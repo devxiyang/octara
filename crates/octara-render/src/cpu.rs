@@ -6,7 +6,8 @@ use crate::Bitmap;
 use crate::glyphs::{GlyphCache, SUBPIXEL_STEPS};
 use crate::shape::{blend, blend_premultiplied, coverage, image_color, inner_rect, sd_round_rect, shadow_alpha};
 use octara::kernel::Color;
-use octara::paint::{DisplayList, GlyphRun, ImagePaint, Item, Quad, Rect, Shadow};
+use crate::paths::{self, PathCache};
+use octara::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, Quad, Rect, Shadow};
 
 /// A clip in device pixels.
 #[derive(Clone, Copy)]
@@ -24,10 +25,11 @@ impl Clip {
     }
 }
 
-/// Renders display lists to RGBA images; keeps rasterized glyphs between frames.
+/// Renders display lists to RGBA images; keeps rasterized glyphs and paths between frames.
 #[derive(Default)]
 pub struct CpuRenderer {
     glyphs: GlyphCache,
+    paths: PathCache,
 }
 
 struct Target {
@@ -72,6 +74,11 @@ impl CpuRenderer {
         Self::default()
     }
 
+    /// How many rasterized path masks are cached.
+    pub fn cached_paths(&self) -> usize {
+        self.paths.len()
+    }
+
     /// Renders at `scale` device pixels per logical pixel.
     pub fn render(&mut self, dl: &DisplayList, scale: f32) -> Bitmap {
         let width = (dl.size.0 * scale).ceil().max(1.0) as u32;
@@ -85,6 +92,7 @@ impl CpuRenderer {
                 Item::Quad(q) => quad(&mut t, q, scale),
                 Item::Image(i) => image(&mut t, i, scale),
                 Item::Glyphs(g) => self.glyph_run(&mut t, g, scale),
+                Item::Path(p) => self.path(&mut t, p, scale),
                 Item::PushClip { rect, radius, .. } => {
                     let c = crate::shape::push_clip(t.clips.last().map(|c| (c.x, c.y, c.w, c.h)), *rect, *radius, scale);
                     t.clips.push(Clip { x: c.0, y: c.1, w: c.2, h: c.3, r: c.4 });
@@ -107,7 +115,36 @@ impl CpuRenderer {
                 }
             }
         }
+        self.paths.end_frame();
         Bitmap::from_premultiplied(width, height, &t.pixels)
+    }
+
+    fn path(&mut self, t: &mut Target, p: &PathPaint, scale: f32) {
+        let window = paths::window((t.width, t.height), t.clips.last().map(|c| (c.x, c.y, c.w, c.h)));
+        let Some(at) = paths::place(p, scale, window) else { return };
+        let mask = self.paths.get(p, &at);
+        let (color, alpha) = rgb(p.color);
+        let b = p.bounds;
+        let gbox = (b.x * scale, b.y * scale, b.w * scale, b.h * scale);
+        for row in 0..mask.height {
+            let py = at.y + row as i32;
+            for col in 0..mask.width {
+                let px = at.x + col as i32;
+                let cov = mask.data[(row * mask.width + col) as usize];
+                if cov == 0 || px < 0 || py < 0 || px >= t.width as i32 || py >= t.height as i32 {
+                    continue;
+                }
+                let (cx, cy) = (px as f32 + 0.5, py as f32 + 0.5);
+                let k = cov as f32 / 255.0 * t.clip_coverage(cx, cy);
+                let dst = &mut t.pixels[(py as u32 * t.width + px as u32) as usize];
+                if let Some(g) = &p.gradient {
+                    let [r, gr, bl, a] = g.at(cx, cy, gbox.0, gbox.1, gbox.2, gbox.3);
+                    blend(dst, [r, gr, bl], a * k);
+                } else {
+                    blend(dst, color, alpha * k);
+                }
+            }
+        }
     }
 
     fn glyph_run(&mut self, t: &mut Target, run: &GlyphRun, scale: f32) {

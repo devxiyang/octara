@@ -19,6 +19,7 @@ pub mod inspect;
 pub mod kernel;
 pub mod motion;
 pub mod paint;
+pub mod path;
 pub mod reactive;
 pub mod task;
 pub mod testing;

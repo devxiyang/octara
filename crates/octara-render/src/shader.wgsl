@@ -41,6 +41,7 @@ const KIND_MASK: f32 = 1.0;
 const KIND_SHADOW: f32 = 3.0;
 const KIND_IMAGE: f32 = 4.0;
 const KIND_LAYER: f32 = 5.0;
+const KIND_PATH: f32 = 6.0;
 
 @vertex
 fn vs(@builtin(vertex_index) vi: u32, inst: Inst) -> VsOut {
@@ -228,6 +229,15 @@ fn fs(v: VsOut) -> @location(0) vec4f {
     if kind == KIND_MASK {
         let a = textureLoad(mask_atlas, texel, 0).r * v.fill.a * clip;
         return vec4f(v.fill.rgb * a, a);
+    }
+    if kind == KIND_PATH {
+        // A path's coverage, filled with its color or its gradient (over the box in `border`).
+        var fill = v.fill;
+        if v.grad.w > 0.5 {
+            fill = gradient_at(p, v.border, v.grad, v.fill, v.grad_color);
+        }
+        let a = textureLoad(mask_atlas, texel, 0).r * fill.a * clip;
+        return vec4f(fill.rgb * a, a);
     }
     let t = textureLoad(color_atlas, texel, 0);
     let a = t.a * v.fill.a * clip;

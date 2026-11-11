@@ -7646,6 +7646,12 @@
           "file": "crates/octara/src/paint.rs"
         },
         {
+          "path": "octara::paint::DisplayList::paths",
+          "kind": "method",
+          "sig": "pub fn paths(&self) -> impl Iterator<Item = &PathPaint>",
+          "file": "crates/octara/src/paint.rs"
+        },
+        {
           "path": "octara::paint::DisplayList::quads",
           "kind": "method",
           "sig": "pub fn quads(&self) -> impl Iterator<Item = &Quad>",
@@ -7859,6 +7865,12 @@
           "file": "crates/octara/src/paint.rs"
         },
         {
+          "path": "octara::paint::Item::Path",
+          "kind": "variant",
+          "sig": "Path(PathPaint)",
+          "file": "crates/octara/src/paint.rs"
+        },
+        {
           "path": "octara::paint::Item::PopClip",
           "kind": "variant",
           "sig": "PopClip",
@@ -7908,6 +7920,61 @@
           "kind": "method",
           "sig": "pub fn fade(&mut self, k: f32)",
           "docs": "Multiplies the item's colors' alpha by `k`.",
+          "file": "crates/octara/src/paint.rs"
+        },
+        {
+          "path": "octara::paint::PathPaint",
+          "kind": "struct",
+          "sig": "pub struct PathPaint { .. }",
+          "docs": "A path filled or stroked with a color or a gradient. `transform` maps the path's\ncoordinates to the window's (logical pixels); a stroke's width scales with it.",
+          "file": "crates/octara/src/paint.rs",
+          "traits": [
+            "Clone",
+            "Debug"
+          ]
+        },
+        {
+          "path": "octara::paint::PathPaint::bounds",
+          "kind": "field",
+          "sig": "pub bounds: Rect",
+          "docs": "The box a gradient spans (the element's), in window coordinates.",
+          "file": "crates/octara/src/paint.rs"
+        },
+        {
+          "path": "octara::paint::PathPaint::color",
+          "kind": "field",
+          "sig": "pub color: Color",
+          "file": "crates/octara/src/paint.rs"
+        },
+        {
+          "path": "octara::paint::PathPaint::gradient",
+          "kind": "field",
+          "sig": "pub gradient: Option<Gradient>",
+          "docs": "A gradient (instead of `color`), spanning `bounds`.",
+          "file": "crates/octara/src/paint.rs"
+        },
+        {
+          "path": "octara::paint::PathPaint::path",
+          "kind": "field",
+          "sig": "pub path: Path",
+          "file": "crates/octara/src/paint.rs"
+        },
+        {
+          "path": "octara::paint::PathPaint::source",
+          "kind": "field",
+          "sig": "pub source: NodeId",
+          "file": "crates/octara/src/paint.rs"
+        },
+        {
+          "path": "octara::paint::PathPaint::style",
+          "kind": "field",
+          "sig": "pub style: PathStyle",
+          "file": "crates/octara/src/paint.rs"
+        },
+        {
+          "path": "octara::paint::PathPaint::transform",
+          "kind": "field",
+          "sig": "pub transform: Transform",
           "file": "crates/octara/src/paint.rs"
         },
         {
@@ -8080,6 +8147,588 @@
           "kind": "field",
           "sig": "pub source: NodeId",
           "file": "crates/octara/src/paint.rs"
+        },
+        {
+          "path": "octara::path",
+          "kind": "module",
+          "sig": "pub mod path",
+          "docs": "Vector paths: the geometry icons and canvases draw.\n\nA [`Path`] is an immutable builder, like elements: each call returns the path with one more\ncommand (GPUI's names). It is cheap to clone (the commands are shared) and carries a content\nhash, so renderers cache what they rasterize by what the path is, not by which value it is.\n\n```\nuse octara::path::{FillRule, LineCap, Path, Stroke, point};\n\nlet check = Path::new().move_to(point(4.0, 12.0)).line_to(point(9.0, 17.0)).line_to(point(20.0, 6.0));\nlet ring = Path::circle(point(12.0, 12.0), 10.0).append(&Path::circle(point(12.0, 12.0), 6.0));\nlet _ = (Stroke::new(2.0).cap(LineCap::Round), FillRule::EvenOdd, check, ring);\n```\n\nPainting a path (a fill with a [`FillRule`], or a [`Stroke`]) is a display-list item\n([`crate::paint::PathPaint`]); both renderers rasterize it into the same coverage.",
+          "file": "crates/octara/src/path.rs",
+          "links": [
+            "octara::paint::PathPaint",
+            "octara::path::FillRule",
+            "octara::path::Path",
+            "octara::path::Stroke"
+          ]
+        },
+        {
+          "path": "octara::path::FillRule",
+          "kind": "enum",
+          "sig": "pub enum FillRule",
+          "docs": "How a fill decides what is inside where subpaths overlap.",
+          "file": "crates/octara/src/path.rs",
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "Default",
+            "Eq",
+            "Hash",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::path::FillRule::EvenOdd",
+          "kind": "variant",
+          "sig": "EvenOdd",
+          "docs": "Inside where an odd number of edges is crossed (any inner subpath makes a hole).",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::FillRule::NonZero",
+          "kind": "variant",
+          "sig": "NonZero",
+          "docs": "Inside where the winding number is not zero (a reversed inner subpath makes a hole).",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::LineCap",
+          "kind": "enum",
+          "sig": "pub enum LineCap",
+          "docs": "The ends of open subpaths.",
+          "file": "crates/octara/src/path.rs",
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "Default",
+            "Eq",
+            "Hash",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::path::LineCap::Butt",
+          "kind": "variant",
+          "sig": "Butt",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::LineCap::Round",
+          "kind": "variant",
+          "sig": "Round",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::LineCap::Square",
+          "kind": "variant",
+          "sig": "Square",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::LineJoin",
+          "kind": "enum",
+          "sig": "pub enum LineJoin",
+          "docs": "Where stroke segments meet.",
+          "file": "crates/octara/src/path.rs",
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "Default",
+            "Eq",
+            "Hash",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::path::LineJoin::Bevel",
+          "kind": "variant",
+          "sig": "Bevel",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::LineJoin::Miter",
+          "kind": "variant",
+          "sig": "Miter",
+          "docs": "A sharp corner, beveled beyond the miter limit.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::LineJoin::Round",
+          "kind": "variant",
+          "sig": "Round",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path",
+          "kind": "struct",
+          "sig": "pub struct Path { .. }",
+          "docs": "A vector path: subpaths of lines and curves. See the [module docs](self).",
+          "file": "crates/octara/src/path.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Default",
+            "PartialEq"
+          ],
+          "links": [
+            "octara::path"
+          ]
+        },
+        {
+          "path": "octara::path::Path::add_polygon",
+          "kind": "method",
+          "sig": "pub fn add_polygon(self, points: &[Point], closed: bool) -> Path",
+          "docs": "A polygon through `points`, closed or not.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::append",
+          "kind": "method",
+          "sig": "pub fn append(self, other: &Path) -> Path",
+          "docs": "This path followed by the subpaths of `other`.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::arc_to",
+          "kind": "method",
+          "sig": "pub fn arc_to(self, radii: impl Into<Point>, x_rotation: f32, large_arc: bool, sweep: bool, to: impl Into<Point>) -> Path",
+          "docs": "An elliptical arc to `to` (SVG's `A`): radii, the ellipse's rotation in degrees, and which\nof the four candidate arcs (`large_arc`, `sweep` clockwise).",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::bounds",
+          "kind": "method",
+          "sig": "pub fn bounds(&self) -> Option<Rect>",
+          "docs": "The box around every point of the path (control points included), or `None` for an\nempty path.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::circle",
+          "kind": "assoc_fn",
+          "sig": "pub fn circle(center: impl Into<Point>, r: f32) -> Path",
+          "docs": "A circle around `center`.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::close",
+          "kind": "method",
+          "sig": "pub fn close(self) -> Path",
+          "docs": "Closes the subpath with a line back to its start.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::commands",
+          "kind": "method",
+          "sig": "pub fn commands(&self) -> &[PathCommand]",
+          "docs": "The commands, in order.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::contains",
+          "kind": "method",
+          "sig": "pub fn contains(&self, p: impl Into<Point>, rule: FillRule) -> bool",
+          "docs": "Whether `p` is inside the path filled with `rule`.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::content_hash",
+          "kind": "method",
+          "sig": "pub fn content_hash(&self) -> u64",
+          "docs": "A hash of the commands: equal paths hash equally, however they were built.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::cubic_bezier_to",
+          "kind": "method",
+          "sig": "pub fn cubic_bezier_to(self, to: impl Into<Point>, control_a: impl Into<Point>, control_b: impl Into<Point>) -> Path",
+          "docs": "A cubic curve to `to` with control points `control_a` and `control_b` (GPUI's order).",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::curve_to",
+          "kind": "method",
+          "sig": "pub fn curve_to(self, to: impl Into<Point>, ctrl: impl Into<Point>) -> Path",
+          "docs": "A quadratic curve to `to` with the control point `ctrl` (GPUI's order).",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::ellipse",
+          "kind": "assoc_fn",
+          "sig": "pub fn ellipse(center: impl Into<Point>, rx: f32, ry: f32) -> Path",
+          "docs": "An ellipse around `center`.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::is_empty",
+          "kind": "method",
+          "sig": "pub fn is_empty(&self) -> bool",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::line_to",
+          "kind": "method",
+          "sig": "pub fn line_to(self, to: impl Into<Point>) -> Path",
+          "docs": "A straight line to `to`.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::move_to",
+          "kind": "method",
+          "sig": "pub fn move_to(self, to: impl Into<Point>) -> Path",
+          "docs": "Begins a subpath at `to`.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::new",
+          "kind": "assoc_fn",
+          "sig": "pub fn new() -> Path",
+          "docs": "An empty path.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::rect",
+          "kind": "assoc_fn",
+          "sig": "pub fn rect(r: Rect) -> Path",
+          "docs": "A rectangle.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::rounded_rect",
+          "kind": "assoc_fn",
+          "sig": "pub fn rounded_rect(r: Rect, radius: f32) -> Path",
+          "docs": "A rectangle with rounded corners (the radius is limited to half the shorter side).",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::svg",
+          "kind": "assoc_fn",
+          "sig": "pub fn svg(data: &str) -> Result<Path, PathError>",
+          "docs": "A path from SVG path data (`\"M3 12h18\"`): every command, relative and absolute, arcs\nincluded.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Path::transform",
+          "kind": "method",
+          "sig": "pub fn transform(self, t: Transform) -> Path",
+          "docs": "The path so far, transformed.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::PathCommand",
+          "kind": "enum",
+          "sig": "pub enum PathCommand",
+          "docs": "One path command (cubic and quadratic curves keep their control points first).",
+          "file": "crates/octara/src/path.rs",
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::path::PathCommand::Close",
+          "kind": "variant",
+          "sig": "Close",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::PathCommand::CurveTo",
+          "kind": "variant",
+          "sig": "CurveTo(Point, Point, Point)",
+          "docs": "A cubic curve: two control points, end point.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::PathCommand::LineTo",
+          "kind": "variant",
+          "sig": "LineTo(Point)",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::PathCommand::MoveTo",
+          "kind": "variant",
+          "sig": "MoveTo(Point)",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::PathCommand::QuadTo",
+          "kind": "variant",
+          "sig": "QuadTo(Point, Point)",
+          "docs": "A quadratic curve: control point, end point.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::PathError",
+          "kind": "struct",
+          "sig": "pub struct PathError { .. }",
+          "docs": "SVG path data that does not parse.",
+          "file": "crates/octara/src/path.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Display",
+            "Eq",
+            "Error",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::path::PathError::offset",
+          "kind": "field",
+          "sig": "pub offset: usize",
+          "docs": "The byte offset where parsing stopped.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::PathStyle",
+          "kind": "enum",
+          "sig": "pub enum PathStyle",
+          "docs": "What painting a path does: fill its inside, or stroke its outline.",
+          "file": "crates/octara/src/path.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Hash",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::path::PathStyle::Fill",
+          "kind": "variant",
+          "sig": "Fill(FillRule)",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::PathStyle::Stroke",
+          "kind": "variant",
+          "sig": "Stroke(Stroke)",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Point",
+          "kind": "struct",
+          "sig": "pub struct Point { .. }",
+          "docs": "A point in logical pixels.",
+          "file": "crates/octara/src/path.rs",
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "Default",
+            "From<(f32, f32)>",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::path::Point::x",
+          "kind": "field",
+          "sig": "pub x: f32",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Point::y",
+          "kind": "field",
+          "sig": "pub y: f32",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Stroke",
+          "kind": "struct",
+          "sig": "pub struct Stroke { .. }",
+          "docs": "How a path is stroked: width (logical pixels), caps, joins and dashes.",
+          "file": "crates/octara/src/path.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Hash",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::path::Stroke::cap",
+          "kind": "field",
+          "sig": "pub cap: LineCap",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Stroke::cap",
+          "kind": "method",
+          "sig": "pub fn cap(self, cap: LineCap) -> Stroke",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Stroke::dash",
+          "kind": "field",
+          "sig": "pub dash: Arc<[f32]>",
+          "docs": "Dash and gap lengths, alternating; empty for a solid line.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Stroke::dash",
+          "kind": "method",
+          "sig": "pub fn dash(self, lengths: &[f32]) -> Stroke",
+          "docs": "Dash and gap lengths, alternating (`&[4.0, 2.0]`).",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Stroke::dash_offset",
+          "kind": "field",
+          "sig": "pub dash_offset: f32",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Stroke::dash_offset",
+          "kind": "method",
+          "sig": "pub fn dash_offset(self, offset: f32) -> Stroke",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Stroke::join",
+          "kind": "field",
+          "sig": "pub join: LineJoin",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Stroke::join",
+          "kind": "method",
+          "sig": "pub fn join(self, join: LineJoin) -> Stroke",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Stroke::miter_limit",
+          "kind": "field",
+          "sig": "pub miter_limit: f32",
+          "docs": "The miter length (in widths) beyond which a miter join is beveled.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Stroke::miter_limit",
+          "kind": "method",
+          "sig": "pub fn miter_limit(self, limit: f32) -> Stroke",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Stroke::new",
+          "kind": "assoc_fn",
+          "sig": "pub fn new(width: f32) -> Stroke",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Stroke::reach",
+          "kind": "method",
+          "sig": "pub fn reach(&self) -> f32",
+          "docs": "How far the stroke reaches beyond the path's geometry, in the stroke's own units.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Stroke::width",
+          "kind": "field",
+          "sig": "pub width: f32",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Transform",
+          "kind": "struct",
+          "sig": "pub struct Transform { .. }",
+          "docs": "An affine transform: `x' = xx·x + yx·y + x`, `y' = xy·x + yy·y + y`.",
+          "file": "crates/octara/src/path.rs",
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "Default",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::path::Transform::IDENTITY",
+          "kind": "assoc_const",
+          "sig": "pub const IDENTITY: Transform",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Transform::apply",
+          "kind": "method",
+          "sig": "pub fn apply(&self, p: Point) -> Point",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Transform::invert",
+          "kind": "method",
+          "sig": "pub fn invert(&self) -> Option<Transform>",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Transform::rotate",
+          "kind": "assoc_fn",
+          "sig": "pub fn rotate(degrees: f32) -> Transform",
+          "docs": "A rotation by `degrees`, clockwise on screen (y points down).",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Transform::scale",
+          "kind": "assoc_fn",
+          "sig": "pub fn scale(sx: f32, sy: f32) -> Transform",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Transform::then",
+          "kind": "method",
+          "sig": "pub fn then(&self, next: &Transform) -> Transform",
+          "docs": "This transform followed by `next`.",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Transform::translate",
+          "kind": "assoc_fn",
+          "sig": "pub fn translate(x: f32, y: f32) -> Transform",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Transform::x",
+          "kind": "field",
+          "sig": "pub x: f32",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Transform::xx",
+          "kind": "field",
+          "sig": "pub xx: f32",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Transform::xy",
+          "kind": "field",
+          "sig": "pub xy: f32",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Transform::y",
+          "kind": "field",
+          "sig": "pub y: f32",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Transform::yx",
+          "kind": "field",
+          "sig": "pub yx: f32",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::Transform::yy",
+          "kind": "field",
+          "sig": "pub yy: f32",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
+          "path": "octara::path::point",
+          "kind": "fn",
+          "sig": "pub fn point(x: f32, y: f32) -> Point",
+          "docs": "The point `(x, y)`.",
+          "file": "crates/octara/src/path.rs"
         },
         {
           "path": "octara::prelude",
@@ -17018,7 +17667,7 @@
     },
     {
       "name": "octara-render",
-      "docs": "Renderers for Octara's display list ([`octara::paint`]).\n\n- [`CpuRenderer`]: the reference renderer. Deterministic (bundled fonts, plain float math), it\n  gives agents and tests screenshots without a GPU and is the oracle the GPU renderer is\n  compared with.\n- [`GpuRenderer`] (feature `gpu`): wgpu, one WGSL shader on every platform, one instance per\n  item and one draw call per frame. It implements the formulas of [`shape`] and uses the same\n  [`glyphs`] rasterization, and is tested against the reference renderer.",
+      "docs": "Renderers for Octara's display list ([`octara::paint`]).\n\n- [`CpuRenderer`]: the reference renderer. Deterministic (bundled fonts, plain float math), it\n  gives agents and tests screenshots without a GPU and is the oracle the GPU renderer is\n  compared with.\n- [`GpuRenderer`] (feature `gpu`): wgpu, one WGSL shader on every platform, one instance per\n  item and one draw call per frame. It implements the formulas of [`shape`] and uses the same\n  [`glyphs`] and [`paths`] rasterization, and is tested against the reference renderer.",
       "items": [
         {
           "path": "octara_render::Bitmap",
@@ -17075,7 +17724,7 @@
           "path": "octara_render::CpuRenderer",
           "kind": "struct",
           "sig": "pub struct CpuRenderer { .. }",
-          "docs": "Renders display lists to RGBA images; keeps rasterized glyphs between frames.",
+          "docs": "Renders display lists to RGBA images; keeps rasterized glyphs and paths between frames.",
           "file": "crates/octara-render/src/cpu.rs",
           "aliases": [
             "octara_render::cpu::CpuRenderer"
@@ -17083,6 +17732,13 @@
           "traits": [
             "Default"
           ]
+        },
+        {
+          "path": "octara_render::CpuRenderer::cached_paths",
+          "kind": "method",
+          "sig": "pub fn cached_paths(&self) -> usize",
+          "docs": "How many rasterized path masks are cached.",
+          "file": "crates/octara-render/src/cpu.rs"
         },
         {
           "path": "octara_render::CpuRenderer::new",
@@ -17237,11 +17893,163 @@
           "path": "octara_render::gpu",
           "kind": "module",
           "sig": "pub mod gpu",
-          "docs": "The GPU renderer: wgpu, one WGSL shader (`shader.wgsl`), one instance per display-list item,\none draw call per frame. Glyphs are rasterized by the same [`GlyphCache`] as the reference\nrenderer and packed into an alpha atlas (masks) and an RGBA atlas (color glyphs).",
+          "docs": "The GPU renderer: wgpu, one WGSL shader (`shader.wgsl`), one instance per display-list item,\none draw call per frame. Glyphs and paths are rasterized as by the reference renderer\n([`GlyphCache`], [`paths`]) and packed into an alpha atlas (masks; a path larger than a tile\ntakes several) and an RGBA atlas (color glyphs). When an atlas fills up, every atlas starts\nover and the frame is built again with only what it draws.",
           "file": "crates/octara-render/src/gpu.rs",
           "links": [
-            "octara_render::glyphs::GlyphCache"
+            "octara_render::glyphs::GlyphCache",
+            "octara_render::paths"
           ]
+        },
+        {
+          "path": "octara_render::paths",
+          "kind": "module",
+          "sig": "pub mod paths",
+          "docs": "Path rasterization, shared by both renderers: strokes become outlines (kurbo), and a path's\ncoverage is computed on the CPU by zeno into an 8-bit mask, which the reference renderer blends directly and the GPU renderer\nsamples from its mask atlas. Both therefore draw the same coverage.\n\nA mask is keyed by the path's content, the transform's linear part, the translation's\nsubpixel phase (quarter pixels, as glyphs), the style and the visible region: a path that\nonly moves by whole pixels reuses its mask, and a path larger than what is visible is\nrasterized only where it shows.",
+          "file": "crates/octara-render/src/paths.rs"
+        },
+        {
+          "path": "octara_render::paths::MaskKey",
+          "kind": "struct",
+          "sig": "pub struct MaskKey { .. }",
+          "docs": "What identifies a mask.",
+          "file": "crates/octara-render/src/paths.rs",
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "Eq",
+            "Hash",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara_render::paths::PathCache",
+          "kind": "struct",
+          "sig": "pub struct PathCache { .. }",
+          "docs": "Rasterized masks, kept while they are drawn (the reference renderer's cache).",
+          "file": "crates/octara-render/src/paths.rs",
+          "traits": [
+            "Default"
+          ]
+        },
+        {
+          "path": "octara_render::paths::PathCache::end_frame",
+          "kind": "method",
+          "sig": "pub fn end_frame(&mut self)",
+          "docs": "Ends a frame: masks unused for a while are dropped (a canvas redrawn every frame does\nnot accumulate them).",
+          "file": "crates/octara-render/src/paths.rs"
+        },
+        {
+          "path": "octara_render::paths::PathCache::get",
+          "kind": "method",
+          "sig": "pub fn get(&mut self, p: &PathPaint, at: &Placed) -> &PathMask",
+          "docs": "The mask of `p` placed at `at`, rasterized on first use.",
+          "file": "crates/octara-render/src/paths.rs"
+        },
+        {
+          "path": "octara_render::paths::PathCache::is_empty",
+          "kind": "method",
+          "sig": "pub fn is_empty(&self) -> bool",
+          "file": "crates/octara-render/src/paths.rs"
+        },
+        {
+          "path": "octara_render::paths::PathCache::len",
+          "kind": "method",
+          "sig": "pub fn len(&self) -> usize",
+          "file": "crates/octara-render/src/paths.rs"
+        },
+        {
+          "path": "octara_render::paths::PathMask",
+          "kind": "struct",
+          "sig": "pub struct PathMask { .. }",
+          "docs": "A rasterized path: coverage, one byte per pixel, rows of `width`.",
+          "file": "crates/octara-render/src/paths.rs",
+          "traits": [
+            "Clone",
+            "Debug"
+          ]
+        },
+        {
+          "path": "octara_render::paths::PathMask::data",
+          "kind": "field",
+          "sig": "pub data: Vec<u8>",
+          "file": "crates/octara-render/src/paths.rs"
+        },
+        {
+          "path": "octara_render::paths::PathMask::height",
+          "kind": "field",
+          "sig": "pub height: u32",
+          "file": "crates/octara-render/src/paths.rs"
+        },
+        {
+          "path": "octara_render::paths::PathMask::width",
+          "kind": "field",
+          "sig": "pub width: u32",
+          "file": "crates/octara-render/src/paths.rs"
+        },
+        {
+          "path": "octara_render::paths::Placed",
+          "kind": "struct",
+          "sig": "pub struct Placed { .. }",
+          "docs": "Where a path's mask goes this frame.",
+          "file": "crates/octara-render/src/paths.rs",
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug"
+          ]
+        },
+        {
+          "path": "octara_render::paths::Placed::height",
+          "kind": "field",
+          "sig": "pub height: u32",
+          "file": "crates/octara-render/src/paths.rs"
+        },
+        {
+          "path": "octara_render::paths::Placed::key",
+          "kind": "field",
+          "sig": "pub key: MaskKey",
+          "file": "crates/octara-render/src/paths.rs"
+        },
+        {
+          "path": "octara_render::paths::Placed::width",
+          "kind": "field",
+          "sig": "pub width: u32",
+          "file": "crates/octara-render/src/paths.rs"
+        },
+        {
+          "path": "octara_render::paths::Placed::x",
+          "kind": "field",
+          "sig": "pub x: i32",
+          "docs": "The device pixel of the mask's first texel.",
+          "file": "crates/octara-render/src/paths.rs"
+        },
+        {
+          "path": "octara_render::paths::Placed::y",
+          "kind": "field",
+          "sig": "pub y: i32",
+          "file": "crates/octara-render/src/paths.rs"
+        },
+        {
+          "path": "octara_render::paths::place",
+          "kind": "fn",
+          "sig": "pub fn place(p: &PathPaint, scale: f32, window: (f32, f32, f32, f32)) -> Option<Placed>",
+          "docs": "Where `p`'s mask goes at `scale` within `window` (device pixels `x0, y0, x1, y1`), or `None`\nwhen none of it shows.",
+          "file": "crates/octara-render/src/paths.rs"
+        },
+        {
+          "path": "octara_render::paths::rasterize",
+          "kind": "fn",
+          "sig": "pub fn rasterize(p: &PathPaint, at: &Placed) -> PathMask",
+          "docs": "Rasterizes the placed region of `p`.",
+          "file": "crates/octara-render/src/paths.rs"
+        },
+        {
+          "path": "octara_render::paths::window",
+          "kind": "fn",
+          "sig": "pub fn window(target: (u32, u32), clip: Option<(f32, f32, f32, f32)>) -> (f32, f32, f32, f32)",
+          "docs": "The visible window in device pixels: the target, limited to the innermost clip's rect.",
+          "file": "crates/octara-render/src/paths.rs"
         },
         {
           "path": "octara_render::screenshot",

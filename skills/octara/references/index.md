@@ -72,6 +72,6 @@ Other crates and modules:
 - octara::testing: Checked, Host, check_consistent
 - octara::diagnostics: Area, CODES, Code, Diagnostic, Severity, code
 - octara_fonts: cjk
-- octara_render: Bitmap, CpuRenderer, GpuRenderer, cpu, glyphs, gpu, screenshot, shape, wgpu
+- octara_render: Bitmap, CpuRenderer, GpuRenderer, cpu, glyphs, gpu, paths, screenshot, shape, wgpu
 - commands (`App::invoke`, `on_command`): focus.{dismiss,down,first,last,left,next,prev,right,up}, press, submit, menu, edit.{copy,cut,delete_backward,delete_forward,delete_to_start,delete_word_backward,delete_word_forward,move_left,move_right,move_to_end,move_to_start,move_word_left,move_word_right,paste,redo,select_{all,left,right},select_to_end,select_to_start,select_word_left,select_word_right,undo}
 - diagnostic codes (`octara explain`): STRICT_READ_UNTRACKED, WRITE_IN_BUILD, WRITE_IN_DERIVE, READ_DISPOSED, WRITE_DISPOSED, CYCLE, FLUSH_RUNAWAY, NO_OWNER, DUPLICATE_STATE_KEY, STATE_TYPE_CHANGED, UNKEYED_STATE, DUPLICATE_KEY, AMBIGUOUS_COMPONENT, DUPLICATE_COMPONENT_KEY, EACH_ROW_NOT_ELEMENT, VIRTUAL_LIST_NOT_SCROLLABLE, LAYOUT_LOOP, OVERFLOW, COLLAPSED, TEXT_TRUNCATED, OVERLAY_CLAMPED, UNNAMED_CONTROL, SMALL_TARGET, LOW_CONTRAST, NOT_SETTLED, BAD_REQUEST, NO_SUCH_ELEMENT, STEP_FAILED, EXPECTATION_FAILED, MISSING_TOKEN

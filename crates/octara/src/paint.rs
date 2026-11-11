@@ -137,6 +137,21 @@ pub struct ImagePaint {
     pub opacity: f32,
 }
 
+/// A path filled or stroked with a color or a gradient. `transform` maps the path's
+/// coordinates to the window's (logical pixels); a stroke's width scales with it.
+#[derive(Clone, Debug)]
+pub struct PathPaint {
+    pub source: NodeId,
+    pub path: crate::path::Path,
+    pub transform: crate::path::Transform,
+    pub style: crate::path::PathStyle,
+    pub color: Color,
+    /// A gradient (instead of `color`), spanning `bounds`.
+    pub gradient: Option<Gradient>,
+    /// The box a gradient spans (the element's), in window coordinates.
+    pub bounds: Rect,
+}
+
 /// One drawing step.
 #[derive(Clone, Debug)]
 pub enum Item {
@@ -144,6 +159,7 @@ pub enum Item {
     Quad(Quad),
     Image(ImagePaint),
     Glyphs(GlyphRun),
+    Path(PathPaint),
     /// Clip what follows to `rect` (rounded by `radius`) until the matching `PopClip`.
     PushClip {
         source: NodeId,
@@ -163,7 +179,7 @@ pub enum Item {
 impl Item {
     /// Whether the item draws something (rather than clipping or grouping).
     pub fn draws(&self) -> bool {
-        matches!(self, Item::Shadow(_) | Item::Quad(_) | Item::Image(_) | Item::Glyphs(_))
+        matches!(self, Item::Shadow(_) | Item::Quad(_) | Item::Image(_) | Item::Glyphs(_) | Item::Path(_))
     }
 
     /// Multiplies the item's colors' alpha by `k`.
@@ -183,6 +199,13 @@ impl Item {
             }
             Item::Image(i) => i.opacity *= k,
             Item::Glyphs(g) => f(&mut g.color),
+            Item::Path(p) => {
+                f(&mut p.color);
+                if let Some(g) = &mut p.gradient {
+                    f(&mut g.from.0);
+                    f(&mut g.to.0);
+                }
+            }
             Item::PushClip { .. } | Item::PopClip | Item::PopLayer => {}
             Item::PushLayer { opacity, .. } => *opacity *= k,
         }
@@ -200,6 +223,9 @@ pub struct DisplayList {
 impl DisplayList {
     pub fn quads(&self) -> impl Iterator<Item = &Quad> {
         self.items.iter().filter_map(|i| if let Item::Quad(q) = i { Some(q) } else { None })
+    }
+    pub fn paths(&self) -> impl Iterator<Item = &PathPaint> {
+        self.items.iter().filter_map(|i| if let Item::Path(p) = i { Some(p) } else { None })
     }
     pub fn glyph_runs(&self) -> impl Iterator<Item = &GlyphRun> {
         self.items.iter().filter_map(|i| if let Item::Glyphs(g) = i { Some(g) } else { None })

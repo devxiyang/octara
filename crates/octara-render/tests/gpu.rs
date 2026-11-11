@@ -191,6 +191,68 @@ fn gpu_matches_the_reference_renderer() {
     }
 }
 
+/// Paths of every kind, and one larger than an atlas tile.
+fn paths_list() -> octara::paint::DisplayList {
+    use octara::kernel::NodeId;
+    use octara::paint::{DisplayList, Gradient, Item, PathPaint, Rect};
+    use octara::path::{FillRule, LineCap, LineJoin, Path, PathStyle, Stroke, Transform, point};
+    let item = |path: Path, style: PathStyle, color: Color, transform: Transform| {
+        let b = path.bounds().unwrap_or_default();
+        let o = transform.apply(point(b.x, b.y));
+        Item::Path(PathPaint {
+            source: NodeId::default(),
+            path,
+            transform,
+            style,
+            color,
+            gradient: None,
+            bounds: Rect { x: o.x, y: o.y, w: b.w, h: b.h },
+        })
+    };
+    let ring = Path::circle(point(0.0, 0.0), 30.0).append(&Path::circle(point(0.0, 0.0), 16.0));
+    let zigzag = Path::new().add_polygon(&[point(0.0, 30.0), point(20.0, 0.0), point(40.0, 30.0), point(60.0, 0.0)], false);
+    let mut gradient = item(
+        Path::rounded_rect(Rect { x: 0.0, y: 0.0, w: 90.0, h: 50.0 }, 12.0),
+        PathStyle::Fill(FillRule::NonZero),
+        Color::BLACK,
+        Transform::translate(300.0, 20.0),
+    );
+    if let Item::Path(p) = &mut gradient {
+        p.gradient = Some(Gradient { angle: 135.0, from: (rgb(0xf59e0b), 0.0), to: (rgb(0x7c3aed), 1.0) });
+    }
+    let items = vec![
+        // Larger than a 1024-pixel tile at 2×: drawn in pieces.
+        item(Path::circle(point(320.0, 300.0), 280.0), PathStyle::Fill(FillRule::NonZero), rgb(0xdbeafe), Transform::IDENTITY),
+        item(ring.clone(), PathStyle::Fill(FillRule::EvenOdd), rgb(0x2563eb), Transform::translate(50.3, 50.7)),
+        item(ring, PathStyle::Fill(FillRule::NonZero), rgb(0x10b981).with_alpha(0.6), Transform::translate(110.0, 50.0)),
+        item(zigzag.clone(), PathStyle::Stroke(Stroke::new(6.0).join(LineJoin::Round).cap(LineCap::Round)), rgb(0xef4444), Transform::translate(160.0, 30.0)),
+        item(zigzag.clone(), PathStyle::Stroke(Stroke::new(3.0).dash(&[6.0, 4.0])), rgb(0x111827), Transform::translate(160.0, 80.0)),
+        item(zigzag, PathStyle::Stroke(Stroke::new(4.0)), rgb(0x7c3aed), Transform::rotate(30.0).then(&Transform::translate(240.0, 40.0))),
+        gradient,
+        Item::PushClip { source: NodeId::default(), rect: Rect { x: 20.0, y: 120.0, w: 120.0, h: 60.0 }, radius: 16.0 },
+        item(Path::circle(point(80.0, 150.0), 50.0), PathStyle::Fill(FillRule::NonZero), rgb(0xec4899), Transform::IDENTITY),
+        Item::PopClip,
+        Item::PushLayer { source: NodeId::default(), opacity: 0.5 },
+        item(Path::rect(Rect { x: 200.0, y: 120.0, w: 60.0, h: 60.0 }), PathStyle::Fill(FillRule::NonZero), rgb(0x0ea5e9), Transform::IDENTITY),
+        item(Path::circle(point(260.0, 180.0), 30.0), PathStyle::Fill(FillRule::NonZero), rgb(0xf97316), Transform::IDENTITY),
+        Item::PopLayer,
+    ];
+    DisplayList { size: (640.0, 400.0), background: Color::WHITE, items }
+}
+
+#[test]
+fn gpu_paths_match_the_reference_renderer() {
+    let Some(mut gpu) = GpuRenderer::new() else {
+        eprintln!("no GPU adapter: skipped");
+        return;
+    };
+    let mut cpu = CpuRenderer::new();
+    let dl = paths_list();
+    for scale in [1.0, 2.0] {
+        compare(&format!("paths@{scale}x"), &cpu.render(&dl, scale), &gpu.render(&dl, scale));
+    }
+}
+
 /// Small stand-ins for the example apps (this crate does not depend on the examples).
 mod octara_examples_like {
     use octara::prelude::*;

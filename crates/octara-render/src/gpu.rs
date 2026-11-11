@@ -1,16 +1,23 @@
 //! The GPU renderer: wgpu, one WGSL shader (`shader.wgsl`), one instance per display-list item,
-//! one draw call per frame. Glyphs are rasterized by the same [`GlyphCache`] as the reference
-//! renderer and packed into an alpha atlas (masks) and an RGBA atlas (color glyphs).
+//! one draw call per frame. Glyphs and paths are rasterized as by the reference renderer
+//! ([`GlyphCache`], [`paths`]) and packed into an alpha atlas (masks; a path larger than a tile
+//! takes several) and an RGBA atlas (color glyphs). When an atlas fills up, every atlas starts
+//! over and the frame is built again with only what it draws.
 
 use crate::Bitmap;
 use crate::glyphs::{GlyphCache, SUBPIXEL_STEPS};
+use crate::paths::{self, MaskKey};
 use crate::shape::push_clip;
 use bytemuck::{Pod, Zeroable};
 use octara::kernel::Color;
-use octara::paint::{DisplayList, GlyphRun, ImagePaint, Item, Quad, Shadow};
+use octara::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, Quad, Shadow};
 use rustc_hash::FxHashMap;
 
 const ATLAS: u32 = 2048;
+/// The mask atlas's size where the device allows it (paths can be window-sized).
+const MASK_ATLAS: u32 = 4096;
+/// The largest piece of a path's mask in the atlas.
+const TILE: u32 = 1024;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// No clip: a rect far larger than any window.
 const NO_CLIP: [f32; 4] = [-1.0e6, -1.0e6, 2.0e6, 2.0e6];
@@ -23,9 +30,10 @@ struct Inst {
     border_color: [f32; 4],
     border: [f32; 4],
     clip: [f32; 4],
-    /// radius, kind (0 quad, 1 mask glyph, 2 color glyph, 3 shadow, 4 image), clip radius, has fill
-    /// (a shadow's σ is `border[0]`; an image's clipping box is `border`, its radius `params[0]`,
-    /// its opacity `fill[3]`, its atlas origin and size `uv`)
+    /// radius, kind (0 quad, 1 mask glyph, 2 color glyph, 3 shadow, 4 image, 5 layer, 6 path),
+    /// clip radius, has fill (a shadow's σ is `border[0]`; an image's clipping box is `border`, its
+    /// radius `params[0]`, its opacity `fill[3]`, its atlas origin and size `uv`; a path's
+    /// gradient box is `border`)
     params: [f32; 4],
     uv: [f32; 4],
     /// A gradient's end color (straight); `fill` is its start.
@@ -52,19 +60,23 @@ struct Pass {
 
 /// A shelf packer for one atlas texture.
 struct Shelf {
+    size: u32,
     x: u32,
     y: u32,
     row: u32,
 }
 
 impl Shelf {
+    fn new(size: u32) -> Shelf {
+        Shelf { size, x: 0, y: 0, row: 0 }
+    }
     fn alloc(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
-        if self.x + w > ATLAS {
+        if self.x + w > self.size {
             self.x = 0;
             self.y += self.row;
             self.row = 0;
         }
-        if self.y + h > ATLAS || w > ATLAS {
+        if self.y + h > self.size || w > self.size {
             return None;
         }
         let at = (self.x, self.y);
@@ -85,6 +97,17 @@ struct Slot {
     width: u32,
     height: u32,
     color: bool,
+}
+
+/// A piece of a path's mask in the mask atlas: its atlas origin, its offset in the mask, its size.
+#[derive(Clone, Copy)]
+struct Tile {
+    ax: u32,
+    ay: u32,
+    dx: u32,
+    dy: u32,
+    w: u32,
+    h: u32,
 }
 
 fn straight(c: Color) -> [f32; 4] {
@@ -109,6 +132,9 @@ pub struct GpuRenderer {
     image_slots: FxHashMap<u64, (u64, u32, u32)>,
     shelves: [Shelf; 3],
     slots: FxHashMap<AtlasKey, Option<Slot>>,
+    path_slots: FxHashMap<MaskKey, Vec<Tile>>,
+    /// An atlas ran out of room while building this frame.
+    overflow: bool,
     glyphs: GlyphCache,
     instances: Option<(wgpu::Buffer, u64)>,
     format: wgpu::TextureFormat,
@@ -208,10 +234,11 @@ impl GpuRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let atlas = |format, label| {
+        let mask_size = device.limits().max_texture_dimension_2d.min(MASK_ATLAS);
+        let atlas = |format, label, size| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
-                size: wgpu::Extent3d { width: ATLAS, height: ATLAS, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -220,9 +247,9 @@ impl GpuRenderer {
                 view_formats: &[],
             })
         };
-        let mask = atlas(wgpu::TextureFormat::R8Unorm, "octara mask atlas");
-        let color = atlas(wgpu::TextureFormat::Rgba8Unorm, "octara color atlas");
-        let images = atlas(wgpu::TextureFormat::Rgba8Unorm, "octara image atlas");
+        let mask = atlas(wgpu::TextureFormat::R8Unorm, "octara mask atlas", mask_size);
+        let color = atlas(wgpu::TextureFormat::Rgba8Unorm, "octara color atlas", ATLAS);
+        let images = atlas(wgpu::TextureFormat::Rgba8Unorm, "octara image atlas", ATLAS);
         let no_layer = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("octara no layer"),
             size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
@@ -245,8 +272,10 @@ impl GpuRenderer {
             layers: Vec::new(),
             no_layer,
             image_slots: FxHashMap::default(),
-            shelves: [Shelf { x: 0, y: 0, row: 0 }, Shelf { x: 0, y: 0, row: 0 }, Shelf { x: 0, y: 0, row: 0 }],
+            shelves: [Shelf::new(mask_size), Shelf::new(ATLAS), Shelf::new(ATLAS)],
             slots: FxHashMap::default(),
+            path_slots: FxHashMap::default(),
+            overflow: false,
             glyphs: GlyphCache::default(),
             instances: None,
             format,
@@ -260,9 +289,51 @@ impl GpuRenderer {
         &self.queue
     }
 
-    /// The image's place in the image atlas, uploading its current pixels when they are new. A
-    /// full atlas starts over (the images of this frame upload again); an image larger than the
-    /// atlas is not drawn.
+    /// Every atlas empty again.
+    fn reset_atlases(&mut self) {
+        for s in &mut self.shelves {
+            *s = Shelf::new(s.size);
+        }
+        self.slots.clear();
+        self.path_slots.clear();
+        self.image_slots.clear();
+    }
+
+    fn upload(&self, texture: &wgpu::Texture, (x, y): (u32, u32), (w, h): (u32, u32), bpp: u32, data: &[u8], stride: u32) {
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d { x, y, z: 0 }, aspect: wgpu::TextureAspect::All },
+            data,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(stride * bpp), rows_per_image: Some(h) },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+    }
+
+    /// The tiles of a path's mask in the mask atlas, rasterizing and uploading it the first time.
+    fn path_tiles(&mut self, p: &PathPaint, at: &paths::Placed) -> Option<Vec<Tile>> {
+        if let Some(t) = self.path_slots.get(&at.key) {
+            return Some(t.clone());
+        }
+        let mask = paths::rasterize(p, at);
+        let mut tiles = Vec::new();
+        for dy in (0..mask.height).step_by(TILE as usize) {
+            for dx in (0..mask.width).step_by(TILE as usize) {
+                let (w, h) = (TILE.min(mask.width - dx), TILE.min(mask.height - dy));
+                let Some((ax, ay)) = self.shelves[0].alloc(w, h) else {
+                    self.overflow = true;
+                    return None;
+                };
+                let start = (dy * mask.width + dx) as usize;
+                let end = start + ((h - 1) * mask.width + w) as usize;
+                self.upload(&self.mask, (ax, ay), (w, h), 1, &mask.data[start..end], mask.width);
+                tiles.push(Tile { ax, ay, dx, dy, w, h });
+            }
+        }
+        self.path_slots.insert(at.key, tiles.clone());
+        Some(tiles)
+    }
+
+    /// The image's place in the image atlas, uploading its current pixels when they are new; an
+    /// image larger than the atlas is not drawn.
     fn image_slot(&mut self, i: &ImagePaint) -> Option<(u32, u32, u32, u32)> {
         let f = i.image.frame();
         if f.width == 0 || f.height == 0 {
@@ -273,22 +344,11 @@ impl GpuRenderer {
         {
             return Some((*x, *y, f.width, f.height));
         }
-        let at = self.shelves[2].alloc(f.width, f.height).or_else(|| {
-            self.shelves[2] = Shelf { x: 0, y: 0, row: 0 };
-            self.image_slots.clear();
-            self.shelves[2].alloc(f.width, f.height)
-        })?;
-        self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.images,
-                mip_level: 0,
-                origin: wgpu::Origin3d { x: at.0, y: at.1, z: 0 },
-                aspect: wgpu::TextureAspect::All,
-            },
-            &f.rgba,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(f.width * 4), rows_per_image: Some(f.height) },
-            wgpu::Extent3d { width: f.width, height: f.height, depth_or_array_layers: 1 },
-        );
+        let Some(at) = self.shelves[2].alloc(f.width, f.height) else {
+            self.overflow = true;
+            return None;
+        };
+        self.upload(&self.images, at, (f.width, f.height), 4, &f.rgba, f.width);
         self.image_slots.insert(i.image.id(), (f.version, at.0, at.1));
         Some((at.0, at.1, f.width, f.height))
     }
@@ -299,30 +359,40 @@ impl GpuRenderer {
         if let Some(s) = self.slots.get(&key) {
             return *s;
         }
-        let slot = self.glyphs.get(&run.font, glyph, size, subpixel, run.embolden, &run.coords).cloned().and_then(|img| {
-            let which = usize::from(img.color);
-            let (x, y) = self.shelves[which].alloc(img.width, img.height)?;
-            let (texture, bpp) = if img.color { (&self.color, 4) } else { (&self.mask, 1) };
-            self.queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d { x, y, z: 0 },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &img.data,
-                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(img.width * bpp), rows_per_image: Some(img.height) },
-                wgpu::Extent3d { width: img.width, height: img.height, depth_or_array_layers: 1 },
-            );
-            Some(Slot { x, y, left: img.left, top: img.top, width: img.width, height: img.height, color: img.color })
-        });
+        // A blank glyph is remembered as `None`; a full atlas is not (the frame starts over).
+        let Some(img) = self.glyphs.get(&run.font, glyph, size, subpixel, run.embolden, &run.coords).cloned() else {
+            self.slots.insert(key, None);
+            return None;
+        };
+        let which = usize::from(img.color);
+        let Some((x, y)) = self.shelves[which].alloc(img.width, img.height) else {
+            self.overflow = true;
+            return None;
+        };
+        let (texture, bpp) = if img.color { (&self.color, 4) } else { (&self.mask, 1) };
+        self.upload(texture, (x, y), (img.width, img.height), bpp, &img.data, img.width);
+        let slot = Some(Slot { x, y, left: img.left, top: img.top, width: img.width, height: img.height, color: img.color });
         self.slots.insert(key, slot);
         slot
     }
 
     /// The instances of each pass: the window's first, then one per layer (a layer's own layers
-    /// come after it, so drawing the passes last to first draws every layer before its use).
+    /// come after it, so drawing the passes last to first draws every layer before its use). When
+    /// an atlas fills up, every atlas starts over and the frame is built again (uploads land in
+    /// order before the draw, so the second build's win); what still does not fit is not drawn.
     fn passes(&mut self, dl: &DisplayList, scale: f32, size: (u32, u32)) -> Vec<Pass> {
+        self.overflow = false;
+        let passes = self.build_passes(dl, scale, size);
+        if !self.overflow {
+            return passes;
+        }
+        self.reset_atlases();
+        let passes = self.build_passes(dl, scale, size);
+        self.overflow = false;
+        passes
+    }
+
+    fn build_passes(&mut self, dl: &DisplayList, scale: f32, size: (u32, u32)) -> Vec<Pass> {
         let mut passes = vec![Pass::default()];
         let mut open: Vec<usize> = vec![0];
         let mut clips: Vec<(f32, f32, f32, f32, f32)> = Vec::new();
@@ -356,6 +426,30 @@ impl GpuRenderer {
                             uv: [s.x as f32, s.y as f32, 0.0, 0.0],
                             grad_color: [0.0; 4],
                             grad: [0.0; 4],
+                        });
+                    }
+                }
+                Item::Path(p) => {
+                    let window = paths::window(size, clips.last().map(|c| (c.0, c.1, c.2, c.3)));
+                    let Some(at) = paths::place(p, scale, window) else { continue };
+                    let Some(tiles) = self.path_tiles(p, &at) else { continue };
+                    let out = &mut passes[current].insts;
+                    let b = p.bounds;
+                    let (fill, grad_color, grad) = match p.gradient {
+                        Some(g) => (straight(g.from.0), straight(g.to.0), [g.angle, g.from.1, g.to.1, 1.0]),
+                        None => (straight(p.color), [0.0; 4], [0.0; 4]),
+                    };
+                    for t in tiles {
+                        out.push(Inst {
+                            rect: [(at.x + t.dx as i32) as f32, (at.y + t.dy as i32) as f32, t.w as f32, t.h as f32],
+                            fill,
+                            border_color: [0.0; 4],
+                            border: [b.x * scale, b.y * scale, b.w * scale, b.h * scale],
+                            clip,
+                            params: [0.0, 6.0, clip_r, 0.0],
+                            uv: [t.ax as f32, t.ay as f32, 0.0, 0.0],
+                            grad_color,
+                            grad,
                         });
                     }
                 }

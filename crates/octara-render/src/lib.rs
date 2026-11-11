@@ -5,12 +5,13 @@
 //!   compared with.
 //! - [`GpuRenderer`] (feature `gpu`): wgpu, one WGSL shader on every platform, one instance per
 //!   item and one draw call per frame. It implements the formulas of [`shape`] and uses the same
-//!   [`glyphs`] rasterization, and is tested against the reference renderer.
+//!   [`glyphs`] and [`paths`] rasterization, and is tested against the reference renderer.
 
 pub mod cpu;
 pub mod glyphs;
 #[cfg(feature = "gpu")]
 pub mod gpu;
+pub mod paths;
 pub mod shape;
 
 pub use cpu::CpuRenderer;

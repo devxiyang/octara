@@ -1,13 +1,14 @@
 # Vector graphics: paths, icons, canvas
 
-Based on the [research](../research/vector-graphics.md). Status: proposed, awaiting confirmation.
+Based on the [research](../research/vector-graphics.md). Status: confirmed; steps 1 and 2 implemented.
 
 ## Paths
 
 - `Path` is an immutable builder, like elements: `Path::new().move_to(x, y).line_to(..)
   .curve_to(ctrl, to).cubic_bezier_to(c1, c2, to).arc_to(..).close()` (GPUI's names), and shapes:
   `Path::rect`, `Path::rounded_rect`, `Path::circle`, `Path::ellipse`, `Path::svg("M3 12h18")`
-  (SVG path data). Stored as a kurbo `BezPath`; cheap to clone (shared).
+  (SVG path data). Stored as its own commands (shared, cheap to clone) with a content hash, so
+  renderers cache masks by what a path is; `contains(point, rule)` hit-tests it.
 - Painting a path: a fill with a rule (`FillRule::NonZero`, `EvenOdd`; holes allowed) and / or a
   stroke: `Stroke::new(width).cap(LineCap::Round).join(LineJoin::Miter).dash(&[4.0, 2.0])`
   (caps butt / round / square, joins miter / round / bevel with a miter limit). Paint is a token,
@@ -17,12 +18,20 @@ Based on the [research](../research/vector-graphics.md). Status: proposed, await
 
 - The display list gains a path item: the path, its transform, fill or stroke, paint, the clip
   and the source node, ordered with quads, glyphs and images.
+- A stroke becomes an outline with kurbo (zeno's own stroker bevels every join sharper than a
+  right angle, whatever the miter limit), in the path's coordinates, so a transform shapes the
+  pen as it shapes the path.
 - Coverage is computed on the CPU with zeno (already used by swash for glyphs) into an R8 mask,
-  cached in the atlas by (path, transform scale, stroke, subpixel phase), and drawn by both
-  renderers as a mask sprite filled with its paint. The CPU reference renderer and the GPU
-  renderer therefore draw the same coverage, and the parity tests keep holding.
-- Content that changes every frame (a canvas animating) skips the cache: its mask is
-  rasterized into a transient region sized to its bounds.
+  keyed by (path content, the transform's linear part, quarter-pixel phase, style, visible
+  region), and drawn by both renderers as a mask filled with its paint. The CPU reference
+  renderer and the GPU renderer therefore draw the same coverage, and the parity tests hold.
+- Only the visible part is rasterized (the path's box within the innermost clip and the target),
+  so a path larger than the window costs the window. The GPU renderer stores a mask in tiles of
+  at most 1024 pixels in a 4096 mask atlas.
+- Content that changes every frame (a canvas animating) makes new keys: the reference renderer
+  drops masks unused for 120 frames; when a GPU atlas fills up, every atlas starts over and the
+  frame is built again with only what it draws (glyphs and images included, which before kept
+  failing once their atlas was full).
 
 ## Icons
 

@@ -19,3 +19,4 @@ wgpu = { workspace = true, optional = true }
 png.workspace = true
 rustc-hash.workspace = true
 swash.workspace = true
+kurbo.workspace = true
