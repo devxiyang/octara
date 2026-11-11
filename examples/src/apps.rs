@@ -83,7 +83,11 @@ pub fn todo(n: usize) -> View {
 
 fn todo_row(id: u32, t: ReadSignal<Todo>, todos: List<u32, Todo>) -> View {
     row()
-        .child(checkbox((move || t.with(|t| t.done), move |v| todos.update(&id, |t| t.done = v))).id(format!("toggle-{id}")))
+        .child(
+            checkbox((move || t.with(|t| t.done), move |v| todos.update(&id, |t| t.done = v)))
+                .id(format!("toggle-{id}"))
+                .label(move || t.with(|t| format!("Done: {}", t.title))),
+        )
         .child(
             text(move || t.with(|t| t.title.clone()))
                 .id(format!("title-{id}"))
@@ -361,7 +365,11 @@ fn contact_row(id: u32, c: ReadSignal<Contact>, people: List<u32, Contact>) -> V
     let open = state("open", || false);
     row()
         .child(text(move || c.with(|c| c.name.clone())).id(format!("name-{id}")))
-        .child(checkbox((move || c.with(|c| c.starred), move |v| people.update(&id, |c| c.starred = v))).id(format!("star-{id}")))
+        .child(
+            checkbox((move || c.with(|c| c.starred), move |v| people.update(&id, |c| c.starred = v)))
+                .id(format!("star-{id}"))
+                .label(move || c.with(|c| format!("Star {}", c.name))),
+        )
         .child(ghost_button("Open").id(format!("open-{id}")).on_press(move || open.update(|o| *o = !*o)))
         .child(show(move || open.get(), move || text("details").id(format!("detail-{id}")).into()))
         .id(format!("contact-{id}"))
@@ -435,7 +443,8 @@ pub fn contacts_virtual(n: usize) -> View {
                                         move || item.with(|f| f.item().is_some_and(|c| c.starred)),
                                         move |v| people.update(&id, |c| c.starred = v),
                                     ))
-                                    .id(format!("star-{id}")),
+                                    .id(format!("star-{id}"))
+                                    .label(move || format!("Star {}", name())),
                                 )
                                 .child(ghost_button("Open").id(format!("open-{id}")).on_press(move || open.update(|o| *o = !*o)))
                                 .child(show(move || open.get(), move || text("details").id(format!("detail-{id}")).into()))

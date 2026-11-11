@@ -34,7 +34,7 @@ pub use style::{BoxShadow, Dirty, FontSize, GridPos, Length, LineHeight, Motion,
 pub use taffy::{AlignItems, Dimension, Display, FlexDirection, FlexWrap, JustifyContent, LengthPercentageAuto, Overflow, Position};
 pub use theme::{
     Breakpoint, Color, ColorStop, ContainerStep, Family, Fill, LinearGradient, MISSING, Paint, RadiusStep, ShadowStep, TextStep, Theme,
-    Token, linear_color_stop, linear_gradient, rgb,
+    Token, contrast, linear_color_stop, linear_gradient, rgb,
 };
 
 new_key_type! {

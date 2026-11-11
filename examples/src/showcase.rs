@@ -29,8 +29,10 @@ fn landscape() -> Image {
 }
 
 fn section(title: &'static str) -> El {
-    // Lifts while the mouse is anywhere over it (the card has no handlers of its own).
+    // Lifts while the mouse is anywhere over it (the card has no handlers of its own). Boxes do
+    // not shrink by default; a card does, so on a phone it narrows and its rows wrap.
     col()
+        .flex_shrink()
         .hover(|p| p.shadow_lg())
         .gap_3()
         .p_5()
@@ -91,6 +93,7 @@ pub fn showcase() -> View {
         .child(
             row()
                 .gap_4()
+                .flex_wrap()
                 .items_end()
                 .child(el().w(200).img(&picture).rounded_lg().shadow_md())
                 .child(el().size_24().img(&picture).object_fit(ObjectFit::Cover).rounded_full().shadow_md())
@@ -115,7 +118,7 @@ pub fn showcase() -> View {
         .child(
             row()
                 .gap_2()
-                .child(text_field(draft).id("note").label("New note").w(260).on_submit(add))
+                .child(text_field(draft).id("note").label("New note").w(260).flex_shrink().on_submit(add))
                 .child(primary_button("Add").id("add").on_press(add)),
         )
         .child(col().gap_1().child(each(
@@ -135,7 +138,7 @@ pub fn showcase() -> View {
         .child(text("Select text with the mouse, double-click a word, ⌘Z to undo, ⌘C / ⌘V.").text_xs().text_color(Token::TextMuted));
 
     let search = section("Async resource")
-        .child(text_field(query).id("query").label("Search").w(260))
+        .child(text_field(query).id("query").label("Search").w(260).flex_shrink())
         .child(text(move || match (results.loading(), results.value(), results.error()) {
             (true, Some(v), _) => format!("{v} (updating…)"),
             (true, None, _) => "Searching…".to_string(),

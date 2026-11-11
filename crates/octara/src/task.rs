@@ -722,8 +722,8 @@ where
     Fut: Future<Output = Result<T, E>> + 'static,
 {
     let at = Location::caller();
-    let state = Signal::new(Load { loading: true, value: None, error: None });
-    let refetches = Signal::new(0u64);
+    let state = Signal::scoped(Load { loading: true, value: None, error: None });
+    let refetches = Signal::scoped(0u64);
     let running: Rc<RefCell<Option<Task>>> = Rc::default();
     let scope = rt(|r| r.current_scope());
     watch(

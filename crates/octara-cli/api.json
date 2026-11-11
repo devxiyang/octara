@@ -6963,6 +6963,16 @@
           "file": "crates/octara/src/kernel/a11y.rs"
         },
         {
+          "path": "octara::kernel::contrast",
+          "kind": "fn",
+          "sig": "pub fn contrast(a: Color, b: Color) -> f32",
+          "docs": "The WCAG contrast ratio of two opaque colors (1 to 21).",
+          "file": "crates/octara/src/kernel/theme.rs",
+          "aliases": [
+            "octara::kernel::theme::contrast"
+          ]
+        },
+        {
           "path": "octara::kernel::floor_boundary",
           "kind": "fn",
           "sig": "pub fn floor_boundary(s: &str, i: usize) -> usize",

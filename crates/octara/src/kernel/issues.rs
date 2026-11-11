@@ -4,6 +4,7 @@
 //! are none. Each issue names the node (test id and path), where it was created, and the usual
 //! fix in Tailwind terms.
 
+use super::theme::{contrast, over};
 use super::{Kernel, Kind, NodeId, Wrap};
 use crate::diagnostics::{self as codes, Code};
 use std::fmt::Write as _;
@@ -216,26 +217,6 @@ impl Kernel {
             ));
         }
     }
-}
-
-/// WCAG relative luminance of an sRGB color.
-fn luminance(c: crate::kernel::Color) -> f32 {
-    let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
-    let [r, g, b, _] = c.components;
-    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
-}
-
-/// `fg` (with its alpha) over the opaque `bg`.
-fn over(fg: crate::kernel::Color, bg: crate::kernel::Color) -> crate::kernel::Color {
-    let a = fg.components[3];
-    let mix = |i: usize| fg.components[i] * a + bg.components[i] * (1.0 - a);
-    crate::kernel::Color::new([mix(0), mix(1), mix(2), 1.0])
-}
-
-/// The WCAG contrast ratio of two opaque colors (1 to 21).
-pub fn contrast(a: crate::kernel::Color, b: crate::kernel::Color) -> f32 {
-    let (la, lb) = (luminance(a), luminance(b));
-    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
 /// A touch target's minimum side (Apple's 44 pt; Material asks 48 dp).

@@ -220,7 +220,8 @@ impl Theme {
                 rgb(0xe4e4e7),
                 rgb(0xd4d4d8),
                 rgb(0x18181b),
-                rgb(0x71717a),
+                // A shade under zinc-500 (#71717a, 4.40:1 on Surface): 4.80:1.
+                rgb(0x6b6b74),
                 rgb(0xe4e4e7),
                 rgb(0x2563eb),
                 rgb(0x1d4ed8),
@@ -242,8 +243,10 @@ impl Theme {
                 rgb(0xfafafa),
                 rgb(0xa1a1aa),
                 rgb(0x27272a),
-                rgb(0x3b82f6),
-                rgb(0x60a5fa),
+                // Accent fills carry white text: blue-600 / blue-700 keep it above 4.5:1 (blue-500
+                // gave 3.68:1). Focus rings stay the bright blue.
+                rgb(0x2563eb),
+                rgb(0x1d4ed8),
                 rgb(0xffffff),
                 rgb(0x60a5fa),
                 rgb(0xef4444),
@@ -429,6 +432,26 @@ impl Paint {
             },
         }
     }
+}
+
+/// WCAG relative luminance of an sRGB color.
+fn luminance(c: Color) -> f32 {
+    let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    let [r, g, b, _] = c.components;
+    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+}
+
+/// `fg` (with its alpha) over the opaque `bg`.
+pub(crate) fn over(fg: Color, bg: Color) -> Color {
+    let a = fg.components[3];
+    let mix = |i: usize| fg.components[i] * a + bg.components[i] * (1.0 - a);
+    Color::new([mix(0), mix(1), mix(2), 1.0])
+}
+
+/// The WCAG contrast ratio of two opaque colors (1 to 21).
+pub fn contrast(a: Color, b: Color) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
 #[cfg(test)]

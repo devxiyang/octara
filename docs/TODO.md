@@ -209,10 +209,13 @@ Basis: [input research](research/input.md), [input design](design/input.md). Con
         exactly as the app does, starts from its `Cargo.lock` and profiles, builds into its target directory and calls
         `octara::inspect::main`; text by default, `--json`; sources relative to the workspace; exit 0 clean / 1 findings /
         2 build or run failure. The examples crate names the counter
-  - [ ] What `check` found in the examples: the kit's controls are 32 px tall (`SMALL_TARGET` on phones everywhere: needs a
-        decision on touch sizing, e.g. a minimum interactive size as in Material); white on the dark theme's accent is 3.68:1
-        (`LOW_CONTRAST`); the showcase overflows at phone width and uses `Signal::new` in a component; the todo checkboxes
-        have no label
+  - [x] What `check` found in the examples, fixed: `resource` kept its state in `Signal::new` (reported `UNKEYED_STATE` in
+        every component using it; now framework-internal signals); the showcase's cards did not shrink at phone width (boxes
+        do not shrink by default; the cards now `flex_shrink()`); todo and contacts checkboxes got labels; the dark theme's
+        accent fill is blue-600 / hover blue-700 (white on blue-500 was 3.68:1) and the light theme's muted text a shade
+        darker (4.40:1 on Surface); a test keeps every text token at 4.5:1 on its surfaces in both themes
+  - [ ] Touch target size: the kit's controls are 32 px tall, so every control is `SMALL_TARGET` on phones (needs a decision:
+        a minimum interactive size on touch, as in Compose, or kit sizes by density)
   - [ ] Example ids (how an item is used in the examples), recipes and byte limits, `octara new` (calls `skill install`), MCP, llms.txt, evaluation
 - [ ] Inspector protocol; causal tracing in the reactive layer (currently only down to the cause id of kernel operations)
 - [ ] Window and GPU rendering; a real text stack (Parley) and per-paragraph incremental layout

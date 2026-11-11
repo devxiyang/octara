@@ -147,3 +147,13 @@ fn accepted_findings_need_a_reason_and_leave_the_report_clean() {
     assert!(r.clean, "{}", r.to_json());
     assert_eq!(r.accepted[0].why.as_deref(), Some("page dots; swiping pages works too"));
 }
+
+#[test]
+fn a_resource_in_a_component_reports_nothing() {
+    // `resource` keeps its state in framework signals, not the app's `Signal::new`.
+    let app = App::new(|| {
+        let r = resource(|| 1u32, |n: u32| async move { Ok::<u32, String>(n) });
+        text(move || format!("{:?}", r.value())).into()
+    });
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+}
