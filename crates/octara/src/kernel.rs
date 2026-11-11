@@ -706,7 +706,10 @@ impl Kernel {
 
     /// `id`'s semantics or children changed: the next accessibility update sends it.
     fn a11y_touch(&self, id: NodeId) {
-        self.a11y_dirty.borrow_mut().insert(id);
+        // Nobody has the tree yet: the next update sends it whole anyway.
+        if self.a11y_live.get() {
+            self.a11y_dirty.borrow_mut().insert(id);
+        }
     }
     /// `parent`'s shown children changed (the overlay layer, shown only with children, changes
     /// the root's).
@@ -718,6 +721,9 @@ impl Kernel {
     }
     /// `id`'s subtree left the accessibility tree: if it comes back, it is sent whole.
     fn a11y_forget(&self, id: NodeId) {
+        if !self.a11y_live.get() {
+            return;
+        }
         let mut stack = vec![id];
         while let Some(n) = stack.pop() {
             let node = self.node(n);
