@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/octara", "crates/octara-cli", "crates/octara-fonts", "crates/octara-kit", "crates/octara-render", "crates/octara-shell", "examples"]
+members = ["crates/octara", "crates/octara-cli", "crates/octara-fonts", "crates/octara-icons", "crates/octara-kit", "crates/octara-render", "crates/octara-shell", "examples"]
 
 [workspace.package]
 edition = "2024"
@@ -27,6 +27,7 @@ zeno = { version = "0.3.3", default-features = false, features = ["std", "eval"]
 proptest = "1.12.0"
 parley = { version = "0.12.0", default-features = false, features = ["std", "complex-scripts"] }
 png = "0.18.1"
+roxmltree = "0.21.2"
 pollster = "1.0.1"
 unicode-segmentation = "1.13.3"
 taffy = { version = "0.15.1", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "content_size"] }
@@ -34,6 +35,7 @@ wgpu = "30.0.1"
 winit = "0.30.13"
 octara = { path = "crates/octara" }
 octara-fonts = { path = "crates/octara-fonts" }
+octara-icons = { path = "crates/octara-icons" }
 octara-kit = { path = "crates/octara-kit" }
 octara-render = { path = "crates/octara-render" }
 octara-shell = { path = "crates/octara-shell" }

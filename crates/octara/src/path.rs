@@ -207,16 +207,13 @@ pub enum PathStyle {
     Stroke(Stroke),
 }
 
-/// SVG path data that does not parse.
+/// SVG path data that does not parse, and why.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct PathError {
-    /// The byte offset where parsing stopped.
-    pub offset: usize,
-}
+pub struct PathError(pub String);
 
 impl std::fmt::Display for PathError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "invalid SVG path data at byte {}", self.offset)
+        write!(f, "invalid SVG path data: {}", self.0)
     }
 }
 
@@ -304,13 +301,20 @@ impl Path {
     /// An elliptical arc to `to` (SVG's `A`): radii, the ellipse's rotation in degrees, and which
     /// of the four candidate arcs (`large_arc`, `sweep` clockwise).
     pub fn arc_to(self, radii: impl Into<Point>, x_rotation: f32, large_arc: bool, sweep: bool, to: impl Into<Point>) -> Path {
-        use zeno::PathBuilder as _;
         let (r, to, from) = (radii.into(), to.into(), self.current);
-        let mut cmds: Vec<zeno::Command> = vec![zeno::Command::MoveTo(zeno::Point::new(from.x, from.y))];
-        let size = if large_arc { zeno::ArcSize::Large } else { zeno::ArcSize::Small };
-        let sweep = if sweep { zeno::ArcSweep::Positive } else { zeno::ArcSweep::Negative };
-        cmds.arc_to(r.x, r.y, zeno::Angle::from_degrees(x_rotation), size, sweep, (to.x, to.y));
-        cmds.into_iter().skip(1).map(from_zeno).fold(self, Path::push)
+        let k = |p: Point| kurbo::Point::new(p.x as f64, p.y as f64);
+        let arc = kurbo::SvgArc {
+            from: k(from),
+            to: k(to),
+            radii: kurbo::Vec2::new(r.x as f64, r.y as f64),
+            x_rotation: (x_rotation as f64).to_radians(),
+            large_arc,
+            sweep,
+        };
+        match kurbo::Arc::from_svg_arc(&arc) {
+            Some(a) => a.append_iter(0.01).map(from_kurbo).fold(self, Path::push),
+            None => self.line_to(to),
+        }
     }
     /// A polygon through `points`, closed or not.
     pub fn add_polygon(self, points: &[Point], closed: bool) -> Path {
@@ -381,9 +385,39 @@ impl Path {
     /// A path from SVG path data (`"M3 12h18"`): every command, relative and absolute, arcs
     /// included.
     pub fn svg(data: &str) -> Result<Path, PathError> {
-        use zeno::PathData as _;
-        zeno::validate_svg(data).map_err(|offset| PathError { offset })?;
-        Ok(Path::from_commands(data.commands().map(from_zeno)))
+        let p = kurbo::BezPath::from_svg(data).map_err(|e| PathError(e.to_string()))?;
+        Ok(Path::from_commands(p.elements().iter().copied().map(from_kurbo)))
+    }
+
+    /// The path as SVG path data (absolute commands, numbers to a thousandth).
+    pub fn to_svg(&self) -> String {
+        use std::fmt::Write;
+        fn num(out: &mut String, v: f32) {
+            let r = (v * 1000.0).round() / 1000.0;
+            let s = format!("{}", if r == 0.0 { 0.0 } else { r });
+            // A space only where the number could run into the previous one.
+            if !(out.is_empty() || out.ends_with(|c: char| c.is_ascii_alphabetic()) || s.starts_with('-')) {
+                out.push(' ');
+            }
+            let s = s.strip_prefix("0.").map(|t| format!(".{t}")).or_else(|| s.strip_prefix("-0.").map(|t| format!("-.{t}"))).unwrap_or(s);
+            let _ = write!(out, "{s}");
+        }
+        let mut out = String::new();
+        for c in self.commands.iter() {
+            let (verb, pts): (char, Vec<Point>) = match *c {
+                PathCommand::MoveTo(a) => ('M', vec![a]),
+                PathCommand::LineTo(a) => ('L', vec![a]),
+                PathCommand::QuadTo(a, b) => ('Q', vec![a, b]),
+                PathCommand::CurveTo(a, b, c) => ('C', vec![a, b, c]),
+                PathCommand::Close => ('Z', Vec::new()),
+            };
+            out.push(verb);
+            for p in pts {
+                num(&mut out, p.x);
+                num(&mut out, p.y);
+            }
+        }
+        out
     }
 
     /// The commands, in order.
@@ -427,14 +461,14 @@ impl Path {
     }
 }
 
-fn from_zeno(c: zeno::Command) -> PathCommand {
-    let p = |v: zeno::Point| point(v.x, v.y);
-    match c {
-        zeno::Command::MoveTo(a) => PathCommand::MoveTo(p(a)),
-        zeno::Command::LineTo(a) => PathCommand::LineTo(p(a)),
-        zeno::Command::QuadTo(a, b) => PathCommand::QuadTo(p(a), p(b)),
-        zeno::Command::CurveTo(a, b, c) => PathCommand::CurveTo(p(a), p(b), p(c)),
-        zeno::Command::Close => PathCommand::Close,
+fn from_kurbo(e: kurbo::PathEl) -> PathCommand {
+    let p = |v: kurbo::Point| point(v.x as f32, v.y as f32);
+    match e {
+        kurbo::PathEl::MoveTo(a) => PathCommand::MoveTo(p(a)),
+        kurbo::PathEl::LineTo(a) => PathCommand::LineTo(p(a)),
+        kurbo::PathEl::QuadTo(a, b) => PathCommand::QuadTo(p(a), p(b)),
+        kurbo::PathEl::CurveTo(a, b, c) => PathCommand::CurveTo(p(a), p(b), p(c)),
+        kurbo::PathEl::ClosePath => PathCommand::Close,
     }
 }
 
@@ -460,7 +494,13 @@ mod tests {
         assert_eq!(a, b, "the same commands, however built");
         assert_eq!(a.content_hash(), b.content_hash());
         assert_ne!(a.content_hash(), a.clone().line_to(point(1.0, 1.0)).content_hash());
-        assert_eq!(Path::svg("M0 0 K1 1").unwrap_err().offset, 5);
+        assert_eq!(a.to_svg(), "M0 0L10 0L10 10Z");
+        let c = Path::svg("M.5-1.25C1 2 3 4 5 6").unwrap();
+        assert_eq!(c.to_svg(), "M.5-1.25C1 2 3 4 5 6");
+        assert_eq!(Path::svg(&c.to_svg()).unwrap(), c);
+        assert!(Path::svg("M0 0 K1 1").is_err());
+        let implicit = Path::svg("M7 10H6a4 4 0 0 1-4-4 1 1 0 0 1 1-1h4").unwrap();
+        assert!(implicit.commands().len() > 4, "arcs repeat without their letter");
 
         let ring = Path::circle(point(12.0, 12.0), 10.0).append(&Path::circle(point(12.0, 12.0), 6.0));
         assert!(ring.contains(point(12.0, 3.0), FillRule::EvenOdd));

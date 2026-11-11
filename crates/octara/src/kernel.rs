@@ -207,6 +207,14 @@ impl Kind {
     }
 }
 
+/// An icon as a node draws it.
+#[derive(Clone, PartialEq, Debug)]
+pub struct NodeIcon {
+    pub name: String,
+    pub view_box: crate::paint::Rect,
+    pub shapes: Vec<crate::icon::IconShape>,
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum HandlerKind {
     Press,
@@ -322,6 +330,8 @@ struct Node {
     commands: Vec<(String, HandlerId)>,
     /// An image shown in the box (`img`), and how it fits.
     image: Option<(crate::image::Image, crate::image::ObjectFit)>,
+    /// An icon drawn in the box (`icon`): its name, view box and shapes.
+    icon: Option<std::rc::Rc<NodeIcon>>,
     /// Properties moving toward their resolved values (`motion`).
     anim: Option<Box<anim::Anim>>,
     /// The layout pass the node was created in: changes before the next layout (its bindings'
@@ -704,6 +714,7 @@ impl Kernel {
             key_context: None,
             commands: Vec::new(),
             image: None,
+            icon: None,
             anim: None,
             born: 0,
             exiting: false,
@@ -1085,6 +1096,23 @@ impl Kernel {
     }
 
     /// Can take keyboard focus (and so receive `FOCUS_VISIBLE`).
+    /// Draws `icon` in the box (`None`: no icon), its strokes `stroke_width` wide on its view box
+    /// (`None`: the icon's own).
+    pub fn set_icon(&mut self, id: NodeId, icon: Option<(&crate::icon::Icon, Option<f32>)>) {
+        let name = icon.map(|(i, _)| i.name().to_owned());
+        let icon = icon.map(|(i, w)| {
+            std::rc::Rc::new(NodeIcon { name: i.name().to_owned(), view_box: i.bounds(), shapes: i.shapes(w) })
+        });
+        if self.node(id).icon == icon {
+            return;
+        }
+        self.node_mut(id).icon = icon;
+        self.changed(id, Dirty::PAINT, "icon", || name.unwrap_or_default());
+    }
+    pub fn icon(&self, id: NodeId) -> Option<&NodeIcon> {
+        self.node(id).icon.as_deref()
+    }
+
     /// Shows `image` in the box (`None`: no image), fitted by `fit`.
     pub fn set_image(&mut self, id: NodeId, image: Option<(crate::image::Image, crate::image::ObjectFit)>) {
         if self.node(id).image == image {

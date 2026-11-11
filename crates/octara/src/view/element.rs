@@ -177,6 +177,8 @@ pub struct El {
     commands: Vec<(String, Rc<dyn Fn()>)>,
     image: Option<crate::image::Image>,
     object_fit: crate::image::ObjectFit,
+    icon: Option<crate::icon::Icon>,
+    stroke_width: Option<f32>,
     group: Option<&'static str>,
     hover_alone: bool,
     overlays: Vec<Overlay>,
@@ -225,6 +227,8 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         commands: Vec::new(),
         image: None,
         object_fit: crate::image::ObjectFit::Fill,
+        icon: None,
+        stroke_width: None,
         group: None,
         hover_alone: false,
         overlays: Vec::new(),
@@ -274,6 +278,17 @@ pub fn text(t: impl IntoText) -> El {
 pub(crate) fn text_at(t: impl IntoText, at: &'static Location<'static>) -> El {
     let mut e = new_el(Kind::Text, at);
     e.text = Some(t.into_text());
+    e
+}
+
+/// An icon (`icon(icons::SEARCH)`, from `octara-icons`, or an [`Icon`](crate::icon::Icon) of
+/// your own): a square, 16 px by default (`size_5`, `size_6` to change), drawn in the text color,
+/// so it follows its button's color and states. Decorative (hidden from assistive technology)
+/// unless it has a `label`, which makes it an image.
+#[track_caller]
+pub fn icon(icon: crate::icon::Icon) -> El {
+    let mut e = new_el(Kind::Box, Location::caller()).size_4();
+    e.icon = Some(icon);
     e
 }
 
@@ -550,6 +565,11 @@ impl El {
         self.image = Some(image.clone());
         self
     }
+    /// An icon's stroke width on its grid (2 for the bundled icons; 1.5 is lighter).
+    pub fn stroke_width(mut self, width: f32) -> Self {
+        self.stroke_width = Some(width);
+        self
+    }
     /// How the image fills the element (GPUI's `object_fit`).
     pub fn object_fit(mut self, fit: crate::image::ObjectFit) -> Self {
         self.object_fit = fit;
@@ -610,6 +630,19 @@ pub(crate) fn build_el(e: El) -> NodeId {
         let mut k = u.kernel.borrow_mut();
         if let Some(r) = e.role {
             k.set_role(node, r);
+        }
+        // An icon is an image when labeled, else decoration.
+        if let Some(i) = &e.icon {
+            match (&e.label, e.role) {
+                (Some(_), None) => {
+                    k.set_role(node, Role::Image);
+                }
+                (None, None) => {
+                    k.set_hidden(node, true);
+                }
+                _ => {}
+            }
+            k.set_icon(node, Some((i, e.stroke_width)));
         }
         if e.hidden {
             k.set_hidden(node, true);

@@ -1,6 +1,6 @@
 # Vector graphics: paths, icons, canvas
 
-Based on the [research](../research/vector-graphics.md). Status: confirmed; steps 1 and 2 implemented.
+Based on the [research](../research/vector-graphics.md). Status: confirmed; steps 1 to 3 implemented.
 
 ## Paths
 
@@ -38,15 +38,20 @@ Based on the [research](../research/vector-graphics.md). Status: confirmed; step
 - `icon(icons::SEARCH)` is an element: square, `size_4` (16 px) by default, sized with the usual
   methods (`size_5`, `size_6`); drawn in the current text color (`text_color(..)` tints it), so an
   icon in a button follows the button's color and states.
-- The set is Lucide (ISC, the same family Zed's icons come from), every icon, in a crate of its
-  own (`octara-icons`, like `octara-fonts`): path data generated at build time from a pinned
-  Lucide release and checked in, so there is no SVG parser at run time. Strokes stay geometry
-  (24 × 24 grid, 2 px), so `.stroke_width(..)` can vary them.
+- The set is Lucide (ISC, the same family Zed's icons come from), every icon (2052 in
+  lucide-static 1.72.0, aliases left out), in a crate of its own (`octara-icons`, like
+  `octara-fonts`): `examples/generate.rs` runs each SVG through `Icon::svg` and writes path data
+  and fill / stroke flags into `src/lucide.rs`, checked in, so no SVG is parsed at run time.
+  Strokes stay geometry (24 × 24 grid, 2 units), so `.stroke_width(..)` can vary them.
+  `icons::by_name`, `icons::search` (names and Lucide's tags) and `icons::ALL` find them.
+- SVG path data is parsed by kurbo (zeno's parser misses arcs repeated without their letter,
+  which Lucide uses).
 - Apps add their own: `Icon::svg(include_str!("logo.svg"))` (a subset of SVG: paths and basic
-  shapes, fill and stroke; parsed at first use), or `Icon::path(Path)`.
+  shapes, groups, fill and stroke attributes, transforms; colors ignored; parsed by roxmltree
+  when called), or `Icon::path(Path)`.
 - Semantics: an icon is decorative (hidden from assistive technology) unless it has a `label`,
   which makes it an image. An icon-only button gets its name from its own `label`, and `check`
-  reports one without (`UNNAMED_CONTROL`).
+  reports one without (`UNNAMED_CONTROL`). `inspect` shows a labeled icon's name (`"icon"`).
 - Later: a platform seam for SF Symbols and Material Symbols by semantic name (Exact).
 
 ## Canvas

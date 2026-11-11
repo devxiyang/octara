@@ -2062,6 +2062,196 @@
           "file": "crates/octara/src/diagnostics.rs"
         },
         {
+          "path": "octara::icon",
+          "kind": "module",
+          "sig": "pub mod icon",
+          "docs": "Icons: single-color vector drawings tinted by the current text color.\n\nThe bundled set is in the `octara-icons` crate (`icon(icons::SEARCH)`); apps add their own\nwith [`Icon::svg`] or [`Icon::path`]. An icon is decorative (hidden from assistive technology)\nunless it has a `label`, which makes it an image.",
+          "file": "crates/octara/src/icon.rs",
+          "links": [
+            "octara::icon::Icon::path",
+            "octara::icon::Icon::svg"
+          ]
+        },
+        {
+          "path": "octara::icon::GRID",
+          "kind": "const",
+          "sig": "pub const GRID: f32",
+          "docs": "The grid bundled icons are drawn on, and their stroke width on it.",
+          "file": "crates/octara/src/icon.rs"
+        },
+        {
+          "path": "octara::icon::Icon",
+          "kind": "struct",
+          "sig": "pub struct Icon { .. }",
+          "docs": "A single-color vector icon: shapes on a view box. See the [module docs](self).",
+          "file": "crates/octara/src/icon.rs",
+          "aliases": [
+            "octara::prelude::Icon"
+          ],
+          "traits": [
+            "Clone",
+            "Debug"
+          ],
+          "links": [
+            "octara::icon"
+          ]
+        },
+        {
+          "path": "octara::icon::Icon::bounds",
+          "kind": "method",
+          "sig": "pub fn bounds(&self) -> Rect",
+          "file": "crates/octara/src/icon.rs"
+        },
+        {
+          "path": "octara::icon::Icon::name",
+          "kind": "method",
+          "sig": "pub fn name(&self) -> &str",
+          "file": "crates/octara/src/icon.rs"
+        },
+        {
+          "path": "octara::icon::Icon::named",
+          "kind": "method",
+          "sig": "pub fn named(self, name: impl Into<Cow<'static, str>>) -> Icon",
+          "docs": "Names the icon (shown by `inspect`).",
+          "file": "crates/octara/src/icon.rs"
+        },
+        {
+          "path": "octara::icon::Icon::path",
+          "kind": "assoc_fn",
+          "sig": "pub fn path(path: Path) -> Icon",
+          "docs": "An icon from one path, filled (non-zero) on the 24-unit grid; change the grid with\n[`view_box`](Self::view_box).",
+          "file": "crates/octara/src/icon.rs",
+          "links": [
+            "octara::icon::Icon::view_box"
+          ]
+        },
+        {
+          "path": "octara::icon::Icon::shapes",
+          "kind": "method",
+          "sig": "pub fn shapes(&self, stroke_width: Option<f32>) -> Vec<IconShape>",
+          "docs": "The shapes to paint; `stroke_width` (on the view box's units) replaces every stroke's.",
+          "file": "crates/octara/src/icon.rs"
+        },
+        {
+          "path": "octara::icon::Icon::stroked",
+          "kind": "assoc_fn",
+          "sig": "pub const fn stroked(name: &'static str, parts: &'static [IconPart]) -> Icon",
+          "docs": "A bundled icon: path data on the 24-unit grid, stroked 2 units wide with round caps and\njoins (Lucide's form), some parts also filled.",
+          "file": "crates/octara/src/icon.rs"
+        },
+        {
+          "path": "octara::icon::Icon::svg",
+          "kind": "assoc_fn",
+          "sig": "pub fn svg(source: &str) -> Result<Icon, IconError>",
+          "docs": "An icon from SVG source: `<path>`, `<rect>`, `<circle>`, `<ellipse>`, `<line>`,\n`<polyline>`, `<polygon>` in `<g>` groups, with `fill`, `stroke`, `stroke-width`,\n`stroke-linecap`, `stroke-linejoin`, `stroke-miterlimit`, `fill-rule` and `transform`.\nColors are ignored: the icon takes the text color.",
+          "file": "crates/octara/src/icon.rs"
+        },
+        {
+          "path": "octara::icon::Icon::view_box",
+          "kind": "method",
+          "sig": "pub fn view_box(self, view_box: Rect) -> Icon",
+          "docs": "The area of the icon's coordinates that is shown, fitted into the element.",
+          "file": "crates/octara/src/icon.rs"
+        },
+        {
+          "path": "octara::icon::IconError",
+          "kind": "enum",
+          "sig": "pub enum IconError",
+          "docs": "SVG an icon cannot be made from.",
+          "file": "crates/octara/src/icon.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Display",
+            "Eq",
+            "Error",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::icon::IconError::PathData",
+          "kind": "variant",
+          "sig": "PathData(String)",
+          "docs": "Bad path data in a `d` attribute.",
+          "file": "crates/octara/src/icon.rs"
+        },
+        {
+          "path": "octara::icon::IconError::Unsupported",
+          "kind": "variant",
+          "sig": "Unsupported(String)",
+          "docs": "An element or attribute value outside the supported subset (paths and basic shapes,\ngroups, fill and stroke, transforms).",
+          "file": "crates/octara/src/icon.rs"
+        },
+        {
+          "path": "octara::icon::IconError::Xml",
+          "kind": "variant",
+          "sig": "Xml(String)",
+          "docs": "Not well-formed XML, or no `<svg>` root.",
+          "file": "crates/octara/src/icon.rs"
+        },
+        {
+          "path": "octara::icon::IconPart",
+          "kind": "struct",
+          "sig": "pub struct IconPart { .. }",
+          "docs": "One shape of a bundled icon: SVG path data on the icon's grid, filled and / or stroked.",
+          "file": "crates/octara/src/icon.rs",
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "Eq",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::icon::IconPart::data",
+          "kind": "field",
+          "sig": "pub data: &'static str",
+          "file": "crates/octara/src/icon.rs"
+        },
+        {
+          "path": "octara::icon::IconPart::fill",
+          "kind": "field",
+          "sig": "pub fill: bool",
+          "file": "crates/octara/src/icon.rs"
+        },
+        {
+          "path": "octara::icon::IconPart::stroke",
+          "kind": "field",
+          "sig": "pub stroke: bool",
+          "file": "crates/octara/src/icon.rs"
+        },
+        {
+          "path": "octara::icon::IconShape",
+          "kind": "struct",
+          "sig": "pub struct IconShape { .. }",
+          "docs": "A shape of an icon, ready to paint (coordinates on the icon's view box).",
+          "file": "crates/octara/src/icon.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::icon::IconShape::path",
+          "kind": "field",
+          "sig": "pub path: Path",
+          "file": "crates/octara/src/icon.rs"
+        },
+        {
+          "path": "octara::icon::IconShape::style",
+          "kind": "field",
+          "sig": "pub style: PathStyle",
+          "file": "crates/octara/src/icon.rs"
+        },
+        {
+          "path": "octara::icon::STROKE_WIDTH",
+          "kind": "const",
+          "sig": "pub const STROKE_WIDTH: f32",
+          "file": "crates/octara/src/icon.rs"
+        },
+        {
           "path": "octara::image",
           "kind": "module",
           "sig": "pub mod image",
@@ -2622,6 +2812,13 @@
           "path": "octara::inspect::Node::expanded",
           "kind": "field",
           "sig": "pub expanded: Option<bool>",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::Node::icon",
+          "kind": "field",
+          "sig": "pub icon: Option<String>",
+          "docs": "The icon it draws, by name (`search`).",
           "file": "crates/octara/src/inspect.rs"
         },
         {
@@ -4255,6 +4452,12 @@
           "file": "crates/octara/src/kernel/focus.rs"
         },
         {
+          "path": "octara::kernel::Kernel::icon",
+          "kind": "method",
+          "sig": "pub fn icon(&self, id: NodeId) -> Option<&NodeIcon>",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::image",
           "kind": "method",
           "sig": "pub fn image(&self, id: NodeId) -> Option<&(Image, ObjectFit)>",
@@ -4670,10 +4873,17 @@
           "file": "crates/octara/src/kernel/focus.rs"
         },
         {
+          "path": "octara::kernel::Kernel::set_icon",
+          "kind": "method",
+          "sig": "pub fn set_icon(&mut self, id: NodeId, icon: Option<(&Icon, Option<f32>)>)",
+          "docs": "Can take keyboard focus (and so receive `FOCUS_VISIBLE`).\nDraws `icon` in the box (`None`: no icon), its strokes `stroke_width` wide on its view box\n(`None`: the icon's own).",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::set_image",
           "kind": "method",
           "sig": "pub fn set_image(&mut self, id: NodeId, image: Option<(Image, ObjectFit)>)",
-          "docs": "Can take keyboard focus (and so receive `FOCUS_VISIBLE`).\nShows `image` in the box (`None`: no image), fitted by `fit`.",
+          "docs": "Shows `image` in the box (`None`: no image), fitted by `fit`.",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -5255,6 +5465,36 @@
           "kind": "field",
           "sig": "pub opacity: Curve",
           "file": "crates/octara/src/kernel/style.rs"
+        },
+        {
+          "path": "octara::kernel::NodeIcon",
+          "kind": "struct",
+          "sig": "pub struct NodeIcon { .. }",
+          "docs": "An icon as a node draws it.",
+          "file": "crates/octara/src/kernel.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::kernel::NodeIcon::name",
+          "kind": "field",
+          "sig": "pub name: String",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::NodeIcon::shapes",
+          "kind": "field",
+          "sig": "pub shapes: Vec<IconShape>",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::NodeIcon::view_box",
+          "kind": "field",
+          "sig": "pub view_box: Rect",
+          "file": "crates/octara/src/kernel.rs"
         },
         {
           "path": "octara::kernel::NodeId",
@@ -8167,6 +8407,9 @@
           "sig": "pub enum FillRule",
           "docs": "How a fill decides what is inside where subpaths overlap.",
           "file": "crates/octara/src/path.rs",
+          "aliases": [
+            "octara::prelude::FillRule"
+          ],
           "traits": [
             "Clone",
             "Copy",
@@ -8197,6 +8440,9 @@
           "sig": "pub enum LineCap",
           "docs": "The ends of open subpaths.",
           "file": "crates/octara/src/path.rs",
+          "aliases": [
+            "octara::prelude::LineCap"
+          ],
           "traits": [
             "Clone",
             "Copy",
@@ -8231,6 +8477,9 @@
           "sig": "pub enum LineJoin",
           "docs": "Where stroke segments meet.",
           "file": "crates/octara/src/path.rs",
+          "aliases": [
+            "octara::prelude::LineJoin"
+          ],
           "traits": [
             "Clone",
             "Copy",
@@ -8266,6 +8515,9 @@
           "sig": "pub struct Path { .. }",
           "docs": "A vector path: subpaths of lines and curves. See the [module docs](self).",
           "file": "crates/octara/src/path.rs",
+          "aliases": [
+            "octara::prelude::Path"
+          ],
           "traits": [
             "Clone",
             "Debug",
@@ -8409,6 +8661,13 @@
           "file": "crates/octara/src/path.rs"
         },
         {
+          "path": "octara::path::Path::to_svg",
+          "kind": "method",
+          "sig": "pub fn to_svg(&self) -> String",
+          "docs": "The path as SVG path data (absolute commands, numbers to a thousandth).",
+          "file": "crates/octara/src/path.rs"
+        },
+        {
           "path": "octara::path::Path::transform",
           "kind": "method",
           "sig": "pub fn transform(self, t: Transform) -> Path",
@@ -8463,8 +8722,8 @@
         {
           "path": "octara::path::PathError",
           "kind": "struct",
-          "sig": "pub struct PathError { .. }",
-          "docs": "SVG path data that does not parse.",
+          "sig": "pub struct PathError(pub String);",
+          "docs": "SVG path data that does not parse, and why.",
           "file": "crates/octara/src/path.rs",
           "traits": [
             "Clone",
@@ -8474,13 +8733,6 @@
             "Error",
             "PartialEq"
           ]
-        },
-        {
-          "path": "octara::path::PathError::offset",
-          "kind": "field",
-          "sig": "pub offset: usize",
-          "docs": "The byte offset where parsing stopped.",
-          "file": "crates/octara/src/path.rs"
         },
         {
           "path": "octara::path::PathStyle",
@@ -8540,6 +8792,9 @@
           "sig": "pub struct Stroke { .. }",
           "docs": "How a path is stroked: width (logical pixels), caps, joins and dashes.",
           "file": "crates/octara/src/path.rs",
+          "aliases": [
+            "octara::prelude::Stroke"
+          ],
           "traits": [
             "Clone",
             "Debug",
@@ -8635,6 +8890,9 @@
           "sig": "pub struct Transform { .. }",
           "docs": "An affine transform: `x' = xx·x + yx·y + x`, `y' = xy·x + yy·y + y`.",
           "file": "crates/octara/src/path.rs",
+          "aliases": [
+            "octara::prelude::Transform"
+          ],
           "traits": [
             "Clone",
             "Copy",
@@ -8728,7 +8986,10 @@
           "kind": "fn",
           "sig": "pub fn point(x: f32, y: f32) -> Point",
           "docs": "The point `(x, y)`.",
-          "file": "crates/octara/src/path.rs"
+          "file": "crates/octara/src/path.rs",
+          "aliases": [
+            "octara::prelude::point"
+          ]
         },
         {
           "path": "octara::prelude",
@@ -10412,6 +10673,13 @@
           "path": "octara::view::El::selected",
           "kind": "method",
           "sig": "pub fn selected(self, s: impl IntoProp<bool>) -> Self",
+          "file": "crates/octara/src/view/element.rs"
+        },
+        {
+          "path": "octara::view::El::stroke_width",
+          "kind": "method",
+          "sig": "pub fn stroke_width(self, width: f32) -> Self",
+          "docs": "An icon's stroke width on its grid (2 for the bundled icons; 1.5 is lighter).",
           "file": "crates/octara/src/view/element.rs"
         },
         {
@@ -17391,6 +17659,19 @@
           "file": "crates/octara/src/view/element.rs",
           "aliases": [
             "octara::prelude::el"
+          ]
+        },
+        {
+          "path": "octara::view::icon",
+          "kind": "fn",
+          "sig": "pub fn icon(icon: Icon) -> El",
+          "docs": "An icon (`icon(icons::SEARCH)`, from `octara-icons`, or an [`Icon`](crate::icon::Icon) of\nyour own): a square, 16 px by default (`size_5`, `size_6` to change), drawn in the text color,\nso it follows its button's color and states. Decorative (hidden from assistive technology)\nunless it has a `label`, which makes it an image.",
+          "file": "crates/octara/src/view/element.rs",
+          "aliases": [
+            "octara::prelude::icon"
+          ],
+          "links": [
+            "octara::icon::Icon"
           ]
         },
         {

@@ -16,6 +16,7 @@ accesskit.workspace = true
 bitflags.workspace = true
 unicode-segmentation.workspace = true
 png.workspace = true
+roxmltree.workspace = true
 color.workspace = true
 parley.workspace = true
 rustc-hash.workspace = true
@@ -23,6 +24,7 @@ serde.workspace = true
 serde_json.workspace = true
 slotmap.workspace = true
 taffy.workspace = true
+kurbo.workspace = true
 zeno.workspace = true
 
 [dev-dependencies]

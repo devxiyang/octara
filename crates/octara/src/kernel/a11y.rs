@@ -150,6 +150,7 @@ impl Kernel {
             bounds: [tenth(x), tenth(y), tenth(w), tenth(h)],
             actions,
             commands: n.commands.iter().map(|(c, _)| c.clone()).collect(),
+            icon: n.icon.as_ref().map(|i| i.name.clone()),
             source: n.origin.map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())),
             children,
         }

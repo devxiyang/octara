@@ -14,6 +14,7 @@ pub use accesskit;
 
 pub mod app;
 pub mod diagnostics;
+pub mod icon;
 pub mod image;
 pub mod inspect;
 pub mod kernel;
@@ -27,7 +28,9 @@ pub mod view;
 
 pub mod prelude {
     pub use crate::app::{App, Drag, DragPhase, Event, Key, KeyEvent, Modifiers};
+    pub use crate::icon::Icon;
     pub use crate::image::{Image, ObjectFit};
+    pub use crate::path::{FillRule, LineCap, LineJoin, Path, Stroke, Transform, point};
     pub use crate::kernel::{
         Align, BoxShadow, Breakpoint, Color, ContainerStep, Family, Fill, Paint, Placement, RadiusStep, Role, ShadowStep, Side, State,
         TextStep, Theme, Token, linear_color_stop, linear_gradient, rgb,

@@ -2,7 +2,8 @@
 
 use super::text::{self, Wrap};
 use super::{Color, Kernel, Kind, NodeId, Token};
-use crate::paint::{DisplayList, GlyphRun, Item, Quad, Rect};
+use crate::paint::{DisplayList, GlyphRun, Item, PathPaint, Quad, Rect};
+use crate::path::Transform;
 
 fn fade(c: Color, opacity: f32) -> Color {
     if opacity >= 1.0 { c } else { c.multiply_alpha(opacity) }
@@ -127,6 +128,36 @@ impl Kernel {
                     radius: (v.radius - l.border.left).max(0.0).min(inner.w / 2.0).min(inner.h / 2.0),
                     opacity,
                 }));
+            }
+        }
+
+        // An icon, fitted into the content box (centered, aspect kept), in the text color.
+        if let Some(icon) = &n.icon
+            && visible
+        {
+            let content = Rect {
+                x: rect.x + l.border.left + l.padding.left,
+                y: rect.y + l.border.top + l.padding.top,
+                w: (rect.w - l.border.left - l.border.right - l.padding.left - l.padding.right).max(0.0),
+                h: (rect.h - l.border.top - l.border.bottom - l.padding.top - l.padding.bottom).max(0.0),
+            };
+            let vb = icon.view_box;
+            let k = (content.w / vb.w).min(content.h / vb.h);
+            if k > 0.0 && k.is_finite() {
+                let (ox, oy) = (content.x + (content.w - vb.w * k) * 0.5, content.y + (content.h - vb.h * k) * 0.5);
+                let transform = Transform::translate(-vb.x, -vb.y).then(&Transform::scale(k, k)).then(&Transform::translate(ox, oy));
+                let color = fade(v.text, opacity);
+                for s in &icon.shapes {
+                    out.push(Item::Path(PathPaint {
+                        source: id,
+                        path: s.path.clone(),
+                        transform,
+                        style: s.style.clone(),
+                        color,
+                        gradient: None,
+                        bounds: content,
+                    }));
+                }
             }
         }
 

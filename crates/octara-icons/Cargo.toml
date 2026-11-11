@@ -1,0 +1,15 @@
+[package]
+name = "octara-icons"
+description = "The Lucide icon set for Octara: every icon as path data, tinted by the text color."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+# The icons themselves are under the ISC license (some under MIT, from Feather): LICENSE-LUCIDE.
+
+[dependencies]
+octara.workspace = true
+
+[dev-dependencies]
+octara-render = { workspace = true, default-features = false }
+serde_json.workspace = true

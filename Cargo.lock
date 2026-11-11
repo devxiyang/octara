@@ -2055,9 +2055,11 @@ dependencies = [
  "accesskit",
  "bitflags 2.13.2",
  "color",
+ "kurbo",
  "parley",
  "png",
  "proptest",
+ "roxmltree",
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
@@ -2097,6 +2099,15 @@ version = "0.0.0"
 dependencies = [
  "octara",
  "octara-render",
+]
+
+[[package]]
+name = "octara-icons"
+version = "0.0.0"
+dependencies = [
+ "octara",
+ "octara-render",
+ "serde_json",
 ]
 
 [[package]]

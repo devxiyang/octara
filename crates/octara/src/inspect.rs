@@ -66,6 +66,9 @@ pub struct Node {
     /// Commands it handles (`on_command`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<String>,
+    /// The icon it draws, by name (`search`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     /// Where it was created (`file:line:column`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
