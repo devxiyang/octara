@@ -2,7 +2,7 @@
 //! horizontal scroll that keeps the caret in view, and how it is painted.
 
 use super::text::{self, Wrap};
-use super::{Color, Dirty, Kernel, Kind, NodeId, State, Token};
+use super::{Color, Dirty, Kernel, NodeId, State, Token};
 use crate::paint::{GlyphRun, Item, Quad, Rect};
 
 /// Floors `i` to a char boundary of `s` (clamped to its length).
@@ -60,32 +60,30 @@ impl Kernel {
     /// handler sets the value); reads clamp to the value.
     pub fn set_selection(&mut self, id: NodeId, anchor: usize, caret: usize) {
         let sel = (anchor, caret);
-        if self.node(id).selection != sel {
+        let Some(i) = self.node_mut(id).input_mut() else { return };
+        if i.selection != sel {
             // A composition moves with the caret: the shown text changes from the earlier caret.
-            let n = self.node(id);
-            if !n.preedit.is_empty() {
-                n.text_clean.set(n.text_clean.get().min(n.selection.1.min(caret)));
+            if !i.preedit.is_empty() {
+                i.clean.set(i.clean.get().min(i.selection.1.min(caret)));
             }
-            self.node_mut(id).selection = sel;
+            i.selection = sel;
             self.mark(Dirty::PAINT);
         }
     }
     /// A text input's selection `(anchor, caret)`, within its current value.
     pub fn selection(&self, id: NodeId) -> (usize, usize) {
-        let n = self.node(id);
-        (floor_boundary(&n.value, n.selection.0), floor_boundary(&n.value, n.selection.1))
+        let Some(i) = self.node(id).input() else { return (0, 0) };
+        (floor_boundary(&i.value, i.selection.0), floor_boundary(&i.value, i.selection.1))
     }
 
     /// Lays out a text input's line (after the last layout).
     pub(crate) fn line(&self, id: NodeId) -> Option<Line> {
         let n = self.node(id);
-        if n.kind != Kind::TextInput {
-            return None;
-        }
+        let input = n.input()?;
         let (anchor, caret) = self.selection(id);
-        let shown = format!("{}{}{}", &n.value[..caret], n.preedit, &n.value[caret..]);
-        let preedit = caret..caret + n.preedit.len();
-        let to_shown = |b: usize| if b <= caret { b } else { b + n.preedit.len() };
+        let shown = format!("{}{}{}", &input.value[..caret], input.preedit, &input.value[caret..]);
+        let preedit = caret..caret + input.preedit.len();
+        let to_shown = |b: usize| if b <= caret { b } else { b + input.preedit.len() };
         let sel = (to_shown(anchor.min(caret)), to_shown(anchor.max(caret)));
         let (x, y, _, _) = self.shown_rect(id);
         let l = self.taffy.layout(n.taffy).expect("taffy");
@@ -96,14 +94,14 @@ impl Kernel {
             vec![(0, 0.0)]
         } else {
             let mut engine = self.text.borrow_mut();
-            text::measure(&mut **engine, id, &shown, n.text_clean.replace(shown.len()), &style, None);
+            text::measure(&mut **engine, id, &shown, input.clean.replace(shown.len()), &style, None);
             engine.caret_stops(id, &shown, &style)
         };
-        let mut line = Line { shown, stops, preedit, sel, caret: caret + n.preedit.len(), x: cx, y: cy, width, scroll: 0.0 };
+        let mut line = Line { shown, stops, preedit, sel, caret: caret + input.preedit.len(), x: cx, y: cy, width, scroll: 0.0 };
         // Keep the caret in view, moving the line as little as possible.
         let (caret_x, end_x) = (line.x_of(line.caret), line.stops.last().map_or(0.0, |s| s.1));
         let room = (width - 1.0).max(0.0);
-        let mut scroll = n.text_scroll.get();
+        let mut scroll = input.scroll.get();
         if caret_x - scroll > room {
             scroll = caret_x - room;
         }
@@ -111,7 +109,7 @@ impl Kernel {
             scroll = caret_x;
         }
         scroll = scroll.min((end_x - room).max(0.0)).max(0.0);
-        n.text_scroll.set(scroll);
+        input.scroll.set(scroll);
         line.scroll = scroll;
         Some(line)
     }

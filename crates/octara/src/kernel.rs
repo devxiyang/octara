@@ -294,20 +294,14 @@ enum Measure {
 }
 
 struct Node {
-    kind: Kind,
+    /// What the node shows inside its box; its `Kind` follows from it.
+    content: Content,
     role: Option<Role>,
     parent: Option<NodeId>,
     children: Vec<NodeId>,
-    text: String,
-    /// Leading bytes of `text` unchanged since the text engine last measured it.
-    text_clean: Cell<usize>,
-    value: String,
-    /// Text an input method is composing in a text input (shown underlined at the caret).
-    preedit: String,
-    /// A text input's selection `(anchor, caret)`, byte offsets into `value`.
-    selection: (usize, usize),
-    /// How far a text input's line is scrolled to keep the caret in view.
-    text_scroll: Cell<f32>,
+    /// The value assistive technology announces for a node that is not a text input (a
+    /// combo box's choice, a slider's level); a text input's value is its content.
+    value: Option<String>,
     checked: Option<bool>,
     label: Option<String>,
     description: Option<String>,
@@ -328,12 +322,6 @@ struct Node {
     key_context: Option<String>,
     /// Command handlers (`on_command`), by command id.
     commands: Vec<(String, HandlerId)>,
-    /// An image shown in the box (`img`), and how it fits.
-    image: Option<(crate::image::Image, crate::image::ObjectFit)>,
-    /// An icon drawn in the box (`icon`): its name, view box and shapes.
-    icon: Option<std::rc::Rc<NodeIcon>>,
-    /// A canvas's recording (`canvas`), in its content box's coordinates.
-    canvas: Option<std::rc::Rc<Vec<crate::canvas::CanvasOp>>>,
     /// Properties moving toward their resolved values (`motion`).
     anim: Option<Box<anim::Anim>>,
     /// The layout pass the node was created in: changes before the next layout (its bindings'
@@ -369,6 +357,64 @@ struct Node {
 }
 
 /// A text input's default width (CSS gives `<input>` about 20 characters).
+/// What a node shows inside its box: at most one kind of content.
+#[derive(Debug)]
+enum Content {
+    /// A plain box (or the root).
+    None,
+    Text(TextContent),
+    Input(Box<InputContent>),
+    Image(crate::image::Image, crate::image::ObjectFit),
+    Icon(std::rc::Rc<NodeIcon>),
+    Canvas(std::rc::Rc<Vec<crate::canvas::CanvasOp>>),
+}
+
+/// A text's content.
+#[derive(Debug, Default)]
+struct TextContent {
+    text: String,
+    /// Bytes known unchanged since the text engine last measured them.
+    clean: Cell<usize>,
+}
+
+/// A text input's content: its value, the input method's composition, the selection and how
+/// far the line is scrolled.
+#[derive(Debug, Default)]
+struct InputContent {
+    value: String,
+    preedit: String,
+    selection: (usize, usize),
+    scroll: Cell<f32>,
+    /// Bytes of the shown line (value with composition) known unchanged since last measured.
+    clean: Cell<usize>,
+}
+
+impl Node {
+    fn kind(&self) -> Kind {
+        match self.content {
+            Content::Text(_) => Kind::Text,
+            Content::Input(_) => Kind::TextInput,
+            _ => Kind::Box,
+        }
+    }
+    /// A text's own text (empty for other nodes).
+    fn text(&self) -> &str {
+        match &self.content {
+            Content::Text(t) => &t.text,
+            _ => "",
+        }
+    }
+    fn text_content(&self) -> Option<&TextContent> {
+        if let Content::Text(t) = &self.content { Some(t) } else { None }
+    }
+    fn input(&self) -> Option<&InputContent> {
+        if let Content::Input(i) = &self.content { Some(i) } else { None }
+    }
+    fn input_mut(&mut self) -> Option<&mut InputContent> {
+        if let Content::Input(i) = &mut self.content { Some(i) } else { None }
+    }
+}
+
 const INPUT_WIDTH: f32 = 160.0;
 
 /// The width limit a text breaks at: the known width, else the available width, with
@@ -407,7 +453,8 @@ fn text_metrics(
 }
 
 fn text_size(engine: &mut dyn TextEngine, n: &Node, id: NodeId, known: Option<f32>, avail: taffy::AvailableSpace) -> (f32, f32) {
-    let m = text_metrics(engine, id, &n.text, &n.text_clean, &n.visual.text_style(), width_limit(known, avail));
+    let Some(t) = n.text_content() else { return (0.0, 0.0) };
+    let m = text_metrics(engine, id, &t.text, &t.clean, &n.visual.text_style(), width_limit(known, avail));
     // Whole pixels, rounded up (as Rune): fractional line heights would make rows alternate.
     (m.width.ceil(), m.height.ceil())
 }
@@ -562,7 +609,8 @@ impl Kernel {
         let n = self.node(id);
         let l = self.taffy.layout(n.taffy).expect("taffy");
         let inner = l.size.width - l.padding.left - l.padding.right - l.border.left - l.border.right;
-        text_metrics(&mut **self.text.borrow_mut(), id, &n.text, &n.text_clean, &n.visual.text_style(), Some(inner.max(0.0)))
+        let Some(t) = n.text_content() else { return TextMetrics::default() };
+        text_metrics(&mut **self.text.borrow_mut(), id, &t.text, &t.clean, &n.visual.text_style(), Some(inner.max(0.0)))
     }
     /// Parent of every overlay; always the root's last child.
     pub fn overlay_layer(&self) -> NodeId {
@@ -634,17 +682,22 @@ impl Kernel {
         self.nodes.contains_key(id)
     }
     pub fn kind(&self, id: NodeId) -> Kind {
-        self.node(id).kind
+        if id == self.root { Kind::Root } else { self.node(id).kind() }
     }
     pub fn role(&self, id: NodeId) -> Role {
-        let n = self.node(id);
-        n.role.unwrap_or(n.kind.default_role())
+        self.node(id).role.unwrap_or(self.kind(id).default_role())
     }
+    /// A text's own text (empty for other nodes).
     pub fn text(&self, id: NodeId) -> &str {
-        &self.node(id).text
+        self.node(id).text()
     }
+    /// A text input's value, else the value set for assistive technology (empty when none).
     pub fn value(&self, id: NodeId) -> &str {
-        &self.node(id).value
+        let n = self.node(id);
+        match n.input() {
+            Some(i) => &i.value,
+            None => n.value.as_deref().unwrap_or(""),
+        }
     }
     pub fn checked(&self, id: NodeId) -> Option<bool> {
         self.node(id).checked
@@ -691,23 +744,23 @@ impl Kernel {
         let t = self.taffy.new_leaf(layout.clone()).expect("taffy");
         let root_inh = Inherited::root(&self.theme);
         let visual = Unresolved::new(&self.theme, &root_inh).resolve(&self.theme, &mut Vec::new());
+        let content = match kind {
+            Kind::Text => Content::Text(TextContent::default()),
+            Kind::TextInput => Content::Input(Box::default()),
+            Kind::Root | Kind::Box => Content::None,
+        };
         let id = self.nodes.insert(Node {
-            kind,
+            content,
             role: None,
             parent: None,
             children: Vec::new(),
-            text: String::new(),
-            text_clean: Cell::new(0),
-            value: String::new(),
-            preedit: String::new(),
+            value: None,
             checked: None,
             label: None,
             description: None,
             expanded: None,
             hidden: false,
             focusable: false,
-            selection: (0, 0),
-            text_scroll: Cell::new(0.0),
             tab_index: 0,
             focus_group: false,
             group_current: None,
@@ -715,9 +768,6 @@ impl Kernel {
             modal: None,
             key_context: None,
             commands: Vec::new(),
-            image: None,
-            icon: None,
-            canvas: None,
             anim: None,
             born: 0,
             exiting: false,
@@ -864,7 +914,8 @@ impl Kernel {
         self.record(id, OpKind::Destroy);
         let n = self.nodes.remove(id).expect("node");
         self.missing_tokens.remove(&id);
-        if n.kind == Kind::Text {
+        // Texts and text inputs are measured by the text engine (keyed by node).
+        if matches!(n.content, Content::Text(_) | Content::Input(_)) {
             self.text.get_mut().forget(id);
         }
         if n.anchor.is_some() {
@@ -909,16 +960,17 @@ impl Kernel {
         true
     }
 
+    /// Sets a text's text (other nodes have none: ignored).
     pub fn set_text(&mut self, id: NodeId, text: &str) -> bool {
-        if self.node(id).text == text {
+        let Content::Text(t) = &mut self.node_mut(id).content else { return false };
+        if t.text == text {
             self.counters.prop_noops += 1;
             return false;
         }
-        let n = self.node_mut(id);
-        let same = n.text.bytes().zip(text.bytes()).take_while(|(a, b)| a == b).count();
-        n.text_clean.set(n.text_clean.get().min(same));
-        n.text.clear();
-        n.text.push_str(text);
+        let same = t.text.bytes().zip(text.bytes()).take_while(|(a, b)| a == b).count();
+        t.clean.set(t.clean.get().min(same));
+        t.text.clear();
+        t.text.push_str(text);
         self.counters.text_bytes += text.len() as u64;
         self.text_changed(id, "text", text);
         true
@@ -930,9 +982,9 @@ impl Kernel {
             self.counters.prop_noops += 1;
             return false;
         }
-        let n = self.node_mut(id);
-        n.text_clean.set(n.text_clean.get().min(n.text.len()));
-        n.text.push_str(more);
+        let Content::Text(t) = &mut self.node_mut(id).content else { return false };
+        t.clean.set(t.clean.get().min(t.text.len()));
+        t.text.push_str(more);
         self.counters.text_bytes += more.len() as u64;
         self.text_changed(id, "text+", more);
         true
@@ -940,9 +992,9 @@ impl Kernel {
 
     /// Replaces the byte range `start..end` of a node's text with `insert`.
     pub fn splice_text(&mut self, id: NodeId, start: usize, end: usize, insert: &str) -> bool {
-        let n = self.node_mut(id);
-        n.text_clean.set(n.text_clean.get().min(start));
-        n.text.replace_range(start..end, insert);
+        let Content::Text(t) = &mut self.node_mut(id).content else { return false };
+        t.clean.set(t.clean.get().min(start));
+        t.text.replace_range(start..end, insert);
         self.counters.text_bytes += insert.len() as u64;
         self.text_changed(id, "text~", insert);
         true
@@ -956,42 +1008,51 @@ impl Kernel {
     /// The node's measured content changed: Taffy must measure it again.
     fn update_measure(&mut self, id: NodeId) {
         let n = self.node(id);
-        if matches!(n.kind, Kind::Text | Kind::TextInput) {
+        if matches!(n.content, Content::Text(_) | Content::Input(_)) {
             self.taffy.mark_dirty(n.taffy).expect("taffy");
         }
     }
 
     /// The input method's composition in a text input (empty when none).
     pub fn set_preedit(&mut self, id: NodeId, text: &str) -> bool {
-        if self.node(id).preedit == text {
+        if self.node(id).input().is_none_or(|i| i.preedit == text) {
             return false;
         }
         // The composition sits at the caret: what is shown changes from there on.
         let caret = self.selection(id).1;
-        let n = self.node_mut(id);
-        n.text_clean.set(n.text_clean.get().min(caret));
-        n.preedit.clear();
-        n.preedit.push_str(text);
+        let i = self.node_mut(id).input_mut().expect("a text input");
+        i.clean.set(i.clean.get().min(caret));
+        i.preedit.clear();
+        i.preedit.push_str(text);
         self.changed(id, Dirty::PAINT, "preedit", || text.to_owned());
         true
     }
     pub fn preedit(&self, id: NodeId) -> &str {
-        &self.node(id).preedit
+        self.node(id).input().map_or("", |i| &i.preedit)
     }
 
+    /// A text input's value; for other nodes, the value assistive technology announces.
     pub fn set_value(&mut self, id: NodeId, value: &str) -> bool {
-        if self.node(id).value == value {
+        if self.value(id) == value && (self.node(id).input().is_some() || self.node(id).value.is_some()) {
             self.counters.prop_noops += 1;
             return false;
         }
         let n = self.node_mut(id);
-        // What a text input shows is unchanged only up to the first byte that differs (and up to
-        // its composition, which follows the caret).
-        let same = n.value.bytes().zip(value.bytes()).take_while(|(a, b)| a == b).count();
-        n.text_clean.set(n.text_clean.get().min(same));
-        n.value.clear();
-        n.value.push_str(value);
-        self.changed(id, Dirty::TEXT | Dirty::SEMANTICS, "value", || value.to_owned());
+        match n.input_mut() {
+            Some(i) => {
+                // What a text input shows is unchanged only up to the first byte that differs
+                // (and up to its composition, which follows the caret).
+                let same = i.value.bytes().zip(value.bytes()).take_while(|(a, b)| a == b).count();
+                i.clean.set(i.clean.get().min(same));
+                i.value.clear();
+                i.value.push_str(value);
+                self.changed(id, Dirty::TEXT | Dirty::SEMANTICS, "value", || value.to_owned());
+            }
+            None => {
+                n.value = Some(value.to_owned());
+                self.changed(id, Dirty::SEMANTICS, "value", || value.to_owned());
+            }
+        }
         true
     }
 
@@ -1098,35 +1159,41 @@ impl Kernel {
         None
     }
 
-    /// Can take keyboard focus (and so receive `FOCUS_VISIBLE`).
+    /// Replaces a box's content (texts and text inputs keep theirs: ignored).
+    fn set_content(&mut self, id: NodeId, content: Content) {
+        let n = self.node_mut(id);
+        if matches!(n.content, Content::Text(_) | Content::Input(_)) {
+            return;
+        }
+        n.content = content;
+    }
+
     /// Draws `icon` in the box (`None`: no icon), its strokes `stroke_width` wide on its view box
     /// (`None`: the icon's own).
     pub fn set_icon(&mut self, id: NodeId, icon: Option<(&crate::icon::Icon, Option<f32>)>) {
         let name = icon.map(|(i, _)| i.name().to_owned());
-        let icon = icon.map(|(i, w)| {
-            std::rc::Rc::new(NodeIcon { name: i.name().to_owned(), view_box: i.bounds(), shapes: i.shapes(w) })
-        });
-        if self.node(id).icon == icon {
+        let icon = icon.map(|(i, w)| NodeIcon { name: i.name().to_owned(), view_box: i.bounds(), shapes: i.shapes(w) });
+        if self.icon(id) == icon.as_ref() {
             return;
         }
-        self.node_mut(id).icon = icon;
+        self.set_content(id, icon.map_or(Content::None, |i| Content::Icon(std::rc::Rc::new(i))));
         self.changed(id, Dirty::PAINT, "icon", || name.unwrap_or_default());
     }
     pub fn icon(&self, id: NodeId) -> Option<&NodeIcon> {
-        self.node(id).icon.as_deref()
+        if let Content::Icon(i) = &self.node(id).content { Some(i) } else { None }
     }
 
-    /// Makes the node a canvas drawing `ops` (in its content box's coordinates).
+    /// Makes the box a canvas drawing `ops` (in its content box's coordinates).
     pub fn set_canvas(&mut self, id: NodeId, ops: Vec<crate::canvas::CanvasOp>) {
-        if self.node(id).canvas.as_deref() == Some(&ops) {
+        if self.canvas(id) == Some(ops.as_slice()) {
             return;
         }
         let count = ops.len();
-        self.node_mut(id).canvas = Some(std::rc::Rc::new(ops));
+        self.set_content(id, Content::Canvas(std::rc::Rc::new(ops)));
         self.changed(id, Dirty::PAINT, "canvas", || format!("{count} ops"));
     }
     pub fn canvas(&self, id: NodeId) -> Option<&[crate::canvas::CanvasOp]> {
-        self.node(id).canvas.as_deref().map(|v| v.as_slice())
+        if let Content::Canvas(ops) = &self.node(id).content { Some(ops) } else { None }
     }
     /// The size of the node's content box (inside border and padding) in the last layout.
     pub fn content_size(&self, id: NodeId) -> (f32, f32) {
@@ -1139,16 +1206,17 @@ impl Kernel {
 
     /// Shows `image` in the box (`None`: no image), fitted by `fit`.
     pub fn set_image(&mut self, id: NodeId, image: Option<(crate::image::Image, crate::image::ObjectFit)>) {
-        if self.node(id).image == image {
+        if self.image(id) == image.as_ref().map(|(i, f)| (i, *f)) {
             return;
         }
-        self.node_mut(id).image = image;
+        self.set_content(id, image.map_or(Content::None, |(i, f)| Content::Image(i, f)));
         self.resolve(id, "image");
         self.mark(Dirty::PAINT);
     }
-    pub fn image(&self, id: NodeId) -> Option<&(crate::image::Image, crate::image::ObjectFit)> {
-        self.node(id).image.as_ref()
+    pub fn image(&self, id: NodeId) -> Option<(&crate::image::Image, crate::image::ObjectFit)> {
+        if let Content::Image(i, f) = &self.node(id).content { Some((i, *f)) } else { None }
     }
+    /// Can take keyboard focus (and so receive `FOCUS_VISIBLE`).
     pub fn set_focusable(&mut self, id: NodeId, focusable: bool) -> bool {
         if self.node(id).focusable == focusable {
             self.counters.prop_noops += 1;
@@ -1278,9 +1346,13 @@ impl Kernel {
     /// Every text measures again: shapes may now resolve to other faces.
     fn fonts_changed(&mut self) {
         let ids: Vec<NodeId> =
-            self.nodes.iter().filter(|(_, n)| matches!(n.kind, Kind::Text | Kind::TextInput)).map(|(id, _)| id).collect();
+            self.nodes.iter().filter(|(_, n)| matches!(n.kind(), Kind::Text | Kind::TextInput)).map(|(id, _)| id).collect();
         for id in ids {
-            self.node(id).text_clean.set(0);
+            match &self.node(id).content {
+                Content::Text(t) => t.clean.set(0),
+                Content::Input(i) => i.clean.set(0),
+                _ => {}
+            }
             self.update_measure(id);
         }
         self.needs_layout = true;
@@ -1289,7 +1361,7 @@ impl Kernel {
     /// Recomputes the effective style; marks what changed.
     fn resolve(&mut self, id: NodeId, why: &'static str) -> bool {
         let n = self.node(id);
-        let mut layout = default_layout(n.kind);
+        let mut layout = default_layout(n.kind());
         let from = n.parent.map_or_else(|| Inherited::root(&self.theme), |p| self.node(p).inherited);
         let mut v = Unresolved::new(&self.theme, &from);
         let n = {
@@ -1336,7 +1408,7 @@ impl Kernel {
         }
         // An image sizes its box like a replaced element: one side set, the other follows its
         // aspect ratio; neither set, its own size (one image pixel per logical pixel).
-        if let Some((img, _)) = &n.image {
+        if let Content::Image(img, _) = &n.content {
             let (w, h) = img.size();
             if w > 0 && h > 0 {
                 if layout.aspect_ratio.is_none() {
@@ -1651,7 +1723,7 @@ impl Kernel {
             if n.layout.display == taffy::Display::None {
                 continue;
             }
-            let own = n.label.as_deref().or((n.kind == Kind::Text).then_some(n.text.as_str()));
+            let own = n.label.as_deref().or((n.kind() == Kind::Text).then_some(n.text()));
             if own == Some(name) {
                 out.push(id);
             }
@@ -1664,7 +1736,7 @@ impl Kernel {
         let n = self.node(id);
         if let Some(t) = &n.test_id {
             format!("`{t}`")
-        } else if let Some(l) = n.label.as_deref().or((n.kind == Kind::Text).then_some(n.text.as_str())).filter(|l| !l.is_empty()) {
+        } else if let Some(l) = n.label.as_deref().or((n.kind() == Kind::Text).then_some(n.text())).filter(|l| !l.is_empty()) {
             format!("{:?} \"{l}\"", self.role(id))
         } else {
             format!("a {:?}", self.role(id))
@@ -1684,11 +1756,12 @@ impl Kernel {
         if let Some(t) = &n.test_id {
             let _ = write!(out, "#{t}");
         }
-        if !n.text.is_empty() {
-            let _ = write!(out, " {:?}", n.text);
+        if !n.text().is_empty() {
+            let _ = write!(out, " {:?}", n.text());
         }
-        if !n.value.is_empty() {
-            let _ = write!(out, " value={:?}", n.value);
+        let value = self.value(id);
+        if !value.is_empty() {
+            let _ = write!(out, " value={value:?}");
         }
         if let Some(c) = n.checked {
             let _ = write!(out, " checked={c}");

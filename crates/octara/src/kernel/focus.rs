@@ -195,7 +195,7 @@ impl Kernel {
                 if auto.is_none() && self.node(id).autofocus {
                     auto = Some(id);
                 }
-                if field.is_none() && self.node(id).kind == Kind::TextInput {
+                if field.is_none() && self.node(id).input().is_some() {
                     field = Some(id);
                 }
             }
@@ -262,7 +262,7 @@ impl Kernel {
     /// The key context `id` adds: its own, else `text_input` for a text input.
     pub fn key_context(&self, id: NodeId) -> Option<&str> {
         let n = self.node(id);
-        n.key_context.as_deref().or((n.kind == Kind::TextInput).then_some("text_input"))
+        n.key_context.as_deref().or((n.kind() == Kind::TextInput).then_some("text_input"))
     }
     pub fn add_command(&mut self, id: NodeId, command: &str, handler: super::HandlerId) {
         self.node_mut(id).commands.push((command.to_owned(), handler));

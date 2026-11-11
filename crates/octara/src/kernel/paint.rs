@@ -108,7 +108,7 @@ impl Kernel {
         }
 
         // An image, fitted into the padding box and clipped to the box's corners.
-        if let Some((img, fit)) = &n.image
+        if let super::Content::Image(img, fit) = &n.content
             && visible
         {
             let (iw, ih) = img.size();
@@ -132,7 +132,7 @@ impl Kernel {
         }
 
         // An icon, fitted into the content box (centered, aspect kept), in the text color.
-        if let Some(icon) = &n.icon
+        if let super::Content::Icon(icon) = &n.content
             && visible
         {
             let content = Rect {
@@ -162,7 +162,7 @@ impl Kernel {
         }
 
         // A canvas's recording, in its content box, clipped to it.
-        if let Some(ops) = &n.canvas
+        if let super::Content::Canvas(ops) = &n.content
             && visible
         {
             let content = Rect {
@@ -175,12 +175,12 @@ impl Kernel {
         }
 
         // A text input: its line, selection, composition and caret.
-        if n.kind == Kind::TextInput && visible {
+        if n.kind() == Kind::TextInput && visible {
             self.paint_input(id, opacity, out);
         }
         // A label's text.
-        if n.kind == Kind::Text && visible {
-            let (s, style) = (n.text.as_str(), v.text_style());
+        if n.kind() == Kind::Text && visible {
+            let (s, style) = (n.text(), v.text_style());
             let cx = rect.x + l.border.left + l.padding.left;
             let cy = rect.y + l.border.top + l.padding.top;
             let inner = (l.size.width - l.border.left - l.border.right - l.padding.left - l.padding.right).max(0.0);
@@ -190,7 +190,8 @@ impl Kernel {
             };
             if !s.is_empty() {
                 let mut engine = self.text.borrow_mut();
-                text::measure(&mut **engine, id, s, n.text_clean.replace(s.len()), &style, limit);
+                let clean = n.text_content().map_or(0, |t| t.clean.replace(s.len()));
+                text::measure(&mut **engine, id, s, clean, &style, limit);
                 // Cut text (one line, or `line_clamp`) ends in an ellipsis inside the box.
                 let fit = (style.wrap == Wrap::Truncate || style.max_lines.is_some()).then_some(inner);
                 let runs = engine.glyph_runs(id, &style, limit, fit);

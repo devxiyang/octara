@@ -120,7 +120,7 @@ impl Kernel {
             ));
         }
 
-        if n.kind == Kind::Text && !n.text.is_empty() {
+        if n.kind() == Kind::Text && !n.text().is_empty() {
             let m = self.text_metrics(id);
             if m.truncated {
                 let how = if n.visual.wrap == Wrap::Truncate { "is truncated" } else { "is cut by `line_clamp`" };
@@ -137,8 +137,8 @@ impl Kernel {
         if w <= TOLERANCE || h <= TOLERANCE {
             let explicit_zero = |d: taffy::Dimension| d == taffy::Dimension::length(0.0);
             let sized_zero = explicit_zero(n.layout.size.width) || explicit_zero(n.layout.size.height);
-            let content = match n.kind {
-                Kind::Text => !n.text.is_empty(),
+            let content = match n.kind() {
+                Kind::Text => !n.text().is_empty(),
                 _ => n.children.iter().any(|c| {
                     let (.., cw, ch) = self.rect(*c);
                     self.node(*c).layout.display != taffy::Display::None && cw > TOLERANCE && ch > TOLERANCE
@@ -156,7 +156,7 @@ impl Kernel {
         }
 
         // Overflow: children past this node's content box (the window for the root).
-        if id == self.overlay_layer || n.kind == Kind::Text {
+        if id == self.overlay_layer || n.kind() == Kind::Text {
             return;
         }
         let (cx, cy, cw, ch) = if id == self.root { (0.0, 0.0, self.viewport.0, self.viewport.1) } else { self.content_box(id) };
@@ -174,7 +174,7 @@ impl Kernel {
             if r > TOLERANCE {
                 right.0 = right.0.max(r);
                 right.1.push(self.name(c));
-                nowrap_text |= cn.kind == Kind::Text && cn.visual.wrap == Wrap::None;
+                nowrap_text |= cn.kind() == Kind::Text && cn.visual.wrap == Wrap::None;
             }
             if b > TOLERANCE {
                 bottom.0 = bottom.0.max(b);
@@ -280,7 +280,7 @@ impl Kernel {
         if n.hidden || n.layout.display == taffy::Display::None {
             return;
         }
-        let bg = if n.visual.gradient.is_some() || n.image.is_some() {
+        let bg = if n.visual.gradient.is_some() || matches!(n.content, super::Content::Image(..)) {
             None
         } else {
             match n.visual.background {
@@ -289,7 +289,7 @@ impl Kernel {
                 _ => under,
             }
         };
-        if n.canvas.is_some() && n.label.is_none() {
+        if matches!(n.content, super::Content::Canvas(_)) && n.label.is_none() {
             let (.., w, h) = self.shown_rect(id);
             if w > 0.0 && h > 0.0 {
                 out.push(self.issue(
@@ -301,10 +301,10 @@ impl Kernel {
             }
         }
         let disabled = n.state.contains(super::State::DISABLED);
-        let control = n.kind == Kind::TextInput || super::HandlerKind::POINTER.iter().any(|k| n.handlers[*k as usize].is_some());
+        let control = n.kind() == Kind::TextInput || super::HandlerKind::POINTER.iter().any(|k| n.handlers[*k as usize].is_some());
         let (.., w, h) = self.shown_rect(id);
         if control && w > 0.0 && h > 0.0 {
-            if n.label.is_none() && !self.has_text(id) && n.kind != Kind::TextInput {
+            if n.label.is_none() && !self.has_text(id) && n.kind() != Kind::TextInput {
                 out.push(self.issue(
                     id,
                     &codes::UNNAMED_CONTROL,
@@ -312,7 +312,7 @@ impl Kernel {
                     "give it `.label(\"..\")`, or text inside it",
                 ));
             }
-            if n.kind == Kind::TextInput && n.label.is_none() {
+            if n.kind() == Kind::TextInput && n.label.is_none() {
                 out.push(self.issue(
                     id,
                     &codes::UNNAMED_CONTROL,
@@ -325,8 +325,8 @@ impl Kernel {
             }
         }
         if let Some(bg) = bg
-            && n.kind == Kind::Text
-            && !n.text.trim().is_empty()
+            && n.kind() == Kind::Text
+            && !n.text().trim().is_empty()
             && !disabled
             && n.visual.opacity > 0.0
         {
@@ -351,6 +351,6 @@ impl Kernel {
     /// Whether any shown text lies inside `id`.
     fn has_text(&self, id: NodeId) -> bool {
         let n = self.node(id);
-        (n.kind == Kind::Text && !n.text.trim().is_empty()) || n.children.iter().any(|c| !self.node(*c).hidden && self.has_text(*c))
+        (n.kind() == Kind::Text && !n.text().trim().is_empty()) || n.children.iter().any(|c| !self.node(*c).hidden && self.has_text(*c))
     }
 }

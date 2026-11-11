@@ -43,14 +43,15 @@ impl Kernel {
         // The name: an explicit label, else a text's own text.
         if let Some(label) = &n.label {
             node.set_label(label.as_str());
-        } else if n.kind == Kind::Text && !n.text.is_empty() {
-            node.set_label(n.text.as_str());
+        } else if n.kind() == Kind::Text && !n.text().is_empty() {
+            node.set_label(n.text());
         }
         if let Some(d) = &n.description {
             node.set_description(d.as_str());
         }
-        if n.kind == Kind::TextInput {
-            node.set_value(n.value.as_str());
+        // A text input's content, or the value set for other controls (a combo box's choice).
+        if n.kind() == Kind::TextInput || n.value.is_some() {
+            node.set_value(self.value(id));
         }
         if let Some(c) = n.checked {
             node.set_toggled(if c { ak::Toggled::True } else { ak::Toggled::False });
@@ -99,7 +100,7 @@ impl Kernel {
         use crate::inspect::{snake, tenth};
         let n = self.node(id);
         let role = if id == self.root { Role::Window } else { self.role(id) };
-        let name = n.label.clone().or_else(|| (n.kind == Kind::Text && !n.text.is_empty()).then(|| n.text.clone()));
+        let name = n.label.clone().or_else(|| (n.kind() == Kind::Text && !n.text().is_empty()).then(|| n.text().to_owned()));
         let mut states = Vec::new();
         for (flag, s) in [
             (State::HOVER, "hovered"),
@@ -128,7 +129,7 @@ impl Kernel {
                 actions.push(a.to_string());
             }
         }
-        if n.kind == Kind::TextInput && !actions.iter().any(|a| a == "input") {
+        if n.kind() == Kind::TextInput && !actions.iter().any(|a| a == "input") {
             actions.push("input".into());
         }
         if n.focusable {
@@ -143,14 +144,17 @@ impl Kernel {
             id: n.test_id.clone(),
             role: snake(&format!("{role:?}")),
             name,
-            value: (n.kind == Kind::TextInput).then(|| n.value.clone()),
+            value: (n.kind() == Kind::TextInput || n.value.is_some()).then(|| self.value(id).to_owned()),
             checked: n.checked,
             expanded: n.expanded,
             states,
             bounds: [tenth(x), tenth(y), tenth(w), tenth(h)],
             actions,
             commands: n.commands.iter().map(|(c, _)| c.clone()).collect(),
-            icon: n.icon.as_ref().map(|i| i.name.clone()),
+            icon: match &n.content {
+                super::Content::Icon(i) => Some(i.name.clone()),
+                _ => None,
+            },
             source: n.origin.map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())),
             children,
         }

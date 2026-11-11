@@ -53,3 +53,21 @@ fn roles_names_states_actions_and_bounds() {
     assert!(app.accessibility_action(inc_id, Action::Focus, None));
     assert_eq!(app.accessibility_tree(1.0).focus, inc_id);
 }
+
+#[test]
+fn a_value_is_announced_for_any_control() {
+    // A combo box's choice is its value, as a text input's content is.
+    let mut app = App::new(|| {
+        col()
+            .child(el().id("theme").role(Role::ComboBox).label("Theme").value("Dark").focusable().on_press(|| {}))
+            .child(text_input().id("name").label("Name").value("Ada"))
+            .into()
+    });
+    let snap = app.inspect();
+    assert_eq!(snap.find("theme").unwrap().value.as_deref(), Some("Dark"));
+    assert_eq!(snap.find("name").unwrap().value.as_deref(), Some("Ada"));
+    let tree = app.accessibility_tree(1.0);
+    let theme = app.kernel().find("theme").unwrap();
+    let node = tree.nodes.iter().find(|(i, _)| *i == a11y_id(theme)).unwrap();
+    assert_eq!(node.1.value(), Some("Dark"));
+}
