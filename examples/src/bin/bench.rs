@@ -1,4 +1,5 @@
-//! Benchmarks for the example apps. Run with `cargo run --release -p octara-examples --bin bench`.
+//! Benchmarks for the example apps. Run with `cargo run --release -p octara-examples --bin bench`
+//! (`-- --frames` for the frame costs only).
 //! Counts (closures, property changes, allocations) are exact; times are the minimum of 3 runs.
 
 use octara::prelude::*;
@@ -239,7 +240,58 @@ fn streaming_text() {
     println!();
 }
 
+/// What a frame costs after the view settles: building the display list and the accessibility
+/// tree with nothing changed, and after one press (min of 3 runs of 20 frames, µs per frame).
+fn frames() {
+    println!("## frame: display list and accessibility tree, layout ON (µs per frame, min of 3)\n");
+    println!("| app | nodes | items | display list (idle) | display list (after a press) | a11y tree (idle) |");
+    println!("| --- | ---: | ---: | ---: | ---: | ---: |");
+    type Case = (&'static str, fn() -> View, &'static str);
+    let cases: [Case; 4] = [
+        ("todo 1000", || apps::todo(1000), "toggle-500"),
+        ("chat 300", || apps::chat(300), "header"),
+        ("contacts 500", || apps::contacts(500), "header"),
+        ("showcase", octara_examples::showcase::showcase, "add"),
+    ];
+    for (name, view, target) in cases {
+        let mut app = App::new(view);
+        app.resize(1024.0, 768.0);
+        let items = app.display_list().items.len();
+        let nodes = app.kernel().counters().nodes_created - app.kernel().counters().nodes_destroyed;
+        let time = |app: &mut App, press: bool| {
+            let mut best = f64::MAX;
+            for _ in 0..3 {
+                let t0 = Instant::now();
+                for _ in 0..20 {
+                    if press {
+                        let _ = app.tap(target);
+                    }
+                    std::hint::black_box(app.display_list());
+                }
+                best = best.min(t0.elapsed().as_secs_f64() * 1e6 / 20.0);
+            }
+            best
+        };
+        let idle = time(&mut app, false);
+        let pressed = time(&mut app, true);
+        let mut a11y = f64::MAX;
+        for _ in 0..3 {
+            let t0 = Instant::now();
+            for _ in 0..20 {
+                std::hint::black_box(app.accessibility_tree(2.0));
+            }
+            a11y = a11y.min(t0.elapsed().as_secs_f64() * 1e6 / 20.0);
+        }
+        println!("| {name} | {nodes} | {items} | {idle:.0} | {pressed:.0} | {a11y:.0} |");
+    }
+    println!();
+}
+
 fn main() {
+    if std::env::args().any(|a| a == "--frames") {
+        return frames();
+    }
+    frames();
     steps::<Apps>();
     scaling();
     virtualization();
