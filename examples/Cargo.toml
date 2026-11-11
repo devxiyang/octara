@@ -13,6 +13,7 @@ view = "octara_examples::apps::counter"
 [dependencies]
 octara = { workspace = true, features = ["system-fonts"] }
 octara-fonts.workspace = true
+octara-icons.workspace = true
 octara-kit.workspace = true
 octara-render.workspace = true
 octara-shell.workspace = true

@@ -13,6 +13,7 @@
 pub use accesskit;
 
 pub mod app;
+pub mod canvas;
 pub mod diagnostics;
 pub mod icon;
 pub mod image;
@@ -28,7 +29,9 @@ pub mod view;
 
 pub mod prelude {
     pub use crate::app::{App, Drag, DragPhase, Event, Key, KeyEvent, Modifiers};
+    pub use crate::canvas::Canvas;
     pub use crate::icon::Icon;
+    pub use crate::paint::Rect;
     pub use crate::image::{Image, ObjectFit};
     pub use crate::path::{FillRule, LineCap, LineJoin, Path, Stroke, Transform, point};
     pub use crate::kernel::{

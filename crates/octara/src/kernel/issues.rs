@@ -229,8 +229,9 @@ pub const MIN_POINTER_TARGET: f32 = 24.0;
 
 impl Kernel {
     /// Accessibility problems in the last layout (as Exact judges them): controls without a name,
-    /// text without enough contrast, and targets under the platform's minimum — 44 × 44 on touch,
-    /// 24 × 24 with a pointer unless no other control's center is within 24 (WCAG 2.5.8).
+    /// canvases without a label, text without enough contrast, and targets under the platform's
+    /// minimum — 44 × 44 on touch, 24 × 24 with a pointer unless no other control's center is
+    /// within 24 (WCAG 2.5.8).
     pub fn accessibility_issues(&self) -> Vec<LayoutIssue> {
         let mut out = Vec::new();
         let mut controls = Vec::new();
@@ -288,6 +289,17 @@ impl Kernel {
                 _ => under,
             }
         };
+        if n.canvas.is_some() && n.label.is_none() {
+            let (.., w, h) = self.shown_rect(id);
+            if w > 0.0 && h > 0.0 {
+                out.push(self.issue(
+                    id,
+                    &codes::UNLABELED_CANVAS,
+                    format!("canvas {} has no label", self.name(id)),
+                    "give it `.label(\"..\")` saying what it shows, or `.a11y_hidden()` if it is decoration",
+                ));
+            }
+        }
         let disabled = n.state.contains(super::State::DISABLED);
         let control = n.kind == Kind::TextInput || super::HandlerKind::POINTER.iter().any(|k| n.handlers[*k as usize].is_some());
         let (.., w, h) = self.shown_rect(id);

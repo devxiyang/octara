@@ -21,6 +21,9 @@ pub struct Rect {
 }
 
 impl Rect {
+    pub const fn new(x: f32, y: f32, w: f32, h: f32) -> Rect {
+        Rect { x, y, w, h }
+    }
     pub fn right(&self) -> f32 {
         self.x + self.w
     }

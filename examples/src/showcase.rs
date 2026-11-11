@@ -1,8 +1,9 @@
-//! A tour of what Octara draws and does: shadows, gradients, images, group opacity, cut text,
-//! text editing, a select, focus, timers, an async resource, and motion.
+//! A tour of what Octara draws and does: shadows, gradients, images, a canvas chart, icons, group
+//! opacity, cut text, text editing, a select, focus, timers, an async resource, and motion.
 
 use octara::prelude::*;
 use octara::task::now;
+use octara_icons as icons;
 use octara_kit::{button, ghost_button, primary_button, select, switch, text_field};
 use std::time::Duration;
 
@@ -42,6 +43,39 @@ fn section(title: &'static str) -> El {
         .border_color(Token::Border)
         .shadow_sm()
         .child(text(title).text_sm().font_semibold().text_color(Token::TextMuted))
+}
+
+/// Monthly figures for the chart.
+const SALES: [f32; 12] = [42.0, 51.0, 47.0, 63.0, 58.0, 72.0, 69.0, 81.0, 77.0, 88.0, 84.0, 96.0];
+const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/// A bar chart drawn on a canvas: dragging across it picks a month.
+fn chart(picked: Signal<usize>) -> El {
+    let pick = move |x: f32, w: f32| picked.set(((x / w * 12.0).floor().max(0.0) as usize).min(11));
+    let width = std::rc::Rc::new(std::cell::Cell::new(1.0f32));
+    let seen = width.clone();
+    canvas(move |c| {
+        let (w, h) = c.size();
+        seen.set(w);
+        let max = 100.0;
+        let slot = w / SALES.len() as f32;
+        // The trend under the bars: an area fading down, and its line.
+        let pts: Vec<_> = SALES.iter().enumerate().map(|(i, v)| point(slot * (i as f32 + 0.5), h - v / max * h)).collect();
+        let line = Path::new().add_polygon(&pts, false);
+        let area = line.clone().line_to((pts[11].x, h)).line_to((pts[0].x, h)).close();
+        c.fill(&area, linear_gradient(180.0, linear_color_stop(rgb(0x6366f1).with_alpha(0.25), 0.0), linear_color_stop(rgb(0x6366f1).with_alpha(0.0), 1.0)));
+        for (i, v) in SALES.iter().enumerate() {
+            let bh = v / max * h;
+            let bar = Path::rounded_rect(Rect::new(slot * i as f32 + slot * 0.2, h - bh, slot * 0.6, bh), 3.0);
+            c.fill(&bar, if i == picked.get() { Token::Accent } else { Token::Border });
+        }
+        c.stroke(&line, &Stroke::new(2.0).cap(LineCap::Round).join(LineJoin::Round), rgb(0x6366f1));
+    })
+    .id("chart")
+    .label(move || format!("Monthly sales, {} selected: {}", MONTHS[picked.get()], SALES[picked.get()]))
+    .w(320)
+    .h(140)
+    .on_drag(move |d| pick(d.x, width.get()))
 }
 
 pub fn showcase() -> View {
@@ -100,6 +134,18 @@ pub fn showcase() -> View {
                 .child(el().w(120).h(96).img(&picture).bg(Token::Surface).rounded_md().object_fit(ObjectFit::Contain)),
         )
         .child(text("200 wide (height from the image) · cover in a circle · contain").text_xs().text_color(Token::TextMuted));
+
+    let picked = state("picked", || 11usize);
+    let drawing = section("Canvas and icons")
+        .child(chart(picked))
+        .child(text(move || format!("{}: {} — drag across the chart", MONTHS[picked.get()], SALES[picked.get()])).text_xs().text_color(Token::TextMuted))
+        .child(
+            row()
+                .gap_3()
+                .items_center()
+                .children([icons::HOUSE, icons::SEARCH, icons::BELL, icons::SETTINGS, icons::HEART, icons::STAR].map(|i| icon(i).size_5()))
+                .child(row().gap_1().items_center().text_color(Token::Accent).child(icon(icons::SPARKLES)).child(text("Lucide, in the text color").text_sm())),
+        );
 
     let layers = section("Group opacity")
         .child(
@@ -169,6 +215,7 @@ pub fn showcase() -> View {
                 .max_w(880)
                 .child(hero)
                 .child(row().gap_6().flex_wrap().items_start().child(images).child(layers))
+                .child(row().gap_6().flex_wrap().items_start().child(drawing))
                 .child(row().gap_6().flex_wrap().items_start().child(editing).child(col().gap_6().child(search).child(cut))),
         )
         .into()

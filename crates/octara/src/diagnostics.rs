@@ -210,6 +210,10 @@ codes! {
         "An element can be operated but has no name for assistive technology.",
         cause: "Screen readers announce a control by its label or the text inside it; an icon-only button or an unlabeled text field has neither.",
         fix: "Give it `.label(\"Save\")`, or text inside it.";
+    UNLABELED_CANVAS: Warning, Accessibility, "docs/design/agent-knowledge.md#inspector-protocol-and-checks",
+        "A canvas is shown without a label, so assistive technology cannot say what it shows.",
+        cause: "A canvas is an image: its drawing has no text for a screen reader to read.",
+        fix: "Give it `.label(\"Sales by month\")` saying what it shows, or `.a11y_hidden()` if it is only decoration.";
     SMALL_TARGET: Warning, Accessibility, "docs/design/agent-knowledge.md#inspector-protocol-and-checks",
         "A control is smaller than the platform's minimum target: 44 × 44 on touch, 24 × 24 with a pointer.",
         cause: "The hit area is the element's box. Fingers need about 44 pt (Apple); with a mouse, WCAG 2.5.8 asks 24 × 24 unless the target is spaced that far from the others.",

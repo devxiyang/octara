@@ -1,6 +1,6 @@
 # Vector graphics: paths, icons, canvas
 
-Based on the [research](../research/vector-graphics.md). Status: confirmed; steps 1 to 3 implemented.
+Based on the [research](../research/vector-graphics.md). Status: confirmed; steps 1 to 4 implemented, `c.text` and labeled regions next.
 
 ## Paths
 
@@ -57,13 +57,18 @@ Based on the [research](../research/vector-graphics.md). Status: confirmed; step
 ## Canvas
 
 - `canvas(move |c| { .. })` is an element whose drawing is built by a closure, given the
-  element's size: `c.fill(&path, paint)`, `c.stroke(&path, &stroke, paint)`, `c.rect(..)`,
-  `c.text(..)`, `c.image(..)`, `c.transform(..)`, `c.clip(..)`. The closure is a binding: it reruns
-  only when what it reads (signals, `live_text`, its size) changes, and its result is a
-  display-list fragment, comparable in tests. Nothing redraws per frame unless something changed.
+  element's content size (`c.size()`): `c.fill(&path, paint)`, `c.fill_with(&path, rule, paint)`,
+  `c.stroke(&path, &stroke, paint)`, `c.rect(rect, paint)`, `c.image(&image, rect)`, and scoped
+  `c.transform(t, |c| ..)` and `c.clip(rect, radius, |c| ..)`. Paint is a token, a color or a
+  gradient (spanning the shape's box); tokens follow the theme. The closure is a binding: it
+  reruns only when what it reads (signals, its size, kept in step after each layout) changes,
+  and its result is a list of `CanvasOp`s (`Kernel::canvas`), comparable in tests. Nothing
+  redraws per frame unless something changed. The drawing is clipped to the content box.
+- Next: `c.text(..)` (the text engine caches by node today; canvas text needs keys of its own).
+  Images and clips under a rotating transform take their bounding box.
 - Layout: a canvas has no content size; it is sized like a box (`w`, `h`, `flex_1`, `size_full`).
 - Semantics: a canvas is an image; it takes a `label` (`check` reports an unlabeled, visible
-  canvas with a new code). Interaction uses the element's own handlers; `on_drag` and
+  canvas: `UNLABELED_CANVAS`), or `a11y_hidden()` when it is decoration. Interaction uses the element's own handlers; `on_drag` and
   pointer events give positions local to the canvas. Labeled hit regions inside a canvas
   (`c.region(path, role, label)`, exposed to `inspect` and accessibility) come in a later step.
 

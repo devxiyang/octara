@@ -1646,6 +1646,161 @@
           "file": "crates/octara/src/app/edit.rs"
         },
         {
+          "path": "octara::canvas",
+          "kind": "module",
+          "sig": "pub mod canvas",
+          "docs": "Canvas: a drawing built by a closure, as data.\n\n[`canvas`](crate::view::canvas)`(move |c| ..)` is an element whose drawing a closure records\ninto a [`Canvas`]: paths filled or stroked, rectangles, images, under scoped transforms and\nclips, in the element's own coordinates (its content box, `(0, 0)` to\n[`size`](Canvas::size)). The closure is a binding: it reruns only when what it reads (signals,\nthe element's size) changes, and the recording is kept as plain data ([`CanvasOp`]) that tests\ncan compare. Nothing redraws per frame unless something changed (Rune's declarative canvas,\nExact's recorder; not GPUI's per-frame paint closures).\n\n```\nuse octara::prelude::*;\n\nfn meter() -> View {\n    let level = state(\"level\", || 0.6);\n    canvas(move |c| {\n        let (w, h) = c.size();\n        c.fill(&Path::rounded_rect(Rect::new(0.0, 0.0, w, h), h / 2.0), Token::Surface);\n        c.fill(&Path::rounded_rect(Rect::new(0.0, 0.0, w * level.get(), h), h / 2.0), Token::Accent);\n    })\n    .w(200)\n    .h(8)\n    .label(\"Level\")\n    .into()\n}\n# let app = App::new(meter);\n# assert_eq!(app.kernel().canvas(app.kernel().find_by_name(\"Level\")[0]).unwrap().len(), 2);\n```\n\nA canvas is an image to assistive technology: give it a `label` (`check` reports a visible\ncanvas without one, `UNLABELED_CANVAS`), or `a11y_hidden()` when it is decoration.",
+          "file": "crates/octara/src/canvas.rs",
+          "links": [
+            "octara::canvas::Canvas",
+            "octara::canvas::Canvas::size",
+            "octara::canvas::CanvasOp",
+            "octara::view::canvas"
+          ]
+        },
+        {
+          "path": "octara::canvas::Canvas",
+          "kind": "struct",
+          "sig": "pub struct Canvas { .. }",
+          "docs": "What a canvas closure draws into. See the [module docs](self).",
+          "file": "crates/octara/src/canvas.rs",
+          "aliases": [
+            "octara::prelude::Canvas"
+          ],
+          "traits": [
+            "Debug"
+          ],
+          "links": [
+            "octara::canvas"
+          ]
+        },
+        {
+          "path": "octara::canvas::Canvas::clip",
+          "kind": "method",
+          "sig": "pub fn clip(&mut self, rect: Rect, radius: f32, f: impl FnOnce(&mut Canvas))",
+          "docs": "Draws what `f` draws clipped to `rect` rounded by `radius`.",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::Canvas::fill",
+          "kind": "method",
+          "sig": "pub fn fill(&mut self, path: &Path, fill: impl Into<Fill>)",
+          "docs": "Fills `path` (non-zero rule) with a token, a color or a gradient (a gradient spans the\npath's box).",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::Canvas::fill_with",
+          "kind": "method",
+          "sig": "pub fn fill_with(&mut self, path: &Path, rule: FillRule, fill: impl Into<Fill>)",
+          "docs": "Fills `path` with `rule` (`EvenOdd` makes every inner subpath a hole).",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::Canvas::height",
+          "kind": "method",
+          "sig": "pub fn height(&self) -> f32",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::Canvas::image",
+          "kind": "method",
+          "sig": "pub fn image(&mut self, image: &Image, rect: Rect)",
+          "docs": "Draws `image` stretched into `rect`.",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::Canvas::into_ops",
+          "kind": "method",
+          "sig": "pub fn into_ops(self) -> Vec<CanvasOp>",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::Canvas::new",
+          "kind": "assoc_fn",
+          "sig": "pub fn new(width: f32, height: f32) -> Canvas",
+          "docs": "An empty recording for a content box of `width` × `height`.",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::Canvas::ops",
+          "kind": "method",
+          "sig": "pub fn ops(&self) -> &[CanvasOp]",
+          "docs": "The recording.",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::Canvas::rect",
+          "kind": "method",
+          "sig": "pub fn rect(&mut self, rect: Rect, fill: impl Into<Fill>)",
+          "docs": "Fills a rectangle.",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::Canvas::size",
+          "kind": "method",
+          "sig": "pub fn size(&self) -> (f32, f32)",
+          "docs": "The content box's width and height: what `(0, 0)` to `size()` covers.",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::Canvas::stroke",
+          "kind": "method",
+          "sig": "pub fn stroke(&mut self, path: &Path, stroke: &Stroke, fill: impl Into<Fill>)",
+          "docs": "Strokes `path`; the width scales with the transform.",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::Canvas::transform",
+          "kind": "method",
+          "sig": "pub fn transform(&mut self, t: Transform, f: impl FnOnce(&mut Canvas))",
+          "docs": "Draws what `f` draws under `t` (after the transform already in place).",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::Canvas::width",
+          "kind": "method",
+          "sig": "pub fn width(&self) -> f32",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasOp",
+          "kind": "enum",
+          "sig": "pub enum CanvasOp",
+          "docs": "One recorded drawing step, in the canvas's coordinates (`transform` maps the path's).",
+          "file": "crates/octara/src/canvas.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::canvas::CanvasOp::Image",
+          "kind": "variant",
+          "sig": "Image { image: Image, rect: Rect }",
+          "docs": "An image drawn into `rect` (the bounding box of the rect under the transform then).",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasOp::Path",
+          "kind": "variant",
+          "sig": "Path { path: Path, style: PathStyle, fill: Fill, transform: Transform }",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasOp::PopClip",
+          "kind": "variant",
+          "sig": "PopClip",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasOp::PushClip",
+          "kind": "variant",
+          "sig": "PushClip { rect: Rect, radius: f32 }",
+          "docs": "Clips what follows to `rect` (rounded by `radius`; the bounding box under the transform\nthen) until the matching `PopClip`.",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
           "path": "octara::diagnostics",
           "kind": "module",
           "sig": "pub mod diagnostics",
@@ -2017,6 +2172,13 @@
           "kind": "static",
           "sig": "pub static UNKEYED_STATE: Code",
           "docs": "`Signal::new` was called inside a component; its value is lost on hot reload.",
+          "file": "crates/octara/src/diagnostics.rs"
+        },
+        {
+          "path": "octara::diagnostics::UNLABELED_CANVAS",
+          "kind": "static",
+          "sig": "pub static UNLABELED_CANVAS: Code",
+          "docs": "A canvas is shown without a label, so assistive technology cannot say what it shows.",
           "file": "crates/octara/src/diagnostics.rs"
         },
         {
@@ -4225,7 +4387,7 @@
           "path": "octara::kernel::Kernel::accessibility_issues",
           "kind": "method",
           "sig": "pub fn accessibility_issues(&self) -> Vec<LayoutIssue>",
-          "docs": "Accessibility problems in the last layout (as Exact judges them): controls without a name,\ntext without enough contrast, and targets under the platform's minimum — 44 × 44 on touch,\n24 × 24 with a pointer unless no other control's center is within 24 (WCAG 2.5.8).",
+          "docs": "Accessibility problems in the last layout (as Exact judges them): controls without a name,\ncanvases without a label, text without enough contrast, and targets under the platform's\nminimum — 44 × 44 on touch, 24 × 24 with a pointer unless no other control's center is\nwithin 24 (WCAG 2.5.8).",
           "file": "crates/octara/src/kernel/issues.rs"
         },
         {
@@ -4260,6 +4422,12 @@
           "sig": "pub fn begin_exit(&mut self, id: NodeId) -> bool",
           "docs": "A subtree is being removed: where its opacity moves (a `motion` subtree) and it has been\nshown, it leaves the tree now — layout, hit testing, focus, assistive technology and test\nids no longer see it — while it fades out where it was; it is destroyed when it has. Its\ndestroy calls until then do nothing. Returns whether it is leaving this way.",
           "file": "crates/octara/src/kernel/anim.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::canvas",
+          "kind": "method",
+          "sig": "pub fn canvas(&self, id: NodeId) -> Option<&[CanvasOp]>",
+          "file": "crates/octara/src/kernel.rs"
         },
         {
           "path": "octara::kernel::Kernel::caret",
@@ -4318,6 +4486,13 @@
           "path": "octara::kernel::Kernel::content_origin_y",
           "kind": "method",
           "sig": "pub fn content_origin_y(&self, id: NodeId) -> f32",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::content_size",
+          "kind": "method",
+          "sig": "pub fn content_size(&self, id: NodeId) -> (f32, f32)",
+          "docs": "The size of the node's content box (inside border and padding) in the last layout.",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -4806,6 +4981,13 @@
           "kind": "method",
           "sig": "pub fn set_autofocus(&mut self, id: NodeId, on: bool)",
           "file": "crates/octara/src/kernel/focus.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::set_canvas",
+          "kind": "method",
+          "sig": "pub fn set_canvas(&mut self, id: NodeId, ops: Vec<CanvasOp>)",
+          "docs": "Makes the node a canvas drawing `ops` (in its content box's coordinates).",
+          "file": "crates/octara/src/kernel.rs"
         },
         {
           "path": "octara::kernel::Kernel::set_cause",
@@ -8281,6 +8463,9 @@
           "sig": "pub struct Rect { .. }",
           "docs": "An axis-aligned rectangle in logical pixels.",
           "file": "crates/octara/src/paint.rs",
+          "aliases": [
+            "octara::prelude::Rect"
+          ],
           "traits": [
             "Clone",
             "Copy",
@@ -8311,6 +8496,12 @@
           "path": "octara::paint::Rect::is_empty",
           "kind": "method",
           "sig": "pub fn is_empty(&self) -> bool",
+          "file": "crates/octara/src/paint.rs"
+        },
+        {
+          "path": "octara::paint::Rect::new",
+          "kind": "assoc_fn",
+          "sig": "pub const fn new(x: f32, y: f32, w: f32, h: f32) -> Rect",
           "file": "crates/octara/src/paint.rs"
         },
         {
@@ -17609,6 +17800,20 @@
           "file": "crates/octara/src/view/mod.rs",
           "aliases": [
             "octara::prelude::breakpoint"
+          ]
+        },
+        {
+          "path": "octara::view::canvas",
+          "kind": "fn",
+          "sig": "pub fn canvas(draw: impl Fn(&mut Canvas) + 'static) -> El",
+          "docs": "A canvas: `draw` records shapes, images, transforms and clips into a\n[`Canvas`](crate::canvas::Canvas) sized to the element's content box. It reruns only when what\nit reads (signals, the element's size) changes. A canvas has no size of its own: size it like\na box (`w`, `h`, `flex_1`, `size_full`). It is an image to assistive technology: give it a\n`label`, or `a11y_hidden()` when it is decoration. See [`crate::canvas`].",
+          "file": "crates/octara/src/view/element.rs",
+          "aliases": [
+            "octara::prelude::canvas"
+          ],
+          "links": [
+            "octara::canvas",
+            "octara::canvas::Canvas"
           ]
         },
         {

@@ -8,7 +8,7 @@ mod list;
 mod style;
 
 pub(crate) use element::build_el;
-pub use element::{El, IntoProp, IntoText, Prop, TextContent, col, el, icon, row, spacer, text, text_input};
+pub use element::{El, IntoProp, IntoText, Prop, TextContent, canvas, col, el, icon, row, spacer, text, text_input};
 pub use list::{each, virtual_each};
 pub use style::{Length, Patch, Styled, px, relative, rems, sp};
 

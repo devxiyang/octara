@@ -2088,6 +2088,7 @@ version = "0.0.0"
 dependencies = [
  "octara",
  "octara-fonts",
+ "octara-icons",
  "octara-kit",
  "octara-render",
  "octara-shell",

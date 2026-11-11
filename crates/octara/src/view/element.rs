@@ -7,6 +7,7 @@ use crate::app::{Drag, KeyEvent};
 
 type DragHandler = Rc<dyn Fn(&Drag)>;
 type KeyHandler = Rc<dyn Fn(&KeyEvent) -> bool>;
+type Draw = Rc<dyn Fn(&mut crate::canvas::Canvas)>;
 use crate::kernel::{
     Breakpoint, Color, Fill, HandlerId, HandlerKind, Kernel, Kind, NodeId, Paint, Placement, Role, State, StyleProp, Token, When,
 };
@@ -179,6 +180,7 @@ pub struct El {
     object_fit: crate::image::ObjectFit,
     icon: Option<crate::icon::Icon>,
     stroke_width: Option<f32>,
+    canvas: Option<Draw>,
     group: Option<&'static str>,
     hover_alone: bool,
     overlays: Vec<Overlay>,
@@ -229,6 +231,7 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         object_fit: crate::image::ObjectFit::Fill,
         icon: None,
         stroke_width: None,
+        canvas: None,
         group: None,
         hover_alone: false,
         overlays: Vec::new(),
@@ -289,6 +292,18 @@ pub(crate) fn text_at(t: impl IntoText, at: &'static Location<'static>) -> El {
 pub fn icon(icon: crate::icon::Icon) -> El {
     let mut e = new_el(Kind::Box, Location::caller()).size_4();
     e.icon = Some(icon);
+    e
+}
+
+/// A canvas: `draw` records shapes, images, transforms and clips into a
+/// [`Canvas`](crate::canvas::Canvas) sized to the element's content box. It reruns only when what
+/// it reads (signals, the element's size) changes. A canvas has no size of its own: size it like
+/// a box (`w`, `h`, `flex_1`, `size_full`). It is an image to assistive technology: give it a
+/// `label`, or `a11y_hidden()` when it is decoration. See [`crate::canvas`].
+#[track_caller]
+pub fn canvas(draw: impl Fn(&mut crate::canvas::Canvas) + 'static) -> El {
+    let mut e = new_el(Kind::Box, Location::caller());
+    e.canvas = Some(Rc::new(draw));
     e
 }
 
@@ -631,6 +646,10 @@ pub(crate) fn build_el(e: El) -> NodeId {
         if let Some(r) = e.role {
             k.set_role(node, r);
         }
+        // A canvas is an image.
+        if e.canvas.is_some() && e.role.is_none() {
+            k.set_role(node, Role::Image);
+        }
         // An icon is an image when labeled, else decoration.
         if let Some(i) = &e.icon {
             match (&e.label, e.role) {
@@ -742,6 +761,9 @@ pub(crate) fn build_el(e: El) -> NodeId {
             k.set_hover_alone(node, true);
         }
     }
+    if let Some(draw) = e.canvas {
+        mount_canvas(at, node, draw);
+    }
     for (command, f) in e.commands {
         let id = u.register(Handler::Press(f));
         u.kernel.borrow_mut().add_command(node, &command, HandlerId(id));
@@ -771,6 +793,46 @@ pub(crate) fn build_el(e: El) -> NodeId {
         mount_overlay(node, o);
     }
     node
+}
+
+/// A canvas's drawing: a binding over the content size (kept in step after each layout) and
+/// whatever `draw` reads.
+fn mount_canvas(at: &'static Location<'static>, node: NodeId, draw: Draw) {
+    let u = ui();
+    let size = graph::Signal::detached((0.0f32, 0.0f32));
+    let hook = {
+        let u = u.clone();
+        u.clone().after_layout(Rc::new(move || {
+            let k = u.kernel.borrow();
+            if !k.is_alive(node) {
+                return false;
+            }
+            let s = k.content_size(node);
+            drop(k);
+            if size.get_untracked() == s {
+                return false;
+            }
+            size.set(s);
+            true
+        }))
+    };
+    {
+        let u = u.clone();
+        rt(|rt| {
+            rt.on_cleanup(Box::new(move || {
+                u.remove_after_layout(hook);
+                size.dispose();
+            }))
+        });
+    }
+    graph::binding(at, move || {
+        let (w, h) = size.get();
+        let mut c = crate::canvas::Canvas::new(w, h);
+        if w > 0.0 && h > 0.0 {
+            draw(&mut c);
+        }
+        u.kernel.borrow_mut().set_canvas(node, c.into_ops());
+    });
 }
 
 /// Mounts an overlay's `show` into its own region of the overlay layer; the region is removed

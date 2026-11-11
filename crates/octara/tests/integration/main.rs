@@ -1,6 +1,7 @@
 //! The crate's integration tests in one binary: one link and one launch for all of them.
 
 mod a11y;
+mod canvas;
 mod diagnostics_registry;
 mod display_list;
 mod edit;

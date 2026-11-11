@@ -161,6 +161,19 @@ impl Kernel {
             }
         }
 
+        // A canvas's recording, in its content box, clipped to it.
+        if let Some(ops) = &n.canvas
+            && visible
+        {
+            let content = Rect {
+                x: rect.x + l.border.left + l.padding.left,
+                y: rect.y + l.border.top + l.padding.top,
+                w: (rect.w - l.border.left - l.border.right - l.padding.left - l.padding.right).max(0.0),
+                h: (rect.h - l.border.top - l.border.bottom - l.padding.top - l.padding.bottom).max(0.0),
+            };
+            self.paint_canvas(id, ops, content, opacity, out);
+        }
+
         // A text input: its line, selection, composition and caret.
         if n.kind == Kind::TextInput && visible {
             self.paint_input(id, opacity, out);
@@ -234,6 +247,62 @@ impl Kernel {
         if clips {
             out.push(Item::PopClip);
         }
+    }
+}
+
+impl Kernel {
+    /// A canvas's ops as display-list items: offset to `content`, paints resolved in the theme.
+    fn paint_canvas(&self, id: NodeId, ops: &[crate::canvas::CanvasOp], content: Rect, opacity: f32, out: &mut Vec<Item>) {
+        use crate::canvas::CanvasOp;
+        use crate::kernel::Fill;
+        let origin = Transform::translate(content.x, content.y);
+        let at = |r: Rect| Rect { x: r.x + content.x, y: r.y + content.y, ..r };
+        let color = |p: crate::kernel::Paint| fade(p.resolve(&self.theme).0, opacity);
+        out.push(Item::PushClip { source: id, rect: content, radius: 0.0 });
+        for op in ops {
+            match op {
+                CanvasOp::Path { path, style, fill, transform } => {
+                    let t = transform.then(&origin);
+                    // A gradient spans the path's box.
+                    let bounds = path.bounds().map_or(content, |b| {
+                        let pts = [(b.x, b.y), (b.right(), b.y), (b.x, b.bottom()), (b.right(), b.bottom())]
+                            .map(|(x, y)| t.apply(crate::path::point(x, y)));
+                        let x0 = pts.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
+                        let y0 = pts.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+                        let x1 = pts.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
+                        let y1 = pts.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+                        Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+                    });
+                    let (c, gradient) = match *fill {
+                        Fill::Solid(p) => (color(p), None),
+                        Fill::Linear(g) => (
+                            crate::kernel::Color::TRANSPARENT,
+                            Some(crate::paint::Gradient {
+                                angle: g.angle,
+                                from: (color(g.from.color), g.from.percentage),
+                                to: (color(g.to.color), g.to.percentage),
+                            }),
+                        ),
+                    };
+                    out.push(Item::Path(PathPaint {
+                        source: id,
+                        path: path.clone(),
+                        transform: t,
+                        style: style.clone(),
+                        color: c,
+                        gradient,
+                        bounds,
+                    }));
+                }
+                CanvasOp::Image { image, rect } => {
+                    let r = at(*rect);
+                    out.push(Item::Image(crate::paint::ImagePaint { source: id, image: image.clone(), rect: r, bounds: r, radius: 0.0, opacity }));
+                }
+                CanvasOp::PushClip { rect, radius } => out.push(Item::PushClip { source: id, rect: at(*rect), radius: *radius }),
+                CanvasOp::PopClip => out.push(Item::PopClip),
+            }
+        }
+        out.push(Item::PopClip);
     }
 }
 

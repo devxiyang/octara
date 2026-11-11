@@ -332,6 +332,8 @@ struct Node {
     image: Option<(crate::image::Image, crate::image::ObjectFit)>,
     /// An icon drawn in the box (`icon`): its name, view box and shapes.
     icon: Option<std::rc::Rc<NodeIcon>>,
+    /// A canvas's recording (`canvas`), in its content box's coordinates.
+    canvas: Option<std::rc::Rc<Vec<crate::canvas::CanvasOp>>>,
     /// Properties moving toward their resolved values (`motion`).
     anim: Option<Box<anim::Anim>>,
     /// The layout pass the node was created in: changes before the next layout (its bindings'
@@ -715,6 +717,7 @@ impl Kernel {
             commands: Vec::new(),
             image: None,
             icon: None,
+            canvas: None,
             anim: None,
             born: 0,
             exiting: false,
@@ -1111,6 +1114,27 @@ impl Kernel {
     }
     pub fn icon(&self, id: NodeId) -> Option<&NodeIcon> {
         self.node(id).icon.as_deref()
+    }
+
+    /// Makes the node a canvas drawing `ops` (in its content box's coordinates).
+    pub fn set_canvas(&mut self, id: NodeId, ops: Vec<crate::canvas::CanvasOp>) {
+        if self.node(id).canvas.as_deref() == Some(&ops) {
+            return;
+        }
+        let count = ops.len();
+        self.node_mut(id).canvas = Some(std::rc::Rc::new(ops));
+        self.changed(id, Dirty::PAINT, "canvas", || format!("{count} ops"));
+    }
+    pub fn canvas(&self, id: NodeId) -> Option<&[crate::canvas::CanvasOp]> {
+        self.node(id).canvas.as_deref().map(|v| v.as_slice())
+    }
+    /// The size of the node's content box (inside border and padding) in the last layout.
+    pub fn content_size(&self, id: NodeId) -> (f32, f32) {
+        let n = self.node(id);
+        let l = self.taffy.layout(n.taffy).expect("taffy");
+        let w = l.size.width - l.border.left - l.border.right - l.padding.left - l.padding.right;
+        let h = l.size.height - l.border.top - l.border.bottom - l.padding.top - l.padding.bottom;
+        (w.max(0.0), h.max(0.0))
     }
 
     /// Shows `image` in the box (`None`: no image), fitted by `fit`.
