@@ -69,7 +69,7 @@ and editing it triggers no collection events.
 
 ## 7. Diagnostics
 
-Diagnostics carry a fixed code and source location, are deduplicated and counted by "code + location". All codes are registered in `octara::diagnostics` (severity, cause, fix, doc anchor); a registered code is passed when reporting, an unregistered code does not compile, and tests ensure that the codes mentioned in source, tests and docs are all registered. Regression tests are in `examples/tests/diagnostics.rs`, numbered as follows:
+Diagnostics carry a fixed code and source location, are deduplicated and counted by "code + location". All codes are registered in `octara::diagnostics` (severity, cause, fix, doc anchor); a registered code is passed when reporting, an unregistered code does not compile, and tests ensure that the codes mentioned in source, tests and docs are all registered. Regression tests are in `examples/tests/integration/diagnostics.rs`, numbered as follows:
 
 | ID | Error | Result |
 | --- | --- | --- |

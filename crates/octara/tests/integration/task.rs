@@ -234,7 +234,7 @@ fn run_until_idle_reports_work_still_running_at_its_limit() {
     let left = app.run_until_idle(ms(1000)).unwrap_err();
     assert_eq!(left.len(), 1);
     assert_eq!((left[0].kind, left[0].due), (WorkKind::Task, Some(ms(5000))));
-    assert!(left[0].at.contains("tests/task.rs"), "{:?}", left[0]);
+    assert!(left[0].at.contains("tests/integration/task.rs"), "{:?}", left[0]);
     assert!(app.run_until_idle(ms(5000)).is_ok());
     assert_eq!(app.now(), ms(5000));
 }

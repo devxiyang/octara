@@ -26,7 +26,7 @@ fn a_snapshot_is_the_semantic_tree() {
     let inc = snap.find("inc").unwrap();
     assert_eq!(inc.name.as_deref(), Some("Increment"));
     assert!(inc.actions.contains(&"press".to_string()), "{:?}", inc.actions);
-    assert!(inc.source.as_deref().is_some_and(|s| s.contains("tests/inspect.rs")), "{:?}", inc.source);
+    assert!(inc.source.as_deref().is_some_and(|s| s.contains("tests/integration/inspect.rs")), "{:?}", inc.source);
     assert!(inc.bounds[2] > 0.0 && inc.bounds[3] > 0.0);
     assert_eq!(snap.find("count").unwrap().name.as_deref(), Some("Count: 0"));
     assert_eq!(snap.find("name").unwrap().value.as_deref(), Some(""));

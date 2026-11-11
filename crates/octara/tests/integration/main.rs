@@ -1,0 +1,26 @@
+//! The crate's integration tests in one binary: one link and one launch for all of them.
+
+mod a11y;
+mod diagnostics_registry;
+mod display_list;
+mod edit;
+mod focus;
+mod grid;
+mod hover;
+mod image;
+mod inherit;
+mod inspect;
+mod interaction;
+mod keys;
+mod layout_issues;
+mod motion;
+mod overlay;
+mod pointer;
+mod position;
+mod responsive;
+mod scroll;
+mod size_of;
+mod system_fonts;
+mod task;
+mod theme;
+mod theme_contrast;
