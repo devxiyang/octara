@@ -1,0 +1,328 @@
+//! Layout diagnostics: problems visible only after layout, as data.
+//!
+//! Like Flutter's "RenderFlex overflowed" but queryable, so tests and agents can assert there
+//! are none. Each issue names the node (test id and path), where it was created, and the usual
+//! fix in Tailwind terms.
+
+use super::{Kernel, Kind, NodeId, Wrap};
+use crate::diagnostics::{self as codes, Code};
+use std::fmt::Write as _;
+use std::panic::Location;
+
+/// One layout problem.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayoutIssue {
+    /// `OVERFLOW`, `COLLAPSED`, `TEXT_TRUNCATED`, `OVERLAY_CLAMPED` or `MISSING_TOKEN`; the
+    /// code carries the severity and the general fix.
+    pub code: &'static Code,
+    pub test_id: Option<String>,
+    /// Ancestors by test id or role, e.g. `col > #todos > #todo-3 > Label`.
+    pub path: String,
+    /// Where the element was created (`file:line:column`), when known.
+    pub at: Option<String>,
+    pub message: String,
+    /// The fix for this case (the code's `fix` is the general one).
+    pub hint: &'static str,
+}
+
+/// Overflow smaller than this is rounding.
+const TOLERANCE: f32 = 0.5;
+
+impl Kernel {
+    /// Records where an element was created, for diagnostics.
+    pub fn set_origin(&mut self, id: NodeId, at: &'static Location<'static>) {
+        self.node_mut(id).origin = Some(at);
+    }
+
+    fn name(&self, id: NodeId) -> String {
+        match &self.node(id).test_id {
+            Some(t) => format!("#{t}"),
+            None => format!("{:?}", self.role(id)),
+        }
+    }
+
+    fn path(&self, id: NodeId) -> String {
+        let mut chain = vec![self.name(id)];
+        let mut p = self.node(id).parent;
+        while let Some(n) = p {
+            if n == self.root {
+                break;
+            }
+            if n != self.overlay_layer {
+                chain.push(self.name(n));
+            }
+            p = self.node(n).parent;
+        }
+        chain.reverse();
+        chain.join(" > ")
+    }
+
+    /// The content box (inside padding and border) in absolute coordinates.
+    fn content_box(&self, id: NodeId) -> (f32, f32, f32, f32) {
+        let (x, y, w, h) = self.rect(id);
+        let l = self.taffy.layout(self.node(id).taffy).expect("taffy");
+        let (pl, pt) = (l.padding.left + l.border.left, l.padding.top + l.border.top);
+        let (pr, pb) = (l.padding.right + l.border.right, l.padding.bottom + l.border.bottom);
+        (x + pl, y + pt, (w - pl - pr).max(0.0), (h - pt - pb).max(0.0))
+    }
+
+    fn issue(&self, id: NodeId, code: &'static Code, message: String, hint: &'static str) -> LayoutIssue {
+        let n = self.node(id);
+        LayoutIssue {
+            code,
+            test_id: n.test_id.clone(),
+            path: self.path(id),
+            at: n.origin.map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())),
+            message,
+            hint,
+        }
+    }
+
+    /// Problems in the last layout, in tree order.
+    pub fn layout_issues(&self) -> Vec<LayoutIssue> {
+        let mut out = Vec::new();
+        let mut stack = vec![self.root];
+        while let Some(id) = stack.pop() {
+            let n = self.node(id);
+            if n.layout.display == taffy::Display::None {
+                continue;
+            }
+            self.check(id, &mut out);
+            stack.extend(n.children.iter().rev().copied());
+        }
+        out
+    }
+
+    fn check(&self, id: NodeId, out: &mut Vec<LayoutIssue>) {
+        let n = self.node(id);
+        let (.., w, h) = self.rect(id);
+
+        if let Some(names) = self.missing_tokens.get(&id) {
+            let mut list = String::new();
+            for (i, name) in names.iter().enumerate() {
+                let _ = write!(list, "{}`{name}`", if i > 0 { ", " } else { "" });
+            }
+            out.push(self.issue(
+                id,
+                &codes::MISSING_TOKEN,
+                format!("{} uses {list}, which the theme does not define (drawn magenta)", self.name(id)),
+                "add it to the theme: `Theme::light().color(Token::custom(\"name\"), rgb(..))`",
+            ));
+        }
+
+        if n.anchor.is_some() && n.placed.is_some_and(|p| p.clamped) {
+            out.push(self.issue(
+                id,
+                &codes::OVERLAY_CLAMPED,
+                format!("overlay {} ({w} × {h}) fits neither side of its anchor and was pushed into the window", self.name(id)),
+                "pick another `Placement`, or bound the overlay (`max_h(..)`) so it fits",
+            ));
+        }
+
+        if n.kind == Kind::Text && !n.text.is_empty() {
+            let m = self.text_metrics(id);
+            if m.truncated {
+                let how = if n.visual.wrap == Wrap::Truncate { "is truncated" } else { "is cut by `line_clamp`" };
+                out.push(self.issue(
+                    id,
+                    &codes::TEXT_TRUNCATED,
+                    format!("text {} {how}: {} of its lines shown", self.name(id), m.lines),
+                    "expected with `truncate()` / `line_clamp`; otherwise give it room or let it wrap",
+                ));
+            }
+        }
+
+        // Collapsed: no area although it has content.
+        if w <= TOLERANCE || h <= TOLERANCE {
+            let explicit_zero = |d: taffy::Dimension| d == taffy::Dimension::length(0.0);
+            let sized_zero = explicit_zero(n.layout.size.width) || explicit_zero(n.layout.size.height);
+            let content = match n.kind {
+                Kind::Text => !n.text.is_empty(),
+                _ => n.children.iter().any(|c| {
+                    let (.., cw, ch) = self.rect(*c);
+                    self.node(*c).layout.display != taffy::Display::None && cw > TOLERANCE && ch > TOLERANCE
+                }),
+            };
+            if content && !sized_zero && n.anchor.is_none() && id != self.overlay_layer {
+                out.push(self.issue(
+                    id,
+                    &codes::COLLAPSED,
+                    format!("{} is {w} × {h} px although it has content", self.name(id)),
+                    "`flex_1` / `flex_grow` / `h_full` only take space the parent has; a parent sized by its content \
+                     has none. Give the parent a size (`size_full()` on the app root), or this element a `min_h`",
+                ));
+            }
+        }
+
+        // Overflow: children past this node's content box (the window for the root).
+        if id == self.overlay_layer || n.kind == Kind::Text {
+            return;
+        }
+        let (cx, cy, cw, ch) = if id == self.root { (0.0, 0.0, self.viewport.0, self.viewport.1) } else { self.content_box(id) };
+        // One issue per container and edge, like Flutter's "RenderFlex overflowed by N px".
+        let (mut right, mut bottom) = ((0.0f32, Vec::new()), (0.0f32, Vec::new()));
+        let mut nowrap_text = false;
+        for &c in &n.children {
+            let cn = self.node(c);
+            if c == self.overlay_layer || cn.anchor.is_some() || cn.hidden || cn.layout.display == taffy::Display::None {
+                continue;
+            }
+            let (kx, ky, kw, kh) = self.rect(c);
+            let r = (kx + kw) - (cx + cw);
+            let b = (ky + kh) - (cy + ch);
+            if r > TOLERANCE {
+                right.0 = right.0.max(r);
+                right.1.push(self.name(c));
+                nowrap_text |= cn.kind == Kind::Text && cn.visual.wrap == Wrap::None;
+            }
+            if b > TOLERANCE {
+                bottom.0 = bottom.0.max(b);
+                bottom.1.push(self.name(c));
+            }
+        }
+        let what = if id == self.root { "the window".to_owned() } else { self.name(id) };
+        let list = |names: &[String]| {
+            let shown: Vec<&str> = names.iter().take(3).map(String::as_str).collect();
+            let more = if names.len() > 3 { format!(" and {} more", names.len() - 3) } else { String::new() };
+            format!("{}{more}", shown.join(", "))
+        };
+        // Scrolled or clipped axes are not overflowing.
+        let o = n.layout.overflow;
+        if o.x != taffy::Overflow::Visible {
+            right.1.clear();
+        }
+        if o.y != taffy::Overflow::Visible {
+            bottom.1.clear();
+        }
+        if !right.1.is_empty() {
+            let hint = if nowrap_text {
+                "let the text wrap (drop `whitespace_nowrap`) or `truncate()` it"
+            } else {
+                "`flex_shrink()` or `truncate()` on the wide child, `flex_wrap()` here, or a scroll container (`overflow_x_scroll`)"
+            };
+            out.push(self.issue(
+                id,
+                &codes::OVERFLOW,
+                format!("content of {what} overflows its right edge by {} px ({})", right.0, list(&right.1)),
+                hint,
+            ));
+        }
+        if !bottom.1.is_empty() {
+            out.push(self.issue(
+                id,
+                &codes::OVERFLOW,
+                format!("content of {what} overflows its bottom by {} px ({})", bottom.0, list(&bottom.1)),
+                "put the content in a scroll container (`flex_1().overflow_y_scroll()`), give this element more height (`size_full()` on the app root), or `flex_shrink()` on a child",
+            ));
+        }
+    }
+}
+
+/// WCAG relative luminance of an sRGB color.
+fn luminance(c: crate::kernel::Color) -> f32 {
+    let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    let [r, g, b, _] = c.components;
+    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+}
+
+/// `fg` (with its alpha) over the opaque `bg`.
+fn over(fg: crate::kernel::Color, bg: crate::kernel::Color) -> crate::kernel::Color {
+    let a = fg.components[3];
+    let mix = |i: usize| fg.components[i] * a + bg.components[i] * (1.0 - a);
+    crate::kernel::Color::new([mix(0), mix(1), mix(2), 1.0])
+}
+
+/// The WCAG contrast ratio of two opaque colors (1 to 21).
+pub fn contrast(a: crate::kernel::Color, b: crate::kernel::Color) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// A touch target's minimum side (Apple's 44 pt; Material asks 48 dp).
+pub const MIN_TARGET: f32 = 44.0;
+
+impl Kernel {
+    /// Accessibility problems in the last layout: controls without a name, text without enough
+    /// contrast and, where input is touch (`touch`), targets smaller than 44 × 44.
+    pub fn accessibility_issues(&self, touch: bool) -> Vec<LayoutIssue> {
+        let mut out = Vec::new();
+        let page = self.theme().get(crate::kernel::Token::Background);
+        self.a11y_check(self.root, Some(page), touch, &mut out);
+        out
+    }
+
+    /// `under`: the solid color behind this node, `None` where it is a gradient or an image
+    /// (contrast is not judged there).
+    fn a11y_check(&self, id: NodeId, under: Option<crate::kernel::Color>, touch: bool, out: &mut Vec<LayoutIssue>) {
+        let n = self.node(id);
+        if n.hidden || n.layout.display == taffy::Display::None {
+            return;
+        }
+        let bg = if n.visual.gradient.is_some() || n.image.is_some() {
+            None
+        } else {
+            match n.visual.background {
+                Some(b) if b.components[3] >= 1.0 => Some(b),
+                Some(b) if b.components[3] > 0.0 => under.map(|u| over(b, u)),
+                _ => under,
+            }
+        };
+        let disabled = n.state.contains(super::State::DISABLED);
+        let control = n.kind == Kind::TextInput || super::HandlerKind::POINTER.iter().any(|k| n.handlers[*k as usize].is_some());
+        let (.., w, h) = self.shown_rect(id);
+        if control && w > 0.0 && h > 0.0 {
+            if n.label.is_none() && !self.has_text(id) && n.kind != Kind::TextInput {
+                out.push(self.issue(
+                    id,
+                    &codes::UNNAMED_CONTROL,
+                    format!("{} can be operated but has no name for assistive technology", self.name(id)),
+                    "give it `.label(\"..\")`, or text inside it",
+                ));
+            }
+            if n.kind == Kind::TextInput && n.label.is_none() {
+                out.push(self.issue(
+                    id,
+                    &codes::UNNAMED_CONTROL,
+                    format!("text field {} has no label", self.name(id)),
+                    "give it `.label(\"..\")` (a placeholder is not a name)",
+                ));
+            }
+            if touch && !disabled && (w < MIN_TARGET - TOLERANCE || h < MIN_TARGET - TOLERANCE) {
+                out.push(self.issue(
+                    id,
+                    &codes::SMALL_TARGET,
+                    format!("{} is {w} × {h} px; touch targets need {MIN_TARGET} × {MIN_TARGET}", self.name(id)),
+                    "`min_w(44.0).min_h(44.0)`, or padding around a small visual",
+                ));
+            }
+        }
+        if let Some(bg) = bg
+            && n.kind == Kind::Text
+            && !n.text.trim().is_empty()
+            && !disabled
+            && n.visual.opacity > 0.0
+        {
+            let fg = over(n.visual.text, bg);
+            let ratio = contrast(fg, bg);
+            let large = n.visual.font_size >= 24.0 || (n.visual.font_size >= 18.66 && n.visual.font_weight >= 700);
+            let need = if large { 3.0 } else { 4.5 };
+            if ratio < need {
+                out.push(self.issue(
+                    id,
+                    &codes::LOW_CONTRAST,
+                    format!("text {} has contrast {ratio:.2}:1 against its background; needs {need}:1", self.name(id)),
+                    "use `Token::Text` / `Token::TextMuted` on surfaces and `Token::AccentText` on accent fills, or adjust the theme",
+                ));
+            }
+        }
+        for &c in &n.children {
+            self.a11y_check(c, bg, touch, out);
+        }
+    }
+
+    /// Whether any shown text lies inside `id`.
+    fn has_text(&self, id: NodeId) -> bool {
+        let n = self.node(id);
+        (n.kind == Kind::Text && !n.text.trim().is_empty()) || n.children.iter().any(|c| !self.node(*c).hidden && self.has_text(*c))
+    }
+}

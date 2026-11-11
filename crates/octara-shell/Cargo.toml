@@ -1,0 +1,15 @@
+[package]
+name = "octara-shell"
+description = "Desktop windows for Octara apps: winit events in, the GPU renderer out."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+accesskit_winit.workspace = true
+arboard.workspace = true
+octara = { workspace = true, features = ["system-fonts"] }
+octara-render.workspace = true
+pollster.workspace = true
+winit.workspace = true

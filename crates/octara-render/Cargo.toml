@@ -1,0 +1,21 @@
+[package]
+name = "octara-render"
+description = "Renderers for Octara's display list: a deterministic CPU reference renderer (screenshots) and, next, the GPU renderer."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["gpu"]
+# The wgpu renderer.
+gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
+
+[dependencies]
+bytemuck = { workspace = true, optional = true }
+octara.workspace = true
+pollster = { workspace = true, optional = true }
+wgpu = { workspace = true, optional = true }
+png.workspace = true
+rustc-hash.workspace = true
+swash.workspace = true

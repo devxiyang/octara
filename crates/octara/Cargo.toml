@@ -1,0 +1,28 @@
+[package]
+name = "octara"
+description = "Agent-first native UI in Rust: signals, incremental collections, retained tree, headless runtime."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# The platform's installed fonts and fallback (CJK, emoji, symbols) for real windows. Headless
+# runs leave it off and use the bundled faces only, so results do not depend on the machine.
+system-fonts = ["parley/system"]
+
+[dependencies]
+accesskit.workspace = true
+bitflags.workspace = true
+unicode-segmentation.workspace = true
+png.workspace = true
+color.workspace = true
+parley.workspace = true
+rustc-hash.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+slotmap.workspace = true
+taffy.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

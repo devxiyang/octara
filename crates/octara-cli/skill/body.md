@@ -1,0 +1,49 @@
+# Octara
+
+Octara is a native UI framework in Rust for desktop and mobile. It is not a web framework: no DOM,
+no CSS cascade, no HTML semantics. Style methods use GPUI's names, which are Tailwind's vocabulary
+(`p_4`, `gap_2`, `rounded_md`, `text_sm`).
+
+Read [references/start-here.md](references/start-here.md) once before writing Octara code; it is
+short and every example in it is tested. [references/index.md](references/index.md) lists every
+name you can use. Look anything up instead of guessing:
+
+- `octara vocab <name>`: signature, docs, members and related entries of any function, method,
+  type, token, spring, command or diagnostic code (`octara vocab bg`, `octara vocab Styled::p_4`,
+  `octara vocab Token`, `octara vocab focus.next`). `--json` for structured output.
+- `octara explain <CODE>`: what a diagnostic means, why it happens and how to fix it. It also finds
+  the code inside a pasted message or panic.
+
+If `octara` is not installed: `cargo install --git https://github.com/octoii-works/octara octara-cli`.
+
+## Rules
+
+- A view function runs **once** and builds a retained tree. What changes is read in closures:
+  `text(move || format!("{}", n.get()))`, `.opacity(move || ..)`. Reading `.get()` in the body
+  bakes the value in (`STRICT_READ_UNTRACKED`).
+- State in components is named: `state("key", || init)`, `list("key", init, key_fn)`,
+  `live_text(..)`. Never `Signal::new` in a component (`UNKEYED_STATE`).
+- Write state only in handlers (`on_press`, ..), `watch` callbacks and tasks
+  (`WRITE_IN_BUILD`, `WRITE_IN_DERIVE`). A value computed from others is a `memo`, not a second
+  state kept in sync.
+- Lists: key items by a stable unique id; an `each` row is one element; `virtual_each` sits
+  directly in a scroll container with a bounded height.
+- Give the app root `size_full()`; a scroll area is `flex_1().overflow_y_scroll()`.
+- Give interactive and checked elements a test id (`.id("save")`); tests and agents drive and
+  read the app by it (`app.tap("save")`, `app.kernel().text_of("total")`).
+- Colors are semantic tokens (`Token::Surface`, `Token::Text`, `Token::Accent`); app colors are
+  `Token::custom("brand")` defined in the theme.
+- Motion is declared, never state: `.motion(Spring::SNAP)` on an element or ancestor makes changes
+  there move. Tests run on a virtual clock (`advance`, `run_until_idle`).
+
+## Done means
+
+```rust,ignore
+let mut app = App::new(view);
+// drive it: app.tap("id"), app.press_key("mod+s"), app.type_text("hi"), app.dispatch(Event::..)
+assert!(app.layout_issues().is_empty(), "{:?}", app.layout_issues());
+assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+```
+
+Tests pass, layout issues and diagnostics are empty (check phone and desktop sizes with
+`app.at_sizes(..)`). For any code in them, run `octara explain <CODE>`.

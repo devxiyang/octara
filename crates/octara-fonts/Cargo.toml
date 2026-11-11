@@ -1,0 +1,20 @@
+[package]
+name = "octara-fonts"
+description = "Fonts for deterministic tests and screenshots beyond the bundled Latin faces: a CJK subset of Noto Sans SC."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+# The fonts themselves are under the SIL Open Font License 1.1 (fonts/OFL.txt).
+
+[features]
+default = ["cjk"]
+# Noto Sans SC 400 and 600, subset to GB2312 level 1 hanzi, CJK punctuation, kana and fullwidth
+# forms (about 1.3 MB each).
+cjk = []
+
+[dependencies]
+octara.workspace = true
+
+[dev-dependencies]
+octara-render = { workspace = true, default-features = false }
