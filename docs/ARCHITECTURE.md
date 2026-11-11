@@ -64,7 +64,8 @@ inspect                          snapshots, scripts, `check` (the agent's protoc
    repeat while they change something (four rounds at most, then `LAYOUT_LOOP`).
 4. The display list is built from the tree in paint order (shadows, quads, images, icons,
    canvases, glyphs, paths, clips, opacity layers), with moving properties sampled at the app's
-   time. Renderers draw it.
+   time, skipping subtrees that cannot show; unchanged and at rest, the last one is reused.
+   Renderers draw it.
 5. The shell rebuilds the accessibility tree for AccessKit when assistive technology is active.
 
 ## Kernel
@@ -123,10 +124,11 @@ owned by scopes on the app clock ([async](design/async.md)).
 - **One thread.** Layout, display list, rasterization of glyphs and paths, and GPU submission run
   on the main thread (as in Rune and GPUI); the display list is data, so a render thread can
   come later.
-- **Whole-tree frames.** The display list and the accessibility tree are rebuilt from the whole
-  tree for each frame; nodes outside the window produce no items but are still visited
-  (`bench -- --frames`: about 0.3 ms for 5000 nodes, release build). Virtual lists keep long
-  content cheap.
+- **Frames cost what shows.** Painting and hit testing skip subtrees whose drawing cannot reach
+  the clip (each node knows how far its drawing reaches past its box), and a frame with nothing
+  changed and nothing moving reuses the last display list (`bench -- --frames`: 0 µs idle,
+  about 70 µs for a 5000-node list after a change, release build). The accessibility tree is
+  still built whole.
 - **Native views** are designed, not built ([Native Island](design/native-island.md)).
 
 ## Out of scope

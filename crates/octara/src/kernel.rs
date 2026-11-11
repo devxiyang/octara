@@ -361,6 +361,9 @@ struct Node {
 }
 
 /// A text input's default width (CSS gives `<input>` about 20 characters).
+/// The last display list built at rest: the paint count and viewport it was built at.
+type LastFrame = (u64, (f32, f32), std::rc::Rc<crate::paint::DisplayList>);
+
 /// What a node shows inside its box: at most one kind of content.
 #[derive(Debug)]
 enum Content {
@@ -527,6 +530,14 @@ pub struct Kernel {
     /// Ink reaches must be computed again (after a layout, or a shadow changed).
     ink_dirty: Cell<bool>,
     culling: bool,
+    /// Bumped by every change that can alter the display list (paint, layout and text changes,
+    /// layouts, theme): an unchanged count with nothing moving means the last frame still holds.
+    paint_gen: u64,
+    /// The last display list built while nothing moved, with the count and viewport it was
+    /// built at.
+    last_frame: RefCell<Option<LastFrame>>,
+    /// Display lists built (not reused), for tests and benchmarks.
+    frames_built: Cell<u64>,
     /// Layout passes run (a node created since the last one is not shown yet).
     layouts: u64,
     /// Nodes whose position and size move (`layout_motion`).
@@ -571,6 +582,9 @@ impl Kernel {
             moving: rustc_hash::FxHashSet::default(),
             ink_dirty: Cell::new(true),
             culling: true,
+            paint_gen: 0,
+            last_frame: RefCell::new(None),
+            frames_built: Cell::new(0),
             layouts: 0,
             framed: rustc_hash::FxHashSet::default(),
             ghosts: Vec::new(),
@@ -653,6 +667,9 @@ impl Kernel {
     }
 
     fn mark(&mut self, d: Dirty) {
+        if d.intersects(Dirty::PAINT | Dirty::LAYOUT | Dirty::TEXT) {
+            self.paint_gen += 1;
+        }
         let c = &mut self.counters;
         if d.contains(Dirty::LAYOUT) {
             c.dirty_layout += 1;
@@ -1326,6 +1343,7 @@ impl Kernel {
             return;
         }
         self.theme = theme;
+        self.paint_gen += 1;
         self.missing_tokens.clear();
         // Breakpoint widths may have changed too.
         self.screen = self.theme.breakpoint_of(self.viewport.0);
@@ -1501,6 +1519,7 @@ impl Kernel {
         }
         self.needs_layout = false;
         self.ink_dirty.set(true);
+        self.paint_gen += 1;
         self.layouts += 1;
         self.clamp_scrolls();
         self.track_frames();

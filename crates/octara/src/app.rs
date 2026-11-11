@@ -463,7 +463,7 @@ impl App {
         }
     }
     /// What the current frame draws, in order (see [`crate::paint`]).
-    pub fn display_list(&self) -> crate::paint::DisplayList {
+    pub fn display_list(&self) -> std::rc::Rc<crate::paint::DisplayList> {
         self.ui.kernel.borrow().display_list()
     }
     pub fn kernel(&self) -> Ref<'_, Kernel> {

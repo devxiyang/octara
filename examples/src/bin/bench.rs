@@ -244,12 +244,12 @@ fn streaming_text() {
 /// tree with nothing changed, and after one press (min of 3 runs of 20 frames, µs per frame).
 fn frames() {
     println!("## frame: display list and accessibility tree, layout ON (µs per frame, min of 3)\n");
-    println!("| app | nodes | items | display list (idle) | display list (after a press) | a11y tree (idle) |");
+    println!("| app | nodes | items | display list (idle) | press + display list | a11y tree (idle) |");
     println!("| --- | ---: | ---: | ---: | ---: | ---: |");
     type Case = (&'static str, fn() -> View, &'static str);
     let cases: [Case; 4] = [
-        ("todo 1000", || apps::todo(1000), "toggle-500"),
-        ("chat 300", || apps::chat(300), "header"),
+        ("todo 1000", || apps::todo(1000), "toggle-1"),
+        ("chat 300", || apps::chat(300), "composer"),
         ("contacts 500", || apps::contacts(500), "header"),
         ("showcase", octara_examples::showcase::showcase, "add"),
     ];

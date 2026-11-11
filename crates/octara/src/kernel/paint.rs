@@ -4,6 +4,7 @@ use super::text::{self, Wrap};
 use super::{Align, Color, Kernel, Kind, NodeId, Token};
 use crate::paint::{DisplayList, GlyphRun, Item, PathPaint, Quad, Rect};
 use crate::path::Transform;
+use std::rc::Rc;
 
 fn fade(c: Color, opacity: f32) -> Color {
     if opacity >= 1.0 { c } else { c.multiply_alpha(opacity) }
@@ -11,7 +12,35 @@ fn fade(c: Color, opacity: f32) -> Color {
 
 impl Kernel {
     /// What the last layout looks like, in drawing order (children over parents, overlays last).
-    pub fn display_list(&self) -> DisplayList {
+    /// While nothing moves and nothing changed since, the last list is returned again.
+    pub fn display_list(&self) -> Rc<DisplayList> {
+        let still = self.at_rest();
+        if still
+            && let Some((generation, viewport, dl)) = &*self.last_frame.borrow()
+            && *generation == self.paint_gen
+            && *viewport == self.viewport
+        {
+            // Debug builds check that reusing it is right: every change must bump the count.
+            #[cfg(debug_assertions)]
+            debug_assert_eq!(
+                format!("{:?}", self.build_display_list().items),
+                format!("{:?}", dl.items),
+                "a change did not invalidate the last frame"
+            );
+            return dl.clone();
+        }
+        let dl = Rc::new(self.build_display_list());
+        self.frames_built.set(self.frames_built.get() + 1);
+        *self.last_frame.borrow_mut() = still.then(|| (self.paint_gen, self.viewport, dl.clone()));
+        dl
+    }
+
+    /// Display lists built rather than reused.
+    pub fn frames_built(&self) -> u64 {
+        self.frames_built.get()
+    }
+
+    fn build_display_list(&self) -> DisplayList {
         let mut items = Vec::new();
         self.update_ink();
         let window = Rect { x: 0.0, y: 0.0, w: self.viewport.0, h: self.viewport.1 };
@@ -28,13 +57,14 @@ impl Kernel {
     /// Whether subtrees can be skipped by their ink: not while anything moves (presented
     /// positions and shadows differ from the resting ones the reaches are computed from).
     fn culls(&self) -> bool {
-        self.culling && self.moving.is_empty() && self.ghosts.is_empty()
+        self.culling && self.at_rest()
     }
 
     /// Whether painting and hit testing skip subtrees that cannot show (on by default; off
     /// checks that skipping changes nothing).
     pub fn set_culling(&mut self, on: bool) {
         self.culling = on;
+        self.paint_gen += 1;
     }
 
     /// Whether `id`'s drawing (its subtree's included) can show inside `clip`.

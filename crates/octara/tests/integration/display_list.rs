@@ -26,7 +26,7 @@ fn view() -> View {
 #[test]
 fn quads_glyphs_and_clips_in_order() {
     let app = App::new(view);
-    let dl: DisplayList = app.display_list();
+    let dl: std::rc::Rc<DisplayList> = app.display_list();
     assert_eq!(dl.size, (800.0, 600.0));
     assert_eq!(dl.background, Theme::light().get(Token::Background));
 
@@ -79,7 +79,7 @@ mod ellipsis {
     fn glyphs(app: &App, id: &str) -> Vec<(u32, f32, f32)> {
         let n = app.kernel().find(id).unwrap();
         let mut out = Vec::new();
-        for item in app.display_list().items {
+        for item in app.display_list().items.iter() {
             if let Item::Glyphs(g) = item
                 && g.source == n
             {
@@ -134,10 +134,10 @@ mod shadows {
                 .into()
         });
         let n = app.kernel().find("card").unwrap();
-        let items: Vec<_> = app
-            .display_list()
+        let dl = app.display_list();
+        let items: Vec<_> = dl
             .items
-            .into_iter()
+            .iter()
             .filter(|i| matches!(i, Item::Shadow(s) if s.source == n) || matches!(i, Item::Quad(q) if q.source == n))
             .collect();
         // shadow-md is two shadows, drawn last-listed first, then the box.
@@ -147,7 +147,7 @@ mod shadows {
         let s = app
             .display_list()
             .items
-            .into_iter()
+            .clone().into_iter()
             .find_map(|i| if let Item::Shadow(s) = i { (s.source == own).then_some(s) } else { None })
             .unwrap();
         assert_eq!((s.rect.x, s.rect.y, s.rect.w), (x + 2.0 - 1.0, y + 3.0 - 1.0, w + 2.0));
@@ -186,4 +186,38 @@ mod gradients {
         let left = g.at(r.x, r.y + r.h / 2.0, r.x, r.y, r.w, r.h);
         assert_eq!(left, Theme::dark().get(Token::Accent).components);
     }
+}
+
+#[test]
+fn an_unchanged_frame_is_reused() {
+    let mut app = App::new(|| {
+        let on = state("on", || false);
+        col()
+            .child(el().id("box").size_8().bg(move || if on.get() { Token::Accent } else { Token::Surface }).on_press(move || on.update(|v| *v = !*v)))
+            .child(el().id("moving").size_8().bg(move || if on.get() { Token::Danger } else { Token::Surface }).motion(Spring::SNAP))
+            .into()
+    });
+    let built = |app: &App| app.kernel().frames_built();
+    let first = app.display_list();
+    let n = built(&app);
+    let again = app.display_list();
+    assert!(std::rc::Rc::ptr_eq(&first, &again), "nothing changed: the same list");
+    assert_eq!(built(&app), n);
+
+    // A press changes a color (and starts a motion): built again, and not reused while it moves.
+    app.tap("box").unwrap();
+    let pressed = app.display_list();
+    assert!(!std::rc::Rc::ptr_eq(&first, &pressed));
+    let _ = app.display_list();
+    assert_eq!(built(&app), n + 2, "rebuilt while something moves");
+    app.advance(std::time::Duration::from_secs(2));
+    let rest = app.display_list();
+    assert!(std::rc::Rc::ptr_eq(&rest, &app.display_list()), "at rest: reused again");
+
+    // A resize and a theme change invalidate it.
+    app.resize(400.0, 300.0);
+    assert!(!std::rc::Rc::ptr_eq(&rest, &app.display_list()));
+    let before = app.display_list();
+    app.set_theme(Theme::dark());
+    assert!(!std::rc::Rc::ptr_eq(&before, &app.display_list()));
 }

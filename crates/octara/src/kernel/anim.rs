@@ -479,6 +479,16 @@ impl Kernel {
         !self.moving.is_empty()
     }
 
+    /// Whether everything shows its resting values at the kernel's time: no property moving, no
+    /// scroll gliding, no subtree fading out (whether or not they have been tidied away yet).
+    pub(crate) fn at_rest(&self) -> bool {
+        let t = self.now;
+        let resting = |id: &NodeId| !self.is_alive(*id) || self.node(*id).anim.as_ref().is_none_or(|a| a.rest_at(t).is_none());
+        self.moving.iter().all(resting)
+            && self.glides.values().all(|[x, y]| x.rest_at(t).is_none() && y.rest_at(t).is_none())
+            && self.ghosts.is_empty()
+    }
+
     /// Moving nodes and when each comes to rest (seconds), for `App::pending`.
     pub fn motions(&self) -> Vec<(NodeId, f64)> {
         let t = self.now;

@@ -6,7 +6,7 @@ use octara::prelude::*;
 
 fn runs(app: &App, id: &str) -> Vec<GlyphRun> {
     let n = app.kernel().find(id).unwrap();
-    app.display_list().items.into_iter().filter_map(|i| if let Item::Glyphs(g) = i { (g.source == n).then_some(g) } else { None }).collect()
+    app.display_list().items.iter().filter_map(|i| if let Item::Glyphs(g) = i { (g.source == n).then(|| g.clone()) } else { None }).collect()
 }
 
 fn is(run: &GlyphRun, font: &[u8]) -> bool {
