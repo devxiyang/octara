@@ -46,6 +46,16 @@
           "file": "crates/octara/src/app/input.rs"
         },
         {
+          "path": "octara::app::App::accessibility_update",
+          "kind": "method",
+          "sig": "pub fn accessibility_update(&self, scale: f64) -> TreeUpdate",
+          "docs": "What changed for assistive technology since the last update (the whole tree the first\ntime, and after [`restart_accessibility`](Self::restart_accessibility)).",
+          "file": "crates/octara/src/app/input.rs",
+          "links": [
+            "octara::app::App::restart_accessibility"
+          ]
+        },
+        {
           "path": "octara::app::App::advance",
           "kind": "method",
           "sig": "pub fn advance(&mut self, dt: Duration)",
@@ -141,7 +151,7 @@
         {
           "path": "octara::app::App::display_list",
           "kind": "method",
-          "sig": "pub fn display_list(&self) -> DisplayList",
+          "sig": "pub fn display_list(&self) -> Rc<DisplayList>",
           "docs": "What the current frame draws, in order (see [`crate::paint`]).",
           "file": "crates/octara/src/app.rs",
           "links": [
@@ -352,6 +362,13 @@
           "sig": "pub fn resize(&mut self, width: f32, height: f32)",
           "docs": "Resizes the window: bindings that read `viewport()` update, then everything is laid out\nagain at the new size (text re-breaks; nothing else reruns).",
           "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::App::restart_accessibility",
+          "kind": "method",
+          "sig": "pub fn restart_accessibility(&self)",
+          "docs": "The next accessibility update is the whole tree (the platform asked for it again).",
+          "file": "crates/octara/src/app/input.rs"
         },
         {
           "path": "octara::app::App::run_until_idle",
@@ -4517,8 +4534,21 @@
           "path": "octara::kernel::Kernel::accessibility_tree",
           "kind": "method",
           "sig": "pub fn accessibility_tree(&self, focus: Option<NodeId>, scale: f64) -> TreeUpdate",
-          "docs": "The whole tree as an AccessKit update. Bounds are in logical pixels; the window node\ncarries the `scale` to device pixels. `focus` is the focused node (else the window).",
-          "file": "crates/octara/src/kernel/a11y.rs"
+          "docs": "The whole tree as an AccessKit update (a snapshot: it does not change what\n[`accessibility_update`](Self::accessibility_update) sends next). `focus` is the focused\nnode (else the window); the window node carries the `scale` to device pixels. Each node's\ntransform places it in its parent (a scroll container's offset is its own), and its bounds\nare in its own space.",
+          "file": "crates/octara/src/kernel/a11y.rs",
+          "links": [
+            "octara::kernel::Kernel::accessibility_update"
+          ]
+        },
+        {
+          "path": "octara::kernel::Kernel::accessibility_update",
+          "kind": "method",
+          "sig": "pub fn accessibility_update(&self, focus: Option<NodeId>, scale: f64) -> TreeUpdate",
+          "docs": "What changed for assistive technology since the last update: the nodes whose semantics,\nchildren or place changed, and subtrees new to it. The first update (and the first after\n[`restart_accessibility`](Self::restart_accessibility)) is the whole tree.",
+          "file": "crates/octara/src/kernel/a11y.rs",
+          "links": [
+            "octara::kernel::Kernel::restart_accessibility"
+          ]
         },
         {
           "path": "octara::kernel::Kernel::add_command",
@@ -4647,8 +4677,8 @@
         {
           "path": "octara::kernel::Kernel::display_list",
           "kind": "method",
-          "sig": "pub fn display_list(&self) -> DisplayList",
-          "docs": "What the last layout looks like, in drawing order (children over parents, overlays last).",
+          "sig": "pub fn display_list(&self) -> Rc<DisplayList>",
+          "docs": "What the last layout looks like, in drawing order (children over parents, overlays last).\nWhile nothing moves and nothing changed since, the last list is returned again.",
           "file": "crates/octara/src/kernel/paint.rs"
         },
         {
@@ -4708,6 +4738,13 @@
           "sig": "pub fn focused_in_group(&mut self, id: NodeId)",
           "docs": "Focus moved to `id`: the focus groups around it remember it (Tab comes back to it).",
           "file": "crates/octara/src/kernel/focus.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::frames_built",
+          "kind": "method",
+          "sig": "pub fn frames_built(&self) -> u64",
+          "docs": "Display lists built rather than reused.",
+          "file": "crates/octara/src/kernel/paint.rs"
         },
         {
           "path": "octara::kernel::Kernel::glide_scroll",
@@ -5019,6 +5056,16 @@
           "file": "crates/octara/src/app/drive.rs"
         },
         {
+          "path": "octara::kernel::Kernel::restart_accessibility",
+          "kind": "method",
+          "sig": "pub fn restart_accessibility(&self)",
+          "docs": "The next [`accessibility_update`](Self::accessibility_update) sends the whole tree (the\nplatform asked for it again).",
+          "file": "crates/octara/src/kernel/a11y.rs",
+          "links": [
+            "octara::kernel::Kernel::accessibility_update"
+          ]
+        },
+        {
           "path": "octara::kernel::Kernel::role",
           "kind": "method",
           "sig": "pub fn role(&self, id: NodeId) -> Role",
@@ -5124,6 +5171,13 @@
           "kind": "method",
           "sig": "pub fn set_checked(&mut self, id: NodeId, checked: Option<bool>) -> bool",
           "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::set_culling",
+          "kind": "method",
+          "sig": "pub fn set_culling(&mut self, on: bool)",
+          "docs": "Whether painting and hit testing skip subtrees that cannot show (on by default; off\nchecks that skipping changes nothing).",
+          "file": "crates/octara/src/kernel/paint.rs"
         },
         {
           "path": "octara::kernel::Kernel::set_description",
