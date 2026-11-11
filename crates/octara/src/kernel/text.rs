@@ -56,14 +56,29 @@ pub struct TextMetrics {
     pub truncated: bool,
 }
 
-/// Measures paragraphs. Implementations cache per `(node, paragraph)`.
+/// What a text engine caches a text by: the node it belongs to and which of its texts (slot 0
+/// is the node's own text; a canvas numbers its texts from 1). Forgetting a node forgets all
+/// of them.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct TextKey {
+    pub node: NodeId,
+    pub slot: u32,
+}
+
+impl From<NodeId> for TextKey {
+    fn from(node: NodeId) -> TextKey {
+        TextKey { node, slot: 0 }
+    }
+}
+
+/// Measures paragraphs. Implementations cache per `(text, paragraph)`.
 pub trait TextEngine {
     /// Width and line count of one paragraph broken at `max_width` (`None`: unbounded).
     /// `unchanged`: the kernel knows this paragraph's text is the same as when the engine last
-    /// saw paragraph `index` of `node` (so a cache may skip comparing it).
+    /// saw paragraph `index` of `key` (so a cache may skip comparing it).
     fn paragraph(
         &mut self,
-        node: NodeId,
+        key: TextKey,
         index: usize,
         text: &str,
         unchanged: bool,
@@ -71,24 +86,24 @@ pub trait TextEngine {
         max_width: Option<f32>,
     ) -> (f32, u32);
     /// Drops cached paragraphs from `count` on (the text now has fewer).
-    fn truncate(&mut self, node: NodeId, count: usize);
-    /// Forgets a destroyed node.
+    fn truncate(&mut self, key: TextKey, count: usize);
+    /// Forgets a destroyed node's texts.
     fn forget(&mut self, node: NodeId);
     /// Adds font data (TTF/OTF, possibly a collection); its families become available by name.
     fn register_font(&mut self, _data: &'static [u8]) {}
     /// Adds font data whose families text falls back to for `scripts` (ISO 15924 tags such as
     /// `*b"Hani"`) when the styled family lacks a character.
     fn register_fallback_font(&mut self, _data: &'static [u8], _scripts: &[[u8; 4]]) {}
-    /// The positioned glyphs of `node`'s text (measured just before) broken at `max_width`,
+    /// The positioned glyphs of `key`'s text (measured just before) broken at `max_width`,
     /// relative to the text's top-left corner, at most `style.max_lines` lines. With `fit`, a
     /// last line that is wider than `fit`, or followed by lines `max_lines` hides, ends in an
     /// ellipsis within `fit`. Engines that only measure return nothing.
-    fn glyph_runs(&mut self, _node: NodeId, _style: &TextStyle, _max_width: Option<f32>, _fit: Option<f32>) -> Vec<ShapedRun> {
+    fn glyph_runs(&mut self, _key: TextKey, _style: &TextStyle, _max_width: Option<f32>, _fit: Option<f32>) -> Vec<ShapedRun> {
         Vec::new()
     }
-    /// Where a caret can stand in `text` (one line, measured just before for `node`): `(byte
+    /// Where a caret can stand in `text` (one line, measured just before for `key`): `(byte
     /// offset, x)` in byte order, from `(0, 0)` to `(text.len(), width)`.
-    fn caret_stops(&mut self, node: NodeId, text: &str, style: &TextStyle) -> Vec<(usize, f32)>;
+    fn caret_stops(&mut self, key: TextKey, text: &str, style: &TextStyle) -> Vec<(usize, f32)>;
 }
 
 /// Caret stops for a monospace advance `em` per character.
@@ -113,7 +128,7 @@ pub struct ShapedRun {
 /// end within them are not compared again (appending to a long text touches only its tail).
 pub fn measure(
     engine: &mut dyn TextEngine,
-    node: NodeId,
+    key: TextKey,
     text: &str,
     clean: usize,
     style: &TextStyle,
@@ -122,13 +137,13 @@ pub fn measure(
     let (mut width, mut lines, mut count, mut start) = (0.0f32, 0u32, 0, 0usize);
     for (i, p) in text.split('\n').enumerate() {
         let end = start + p.len();
-        let (w, l) = engine.paragraph(node, i, p, end < clean, style, max_width);
+        let (w, l) = engine.paragraph(key, i, p, end < clean, style, max_width);
         start = end + 1;
         width = width.max(w);
         lines += l.max(1);
         count = i + 1;
     }
-    engine.truncate(node, count);
+    engine.truncate(key, count);
     let shown = style.max_lines.map_or(lines, |m| lines.min(m as u32));
     TextMetrics { width, height: shown as f32 * style.line_height, lines: shown, truncated: shown < lines }
 }
@@ -140,7 +155,7 @@ pub fn measure(
 pub struct MonoEngine;
 
 impl TextEngine for MonoEngine {
-    fn paragraph(&mut self, _: NodeId, _: usize, text: &str, _: bool, style: &TextStyle, max_width: Option<f32>) -> (f32, u32) {
+    fn paragraph(&mut self, _: TextKey, _: usize, text: &str, _: bool, style: &TextStyle, max_width: Option<f32>) -> (f32, u32) {
         let em = style.font_size * 0.5;
         let Some(max) = max_width else { return (text.chars().count() as f32 * em, 1) };
         let (mut widest, mut line, mut lines) = (0.0f32, 0.0f32, 1u32);
@@ -157,9 +172,9 @@ impl TextEngine for MonoEngine {
         }
         (widest.max(line), lines)
     }
-    fn truncate(&mut self, _: NodeId, _: usize) {}
+    fn truncate(&mut self, _: TextKey, _: usize) {}
     fn forget(&mut self, _: NodeId) {}
-    fn caret_stops(&mut self, _: NodeId, text: &str, style: &TextStyle) -> Vec<(usize, f32)> {
+    fn caret_stops(&mut self, _: TextKey, text: &str, style: &TextStyle) -> Vec<(usize, f32)> {
         even_stops(text, style.font_size * 0.5)
     }
 }
@@ -194,7 +209,8 @@ struct Paragraph {
 pub struct ParleyEngine {
     fonts: FontContext,
     layouts: LayoutContext<()>,
-    cache: FxHashMap<NodeId, Vec<Paragraph>>,
+    /// Paragraphs by node, then by slot.
+    cache: FxHashMap<NodeId, Vec<(u32, Vec<Paragraph>)>>,
     /// "…" shaped per style, for truncated text.
     ellipses: Vec<(TextStyle, Vec<ShapedRun>, f32)>,
     /// Paragraphs shaped, for tests and benchmarks.
@@ -285,17 +301,36 @@ impl ParleyEngine {
     }
 }
 
+impl ParleyEngine {
+    /// The cached paragraphs of `key`, if any.
+    fn paras(&mut self, key: TextKey) -> Option<&mut Vec<Paragraph>> {
+        self.cache.get_mut(&key.node)?.iter_mut().find(|(s, _)| *s == key.slot).map(|(_, p)| p)
+    }
+    /// The cached paragraphs of `key`, made on first use.
+    fn paras_entry(&mut self, key: TextKey) -> &mut Vec<Paragraph> {
+        let slots = self.cache.entry(key.node).or_default();
+        let at = match slots.iter().position(|(s, _)| *s == key.slot) {
+            Some(i) => i,
+            None => {
+                slots.push((key.slot, Vec::new()));
+                slots.len() - 1
+            }
+        };
+        &mut slots[at].1
+    }
+}
+
 impl TextEngine for ParleyEngine {
     fn paragraph(
         &mut self,
-        node: NodeId,
+        key: TextKey,
         index: usize,
         text: &str,
         unchanged: bool,
         style: &TextStyle,
         max_width: Option<f32>,
     ) -> (f32, u32) {
-        let paras = self.cache.entry(node).or_default();
+        let paras = self.paras_entry(key);
         let known = unchanged && paras.get(index).is_some_and(|p| p.style == *style);
         let hash = if known {
             paras[index].hash
@@ -307,7 +342,7 @@ impl TextEngine for ParleyEngine {
         let fresh = !known && paras.get(index).is_none_or(|p| p.hash != hash || p.style != *style);
         if fresh {
             let layout = self.shape(text, style);
-            let paras = self.cache.get_mut(&node).expect("entry");
+            let paras = self.paras_entry(key);
             let p = Paragraph { hash, style: *style, layout, results: Vec::new() };
             if index < paras.len() {
                 paras[index] = p;
@@ -315,7 +350,7 @@ impl TextEngine for ParleyEngine {
                 paras.push(p);
             }
         }
-        let p = &mut self.cache.get_mut(&node).expect("entry")[index];
+        let p = &mut self.paras_entry(key)[index];
         let key = width_key(max_width);
         if let Some(&(_, w, l)) = p.results.iter().find(|r| r.0 == key) {
             return (w, l);
@@ -328,17 +363,17 @@ impl TextEngine for ParleyEngine {
         p.results.push((key, w, l));
         (w, l)
     }
-    fn truncate(&mut self, node: NodeId, count: usize) {
-        if let Some(p) = self.cache.get_mut(&node) {
+    fn truncate(&mut self, key: TextKey, count: usize) {
+        if let Some(p) = self.paras(key) {
             p.truncate(count);
         }
     }
     fn forget(&mut self, node: NodeId) {
         self.cache.remove(&node);
     }
-    fn glyph_runs(&mut self, node: NodeId, style: &TextStyle, max_width: Option<f32>, fit: Option<f32>) -> Vec<ShapedRun> {
+    fn glyph_runs(&mut self, key: TextKey, style: &TextStyle, max_width: Option<f32>, fit: Option<f32>) -> Vec<ShapedRun> {
         let ellipsis = fit.map(|_| self.ellipsis(style));
-        let Some(paras) = self.cache.get_mut(&node) else { return Vec::new() };
+        let Some(paras) = self.paras(key) else { return Vec::new() };
         let max_lines = style.max_lines.map_or(u32::MAX, u32::from);
         // Every line shown, as runs with their glyphs' advances.
         let mut lines: Vec<Vec<(ShapedRun, Vec<f32>)>> = Vec::new();
@@ -408,8 +443,8 @@ impl TextEngine for ParleyEngine {
         }
         lines.into_iter().flatten().map(|(r, _)| r).collect()
     }
-    fn caret_stops(&mut self, node: NodeId, text: &str, style: &TextStyle) -> Vec<(usize, f32)> {
-        let Some(p) = self.cache.get_mut(&node).and_then(|p| p.first_mut()) else { return even_stops(text, style.font_size * 0.5) };
+    fn caret_stops(&mut self, key: TextKey, text: &str, style: &TextStyle) -> Vec<(usize, f32)> {
+        let Some(p) = self.paras(key).and_then(|p| p.first_mut()) else { return even_stops(text, style.font_size * 0.5) };
         p.layout.break_all_lines(None);
         let mut stops: Vec<(usize, f32)> = vec![(0, 0.0), (text.len(), p.layout.width())];
         if let Some(line) = p.layout.lines().next() {
@@ -461,23 +496,23 @@ mod tests {
     fn parley_wraps_and_caches_by_paragraph() {
         let mut e = ParleyEngine::default();
         let s = TextStyle::default();
-        let one = measure(&mut e, node(), "hello world", 0, &s, None);
+        let one = measure(&mut e, node().into(), "hello world", 0, &s, None);
         assert!(one.width > 50.0 && one.width < 120.0, "{one:?}");
         assert_eq!((one.lines, one.height), (1, 24.0));
-        let narrow = measure(&mut e, node(), "hello world", 0, &s, Some(one.width / 2.0 + 10.0));
+        let narrow = measure(&mut e, node().into(), "hello world", 0, &s, Some(one.width / 2.0 + 10.0));
         assert_eq!(narrow.lines, 2);
         assert!(narrow.width < one.width);
-        let min = measure(&mut e, node(), "hello world", 0, &s, Some(0.0));
+        let min = measure(&mut e, node().into(), "hello world", 0, &s, Some(0.0));
         assert_eq!(min.lines, 2, "min-content breaks at every opportunity");
 
         let before = e.shaped;
-        measure(&mut e, node(), "first\nsecond", 0, &s, None);
-        measure(&mut e, node(), "first\nsecond more", 0, &s, None);
+        measure(&mut e, node().into(), "first\nsecond", 0, &s, None);
+        measure(&mut e, node().into(), "first\nsecond more", 0, &s, None);
         assert_eq!(e.shaped - before, 3, "appending reshapes only the last paragraph");
-        let mono = measure(&mut e, node(), "iiii", 0, &TextStyle { family: "IBM Plex Mono", ..s }, None);
-        let sans = measure(&mut e, node(), "iiii", 0, &s, None);
+        let mono = measure(&mut e, node().into(), "iiii", 0, &TextStyle { family: "IBM Plex Mono", ..s }, None);
+        let sans = measure(&mut e, node().into(), "iiii", 0, &s, None);
         assert!(mono.width > sans.width * 1.5, "mono is monospaced: {mono:?} vs {sans:?}");
-        let capped = measure(&mut e, node(), "a\nb\nc", 0, &TextStyle { max_lines: Some(2), ..s }, None);
+        let capped = measure(&mut e, node().into(), "a\nb\nc", 0, &TextStyle { max_lines: Some(2), ..s }, None);
         assert_eq!((capped.lines, capped.truncated), (2, true));
     }
 
@@ -485,8 +520,8 @@ mod tests {
     fn mono_is_half_an_em_per_char() {
         let mut e = MonoEngine;
         let s = TextStyle::default();
-        assert_eq!(measure(&mut e, node(), "abcd", 0, &s, None).width, 32.0);
-        let m = measure(&mut e, node(), "abcd efgh", 0, &s, Some(40.0));
+        assert_eq!(measure(&mut e, node().into(), "abcd", 0, &s, None).width, 32.0);
+        let m = measure(&mut e, node().into(), "abcd efgh", 0, &s, Some(40.0));
         assert_eq!((m.width, m.lines), (32.0, 2));
     }
 }

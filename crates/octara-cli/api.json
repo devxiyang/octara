@@ -1649,7 +1649,7 @@
           "path": "octara::canvas",
           "kind": "module",
           "sig": "pub mod canvas",
-          "docs": "Canvas: a drawing built by a closure, as data.\n\n[`canvas`](crate::view::canvas)`(move |c| ..)` is an element whose drawing a closure records\ninto a [`Canvas`]: paths filled or stroked, rectangles, images, under scoped transforms and\nclips, in the element's own coordinates (its content box, `(0, 0)` to\n[`size`](Canvas::size)). The closure is a binding: it reruns only when what it reads (signals,\nthe element's size) changes, and the recording is kept as plain data ([`CanvasOp`]) that tests\ncan compare. Nothing redraws per frame unless something changed (Rune's declarative canvas,\nExact's recorder; not GPUI's per-frame paint closures).\n\n```\nuse octara::prelude::*;\n\nfn meter() -> View {\n    let level = state(\"level\", || 0.6);\n    canvas(move |c| {\n        let (w, h) = c.size();\n        c.fill(&Path::rounded_rect(Rect::new(0.0, 0.0, w, h), h / 2.0), Token::Surface);\n        c.fill(&Path::rounded_rect(Rect::new(0.0, 0.0, w * level.get(), h), h / 2.0), Token::Accent);\n    })\n    .w(200)\n    .h(8)\n    .label(\"Level\")\n    .into()\n}\n# let app = App::new(meter);\n# assert_eq!(app.kernel().canvas(app.kernel().find_by_name(\"Level\")[0]).unwrap().len(), 2);\n```\n\nA canvas is an image to assistive technology: give it a `label` (`check` reports a visible\ncanvas without one, `UNLABELED_CANVAS`), or `a11y_hidden()` when it is decoration.",
+          "docs": "Canvas: a drawing built by a closure, as data.\n\n[`canvas`](crate::view::canvas)`(move |c| ..)` is an element whose drawing a closure records\ninto a [`Canvas`]: paths filled or stroked, rectangles, text, images, under scoped transforms\nand clips, in the element's own coordinates (its content box, `(0, 0)` to\n[`size`](Canvas::size)). The closure is a binding: it reruns only when what it reads (signals,\nthe element's size) changes, and the recording is kept as plain data ([`CanvasOp`]) that tests\ncan compare. Nothing redraws per frame unless something changed (Rune's declarative canvas,\nExact's recorder; not GPUI's per-frame paint closures).\n\n```\nuse octara::prelude::*;\n\nfn meter() -> View {\n    let level = state(\"level\", || 0.6);\n    canvas(move |c| {\n        let (w, h) = c.size();\n        c.fill(&Path::rounded_rect(Rect::new(0.0, 0.0, w, h), h / 2.0), Token::Surface);\n        c.fill(&Path::rounded_rect(Rect::new(0.0, 0.0, w * level.get(), h), h / 2.0), Token::Accent);\n    })\n    .w(200)\n    .h(8)\n    .label(\"Level\")\n    .into()\n}\n# let app = App::new(meter);\n# assert_eq!(app.kernel().canvas(app.kernel().find_by_name(\"Level\")[0]).unwrap().len(), 2);\n```\n\nA canvas is an image to assistive technology: give it a `label` (`check` reports a visible\ncanvas without one, `UNLABELED_CANVAS`), or `a11y_hidden()` when it is decoration.",
           "file": "crates/octara/src/canvas.rs",
           "links": [
             "octara::canvas::Canvas",
@@ -1750,6 +1750,13 @@
           "file": "crates/octara/src/canvas.rs"
         },
         {
+          "path": "octara::canvas::Canvas::text",
+          "kind": "method",
+          "sig": "pub fn text(&mut self, text: impl Into<String>, at: impl Into<Point>) -> &mut CanvasText",
+          "docs": "Draws `text` anchored at `at` (its top-left corner unless `align` / `valign` say\notherwise), in the canvas's text style: `c.text(\"Jan\", (x, h)).align(Align::Center)\n.valign(Align::End).size(12.0)`. A transform moves and scales it; text is not rotated.",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
           "path": "octara::canvas::Canvas::transform",
           "kind": "method",
           "sig": "pub fn transform(&mut self, t: Transform, f: impl FnOnce(&mut Canvas))",
@@ -1798,6 +1805,122 @@
           "kind": "variant",
           "sig": "PushClip { rect: Rect, radius: f32 }",
           "docs": "Clips what follows to `rect` (rounded by `radius`; the bounding box under the transform\nthen) until the matching `PopClip`.",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasOp::Text",
+          "kind": "variant",
+          "sig": "Text(CanvasText)",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasText",
+          "kind": "struct",
+          "sig": "pub struct CanvasText { .. }",
+          "docs": "A text on a canvas. Options left unset take the canvas element's own text style and color\n(so `text_sm()` or `text_color(..)` on the canvas styles its labels).",
+          "file": "crates/octara/src/canvas.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::canvas::CanvasText::align",
+          "kind": "field",
+          "sig": "pub align: Align",
+          "docs": "Which side of the text `at` is horizontally: start (the default), center or end.",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasText::align",
+          "kind": "method",
+          "sig": "pub fn align(&mut self, a: Align) -> &mut Self",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasText::at",
+          "kind": "field",
+          "sig": "pub at: Point",
+          "docs": "Where the text is anchored, as `align` and `valign` say (under the transform then).",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasText::color",
+          "kind": "field",
+          "sig": "pub color: Option<Paint>",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasText::color",
+          "kind": "method",
+          "sig": "pub fn color(&mut self, c: impl Into<Paint>) -> &mut Self",
+          "docs": "A token or a color.",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasText::max_width",
+          "kind": "field",
+          "sig": "pub max_width: Option<f32>",
+          "docs": "Wraps at this width (unbounded: one line per paragraph).",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasText::max_width",
+          "kind": "method",
+          "sig": "pub fn max_width(&mut self, w: f32) -> &mut Self",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasText::scale",
+          "kind": "field",
+          "sig": "pub scale: f32",
+          "docs": "The transform's scale then (sizes are multiplied by it; text is not rotated).",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasText::size",
+          "kind": "field",
+          "sig": "pub size: Option<f32>",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasText::size",
+          "kind": "method",
+          "sig": "pub fn size(&mut self, px: f32) -> &mut Self",
+          "docs": "The font size in pixels.",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasText::text",
+          "kind": "field",
+          "sig": "pub text: String",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasText::valign",
+          "kind": "field",
+          "sig": "pub valign: Align",
+          "docs": "Which side of the line `at` is vertically: top (the default), middle or bottom.",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasText::valign",
+          "kind": "method",
+          "sig": "pub fn valign(&mut self, a: Align) -> &mut Self",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasText::weight",
+          "kind": "field",
+          "sig": "pub weight: Option<u16>",
+          "file": "crates/octara/src/canvas.rs"
+        },
+        {
+          "path": "octara::canvas::CanvasText::weight",
+          "kind": "method",
+          "sig": "pub fn weight(&mut self, w: u16) -> &mut Self",
+          "docs": "The font weight (400 regular, 600 semibold).",
           "file": "crates/octara/src/canvas.rs"
         },
         {
@@ -4635,7 +4758,7 @@
         {
           "path": "octara::kernel::Kernel::image",
           "kind": "method",
-          "sig": "pub fn image(&self, id: NodeId) -> Option<&(Image, ObjectFit)>",
+          "sig": "pub fn image(&self, id: NodeId) -> Option<(&Image, ObjectFit)>",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -4986,7 +5109,7 @@
           "path": "octara::kernel::Kernel::set_canvas",
           "kind": "method",
           "sig": "pub fn set_canvas(&mut self, id: NodeId, ops: Vec<CanvasOp>)",
-          "docs": "Makes the node a canvas drawing `ops` (in its content box's coordinates).",
+          "docs": "Makes the box a canvas drawing `ops` (in its content box's coordinates).",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -5024,6 +5147,7 @@
           "path": "octara::kernel::Kernel::set_focusable",
           "kind": "method",
           "sig": "pub fn set_focusable(&mut self, id: NodeId, focusable: bool) -> bool",
+          "docs": "Can take keyboard focus (and so receive `FOCUS_VISIBLE`).",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -5058,7 +5182,7 @@
           "path": "octara::kernel::Kernel::set_icon",
           "kind": "method",
           "sig": "pub fn set_icon(&mut self, id: NodeId, icon: Option<(&Icon, Option<f32>)>)",
-          "docs": "Can take keyboard focus (and so receive `FOCUS_VISIBLE`).\nDraws `icon` in the box (`None`: no icon), its strokes `stroke_width` wide on its view box\n(`None`: the icon's own).",
+          "docs": "Draws `icon` in the box (`None`: no icon), its strokes `stroke_width` wide on its view box\n(`None`: the icon's own).",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -5186,6 +5310,7 @@
           "path": "octara::kernel::Kernel::set_text",
           "kind": "method",
           "sig": "pub fn set_text(&mut self, id: NodeId, text: &str) -> bool",
+          "docs": "Sets a text's text (other nodes have none: ignored).",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -5219,6 +5344,7 @@
           "path": "octara::kernel::Kernel::set_value",
           "kind": "method",
           "sig": "pub fn set_value(&mut self, id: NodeId, value: &str) -> bool",
+          "docs": "A text input's value; for other nodes, the value assistive technology announces.",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -5277,6 +5403,7 @@
           "path": "octara::kernel::Kernel::text",
           "kind": "method",
           "sig": "pub fn text(&self, id: NodeId) -> &str",
+          "docs": "A text's own text (empty for other nodes).",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -5322,6 +5449,7 @@
           "path": "octara::kernel::Kernel::value",
           "kind": "method",
           "sig": "pub fn value(&self, id: NodeId) -> &str",
+          "docs": "A text input's value, else the value set for assistive technology (empty when none).",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -5692,6 +5820,7 @@
             "Eq",
             "From<KeyData>",
             "Hash",
+            "Into<TextKey>",
             "Key",
             "Ord",
             "PartialEq",
@@ -7574,7 +7703,7 @@
           "path": "octara::kernel::text::TextEngine",
           "kind": "trait",
           "sig": "pub trait TextEngine",
-          "docs": "Measures paragraphs. Implementations cache per `(node, paragraph)`.",
+          "docs": "Measures paragraphs. Implementations cache per `(text, paragraph)`.",
           "file": "crates/octara/src/kernel/text.rs",
           "implementors": [
             "MonoEngine",
@@ -7584,29 +7713,29 @@
         {
           "path": "octara::kernel::text::TextEngine::caret_stops",
           "kind": "method",
-          "sig": "fn caret_stops(&mut self, node: NodeId, text: &str, style: &TextStyle) -> Vec<(usize, f32)>",
-          "docs": "Where a caret can stand in `text` (one line, measured just before for `node`): `(byte\noffset, x)` in byte order, from `(0, 0)` to `(text.len(), width)`.",
+          "sig": "fn caret_stops(&mut self, key: TextKey, text: &str, style: &TextStyle) -> Vec<(usize, f32)>",
+          "docs": "Where a caret can stand in `text` (one line, measured just before for `key`): `(byte\noffset, x)` in byte order, from `(0, 0)` to `(text.len(), width)`.",
           "file": "crates/octara/src/kernel/text.rs"
         },
         {
           "path": "octara::kernel::text::TextEngine::forget",
           "kind": "method",
           "sig": "fn forget(&mut self, node: NodeId)",
-          "docs": "Forgets a destroyed node.",
+          "docs": "Forgets a destroyed node's texts.",
           "file": "crates/octara/src/kernel/text.rs"
         },
         {
           "path": "octara::kernel::text::TextEngine::glyph_runs",
           "kind": "method",
-          "sig": "fn glyph_runs(&mut self, _node: NodeId, _style: &TextStyle, _max_width: Option<f32>, _fit: Option<f32>) -> Vec<ShapedRun>",
-          "docs": "The positioned glyphs of `node`'s text (measured just before) broken at `max_width`,\nrelative to the text's top-left corner, at most `style.max_lines` lines. With `fit`, a\nlast line that is wider than `fit`, or followed by lines `max_lines` hides, ends in an\nellipsis within `fit`. Engines that only measure return nothing.",
+          "sig": "fn glyph_runs(&mut self, _key: TextKey, _style: &TextStyle, _max_width: Option<f32>, _fit: Option<f32>) -> Vec<ShapedRun>",
+          "docs": "The positioned glyphs of `key`'s text (measured just before) broken at `max_width`,\nrelative to the text's top-left corner, at most `style.max_lines` lines. With `fit`, a\nlast line that is wider than `fit`, or followed by lines `max_lines` hides, ends in an\nellipsis within `fit`. Engines that only measure return nothing.",
           "file": "crates/octara/src/kernel/text.rs"
         },
         {
           "path": "octara::kernel::text::TextEngine::paragraph",
           "kind": "method",
-          "sig": "fn paragraph(&mut self, node: NodeId, index: usize, text: &str, unchanged: bool, style: &TextStyle, max_width: Option<f32>) -> (f32, u32)",
-          "docs": "Width and line count of one paragraph broken at `max_width` (`None`: unbounded).\n`unchanged`: the kernel knows this paragraph's text is the same as when the engine last\nsaw paragraph `index` of `node` (so a cache may skip comparing it).",
+          "sig": "fn paragraph(&mut self, key: TextKey, index: usize, text: &str, unchanged: bool, style: &TextStyle, max_width: Option<f32>) -> (f32, u32)",
+          "docs": "Width and line count of one paragraph broken at `max_width` (`None`: unbounded).\n`unchanged`: the kernel knows this paragraph's text is the same as when the engine last\nsaw paragraph `index` of `key` (so a cache may skip comparing it).",
           "file": "crates/octara/src/kernel/text.rs"
         },
         {
@@ -7626,8 +7755,36 @@
         {
           "path": "octara::kernel::text::TextEngine::truncate",
           "kind": "method",
-          "sig": "fn truncate(&mut self, node: NodeId, count: usize)",
+          "sig": "fn truncate(&mut self, key: TextKey, count: usize)",
           "docs": "Drops cached paragraphs from `count` on (the text now has fewer).",
+          "file": "crates/octara/src/kernel/text.rs"
+        },
+        {
+          "path": "octara::kernel::text::TextKey",
+          "kind": "struct",
+          "sig": "pub struct TextKey { .. }",
+          "docs": "What a text engine caches a text by: the node it belongs to and which of its texts (slot 0\nis the node's own text; a canvas numbers its texts from 1). Forgetting a node forgets all\nof them.",
+          "file": "crates/octara/src/kernel/text.rs",
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "Eq",
+            "From<NodeId>",
+            "Hash",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::kernel::text::TextKey::node",
+          "kind": "field",
+          "sig": "pub node: NodeId",
+          "file": "crates/octara/src/kernel/text.rs"
+        },
+        {
+          "path": "octara::kernel::text::TextKey::slot",
+          "kind": "field",
+          "sig": "pub slot: u32",
           "file": "crates/octara/src/kernel/text.rs"
         },
         {
@@ -7761,7 +7918,7 @@
         {
           "path": "octara::kernel::text::measure",
           "kind": "fn",
-          "sig": "pub fn measure(engine: &mut dyn TextEngine, node: NodeId, text: &str, clean: usize, style: &TextStyle, max_width: Option<f32>) -> TextMetrics",
+          "sig": "pub fn measure(engine: &mut dyn TextEngine, key: TextKey, text: &str, clean: usize, style: &TextStyle, max_width: Option<f32>) -> TextMetrics",
           "docs": "Lays out `text` (all paragraphs) at `max_width` with `style.max_lines` applied. The first\n`clean` bytes are known unchanged since the engine last measured this node: paragraphs that\nend within them are not compared again (appending to a long text touches only its tail).",
           "file": "crates/octara/src/kernel/text.rs"
         },

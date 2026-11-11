@@ -441,10 +441,10 @@ fn text_metrics(
     }
     let c = clean.replace(content.len());
     match style.wrap {
-        Wrap::Words => text::measure(engine, id, content, c, style, limit),
-        Wrap::None => text::measure(engine, id, content, c, style, None),
+        Wrap::Words => text::measure(engine, id.into(), content, c, style, limit),
+        Wrap::None => text::measure(engine, id.into(), content, c, style, None),
         Wrap::Truncate => {
-            let natural = text::measure(engine, id, content, c, style, None);
+            let natural = text::measure(engine, id.into(), content, c, style, None);
             let width = limit.map_or(natural.width, |l| natural.width.min(l));
             let cut = natural.lines > 1 || width < natural.width;
             TextMetrics { width, height: style.line_height, lines: 1, truncated: cut }

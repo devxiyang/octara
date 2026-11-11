@@ -20,7 +20,7 @@ Prelude (`use octara::prelude::*`), by module:
 
 Members of prelude types (`.name(..)`):
 - App: accessibility_action, accessibility_tree, advance, advance_to, at_sizes, bind, breakpoint, caret, clear_forced, click_at, clipboard_text, commands, diagnostic_counts, diagnostics, dispatch, display_list, double_tap, drag, force_state, hot_reload, inspect, invoke, kernel, kernel_mut, key_event, keymap, layout_issues, long_press, new, next_deadline, now, pending, platform, pointer, pointer_{down,leave,move,up}, poll, press_key, register_fallback_font, register_font, replace_text, reset_work, resize, run_until_idle, secondary_tap, send, set_{clipboard,composition,keymap,platform,selection,theme,tuning,waker}, set_reduced_motion, settle, settle_motion, size, swipe, tap, tap_with, text_field, tuning, type_text, use_system_fonts, wheel, work
-- Canvas: clip, fill, fill_with, height, image, into_ops, new, ops, rect, size, stroke, transform, width
+- Canvas: clip, fill, fill_with, height, image, into_ops, new, ops, rect, size, stroke, text, transform, width
 - ContainerStep: Lg, Md, Sm, Xl, Xl2, Xl3, Xl4, Xl5, Xl6, Xl7, Xs, Xs2, Xs3
 - El: a11y_hidden, active, autofocus, bg, border_color, checked, child, children, description, disabled, expanded, focus, focus_{group,visible}, focusable, group, group_hover, hover, hover_alone, id, img, key_context, label, modal, object_fit, on_{command,drag,input,key,press,submit,toggle}, on_double_press, on_long_press, on_secondary_press, opacity, overlay, role, screen, selected, stroke_width, style_when, tab_index, text_color, value, when_{expanded,large,medium,touch}, when_extra_large
 - Event: Blur, Focus, Hover, Input, Press, Scroll, ScrollTo, Send, Toggle

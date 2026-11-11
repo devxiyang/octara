@@ -128,3 +128,47 @@ fn transforms_clips_gradients_and_semantics() {
     let codes: Vec<_> = issues.iter().map(|i| (i.code.id, i.test_id.as_deref())).collect();
     assert_eq!(codes, [("UNLABELED_CANVAS", Some("art"))]);
 }
+
+#[test]
+fn text_takes_the_canvas_style_and_its_anchor() {
+    let app = App::new(|| {
+        row()
+            .child(
+                canvas(|c| {
+                    let (w, h) = c.size();
+                    c.text("Mid", (w / 2.0, h / 2.0)).align(Align::Center).valign(Align::Center);
+                    c.text("Big", (0.0, 0.0)).size(28.0).weight(600).color(rgb(0xff0000));
+                    c.transform(Transform::scale(2.0, 2.0), |c| {
+                        c.text("Twice", (10.0, 10.0));
+                    });
+                })
+                .id("labels")
+                .label("Labels")
+                .w(200)
+                .h(100)
+                .text_sm()
+                .text_color(Token::TextMuted),
+            )
+            .into()
+    });
+    let dl = app.display_list();
+    let k = app.kernel();
+    let n = k.find("labels").unwrap();
+    let (x, y, ..) = k.rect(n);
+    drop(k);
+    let runs: Vec<_> = dl.glyph_runs().filter(|r| r.source == n).collect();
+    assert_eq!(runs.len(), 3);
+    // "Mid": 14 px in the muted color, centered on the middle of the box.
+    let mid = runs[0];
+    assert_eq!((mid.size, mid.color), (14.0, Theme::light().get(Token::TextMuted)));
+    let (left, right) = (mid.glyphs[0].x, mid.glyphs.last().unwrap().x);
+    assert!(left > x + 80.0 && left < x + 100.0 && right > x + 100.0 && right < x + 120.0, "{left} {right}");
+    // "Big": its own size and color, at the top-left.
+    let big = runs[1];
+    assert_eq!((big.size, big.color), (28.0, rgb(0xff0000)));
+    assert!((big.glyphs[0].x - x).abs() < 2.0 && big.glyphs[0].y > y && big.glyphs[0].y < y + 40.0);
+    // Under a 2× scale: moved to (20, 20) and twice the size.
+    let twice = runs[2];
+    assert_eq!(twice.size, 28.0);
+    assert!((twice.glyphs[0].x - (x + 20.0)).abs() < 2.0);
+}

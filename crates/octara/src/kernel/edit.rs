@@ -94,8 +94,8 @@ impl Kernel {
             vec![(0, 0.0)]
         } else {
             let mut engine = self.text.borrow_mut();
-            text::measure(&mut **engine, id, &shown, input.clean.replace(shown.len()), &style, None);
-            engine.caret_stops(id, &shown, &style)
+            text::measure(&mut **engine, id.into(), &shown, input.clean.replace(shown.len()), &style, None);
+            engine.caret_stops(id.into(), &shown, &style)
         };
         let mut line = Line { shown, stops, preedit, sel, caret: caret + input.preedit.len(), x: cx, y: cy, width, scroll: 0.0 };
         // Keep the caret in view, moving the line as little as possible.
@@ -156,7 +156,7 @@ impl Kernel {
         }
         if !line.shown.is_empty() {
             let style = super::TextStyle { wrap: Wrap::None, ..v.text_style() };
-            let runs = self.text.borrow_mut().glyph_runs(id, &style, None, None);
+            let runs = self.text.borrow_mut().glyph_runs(id.into(), &style, None, None);
             for r in runs {
                 let glyphs = r
                     .glyphs

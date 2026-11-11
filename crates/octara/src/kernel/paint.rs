@@ -1,7 +1,7 @@
 //! Building the display list from the laid-out tree.
 
 use super::text::{self, Wrap};
-use super::{Color, Kernel, Kind, NodeId, Token};
+use super::{Align, Color, Kernel, Kind, NodeId, Token};
 use crate::paint::{DisplayList, GlyphRun, Item, PathPaint, Quad, Rect};
 use crate::path::Transform;
 
@@ -171,7 +171,7 @@ impl Kernel {
                 w: (rect.w - l.border.left - l.border.right - l.padding.left - l.padding.right).max(0.0),
                 h: (rect.h - l.border.top - l.border.bottom - l.padding.top - l.padding.bottom).max(0.0),
             };
-            self.paint_canvas(id, ops, content, opacity, out);
+            self.paint_canvas(id, ops, content, (v.text_style(), v.text), opacity, out);
         }
 
         // A text input: its line, selection, composition and caret.
@@ -191,10 +191,10 @@ impl Kernel {
             if !s.is_empty() {
                 let mut engine = self.text.borrow_mut();
                 let clean = n.text_content().map_or(0, |t| t.clean.replace(s.len()));
-                text::measure(&mut **engine, id, s, clean, &style, limit);
+                text::measure(&mut **engine, id.into(), s, clean, &style, limit);
                 // Cut text (one line, or `line_clamp`) ends in an ellipsis inside the box.
                 let fit = (style.wrap == Wrap::Truncate || style.max_lines.is_some()).then_some(inner);
-                let runs = engine.glyph_runs(id, &style, limit, fit);
+                let runs = engine.glyph_runs(id.into(), &style, limit, fit);
                 drop(engine);
                 // A truncated line is clipped to the box (an ellipsis comes with the renderer).
                 let clip_text = style.wrap == Wrap::Truncate;
@@ -253,13 +253,23 @@ impl Kernel {
 
 impl Kernel {
     /// A canvas's ops as display-list items: offset to `content`, paints resolved in the theme.
-    fn paint_canvas(&self, id: NodeId, ops: &[crate::canvas::CanvasOp], content: Rect, opacity: f32, out: &mut Vec<Item>) {
+    fn paint_canvas(
+        &self,
+        id: NodeId,
+        ops: &[crate::canvas::CanvasOp],
+        content: Rect,
+        (base, text_color): (text::TextStyle, Color),
+        opacity: f32,
+        out: &mut Vec<Item>,
+    ) {
         use crate::canvas::CanvasOp;
         use crate::kernel::Fill;
         let origin = Transform::translate(content.x, content.y);
         let at = |r: Rect| Rect { x: r.x + content.x, y: r.y + content.y, ..r };
         let color = |p: crate::kernel::Paint| fade(p.resolve(&self.theme).0, opacity);
         out.push(Item::PushClip { source: id, rect: content, radius: 0.0 });
+        // A canvas's texts are cached by the text engine as slots of its node, in order.
+        let mut slot = 0u32;
         for op in ops {
             match op {
                 CanvasOp::Path { path, style, fill, transform } => {
@@ -298,6 +308,44 @@ impl Kernel {
                 CanvasOp::Image { image, rect } => {
                     let r = at(*rect);
                     out.push(Item::Image(crate::paint::ImagePaint { source: id, image: image.clone(), rect: r, bounds: r, radius: 0.0, opacity }));
+                }
+                CanvasOp::Text(t) => {
+                    slot += 1;
+                    let size = t.size.unwrap_or(base.font_size) * t.scale;
+                    let style = text::TextStyle {
+                        font_size: size,
+                        line_height: base.line_height * size / base.font_size.max(1.0),
+                        weight: t.weight.unwrap_or(base.weight),
+                        wrap: if t.max_width.is_some() { Wrap::Words } else { Wrap::None },
+                        max_lines: None,
+                        ..base
+                    };
+                    let limit = t.max_width.map(|w| w * t.scale);
+                    let key = text::TextKey { node: id, slot };
+                    let mut engine = self.text.borrow_mut();
+                    let m = text::measure(&mut **engine, key, &t.text, 0, &style, limit);
+                    let runs = engine.glyph_runs(key, &style, limit, None);
+                    drop(engine);
+                    let along = |a: Align, len: f32| match a {
+                        Align::Start => 0.0,
+                        Align::Center => len / 2.0,
+                        Align::End => len,
+                    };
+                    let x = content.x + t.at.x - along(t.align, m.width);
+                    let y = content.y + t.at.y - along(t.valign, m.height);
+                    let color = t.color.map_or(fade(text_color, opacity), color);
+                    for r in runs {
+                        let glyphs = r.glyphs.into_iter().map(|g| crate::paint::Glyph { id: g.id, x: g.x + x, y: g.y + y }).collect();
+                        out.push(Item::Glyphs(GlyphRun {
+                            source: id,
+                            font: r.font,
+                            size: r.size,
+                            coords: r.coords,
+                            embolden: r.embolden,
+                            color,
+                            glyphs,
+                        }));
+                    }
                 }
                 CanvasOp::PushClip { rect, radius } => out.push(Item::PushClip { source: id, rect: at(*rect), radius: *radius }),
                 CanvasOp::PopClip => out.push(Item::PopClip),

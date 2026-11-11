@@ -55,9 +55,12 @@ fn chart(picked: Signal<usize>) -> El {
     let width = std::rc::Rc::new(std::cell::Cell::new(1.0f32));
     let seen = width.clone();
     canvas(move |c| {
-        let (w, h) = c.size();
+        let (w, full) = c.size();
         seen.set(w);
-        let max = 100.0;
+        // Room for the month labels under the plot.
+        let h = full - 18.0;
+        // Headroom above the tallest bar for its value label.
+        let max = 115.0;
         let slot = w / SALES.len() as f32;
         // The trend under the bars: an area fading down, and its line.
         let pts: Vec<_> = SALES.iter().enumerate().map(|(i, v)| point(slot * (i as f32 + 0.5), h - v / max * h)).collect();
@@ -70,11 +73,26 @@ fn chart(picked: Signal<usize>) -> El {
             c.fill(&bar, if i == picked.get() { Token::Accent } else { Token::Border });
         }
         c.stroke(&line, &Stroke::new(2.0).cap(LineCap::Round).join(LineJoin::Round), rgb(0x6366f1));
+        for (i, m) in MONTHS.iter().enumerate() {
+            let label = c.text(*m, (slot * (i as f32 + 0.5), full)).align(Align::Center).valign(Align::End).size(10.0);
+            if i == picked.get() {
+                label.color(Token::Text).weight(600);
+            }
+        }
+        let p = picked.get();
+        let top = h - SALES[p] / max * h;
+        c.text(format!("{}", SALES[p]), (slot * (p as f32 + 0.5), (top - 4.0).max(12.0)))
+            .align(Align::Center)
+            .valign(Align::End)
+            .size(12.0)
+            .weight(600)
+            .color(Token::Accent);
     })
+    .text_color(Token::TextMuted)
     .id("chart")
     .label(move || format!("Monthly sales, {} selected: {}", MONTHS[picked.get()], SALES[picked.get()]))
     .w(320)
-    .h(140)
+    .h(160)
     .on_drag(move |d| pick(d.x, width.get()))
 }
 

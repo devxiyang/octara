@@ -1,8 +1,8 @@
 //! Canvas: a drawing built by a closure, as data.
 //!
 //! [`canvas`](crate::view::canvas)`(move |c| ..)` is an element whose drawing a closure records
-//! into a [`Canvas`]: paths filled or stroked, rectangles, images, under scoped transforms and
-//! clips, in the element's own coordinates (its content box, `(0, 0)` to
+//! into a [`Canvas`]: paths filled or stroked, rectangles, text, images, under scoped transforms
+//! and clips, in the element's own coordinates (its content box, `(0, 0)` to
 //! [`size`](Canvas::size)). The closure is a binding: it reruns only when what it reads (signals,
 //! the element's size) changes, and the recording is kept as plain data ([`CanvasOp`]) that tests
 //! can compare. Nothing redraws per frame unless something changed (Rune's declarative canvas,
@@ -31,9 +31,9 @@
 //! canvas without one, `UNLABELED_CANVAS`), or `a11y_hidden()` when it is decoration.
 
 use crate::image::Image;
-use crate::kernel::Fill;
+use crate::kernel::{Align, Fill, Paint};
 use crate::paint::Rect;
-use crate::path::{FillRule, Path, PathStyle, Stroke, Transform, point};
+use crate::path::{FillRule, Path, PathStyle, Point, Stroke, Transform, point};
 
 /// One recorded drawing step, in the canvas's coordinates (`transform` maps the path's).
 #[derive(Clone, PartialEq, Debug)]
@@ -41,10 +41,61 @@ pub enum CanvasOp {
     Path { path: Path, style: PathStyle, fill: Fill, transform: Transform },
     /// An image drawn into `rect` (the bounding box of the rect under the transform then).
     Image { image: Image, rect: Rect },
+    Text(CanvasText),
     /// Clips what follows to `rect` (rounded by `radius`; the bounding box under the transform
     /// then) until the matching `PopClip`.
     PushClip { rect: Rect, radius: f32 },
     PopClip,
+}
+
+/// A text on a canvas. Options left unset take the canvas element's own text style and color
+/// (so `text_sm()` or `text_color(..)` on the canvas styles its labels).
+#[derive(Clone, PartialEq, Debug)]
+pub struct CanvasText {
+    pub text: String,
+    /// Where the text is anchored, as `align` and `valign` say (under the transform then).
+    pub at: Point,
+    /// Which side of the text `at` is horizontally: start (the default), center or end.
+    pub align: Align,
+    /// Which side of the line `at` is vertically: top (the default), middle or bottom.
+    pub valign: Align,
+    pub color: Option<Paint>,
+    pub size: Option<f32>,
+    pub weight: Option<u16>,
+    /// Wraps at this width (unbounded: one line per paragraph).
+    pub max_width: Option<f32>,
+    /// The transform's scale then (sizes are multiplied by it; text is not rotated).
+    pub scale: f32,
+}
+
+impl CanvasText {
+    pub fn align(&mut self, a: Align) -> &mut Self {
+        self.align = a;
+        self
+    }
+    pub fn valign(&mut self, a: Align) -> &mut Self {
+        self.valign = a;
+        self
+    }
+    /// A token or a color.
+    pub fn color(&mut self, c: impl Into<Paint>) -> &mut Self {
+        self.color = Some(c.into());
+        self
+    }
+    /// The font size in pixels.
+    pub fn size(&mut self, px: f32) -> &mut Self {
+        self.size = Some(px);
+        self
+    }
+    /// The font weight (400 regular, 600 semibold).
+    pub fn weight(&mut self, w: u16) -> &mut Self {
+        self.weight = Some(w);
+        self
+    }
+    pub fn max_width(&mut self, w: f32) -> &mut Self {
+        self.max_width = Some(w);
+        self
+    }
 }
 
 /// What a canvas closure draws into. See the [module docs](self).
@@ -99,6 +150,27 @@ impl Canvas {
     pub fn image(&mut self, image: &Image, rect: Rect) {
         let rect = self.bounding(rect);
         self.ops.push(CanvasOp::Image { image: image.clone(), rect });
+    }
+
+    /// Draws `text` anchored at `at` (its top-left corner unless `align` / `valign` say
+    /// otherwise), in the canvas's text style: `c.text("Jan", (x, h)).align(Align::Center)
+    /// .valign(Align::End).size(12.0)`. A transform moves and scales it; text is not rotated.
+    pub fn text(&mut self, text: impl Into<String>, at: impl Into<Point>) -> &mut CanvasText {
+        let t = self.transform;
+        let scale = (t.xx * t.yy - t.xy * t.yx).abs().sqrt();
+        self.ops.push(CanvasOp::Text(CanvasText {
+            text: text.into(),
+            at: t.apply(at.into()),
+            align: Align::Start,
+            valign: Align::Start,
+            color: None,
+            size: None,
+            weight: None,
+            max_width: None,
+            scale,
+        }));
+        let Some(CanvasOp::Text(t)) = self.ops.last_mut() else { unreachable!() };
+        t
     }
 
     /// Draws what `f` draws under `t` (after the transform already in place).

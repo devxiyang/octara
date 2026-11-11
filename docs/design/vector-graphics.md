@@ -1,6 +1,6 @@
 # Vector graphics: paths, icons, canvas
 
-Based on the [research](../research/vector-graphics.md). Status: confirmed; steps 1 to 4 implemented, `c.text` and labeled regions next.
+Based on the [research](../research/vector-graphics.md). Status: confirmed; steps 1 to 4 implemented, labeled regions next.
 
 ## Paths
 
@@ -58,14 +58,18 @@ Based on the [research](../research/vector-graphics.md). Status: confirmed; step
 
 - `canvas(move |c| { .. })` is an element whose drawing is built by a closure, given the
   element's content size (`c.size()`): `c.fill(&path, paint)`, `c.fill_with(&path, rule, paint)`,
-  `c.stroke(&path, &stroke, paint)`, `c.rect(rect, paint)`, `c.image(&image, rect)`, and scoped
+  `c.stroke(&path, &stroke, paint)`, `c.rect(rect, paint)`, `c.image(&image, rect)`,
+  `c.text("Jan", (x, y)).align(Align::Center).valign(Align::End).size(12.0)`, and scoped
   `c.transform(t, |c| ..)` and `c.clip(rect, radius, |c| ..)`. Paint is a token, a color or a
   gradient (spanning the shape's box); tokens follow the theme. The closure is a binding: it
   reruns only when what it reads (signals, its size, kept in step after each layout) changes,
   and its result is a list of `CanvasOp`s (`Kernel::canvas`), comparable in tests. Nothing
   redraws per frame unless something changed. The drawing is clipped to the content box.
-- Next: `c.text(..)` (the text engine caches by node today; canvas text needs keys of its own).
-  Images and clips under a rotating transform take their bounding box.
+- Text takes the canvas element's text style and color unless set (`text_sm()` and
+  `text_color(..)` on the canvas style its labels); a transform moves and scales it, it is not
+  rotated. The text engine caches texts by `TextKey` (a node and a slot: 0 for a node's own
+  text, a canvas's texts from 1), so canvas texts are measured and shaped once while they stay
+  the same. Images and clips under a rotating transform take their bounding box.
 - Layout: a canvas has no content size; it is sized like a box (`w`, `h`, `flex_1`, `size_full`).
 - Semantics: a canvas is an image; it takes a `label` (`check` reports an unlabeled, visible
   canvas: `UNLABELED_CANVAS`), or `a11y_hidden()` when it is decoration. Interaction uses the element's own handlers; `on_drag` and
