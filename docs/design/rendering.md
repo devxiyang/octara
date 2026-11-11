@@ -23,7 +23,8 @@ Platform layer: winit (desktop); a thin self-written layer on mobile (iOS UIText
 - Primitives:
   - `Quad`: rectangle, corner radii, fill color, per-edge border widths and border color;
   - `Glyphs`: a run of glyphs (font data, font size, color, each glyph's id and baseline position);
-  - `PushClip` / `PopClip`: clipping for scroll containers and `overflow_hidden` (rounded clipping comes later);
+  - `PushClip` / `PopClip`: clipping for scroll containers, `overflow_hidden` and canvases, rounded by the innermost clip's radius;
+  - `Path`: a path filled or stroked with a color or gradient under a transform ([vector graphics](vector-graphics.md));
   - `Shadow`: an offset, expanded, blurred rounded rectangle, painted before the element's `Quad`; the blur radius follows CSS (σ = blur / 2, same as
     Rune), and coverage uses Evan Wallace's formula (same as the GPUI shader);
   - `Quad::gradient`: a two-stop linear gradient (GPUI's `linear_gradient`), the gradient line as in CSS, colors interpolated premultiplied;

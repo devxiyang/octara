@@ -1,160 +1,136 @@
 # Octara Architecture
 
-Status: architecture baseline. This document records the directions already decided; items marked "to be determined" need prototype verification.
-For detailed designs of the reactive kernel and UI primitives see [`docs/design/`](design/); for research material see [`docs/research/`](research/).
+Status: current (reviewed 2026-11). What is built, how its parts fit, and the decisions that shape
+them. Detailed designs are in [`docs/design/`](design/), research in [`docs/research/`](research/).
 
-## Product Definition
+## Product
 
-**Agent-First. Rust-Native. Cross-Platform.**
+**Agent-first. Rust-native. Cross-platform.** Apps are written in Rust with fine-grained
+reactivity, drawn on the GPU, with native views and OS capabilities where the GPU cannot serve.
+The agent's loop is generate → compile → run → inspect → test → fix, and the framework answers
+the agent's questions itself (semantic tree, diagnostics with fixes, checks, scripted driving).
 
-Octara is a modern cross-platform application platform designed for AI Agents: applications are written in Rust, using a
-SolidJS-style fine-grained reactive model, rendered on the GPU by default, while also providing native components and operating system capabilities.
+Principles:
 
-The product has four layers: UI Framework, Native SDK, Development Toolchain, and Agent Runtime.
-The Agent development loop is Generate → Compile → Run → Inspect → Test → Fix.
+1. **Agent first**: an agent can understand, generate, debug, test and change the UI.
+2. **Rust only**: no JavaScript runtime, no view DSL; builder methods with GPUI's names.
+3. **Fine-grained reactivity**: signals, memos and incremental collections update properties;
+   a component runs once ([reactive core](design/reactive-core.md)).
+4. **GPU first**, with native views as islands where they must be ([Native Island](design/native-island.md)).
+5. **Cross-platform**: desktop first; the architecture covers iOS and Android.
+6. **Deterministic by default**: headless runs, bundled fonts, an app clock and a CPU reference
+   renderer give the same results on every machine.
 
-## Six Core Principles
+## Crates
 
-1. **Agent First**: an Agent can understand, generate, debug, test, and modify the UI.
-2. **Rust Only**: the public APIs of applications and the framework are in Rust, with no dependency on a JavaScript Runtime.
-3. **Fine-Grained Reactivity**: Signals, Memo, and incremental collections drive updates precisely, and a component runs only once;
-   side effects use `watch`, separate from dependency tracking (see [Reactive core](design/reactive-core.md)).
-4. **GPU First**: the UI is drawn with wgpu by default.
-5. **Native Extensible**: Native Views and Native Modules are first-class citizens.
-6. **Cross-Platform**: desktop first, with an architecture covering macOS, Windows, Linux, iOS, and Android.
-
-## Technology Choices
-
-| Module | Approach |
+| Crate | Contents |
 | --- | --- |
-| Language | Rust 2024 |
-| UI API | Rust builder (`el` / `row` / `col` / `text` with typed style methods), no view DSL |
-| Reactivity | Fine-grained Signals, Memo, `watch`; named state; incremental collections (order-statistic tree); `LiveText` |
-| Components | `octara-kit`: a component library driven by semantic tokens; the theme is a separate crate |
-| UI structure | Retained UI Tree |
-| Layout | Taffy |
-| Text | Parley + editing subsystem |
-| GPU rendering | wgpu |
-| Windowing and events | winit + platform-native extensions |
-| Native modules | Rust Traits + Crates |
-| Native components | Native Islands |
-| Accessibility | AccessKit |
-| Async tasks | Custom single-threaded executor (scopes own tasks, application clock; see [Async](design/async.md)); I/O can be done on background threads with any runtime |
-| Agent tooling | Semantic Inspector + Test Runtime |
-| Development tools | Rust CLI + incremental builds |
+| `octara` | The core: reactive runtime, retained kernel, views, app runtime, tasks, motion, display list, paths, icons, canvas, inspector and checks, diagnostics |
+| `octara-kit` | Components (buttons, fields, select, switch, …) built only on `octara`'s public API and theme tokens |
+| `octara-render` | Display list → pixels: the CPU reference renderer and the wgpu renderer |
+| `octara-shell` | Desktop window (winit): input, IME, scale, redraw on demand, AccessKit |
+| `octara-icons` | The Lucide set as path data (generated, checked in) |
+| `octara-fonts` | A CJK subset for deterministic tests and screenshots |
+| `octara-cli` | The `octara` command: `check`, `inspect`, `run`, `vocab`, `explain`, `skill`, `api` |
+| `examples` | Example apps, their acceptance tests, benchmarks, screenshot and window tools |
 
-The choices above describe the responsibilities of each component; they do not mean the dependencies have been introduced or the platform integrations completed.
+Everything but `octara` depends only on `octara`'s public API (`api.json` is generated from it).
 
-## Reactive Runtime and Retained UI
-
-
-Default update path:
+## Inside `octara`
 
 ```text
-Signal
-  → Reactive Effect / Property Binding
-  → UI Property
-  → Incremental Layout / Scene Update
+diagnostics ◄── reactive        signals, memos, watch, scopes; incremental lists; LiveText
+                    ▲
+kernel ─────────────┼──────────  retained node tree, styles and states, taffy layout, parley
+  (paint, path,     │            text, motion, semantics, focus, display list, checks
+   icon, canvas)    │            (does not depend on view or app)
+    ▲               │
+view ───────────────┘            elements and builders; each property is one binding
+    ▲
+app ◄── task                     the runtime: frames, input recognizers, focus, keymap, clock;
+    ▲                            a single-threaded executor whose tasks belong to scopes
+inspect                          snapshots, scripts, `check` (the agent's protocol)
 ```
 
-A component builds views, scopes, and bindings. An ordinary state change updates the relevant properties without re-running the whole component function,
-and without relying on a Diff of the whole UI Tree. Structural changes such as conditional branches and keyed lists need separate handling of child node
-identity and of scope creation and destruction.
+## A frame
 
-The Reactive Runtime is responsible for the dependency graph, Memo, Effects, scope lifecycle, and scheduling. The Retained UI Tree
-is responsible for stable node identity, events, focus, layout association, and semantic information. Property changes need to be distinguished by impact scope
-such as layout, paint, text, and semantics, so that an update enters only the necessary subsystems.
+1. A signal changes; the bindings that read it rerun, each writing one kernel property. Component
+   functions do not rerun and the tree is not diffed. Structure (`show`, `each`) inserts and
+   removes nodes with their scopes.
+2. A property change marks its categories (layout, paint, text, semantics); only layout changes
+   make the next frame lay out again.
+3. `settle_frame`: run ready tasks, flush the reactive graph, lay out with taffy (cached per
+   node), run after-layout hooks (virtual lists measure rows, scroll state, canvas sizes) and
+   repeat while they change something (four rounds at most, then `LAYOUT_LOOP`).
+4. The display list is built from the tree in paint order (shadows, quads, images, icons,
+   canvases, glyphs, paths, clips, opacity layers), with moving properties sampled at the app's
+   time. Renderers draw it.
+5. The shell rebuilds the accessibility tree for AccessKit when assistive technology is active.
 
-A Scope must own and clean up Effects, child Scopes, event subscriptions, and async tasks. Background tasks deliver results through the UI
-Scheduler; a Scope that has already been destroyed should not keep receiving updates.
+## Kernel
 
-The details previously to be determined (handles and lifecycle, dynamic dependency switching, batching, execution order, reentrancy and cycle diagnostics, stale handle detection)
-have been settled in the prototype; see [Reactive core](design/reactive-core.md).
+- **Nodes** live in a slotmap (`NodeId`); each has a role, semantics, handlers, styles and state
+  overrides, and one **content**: none, text, a text input (value, composition, selection,
+  scroll), an image, an icon or a canvas recording. Its `Kind` follows from the content.
+- **Styles** resolve against the theme (semantic tokens, scales, breakpoints) and the node's
+  states (hover, focus, pressed, disabled, touch, window size class); inherited text properties
+  flow down. Missing tokens are diagnostics.
+- **Layout** is taffy (flexbox and grid); texts and inputs are measured by the text engine, which
+  caches by `TextKey` (a node and a slot) per paragraph and width.
+- **Motion**: changed visual and layout properties can move (springs, curves) on the app clock;
+  presented values are sampled per frame; leaving subtrees stay as ghosts until they finish.
+- **Semantics**: roles, names, values, states and actions feed AccessKit and the inspector from
+  one place; `check` judges unnamed controls, unlabeled canvases, contrast and target sizes.
 
-## GPU and Native Capabilities
+## Rendering
 
-| Type | Implementation | Typical scenarios |
-| --- | --- | --- |
-| GPU View | wgpu | Regular UI, animation, charts, Canvas |
-| Native View | OS UI Toolkit | WebView, special input fields, platform controls |
-| Native Module | Rust + OS API | Files, windows, system menus, dialogs, notifications, permissions |
+- The display list is plain data in logical pixels; every item names its source node.
+- The CPU reference renderer is deterministic: screenshots for agents and tests, and the oracle
+  the GPU renderer is compared with (at most two levels per channel).
+- The GPU renderer (wgpu) draws instanced SDF quads, shadows, images, glyph masks and path masks
+  with one WGSL shader; glyphs (swash) and paths (kurbo strokes, zeno coverage) are rasterized
+  on the CPU by code both renderers share, into atlases that start over when full.
+- See [rendering](design/rendering.md) and [vector graphics](design/vector-graphics.md).
 
-All three are managed through a unified Rust API. GPU Views and Native Views share the logical component tree, layout constraints, and
-semantic interface. Compositing, stacking, clipping, transforms, input, and focus behavior of native components must respect platform restrictions;
-it cannot be assumed that every platform supports arbitrary GPU scene effects.
+## Input, focus, async
 
-The platform capability description of Native Islands, how restricted properties are reported, and how the window event loop cooperates with the native toolkit
-all need to be determined through platform prototypes. Beyond Parley's text layout, editing, selection,
-caret, IME, clipboard, and the platform text input protocol also need to be designed.
+Pointer recognizers (tap, double, long press, secondary, drag, swipe with momentum), focus order
+and groups, keymap and commands ([input](design/input.md)); tasks, timers, channels and resources
+owned by scopes on the app clock ([async](design/async.md)).
 
-## Platform Targets
+## Agent runtime
 
-| Platform | GPU | Native extension | Platform priority |
+- `octara::inspect`: the semantic tree with test ids, bounds, actions and source locations;
+  requests (tap, type, key, advance, settle, size, theme, expect, …) over JSON lines; `check`
+  across themes and sizes.
+- Diagnostics are registered codes with cause, fix and doc anchor; tests keep the registry
+  complete.
+- The CLI builds a harness around an app's view (`[package.metadata.octara] view`) and drives it;
+  the `octara` skill teaches agents the framework ([agent knowledge](design/agent-knowledge.md)).
+
+## Platforms
+
+| Platform | GPU | Native views | Priority |
 | --- | --- | --- | --- |
-| macOS | Metal | AppKit | P0 |
+| macOS | Metal | AppKit | P0 (the shell runs today) |
 | Windows | D3D12 | Win32 / WinUI | P0 |
 | Linux | Vulkan / GLES | GTK4 | P0 |
 | iOS | Metal | UIKit | P1 |
-| Android | Vulkan / GLES | JNI / Android Views | P1 |
+| Android | Vulkan / GLES | Android Views | P1 |
 
-Here P0/P1 are platform priorities; for development phases see the roadmap. The three desktop platforms are the first-phase delivery targets;
-mobile platforms are considered from the architecture stage, but the first version is not required to be production-ready.
+## Known limits
 
-## Agent Runtime
+- **One thread.** Layout, display list, rasterization of glyphs and paths, and GPU submission run
+  on the main thread (as in Rune and GPUI); the display list is data, so a render thread can
+  come later.
+- **Whole-tree frames.** The display list and the accessibility tree are rebuilt from the whole
+  tree for each frame; nodes outside the window produce no items but are still visited
+  (`bench -- --frames`: about 0.3 ms for 5000 nodes, release build). Virtual lists keep long
+  content cheap.
+- **Native views** are designed, not built ([Native Island](design/native-island.md)).
 
-| Capability | Goal |
-| --- | --- |
-| Semantic Tree | Structured description of components, roles, states, and executable actions |
-| Source Mapping | Locate Rust source from a UI node |
-| State Inspection | Inspect explicitly authorized reactive state |
-| Causal Tracing | Correlate interactions, state changes, Effects, properties, and render updates |
-| Deterministic Replay | Reproduce interactions and tests under controlled input |
-| Headless Runtime | Run semantic and logic tests without a real window |
-| Native Action Schema | Typed, authorizable system actions |
-| Agent CLI | Create, compile, launch, inspect, and verify applications |
+## Out of scope
 
-A minimal Inspector and Headless Runtime are established in P0, and P3 extends them to their full capabilities.
-
-The Semantic Tree and AccessKit should share the base definitions of roles, labels, states, and actions. The Agent interface also
-needs to express source, diagnostics, and authorization information. State inspection does not mean exposing arbitrary memory or all application state;
-the observable fields and the boundary of sensitive data must be made explicit.
-
-Source Mapping, runtime node identity, and test-oriented stable targeting need to be defined separately, to avoid using source
-line numbers as node identity. The capacity and persistence policy of Traces must be bounded, so that a long-running application cannot
-accumulate diagnostic data without limit.
-
-Deterministic replay needs to control the clock, random sources, task delivery, and external I/O, or record their results. The first version should state clearly
-the boundary of what can be replayed; beyond Headless tests, real GPU rendering, IME, accessibility, and native component integration still need to be verified.
-
-The main Agent evaluation metrics are task success rate, compile-fix rounds, verification latency, and token cost; rendering
-and interaction performance are also recorded, to avoid judging the framework's value by FPS alone.
-
-## First-Version Scope
-
-The first phase verifies three hypotheses:
-
-1. Signals can reliably drive incremental UI updates and manage lifecycles correctly.
-2. GPU UI and native components can coexist within clearly stated platform capability boundaries.
-3. Built-in semantics, inspection, and testing measurably improve an Agent's application development efficiency.
-
-Out of scope for now: a custom programming language or Contract DSL, a JavaScript / TypeScript Runtime, a Web rendering target,
-a custom GPU backend or layout algorithm, dynamic plugins over an unstable Rust ABI, a full mobile SDK,
-and complex multi-threaded rendering designed in advance for theoretical performance.
-
-## Code Organization
-
-| Package | Contents |
-| --- | --- |
-| `crates/octara` | `kernel` (node tree, invalidation classification, layout, semantics, counters), `reactive`, `view`, `app`, `testing` |
-| `crates/octara-kit` | Component library, using only the public primitives of `octara` |
-| `crates/octara-render` | CPU and GPU (wgpu) renderers for the display list |
-| `crates/octara-shell` | Desktop window (winit), input, and accessibility bridge |
-| `crates/octara-fonts` | Deterministic bundled CJK fonts (for tests and screenshots) |
-| `crates/octara-cli` | The `octara` command; the checked-in `api.json` (public API, generated from nightly rustdoc JSON) |
-| `examples` | Example applications, shared scenes, tests, and benchmarks |
-
-## Core Architecture Decisions
-
-- Fine-grained Signals and incremental collections drive the Retained UI Tree; ordinary updates do not use React-style full View Rebuilds.
-- GPU First, with the extension boundary of Native Views / Native Modules defined from day one.
-- Agent capabilities are built into the Runtime; semantics, source mapping, structured diagnostics, and Headless testing take part in the initial design.
+A custom language or contract DSL, a JavaScript runtime, a web target, a custom GPU backend or
+layout algorithm, dynamic plugins over an unstable ABI, and multi-threaded rendering designed in
+advance.
