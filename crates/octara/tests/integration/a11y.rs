@@ -57,7 +57,7 @@ fn roles_names_states_actions_and_bounds() {
 #[test]
 fn a_value_is_announced_for_any_control() {
     // A combo box's choice is its value, as a text input's content is.
-    let mut app = App::new(|| {
+    let app = App::new(|| {
         col()
             .child(el().id("theme").role(Role::ComboBox).label("Theme").value("Dark").focusable().on_press(|| {}))
             .child(text_input().id("name").label("Name").value("Ada"))
