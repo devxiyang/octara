@@ -8,7 +8,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::paint::Rect;
-use crate::path::{FillRule, LineCap, LineJoin, Path, PathStyle, Stroke, Transform};
+use crate::path::{FillRule, LineCap, LineJoin, Path, PathStyle, Stroke};
 
 /// One shape of a bundled icon: SVG path data on the icon's grid, filled and / or stroked.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -84,7 +84,8 @@ impl Icon {
     /// An icon from SVG source: `<path>`, `<rect>`, `<circle>`, `<ellipse>`, `<line>`,
     /// `<polyline>`, `<polygon>` in `<g>` groups, with `fill`, `stroke`, `stroke-width`,
     /// `stroke-linecap`, `stroke-linejoin`, `stroke-miterlimit`, `fill-rule` and `transform`.
-    /// Colors are ignored: the icon takes the text color.
+    /// Colors are ignored: the icon takes the text color. Needs the `svg` feature (default).
+    #[cfg(feature = "svg")]
     pub fn svg(source: &str) -> Result<Icon, IconError> {
         svg::parse(source)
     }
@@ -139,8 +140,10 @@ impl Icon {
 }
 
 /// The SVG subset icons are made from.
+#[cfg(feature = "svg")]
 mod svg {
     use super::*;
+    use crate::path::Transform;
 
     #[derive(Clone)]
     struct Inherited {
@@ -326,7 +329,7 @@ mod svg {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "svg"))]
 mod tests {
     use super::*;
 

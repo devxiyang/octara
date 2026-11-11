@@ -2428,7 +2428,7 @@
           "path": "octara::icon::Icon::svg",
           "kind": "assoc_fn",
           "sig": "pub fn svg(source: &str) -> Result<Icon, IconError>",
-          "docs": "An icon from SVG source: `<path>`, `<rect>`, `<circle>`, `<ellipse>`, `<line>`,\n`<polyline>`, `<polygon>` in `<g>` groups, with `fill`, `stroke`, `stroke-width`,\n`stroke-linecap`, `stroke-linejoin`, `stroke-miterlimit`, `fill-rule` and `transform`.\nColors are ignored: the icon takes the text color.",
+          "docs": "An icon from SVG source: `<path>`, `<rect>`, `<circle>`, `<ellipse>`, `<line>`,\n`<polyline>`, `<polygon>` in `<g>` groups, with `fill`, `stroke`, `stroke-width`,\n`stroke-linecap`, `stroke-linejoin`, `stroke-miterlimit`, `fill-rule` and `transform`.\nColors are ignored: the icon takes the text color. Needs the `svg` feature (default).",
           "file": "crates/octara/src/icon.rs"
         },
         {
