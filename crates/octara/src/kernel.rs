@@ -300,6 +300,8 @@ struct Node {
     /// its box (left, top, right, bottom): shadows, overflowing text and children. Painting and
     /// hit testing skip subtrees whose reach misses the clip.
     ink: Cell<[f32; 4]>,
+    /// The place last sent to assistive technology (`None`: not sent, or dropped since).
+    a11y_sent: Cell<Option<[f32; 6]>>,
     role: Option<Role>,
     parent: Option<NodeId>,
     children: Vec<NodeId>,
@@ -538,6 +540,16 @@ pub struct Kernel {
     last_frame: RefCell<Option<LastFrame>>,
     /// Display lists built (not reused), for tests and benchmarks.
     frames_built: Cell<u64>,
+    /// Nodes whose semantics or children changed since the last accessibility update.
+    a11y_dirty: RefCell<rustc_hash::FxHashSet<NodeId>>,
+    /// A layout ran since the last accessibility update (places may have changed).
+    a11y_geometry: Cell<bool>,
+    /// Assistive technology has the tree (updates can be incremental), at this scale.
+    a11y_live: Cell<bool>,
+    a11y_scale: Cell<f64>,
+    /// Debug builds: what assistive technology was sent, to check updates against the tree.
+    #[cfg(debug_assertions)]
+    a11y_mirror: RefCell<rustc_hash::FxHashMap<accesskit::NodeId, accesskit::Node>>,
     /// Layout passes run (a node created since the last one is not shown yet).
     layouts: u64,
     /// Nodes whose position and size move (`layout_motion`).
@@ -585,6 +597,12 @@ impl Kernel {
             paint_gen: 0,
             last_frame: RefCell::new(None),
             frames_built: Cell::new(0),
+            a11y_dirty: RefCell::default(),
+            a11y_geometry: Cell::new(true),
+            a11y_live: Cell::new(false),
+            a11y_scale: Cell::new(1.0),
+            #[cfg(debug_assertions)]
+            a11y_mirror: RefCell::default(),
             layouts: 0,
             framed: rustc_hash::FxHashSet::default(),
             ghosts: Vec::new(),
@@ -686,7 +704,32 @@ impl Kernel {
         }
     }
 
+    /// `id`'s semantics or children changed: the next accessibility update sends it.
+    fn a11y_touch(&self, id: NodeId) {
+        self.a11y_dirty.borrow_mut().insert(id);
+    }
+    /// `parent`'s shown children changed (the overlay layer, shown only with children, changes
+    /// the root's).
+    fn a11y_children_changed(&self, parent: NodeId) {
+        self.a11y_touch(parent);
+        if parent == self.overlay_layer {
+            self.a11y_touch(self.root);
+        }
+    }
+    /// `id`'s subtree left the accessibility tree: if it comes back, it is sent whole.
+    fn a11y_forget(&self, id: NodeId) {
+        let mut stack = vec![id];
+        while let Some(n) = stack.pop() {
+            let node = self.node(n);
+            node.a11y_sent.set(None);
+            stack.extend(node.children.iter().copied());
+        }
+    }
+
     fn changed(&mut self, id: NodeId, d: Dirty, prop: &'static str, value: impl FnOnce() -> String) {
+        if d.contains(Dirty::SEMANTICS) {
+            self.a11y_touch(id);
+        }
         self.counters.prop_changes += 1;
         self.mark(d);
         if self.log.is_some() {
@@ -778,6 +821,7 @@ impl Kernel {
         let id = self.nodes.insert(Node {
             content,
             ink: Cell::new([0.0; 4]),
+            a11y_sent: Cell::new(None),
             role: None,
             parent: None,
             children: Vec::new(),
@@ -847,6 +891,8 @@ impl Kernel {
         }
         self.begin_enter(child);
         self.counters.structural_ops += 1;
+        self.a11y_children_changed(parent);
+        self.a11y_forget(child);
         self.mark(Dirty::LAYOUT | Dirty::SEMANTICS);
         self.record(child, OpKind::Insert { parent, index });
     }
@@ -894,6 +940,8 @@ impl Kernel {
             self.refresh_taffy_node(parent);
         }
         self.counters.structural_ops += 1;
+        self.a11y_children_changed(parent);
+        self.a11y_forget(child);
         self.mark(Dirty::LAYOUT | Dirty::SEMANTICS);
         self.record(child, OpKind::Remove { parent });
     }
@@ -912,6 +960,7 @@ impl Kernel {
         self.taffy.remove_child_at_index(pt, pos).expect("taffy");
         self.taffy.insert_child_at_index(pt, index, ct).expect("taffy");
         self.counters.structural_ops += 1;
+        self.a11y_children_changed(parent);
         self.mark(Dirty::LAYOUT | Dirty::SEMANTICS);
         self.record(child, OpKind::Move { index });
     }
@@ -1153,6 +1202,10 @@ impl Kernel {
             return false;
         }
         self.node_mut(id).hidden = hidden;
+        if let Some(p) = self.node(id).parent {
+            self.a11y_children_changed(p);
+        }
+        self.a11y_forget(id);
         self.changed(id, Dirty::SEMANTICS, "hidden", || hidden.to_string());
         true
     }
@@ -1263,6 +1316,8 @@ impl Kernel {
         if *slot != handler {
             *slot = handler;
             self.counters.handler_sets += 1;
+            // What it can do is part of what assistive technology reads.
+            self.a11y_touch(id);
         }
     }
 
@@ -1467,6 +1522,13 @@ impl Kernel {
         let mut dirty = Dirty::empty();
         if layout_changed {
             dirty |= Dirty::LAYOUT;
+            // Shown or not changes what assistive technology sees under the parent.
+            if (layout.display == taffy::Display::None) != (self.node(id).layout.display == taffy::Display::None) {
+                if let Some(p) = self.node(id).parent {
+                    self.a11y_children_changed(p);
+                }
+                self.a11y_forget(id);
+            }
             self.taffy.set_style(t, layout.clone()).expect("taffy");
         }
         if visual != old_visual {
@@ -1519,6 +1581,7 @@ impl Kernel {
         }
         self.needs_layout = false;
         self.ink_dirty.set(true);
+        self.a11y_geometry.set(true);
         self.paint_gen += 1;
         self.layouts += 1;
         self.clamp_scrolls();
@@ -1666,6 +1729,7 @@ impl Kernel {
             return false;
         }
         self.node_mut(id).scroll = to;
+        self.a11y_touch(id);
         if !self.anchored.is_empty() {
             // Overlays anchored inside may need to move.
             self.needs_layout = true;
@@ -1685,6 +1749,7 @@ impl Kernel {
     pub fn scroll_to_unclamped(&mut self, id: NodeId, x: f32, y: f32) {
         if self.node(id).scroll != (x, y) {
             self.node_mut(id).scroll = (x, y);
+            self.a11y_touch(id);
             self.changed(id, Dirty::PAINT, "scroll", || format!("{:?}", (x, y)));
         }
     }

@@ -349,6 +349,8 @@ impl Kernel {
         self.ghosts.push(id);
         self.moving.insert(id);
         self.counters.structural_ops += 1;
+        self.a11y_touch(parent);
+        self.a11y_forget(id);
         self.mark(super::Dirty::LAYOUT | super::Dirty::SEMANTICS);
         self.record(id, super::OpKind::Remove { parent });
         true
@@ -402,7 +404,7 @@ impl Kernel {
     }
 
     /// A node's position relative to its parent and its size, as shown now.
-    fn shown_frame(&self, id: NodeId) -> (f32, f32, f32, f32) {
+    pub(crate) fn shown_frame(&self, id: NodeId) -> (f32, f32, f32, f32) {
         let n = self.node(id);
         if let Some(f) = n.anim.as_ref().and_then(|a| a.frame.as_ref())
             && f.iter().any(|tr| tr.moving(self.now))

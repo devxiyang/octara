@@ -71,3 +71,87 @@ fn a_value_is_announced_for_any_control() {
     let node = tree.nodes.iter().find(|(i, _)| *i == a11y_id(theme)).unwrap();
     assert_eq!(node.1.value(), Some("Dark"));
 }
+
+/// A view where every kind of change happens: text, labels, states, structure, order, scroll,
+/// overlays, motion.
+fn busy() -> View {
+    let count = state("count", || 0);
+    let open = state("open", || false);
+    let menu = state("menu", || false);
+    let items = list("items", || (0..20u32).collect::<Vec<_>>(), |i| *i);
+    let next = state("next", || 20u32);
+    col()
+        .size_full()
+        .child(text(move || format!("Count {}", count.get())).id("count"))
+        .child(
+            el().id("inc")
+                .size_8()
+                .role(Role::Button)
+                .label(move || format!("Add one to {}", count.get()))
+                .on_press(move || count.update(|n| *n += 1))
+                .bg(move || if count.get() % 2 == 0 { Token::Surface } else { Token::Accent })
+                .motion(Spring::SNAP),
+        )
+        .child(el().id("toggle").size_8().role(Role::Button).label("Toggle").on_press(move || open.update(|o| *o = !*o)))
+        .child(show(move || open.get(), || col().id("panel").child(text("Inside")).child(el().id("deep").role(Role::Button).label("Deep").on_press(|| {})).into()))
+        .child(el().id("add").size_8().role(Role::Button).label("Add").on_press(move || {
+            let n = next.get();
+            next.set(n + 1);
+            items.insert(0, n);
+        }))
+        .child(el().id("drop").size_8().role(Role::Button).label("Drop").on_press(move || {
+            if let Some(k) = items.last_key() {
+                items.remove(&k);
+            }
+        }))
+        .child(
+            el().id("menu-button")
+                .size_8()
+                .role(Role::Button)
+                .label("Menu")
+                .on_press(move || menu.update(|m| *m = !*m))
+                .overlay(move || menu.get(), Placement::BELOW, || text("A menu item").id("menu-item").into()),
+        )
+        .child(col().id("list").h(100).overflow_y_scroll().child(each(move || items.source(), |i, _| text(format!("Item {i}")).h(30).into())))
+        .into()
+}
+
+#[test]
+fn updates_send_only_what_changed() {
+    let mut app = App::new(busy);
+    let full = app.accessibility_update(2.0);
+    assert!(full.tree.is_some() && full.nodes.len() > 10, "the first update is the whole tree");
+    let quiet = app.accessibility_update(2.0);
+    assert!(quiet.nodes.is_empty(), "nothing changed: nothing sent");
+
+    // Every update below is checked against the whole tree in debug builds.
+    let sizes = |app: &mut App, what: &str, op: &dyn Fn(&mut App)| {
+        op(app);
+        let u = app.accessibility_update(2.0);
+        assert!(u.tree.is_none(), "{what}: incremental");
+        u.nodes.len()
+    };
+    let n = sizes(&mut app, "press", &|a| a.tap("inc").unwrap());
+    assert!(n <= 3, "a press sends the text and the button: {n}");
+    app.advance(std::time::Duration::from_secs(1));
+    sizes(&mut app, "motion settles", &|_| {});
+    let shown = sizes(&mut app, "show", &|a| a.tap("toggle").unwrap());
+    assert!(shown >= 4, "the panel's subtree is new: {shown}");
+    sizes(&mut app, "hide", &|a| a.tap("toggle").unwrap());
+    sizes(&mut app, "show again", &|a| a.tap("toggle").unwrap());
+    sizes(&mut app, "insert", &|a| a.tap("add").unwrap());
+    sizes(&mut app, "remove", &|a| a.tap("drop").unwrap());
+    let list = app.kernel().find("list").unwrap();
+    let scrolled = sizes(&mut app, "scroll", &|a| {
+        assert!(a.kernel_mut().scroll_to(list, 0.0, 60.0));
+    });
+    assert_eq!(scrolled, 1, "a scroll moves only the container's space");
+    sizes(&mut app, "overlay", &|a| a.tap("menu-button").unwrap());
+    sizes(&mut app, "overlay closes", &|a| a.tap("menu-button").unwrap());
+    sizes(&mut app, "resize", &|a| a.resize(500.0, 400.0));
+    sizes(&mut app, "theme", &|a| a.set_theme(Theme::dark()));
+
+    // Restarting sends the whole tree again.
+    app.restart_accessibility();
+    assert!(app.accessibility_update(2.0).tree.is_some());
+}

@@ -66,7 +66,10 @@ inspect                          snapshots, scripts, `check` (the agent's protoc
    canvases, glyphs, paths, clips, opacity layers), with moving properties sampled at the app's
    time, skipping subtrees that cannot show; unchanged and at rest, the last one is reused.
    Renderers draw it.
-5. The shell rebuilds the accessibility tree for AccessKit when assistive technology is active.
+5. When assistive technology is active, the shell sends AccessKit what changed: nodes whose
+   semantics, children or place changed, and subtrees new to it. Each node is placed in its
+   parent's space (a scroll container's offset is its own), so moving or scrolling sends one
+   node, not its subtree.
 
 ## Kernel
 
@@ -127,8 +130,9 @@ owned by scopes on the app clock ([async](design/async.md)).
 - **Frames cost what shows.** Painting and hit testing skip subtrees whose drawing cannot reach
   the clip (each node knows how far its drawing reaches past its box), and a frame with nothing
   changed and nothing moving reuses the last display list (`bench -- --frames`: 0 µs idle,
-  about 70 µs for a 5000-node list after a change, release build). The accessibility tree is
-  still built whole.
+  about 70 µs for a 5000-node list after a change, release build). Accessibility updates are
+  incremental (4 nodes and about 40 µs after a press in that list, against 0.4 ms for the whole
+  tree). Debug builds check both against a full rebuild every time they are reused or sent.
 - **Native views** are designed, not built ([Native Island](design/native-island.md)).
 
 ## Out of scope

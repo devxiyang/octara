@@ -67,6 +67,18 @@ impl App {
         self.ui.kernel.borrow().accessibility_tree(focus, scale)
     }
 
+    /// What changed for assistive technology since the last update (the whole tree the first
+    /// time, and after [`restart_accessibility`](Self::restart_accessibility)).
+    pub fn accessibility_update(&self, scale: f64) -> accesskit::TreeUpdate {
+        let focus = self.interaction.borrow().focused;
+        self.ui.kernel.borrow().accessibility_update(focus, scale)
+    }
+
+    /// The next accessibility update is the whole tree (the platform asked for it again).
+    pub fn restart_accessibility(&self) {
+        self.ui.kernel.borrow().restart_accessibility();
+    }
+
     /// Performs an action assistive technology asked for. Returns whether it did anything.
     pub fn accessibility_action(
         &mut self,

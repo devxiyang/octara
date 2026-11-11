@@ -237,7 +237,7 @@ impl Shell {
         }
         let scale = self.scale() as f64;
         if let (Some(a11y), Some(app)) = (&mut self.a11y, &self.app) {
-            a11y.update_if_active(|| app.accessibility_tree(scale));
+            a11y.update_if_active(|| app.accessibility_update(scale));
         }
     }
 
@@ -397,7 +397,8 @@ impl ApplicationHandler<ShellEvent> for Shell {
         match e.window_event {
             accesskit_winit::WindowEvent::InitialTreeRequested => {
                 if let (Some(a11y), Some(app)) = (&mut self.a11y, &self.app) {
-                    a11y.update_if_active(|| app.accessibility_tree(scale));
+                    app.restart_accessibility();
+                    a11y.update_if_active(|| app.accessibility_update(scale));
                 }
             }
             accesskit_winit::WindowEvent::ActionRequested(req) => {

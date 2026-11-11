@@ -244,8 +244,8 @@ fn streaming_text() {
 /// tree with nothing changed, and after one press (min of 3 runs of 20 frames, µs per frame).
 fn frames() {
     println!("## frame: display list and accessibility tree, layout ON (µs per frame, min of 3)\n");
-    println!("| app | nodes | items | display list (idle) | press + display list | a11y tree (idle) |");
-    println!("| --- | ---: | ---: | ---: | ---: | ---: |");
+    println!("| app | nodes | items | display list (idle) | press + display list | a11y tree (whole) | a11y update after a press (nodes) |");
+    println!("| --- | ---: | ---: | ---: | ---: | ---: | ---: |");
     type Case = (&'static str, fn() -> View, &'static str);
     let cases: [Case; 4] = [
         ("todo 1000", || apps::todo(1000), "toggle-1"),
@@ -282,7 +282,20 @@ fn frames() {
             }
             a11y = a11y.min(t0.elapsed().as_secs_f64() * 1e6 / 20.0);
         }
-        println!("| {name} | {nodes} | {items} | {idle:.0} | {pressed:.0} | {a11y:.0} |");
+        // Incremental: after a press, what the platform is sent (the press itself not timed).
+        let _ = app.accessibility_update(2.0);
+        let (mut update, mut sent) = (f64::MAX, 0);
+        for _ in 0..3 {
+            let mut total = 0.0;
+            for _ in 0..20 {
+                let _ = app.tap(target);
+                let t0 = Instant::now();
+                sent = std::hint::black_box(app.accessibility_update(2.0)).nodes.len();
+                total += t0.elapsed().as_secs_f64();
+            }
+            update = update.min(total * 1e6 / 20.0);
+        }
+        println!("| {name} | {nodes} | {items} | {idle:.0} | {pressed:.0} | {a11y:.0} | {update:.0} ({sent}) |");
     }
     println!();
 }

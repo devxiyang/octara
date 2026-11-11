@@ -29,6 +29,7 @@ impl Kernel {
     pub fn set_modal(&mut self, id: NodeId, modal: Option<bool>) {
         if self.node(id).modal != modal {
             self.node_mut(id).modal = modal;
+            self.a11y_touch(id);
             self.mark(super::Dirty::SEMANTICS);
         }
     }

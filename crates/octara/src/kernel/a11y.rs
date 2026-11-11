@@ -17,29 +17,152 @@ impl Kernel {
         self.is_alive(n).then_some(n)
     }
 
-    /// The whole tree as an AccessKit update. Bounds are in logical pixels; the window node
-    /// carries the `scale` to device pixels. `focus` is the focused node (else the window).
+    /// The whole tree as an AccessKit update (a snapshot: it does not change what
+    /// [`accessibility_update`](Self::accessibility_update) sends next). `focus` is the focused
+    /// node (else the window); the window node carries the `scale` to device pixels. Each node's
+    /// transform places it in its parent (a scroll container's offset is its own), and its bounds
+    /// are in its own space.
     pub fn accessibility_tree(&self, focus: Option<NodeId>, scale: f64) -> ak::TreeUpdate {
         let mut nodes = Vec::new();
-        self.a11y_node(self.root, &mut nodes);
-        if let Some((_, root)) = nodes.iter_mut().find(|(id, _)| *id == a11y_id(self.root)) {
-            root.set_transform(ak::Affine::scale(scale));
-        }
+        self.a11y_subtree(self.root, scale, &mut nodes, &mut |_, _| {});
         let focus = focus.filter(|n| self.is_alive(*n)).unwrap_or(self.root);
         ak::TreeUpdate { nodes, tree: Some(ak::TreeInfo::new(a11y_id(self.root))), tree_id: ak::TreeId::ROOT, focus: a11y_id(focus) }
     }
 
-    fn shown_to_a11y(&self, id: NodeId) -> bool {
+    /// What changed for assistive technology since the last update: the nodes whose semantics,
+    /// children or place changed, and subtrees new to it. The first update (and the first after
+    /// [`restart_accessibility`](Self::restart_accessibility)) is the whole tree.
+    pub fn accessibility_update(&self, focus: Option<NodeId>, scale: f64) -> ak::TreeUpdate {
+        let focus = a11y_id(focus.filter(|n| self.is_alive(*n)).unwrap_or(self.root));
+        if !self.a11y_live.get() || self.a11y_scale.get() != scale {
+            self.a11y_live.set(true);
+            self.a11y_scale.set(scale);
+            self.a11y_dirty.borrow_mut().clear();
+            let mut nodes = Vec::new();
+            self.a11y_subtree(self.root, scale, &mut nodes, &mut |id, g| self.node(id).a11y_sent.set(Some(g)));
+            #[cfg(debug_assertions)]
+            {
+                *self.a11y_mirror.borrow_mut() = nodes.iter().cloned().collect();
+            }
+            return ak::TreeUpdate { nodes, tree: Some(ak::TreeInfo::new(a11y_id(self.root))), tree_id: ak::TreeId::ROOT, focus };
+        }
+        let mut dirty: Vec<NodeId> = self.a11y_dirty.borrow_mut().drain().collect();
+        // A layout (or motion) may have moved anything: compare each sent node's place.
+        if self.a11y_geometry.replace(false) || !self.at_rest() {
+            self.a11y_moved(self.root, &mut dirty);
+        }
+        dirty.sort();
+        dirty.dedup();
+        let mut nodes = Vec::new();
+        let mut sent = rustc_hash::FxHashSet::default();
+        for id in dirty {
+            if self.is_alive(id) && self.a11y_reachable(id) && !sent.contains(&id) {
+                self.a11y_emit(id, scale, &mut nodes, &mut sent);
+            }
+        }
+        #[cfg(debug_assertions)]
+        self.a11y_verify(&nodes, scale);
+        ak::TreeUpdate { nodes, tree: None, tree_id: ak::TreeId::ROOT, focus }
+    }
+
+    /// The next [`accessibility_update`](Self::accessibility_update) sends the whole tree (the
+    /// platform asked for it again).
+    pub fn restart_accessibility(&self) {
+        self.a11y_live.set(false);
+    }
+
+    /// Sends `id` and the subtrees of its children assistive technology has not seen.
+    fn a11y_emit(&self, id: NodeId, scale: f64, out: &mut Vec<(ak::NodeId, ak::Node)>, sent: &mut rustc_hash::FxHashSet<NodeId>) {
+        let (node, g, children) = self.a11y_build(id, scale);
+        self.node(id).a11y_sent.set(Some(g));
+        sent.insert(id);
+        out.push((a11y_id(id), node));
+        for c in children {
+            if self.node(c).a11y_sent.get().is_none() && !sent.contains(&c) {
+                self.a11y_emit(c, scale, out, sent);
+            }
+        }
+    }
+
+    /// Nodes already sent whose place changed.
+    fn a11y_moved(&self, id: NodeId, out: &mut Vec<NodeId>) {
+        let n = self.node(id);
+        let Some(was) = n.a11y_sent.get() else { return };
+        if was != self.a11y_geometry_of(id) {
+            out.push(id);
+        }
+        for &c in &n.children {
+            if self.shown_to_a11y(c) {
+                self.a11y_moved(c, out);
+            }
+        }
+    }
+
+    /// Whether `id` is in the tree assistive technology sees (shown, and its ancestors too).
+    fn a11y_reachable(&self, id: NodeId) -> bool {
+        let mut at = id;
+        loop {
+            if at != self.root && !self.shown_to_a11y(at) {
+                return false;
+            }
+            match self.node(at).parent {
+                Some(p) => at = p,
+                None => return at == self.root,
+            }
+        }
+    }
+
+    /// A node's place in its parent's space and its scroll: what its transform and bounds come
+    /// from.
+    fn a11y_geometry_of(&self, id: NodeId) -> [f32; 6] {
+        let (x, y, w, h) = if id == self.root { (0.0, 0.0, self.viewport.0, self.viewport.1) } else { self.shown_frame(id) };
+        let (sx, sy) = self.node(id).scroll;
+        [x, y, w, h, sx, sy]
+    }
+
+    /// `id` and its shown descendants, with `seen` called for each node and its geometry.
+    fn a11y_subtree(&self, id: NodeId, scale: f64, out: &mut Vec<(ak::NodeId, ak::Node)>, seen: &mut dyn FnMut(NodeId, [f32; 6])) {
+        let (node, g, children) = self.a11y_build(id, scale);
+        seen(id, g);
+        out.push((a11y_id(id), node));
+        for c in children {
+            self.a11y_subtree(c, scale, out, seen);
+        }
+    }
+
+    /// Debug builds: what was sent so far, applied in order, is the whole tree now.
+    #[cfg(debug_assertions)]
+    fn a11y_verify(&self, update: &[(ak::NodeId, ak::Node)], scale: f64) {
+        let mut mirror = self.a11y_mirror.borrow_mut();
+        for (id, n) in update {
+            mirror.insert(*id, n.clone());
+        }
+        let mut full = Vec::new();
+        self.a11y_subtree(self.root, scale, &mut full, &mut |_, _| {});
+        for (id, n) in &full {
+            debug_assert_eq!(mirror.get(id), Some(n), "assistive technology was not told about a change to {:?}", self.node_of_a11y(*id).map(|n| self.describe(n)));
+        }
+        let live: rustc_hash::FxHashSet<ak::NodeId> = full.iter().map(|(id, _)| *id).collect();
+        mirror.retain(|id, _| live.contains(id));
+    }
+
+    pub(crate) fn shown_to_a11y(&self, id: NodeId) -> bool {
         let n = self.node(id);
         let empty_layer = id == self.overlay_layer && n.children.is_empty();
         !n.hidden && !empty_layer && n.layout.display != taffy::Display::None
     }
 
-    fn a11y_node(&self, id: NodeId, out: &mut Vec<(ak::NodeId, ak::Node)>) {
+    /// One node for AccessKit, its geometry, and its shown children.
+    fn a11y_build(&self, id: NodeId, scale: f64) -> (ak::Node, [f32; 6], Vec<NodeId>) {
         let n = self.node(id);
         let mut node = ak::Node::new(if id == self.root { Role::Window } else { self.role(id) });
-        let (x, y, w, h) = self.shown_rect(id);
-        node.set_bounds(ak::Rect { x0: x as f64, y0: y as f64, x1: (x + w) as f64, y1: (y + h) as f64 });
+        // Placed in the parent's space; a scroll container's space moves with its offset, so its
+        // children keep their transforms while it scrolls.
+        let g = self.a11y_geometry_of(id);
+        let [x, y, w, h, sx, sy] = g.map(f64::from);
+        let place = ak::Affine::translate((x - sx, y - sy));
+        node.set_transform(if id == self.root { ak::Affine::scale(scale) * place } else { place });
+        node.set_bounds(ak::Rect { x0: sx, y0: sy, x1: sx + w, y1: sy + h });
         // The name: an explicit label, else a text's own text.
         if let Some(label) = &n.label {
             node.set_label(label.as_str());
@@ -82,10 +205,7 @@ impl Kernel {
         }
         let children: Vec<NodeId> = n.children.iter().copied().filter(|c| self.shown_to_a11y(*c)).collect();
         node.set_children(children.iter().map(|c| a11y_id(*c)).collect::<Vec<_>>());
-        out.push((a11y_id(id), node));
-        for c in children {
-            self.a11y_node(c, out);
-        }
+        (node, g, children)
     }
 }
 
