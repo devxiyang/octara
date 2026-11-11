@@ -362,6 +362,13 @@ impl El {
         self
     }
 
+    /// Style while input is touch (iOS, Android): touch sizes for controls, as a coarse-pointer
+    /// media query does. Resolved by the kernel when the platform changes: no closure reruns.
+    pub fn when_touch(mut self, f: impl FnOnce(Patch) -> Patch) -> Self {
+        self.overrides.push((When::Touch, f(Patch::default()).0));
+        self
+    }
+
     // ---- window size classes (smallest first) ----
 
     /// Style from size class `bp` up. Resolved by the kernel when the window crosses a class

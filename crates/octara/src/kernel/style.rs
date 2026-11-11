@@ -38,11 +38,14 @@ bitflags! {
     }
 }
 
-/// When an override applies: from a breakpoint up, or while a state is on. Screen overrides
-/// apply first (smallest first), then states, so interaction feedback shows at every size.
+/// When an override applies: from a breakpoint up, on touch input, or while a state is on.
+/// Screen overrides apply first (smallest first), then touch, then states, so interaction
+/// feedback shows at every size.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum When {
     Screen(Breakpoint),
+    /// While input is touch (the app runs on iOS or Android): controls take their touch sizes.
+    Touch,
     State(State),
     /// While an ancestor of this group name (`group`) is hovered (GPUI's `group_hover`).
     GroupHover(&'static str),

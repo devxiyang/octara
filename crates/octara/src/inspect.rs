@@ -458,15 +458,29 @@ pub fn run_script(app: &mut App, script: &str) -> Vec<(usize, Reply)> {
 /// The check report schema.
 pub const CHECK_SCHEMA: &str = "octara.check/1";
 
-/// One window size to check at.
+/// One window size to check at, on a platform.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Size {
     pub name: String,
     pub width: f32,
     pub height: f32,
-    /// Input is touch here: targets must be large enough for a finger.
-    #[serde(default)]
-    pub touch: bool,
+    /// `ios`, `android`, `macos`, `windows` or `linux`: its controls' sizes and its minimum
+    /// target (44 × 44 on touch, 24 × 24 with a pointer).
+    pub platform: String,
+}
+
+/// A platform by its `check` name.
+pub fn platform(name: &str) -> Option<crate::app::Platform> {
+    use crate::app::Platform;
+    Some(match name {
+        "ios" => Platform::Ios,
+        "android" => Platform::Android,
+        "macos" => Platform::MacOs,
+        "windows" => Platform::Windows,
+        "linux" => Platform::Linux,
+        _ => return None,
+    })
 }
 
 /// A finding the app accepts, with the reason (`[package.metadata.octara] accept`).
@@ -495,8 +509,8 @@ impl Default for CheckOptions {
     fn default() -> Self {
         CheckOptions {
             sizes: vec![
-                Size { name: "phone".into(), width: 390.0, height: 844.0, touch: true },
-                Size { name: "desktop".into(), width: 1280.0, height: 800.0, touch: false },
+                Size { name: "phone".into(), width: 390.0, height: 844.0, platform: "ios".into() },
+                Size { name: "desktop".into(), width: 1280.0, height: 800.0, platform: "macos".into() },
             ],
             themes: vec!["light".into(), "dark".into()],
             accept: Vec::new(),
@@ -548,9 +562,9 @@ impl CheckReport {
 /// How long `check` lets the app settle, in app time.
 pub const SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Mounts `view` fresh at each theme and size, lets it settle, and judges it: layout issues,
-/// diagnostics, work that does not settle, and accessibility (names, contrast, and touch target
-/// sizes where input is touch).
+/// Mounts `view` fresh at each theme and size, on the size's platform, lets it settle, and
+/// judges it: layout issues, diagnostics, work that does not settle, and accessibility (names,
+/// contrast, and targets under the platform's minimum).
 pub fn check(view: fn() -> crate::view::View, opts: &CheckOptions) -> CheckReport {
     let mut findings: Vec<Finding> = Vec::new();
     let mut cells = Vec::new();
@@ -559,6 +573,8 @@ pub fn check(view: fn() -> crate::view::View, opts: &CheckOptions) -> CheckRepor
             let cell = format!("{theme}/{}", size.name);
             cells.push(cell.clone());
             let mut app = App::new(view);
+            let platform = platform(&size.platform).unwrap_or(crate::app::Platform::current());
+            app.set_platform(platform);
             app.set_theme(if theme == "dark" { crate::kernel::Theme::dark() } else { crate::kernel::Theme::light() });
             app.resize(size.width, size.height);
             let mut found = issues(&app);
@@ -574,7 +590,7 @@ pub fn check(view: fn() -> crate::view::View, opts: &CheckOptions) -> CheckRepor
             }
             // After settling, what the app shows at rest.
             found = issues(&app).into_iter().chain(found.into_iter().filter(|i| i.code == codes::NOT_SETTLED.id)).collect();
-            found.extend(app.kernel().accessibility_issues(size.touch).into_iter().map(|i| Issue {
+            found.extend(app.kernel().accessibility_issues().into_iter().map(|i| Issue {
                 code: i.code.id.into(),
                 severity: severity_name(i.code.severity).into(),
                 message: i.message,
@@ -674,10 +690,13 @@ pub fn main(view: fn() -> crate::view::View) {
     };
     match args.first().map(String::as_str) {
         Some("check") => {
-            let opts = match flag("--options") {
+            let opts: CheckOptions = match flag("--options") {
                 Some(json) => serde_json::from_str(&json).unwrap_or_else(|e| fail(format!("--options: {e}"))),
                 None => CheckOptions::default(),
             };
+            if let Some(s) = opts.sizes.iter().find(|s| platform(&s.platform).is_none()) {
+                fail(format!("size `{}`: unknown platform `{}` (ios, android, macos, windows, linux)", s.name, s.platform));
+            }
             println!("{}", check(view, &opts).to_json());
         }
         Some("inspect") => {

@@ -157,7 +157,7 @@ Basis: [input research](research/input.md), [input design](design/input.md). Con
       replaced by `Event::Send`; the shell wakes through an event-loop proxy
 - [ ] After async: resource deduplication cache, deferred placeholders, record and replay at the loopback, forbidding real time in tests, stream backpressure and coalescing
 - [ ] Collection operators `map`, `join`; once `map` lands, remove the duplicate per-entry Signals in flattening
-- [ ] Scroll containers, `image`, `icon`
+- [ ] `icon` (scroll containers and images are done)
 - [x] Animation step 1: the `motion` module — `Spring::new(duration, bounce)` (the SwiftUI / Rune mapping) and named presets, analytic tracks (same value at any frame rate,
       retargeting keeps position and velocity, the rest time is computed when a segment is built), `PropClass` (rest threshold and reduced motion)
 - [x] Animation step 2 ([Animation](design/animation.md), confirmed: declared on the element, inherited by the subtree): `.motion(..)` / `motion_none` / `color_motion` /
@@ -214,8 +214,12 @@ Basis: [input research](research/input.md), [input design](design/input.md). Con
         do not shrink by default; the cards now `flex_shrink()`); todo and contacts checkboxes got labels; the dark theme's
         accent fill is blue-600 / hover blue-700 (white on blue-500 was 3.68:1) and the light theme's muted text a shade
         darker (4.40:1 on Surface); a test keeps every text token at 4.5:1 on its surfaces in both themes
-  - [ ] Touch target size: the kit's controls are 32 px tall, so every control is `SMALL_TARGET` on phones (needs a decision:
-        a minimum interactive size on touch, as in Compose, or kit sizes by density)
+  - [x] Target sizes, as Exact does it (confirmed): no runtime enlargement; controls are sized for the platform and `check`
+        flags the ones that are not. `When::Touch` / `when_touch(..)` styles apply on iOS and Android (`Platform::is_touch`;
+        `set_platform` re-resolves, no closure reruns); the kit's buttons, fields and selects take 44 px on touch, and the
+        checkbox and switch are a press area around their visual (hugging it with a pointer, 44 × 44 on touch). `check` cells
+        name a platform (phone: `ios`, desktop: `macos`); `SMALL_TARGET` asks 44 × 44 on touch and 24 × 24 with a pointer
+        unless no other control's center is within 24 (WCAG 2.5.8)
   - [ ] Example ids (how an item is used in the examples), recipes and byte limits, `octara new` (calls `skill install`), MCP, llms.txt, evaluation
 - [ ] Inspector protocol; causal tracing in the reactive layer (currently only down to the cause id of kernel operations)
 - [ ] Window and GPU rendering; a real text stack (Parley) and per-paragraph incremental layout

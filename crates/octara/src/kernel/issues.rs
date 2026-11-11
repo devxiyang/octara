@@ -219,22 +219,62 @@ impl Kernel {
     }
 }
 
-/// A touch target's minimum side (Apple's 44 pt; Material asks 48 dp).
-pub const MIN_TARGET: f32 = 44.0;
+/// A touch target's minimum side (Apple's 44 pt; Exact asks the same on touch screens).
+pub const MIN_TOUCH_TARGET: f32 = 44.0;
+/// `(x, y, width, height)` in logical pixels.
+type Rect = (f32, f32, f32, f32);
+
+/// A pointer target's minimum side (WCAG 2.5.8), unless it is spaced that far from the others.
+pub const MIN_POINTER_TARGET: f32 = 24.0;
 
 impl Kernel {
-    /// Accessibility problems in the last layout: controls without a name, text without enough
-    /// contrast and, where input is touch (`touch`), targets smaller than 44 × 44.
-    pub fn accessibility_issues(&self, touch: bool) -> Vec<LayoutIssue> {
+    /// Accessibility problems in the last layout (as Exact judges them): controls without a name,
+    /// text without enough contrast, and targets under the platform's minimum — 44 × 44 on touch,
+    /// 24 × 24 with a pointer unless no other control's center is within 24 (WCAG 2.5.8).
+    pub fn accessibility_issues(&self) -> Vec<LayoutIssue> {
         let mut out = Vec::new();
+        let mut controls = Vec::new();
         let page = self.theme().get(crate::kernel::Token::Background);
-        self.a11y_check(self.root, Some(page), touch, &mut out);
+        self.a11y_check(self.root, Some(page), &mut controls, &mut out);
+        let (min, spaced_ok) = if self.touch { (MIN_TOUCH_TARGET, false) } else { (MIN_POINTER_TARGET, true) };
+        let center = |(x, y, w, h): (f32, f32, f32, f32)| (x + w / 2.0, y + h / 2.0);
+        for &(id, rect) in &controls {
+            let (.., w, h) = rect;
+            if w >= min - TOLERANCE && h >= min - TOLERANCE {
+                continue;
+            }
+            let (cx, cy) = center(rect);
+            let spaced = controls.iter().all(|&(o, r)| {
+                let (ox, oy) = center(r);
+                o == id || (ox - cx).hypot(oy - cy) >= min
+            });
+            if spaced_ok && spaced {
+                continue;
+            }
+            let how = if self.touch { "touch targets" } else { "pointer targets this close to others" };
+            out.push(self.issue(
+                id,
+                &codes::SMALL_TARGET,
+                format!("{} is {w} × {h} px; {how} need {min} × {min}", self.name(id)),
+                if self.touch {
+                    "make its box at least 44 × 44: padding, or `min_w(44.0).min_h(44.0)` (`when_touch(..)` keeps the desktop size)"
+                } else {
+                    "make its box at least 24 × 24 (padding, or `min_w` / `min_h`), or space it from its neighbors"
+                },
+            ));
+        }
         out
     }
 
     /// `under`: the solid color behind this node, `None` where it is a gradient or an image
     /// (contrast is not judged there).
-    fn a11y_check(&self, id: NodeId, under: Option<crate::kernel::Color>, touch: bool, out: &mut Vec<LayoutIssue>) {
+    fn a11y_check(
+        &self,
+        id: NodeId,
+        under: Option<crate::kernel::Color>,
+        controls: &mut Vec<(NodeId, Rect)>,
+        out: &mut Vec<LayoutIssue>,
+    ) {
         let n = self.node(id);
         if n.hidden || n.layout.display == taffy::Display::None {
             return;
@@ -268,13 +308,8 @@ impl Kernel {
                     "give it `.label(\"..\")` (a placeholder is not a name)",
                 ));
             }
-            if touch && !disabled && (w < MIN_TARGET - TOLERANCE || h < MIN_TARGET - TOLERANCE) {
-                out.push(self.issue(
-                    id,
-                    &codes::SMALL_TARGET,
-                    format!("{} is {w} × {h} px; touch targets need {MIN_TARGET} × {MIN_TARGET}", self.name(id)),
-                    "`min_w(44.0).min_h(44.0)`, or padding around a small visual",
-                ));
+            if !disabled {
+                controls.push((id, self.shown_rect(id)));
             }
         }
         if let Some(bg) = bg
@@ -297,7 +332,7 @@ impl Kernel {
             }
         }
         for &c in &n.children {
-            self.a11y_check(c, bg, touch, out);
+            self.a11y_check(c, bg, controls, out);
         }
     }
 

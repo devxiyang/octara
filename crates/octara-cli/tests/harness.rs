@@ -22,16 +22,16 @@ fn octara(args: &[&str], stdin: Option<&str>) -> (i32, String, String) {
 
 #[test]
 fn check_inspect_and_run_drive_the_app() {
-    // check: the counter's buttons are too small for touch; exit 1 with findings.
+    // check: the counter is clean at every theme and size (the kit's buttons take their touch
+    // size on the phone's platform).
     let (code, json, err) = octara(&["check", "--json"], None);
-    assert_eq!(code, 1, "{err}");
+    assert_eq!(code, 0, "{err}{json}");
     let report: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(report["schema"], "octara.check/1");
-    assert_eq!(report["clean"], false);
-    let small =
-        report["findings"].as_array().unwrap().iter().find(|f| f["code"] == "SMALL_TARGET" && f["id"] == "inc").expect("#inc is small");
-    assert_eq!(small["cells"], serde_json::json!(["light/phone", "dark/phone"]));
-    assert!(small["source"].as_str().unwrap().starts_with("examples/src/apps.rs:"), "sources are relative: {}", small["source"]);
+    assert_eq!(report["clean"], true);
+    assert_eq!(report["cells"], serde_json::json!(["light/phone", "light/desktop", "dark/phone", "dark/desktop"]));
+    let (code, text, _) = octara(&["check"], None);
+    assert_eq!((code, text.lines().last()), (0, Some("check: clean (light/phone, light/desktop, dark/phone, dark/desktop)")));
 
     // inspect: the semantic tree at a size.
     let (code, json, err) = octara(&["inspect", "--json", "--size", "390x844", "--theme", "dark"], None);
@@ -39,6 +39,7 @@ fn check_inspect_and_run_drive_the_app() {
     let snap: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!((snap["schema"].as_str(), snap["theme"].as_str()), (Some("octara.inspect/1"), Some("dark")));
     assert!(json.contains("\"id\": \"inc\""));
+    assert!(json.contains("\"source\": \"examples/src/apps.rs:"), "sources are relative to the workspace");
 
     // run: a script stops at the first failure.
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));

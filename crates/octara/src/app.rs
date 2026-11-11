@@ -74,6 +74,11 @@ impl Platform {
     pub fn is_apple(self) -> bool {
         matches!(self, Platform::MacOs | Platform::Ios)
     }
+    /// Input is a finger: controls take their touch sizes (`When::Touch`), and `octara check`
+    /// asks 44 × 44 targets.
+    pub fn is_touch(self) -> bool {
+        matches!(self, Platform::Ios | Platform::Android)
+    }
 }
 
 /// How the user last gave input: focus rings show only after the keyboard (Rune, GPUI).
@@ -162,6 +167,7 @@ impl App {
         };
         app.ui.viewport.set(Some(app.viewport));
         app.ui.breakpoint.set(Some(app.breakpoint));
+        app.ui.kernel.borrow_mut().set_touch(app.platform.get().is_touch());
         app.enter(|| app.mount_root());
         app
     }
@@ -509,8 +515,12 @@ impl App {
     pub fn platform(&self) -> Platform {
         self.platform.get()
     }
+    /// The platform whose conventions input follows: its keymap, and on touch platforms the
+    /// controls' touch sizes (`when_touch`).
     pub fn set_platform(&mut self, p: Platform) {
         self.platform.set(p);
+        self.ui.kernel.borrow_mut().set_touch(p.is_touch());
+        self.enter(|| self.settle_frame());
     }
     /// Holds an interaction state (`HOVER`, `FOCUSED`, `FOCUS_VISIBLE`, `PRESSED`) on or off, e.g. to check
     /// pressed styles; kept across hot reload. `SELECTED` and `DISABLED` come from props.

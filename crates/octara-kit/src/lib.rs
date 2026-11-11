@@ -41,6 +41,10 @@ where
 
 // ---- shared looks ----
 
+/// Controls are sized for the platform, as native controls are (Exact's rule): pointer sizes on
+/// desktop, at least 44 × 44 on touch.
+const TOUCH_TARGET: f32 = 44.0;
+
 /// Focus ring and disabled look shared by every interactive component.
 fn interactive(e: El) -> El {
     // Hover, press and focus shades ease in (Rune's kit: colors on a quick spring).
@@ -60,6 +64,8 @@ pub fn button(label: impl IntoProp<String>) -> El {
     interactive(text(label).role(Role::Button))
         .px_3()
         .py_1p5()
+        // 20 px of text and 12 px above and below: 44 on touch.
+        .when_touch(|p| p.px_4().py_3().min_w(TOUCH_TARGET))
         .rounded_md()
         .text_sm()
         .font_medium()
@@ -102,34 +108,65 @@ fn toggle_model(model: impl Model<bool>) -> (impl Fn() -> bool + 'static, impl F
     (move || r.get(), move || m.set(!m.get()))
 }
 
+/// The press area of a small control: the element that is focused, pressed and named, around
+/// the control's visual. It hugs the visual with a pointer and grows to 44 × 44 on touch (the
+/// visual stays its size, centered). Its border shows only as the focus ring.
+fn target(role: Role, visual: El) -> El {
+    el().role(role)
+        .child(visual)
+        .items_center()
+        .justify_center()
+        .color_motion(Spring::SNAP)
+        .focusable()
+        .border()
+        .border_color(Paint::Color(Color::TRANSPARENT))
+        .rounded_md()
+        .focus_visible(|p| p.border_color(Token::Focus))
+        .style_when(State::DISABLED, |p| p.opacity(0.5))
+        .when_touch(|p| p.min_w(TOUCH_TARGET).min_h(TOUCH_TARGET))
+}
+
 /// A checkbox bound to `checked`; `Event::Toggle` flips it.
 #[track_caller]
 pub fn checkbox(checked: impl Model<bool>) -> El {
     let (get, flip) = toggle_model(checked);
-    interactive(el().role(Role::CheckBox))
+    let get = Rc::new(get);
+    let shown = get.clone();
+    // The box itself carries `checked` too, for its look; it is hidden from assistive technology
+    // (the press area is the checkbox there).
+    let square = el()
         .size_4()
         .rounded_sm()
+        .border()
+        .border_color(Token::Border)
         .bg(Token::Background)
+        .color_motion(Spring::SNAP)
+        .checked(move || shown())
         .style_when(State::CHECKED, |p| p.bg(Token::Accent).border_color(Token::Accent))
-        .checked(get)
-        .on_toggle(flip)
+        .a11y_hidden();
+    target(Role::CheckBox, square).checked(move || get()).on_toggle(flip)
 }
 
 /// An on/off switch bound to `on`; `Event::Toggle` flips it.
 #[track_caller]
 pub fn switch(on: impl Model<bool>) -> El {
     let (get, flip) = toggle_model(on);
-    let thumb = el().size_4().rounded_full().bg(Token::Background).a11y_hidden();
-    interactive(el().child(thumb).role(Role::Switch))
+    let get = Rc::new(get);
+    let shown = get.clone();
+    let thumb = el().size_4().rounded_full().bg(Token::Background);
+    let track = el()
+        .child(thumb)
         .w_8()
         .h_5()
-        .p(1.0)
+        .p(2.0)
         .items_center()
         .rounded_full()
         .bg(Token::Border)
+        .color_motion(Spring::SNAP)
+        .checked(move || shown())
         .style_when(State::CHECKED, |p| p.bg(Token::Accent).justify_end())
-        .checked(get)
-        .on_toggle(flip)
+        .a11y_hidden();
+    target(Role::Switch, track).checked(move || get()).on_toggle(flip)
 }
 
 // ---- text field ----
@@ -142,6 +179,7 @@ pub fn text_field(value: impl Model<String>) -> El {
     interactive(text_input())
         .px_3()
         .py_1p5()
+        .when_touch(|p| p.py_3())
         .rounded_md()
         .text_sm()
         .bg(Token::Background)

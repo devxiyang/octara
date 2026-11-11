@@ -443,6 +443,8 @@ pub struct Kernel {
     anchored: Vec<NodeId>,
     viewport: (f32, f32),
     screen: Breakpoint,
+    /// Input is touch: `When::Touch` overrides apply.
+    touch: bool,
     missing_tokens: FxHashMap<NodeId, Vec<&'static str>>,
     text: RefCell<Box<dyn TextEngine>>,
     taffy: taffy::TaffyTree<Measure>,
@@ -487,6 +489,7 @@ impl Kernel {
             anchored: Vec::new(),
             viewport: (0.0, 0.0),
             screen: Breakpoint::Compact,
+            touch: false,
             missing_tokens: Default::default(),
             text: RefCell::new(Box::new(text::ParleyEngine::default())),
             taffy: taffy::TaffyTree::new(),
@@ -1251,6 +1254,13 @@ impl Kernel {
                 }
             }
         }
+        if self.touch {
+            for (_, props) in n.overrides.iter().filter(|(w, _)| *w == When::Touch) {
+                for p in props {
+                    p.apply(&mut layout, &mut v, &self.theme);
+                }
+            }
+        }
         for flag in State::all().iter() {
             if n.state.contains(flag) {
                 for (_, props) in n.overrides.iter().filter(|(w, _)| *w == When::State(flag)) {
@@ -1388,6 +1398,25 @@ impl Kernel {
     /// The breakpoint of the last layout's width.
     pub fn screen(&self) -> Breakpoint {
         self.screen
+    }
+
+    /// Whether input is touch (`When::Touch` overrides apply).
+    pub fn touch(&self) -> bool {
+        self.touch
+    }
+
+    /// Switching between touch and pointer input re-resolves the nodes with touch overrides (no
+    /// closure runs).
+    pub fn set_touch(&mut self, on: bool) {
+        if on == self.touch {
+            return;
+        }
+        self.touch = on;
+        let ids: Vec<NodeId> =
+            self.nodes.iter().filter(|(_, n)| n.overrides.iter().any(|(w, _)| *w == When::Touch)).map(|(id, _)| id).collect();
+        for id in ids {
+            self.resolve(id, "touch");
+        }
     }
 
     /// Crossing a breakpoint re-resolves the nodes with screen overrides (no closure runs).

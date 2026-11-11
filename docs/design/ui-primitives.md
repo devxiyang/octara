@@ -26,16 +26,17 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | | Context `provide` / `use_context` | Implemented |
 | | Tasks, subscriptions, resources | Implemented ([async](async.md)) |
 | Structure | `component_keyed` / `component`, `show` / `show_else`, `each`, `virtual_each` | Implemented |
-| | `.child(..)` / `.children(iter)`, `El::overlay` | Implemented; close on outside click / Esc and focus trapping to do |
+| | `.child(..)` / `.children(iter)`, `El::overlay`, modals (Escape, press outside, focus kept inside) | Implemented |
 | Elements | `el`, `row`, `col`, `spacer`; `text(fixed value \| closure \| LiveText)` | Implemented |
-| | `text_input` (native input protocols on each platform) | Headless version implemented, platform protocols to do |
-| | Scroll containers, `image`, `icon`; Native Island, Canvas | To do |
-| Style | `Styled`: GPUI method names, 4 px scale, `px` / `relative` / `rems`; semantic `Token` and `Theme`; state and window size class overrides; `absolute` / `top` / `left` | Implemented |
+| | `text_input`: single line, selection, undo, clipboard, IME composition | Implemented headless and through the shell; multi-line, password, direct platform text protocols to do |
+| | Scroll containers (`overflow_*_scroll`, `scroll_to`), images (`img`, `object_fit`) | Implemented |
+| | `icon`; Native Island; Canvas | To do |
+| Style | `Styled`: GPUI method names, 4 px scale, `px` / `relative` / `rems`; semantic `Token` and `Theme`; state, window size class, touch and group-hover overrides; `absolute` / `top` / `left`; shadows, gradients, opacity layers; motion | Implemented |
 | Semantics | `role`, `label`, `description`, `expanded`, `checked`, `value`, `a11y_hidden`, `focusable`; test id is the semantic id | Implemented |
-| Interaction | `on_press` / `on_input` / `on_toggle`; `Event::Hover` / `Focus` / `Blur`; disabled elements reject events | Implemented |
-| | `on_key`, gestures, focus order, shortcuts | To do |
-| Agent | Structured diagnostics, `testing::Checked`, `App::force_state` | Implemented |
-| | Inspector protocol | To do |
+| Interaction | `on_press` / `on_input` / `on_toggle` / `on_submit`; hover chain and groups; disabled elements reject events | Implemented |
+| | `on_key`, gestures (tap, double, long press, secondary, drag, swipe, momentum), focus order and groups, keymap and commands | Implemented ([input](input.md)) |
+| Agent | Structured diagnostics with registered codes, `testing::Checked`, `App::force_state` | Implemented |
+| | Inspector protocol, `octara check` / `inspect` / `run` | Implemented ([agent knowledge](agent-knowledge.md)) |
 
 ## 3. Naming
 

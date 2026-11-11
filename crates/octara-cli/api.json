@@ -402,6 +402,7 @@
           "path": "octara::app::App::set_platform",
           "kind": "method",
           "sig": "pub fn set_platform(&mut self, p: Platform)",
+          "docs": "The platform whose conventions input follows: its keymap, and on touch platforms the\ncontrols' touch sizes (`when_touch`).",
           "file": "crates/octara/src/app.rs"
         },
         {
@@ -1368,6 +1369,13 @@
           "file": "crates/octara/src/app.rs"
         },
         {
+          "path": "octara::app::Platform::is_touch",
+          "kind": "method",
+          "sig": "pub fn is_touch(self) -> bool",
+          "docs": "Input is a finger: controls take their touch sizes (`When::Touch`), and `octara check`\nasks 44 × 44 targets.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
           "path": "octara::app::PointerEvent",
           "kind": "struct",
           "sig": "pub struct PointerEvent { .. }",
@@ -1938,7 +1946,7 @@
           "path": "octara::diagnostics::SMALL_TARGET",
           "kind": "static",
           "sig": "pub static SMALL_TARGET: Code",
-          "docs": "A control is smaller than 44 × 44 on a touch screen.",
+          "docs": "A control is smaller than the platform's minimum target: 44 × 44 on touch, 24 × 24 with a pointer.",
           "file": "crates/octara/src/diagnostics.rs"
         },
         {
@@ -2885,7 +2893,7 @@
           "path": "octara::inspect::Size",
           "kind": "struct",
           "sig": "pub struct Size { .. }",
-          "docs": "One window size to check at.",
+          "docs": "One window size to check at, on a platform.",
           "file": "crates/octara/src/inspect.rs",
           "traits": [
             "Clone",
@@ -2908,10 +2916,10 @@
           "file": "crates/octara/src/inspect.rs"
         },
         {
-          "path": "octara::inspect::Size::touch",
+          "path": "octara::inspect::Size::platform",
           "kind": "field",
-          "sig": "pub touch: bool",
-          "docs": "Input is touch here: targets must be large enough for a finger.",
+          "sig": "pub platform: String",
+          "docs": "`ios`, `android`, `macos`, `windows` or `linux`: its controls' sizes and its minimum\ntarget (44 × 44 on touch, 24 × 24 with a pointer).",
           "file": "crates/octara/src/inspect.rs"
         },
         {
@@ -3010,7 +3018,7 @@
           "path": "octara::inspect::check",
           "kind": "fn",
           "sig": "pub fn check(view: fn() -> View, opts: &CheckOptions) -> CheckReport",
-          "docs": "Mounts `view` fresh at each theme and size, lets it settle, and judges it: layout issues,\ndiagnostics, work that does not settle, and accessibility (names, contrast, and touch target\nsizes where input is touch).",
+          "docs": "Mounts `view` fresh at each theme and size, on the size's platform, lets it settle, and\njudges it: layout issues, diagnostics, work that does not settle, and accessibility (names,\ncontrast, and targets under the platform's minimum).",
           "file": "crates/octara/src/inspect.rs"
         },
         {
@@ -3044,6 +3052,13 @@
             "octara::inspect::CheckReport",
             "octara::inspect::Snapshot"
           ]
+        },
+        {
+          "path": "octara::inspect::platform",
+          "kind": "fn",
+          "sig": "pub fn platform(name: &str) -> Option<Platform>",
+          "docs": "A platform by its `check` name.",
+          "file": "crates/octara/src/inspect.rs"
         },
         {
           "path": "octara::inspect::run_script",
@@ -4012,8 +4027,8 @@
         {
           "path": "octara::kernel::Kernel::accessibility_issues",
           "kind": "method",
-          "sig": "pub fn accessibility_issues(&self, touch: bool) -> Vec<LayoutIssue>",
-          "docs": "Accessibility problems in the last layout: controls without a name, text without enough\ncontrast and, where input is touch (`touch`), targets smaller than 44 × 44.",
+          "sig": "pub fn accessibility_issues(&self) -> Vec<LayoutIssue>",
+          "docs": "Accessibility problems in the last layout (as Exact judges them): controls without a name,\ntext without enough contrast, and targets under the platform's minimum — 44 × 44 on touch,\n24 × 24 with a pointer unless no other control's center is within 24 (WCAG 2.5.8).",
           "file": "crates/octara/src/kernel/issues.rs"
         },
         {
@@ -4802,6 +4817,13 @@
           "file": "crates/octara/src/kernel/anim.rs"
         },
         {
+          "path": "octara::kernel::Kernel::set_touch",
+          "kind": "method",
+          "sig": "pub fn set_touch(&mut self, on: bool)",
+          "docs": "Switching between touch and pointer input re-resolves the nodes with touch overrides (no\nclosure runs).",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::set_value",
           "kind": "method",
           "sig": "pub fn set_value(&mut self, id: NodeId, value: &str) -> bool",
@@ -4889,6 +4911,13 @@
           "kind": "method",
           "sig": "pub fn time(&self) -> f64",
           "file": "crates/octara/src/kernel/anim.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::touch",
+          "kind": "method",
+          "sig": "pub fn touch(&self) -> bool",
+          "docs": "Whether input is touch (`When::Touch` overrides apply).",
+          "file": "crates/octara/src/kernel.rs"
         },
         {
           "path": "octara::kernel::Kernel::tree_dump",
@@ -6914,7 +6943,7 @@
           "path": "octara::kernel::When",
           "kind": "enum",
           "sig": "pub enum When",
-          "docs": "When an override applies: from a breakpoint up, or while a state is on. Screen overrides\napply first (smallest first), then states, so interaction feedback shows at every size.",
+          "docs": "When an override applies: from a breakpoint up, on touch input, or while a state is on.\nScreen overrides apply first (smallest first), then touch, then states, so interaction\nfeedback shows at every size.",
           "file": "crates/octara/src/kernel/style.rs",
           "aliases": [
             "octara::kernel::style::When"
@@ -6946,6 +6975,13 @@
           "path": "octara::kernel::When::State",
           "kind": "variant",
           "sig": "State(State)",
+          "file": "crates/octara/src/kernel/style.rs"
+        },
+        {
+          "path": "octara::kernel::When::Touch",
+          "kind": "variant",
+          "sig": "Touch",
+          "docs": "While input is touch (the app runs on iOS or Android): controls take their touch sizes.",
           "file": "crates/octara/src/kernel/style.rs"
         },
         {
@@ -9781,6 +9817,13 @@
           "kind": "method",
           "sig": "pub fn when_medium(self, f: impl FnOnce(Patch) -> Patch) -> Self",
           "docs": "From the medium size class up (600 dp: tablets in portrait, small windows).",
+          "file": "crates/octara/src/view/element.rs"
+        },
+        {
+          "path": "octara::view::El::when_touch",
+          "kind": "method",
+          "sig": "pub fn when_touch(self, f: impl FnOnce(Patch) -> Patch) -> Self",
+          "docs": "Style while input is touch (iOS, Android): touch sizes for controls, as a coarse-pointer\nmedia query does. Resolved by the kernel when the platform changes: no closure reruns.",
           "file": "crates/octara/src/view/element.rs"
         },
         {

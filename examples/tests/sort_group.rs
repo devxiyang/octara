@@ -111,9 +111,10 @@ mod virtualized {
         external(&mut h, "team", &format!("{id}:red")).unwrap();
         assert_eq!(h.kernel().text_of("team-green").as_deref(), Some("green (29999)"));
         assert!(!h.kernel().exists(&format!("contact-{id}")), "moved out of the window");
-        // One row enters the window to fill the gap: a contact row is 4 nodes (row, name, star, open).
+        // One row enters the window to fill the gap: a contact row is 5 nodes (row, name, the star's
+        // press area and box, open).
         let c = h.kernel().counters();
-        assert_eq!((c.nodes_created, c.nodes_destroyed), (4, 5), "one row in; the moved row (with its open detail) out");
+        assert_eq!((c.nodes_created, c.nodes_destroyed), (5, 6), "one row in; the moved row (with its open detail) out");
         consistent_flat(&mut h);
         assert!(h.diagnostics().is_empty(), "{:?}", h.diagnostics());
     }

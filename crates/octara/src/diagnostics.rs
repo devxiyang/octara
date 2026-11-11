@@ -211,9 +211,9 @@ codes! {
         cause: "Screen readers announce a control by its label or the text inside it; an icon-only button or an unlabeled text field has neither.",
         fix: "Give it `.label(\"Save\")`, or text inside it.";
     SMALL_TARGET: Warning, Accessibility, "docs/design/agent-knowledge.md#inspector-protocol-and-checks",
-        "A control is smaller than 44 × 44 on a touch screen.",
-        cause: "Fingers need about 44 pt (Apple) to 48 dp (Material) to hit a target reliably; the hit area is the element's box.",
-        fix: "Give the control `min_w(44.0).min_h(44.0)`, or padding around a smaller visual.";
+        "A control is smaller than the platform's minimum target: 44 × 44 on touch, 24 × 24 with a pointer.",
+        cause: "The hit area is the element's box. Fingers need about 44 pt (Apple); with a mouse, WCAG 2.5.8 asks 24 × 24 unless the target is spaced that far from the others.",
+        fix: "Make its box larger with padding or `min_w` / `min_h`; for touch only, put the touch size in `when_touch(..)` so the desktop size stays.";
     LOW_CONTRAST: Warning, Accessibility, "docs/design/agent-knowledge.md#inspector-protocol-and-checks",
         "Text does not stand out enough from its background.",
         cause: "WCAG asks a contrast of 4.5:1 for text and 3:1 for large text (24 px, or 18.66 px bold); muted text on a tinted surface often falls short.",

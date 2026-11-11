@@ -49,17 +49,21 @@ fn buttons_have_roles_states_and_refuse_when_disabled() {
 #[test]
 fn switch_and_checkbox_are_controlled() {
     let mut app = App::new(view);
+    // The switch is a press area around its track; the thumb sits in the track.
+    let track = |app: &App| {
+        let k = app.kernel();
+        k.children(k.find("wifi").unwrap())[0]
+    };
     let thumb_x = |app: &App| {
         let k = app.kernel();
-        let sw = k.find("wifi").unwrap();
-        k.rect(k.children(sw)[0]).0
+        k.rect(k.children(track(app))[0]).0
     };
     let off = thumb_x(&app);
     assert_eq!(app.kernel().role_of("wifi"), Some(Role::Switch));
     assert_eq!(app.kernel().checked_of("wifi"), Some(false));
     app.dispatch(Event::Toggle("wifi".into())).unwrap();
     assert_eq!(app.kernel().checked_of("wifi"), Some(true));
-    assert_eq!(app.kernel().visual_of("wifi").unwrap().background, Some(tok(Token::Accent)));
+    assert_eq!(app.kernel().visual(track(&app)).background, Some(tok(Token::Accent)));
     assert!(thumb_x(&app) > off, "the thumb moves to the end");
     app.dispatch(Event::Toggle("star".into())).unwrap();
     assert_eq!(app.kernel().checked_of("star"), Some(true));
