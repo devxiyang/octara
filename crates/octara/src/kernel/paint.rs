@@ -13,6 +13,7 @@ impl Kernel {
     /// What the last layout looks like, in drawing order (children over parents, overlays last).
     pub fn display_list(&self) -> DisplayList {
         let mut items = Vec::new();
+        self.update_ink();
         let window = Rect { x: 0.0, y: 0.0, w: self.viewport.0, h: self.viewport.1 };
         self.paint(self.root, 1.0, window, &mut items);
         DisplayList { size: self.viewport, background: self.theme.get(Token::Background), items }
@@ -24,12 +25,96 @@ impl Kernel {
         Rect { x, y, w, h }
     }
 
+    /// Whether subtrees can be skipped by their ink: not while anything moves (presented
+    /// positions and shadows differ from the resting ones the reaches are computed from).
+    fn culls(&self) -> bool {
+        self.culling && self.moving.is_empty() && self.ghosts.is_empty()
+    }
+
+    /// Whether painting and hit testing skip subtrees that cannot show (on by default; off
+    /// checks that skipping changes nothing).
+    pub fn set_culling(&mut self, on: bool) {
+        self.culling = on;
+    }
+
+    /// Whether `id`'s drawing (its subtree's included) can show inside `clip`.
+    fn ink_meets(&self, id: NodeId, clip: &Rect) -> bool {
+        if !self.culls() {
+            return true;
+        }
+        let r = self.rect_of(id);
+        let [l, t, rr, b] = self.node(id).ink.get();
+        !Rect { x: r.x - l, y: r.y - t, w: r.w + l + rr, h: r.h + t + b }.intersect(clip).is_empty()
+    }
+
+    /// Computes every node's ink reach again if a layout or a shadow changed since.
+    pub(crate) fn update_ink(&self) {
+        if self.ink_dirty.replace(false) {
+            self.ink_of(self.root);
+        }
+    }
+
+    /// Where a node's own drawing (not its shadows or children) can be: its box, grown by what
+    /// its text draws past it.
+    fn content_rect(&self, id: NodeId, rect: Rect) -> Rect {
+        let n = self.node(id);
+        if n.kind() != Kind::Text {
+            return rect;
+        }
+        let l = self.taffy.layout(n.taffy).expect("taffy");
+        let o = l.scrollable_overflow_rect;
+        let m = Self::INK_MARGIN;
+        let grow = |size: f32, reach: f32| if reach > size { reach + m } else { size };
+        Rect { w: grow(rect.w, o.right), h: grow(rect.h, o.bottom), ..rect }
+    }
+
+    /// Margin for antialiasing, glyph overhang and strokes on a box's edge.
+    const INK_MARGIN: f32 = 2.0;
+
+    fn ink_of(&self, id: NodeId) -> [f32; 4] {
+        let n = self.node(id);
+        let mut e = [Self::INK_MARGIN; 4];
+        if n.layout.display == taffy::Display::None {
+            n.ink.set(e);
+            return e;
+        }
+        let l = self.taffy.layout(n.taffy).expect("taffy");
+        for s in n.visual.shadow.resolve(&self.theme) {
+            let reach = 1.5 * s.blur_radius + s.spread_radius;
+            e[0] = e[0].max(reach - s.offset.0);
+            e[1] = e[1].max(reach - s.offset.1);
+            e[2] = e[2].max(reach + s.offset.0);
+            e[3] = e[3].max(reach + s.offset.1);
+        }
+        // Text wider or taller than its box (a line that does not wrap) draws past it.
+        if n.kind() == Kind::Text {
+            let o = l.scrollable_overflow_rect;
+            e[2] = e[2].max(o.right - l.size.width + Self::INK_MARGIN);
+            e[3] = e[3].max(o.bottom - l.size.height + Self::INK_MARGIN);
+        }
+        let clips = n.layout.overflow.x != taffy::Overflow::Visible || n.layout.overflow.y != taffy::Overflow::Visible;
+        for &c in &n.children {
+            let ce = self.ink_of(c);
+            if clips {
+                continue;
+            }
+            let cl = self.taffy.layout(self.node(c).taffy).expect("taffy");
+            let (cx, cy) = (cl.location.x, cl.location.y);
+            e[0] = e[0].max(ce[0] - cx);
+            e[1] = e[1].max(ce[1] - cy);
+            e[2] = e[2].max(cx + cl.size.width + ce[2] - l.size.width);
+            e[3] = e[3].max(cy + cl.size.height + ce[3] - l.size.height);
+        }
+        n.ink.set(e);
+        e
+    }
+
     /// Paints `id` and its subtree. Below full opacity, a subtree that draws more than one thing
     /// goes into a layer composited at that opacity (Rune's group opacity); a single thing is
     /// faded directly.
     fn paint(&self, id: NodeId, opacity: f32, clip: Rect, out: &mut Vec<Item>) {
         let n = self.node(id);
-        if n.layout.display == taffy::Display::None {
+        if n.layout.display == taffy::Display::None || !self.ink_meets(id, &clip) {
             return;
         }
         let own = self.presented(id).opacity;
@@ -60,7 +145,8 @@ impl Kernel {
         let n = self.node(id);
         let rect = self.rect_of(id);
         let l = self.taffy.layout(n.taffy).expect("taffy");
-        let visible = !rect.intersect(&clip).is_empty();
+        // Its own drawing shows: the box, or a line of text running past it.
+        let visible = !self.content_rect(id, rect).intersect(&clip).is_empty();
         // What is shown now: moving properties sampled at the kernel's time.
         let shown = self.presented(id);
         let v = &shown;
@@ -358,6 +444,7 @@ impl Kernel {
 impl Kernel {
     /// The topmost node under `(x, y)` (logical pixels): drawn last, inside every clip around it.
     pub fn hit_test(&self, x: f32, y: f32) -> Option<NodeId> {
+        self.update_ink();
         let window = Rect { x: 0.0, y: 0.0, w: self.viewport.0, h: self.viewport.1 };
         let mut hit = None;
         self.hit(self.root, x, y, window, &mut hit);
@@ -370,6 +457,10 @@ impl Kernel {
             return;
         }
         let inside = |r: &Rect| x >= r.x && x < r.right() && y >= r.y && y < r.bottom();
+        // Nothing in a subtree whose reach misses the point can be hit.
+        if !self.ink_meets(id, &Rect { x, y, w: 1.0, h: 1.0 }) {
+            return;
+        }
         let rect = self.rect_of(id);
         if inside(&rect) && inside(&clip) && id != self.overlay_layer {
             *hit = Some(id);

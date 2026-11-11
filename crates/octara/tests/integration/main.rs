@@ -2,6 +2,7 @@
 
 mod a11y;
 mod canvas;
+mod culling;
 mod diagnostics_registry;
 mod display_list;
 mod edit;

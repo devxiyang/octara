@@ -296,6 +296,10 @@ enum Measure {
 struct Node {
     /// What the node shows inside its box; its `Kind` follows from it.
     content: Content,
+    /// How far the node's drawing, its subtree's included where nothing clips it, reaches beyond
+    /// its box (left, top, right, bottom): shadows, overflowing text and children. Painting and
+    /// hit testing skip subtrees whose reach misses the clip.
+    ink: Cell<[f32; 4]>,
     role: Option<Role>,
     parent: Option<NodeId>,
     children: Vec<NodeId>,
@@ -520,6 +524,9 @@ pub struct Kernel {
     reduced_motion: bool,
     /// Nodes with properties in motion.
     moving: rustc_hash::FxHashSet<NodeId>,
+    /// Ink reaches must be computed again (after a layout, or a shadow changed).
+    ink_dirty: Cell<bool>,
+    culling: bool,
     /// Layout passes run (a node created since the last one is not shown yet).
     layouts: u64,
     /// Nodes whose position and size move (`layout_motion`).
@@ -562,6 +569,8 @@ impl Kernel {
             instant: false,
             reduced_motion: false,
             moving: rustc_hash::FxHashSet::default(),
+            ink_dirty: Cell::new(true),
+            culling: true,
             layouts: 0,
             framed: rustc_hash::FxHashSet::default(),
             ghosts: Vec::new(),
@@ -751,6 +760,7 @@ impl Kernel {
         };
         let id = self.nodes.insert(Node {
             content,
+            ink: Cell::new([0.0; 4]),
             role: None,
             parent: None,
             children: Vec::new(),
@@ -1443,6 +1453,9 @@ impl Kernel {
         }
         if visual != old_visual {
             dirty |= Dirty::PAINT;
+            if visual.shadow != old_visual.shadow {
+                self.ink_dirty.set(true);
+            }
             if visual.text_style() != old_visual.text_style() {
                 dirty |= Dirty::LAYOUT | Dirty::TEXT;
             }
@@ -1487,6 +1500,7 @@ impl Kernel {
             self.compute_layout(width, height);
         }
         self.needs_layout = false;
+        self.ink_dirty.set(true);
         self.layouts += 1;
         self.clamp_scrolls();
         self.track_frames();
