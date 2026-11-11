@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod catalog;
+pub mod harness;
 pub mod skill;
 
 /// `docs/start-here.md`, whose code blocks run as doctests.

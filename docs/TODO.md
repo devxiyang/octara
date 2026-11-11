@@ -204,8 +204,11 @@ Basis: [input research](research/input.md), [input design](design/input.md). Con
         phone/desktop, settles it (`NOT_SETTLED`) and reports layout issues, diagnostics and accessibility (`UNNAMED_CONTROL`,
         `SMALL_TARGET` on touch sizes, `LOW_CONTRAST` per WCAG, skipped over gradients and images), merged across cells, with
         accepted findings (`why` required) set aside (`octara.check/1`)
-  - [ ] `octara check` / `inspect` / `run --script` in the CLI: `[package.metadata.octara] view`, a generated harness in
-        `target/octara/harness/` that calls `octara::inspect`
+  - [x] `octara check` / `inspect` / `run [--script]` in the CLI: the app names `[package.metadata.octara] view` (plus optional
+        `sizes`, `themes`, `accept`); a harness generated in `<target>/octara/harness/` depends on the app by path and on `octara`
+        exactly as the app does, starts from its `Cargo.lock` and profiles, builds into its target directory and calls
+        `octara::inspect::main`; text by default, `--json`; sources relative to the workspace; exit 0 clean / 1 findings /
+        2 build or run failure. The examples crate names the counter
   - [ ] What `check` found in the examples: the kit's controls are 32 px tall (`SMALL_TARGET` on phones everywhere: needs a
         decision on touch sizing, e.g. a minimum interactive size as in Material); white on the dark theme's accent is 3.68:1
         (`LOW_CONTRAST`); the showcase overflows at phone width and uses `Signal::new` in a component; the todo checkboxes

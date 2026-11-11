@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+# `octara check` / `inspect` / `run` drive this view.
+[package.metadata.octara]
+view = "octara_examples::apps::counter"
+
 [dependencies]
 octara = { workspace = true, features = ["system-fonts"] }
 octara-fonts.workspace = true

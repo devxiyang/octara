@@ -2281,6 +2281,7 @@
           "path": "octara::inspect::CheckOptions",
           "kind": "struct",
           "sig": "pub struct CheckOptions { .. }",
+          "docs": "What `check` runs; every field may be left out (`[package.metadata.octara]` gives them).",
           "file": "crates/octara/src/inspect.rs",
           "traits": [
             "Clone",
@@ -3032,6 +3033,17 @@
           "sig": "pub fn issues(app: &App) -> Vec<Issue>",
           "docs": "Every layout issue and diagnostic of `app` now.",
           "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::main",
+          "kind": "fn",
+          "sig": "pub fn main(view: fn() -> View)",
+          "docs": "The `main` of the harness `octara check` / `inspect` / `run` build around an app: the\napp's root view is all it needs. Arguments:\n\n- `check [--options <json>]`: prints a [`CheckReport`] (JSON);\n- `inspect [--size <w>x<h>] [--theme light|dark]`: settles the first screen and prints a\n  [`Snapshot`] (JSON);\n- `run [--size ..] [--theme ..] [--stop]`: reads requests from stdin, one JSON line each, and\n  prints one reply line each (`{\"line\":n,\"ok\":..}`); `--stop` ends at the first failure.\n\nExits 2 on bad arguments.",
+          "file": "crates/octara/src/inspect.rs",
+          "links": [
+            "octara::inspect::CheckReport",
+            "octara::inspect::Snapshot"
+          ]
         },
         {
           "path": "octara::inspect::run_script",

@@ -481,11 +481,12 @@ pub struct Accept {
     pub why: String,
 }
 
+/// What `check` runs; every field may be left out (`[package.metadata.octara]` gives them).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct CheckOptions {
     pub sizes: Vec<Size>,
     pub themes: Vec<String>,
-    #[serde(default)]
     pub accept: Vec<Accept>,
 }
 
@@ -636,5 +637,77 @@ pub fn check(view: fn() -> crate::view::View, opts: &CheckOptions) -> CheckRepor
         cells,
         findings: open,
         accepted,
+    }
+}
+
+// ---- the harness entry point ----
+
+/// The `main` of the harness `octara check` / `inspect` / `run` build around an app: the
+/// app's root view is all it needs. Arguments:
+///
+/// - `check [--options <json>]`: prints a [`CheckReport`] (JSON);
+/// - `inspect [--size <w>x<h>] [--theme light|dark]`: settles the first screen and prints a
+///   [`Snapshot`] (JSON);
+/// - `run [--size ..] [--theme ..] [--stop]`: reads requests from stdin, one JSON line each, and
+///   prints one reply line each (`{"line":n,"ok":..}`); `--stop` ends at the first failure.
+///
+/// Exits 2 on bad arguments.
+pub fn main(view: fn() -> crate::view::View) {
+    use std::io::{BufRead, Write};
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+    let fail = |msg: String| -> ! {
+        eprintln!("octara harness: {msg}");
+        std::process::exit(2)
+    };
+    let setup = |app: &mut App| {
+        if let Some(size) = flag("--size") {
+            let parsed = size.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)));
+            let Some((w, h)) = parsed else { fail(format!("--size takes <width>x<height>, not `{size}`")) };
+            app.resize(w, h);
+        }
+        match flag("--theme").as_deref() {
+            None | Some("light") => {}
+            Some("dark") => app.set_theme(crate::kernel::Theme::dark()),
+            Some(other) => fail(format!("unknown theme `{other}`")),
+        }
+    };
+    match args.first().map(String::as_str) {
+        Some("check") => {
+            let opts = match flag("--options") {
+                Some(json) => serde_json::from_str(&json).unwrap_or_else(|e| fail(format!("--options: {e}"))),
+                None => CheckOptions::default(),
+            };
+            println!("{}", check(view, &opts).to_json());
+        }
+        Some("inspect") => {
+            let mut app = App::new(view);
+            setup(&mut app);
+            let _ = app.run_until_idle(SETTLE_LIMIT);
+            println!("{}", serde_json::to_string_pretty(&app.inspect()).expect("serializes"));
+        }
+        Some("run") => {
+            let mut app = App::new(view);
+            setup(&mut app);
+            let stop = args.iter().any(|a| a == "--stop");
+            let stdout = std::io::stdout();
+            for (i, line) in std::io::stdin().lock().lines().enumerate() {
+                let Ok(line) = line else { break };
+                let line = line.trim();
+                if line.is_empty() || line.starts_with("//") {
+                    continue;
+                }
+                let reply = handle_line(&mut app, line);
+                let mut value = serde_json::to_value(&reply).expect("serializes");
+                value.as_object_mut().expect("an object").insert("line".into(), (i + 1).into());
+                let mut out = stdout.lock();
+                let _ = writeln!(out, "{value}");
+                let _ = out.flush();
+                if stop && !reply.ok {
+                    break;
+                }
+            }
+        }
+        _ => fail("usage: check [--options <json>] | inspect [--size WxH] [--theme T] | run [--size WxH] [--theme T] [--stop]".into()),
     }
 }

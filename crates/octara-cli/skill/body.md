@@ -45,5 +45,27 @@ assert!(app.layout_issues().is_empty(), "{:?}", app.layout_issues());
 assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
 ```
 
-Tests pass, layout issues and diagnostics are empty (check phone and desktop sizes with
-`app.at_sizes(..)`). For any code in them, run `octara explain <CODE>`.
+Tests pass, layout issues and diagnostics are empty, and `octara check` is clean. For any code,
+run `octara explain <CODE>`.
+
+## Checking and driving the running app
+
+Name the root view once in the app's `Cargo.toml`:
+
+```toml
+[package.metadata.octara]
+view = "my_app::app"   # a `fn() -> View` in the library
+```
+
+- `octara check`: the app at light and dark, phone and desktop sizes — layout issues,
+  diagnostics, work that never settles, unnamed controls, small touch targets, low contrast.
+  Exit 0 means clean. A finding that is fine is accepted with a reason:
+  `accept = [{ code = "SMALL_TARGET", id = "dot-*", why = "..." }]` in the same table.
+- `octara inspect [--size 390x844] [--theme dark]`: the semantic tree — test ids, roles, names,
+  states, bounds, actions, source locations.
+- `octara run --script steps.jsonl`: one JSON request per line, stopping at the first failure;
+  without `--script`, requests from stdin. Requests: `{"op":"tap","id":"save"}`,
+  `{"op":"type","id":"title","text":"Milk"}`, `{"op":"key","chord":"mod+s"}`,
+  `{"op":"advance","ms":300}`, `{"op":"settle"}`, `{"op":"inspect"}`, `{"op":"issues"}`,
+  `{"op":"expect","id":"total","text":"3 items"}`, `{"op":"expect","clean":true}`
+  (`octara vocab octara::inspect::Request` lists them all).

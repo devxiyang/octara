@@ -266,6 +266,15 @@ assert_eq!(app.kernel().text_of("status").as_deref(), Some("ready"));
   compares.
 - Time: `advance(d)`, `run_until_idle(limit)`, `settle()`.
 
+## Checking the running app
+
+Name the root view in `Cargo.toml` (`[package.metadata.octara] view = "my_app::app"`), then:
+`octara check` judges the app at light and dark, phone and desktop sizes (layout, diagnostics,
+work that never settles, accessibility); `octara inspect` prints the semantic tree; and
+`octara run --script steps.jsonl` drives it with one JSON request per line
+(`{"op":"tap","id":"save"}`, `{"op":"expect","id":"total","text":"3 items"}`). The same requests
+work in a test: `octara::inspect::run_script(&mut app, script)`.
+
 ## When something is wrong
 
 - A diagnostic or layout issue names its code: `octara explain OVERFLOW` gives the cause and the
