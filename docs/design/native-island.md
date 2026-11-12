@@ -10,6 +10,9 @@ Based on the [research](../research/native-island.md). Status: confirmed; steps 
   rounds, animates and interleaves like an image.
 - **Views only where a texture cannot work**: web views, maps, platform pickers, a platform text
   field. `native_view(kind)` is the general element; typed builders wrap it (`web_view(url)`).
+- **One kind, a view or a texture per platform**: where a platform has no view to host, its
+  host renders the kind into frames Octara draws like an image (Linux: WPE WebKit for `web`),
+  forwarding input to it. The app's code is the same everywhere.
 
 ## Two slots, no interleaving (Rune)
 
@@ -43,6 +46,32 @@ Based on the [research](../research/native-island.md). Status: confirmed; steps 
 - Input: AppKit hit-tests overlay views before the content view, so they get their own pointer
   events. An underlay view is under the Metal view: where Octara's hit test finds the underlay
   view topmost, the shell forwards the event to it (a map's drags and pinches).
+
+## Hosting on Windows (DirectComposition)
+
+- The window is created without a redirection bitmap and holds one DirectComposition target.
+  Its tree: the underlay container, the wgpu swap chain's visual (DX12 on a composition visual,
+  premultiplied alpha), the overlay container; each view sits in a container visual with its
+  offset, a rounded rectangle clip (per corner) and opacity.
+- `web` is WebView2 in visual hosting (a composition controller whose root visual is the view's
+  container). The shell applies placements, presents, then commits the device, on the UI
+  thread; the page's own pixels are committed by the browser process and may trail by a frame.
+- The shell forwards pointer input (mouse, pointer, wheel, leave, capture), focus, cursor and
+  drag and drop to the view, and grafts its UIA provider into the window's accessibility tree.
+  IME and accessibility are spiked first.
+- Snapshots: `CapturePreview`.
+
+## Hosting on Linux (textures)
+
+- `web` is WPE WebKit (2.54 or later, the WPE Platform API) rendering offscreen: each frame's
+  DMA-BUF is imported into wgpu and copied into the view's texture (shared memory when there is
+  no DRM device, with a diagnostic), drawn in paint order like an image: it clips, rounds and
+  interleaves, so `NATIVE_COVERED` does not apply to it.
+- Input goes to `wpe_view_event`, IME through an input method context bridge, WebKit's GLib
+  loop is bridged to winit's. Accessibility: WebKit's AT-SPI subtree is embedded where the
+  adapter allows, else it is a separate application (a known gap).
+- Bindings are a C shim or sys crate; a spike proves the DMA-BUF path on Mesa and NVIDIA first.
+  Servo and CEF can be second backends behind the same host.
 
 ## Placement and lifecycle
 
@@ -109,5 +138,8 @@ Based on the [research](../research/native-island.md). Status: confirmed; steps 
    order, events forwarded to the underlay view; a map (`MKMapView`) as the first kind.
 4. Focus targets in the Tab order, Escape back, accessibility joining; views created near the
    viewport and hidden when far; the agent input channel.
-5. `surface`: video and camera frames as zero-copy textures (Rune's `NativeSurface` path).
-6. iOS, then Android; the platform text field as an overlay kind.
+5. Windows: DirectComposition hosting, WebView2 in visual hosting (input, focus, cursor,
+   accessibility, IME spiked first).
+6. `surface`: video and camera frames as zero-copy textures (Rune's `NativeSurface` path).
+7. Linux: WPE WebKit as a texture (the DMA-BUF spike first), on the `surface` path.
+8. iOS, then Android; the platform text field as an overlay kind.

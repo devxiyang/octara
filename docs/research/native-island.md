@@ -111,3 +111,55 @@ takes tens of milliseconds (screenshots, not frames).
 7. **Order**: placement plumbing and the headless fake; the macOS shell's overlay and underlay
    with a web view; focus handoff and accessibility; the texture path with video; then iOS and
    Android.
+
+## Windows and Linux (researched 2026-11)
+
+### Windows: WebView2 in visual hosting
+
+- `ICoreWebView2Environment3::CreateCoreWebView2CompositionController(hwnd)` creates a web view
+  whose output goes to a DirectComposition visual given with `put_RootVisualTarget`; the host
+  commits its own device afterwards ([controller](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2compositioncontroller)).
+  Windowed hosting (a child HWND, what wry uses) gets input, focus, IME and accessibility from
+  the system but cannot sit below the app's surface or move in its transaction.
+- In visual hosting the host forwards input: `SendMouseInput` (client coordinates; wheel in
+  screen coordinates; `LEAVE` too; capture on press), `SendPointerInput` for touch and pen,
+  the cursor from `CursorChanged`, focus with `MoveFocus` (keys then go to the controller's
+  HWND), drag and drop through an own `IDropTarget` (`CompositionController3`) and
+  `DragStarting` (`CompositionController5`); accessibility is a UIA provider
+  (`CompositionController2::get_AutomationProvider`) to graft into the window's tree. IME in
+  this mode is undocumented: prototype early.
+- DPI: the visual inherits its ancestors' scale; set `RasterizationScale`. The background is
+  opaque or fully transparent (`DefaultBackgroundColor` alpha 0 or 255).
+- One DirectComposition device and target on the window (created with
+  `WS_EX_NOREDIRECTIONBITMAP`: winit's `with_no_redirection_bitmap(true)`); wgpu 30 creates
+  its DX12 swap chain on a visual (`SurfaceTargetUnsafe::CompositionVisual`), with
+  premultiplied alpha available there (not on a plain HWND), and never commits: the host does.
+  Placements, then `Present`, then `Commit`, on the UI thread, move the views with the frame;
+  the page's own pixels come from the browser process and are not frame-locked.
+- `IDCompositionRectangleClip` has per-corner radii (clips draw, not input: hit-test the radius
+  ourselves). Snapshots: `ICoreWebView2::CapturePreview` (fails before the first
+  `ContentLoading`, may show the previous page after a navigation). No Rust project hosts
+  WebView2 this way; `webview2-com` 0.39 (on `windows` 0.62) projects the COM API.
+
+### Linux: WPE WebKit as a texture
+
+- Without GTK owning the window, WebKitGTK cannot be embedded (X11 only, through reparenting).
+  WPE renders offscreen: with the WPE Platform API an embedder subclasses `WPEDisplay`,
+  `WPEToplevel` and `WPEView`; WebKit hands each frame to `render_buffer` as a `WPEBuffer`
+  (DMA-BUF when the display names a DRM device, shared memory otherwise), and the embedder
+  answers `buffer_rendered` / `buffer_released` ([Igalia](https://blogs.igalia.com/llepage/the-wpe-platform-api/)).
+  The API was a preview in 2.50 and 2.52; 2.54 makes it the default and deprecates libwpe
+  (secondary sources).
+- wgpu-hal 30 imports a single-plane DMA-BUF (`Device::texture_from_dmabuf_fd`, feature
+  `VULKAN_EXTERNAL_MEMORY_DMA_BUF`); copying into an own texture then releasing the buffer keeps
+  WebKit's buffer lifetime out of the renderer. The `cef` crate does the same for CEF.
+- Input goes through `wpe_view_event` (pointer, scroll, keys, touch), focus in and out, cursor
+  callbacks; IME through a `WPEInputMethodContext` subclass. WebKit runs on a GLib main loop to
+  bridge with winit's.
+- Accessibility: WebKit's AT-SPI tree joins a parent only through the AT-SPI `Socket.Embed`
+  call, which AccessKit's Unix adapter does not offer today; otherwise it shows as a separate
+  application.
+- Distribution: Debian unstable and Arch ship 2.52; Debian stable 2.48; no Flatpak runtime has
+  WPE; no Rust bindings exist (sys bindings or a C shim). Servo (Rust, AccessKit grafting, GL
+  only, weaker compatibility) and CEF (Chromium, OSR with DMA-BUF, about 200 MB) are second
+  backends behind the same host trait.
