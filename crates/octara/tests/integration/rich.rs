@@ -235,3 +235,36 @@ fn the_clipboard_takes_text_or_an_image() {
     assert_eq!(item.text(), None, "an image replaces the text");
     assert_eq!(item.image().unwrap().size(), (2, 1));
 }
+
+#[test]
+fn dialogs_answer_the_task_that_asked() {
+    let platform = octara::platform::HeadlessPlatform {
+        answers: [Some(vec!["/tmp/a.md".into(), "/tmp/b.md".into()]), None].into(),
+        ..Default::default()
+    };
+    let app = App::new(platform);
+    let mut w = app
+        .open_window(octara::platform::WindowOptions::new("Files"), || {
+            let picked = state("picked", String::new);
+            col()
+                .child(el().id("open").size_4().on_press(move || {
+                    spawn(async move {
+                        let options = PathPromptOptions { files: true, multiple: true, ..Default::default() };
+                        let paths = prompt_for_paths(options).await;
+                        picked.set(format!("{paths:?}"));
+                    });
+                }))
+                .child(text(move || picked.get()).id("picked"))
+                .into()
+        })
+        .unwrap();
+    w.tap("open").unwrap();
+    app.settle();
+    assert_eq!(w.kernel().text(w.kernel().find("picked").unwrap()), r#"Some(["/tmp/a.md", "/tmp/b.md"])"#);
+    w.tap("open").unwrap();
+    app.settle();
+    assert_eq!(w.kernel().text(w.kernel().find("picked").unwrap()), "None", "cancelled");
+    let p = app.platform();
+    let prompted = &p.as_any().downcast_ref::<octara::platform::HeadlessPlatform>().unwrap().prompted;
+    assert_eq!(prompted.len(), 2);
+}

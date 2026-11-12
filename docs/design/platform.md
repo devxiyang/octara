@@ -60,7 +60,12 @@ platform is presented a `Frame` after each operation.
 - The clipboard holds text, an image or both: `ClipboardItem` (`new_string`, `new_image`, `text`,
   `image`); `write_to_clipboard(item)` and `read_from_clipboard()` (GPUI's names); the
   platform's `read_text` / `write_text` and `read_image` / `write_image` (the shell: arboard).
-- Not yet: `InputHandler`, menus, file dialogs, displays, lifecycle.
+- File dialogs: `prompt_for_paths(PathPromptOptions { files, directories, multiple, prompt })`
+  and `prompt_for_new_path(directory, name)` (GPUI's names) are awaited in a task; `None` when
+  cancelled. The platform answers through a reply callable from any thread (the shell: rfd's
+  async dialogs, made on the main thread and awaited on a thread of their own; headless: the
+  answers queued in `HeadlessPlatform::answers`, the dialogs asked recorded in `prompted`).
+- Not yet: `InputHandler`, menus, displays, lifecycle.
 
 ## Backends
 

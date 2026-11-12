@@ -51,7 +51,7 @@ pub mod prelude {
     pub use crate::native::{NativeEvent, Slot};
     pub use crate::paint::Rect;
     pub use crate::path::{FillRule, LineCap, LineJoin, Path, Stroke, Transform, point};
-    pub use crate::platform::{ClipboardItem, CursorStyle};
+    pub use crate::platform::{ClipboardItem, CursorStyle, PathPromptOptions};
     pub use crate::reactive::graph::{Memo, ReadSignal, Signal, memo, provide, state, untrack, use_context, watch};
     pub use crate::reactive::list::{Derived, FlatItem, FlatKey, GroupInfo, Groups, List, Source, list};
     pub use crate::reactive::text::{LiveText, live_text};

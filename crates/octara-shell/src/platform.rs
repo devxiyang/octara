@@ -55,6 +55,38 @@ impl Platform for WinitPlatform {
             let _ = c.set_image(data);
         }
     }
+    fn prompt_for_paths(
+        &mut self,
+        o: &octara::platform::PathPromptOptions,
+        reply: octara::platform::Reply<Option<Vec<std::path::PathBuf>>>,
+    ) {
+        let mut d = rfd::AsyncFileDialog::new();
+        if let Some(p) = &o.prompt {
+            d = d.set_title(p);
+        }
+        // Made here (the main thread: the panel shows now), awaited on a thread of its own.
+        let paths: std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<std::path::PathBuf>>> + Send>> =
+            match (o.directories && !o.files, o.multiple) {
+                (true, true) => Box::pin(async move { Some(d.pick_folders().await?.iter().map(|h| h.path().to_owned()).collect()) }),
+                (true, false) => Box::pin(async move { Some(vec![d.pick_folder().await?.path().to_owned()]) }),
+                (false, true) => Box::pin(async move { Some(d.pick_files().await?.iter().map(|h| h.path().to_owned()).collect()) }),
+                (false, false) => Box::pin(async move { Some(vec![d.pick_file().await?.path().to_owned()]) }),
+            };
+        std::thread::spawn(move || reply(pollster::block_on(paths)));
+    }
+    fn prompt_for_new_path(
+        &mut self,
+        directory: &std::path::Path,
+        name: Option<&str>,
+        reply: octara::platform::Reply<Option<std::path::PathBuf>>,
+    ) {
+        let mut d = rfd::AsyncFileDialog::new().set_directory(directory);
+        if let Some(n) = name {
+            d = d.set_file_name(n);
+        }
+        let path = d.save_file();
+        std::thread::spawn(move || reply(pollster::block_on(path).map(|h| h.path().to_owned())));
+    }
     fn open_url(&mut self, url: &str) {
         if let Err(e) = open::that_detached(url) {
             eprintln!("octara-shell: cannot open {url}: {e}");

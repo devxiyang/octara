@@ -11,6 +11,7 @@
 use crate::native::NativeChange;
 use crate::paint::Rect;
 use std::any::Any;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// The system an app runs on (one per app).
@@ -30,6 +31,18 @@ pub trait Platform {
     /// driven step by step.
     fn waker(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
         None
+    }
+    /// Asks for files or directories to open; `reply` gets them (`None`: cancelled), at once or
+    /// later from any thread.
+    fn prompt_for_paths(&mut self, options: &PathPromptOptions, reply: Reply<Option<Vec<PathBuf>>>) {
+        let _ = options;
+        reply(None)
+    }
+    /// Asks where to save, in `directory`, suggesting `name`; `reply` gets the path (`None`:
+    /// cancelled).
+    fn prompt_for_new_path(&mut self, directory: &Path, name: Option<&str>, reply: Reply<Option<PathBuf>>) {
+        let _ = (directory, name);
+        reply(None)
     }
     /// Opens `url` with the system (the browser, the mail app).
     fn open_url(&mut self, url: &str) {
@@ -105,6 +118,26 @@ pub trait PlatformWindow {
     }
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+/// Where a platform's answer goes (from any thread).
+pub type Reply<T> = Box<dyn FnOnce(T) + Send>;
+
+/// What a dialog for paths to open lets a person pick (GPUI's `PathPromptOptions`).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PathPromptOptions {
+    pub files: bool,
+    pub directories: bool,
+    pub multiple: bool,
+    /// The dialog's prompt (its title or button).
+    pub prompt: Option<String>,
+}
+
+/// A dialog a headless run was asked for.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Prompted {
+    Paths(PathPromptOptions),
+    NewPath { directory: PathBuf, name: Option<String> },
 }
 
 /// What the clipboard holds: text, an image, or both (a copied picture with its description).
@@ -211,6 +244,11 @@ pub struct HeadlessPlatform {
     pub clipboard_image: Option<crate::image::Image>,
     /// Every URL opened, in order.
     pub opened_urls: Vec<String>,
+    /// Every dialog asked for, in order.
+    pub prompted: Vec<Prompted>,
+    /// The answers dialogs get, in order (none left: cancelled). A dialog for a new path gets
+    /// the first path of its answer.
+    pub answers: std::collections::VecDeque<Option<Vec<PathBuf>>>,
     /// The window the next one opened is (a test's fake platform views).
     pub next_window: Option<HeadlessWindow>,
 }
@@ -231,6 +269,14 @@ impl Platform for HeadlessPlatform {
     }
     fn read_image(&mut self) -> Option<crate::image::Image> {
         self.clipboard_image.clone()
+    }
+    fn prompt_for_paths(&mut self, options: &PathPromptOptions, reply: Reply<Option<Vec<PathBuf>>>) {
+        self.prompted.push(Prompted::Paths(options.clone()));
+        reply(self.answers.pop_front().flatten())
+    }
+    fn prompt_for_new_path(&mut self, directory: &Path, name: Option<&str>, reply: Reply<Option<PathBuf>>) {
+        self.prompted.push(Prompted::NewPath { directory: directory.to_owned(), name: name.map(str::to_owned) });
+        reply(self.answers.pop_front().flatten().and_then(|p| p.into_iter().next()))
     }
     fn write_image(&mut self, image: &crate::image::Image) {
         self.clipboard = None;

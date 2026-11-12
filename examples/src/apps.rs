@@ -632,6 +632,7 @@ fn listen(name: &str, f: impl Fn(String) + 'static) {
 /// app ends with its last window.
 pub fn windows() -> View {
     let opened = state("opened", || 0u32);
+    let picked = state("picked", String::new);
     col()
         .size_full()
         .p_6()
@@ -644,6 +645,17 @@ pub fn windows() -> View {
             let options = WindowOptions::new(format!("Note {n}")).size(360.0, 240.0);
             let _ = open_window(options, move || note(n));
         }))
+        .child(button("Open files…").id("open").self_start().on_press(move || {
+            spawn(async move {
+                let options = PathPromptOptions { files: true, multiple: true, prompt: Some("Open".into()), ..Default::default() };
+                let paths = prompt_for_paths(options).await;
+                picked.set(match paths {
+                    Some(p) => p.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n"),
+                    None => "Cancelled".into(),
+                });
+            });
+        }))
+        .child(text(move || picked.get()).id("picked").text_sm().text_color(Token::TextMuted))
         .into()
 }
 

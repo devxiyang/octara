@@ -149,7 +149,7 @@ pub(crate) struct AppState {
     /// The app's own bindings (after the platform's standard ones).
     keymap: RefCell<keys::Keymap>,
     /// The system the app runs on (clipboard, waking the loop, windows).
-    system: RefCell<Box<dyn crate::platform::Platform>>,
+    pub(crate) system: RefCell<Box<dyn crate::platform::Platform>>,
     /// What paints `capture` requests (the harness installs the reference renderer).
     painter: RefCell<Option<Box<dyn crate::capture::Painter>>>,
     /// How deep the app's entry points are nested: an operation ends when it returns to 0.

@@ -520,6 +520,22 @@ pub fn background<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) 
     Background { slot }
 }
 
+/// A value coming later from any thread (a platform's answer): the reply that sets it, and the
+/// future that awaits it in a task.
+pub(crate) fn later<T: Send + 'static>() -> (crate::platform::Reply<T>, impl Future<Output = T>) {
+    let slot = Arc::new(Oneshot { value: Mutex::new(None), waker: Mutex::new(None) });
+    let shared = sched().shared.clone();
+    let done = slot.clone();
+    let reply: crate::platform::Reply<T> = Box::new(move |v| {
+        *done.value.lock().expect("oneshot") = Some(v);
+        if let Some(w) = done.waker.lock().expect("oneshot").take() {
+            w.wake();
+        }
+        shared.notify();
+    });
+    (reply, Background { slot })
+}
+
 // ---- channels ----
 
 struct Chan<T> {

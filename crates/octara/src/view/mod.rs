@@ -477,6 +477,25 @@ pub fn set_theme(theme: Theme) {
     crate::app::app_state().set_theme(theme);
 }
 
+/// Asks for files or directories to open (GPUI's `prompt_for_paths`): await it in a task; `None`
+/// when cancelled.
+pub fn prompt_for_paths(options: crate::platform::PathPromptOptions) -> impl std::future::Future<Output = Option<Vec<std::path::PathBuf>>> {
+    let (reply, answer) = crate::task::later();
+    crate::app::app_state().system.borrow_mut().prompt_for_paths(&options, reply);
+    answer
+}
+
+/// Asks where to save, in `directory`, suggesting `name` (GPUI's `prompt_for_new_path`): await it
+/// in a task; `None` when cancelled.
+pub fn prompt_for_new_path(
+    directory: &std::path::Path,
+    name: Option<&str>,
+) -> impl std::future::Future<Output = Option<std::path::PathBuf>> {
+    let (reply, answer) = crate::task::later();
+    crate::app::app_state().system.borrow_mut().prompt_for_new_path(directory, name, reply);
+    answer
+}
+
 /// Opens `url` with the system: the browser, the mail app (GPUI's `open_url`). A link no
 /// `on_link` takes opens this way. Callable from handlers.
 pub fn open_url(url: &str) {
