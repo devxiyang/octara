@@ -37,6 +37,9 @@ pub struct Snapshot {
     pub pending: usize,
     /// This window's number (what a request's `window` names).
     pub window: u64,
+    /// The document selection's text, when there is one (cut after 2 000 characters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<String>,
     /// The app's open windows.
     pub windows: Vec<WindowInfo>,
     pub root: Node,
@@ -230,6 +233,18 @@ pub enum Request {
         x: f32,
         y: f32,
     },
+    /// Selects text in a selectable region, from a text (test id) and byte offset to another
+    /// (as a drag would); without `from`, everything in the region `region`.
+    Select {
+        #[serde(default)]
+        from: Option<(String, usize)>,
+        #[serde(default)]
+        to: Option<(String, usize)>,
+        #[serde(default)]
+        region: Option<String>,
+    },
+    /// Copies the document selection (`mod+c`); the reply's `text` is what was copied.
+    Copy,
     /// Fails unless every given property holds for the element `id` (or, with only `clean`, for
     /// the app).
     Expect(Expect),
@@ -282,6 +297,9 @@ pub struct Reply {
     /// What a `pick` found.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picked: Option<Box<Picked>>,
+    /// What a `copy` copied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// A `#[component]` function, as the inspector names it.
@@ -347,7 +365,7 @@ pub struct Issue {
 
 impl Reply {
     pub fn ok() -> Reply {
-        Reply { ok: true, code: None, message: None, actual: None, snapshot: None, issues: None, capture: None, picked: None }
+        Reply { ok: true, code: None, message: None, actual: None, snapshot: None, issues: None, capture: None, picked: None, text: None }
     }
 
     pub fn fail(code: &'static Code, message: impl Into<String>) -> Reply {
@@ -466,6 +484,18 @@ pub fn handle(app: &mut Window, req: Request) -> Reply {
             Reply::ok()
         }
         Request::Expect(e) => expect(app, &e),
+        Request::Select { from, to, region } => match (from, to, region) {
+            (Some(f), Some(t), _) => step(app.select((&f.0, f.1), (&t.0, t.1))),
+            (None, None, Some(r)) => step(app.select_all(&r)),
+            _ => Reply::fail(&codes::BAD_REQUEST, "`select` takes `from` and `to` ([id, offset] each), or a `region`"),
+        },
+        Request::Copy => match app.selected_text() {
+            Some(text) => {
+                let _ = app.invoke("edit.copy");
+                Reply { text: Some(text), ..Reply::ok() }
+            }
+            None => Reply::fail(&codes::STEP_FAILED, "nothing is selected"),
+        },
         Request::Pick { x, y } => match app.pick(x, y) {
             Some(p) => Reply { picked: Some(Box::new(p)), ..Reply::ok() },
             None => Reply::fail(&codes::NO_SUCH_ELEMENT, format!("nothing is at ({x}, {y})")),

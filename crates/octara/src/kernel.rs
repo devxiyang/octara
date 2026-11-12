@@ -17,6 +17,7 @@ mod issues;
 mod paint;
 mod pick;
 pub mod rich;
+pub mod select;
 pub mod style;
 pub mod text;
 pub mod theme;
@@ -351,6 +352,14 @@ struct Node {
     group: Option<&'static str>,
     /// While hovered, the elements around it are not (`hover_alone`).
     hover_alone: bool,
+    /// Its texts can be selected together, as one document (`.selectable()`).
+    region: bool,
+    /// Its texts are never selected (`.select_none()`).
+    select_none: bool,
+    /// A list row's key (`each`, `virtual_each`): selections address rows by it.
+    row_key: Option<std::rc::Rc<str>>,
+    /// The range of its text a document selection covers now.
+    selected: Option<std::ops::Range<usize>>,
     /// An overlay's anchor node and placement; the node is positioned absolutely in the overlay layer.
     anchor: Option<(NodeId, Placement)>,
     /// Where the last layout put an anchored node.
@@ -1060,6 +1069,10 @@ impl Kernel {
             exiting: false,
             group: None,
             hover_alone: false,
+            region: false,
+            select_none: false,
+            row_key: None,
+            selected: None,
             anchor: None,
             placed: None,
             scroll: (0.0, 0.0),

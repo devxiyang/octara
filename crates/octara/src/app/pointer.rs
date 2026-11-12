@@ -172,6 +172,9 @@ pub(crate) struct Held {
     clicks: u32,
     /// Recent touch positions `(time, x, y)` for the release velocity.
     samples: Vec<(f64, f32, f32)>,
+    /// Selecting text in this selectable region (the press landed on its text, not on
+    /// anything pressable).
+    selecting: Option<NodeId>,
 }
 
 /// The last press, for counting double presses.
@@ -398,12 +401,34 @@ impl Window {
             let _ = self.set_focus(focus);
         }
         let enabled = target.is_some_and(|n| !self.w.kernel.borrow().state(n).contains(State::DISABLED));
-        let mode = if stopped || !enabled { Mode::Spent } else { Mode::Pending };
+        // A press on a selectable region's text, not on anything pressable, selects.
+        // (A target around the region, such as the scroll container it is, does not stop it.)
+        let selecting = (button == Button::Primary && !outside && !stopped)
+            .then(|| {
+                let k = self.w.kernel.borrow();
+                hit.and_then(|h| k.region_of(h)).filter(|r| target.is_none_or(|t| k.is_within(*r, t)))
+            })
+            .flatten();
+        let mode = if selecting.is_some() {
+            Mode::Pending
+        } else if stopped || !enabled {
+            Mode::Spent
+        } else {
+            Mode::Pending
+        };
         // The run of presses (double click) counts from the press (AppKit, Rune).
-        let clicks = match target {
+        let clicks = match target.or(selecting) {
             Some(n) if mode == Mode::Pending && button == Button::Primary => self.count_press(n, ev.kind, (ev.x, ev.y)),
             _ => 1,
         };
+        match selecting {
+            Some(region) => self.select_press(region, &ev, clicks),
+            // A press anywhere else ends a document selection (Shift keeps it to extend).
+            None if button == Button::Primary && !ev.modifiers.contains(Modifiers::SHIFT) => {
+                self.clear_doc_selection();
+            }
+            None => {}
+        }
         if mode == Mode::Pending
             && button == Button::Primary
             && let Some(n) = target
@@ -424,6 +449,7 @@ impl Window {
             mode,
             clicks,
             samples: vec![(now, ev.x, ev.y)],
+            selecting,
         });
         // An element kind with behavior of its own acts on the press (a field's caret).
         if mode == Mode::Pending
@@ -442,6 +468,22 @@ impl Window {
             self.set_hover(hit);
         }
         let Some(mut h) = self.w.interaction.borrow().pointer.held.clone().filter(|h| h.pointer == ev.id) else { return };
+        // Selecting: the focus follows the pointer.
+        if let Some(region) = h.selecting {
+            if let Some(p) = self.point_at(region, ev.x, ev.y)
+                && let Some(sel) = self.w.selection.borrow_mut().as_mut().filter(|s| s.region == region)
+            {
+                sel.focus = p;
+            }
+            h.at = (ev.x, ev.y);
+            if h.mode == Mode::Pending {
+                // A drag ends a run of clicks.
+                self.w.interaction.borrow_mut().pointer.last_press = None;
+            }
+            h.mode = Mode::Dragging;
+            self.w.interaction.borrow_mut().pointer.held = Some(h);
+            return;
+        }
         let prev = h.at;
         h.at = (ev.x, ev.y);
         let now = self.now_ms();
@@ -718,5 +760,26 @@ impl Window {
     /// Hover is being held while layout moves.
     pub(super) fn hover_held(&self) -> bool {
         self.w.interaction.borrow().hover_held
+    }
+}
+
+impl Window {
+    /// A press that selects in `region`: a caret-less start, a word (double), a text (triple),
+    /// or, with Shift, the existing selection extended to here.
+    fn select_press(&self, region: NodeId, ev: &PointerEvent, clicks: u32) {
+        let Some(p) = self.point_at(region, ev.x, ev.y) else { return };
+        let extend = ev.modifiers.contains(Modifiers::SHIFT) && self.w.selection.borrow().as_ref().is_some_and(|s| s.region == region);
+        if extend {
+            if let Some(sel) = self.w.selection.borrow_mut().as_mut() {
+                sel.focus = p;
+            }
+            return;
+        }
+        let (anchor, focus) = match clicks {
+            1 => (p.clone(), p),
+            2 => self.unit_at(region, &p, false).unwrap_or((p.clone(), p)),
+            _ => self.unit_at(region, &p, true).unwrap_or((p.clone(), p)),
+        };
+        self.set_doc_selection(region, anchor, focus);
     }
 }

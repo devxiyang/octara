@@ -28,6 +28,7 @@ mod responsive;
 mod rich;
 mod scroll;
 mod secure;
+mod selection;
 mod size_of;
 mod state_keys;
 mod system_fonts;

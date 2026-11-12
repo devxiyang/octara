@@ -347,6 +347,21 @@ impl Kernel {
                 if clip_text {
                     out.push(Item::PushClip { source: id, rect: Rect { x: cx, y: cy, w: inner, h: rect.h }, radius: 0.0 });
                 }
+                // A document selection, behind the glyphs (as a field draws its own).
+                if n.selected.is_some() {
+                    let fill = fade(self.res.theme.borrow().get(Token::Accent).multiply_alpha(0.3), opacity);
+                    for r in self.selected_rects(id) {
+                        out.push(Item::Quad(crate::paint::Quad {
+                            source: id,
+                            rect: Rect { x: rect.x + r.x, y: rect.y + r.y, w: r.w, h: r.h },
+                            radius: 0.0,
+                            fill: Some(fill),
+                            gradient: None,
+                            border: [0.0; 4],
+                            border_color: fill,
+                        }));
+                    }
+                }
                 self.paint_runs(id, &runs, (cx, cy), v.text, opacity, out);
                 if clip_text {
                     out.push(Item::PopClip);

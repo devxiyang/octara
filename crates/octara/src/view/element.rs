@@ -244,6 +244,8 @@ pub struct El {
     on_link: Option<OnLink>,
     group: Option<&'static str>,
     hover_alone: bool,
+    region: bool,
+    select_none: bool,
     overlays: Vec<Overlay>,
     anchor: Option<(NodeId, Placement)>,
     pub(crate) children: Vec<View>,
@@ -305,6 +307,8 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         on_link: None,
         group: None,
         hover_alone: false,
+        region: false,
+        select_none: false,
         overlays: Vec::new(),
         anchor: None,
         children: Vec::new(),
@@ -465,6 +469,19 @@ impl El {
     /// a hoverable card lights up alone.
     pub fn hover_alone(mut self) -> Self {
         self.hover_alone = true;
+        self
+    }
+    /// Its texts can be selected as one document: press and drag across them, double press a
+    /// word, triple press a text, Shift+press to extend, `mod+a` and `mod+c` (a chat transcript,
+    /// a message, Markdown). Rows of its lists keep their part of a selection while they scroll
+    /// out and back.
+    pub fn selectable(mut self) -> Self {
+        self.region = true;
+        self
+    }
+    /// Its texts are not selected (list markers, labels of controls inside a selectable region).
+    pub fn select_none(mut self) -> Self {
+        self.select_none = true;
         self
     }
     /// Style while pressed (Tailwind's `active:`).
@@ -946,6 +963,12 @@ pub(crate) fn build_el(e: El) -> NodeId {
         }
         if e.hover_alone {
             k.set_hover_alone(node, true);
+        }
+        if e.region {
+            k.set_region(node, true);
+        }
+        if e.select_none {
+            k.set_select_none(node, true);
         }
     }
     if let Some(draw) = e.canvas {

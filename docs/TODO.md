@@ -40,6 +40,9 @@ Checked by tests and screenshots; to be tried in a real window (`cargo run -p oc
       OCTARA_CAPTURE_PIXELS=display cargo run -p octara-examples --bin window -- showcase web`
       reports `pixels: display`, and the picture holds the Metal frame and the live web page,
       cropped to the content view (no title bar), at the backing scale.
+- [ ] Selection (`window -- showcase text`): dragging across the card's texts highlights as it
+      goes, a double click selects a word and a triple click the paragraph, Shift+click extends,
+      `cmd+c` copies, a click elsewhere clears; pressing a link still opens it.
 - [ ] Picking (`window -- todo`, a debug build): `mod+shift+c`, then moving the pointer outlines
       each element; a click prints its line and copies it (a "Delete" button
       says `made by todo_row()`), the button does not press, and picking ends; Escape ends it

@@ -1,5 +1,5 @@
 //! Rich text: one paragraph of styled runs, inline code and links that are elements of their
-//! own (pressable, focusable, named by their words).
+//! own (pressable, focusable, named by their words); the card's texts select as one document.
 
 use octara::prelude::*;
 
@@ -8,6 +8,7 @@ pub fn card() -> El {
     let opened = state("opened", String::new);
     super::section("Rich text")
         .w(380.0)
+        .selectable()
         .child(
             text(
                 rich()

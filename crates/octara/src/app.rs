@@ -9,12 +9,15 @@ mod input;
 mod keys;
 mod pick;
 mod pointer;
+mod selection;
 mod time;
 
 pub use edit::{TextField, byte_offset, utf16_offset};
 pub use event::{InputEvent, Recorded, Recording};
 pub use keys::{BUILTIN_COMMANDS, Binding, Chord, Key, KeyEvent, Keymap};
 pub use pointer::{Button, Drag, DragPhase, Modifiers, Phase, PointerEvent, PointerKind, Tuning};
+pub(crate) use selection::ListOrder;
+pub use selection::TextPoint;
 
 use crate::diagnostics::{self as codes, Diagnostic};
 use crate::kernel::{Breakpoint, HandlerKind, Kernel, NodeId, State, Theme};
@@ -204,6 +207,11 @@ pub(crate) struct WindowState {
     capturing: RefCell<Option<crate::capture::Capturing>>,
     /// Picking an element to hand to an agent.
     picking: RefCell<pick::Picking>,
+    /// The document selection (a selectable region's), and the texts it marked last.
+    selection: RefCell<Option<selection::DocSelection>>,
+    selected_texts: RefCell<Vec<NodeId>>,
+    /// How lists order their rows, by container (for selections through them).
+    pub(crate) lists: RefCell<std::collections::HashMap<NodeId, selection::ListOrder>>,
 }
 
 thread_local! {
@@ -321,6 +329,9 @@ impl WindowState {
             presented: Cell::new(u64::MAX),
             capturing: RefCell::default(),
             picking: RefCell::default(),
+            selection: RefCell::default(),
+            selected_texts: RefCell::default(),
+            lists: RefCell::default(),
         }
     }
 }
@@ -913,6 +924,7 @@ impl Window {
             focus,
             pending: self.app().pending().len(),
             window: self.w.id.number(),
+            selection: self.selected_text().map(|t| t.chars().take(2000).collect()),
             windows: self
                 .app()
                 .each()
@@ -1383,6 +1395,7 @@ impl Window {
     /// Presents what changed to the window's platform: native view changes, the text input,
     /// whether to draw again (after every settle; nothing when nothing changed).
     fn present(&self) {
+        self.mark_selection();
         let text_input = self.focused_input().and_then(|(n, _)| {
             let k = self.w.kernel.borrow();
             let caret = k.caret(n)?;

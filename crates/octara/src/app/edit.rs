@@ -216,7 +216,7 @@ impl Window {
     }
 
     /// Moves the caret (extending the selection with `extend`).
-    fn select(&self, n: NodeId, anchor: usize, caret: usize) {
+    fn select_field(&self, n: NodeId, anchor: usize, caret: usize) {
         self.w.kernel.borrow_mut().set_selection(n, anchor, caret);
         self.w.interaction.borrow_mut().reveal = Some(n);
         if let Some(st) = self.w.interaction.borrow_mut().edits.get_mut(&n) {
@@ -246,7 +246,7 @@ impl Window {
     /// its x from where the moves by lines began.
     fn by_lines(&self, n: NodeId, anchor: usize, lines: i32, extend: bool) {
         let Some((to, goal)) = self.w.kernel.borrow().input_offset_by_lines(n, lines) else { return };
-        self.select(n, if extend { anchor } else { to }, to);
+        self.select_field(n, if extend { anchor } else { to }, to);
         self.w.kernel.borrow_mut().keep_goal(n, goal);
     }
 
@@ -280,14 +280,14 @@ impl Window {
             "edit.select_page_down" => self.by_lines(n, a, page, true),
             "edit.move_to_line_start" => {
                 let to = edges().0;
-                self.select(n, to, to)
+                self.select_field(n, to, to)
             }
             "edit.move_to_line_end" => {
                 let to = edges().1;
-                self.select(n, to, to)
+                self.select_field(n, to, to)
             }
-            "edit.select_to_line_start" => self.select(n, a, edges().0),
-            "edit.select_to_line_end" => self.select(n, a, edges().1),
+            "edit.select_to_line_start" => self.select_field(n, a, edges().0),
+            "edit.select_to_line_end" => self.select_field(n, a, edges().1),
             "edit.newline" => {
                 if !multiline {
                     return false;
@@ -296,28 +296,28 @@ impl Window {
                 self.apply(n, new, s + 1, s + 1, Kind::Insert);
             }
             "edit.move_left" => {
-                self.select(n, if collapsed { prev_grapheme(&v, c) } else { s }, if collapsed { prev_grapheme(&v, c) } else { s })
+                self.select_field(n, if collapsed { prev_grapheme(&v, c) } else { s }, if collapsed { prev_grapheme(&v, c) } else { s })
             }
             "edit.move_right" => {
-                self.select(n, if collapsed { next_grapheme(&v, c) } else { e }, if collapsed { next_grapheme(&v, c) } else { e })
+                self.select_field(n, if collapsed { next_grapheme(&v, c) } else { e }, if collapsed { next_grapheme(&v, c) } else { e })
             }
             "edit.move_word_left" => {
                 let to = prev_word(&v, c);
-                self.select(n, to, to)
+                self.select_field(n, to, to)
             }
             "edit.move_word_right" => {
                 let to = next_word(&v, c);
-                self.select(n, to, to)
+                self.select_field(n, to, to)
             }
-            "edit.move_to_start" => self.select(n, 0, 0),
-            "edit.move_to_end" => self.select(n, v.len(), v.len()),
-            "edit.select_left" => self.select(n, a, prev_grapheme(&v, c)),
-            "edit.select_right" => self.select(n, a, next_grapheme(&v, c)),
-            "edit.select_word_left" => self.select(n, a, prev_word(&v, c)),
-            "edit.select_word_right" => self.select(n, a, next_word(&v, c)),
-            "edit.select_to_start" => self.select(n, a, 0),
-            "edit.select_to_end" => self.select(n, a, v.len()),
-            "edit.select_all" => self.select(n, 0, v.len()),
+            "edit.move_to_start" => self.select_field(n, 0, 0),
+            "edit.move_to_end" => self.select_field(n, v.len(), v.len()),
+            "edit.select_left" => self.select_field(n, a, prev_grapheme(&v, c)),
+            "edit.select_right" => self.select_field(n, a, next_grapheme(&v, c)),
+            "edit.select_word_left" => self.select_field(n, a, prev_word(&v, c)),
+            "edit.select_word_right" => self.select_field(n, a, next_word(&v, c)),
+            "edit.select_to_start" => self.select_field(n, a, 0),
+            "edit.select_to_end" => self.select_field(n, a, v.len()),
+            "edit.select_all" => self.select_field(n, 0, v.len()),
             "edit.delete_backward"
             | "edit.delete_forward"
             | "edit.delete_word_backward"
@@ -402,13 +402,13 @@ impl Window {
         let v = self.w.kernel.borrow().value(n).to_owned();
         let (a, _) = self.w.kernel.borrow().selection(n);
         match clicks {
-            1 if extend => self.select(n, a, at),
-            1 => self.select(n, at, at),
+            1 if extend => self.select_field(n, a, at),
+            1 => self.select_field(n, at, at),
             2 => {
                 let (s, e) = word_at(&v, at);
-                self.select(n, s, e)
+                self.select_field(n, s, e)
             }
-            _ => self.select(n, 0, v.len()),
+            _ => self.select_field(n, 0, v.len()),
         }
     }
 
@@ -416,7 +416,7 @@ impl Window {
     fn drag_in_field(&self, n: NodeId, (x, y): (f32, f32)) {
         let Some(at) = self.w.kernel.borrow().input_offset_at(n, x, y, false) else { return };
         let (a, _) = self.w.kernel.borrow().selection(n);
-        self.select(n, a, at);
+        self.select_field(n, a, at);
     }
 
     /// What the clipboard holds as text.
@@ -456,7 +456,7 @@ impl Window {
     pub fn set_selection(&mut self, anchor: usize, caret: usize) {
         self.input_frame(|| {
             if let Some((n, ..)) = self.field() {
-                self.select(n, anchor, caret);
+                self.select_field(n, anchor, caret);
             }
         });
     }

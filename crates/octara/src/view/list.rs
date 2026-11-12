@@ -30,6 +30,8 @@ fn build_row<K: Display, T: Clone + 'static>(
             build_el(col())
         }
     });
+    // Selections address rows by their key.
+    crate::app::window().kernel.borrow_mut().set_row_key(node, Some(k.to_string().into()));
     (s, node)
 }
 
@@ -200,6 +202,47 @@ where
         let mirror: Rc<RefCell<Seq<K>>> = Rc::default();
         let rows: Rc<RefCell<HashMap<K, (ScopeId, NodeId)>>> = Rc::default();
         let current: Current<K, T> = Rc::default();
+        // Keys by the name paths write them in (every row built, and every key listed).
+        let names: Rc<RefCell<HashMap<String, K>>> = Rc::default();
+        let row = Rc::new(row);
+
+        // How a selection through the list orders rows and reads the ones not mounted.
+        {
+            let (mirror, names, current, row) = (mirror.clone(), names.clone(), current.clone(), row.clone());
+            let base = base.clone();
+            let index_of = {
+                let (mirror, names) = (mirror.clone(), names.clone());
+                Rc::new(move |name: &str| names.borrow().get(name).and_then(|k| mirror.borrow().index_of(k)))
+            };
+            let keys = {
+                let (mirror, names) = (mirror.clone(), names.clone());
+                Rc::new(move |start: usize, end: usize| {
+                    let m = mirror.borrow();
+                    let mut names = names.borrow_mut();
+                    (start..end.min(m.len()))
+                        .filter_map(|i| m.nth(i))
+                        .map(|k| {
+                            let name = k.to_string();
+                            names.entry(name.clone()).or_insert_with(|| k.clone());
+                            Rc::<str>::from(name)
+                        })
+                        .collect::<Vec<_>>()
+                })
+            };
+            let build = Rc::new(move |name: &str| -> Option<(NodeId, Box<dyn FnOnce()>)> {
+                let k = names.borrow().get(name).cloned()?;
+                let item = current.borrow().as_ref().and_then(|(src, _)| src.item(&k))?;
+                let (scope, node) = rt(|rt| build_row(rt, owner, &format!("{base}/offscreen"), at, &k, Some(item), &*row));
+                Some((node, Box::new(move || rt(|rt| rt.dispose_scope(scope)))))
+            });
+            u.lists.borrow_mut().insert(container, crate::app::ListOrder { index_of, keys, build: Some(build) });
+            let u = u.clone();
+            rt(|rt| {
+                rt.on_cleanup(Box::new(move || {
+                    u.lists.borrow_mut().remove(&container);
+                }))
+            });
+        }
 
         // After each layout: where the list starts in the container, and the rows' real heights.
         let hook = {
@@ -338,7 +381,8 @@ where
                         .map(|k| {
                             let e = old.remove(&k).unwrap_or_else(|| {
                                 built = true;
-                                build_row(rt, owner, &base, at, &k, src.item(&k), &row)
+                                names.borrow_mut().entry(k.to_string()).or_insert_with(|| k.clone());
+                                build_row(rt, owner, &base, at, &k, src.item(&k), &*row)
                             });
                             (k, e)
                         })

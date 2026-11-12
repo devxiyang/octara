@@ -297,6 +297,9 @@ impl Keymap {
                 b(chord, *command, Some(field));
             }
         }
+        // A document selection (a selectable region's), where no field has focus.
+        b("mod+c", Some("edit.copy"), None);
+        b("mod+a", Some("edit.select_all"), None);
         k
     }
 }
@@ -530,7 +533,8 @@ impl Window {
             "focus.last" => self.arrow(Arrow::End),
             "focus.dismiss" => {
                 if self.top_modal().is_none() && focused.is_none() {
-                    return false;
+                    // Escape with nothing else to dismiss clears a document selection.
+                    return self.clear_doc_selection();
                 }
                 self.escape();
                 true
@@ -542,7 +546,7 @@ impl Window {
                 let target = focused.and_then(|f| self.w.kernel.borrow().handler_above(Some(f), HandlerKind::SecondaryPress));
                 target.is_some_and(|n| self.run(n, &[HandlerKind::SecondaryPress], None))
             }
-            c if c.starts_with("edit.") => self.edit_command(c),
+            c if c.starts_with("edit.") => self.edit_command(c) || (focused.is_none() && self.document_command(c)),
             _ => false,
         }
     }

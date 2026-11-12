@@ -1,6 +1,6 @@
 # The text core
 
-Based on the [research](../research/text.md). Status: confirmed; step 1 (rich text and links) implemented. The [core](core.md)'s step 3: rich
+Based on the [research](../research/text.md). Status: confirmed; steps 1 (rich text and links) and 2 (selection) implemented. The [core](core.md)'s step 3: rich
 text, blocks laid out and painted one at a time, a selection across blocks and rows of a
 virtual list, and accessible text. Designed for the AI chat app: messages streaming in as
 Markdown, long transcripts, select and copy across messages.
@@ -84,13 +84,17 @@ Markdown, long transcripts, select and copy across messages.
   region, `mod+c` copies, Escape or a press elsewhere clears. A press on a link, a button or a
   field acts as it does; a drag starting on a link selects. Text fields keep their own selection;
   focusing one clears the region's.
-- **Painting**: each mounted text draws its part's highlight rects (Parley's selection
-  geometry) behind its glyphs, in a new `Token::Selection` (the one text fields draw their selection in too).
+- **Painting**: after each operation the window marks the range each mounted text of the
+  region covers; the kernel draws it behind the glyphs from the text's kept lines (a line's
+  break included), in the accent at 30 % as fields draw theirs.
 - **Copy** reads the source: mounted texts their strings; rows between that are not mounted are
   built view-only (the row's view run in a detached scope, its texts read, the scope disposed),
-  capped at 10 000 rows and 4 MiB. Texts join with a newline, blocks (paragraph, heading, code
-  block, list item, quote) with a blank line, table cells with a tab; list items get their
-  markers. `mod+c` copies that plain text, always. `edit.copy_markdown` (`mod+shift+c`, and the
+  capped at 10 000 rows. Texts join with a newline, list rows with a blank line (Markdown's
+  blocks, table cells and list markers join by their roles in step 4).
+- **Lists**: each row's root carries its key; a virtual list registers on the window how it
+  orders keys (through its weighted mirror) and how it builds a row off screen. Selecting all
+  uses two points outside every text (before the first, after the last), so it covers rows that
+  were never mounted. `mod+c` copies that plain text, always. `edit.copy_markdown` (`mod+shift+c`, and the
   context menu) copies Markdown: a region can supply its own source for the blocks it covers
   (`markdown` gives the touched blocks' source; partly selected blocks are cut at the selection
   through their source maps).
