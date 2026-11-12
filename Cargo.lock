@@ -2302,6 +2302,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "octara-chat"
+version = "0.0.0"
+dependencies = [
+ "octara",
+ "octara-icons",
+ "octara-kit",
+ "octara-shell",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "octara-cli"
 version = "0.0.0"
 dependencies = [

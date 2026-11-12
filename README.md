@@ -16,6 +16,7 @@ GPU rendering, the native SDK and the CLI are planned.
 ```sh
 cargo test                                            # everything, headless
 cargo run --release -p octara-examples --bin bench    # benchmark tables
+cargo run -p octara-chat                              # the AI chat reference app
 ```
 
 ```rust
@@ -117,6 +118,7 @@ These are architectural targets, not a current support matrix.
 | `crates/octara-macros` | `#[component]` |
 | `crates/octara-kit` | Components (in progress) |
 | `examples` | Example apps, shared scenarios, tests and the benchmark |
+| `apps/chat` | The AI chat reference app, built from the core and the kit, answered by an offline scripted model |
 
 The first milestone pairs the reactive core with a minimal semantic inspector and
 headless tests. Agent capabilities are part of the initial design.

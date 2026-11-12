@@ -33,6 +33,7 @@ Principles:
 | `octara-fonts` | A CJK subset for deterministic tests and screenshots |
 | `octara-cli` | The `octara` command: `check`, `inspect`, `run`, `vocab`, `explain`, `skill`, `api` |
 | `examples` | Example apps, their acceptance tests, benchmarks, screenshot and window tools |
+| `apps/chat` | The AI chat reference app: its data (threads, messages of parts, a model's events), a `Model` interface with an offline scripted model on the app's clock, conversations saved as JSON, and views composed from the kit |
 
 Everything but `octara` and `octara-macros` depends only on `octara`'s public API, which the CLI reads from the source an app builds with.
 
