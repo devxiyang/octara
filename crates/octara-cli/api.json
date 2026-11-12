@@ -2329,6 +2329,13 @@
           "file": "crates/octara/src/diagnostics.rs"
         },
         {
+          "path": "octara::diagnostics::VIEW_READS_STATE",
+          "kind": "static",
+          "sig": "pub static VIEW_READS_STATE: Code",
+          "docs": "A signal was read inside a view's closure (filter, sort_by, group_by, map, join).",
+          "file": "crates/octara/src/diagnostics.rs"
+        },
+        {
           "path": "octara::diagnostics::VIRTUAL_LIST_NOT_SCROLLABLE",
           "kind": "static",
           "sig": "pub static VIRTUAL_LIST_NOT_SCROLLABLE: Code",
@@ -9690,6 +9697,17 @@
           "file": "crates/octara/src/reactive/list.rs"
         },
         {
+          "path": "octara::reactive::list::Derived::map",
+          "kind": "method",
+          "sig": "pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> Derived<K, U>",
+          "within": "impl<K, T> Derived<K, T> where K: Eq + Hash + Clone + 'static, T: Clone + 'static",
+          "docs": "The items transformed by `f`, same keys and order ([`Source::map`]).",
+          "file": "crates/octara/src/reactive/list.rs",
+          "links": [
+            "octara::reactive::list::Source::map"
+          ]
+        },
+        {
           "path": "octara::reactive::list::Derived::sort_by",
           "kind": "method",
           "sig": "pub fn sort_by<S: Ord + Clone + 'static>(&self, key: impl Fn(&T) -> S + 'static) -> Derived<K, T>",
@@ -9946,6 +9964,17 @@
           "file": "crates/octara/src/reactive/list.rs"
         },
         {
+          "path": "octara::reactive::list::List::map",
+          "kind": "method",
+          "sig": "pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> Derived<K, U>",
+          "within": "impl<K, T> List<K, T> where K: Eq + Hash + Clone + 'static, T: Clone + 'static",
+          "docs": "The items transformed by `f`, same keys and order ([`Source::map`]).",
+          "file": "crates/octara/src/reactive/list.rs",
+          "links": [
+            "octara::reactive::list::Source::map"
+          ]
+        },
+        {
           "path": "octara::reactive::list::List::push",
           "kind": "method",
           "sig": "pub fn push(&self, t: T)",
@@ -10055,6 +10084,14 @@
           "sig": "pub fn log_len(&self) -> usize",
           "within": "impl<K, T> Source<K, T> where K: Eq + Hash + Clone + 'static, T: Clone + 'static",
           "docs": "Entries held in this stage's log (to check it stays bounded).",
+          "file": "crates/octara/src/reactive/list.rs"
+        },
+        {
+          "path": "octara::reactive::list::Source::map",
+          "kind": "method",
+          "sig": "pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> Derived<K, U>",
+          "within": "impl<K, T> Source<K, T> where K: Eq + Hash + Clone + 'static, T: Clone + 'static",
+          "docs": "The items transformed by `f`, under the same keys and in the same order; maintained\nincrementally: an item's change calls `f` once, and reaches what follows only if the\nresult differs. `f` is a pure function of the item (a read signal is reported).",
           "file": "crates/octara/src/reactive/list.rs"
         },
         {

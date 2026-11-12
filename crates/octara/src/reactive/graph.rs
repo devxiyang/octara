@@ -98,6 +98,9 @@ pub(crate) enum Ctx {
     Handler,
     /// Inside `untrack`.
     Untracked,
+    /// Inside a view's closure (`filter`, `sort_by`, `group_by`, `map`, `join`): a pure function
+    /// of the item, run per item event; reads are not tracked and are reported.
+    View,
 }
 
 /// Named state by (scope path, key), with the value's type.
@@ -311,6 +314,17 @@ impl Runtime {
                 nodes[obs.i as usize].sources.push(src);
                 nodes[src.i as usize].observers.push(obs);
             }
+        } else if self.ctx() == Ctx::View {
+            let at_def = self.defined_at(src);
+            self.diag(
+                &codes::VIEW_READS_STATE,
+                format!(
+                    "value defined at {at_def} read inside a view's closure (filter, sort_by, group_by, map, join); \
+                     the view runs per item change and will not follow this value. Put it in the item, join the \
+                     data, or pick between views in a memo"
+                ),
+                at,
+            );
         } else if self.ctx() == Ctx::Build {
             let at_def = self.defined_at(src);
             self.diag(

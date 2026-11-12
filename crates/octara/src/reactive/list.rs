@@ -99,9 +99,11 @@ impl<E: Clone> Log<E> {
 /// Value-level events from an upstream stage. Indices are positions in that stage.
 pub(crate) trait Observer<K, T> {
     fn inserted(&self, index: usize, key: &K, item: &T);
-    fn removed(&self, key: &K, item: &T);
+    /// `index` is where the key was in the upstream stage.
+    fn removed(&self, index: usize, key: &K, item: &T);
     fn updated(&self, key: &K, old: &T, new: &T);
-    fn moved(&self, key: &K, to: usize, item: &T);
+    /// `to` is the index after removing the key from `from`.
+    fn moved(&self, key: &K, from: usize, to: usize, item: &T);
 }
 
 /// The output side of a stage: its log, its version signal and its observers.
@@ -131,7 +133,7 @@ impl<K: Clone + 'static, T: 'static> Emitter<K, T> {
     fn remove(&self, index: usize, k: &K, t: &T) {
         self.log.borrow_mut().push(Change::Remove { key: k.clone(), index });
         self.bump();
-        self.live().iter().for_each(|o| o.removed(k, t));
+        self.live().iter().for_each(|o| o.removed(index, k, t));
     }
     fn update(&self, k: &K, old: &T, new: &T) {
         self.live().iter().for_each(|o| o.updated(k, old, new));
@@ -139,7 +141,7 @@ impl<K: Clone + 'static, T: 'static> Emitter<K, T> {
     fn moved(&self, from: usize, to: usize, k: &K, t: &T) {
         self.log.borrow_mut().push(Change::Move { key: k.clone(), from, to });
         self.bump();
-        self.live().iter().for_each(|o| o.moved(k, to, t));
+        self.live().iter().for_each(|o| o.moved(k, from, to, t));
     }
 }
 
@@ -158,12 +160,18 @@ pub(crate) trait Stage<K, T> {
     fn emitter(&self) -> &Emitter<K, T>;
 }
 
+/// A view's closure, run as one: untracked (even when the view is built inside a binding), a
+/// signal read reported (`VIEW_READS_STATE`), a write rejected.
+fn view_fn<A: ?Sized + 'static, R: 'static>(f: impl Fn(&A) -> R + 'static) -> impl Fn(&A) -> R + 'static {
+    move |a| rt(|rt| rt.with_frame(Ctx::View, None, None, || f(a)))
+}
+
 /// Writes to collections and text follow the layer rules of signals.
 pub(crate) fn writable(at: &'static Location<'static>) -> bool {
     rt(|rt| {
         let code = match rt.ctx() {
             Ctx::Build => &codes::WRITE_IN_BUILD,
-            Ctx::Derive | Ctx::Observe => &codes::WRITE_IN_DERIVE,
+            Ctx::Derive | Ctx::Observe | Ctx::View => &codes::WRITE_IN_DERIVE,
             _ => return true,
         };
         rt.diag(code, "collection write outside a handler or `watch` callback; rejected".into(), at);
@@ -253,14 +261,34 @@ where
 
     /// The items matching `pred`, in upstream order; maintained incrementally.
     pub fn filter(&self, pred: impl Fn(&T) -> bool + 'static) -> Derived<K, T> {
+        let pred = view_fn(pred);
         let up = self.0.clone();
         let members = Seq::from_keys(up.snapshot().into_iter().filter(|k| up.item(k).is_some_and(|i| i.with_untracked(|t| pred(t)))));
         self.attach(Rc::new(FilterInner { up, pred: Box::new(pred), seq: RefCell::new(members), emitter: Emitter::new() }))
     }
 
+    /// The items transformed by `f`, under the same keys and in the same order; maintained
+    /// incrementally: an item's change calls `f` once, and reaches what follows only if the
+    /// result differs. `f` is a pure function of the item (a read signal is reported).
+    pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> Derived<K, U> {
+        let f = view_fn(f);
+        let up = self.0.clone();
+        let out = up
+            .snapshot()
+            .into_iter()
+            .filter_map(|k| up.item(&k).map(|it| (k, Signal::detached(it.with_untracked(|t| f(t))))))
+            .collect();
+        let m = Rc::new(MapInner { up: up.clone(), f: Box::new(f), out: RefCell::new(out), emitter: Emitter::new() });
+        let obs: Rc<dyn Observer<K, T>> = m.clone();
+        up.emitter().observers.borrow_mut().push(Rc::downgrade(&obs));
+        let version = m.emitter.version;
+        Derived { holder: Signal::scoped(m as Rc<dyn Stage<K, U>>), version }
+    }
+
     /// The items ordered by `key` (ties keep the order in which they entered the view);
     /// maintained incrementally: a key change moves one item.
     pub fn sort_by<S: Ord + Clone + 'static>(&self, key: impl Fn(&T) -> S + 'static) -> Derived<K, T> {
+        let key = view_fn(key);
         let up = self.0.clone();
         let mut entries: Vec<(K, (S, u64))> = up
             .snapshot()
@@ -288,6 +316,7 @@ where
     where
         G: Ord + Hash + Clone + Display + 'static,
     {
+        let key = view_fn(key);
         let up = self.0.clone();
         let g = Rc::new(GroupsInner {
             up: up.clone(),
@@ -431,6 +460,10 @@ where
     pub fn filter(&self, pred: impl Fn(&T) -> bool + 'static) -> Derived<K, T> {
         self.source().filter(pred)
     }
+    /// The items transformed by `f`, same keys and order ([`Source::map`]).
+    pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> Derived<K, U> {
+        self.source().map(f)
+    }
     pub fn sort_by<S: Ord + Clone + 'static>(&self, key: impl Fn(&T) -> S + 'static) -> Derived<K, T> {
         self.source().sort_by(key)
     }
@@ -554,6 +587,10 @@ where
     pub fn filter(&self, pred: impl Fn(&T) -> bool + 'static) -> Derived<K, T> {
         self.source().filter(pred)
     }
+    /// The items transformed by `f`, same keys and order ([`Source::map`]).
+    pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> Derived<K, U> {
+        self.source().map(f)
+    }
     pub fn sort_by<S: Ord + Clone + 'static>(&self, key: impl Fn(&T) -> S + 'static) -> Derived<K, T> {
         self.source().sort_by(key)
     }
@@ -589,7 +626,7 @@ impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> Observer<K, T> for Filt
             self.add(ui, k, t);
         }
     }
-    fn removed(&self, k: &K, t: &T) {
+    fn removed(&self, _: usize, k: &K, t: &T) {
         let i = self.seq.borrow_mut().remove(k);
         if let Some(i) = i {
             self.emitter.remove(i, k, t);
@@ -599,12 +636,12 @@ impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> Observer<K, T> for Filt
         let member = self.seq.borrow().contains(k);
         match (member, (self.pred)(new)) {
             (false, true) => self.add(self.up.index_of(k).expect("key upstream"), k, new),
-            (true, false) => self.removed(k, old),
+            (true, false) => self.removed(0, k, old),
             (true, true) => self.emitter.update(k, old, new),
             (false, false) => {}
         }
     }
-    fn moved(&self, k: &K, to: usize, t: &T) {
+    fn moved(&self, k: &K, _: usize, to: usize, t: &T) {
         let from = self.seq.borrow_mut().remove(k);
         if let Some(from) = from {
             let r = self.rank(to);
@@ -662,7 +699,7 @@ impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static, S: Ord + Clone + 'stati
         self.seq.borrow_mut().insert(r, k.clone());
         self.emitter.insert(r, k, t);
     }
-    fn removed(&self, k: &K, t: &T) {
+    fn removed(&self, _: usize, k: &K, t: &T) {
         self.ord.borrow_mut().remove(k);
         let i = self.seq.borrow_mut().remove(k);
         if let Some(i) = i {
@@ -684,7 +721,7 @@ impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static, S: Ord + Clone + 'stati
         }
         self.emitter.update(k, old, new);
     }
-    fn moved(&self, _: &K, _: usize, _: &T) {
+    fn moved(&self, _: &K, _: usize, _: usize, _: &T) {
         // Upstream order does not affect a sorted view.
     }
 }
@@ -708,6 +745,77 @@ impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static, S: Ord + Clone + 'stati
 }
 
 // ---- group ----
+
+// ---------------------------------------------------------------------------------------------
+// map
+// ---------------------------------------------------------------------------------------------
+
+/// `map`: one output signal per key; order and positions are the upstream's.
+struct MapInner<K, T, U> {
+    up: Rc<dyn Stage<K, T>>,
+    f: Box<dyn Fn(&T) -> U>,
+    out: RefCell<HashMap<K, Signal<U>>>,
+    emitter: Emitter<K, U>,
+}
+
+impl<K, T, U> Drop for MapInner<K, T, U> {
+    fn drop(&mut self) {
+        for s in self.out.get_mut().values() {
+            s.dispose();
+        }
+    }
+}
+
+impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static, U: Clone + PartialEq + 'static> Observer<K, T> for MapInner<K, T, U> {
+    fn inserted(&self, index: usize, k: &K, t: &T) {
+        let u = (self.f)(t);
+        self.out.borrow_mut().insert(k.clone(), Signal::detached(u.clone()));
+        self.emitter.insert(index, k, &u);
+    }
+    fn removed(&self, index: usize, k: &K, _: &T) {
+        let s = self.out.borrow_mut().remove(k);
+        if let Some(s) = s {
+            let u = s.get_untracked();
+            self.emitter.remove(index, k, &u);
+            s.dispose();
+        }
+    }
+    fn updated(&self, k: &K, _: &T, new: &T) {
+        let u = (self.f)(new);
+        let s = self.out.borrow().get(k).copied();
+        if let Some(s) = s {
+            let old = s.get_untracked();
+            if old != u {
+                s.set_internal(u.clone());
+                self.emitter.update(k, &old, &u);
+            }
+        }
+    }
+    fn moved(&self, k: &K, from: usize, to: usize, _: &T) {
+        let s = self.out.borrow().get(k).copied();
+        if let Some(s) = s {
+            self.emitter.moved(from, to, k, &s.get_untracked());
+        }
+    }
+}
+
+impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static, U: Clone + PartialEq + 'static> Stage<K, U> for MapInner<K, T, U> {
+    fn index_of(&self, k: &K) -> Option<usize> {
+        self.up.index_of(k)
+    }
+    fn len(&self) -> usize {
+        self.up.len()
+    }
+    fn snapshot(&self) -> Vec<K> {
+        self.up.snapshot()
+    }
+    fn item(&self, k: &K) -> Option<ReadSignal<U>> {
+        self.out.borrow().get(k).map(|s| s.read_only())
+    }
+    fn emitter(&self) -> &Emitter<K, U> {
+        &self.emitter
+    }
+}
 
 /// One group's summary, the item of a `Groups` stage.
 #[derive(Clone, PartialEq, Debug)]
@@ -835,7 +943,7 @@ where
         self.member_of.borrow_mut().insert(k.clone(), g.clone());
         self.resize(&g, info, 1);
     }
-    fn removed(&self, k: &K, t: &T) {
+    fn removed(&self, _: usize, k: &K, t: &T) {
         let Some(g) = self.member_of.borrow_mut().remove(k) else { return };
         let (members, info) = {
             let m = self.members.borrow();
@@ -851,11 +959,11 @@ where
             let members = self.members.borrow()[&g0].members.clone();
             members.emitter.update(k, old, new);
         } else {
-            self.removed(k, old);
+            self.removed(0, k, old);
             self.inserted(self.up.index_of(k).expect("key upstream"), k, new);
         }
     }
-    fn moved(&self, k: &K, to: usize, t: &T) {
+    fn moved(&self, k: &K, _: usize, to: usize, t: &T) {
         let Some(g) = self.member_of.borrow().get(k).cloned() else { return };
         let members = self.members.borrow()[&g].members.clone();
         members.reposition(k, to, t);
@@ -1001,7 +1109,7 @@ where
             f.put(at, FlatKey::Item(k.clone()), FlatItem::Item(t.clone()));
         }
     }
-    fn removed(&self, k: &K, _: &T) {
+    fn removed(&self, _: usize, k: &K, _: &T) {
         if let Some(f) = self.flat.upgrade() {
             f.take(&FlatKey::Item(k.clone()));
         }
@@ -1011,7 +1119,7 @@ where
             f.replace(&FlatKey::Item(k.clone()), FlatItem::Item(old.clone()), FlatItem::Item(new.clone()));
         }
     }
-    fn moved(&self, k: &K, to: usize, _: &T) {
+    fn moved(&self, k: &K, _: usize, to: usize, _: &T) {
         if let Some(f) = self.flat.upgrade() {
             let key = FlatKey::Item(k.clone());
             let from = f.seq.borrow_mut().remove(&key).expect("member in flat");
@@ -1078,7 +1186,7 @@ where
         // Members arrive after the group is created: watch them from now on.
         self.watch_members(g);
     }
-    fn removed(&self, g: &G, _: &GroupInfo<G>) {
+    fn removed(&self, _: usize, g: &G, _: &GroupInfo<G>) {
         self.order.borrow_mut().remove(g);
         self.adapters.borrow_mut().remove(g);
         self.take(&FlatKey::Header(g.clone()));
@@ -1086,7 +1194,7 @@ where
     fn updated(&self, g: &G, old: &GroupInfo<G>, new: &GroupInfo<G>) {
         self.replace(&FlatKey::Header(g.clone()), FlatItem::Header(old.clone()), FlatItem::Header(new.clone()));
     }
-    fn moved(&self, _: &G, _: usize, _: &GroupInfo<G>) {
+    fn moved(&self, _: &G, _: usize, _: usize, _: &GroupInfo<G>) {
         // Groups are ordered by key; they never move.
     }
 }
@@ -1185,6 +1293,11 @@ mod tests {
                 let s = f.sort_by(|r| (r.b, r.id));
                 let g = l.group_by(|r| r.a % 3);
                 let flat = l.sort_by(|r| (r.b, r.id)).group_by(|r| r.a % 3).flatten();
+                // map after a sort (moves pass through it) and a filter after a map.
+                let m = s.map(|r| r.a as u32 * 10 + r.b as u32);
+                let mf = l.map(|r| r.b).filter(|b| *b >= 2);
+                let m_cursor = m.source().0.emitter().log.borrow_mut().subscribe();
+                let mut m_replay: Vec<u32> = Vec::new();
                 let flat_cursor = flat.source().0.emitter().log.borrow_mut().subscribe();
                 let mut flat_replay: Vec<FlatKey<u8, u32>> = Vec::new();
                 let logs = [l.source(), f.source(), s.source()];
@@ -1223,6 +1336,23 @@ mod tests {
                     sorted.sort_by_key(|r| (r.b, r.id));
                     let want_s: Vec<u32> = sorted.iter().map(|r| r.id).collect();
                     assert_eq!(f.keys(), want_f, "filter at step {step}");
+                    assert_eq!(m.keys(), want_s, "map keys at step {step}");
+                    for (k, r) in sorted.iter().map(|r| (r.id, r)) {
+                        assert_eq!(m.source().item(&k).unwrap().get_untracked(), r.a as u32 * 10 + r.b as u32, "map value at step {step}");
+                    }
+                    let want_mf: Vec<u32> = all.iter().filter(|r| r.b >= 2).map(|r| r.id).collect();
+                    assert_eq!(mf.keys(), want_mf, "filter after map at step {step}");
+                    for ch in m.source().0.emitter().log.borrow_mut().take(&m_cursor) {
+                        match ch {
+                            Change::Insert { key, index } => m_replay.insert(index, key),
+                            Change::Remove { key, index } => assert_eq!(m_replay.remove(index), key),
+                            Change::Move { key, from, to } => {
+                                assert_eq!(m_replay.remove(from), key);
+                                m_replay.insert(to, key);
+                            }
+                        }
+                    }
+                    assert_eq!(m_replay, want_s, "map log replay at step {step}");
                     assert_eq!(s.keys(), want_s, "sort at step {step}");
                     let mut want_g: Vec<u8> = all.iter().map(|r| r.a % 3).collect();
                     want_g.sort();
@@ -1270,5 +1400,52 @@ mod tests {
             });
         });
         assert!(rt.diagnostics().is_empty(), "{:?}", rt.diagnostics());
+    }
+
+    /// `map` calls its closure once per changed item and passes an update on only when the result
+    /// differs; a view closure that reads a signal is reported.
+    #[test]
+    fn map_recomputes_changed_items_only_and_view_reads_are_reported() {
+        use crate::reactive::graph::state;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let rt = Runtime::new();
+        rt.enter(|| {
+            let scope = rt.create_scope(None, "t");
+            rt.with_frame(Ctx::Idle, None, Some(Some(scope)), || {
+                let l = list("rows", || (0..100u32).map(|id| Row { id, a: 0, b: 0 }).collect(), |r| r.id);
+                let calls = Rc::new(Cell::new(0));
+                let c = calls.clone();
+                let m = l.map(move |r| {
+                    c.set(c.get() + 1);
+                    r.a
+                });
+                // Downstream of the map: counts the updates that reach it.
+                let seen = Rc::new(Cell::new(0));
+                let s2 = seen.clone();
+                let after = m.filter(move |_| {
+                    s2.set(s2.get() + 1);
+                    true
+                });
+                assert_eq!(calls.get(), 100);
+                let (c0, s0) = (calls.get(), seen.get());
+                rt.with_frame(Ctx::Handler, None, None, || l.update(&7, |r| r.b = 9));
+                assert_eq!(calls.get(), c0 + 1, "one item changed: one call");
+                assert_eq!(seen.get(), s0, "its mapped value did not change: nothing passed on");
+                rt.with_frame(Ctx::Handler, None, None, || l.update(&7, |r| r.a = 3));
+                assert_eq!(seen.get(), s0 + 1, "a changed value is passed on");
+                assert_eq!(m.source().item(&7).unwrap().get_untracked(), 3);
+                assert_eq!(after.keys().len(), 100);
+                rt.with_frame(Ctx::Handler, None, None, || l.remove(&7));
+                assert!(m.source().item(&7).is_none());
+
+                // A view closure reading state: reported once, at the read.
+                let limit = state("limit", || 5u8);
+                let _stale = l.filter(move |r| r.a < limit.get());
+                rt.with_frame(Ctx::Handler, None, None, || l.update(&8, |r| r.a = 1));
+            });
+        });
+        let d = rt.diagnostics();
+        assert_eq!(d.iter().filter(|d| d.code.id == "VIEW_READS_STATE").count(), 1, "{d:?}");
     }
 }

@@ -21,7 +21,7 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | Category | Primitives | Status |
 | --- | --- | --- |
 | Reactive | `state`, `memo`, `watch`, `untrack` | Implemented |
-| | `list` and `filter` / `sort_by` / `group_by` / `flatten` | Implemented; `map`, `join` to do |
+| | `list` and `filter` / `sort_by` / `group_by` / `map` / `flatten` | Implemented; `join` to do ([map and join](map-join.md)) |
 | | `LiveText`, `live_text` | Implemented |
 | | Context `provide` / `use_context` | Implemented |
 | | Tasks, subscriptions, resources | Implemented ([async](async.md)) |

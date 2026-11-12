@@ -163,6 +163,10 @@ codes! {
         "`Signal::new` was called inside a component; its value is lost on hot reload.",
         cause: "Only named state (`state(key, init)`) is found again after a reload.",
         fix: "Use `state(\"key\", || value)` inside components.";
+    VIEW_READS_STATE: Warning, Reactive, "docs/design/map-join.md#view-closures",
+        "A signal was read inside a view's closure (filter, sort_by, group_by, map, join).",
+        cause: "A view runs its closure when an item changes, not when other values change: what it read goes stale silently.",
+        fix: "Put the value in the item, `join` the data it needs, or pick between views in a memo (`memo(move || if active.get() { open.source() } else { all.source() })`).";
     DUPLICATE_KEY: Error, Reactive, "docs/design/reactive-core.md#5-incremental-collections",
         "Two list items share a key; the later one was dropped.",
         cause: "Lists identify items by key: rows, state and moves follow it.",

@@ -1,6 +1,6 @@
 # Collection operators: `map` and `join`
 
-Based on the [research](../research/map-join.md). Status: confirmed.
+Based on the [research](../research/map-join.md). Status: confirmed; step 1 implemented.
 
 Both are stages like `filter`, `sort_by` and `group_by`: they observe an upstream stage, keep
 their own state incrementally, and are stages themselves, so they compose
@@ -40,13 +40,13 @@ their own state incrementally, and are stages themselves, so they compose
 
 - The closures of every view (`filter`, `sort_by`, `group_by`, `map`, `join`) run untracked:
   a view reruns per item event, not when a signal read inside it changes. Reading a signal in
-  one is a mistake that silently goes stale, so it is reported: VIEW_READS_STATE (warning,
+  one is a mistake that silently goes stale, so it is reported: `VIEW_READS_STATE` (warning,
   at the closure's call site). The fix: put the value in the item, `join` the data, or choose
   between views in a memo (`memo(move || if active.get() { open.source() } else { all })`).
 
 ## Diagnostics
 
-- VIEW_READS_STATE (above).
+- `VIEW_READS_STATE` (above).
 - JOIN_FANOUT (warning): one right-side change updated more than 10 000 rows; the cause is a
   hot key (one tag on everything); the fix is a narrower projection, or joining after
   `virtual_each`'s window instead of before.
@@ -60,6 +60,6 @@ their own state incrementally, and are stages themselves, so they compose
 
 ## Steps
 
-1. `map`, VIEW_READS_STATE for every view.
+1. `map`, `VIEW_READS_STATE` for every view.
 2. `flatten` on `map`'s outputs.
 3. `join`, JOIN_FANOUT; the contacts example joins a teams list.
