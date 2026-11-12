@@ -100,6 +100,19 @@ Basis: [input research](research/input.md), [input design](design/input.md).
       before driving; multi-finger gestures, edge back swipe; direct platform text protocols
       (NSTextInputClient, etc.).
 
+## Platform
+
+Basis: [platform design](design/platform.md); done with the core's platform boundary step.
+
+- [ ] Frames paced by the display (a display link, as GPUI): a Metal layer presenting with its
+      transaction (native views in sight and moving) holds no drawable back, so frames drawn on
+      input are not aligned to refreshes and a trackpad scroll judders over a web view or map;
+      AppKit's redraw request comes on the next pass of the run loop, not at a refresh.
+- [ ] Scrolling over native views: a wheel or trackpad scroll over a web view goes through the
+      web content process first, and a map takes it to pan; the page around them should scroll
+      as a native nested scroll does (the inner view at its edge, or not scrollable on that
+      axis, hands the scroll on).
+
 ## Async and motion
 
 - [ ] Resource deduplication cache, deferred placeholders, forbidding real time in tests, stream
