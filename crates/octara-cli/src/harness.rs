@@ -48,8 +48,9 @@ fn cargo() -> Command {
     c
 }
 
-/// Finds the app: the package in `manifest_path`'s workspace (or the current directory's) with
-/// `[package.metadata.octara] view`, or the one named `package`.
+/// Finds the app: the one named `package`; else the package `manifest_path` names (or the current
+/// directory is in) if it has `[package.metadata.octara] view`; else the workspace's one package
+/// with a view.
 pub fn find(manifest_path: Option<&Path>, package: Option<&str>) -> Result<Target, String> {
     let mut cmd = cargo();
     cmd.args(["metadata", "--format-version", "1", "--no-deps"]);
@@ -63,8 +64,24 @@ pub fn find(manifest_path: Option<&Path>, package: Option<&str>) -> Result<Targe
     let meta: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("cargo metadata: {e}"))?;
     let packages = meta["packages"].as_array().cloned().unwrap_or_default();
     let with_view: Vec<&serde_json::Value> = packages.iter().filter(|p| p["metadata"]["octara"]["view"].is_string()).collect();
+    // As cargo does: the package `manifest_path` names, else the one the current directory is in.
+    let here = match manifest_path {
+        Some(m) => Some(crate::api::plain(&m.canonicalize().unwrap_or_else(|_| m.to_path_buf()))),
+        None => std::env::current_dir().ok().map(|d| crate::api::plain(&d.canonicalize().unwrap_or(d))),
+    };
+    let own = here.and_then(|here| {
+        with_view
+            .iter()
+            .filter(|p| {
+                let manifest = crate::api::plain(Path::new(p["manifest_path"].as_str().unwrap_or_default()));
+                manifest == here || manifest.parent().is_some_and(|dir| here.starts_with(dir))
+            })
+            .max_by_key(|p| p["manifest_path"].as_str().map_or(0, str::len))
+            .copied()
+    });
     let pkg = match package {
         Some(name) => packages.iter().find(|p| p["name"] == name).ok_or_else(|| format!("no package `{name}` in this workspace"))?,
+        None if own.is_some() => own.expect("checked"),
         None => match with_view.as_slice() {
             [one] => one,
             [] => {
