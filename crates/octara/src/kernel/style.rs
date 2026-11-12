@@ -24,7 +24,7 @@ bitflags! {
     /// `CHECKED` and `EXPANDED` follow the `checked` / `expanded` semantics (like Tailwind's
     /// `aria-checked:`), so a switch can style its thumb with `style_when(State::CHECKED, ..)`.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-    pub struct State: u8 {
+    pub struct State: u16 {
         const HOVER = 1;
         /// Has keyboard focus, however it got there.
         const FOCUSED = 2;
@@ -35,6 +35,8 @@ bitflags! {
         const CHECKED = 32;
         const EXPANDED = 64;
         const DISABLED = 128;
+        /// Files dragged from the system are over it, and it takes them (`on_drop`).
+        const DRAG_OVER = 256;
     }
 }
 

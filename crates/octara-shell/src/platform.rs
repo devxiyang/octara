@@ -163,6 +163,8 @@ impl Platform for WinitPlatform {
             secure: false,
             cursor_style: CursorStyle::Arrow,
             cursor: (0.0, 0.0),
+            hovering: Vec::new(),
+            dropped: Vec::new(),
             pending: true,
             presented: None,
             resized: false,
@@ -223,6 +225,10 @@ pub(crate) struct WinitWindow {
     cursor_style: CursorStyle,
     /// The pointer, in logical pixels.
     pub(crate) cursor: (f32, f32),
+    /// Files dragged from the system over it, and those dropped (sent once the drop's events
+    /// are all in).
+    pub(crate) hovering: Vec<std::path::PathBuf>,
+    pub(crate) dropped: Vec<std::path::PathBuf>,
     /// The app has something new to show.
     pub(crate) pending: bool,
     /// When the last frame was presented.
@@ -246,6 +252,16 @@ impl WinitWindow {
     fn refresh(&self) -> Duration {
         let mhz = self.window.current_monitor().and_then(|m| m.refresh_rate_millihertz()).filter(|r| *r > 0).unwrap_or(60_000);
         Duration::from_secs_f64(1000.0 / f64::from(mhz))
+    }
+
+    /// Where the pointer is: asked of AppKit on macOS (it sends no moves while files are dragged
+    /// over the window), else the last move's place.
+    pub(crate) fn pointer(&mut self) -> (f32, f32) {
+        #[cfg(target_os = "macos")]
+        if let Some(p) = super::native_mac::pointer_in(&self.window) {
+            self.cursor = p;
+        }
+        self.cursor
     }
 
     /// Nothing was shown for a refresh: a new frame is drawn at once, not at the next refresh

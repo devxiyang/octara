@@ -34,7 +34,11 @@ pub(crate) enum Handler {
     Key(Rc<dyn Fn(&crate::app::KeyEvent) -> bool>),
     Native(Rc<dyn Fn(&crate::native::NativeEvent)>),
     Link(Rc<dyn Fn(&str)>),
+    Drop(OnDrop),
 }
+
+/// What an element does with files dropped on it.
+pub(crate) type OnDrop = Rc<dyn Fn(&[std::path::PathBuf])>;
 
 /// A hook run after each layout; returns whether it changed anything.
 pub(crate) type AfterLayout = Rc<dyn Fn() -> bool>;

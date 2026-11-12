@@ -281,6 +281,11 @@ assert_eq!(app.kernel().text_of("status").as_deref(), Some("ready"));
 - `background(|| ..)`: blocking work on a worker thread, awaited in a task.
 - `channel()`: a `Sender` for other threads (a socket, an LLM's tokens) and a `Receiver` on the UI
   thread. `interval(period, f)` ticks while its scope lives.
+- The system: `open_window(options, view)` / `close_window(id)`; `open_url(url)`;
+  `write_to_clipboard(text or image)` / `read_from_clipboard()`; `prompt_for_paths(options)` and
+  `prompt_for_new_path(dir, name)`, awaited in a task (`None`: cancelled); files dropped from the
+  system reach `.on_drop(|paths| ..)`, styled meanwhile by `.drag_over(|p| ..)`; the pointer's
+  look is `.cursor(CursorStyle::..)` (`cursor_pointer()`), else the platform's.
 
 ## Testing and checking
 

@@ -656,6 +656,19 @@ pub fn windows() -> View {
             });
         }))
         .child(text(move || picked.get()).id("picked").text_sm().text_color(Token::TextMuted))
+        .child(
+            col()
+                .id("drop")
+                .h(100.0)
+                .items_center()
+                .justify_center()
+                .rounded_lg()
+                .border_2()
+                .border_color(Token::Border)
+                .drag_over(|p| p.border_color(Token::Accent).bg(Token::Surface))
+                .on_drop(move |paths| picked.set(paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n")))
+                .child(text("Drop files here").text_color(Token::TextMuted)),
+        )
         .into()
 }
 

@@ -65,6 +65,11 @@ platform is presented a `Frame` after each operation.
   cancelled. The platform answers through a reply callable from any thread (the shell: rfd's
   async dialogs, made on the main thread and awaited on a thread of their own; headless: the
   answers queued in `HeadlessPlatform::answers`, the dialogs asked recorded in `prompted`).
+- Files dragged from the system arrive as `InputEvent::FileDrag` (`Over` a point with their
+  paths, `Drop`, `Leave`): the element at or above the point with `on_drop` is `DRAG_OVER`
+  (styled by `drag_over`), and gets the paths when they drop. The shell turns winit's
+  per-file events into one drop, and asks AppKit where the pointer is while files are dragged
+  (AppKit sends no moves then).
 - Not yet: `InputHandler`, menus, displays, lifecycle.
 
 ## Backends

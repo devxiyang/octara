@@ -243,10 +243,12 @@ pub enum HandlerKind {
     Native,
     /// A link inside the element's texts was pressed (`on_link`).
     Link,
+    /// Files dragged from the system were dropped on it (`on_drop`).
+    Drop,
 }
 
 impl HandlerKind {
-    pub const COUNT: usize = 12;
+    pub const COUNT: usize = 13;
     /// Handlers that make an element a pointer target.
     pub const POINTER: [HandlerKind; 6] = [
         HandlerKind::Press,

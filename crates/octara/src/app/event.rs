@@ -14,6 +14,8 @@ use std::time::Duration;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InputEvent {
+    /// Files dragged from the system: over a point of the window, dropped there, or gone.
+    FileDrag(FileDrag),
     /// A mouse, touch or pen event, in logical pixels from the window's top-left corner.
     Pointer(PointerEvent),
     /// The pointer left the window: nothing is hovered.
@@ -58,6 +60,7 @@ impl Window {
             return true;
         }
         match event {
+            InputEvent::FileDrag(ev) => self.on_file_drag(ev),
             InputEvent::Pointer(ev) => {
                 self.on_pointer(ev);
                 true
@@ -91,6 +94,15 @@ impl Window {
             }
         }
     }
+}
+
+/// Files dragged from the system (logical pixels from the window's top-left corner).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileDrag {
+    Over { x: f32, y: f32, paths: Vec<std::path::PathBuf> },
+    Drop { x: f32, y: f32, paths: Vec<std::path::PathBuf> },
+    Leave,
 }
 
 /// One recorded input: when on the app's clock, to which window, what.

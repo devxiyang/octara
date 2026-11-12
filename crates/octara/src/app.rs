@@ -13,7 +13,7 @@ mod selection;
 mod time;
 
 pub use edit::{TextField, byte_offset, utf16_offset};
-pub use event::{InputEvent, Recorded, Recording};
+pub use event::{FileDrag, InputEvent, Recorded, Recording};
 pub use keys::{BUILTIN_COMMANDS, Binding, Chord, Key, KeyEvent, Keymap};
 pub use pointer::{Button, Drag, DragPhase, Modifiers, Phase, PointerEvent, PointerKind, Tuning};
 pub(crate) use selection::ListOrder;
@@ -277,6 +277,8 @@ pub struct Window {
 struct Interaction {
     /// The node under the mouse; it and its ancestors (`hover_chain`) are hovered.
     hovered: Option<NodeId>,
+    /// What files dragged from the system are over (it takes them: `on_drop`).
+    drop_target: Option<NodeId>,
     hover_chain: Vec<NodeId>,
     /// Hover held still while layout moved under a still pointer (Rune).
     hover_held: bool,
@@ -348,7 +350,7 @@ fn n_offset(k: &Kernel, n: crate::kernel::NodeId, relative: bool) -> (f32, f32) 
 }
 
 /// States the runtime drives; `SELECTED` and `DISABLED` come from element props.
-const RUNTIME_STATES: State = State::HOVER.union(State::FOCUSED).union(State::FOCUS_VISIBLE).union(State::PRESSED);
+const RUNTIME_STATES: State = State::HOVER.union(State::FOCUSED).union(State::FOCUS_VISIBLE).union(State::PRESSED).union(State::DRAG_OVER);
 
 impl App {
     /// An app on `platform` (a backend's; `HeadlessPlatform` for tests and agents), with no
@@ -1218,6 +1220,40 @@ impl Window {
     }
 
     /// An event from native view `id` (`InputEvent::Native`): runs its `on_native`.
+    /// Files dragged from the system: the element under them that takes them (`on_drop`, the
+    /// nearest at or above the point) is `DRAG_OVER`; dropped, it gets their paths.
+    pub(crate) fn on_file_drag(&mut self, ev: crate::app::FileDrag) -> bool {
+        let target = |x: f32, y: f32| {
+            let k = self.w.kernel.borrow();
+            k.hit_test(x, y).and_then(|n| k.handler_above(Some(n), HandlerKind::Drop))
+        };
+        let (over, dropped) = match ev {
+            crate::app::FileDrag::Over { x, y, .. } => (target(x, y), None),
+            crate::app::FileDrag::Drop { x, y, paths } => (None, target(x, y).map(|t| (t, paths))),
+            crate::app::FileDrag::Leave => (None, None),
+        };
+        let handler = dropped.as_ref().and_then(|(t, _)| {
+            let k = self.w.kernel.borrow();
+            k.handler(*t, HandlerKind::Drop).and_then(|h| self.w.handlers.borrow().get(&h.0).cloned())
+        });
+        self.input_frame(|| {
+            let was = std::mem::replace(&mut self.w.interaction.borrow_mut().drop_target, over);
+            if was != over {
+                let mut k = self.w.kernel.borrow_mut();
+                if let Some(n) = was.filter(|n| k.is_alive(*n)) {
+                    k.set_state(n, State::DRAG_OVER, false);
+                }
+                if let Some(n) = over {
+                    k.set_state(n, State::DRAG_OVER, true);
+                }
+            }
+            if let (Some(crate::view::Handler::Drop(f)), Some((_, paths))) = (handler, &dropped) {
+                self.app.rt.with_frame(Ctx::Handler, None, Some(None), || f(paths));
+            }
+        });
+        true
+    }
+
     pub(crate) fn on_native_event(&mut self, id: crate::native::NativeId, event: crate::native::NativeEvent) -> bool {
         let Some(n) = self.native_node(id) else { return false };
         let handler = {

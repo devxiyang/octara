@@ -841,3 +841,17 @@ impl Native {
         CATransaction::commit();
     }
 }
+
+/// Where the mouse is over `window`'s content (logical pixels from its top-left corner): AppKit
+/// sends no moves while files are dragged over a window.
+pub(crate) fn pointer_in(window: &Window) -> Option<(f32, f32)> {
+    let _mtm = MainThreadMarker::new()?;
+    let RawWindowHandle::AppKit(handle) = window.window_handle().ok()?.as_raw() else { return None };
+    // SAFETY: winit's content view, alive as long as the window.
+    let view: Retained<NSView> = unsafe { Retained::retain(handle.ns_view.as_ptr().cast()) }?;
+    let ns_window = view.window()?;
+    let in_window = ns_window.convertPointFromScreen(objc2_app_kit::NSEvent::mouseLocation());
+    let p = view.convertPoint_fromView(in_window, None);
+    let y = if view.isFlipped() { p.y } else { view.bounds().size.height - p.y };
+    Some((p.x as f32, y as f32))
+}

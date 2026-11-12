@@ -7,6 +7,7 @@ mod culling;
 mod cursor;
 mod diagnostics_registry;
 mod display_list;
+mod drop;
 mod edit;
 mod focus;
 mod grid;

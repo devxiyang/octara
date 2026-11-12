@@ -13,7 +13,7 @@
 //! # fn octara_examples_counter() -> octara::view::View { unimplemented!() }
 //! ```
 
-use octara::app::{App, Button, InputEvent, Key, KeyEvent, Modifiers, Phase, PointerEvent, Window as AppWindow};
+use octara::app::{App, Button, FileDrag, InputEvent, Key, KeyEvent, Modifiers, Phase, PointerEvent, Window as AppWindow};
 use octara::view::View;
 use platform::WinitWindow;
 use std::cell::{Cell, RefCell};
@@ -384,9 +384,37 @@ impl ApplicationHandler<ShellEvent> for Shell {
             event_loop.exit();
             return;
         }
-        let deadline = self.app.as_ref().and_then(|a| a.next_deadline());
-        event_loop.set_control_flow(match deadline {
-            Some(d) => ControlFlow::WaitUntil(self.started + d),
+        // Files dropped (one event per file): the drop, once all are in; files still dragged
+        // over a window follow the pointer.
+        let mut dragging = false;
+        if let Some(app) = self.app.clone() {
+            let _in = InLoop::enter(&self.shared, event_loop);
+            for id in app.windows() {
+                let Some(mut w) = app.window(id) else { continue };
+                let (dropped, hover) = ww(&w, |x| {
+                    let dropped = std::mem::take(&mut x.dropped);
+                    if !dropped.is_empty() {
+                        x.hovering.clear();
+                    }
+                    let (px, py) = x.pointer();
+                    (dropped, (!x.hovering.is_empty()).then(|| (px, py, x.hovering.clone())))
+                })
+                .unwrap_or_default();
+                if !dropped.is_empty() {
+                    let (x, y) = ww(&w, |x| x.cursor).unwrap_or_default();
+                    w.event(InputEvent::FileDrag(FileDrag::Drop { x, y, paths: dropped }));
+                }
+                if let Some((x, y, paths)) = hover {
+                    dragging = true;
+                    w.event(InputEvent::FileDrag(FileDrag::Over { x, y, paths }));
+                }
+            }
+            self.show();
+        }
+        let deadline = self.app.as_ref().and_then(|a| a.next_deadline()).map(|d| self.started + d);
+        let follow = dragging.then(|| Instant::now() + std::time::Duration::from_millis(16));
+        event_loop.set_control_flow(match deadline.into_iter().chain(follow).min() {
+            Some(t) => ControlFlow::WaitUntil(t),
             None => ControlFlow::Wait,
         });
     }
@@ -549,6 +577,22 @@ impl ApplicationHandler<ShellEvent> for Shell {
             WindowEvent::Ime(Ime::Preedit(text, _)) => {
                 ww(&w, |x| x.traced(Instant::now(), "input method composition"));
                 w.event(InputEvent::Composition(text));
+            }
+            WindowEvent::HoveredFile(path) => {
+                let (x, y, paths) = ww(&w, |win| {
+                    win.hovering.push(path);
+                    let (x, y) = win.pointer();
+                    (x, y, win.hovering.clone())
+                })
+                .unwrap_or_default();
+                w.event(InputEvent::FileDrag(FileDrag::Over { x, y, paths }));
+            }
+            WindowEvent::DroppedFile(path) => {
+                ww(&w, |win| win.dropped.push(path));
+            }
+            WindowEvent::HoveredFileCancelled => {
+                ww(&w, |win| win.hovering.clear());
+                w.event(InputEvent::FileDrag(FileDrag::Leave));
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
                 ww(&w, |x| x.traced(Instant::now(), "input method commit"));

@@ -242,6 +242,7 @@ pub struct El {
     props: Option<Prop<serde_json::Value>>,
     on_native: Option<OnNative>,
     on_link: Option<OnLink>,
+    on_drop: Option<super::OnDrop>,
     group: Option<&'static str>,
     hover_alone: bool,
     region: bool,
@@ -309,6 +310,7 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         props: None,
         on_native: None,
         on_link: None,
+        on_drop: None,
         group: None,
         hover_alone: false,
         region: false,
@@ -808,6 +810,16 @@ impl El {
         self.on_link = Some(Rc::new(f));
         self
     }
+    /// Files dragged from the system (Finder, Explorer) were dropped on it or its descendants:
+    /// `f` gets their paths (GPUI's `on_drop::<ExternalPaths>`).
+    pub fn on_drop(mut self, f: impl Fn(&[std::path::PathBuf]) + 'static) -> Self {
+        self.on_drop = Some(Rc::new(f));
+        self
+    }
+    /// Style while files dragged from the system are over it and it takes them (`on_drop`).
+    pub fn drag_over(self, f: impl FnOnce(Patch) -> Patch) -> Self {
+        self.style_when(State::DRAG_OVER, f)
+    }
     /// An icon's stroke width on its grid (2 for the bundled icons; 1.5 is lighter).
     pub fn stroke_width(mut self, width: f32) -> Self {
         self.stroke_width = Some(width);
@@ -1054,6 +1066,7 @@ pub(crate) fn build_el(e: El) -> NodeId {
         (HandlerKind::Key, e.key.map(Handler::Key)),
         (HandlerKind::Native, e.on_native.map(Handler::Native)),
         (HandlerKind::Link, e.on_link.map(Handler::Link)),
+        (HandlerKind::Drop, e.on_drop.map(Handler::Drop)),
     ] {
         if let Some(h) = h {
             let id = u.register(h);

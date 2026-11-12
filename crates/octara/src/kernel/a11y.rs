@@ -507,6 +507,7 @@ impl Kernel {
             (State::PRESSED, "pressed"),
             (State::SELECTED, "selected"),
             (State::DISABLED, "disabled"),
+            (State::DRAG_OVER, "drag_over"),
         ] {
             if n.state.contains(flag) {
                 states.push(s.to_string());
