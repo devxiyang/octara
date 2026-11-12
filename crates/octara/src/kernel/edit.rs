@@ -5,6 +5,13 @@
 use super::text::{self, VisualLine, Wrap};
 use super::{Color, Dirty, Kernel, NodeId, State, Token};
 use crate::paint::{GlyphRun, Item, Quad, Rect};
+use unicode_segmentation::UnicodeSegmentation;
+
+/// What a secure field shows for each grapheme of its value.
+const MASK: char = '•';
+
+/// How long a touch platform shows the last character typed into a secure field (seconds).
+pub const REVEAL_LAST: f64 = 1.5;
 
 /// Floors `i` to a char boundary of `s` (clamped to its length).
 pub fn floor_boundary(s: &str, i: usize) -> usize {
@@ -33,6 +40,8 @@ pub(crate) struct Field {
     pub lines: Vec<VisualLine>,
     /// How far the text is scrolled (x for one line, y for several).
     pub scroll: (f32, f32),
+    /// A masked field: `(value offset, shown offset)` at each grapheme boundary.
+    pub masked: Option<Vec<(usize, usize)>>,
 }
 
 impl Field {
@@ -160,6 +169,62 @@ impl Kernel {
         (floor_boundary(&i.value, i.selection.0), floor_boundary(&i.value, i.selection.1))
     }
 
+    /// Makes a text input a secure field (a password): shown as bullets; no copy, cut, undo
+    /// history, word motion or input method; bullets to assistive technology and every report.
+    pub fn set_secure(&mut self, id: NodeId, on: bool) {
+        let Some(i) = self.node_mut(id).input_mut() else { return };
+        if i.secure != on {
+            i.secure = on;
+            i.clean.set(0);
+            i.preedit.clear();
+            self.changed(id, Dirty::PAINT | Dirty::TEXT | Dirty::SEMANTICS, "secure", || on.to_string());
+        }
+    }
+    /// Shows a secure field's text (a "show password" toggle); its other protections stay.
+    pub fn set_revealed(&mut self, id: NodeId, on: bool) {
+        let Some(i) = self.node_mut(id).input_mut() else { return };
+        if i.revealed != on {
+            i.revealed = on;
+            i.clean.set(0);
+            self.changed(id, Dirty::PAINT | Dirty::TEXT | Dirty::SEMANTICS, "revealed", || on.to_string());
+        }
+    }
+    pub fn is_secure(&self, id: NodeId) -> bool {
+        self.node(id).input().is_some_and(|i| i.secure)
+    }
+    /// The value as reports show it (inspect, checks, dumps): a secure field's as bullets.
+    pub fn reported_value(&self, id: NodeId) -> String {
+        match self.node(id).input() {
+            Some(i) if i.secure => i.value.graphemes(true).map(|_| MASK).collect(),
+            _ => self.value(id).to_owned(),
+        }
+    }
+    /// Shows the grapheme typed at value offset `at` of a secure field for [`REVEAL_LAST`]
+    /// seconds (touch platforms); `None` hides it now.
+    pub fn reveal_typed(&mut self, id: NodeId, at: Option<usize>) {
+        let until = self.now + REVEAL_LAST;
+        let Some(i) = self.node_mut(id).input_mut() else { return };
+        let reveal = at.map(|b| (b, until));
+        if i.reveal.get() != reveal {
+            i.reveal.set(reveal);
+            i.clean.set(0);
+            self.revealing = reveal.map(|r| (id, r.1));
+            self.mark(Dirty::PAINT);
+        }
+    }
+    /// A secure field's shown character hid (its time came): it shows a bullet again.
+    pub(crate) fn hide_typed(&mut self, id: NodeId) {
+        if let Some(i) = self.node(id).input() {
+            i.reveal.set(None);
+            i.clean.set(0);
+        }
+        self.mark(Dirty::PAINT);
+    }
+    /// When a secure field's shown character hides (kernel time), if one shows.
+    pub fn reveal_deadline(&self) -> Option<f64> {
+        self.revealing.filter(|(id, _)| self.is_alive(*id)).map(|(_, t)| t).filter(|t| *t > self.now)
+    }
+
     /// A multi-line text input's height in lines: it follows the text from `min` to `max`
     /// lines, and scrolls beyond.
     pub fn set_rows(&mut self, id: NodeId, min: u16, max: u16) {
@@ -196,10 +261,30 @@ impl Kernel {
         let n = self.node(id);
         let input = n.input()?;
         let (anchor, caret) = self.selection(id);
-        let shown = format!("{}{}{}", &input.value[..caret], input.preedit, &input.value[caret..]);
-        let preedit = caret..caret + input.preedit.len();
-        let to_shown = |b: usize| if b <= caret { b } else { b + input.preedit.len() };
+        // A masked field shows a bullet per grapheme (the last typed one for a moment on touch
+        // platforms) and no composition.
+        let masked = input.masked().then(|| {
+            let reveal = input.reveal.get().filter(|r| self.now < r.1).map(|r| r.0);
+            let mut shown = String::new();
+            let mut pairs = Vec::new();
+            for (b, g) in input.value.grapheme_indices(true) {
+                pairs.push((b, shown.len()));
+                if reveal == Some(b) { shown.push_str(g) } else { shown.push(MASK) }
+            }
+            pairs.push((input.value.len(), shown.len()));
+            (shown, pairs)
+        });
+        let (shown, preedit, pairs) = match masked {
+            Some((shown, pairs)) => (shown, 0..0, Some(pairs)),
+            None => (format!("{}{}{}", &input.value[..caret], input.preedit, &input.value[caret..]), caret..caret + input.preedit.len(), None),
+        };
+        let to_shown = |b: usize| match &pairs {
+            Some(p) => p[p.partition_point(|x| x.0 <= b).saturating_sub(1)].1,
+            None if b <= caret => b,
+            None => b + input.preedit.len(),
+        };
         let sel = (to_shown(anchor.min(caret)), to_shown(anchor.max(caret)));
+        let preedit = if pairs.is_some() { to_shown(caret)..to_shown(caret) } else { preedit };
         let (x, y, _, _) = self.shown_rect(id);
         let l = self.taffy.layout(n.taffy).expect("taffy");
         let (cx, cy) = (x + l.border.left + l.padding.left, y + l.border.top + l.padding.top);
@@ -218,7 +303,7 @@ impl Kernel {
             shown,
             preedit,
             sel,
-            caret: caret + input.preedit.len(),
+            caret: if pairs.is_some() { to_shown(caret) } else { caret + input.preedit.len() },
             x: cx,
             y: cy,
             width,
@@ -226,6 +311,7 @@ impl Kernel {
             line_height: style.line_height,
             lines,
             scroll: (0.0, 0.0),
+            masked: pairs,
         };
         // Keep the caret in view, moving the text as little as possible.
         let (caret_x, caret_y) = f.pos(f.caret);
@@ -263,6 +349,9 @@ impl Kernel {
     /// The value offset of a text field `field` shows at byte `b` (the composition is not part
     /// of the value).
     fn value_offset(field: &Field, b: usize) -> usize {
+        if let Some(p) = &field.masked {
+            return p[p.partition_point(|x| x.1 <= b).saturating_sub(1)].0;
+        }
         if b <= field.preedit.start { b } else { b.saturating_sub(field.preedit.len()).max(field.preedit.start) }
     }
 

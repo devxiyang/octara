@@ -122,6 +122,9 @@ pub struct TextField {
     pub composition: String,
     /// The caret `(x, y, w, h)` in logical pixels, for the input method's candidate window.
     pub caret: (f32, f32, f32, f32),
+    /// A secure field (a password): shells turn the input method off and the platform's secure
+    /// input on while it is focused.
+    pub secure: bool,
 }
 
 /// The UTF-16 offset of byte `b` of `s`.
@@ -204,7 +207,9 @@ impl App {
             let (a, c) = k.selection(n);
             (k.value(n).to_owned(), a, c)
         };
-        if value != old {
+        // A secure field keeps no history.
+        let secure = self.ui.kernel.borrow().is_secure(n);
+        if value != old && !secure {
             let mut i = self.interaction.borrow_mut();
             let st = i.edits.entry(n).or_default();
             let step = Step::between(&old, &value, (a0, c0), (anchor, caret));
@@ -244,7 +249,15 @@ impl App {
         let (s, e) = (a.min(c), a.max(c));
         let new = format!("{}{text}{}", &value[..s], &value[e..]);
         let at = s + text.len();
+        // On touch platforms a secure field shows what was just typed, for a moment.
+        let reveal = {
+            let k = self.ui.kernel.borrow();
+            (k.is_secure(n) && k.touch()).then(|| new[..at].grapheme_indices(true).next_back().map(|(b, _)| b)).flatten()
+        };
         self.apply(n, new, at, at, Kind::Insert);
+        if self.ui.kernel.borrow().is_secure(n) {
+            self.ui.kernel.borrow_mut().reveal_typed(n, reveal);
+        }
     }
 
     /// Moves the caret `lines` visual lines (extending the selection with `extend`), keeping
@@ -261,8 +274,19 @@ impl App {
         let (s, e) = (a.min(c), a.max(c));
         let collapsed = s == e;
         let multiline = self.ui.kernel.borrow().is_multiline(n);
+        let secure = self.ui.kernel.borrow().is_secure(n);
         let page = self.ui.kernel.borrow().input_page_lines(n) as i32;
         let edges = || self.ui.kernel.borrow().input_line_edges(n).unwrap_or((0, v.len()));
+        // A secure field: words are not revealed (word moves go to the ends), and nothing is
+        // copied out or kept in a history.
+        type Word = fn(&str, usize) -> usize;
+        let (prev_word, next_word): (Word, Word) = if secure { (|_, _| 0, |s, _| s.len()) } else { (prev_word, next_word) };
+        if secure && matches!(command, "edit.copy" | "edit.cut" | "edit.undo" | "edit.redo") {
+            return true;
+        }
+        if secure && command.starts_with("edit.") {
+            self.ui.kernel.borrow_mut().reveal_typed(n, None);
+        }
         match command {
             "edit.move_up" => self.by_lines(n, a, -1, false),
             "edit.move_down" => self.by_lines(n, a, 1, false),
@@ -420,6 +444,7 @@ impl App {
         let k = self.ui.kernel.borrow();
         let r = k.caret(n)?;
         Some(TextField {
+            secure: k.is_secure(n),
             selection: a.min(c)..a.max(c),
             reversed: c < a,
             composition: k.preedit(n).to_owned(),
@@ -456,6 +481,10 @@ impl App {
     pub fn set_composition(&mut self, text: &str) {
         self.input_frame(|| {
             let Some((n, v, a, c)) = self.field() else { return };
+            // No input method in a secure field.
+            if self.ui.kernel.borrow().is_secure(n) {
+                return;
+            }
             if !text.is_empty() && a != c {
                 // Composing over a selection replaces it.
                 let (s, e) = (a.min(c), a.max(c));

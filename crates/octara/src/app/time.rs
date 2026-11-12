@@ -62,7 +62,9 @@ impl App {
     /// frame of momentum or of motion), if anything is pending. Shells wake up then.
     pub fn next_deadline(&self) -> Option<Duration> {
         let frame = self.ui.kernel.borrow_mut().in_motion().then(|| self.ui.sched.now_ms() + MOTION_FRAME_MS);
-        [self.ui.sched.next_timer(), self.pointer_deadline(), frame].into_iter().flatten().min_by(f64::total_cmp).map(duration)
+        // A secure field's shown character hides.
+        let reveal = self.ui.kernel.borrow().reveal_deadline().map(|t| t * 1000.0);
+        [self.ui.sched.next_timer(), self.pointer_deadline(), frame, reveal].into_iter().flatten().min_by(f64::total_cmp).map(duration)
     }
 
     /// Moves the clock: the scheduler's and the time the kernel shows.

@@ -22,6 +22,7 @@ mod pointer;
 mod position;
 mod responsive;
 mod scroll;
+mod secure;
 mod size_of;
 mod system_fonts;
 mod task;

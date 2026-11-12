@@ -387,8 +387,9 @@ struct TextContent {
 }
 
 /// A text input's content: its value, the input method's composition, the selection and how
-/// far the line is scrolled.
-#[derive(Debug, Default)]
+/// far the line is scrolled. A secure field's value never shows in `Debug` and is zeroed when
+/// it is replaced or dropped.
+#[derive(Default)]
 struct InputContent {
     value: String,
     preedit: String,
@@ -408,6 +409,50 @@ struct InputContent {
     /// The caret (and text length) the scroll last kept in view: the text scrolls back to the
     /// caret only when it moves, not after a wheel moved the text away from it.
     kept: Cell<Option<(usize, usize)>>,
+    /// A password: shown masked, kept out of copies, history, input methods and every report.
+    secure: bool,
+    /// A secure field showing its text (a "show password" toggle); the rest still applies.
+    revealed: bool,
+    /// The last typed grapheme of a secure field shown until a time (touch platforms): its
+    /// value byte offset and the kernel time it hides at.
+    reveal: Cell<Option<(usize, f64)>>,
+}
+
+impl InputContent {
+    /// Shown as bullets.
+    fn masked(&self) -> bool {
+        self.secure && !self.revealed
+    }
+}
+
+/// Overwrites a string's bytes before letting them go (a secure field's value).
+fn wipe(s: &mut String) {
+    // SAFETY: zero bytes are valid UTF-8, and the string is cleared right after.
+    for b in unsafe { s.as_bytes_mut() } {
+        unsafe { std::ptr::write_volatile(b, 0) };
+    }
+    s.clear();
+}
+
+impl Drop for InputContent {
+    fn drop(&mut self) {
+        if self.secure {
+            wipe(&mut self.value);
+            wipe(&mut self.preedit);
+        }
+    }
+}
+
+impl std::fmt::Debug for InputContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut d = f.debug_struct("InputContent");
+        if self.secure {
+            d.field("value", &"[redacted]");
+        } else {
+            d.field("value", &self.value).field("preedit", &self.preedit).field("selection", &self.selection);
+        }
+        d.field("multiline", &self.multiline).field("secure", &self.secure).finish_non_exhaustive()
+    }
 }
 
 impl Node {
@@ -560,6 +605,8 @@ pub struct Kernel {
     /// Ink reaches must be computed again (after a layout, or a shadow changed).
     ink_dirty: Cell<bool>,
     culling: bool,
+    /// A secure field showing its last typed character, and when it hides.
+    revealing: Option<(NodeId, f64)>,
     /// Nodes made modals (shown or not, attached or not): `modals` filters them.
     modal_nodes: rustc_hash::FxHashSet<NodeId>,
     /// Bumped by every change that can alter the display list (paint, layout and text changes,
@@ -624,6 +671,7 @@ impl Kernel {
             moving: rustc_hash::FxHashSet::default(),
             ink_dirty: Cell::new(true),
             culling: true,
+            revealing: None,
             modal_nodes: rustc_hash::FxHashSet::default(),
             paint_gen: 0,
             last_frame: RefCell::new(None),
@@ -792,7 +840,11 @@ impl Kernel {
     }
     pub fn role(&self, id: NodeId) -> Role {
         let n = self.node(id);
-        n.role.unwrap_or(if n.input().is_some_and(|i| i.multiline) { Role::MultilineTextInput } else { self.kind(id).default_role() })
+        n.role.unwrap_or(match n.input() {
+            Some(i) if i.masked() => Role::PasswordInput,
+            Some(i) if i.multiline => Role::MultilineTextInput,
+            _ => self.kind(id).default_role(),
+        })
     }
     /// A text's own text (empty for other nodes).
     pub fn text(&self, id: NodeId) -> &str {
@@ -853,7 +905,11 @@ impl Kernel {
         let visual = Unresolved::new(&self.theme, &root_inh).resolve(&self.theme, &mut Vec::new());
         let content = match kind {
             Kind::Text => Content::Text(TextContent::default()),
-            Kind::TextInput => Content::Input(Box::new(InputContent { rows: (1, u16::MAX), ..InputContent::default() })),
+            Kind::TextInput => Content::Input({
+                let mut i = Box::<InputContent>::default();
+                i.rows = (1, u16::MAX);
+                i
+            }),
             Kind::Root | Kind::Box => Content::None,
         };
         let id = self.nodes.insert(Node {
@@ -1159,7 +1215,13 @@ impl Kernel {
                 // (and up to its composition, which follows the caret).
                 let same = i.value.bytes().zip(value.bytes()).take_while(|(a, b)| a == b).count();
                 i.clean.set(i.clean.get().min(same));
-                i.value.clear();
+                if i.secure {
+                    // A masked field's shown text changes with every edit (the bullets).
+                    i.clean.set(0);
+                    wipe(&mut i.value);
+                } else {
+                    i.value.clear();
+                }
                 i.value.push_str(value);
                 // A multi-line field's height follows its text.
                 let grows = i.multiline;
@@ -1963,7 +2025,7 @@ impl Kernel {
         if !n.text().is_empty() {
             let _ = write!(out, " {:?}", n.text());
         }
-        let value = self.value(id);
+        let value = self.reported_value(id);
         if !value.is_empty() {
             let _ = write!(out, " value={value:?}");
         }

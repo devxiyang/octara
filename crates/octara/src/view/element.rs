@@ -184,6 +184,8 @@ pub struct El {
     multiline: bool,
     rows: Option<(u16, u16)>,
     submit_on_enter: bool,
+    secure: bool,
+    revealed: Option<Prop<bool>>,
     group: Option<&'static str>,
     hover_alone: bool,
     overlays: Vec<Overlay>,
@@ -238,6 +240,8 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         multiline: false,
         rows: None,
         submit_on_enter: false,
+        secure: false,
+        revealed: None,
         group: None,
         hover_alone: false,
         overlays: Vec::new(),
@@ -607,6 +611,19 @@ impl El {
         self.submit_on_enter = true;
         self
     }
+    /// Makes a text input a secure field (a password): the value shows as bullets; copy, cut,
+    /// undo and the input method are off; assistive technology, `inspect`, `check`, logs and
+    /// `Debug` see bullets only. On touch platforms the last typed character shows for a moment.
+    pub fn secure(mut self) -> Self {
+        self.secure = true;
+        self
+    }
+    /// Shows a secure field's text (a "show password" toggle: `.revealed(move || show.get())`);
+    /// its other protections stay.
+    pub fn revealed(mut self, on: impl IntoProp<bool>) -> Self {
+        self.revealed = Some(on.into_prop());
+        self
+    }
     /// An icon's stroke width on its grid (2 for the bundled icons; 1.5 is lighter).
     pub fn stroke_width(mut self, width: f32) -> Self {
         self.stroke_width = Some(width);
@@ -743,6 +760,12 @@ pub(crate) fn build_el(e: El) -> NodeId {
     if let Some(p) = e.checked {
         bind(at, node, p, |k, n, v: &bool| k.set_checked(n, Some(*v)));
     }
+    if let Some(p) = e.revealed {
+        bind(at, node, p, |k, n, v: &bool| {
+            k.set_revealed(n, *v);
+            true
+        });
+    }
     if let Some(p) = e.label {
         bind(at, node, p, |k, n, v: &String| k.set_label(n, Some(v)));
     }
@@ -786,6 +809,9 @@ pub(crate) fn build_el(e: El) -> NodeId {
         }
         if e.submit_on_enter {
             k.set_submit_on_enter(node, true);
+        }
+        if e.secure {
+            k.set_secure(node, true);
         }
         if let Some(img) = e.image {
             k.set_image(node, Some((img, e.object_fit)));

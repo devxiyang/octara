@@ -149,6 +149,16 @@ impl Anim {
 impl Kernel {
     /// The time the kernel shows (seconds on the app's clock).
     pub fn set_time(&mut self, seconds: f64) {
+        // A secure field's shown character hides now: what it shows changes.
+        if let Some((id, until)) = self.revealing
+            && self.now < until
+            && seconds >= until
+        {
+            self.revealing = None;
+            if self.is_alive(id) {
+                self.hide_typed(id);
+            }
+        }
         self.now = seconds;
     }
     pub fn time(&self) -> f64 {

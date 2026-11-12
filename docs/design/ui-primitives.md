@@ -28,7 +28,7 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | Structure | `component_keyed` / `component`, `show` / `show_else`, `each`, `virtual_each` | Implemented |
 | | `.child(..)` / `.children(iter)`, `El::overlay`, modals (Escape, press outside, focus kept inside) | Implemented |
 | Elements | `el`, `row`, `col`, `spacer`; `text(fixed value \| closure \| LiveText)` | Implemented |
-| | `text_input`: single line, `.multiline()`, `.rows(min, max)`, `.submit_on_enter()`, selection, undo, clipboard, IME composition | Implemented headless and through the shell; secure fields, direct platform text protocols to do ([text input](text-input.md)) |
+| | `text_input`: single line, `.multiline()`, `.rows(min, max)`, `.submit_on_enter()`, `.secure()` / `.revealed(..)`, selection, undo, clipboard, IME composition | Implemented headless and through the shell; direct platform text protocols to do ([text input](text-input.md)) |
 | | Scroll containers (`overflow_*_scroll`, `scroll_to`), images (`img`, `object_fit`) | Implemented |
 | | Vector paths (`Path`, fills, strokes); `icon` with the Lucide set (`octara-icons`), `Icon::svg` | Implemented ([vector graphics](vector-graphics.md)) |
 | | `canvas` (declarative recording: paths, rects, text, images, transforms, clips) | Implemented; labeled regions to do |

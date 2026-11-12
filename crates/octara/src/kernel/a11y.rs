@@ -174,7 +174,8 @@ impl Kernel {
         }
         // A text input's content, or the value set for other controls (a combo box's choice).
         if n.kind() == Kind::TextInput || n.value.is_some() {
-            node.set_value(self.value(id));
+            // A password is bullets to assistive technology (AccessKit's contract), unless shown.
+            node.set_value(if n.input().is_some_and(|i| i.masked()) { self.reported_value(id) } else { self.value(id).to_owned() });
         }
         if let Some(c) = n.checked {
             node.set_toggled(if c { ak::Toggled::True } else { ak::Toggled::False });
@@ -264,7 +265,7 @@ impl Kernel {
             id: n.test_id.clone(),
             role: snake(&format!("{role:?}")),
             name,
-            value: (n.kind() == Kind::TextInput || n.value.is_some()).then(|| self.value(id).to_owned()),
+            value: (n.kind() == Kind::TextInput || n.value.is_some()).then(|| self.reported_value(id)),
             checked: n.checked,
             expanded: n.expanded,
             states,

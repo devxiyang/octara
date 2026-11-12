@@ -1537,6 +1537,13 @@
           "file": "crates/octara/src/app/edit.rs"
         },
         {
+          "path": "octara::app::TextField::secure",
+          "kind": "field",
+          "sig": "pub secure: bool",
+          "docs": "A secure field (a password): shells turn the input method off and the platform's secure\ninput on while it is focused.",
+          "file": "crates/octara/src/app/edit.rs"
+        },
+        {
           "path": "octara::app::TextField::selection",
           "kind": "field",
           "sig": "pub selection: Range<usize>",
@@ -4903,6 +4910,12 @@
           "file": "crates/octara/src/kernel/edit.rs"
         },
         {
+          "path": "octara::kernel::Kernel::is_secure",
+          "kind": "method",
+          "sig": "pub fn is_secure(&self, id: NodeId) -> bool",
+          "file": "crates/octara/src/kernel/edit.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::is_within",
           "kind": "method",
           "sig": "pub fn is_within(&self, node: NodeId, ancestor: NodeId) -> bool",
@@ -5097,6 +5110,13 @@
           "file": "crates/octara/src/kernel.rs"
         },
         {
+          "path": "octara::kernel::Kernel::reported_value",
+          "kind": "method",
+          "sig": "pub fn reported_value(&self, id: NodeId) -> String",
+          "docs": "The value as reports show it (inspect, checks, dumps): a secure field's as bullets.",
+          "file": "crates/octara/src/kernel/edit.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::reset_counters",
           "kind": "method",
           "sig": "pub fn reset_counters(&mut self)",
@@ -5125,6 +5145,20 @@
           "sig": "pub fn reveal(&mut self, id: NodeId, rect: Rect) -> bool",
           "docs": "Scrolls the containers around `id`, innermost first and each as little as possible, so\nthat `rect` (window coordinates) shows. Returns whether anything moved.",
           "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::reveal_deadline",
+          "kind": "method",
+          "sig": "pub fn reveal_deadline(&self) -> Option<f64>",
+          "docs": "When a secure field's shown character hides (kernel time), if one shows.",
+          "file": "crates/octara/src/kernel/edit.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::reveal_typed",
+          "kind": "method",
+          "sig": "pub fn reveal_typed(&mut self, id: NodeId, at: Option<usize>)",
+          "docs": "Shows the grapheme typed at value offset `at` of a secure field for [`REVEAL_LAST`]\nseconds (touch platforms); `None` hides it now.",
+          "file": "crates/octara/src/kernel/edit.rs"
         },
         {
           "path": "octara::kernel::Kernel::role",
@@ -5383,6 +5417,13 @@
           "file": "crates/octara/src/kernel/anim.rs"
         },
         {
+          "path": "octara::kernel::Kernel::set_revealed",
+          "kind": "method",
+          "sig": "pub fn set_revealed(&mut self, id: NodeId, on: bool)",
+          "docs": "Shows a secure field's text (a \"show password\" toggle); its other protections stay.",
+          "file": "crates/octara/src/kernel/edit.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::set_role",
           "kind": "method",
           "sig": "pub fn set_role(&mut self, id: NodeId, role: Role) -> bool",
@@ -5393,6 +5434,13 @@
           "kind": "method",
           "sig": "pub fn set_rows(&mut self, id: NodeId, min: u16, max: u16)",
           "docs": "A multi-line text input's height in lines: it follows the text from `min` to `max`\nlines, and scrolls beyond.",
+          "file": "crates/octara/src/kernel/edit.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::set_secure",
+          "kind": "method",
+          "sig": "pub fn set_secure(&mut self, id: NodeId, on: bool)",
+          "docs": "Makes a text input a secure field (a password): shown as bullets; no copy, cut, undo\nhistory, word motion or input method; bullets to assistive technology and every report.",
           "file": "crates/octara/src/kernel/edit.rs"
         },
         {
@@ -11258,6 +11306,13 @@
           "file": "crates/octara/src/view/element.rs"
         },
         {
+          "path": "octara::view::El::revealed",
+          "kind": "method",
+          "sig": "pub fn revealed(self, on: impl IntoProp<bool>) -> Self",
+          "docs": "Shows a secure field's text (a \"show password\" toggle: `.revealed(move || show.get())`);\nits other protections stay.",
+          "file": "crates/octara/src/view/element.rs"
+        },
+        {
           "path": "octara::view::El::role",
           "kind": "method",
           "sig": "pub fn role(self, r: Role) -> Self",
@@ -11275,6 +11330,13 @@
           "kind": "method",
           "sig": "pub fn screen(self, bp: Breakpoint, f: impl FnOnce(Patch) -> Patch) -> Self",
           "docs": "Style from size class `bp` up. Resolved by the kernel when the window crosses a class\nboundary: no closure reruns.",
+          "file": "crates/octara/src/view/element.rs"
+        },
+        {
+          "path": "octara::view::El::secure",
+          "kind": "method",
+          "sig": "pub fn secure(self) -> Self",
+          "docs": "Makes a text input a secure field (a password): the value shows as bullets; copy, cut,\nundo and the input method are off; assistive technology, `inspect`, `check`, logs and\n`Debug` see bullets only. On touch platforms the last typed character shows for a moment.",
           "file": "crates/octara/src/view/element.rs"
         },
         {

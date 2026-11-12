@@ -91,8 +91,44 @@ pub fn run_with(options: Options, root: impl Fn() -> View + 'static) {
         unshown: None,
         presented: None,
         done: false,
+        secure: false,
     };
     event_loop.run_app(&mut shell).expect("event loop");
+}
+
+/// The platform's secure keyboard input (macOS: other processes cannot read the keys typed
+/// into a password field). Calls are balanced: on when a secure field gains focus, off when it
+/// loses it and when the shell ends.
+#[cfg(target_os = "macos")]
+mod secure_input {
+    #[link(name = "Carbon", kind = "framework")]
+    unsafe extern "C" {
+        fn EnableSecureEventInput() -> i32;
+        fn DisableSecureEventInput() -> i32;
+    }
+    pub fn set(on: bool) {
+        // SAFETY: no arguments; the system keeps a count, which the shell keeps balanced.
+        unsafe {
+            if on {
+                EnableSecureEventInput();
+            } else {
+                DisableSecureEventInput();
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod secure_input {
+    pub fn set(_: bool) {}
+}
+
+impl Drop for Shell {
+    fn drop(&mut self) {
+        if self.secure {
+            secure_input::set(false);
+        }
+    }
 }
 
 struct Gpu {
@@ -123,6 +159,8 @@ struct Shell {
     presented: Option<Instant>,
     /// `exit_after_frames` was reached.
     done: bool,
+    /// A secure field has focus: the input method is off and (macOS) secure input on.
+    secure: bool,
 }
 
 fn modifiers(m: ModifiersState) -> Modifiers {
@@ -293,11 +331,18 @@ impl Shell {
         }
     }
 
-    /// Tells the input method where the caret is, so its candidate window opens next to it.
-    fn place_ime(&self) {
+    /// Tells the input method where the caret is, so its candidate window opens next to it; a
+    /// secure field turns the input method off and the platform's secure input on.
+    fn place_ime(&mut self) {
         let (Some(g), Some(app)) = (&self.gpu, &self.app) else { return };
         if let Some((x, y, w, h)) = app.caret() {
             g.window.set_ime_cursor_area(LogicalPosition::new(x, y), LogicalSize::new(w.max(1.0), h));
+        }
+        let secure = app.text_field().is_some_and(|f| f.secure);
+        if secure != self.secure {
+            self.secure = secure;
+            g.window.set_ime_allowed(!secure);
+            secure_input::set(secure);
         }
     }
 
