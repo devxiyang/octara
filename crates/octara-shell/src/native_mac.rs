@@ -626,12 +626,15 @@ impl Views {
         self.hosted.values().any(|h| h.slot == Slot::Underlay)
     }
 
-    /// Placements waiting that move or resize a view (or show one for the first time).
+    /// Placements waiting that visibly move or resize a view (or show or hide one): those the
+    /// frame must present with. A view hidden before and after moves unseen.
     fn moving(&self) -> bool {
         self.pending.iter().any(|p| {
-            self.hosted
-                .get(&p.id)
-                .is_some_and(|h| h.placed.as_ref().is_none_or(|q| q.rect != p.rect || q.clip != p.clip || q.visible != p.visible))
+            self.hosted.get(&p.id).is_some_and(|h| {
+                h.placed
+                    .as_ref()
+                    .is_none_or(|q| (q.visible || p.visible) && (q.rect != p.rect || q.clip != p.clip || q.visible != p.visible))
+            })
         })
     }
 
