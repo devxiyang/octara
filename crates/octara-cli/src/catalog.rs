@@ -1,5 +1,5 @@
-//! The usage catalog: one entry per thing an app can use, merged from `api.json` (signatures and
-//! docs) and the kernel's own tables (diagnostic codes, built-in commands and their keys, theme
+//! The usage catalog: one entry per thing an app can use, merged from the API (signatures and
+//! docs, read from the source) and the kernel's own tables (diagnostic codes, built-in commands and their keys, theme
 //! token colors, named springs). `octara vocab` and `octara explain` answer from it.
 
 use crate::api::{Api, Kind};
@@ -65,10 +65,33 @@ pub struct Found<'a> {
     pub similar: Vec<&'a str>,
 }
 
-/// The first paragraph of `docs`, on one line, intra-doc link brackets dropped.
+/// The first paragraph of `docs`, on one line, links written as their text.
 pub fn summary(docs: &str) -> String {
     let para: Vec<&str> = docs.lines().map(str::trim).take_while(|l| !l.is_empty()).collect();
-    para.join(" ").replace("[`", "`").replace("`]", "`")
+    link_text(&para.join(" "))
+}
+
+/// `[text](target)` and `[`name`]` as their text.
+fn link_text(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(open) = rest.find('[') {
+        let Some(close) = rest[open..].find(']').map(|c| open + c) else { break };
+        out.push_str(&rest[..open]);
+        out.push_str(&rest[open + 1..close]);
+        let after = &rest[close + 1..];
+        rest = match after.strip_prefix('(').and_then(|a| a.find(')').map(|e| &a[e + 1..])) {
+            Some(r) => r,
+            None => after,
+        };
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The first sentence of a summary.
+pub fn first_sentence(s: &str) -> &str {
+    s.find(". ").map(|i| &s[..=i]).unwrap_or(s)
 }
 
 fn hex(c: octara::kernel::Color) -> String {
@@ -137,7 +160,7 @@ impl Catalog {
         let light = Theme::light();
         let dark = Theme::dark();
 
-        for item in api.items() {
+        for (item, root) in api.crates.iter().flat_map(|c| c.items.iter().map(move |i| (i, &c.root))) {
             // A code's static is the code's own entry (below).
             if item.path.strip_prefix("octara::diagnostics::").is_some_and(|n| diagnostics::code(n).is_some()) {
                 continue;
@@ -183,7 +206,7 @@ impl Catalog {
                 within: item.within.clone(),
                 summary: summary(&item.docs),
                 docs: item.docs.clone(),
-                file: item.file.clone(),
+                file: if root.is_empty() { item.file.clone() } else { format!("{root}/{}", item.file) },
                 aliases: item.aliases.clone(),
                 related,
                 facts,
@@ -358,75 +381,6 @@ impl Catalog {
         Found { query: query.to_string(), matches, similar }
     }
 
-    /// The index (the skill's `references/index.md`): every name an app can use, grouped,
-    /// signatures left to `octara vocab`.
-    pub fn index(&self) -> String {
-        // (heading before the line, label, names), factored together at the end.
-        let mut lines: Vec<(Option<&str>, String, Vec<String>)> = Vec::new();
-        let module = |e: &Entry| -> String {
-            let parts: Vec<&str> = e.path.split("::").collect();
-            parts.get(1).filter(|_| parts.len() > 2).map(|m| m.to_string()).unwrap_or_else(|| parts[0].to_string())
-        };
-        let mut by_module: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for e in self.prelude() {
-            by_module.entry(module(e)).or_default().push(e.name().to_string());
-        }
-        let mut heading = Some("Prelude (`use octara::prelude::*`), by module:");
-        for (m, mut names) in by_module {
-            names.sort_by_key(|n| (n.starts_with(|c: char| c.is_uppercase()), n.clone()));
-            lines.push((heading.take(), m, names));
-        }
-        let mut typed: Vec<&Entry> = self.prelude().filter(|e| !e.members.is_empty()).collect();
-        typed.sort_by_key(|e| (e.members.len() < 8, e.name().to_string()));
-        let mut heading = Some("Members of prelude types (`.name(..)`):");
-        for e in typed {
-            let label = match e.facts.get("implementors") {
-                Some(i) if e.kind == "trait" => {
-                    // Generic implementors (closures, `impl<T: ..> T`) by their shape only.
-                    let mut shown: Vec<&str> =
-                        split_top(i).into_iter().map(|t| if t.starts_with("impl<") { "generic impls" } else { t }).collect();
-                    shown.dedup();
-                    format!("{} (trait; {})", e.name(), shown.join(", "))
-                }
-                _ => e.name().to_string(),
-            };
-            let mut names = e.members.clone();
-            // Bitflags types: their flags; the set operations are bitflags' own.
-            if e.facts.get("traits").is_some_and(|t| t.split(", ").any(|t| t == "Flags")) {
-                names.retain(|n| n.chars().all(|c| c.is_ascii_uppercase() || c == '_'));
-            }
-            names.dedup();
-            lines.push((heading.take(), label, names));
-        }
-        let mut heading = Some("Other crates and modules:");
-        for c in ["octara_kit", "octara_shell", "octara::inspect", "octara::diagnostics", "octara_fonts", "octara_render"] {
-            if let Some(e) = self.get(c) {
-                let mut names = e.members.clone();
-                names.retain(|n| diagnostics::code(n).is_none() && n != "prelude");
-                lines.push((heading.take(), c.to_string(), names));
-            }
-        }
-        let commands: Vec<String> = BUILTIN_COMMANDS.iter().map(|(c, _)| c.to_string()).collect();
-        lines.push((None, "commands (`App::invoke`, `on_command`)".into(), commands));
-        lines.push((None, "diagnostic codes (`octara explain`)".into(), diagnostics::CODES.iter().map(|c| c.id.to_string()).collect()));
-
-        let mut s = String::new();
-        for (heading, label, names) in lines {
-            if names.is_empty() {
-                continue;
-            }
-            if let Some(h) = heading {
-                if !s.is_empty() && !s.ends_with("\n\n") {
-                    s += "\n";
-                }
-                s += h;
-                s += "\n";
-            }
-            s += &format!("- {label}: {}\n", names.join(", "));
-        }
-        s
-    }
-
     /// The registered code named in `text` (a code, or a message or panic that contains one).
     pub fn code_in(&self, text: &str) -> Option<&Entry> {
         let upper = text.to_uppercase();
@@ -434,22 +388,4 @@ impl Catalog {
         let found = words.filter_map(diagnostics::code).next()?;
         self.get(found.id)
     }
-}
-
-/// `a, B<c, d>, e` split at the commas outside brackets.
-fn split_top(s: &str) -> Vec<&str> {
-    let (mut out, mut depth, mut start) = (Vec::new(), 0i32, 0);
-    for (i, c) in s.char_indices() {
-        match c {
-            '<' | '(' | '[' => depth += 1,
-            '>' | ')' | ']' if !s[..i].ends_with('-') => depth -= 1,
-            ',' if depth == 0 => {
-                out.push(s[start..i].trim());
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    out.push(s[start..].trim());
-    out
 }

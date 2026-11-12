@@ -1,33 +1,18 @@
-//! `api.json` matches the source, and answers the questions the CLI asks of it.
+//! The API read from the source: canonical paths and aliases, signatures, members written by
+//! macros, impl blocks' bounds, trait impls, re-exports, and where each item is.
 
 use octara_cli::api::{self, Kind};
 
 #[test]
-fn api_json_matches_the_source() {
-    let fresh = api::generate().unwrap_or_else(|e| panic!("{e}"));
-    let text = api::to_json(&fresh);
-    if text != api::CHECKED_IN {
-        let (added, removed, changed) = api::diff(&api::load(), &fresh);
-        let show = |v: &[String]| v.iter().take(8).cloned().collect::<Vec<_>>().join(", ");
-        panic!(
-            "api.json is out of date — run `cargo run -p octara-cli -- api`\n  added: {}\n  removed: {}\n  changed: {}",
-            show(&added),
-            show(&removed),
-            show(&changed)
-        );
-    }
-}
-
-#[test]
 fn items_are_found_by_canonical_path_and_alias() {
     let api = api::load();
-    assert_eq!(api.format, api::FORMAT);
     let state = api.get("octara::prelude::state").expect("the prelude alias resolves");
     assert_eq!(state.path, "octara::reactive::graph::state");
     assert_eq!(state.kind, Kind::Fn);
     assert!(state.sig.starts_with("pub fn state<T: Clone + 'static>(key: &'static str"), "{}", state.sig);
-    let p = api.get("octara::view::Styled::p_4").expect("trait methods are items");
+    let p = api.get("octara::view::Styled::p_4").expect("methods a macro writes are items");
     assert_eq!((p.kind, p.sig.as_str()), (Kind::Method, "fn p_4(self) -> Self"));
+    assert!(p.docs.contains("spacing steps"), "their docs too: {}", p.docs);
     let set = api.get("octara::reactive::graph::Signal::set").unwrap();
     assert_eq!(set.within, "impl<T: Clone + 'static> Signal<T>", "methods keep their impl block's bounds");
     let spring = api.get("octara::motion::Spring").unwrap();
@@ -35,13 +20,35 @@ fn items_are_found_by_canonical_path_and_alias() {
     let el = api.get("octara::view::El").unwrap();
     assert!(el.traits.iter().any(|t| t == "Styled"));
     assert_eq!(api.get("octara::kernel::Role").unwrap().target, "accesskit::Role", "re-exports name their target");
+    assert!(api.get("octara::kernel::State::HOVER").is_some(), "bitflags' flags are items");
+    assert!(api.get("octara::kernel::NodeId").is_some(), "new_key_type's keys are items");
+    assert!(api.get("octara::diagnostics::OVERFLOW").is_some(), "codes! writes the registry's statics");
+    assert!(api.get("octara::view::enter_component").is_none(), "#[doc(hidden)] is not API");
+    assert!(api.get("octara::kernel::Node").is_none(), "private items are not API");
 }
 
 #[test]
-fn items_are_unique_and_sorted() {
-    for c in &api::load().crates {
-        // A field and a method may share a name (`BoxShadow::blur_radius`); a path and kind may not.
+fn items_say_where_they_are() {
+    let api = api::load();
+    for c in &api.crates {
         assert!(c.items.windows(2).all(|w| (&w[0].path, w[0].kind) < (&w[1].path, w[1].kind)), "{} items are sorted and unique", c.name);
-        assert!(c.items.iter().all(|i| !i.file.starts_with('/')), "{}: files are relative to the workspace", c.name);
+        assert!(std::path::Path::new(&c.root).join("Cargo.toml").exists(), "{}: root is the crate's directory", c.name);
     }
+    let text = api.get("octara::view::text").unwrap();
+    let (file, line) = text.file.rsplit_once(':').unwrap();
+    assert_eq!(file, "src/view/element.rs");
+    let source = std::fs::read_to_string(api::workspace_root().join("crates/octara").join(file)).unwrap();
+    let at = source.lines().nth(line.parse::<usize>().unwrap() - 1).unwrap();
+    assert!(at.contains("pub fn text("), "the line is the declaration: {at}");
+}
+
+#[test]
+fn a_read_is_cached_until_the_source_changes() {
+    let dir = std::env::temp_dir().join(format!("octara-api-cache-{}", std::process::id()));
+    let sources = api::workspace_sources();
+    let a = api::cached(&sources, &dir).unwrap();
+    assert!(dir.join("octara/api.json").exists());
+    let b = api::cached(&sources, &dir).unwrap();
+    assert_eq!(a, b);
+    std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use octara_cli::api;
 use octara_cli::catalog::{Catalog, Entry};
 use std::fmt::Write as _;
+use std::path::Path;
 use std::process::ExitCode;
 
 #[derive(Parser)]
@@ -72,18 +73,10 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Print the index of every name an app can use (the skill's `references/index.md`).
-    Index,
     /// The `octara` skill for coding agents: install it into a project, or export it.
     Skill {
         #[command(subcommand)]
         action: SkillAction,
-    },
-    /// Regenerate `api.json` from the source (needs a nightly toolchain for rustdoc's JSON).
-    Api {
-        /// Only check that `api.json` matches the source; exit 1 if it is out of date.
-        #[arg(long)]
-        check: bool,
     },
 }
 
@@ -155,25 +148,23 @@ fn main() -> ExitCode {
         Command::Check { app, json } => check(&mut out, &app, json),
         Command::Inspect { app, window, json } => inspect(&mut out, &app, &window, json),
         Command::Run { app, window, script, json } => run(&mut out, &app, &window, script.as_deref(), json),
-        Command::Index => {
-            out += &catalog().index();
-            ExitCode::SUCCESS
-        }
         Command::Skill { action } => skill(&mut out, action),
-        Command::Api { check } => regenerate(check),
     };
     // Written at once: a reader that stops early (`| head`) is not an error.
     let _ = std::io::Write::write_all(&mut std::io::stdout().lock(), out.as_bytes());
     code
 }
 
-/// The first sentence of a summary.
-fn sentence(s: &str) -> &str {
-    s.find(". ").map(|i| &s[..=i]).unwrap_or(s)
+/// The API of the octara the current project depends on, with the kernel's tables.
+fn api_here() -> api::Api {
+    api::for_project(Path::new(".")).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(2)
+    })
 }
 
 fn catalog() -> Catalog {
-    Catalog::build(&api::load())
+    Catalog::build(&api_here())
 }
 
 fn json_to(out: &mut String, v: &impl serde::Serialize) {
@@ -232,7 +223,7 @@ fn vocab(out: &mut String, name: Option<&str>, json: bool) -> ExitCode {
         } else {
             *out += "The prelude (`use octara::prelude::*`); `octara vocab <name>` for any of them:\n\n";
             for e in prelude {
-                let _ = writeln!(out, "{:<10} {:<20} {}", e.kind, e.name(), sentence(&e.summary));
+                let _ = writeln!(out, "{:<10} {:<20} {}", e.kind, e.name(), octara_cli::catalog::first_sentence(&e.summary));
             }
         }
         return ExitCode::SUCCESS;
@@ -511,17 +502,23 @@ fn run(out: &mut String, app: &AppArgs, window: &WindowArgs, script: Option<&std
 
 fn skill(out: &mut String, action: SkillAction) -> ExitCode {
     use octara_cli::skill;
-    let cat = catalog();
     let result = match action {
-        SkillAction::Export { dir } => skill::export(&cat, &dir).map(|root| vec![format!("wrote {}", root.display())]),
+        SkillAction::Export { dir } => skill::export(&dir).map(|root| vec![format!("wrote {}", root.display())]),
         SkillAction::Install { dir, global, agents, no_pointer, check } => {
             let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from) else {
                 eprintln!("error: no home directory (HOME)");
                 return ExitCode::FAILURE;
             };
+            let api = match api::for_project(&dir) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
             if check {
                 let root = if global { home } else { dir }.join(".agents/skills").join(skill::NAME);
-                let stale = skill::stale(&cat, &root);
+                let stale = skill::stale(Some(&api), &root);
                 if stale.is_empty() {
                     let _ = writeln!(out, "{} is current", root.display());
                     return ExitCode::SUCCESS;
@@ -530,7 +527,7 @@ fn skill(out: &mut String, action: SkillAction) -> ExitCode {
                 return ExitCode::FAILURE;
             }
             let opts = skill::Install { project: dir, home, global, agents: (!agents.is_empty()).then_some(agents), pointer: !no_pointer };
-            skill::install(&cat, &opts)
+            skill::install(&api, &opts)
         }
     };
     match result {
@@ -545,38 +542,5 @@ fn skill(out: &mut String, action: SkillAction) -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
-    ExitCode::SUCCESS
-}
-
-fn regenerate(check: bool) -> ExitCode {
-    let fresh = match api::generate() {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let text = api::to_json(&fresh);
-    let path = api::checked_in_path();
-    let current = std::fs::read_to_string(&path).unwrap_or_default();
-    if current == text {
-        eprintln!("api.json is up to date ({} items)", fresh.items().count());
-        return ExitCode::SUCCESS;
-    }
-    if check {
-        if let Ok(old) = serde_json::from_str::<api::Api>(&current) {
-            let (added, removed, changed) = api::diff(&old, &fresh);
-            eprintln!("api.json is out of date: {} added, {} removed, {} changed", added.len(), removed.len(), changed.len());
-        } else {
-            eprintln!("api.json is out of date");
-        }
-        eprintln!("run `cargo run -p octara-cli -- api` to regenerate it");
-        return ExitCode::FAILURE;
-    }
-    if let Err(e) = std::fs::write(&path, &text) {
-        eprintln!("error: {}: {e}", path.display());
-        return ExitCode::FAILURE;
-    }
-    eprintln!("wrote {} ({} items)", path.display(), fresh.items().count());
     ExitCode::SUCCESS
 }

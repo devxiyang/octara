@@ -1,5 +1,5 @@
-//! The checked-in API format (`api.json`): one entry per public item of the framework's crates,
-//! in Octara's own stable shape. rustdoc's JSON changes with every nightly; this does not.
+//! The API model: one entry per public item of the framework's crates, read from their source
+//! (see [`super::source`]) and cached as JSON.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +17,9 @@ pub struct Api {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CrateApi {
     pub name: String,
+    /// The directory holding the crate's `Cargo.toml`; items' `file`s are relative to it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub root: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub docs: String,
     pub items: Vec<Item>,
@@ -36,7 +39,7 @@ pub struct Item {
     pub within: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub docs: String,
-    /// The source file, relative to the workspace (no line: lines move on every edit).
+    /// `file:line`, the file relative to the crate's `root`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub file: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

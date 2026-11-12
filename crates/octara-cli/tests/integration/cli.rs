@@ -1,5 +1,5 @@
-//! `octara vocab` and `octara explain`: the catalog answers from api.json and the kernel's tables,
-//! and the binary prints it as text and JSON.
+//! `octara vocab` and `octara explain`: the catalog answers from the API read from the source and
+//! the kernel's tables, and the binary prints it as text and JSON.
 
 use octara::app::BUILTIN_COMMANDS;
 use octara::kernel::{Theme, Token};
@@ -9,7 +9,7 @@ use octara_cli::catalog::Catalog;
 use std::process::Command;
 
 fn catalog() -> Catalog {
-    Catalog::build(&api::load())
+    Catalog::build(api::load())
 }
 
 fn run(args: &[&str]) -> (bool, String) {
@@ -57,7 +57,7 @@ fn kernel_tables_are_merged_in() {
 
 #[test]
 fn every_named_spring_is_in_the_table() {
-    // `Spring::NAMED` is written by hand next to the constants; api.json sees every constant.
+    // `Spring::NAMED` is written by hand next to the constants; the API sees every constant.
     let api = api::load();
     let consts: Vec<&str> = api
         .items()
@@ -114,7 +114,7 @@ fn the_binary_prints_text_and_json() {
 fn help_lists_every_command() {
     let (ok, help) = run(&["--help"]);
     assert!(ok);
-    for c in ["vocab", "explain", "index", "skill", "api"] {
+    for c in ["vocab", "explain", "check", "inspect", "run", "skill"] {
         assert!(help.lines().any(|l| l.trim_start().starts_with(c)), "--help lists `{c}`:\n{help}");
     }
 }

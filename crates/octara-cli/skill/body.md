@@ -5,8 +5,10 @@ no CSS cascade, no HTML semantics. Style methods use GPUI's names, which are Tai
 (`p_4`, `gap_2`, `rounded_md`, `text_sm`).
 
 Read [references/start-here.md](references/start-here.md) once before writing Octara code; it is
-short and every example in it is tested. [references/index.md](references/index.md) lists every
-name you can use. Look anything up instead of guessing:
+short and every example in it is tested. [references/api/index.md](references/api/index.md) lists
+the crates and modules, one file each: every item with its signature, summary and the line that
+defines it (written by `octara skill install` for the version this project uses; run it if the
+directory is missing). Look anything up instead of guessing:
 
 - `octara vocab <name>`: signature, docs, members and related entries of any function, method,
   type, token, spring, command or diagnostic code (`octara vocab bg`, `octara vocab Styled::p_4`,

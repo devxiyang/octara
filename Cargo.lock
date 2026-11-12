@@ -2238,9 +2238,12 @@ dependencies = [
  "octara",
  "octara-kit",
  "octara-shell",
- "rustdoc-types",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
  "serde",
  "serde_json",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -2628,6 +2631,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
 
 [[package]]
+name = "prettyplease"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bfe0f4c752e450fc2faf62654f1c134747922825d5b04ca717b8874f41a40c0"
+dependencies = [
+ "proc-macro2",
+ "syn 3.0.10",
+]
+
+[[package]]
 name = "proc-macro-crate"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2834,16 +2847,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
 dependencies = [
  "semver",
-]
-
-[[package]]
-name = "rustdoc-types"
-version = "0.61.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa251f75d3b9d5d5d8317ce526dfa4a040c15938d82fd3a5443d103f30a66932"
-dependencies = [
- "serde",
- "serde_derive",
 ]
 
 [[package]]

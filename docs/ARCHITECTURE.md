@@ -34,7 +34,7 @@ Principles:
 | `octara-cli` | The `octara` command: `check`, `inspect`, `run`, `vocab`, `explain`, `skill`, `api` |
 | `examples` | Example apps, their acceptance tests, benchmarks, screenshot and window tools |
 
-Everything but `octara` and `octara-macros` depends only on `octara`'s public API (`api.json` is generated from it).
+Everything but `octara` and `octara-macros` depends only on `octara`'s public API, which the CLI reads from the source an app builds with.
 
 ## Inside `octara`
 

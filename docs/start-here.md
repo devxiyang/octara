@@ -2,8 +2,9 @@
 
 The one page to read before writing an Octara app. Everything else is for looking things up:
 `octara vocab <name>` gives any function, method, type, token, spring, command or diagnostic code
-with its signature and docs; `octara explain <CODE>` explains a diagnostic; `octara index` lists
-every name. The code blocks on this page are compiled and run as tests.
+with its signature, docs and where it is defined; `octara explain <CODE>` explains a diagnostic;
+the skill's `references/api/` lists every item by module. The code blocks on this page are
+compiled and run as tests.
 
 ## What Octara is
 

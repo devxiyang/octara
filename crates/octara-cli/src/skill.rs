@@ -6,7 +6,7 @@
 //! directory (Claude Code, Kiro; Amp's user directory) get a link to it. A short block in the
 //! project's `AGENTS.md` points at it, since a skill alone is often never invoked.
 
-use crate::catalog::Catalog;
+use crate::api::Api;
 use std::path::{Path, PathBuf};
 
 pub const NAME: &str = "octara";
@@ -21,16 +21,19 @@ elements, styles, state, lists, input, motion, async work, headless tests and di
 code uses the `octara` crates (`use octara::prelude::*`), the task touches Octara views or tests, or an \
 Octara diagnostic code (such as OVERFLOW or STRICT_READ_UNTRACKED) appears.";
 
-/// The skill's files, relative to its directory.
-pub fn files(catalog: &Catalog) -> Vec<(&'static str, String)> {
+/// The skill's files, relative to its directory; with `api`, its reference under
+/// `references/api/` (generated where the skill is installed, for the version the project uses).
+pub fn files(api: Option<&Api>) -> Vec<(String, String)> {
     let skill = format!(
         "---\nname: {NAME}\ndescription: {}\nlicense: MIT OR Apache-2.0\nmetadata:\n  octara-version: {}\n---\n\n{BODY}",
         yaml_string(DESCRIPTION),
         yaml_string(env!("CARGO_PKG_VERSION"))
     );
-    let index =
-        format!("# Octara index\n\nEvery name an app can use, grouped. Signatures and docs: `octara vocab <name>`.\n\n{}", catalog.index());
-    vec![("SKILL.md", skill), ("references/index.md", index), ("references/start-here.md", for_readers(START_HERE))]
+    let mut out = vec![("SKILL.md".to_string(), skill), ("references/start-here.md".to_string(), for_readers(START_HERE))];
+    if let Some(api) = api {
+        out.extend(crate::reference::files(api).into_iter().map(|(p, t)| (format!("references/api/{p}"), t)));
+    }
+    out
 }
 
 /// A YAML double-quoted string: safe for any text (a plain scalar may not contain `: `).
@@ -60,15 +63,23 @@ fn for_readers(doc: &str) -> String {
     out
 }
 
-/// Writes the skill into `dir/octara/`, replacing what was there.
-pub fn export(catalog: &Catalog, dir: &Path) -> Result<PathBuf, String> {
+/// Writes the skill into `dir/octara/` without the API reference (a copy for `npx skills add`;
+/// `octara skill install` writes the reference).
+pub fn export(dir: &Path) -> Result<PathBuf, String> {
     let root = dir.join(NAME);
-    write_files(catalog, &root)?;
+    write_files(None, &root)?;
     Ok(root)
 }
 
-fn write_files(catalog: &Catalog, root: &Path) -> Result<(), String> {
-    for (rel, text) in files(catalog) {
+fn write_files(api: Option<&Api>, root: &Path) -> Result<(), String> {
+    if api.is_some() {
+        // Modules come and go between versions: the reference is written afresh.
+        let reference = root.join("references/api");
+        if reference.is_dir() {
+            std::fs::remove_dir_all(&reference).map_err(|e| format!("{}: {e}", reference.display()))?;
+        }
+    }
+    for (rel, text) in files(api) {
         let path = root.join(rel);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
@@ -79,11 +90,11 @@ fn write_files(catalog: &Catalog, root: &Path) -> Result<(), String> {
 }
 
 /// The files of the skill at `root` that differ from this version's (missing ones included).
-pub fn stale(catalog: &Catalog, root: &Path) -> Vec<String> {
-    files(catalog)
+pub fn stale(api: Option<&Api>, root: &Path) -> Vec<String> {
+    files(api)
         .into_iter()
         .filter(|(rel, text)| std::fs::read_to_string(root.join(rel)).ok().as_deref() != Some(text.as_str()))
-        .map(|(rel, _)| rel.to_string())
+        .map(|(rel, _)| rel)
         .collect()
 }
 
@@ -128,7 +139,7 @@ pub fn pointer() -> String {
     format!(
         "{POINTER_START}\n## Octara\n\nThis project's UI is built with Octara (Rust; native desktop and mobile, not web). Before writing \
          or changing UI, read the `octara` skill: `.agents/skills/octara/SKILL.md`, then its `references/start-here.md`. Look names \
-         up with `octara vocab <name>` and diagnostic codes with `octara explain <CODE>` instead of guessing.\n{POINTER_END}\n"
+         up in `references/api/` or with `octara vocab <name>`, and diagnostic codes with `octara explain <CODE>` instead of guessing.\n{POINTER_END}\n"
     )
 }
 
@@ -143,13 +154,14 @@ pub fn with_pointer(text: &str) -> String {
 }
 
 /// Installs the skill: the canonical copy, links for agents that look elsewhere, and the pointer.
-pub fn install(catalog: &Catalog, opts: &Install) -> Result<Report, String> {
+pub fn install(api: &Api, opts: &Install) -> Result<Report, String> {
+    let api = Some(api);
     let mut report = Vec::new();
     let base = if opts.global { opts.home.clone() } else { opts.project.clone() };
     let canonical = base.join(".agents/skills").join(NAME);
     guard(&canonical)?;
-    if !stale(catalog, &canonical).is_empty() {
-        write_files(catalog, &canonical)?;
+    if !stale(api, &canonical).is_empty() {
+        write_files(api, &canonical)?;
         report.push(format!("wrote {}", canonical.display()));
     }
 
@@ -176,7 +188,7 @@ pub fn install(catalog: &Catalog, opts: &Install) -> Result<Report, String> {
         let dir = if opts.global { a.user.map(|d| opts.home.join(d)) } else { a.project.map(|d| opts.project.join(d)) };
         let Some(dir) = dir else { continue };
         let at = dir.join(NAME);
-        if link(catalog, &canonical, &at)? {
+        if link(api, &canonical, &at)? {
             report.push(format!("linked {} ({})", at.display(), a.name));
         }
     }
@@ -213,7 +225,7 @@ fn guard(dir: &Path) -> Result<(), String> {
 
 /// Points `at` at `canonical`: a relative symlink, or a copy where links are not possible.
 /// Returns whether anything changed.
-fn link(catalog: &Catalog, canonical: &Path, at: &Path) -> Result<bool, String> {
+fn link(api: Option<&Api>, canonical: &Path, at: &Path) -> Result<bool, String> {
     let parent = at.parent().expect("a skills directory");
     let target = relative(canonical, parent);
     if std::fs::read_link(at).is_ok_and(|t| t == target) {
@@ -224,10 +236,10 @@ fn link(catalog: &Catalog, canonical: &Path, at: &Path) -> Result<bool, String> 
     } else if at.exists() {
         guard(at)?;
         // A copy from an earlier install where links failed: refresh it in place.
-        if stale(catalog, at).is_empty() {
+        if stale(api, at).is_empty() {
             return Ok(false);
         }
-        write_files(catalog, at)?;
+        write_files(api, at)?;
         return Ok(true);
     }
     std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
@@ -236,7 +248,7 @@ fn link(catalog: &Catalog, canonical: &Path, at: &Path) -> Result<bool, String> 
     #[cfg(windows)]
     let linked = std::os::windows::fs::symlink_dir(&target, at).is_ok();
     if !linked {
-        write_files(catalog, at)?;
+        write_files(api, at)?;
     }
     Ok(true)
 }

@@ -16,8 +16,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # rustdoc's JSON (api.json) from a nightly whose format matches `rustdoc-types`.
-  OCTARA_RUSTDOC_TOOLCHAIN: nightly-2026-11-10
 
 jobs:
   lint:
@@ -44,8 +42,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - name: Nightly for rustdoc's JSON
-        run: rustup toolchain install ${{ env.OCTARA_RUSTDOC_TOOLCHAIN }} --profile minimal
       - name: Linux libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev
