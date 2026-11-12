@@ -207,3 +207,19 @@ fn focus_and_blur_are_heard() {
     assert!(app.kernel().find("name").is_none());
     assert!(log.borrow().is_empty(), "{:?}", log.borrow());
 }
+
+#[test]
+fn the_app_moves_focus_to_an_element_built_in_the_same_frame() {
+    let mut app = Window::headless(|| {
+        let editing = state("editing", || false);
+        col()
+            .child(show(move || editing.get(), || text_input().id("name").into()))
+            .child(button("open").on_press(move || {
+                editing.set(true);
+                focus("name");
+            }))
+            .into()
+    });
+    app.tap("open").unwrap();
+    assert_eq!(focused(&app).as_deref(), Some("name"));
+}

@@ -81,6 +81,8 @@ catches up after the animation ends or the pointer moves (Rune).
   outside the modal) calls `dismiss`; after unmount, focus returns to the element from before it opened. With multiple modals only the topmost takes
   effect (Rune's modal stack).
 - With no focus, Escape does nothing; with focus and not inside a modal, Escape moves focus away.
+- `focus(id)` (GPUI's `window.focus`): the app moves focus to an element by test id once the
+  frame is built, so an element built in the same handler can take it.
 - `on_focus` / `on_blur` (GPUI's names): an element hears that it got or lost keyboard focus, the
   one losing it first. Focus moving or being cleared blurs; the window going inactive does not
   (the element keeps its focus), nor does the element leaving the tree. A field edited in place

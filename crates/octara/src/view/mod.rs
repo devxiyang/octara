@@ -600,6 +600,14 @@ pub fn clock(period: std::time::Duration) -> ReadSignal<std::time::Duration> {
     signal.read_only()
 }
 
+/// Moves keyboard focus to the element with test id `id` once this frame is built (GPUI's
+/// `window.focus`): a field after the view that holds it was rebuilt, the composer after "New
+/// chat". It must be focusable and enabled then; otherwise focus stays where it is. Callable
+/// from handlers and tasks.
+pub fn focus(id: &str) {
+    crate::app::window().interaction_request_focus(id);
+}
+
 /// Lands everything in motion on its target now (Rune's `tx.settle`).
 pub fn settle_motion() {
     let u = crate::app::window();

@@ -302,6 +302,12 @@ pub struct Window {
     w: Rc<WindowState>,
 }
 
+impl WindowState {
+    pub(crate) fn interaction_request_focus(&self, id: &str) {
+        self.interaction.borrow_mut().focus_request = Some(id.to_owned());
+    }
+}
+
 /// A clock someone reads: its signal, the timer moving it, and how many scopes read it.
 pub(crate) struct Clock {
     pub(crate) signal: Signal<std::time::Duration>,
@@ -338,6 +344,8 @@ struct Interaction {
     reveal: Option<NodeId>,
     /// The window's tooltip.
     tip: tooltip::Tip,
+    /// The test id of an element the app asked to focus (`focus`), once the frame is built.
+    focus_request: Option<String>,
 }
 
 impl WindowState {
@@ -763,6 +771,16 @@ impl Window {
             }
             if !self.app.sched.has_ready() {
                 break;
+            }
+        }
+        // Focus the app asked for lands on the element as built now.
+        let request = self.w.interaction.borrow_mut().focus_request.take();
+        if let Some(id) = request {
+            let n = self.w.kernel.borrow().find(&id);
+            if let Some(n) = n
+                && self.set_focus(Some(n)).is_ok()
+            {
+                self.settle_layout(at);
             }
         }
         // A caret that moved shows: the scroll containers around its field follow it.
