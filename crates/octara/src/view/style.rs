@@ -127,9 +127,11 @@ pub trait Styled: Sized {
     fn flex(self) -> Self {
         self.style(StyleProp::Display(Display::Flex))
     }
+    /// Lays children out in a row, start to end (the default).
     fn flex_row(self) -> Self {
         self.style(StyleProp::Direction(FlexDirection::Row))
     }
+    /// Lays children out in a row, end to start.
     fn flex_row_reverse(self) -> Self {
         self.style(StyleProp::Direction(FlexDirection::RowReverse))
     }
@@ -137,12 +139,15 @@ pub trait Styled: Sized {
     fn flex_col(self) -> Self {
         self.style(StyleProp::Direction(FlexDirection::Column))
     }
+    /// Lays children out in a column, bottom to top.
     fn flex_col_reverse(self) -> Self {
         self.style(StyleProp::Direction(FlexDirection::ColumnReverse))
     }
+    /// Children that do not fit wrap onto further lines.
     fn flex_wrap(self) -> Self {
         self.style(StyleProp::FlexWrap(FlexWrap::Wrap))
     }
+    /// Children stay on one line (the default).
     fn flex_nowrap(self) -> Self {
         self.style(StyleProp::FlexWrap(FlexWrap::NoWrap))
     }
@@ -172,54 +177,71 @@ pub trait Styled: Sized {
     fn flex_shrink_0(self) -> Self {
         self.style(StyleProp::Shrink(0.0))
     }
+    /// The size a flex item starts from before growing or shrinking (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn flex_basis(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::Basis(l.into()))
     }
+    /// Children align to the start of the cross axis.
     fn items_start(self) -> Self {
         self.style(StyleProp::AlignItems(AlignItems::FLEX_START))
     }
+    /// Children are centered across the cross axis.
     fn items_center(self) -> Self {
         self.style(StyleProp::AlignItems(AlignItems::CENTER))
     }
+    /// Children align to the end of the cross axis.
     fn items_end(self) -> Self {
         self.style(StyleProp::AlignItems(AlignItems::FLEX_END))
     }
+    /// Children align on their first text baseline across the cross axis.
     fn items_baseline(self) -> Self {
         self.style(StyleProp::AlignItems(AlignItems::BASELINE))
     }
+    /// Children stretch across the cross axis (the default).
     fn items_stretch(self) -> Self {
         self.style(StyleProp::AlignItems(AlignItems::STRETCH))
     }
+    /// This child aligns to the start of the parent's cross axis.
     fn self_start(self) -> Self {
         self.style(StyleProp::AlignSelf(Some(AlignItems::FLEX_START)))
     }
+    /// This child is centered across the parent's cross axis.
     fn self_center(self) -> Self {
         self.style(StyleProp::AlignSelf(Some(AlignItems::CENTER)))
     }
+    /// This child aligns to the end of the parent's cross axis.
     fn self_end(self) -> Self {
         self.style(StyleProp::AlignSelf(Some(AlignItems::FLEX_END)))
     }
+    /// This child stretches across the parent's cross axis.
     fn self_stretch(self) -> Self {
         self.style(StyleProp::AlignSelf(Some(AlignItems::STRETCH)))
     }
+    /// Cross-axis alignment from the parent's `items_*` (the default).
     fn self_auto(self) -> Self {
         self.style(StyleProp::AlignSelf(None))
     }
+    /// Children are packed at the start of the main axis (the default).
     fn justify_start(self) -> Self {
         self.style(StyleProp::Justify(JustifyContent::FLEX_START))
     }
+    /// Children are centered along the main axis.
     fn justify_center(self) -> Self {
         self.style(StyleProp::Justify(JustifyContent::CENTER))
     }
+    /// Children are packed at the end of the main axis.
     fn justify_end(self) -> Self {
         self.style(StyleProp::Justify(JustifyContent::FLEX_END))
     }
+    /// Free space along the main axis goes between children.
     fn justify_between(self) -> Self {
         self.style(StyleProp::Justify(JustifyContent::SPACE_BETWEEN))
     }
+    /// Free space along the main axis goes around each child.
     fn justify_around(self) -> Self {
         self.style(StyleProp::Justify(JustifyContent::SPACE_AROUND))
     }
+    /// Free space along the main axis is split evenly, edges included.
     fn justify_evenly(self) -> Self {
         self.style(StyleProp::Justify(JustifyContent::SPACE_EVENLY))
     }
@@ -250,12 +272,15 @@ pub trait Styled: Sized {
     fn col_start(self, n: i16) -> Self {
         self.style(StyleProp::ColStart(GridPos::Line(n)))
     }
+    /// Grid: the item's start column is placed automatically.
     fn col_start_auto(self) -> Self {
         self.style(StyleProp::ColStart(GridPos::Auto))
     }
+    /// Grid: the column line the item ends at (negative counts from the end).
     fn col_end(self, n: i16) -> Self {
         self.style(StyleProp::ColEnd(GridPos::Line(n)))
     }
+    /// Grid: the item's end column is placed automatically.
     fn col_end_auto(self) -> Self {
         self.style(StyleProp::ColEnd(GridPos::Auto))
     }
@@ -263,18 +288,23 @@ pub trait Styled: Sized {
     fn row_span(self, n: u16) -> Self {
         self.style(StyleProp::RowStart(GridPos::Span(n))).style(StyleProp::RowEnd(GridPos::Span(n)))
     }
+    /// Grid: the item spans every row.
     fn row_span_full(self) -> Self {
         self.style(StyleProp::RowStart(GridPos::Line(1))).style(StyleProp::RowEnd(GridPos::Line(-1)))
     }
+    /// Grid: the row line the item starts at.
     fn row_start(self, n: i16) -> Self {
         self.style(StyleProp::RowStart(GridPos::Line(n)))
     }
+    /// Grid: the item's start row is placed automatically.
     fn row_start_auto(self) -> Self {
         self.style(StyleProp::RowStart(GridPos::Auto))
     }
+    /// Grid: the row line the item ends at (negative counts from the end).
     fn row_end(self, n: i16) -> Self {
         self.style(StyleProp::RowEnd(GridPos::Line(n)))
     }
+    /// Grid: the item's end row is placed automatically.
     fn row_end_auto(self) -> Self {
         self.style(StyleProp::RowEnd(GridPos::Auto))
     }
@@ -296,15 +326,19 @@ pub trait Styled: Sized {
         let l = l.into();
         self.pt(l).pb(l)
     }
+    /// Padding on the top (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn pt(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::PaddingTop(l.into()))
     }
+    /// Padding on the right (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn pr(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::PaddingRight(l.into()))
     }
+    /// Padding on the bottom (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn pb(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::PaddingBottom(l.into()))
     }
+    /// Padding on the left (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn pl(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::PaddingLeft(l.into()))
     }
@@ -313,23 +347,29 @@ pub trait Styled: Sized {
         let l = l.into();
         self.mt(l).mr(l).mb(l).ml(l)
     }
+    /// Margin on the left and right (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn mx(self, l: impl Into<Length>) -> Self {
         let l = l.into();
         self.ml(l).mr(l)
     }
+    /// Margin on the top and bottom (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn my(self, l: impl Into<Length>) -> Self {
         let l = l.into();
         self.mt(l).mb(l)
     }
+    /// Margin on the top (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn mt(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::MarginTop(l.into()))
     }
+    /// Margin on the right (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn mr(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::MarginRight(l.into()))
     }
+    /// Margin on the bottom (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn mb(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::MarginBottom(l.into()))
     }
+    /// Margin on the left (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn ml(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::MarginLeft(l.into()))
     }
@@ -341,21 +381,27 @@ pub trait Styled: Sized {
     fn mx_auto(self) -> Self {
         self.mx(Length::Auto)
     }
+    /// Automatic margin on the top and bottom: takes the free space (pushes the item away from that side).
     fn my_auto(self) -> Self {
         self.my(Length::Auto)
     }
+    /// Automatic margin on the left: takes the free space (pushes the item away from that side).
     fn ml_auto(self) -> Self {
         self.ml(Length::Auto)
     }
+    /// Automatic margin on the right: takes the free space (pushes the item away from that side).
     fn mr_auto(self) -> Self {
         self.mr(Length::Auto)
     }
+    /// Automatic margin on the top: takes the free space (pushes the item away from that side).
     fn mt_auto(self) -> Self {
         self.mt(Length::Auto)
     }
+    /// Automatic margin on the bottom: takes the free space (pushes the item away from that side).
     fn mb_auto(self) -> Self {
         self.mb(Length::Auto)
     }
+    /// Space between children, both ways (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn gap(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::Gap(l.into()))
     }
@@ -403,45 +449,59 @@ pub trait Styled: Sized {
         let l = l.into();
         self.w(l).h(l)
     }
+    /// Minimum width (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn min_w(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::MinWidth(l.into()))
     }
+    /// Minimum height (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn min_h(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::MinHeight(l.into()))
     }
+    /// Maximum width (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn max_w(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::MaxWidth(l.into()))
     }
+    /// Maximum height (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn max_h(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::MaxHeight(l.into()))
     }
+    /// Width of the parent.
     fn w_full(self) -> Self {
         self.w(relative(1.0))
     }
+    /// Height of the parent.
     fn h_full(self) -> Self {
         self.h(relative(1.0))
     }
+    /// Width and height of the parent.
     fn size_full(self) -> Self {
         self.size(relative(1.0))
     }
+    /// Width from the content (the default).
     fn w_auto(self) -> Self {
         self.w(Length::Auto)
     }
+    /// Height from the content (the default).
     fn h_auto(self) -> Self {
         self.h(Length::Auto)
     }
+    /// No minimum width: a flex item may shrink below its content.
     fn min_w_0(self) -> Self {
         self.min_w(0.0)
     }
+    /// No minimum height: a flex item may shrink below its content.
     fn min_h_0(self) -> Self {
         self.min_h(0.0)
     }
+    /// At least the parent's width.
     fn min_w_full(self) -> Self {
         self.min_w(relative(1.0))
     }
+    /// At most the parent's width.
     fn max_w_full(self) -> Self {
         self.max_w(relative(1.0))
     }
+    /// At most the parent's height.
     fn max_h_full(self) -> Self {
         self.max_h(relative(1.0))
     }
@@ -449,9 +509,11 @@ pub trait Styled: Sized {
     fn aspect(self, ratio: f32) -> Self {
         self.style(StyleProp::AspectRatio(Some(ratio)))
     }
+    /// Width and height in a 1:1 ratio.
     fn aspect_square(self) -> Self {
         self.aspect(1.0)
     }
+    /// Width and height in a 16:9 ratio.
     fn aspect_video(self) -> Self {
         self.aspect(16.0 / 9.0)
     }
@@ -485,29 +547,37 @@ pub trait Styled: Sized {
     fn absolute(self) -> Self {
         self.style(StyleProp::Position(Position::Absolute))
     }
+    /// Positioned in the flow; `top`/`left`/… move it from there (the default).
     fn relative(self) -> Self {
         self.style(StyleProp::Position(Position::Relative))
     }
+    /// Offset from the top of the containing box (with `absolute` or `relative`) (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn top(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::Top(l.into()))
     }
+    /// Offset from the right of the containing box (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn right(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::Right(l.into()))
     }
+    /// Offset from the bottom of the containing box (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn bottom(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::Bottom(l.into()))
     }
+    /// Offset from the left of the containing box (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn left(self, l: impl Into<Length>) -> Self {
         self.style(StyleProp::Left(l.into()))
     }
+    /// Offsets from every side of the containing box (with `absolute`) (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn inset(self, l: impl Into<Length>) -> Self {
         let l = l.into();
         self.top(l).right(l).bottom(l).left(l)
     }
+    /// Offsets from the left and right of the containing box (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn inset_x(self, l: impl Into<Length>) -> Self {
         let l = l.into();
         self.left(l).right(l)
     }
+    /// Offsets from the top and bottom of the containing box (a number is logical pixels; `relative`, `rems`, `sp` for others).
     fn inset_y(self, l: impl Into<Length>) -> Self {
         let l = l.into();
         self.top(l).bottom(l)
@@ -536,9 +606,11 @@ pub trait Styled: Sized {
     fn overflow_auto(self) -> Self {
         self.overflow_x_auto().overflow_y_auto()
     }
+    /// Scrolls content that overflows horizontally (as `overflow_x_scroll`: scroll bars are the platform's).
     fn overflow_x_auto(self) -> Self {
         self.style(StyleProp::OverflowX(Overflow::Scroll))
     }
+    /// Scrolls content that overflows vertically (as `overflow_y_scroll`: scroll bars are the platform's).
     fn overflow_y_auto(self) -> Self {
         self.style(StyleProp::OverflowY(Overflow::Scroll))
     }
@@ -546,9 +618,11 @@ pub trait Styled: Sized {
     fn overflow_scroll(self) -> Self {
         self.overflow_auto()
     }
+    /// Scrolls content that overflows horizontally (and clips it).
     fn overflow_x_scroll(self) -> Self {
         self.overflow_x_auto()
     }
+    /// Scrolls content that overflows vertically (and clips it).
     fn overflow_y_scroll(self) -> Self {
         self.overflow_y_auto()
     }
@@ -556,9 +630,11 @@ pub trait Styled: Sized {
     fn overflow_hidden(self) -> Self {
         self.overflow_x_hidden().overflow_y_hidden()
     }
+    /// Clips content that overflows horizontally.
     fn overflow_x_hidden(self) -> Self {
         self.style(StyleProp::OverflowX(Overflow::Hidden))
     }
+    /// Clips content that overflows vertically.
     fn overflow_y_hidden(self) -> Self {
         self.style(StyleProp::OverflowY(Overflow::Hidden))
     }
@@ -577,15 +653,19 @@ pub trait Styled: Sized {
     fn border(self) -> Self {
         self.border_w(1.0)
     }
+    /// No border.
     fn border_0(self) -> Self {
         self.border_w(0.0)
     }
+    /// A 2 px border on every side.
     fn border_2(self) -> Self {
         self.border_w(2.0)
     }
+    /// A 4 px border on every side.
     fn border_4(self) -> Self {
         self.border_w(4.0)
     }
+    /// A 8 px border on every side.
     fn border_8(self) -> Self {
         self.border_w(8.0)
     }
@@ -623,27 +703,35 @@ pub trait Styled: Sized {
         }
         self.style(StyleProp::Shadow(Shadows::Custom(list)))
     }
+    /// No shadow.
     fn shadow_none(self) -> Self {
         self.style(StyleProp::Shadow(Shadows::None))
     }
+    /// Shadow: the theme's `2xs` step.
     fn shadow_2xs(self) -> Self {
         self.style(StyleProp::Shadow(Shadows::Step(ShadowStep::Xs2)))
     }
+    /// Shadow: the theme's `xs` step.
     fn shadow_xs(self) -> Self {
         self.style(StyleProp::Shadow(Shadows::Step(ShadowStep::Xs)))
     }
+    /// Shadow: the theme's `sm` step.
     fn shadow_sm(self) -> Self {
         self.style(StyleProp::Shadow(Shadows::Step(ShadowStep::Sm)))
     }
+    /// Shadow: the theme's `md` step.
     fn shadow_md(self) -> Self {
         self.style(StyleProp::Shadow(Shadows::Step(ShadowStep::Md)))
     }
+    /// Shadow: the theme's `lg` step.
     fn shadow_lg(self) -> Self {
         self.style(StyleProp::Shadow(Shadows::Step(ShadowStep::Lg)))
     }
+    /// Shadow: the theme's `xl` step.
     fn shadow_xl(self) -> Self {
         self.style(StyleProp::Shadow(Shadows::Step(ShadowStep::Xl)))
     }
+    /// Shadow: the theme's `2xl` step.
     fn shadow_2xl(self) -> Self {
         self.style(StyleProp::Shadow(Shadows::Step(ShadowStep::Xl2)))
     }
@@ -651,45 +739,58 @@ pub trait Styled: Sized {
     fn rounded(self, px: f32) -> Self {
         self.style(StyleProp::Radius(Radius::Px(px)))
     }
+    /// Square corners.
     fn rounded_none(self) -> Self {
         self.rounded(0.0)
     }
+    /// Corner radius: the theme's `xs` step.
     fn rounded_xs(self) -> Self {
         self.style(StyleProp::Radius(Radius::Step(RadiusStep::Xs)))
     }
+    /// Corner radius: the theme's `sm` step.
     fn rounded_sm(self) -> Self {
         self.style(StyleProp::Radius(Radius::Step(RadiusStep::Sm)))
     }
+    /// Corner radius: the theme's `md` step.
     fn rounded_md(self) -> Self {
         self.style(StyleProp::Radius(Radius::Step(RadiusStep::Md)))
     }
+    /// Corner radius: the theme's `lg` step.
     fn rounded_lg(self) -> Self {
         self.style(StyleProp::Radius(Radius::Step(RadiusStep::Lg)))
     }
+    /// Corner radius: the theme's `xl` step.
     fn rounded_xl(self) -> Self {
         self.style(StyleProp::Radius(Radius::Step(RadiusStep::Xl)))
     }
+    /// Corner radius: the theme's `2xl` step.
     fn rounded_2xl(self) -> Self {
         self.style(StyleProp::Radius(Radius::Step(RadiusStep::Xl2)))
     }
+    /// Corner radius: the theme's `3xl` step.
     fn rounded_3xl(self) -> Self {
         self.style(StyleProp::Radius(Radius::Step(RadiusStep::Xl3)))
     }
+    /// Corner radius: the theme's `4xl` step.
     fn rounded_4xl(self) -> Self {
         self.style(StyleProp::Radius(Radius::Step(RadiusStep::Xl4)))
     }
+    /// Fully rounded corners: a pill, or a circle for a square.
     fn rounded_full(self) -> Self {
         self.style(StyleProp::Radius(Radius::Full))
     }
 
     // ---- type ----
 
+    /// Font size from the theme's text scale, with its line height; inherited.
     fn text_step(self, s: TextStep) -> Self {
         self.style(StyleProp::FontSize(FontSize::Step(s)))
     }
+    /// Font size: the theme's `xs` text step, with its line height; inherited.
     fn text_xs(self) -> Self {
         self.text_step(TextStep::Xs)
     }
+    /// Font size: the theme's `sm` text step, with its line height; inherited.
     fn text_sm(self) -> Self {
         self.text_step(TextStep::Sm)
     }
@@ -697,33 +798,43 @@ pub trait Styled: Sized {
     fn text_base(self) -> Self {
         self.text_step(TextStep::Base)
     }
+    /// Font size: the theme's `lg` text step, with its line height; inherited.
     fn text_lg(self) -> Self {
         self.text_step(TextStep::Lg)
     }
+    /// Font size: the theme's `xl` text step, with its line height; inherited.
     fn text_xl(self) -> Self {
         self.text_step(TextStep::Xl)
     }
+    /// Font size: the theme's `2xl` text step, with its line height; inherited.
     fn text_2xl(self) -> Self {
         self.text_step(TextStep::Xl2)
     }
+    /// Font size: the theme's `3xl` text step, with its line height; inherited.
     fn text_3xl(self) -> Self {
         self.text_step(TextStep::Xl3)
     }
+    /// Font size: the theme's `4xl` text step, with its line height; inherited.
     fn text_4xl(self) -> Self {
         self.text_step(TextStep::Xl4)
     }
+    /// Font size: the theme's `5xl` text step, with its line height; inherited.
     fn text_5xl(self) -> Self {
         self.text_step(TextStep::Xl5)
     }
+    /// Font size: the theme's `6xl` text step, with its line height; inherited.
     fn text_6xl(self) -> Self {
         self.text_step(TextStep::Xl6)
     }
+    /// Font size: the theme's `7xl` text step, with its line height; inherited.
     fn text_7xl(self) -> Self {
         self.text_step(TextStep::Xl7)
     }
+    /// Font size: the theme's `8xl` text step, with its line height; inherited.
     fn text_8xl(self) -> Self {
         self.text_step(TextStep::Xl8)
     }
+    /// Font size: the theme's `9xl` text step, with its line height; inherited.
     fn text_9xl(self) -> Self {
         self.text_step(TextStep::Xl9)
     }
@@ -744,48 +855,63 @@ pub trait Styled: Sized {
     fn leading_none(self) -> Self {
         self.line_height(relative(1.0))
     }
+    /// Line height 1.25 × the font size; inherited.
     fn leading_tight(self) -> Self {
         self.line_height(relative(1.25))
     }
+    /// Line height 1.375 × the font size; inherited.
     fn leading_snug(self) -> Self {
         self.line_height(relative(1.375))
     }
+    /// Line height 1.5 × the font size; inherited.
     fn leading_normal(self) -> Self {
         self.line_height(relative(1.5))
     }
+    /// Line height 1.625 × the font size; inherited.
     fn leading_relaxed(self) -> Self {
         self.line_height(relative(1.625))
     }
+    /// Line height 2 × the font size; inherited.
     fn leading_loose(self) -> Self {
         self.line_height(relative(2.0))
     }
+    /// Font weight, 100 to 900 (400 regular, 700 bold); inherited.
     fn font_weight(self, w: u16) -> Self {
         self.style(StyleProp::FontWeight(w))
     }
+    /// Font weight 100 (thin); inherited.
     fn font_thin(self) -> Self {
         self.font_weight(100)
     }
+    /// Font weight 200 (extralight); inherited.
     fn font_extralight(self) -> Self {
         self.font_weight(200)
     }
+    /// Font weight 300 (light); inherited.
     fn font_light(self) -> Self {
         self.font_weight(300)
     }
+    /// Font weight 400 (normal); inherited.
     fn font_normal(self) -> Self {
         self.font_weight(400)
     }
+    /// Font weight 500 (medium); inherited.
     fn font_medium(self) -> Self {
         self.font_weight(500)
     }
+    /// Font weight 600 (semibold); inherited.
     fn font_semibold(self) -> Self {
         self.font_weight(600)
     }
+    /// Font weight 700 (bold); inherited.
     fn font_bold(self) -> Self {
         self.font_weight(700)
     }
+    /// Font weight 800 (extrabold); inherited.
     fn font_extrabold(self) -> Self {
         self.font_weight(800)
     }
+    /// Font weight 900 (black); inherited.
     fn font_black(self) -> Self {
         self.font_weight(900)
     }
@@ -828,30 +954,39 @@ pub trait Styled: Sized {
 
     // ---- color and opacity (fixed values; elements also accept closures, see `El`) ----
 
+    /// Background: a token, a color or a gradient (what `bg` takes, as a value).
     fn bg_paint(self, p: impl Into<Fill>) -> Self {
         self.style(StyleProp::Background(Some(p.into())))
     }
+    /// Text color: a token or a color (what `text_color` takes, as a value); inherited.
     fn text_paint(self, p: impl Into<Paint>) -> Self {
         self.style(StyleProp::TextColor(p.into()))
     }
+    /// Border color: a token or a color (what `border_color` takes, as a value).
     fn border_paint(self, p: impl Into<Paint>) -> Self {
         self.style(StyleProp::BorderColor(p.into()))
     }
+    /// Opacity from 0 (invisible) to 1; a subtree drawing several things fades as one layer.
     fn opacity_value(self, o: f32) -> Self {
         self.style(StyleProp::Opacity(o))
     }
+    /// Opacity 0 %.
     fn opacity_0(self) -> Self {
         self.opacity_value(0.0)
     }
+    /// Opacity 25 %.
     fn opacity_25(self) -> Self {
         self.opacity_value(0.25)
     }
+    /// Opacity 50 %.
     fn opacity_50(self) -> Self {
         self.opacity_value(0.5)
     }
+    /// Opacity 75 %.
     fn opacity_75(self) -> Self {
         self.opacity_value(0.75)
     }
+    /// Opacity 100 %.
     fn opacity_100(self) -> Self {
         self.opacity_value(1.0)
     }
