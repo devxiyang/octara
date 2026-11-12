@@ -44,7 +44,13 @@ Ownership and context are [the core's](core.md).
   focus returns where it was; items `menu:{id}`, submenus open to the right) and prompts over a
   scrim, mounted only while one is open (answers `prompt:{i}`, the last the default and focused;
   Escape dismisses). A menu item shows its keys as the platform writes them (`⌘C`, `Ctrl+C`).
-- Native menus (Rune's) on macOS and Windows; the menu bar's items run commands (GPUI's model).
+- Native on macOS: a menu is an `NSMenu` popped up at its point, a prompt an `NSAlert` sheet on
+  the window (the last answer the default, a `Cancel` answer on Escape), a file dialog rfd's
+  sheet; menus and alerts open from the main run loop after the loop's callback returns (AppKit
+  tracks a menu in a loop of its own; winit's handler must not be entered again from it). A
+  withdrawn request closes (`cancelTracking`, `endSheet`). After an answer the pointer is
+  sampled again (no move came while the menu had it). Windows' native menus and alerts come
+  later (drawn there now), with the menu bar's items running commands (GPUI's model).
 - Tooltips are drawn in the window.
 
 ## Agents
@@ -58,5 +64,5 @@ Ownership and context are [the core's](core.md).
 1. Several windows headless; windows in the inspector protocol and captures. Implemented.
 2. Several windows in the winit backend; the shell routes events by window. Implemented.
 3. Requests: the mechanism, file dialogs on it, menus and prompts drawn in the window.
-   Implemented. Then native menus and alerts (macOS), the macOS menu bar; Windows' native menus
-   and Wayland popups later.
+   Implemented. Native menus and alerts on macOS. Implemented. Then the macOS menu bar; Windows'
+   native menus and alerts, Wayland popups later.

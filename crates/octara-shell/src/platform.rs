@@ -128,6 +128,8 @@ impl Platform for WinitPlatform {
             host,
             #[cfg(target_os = "macos")]
             link,
+            #[cfg(target_os = "macos")]
+            shown: Rc::default(),
             secure: false,
             cursor_style: CursorStyle::Arrow,
             cursor: (0.0, 0.0),
@@ -187,6 +189,9 @@ pub(crate) struct WinitWindow {
     /// (Wayland) or the swap chain's blocking present.
     #[cfg(target_os = "macos")]
     link: Option<super::pace_mac::DisplayLink>,
+    /// The requests it shows natively now (macOS: menus and alerts).
+    #[cfg(target_os = "macos")]
+    shown: Rc<super::ask_mac::Shown>,
     /// A secure field has focus: the input method is off and (macOS) secure input on.
     secure: bool,
     /// How the pointer looks.
@@ -335,9 +340,19 @@ impl WinitWindow {
         use octara::ask::{Answer, Ask};
         use std::future::Future;
         use std::pin::Pin;
+        let (proxy, window) = (self.shared.proxy.clone(), self.window.id());
+        #[cfg(target_os = "macos")]
+        if super::ask_mac::shows(&ask) {
+            let send: super::ask_mac::Send = Rc::new(move |id, answer| {
+                let _ = proxy.send_event(ShellEvent::Answer { window, id, answer });
+            });
+            super::ask_mac::show(&self.window, &self.shown, id, ask, send);
+            return;
+        }
         let answer: Pin<Box<dyn Future<Output = Answer> + Send>> = match ask {
             Ask::Paths(o) => {
-                let mut d = rfd::AsyncFileDialog::new();
+                // A sheet on the window where the platform has them.
+                let mut d = rfd::AsyncFileDialog::new().set_parent(&*self.window);
                 if let Some(p) = &o.prompt {
                     d = d.set_title(p);
                 }
@@ -351,7 +366,7 @@ impl WinitWindow {
                 }
             }
             Ask::NewPath { directory, name } => {
-                let mut d = rfd::AsyncFileDialog::new().set_directory(directory);
+                let mut d = rfd::AsyncFileDialog::new().set_parent(&*self.window).set_directory(directory);
                 if let Some(n) = name {
                     d = d.set_file_name(n);
                 }
@@ -360,7 +375,6 @@ impl WinitWindow {
             }
             _ => return,
         };
-        let (proxy, window) = (self.shared.proxy.clone(), self.window.id());
         std::thread::spawn(move || {
             let answer = pollster::block_on(answer);
             let _ = proxy.send_event(ShellEvent::Answer { window, id, answer });
@@ -412,11 +426,20 @@ impl PlatformWindow for WinitWindow {
         if frame.redraw || placed {
             self.pending = true;
         }
+        for id in frame.withdrawn {
+            #[cfg(target_os = "macos")]
+            super::ask_mac::withdraw(&self.shown, id);
+            let _ = id;
+        }
         for (id, ask) in frame.asks {
             self.show_ask(id, ask);
         }
     }
     fn shows_ask(&self, ask: &octara::ask::Ask) -> bool {
+        #[cfg(target_os = "macos")]
+        if self.host.is_some() && super::ask_mac::shows(ask) {
+            return true;
+        }
         matches!(ask, octara::ask::Ask::Paths(_) | octara::ask::Ask::NewPath { .. })
     }
     fn shows_native(&self, kind: &str, slot: octara::native::Slot) -> bool {

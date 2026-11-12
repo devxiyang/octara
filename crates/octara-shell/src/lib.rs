@@ -30,6 +30,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{Key as WKey, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::WindowId;
 
+#[cfg(target_os = "macos")]
+mod ask_mac;
 mod capture;
 #[cfg(target_os = "macos")]
 mod native_mac;
@@ -475,6 +477,10 @@ impl ApplicationHandler<ShellEvent> for Shell {
             ShellEvent::Answer { window, id, answer } => {
                 self.tick();
                 if let Some(mut w) = self.window_of(window) {
+                    // No move came while a menu or a sheet had the pointer: where it is now.
+                    if let Some((x, y)) = ww(&w, |x| x.pointer()) {
+                        w.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Move, x, y).modifiers(modifiers(self.modifiers))));
+                    }
                     w.event(InputEvent::Answer { id, answer });
                 }
                 self.show();
