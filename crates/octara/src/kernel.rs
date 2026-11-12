@@ -532,6 +532,8 @@ pub struct Kernel {
     /// Ink reaches must be computed again (after a layout, or a shadow changed).
     ink_dirty: Cell<bool>,
     culling: bool,
+    /// Nodes made modals (shown or not, attached or not): `modals` filters them.
+    modal_nodes: rustc_hash::FxHashSet<NodeId>,
     /// Bumped by every change that can alter the display list (paint, layout and text changes,
     /// layouts, theme): an unchanged count with nothing moving means the last frame still holds.
     paint_gen: u64,
@@ -594,6 +596,7 @@ impl Kernel {
             moving: rustc_hash::FxHashSet::default(),
             ink_dirty: Cell::new(true),
             culling: true,
+            modal_nodes: rustc_hash::FxHashSet::default(),
             paint_gen: 0,
             last_frame: RefCell::new(None),
             frames_built: Cell::new(0),
@@ -996,6 +999,7 @@ impl Kernel {
         self.record(id, OpKind::Destroy);
         let n = self.nodes.remove(id).expect("node");
         self.missing_tokens.remove(&id);
+        self.modal_nodes.remove(&id);
         // Texts and text inputs are measured by the text engine (keyed by node).
         if matches!(n.content, Content::Text(_) | Content::Input(_)) {
             self.text.get_mut().forget(id);

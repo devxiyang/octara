@@ -44,14 +44,22 @@ impl Kernel {
         let mut items = Vec::new();
         self.update_ink();
         let window = Rect { x: 0.0, y: 0.0, w: self.viewport.0, h: self.viewport.1 };
-        self.paint(self.root, 1.0, window, &mut items);
+        self.paint(self.root, (0.0, 0.0), 1.0, window, &mut items);
         DisplayList { size: self.viewport, background: self.theme.get(Token::Background), items }
     }
 
-    /// Where the node is shown now (moving layout included).
-    fn rect_of(&self, id: NodeId) -> Rect {
-        let (x, y, w, h) = self.shown_rect(id);
-        Rect { x, y, w, h }
+    /// Where the node is shown now (moving layout included), given where its parent's content
+    /// starts in the window (`origin`: the parent's position less its scroll). Walking down the
+    /// tree, each node's place costs the same however deep it is.
+    fn rect_at(&self, id: NodeId, origin: (f32, f32)) -> Rect {
+        let (x, y, w, h) = self.shown_frame(id);
+        Rect { x: origin.0 + x, y: origin.1 + y, w, h }
+    }
+
+    /// Where the children of a node shown at `rect` start (its scroll applied).
+    fn content_origin(&self, id: NodeId, rect: Rect) -> (f32, f32) {
+        let (sx, sy) = self.node(id).scroll;
+        (rect.x - sx, rect.y - sy)
     }
 
     /// Whether subtrees can be skipped by their ink: not while anything moves (presented
@@ -67,12 +75,11 @@ impl Kernel {
         self.paint_gen += 1;
     }
 
-    /// Whether `id`'s drawing (its subtree's included) can show inside `clip`.
-    fn ink_meets(&self, id: NodeId, clip: &Rect) -> bool {
+    /// Whether `id`'s drawing (its subtree's included), shown at `r`, can show inside `clip`.
+    fn ink_meets(&self, id: NodeId, r: Rect, clip: &Rect) -> bool {
         if !self.culls() {
             return true;
         }
-        let r = self.rect_of(id);
         let [l, t, rr, b] = self.node(id).ink.get();
         !Rect { x: r.x - l, y: r.y - t, w: r.w + l + rr, h: r.h + t + b }.intersect(clip).is_empty()
     }
@@ -142,21 +149,25 @@ impl Kernel {
     /// Paints `id` and its subtree. Below full opacity, a subtree that draws more than one thing
     /// goes into a layer composited at that opacity (Rune's group opacity); a single thing is
     /// faded directly.
-    fn paint(&self, id: NodeId, opacity: f32, clip: Rect, out: &mut Vec<Item>) {
+    fn paint(&self, id: NodeId, origin: (f32, f32), opacity: f32, clip: Rect, out: &mut Vec<Item>) {
         let n = self.node(id);
-        if n.layout.display == taffy::Display::None || !self.ink_meets(id, &clip) {
+        if n.layout.display == taffy::Display::None {
+            return;
+        }
+        let rect = self.rect_at(id, origin);
+        if !self.ink_meets(id, rect, &clip) {
             return;
         }
         let own = self.presented(id).opacity;
         if own >= 1.0 {
-            return self.paint_node(id, opacity, clip, out);
+            return self.paint_node(id, rect, opacity, clip, out);
         }
         let k = opacity * own;
         if k <= 0.0 {
             return;
         }
         let mut inner = Vec::new();
-        self.paint_node(id, 1.0, clip, &mut inner);
+        self.paint_node(id, rect, 1.0, clip, &mut inner);
         if inner.iter().filter(|i| i.draws()).count() <= 1 {
             for mut i in inner {
                 i.fade(k);
@@ -171,9 +182,8 @@ impl Kernel {
 
     /// Paints `id` and its subtree, fading colors by `opacity` (the node's own opacity is the
     /// caller's to apply).
-    fn paint_node(&self, id: NodeId, opacity: f32, clip: Rect, out: &mut Vec<Item>) {
+    fn paint_node(&self, id: NodeId, rect: Rect, opacity: f32, clip: Rect, out: &mut Vec<Item>) {
         let n = self.node(id);
-        let rect = self.rect_of(id);
         let l = self.taffy.layout(n.taffy).expect("taffy");
         // Its own drawing shows: the box, or a line of text running past it.
         let visible = !self.content_rect(id, rect).intersect(&clip).is_empty();
@@ -354,12 +364,13 @@ impl Kernel {
             }
             out.push(Item::PushClip { source: id, rect: inner, radius: (v.radius - l.border.left).max(0.0) });
         }
+        let origin = self.content_origin(id, rect);
         for &c in &n.children {
-            self.paint(c, opacity, child_clip, out);
+            self.paint(c, origin, opacity, child_clip, out);
         }
         // Subtrees on their way out, where they were.
         for g in self.ghosts_of(id) {
-            self.paint(g, opacity, child_clip, out);
+            self.paint(g, origin, opacity, child_clip, out);
         }
         if clips {
             out.push(Item::PopClip);
@@ -477,21 +488,21 @@ impl Kernel {
         self.update_ink();
         let window = Rect { x: 0.0, y: 0.0, w: self.viewport.0, h: self.viewport.1 };
         let mut hit = None;
-        self.hit(self.root, x, y, window, &mut hit);
+        self.hit(self.root, (0.0, 0.0), x, y, window, &mut hit);
         hit
     }
 
-    fn hit(&self, id: NodeId, x: f32, y: f32, clip: Rect, hit: &mut Option<NodeId>) {
+    fn hit(&self, id: NodeId, origin: (f32, f32), x: f32, y: f32, clip: Rect, hit: &mut Option<NodeId>) {
         let n = self.node(id);
         if n.layout.display == taffy::Display::None {
             return;
         }
         let inside = |r: &Rect| x >= r.x && x < r.right() && y >= r.y && y < r.bottom();
+        let rect = self.rect_at(id, origin);
         // Nothing in a subtree whose reach misses the point can be hit.
-        if !self.ink_meets(id, &Rect { x, y, w: 1.0, h: 1.0 }) {
+        if !self.ink_meets(id, rect, &Rect { x, y, w: 1.0, h: 1.0 }) {
             return;
         }
-        let rect = self.rect_of(id);
         if inside(&rect) && inside(&clip) && id != self.overlay_layer {
             *hit = Some(id);
         }
@@ -499,8 +510,9 @@ impl Kernel {
         if n.layout.overflow.x != taffy::Overflow::Visible || n.layout.overflow.y != taffy::Overflow::Visible {
             child_clip = clip.intersect(&rect);
         }
+        let origin = self.content_origin(id, rect);
         for &c in &n.children {
-            self.hit(c, x, y, child_clip, hit);
+            self.hit(c, origin, x, y, child_clip, hit);
         }
     }
 }

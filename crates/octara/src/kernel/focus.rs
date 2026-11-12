@@ -29,6 +29,11 @@ impl Kernel {
     pub fn set_modal(&mut self, id: NodeId, modal: Option<bool>) {
         if self.node(id).modal != modal {
             self.node_mut(id).modal = modal;
+            if modal.is_some() {
+                self.modal_nodes.insert(id);
+            } else {
+                self.modal_nodes.remove(&id);
+            }
             self.a11y_touch(id);
             self.mark(super::Dirty::SEMANTICS);
         }
@@ -57,13 +62,30 @@ impl Kernel {
     /// Shown modals, outermost first (tree order: overlays come after the page, a modal inside
     /// another after it).
     pub fn modals(&self) -> Vec<NodeId> {
-        let mut out = Vec::new();
-        self.walk_shown(self.root, &mut |id| {
-            if self.node(id).modal.is_some() {
-                out.push(id);
+        // The modal nodes are known: keep those shown in the window, in tree order (each one's
+        // path of child indices from the root).
+        let mut out: Vec<(Vec<usize>, NodeId)> = self.modal_nodes.iter().filter_map(|&id| self.shown_path(id).map(|p| (p, id))).collect();
+        out.sort();
+        out.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// The child indices from the root to `id`, if it and every ancestor are shown and it is in
+    /// the window's tree.
+    fn shown_path(&self, id: NodeId) -> Option<Vec<usize>> {
+        let mut path = Vec::new();
+        let mut at = id;
+        loop {
+            if !self.shown(at) {
+                return None;
             }
-        });
-        out
+            let Some(p) = self.node(at).parent else { break };
+            path.push(self.node(p).children.iter().position(|c| *c == at)?);
+            at = p;
+        }
+        (at == self.root).then(|| {
+            path.reverse();
+            path
+        })
     }
 
     fn walk_shown(&self, id: NodeId, f: &mut impl FnMut(NodeId)) {
