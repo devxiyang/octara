@@ -4,6 +4,10 @@
 //! accessibility adapter, native views and frame clock (macOS: its view's display link), and the
 //! loop ends when the last one closes.
 //!
+//! Conformance: `OCTARA_CONFORMANCE=1` runs the platform contract's checks
+//! ([`octara::conformance`]) in the loop once the first window is open, prints them (JSON) on
+//! stdout and exits, with status 1 if one failed.
+//!
 //! Picking: in debug builds `mod+shift+c` (as browsers' "inspect element") starts picking, and
 //! `OCTARA_PICK=1` starts the window picking. Click an element: its line (number, role, test id,
 //! source, the component that made it) goes to the clipboard and to stderr, its JSON to stdout.
@@ -97,9 +101,13 @@ pub fn run_with(options: Options, root: impl Fn() -> View + 'static) {
         modifiers: ModifiersState::empty(),
         started: Instant::now(),
         done: false,
+        failed: false,
         capture: None,
     };
     event_loop.run_app(&mut shell).expect("event loop");
+    if shell.failed {
+        std::process::exit(1);
+    }
 }
 
 /// What the shell and its platform share: the loop's proxy, the loop running a callback now
@@ -148,8 +156,10 @@ struct Shell {
     modifiers: ModifiersState,
     /// The app's clock starts at launch.
     started: Instant,
-    /// `exit_after_frames` was reached, or a capture finished.
+    /// `exit_after_frames` was reached, a capture or the conformance checks finished.
     done: bool,
+    /// A conformance check failed: the process exits with status 1.
+    failed: bool,
     /// A capture in progress (`OCTARA_CAPTURE`, see [`capture`]).
     capture: Option<capture::Job>,
 }
@@ -489,8 +499,20 @@ impl ApplicationHandler<ShellEvent> for Shell {
             w.set_picking(true);
         }
         self.main = Some(w.id());
-        self.app = Some(app);
+        self.app = Some(app.clone());
         self.show();
+        if std::env::var("OCTARA_CONFORMANCE").is_ok_and(|v| v == "1") {
+            let checks = octara::conformance::run(&app);
+            for c in &checks {
+                match &c.failure {
+                    None => eprintln!("octara-shell: conformance {}: ok", c.name),
+                    Some(why) => eprintln!("octara-shell: conformance {}: FAILED: {why}", c.name),
+                }
+            }
+            println!("{}", octara::serde_json::to_string(&checks).expect("checks serialize"));
+            self.failed = checks.iter().any(|c| c.failure.is_some());
+            self.done = true;
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -554,10 +576,13 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 let (x, y) = (location.x as f32 / scale, location.y as f32 / scale);
                 self.pointer(&mut w, PointerEvent::touch(id, phase, x, y));
             }
-            WindowEvent::Focused(false) => {
-                // The window lost the pointer: a held press or drag is cancelled.
-                let (x, y) = cursor;
-                self.pointer(&mut w, PointerEvent::mouse(Phase::Cancel, x, y));
+            WindowEvent::Focused(on) => {
+                if !on {
+                    // The window lost the pointer: a held press or drag is cancelled.
+                    let (x, y) = cursor;
+                    self.pointer(&mut w, PointerEvent::mouse(Phase::Cancel, x, y));
+                }
+                w.event(InputEvent::Active(on));
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {

@@ -205,6 +205,8 @@ pub(crate) struct WindowState {
     native_changes: RefCell<Vec<crate::native::NativeChange>>,
     /// The paint generation last presented.
     presented: Cell<u64>,
+    /// Frames presented to the platform window.
+    frames: Cell<u64>,
     /// A capture in progress: the snapshots asked for.
     capturing: RefCell<Option<crate::capture::Capturing>>,
     /// Picking an element to hand to an agent.
@@ -334,6 +336,7 @@ impl WindowState {
             native_sent: RefCell::default(),
             native_changes: RefCell::default(),
             presented: Cell::new(u64::MAX),
+            frames: Cell::new(0),
             capturing: RefCell::default(),
             picking: RefCell::default(),
             selection: RefCell::default(),
@@ -1450,6 +1453,18 @@ impl Window {
 
     /// Tells the window's platform about the focused text field when it changed: where its
     /// caret is, whether it is secure or multi-line.
+    /// How many frames the window presented to its platform window (each operation that changed
+    /// something presents one).
+    pub fn frames_presented(&self) -> u64 {
+        self.w.frames.get()
+    }
+
+    /// Whether the window is the active one (key on macOS; GPUI's `is_window_active`): its
+    /// focused field shows a caret. Headless windows are active.
+    pub fn is_active(&self) -> bool {
+        self.w.kernel.borrow().window_active()
+    }
+
     /// How the pointer looks now: over the element it is on (an arrow off the window).
     pub fn cursor(&self) -> crate::platform::CursorStyle {
         let hovered = self.w.interaction.borrow().hovered;
@@ -1477,6 +1492,7 @@ impl Window {
         self.w.text_input.set(text_input);
         self.w.cursor.set(cursor);
         self.w.presented.set(generation);
+        self.w.frames.set(self.w.frames.get() + 1);
         self.w.platform.borrow_mut().present(crate::platform::Frame { native, text_input, redraw, cursor, picked });
     }
 }

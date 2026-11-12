@@ -153,7 +153,7 @@ Designed in [the text core](text.md); what the core decided:
    live regions in accessibility, Markdown. Implemented.
 4. Incremental paint and accessibility. Implemented.
 5. The platform boundary completed: rendering and accessibility in the backend, cursor, drops,
-   image clipboard, URLs, file dialogs; the winit backend with several windows (it shows one);
-   the conformance suite.
+   image clipboard, URLs, file dialogs; the winit backend with several windows; the conformance
+   suite. Implemented.
 6. Popups and menus ([windows](windows.md)).
 7. The AI chat components and the AI chat reference app.

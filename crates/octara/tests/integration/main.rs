@@ -3,6 +3,7 @@
 mod a11y;
 mod canvas;
 mod capture;
+mod conformance;
 mod culling;
 mod cursor;
 mod diagnostics_registry;

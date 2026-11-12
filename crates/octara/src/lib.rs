@@ -22,6 +22,7 @@ pub use serde_json;
 pub mod app;
 pub mod canvas;
 pub mod capture;
+pub mod conformance;
 pub mod diagnostics;
 pub mod icon;
 pub mod image;

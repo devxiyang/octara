@@ -295,3 +295,21 @@ fn the_platform_is_told_when_the_caret_blinks() {
     app.app().advance(Duration::from_millis(550));
     assert!(frames(&app) > before, "the blink is presented, not only drawn when asked");
 }
+
+#[test]
+fn an_inactive_window_shows_no_caret() {
+    use std::time::Duration;
+    let mut app = Window::headless(|| text_input().id("f").into());
+    app.tap("f").unwrap();
+    let caret = |app: &Window| {
+        let f = app.kernel().find("f").unwrap();
+        app.display_list().quads().any(|q| q.source == f && q.rect.w <= 2.0)
+    };
+    assert!(app.is_active() && caret(&app));
+    app.event(InputEvent::Active(false));
+    assert!(!app.is_active() && !caret(&app), "another window is active: no caret");
+    assert!(app.app().next_deadline().is_none(), "and no blink to wake for");
+    app.app().advance(Duration::from_millis(1200));
+    app.event(InputEvent::Active(true));
+    assert!(caret(&app), "back: shown at once");
+}

@@ -711,6 +711,8 @@ pub struct Kernel {
     /// The focused text field and when its caret last moved or its text changed: the caret
     /// blinks from then on (shown for half a second, hidden for half).
     caret: Option<(NodeId, f64)>,
+    /// The window is the active one (key on macOS): its focused field shows a caret.
+    window_active: bool,
     /// Nodes made modals (shown or not, attached or not): `modals` filters them.
     modal_nodes: rustc_hash::FxHashSet<NodeId>,
     /// Native views (mounted or not): placements and the host follow them.
@@ -823,6 +825,7 @@ impl Kernel {
             culling: true,
             revealing: None,
             caret: None,
+            window_active: true,
             modal_nodes: rustc_hash::FxHashSet::default(),
             native_nodes: rustc_hash::FxHashSet::default(),
             paint_gen: 0,

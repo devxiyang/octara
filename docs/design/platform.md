@@ -1,8 +1,9 @@
 # The platform layer
 
 Based on the [research](../research/windows-and-platform.md). Status: confirmed; the traits, the
-headless platform and the winit backend behind them are implemented, the owned macOS backend is
-not.
+headless platform, the winit backend behind them (several windows, frame clocks, the pointer,
+URLs, the clipboard with images, file dialogs, drops, activation) and the conformance checks are
+implemented; the owned macOS backend is not.
 
 The app and the kernel never see a windowing library's types. A platform backend implements a
 narrow set of traits (GPUI's names); headless runs (tests, agents, `octara run`) implement the
@@ -70,6 +71,15 @@ platform is presented a `Frame` after each operation.
   (styled by `drag_over`), and gets the paths when they drop. The shell turns winit's
   per-file events into one drop, and asks AppKit where the pointer is while files are dragged
   (AppKit sends no moves then).
+- Activation: a backend sends `InputEvent::Active` when a window becomes the active one or stops
+  being (the shell: winit's `Focused`); `Window::is_active` (GPUI's `is_window_active`). A
+  window that is not active shows no caret in its focused field and wakes for no blink.
+- Conformance: `octara::conformance::run(app)` checks the contract through what the app sees
+  (the clipboard's text and images, restored afterwards; windows opening and closing; each
+  operation that changes something presenting a frame and an idle clock none; activation; the
+  pointer's look). The headless platform runs it in tests; the shell with
+  `OCTARA_CONFORMANCE=1` (CI on macOS and Windows). URLs and file dialogs, which need a person
+  or act outside the app, are not in it.
 - Not yet: `InputHandler`, menus, displays, lifecycle.
 
 ## Backends

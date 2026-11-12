@@ -224,20 +224,39 @@ impl Kernel {
         self.mark(Dirty::PAINT);
     }
     /// When a secure field's shown character hides (kernel time), if one shows.
-    /// Whether the caret of field `id` shows now: always, but while it blinks, the first half of
-    /// each second since it last moved.
+    /// Whether the caret of field `id` shows now: not in a window that is not active (as the
+    /// platform's fields); else always, but while it blinks, the first half of each second since
+    /// it last moved.
     pub fn caret_shown(&self, id: NodeId) -> bool {
+        if !self.window_active {
+            return false;
+        }
         match self.caret {
             Some((f, since)) if f == id => ((self.now - since) / CARET_BLINK).floor() as i64 % 2 == 0,
             _ => true,
         }
     }
 
-    /// When the focused field's caret next shows or hides.
+    /// When the focused field's caret next shows or hides (none in a window that is not active).
     pub fn caret_deadline(&self) -> Option<f64> {
-        let (f, since) = self.caret.filter(|(f, _)| self.is_alive(*f))?;
-        let _ = f;
+        let (_, since) = self.caret.filter(|(f, _)| self.window_active && self.is_alive(*f))?;
         Some(since + (((self.now - since) / CARET_BLINK).floor() + 1.0) * CARET_BLINK)
+    }
+
+    /// The window became active or stopped being: its focused field's caret shows (blinking
+    /// from now) or hides.
+    pub fn set_window_active(&mut self, on: bool) {
+        if self.window_active == on {
+            return;
+        }
+        self.window_active = on;
+        if let Some((f, _)) = self.caret.filter(|(f, _)| self.is_alive(*f)) {
+            // Through `changed`: the caret blinks from now.
+            self.changed(f, Dirty::PAINT, "window active", || on.to_string());
+        }
+    }
+    pub fn window_active(&self) -> bool {
+        self.window_active
     }
 
     pub fn reveal_deadline(&self) -> Option<f64> {

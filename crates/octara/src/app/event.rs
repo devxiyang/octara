@@ -16,6 +16,8 @@ use std::time::Duration;
 pub enum InputEvent {
     /// Files dragged from the system: over a point of the window, dropped there, or gone.
     FileDrag(FileDrag),
+    /// The window became the active one (key on macOS, foreground elsewhere) or stopped being.
+    Active(bool),
     /// A mouse, touch or pen event, in logical pixels from the window's top-left corner.
     Pointer(PointerEvent),
     /// The pointer left the window: nothing is hovered.
@@ -61,6 +63,10 @@ impl Window {
         }
         match event {
             InputEvent::FileDrag(ev) => self.on_file_drag(ev),
+            InputEvent::Active(on) => {
+                self.input_frame(|| self.w.kernel.borrow_mut().set_window_active(on));
+                true
+            }
             InputEvent::Pointer(ev) => {
                 self.on_pointer(ev);
                 true

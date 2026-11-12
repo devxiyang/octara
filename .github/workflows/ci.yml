@@ -50,6 +50,10 @@ jobs:
         run: cargo build --workspace --all-targets
       - name: Test
         run: cargo test --workspace
+      - name: Platform conformance (a real window)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: OCTARA_CONFORMANCE=1 cargo run -q -p octara-examples --bin window -- counter
       - name: Screenshots (reference renderer, bundled fonts)
         run: cargo run -p octara-examples --bin screenshot -- screenshots 1 --bundled
       - name: A capture through `octara run`
