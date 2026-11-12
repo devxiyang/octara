@@ -96,7 +96,7 @@ const MIN_PANE: f32 = 120.0;
 /// Two panes side by side (AppKit's `NSSplitView`): `leading` is `width` wide, `trailing` takes
 /// the rest; dragging the divider between them, or its arrow keys when focused, changes `width`
 /// (at least 120; the setter may clamp it more). `id` names it; its divider is `{id}-divider`, a
-/// `Splitter` whose value is the width.
+/// `Splitter` whose value is the width: a line in a strip 7 wide to grab (20 on touch).
 #[component]
 #[track_caller]
 pub fn split(id: &str, width: impl Model<f32>, leading: impl IntoElement, trailing: impl IntoElement) -> El {
@@ -109,13 +109,13 @@ pub fn split(id: &str, width: impl Model<f32>, leading: impl IntoElement, traili
         .label("Resize")
         .value(move || format!("{}", value.get().round()))
         .focusable()
-        .absolute()
-        .top(0.0)
-        .bottom(0.0)
-        .left(-3.0)
         .w(7.0)
+        .when_touch(|p| p.w(20.0))
+        .h_full()
+        .flex_shrink_0()
+        .justify_center()
         .cursor(CursorStyle::ResizeLeftRight)
-        .focus_visible(|p| p.bg(Token::Focus))
+        .child(el().w(1.0).h_full().bg(Token::Border).style_when(State::FOCUS_VISIBLE, |p| p.bg(Token::Focus)).a11y_hidden())
         .on_drag(move |d| match d.phase {
             DragPhase::Start => start.set(drag.get()),
             DragPhase::Move => drag.set((start.get() + d.dx).max(MIN_PANE)),
@@ -135,6 +135,6 @@ pub fn split(id: &str, width: impl Model<f32>, leading: impl IntoElement, traili
         .id(id.to_owned())
         .size_full()
         .child(el().h_full().flex_shrink_0().style_with(move |s| s.w(read.get())).child(leading))
-        .child(el().w(1.0).h_full().flex_shrink_0().bg(Token::Border).relative().child(handle))
+        .child(handle)
         .child(el().h_full().flex_1().min_w(0.0).child(trailing))
 }

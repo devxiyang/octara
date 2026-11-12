@@ -215,7 +215,7 @@ pub fn text_field(value: impl Model<String>) -> El {
     interactive(text_input())
         .px_3()
         .py_1p5()
-        .when_touch(|p| p.py_3())
+        .when_touch(|p| p.py_3().min_h(TOUCH_TARGET))
         .rounded_md()
         .text_sm()
         .bg(Token::Background)
