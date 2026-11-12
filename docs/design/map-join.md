@@ -1,6 +1,6 @@
 # Collection operators: `map` and `join`
 
-Based on the [research](../research/map-join.md). Status: proposed, awaiting confirmation.
+Based on the [research](../research/map-join.md). Status: confirmed.
 
 Both are stages like `filter`, `sort_by` and `group_by`: they observe an upstream stage, keep
 their own state incrementally, and are stages themselves, so they compose
