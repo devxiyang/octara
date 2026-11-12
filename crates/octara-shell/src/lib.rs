@@ -13,7 +13,7 @@ use octara_render::wgpu;
 use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalPosition, LogicalSize};
+use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, StartCause, Touch, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key as WKey, KeyCode, ModifiersState, NamedKey, PhysicalKey};
@@ -22,6 +22,7 @@ use winit::window::{Window, WindowId};
 mod capture;
 #[cfg(target_os = "macos")]
 mod native_mac;
+mod platform;
 
 /// Events sent to the loop from elsewhere: AccessKit's requests, and the app's waker (another
 /// thread finished background work or sent on a channel).
@@ -36,18 +37,6 @@ pub enum ShellEvent {
 impl From<accesskit_winit::Event> for ShellEvent {
     fn from(e: accesskit_winit::Event) -> Self {
         ShellEvent::Accessibility(e)
-    }
-}
-
-/// The platform's clipboard (text).
-struct SystemClipboard(arboard::Clipboard);
-
-impl octara::app::Clipboard for SystemClipboard {
-    fn read_text(&mut self) -> Option<String> {
-        self.0.get_text().ok()
-    }
-    fn write_text(&mut self, text: &str) {
-        let _ = self.0.set_text(text);
     }
 }
 
@@ -97,48 +86,12 @@ pub fn run_with(options: Options, root: impl Fn() -> View + 'static) {
         unshown: None,
         presented: None,
         done: false,
-        secure: false,
         resized: false,
         capture: None,
         #[cfg(target_os = "macos")]
         native: None,
     };
     event_loop.run_app(&mut shell).expect("event loop");
-}
-
-/// The platform's secure keyboard input (macOS: other processes cannot read the keys typed
-/// into a password field). Calls are balanced: on when a secure field gains focus, off when it
-/// loses it and when the shell ends.
-#[cfg(target_os = "macos")]
-mod secure_input {
-    #[link(name = "Carbon", kind = "framework")]
-    unsafe extern "C" {
-        fn EnableSecureEventInput() -> i32;
-        fn DisableSecureEventInput() -> i32;
-    }
-    pub fn set(on: bool) {
-        // SAFETY: no arguments; the system keeps a count, which the shell keeps balanced.
-        unsafe {
-            if on {
-                EnableSecureEventInput();
-            } else {
-                DisableSecureEventInput();
-            }
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-mod secure_input {
-    pub fn set(_: bool) {}
-}
-
-impl Drop for Shell {
-    fn drop(&mut self) {
-        if self.secure {
-            secure_input::set(false);
-        }
-    }
 }
 
 struct Gpu {
@@ -169,8 +122,6 @@ struct Shell {
     presented: Option<Instant>,
     /// `exit_after_frames` was reached.
     done: bool,
-    /// A secure field has focus: the input method is off and (macOS) secure input on.
-    secure: bool,
     /// The window resized since the last frame (native views present with the frame).
     resized: bool,
     /// A capture in progress (`OCTARA_CAPTURE`, see [`capture`]).
@@ -262,7 +213,6 @@ impl Shell {
         if let Some(app) = &mut self.app {
             app.pointer(ev);
         }
-        self.place_ime();
         // Moves come in bursts, and a cancel (the window losing focus) shows nothing new.
         match ev.phase {
             Phase::Down => self.traced(at, "pointer down"),
@@ -375,21 +325,6 @@ impl Shell {
             } else {
                 g.window.request_redraw();
             }
-        }
-    }
-
-    /// Tells the input method where the caret is, so its candidate window opens next to it; a
-    /// secure field turns the input method off and the platform's secure input on.
-    fn place_ime(&mut self) {
-        let (Some(g), Some(app)) = (&self.gpu, &self.app) else { return };
-        if let Some((x, y, w, h)) = app.caret() {
-            g.window.set_ime_cursor_area(LogicalPosition::new(x, y), LogicalSize::new(w.max(1.0), h));
-        }
-        let secure = app.text_field().is_some_and(|f| f.secure);
-        if secure != self.secure {
-            self.secure = secure;
-            g.window.set_ime_allowed(!secure);
-            secure_input::set(secure);
         }
     }
 
@@ -562,24 +497,21 @@ impl ApplicationHandler<ShellEvent> for Shell {
         let renderer = GpuRenderer::with_device(device, queue, format);
         let scale = window.scale_factor() as f32;
         let root = self.root.take().expect("root view");
-        let mut app = App::new(root);
-        let proxy = self.proxy.clone();
-        app.set_waker(move || {
-            let _ = proxy.send_event(ShellEvent::Wake);
-        });
+        // The window's native views: AppKit's on macOS, placeholders elsewhere for now.
+        #[allow(unused_mut)]
+        let mut host: Box<dyn octara::native::NativeHost> = Box::<octara::native::RecordingHost>::default();
         #[cfg(target_os = "macos")]
         {
             let proxy = self.proxy.clone();
-            if let Some((native, host)) = native_mac::Native::new(&window, move || {
+            if let Some((native, mac)) = native_mac::Native::new(&window, move || {
                 let _ = proxy.send_event(ShellEvent::Wake);
             }) {
-                app.set_native_host(host);
+                host = mac;
                 self.native = Some(native);
             }
         }
-        if let Ok(c) = arboard::Clipboard::new() {
-            app.set_clipboard(Box::new(SystemClipboard(c)));
-        }
+        let mut app =
+            App::with_platform(platform::WinitPlatform::new(self.proxy.clone()), platform::WinitWindow::new(window.clone(), host), root);
         if self.options.system_fonts {
             app.use_system_fonts();
         }
@@ -666,7 +598,6 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 if let Some(app) = &mut self.app {
                     app.set_composition(&text);
                 }
-                self.place_ime();
                 self.redraw();
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
@@ -674,7 +605,6 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 if let Some(app) = &mut self.app {
                     app.type_text(&text);
                 }
-                self.place_ime();
                 self.redraw();
             }
             _ => {}

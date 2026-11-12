@@ -9,7 +9,7 @@
 //! text, which the shell sends separately.
 
 use super::pointer::Modifiers;
-use super::{App, Handler, Modality, Platform};
+use super::{App, Handler, Modality, TargetPlatform};
 use crate::kernel::{Arrow, HandlerKind, NodeId, State};
 use crate::reactive::graph::Ctx;
 use std::fmt;
@@ -124,7 +124,7 @@ impl Chord {
     }
 
     /// The modifiers this chord needs on `platform`.
-    pub fn modifiers_on(&self, platform: Platform) -> Modifiers {
+    pub fn modifiers_on(&self, platform: TargetPlatform) -> Modifiers {
         let mut m = self.modifiers;
         if self.platform_mod {
             m |= if platform.is_apple() { Modifiers::META } else { Modifiers::CTRL };
@@ -132,7 +132,7 @@ impl Chord {
         m
     }
 
-    fn matches(&self, key: Key, modifiers: Modifiers, platform: Platform) -> bool {
+    fn matches(&self, key: Key, modifiers: Modifiers, platform: TargetPlatform) -> bool {
         let want = self.modifiers_on(platform);
         match (self.key, key) {
             (Key::Char(a), Key::Char(b)) if a.is_alphabetic() => a.to_lowercase().eq(b.to_lowercase()) && want == modifiers,
@@ -143,7 +143,7 @@ impl Chord {
     }
 
     /// The key event this chord describes on `platform`.
-    pub fn event(&self, platform: Platform) -> KeyEvent {
+    pub fn event(&self, platform: TargetPlatform) -> KeyEvent {
         let mut ev = KeyEvent::new(self.key, self.modifiers_on(platform));
         if let Key::Char(c) = self.key
             && ev.modifiers.contains(Modifiers::SHIFT)
@@ -204,7 +204,7 @@ impl Keymap {
     }
 
     /// The built-in bindings on `platform` (Rune's and the platforms' conventions).
-    pub fn standard(platform: Platform) -> Keymap {
+    pub fn standard(platform: TargetPlatform) -> Keymap {
         let mut k = Keymap::default();
         let mut b = |chord: &str, command: Option<&str>, context: Option<&str>| k.bind(chord, command, context).expect("standard chord");
         for (chord, command) in [

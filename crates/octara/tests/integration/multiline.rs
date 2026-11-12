@@ -3,7 +3,7 @@
 //! lines, pointer placement on a line, paste keeping line breaks, and the caret's real line.
 //! The monospace engine makes every position exact: 8 px a character, 24 px a line.
 
-use octara::app::{MemoryClipboard, Phase, Platform, PointerEvent};
+use octara::app::{Phase, PointerEvent, TargetPlatform};
 use octara::kernel::text::MonoEngine;
 use octara::prelude::*;
 
@@ -30,7 +30,7 @@ fn app(initial: &'static str, width: f32) -> App {
             .into()
     });
     app.kernel_mut().set_text_engine(Box::new(MonoEngine));
-    app.set_platform(Platform::MacOs);
+    app.set_target_platform(TargetPlatform::MacOs);
     app.tap("area").unwrap();
     app
 }
@@ -130,7 +130,7 @@ fn selection_rectangles_pointer_paste() {
     assert_eq!(caret(&app), 14);
 
     // A paste keeps its line breaks.
-    app.set_clipboard(Box::new(MemoryClipboard(Some("1\r\n2".into()))));
+    app.platform().write_text("1\r\n2");
     place(&mut app, 0);
     app.press_key("mod+v").unwrap();
     assert!(value(&app).starts_with("1\n2"), "{:?}", value(&app));
@@ -153,7 +153,7 @@ fn rows_app(chat: bool) -> App {
         col().size_full().items_start().child(field).child(text(move || format!("sent {}", sent.get())).id("sent")).into()
     });
     app.kernel_mut().set_text_engine(Box::new(MonoEngine));
-    app.set_platform(Platform::MacOs);
+    app.set_target_platform(TargetPlatform::MacOs);
     app.tap("area").unwrap();
     app
 }

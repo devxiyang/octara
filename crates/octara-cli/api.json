@@ -298,8 +298,8 @@
         {
           "path": "octara::app::App::native_host",
           "kind": "method",
-          "sig": "pub fn native_host(&self) -> Ref<'_, Box<dyn NativeHost>>",
-          "docs": "The native host (downcast with `as_any`; headless, a [`RecordingHost`]).\n\n[`RecordingHost`]: crate::native::RecordingHost",
+          "sig": "pub fn native_host(&self) -> Ref<'_, dyn NativeHost>",
+          "docs": "The main window's native host (downcast with `as_any`; headless, a [`RecordingHost`]).\n\n[`RecordingHost`]: crate::native::RecordingHost",
           "file": "crates/octara/src/app.rs",
           "links": [
             "octara::native::RecordingHost"
@@ -323,7 +323,11 @@
           "path": "octara::app::App::new",
           "kind": "assoc_fn",
           "sig": "pub fn new(root: impl Fn() -> View + 'static) -> Self",
-          "file": "crates/octara/src/app.rs"
+          "docs": "A headless app ([`HeadlessPlatform`](crate::platform::HeadlessPlatform)): tests, agents,\n`octara run`.",
+          "file": "crates/octara/src/app.rs",
+          "links": [
+            "octara::platform::HeadlessPlatform"
+          ]
         },
         {
           "path": "octara::app::App::next_deadline",
@@ -349,9 +353,22 @@
         {
           "path": "octara::app::App::platform",
           "kind": "method",
-          "sig": "pub fn platform(&self) -> Platform",
-          "docs": "The platform whose conventions input follows (the build's by default).",
-          "file": "crates/octara/src/app.rs"
+          "sig": "pub fn platform(&self) -> RefMut<'_, dyn Platform>",
+          "docs": "The system the app runs on (downcast with `as_any`; headless, a\n[`HeadlessPlatform`](crate::platform::HeadlessPlatform), whose clipboard tests set).",
+          "file": "crates/octara/src/app.rs",
+          "links": [
+            "octara::platform::HeadlessPlatform"
+          ]
+        },
+        {
+          "path": "octara::app::App::platform_window",
+          "kind": "method",
+          "sig": "pub fn platform_window(&self) -> Ref<'_, dyn PlatformWindow>",
+          "docs": "The main window on the platform (downcast with `as_any`; headless, a\n[`HeadlessWindow`](crate::platform::HeadlessWindow)).",
+          "file": "crates/octara/src/app.rs",
+          "links": [
+            "octara::platform::HeadlessWindow"
+          ]
         },
         {
           "path": "octara::app::App::pointer",
@@ -465,13 +482,6 @@
           "file": "crates/octara/src/app/time.rs"
         },
         {
-          "path": "octara::app::App::set_clipboard",
-          "kind": "method",
-          "sig": "pub fn set_clipboard(&mut self, clipboard: Box<dyn Clipboard>)",
-          "docs": "Replaces the clipboard (shells install the system's).",
-          "file": "crates/octara/src/app/edit.rs"
-        },
-        {
           "path": "octara::app::App::set_composition",
           "kind": "method",
           "sig": "pub fn set_composition(&mut self, text: &str)",
@@ -489,24 +499,10 @@
           "file": "crates/octara/src/app/keys.rs"
         },
         {
-          "path": "octara::app::App::set_native_host",
-          "kind": "method",
-          "sig": "pub fn set_native_host(&mut self, host: Box<dyn NativeHost>)",
-          "docs": "Replaces the native host (a shell installs the platform's). Views already shown are\ncreated again on the new one.",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
           "path": "octara::app::App::set_painter",
           "kind": "method",
           "sig": "pub fn set_painter(&mut self, painter: Box<dyn Painter>)",
           "docs": "Installs what paints `capture` requests headless (`octara-render`'s reference renderer).",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::set_platform",
-          "kind": "method",
-          "sig": "pub fn set_platform(&mut self, p: Platform)",
-          "docs": "The platform whose conventions input follows: its keymap, and on touch platforms the\ncontrols' touch sizes (`when_touch`).",
           "file": "crates/octara/src/app.rs"
         },
         {
@@ -524,6 +520,13 @@
           "file": "crates/octara/src/app/edit.rs"
         },
         {
+          "path": "octara::app::App::set_target_platform",
+          "kind": "method",
+          "sig": "pub fn set_target_platform(&mut self, p: TargetPlatform)",
+          "docs": "The platform whose conventions input follows: its keymap, and on touch platforms the\ncontrols' touch sizes (`when_touch`).",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
           "path": "octara::app::App::set_theme",
           "kind": "method",
           "sig": "pub fn set_theme(&mut self, theme: Theme)",
@@ -534,16 +537,6 @@
           "kind": "method",
           "sig": "pub fn set_tuning(&mut self, tuning: Tuning)",
           "file": "crates/octara/src/app/pointer.rs"
-        },
-        {
-          "path": "octara::app::App::set_waker",
-          "kind": "method",
-          "sig": "pub fn set_waker(&mut self, wake: impl Fn() + Send + Sync + 'static)",
-          "docs": "Lets the shell know when another thread woke the app (call [`App::poll`] then).",
-          "file": "crates/octara/src/app/time.rs",
-          "links": [
-            "octara::app::App::poll"
-          ]
         },
         {
           "path": "octara::app::App::settle",
@@ -588,6 +581,13 @@
           "file": "crates/octara/src/app/drive.rs"
         },
         {
+          "path": "octara::app::App::target_platform",
+          "kind": "method",
+          "sig": "pub fn target_platform(&self) -> TargetPlatform",
+          "docs": "The platform whose conventions input follows (the build's by default).",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
           "path": "octara::app::App::text_field",
           "kind": "method",
           "sig": "pub fn text_field(&self) -> Option<TextField>",
@@ -628,6 +628,13 @@
           "sig": "pub fn wheel(&mut self, x: f32, y: f32, dx: f32, dy: f32)",
           "docs": "A wheel or trackpad scroll of `(dx, dy)` at `(x, y)`: the innermost scroll container\nthere that scrolls on that axis takes it (no hand-off to outer ones at the edge, as in\nRune). A press being held is cancelled, unless it is dragging.",
           "file": "crates/octara/src/app/pointer.rs"
+        },
+        {
+          "path": "octara::app::App::with_platform",
+          "kind": "assoc_fn",
+          "sig": "pub fn with_platform(platform: impl Platform + 'static, window: impl PlatformWindow + 'static, root: impl Fn() -> View + 'static) -> Self",
+          "docs": "An app on `platform`, its main window `window` (a shell's backend).",
+          "file": "crates/octara/src/app.rs"
         },
         {
           "path": "octara::app::App::work",
@@ -723,7 +730,7 @@
         {
           "path": "octara::app::Chord::event",
           "kind": "method",
-          "sig": "pub fn event(&self, platform: Platform) -> KeyEvent",
+          "sig": "pub fn event(&self, platform: TargetPlatform) -> KeyEvent",
           "docs": "The key event this chord describes on `platform`.",
           "file": "crates/octara/src/app/keys.rs"
         },
@@ -742,7 +749,7 @@
         {
           "path": "octara::app::Chord::modifiers_on",
           "kind": "method",
-          "sig": "pub fn modifiers_on(&self, platform: Platform) -> Modifiers",
+          "sig": "pub fn modifiers_on(&self, platform: TargetPlatform) -> Modifiers",
           "docs": "The modifiers this chord needs on `platform`.",
           "file": "crates/octara/src/app/keys.rs"
         },
@@ -758,28 +765,6 @@
           "sig": "pub platform_mod: bool",
           "docs": "Includes the platform's shortcut modifier (`mod`).",
           "file": "crates/octara/src/app/keys.rs"
-        },
-        {
-          "path": "octara::app::Clipboard",
-          "kind": "trait",
-          "sig": "pub trait Clipboard",
-          "docs": "Where the system clipboard is (the shell sets the platform's; tests keep this one).",
-          "file": "crates/octara/src/app/edit.rs",
-          "implementors": [
-            "MemoryClipboard"
-          ]
-        },
-        {
-          "path": "octara::app::Clipboard::read_text",
-          "kind": "method",
-          "sig": "fn read_text(&mut self) -> Option<String>",
-          "file": "crates/octara/src/app/edit.rs"
-        },
-        {
-          "path": "octara::app::Clipboard::write_text",
-          "kind": "method",
-          "sig": "fn write_text(&mut self, text: &str)",
-          "file": "crates/octara/src/app/edit.rs"
         },
         {
           "path": "octara::app::DEFAULT_VIEWPORT",
@@ -1153,20 +1138,9 @@
         {
           "path": "octara::app::Keymap::standard",
           "kind": "assoc_fn",
-          "sig": "pub fn standard(platform: Platform) -> Keymap",
+          "sig": "pub fn standard(platform: TargetPlatform) -> Keymap",
           "docs": "The built-in bindings on `platform` (Rune's and the platforms' conventions).",
           "file": "crates/octara/src/app/keys.rs"
-        },
-        {
-          "path": "octara::app::MemoryClipboard",
-          "kind": "struct",
-          "sig": "pub struct MemoryClipboard(pub Option<String>);",
-          "docs": "A clipboard in memory.",
-          "file": "crates/octara/src/app/edit.rs",
-          "traits": [
-            "Clipboard",
-            "Default"
-          ]
         },
         {
           "path": "octara::app::Modifiers",
@@ -1423,70 +1397,6 @@
           "file": "crates/octara/src/app/pointer.rs"
         },
         {
-          "path": "octara::app::Platform",
-          "kind": "enum",
-          "sig": "pub enum Platform",
-          "docs": "The platform an app runs on, for its conventions: the shortcut modifier (Command on Apple\nplatforms, Control elsewhere), Control-click as a right click on macOS.",
-          "file": "crates/octara/src/app.rs",
-          "traits": [
-            "Clone",
-            "Copy",
-            "Debug",
-            "Eq",
-            "PartialEq"
-          ]
-        },
-        {
-          "path": "octara::app::Platform::Android",
-          "kind": "variant",
-          "sig": "Android",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::Platform::Ios",
-          "kind": "variant",
-          "sig": "Ios",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::Platform::Linux",
-          "kind": "variant",
-          "sig": "Linux",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::Platform::MacOs",
-          "kind": "variant",
-          "sig": "MacOs",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::Platform::Windows",
-          "kind": "variant",
-          "sig": "Windows",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::Platform::current",
-          "kind": "assoc_fn",
-          "sig": "pub fn current() -> Self",
-          "docs": "The platform this build targets.",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::Platform::is_apple",
-          "kind": "method",
-          "sig": "pub fn is_apple(self) -> bool",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::Platform::is_touch",
-          "kind": "method",
-          "sig": "pub fn is_touch(self) -> bool",
-          "docs": "Input is a finger: controls take their touch sizes (`When::Touch`), and `octara check`\nasks 44 × 44 targets.",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
           "path": "octara::app::PointerEvent",
           "kind": "struct",
           "sig": "pub struct PointerEvent { .. }",
@@ -1597,6 +1507,70 @@
           "kind": "variant",
           "sig": "Touch",
           "file": "crates/octara/src/app/pointer.rs"
+        },
+        {
+          "path": "octara::app::TargetPlatform",
+          "kind": "enum",
+          "sig": "pub enum TargetPlatform",
+          "docs": "The platform an app runs on, for its conventions: the shortcut modifier (Command on Apple\nplatforms, Control elsewhere), Control-click as a right click on macOS.",
+          "file": "crates/octara/src/app.rs",
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "Eq",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::app::TargetPlatform::Android",
+          "kind": "variant",
+          "sig": "Android",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::TargetPlatform::Ios",
+          "kind": "variant",
+          "sig": "Ios",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::TargetPlatform::Linux",
+          "kind": "variant",
+          "sig": "Linux",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::TargetPlatform::MacOs",
+          "kind": "variant",
+          "sig": "MacOs",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::TargetPlatform::Windows",
+          "kind": "variant",
+          "sig": "Windows",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::TargetPlatform::current",
+          "kind": "assoc_fn",
+          "sig": "pub fn current() -> Self",
+          "docs": "The platform this build targets.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::TargetPlatform::is_apple",
+          "kind": "method",
+          "sig": "pub fn is_apple(self) -> bool",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::TargetPlatform::is_touch",
+          "kind": "method",
+          "sig": "pub fn is_touch(self) -> bool",
+          "docs": "Input is a finger: controls take their touch sizes (`When::Touch`), and `octara check`\nasks 44 × 44 targets.",
+          "file": "crates/octara/src/app.rs"
         },
         {
           "path": "octara::app::TextField",
@@ -4025,7 +3999,7 @@
         {
           "path": "octara::inspect::platform",
           "kind": "fn",
-          "sig": "pub fn platform(name: &str) -> Option<Platform>",
+          "sig": "pub fn platform(name: &str) -> Option<TargetPlatform>",
           "docs": "A platform by its `check` name.",
           "file": "crates/octara/src/inspect.rs"
         },
@@ -10453,6 +10427,177 @@
           "aliases": [
             "octara::prelude::point"
           ]
+        },
+        {
+          "path": "octara::platform",
+          "kind": "module",
+          "sig": "pub mod platform",
+          "docs": "The platform layer ([design](../../../docs/design/platform.md)): what an app needs from the\nsystem it runs on, as traits a backend implements. The app and the kernel never see a\nwindowing library's types; headless runs (tests, agents, `octara run`) implement the same\ntraits with [`HeadlessPlatform`] and [`HeadlessWindow`].\n\nA backend drives the app with its input methods ([`App::pointer`](crate::app::App::pointer),\n[`App::key_event`](crate::app::App::key_event), …) and draws its display list; the app\ncalls back through these traits for the clipboard, waking the loop, native views and the\nstate of text input.",
+          "file": "crates/octara/src/platform.rs",
+          "links": [
+            "octara::app::App::key_event",
+            "octara::app::App::pointer",
+            "octara::platform::HeadlessPlatform",
+            "octara::platform::HeadlessWindow"
+          ]
+        },
+        {
+          "path": "octara::platform::HeadlessPlatform",
+          "kind": "struct",
+          "sig": "pub struct HeadlessPlatform { .. }",
+          "docs": "The platform of headless runs: a clipboard in memory, no waker.",
+          "file": "crates/octara/src/platform.rs",
+          "traits": [
+            "Debug",
+            "Default",
+            "Platform"
+          ]
+        },
+        {
+          "path": "octara::platform::HeadlessPlatform::clipboard",
+          "kind": "field",
+          "sig": "pub clipboard: Option<String>",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::HeadlessWindow",
+          "kind": "struct",
+          "sig": "pub struct HeadlessWindow { .. }",
+          "docs": "The window of headless runs: native views in a [`RecordingHost`] (or the host given), the\ntext input state kept for tests.",
+          "file": "crates/octara/src/platform.rs",
+          "traits": [
+            "Default",
+            "PlatformWindow"
+          ],
+          "links": [
+            "octara::native::RecordingHost"
+          ]
+        },
+        {
+          "path": "octara::platform::HeadlessWindow::host",
+          "kind": "field",
+          "sig": "pub host: Box<dyn NativeHost>",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::HeadlessWindow::text_input",
+          "kind": "field",
+          "sig": "pub text_input: Option<TextInput>",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::HeadlessWindow::with_host",
+          "kind": "assoc_fn",
+          "sig": "pub fn with_host(host: impl NativeHost + 'static) -> HeadlessWindow",
+          "docs": "A headless window whose native views go to `host` (a test's fake platform views).",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::Platform",
+          "kind": "trait",
+          "sig": "pub trait Platform",
+          "docs": "The system an app runs on (one per app).",
+          "file": "crates/octara/src/platform.rs",
+          "implementors": [
+            "HeadlessPlatform"
+          ]
+        },
+        {
+          "path": "octara::platform::Platform::as_any",
+          "kind": "method",
+          "sig": "fn as_any(&self) -> &dyn Any",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::Platform::read_text",
+          "kind": "method",
+          "sig": "fn read_text(&mut self) -> Option<String>",
+          "docs": "The clipboard's text, if it holds text.",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::Platform::waker",
+          "kind": "method",
+          "sig": "fn waker(&self) -> Option<Arc<dyn Fn() + Send + Sync>>",
+          "docs": "What wakes the event loop from another thread (background work finished, a channel\nsent); the app then [polls](crate::app::App::poll). `None` headless, where the app is\ndriven step by step.",
+          "file": "crates/octara/src/platform.rs",
+          "links": [
+            "octara::app::App::poll"
+          ]
+        },
+        {
+          "path": "octara::platform::Platform::write_text",
+          "kind": "method",
+          "sig": "fn write_text(&mut self, text: &str)",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::PlatformWindow",
+          "kind": "trait",
+          "sig": "pub trait PlatformWindow",
+          "docs": "One window on that system.",
+          "file": "crates/octara/src/platform.rs",
+          "implementors": [
+            "HeadlessWindow"
+          ]
+        },
+        {
+          "path": "octara::platform::PlatformWindow::as_any",
+          "kind": "method",
+          "sig": "fn as_any(&self) -> &dyn Any",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::PlatformWindow::native_host",
+          "kind": "method",
+          "sig": "fn native_host(&self) -> &dyn NativeHost",
+          "docs": "Where the window's native views live.",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::PlatformWindow::native_host_mut",
+          "kind": "method",
+          "sig": "fn native_host_mut(&mut self) -> &mut dyn NativeHost",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::PlatformWindow::set_text_input",
+          "kind": "method",
+          "sig": "fn set_text_input(&mut self, input: Option<&TextInput>)",
+          "docs": "The focused text field changed (or none has focus): where its caret is, so the input\nmethod's window opens next to it, and whether it is secure (the input method off and,\non macOS, secure keyboard input on) or multi-line. Sent when it changes, after a frame.",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::TextInput",
+          "kind": "struct",
+          "sig": "pub struct TextInput { .. }",
+          "docs": "The focused text field, as the platform's text input sees it.",
+          "file": "crates/octara/src/platform.rs",
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::platform::TextInput::caret",
+          "kind": "field",
+          "sig": "pub caret: Rect",
+          "docs": "The caret's rect in logical window coordinates.",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::TextInput::multiline",
+          "kind": "field",
+          "sig": "pub multiline: bool",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::TextInput::secure",
+          "kind": "field",
+          "sig": "pub secure: bool",
+          "file": "crates/octara/src/platform.rs"
         },
         {
           "path": "octara::prelude",

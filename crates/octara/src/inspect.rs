@@ -513,14 +513,14 @@ pub struct Size {
 }
 
 /// A platform by its `check` name.
-pub fn platform(name: &str) -> Option<crate::app::Platform> {
-    use crate::app::Platform;
+pub fn platform(name: &str) -> Option<crate::app::TargetPlatform> {
+    use crate::app::TargetPlatform;
     Some(match name {
-        "ios" => Platform::Ios,
-        "android" => Platform::Android,
-        "macos" => Platform::MacOs,
-        "windows" => Platform::Windows,
-        "linux" => Platform::Linux,
+        "ios" => TargetPlatform::Ios,
+        "android" => TargetPlatform::Android,
+        "macos" => TargetPlatform::MacOs,
+        "windows" => TargetPlatform::Windows,
+        "linux" => TargetPlatform::Linux,
         _ => return None,
     })
 }
@@ -615,8 +615,8 @@ pub fn check(view: fn() -> crate::view::View, opts: &CheckOptions) -> CheckRepor
             let cell = format!("{theme}/{}", size.name);
             cells.push(cell.clone());
             let mut app = App::new(view);
-            let platform = platform(&size.platform).unwrap_or(crate::app::Platform::current());
-            app.set_platform(platform);
+            let platform = platform(&size.platform).unwrap_or(crate::app::TargetPlatform::current());
+            app.set_target_platform(platform);
             app.set_theme(if theme == "dark" { crate::kernel::Theme::dark() } else { crate::kernel::Theme::light() });
             app.resize(size.width, size.height);
             let mut found = issues(&app);

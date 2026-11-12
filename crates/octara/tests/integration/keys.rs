@@ -1,7 +1,7 @@
 //! The keyboard: chords as data, the keymap resolved along the focus path, commands, `on_key`,
 //! other keyboard layouts, and input methods.
 
-use octara::app::{Chord, Platform};
+use octara::app::{Chord, TargetPlatform};
 use octara::prelude::*;
 
 fn view() -> View {
@@ -52,7 +52,7 @@ fn log(app: &mut App) -> String {
 
 fn app() -> App {
     let mut app = App::new(view);
-    app.set_platform(Platform::MacOs);
+    app.set_target_platform(TargetPlatform::MacOs);
     app.bind("mod+s", Some("save"), None).unwrap();
     app.bind("mod+o", Some("open"), None).unwrap();
     app.bind("mod+shift+f", Some("format"), Some("editor")).unwrap();
@@ -63,8 +63,8 @@ fn app() -> App {
 fn chords_parse_and_print() {
     let c = Chord::parse("mod+shift+k").unwrap();
     assert_eq!(c.to_string(), "mod+shift+k");
-    assert_eq!(c.modifiers_on(Platform::MacOs), Modifiers::META | Modifiers::SHIFT);
-    assert_eq!(c.modifiers_on(Platform::Windows), Modifiers::CTRL | Modifiers::SHIFT);
+    assert_eq!(c.modifiers_on(TargetPlatform::MacOs), Modifiers::META | Modifiers::SHIFT);
+    assert_eq!(c.modifiers_on(TargetPlatform::Windows), Modifiers::CTRL | Modifiers::SHIFT);
     assert_eq!(Chord::parse("ctrl++").unwrap().key, Key::Char('+'));
     assert_eq!(Chord::parse("shift+f10").unwrap().key, Key::F(10));
     assert!(Chord::parse("hyper+k").unwrap_err().contains("unknown modifier"));
@@ -84,7 +84,7 @@ fn commands_resolve_along_the_focus_path() {
     app.press_key("cmd+o").unwrap();
     assert_eq!(log(&mut app), "editor-save,format,app-open", "the innermost handler wins; others fall through to the app");
     // Off Apple platforms `mod` is Control.
-    app.set_platform(Platform::Linux);
+    app.set_target_platform(TargetPlatform::Linux);
     app.press_key("ctrl+s").unwrap();
     app.press_key("cmd+s").unwrap();
     assert_eq!(log(&mut app), "editor-save");

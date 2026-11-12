@@ -2,7 +2,7 @@
 //! undo, composition at the caret, pointer selection, and the platform text protocol.
 
 use octara::accesskit;
-use octara::app::{Phase, Platform, PointerEvent, byte_offset, utf16_offset};
+use octara::app::{Phase, PointerEvent, TargetPlatform, byte_offset, utf16_offset};
 use octara::prelude::*;
 
 fn app(initial: &'static str) -> App {
@@ -14,7 +14,7 @@ fn app(initial: &'static str) -> App {
             .child(text_input().id("narrow").w(px(60.0)).value("").on_input(|_| {}))
             .into()
     });
-    app.set_platform(Platform::MacOs);
+    app.set_target_platform(TargetPlatform::MacOs);
     app.tap("field").unwrap();
     app
 }
@@ -65,7 +65,7 @@ fn typing_replaces_the_selection_and_deletes_by_word() {
     keys(&mut app, &["home", "delete"]);
     assert_eq!(value(&app), "ello brave ");
     // Off Apple platforms words move with Control.
-    app.set_platform(Platform::Windows);
+    app.set_target_platform(TargetPlatform::Windows);
     keys(&mut app, &["ctrl+delete"]);
     assert_eq!(value(&app), " brave ");
 }
@@ -81,7 +81,7 @@ fn cut_copy_paste() {
     keys(&mut app, &["home", "cmd+v"]);
     assert_eq!(value(&app), "twoone ");
     assert_eq!(selection(&app), 3..3);
-    app.set_clipboard(Box::new(octara::app::MemoryClipboard(Some("a\nb".into()))));
+    app.platform().write_text("a\nb");
     keys(&mut app, &["cmd+v"]);
     assert_eq!(value(&app), "twoa bone ", "one line: breaks become spaces");
 }

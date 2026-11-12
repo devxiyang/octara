@@ -2,7 +2,7 @@
 //! handling `on_input(new)`; the selection, the composition and the undo history live here, per
 //! field. Carets move by grapheme clusters and Unicode words.
 //!
-//! Platform text protocols (NSTextInputClient, UITextInput, InputConnection, TSF,
+//! TargetPlatform text protocols (NSTextInputClient, UITextInput, InputConnection, TSF,
 //! text-input-v3) map onto [`App::text_field`], [`App::replace_text`], [`App::set_selection`]
 //! and [`App::set_composition`]; ranges are byte offsets, with [`utf16_offset`] and
 //! [`byte_offset`] for the protocols that count UTF-16 units.
@@ -16,25 +16,6 @@ use unicode_segmentation::UnicodeSegmentation;
 
 /// The most undo steps a field keeps (Rune).
 const UNDO_LIMIT: usize = 128;
-
-/// Where the system clipboard is (the shell sets the platform's; tests keep this one).
-pub trait Clipboard {
-    fn read_text(&mut self) -> Option<String>;
-    fn write_text(&mut self, text: &str);
-}
-
-/// A clipboard in memory.
-#[derive(Default)]
-pub struct MemoryClipboard(pub Option<String>);
-
-impl Clipboard for MemoryClipboard {
-    fn read_text(&mut self) -> Option<String> {
-        self.0.clone()
-    }
-    fn write_text(&mut self, text: &str) {
-        self.0 = Some(text.to_owned());
-    }
-}
 
 /// One undo step: at byte `at`, `removed` was replaced by `inserted`; the selection
 /// `(anchor, caret)` before and after. Only the change is kept, so long texts cost their edits,
@@ -363,13 +344,13 @@ impl App {
                 if collapsed {
                     return true;
                 }
-                self.clipboard.borrow_mut().write_text(&v[s..e]);
+                self.system.borrow_mut().write_text(&v[s..e]);
                 if command == "edit.cut" {
                     self.apply(n, format!("{}{}", &v[..s], &v[e..]), s, s, Kind::Other);
                 }
             }
             "edit.paste" => {
-                let text = self.clipboard.borrow_mut().read_text();
+                let text = self.system.borrow_mut().read_text();
                 if let Some(t) = text {
                     // A multi-line field keeps line breaks; one line turns them into spaces.
                     let t = if multiline {
@@ -438,13 +419,9 @@ impl App {
         self.select(n, a, at);
     }
 
-    /// Replaces the clipboard (shells install the system's).
-    pub fn set_clipboard(&mut self, clipboard: Box<dyn Clipboard>) {
-        *self.clipboard.borrow_mut() = clipboard;
-    }
     /// What the clipboard holds as text.
     pub fn clipboard_text(&self) -> Option<String> {
-        self.clipboard.borrow_mut().read_text()
+        self.system.borrow_mut().read_text()
     }
 
     /// The focused text field, for platform text protocols.

@@ -122,7 +122,7 @@ catches up after the animation ends or the pointer moves (Rune).
 - Editing commands (context `text_input`): left and right, Home / End, extending the selection with Shift, move and delete by word (Alt on Apple, Ctrl
   elsewhere), Backspace / Delete, select all, copy / cut / paste, undo / redo.
 - Undo: snapshots (value, selection), consecutive typing merged into one step, at most 128 steps (Rune).
-- Clipboard: the `Clipboard` interface; the default is an in-memory clipboard (tests), and the shell connects the system clipboard.
+- Clipboard: the [platform](platform.md)'s (`Platform::read_text` / `write_text`); headless it is in memory, and the shell's backend uses the system clipboard.
 - Input method (IME) composition is displayed at the caret with an underline, does not enter the value, and enters only after commit.
 - Platform protocol (the shape of GPUI's `InputHandler`): text, selection, composition range, replace by range, set composition, set selection, caret
   rectangle; internally byte offsets are used, with a UTF-16 conversion provided for NSTextInputClient, UITextInput and TSF. The winit shell uses only the

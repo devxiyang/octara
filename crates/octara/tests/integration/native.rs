@@ -3,6 +3,7 @@
 //! finds content an overlay view would hide, and views without a label.
 
 use octara::native::{HostCall, NativeEvent, NativeId, RecordingHost, Slot};
+use octara::platform::{HeadlessPlatform, HeadlessWindow};
 use octara::prelude::*;
 
 fn calls(app: &App) -> Vec<HostCall> {
@@ -167,13 +168,13 @@ fn map_with_controls() -> View {
 #[test]
 fn a_shown_underlay_view_is_cut_out_and_its_covered_parts_known() {
     use octara::paint::Item;
-    let mut app = App::new(map_with_controls);
+    let app = App::new(map_with_controls);
     let natives = |app: &App| -> Vec<bool> {
         app.display_list().items.iter().filter_map(|i| if let Item::Native { cut, .. } = i { Some(*cut) } else { None }).collect()
     };
     assert_eq!(natives(&app), [false], "headless: a placeholder, no hole");
 
-    app.set_native_host(Box::new(Shows));
+    let app = App::with_platform(HeadlessPlatform::default(), HeadlessWindow::with_host(Shows), map_with_controls);
     let list = app.display_list();
     assert_eq!(natives(&app), [true], "shown by the platform: cut out");
     let map = app.kernel().find("map").unwrap();

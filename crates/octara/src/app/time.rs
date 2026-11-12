@@ -94,11 +94,6 @@ impl App {
         self.input_frame(|| {});
     }
 
-    /// Lets the shell know when another thread woke the app (call [`App::poll`] then).
-    pub fn set_waker(&mut self, wake: impl Fn() + Send + Sync + 'static) {
-        self.win().ui.sched.set_waker(std::sync::Arc::new(wake));
-    }
-
     /// Lands asynchronous work without moving the clock: waits (in real time) for background
     /// jobs, and runs every woken task, until none is left. Returns what is still pending
     /// (tasks waiting on timers or channels, subscriptions).

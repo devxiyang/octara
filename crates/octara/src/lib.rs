@@ -26,6 +26,7 @@ pub mod motion;
 pub mod native;
 pub mod paint;
 pub mod path;
+pub mod platform;
 pub mod reactive;
 pub mod task;
 pub mod testing;

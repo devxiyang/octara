@@ -4,13 +4,13 @@
 //! for a moment.
 
 use octara::accesskit::Role as AkRole;
-use octara::app::{MemoryClipboard, Platform};
+use octara::app::TargetPlatform;
 use octara::kernel::a11y::a11y_id;
 use octara::prelude::*;
 
 const SECRET: &str = "pässwörd🙂";
 
-fn app(platform: Platform) -> App {
+fn app(platform: TargetPlatform) -> App {
     let mut app = App::new(|| {
         let v = state("v", || SECRET.to_owned());
         let show = state("show", || false);
@@ -28,7 +28,7 @@ fn app(platform: Platform) -> App {
             .child(el().id("show").role(Role::Button).label("Show").on_press(move || show.update(|s| *s = !*s)).size_8())
             .into()
     });
-    app.set_platform(platform);
+    app.set_target_platform(platform);
     app.tap("pw").unwrap();
     app
 }
@@ -39,7 +39,7 @@ fn value(app: &App) -> String {
 
 #[test]
 fn nothing_reports_the_value() {
-    let app = app(Platform::MacOs);
+    let app = app(TargetPlatform::MacOs);
     let bullets = "•".repeat(9);
     let snap = app.inspect();
     let pw = snap.find("pw").unwrap();
@@ -57,8 +57,8 @@ fn nothing_reports_the_value() {
 
 #[test]
 fn editing_keeps_it_in() {
-    let mut app = app(Platform::MacOs);
-    app.set_clipboard(Box::new(MemoryClipboard(Some("clip".into()))));
+    let mut app = app(TargetPlatform::MacOs);
+    app.platform().write_text("clip");
     app.press_key("mod+a").unwrap();
     app.press_key("mod+c").unwrap();
     app.press_key("mod+x").unwrap();
@@ -80,7 +80,7 @@ fn editing_keeps_it_in() {
 
 #[test]
 fn revealing_shows_the_text_to_the_screen_only_for_agents() {
-    let mut app = app(Platform::MacOs);
+    let mut app = app(TargetPlatform::MacOs);
     app.tap("show").unwrap();
     let tree = app.accessibility_tree(1.0);
     let n = app.kernel().find("pw").unwrap();
@@ -89,10 +89,10 @@ fn revealing_shows_the_text_to_the_screen_only_for_agents() {
     assert_eq!(app.inspect().find("pw").unwrap().value.as_deref(), Some("•".repeat(9).as_str()), "agents still see bullets");
     // Copy stays off while revealed.
     app.tap("pw").unwrap();
-    app.set_clipboard(Box::new(MemoryClipboard(None)));
+    app.platform().write_text("before");
     app.press_key("mod+a").unwrap();
     app.press_key("mod+c").unwrap();
-    assert_eq!(app.clipboard_text(), None);
+    assert_eq!(app.clipboard_text().as_deref(), Some("before"), "copy left the clipboard alone");
 }
 
 /// The glyph ids the field draws.
@@ -103,7 +103,7 @@ fn glyphs(app: &App) -> Vec<u32> {
 
 #[test]
 fn touch_shows_the_last_character_for_a_moment() {
-    let mut app = app(Platform::Ios);
+    let mut app = app(TargetPlatform::Ios);
     app.press_key("mod+a").unwrap();
     app.press_key("backspace").unwrap();
     app.type_text("a");
@@ -117,4 +117,18 @@ fn touch_shows_the_last_character_for_a_moment() {
     let hidden = glyphs(&app);
     assert_eq!(hidden[0], hidden[1], "two bullets");
     assert_eq!(value(&app), "ab");
+}
+
+#[test]
+fn the_platform_hears_of_the_focused_field() {
+    use octara::platform::HeadlessWindow;
+    let mut app = app(TargetPlatform::MacOs);
+    let sent = |app: &App| app.platform_window().as_any().downcast_ref::<HeadlessWindow>().unwrap().text_input;
+    let input = sent(&app).expect("the focused field");
+    assert!(input.secure && !input.multiline, "{input:?}");
+    let n = app.kernel().find("pw").unwrap();
+    let (x, _, w, _) = app.kernel().rect(n);
+    assert!(input.caret.x >= x && input.caret.x <= x + w, "the caret is in the field: {input:?}");
+    app.dispatch(Event::Blur).unwrap();
+    assert_eq!(sent(&app), None, "blurred: the input method is told");
 }

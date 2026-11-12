@@ -332,8 +332,8 @@ fn underlay() -> View {
 
 #[test]
 fn underlay_cutouts_clear_to_transparent() {
-    let mut app = App::new(underlay);
-    app.set_native_host(Box::new(Shows));
+    let app =
+        App::with_platform(octara::platform::HeadlessPlatform::default(), octara::platform::HeadlessWindow::with_host(Shows), underlay);
     let dl = app.display_list();
     let cpu = CpuRenderer::new().render(&dl, 1.0);
     assert_eq!(cpu.pixel(150, 80)[3], 0, "the view shows through");

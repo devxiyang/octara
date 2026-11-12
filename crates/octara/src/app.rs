@@ -9,7 +9,7 @@ mod keys;
 mod pointer;
 mod time;
 
-pub use edit::{Clipboard, MemoryClipboard, TextField, byte_offset, utf16_offset};
+pub use edit::{TextField, byte_offset, utf16_offset};
 pub use keys::{BUILTIN_COMMANDS, Binding, Chord, Key, KeyEvent, Keymap};
 pub use pointer::{Button, Drag, DragPhase, Modifiers, Phase, PointerEvent, PointerKind, Tuning};
 
@@ -48,7 +48,7 @@ pub enum Event {
 /// The platform an app runs on, for its conventions: the shortcut modifier (Command on Apple
 /// platforms, Control elsewhere), Control-click as a right click on macOS.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Platform {
+pub enum TargetPlatform {
     MacOs,
     Ios,
     Windows,
@@ -56,28 +56,28 @@ pub enum Platform {
     Android,
 }
 
-impl Platform {
+impl TargetPlatform {
     /// The platform this build targets.
     pub fn current() -> Self {
         if cfg!(target_os = "macos") {
-            Platform::MacOs
+            TargetPlatform::MacOs
         } else if cfg!(target_os = "ios") {
-            Platform::Ios
+            TargetPlatform::Ios
         } else if cfg!(target_os = "windows") {
-            Platform::Windows
+            TargetPlatform::Windows
         } else if cfg!(target_os = "android") {
-            Platform::Android
+            TargetPlatform::Android
         } else {
-            Platform::Linux
+            TargetPlatform::Linux
         }
     }
     pub fn is_apple(self) -> bool {
-        matches!(self, Platform::MacOs | Platform::Ios)
+        matches!(self, TargetPlatform::MacOs | TargetPlatform::Ios)
     }
     /// Input is a finger: controls take their touch sizes (`When::Touch`), and `octara check`
     /// asks 44 × 44 targets.
     pub fn is_touch(self) -> bool {
-        matches!(self, Platform::Ios | Platform::Android)
+        matches!(self, TargetPlatform::Ios | TargetPlatform::Android)
     }
 }
 
@@ -112,10 +112,11 @@ pub struct App {
     main: WindowId,
     next_cause: Cell<u64>,
     tuning: Cell<Tuning>,
-    platform: Cell<Platform>,
+    platform: Cell<TargetPlatform>,
     /// The app's own bindings (after the platform's standard ones).
     keymap: RefCell<keys::Keymap>,
-    clipboard: RefCell<Box<dyn edit::Clipboard>>,
+    /// The system the app runs on (clipboard, waking the loop).
+    system: RefCell<Box<dyn crate::platform::Platform>>,
     /// What paints `capture` requests (the harness installs the reference renderer).
     painter: RefCell<Option<Box<dyn crate::capture::Painter>>>,
 }
@@ -131,8 +132,10 @@ pub(crate) struct Window {
     viewport: Signal<(f32, f32)>,
     breakpoint: Signal<Breakpoint>,
     size: Cell<(f32, f32)>,
-    /// Where native views live: the platform's in a shell, a recording one headless.
-    native_host: RefCell<Box<dyn crate::native::NativeHost>>,
+    /// The window on the system: its native views and text input (headless: a recording host).
+    platform: RefCell<Box<dyn crate::platform::PlatformWindow>>,
+    /// The text input state last sent to it.
+    text_input: Cell<Option<crate::platform::TextInput>>,
     /// What the host was last told of each native view: its props version and placement.
     native_sent: RefCell<rustc_hash::FxHashMap<NodeId, (u64, Option<crate::native::Placement>)>>,
     /// A capture in progress: the snapshots asked for.
@@ -165,7 +168,12 @@ struct Interaction {
 }
 
 impl Window {
-    fn new(rt: &Rc<Runtime>, root: Rc<dyn Fn() -> View>, platform: Platform) -> Window {
+    fn new(
+        rt: &Rc<Runtime>,
+        root: Rc<dyn Fn() -> View>,
+        platform: TargetPlatform,
+        window: Box<dyn crate::platform::PlatformWindow>,
+    ) -> Window {
         let window = Window {
             ui: Rc::new(Ui::default()),
             root,
@@ -175,7 +183,8 @@ impl Window {
             viewport: rt.enter(|| Signal::detached(DEFAULT_VIEWPORT)),
             breakpoint: rt.enter(|| Signal::detached(Theme::default().breakpoint_of(DEFAULT_VIEWPORT.0))),
             size: Cell::new(DEFAULT_VIEWPORT),
-            native_host: RefCell::new(Box::<crate::native::RecordingHost>::default()),
+            platform: RefCell::new(window),
+            text_input: Cell::new(None),
             native_sent: RefCell::default(),
             capturing: RefCell::default(),
         };
@@ -195,10 +204,21 @@ fn n_offset(k: &Kernel, n: crate::kernel::NodeId, relative: bool) -> (f32, f32) 
 const RUNTIME_STATES: State = State::HOVER.union(State::FOCUSED).union(State::FOCUS_VISIBLE).union(State::PRESSED);
 
 impl App {
+    /// A headless app ([`HeadlessPlatform`](crate::platform::HeadlessPlatform)): tests, agents,
+    /// `octara run`.
     pub fn new(root: impl Fn() -> View + 'static) -> Self {
+        Self::with_platform(crate::platform::HeadlessPlatform::default(), crate::platform::HeadlessWindow::default(), root)
+    }
+
+    /// An app on `platform`, its main window `window` (a shell's backend).
+    pub fn with_platform(
+        platform: impl crate::platform::Platform + 'static,
+        window: impl crate::platform::PlatformWindow + 'static,
+        root: impl Fn() -> View + 'static,
+    ) -> Self {
         let rt = Runtime::new();
-        let platform = Platform::current();
-        let window = Window::new(&rt, Rc::new(root), platform);
+        let target = TargetPlatform::current();
+        let window = Window::new(&rt, Rc::new(root), target, Box::new(window));
         let mut windows = slotmap::SlotMap::with_key();
         let main = windows.insert(window);
         let app = App {
@@ -207,11 +227,14 @@ impl App {
             main,
             next_cause: Cell::new(0),
             tuning: Cell::new(Tuning::default()),
-            platform: Cell::new(platform),
+            platform: Cell::new(target),
             painter: RefCell::default(),
             keymap: RefCell::new(keys::Keymap::default()),
-            clipboard: RefCell::new(Box::new(edit::MemoryClipboard::default())),
+            system: RefCell::new(Box::new(platform)),
         };
+        if let Some(wake) = app.system.borrow().waker() {
+            app.win().ui.sched.set_waker(wake);
+        }
         app.enter(|| app.mount_root());
         app
     }
@@ -271,6 +294,7 @@ impl App {
             }
         }
         self.sync_native();
+        self.sync_text_input();
         // An `instant` transaction covers the frame it was made in.
         self.win().ui.kernel.borrow_mut().set_instant(false);
         // What is on its way out can no longer be focused or hovered.
@@ -579,12 +603,12 @@ impl App {
         })
     }
     /// The platform whose conventions input follows (the build's by default).
-    pub fn platform(&self) -> Platform {
+    pub fn target_platform(&self) -> TargetPlatform {
         self.platform.get()
     }
     /// The platform whose conventions input follows: its keymap, and on touch platforms the
     /// controls' touch sizes (`when_touch`).
-    pub fn set_platform(&mut self, p: Platform) {
+    pub fn set_target_platform(&mut self, p: TargetPlatform) {
         self.platform.set(p);
         self.win().ui.kernel.borrow_mut().set_touch(p.is_touch());
         self.enter(|| self.settle_frame());
@@ -696,7 +720,8 @@ impl App {
         if k.native_nodes().is_empty() && sent.is_empty() {
             return;
         }
-        let mut host = self.win().native_host.borrow_mut();
+        let mut window = self.win().platform.borrow_mut();
+        let host = window.native_host_mut();
         let placements = k.native_placements();
         let mut moved = Vec::new();
         let mut live = Vec::new();
@@ -730,7 +755,7 @@ impl App {
             }
             keep
         });
-        drop((k, host, sent));
+        drop((k, window, sent));
         // Painted next as the platform shows them: no placeholder, a cutout for the underlay.
         for (n, shown) in live {
             self.win().ui.kernel.borrow_mut().set_native_live(n, shown);
@@ -773,7 +798,8 @@ impl App {
             .map(|p| if p.at.is_empty() { p.label } else { format!("{} ({})", p.label, p.at) })
             .collect();
         let placements = self.win().ui.kernel.borrow().native_placements();
-        let host = self.win().native_host.borrow();
+        let window = self.win().platform.borrow();
+        let host = window.native_host();
         for (n, p) in placements.into_iter().filter(|(_, p)| p.visible) {
             if let Some(what) = host.busy(p.id) {
                 out.push(format!("{}: {what}", self.native_name(n)));
@@ -801,7 +827,8 @@ impl App {
     /// views whose snapshot is coming (through [`native_snapshot`](Self::native_snapshot)).
     pub fn capture_begin(&mut self) -> Vec<crate::native::NativeId> {
         let placements = self.win().ui.kernel.borrow().native_placements();
-        let mut host = self.win().native_host.borrow_mut();
+        let mut window = self.win().platform.borrow_mut();
+        let host = window.native_host_mut();
         let asked: Vec<_> = placements.into_iter().filter(|(_, p)| p.visible).map(|(_, p)| (p.id, host.snapshot(p.id))).collect();
         let coming = asked.iter().filter(|(_, r)| r.is_ok()).map(|(id, _)| *id).collect();
         *self.win().capturing.borrow_mut() = Some(crate::capture::Capturing { asked });
@@ -928,18 +955,36 @@ impl App {
         self.input_frame(|| self.win().ui.kernel.borrow_mut().set_native_snapshot(n, image));
     }
 
-    /// Replaces the native host (a shell installs the platform's). Views already shown are
-    /// created again on the new one.
-    pub fn set_native_host(&mut self, host: Box<dyn crate::native::NativeHost>) {
-        *self.win().native_host.borrow_mut() = host;
-        self.win().native_sent.borrow_mut().clear();
-        self.sync_native();
-    }
-
-    /// The native host (downcast with `as_any`; headless, a [`RecordingHost`]).
+    /// The main window's native host (downcast with `as_any`; headless, a [`RecordingHost`]).
     ///
     /// [`RecordingHost`]: crate::native::RecordingHost
-    pub fn native_host(&self) -> std::cell::Ref<'_, Box<dyn crate::native::NativeHost>> {
-        self.win().native_host.borrow()
+    pub fn native_host(&self) -> std::cell::Ref<'_, dyn crate::native::NativeHost> {
+        std::cell::Ref::map(self.win().platform.borrow(), |w| w.native_host())
+    }
+
+    /// The system the app runs on (downcast with `as_any`; headless, a
+    /// [`HeadlessPlatform`](crate::platform::HeadlessPlatform), whose clipboard tests set).
+    pub fn platform(&self) -> std::cell::RefMut<'_, dyn crate::platform::Platform> {
+        std::cell::RefMut::map(self.system.borrow_mut(), |p| &mut **p)
+    }
+
+    /// The main window on the platform (downcast with `as_any`; headless, a
+    /// [`HeadlessWindow`](crate::platform::HeadlessWindow)).
+    pub fn platform_window(&self) -> std::cell::Ref<'_, dyn crate::platform::PlatformWindow> {
+        std::cell::Ref::map(self.win().platform.borrow(), |w| &**w)
+    }
+
+    /// Tells the window's platform about the focused text field when it changed: where its
+    /// caret is, whether it is secure or multi-line.
+    fn sync_text_input(&self) {
+        let now = self.focused_input().and_then(|(n, _)| {
+            let k = self.win().ui.kernel.borrow();
+            let caret = k.caret(n)?;
+            Some(crate::platform::TextInput { caret, secure: k.is_secure(n), multiline: k.is_multiline(n) })
+        });
+        if self.win().text_input.get() != now {
+            self.win().text_input.set(now);
+            self.win().platform.borrow_mut().set_text_input(now.as_ref());
+        }
     }
 }

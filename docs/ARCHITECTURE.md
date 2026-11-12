@@ -50,6 +50,7 @@ view ───────────────┘            elements and bu
 app ◄── task                     the runtime: frames, input recognizers, focus, keymap, clock;
     ▲                            a single-threaded executor whose tasks belong to scopes
 inspect                          snapshots, scripts, `check` (the agent's protocol)
+platform                         what the app needs from the system (traits); headless impl
 ```
 
 ## A frame
@@ -136,8 +137,9 @@ owned by scopes on the app clock ([async](design/async.md)).
 - **One window per app** today: the kernel has one root, viewport and overlay layer; several
   windows and OS popups are [designed](design/windows.md), each window with its own kernel under
   the one runtime.
-- **The shell is winit's**, and winit types reach the shell's code directly; a [platform
-  layer](design/platform.md) (traits the app sees, a headless platform, backends) is designed.
+- **The shell is winit's**: it implements the [platform layer](design/platform.md)'s traits
+  (clipboard, waker, native views, text input); opening windows, menus and an owned macOS
+  backend are next.
 - **Native views**: macOS overlay web views and underlay maps are built
   ([Native Island](design/native-island.md)); Windows and Linux are designed.
 

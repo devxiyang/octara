@@ -179,7 +179,7 @@ Basis: [input research](research/input.md), [input design](design/input.md). Con
 - [x] Pointer: `PointerEvent { id, kind: Mouse / Touch / Pen, phase: Down / Move / Up / Cancel, button, modifiers }`; captured on press;
       moving out releases the press, moving back restores it; scrolling while held or `Cancel` cancels; `on_double_press`, `on_secondary_press` (right click, macOS Ctrl+click, touch long press,
       accessibility ShowContextMenu), `on_long_press`, `on_drag(Drag)`; touch pan scrolling and inertia (iOS decay); hover updates as content moves, touch does not hover
-- [x] Virtual clock: `advance` / `advance_to` / `now` / `next_deadline`; tunable parameters `Tuning`; `Platform`
+- [x] Virtual clock: `advance` / `advance_to` / `now` / `next_deadline`; tunable parameters `Tuning`; `TargetPlatform`
 - [x] Focus ring follows the input method: `FOCUSED` and `FOCUS_VISIBLE` are separate, `.focus(..)` / `.focus_visible(..)` as in GPUI
 - [x] Per-element driving: `tap` / `tap_with` / `double_tap` / `secondary_tap` / `long_press` / `drag` / `swipe`; by test id and then by accessibility name,
       with errors on duplicate names, occluded targets, and targets outside the window
@@ -194,7 +194,7 @@ Basis: [input research](research/input.md), [input design](design/input.md). Con
 - [x] Mechanism fix (confirmed): text field submission becomes `on_submit` (Enter → `submit` command, falling through to `press` when unhandled), and `on_press` is synonymous for all elements;
       the pointer behavior of built-in elements goes through the `Behavior` interface (no element-type checks remain in the recognizer); multi-clicks are counted on press
 - [x] Text editing (owned by the runtime; the app is still `value` + `on_input`): selection; movement, selection, and deletion by grapheme and Unicode word; select all, copy, cut, paste
-      (`Clipboard`, the shell connects arboard 3.7.0); undo / redo (consecutive typing or deletion merges into one step, 128 steps, cleared when the app rewrites the value); IME composition is shown at the caret
+      (the platform's clipboard; the shell's backend uses arboard 3.7.0); undo / redo (consecutive typing or deletion merges into one step, 128 steps, cleared when the app rewrites the value); IME composition is shown at the caret
       and replaces the selection; click, Shift+click, double-click to select a word, triple-click to select all, drag to select; long lines scroll horizontally to keep the caret visible; platform protocol `text_field` / `replace_text` /
       `set_selection` / `set_composition` with UTF-16 conversion; standard per-platform keybindings (Apple uses Alt by word, Cmd+arrow to the ends); accessibility `SetValue`
 - [x] Multi-line text fields; password fields ([text input](design/text-input.md))
@@ -268,8 +268,8 @@ Basis: [input research](research/input.md), [input design](design/input.md). Con
         accent fill is blue-600 / hover blue-700 (white on blue-500 was 3.68:1) and the light theme's muted text a shade
         darker (4.40:1 on Surface); a test keeps every text token at 4.5:1 on its surfaces in both themes
   - [x] Target sizes, as Exact does it (confirmed): no runtime enlargement; controls are sized for the platform and `check`
-        flags the ones that are not. `When::Touch` / `when_touch(..)` styles apply on iOS and Android (`Platform::is_touch`;
-        `set_platform` re-resolves, no closure reruns); the kit's buttons, fields and selects take 44 px on touch, and the
+        flags the ones that are not. `When::Touch` / `when_touch(..)` styles apply on iOS and Android (`TargetPlatform::is_touch`;
+        `set_target_platform` re-resolves, no closure reruns); the kit's buttons, fields and selects take 44 px on touch, and the
         checkbox and switch are a press area around their visual (hugging it with a pointer, 44 × 44 on touch). `check` cells
         name a platform (phone: `ios`, desktop: `macos`); `SMALL_TARGET` asks 44 × 44 on touch and 24 × 24 with a pointer
         unless no other control's center is within 24 (WCAG 2.5.8)

@@ -77,10 +77,10 @@ fn a_headless_capture_reports_placeholders() {
 
 #[test]
 fn snapshots_draw_in_place_and_are_cleared() {
-    let mut app = App::new(view);
     let host = Snapping::default();
     let busy = host.busy.clone();
-    app.set_native_host(Box::new(host));
+    let mut app =
+        App::with_platform(octara::platform::HeadlessPlatform::default(), octara::platform::HeadlessWindow::with_host(host), view);
 
     // A busy view keeps the app unsettled.
     *busy.borrow_mut() = Some("loading https://example.com".into());

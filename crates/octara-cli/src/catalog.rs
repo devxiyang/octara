@@ -3,7 +3,7 @@
 //! token colors, named springs). `octara vocab` and `octara explain` answer from it.
 
 use crate::api::{Api, Kind};
-use octara::app::{BUILTIN_COMMANDS, Keymap, Platform};
+use octara::app::{BUILTIN_COMMANDS, Keymap, TargetPlatform};
 use octara::diagnostics::{self, Area, Code, Severity};
 use octara::kernel::{Theme, Token};
 use octara::motion::Spring;
@@ -132,8 +132,8 @@ fn backticked_names(text: &str) -> Vec<&str> {
 impl Catalog {
     pub fn build(api: &Api) -> Catalog {
         let mut entries: Vec<Entry> = Vec::new();
-        let mac = Keymap::standard(Platform::MacOs);
-        let other = Keymap::standard(Platform::Windows);
+        let mac = Keymap::standard(TargetPlatform::MacOs);
+        let other = Keymap::standard(TargetPlatform::Windows);
         let light = Theme::light();
         let dark = Theme::dark();
 

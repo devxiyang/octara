@@ -1,6 +1,6 @@
 # The platform layer
 
-Based on the [research](../research/windows-and-platform.md). Status: confirmed; in progress.
+Based on the [research](../research/windows-and-platform.md). Status: confirmed; step 1 implemented.
 
 The app and the kernel never see a windowing library's types. A platform backend implements a
 narrow set of traits (GPUI's names, about 45 methods to start); headless runs (tests, agents,
@@ -23,6 +23,17 @@ narrow set of traits (GPUI's names, about 45 methods to start); headless runs (t
   character index at a point. Backends without a direct text protocol (winit's IME events) feed
   it the same way.
 - What exists now becomes part of it: `Clipboard`, `NativeHost`, the waker.
+- As built (step 1, `octara::platform`): `Platform` (the clipboard, the waker) and
+  `PlatformWindow` (the native host, `set_text_input` with the focused field's caret rect,
+  secure and multi-line flags, sent when it changes after a frame); `HeadlessPlatform` and
+  `HeadlessWindow` are `App::new`'s; `App::with_platform(platform, window, root)` takes a
+  backend's; `App::platform()` and `App::platform_window()` reach them. The shell's
+  `WinitPlatform` (arboard, the event loop's proxy) and `WinitWindow` (the native host, the
+  input method's position, secure input) implement them: the app no longer installs a clipboard,
+  a waker or a host, and the shell no longer polls the caret. The enum of platform conventions
+  is `TargetPlatform` (`App::target_platform`). Opening windows joins with
+  [windows](windows.md) step 2; `InputHandler` and a `PlatformInput` stream with the owned
+  macOS backend.
 
 ## Backends
 

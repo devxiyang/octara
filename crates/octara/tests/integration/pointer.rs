@@ -1,7 +1,7 @@
 //! Pointer input: presses with capture, double presses, context menus, long presses, drags,
 //! touch scrolling with momentum, and the focus ring following the keyboard.
 
-use octara::app::{Button, Modifiers, Phase, Platform, PointerEvent};
+use octara::app::{Button, Modifiers, Phase, PointerEvent, TargetPlatform};
 use octara::prelude::*;
 use std::time::Duration;
 
@@ -102,12 +102,12 @@ fn right_click_and_control_click_ask_for_a_context_menu() {
     app.pointer(right(Phase::Down));
     app.pointer(right(Phase::Up));
     assert_eq!(log(&mut app), "menu", "the nearest element with a context menu, from the pointer up");
-    app.set_platform(Platform::MacOs);
+    app.set_target_platform(TargetPlatform::MacOs);
     let ctrl = |phase| PointerEvent::mouse(phase, x, y).modifiers(Modifiers::CTRL);
     app.pointer(ctrl(Phase::Down));
     app.pointer(ctrl(Phase::Up));
     assert_eq!(log(&mut app), "menu");
-    app.set_platform(Platform::Windows);
+    app.set_target_platform(TargetPlatform::Windows);
     app.pointer(ctrl(Phase::Down));
     app.pointer(ctrl(Phase::Up));
     assert_eq!(log(&mut app), "inner", "Control-click is a click off Apple platforms");
