@@ -645,6 +645,16 @@
           "file": "crates/octara/src/app/event.rs"
         },
         {
+          "path": "octara::app::InputEvent::Picking",
+          "kind": "variant",
+          "sig": "Picking(bool)",
+          "docs": "Starts or ends picking: a person pointing at an element to hand it to an agent (see\n[`Window::set_picking`]).",
+          "file": "crates/octara/src/app/event.rs",
+          "links": [
+            "octara::app::Window::set_picking"
+          ]
+        },
+        {
           "path": "octara::app::InputEvent::Pointer",
           "kind": "variant",
           "sig": "Pointer(PointerEvent)",
@@ -1589,14 +1599,14 @@
         {
           "path": "octara::app::Window::capture_display",
           "kind": "method",
-          "sig": "pub fn capture_display(&mut self, picture: &Picture, path: &str, scale: f32, pending: Vec<String>) -> Result<Capture, String>",
-          "docs": "A `display` capture: the window server's `picture` of the window, written to `path` as a\nPNG, with the native views reported live.",
+          "sig": "pub fn capture_display(&mut self, picture: &Picture, path: &str, scale: f32, pending: Vec<String>, marks: Option<&mut dyn Painter>) -> Result<Capture, String>",
+          "docs": "A `display` capture: the window server's `picture` of the window, written to `path` as a\nPNG, with the native views reported live. With `marks`, `painter` draws the marks over\nit.",
           "file": "crates/octara/src/app.rs"
         },
         {
           "path": "octara::app::Window::capture_finish",
           "kind": "method",
-          "sig": "pub fn capture_finish(&mut self, painter: &mut dyn Painter, path: &str, scale: f32, pending: Vec<String>, fallback: Option<String>) -> Result<Capture, String>",
+          "sig": "pub fn capture_finish(&mut self, painter: &mut dyn Painter, path: &str, scale: f32, pending: Vec<String>, fallback: Option<String>, marks: bool) -> Result<Capture, String>",
           "docs": "Ends a capture: paints the frame (snapshots in their views' places) with `painter`,\nwrites it to `path` as a PNG, clears the snapshots, and reports. `pending` is what was\nstill running when the wait ended ([`unsettled`](Self::unsettled)); `fallback` why a\n`display` capture was asked and this painted one given.",
           "file": "crates/octara/src/app.rs",
           "links": [
@@ -1775,6 +1785,20 @@
           "file": "crates/octara/src/app.rs"
         },
         {
+          "path": "octara::app::Window::pick",
+          "kind": "method",
+          "sig": "pub fn pick(&self, x: f32, y: f32) -> Option<Picked>",
+          "docs": "The topmost element at `(x, y)` (logical pixels), with its number, test id, source and\nthe elements around it (the inspector's `pick`).",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::picking",
+          "kind": "method",
+          "sig": "pub fn picking(&self) -> bool",
+          "docs": "Whether the window is picking.",
+          "file": "crates/octara/src/app/pick.rs"
+        },
+        {
           "path": "octara::app::Window::platform_window",
           "kind": "method",
           "sig": "pub fn platform_window(&self) -> Ref<'_, dyn PlatformWindow>",
@@ -1860,6 +1884,13 @@
           "sig": "pub fn set_keymap(&mut self, keymap: Keymap)",
           "docs": "Replaces the app's bindings (the standard ones stay; unbind them with `None` commands).",
           "file": "crates/octara/src/app/keys.rs"
+        },
+        {
+          "path": "octara::app::Window::set_picking",
+          "kind": "method",
+          "sig": "pub fn set_picking(&mut self, on: bool)",
+          "docs": "Starts or ends picking (an input, so a recording replays it).",
+          "file": "crates/octara/src/app/pick.rs"
         },
         {
           "path": "octara::app::Window::set_selection",
@@ -2338,6 +2369,13 @@
           "file": "crates/octara/src/capture.rs"
         },
         {
+          "path": "octara::capture::Capture::marks",
+          "kind": "field",
+          "sig": "pub marks: Vec<Mark>",
+          "docs": "The numbered elements drawn over a marked capture, in number order.",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
           "path": "octara::capture::Capture::native",
           "kind": "field",
           "sig": "pub native: Vec<NativeShot>",
@@ -2392,6 +2430,57 @@
           "path": "octara::capture::Capture::width",
           "kind": "field",
           "sig": "pub width: u32",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Mark",
+          "kind": "struct",
+          "sig": "pub struct Mark { .. }",
+          "docs": "One numbered element of a marked capture: `#n` in the picture, `mark: n` in the snapshot.",
+          "file": "crates/octara/src/capture.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Deserialize<'de>",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::capture::Mark::id",
+          "kind": "field",
+          "sig": "pub id: Option<String>",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Mark::mark",
+          "kind": "field",
+          "sig": "pub mark: u32",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Mark::name",
+          "kind": "field",
+          "sig": "pub name: Option<String>",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Mark::rect",
+          "kind": "field",
+          "sig": "pub rect: [f32; 4]",
+          "docs": "`[x, y, width, height]` in logical pixels.",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Mark::role",
+          "kind": "field",
+          "sig": "pub role: String",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Mark::source",
+          "kind": "field",
+          "sig": "pub source: Option<String>",
           "file": "crates/octara/src/capture.rs"
         },
         {
@@ -2485,6 +2574,13 @@
           "path": "octara::capture::Picture::height",
           "kind": "field",
           "sig": "pub height: u32",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Picture::over",
+          "kind": "method",
+          "sig": "pub fn over(&mut self, top: &Picture)",
+          "docs": "Draws `top` (the same size, straight alpha) over this picture.",
           "file": "crates/octara/src/capture.rs"
         },
         {
@@ -3401,9 +3497,13 @@
           "path": "octara::inspect",
           "kind": "module",
           "sig": "pub mod inspect",
-          "docs": "The Inspector protocol: what tools and agents read from a running app and how they drive it.\n\n- [`Snapshot`]: the semantic tree (`octara.inspect/1`) — roles, names, values, states,\n  presented bounds, actions, commands and source locations, addressed by test id.\n- [`Request`] / [`Reply`]: one JSON line each way (`{\"op\":\"tap\",\"id\":\"save\"}` →\n  `{\"ok\":true}`); a failure names its registered code. A script is requests, one per line\n  ([`run_script`]), stopping at the first failure.\n- [`check`]: the app at each theme and size, judged: layout issues, diagnostics, pending work\n  and accessibility.\n\nThe protocol lives in the framework, not the CLI, so it always matches the `octara` the app\nwas built with. Within a schema version fields are only added.",
+          "docs": "The Inspector protocol: what tools and agents read from a running app and how they drive it.\n\n- [`Snapshot`]: the semantic tree (`octara.inspect/1`) — roles, names, values, states,\n  presented bounds, actions, commands and source locations, addressed by test id.\n- [`Request`] / [`Reply`]: one JSON line each way (`{\"op\":\"tap\",\"id\":\"save\"}` →\n  `{\"ok\":true}`); a failure names its registered code. A script is requests, one per line\n  ([`run_script`]), stopping at the first failure.\n- [`check`]: the app at each theme and size, judged: layout issues, diagnostics, pending work\n  and accessibility.\n- What people point at: [`Node::mark`] (the numbers of a marked capture), [`Node::component`]\n  (component boundaries), `pick` ([`Picked`]) and `layout` ([`LayoutExplanation`]).\n\nThe protocol lives in the framework, not the CLI, so it always matches the `octara` the app\nwas built with. Within a schema version fields are only added.",
           "file": "crates/octara/src/inspect.rs",
           "links": [
+            "octara::inspect::LayoutExplanation",
+            "octara::inspect::Node::component",
+            "octara::inspect::Node::mark",
+            "octara::inspect::Picked",
             "octara::inspect::Reply",
             "octara::inspect::Request",
             "octara::inspect::Snapshot",
@@ -3443,6 +3543,94 @@
           "kind": "field",
           "sig": "pub why: String",
           "docs": "Why it is fine. Required.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::Ancestor",
+          "kind": "struct",
+          "sig": "pub struct Ancestor { .. }",
+          "docs": "An element around a picked one.",
+          "file": "crates/octara/src/inspect.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Deserialize<'de>",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::inspect::Ancestor::component",
+          "kind": "field",
+          "sig": "pub component: Option<ComponentInfo>",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::Ancestor::id",
+          "kind": "field",
+          "sig": "pub id: Option<String>",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::Ancestor::mark",
+          "kind": "field",
+          "sig": "pub mark: Option<u32>",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::Ancestor::role",
+          "kind": "field",
+          "sig": "pub role: String",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::Ancestor::source",
+          "kind": "field",
+          "sig": "pub source: Option<String>",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::AxisExplanation",
+          "kind": "struct",
+          "sig": "pub struct AxisExplanation { .. }",
+          "docs": "One axis of a [`LayoutExplanation`].",
+          "file": "crates/octara/src/inspect.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Deserialize<'de>",
+            "PartialEq",
+            "Serialize"
+          ],
+          "links": [
+            "octara::inspect::LayoutExplanation"
+          ]
+        },
+        {
+          "path": "octara::inspect::AxisExplanation::because",
+          "kind": "field",
+          "sig": "pub because: String",
+          "docs": "What decided it, in a sentence.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::AxisExplanation::content",
+          "kind": "field",
+          "sig": "pub content: Option<f32>",
+          "docs": "What its content asks on this axis: a text's natural width or its height at this width,\na box's children's extent (padding and border included).",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::AxisExplanation::rules",
+          "kind": "field",
+          "sig": "pub rules: Vec<String>",
+          "docs": "The constraints written on the element for this axis (`w(320)`, `min_w(44)`,\n`flex_grow(1)`, …), as the style methods name them.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::AxisExplanation::size",
+          "kind": "field",
+          "sig": "pub size: f32",
           "file": "crates/octara/src/inspect.rs"
         },
         {
@@ -3540,6 +3728,42 @@
           "path": "octara::inspect::CheckReport::to_json",
           "kind": "method",
           "sig": "pub fn to_json(&self) -> String",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::ComponentInfo",
+          "kind": "struct",
+          "sig": "pub struct ComponentInfo { .. }",
+          "docs": "A `#[component]` function, as the inspector names it.",
+          "file": "crates/octara/src/inspect.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Deserialize<'de>",
+            "Eq",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::inspect::ComponentInfo::called_at",
+          "kind": "field",
+          "sig": "pub called_at: String",
+          "docs": "Where it was called (`file:line:column`).",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::ComponentInfo::module",
+          "kind": "field",
+          "sig": "pub module: String",
+          "docs": "Its module path (`my_app::sidebar`, `octara_kit`).",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::ComponentInfo::name",
+          "kind": "field",
+          "sig": "pub name: String",
+          "docs": "The function's name (`toolbar`).",
           "file": "crates/octara/src/inspect.rs"
         },
         {
@@ -3739,6 +3963,83 @@
           "file": "crates/octara/src/inspect.rs"
         },
         {
+          "path": "octara::inspect::LayoutExplanation",
+          "kind": "struct",
+          "sig": "pub struct LayoutExplanation { .. }",
+          "docs": "Why an element is the size it is.",
+          "file": "crates/octara/src/inspect.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Deserialize<'de>",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::inspect::LayoutExplanation::border",
+          "kind": "field",
+          "sig": "pub border: [f32; 4]",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::LayoutExplanation::bounds",
+          "kind": "field",
+          "sig": "pub bounds: [f32; 4]",
+          "docs": "`[x, y, width, height]` from the last layout, logical pixels.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::LayoutExplanation::component",
+          "kind": "field",
+          "sig": "pub component: Option<ComponentInfo>",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::LayoutExplanation::height",
+          "kind": "field",
+          "sig": "pub height: AxisExplanation",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::LayoutExplanation::id",
+          "kind": "field",
+          "sig": "pub id: Option<String>",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::LayoutExplanation::padding",
+          "kind": "field",
+          "sig": "pub padding: [f32; 4]",
+          "docs": "Padding and border, `[top, right, bottom, left]` each.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::LayoutExplanation::parent",
+          "kind": "field",
+          "sig": "pub parent: Option<ParentLayout>",
+          "docs": "The layout it sits in (none for the window's root).",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::LayoutExplanation::role",
+          "kind": "field",
+          "sig": "pub role: String",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::LayoutExplanation::source",
+          "kind": "field",
+          "sig": "pub source: Option<String>",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::LayoutExplanation::width",
+          "kind": "field",
+          "sig": "pub width: AxisExplanation",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
           "path": "octara::inspect::Node",
           "kind": "struct",
           "sig": "pub struct Node { .. }",
@@ -3786,6 +4087,13 @@
           "file": "crates/octara/src/inspect.rs"
         },
         {
+          "path": "octara::inspect::Node::component",
+          "kind": "field",
+          "sig": "pub component: Option<ComponentInfo>",
+          "docs": "The `#[component]` function that built it, shown where it differs from its parent's:\nthe component boundaries.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
           "path": "octara::inspect::Node::expanded",
           "kind": "field",
           "sig": "pub expanded: Option<bool>",
@@ -3803,6 +4111,13 @@
           "kind": "field",
           "sig": "pub id: Option<String>",
           "docs": "The test id (`.id(..)`), which every operation addresses.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::Node::mark",
+          "kind": "field",
+          "sig": "pub mark: Option<u32>",
+          "docs": "Its number in a marked capture: every element with an action, and every element a\ncomponent starts at, is numbered depth first from 1, so \"#12\" in a picture is the node\nwith `mark` 12 here.",
           "file": "crates/octara/src/inspect.rs"
         },
         {
@@ -3854,6 +4169,113 @@
           "file": "crates/octara/src/inspect.rs"
         },
         {
+          "path": "octara::inspect::ParentLayout",
+          "kind": "struct",
+          "sig": "pub struct ParentLayout { .. }",
+          "docs": "The layout an element sits in.",
+          "file": "crates/octara/src/inspect.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Deserialize<'de>",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::inspect::ParentLayout::align_items",
+          "kind": "field",
+          "sig": "pub align_items: String",
+          "docs": "Cross-axis alignment of its children (`stretch` unless set).",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::ParentLayout::content_box",
+          "kind": "field",
+          "sig": "pub content_box: [f32; 2]",
+          "docs": "Its content box (inside padding and border), `[width, height]`.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::ParentLayout::gap",
+          "kind": "field",
+          "sig": "pub gap: [f32; 2]",
+          "docs": "`[column gap, row gap]`.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::ParentLayout::id",
+          "kind": "field",
+          "sig": "pub id: Option<String>",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::ParentLayout::justify_content",
+          "kind": "field",
+          "sig": "pub justify_content: String",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::ParentLayout::layout",
+          "kind": "field",
+          "sig": "pub layout: String",
+          "docs": "`row`, `column` or `grid` (`row_reverse`, `column_reverse` too).",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::ParentLayout::role",
+          "kind": "field",
+          "sig": "pub role: String",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::ParentLayout::source",
+          "kind": "field",
+          "sig": "pub source: Option<String>",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::ParentLayout::wrap",
+          "kind": "field",
+          "sig": "pub wrap: bool",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::Picked",
+          "kind": "struct",
+          "sig": "pub struct Picked { .. }",
+          "docs": "The element at a point, for a person to hand to an agent.",
+          "file": "crates/octara/src/inspect.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Deserialize<'de>",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::inspect::Picked::ancestors",
+          "kind": "field",
+          "sig": "pub ancestors: Vec<Ancestor>",
+          "docs": "The elements around it, innermost first, up to the window.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::Picked::node",
+          "kind": "field",
+          "sig": "pub node: Node",
+          "docs": "The element (its children left out).",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::Picked::text",
+          "kind": "field",
+          "sig": "pub text: String",
+          "docs": "One line to paste: `#12 button \"Save\" (id save) at src/app.rs:52:9, in row at …`.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
           "path": "octara::inspect::Reply",
           "kind": "struct",
           "sig": "pub struct Reply { .. }",
@@ -3901,6 +4323,13 @@
           "file": "crates/octara/src/inspect.rs"
         },
         {
+          "path": "octara::inspect::Reply::layout",
+          "kind": "field",
+          "sig": "pub layout: Option<Box<LayoutExplanation>>",
+          "docs": "A `layout` request's explanation.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
           "path": "octara::inspect::Reply::message",
           "kind": "field",
           "sig": "pub message: Option<String>",
@@ -3916,6 +4345,13 @@
           "path": "octara::inspect::Reply::ok",
           "kind": "assoc_fn",
           "sig": "pub fn ok() -> Reply",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::Reply::picked",
+          "kind": "field",
+          "sig": "pub picked: Option<Box<Picked>>",
+          "docs": "What a `pick` found.",
           "file": "crates/octara/src/inspect.rs"
         },
         {
@@ -3954,7 +4390,7 @@
         {
           "path": "octara::inspect::Request::Capture",
           "kind": "variant",
-          "sig": "Capture { path: String, settle_ms: Option<u64>, scale: Option<f32>, pixels: Pixels }",
+          "sig": "Capture { path: String, settle_ms: Option<u64>, scale: Option<f32>, pixels: Pixels, marks: bool }",
           "docs": "Settles the app (at most `settle_ms`, default 5000) and writes a picture of it to `path`\n(PNG): the frame with each native view's snapshot in its place, at `scale` (default 2\nheadless). The reply's `capture` reports what the picture can be trusted for\n([design](https://github.com/octoii-works/octara/blob/main/docs/design/capture.md)).",
           "file": "crates/octara/src/inspect.rs"
         },
@@ -4017,9 +4453,23 @@
           "file": "crates/octara/src/inspect.rs"
         },
         {
+          "path": "octara::inspect::Request::Layout",
+          "kind": "variant",
+          "sig": "Layout { id: Option<String>, mark: Option<u32> }",
+          "docs": "Why the element (by test id, or by `mark`) is the size it is: the constraints on each\naxis, its content, and its parent's layout.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
           "path": "octara::inspect::Request::LongPress",
           "kind": "variant",
           "sig": "LongPress { id: String }",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::Request::Pick",
+          "kind": "variant",
+          "sig": "Pick { x: f32, y: f32 }",
+          "docs": "What is at `(x, y)` (logical pixels in the window): the topmost element there, its\nnumber, test id and source, and the elements around it.",
           "file": "crates/octara/src/inspect.rs"
         },
         {
@@ -4156,6 +4606,16 @@
           "sig": "pub focus: Option<String>",
           "docs": "The focused element's test id.",
           "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::Snapshot::marked",
+          "kind": "method",
+          "sig": "pub fn marked(&self, mark: u32) -> Option<&Node>",
+          "docs": "The node numbered `mark` (see [`Node::mark`]).",
+          "file": "crates/octara/src/inspect.rs",
+          "links": [
+            "octara::inspect::Node::mark"
+          ]
         },
         {
           "path": "octara::inspect::Snapshot::octara",
@@ -4590,6 +5050,42 @@
           "kind": "field",
           "sig": "pub percentage: f32",
           "file": "crates/octara/src/kernel/theme.rs"
+        },
+        {
+          "path": "octara::kernel::Component",
+          "kind": "struct",
+          "sig": "pub struct Component { .. }",
+          "docs": "The component function that built an element: a `#[component]` function's name and module,\nand where it was called.",
+          "file": "crates/octara/src/kernel.rs",
+          "aliases": [
+            "octara::prelude::Component",
+            "octara::view::Component"
+          ],
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "Eq",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::kernel::Component::at",
+          "kind": "field",
+          "sig": "pub at: &'static Location<'static>",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::Component::module",
+          "kind": "field",
+          "sig": "pub module: &'static str",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::Component::name",
+          "kind": "field",
+          "sig": "pub name: &'static str",
+          "file": "crates/octara/src/kernel.rs"
         },
         {
           "path": "octara::kernel::ContainerStep",
@@ -5397,6 +5893,13 @@
           "file": "crates/octara/src/kernel/focus.rs"
         },
         {
+          "path": "octara::kernel::Kernel::component",
+          "kind": "method",
+          "sig": "pub fn component(&self, id: NodeId) -> Option<Component>",
+          "docs": "The component function that built the element, if one was marked `#[component]`.",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::content_origin_y",
           "kind": "method",
           "sig": "pub fn content_origin_y(&self, id: NodeId) -> f32",
@@ -5465,6 +5968,13 @@
           "kind": "method",
           "sig": "pub fn expanded_of(&self, test_id: &str) -> Option<bool>",
           "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::explain_layout",
+          "kind": "method",
+          "sig": "pub fn explain_layout(&self, id: NodeId) -> LayoutExplanation",
+          "docs": "Why `id` is the size it is: per axis the constraints written on it, what its content\nasks, and what decided the size.",
+          "file": "crates/octara/src/kernel/explain.rs"
         },
         {
           "path": "octara::kernel::Kernel::find",
@@ -5730,6 +6240,13 @@
           "file": "crates/octara/src/kernel.rs"
         },
         {
+          "path": "octara::kernel::Kernel::marks",
+          "kind": "method",
+          "sig": "pub fn marks(&self) -> Vec<NodeId>",
+          "docs": "The marked elements in number order (`marks()[0]` is #1): depth first through the tree\nthe inspector shows.",
+          "file": "crates/octara/src/kernel/explain.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::missing_tokens",
           "kind": "method",
           "sig": "pub fn missing_tokens(&self) -> Vec<&'static str>",
@@ -5826,6 +6343,13 @@
           "kind": "method",
           "sig": "pub fn parent(&self, id: NodeId) -> Option<NodeId>",
           "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::pick",
+          "kind": "method",
+          "sig": "pub fn pick(&self, x: f32, y: f32) -> Option<Picked>",
+          "docs": "The topmost element at `(x, y)` (logical window pixels), with what surrounds it.",
+          "file": "crates/octara/src/kernel/explain.rs"
         },
         {
           "path": "octara::kernel::Kernel::placed_side",
@@ -6047,6 +6571,12 @@
           "path": "octara::kernel::Kernel::set_checked",
           "kind": "method",
           "sig": "pub fn set_checked(&mut self, id: NodeId, checked: Option<bool>) -> bool",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::set_component",
+          "kind": "method",
+          "sig": "pub fn set_component(&mut self, id: NodeId, component: Option<Component>)",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -10766,6 +11296,16 @@
           "file": "crates/octara/src/platform.rs"
         },
         {
+          "path": "octara::platform::Frame::picked",
+          "kind": "field",
+          "sig": "pub picked: Option<Picked>",
+          "docs": "The element a person picked ([`Window::set_picking`](crate::app::Window::set_picking)),\nits line already on the clipboard: a backend may print or show it.",
+          "file": "crates/octara/src/platform.rs",
+          "links": [
+            "octara::app::Window::set_picking"
+          ]
+        },
+        {
           "path": "octara::platform::Frame::redraw",
           "kind": "field",
           "sig": "pub redraw: bool",
@@ -10844,6 +11384,13 @@
           "kind": "field",
           "sig": "pub native: Vec<NativeChange>",
           "docs": "Every native change presented, in order.",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::HeadlessWindow::picked",
+          "kind": "field",
+          "sig": "pub picked: Vec<Picked>",
+          "docs": "Every element picked, in order.",
           "file": "crates/octara/src/platform.rs"
         },
         {
@@ -11100,6 +11647,13 @@
           "sig": "pub use accesskit::Role",
           "file": "crates/octara/src/lib.rs",
           "target": "accesskit::Role"
+        },
+        {
+          "path": "octara::prelude::component",
+          "kind": "reexport",
+          "sig": "pub use octara_macros::component",
+          "file": "crates/octara/src/view/mod.rs",
+          "target": "octara_macros::component"
         },
         {
           "path": "octara::prelude::json",
@@ -19948,6 +20502,13 @@
           ]
         },
         {
+          "path": "octara::view::component",
+          "kind": "reexport",
+          "sig": "pub use octara_macros::component",
+          "file": "crates/octara/src/view/mod.rs",
+          "target": "octara_macros::component"
+        },
+        {
           "path": "octara::view::component_keyed",
           "kind": "fn",
           "sig": "pub fn component_keyed(name: &'static str, key: impl Display, f: impl FnOnce() -> View + 'static) -> View",
@@ -20813,7 +21374,7 @@
     },
     {
       "name": "octara-shell",
-      "docs": "Desktop windows for Octara apps (winit): window events become [`App`] input by position and\nkey, and frames are the app's display list drawn by the GPU renderer into the window.\n\n```no_run\noctara_shell::run(\"Counter\", octara_examples_counter);\n# fn octara_examples_counter() -> octara::view::View { unimplemented!() }\n```",
+      "docs": "Desktop windows for Octara apps (winit): window events become [`App`] input by position and\nkey, and frames are the app's display list drawn by the GPU renderer into the window.\n\nPicking: in debug builds `mod+shift+c` (as browsers' \"inspect element\") starts picking, and\n`OCTARA_PICK=1` starts the window picking. Click an element: its line (number, role, test id,\nsource, the component that made it) goes to the clipboard and to stderr, its JSON to stdout.\n\n```no_run\noctara_shell::run(\"Counter\", octara_examples_counter);\n# fn octara_examples_counter() -> octara::view::View { unimplemented!() }\n```",
       "items": [
         {
           "path": "octara_shell::Options",

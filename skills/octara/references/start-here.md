@@ -22,6 +22,7 @@ GPUI's names, which are Tailwind's vocabulary (`p_4`, `gap_2`, `rounded_md`, `te
 ```rust
 use octara::prelude::*;
 
+#[component]
 fn counter() -> View {
     let count = state("count", || 0);
     col()
@@ -51,6 +52,9 @@ fn main() {
 - `state(key, init)` is named state: the key identifies it within the component, so it survives
   hot reload. Use it for every piece of state a component owns.
 - `text(move || ..)` is a binding; `text("fixed")` is not.
+- `#[component]` marks a function that builds part of the view: every element it builds records
+  it and where it was called, so the inspector, picking and marked captures can say "made by
+  `counter()`, called at `src/main.rs:30`". Put it on every such function.
 - The app root gets `size_full()`: without it the root is only as big as its content.
 
 The same app, tested headlessly — no window, no GPU, deterministic:
@@ -165,7 +169,8 @@ assert!(!app.kernel().exists("todo-1"));
 - `show(cond, then)` / `show_else(cond, then, otherwise)`: the branch is a scope; its state
   lives while it is shown.
 - `component_keyed("Card", id, || ..)`: a named scope with its own state. Prefer it over
-  `component` whenever siblings share a name (`AMBIGUOUS_COMPONENT`).
+  `component` whenever siblings share a name (`AMBIGUOUS_COMPONENT`). The attribute
+  `#[component]` only names who built what; state scopes are these functions'.
 - `.overlay(open, Placement::BELOW, || ..)`: popovers and menus, placed next to the element and
   kept inside the window.
 
@@ -276,6 +281,14 @@ work that never settles, accessibility); `octara inspect` prints the semantic tr
 `octara run --script steps.jsonl` drives it with one JSON request per line
 (`{"op":"tap","id":"save"}`, `{"op":"expect","id":"total","text":"3 items"}`). The same requests
 work in a test: `octara::inspect::run_script(&mut app, script)`.
+
+What a person points at reaches you as a number, a point or a picked line:
+`{"op":"capture","path":"shot.png","marks":true}` numbers the interactive elements and the
+components in the picture (the snapshot's `mark` repeats each number);
+`{"op":"pick","x":120,"y":40}` names the element at a point; `{"op":"layout","mark":12}` (or
+`"id"`) explains why an element is the size it is. In a running debug window, `mod+shift+c`
+picks with the mouse and copies a line such as `#12 button "Save" (id save) at src/app.rs:52:9;
+made by toolbar() called at src/app.rs:30:5`.
 
 ## When something is wrong
 

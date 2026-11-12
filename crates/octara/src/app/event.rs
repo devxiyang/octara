@@ -43,6 +43,9 @@ pub enum InputEvent {
     },
     /// A step by test id or by name (press, input, toggle, hover, focus, scroll, send).
     Semantic(Event),
+    /// Starts or ends picking: a person pointing at an element to hand it to an agent (see
+    /// [`Window::set_picking`]).
+    Picking(bool),
 }
 
 impl Window {
@@ -51,6 +54,9 @@ impl Window {
     /// for a view gone, an assistive request for a node gone, go nowhere).
     pub fn event(&mut self, event: InputEvent) -> bool {
         self.app.record(self.w.id, &event);
+        if self.picks(&event) {
+            return true;
+        }
         match event {
             InputEvent::Pointer(ev) => {
                 self.on_pointer(ev);
@@ -79,6 +85,10 @@ impl Window {
             InputEvent::NativeSize { id, width, height } => self.on_native_size(id, width, height),
             InputEvent::NativeSnapshot { id, image } => self.on_native_snapshot(id, image),
             InputEvent::Semantic(ev) => self.on_semantic(ev).is_ok(),
+            InputEvent::Picking(on) => {
+                self.on_picking(on);
+                true
+            }
         }
     }
 }

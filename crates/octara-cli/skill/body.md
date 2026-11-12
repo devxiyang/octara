@@ -21,6 +21,8 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
 - A view function runs **once** and builds a retained tree. What changes is read in closures:
   `text(move || format!("{}", n.get()))`, `.opacity(move || ..)`. Reading `.get()` in the body
   bakes the value in (`STRICT_READ_UNTRACKED`).
+- Mark every function that builds part of the view `#[component]`: elements then record which
+  component made them and where it was called, for the inspector, picking and marked captures.
 - State in components is named: `state("key", || init)`, `list("key", init, key_fn)`,
   `live_text(..)`. Never `Signal::new` in a component (`UNKEYED_STATE`).
 - Write state only in handlers (`on_press`, ..), `watch` callbacks and tasks
@@ -69,6 +71,9 @@ view = "my_app::app"   # a `fn() -> View` in the library
   `{"op":"advance","ms":300}`, `{"op":"settle"}`, `{"op":"inspect"}`, `{"op":"issues"}`,
   `{"op":"expect","id":"total","text":"3 items"}`, `{"op":"expect","clean":true}`,
   `{"op":"capture","path":"shot.png"}` (a picture after settling, with a report: whether it
-  settled, what each native view shows) (`octara vocab octara::inspect::Request` lists them
-  all). A window captures with `OCTARA_CAPTURE=shot.png` (the window's GPU renderer, native
+  settled, what each native view shows; `"marks":true` numbers the interactive elements and
+  components, and the snapshot's `mark` repeats each number), `{"op":"pick","x":120,"y":40}`
+  (the element at a point, with its source and component), `{"op":"layout","mark":12}` (why an
+  element is the size it is) (`octara vocab octara::inspect::Request` lists them all). In a
+  running debug window, `mod+shift+c` picks with the mouse and copies the element's line. A window captures with `OCTARA_CAPTURE=shot.png` (the window's GPU renderer, native
   views from their own snapshots).

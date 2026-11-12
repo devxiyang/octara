@@ -107,6 +107,9 @@ pub struct Frame {
     pub text_input: Option<TextInput>,
     /// What the window shows changed or moves: draw again.
     pub redraw: bool,
+    /// The element a person picked ([`Window::set_picking`](crate::app::Window::set_picking)),
+    /// its line already on the clipboard: a backend may print or show it.
+    pub picked: Option<crate::inspect::Picked>,
 }
 
 /// The focused text field, as the platform's text input sees it.
@@ -166,12 +169,15 @@ pub struct HeadlessWindow {
     pub snapshots: Option<Vec<String>>,
     /// Pretend every native view is busy with this.
     pub busy: Option<String>,
+    /// Every element picked, in order.
+    pub picked: Vec<crate::inspect::Picked>,
 }
 
 impl PlatformWindow for HeadlessWindow {
     fn present(&mut self, frame: Frame) {
         self.native.extend(frame.native);
         self.text_input = frame.text_input;
+        self.picked.extend(frame.picked);
         self.frames += 1;
     }
     fn shows_native(&self, _: &str, _: crate::native::Slot) -> bool {

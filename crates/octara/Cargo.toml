@@ -15,6 +15,7 @@ svg = ["dep:roxmltree"]
 system-fonts = ["parley/system"]
 
 [dependencies]
+octara-macros = { path = "../octara-macros" }
 accesskit.workspace = true
 bitflags.workspace = true
 unicode-segmentation.workspace = true

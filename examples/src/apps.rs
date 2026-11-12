@@ -4,6 +4,7 @@ use octara::app::Window;
 use octara::prelude::*;
 use octara_kit::{button, checkbox, ghost_button, primary_button, switch, text_field, toggle_button};
 
+#[component]
 pub fn counter() -> View {
     let count = state("count", || 0i64);
     let double = memo(move || count.get() * 2);
@@ -33,6 +34,7 @@ enum Show {
     Done,
 }
 
+#[component]
 pub fn todo(n: usize) -> View {
     let todos =
         list("todos", || (1..=n as u32).map(|i| Todo { id: i, title: format!("Item {i}"), done: false }).collect(), |t: &Todo| t.id);
@@ -81,6 +83,7 @@ pub fn todo(n: usize) -> View {
         .into()
 }
 
+#[component]
 fn todo_row(id: u32, t: ReadSignal<Todo>, todos: List<u32, Todo>) -> View {
     row()
         .child(
@@ -105,6 +108,7 @@ pub struct Msg {
     pub body: String,
 }
 
+#[component]
 pub fn chat(n: usize) -> View {
     let messages = list(
         "messages",
@@ -165,6 +169,7 @@ pub fn chat(n: usize) -> View {
         .into()
 }
 
+#[component]
 pub fn settings() -> View {
     let notifications = state("notifications", || false);
     let sound = state("sound", || true);
@@ -208,6 +213,7 @@ pub fn settings() -> View {
         .into()
 }
 
+#[component]
 fn disclosure(id: &'static str, title: &'static str, body: impl Fn() -> View + 'static) -> View {
     component_keyed("Disclosure", id, move || {
         let open = state("open", || false);
@@ -223,6 +229,7 @@ pub const MSG_ROW_HEIGHT: f32 = 40.0;
 
 /// The chat app with a virtualized message list (600 px viewport). Same behaviour as [`chat`];
 /// only messages near the visible area exist as nodes. `Event::ScrollTo("messages", 0, y)` scrolls.
+#[component]
 pub fn chat_virtual(n: usize) -> View {
     let messages = list(
         "messages",
@@ -299,6 +306,7 @@ pub const TEAMS: [&str; 3] = ["blue", "green", "red"];
 /// Contacts sorted by name, grouped by team; each group has a header with its size. Events:
 /// `Send("rename", "id:name")`, `Send("team", "id:team")`, `Send("add", "name:team")`,
 /// `Toggle("star-{id}")`, `Press("open-{id}")` (row-local state).
+#[component]
 pub fn contacts(n: usize) -> View {
     let people = list(
         "people",
@@ -361,6 +369,7 @@ pub fn contacts(n: usize) -> View {
         .into()
 }
 
+#[component]
 fn contact_row(id: u32, c: ReadSignal<Contact>, people: List<u32, Contact>) -> View {
     let open = state("open", || false);
     row()
@@ -383,6 +392,7 @@ pub const CONTACT_HEIGHT: f32 = 32.0;
 
 /// [`contacts`] with the grouped, sorted list flattened and virtualized: headers and contacts
 /// in one virtual list with two row heights. Same events, plus `Event::ScrollTo("contacts", 0, y)`.
+#[component]
 pub fn contacts_virtual(n: usize) -> View {
     let people = list(
         "people",
@@ -473,6 +483,7 @@ pub struct StreamMsg {
 
 /// [`chat_virtual`] with bodies as `LiveText` rendered by `text(body)`: a token is an append edit
 /// that reaches the kernel as an append, O(token) instead of O(body).
+#[component]
 pub fn chat_stream(n: usize) -> View {
     let messages = list(
         "messages",
@@ -579,6 +590,7 @@ pub struct Message {
 /// rewrites their rows only, and a change the rows do not show (going online) rewrites none.
 /// Events: `Send("rename", "id:name")`, `Send("online", "id")`, `Send("forget", "id")` (the
 /// person goes; their rows stay, from "unknown").
+#[component]
 pub fn inbox(n: usize) -> View {
     let people =
         list("people", || (1..=20u32).map(|id| Person { id, name: format!("Person {id}"), online: false }).collect(), |p: &Person| p.id);

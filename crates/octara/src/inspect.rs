@@ -7,6 +7,8 @@
 //!   ([`run_script`]), stopping at the first failure.
 //! - [`check`]: the app at each theme and size, judged: layout issues, diagnostics, pending work
 //!   and accessibility.
+//! - What people point at: [`Node::mark`] (the numbers of a marked capture), [`Node::component`]
+//!   (component boundaries), `pick` ([`Picked`]) and `layout` ([`LayoutExplanation`]).
 //!
 //! The protocol lives in the framework, not the CLI, so it always matches the `octara` the app
 //! was built with. Within a schema version fields are only added.
@@ -89,6 +91,15 @@ pub struct Node {
     /// Where it was created (`file:line:column`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// The `#[component]` function that built it, shown where it differs from its parent's:
+    /// the component boundaries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component: Option<ComponentInfo>,
+    /// Its number in a marked capture: every element with an action, and every element a
+    /// component starts at, is numbered depth first from 1, so "#12" in a picture is the node
+    /// with `mark` 12 here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Node>,
 }
@@ -108,6 +119,11 @@ impl Snapshot {
     /// The node with test id `id`.
     pub fn find(&self, id: &str) -> Option<&Node> {
         self.root.walk().into_iter().find(|n| n.id.as_deref() == Some(id))
+    }
+
+    /// The node numbered `mark` (see [`Node::mark`]).
+    pub fn marked(&self, mark: u32) -> Option<&Node> {
+        self.root.walk().into_iter().find(|n| n.mark == Some(mark))
     }
 
     pub fn to_json(&self) -> String {
@@ -217,6 +233,23 @@ pub enum Request {
         /// `painted` (default) or `display` (the window server's picture, where there is one).
         #[serde(default)]
         pixels: crate::capture::Pixels,
+        /// Draws each marked element's outline and number ([`Node::mark`]) over the picture.
+        #[serde(default)]
+        marks: bool,
+    },
+    /// What is at `(x, y)` (logical pixels in the window): the topmost element there, its
+    /// number, test id and source, and the elements around it.
+    Pick {
+        x: f32,
+        y: f32,
+    },
+    /// Why the element (by test id, or by `mark`) is the size it is: the constraints on each
+    /// axis, its content, and its parent's layout.
+    Layout {
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default)]
+        mark: Option<u32>,
     },
     /// Fails unless every given property holds for the element `id` (or, with only `clean`, for
     /// the app).
@@ -267,6 +300,117 @@ pub struct Reply {
     /// A `capture`'s report.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture: Option<Box<crate::capture::Capture>>,
+    /// What a `pick` found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picked: Option<Box<Picked>>,
+    /// A `layout` request's explanation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Box<LayoutExplanation>>,
+}
+
+/// A `#[component]` function, as the inspector names it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComponentInfo {
+    /// The function's name (`toolbar`).
+    pub name: String,
+    /// Its module path (`my_app::sidebar`, `octara_kit`).
+    pub module: String,
+    /// Where it was called (`file:line:column`).
+    pub called_at: String,
+}
+
+impl ComponentInfo {
+    pub(crate) fn of(c: crate::kernel::Component) -> ComponentInfo {
+        ComponentInfo {
+            name: c.name.into(),
+            module: c.module.into(),
+            called_at: format!("{}:{}:{}", crate::diagnostics::source_file(c.at), c.at.line(), c.at.column()),
+        }
+    }
+}
+
+/// The element at a point, for a person to hand to an agent.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Picked {
+    /// The element (its children left out).
+    pub node: Node,
+    /// The elements around it, innermost first, up to the window.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ancestors: Vec<Ancestor>,
+    /// One line to paste: `#12 button "Save" (id save) at src/app.rs:52:9, in row at …`.
+    pub text: String,
+}
+
+/// An element around a picked one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Ancestor {
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component: Option<ComponentInfo>,
+}
+
+/// Why an element is the size it is.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayoutExplanation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component: Option<ComponentInfo>,
+    /// `[x, y, width, height]` from the last layout, logical pixels.
+    pub bounds: [f32; 4],
+    pub width: AxisExplanation,
+    pub height: AxisExplanation,
+    /// Padding and border, `[top, right, bottom, left]` each.
+    pub padding: [f32; 4],
+    pub border: [f32; 4],
+    /// The layout it sits in (none for the window's root).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<ParentLayout>,
+}
+
+/// One axis of a [`LayoutExplanation`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AxisExplanation {
+    pub size: f32,
+    /// What decided it, in a sentence.
+    pub because: String,
+    /// The constraints written on the element for this axis (`w(320)`, `min_w(44)`,
+    /// `flex_grow(1)`, …), as the style methods name them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<String>,
+    /// What its content asks on this axis: a text's natural width or its height at this width,
+    /// a box's children's extent (padding and border included).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<f32>,
+}
+
+/// The layout an element sits in.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ParentLayout {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// `row`, `column` or `grid` (`row_reverse`, `column_reverse` too).
+    pub layout: String,
+    /// Its content box (inside padding and border), `[width, height]`.
+    pub content_box: [f32; 2],
+    /// `[column gap, row gap]`.
+    pub gap: [f32; 2],
+    /// Cross-axis alignment of its children (`stretch` unless set).
+    pub align_items: String,
+    pub justify_content: String,
+    pub wrap: bool,
 }
 
 /// A layout issue or diagnostic, as tools see it.
@@ -289,7 +433,7 @@ pub struct Issue {
 
 impl Reply {
     pub fn ok() -> Reply {
-        Reply { ok: true, code: None, message: None, actual: None, snapshot: None, issues: None, capture: None }
+        Reply { ok: true, code: None, message: None, actual: None, snapshot: None, issues: None, capture: None, picked: None, layout: None }
     }
 
     pub fn fail(code: &'static Code, message: impl Into<String>) -> Reply {
@@ -410,7 +554,24 @@ pub fn handle(app: &mut Window, req: Request) -> Reply {
             Reply::ok()
         }
         Request::Expect(e) => expect(app, &e),
-        Request::Capture { path, settle_ms, scale, pixels } => {
+        Request::Pick { x, y } => match app.pick(x, y) {
+            Some(p) => Reply { picked: Some(Box::new(p)), ..Reply::ok() },
+            None => Reply::fail(&codes::NO_SUCH_ELEMENT, format!("nothing is at ({x}, {y})")),
+        },
+        Request::Layout { id, mark } => {
+            let node = match (&id, mark) {
+                (Some(id), None) => app.kernel().find(id).ok_or_else(|| format!("no element has test id `{id}`")),
+                (None, Some(m)) => {
+                    app.kernel().marks().get((m as usize).wrapping_sub(1)).copied().ok_or_else(|| format!("no element is numbered {m}"))
+                }
+                _ => return Reply::fail(&codes::BAD_REQUEST, "`layout` takes an `id` or a `mark`"),
+            };
+            match node {
+                Ok(n) => Reply { layout: Some(Box::new(app.kernel().explain_layout(n))), ..Reply::ok() },
+                Err(e) => Reply::fail(&codes::NO_SUCH_ELEMENT, e),
+            }
+        }
+        Request::Capture { path, settle_ms, scale, pixels, marks } => {
             let Some(mut painter) = app.app().take_painter() else {
                 return Reply::fail(
                     &codes::CAPTURE_FAILED,
@@ -422,7 +583,7 @@ pub fn handle(app: &mut Window, req: Request) -> Reply {
             app.capture_begin();
             let fallback =
                 (pixels == crate::capture::Pixels::Display).then(|| "headless: there is no window to take a picture of".to_owned());
-            let result = app.capture_finish(&mut *painter, &path, scale.unwrap_or(2.0), pending, fallback);
+            let result = app.capture_finish(&mut *painter, &path, scale.unwrap_or(2.0), pending, fallback, marks);
             app.app().set_painter(painter);
             match result {
                 Ok(c) => Reply { capture: Some(Box::new(c)), ..Reply::ok() },

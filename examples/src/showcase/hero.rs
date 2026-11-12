@@ -5,6 +5,7 @@ use octara::task::now;
 use octara_kit::select;
 use std::time::Duration;
 
+#[component]
 pub fn card() -> El {
     let theme = state("theme", || "light");
     let clock = state("clock", || 0u64);

@@ -25,6 +25,7 @@ Principles:
 | Crate | Contents |
 | --- | --- |
 | `octara` | The core: reactive runtime, retained kernel, views, app runtime, tasks, motion, display list, paths, icons, canvas, inspector and checks, diagnostics |
+| `octara-macros` | `#[component]`: elements record the component function that built them and where it was called |
 | `octara-kit` | Components (buttons, fields, select, switch, …) built only on `octara`'s public API and theme tokens |
 | `octara-render` | Display list → pixels: the CPU reference renderer and the wgpu renderer |
 | `octara-shell` | Desktop window (winit): input, IME, scale, redraw on demand, AccessKit, native views (macOS: WKWebView, placed with the frame) |
@@ -33,7 +34,7 @@ Principles:
 | `octara-cli` | The `octara` command: `check`, `inspect`, `run`, `vocab`, `explain`, `skill`, `api` |
 | `examples` | Example apps, their acceptance tests, benchmarks, screenshot and window tools |
 
-Everything but `octara` depends only on `octara`'s public API (`api.json` is generated from it).
+Everything but `octara` and `octara-macros` depends only on `octara`'s public API (`api.json` is generated from it).
 
 ## Inside `octara`
 
@@ -118,9 +119,13 @@ owned by scopes on the app clock ([async](design/async.md)).
 
 ## Agent runtime
 
-- `octara::inspect`: the semantic tree with test ids, bounds, actions and source locations;
-  requests (tap, type, key, advance, settle, size, theme, expect, …) over JSON lines; `check`
-  across themes and sizes.
+- `octara::inspect`: the semantic tree with test ids, bounds, actions, source locations and
+  component boundaries; requests (tap, type, key, advance, settle, size, theme, expect, …) over
+  JSON lines; `check` across themes and sizes.
+- What people point at: marked captures number the interactive elements and components (the
+  snapshot repeats the numbers); `pick` names the element at a point; `layout` explains an
+  element's size; a picking window (`mod+shift+c` in debug shells) outlines what the pointer is
+  over and copies the clicked element's line.
 - Diagnostics are registered codes with cause, fix and doc anchor; tests keep the registry
   complete.
 - The CLI builds a harness around an app's view (`[package.metadata.octara] view`) and drives it;

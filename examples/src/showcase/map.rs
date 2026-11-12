@@ -6,6 +6,7 @@ use super::section;
 use octara::prelude::*;
 use octara_kit::button;
 
+#[component]
 pub fn card() -> El {
     let span = state("map_span", || 0.08f64);
     let center = state("map_center", String::new);

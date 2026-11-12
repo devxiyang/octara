@@ -7,9 +7,11 @@ mod element;
 mod list;
 mod style;
 
+pub use crate::kernel::Component;
 pub(crate) use element::build_el;
 pub use element::{El, IntoProp, IntoText, Prop, TextContent, canvas, col, el, icon, native_view, row, spacer, text, text_input, web_view};
 pub use list::{each, virtual_each};
+pub use octara_macros::component;
 pub use style::{Length, Patch, Styled, px, relative, rems, sp};
 
 use crate::diagnostics as codes;
@@ -296,6 +298,7 @@ pub fn component(name: &'static str, f: impl FnOnce() -> View + 'static) -> View
 }
 
 fn component_at(at: &'static Location<'static>, name: &'static str, key: Option<String>, f: impl FnOnce() -> View + 'static) -> View {
+    let made = building();
     View::Dyn(Mount(Box::new(move |parent, target| {
         let s = rt(|rt| {
             let cur = rt.current_scope().expect("component outside a scope");
@@ -327,8 +330,51 @@ fn component_at(at: &'static Location<'static>, name: &'static str, key: Option<
             };
             rt.create_scope(Some(cur), &seg)
         });
-        rt(|rt| rt.with_frame(Ctx::Build, None, Some(Some(s)), || mount(f(), parent, target)));
+        rt(|rt| rt.with_frame(Ctx::Build, None, Some(Some(s)), || mount(as_part_of(made, f), parent, target)));
     })))
+}
+
+// ---- the component being built (`#[component]`) ----
+
+thread_local! {
+    static BUILDING: Cell<Option<Component>> = const { Cell::new(None) };
+}
+
+/// Restores the component that was being built when dropped.
+#[doc(hidden)]
+pub struct Building(Option<Component>);
+
+impl Drop for Building {
+    fn drop(&mut self) {
+        BUILDING.set(self.0);
+    }
+}
+
+/// What a `#[component]` function runs first: the elements it builds, and those its views build
+/// later, are its own until the guard drops. A component called through another's
+/// `#[track_caller]` chain from the same call site (`primary_button` calling `button`) belongs to
+/// the outer one: that is the one its caller wrote.
+#[doc(hidden)]
+pub fn enter_component(name: &'static str, module: &'static str, at: &'static Location<'static>) -> Building {
+    let prev = BUILDING.get();
+    let next = match prev {
+        Some(p) if p.at == at => p,
+        _ => Component { name, module, at },
+    };
+    BUILDING.set(Some(next));
+    Building(prev)
+}
+
+/// The component being built now.
+pub(crate) fn building() -> Option<Component> {
+    BUILDING.get()
+}
+
+/// Runs `f` as part of `component` (a view's closure, run after its component returned).
+pub(crate) fn as_part_of<R>(component: Option<Component>, f: impl FnOnce() -> R) -> R {
+    let prev = BUILDING.replace(component);
+    let _restore = Building(prev);
+    f()
 }
 
 /// Shows `then` while `cond` holds; the branch is a scope, so its state lives while it is shown.
@@ -348,6 +394,7 @@ fn show_else_at(
     then: impl Fn() -> View + 'static,
     els: impl Fn() -> View + 'static,
 ) -> View {
+    let made = building();
     View::Dyn(Mount(Box::new(move |parent, target| {
         let region = Slots::default();
         target.borrow_mut().push(Slot::Region(region.clone()));
@@ -379,7 +426,9 @@ fn show_else_at(
                 region.borrow_mut().clear();
                 let s = rt.create_scope(Some(owner), &format!("{base}:{}", if c { "then" } else { "else" }));
                 branch.set(Some(s));
-                rt.with_frame(Ctx::Build, None, Some(Some(s)), || mount(if c { then() } else { els() }, &parent, &region));
+                rt.with_frame(Ctx::Build, None, Some(Some(s)), || {
+                    mount(as_part_of(made, || if c { then() } else { els() }), &parent, &region)
+                });
             });
         });
     })))

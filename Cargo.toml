@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/octara", "crates/octara-cli", "crates/octara-fonts", "crates/octara-icons", "crates/octara-kit", "crates/octara-render", "crates/octara-shell", "examples"]
+members = ["crates/octara", "crates/octara-cli", "crates/octara-fonts", "crates/octara-icons", "crates/octara-kit", "crates/octara-macros", "crates/octara-render", "crates/octara-shell", "examples"]
 
 [workspace.package]
 edition = "2024"

@@ -1,6 +1,10 @@
 //! Desktop windows for Octara apps (winit): window events become [`App`] input by position and
 //! key, and frames are the app's display list drawn by the GPU renderer into the window.
 //!
+//! Picking: in debug builds `mod+shift+c` (as browsers' "inspect element") starts picking, and
+//! `OCTARA_PICK=1` starts the window picking. Click an element: its line (number, role, test id,
+//! source, the component that made it) goes to the clipboard and to stderr, its JSON to stdout.
+//!
 //! ```no_run
 //! octara_shell::run("Counter", octara_examples_counter);
 //! # fn octara_examples_counter() -> octara::view::View { unimplemented!() }
@@ -332,6 +336,18 @@ impl Shell {
     /// the text it typed goes to the focused field.
     fn key(&mut self, event: &winit::event::KeyEvent) {
         let Some(app) = &mut self.win else { return };
+        // `mod+shift+c` starts and ends picking in debug builds.
+        let command = if cfg!(target_os = "macos") { self.modifiers.super_key() } else { self.modifiers.control_key() };
+        if cfg!(debug_assertions)
+            && command
+            && self.modifiers.shift_key()
+            && physical_char(event.physical_key) == Some('c')
+            && !event.repeat
+        {
+            let on = !app.picking();
+            app.set_picking(on);
+            return;
+        }
         let key = match &event.logical_key {
             WKey::Named(n) => match n {
                 NamedKey::Tab => Some(Key::Tab),
@@ -520,6 +536,9 @@ impl ApplicationHandler<ShellEvent> for Shell {
         }
         app.event(InputEvent::Resize { width: size.width as f32 / scale, height: size.height as f32 / scale, scale });
         self.capture = capture::Job::from_env(&self.proxy);
+        if std::env::var("OCTARA_PICK").is_ok_and(|v| v == "1") {
+            app.set_picking(true);
+        }
         self.win = Some(app);
         self.gpu = Some(Gpu { window, surface, config, renderer });
         self.redraw();

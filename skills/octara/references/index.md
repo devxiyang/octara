@@ -10,7 +10,7 @@ Prelude (`use octara::prelude::*`), by module:
 - canvas: Canvas
 - icon: Icon
 - image: Image, ObjectFit
-- kernel: linear_color_stop, linear_gradient, rgb, Align, BoxShadow, Breakpoint, Color, ContainerStep, Family, Fill, Length, Paint, Placement, RadiusStep, ShadowStep, Side, State, TextStep, Theme, Token
+- kernel: linear_color_stop, linear_gradient, rgb, Align, BoxShadow, Breakpoint, Color, Component, ContainerStep, Family, Fill, Length, Paint, Placement, RadiusStep, ShadowStep, Side, State, TextStep, Theme, Token
 - motion: Curve, Spring
 - native: NativeEvent, Slot
 - paint: Rect
@@ -29,7 +29,7 @@ Members of prelude types (`.name(..)`):
 - El: a11y_hidden, active, autofocus, bg, border_color, checked, child, children, description, disabled, expanded, focus, focus_{group,visible}, focusable, group, group_hover, hover, hover_alone, id, img, key_context, label, modal, multiline, object_fit, on_{command,drag,input,key,native,press,submit,toggle}, on_double_press, on_long_press, on_secondary_press, opacity, overlay, props, revealed, role, rows, screen, secure, selected, slot, stroke_width, style_when, submit_on_enter, tab_index, text_color, value, when_{expanded,large,medium,touch}, when_extra_large
 - Event: Blur, Focus, Hover, Input, Press, Scroll, ScrollTo, Send, Toggle
 - Icon: bounds, name, named, path, shapes, stroked, svg, view_box
-- InputEvent: Accessibility, Composition, Key, Native, NativeSize, NativeSnapshot, Pointer, PointerLeave, Resize, Semantic, Text, Wheel
+- InputEvent: Accessibility, Composition, Key, Native, NativeSize, NativeSnapshot, Picking, Pointer, PointerLeave, Resize, Semantic, Text, Wheel
 - Key: Backspace, Char, Delete, Down, End, Enter, Escape, F, Home, Left, Menu, PageDown, PageUp, Right, Space, Tab, Up
 - List: all, filter, group_by, index_of, insert, is_empty, item, join, keys, last_key, len, map, push, remove, retain, sort_by, source, update
 - LiveText: append, get, get_untracked, is_empty, len, log_len, new, set, splice, with
@@ -48,10 +48,11 @@ Members of prelude types (`.name(..)`):
 - Theme: breakpoint, breakpoint_{of,width}, color, container, container_of, dark, family, font_mono, font_sans, get, light, line_height, name, radius, radius_of, rem, shadow, shadow_of, spacing, text, text_of, try_get
 - Token: Accent, AccentHover, AccentText, BUILTIN, Background, Border, Custom, Danger, Focus, Surface, SurfaceHover, SurfacePressed, Text, TextMuted, custom
 - Transform: IDENTITY, apply, invert, rotate, scale, then, translate, x, xx, xy, y, yx, yy
-- Window: accessibility_tree, accessibility_update, app, at_sizes, bind, breakpoint, capture_{awaiting,begin,display,finish}, caret, clear_forced, click_at, clipboard_text, commands, dispatch, display_list, double_tap, drag, event, force_state, headless, headless_on, id, inspect, invoke, is_closed, kernel, kernel_mut, keymap, layout_issues, long_press, options, platform_window, platform_window_mut, pointer_{down,move,up}, press_key, replace_text, resize, restart_accessibility, scale, secondary_tap, set_{keymap,selection,tuning}, size, swipe, tap, tap_with, text_field, tuning, type_text, unsettled, wheel
+- Window: accessibility_tree, accessibility_update, app, at_sizes, bind, breakpoint, capture_{awaiting,begin,display,finish}, caret, clear_forced, click_at, clipboard_text, commands, dispatch, display_list, double_tap, drag, event, force_state, headless, headless_on, id, inspect, invoke, is_closed, kernel, kernel_mut, keymap, layout_issues, long_press, options, pick, picking, platform_window, platform_window_mut, pointer_{down,move,up}, press_key, replace_text, resize, restart_accessibility, scale, secondary_tap, set_{keymap,picking,selection,tuning}, size, swipe, tap, tap_with, text_field, tuning, type_text, unsettled, wheel
 - Align: Center, End, Start
 - BoxShadow: blur_radius, color, new, offset, spread_radius
 - Breakpoint: ALL, Compact, Expanded, ExtraLarge, Large, Medium
+- Component: at, module, name
 - Curve: Fade, Instant, Spring
 - Drag: dx, dy, phase, x, y
 - DragPhase: Cancel, End, Move, Start

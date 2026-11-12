@@ -41,6 +41,10 @@ Checked by tests and screenshots; to be tried in a real window (`cargo run -p oc
       OCTARA_CAPTURE_PIXELS=display cargo run -p octara-examples --bin window -- showcase web`
       reports `pixels: display`, and the picture holds the Metal frame and the live web page,
       cropped to the content view (no title bar), at the backing scale.
+- [ ] Picking (`window -- todo`, a debug build): `mod+shift+c`, then moving the pointer outlines
+      each element with its number; a click prints its line and copies it (a "Delete" button
+      says `made by todo_row()`), the button does not press, and picking ends; Escape ends it
+      too.
 - [ ] Web view (`window -- showcase web`, macOS): the page shows in the rounded box, "Other page"
       loads the second page and the status shows its title; in the full `showcase`, scrolling and
       resizing move the view with the page, without lag or a gap, and it clips at the window's

@@ -2216,6 +2216,7 @@ dependencies = [
  "bitflags 2.13.2",
  "color",
  "kurbo",
+ "octara-macros",
  "parley",
  "png",
  "proptest",
@@ -2277,6 +2278,10 @@ version = "0.0.0"
 dependencies = [
  "octara",
 ]
+
+[[package]]
+name = "octara-macros"
+version = "0.0.0"
 
 [[package]]
 name = "octara-render"

@@ -62,6 +62,8 @@ where
     T: Clone + 'static,
 {
     let at = Location::caller();
+    let made = super::building();
+    let row = move |k: &K, t: ReadSignal<T>| super::as_part_of(made, || row(k, t));
     View::Dyn(Mount(Box::new(move |parent: &Parent, target: &Slots| {
         let count: Rc<Cell<usize>> = Rc::default();
         target.borrow_mut().push(Slot::Count(count.clone()));
@@ -160,6 +162,8 @@ where
     T: Clone + 'static,
 {
     let at = Location::caller();
+    let made = super::building();
+    let row = move |k: &K, t: ReadSignal<T>| super::as_part_of(made, || row(k, t));
     View::Dyn(Mount(Box::new(move |parent: &Parent, target: &Slots| {
         let count: Rc<Cell<usize>> = Rc::default();
         target.borrow_mut().push(Slot::Count(count.clone()));

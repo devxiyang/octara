@@ -3,6 +3,7 @@
 use super::section;
 use octara::prelude::*;
 
+#[component]
 pub fn card() -> El {
     section("Cut text")
         .child(text("A sentence that is far too long to fit in this narrow box, cut with an ellipsis").w(240).truncate())

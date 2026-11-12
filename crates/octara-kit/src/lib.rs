@@ -59,6 +59,7 @@ fn interactive(e: El) -> El {
 // ---- button ----
 
 /// A secondary button: surface background, border, hover and pressed shades.
+#[component]
 #[track_caller]
 pub fn button(label: impl IntoProp<String>) -> El {
     interactive(text(label).role(Role::Button))
@@ -76,6 +77,7 @@ pub fn button(label: impl IntoProp<String>) -> El {
 }
 
 /// The main action of a view: accent background.
+#[component]
 #[track_caller]
 pub fn primary_button(label: impl IntoProp<String>) -> El {
     button(label)
@@ -87,12 +89,14 @@ pub fn primary_button(label: impl IntoProp<String>) -> El {
 }
 
 /// A low-emphasis button: no background until hovered.
+#[component]
 #[track_caller]
 pub fn ghost_button(label: impl IntoProp<String>) -> El {
     button(label).bg(Paint::Color(Color::TRANSPARENT)).border_color(Paint::Color(Color::TRANSPARENT))
 }
 
 /// A button that stays selected while `selected` holds (tabs, segmented controls, filters).
+#[component]
 #[track_caller]
 pub fn toggle_button(label: impl IntoProp<String>, selected: impl Fn() -> bool + 'static) -> El {
     ghost_button(label)
@@ -127,6 +131,7 @@ fn target(role: Role, visual: El) -> El {
 }
 
 /// A checkbox bound to `checked`; `Event::Toggle` flips it.
+#[component]
 #[track_caller]
 pub fn checkbox(checked: impl Model<bool>) -> El {
     let (get, flip) = toggle_model(checked);
@@ -148,6 +153,7 @@ pub fn checkbox(checked: impl Model<bool>) -> El {
 }
 
 /// An on/off switch bound to `on`; `Event::Toggle` flips it.
+#[component]
 #[track_caller]
 pub fn switch(on: impl Model<bool>) -> El {
     let (get, flip) = toggle_model(on);
@@ -172,6 +178,7 @@ pub fn switch(on: impl Model<bool>) -> El {
 // ---- text field ----
 
 /// A single-line text field bound to `value`.
+#[component]
 #[track_caller]
 pub fn text_field(value: impl Model<String>) -> El {
     let m = Rc::new(value);
@@ -195,6 +202,7 @@ pub fn text_field(value: impl Model<String>) -> El {
 /// `id` names the trigger and keys the component, so its open state survives hot reload. The
 /// trigger has role `ComboBox` and `expanded`; pressing it opens a `ListBox` below it (flipped
 /// above when there is no room) with options `{id}-option-{index}`, the current one `selected`.
+#[component]
 #[track_caller]
 pub fn select<T: Clone + PartialEq + 'static>(
     id: &str,

@@ -5,6 +5,7 @@ use super::section;
 use octara::prelude::*;
 use octara_kit::button;
 
+#[component]
 pub fn card() -> El {
     let page = state("page", || 0usize);
     let page_title = state("page_title", String::new);

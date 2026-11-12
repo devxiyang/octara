@@ -113,7 +113,8 @@ These are architectural targets, not a current support matrix.
 
 | Path | Contents |
 | --- | --- |
-| `crates/octara` | `kernel`, `reactive`, `view`, `app`, `testing` |
+| `crates/octara` | `reactive`, `kernel`, `view`, `app`, `platform`, `inspect`, `capture` |
+| `crates/octara-macros` | `#[component]` |
 | `crates/octara-kit` | Components (in progress) |
 | `examples` | Example apps, shared scenarios, tests and the benchmark |
 

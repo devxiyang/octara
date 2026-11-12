@@ -12,6 +12,7 @@
 pub mod a11y;
 mod anim;
 mod edit;
+mod explain;
 mod focus;
 mod issues;
 mod paint;
@@ -355,6 +356,8 @@ struct Node {
     inherited_from: Inherited,
     /// Where the element was created (`file:line`), for diagnostics.
     origin: Option<&'static std::panic::Location<'static>>,
+    /// The component function that built it.
+    component: Option<Component>,
     test_id: Option<String>,
     handlers: [Option<HandlerId>; HandlerKind::COUNT],
     taffy: taffy::NodeId,
@@ -364,6 +367,15 @@ struct Node {
     state: State,
     layout: taffy::Style,
     visual: Visual,
+}
+
+/// The component function that built an element: a `#[component]` function's name and module,
+/// and where it was called.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Component {
+    pub name: &'static str,
+    pub module: &'static str,
+    pub at: &'static std::panic::Location<'static>,
 }
 
 /// A text input's default width (CSS gives `<input>` about 20 characters).
@@ -1018,6 +1030,7 @@ impl Kernel {
             inherited: root_inh,
             inherited_from: root_inh,
             origin: None,
+            component: None,
             test_id: None,
             handlers: [None; HandlerKind::COUNT],
             taffy: t,
@@ -2084,6 +2097,13 @@ impl Kernel {
     /// Where the element was created (`file:line`), if known.
     pub fn origin(&self, id: NodeId) -> Option<&'static std::panic::Location<'static>> {
         self.node(id).origin
+    }
+    /// The component function that built the element, if one was marked `#[component]`.
+    pub fn component(&self, id: NodeId) -> Option<Component> {
+        self.node(id).component
+    }
+    pub fn set_component(&mut self, id: NodeId, component: Option<Component>) {
+        self.node_mut(id).component = component;
     }
     pub fn content_origin_y(&self, id: NodeId) -> f32 {
         let l = self.taffy.layout(self.node(id).taffy).expect("taffy");

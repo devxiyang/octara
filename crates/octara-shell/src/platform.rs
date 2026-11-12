@@ -93,6 +93,10 @@ impl PlatformWindow for WinitWindow {
             }
         }
         self.text_input(frame.text_input.as_ref());
+        if let Some(p) = &frame.picked {
+            eprintln!("octara-shell: picked {} (on the clipboard)", p.text);
+            println!("{}", serde_json::to_string(p).expect("a pick serializes"));
+        }
         if frame.redraw {
             self.window.request_redraw();
         }

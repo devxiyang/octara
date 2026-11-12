@@ -21,6 +21,7 @@ mod multiline;
 mod native;
 mod overlay;
 mod pointer;
+mod pointing;
 mod position;
 mod replay;
 mod responsive;

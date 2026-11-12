@@ -7,6 +7,7 @@ mod event;
 mod focus;
 mod input;
 mod keys;
+mod pick;
 mod pointer;
 mod time;
 
@@ -201,6 +202,8 @@ pub(crate) struct WindowState {
     presented: Cell<u64>,
     /// A capture in progress: the snapshots asked for.
     capturing: RefCell<Option<crate::capture::Capturing>>,
+    /// Picking an element to hand to an agent.
+    picking: RefCell<pick::Picking>,
 }
 
 thread_local! {
@@ -317,6 +320,7 @@ impl WindowState {
             native_changes: RefCell::default(),
             presented: Cell::new(u64::MAX),
             capturing: RefCell::default(),
+            picking: RefCell::default(),
         }
     }
 }
@@ -914,7 +918,15 @@ impl Window {
     }
     /// What the current frame draws, in order (see [`crate::paint`]).
     pub fn display_list(&self) -> std::rc::Rc<crate::paint::DisplayList> {
-        self.w.kernel.borrow().display_list()
+        let list = self.w.kernel.borrow().display_list();
+        match self.picking_overlay() {
+            Some(over) => {
+                let mut list = (*list).clone();
+                list.items.extend(over);
+                std::rc::Rc::new(list)
+            }
+            None => list,
+        }
     }
     pub fn kernel(&self) -> Ref<'_, Kernel> {
         self.w.kernel.borrow()
@@ -1212,6 +1224,12 @@ impl Window {
         }
     }
 
+    /// The topmost element at `(x, y)` (logical pixels), with its number, test id, source and
+    /// the elements around it (the inspector's `pick`).
+    pub fn pick(&self, x: f32, y: f32) -> Option<crate::inspect::Picked> {
+        self.w.kernel.borrow().pick(x, y)
+    }
+
     /// Starts a capture: asks the platform window for a snapshot of every native view shown.
     /// Returns the views whose snapshot is coming (as [`InputEvent::NativeSnapshot`]s).
     pub fn capture_begin(&mut self) -> Vec<crate::native::NativeId> {
@@ -1246,6 +1264,7 @@ impl Window {
         scale: f32,
         pending: Vec<String>,
         fallback: Option<String>,
+        marks: bool,
     ) -> Result<crate::capture::Capture, String> {
         use crate::capture::{NativeShot, Shown};
         let asked = self.w.capturing.borrow_mut().take().map(|c| c.asked).unwrap_or_default();
@@ -1269,7 +1288,10 @@ impl Window {
                 misses,
             });
         }
-        let painted = painter.paint(&self.display_list(), scale).and_then(|p| p.save_png(path).map(|()| p));
+        let (over, marked) = if marks { crate::capture::marks(&self.w.kernel.borrow()) } else { Default::default() };
+        let mut list = (*self.display_list()).clone();
+        list.items.extend(over);
+        let painted = painter.paint(&list, scale).and_then(|p| p.save_png(path).map(|()| p));
         for (id, _) in &asked {
             self.on_native_snapshot(*id, None);
         }
@@ -1285,20 +1307,33 @@ impl Window {
             settled: pending.is_empty(),
             pending,
             native,
+            marks: marked,
         })
     }
 
     /// A `display` capture: the window server's `picture` of the window, written to `path` as a
-    /// PNG, with the native views reported live.
+    /// PNG, with the native views reported live. With `marks`, `painter` draws the marks over
+    /// it.
     pub fn capture_display(
         &mut self,
         picture: &crate::capture::Picture,
         path: &str,
         scale: f32,
         pending: Vec<String>,
+        marks: Option<&mut dyn crate::capture::Painter>,
     ) -> Result<crate::capture::Capture, String> {
         use crate::capture::{NativeShot, Shown};
-        picture.save_png(path)?;
+        let mut marked = Vec::new();
+        if let Some(painter) = marks {
+            let (items, report) = crate::capture::marks(&self.w.kernel.borrow());
+            let list = crate::paint::DisplayList { size: self.size(), background: crate::kernel::Color::TRANSPARENT, items };
+            let mut out = picture.clone();
+            out.over(&painter.paint(&list, scale)?);
+            out.save_png(path)?;
+            marked = report;
+        } else {
+            picture.save_png(path)?;
+        }
         let placements = self.w.kernel.borrow().native_placements();
         let k = self.w.kernel.borrow();
         let native = placements
@@ -1328,6 +1363,7 @@ impl Window {
             settled: pending.is_empty(),
             pending,
             native,
+            marks: marked,
         })
     }
 
@@ -1361,14 +1397,15 @@ impl Window {
             Some(crate::platform::TextInput { caret, secure: k.is_secure(n), multiline: k.is_multiline(n) })
         });
         let generation = self.w.kernel.borrow().paint_generation();
-        let redraw = generation != self.w.presented.get() || self.w.kernel.borrow_mut().in_motion();
+        let (picking, picked) = self.picking_frame();
+        let redraw = picking || generation != self.w.presented.get() || self.w.kernel.borrow_mut().in_motion();
         let native = std::mem::take(&mut *self.w.native_changes.borrow_mut());
-        if native.is_empty() && !redraw && text_input == self.w.text_input.get() {
+        if native.is_empty() && !redraw && picked.is_none() && text_input == self.w.text_input.get() {
             return;
         }
         self.w.text_input.set(text_input);
         self.w.presented.set(generation);
-        self.w.platform.borrow_mut().present(crate::platform::Frame { native, text_input, redraw });
+        self.w.platform.borrow_mut().present(crate::platform::Frame { native, text_input, redraw, picked });
     }
 }
 

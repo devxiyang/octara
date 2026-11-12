@@ -9,6 +9,7 @@ const SALES: [f32; 12] = [42.0, 51.0, 47.0, 63.0, 58.0, 72.0, 69.0, 81.0, 77.0, 
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /// A bar chart drawn on a canvas: dragging across it picks a month.
+#[component]
 fn chart(picked: Signal<usize>) -> El {
     let pick = move |x: f32, w: f32| picked.set(((x / w * 12.0).floor().max(0.0) as usize).min(11));
     let width = std::rc::Rc::new(std::cell::Cell::new(1.0f32));
@@ -62,6 +63,7 @@ fn chart(picked: Signal<usize>) -> El {
     .on_drag(move |d| pick(d.x, width.get()))
 }
 
+#[component]
 pub fn card() -> El {
     let picked = state("picked", || 11usize);
     section("Canvas and icons")

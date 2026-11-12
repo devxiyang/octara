@@ -1,7 +1,7 @@
 # The core: ownership, context, input and frames
 
-Status: confirmed. Ownership and context, input as data, frames, and recording and replay are
-implemented; the rest of the plan below is not. Designed for the first product (an AI chat app),
+Status: confirmed. Ownership and context, input as data, frames, recording and replay, and what
+people and agents point at are implemented; the rest of the plan below is not. Designed for the first product (an AI chat app),
 several windows, the [platform layer](platform.md) and agents.
 
 ## Goals
@@ -81,13 +81,40 @@ and closes leave nothing behind.
 
 ## What people and agents point at
 
-- Each node knows the component that made it (its name and call site, besides its own source).
-- A capture can mark the interactive elements and components with numbers the snapshot repeats
-  ("make #12 wider").
-- A point in a running window picks an element (its number, test id, component and source, to
-  paste to an agent); the protocol asks the same by coordinates.
-- A request explains an element's size: the constraints on it (flex, grid, minimum and maximum,
-  text measurement).
+- **Components**: `#[component]` (the `octara-macros` crate, written on the token stream) on a
+  function that builds part of the view. Its body runs in an immediately called closure, so
+  `#[track_caller]` does not reach through it and each element keeps its own line; the
+  function itself is `#[track_caller]`, and a thread-local frame holds its name, module and
+  call site while the body runs. An element records the frame current when its builder is made
+  (`El`), and the views that build later (`show`, `each`, `virtual_each`, `component`,
+  overlays) capture the frame where they are written and restore it when they build. A
+  component that is also `#[track_caller]` is a leaf (the kit's): its elements' sources are its
+  caller's, and a component entered from the same call site belongs to the outer one
+  (`primary_button` calling `button` records `primary_button`). Nothing is allocated; state
+  scopes stay `component(name, ..)`'s.
+- The snapshot shows a node's `component` where it differs from its parent's: the boundaries.
+- **Marks**: the elements with an action, and the elements a component starts at, numbered
+  depth first from 1 through the inspector's tree. The numbering is the tree's, not a capture's
+  (no state): every snapshot carries `mark`, and the same tree numbers the same. A capture with
+  `marks` draws each one's outline (rose for interactive, violet for a component) and its number
+  in a badge, inside the top-left corner (above a small element, moved right past badges
+  already placed), as display list items over the frame; a `display` capture has them painted
+  over the window server's picture. The report lists the marks (number, id, role, name, rect,
+  source).
+- **Pick**: `Window::pick(x, y)` and the `pick` request: the topmost element at the point, its
+  ancestors, and one line to paste (`#12 button "Save" (id save) at src/app.rs:52:9; made by
+  toolbar() called at src/app.rs:30:5`).
+- **Picking**: `InputEvent::Picking(on)` (`Window::set_picking`) puts a window in picking mode:
+  the element under the pointer is outlined with its number in the display list, pointer input
+  goes to picking instead of the app, a click picks (its line to the clipboard, the pick in the
+  next `Frame`) and ends picking, Escape ends it; wheels still scroll. It is an input, so a
+  recording replays it. Debug shells toggle it with `mod+shift+c`, and print the pick.
+- **Layout**: `Kernel::explain_layout` and the `layout` request (by test id or mark): per axis
+  the constraints written on the element (`w(320)`, `min_w(44)`, `flex_grow(1)`, …), what its
+  content asks (a text's natural width, its height at its width, children's extent), and what
+  decided the size (a limit held, a set size, growing into or shrinking from the parent's free
+  space, a stretch on the cross axis, content, a grid cell); with the parent's layout, content
+  box, gap and alignment. It reads taffy's results after layout, not the solver's steps.
 - The accessibility label is the user's; a hand-written developer tag waits until these prove not
   enough.
 
@@ -127,8 +154,8 @@ Its own design comes first; what is decided:
 
 1. Ownership and context. Implemented.
 2. Input as data, frames out, recording and replay, windows in the protocol. Implemented.
-2.5. What people and agents point at: component boundaries, marked captures, picking by point,
-   size explanations.
+2.5. What people and agents point at: component boundaries, marked captures, picking by point
+   and in a picking window, size explanations. Implemented.
 3. The text core (its design first): runs, blocks, block layout, document selection, text runs and
    live regions in accessibility.
 4. Incremental paint and accessibility.

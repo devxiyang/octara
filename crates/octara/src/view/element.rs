@@ -151,6 +151,7 @@ struct Overlay {
     placement: Placement,
     content: Rc<dyn Fn() -> View>,
     at: &'static Location<'static>,
+    made: Option<crate::kernel::Component>,
 }
 
 // ---- elements ----
@@ -159,6 +160,8 @@ pub struct El {
     kind: Kind,
     role: Option<Role>,
     at: &'static Location<'static>,
+    /// The `#[component]` function building it.
+    made: Option<crate::kernel::Component>,
     test_id: Option<Prop<String>>,
     text: Option<TextContent>,
     value: Option<Prop<String>>,
@@ -218,6 +221,7 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         kind,
         role: None,
         at,
+        made: super::building(),
         test_id: None,
         text: None,
         value: None,
@@ -619,7 +623,13 @@ impl El {
     /// (flipped and clamped to stay in the window). Its state lives while it is open.
     #[track_caller]
     pub fn overlay(mut self, open: impl Fn() -> bool + 'static, placement: Placement, content: impl Fn() -> View + 'static) -> Self {
-        self.overlays.push(Overlay { open: Box::new(open), placement, content: Rc::new(content), at: Location::caller() });
+        self.overlays.push(Overlay {
+            open: Box::new(open),
+            placement,
+            content: Rc::new(content),
+            at: Location::caller(),
+            made: super::building(),
+        });
         self
     }
 
@@ -734,6 +744,7 @@ pub(crate) fn build_el(e: El) -> NodeId {
     let at = e.at;
     let node = u.kernel.borrow_mut().create(e.kind);
     u.kernel.borrow_mut().set_origin(node, at);
+    u.kernel.borrow_mut().set_component(node, e.made);
     {
         let u = u.clone();
         rt(|rt| {
@@ -982,10 +993,12 @@ fn mount_overlay(anchor: NodeId, o: Overlay) {
     }
     let layer = Parent { node: u.kernel.borrow().overlay_layer(), root: u.overlay_slots.clone() };
     let (placement, content, at) = (o.placement, o.content, o.at);
-    let view = show(o.open, move || {
-        let mut b = boxed(content(), at);
-        b.anchor = Some((anchor, placement));
-        b.into()
+    let view = super::as_part_of(o.made, || {
+        show(o.open, move || {
+            let mut b = boxed(content(), at);
+            b.anchor = Some((anchor, placement));
+            b.into()
+        })
     });
     mount(view, &layer, &region);
 }

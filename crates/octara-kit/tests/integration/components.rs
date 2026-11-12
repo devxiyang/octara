@@ -143,3 +143,16 @@ fn select_works_from_the_keyboard() {
     let list = app.kernel().find("size-list").unwrap();
     assert!(app.display_list().items.iter().any(|i| matches!(i, octara::paint::Item::Shadow(s) if s.source == list)));
 }
+
+/// A kit component is a leaf: its elements' source is where the app called it, and the
+/// component it records is the one the app wrote (`primary_button`, not the `button` inside).
+#[test]
+fn kit_components_point_at_the_app() {
+    let w = Window::headless(|| col().child(primary_button("Save").id("save")).into());
+    let snap = w.inspect();
+    let save = snap.find("save").unwrap();
+    let made = save.component.as_ref().expect("made by the kit");
+    assert_eq!((made.name.as_str(), made.module.as_str()), ("primary_button", "octara_kit"));
+    assert_eq!(save.source.as_deref(), Some(made.called_at.as_str()), "the app's line");
+    assert!(made.called_at.contains("components.rs:"), "{}", made.called_at);
+}

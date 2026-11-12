@@ -219,27 +219,13 @@ impl Kernel {
     /// The semantic tree as the Inspector protocol gives it (see [`crate::inspect`]): the nodes
     /// assistive technology sees, with test ids, presented bounds, actions and source locations.
     pub fn inspect_tree(&self) -> crate::inspect::Node {
-        self.inspect_node(self.root)
+        let marks = self.mark_numbers();
+        self.inspect_node(self.root, &marks)
     }
 
-    fn inspect_node(&self, id: NodeId) -> crate::inspect::Node {
-        use crate::inspect::{snake, tenth};
+    /// What can be done to a node, as the inspector names it.
+    pub(crate) fn node_actions(&self, id: NodeId) -> Vec<String> {
         let n = self.node(id);
-        let role = if id == self.root { Role::Window } else { self.role(id) };
-        let name = n.label.clone().or_else(|| (n.kind() == Kind::Text && !n.text().is_empty()).then(|| n.text().to_owned()));
-        let mut states = Vec::new();
-        for (flag, s) in [
-            (State::HOVER, "hovered"),
-            (State::FOCUSED, "focused"),
-            (State::FOCUS_VISIBLE, "focus_visible"),
-            (State::PRESSED, "pressed"),
-            (State::SELECTED, "selected"),
-            (State::DISABLED, "disabled"),
-        ] {
-            if n.state.contains(flag) {
-                states.push(s.to_string());
-            }
-        }
         let mut actions = Vec::new();
         for (kind, a) in [
             (HandlerKind::Press, "press"),
@@ -264,8 +250,29 @@ impl Kernel {
         if self.scrollable(id) != (false, false) {
             actions.push("scroll".into());
         }
+        actions
+    }
+
+    /// One node of the inspector's tree, without its children.
+    pub(crate) fn inspect_one(&self, id: NodeId, mark: Option<u32>) -> crate::inspect::Node {
+        use crate::inspect::{snake, tenth};
+        let n = self.node(id);
+        let role = if id == self.root { Role::Window } else { self.role(id) };
+        let name = n.label.clone().or_else(|| (n.kind() == Kind::Text && !n.text().is_empty()).then(|| n.text().to_owned()));
+        let mut states = Vec::new();
+        for (flag, s) in [
+            (State::HOVER, "hovered"),
+            (State::FOCUSED, "focused"),
+            (State::FOCUS_VISIBLE, "focus_visible"),
+            (State::PRESSED, "pressed"),
+            (State::SELECTED, "selected"),
+            (State::DISABLED, "disabled"),
+        ] {
+            if n.state.contains(flag) {
+                states.push(s.to_string());
+            }
+        }
         let (x, y, w, h) = self.shown_rect(id);
-        let children = n.children.iter().copied().filter(|c| self.shown_to_a11y(*c)).map(|c| self.inspect_node(c)).collect();
         crate::inspect::Node {
             id: n.test_id.clone(),
             role: snake(&format!("{role:?}")),
@@ -275,7 +282,7 @@ impl Kernel {
             expanded: n.expanded,
             states,
             bounds: [tenth(x), tenth(y), tenth(w), tenth(h)],
-            actions,
+            actions: self.node_actions(id),
             commands: n.commands.iter().map(|(c, _)| c.clone()).collect(),
             native: self.native(id).map(|v| crate::native::NativeInfo {
                 kind: v.kind.clone(),
@@ -286,8 +293,20 @@ impl Kernel {
                 super::Content::Icon(i) => Some(i.name.clone()),
                 _ => None,
             },
-            source: n.origin.map(|l| format!("{}:{}:{}", crate::diagnostics::source_file(l), l.line(), l.column())),
-            children,
+            source: self.source_of(id),
+            component: n.component.map(crate::inspect::ComponentInfo::of),
+            mark,
+            children: Vec::new(),
         }
+    }
+
+    fn inspect_node(&self, id: NodeId, marks: &rustc_hash::FxHashMap<NodeId, u32>) -> crate::inspect::Node {
+        let mut node = self.inspect_one(id, marks.get(&id).copied());
+        if self.node(id).parent.is_some_and(|p| self.node(p).component == self.node(id).component) {
+            node.component = None;
+        }
+        node.children =
+            self.node(id).children.iter().copied().filter(|c| self.shown_to_a11y(*c)).map(|c| self.inspect_node(c, marks)).collect();
+        node
     }
 }

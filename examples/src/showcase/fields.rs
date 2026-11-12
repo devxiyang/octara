@@ -4,6 +4,7 @@ use super::section;
 use octara::prelude::*;
 use octara_kit::{primary_button, switch, text_field};
 
+#[component]
 pub fn card() -> El {
     let notes_text =
         state("notes_text", || "Notes wrap at the field's width and the field grows with them.\nA second paragraph.".to_string());
