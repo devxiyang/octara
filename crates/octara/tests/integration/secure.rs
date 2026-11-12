@@ -15,7 +15,16 @@ fn app(platform: Platform) -> App {
         let v = state("v", || SECRET.to_owned());
         let show = state("show", || false);
         col()
-            .child(text_input().id("pw").label("Password").secure().revealed(move || show.get()).w(px(200.0)).value(move || v.get()).on_input(move |s| v.set(s)))
+            .child(
+                text_input()
+                    .id("pw")
+                    .label("Password")
+                    .secure()
+                    .revealed(move || show.get())
+                    .w(px(200.0))
+                    .value(move || v.get())
+                    .on_input(move |s| v.set(s)),
+            )
             .child(el().id("show").role(Role::Button).label("Show").on_press(move || show.update(|s| *s = !*s)).size_8())
             .into()
     });

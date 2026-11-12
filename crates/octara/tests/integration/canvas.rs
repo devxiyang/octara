@@ -71,7 +71,11 @@ fn drawn_in_the_content_box_clipped_and_themed() {
     let chart = k.find("chart").unwrap();
     let (x, y, ..) = k.rect(chart);
     drop(k);
-    let items: Vec<&Item> = dl.items.iter().filter(|i| matches!(i, Item::Path(p) if p.source == chart) || matches!(i, Item::PushClip { source, .. } if *source == chart)).collect();
+    let items: Vec<&Item> = dl
+        .items
+        .iter()
+        .filter(|i| matches!(i, Item::Path(p) if p.source == chart) || matches!(i, Item::PushClip { source, .. } if *source == chart))
+        .collect();
     let Item::PushClip { rect, .. } = items[0] else { panic!("the canvas clips to its content box first") };
     assert_eq!((rect.x, rect.y, rect.w, rect.h), (x + 8.0, y + 8.0, 784.0, 84.0));
     let Item::Path(bar) = items[1] else { panic!() };

@@ -161,7 +161,9 @@ pub(crate) trait Stage<K, T> {
 }
 
 /// A two-argument view closure, run as one (see [`view_fn`]).
-fn view_fn2<A: ?Sized + 'static, B: ?Sized + 'static, R: 'static>(f: impl Fn(&A, Option<&B>) -> R + 'static) -> impl Fn(&A, Option<&B>) -> R + 'static {
+fn view_fn2<A: ?Sized + 'static, B: ?Sized + 'static, R: 'static>(
+    f: impl Fn(&A, Option<&B>) -> R + 'static,
+) -> impl Fn(&A, Option<&B>) -> R + 'static {
     move |a, b| rt(|rt| rt.with_frame(Ctx::View, None, None, || f(a, b)))
 }
 
@@ -308,11 +310,8 @@ where
     pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> Derived<K, U> {
         let f = view_fn(f);
         let up = self.0.clone();
-        let out = up
-            .snapshot()
-            .into_iter()
-            .filter_map(|k| up.item(&k).map(|it| (k, Signal::detached(it.with_untracked(|t| f(t))))))
-            .collect();
+        let out =
+            up.snapshot().into_iter().filter_map(|k| up.item(&k).map(|it| (k, Signal::detached(it.with_untracked(|t| f(t)))))).collect();
         let m = Rc::new(MapInner { up: up.clone(), f: Box::new(f), out: RefCell::new(out), emitter: Emitter::new() });
         let obs: Rc<dyn Observer<K, T>> = m.clone();
         up.emitter().observers.borrow_mut().push(Rc::downgrade(&obs));
@@ -1024,7 +1023,9 @@ where
             rt(|rt| {
                 rt.diag(
                     &codes::JOIN_FANOUT,
-                    format!("one change on the right side of a join updated {updated} rows; the join's output takes something many rows share"),
+                    format!(
+                        "one change on the right side of a join updated {updated} rows; the join's output takes something many rows share"
+                    ),
                     self.at,
                 )
             });

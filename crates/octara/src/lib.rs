@@ -35,15 +35,15 @@ pub mod prelude {
     pub use crate::app::{App, Drag, DragPhase, Event, Key, KeyEvent, Modifiers};
     pub use crate::canvas::Canvas;
     pub use crate::icon::Icon;
-    pub use crate::paint::Rect;
     pub use crate::image::{Image, ObjectFit};
-    pub use crate::path::{FillRule, LineCap, LineJoin, Path, Stroke, Transform, point};
     pub use crate::kernel::{
         Align, BoxShadow, Breakpoint, Color, ContainerStep, Family, Fill, Paint, Placement, RadiusStep, Role, ShadowStep, Side, State,
         TextStep, Theme, Token, linear_color_stop, linear_gradient, rgb,
     };
     pub use crate::motion::{Curve, Spring};
     pub use crate::native::{NativeEvent, Slot};
+    pub use crate::paint::Rect;
+    pub use crate::path::{FillRule, LineCap, LineJoin, Path, Stroke, Transform, point};
     pub use crate::reactive::graph::{Memo, ReadSignal, Signal, memo, provide, state, untrack, use_context, watch};
     pub use crate::reactive::list::{Derived, FlatItem, FlatKey, GroupInfo, Groups, List, Source, list};
     pub use crate::reactive::text::{LiveText, live_text};

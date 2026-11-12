@@ -36,7 +36,10 @@ fn fills_follow_their_rule() {
     let non_zero = cpu.render(&list(vec![paint(ring, PathStyle::Fill(FillRule::NonZero), red)]), 1.0);
     assert_eq!(rgb8(&non_zero, 30, 30), RED, "same winding: filled");
     // Edges are antialiased: some pixel on the outer circle is between the two colors.
-    assert!((0..60).any(|y| { let p = rgb8(&non_zero, 10, y); p[1] > 0 && p[1] < 255 }));
+    assert!((0..60).any(|y| {
+        let p = rgb8(&non_zero, 10, y);
+        p[1] > 0 && p[1] < 255
+    }));
 }
 
 #[test]

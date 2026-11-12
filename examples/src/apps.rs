@@ -580,11 +580,8 @@ pub struct Message {
 /// Events: `Send("rename", "id:name")`, `Send("online", "id")`, `Send("forget", "id")` (the
 /// person goes; their rows stay, from "unknown").
 pub fn inbox(n: usize) -> View {
-    let people = list(
-        "people",
-        || (1..=20u32).map(|id| Person { id, name: format!("Person {id}"), online: false }).collect(),
-        |p: &Person| p.id,
-    );
+    let people =
+        list("people", || (1..=20u32).map(|id| Person { id, name: format!("Person {id}"), online: false }).collect(), |p: &Person| p.id);
     let messages = list(
         "messages",
         || (1..=n as u32).map(|id| Message { id, from: id % 20 + 1, body: format!("Message {id}") }).collect(),
@@ -600,23 +597,17 @@ pub fn inbox(n: usize) -> View {
     listen("forget", move |id| people.remove(&id.parse().unwrap_or(0)));
     col()
         .size_full()
-        .child(
-            col()
-                .id("messages")
-                .flex_1()
-                .overflow_y_scroll()
-                .child(each(
-                    move || rows.source(),
-                    |id, msg| {
-                        row()
-                            .gap_2()
-                            .child(text(move || msg.with(|r| r.0.clone())).font_semibold().id(format!("from-{id}")))
-                            .child(text(move || msg.with(|r| r.1.clone())))
-                            .id(format!("message-{id}"))
-                            .into()
-                    },
-                )),
-        )
+        .child(col().id("messages").flex_1().overflow_y_scroll().child(each(
+            move || rows.source(),
+            |id, msg| {
+                row()
+                    .gap_2()
+                    .child(text(move || msg.with(|r| r.0.clone())).font_semibold().id(format!("from-{id}")))
+                    .child(text(move || msg.with(|r| r.1.clone())))
+                    .id(format!("message-{id}"))
+                    .into()
+            },
+        )))
         .into()
 }
 

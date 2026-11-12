@@ -16,6 +16,8 @@
 
 pub use octara::icon::Icon;
 
+// Generated, one icon per line: rustfmt would spread it over ten times the lines.
+#[rustfmt::skip]
 mod lucide;
 pub use lucide::*;
 

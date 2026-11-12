@@ -346,8 +346,10 @@ mod tests {
         assert!(matches!(shapes[2].style, PathStyle::Fill(FillRule::NonZero)));
         assert!(matches!(&icon.shapes(Some(1.5))[1].style, PathStyle::Stroke(s) if s.width == 1.5));
 
-        let logo = Icon::svg(r#"<svg viewBox="0 0 10 10"><g transform="translate(5 0) scale(2)"><rect width="1" height="1" fill-rule="evenodd"/></g></svg>"#)
-            .unwrap();
+        let logo = Icon::svg(
+            r#"<svg viewBox="0 0 10 10"><g transform="translate(5 0) scale(2)"><rect width="1" height="1" fill-rule="evenodd"/></g></svg>"#,
+        )
+        .unwrap();
         let s = logo.shapes(None);
         assert_eq!(s.len(), 1, "filled by default, not stroked");
         assert_eq!(s[0].style, PathStyle::Fill(FillRule::EvenOdd));

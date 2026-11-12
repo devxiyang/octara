@@ -9,9 +9,11 @@ fn tricky() -> View {
         .size_full()
         .child(
             // A long scrolled list: most rows are off screen.
-            col().id("list").h(300).overflow_y_scroll().children((0..400).map(|i| {
-                row().id(format!("row-{i}")).h(24).px_2().on_press(|| {}).child(text(format!("Row {i}")))
-            })),
+            col()
+                .id("list")
+                .h(300)
+                .overflow_y_scroll()
+                .children((0..400).map(|i| row().id(format!("row-{i}")).h(24).px_2().on_press(|| {}).child(text(format!("Row {i}"))))),
         )
         .child(
             // An off-screen box whose child is placed back into view.
@@ -19,7 +21,11 @@ fn tricky() -> View {
         )
         .child(
             // An off-screen box whose shadow reaches into view.
-            el().w(100).h(40).ml(-140.0).bg(Token::Surface).shadow([BoxShadow::new(0.0, 0.0, rgb(0x000000)).blur_radius(40.0).spread_radius(20.0)]),
+            el().w(100)
+                .h(40)
+                .ml(-140.0)
+                .bg(Token::Surface)
+                .shadow([BoxShadow::new(0.0, 0.0, rgb(0x000000)).blur_radius(40.0).spread_radius(20.0)]),
         )
         .child(
             // A narrow off-screen text whose one line runs past its box into view.

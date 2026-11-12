@@ -142,7 +142,8 @@ fn even_lines(text: &str, em: f32, line_height: f32, max_width: Option<f32>) -> 
         }
         for (i, &s) in starts.iter().enumerate() {
             let e = starts.get(i + 1).copied().unwrap_or(para.len());
-            let mut stops: Vec<(usize, f32)> = para[s..e].char_indices().enumerate().map(|(n, (b, _))| (base + s + b, n as f32 * em)).collect();
+            let mut stops: Vec<(usize, f32)> =
+                para[s..e].char_indices().enumerate().map(|(n, (b, _))| (base + s + b, n as f32 * em)).collect();
             stops.push((base + e, para[s..e].chars().count() as f32 * em));
             out.push(VisualLine { start: base + s, end: base + e, top: out.len() as f32 * line_height, stops });
         }

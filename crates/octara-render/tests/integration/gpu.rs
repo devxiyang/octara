@@ -228,7 +228,12 @@ fn paths_list() -> octara::paint::DisplayList {
         item(Path::circle(point(320.0, 300.0), 280.0), PathStyle::Fill(FillRule::NonZero), rgb(0xdbeafe), Transform::IDENTITY),
         item(ring.clone(), PathStyle::Fill(FillRule::EvenOdd), rgb(0x2563eb), Transform::translate(50.3, 50.7)),
         item(ring, PathStyle::Fill(FillRule::NonZero), rgb(0x10b981).with_alpha(0.6), Transform::translate(110.0, 50.0)),
-        item(zigzag.clone(), PathStyle::Stroke(Stroke::new(6.0).join(LineJoin::Round).cap(LineCap::Round)), rgb(0xef4444), Transform::translate(160.0, 30.0)),
+        item(
+            zigzag.clone(),
+            PathStyle::Stroke(Stroke::new(6.0).join(LineJoin::Round).cap(LineCap::Round)),
+            rgb(0xef4444),
+            Transform::translate(160.0, 30.0),
+        ),
         item(zigzag.clone(), PathStyle::Stroke(Stroke::new(3.0).dash(&[6.0, 4.0])), rgb(0x111827), Transform::translate(160.0, 80.0)),
         item(zigzag, PathStyle::Stroke(Stroke::new(4.0)), rgb(0x7c3aed), Transform::rotate(30.0).then(&Transform::translate(240.0, 40.0))),
         gradient,
@@ -236,7 +241,12 @@ fn paths_list() -> octara::paint::DisplayList {
         item(Path::circle(point(80.0, 150.0), 50.0), PathStyle::Fill(FillRule::NonZero), rgb(0xec4899), Transform::IDENTITY),
         Item::PopClip,
         Item::PushLayer { source: NodeId::default(), opacity: 0.5 },
-        item(Path::rect(Rect { x: 200.0, y: 120.0, w: 60.0, h: 60.0 }), PathStyle::Fill(FillRule::NonZero), rgb(0x0ea5e9), Transform::IDENTITY),
+        item(
+            Path::rect(Rect { x: 200.0, y: 120.0, w: 60.0, h: 60.0 }),
+            PathStyle::Fill(FillRule::NonZero),
+            rgb(0x0ea5e9),
+            Transform::IDENTITY,
+        ),
         item(Path::circle(point(260.0, 180.0), 30.0), PathStyle::Fill(FillRule::NonZero), rgb(0xf97316), Transform::IDENTITY),
         Item::PopLayer,
     ];
@@ -308,9 +318,13 @@ fn underlay() -> View {
     el().size_full()
         .bg(Token::Surface)
         .child(
-            el().absolute().top(px(10.0)).left(px(10.0)).p_4().rounded_xl().bg(Token::Background).child(
-                native_view("map").slot(octara::native::Slot::Underlay).label("Map").w(px(160.0)).h(px(90.0)).rounded_lg(),
-            ),
+            el().absolute()
+                .top(px(10.0))
+                .left(px(10.0))
+                .p_4()
+                .rounded_xl()
+                .bg(Token::Background)
+                .child(native_view("map").slot(octara::native::Slot::Underlay).label("Map").w(px(160.0)).h(px(90.0)).rounded_lg()),
         )
         .child(el().absolute().top(px(40.0)).left(px(40.0)).size_8().rounded_full().bg(Token::Accent))
         .into()

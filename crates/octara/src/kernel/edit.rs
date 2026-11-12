@@ -276,7 +276,9 @@ impl Kernel {
         });
         let (shown, preedit, pairs) = match masked {
             Some((shown, pairs)) => (shown, 0..0, Some(pairs)),
-            None => (format!("{}{}{}", &input.value[..caret], input.preedit, &input.value[caret..]), caret..caret + input.preedit.len(), None),
+            None => {
+                (format!("{}{}{}", &input.value[..caret], input.preedit, &input.value[caret..]), caret..caret + input.preedit.len(), None)
+            }
         };
         let to_shown = |b: usize| match &pairs {
             Some(p) => p[p.partition_point(|x| x.0 <= b).saturating_sub(1)].1,

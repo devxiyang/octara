@@ -147,7 +147,8 @@ mod shadows {
         let s = app
             .display_list()
             .items
-            .clone().into_iter()
+            .clone()
+            .into_iter()
             .find_map(|i| if let Item::Shadow(s) = i { (s.source == own).then_some(s) } else { None })
             .unwrap();
         assert_eq!((s.rect.x, s.rect.y, s.rect.w), (x + 2.0 - 1.0, y + 3.0 - 1.0, w + 2.0));
@@ -193,7 +194,12 @@ fn an_unchanged_frame_is_reused() {
     let mut app = App::new(|| {
         let on = state("on", || false);
         col()
-            .child(el().id("box").size_8().bg(move || if on.get() { Token::Accent } else { Token::Surface }).on_press(move || on.update(|v| *v = !*v)))
+            .child(
+                el().id("box")
+                    .size_8()
+                    .bg(move || if on.get() { Token::Accent } else { Token::Surface })
+                    .on_press(move || on.update(|v| *v = !*v)),
+            )
             .child(el().id("moving").size_8().bg(move || if on.get() { Token::Danger } else { Token::Surface }).motion(Spring::SNAP))
             .into()
     });

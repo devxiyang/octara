@@ -140,7 +140,12 @@ impl Kernel {
         let mut full = Vec::new();
         self.a11y_subtree(self.root, scale, &mut full, &mut |_, _| {});
         for (id, n) in &full {
-            debug_assert_eq!(mirror.get(id), Some(n), "assistive technology was not told about a change to {:?}", self.node_of_a11y(*id).map(|n| self.describe(n)));
+            debug_assert_eq!(
+                mirror.get(id),
+                Some(n),
+                "assistive technology was not told about a change to {:?}",
+                self.node_of_a11y(*id).map(|n| self.describe(n))
+            );
         }
         let live: rustc_hash::FxHashSet<ak::NodeId> = full.iter().map(|(id, _)| *id).collect();
         mirror.retain(|id, _| live.contains(id));

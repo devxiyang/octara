@@ -4,9 +4,9 @@
 
 use crate::Bitmap;
 use crate::glyphs::{GlyphCache, SUBPIXEL_STEPS};
+use crate::paths::{self, PathCache};
 use crate::shape::{blend, blend_premultiplied, coverage, image_color, inner_rect, sd_round_rect, shadow_alpha};
 use octara::kernel::Color;
-use crate::paths::{self, PathCache};
 use octara::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, Quad, Rect, Shadow};
 
 /// A clip in device pixels.

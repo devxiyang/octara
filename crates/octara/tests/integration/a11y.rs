@@ -93,7 +93,10 @@ fn busy() -> View {
                 .motion(Spring::SNAP),
         )
         .child(el().id("toggle").size_8().role(Role::Button).label("Toggle").on_press(move || open.update(|o| *o = !*o)))
-        .child(show(move || open.get(), || col().id("panel").child(text("Inside")).child(el().id("deep").role(Role::Button).label("Deep").on_press(|| {})).into()))
+        .child(show(
+            move || open.get(),
+            || col().id("panel").child(text("Inside")).child(el().id("deep").role(Role::Button).label("Deep").on_press(|| {})).into(),
+        ))
         .child(el().id("add").size_8().role(Role::Button).label("Add").on_press(move || {
             let n = next.get();
             next.set(n + 1);
@@ -104,15 +107,14 @@ fn busy() -> View {
                 items.remove(&k);
             }
         }))
+        .child(el().id("menu-button").size_8().role(Role::Button).label("Menu").on_press(move || menu.update(|m| *m = !*m)).overlay(
+            move || menu.get(),
+            Placement::BELOW,
+            || text("A menu item").id("menu-item").into(),
+        ))
         .child(
-            el().id("menu-button")
-                .size_8()
-                .role(Role::Button)
-                .label("Menu")
-                .on_press(move || menu.update(|m| *m = !*m))
-                .overlay(move || menu.get(), Placement::BELOW, || text("A menu item").id("menu-item").into()),
+            col().id("list").h(100).overflow_y_scroll().child(each(move || items.source(), |i, _| text(format!("Item {i}")).h(30).into())),
         )
-        .child(col().id("list").h(100).overflow_y_scroll().child(each(move || items.source(), |i, _| text(format!("Item {i}")).h(30).into())))
         .into()
 }
 

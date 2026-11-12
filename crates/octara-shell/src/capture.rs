@@ -30,10 +30,19 @@ pub(crate) struct Job {
 
 enum Stage {
     Start,
-    Settling { until: Instant },
+    Settling {
+        until: Instant,
+    },
     /// Waiting for the presented frame to reach the window server.
-    Display { at: Instant, pending: Vec<String> },
-    Snapshots { until: Instant, pending: Vec<String>, fallback: Option<String> },
+    Display {
+        at: Instant,
+        pending: Vec<String>,
+    },
+    Snapshots {
+        until: Instant,
+        pending: Vec<String>,
+        fallback: Option<String>,
+    },
 }
 
 fn env<T: std::str::FromStr>(name: &str) -> Option<T> {

@@ -1416,7 +1416,15 @@ impl Kernel {
     /// Makes the box a native view of `kind` in `slot`, sized by the size it reports until an
     /// authored one.
     pub fn set_native(&mut self, id: NodeId, kind: &str, slot: crate::native::Slot) {
-        let content = NativeContent { kind: kind.to_owned(), slot, props: serde_json::Value::Null, version: 0, intrinsic: None, snapshot: None, live: false };
+        let content = NativeContent {
+            kind: kind.to_owned(),
+            slot,
+            props: serde_json::Value::Null,
+            version: 0,
+            intrinsic: None,
+            snapshot: None,
+            live: false,
+        };
         self.set_content(id, Content::Native(Box::new(content)));
         let t = self.node(id).taffy;
         self.taffy.set_node_context(t, Some(Measure::Native(id))).expect("taffy");

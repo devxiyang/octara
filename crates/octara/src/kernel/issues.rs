@@ -87,10 +87,15 @@ impl Kernel {
                 Item::Shadow(s) => Some((s.source, s.rect)),
                 Item::Image(i) => Some((i.source, i.rect.intersect(&i.bounds))),
                 Item::Path(p) => Some((p.source, p.bounds)),
-                Item::Glyphs(g) => g.glyphs.iter().map(|gl| Rect { x: gl.x, y: gl.y - g.size, w: g.size * 0.5, h: g.size }).reduce(|a, b| {
-                    let (x, y) = (a.x.min(b.x), a.y.min(b.y));
-                    Rect { x, y, w: a.right().max(b.right()) - x, h: a.bottom().max(b.bottom()) - y }
-                }).map(|r| (g.source, r)),
+                Item::Glyphs(g) => g
+                    .glyphs
+                    .iter()
+                    .map(|gl| Rect { x: gl.x, y: gl.y - g.size, w: g.size * 0.5, h: g.size })
+                    .reduce(|a, b| {
+                        let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+                        Rect { x, y, w: a.right().max(b.right()) - x, h: a.bottom().max(b.bottom()) - y }
+                    })
+                    .map(|r| (g.source, r)),
                 _ => None,
             };
             let Some((src, r)) = drawn else { continue };
@@ -106,7 +111,11 @@ impl Kernel {
                 self.issue(
                     src,
                     &codes::NATIVE_COVERED,
-                    format!("{} is painted over {}, a native view above Octara's surface: the view hides it", self.name(src), self.name(view)),
+                    format!(
+                        "{} is painted over {}, a native view above Octara's surface: the view hides it",
+                        self.name(src),
+                        self.name(view)
+                    ),
                     "move it out of the view's area, or put the view in the underlay (`.slot(Slot::Underlay)`) so content can draw over it",
                 )
             })
@@ -315,13 +324,7 @@ impl Kernel {
 
     /// `under`: the solid color behind this node, `None` where it is a gradient or an image
     /// (contrast is not judged there).
-    fn a11y_check(
-        &self,
-        id: NodeId,
-        under: Option<crate::kernel::Color>,
-        controls: &mut Vec<(NodeId, Rect)>,
-        out: &mut Vec<LayoutIssue>,
-    ) {
+    fn a11y_check(&self, id: NodeId, under: Option<crate::kernel::Color>, controls: &mut Vec<(NodeId, Rect)>, out: &mut Vec<LayoutIssue>) {
         let n = self.node(id);
         if n.hidden || n.layout.display == taffy::Display::None {
             return;

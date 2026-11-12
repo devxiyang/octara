@@ -244,7 +244,9 @@ fn streaming_text() {
 /// tree with nothing changed, and after one press (min of 3 runs of 20 frames, µs per frame).
 fn frames() {
     println!("## frame: display list and accessibility tree, layout ON (µs per frame, min of 3)\n");
-    println!("| app | nodes | items | display list (idle) | press + display list | a11y tree (whole) | a11y update after a press (nodes) |");
+    println!(
+        "| app | nodes | items | display list (idle) | press + display list | a11y tree (whole) | a11y update after a press (nodes) |"
+    );
     println!("| --- | ---: | ---: | ---: | ---: | ---: | ---: |");
     type Case = (&'static str, fn() -> View, &'static str);
     let cases: [Case; 4] = [

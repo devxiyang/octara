@@ -214,7 +214,8 @@ impl App {
             let st = i.edits.entry(n).or_default();
             let step = Step::between(&old, &value, (a0, c0), (anchor, caret));
             // Typing on from where the last edit of the same kind left off continues its step.
-            let continues = st.last.is_some_and(|(k, h, sel)| k == kind && kind != Kind::Other && sel == (a0, c0) && h == fingerprint(&old));
+            let continues =
+                st.last.is_some_and(|(k, h, sel)| k == kind && kind != Kind::Other && sel == (a0, c0) && h == fingerprint(&old));
             if !(continues && st.undo.last_mut().is_some_and(|last| last.merge(&step))) {
                 st.undo.push(step);
                 if st.undo.len() > UNDO_LIMIT {
@@ -371,7 +372,11 @@ impl App {
                 let text = self.clipboard.borrow_mut().read_text();
                 if let Some(t) = text {
                     // A multi-line field keeps line breaks; one line turns them into spaces.
-                    let t = if multiline { t.replace("\r\n", "\n").replace('\r', "\n") } else { t.replace("\r\n", " ").replace(['\n', '\r'], " ") };
+                    let t = if multiline {
+                        t.replace("\r\n", "\n").replace('\r', "\n")
+                    } else {
+                        t.replace("\r\n", " ").replace(['\n', '\r'], " ")
+                    };
                     let new = format!("{}{t}{}", &v[..s], &v[e..]);
                     self.apply(n, new, s + t.len(), s + t.len(), Kind::Other);
                 }
@@ -390,7 +395,11 @@ impl App {
                         let value = step.apply(&v, undo);
                         let sel = if undo { step.before } else { step.after };
                         st.last = Some((Kind::Other, fingerprint(&value), sel));
-                        if undo { st.redo.push(step) } else { st.undo.push(step) }
+                        if undo {
+                            st.redo.push(step)
+                        } else {
+                            st.undo.push(step)
+                        }
                         (value, sel)
                     })
                 };

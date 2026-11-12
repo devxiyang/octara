@@ -804,7 +804,14 @@ impl App {
                 Ok(misses) => (Shown::Failed, Some("its snapshot did not come in time".to_owned()), misses.clone()),
                 Err(why) => (Shown::Placeholder, Some(why.clone()), Vec::new()),
             };
-            native.push(NativeShot { id: k.test_id(n).map(str::to_owned), kind: v.kind.clone(), rect: [x, y, w, h], shown, reason, misses });
+            native.push(NativeShot {
+                id: k.test_id(n).map(str::to_owned),
+                kind: v.kind.clone(),
+                rect: [x, y, w, h],
+                shown,
+                reason,
+                misses,
+            });
         }
         let painted = painter.paint(&self.display_list(), scale).and_then(|p| p.save_png(path).map(|()| p));
         for (id, _) in &asked {
@@ -844,7 +851,14 @@ impl App {
             .filter_map(|(n, p)| {
                 let v = k.native(n)?;
                 let r = p.rect;
-                Some(NativeShot { id: k.test_id(n).map(str::to_owned), kind: v.kind.clone(), rect: [r.x, r.y, r.w, r.h], shown: Shown::Live, reason: None, misses: Vec::new() })
+                Some(NativeShot {
+                    id: k.test_id(n).map(str::to_owned),
+                    kind: v.kind.clone(),
+                    rect: [r.x, r.y, r.w, r.h],
+                    shown: Shown::Live,
+                    reason: None,
+                    misses: Vec::new(),
+                })
             })
             .collect();
         Ok(crate::capture::Capture {
@@ -888,4 +902,3 @@ impl App {
         self.native_host.borrow()
     }
 }
-

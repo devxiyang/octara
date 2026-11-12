@@ -398,12 +398,16 @@ pub fn handle(app: &mut App, req: Request) -> Reply {
         Request::Expect(e) => expect(app, &e),
         Request::Capture { path, settle_ms, scale, pixels } => {
             let Some(mut painter) = app.take_painter() else {
-                return Reply::fail(&codes::CAPTURE_FAILED, "nothing paints captures here: run through `octara run`, whose harness links the reference renderer");
+                return Reply::fail(
+                    &codes::CAPTURE_FAILED,
+                    "nothing paints captures here: run through `octara run`, whose harness links the reference renderer",
+                );
             };
             let _ = app.run_until_idle(Duration::from_millis(settle_ms.unwrap_or(5_000)));
             let pending = app.unsettled();
             app.capture_begin();
-            let fallback = (pixels == crate::capture::Pixels::Display).then(|| "headless: there is no window to take a picture of".to_owned());
+            let fallback =
+                (pixels == crate::capture::Pixels::Display).then(|| "headless: there is no window to take a picture of".to_owned());
             let result = app.capture_finish(&mut *painter, &path, scale.unwrap_or(2.0), pending, fallback);
             app.set_painter(painter);
             match result {

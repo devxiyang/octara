@@ -38,13 +38,24 @@ use crate::path::{FillRule, Path, PathStyle, Point, Stroke, Transform, point};
 /// One recorded drawing step, in the canvas's coordinates (`transform` maps the path's).
 #[derive(Clone, PartialEq, Debug)]
 pub enum CanvasOp {
-    Path { path: Path, style: PathStyle, fill: Fill, transform: Transform },
+    Path {
+        path: Path,
+        style: PathStyle,
+        fill: Fill,
+        transform: Transform,
+    },
     /// An image drawn into `rect` (the bounding box of the rect under the transform then).
-    Image { image: Image, rect: Rect },
+    Image {
+        image: Image,
+        rect: Rect,
+    },
     Text(CanvasText),
     /// Clips what follows to `rect` (rounded by `radius`; the bounding box under the transform
     /// then) until the matching `PopClip`.
-    PushClip { rect: Rect, radius: f32 },
+    PushClip {
+        rect: Rect,
+        radius: f32,
+    },
     PopClip,
 }
 

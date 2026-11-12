@@ -25,7 +25,14 @@ fn chart(picked: Signal<usize>) -> El {
         let pts: Vec<_> = SALES.iter().enumerate().map(|(i, v)| point(slot * (i as f32 + 0.5), h - v / max * h)).collect();
         let line = Path::new().add_polygon(&pts, false);
         let area = line.clone().line_to((pts[11].x, h)).line_to((pts[0].x, h)).close();
-        c.fill(&area, linear_gradient(180.0, linear_color_stop(rgb(0x6366f1).with_alpha(0.25), 0.0), linear_color_stop(rgb(0x6366f1).with_alpha(0.0), 1.0)));
+        c.fill(
+            &area,
+            linear_gradient(
+                180.0,
+                linear_color_stop(rgb(0x6366f1).with_alpha(0.25), 0.0),
+                linear_color_stop(rgb(0x6366f1).with_alpha(0.0), 1.0),
+            ),
+        );
         for (i, v) in SALES.iter().enumerate() {
             let bh = v / max * h;
             let bar = Path::rounded_rect(Rect::new(slot * i as f32 + slot * 0.2, h - bh, slot * 0.6, bh), 3.0);
@@ -59,12 +66,23 @@ pub fn card() -> El {
     let picked = state("picked", || 11usize);
     section("Canvas and icons")
         .child(chart(picked))
-        .child(text(move || format!("{}: {} — drag across the chart", MONTHS[picked.get()], SALES[picked.get()])).text_xs().text_color(Token::TextMuted))
+        .child(
+            text(move || format!("{}: {} — drag across the chart", MONTHS[picked.get()], SALES[picked.get()]))
+                .text_xs()
+                .text_color(Token::TextMuted),
+        )
         .child(
             row()
                 .gap_3()
                 .items_center()
                 .children([icons::HOUSE, icons::SEARCH, icons::BELL, icons::SETTINGS, icons::HEART, icons::STAR].map(|i| icon(i).size_5()))
-                .child(row().gap_1().items_center().text_color(Token::Accent).child(icon(icons::SPARKLES)).child(text("Lucide, in the text color").text_sm())),
+                .child(
+                    row()
+                        .gap_1()
+                        .items_center()
+                        .text_color(Token::Accent)
+                        .child(icon(icons::SPARKLES))
+                        .child(text("Lucide, in the text color").text_sm()),
+                ),
         )
 }

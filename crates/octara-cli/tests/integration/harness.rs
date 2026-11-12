@@ -70,7 +70,11 @@ fn check_inspect_and_run_drive_the_app() {
     let (code, out, err) = octara(&["run"], Some(&request));
     assert_eq!(code, 0, "{err}");
     let reply: serde_json::Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
-    assert_eq!((reply["ok"].as_bool(), reply["capture"]["renderer"].as_str(), reply["capture"]["settled"].as_bool()), (Some(true), Some("reference"), Some(true)), "{reply}");
+    assert_eq!(
+        (reply["ok"].as_bool(), reply["capture"]["renderer"].as_str(), reply["capture"]["settled"].as_bool()),
+        (Some(true), Some("reference"), Some(true)),
+        "{reply}"
+    );
     let png = std::fs::read(&shot).unwrap();
     std::fs::remove_file(&shot).unwrap();
     assert_eq!(&png[1..4], b"PNG");

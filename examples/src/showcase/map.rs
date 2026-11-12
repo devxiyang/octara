@@ -41,8 +41,10 @@ pub fn card() -> El {
                 ),
         )
         .child(
-            text(move || if center.get().is_empty() { "Drag or pinch the map".to_string() } else { format!("Centered at {}", center.get()) })
-                .text_sm()
-                .id("map_status"),
+            text(
+                move || if center.get().is_empty() { "Drag or pinch the map".to_string() } else { format!("Centered at {}", center.get()) },
+            )
+            .text_sm()
+            .id("map_status"),
         )
 }

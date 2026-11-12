@@ -83,8 +83,13 @@ fn new_pixels_draw_without_rerunning_the_view() {
     let mut app = App::new(move || col().child(el().id("pic").w(40).img(&shown)).into());
     app.reset_work();
     img.set(4, 4, [255u8, 255, 255, 255].repeat(16));
-    let frame =
-        app.display_list().items.clone().into_iter().find_map(|i| if let Item::Image(p) = i { Some(p.image.frame()) } else { None }).unwrap();
+    let frame = app
+        .display_list()
+        .items
+        .clone()
+        .into_iter()
+        .find_map(|i| if let Item::Image(p) = i { Some(p.image.frame()) } else { None })
+        .unwrap();
     assert_eq!(frame.version, 1);
     assert_eq!(frame.rgba[0], 255);
     assert_eq!(app.work().closures_run, 0);

@@ -11,7 +11,12 @@ use octara::prelude::*;
 use octara_icons as icons;
 
 fn tile(e: &'static icons::Entry) -> El {
-    col().w(88).items_center().gap_1().child(icon(e.icon.clone()).size_6()).child(text(e.name).text_xs().text_color(Token::TextMuted).truncate())
+    col()
+        .w(88)
+        .items_center()
+        .gap_1()
+        .child(icon(e.icon.clone()).size_6())
+        .child(text(e.name).text_xs().text_color(Token::TextMuted).truncate())
 }
 
 fn sample() -> View {
@@ -44,7 +49,12 @@ fn sample() -> View {
                 .child(button("Search", icons::SEARCH, true))
                 .child(button("Save", icons::SAVE, false))
                 .child(button("Delete", icons::TRASH, false).text_color(Token::Danger))
-                .child(row().gap_3().children([rgb(0xef4444), rgb(0xf59e0b), rgb(0x10b981), rgb(0x3b82f6), rgb(0x8b5cf6)].map(|c| icon(icons::HEART).size_6().text_color(c)))),
+                .child(
+                    row().gap_3().children(
+                        [rgb(0xef4444), rgb(0xf59e0b), rgb(0x10b981), rgb(0x3b82f6), rgb(0x8b5cf6)]
+                            .map(|c| icon(icons::HEART).size_6().text_color(c)),
+                    ),
+                ),
         )
         .into()
 }
@@ -59,7 +69,15 @@ fn main() {
         let mut app = App::new(move || match &q {
             Some(q) => {
                 let found = icons::search(q);
-                row().size_full().p_4().gap_2().flex_wrap().items_start().bg(Token::Background).children(found.into_iter().take(120).map(tile)).into()
+                row()
+                    .size_full()
+                    .p_4()
+                    .gap_2()
+                    .flex_wrap()
+                    .items_start()
+                    .bg(Token::Background)
+                    .children(found.into_iter().take(120).map(tile))
+                    .into()
             }
             None => sample(),
         });

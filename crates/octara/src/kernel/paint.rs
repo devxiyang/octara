@@ -458,7 +458,14 @@ impl Kernel {
                 }
                 CanvasOp::Image { image, rect } => {
                     let r = at(*rect);
-                    out.push(Item::Image(crate::paint::ImagePaint { source: id, image: image.clone(), rect: r, bounds: r, radius: 0.0, opacity }));
+                    out.push(Item::Image(crate::paint::ImagePaint {
+                        source: id,
+                        image: image.clone(),
+                        rect: r,
+                        bounds: r,
+                        radius: 0.0,
+                        opacity,
+                    }));
                 }
                 CanvasOp::Text(t) => {
                     slot += 1;
@@ -625,7 +632,8 @@ impl Kernel {
                 p = an.parent;
             }
             let visible = shown && opacity > 0.0 && !rect.intersect(&clip).is_empty();
-            let covered = if nv.slot == crate::native::Slot::Underlay && visible { self.covering(id, rect.intersect(&clip)) } else { Vec::new() };
+            let covered =
+                if nv.slot == crate::native::Slot::Underlay && visible { self.covering(id, rect.intersect(&clip)) } else { Vec::new() };
             out.push((
                 id,
                 crate::native::Placement {
@@ -644,4 +652,3 @@ impl Kernel {
         out
     }
 }
-

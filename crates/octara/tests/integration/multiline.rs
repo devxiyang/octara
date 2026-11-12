@@ -194,7 +194,16 @@ fn a_growing_field_keeps_its_caret_in_view_in_a_scroll_container() {
             .w(px(300.0))
             .overflow_y_scroll()
             .child(el().h(px(60.0)))
-            .child(text_input().id("area").label("Notes").multiline().line_height(px(24.0)).w(px(200.0)).value(move || v.get()).on_input(move |s| v.set(s)))
+            .child(
+                text_input()
+                    .id("area")
+                    .label("Notes")
+                    .multiline()
+                    .line_height(px(24.0))
+                    .w(px(200.0))
+                    .value(move || v.get())
+                    .on_input(move |s| v.set(s)),
+            )
             .into()
     });
     app.kernel_mut().set_text_engine(Box::new(MonoEngine));

@@ -27,13 +27,13 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{NSBitmapImageRep, NSDeviceRGBColorSpace, NSGraphicsContext, NSImage, NSView, NSWindowOrderingMode};
+use objc2_foundation::{
+    NSDictionary, NSError, NSKeyValueChangeKey, NSKeyValueObservingOptions, NSObjectNSKeyValueObserverRegistration, NSPoint, NSRect,
+    NSSize, NSString, NSURL, NSURLRequest, ns_string,
+};
 use objc2_map_kit::{
     MKCoordinateRegion, MKCoordinateSpan, MKHybridMapConfiguration, MKImageryMapConfiguration, MKMapConfiguration, MKMapSnapshot,
     MKMapSnapshotOptions, MKMapSnapshotter, MKMapView, MKMapViewDelegate, MKStandardMapConfiguration,
-};
-use objc2_foundation::{
-    NSDictionary, NSError, NSKeyValueChangeKey, NSKeyValueObservingOptions, NSObjectNSKeyValueObserverRegistration,
-    NSPoint, NSRect, NSSize, NSString, NSURL, NSURLRequest, ns_string,
 };
 use objc2_quartz_core::{CAMetalLayer, CATransaction};
 use objc2_web_kit::{WKNavigation, WKNavigationDelegate, WKSnapshotConfiguration, WKWebView, WKWebViewConfiguration};
@@ -232,7 +232,9 @@ impl Underlay {
         let this = Self::alloc(mtm).set_ivars(Regions::default());
         let host: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
         // Width and height follow winit's view.
-        host.setAutoresizingMask(objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable | objc2_app_kit::NSAutoresizingMaskOptions::ViewHeightSizable);
+        host.setAutoresizingMask(
+            objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable | objc2_app_kit::NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
         host.setWantsLayer(true);
         host
     }
@@ -487,7 +489,12 @@ impl Views {
         let delegate = WebDelegate::new(mtm, id, self.inbox.clone());
         unsafe {
             web.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-            web.addObserver_forKeyPath_options_context(&delegate, ns_string!("title"), NSKeyValueObservingOptions::New, std::ptr::null_mut());
+            web.addObserver_forKeyPath_options_context(
+                &delegate,
+                ns_string!("title"),
+                NSKeyValueObservingOptions::New,
+                std::ptr::null_mut(),
+            );
         }
         load(&web, props);
         (web, delegate)
@@ -622,9 +629,9 @@ impl Views {
     /// Placements waiting that move or resize a view (or show one for the first time).
     fn moving(&self) -> bool {
         self.pending.iter().any(|p| {
-            self.hosted.get(&p.id).is_some_and(|h| {
-                h.placed.as_ref().is_none_or(|q| q.rect != p.rect || q.clip != p.clip || q.visible != p.visible)
-            })
+            self.hosted
+                .get(&p.id)
+                .is_some_and(|h| h.placed.as_ref().is_none_or(|q| q.rect != p.rect || q.clip != p.clip || q.visible != p.visible))
         })
     }
 

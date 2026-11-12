@@ -19,21 +19,26 @@ fn view() -> View {
         .child(el().id("next").role(Role::Button).label("Next").size_8().on_press(move || url.set("https://example.org".into())))
         .child(text(move || loaded.get()).id("loaded"))
         .child(
-            col().id("page").h(px(200.0)).overflow_y_scroll().child(show(
-                move || shown.get(),
-                move || {
-                    web_view(move || url.get())
-                        .id("web")
-                        .label("Help page")
-                        .w(px(300.0))
-                        .on_native(move |e: &NativeEvent| {
-                            if e.name == "load" {
-                                loaded.set(e.data["url"].as_str().unwrap_or_default().to_owned())
-                            }
-                        })
-                        .into()
-                },
-            )).child(el().h(px(400.0))),
+            col()
+                .id("page")
+                .h(px(200.0))
+                .overflow_y_scroll()
+                .child(show(
+                    move || shown.get(),
+                    move || {
+                        web_view(move || url.get())
+                            .id("web")
+                            .label("Help page")
+                            .w(px(300.0))
+                            .on_native(move |e: &NativeEvent| {
+                                if e.name == "load" {
+                                    loaded.set(e.data["url"].as_str().unwrap_or_default().to_owned())
+                                }
+                            })
+                            .into()
+                    },
+                ))
+                .child(el().h(px(400.0))),
         )
         .into()
 }
@@ -134,8 +139,28 @@ impl octara::native::NativeHost for Shows {
 
 fn map_with_controls() -> View {
     el().size_full()
-        .child(native_view("map").slot(Slot::Underlay).id("map").label("Map").absolute().top(px(10.0)).left(px(10.0)).w(px(200.0)).h(px(100.0)))
-        .child(el().id("zoom").role(Role::Button).label("Zoom").absolute().top(px(20.0)).left(px(20.0)).size_8().bg(Token::Accent).on_press(|| {}))
+        .child(
+            native_view("map")
+                .slot(Slot::Underlay)
+                .id("map")
+                .label("Map")
+                .absolute()
+                .top(px(10.0))
+                .left(px(10.0))
+                .w(px(200.0))
+                .h(px(100.0)),
+        )
+        .child(
+            el().id("zoom")
+                .role(Role::Button)
+                .label("Zoom")
+                .absolute()
+                .top(px(20.0))
+                .left(px(20.0))
+                .size_8()
+                .bg(Token::Accent)
+                .on_press(|| {}),
+        )
         .into()
 }
 
@@ -143,17 +168,16 @@ fn map_with_controls() -> View {
 fn a_shown_underlay_view_is_cut_out_and_its_covered_parts_known() {
     use octara::paint::Item;
     let mut app = App::new(map_with_controls);
-    let natives = |app: &App| -> Vec<bool> { app.display_list().items.iter().filter_map(|i| if let Item::Native { cut, .. } = i { Some(*cut) } else { None }).collect() };
+    let natives = |app: &App| -> Vec<bool> {
+        app.display_list().items.iter().filter_map(|i| if let Item::Native { cut, .. } = i { Some(*cut) } else { None }).collect()
+    };
     assert_eq!(natives(&app), [false], "headless: a placeholder, no hole");
 
     app.set_native_host(Box::new(Shows));
     let list = app.display_list();
     assert_eq!(natives(&app), [true], "shown by the platform: cut out");
     let map = app.kernel().find("map").unwrap();
-    assert!(
-        !list.items.iter().any(|i| matches!(i, Item::Quad(q) if q.source == map)),
-        "no placeholder under a view the platform shows"
-    );
+    assert!(!list.items.iter().any(|i| matches!(i, Item::Quad(q) if q.source == map)), "no placeholder under a view the platform shows");
     let placements = app.kernel().native_placements();
     let covered = &placements[0].1.covered;
     assert_eq!(covered.len(), 1, "{covered:?}");
