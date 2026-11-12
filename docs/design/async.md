@@ -1,7 +1,7 @@
 # Async: Tasks, Timers, Channels and Resources
 
 Based on [async research](../research/async.md). Confirmed: a self-written single-threaded executor (the core does not depend on Tokio); typed
-channels, optionally named, replacing `on_external`; a subscription is a scope-owned handle.
+channels, optionally named; a subscription is a scope-owned handle.
 
 ## Tasks
 
@@ -23,7 +23,7 @@ channels, optionally named, replacing `on_external`; a subscription is a scope-o
 
 ## Time
 
-- The only clock is the app clock (previously in `App`, now in the scheduler; tasks and `sleep` both read it). Before each event and frame the shell
+- The only clock is the app clock, kept by the scheduler (tasks and `sleep` both read it). Before each event and frame the shell
   calls `advance_to(time since launch)`; tests call `advance(d)`.
 - `sleep(d)`, `sleep_until(t)`, `now()`, `interval(d, f)` (each firing time is computed from the start, no drift).
 - `advance_to` handles everything that expires along the way (timers, long presses) in time order, each at its own time; `next_deadline` aggregates
@@ -41,7 +41,7 @@ channels, optionally named, replacing `on_external`; a subscription is a scope-o
 - `channel::<T>() -> (Sender<T>, Receiver<T>)`: `Sender` is `Send + Clone` and can be taken to any thread; `Receiver` is on the UI thread, with
   `rx.recv().await` or `rx.on(|v| ..)` (a subscription: owned by the scope, stops when the scope is destroyed, after which the sender gets its value back).
 - `rx.named("token")` (`T: FromStr`): tests and agents feed text by name (`App::send(name, payload)`, `Event::Send`); the name itself counts as a
-  sender, and the channel stays open while it is registered. This replaces `on_external` and `Event::External`.
+  sender, and the channel stays open while it is registered.
 
 ## Resources
 

@@ -50,7 +50,7 @@ Windows.Graphics.Capture of the own window (later). Where it is unavailable (hea
 a locked screen or a sleeping display, an empty picture) the capture is painted and `fallback`
 says why. Native views are `live` in it.
 
-As built (macOS): the latest frame is presented, and 40 ms later (two refreshes and a margin)
+On macOS the latest frame is presented, and 40 ms later (two refreshes and a margin)
 the content view's rect in global display coordinates is taken from the window server
 (framing ignored, best resolution). It falls back when the session's screen is locked
 (`CGSSessionScreenIsLocked`), the symbol is gone, the window is not visible, or the picture's
@@ -62,7 +62,7 @@ size is not the window's (a sleeping display).
   renderer; the harness links `octara-render` for it.
 - A window: `OCTARA_CAPTURE=shot.png` (with `OCTARA_CAPTURE_AFTER_MS`, `OCTARA_CAPTURE_SCROLL`,
   `OCTARA_CAPTURE_PIXELS=display`) captures once and exits, printing the report as JSON; the
-  window's agent channel (Native Island step 4) will take the same request.
+  window's agent channel ([Native Island](native-island.md)) will take the same request.
 
 ## Steps
 

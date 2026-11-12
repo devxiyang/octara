@@ -199,8 +199,8 @@ impl Kernel {
             _ => self.value(id).to_owned(),
         }
     }
-    /// Shows the grapheme typed at value offset `at` of a secure field for [`REVEAL_LAST`]
-    /// seconds (touch platforms); `None` hides it now.
+    /// Shows the grapheme typed at value offset `at` of a secure field for `REVEAL_LAST`
+    /// (1.5) seconds (touch platforms); `None` hides it now.
     pub fn reveal_typed(&mut self, id: NodeId, at: Option<usize>) {
         let until = self.now + REVEAL_LAST;
         let Some(i) = self.node_mut(id).input_mut() else { return };

@@ -1,12 +1,17 @@
 //! Octara: agent-first native UI in Rust.
 //!
-//! - [`kernel`]: the retained node tree, invalidation categories, layout, semantics, counters;
 //! - [`reactive`]: signals, named state, incremental collections, live text;
+//! - [`kernel`]: the retained node tree, invalidation categories, layout, semantics, counters;
 //! - [`view`]: elements, bindings, structure, list rendering;
-//! - [`app`]: the runtime that mounts a view and dispatches events;
-//! - [`testing`]: headless driving and from-scratch consistency checks;
+//! - [`app`]: the app and its windows: input events, frames, focus, keymap, clock, recording;
+//! - [`window`]: opening and closing windows from app code;
+//! - [`task`]: tasks, timers, channels and resources on the app clock;
+//! - [`platform`]: what the app needs from the system, and the headless platform;
+//! - [`paint`], [`path`], [`icon`], [`image`], [`canvas`], [`motion`], [`native`]: what is drawn
+//!   and how it moves;
 //! - [`diagnostics`]: every reported problem's code, cause and fix;
-//! - [`inspect`]: the semantic tree, scripts and checks tools drive a headless app with.
+//! - [`inspect`] and [`capture`]: the semantic tree, scripts, checks and pictures agents drive an
+//!   app with.
 //!
 //! Most apps only need the [`prelude`].
 

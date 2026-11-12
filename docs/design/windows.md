@@ -1,32 +1,35 @@
 # Windows and popups
 
-Based on the [research](../research/windows-and-platform.md). Status: confirmed; in progress. The
-ownership and context it runs on are [the core's](core.md), which supersedes step 1 below.
+Based on the [research](../research/windows-and-platform.md). Status: confirmed; several windows
+are implemented headless, in the protocol and in captures; the winit backend shows one window;
+popups and menus are not implemented. Ownership and context are [the core's](core.md).
 
 ## Model
 
-- One `App` holds the one reactive runtime and its windows: `windows: SlotMap<WindowId,
-  Window>`. A `Window` owns what is the window's own: its `Kernel` (root, viewport, overlay
-  layer), interaction state (focus, hover, presses, edits), size, scale, its viewport and
-  breakpoint signals, its native host and what was sent to it, its accessibility state and a
-  capture in progress. The kernel does not know other windows.
-- Each window has a root scope under the app's scope: closing a window disposes its scopes only.
-  Signals, lists and resources are the app's and shared by every window.
-- What reads "the window" (`window_size()`, breakpoints, focus commands, `open_window`'s parent)
-  means the window whose view is being built or whose event is being handled.
+- One `App` holds the one reactive runtime and its windows. A window owns what is its own: its
+  `Kernel` (root, viewport, overlay layer), interaction state (focus, hover, presses, edits),
+  size, scale, its viewport and breakpoint signals, its platform window and what was presented
+  to it, and a capture in progress. The kernel does not know other windows.
+- Each window has its own root scope: closing a window disposes its scope only. Signals, lists
+  and resources made outside a window's view (`App::run`) are the app's and shared by every
+  window.
+- What reads "the window" (`window_size()`, breakpoints, focus commands, `current_window()`)
+  means the window whose view is being built, whose event is being handled or whose task runs.
 
 ## API (GPUI's names, Octara's free functions)
 
-- `open_window(WindowOptions, || View) -> WindowHandle`; `WindowHandle::close()`,
-  `windows()`, `on_window_closed(..)`. `WindowOptions`: title, size, kind.
-- `WindowKind::{Normal, Dialog, Popup(PopupOptions)}`; `PopupOptions { parent, anchor_rect,
-  anchor, gravity, constraint_adjustment, offset, grab }`, placed by the platform.
+- `App::open_window(WindowOptions, || View) -> Result<Window, String>`; from app code,
+  `open_window(..) -> Result<WindowId, String>` (built at the end of the frame),
+  `close_window(id)`, `windows()`, `current_window()`. `WindowOptions`: title, size, kind.
+- `WindowKind::{Normal, Dialog}`; `Popup(PopupOptions)` with `PopupOptions { parent,
+  anchor_rect, anchor, gravity, constraint_adjustment, offset, grab }`, placed by the platform,
+  comes with popups. `on_window_closed(..)` comes with close requests.
 
 ## Popups and menus
 
-- In-window overlays (today's) stay the default and the fallback on every platform; a popup
-  becomes its own OS window where the platform supports it and it must leave the window's
-  bounds (Wayland `xdg_popup`, macOS panels), from the same view.
+- In-window overlays stay the default and the fallback on every platform; a popup becomes its
+  own OS window where the platform supports it and it must leave the window's bounds (Wayland
+  `xdg_popup`, macOS panels), from the same view.
 - Dismissal is an event from the popup (a grab does not see clicks inside the app); the focus
   before it opened returns when it closes; a modal dialog blocks its parent's input.
 - Menus (Rune's): asking for one answers the picked id or `None`; native on macOS and Windows,
@@ -35,13 +38,12 @@ ownership and context it runs on are [the core's](core.md), which supersedes ste
 
 ## Agents
 
-- The inspector's snapshot lists `windows`; every node names its window; requests take an
-  optional `window` (default: the main window). Test ids are per window. A popup is a window
-  whose parent is named.
+- The inspector's snapshot names its window and lists the app's (`window`, `windows`: number,
+  title, size); requests take an optional `window` (default: the window the protocol was given).
+  Test ids are per window. A popup is a window whose parent is named.
 
 ## Steps
 
-1. Move the window's own state from `App` into `Window`, one window, no change in behavior.
-2. `open_window` for normal windows and dialogs; the shell routes events by window.
-3. Windows in the inspector protocol and captures.
-4. Native menus (macOS, Windows), then OS popups (Wayland, macOS panels).
+1. Several windows headless; windows in the inspector protocol and captures. Implemented.
+2. Several windows in the winit backend; the shell routes events by window.
+3. Native menus (macOS, Windows), then OS popups (Wayland, macOS panels).

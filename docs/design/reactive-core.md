@@ -1,7 +1,7 @@
 # Reactive Core
 
 Status: a settled design, implemented in `crates/octara/src/reactive/` and `crates/octara/src/view/`.
-This document replaces the earlier state-model arguments and the experiment notes from each round (the originals are in git history); research material is in [`docs/research/`](../research/).
+Research material is in [`docs/research/`](../research/).
 
 ## 1. Conclusion
 
@@ -107,7 +107,7 @@ Data is from Apple M4, `--release`, Headless; counts are exact, times are the mi
 ## 9. Known limitations
 
 - Kernel children are a `Vec`: with siblings on the order of 100,000, insert and remove are O(n); avoided by virtualization;
-- Flattening builds a separate entry Signal per item (about twice the memory), to be removed once the `map` operator solves the entry-type mapping;
-- Virtualized row heights are estimates, not yet backfilled with real layout, and there is no scroll anchoring for variable-height rows;
-- Text is measured only as monospace; per-paragraph incremental layout must be implemented in the real text stack;
+- Flattening builds a separate entry Signal per item (about twice the memory; see [map and join](map-join.md));
+- After hot reload, virtual list rows are measured again;
+- A very long paragraph without line breaks is laid out whole ([layout](layout.md));
 - Tasks, subscriptions and cancellable resources are in [async](async.md).

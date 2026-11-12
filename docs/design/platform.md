@@ -1,12 +1,13 @@
 # The platform layer
 
-Based on the [research](../research/windows-and-platform.md). Status: confirmed; step 1 implemented.
-[The core](core.md) moves the boundary to frames out (`PlatformWindow::present`) and input in
-(`InputEvent`).
+Based on the [research](../research/windows-and-platform.md). Status: confirmed; the traits, the
+headless platform and the winit backend behind them are implemented, the owned macOS backend is
+not.
 
 The app and the kernel never see a windowing library's types. A platform backend implements a
-narrow set of traits (GPUI's names, about 45 methods to start); headless runs (tests, agents,
-`octara run`) implement the same traits.
+narrow set of traits (GPUI's names); headless runs (tests, agents, `octara run`) implement the
+same traits. Input reaches the app as [`InputEvent`s](core.md#driving-an-app) and each window's
+platform is presented a `Frame` after each operation.
 
 ## Traits
 
@@ -15,35 +16,36 @@ narrow set of traits (GPUI's names, about 45 methods to start); headless runs (t
   file dialogs, revealing paths, opening URLs; the clipboard; appearance and cursor; the app's
   lifecycle (suspend, resume, memory warnings); the keyboard layout.
 - `PlatformWindow`: bounds, content size, scale, appearance, safe-area insets; title, minimize,
-  zoom, fullscreen, activate; input in (`PlatformInput`), resize, close, active status, frame
-  requests; `set_input_handler` and the text input configuration (secure, multi-line, the
-  return key, the content type), the input method's position, the soft keyboard; the
-  accessibility tree; the native view host; `draw(frame)`, where the frame and the native views'
-  placements reach the screen together; surface loss and recovery.
+  zoom, fullscreen, activate; resize, close, active status; `present(Frame)`: native views'
+  changes and placements, the focused field's text input (its caret for the input method,
+  secure, multi-line), whether to draw; the soft keyboard; the accessibility tree; surface loss
+  and recovery. Questions it answers: whether it shows a kind of native view, a view's snapshot,
+  whether a view is busy.
 - `InputHandler` (NSTextInputClient's model, as GPUI's): text for a range, the selected and
   marked ranges, replace text in a range, replace and mark, unmark, bounds for a range, the
   character index at a point. Backends without a direct text protocol (winit's IME events) feed
   it the same way.
-- What existed became part of it: the clipboard, the native host, the waker.
-- As built (step 1, `octara::platform`; frames since [the core](core.md)'s step 2): `Platform`
-  (the clipboard, the waker, `open_window`) and `PlatformWindow` (`present(Frame)`: native
-  changes, the focused field's text input, whether to redraw; `shows_native`,
-  `snapshot_native`, `native_busy`); `HeadlessPlatform` and
-  `HeadlessWindow` are `Window::headless`'s; `App::new(platform)` takes a backend's, whose
-  `open_window` makes each window's; `App::platform()` and `Window::platform_window()` reach
-  them. The shell's
-  `WinitPlatform` (arboard, the event loop's proxy) and `WinitWindow` (the native host, the
-  input method's position, secure input) implement them: the app no longer installs a clipboard,
-  a waker or a host, and the shell no longer polls the caret. The enum of platform conventions
-  is `TargetPlatform` (`App::target_platform`). Opening windows joins with
-  [windows](windows.md) step 2; `InputHandler` and a `PlatformInput` stream with the owned
-  macOS backend.
+
+## Implemented
+
+- `octara::platform`: `Platform` (the clipboard's text, the waker, `open_window`) and
+  `PlatformWindow` (`present`, `shows_native`, `snapshot_native`, `native_busy`); `Frame`,
+  `TextInput`, `WindowOptions` (title, size, `WindowKind::{Normal, Dialog}`).
+- `HeadlessPlatform` and `HeadlessWindow`: what `Window::headless` runs on. A headless window
+  keeps the native changes it was presented, the text input, a count of frames, and can be told
+  to show native views, take snapshots or be busy (`HeadlessPlatform::with_window`).
+- `App::new(platform)` takes a backend's platform, whose `open_window` makes each window's
+  platform window; `App::platform()` and `Window::platform_window()` reach them.
+- The shell's `WinitPlatform` (arboard, the event loop's proxy) and `WinitWindow` (the macOS
+  native view host, the input method's position, secure input) implement them. The enum of
+  platform conventions is `TargetPlatform` (`App::target_platform`).
+- Not yet: `InputHandler`, menus, file dialogs, URLs, cursor, displays, lifecycle, more than one
+  winit window.
 
 ## Backends
 
-1. winit 0.30 (today's shell, behind the traits, behavior unchanged): macOS, Windows and Linux;
-   raw handles for AppKit views, DirectComposition, `muda` and `rfd`. winit 0.31 is evaluated
-   when it is released.
+1. winit 0.30: macOS, Windows and Linux; raw handles for AppKit views, DirectComposition, `muda`
+   and `rfd`. winit 0.31 is evaluated when it is released.
 2. macOS, owned (NSWindow, an NSView with NSTextInputClient, menus, live resize in the frame's
    transaction, panels for popups), sharing Apple code with a later iOS backend.
 3. Windows and Linux stay on winit until direct text protocols (TSF, text-input-v3) become a
@@ -52,5 +54,5 @@ narrow set of traits (GPUI's names, about 45 methods to start); headless runs (t
 
 ## Steps
 
-1. The traits, the headless platform, the winit backend behind them.
+1. The traits, the headless platform, the winit backend behind them. Implemented.
 2. The owned macOS backend.

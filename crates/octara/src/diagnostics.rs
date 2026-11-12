@@ -194,7 +194,7 @@ codes! {
         "A list row was not one element; an empty column was used instead.",
         cause: "`each` and `virtual_each` move, insert and remove rows as single nodes.",
         fix: "Wrap the row's content in one element (`row()`, `col()` or `el()`).";
-    VIRTUAL_LIST_NOT_SCROLLABLE: Error, View, "docs/design/layout.md#5-later",
+    VIRTUAL_LIST_NOT_SCROLLABLE: Error, View, "docs/design/layout.md#5-scrolling-and-overlays",
         "`virtual_each` is not directly inside a scroll container.",
         cause: "A virtual list mounts the rows in its scroll container's viewport; without one it has no viewport.",
         fix: "Give its parent `overflow_y_scroll()` and a bounded height (`flex_1()` in a `size_full()` column).";
@@ -202,7 +202,7 @@ codes! {
         "Layout did not settle in 4 rounds.",
         cause: "Something reads a size (`size_of`, a breakpoint) and changes what that size measures, so each layout changes it again.",
         fix: "Switch on a threshold with hysteresis or a `memo` comparison, not the raw size; or size the reader independently of what it shows.";
-    // ---- layout issues (App::layout_issues) ----
+    // ---- layout issues (Window::layout_issues) ----
     OVERFLOW: Warning, Layout, "docs/design/layout.md#4-layout-diagnostics",
         "Children extend past their container's content box.",
         cause: "The children's sizes add up to more than the container has, and nothing shrinks, wraps or scrolls.",

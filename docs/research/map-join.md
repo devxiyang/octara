@@ -4,17 +4,6 @@ Scope: prior art and recommended semantics for Octara's next two stage operators
 
 Sources: Octara repo (paths relative to the repo root); reference clones (paths relative to `~/code/archive/reference/`); general knowledge marked "known" (not re-verified in this pass, no web access used).
 
-## Octara today (constraints already in the repo)
-
-- `crates/octara/src/reactive/list.rs:1-11`: every collection is a stage (ordered keys, item per key, bounded Insert/Remove/Move log, observers with inserted/removed/updated(old,new)/moved); O(log n) per event.
-- `list.rs:630,703,762`: `filter`, `sort_by`, `Members` return `self.up.item(k)` from `Stage::item`, so views share the source's item `Signal<T>`. Only `flatten` (`list.rs:978-1056`, `put`/`replace`/`take`) owns per-key signals of a new type `FlatItem`, created with `Signal::detached` and disposed on removal. That is exactly what `map` must generalize.
-- `list.rs:249-270`: view predicates/keys are evaluated with `with_untracked`, i.e. view closures are pure functions of the item, not reactive scopes.
-- `docs/design/reactive-core.md:110` (section 9): "Flattening builds a separate entry Signal per item (about twice the memory), to be removed once the `map` operator solves the entry-type mapping".
-- `docs/research/papers/applicable.md:32-33`: "`map`: derive a new item type, recomputing only the changed items; `join`: associate two collections by key, for example tasks and tags." Same list at `docs/design/ui-primitives.md:24` ("`map`, `join` to do").
-- `docs/research/papers/incremental-collections.md`: "the incremental version of a composition is the composition of incremental versions"; `applicable.md` also suggests DBSP weights (+1/-1) to unify insert/delete/modify. Not adopted so far: the stage API has `updated(old,new)`.
-- `docs/design/reactive-core.md:57-59`: `each` applies the log, a Move keeps row state. `diagnostics.rs:166` `DUPLICATE_KEY` already covers key collisions on a `list`.
-- No existing text decides join order, key, or missing-key behavior.
-
 ## map
 
 - **DBSP / Differential Dataflow** (known): `map` is linear, so its incremental version is itself: apply `f` to each record in the change (delta); DD `map` is stateless, no arrangement. A changed value is a retraction of `f(old)` plus an insertion of `f(new)`; weights make this uniform. Cost O(|delta|) calls of `f`, zero memory. Nothing memoized: a retraction recomputes `f(old)` (in Octara we can store the output instead).

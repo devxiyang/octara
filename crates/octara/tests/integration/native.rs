@@ -1,5 +1,5 @@
-//! Native views headless: the host hears of creation, props, placements (with clips and
-//! scrolling) and removal; events and sizes come back from it; inspect shows the view; check
+//! Native views headless: the platform window is presented creation, props, placements (with clips
+//! and scrolling) and removal; events and sizes come back from it; inspect shows the view; check
 //! finds content an overlay view would hide, and views without a label.
 
 use octara::native::{NativeChange, NativeEvent, Slot};

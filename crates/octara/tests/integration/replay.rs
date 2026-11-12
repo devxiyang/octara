@@ -1,4 +1,4 @@
-//! Input as data and frames out ([core](../../../../docs/design/core.md) step 2): every input is
+//! Input as data and frames out ([core](../../../../docs/design/core.md)): every input is
 //! an `InputEvent`, recorded with its time and window and replayed to the same state; each
 //! operation presents a `Frame` to the window's platform; the protocol names windows.
 

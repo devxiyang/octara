@@ -1,7 +1,6 @@
 # Octara Architecture
 
-Status: current (reviewed 2026-11). What is built, how its parts fit, and the decisions that shape
-them. Detailed designs are in [`docs/design/`](design/), research in [`docs/research/`](research/).
+What is built, how its parts fit, and the decisions that shape them. Detailed designs are in [`docs/design/`](design/), research in [`docs/research/`](research/).
 
 ## Product
 
@@ -47,11 +46,25 @@ kernel ─────────────┼────────── 
     ▲               │
 view ───────────────┘            elements and builders; each property is one binding
     ▲
-app ◄── task                     the runtime: frames, input recognizers, focus, keymap, clock;
-    ▲                            a single-threaded executor whose tasks belong to scopes
+app ◄── task                     App and its windows: input events, frames, recognizers, focus,
+    ▲                            keymap, clock, recording; a single-threaded executor whose
+    │                            tasks belong to scopes
 inspect                          snapshots, scripts, `check` (the agent's protocol)
 platform                         what the app needs from the system (traits); headless impl
 ```
+
+## App and windows
+
+- `App` is a handle on the app's state: the reactive runtime, the scheduler and its clock, the
+  resources every window's kernel reads (theme, text system), the platform, and the windows. A
+  `Window` is a handle on one window's state: its kernel, interaction, size and scale, root
+  scope and platform window. Closing a window disposes its scope and frees it.
+- The reactive runtime carries one owner (a window): every binding, memo, watch and task runs as
+  the window that made it, so free functions (`state`, `spawn`, `current_window`) need no
+  context passed.
+- Every input is an `InputEvent` through `Window::event`, recordable and replayable; after each
+  operation every window settles and presents a `Frame` (native view changes, text input, redraw)
+  to its platform window. See [the core](design/core.md).
 
 ## A frame
 
@@ -117,7 +130,7 @@ owned by scopes on the app clock ([async](design/async.md)).
 
 | Platform | GPU | Native views | Priority |
 | --- | --- | --- | --- |
-| macOS | Metal | AppKit | P0 (the shell runs today) |
+| macOS | Metal | AppKit | P0 (the winit shell runs) |
 | Windows | D3D12 | WebView2 in DirectComposition | P0 |
 | Linux | Vulkan / GLES | textures (WPE WebKit) | P0 |
 | iOS | Metal | UIKit | P1 |
@@ -134,12 +147,12 @@ owned by scopes on the app clock ([async](design/async.md)).
   about 70 µs for a 5000-node list after a change, release build). Accessibility updates are
   incremental (4 nodes and about 40 µs after a press in that list, against 0.4 ms for the whole
   tree). Debug builds check both against a full rebuild every time they are reused or sent.
-- **One window per app** today: the kernel has one root, viewport and overlay layer; several
-  windows and OS popups are [designed](design/windows.md), each window with its own kernel under
-  the one runtime.
+- **One window in the shell**: an app holds any number of windows (headless, in the protocol
+  and in captures), the winit shell shows one; OS popups and menus are
+  [designed](design/windows.md).
 - **The shell is winit's**: it implements the [platform layer](design/platform.md)'s traits
-  (clipboard, waker, native views, text input); opening windows, menus and an owned macOS
-  backend are next.
+  (clipboard, waker, native views, text input); several windows, menus and an owned macOS
+  backend are planned.
 - **Native views**: macOS overlay web views and underlay maps are built
   ([Native Island](design/native-island.md)); Windows and Linux are designed.
 

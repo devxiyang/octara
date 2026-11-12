@@ -37,7 +37,7 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | Semantics | `role`, `label`, `description`, `expanded`, `checked`, `value`, `a11y_hidden`, `focusable`; test id is the semantic id | Implemented |
 | Interaction | `on_press` / `on_input` / `on_toggle` / `on_submit`; hover chain and groups; disabled elements reject events | Implemented |
 | | `on_key`, gestures (tap, double, long press, secondary, drag, swipe, momentum), focus order and groups, keymap and commands | Implemented ([input](input.md)) |
-| Agent | Structured diagnostics with registered codes, `App::set_check_consistency`, `App::force_state` | Implemented |
+| Agent | Structured diagnostics with registered codes, `App::set_check_consistency`, `Window::force_state` | Implemented |
 | | Inspector protocol, `octara check` / `inspect` / `run` | Implemented ([agent knowledge](agent-knowledge.md)) |
 
 ## 3. Naming
@@ -114,5 +114,4 @@ checkbox((move || t.with(|t| t.done), move |v| todos.update(&id, |t| t.done = v)
 select("model", model, [(Model::Fast, "Fast"), (Model::Best, "Best")])
 ```
 
-After the example apps were rewritten in the component-library style (`examples/src/apps.rs`): 526 → 509 lines, the acceptance, consistency and diagnostics tests all pass, with no diagnostics regression.
-The cost of adding one todo rose from 4.0 µs to about 5 µs (each component adds a few style and model closures); the fixed styles of a new node are resolved once, and the number of property changes is the same as before the rewrite.
+Adding one todo in the example app (`examples/src/apps.rs`) costs about 5 µs: each component adds a few style and model closures; the fixed styles of a new node are resolved once.

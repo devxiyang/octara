@@ -3,7 +3,7 @@
   "crates": [
     {
       "name": "octara",
-      "docs": "Octara: agent-first native UI in Rust.\n\n- [`kernel`]: the retained node tree, invalidation categories, layout, semantics, counters;\n- [`reactive`]: signals, named state, incremental collections, live text;\n- [`view`]: elements, bindings, structure, list rendering;\n- [`app`]: the runtime that mounts a view and dispatches events;\n- [`testing`]: headless driving and from-scratch consistency checks;\n- [`diagnostics`]: every reported problem's code, cause and fix;\n- [`inspect`]: the semantic tree, scripts and checks tools drive a headless app with.\n\nMost apps only need the [`prelude`].",
+      "docs": "Octara: agent-first native UI in Rust.\n\n- [`reactive`]: signals, named state, incremental collections, live text;\n- [`kernel`]: the retained node tree, invalidation categories, layout, semantics, counters;\n- [`view`]: elements, bindings, structure, list rendering;\n- [`app`]: the app and its windows: input events, frames, focus, keymap, clock, recording;\n- [`window`]: opening and closing windows from app code;\n- [`task`]: tasks, timers, channels and resources on the app clock;\n- [`platform`]: what the app needs from the system, and the headless platform;\n- [`paint`], [`path`], [`icon`], [`image`], [`canvas`], [`motion`], [`native`]: what is drawn\n  and how it moves;\n- [`diagnostics`]: every reported problem's code, cause and fix;\n- [`inspect`] and [`capture`]: the semantic tree, scripts, checks and pictures agents drive an\n  app with.\n\nMost apps only need the [`prelude`].",
       "items": [
         {
           "path": "octara::accesskit",
@@ -414,8 +414,11 @@
           "path": "octara::app::DEFAULT_VIEWPORT",
           "kind": "const",
           "sig": "pub const DEFAULT_VIEWPORT: (f32, f32)",
-          "docs": "The window size an app starts with; change it with [`App::resize`].",
-          "file": "crates/octara/src/app.rs"
+          "docs": "The window size an app starts with; change it with [`Window::resize`].",
+          "file": "crates/octara/src/app.rs",
+          "links": [
+            "octara::app::Window::resize"
+          ]
         },
         {
           "path": "octara::app::Drag",
@@ -1577,8 +1580,11 @@
           "path": "octara::app::Window::capture_begin",
           "kind": "method",
           "sig": "pub fn capture_begin(&mut self) -> Vec<NativeId>",
-          "docs": "Starts a capture: asks the host for a snapshot of every native view shown. Returns the\nviews whose snapshot is coming (through [`native_snapshot`](Self::native_snapshot)).",
-          "file": "crates/octara/src/app.rs"
+          "docs": "Starts a capture: asks the platform window for a snapshot of every native view shown.\nReturns the views whose snapshot is coming (as [`InputEvent::NativeSnapshot`]s).",
+          "file": "crates/octara/src/app.rs",
+          "links": [
+            "octara::app::event::InputEvent::NativeSnapshot"
+          ]
         },
         {
           "path": "octara::app::Window::capture_display",
@@ -5933,7 +5939,7 @@
           "path": "octara::kernel::Kernel::reveal_typed",
           "kind": "method",
           "sig": "pub fn reveal_typed(&mut self, id: NodeId, at: Option<usize>)",
-          "docs": "Shows the grapheme typed at value offset `at` of a secure field for [`REVEAL_LAST`]\nseconds (touch platforms); `None` hides it now.",
+          "docs": "Shows the grapheme typed at value offset `at` of a secure field for `REVEAL_LAST`\n(1.5) seconds (touch platforms); `None` hides it now.",
           "file": "crates/octara/src/kernel/edit.rs"
         },
         {

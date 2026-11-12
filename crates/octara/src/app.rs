@@ -23,7 +23,7 @@ use crate::view::{Handler, Parent, Slots, View, mount};
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::rc::Rc;
 
-/// The window size an app starts with; change it with [`App::resize`].
+/// The window size an app starts with; change it with [`Window::resize`].
 pub const DEFAULT_VIEWPORT: (f32, f32) = (800.0, 600.0);
 
 /// An input event, addressed by test id (or by name for external events).
@@ -1161,7 +1161,7 @@ impl Window {
         k.node_of_a11y(accesskit::NodeId(id.0)).filter(|n| k.native(*n).is_some())
     }
 
-    /// An event from native view `id` (the host calls this): runs its `on_native`.
+    /// An event from native view `id` (`InputEvent::Native`): runs its `on_native`.
     pub(crate) fn on_native_event(&mut self, id: crate::native::NativeId, event: crate::native::NativeEvent) -> bool {
         let Some(n) = self.native_node(id) else { return false };
         let handler = {
@@ -1173,8 +1173,8 @@ impl Window {
         true
     }
 
-    /// The natural size native view `id` reports (the host calls this): used where no size is
-    /// authored.
+    /// The natural size native view `id` reports (`InputEvent::NativeSize`): used where no size
+    /// is authored.
     pub(crate) fn on_native_size(&mut self, id: crate::native::NativeId, width: f32, height: f32) -> bool {
         let Some(n) = self.native_node(id) else { return false };
         self.input_frame(|| self.w.kernel.borrow_mut().set_native_size(n, (width, height)));
@@ -1212,8 +1212,8 @@ impl Window {
         }
     }
 
-    /// Starts a capture: asks the host for a snapshot of every native view shown. Returns the
-    /// views whose snapshot is coming (through [`native_snapshot`](Self::native_snapshot)).
+    /// Starts a capture: asks the platform window for a snapshot of every native view shown.
+    /// Returns the views whose snapshot is coming (as [`InputEvent::NativeSnapshot`]s).
     pub fn capture_begin(&mut self) -> Vec<crate::native::NativeId> {
         let placements = self.w.kernel.borrow().native_placements();
         let mut window = self.w.platform.borrow_mut();
@@ -1331,7 +1331,7 @@ impl Window {
         })
     }
 
-    /// An image of what native view `id` shows (the host calls this): drawn in its place
+    /// An image of what native view `id` shows (`InputEvent::NativeSnapshot`): drawn in its place
     /// instead of the placeholder, until `None` clears it.
     pub(crate) fn on_native_snapshot(&mut self, id: crate::native::NativeId, image: Option<crate::image::Image>) -> bool {
         let Some(n) = self.native_node(id) else { return false };

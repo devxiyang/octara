@@ -29,7 +29,7 @@ Where the two disagree, Rune prevails.
   - `ParleyEngine`: the default. It uses only the fonts bundled with the framework (Inter), so headless tests give identical results on any machine; real windows add system font fallback (Chinese, etc.).
   - `MonoEngine`: a deterministic monospace model, used for benchmarks that isolate text cost.
 - The cache is per node and per paragraph (separated by `\n`): appending text re-lays out only the last paragraph; a width change only re-breaks lines, without reshaping. The kernel records, for each
-  paragraph of text, the number of prefix bytes unchanged since the last measurement (the common prefix on append, range replacement and whole replacement), and the engine no longer compares paragraphs that fall within it.
+  paragraph of text, the number of prefix bytes unchanged since the last measurement (the common prefix on append, range replacement and whole replacement), and the engine does not compare paragraphs that fall within it.
 - Known limitation: a very long paragraph with no line breaks is fully re-laid out every time (about 16 ms for 100 KB). As in Rune, this is mainly handled by splitting content into blocks (one text per Markdown block).
 
 ## 3. Viewport and window size classes
@@ -43,7 +43,7 @@ so that style-only responsiveness need not rerun closures.
    so feedback such as press is visible at any size. Boundary widths are set by the theme.
 2. **Use Signals for structural changes** (implemented): `viewport()`, `breakpoint()` (changes only when a size class is crossed). Any condition is written as
    `memo(|| viewport().get().0 < 500.0)`: the Memo's cutoff makes readers rerun only when the result flips, equivalent to Rune's `layout_with`.
-3. **Testing** (implemented): `App::resize`, `App::breakpoint`, `App::at_sizes(&[(375.0, 667.0), (1280.0, 800.0)], |app| ..)`
+3. **Testing** (implemented): `Window::resize`, `Window::breakpoint`, `Window::at_sizes(&[(375.0, 667.0), (1280.0, 800.0)], |w| ..)`
    run the same check at each size and name the size on failure.
 4. **Container size** (to do): styles by container width, the same mechanism as window size classes; evaluated by container width after layout, and if a hit flips, layout again,
    with a limit, reporting `LAYOUT_LOOP` when exceeded.
@@ -52,7 +52,7 @@ so that style-only responsiveness need not rerun closures.
 
 ## 4. Layout diagnostics
 
-(Implemented) Queryable after each layout; the result is structured data with the test id, path, creation location and fix (`App::layout_issues()`), and tests and Agents can assert it is empty.
+(Implemented) Queryable after each layout; the result is structured data with the test id, path, creation location and fix (`Window::layout_issues()`), and tests and Agents can assert it is empty.
 Overflow is summarized as one entry per container and edge (as in Flutter's "RenderFlex overflowed by N px"), listing the children that overflow:
 
 | Code | Situation | Suggestion |
@@ -63,10 +63,14 @@ Overflow is summarized as one entry per container and edge (as in Flutter's "Ren
 | `OVERLAY_CLAMPED` | The overlay fits on neither side and is pushed back into the window (no `fit` set) | `Placement::fit(true)`, or change direction |
 | `MISSING_TOKEN` | A custom token not defined by the theme is used (painted magenta) | Define it in the theme |
 
-## 5. Later
+## 5. Scrolling and overlays
 
-- Done: scroll containers (`overflow_y_scroll()` etc., names as in GPUI); virtual lists go inside scroll containers, backfilled by key with measured values, and the anchor is the first row that has
+- Scroll containers (`overflow_y_scroll()`, `overflow_x_auto()`, `overflow_hidden()`, `overflow_clip()`, names as in GPUI) can shrink below their content and clip; diagnostics do not count the scroll axis as overflow.
+- Virtual lists go inside scroll containers and follow their offset and height; rows start from an estimate, are backfilled by key with measured heights, and the anchor is the first row that has
   been measured and is still in the viewport (like the browser's overflow-anchor and Rune).
+- Overlays keep 8 px from the window edge; with `fit` (on by default for `BELOW` / `RIGHT`) their size is limited to the remaining space and they scroll.
+
+## 6. Later
+
 - Real windows: system UI font and system fallback (like GPUI's `.SystemUIFont` and Rune's CJK fallback); headless tests still use only the bundled fonts.
-- Inertial scrolling, bounce (render thread); mobile has no hover, and press feedback uses `active`.
-- Overlays: margin from the window edge, and size limited by the remaining space.
+- Bounce at the scroll ends (render thread); mobile has no hover, and press feedback uses `active`.

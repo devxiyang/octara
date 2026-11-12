@@ -1,18 +1,14 @@
 # Octara Roadmap
 
-Status: P0 in progress. Apart from the parts of P0 marked as implemented, the capabilities below are all targets yet to be delivered.
+Each phase lists what it delivers and, under Status, what of it is implemented. Concrete tasks are in
+[TODO](TODO.md).
 
 ## P0 — Reactive Core
 
-> Progress (2026-11): the reactive kernel, incremental collections, virtualization, named state and hot reload, structured diagnostics,
-> headless testing, and from-scratch consistency checking are implemented in `crates/octara` (see [Reactive core](design/reactive-core.md)).
-> Against the acceptance criteria below: semantic-tree lookup and typed actions, driving only the relevant bindings (counters and the kernel
-> operation log), dynamic dependency switching, and unmounting scopes are all met;
-> the causal chain currently reaches only kernel operations (a cause id for each event), tracing in the reactive layer is not yet implemented;
-> window rendering has not started, and only headless is available today.
-> Next: UI primitives and `octara-kit` (see [UI primitives and component layering](design/ui-primitives.md)), then commands, subscriptions
-> and resources, then windowing and GPU rendering.
-> For concrete tasks see [TODO](TODO.md).
+> Status: implemented in `crates/octara` (see [Reactive core](design/reactive-core.md)): the reactive kernel,
+> incremental collections, virtualization, named state and hot reload, structured diagnostics, headless testing,
+> from-scratch consistency checking, and window rendering on the GPU. Of the acceptance criteria below, all are met
+> but the causal chain, which reaches kernel operations (a cause id for each event) and not the reactive layer.
 
 Signals, Memo, Effects, Scoped Lifecycle, Retained UI Tree, Taffy, and basic GPU rendering.
 Also establish a minimal Semantic Inspector, Source Mapping, and a Headless test entry point.
@@ -32,6 +28,10 @@ The counter loop is the suggested first implementation slice; it does not repres
 
 Deliver desktop runtime capabilities for macOS, Windows, and Linux, completing text, scrolling, windowing, input, and basic components.
 
+> Status: text layout, editing, selection, IME, clipboard, fonts, pointer and keyboard input, focus, scroll containers,
+> AccessKit and basic components are implemented; the winit shell runs on macOS (Windows and Linux build and test in CI).
+> Several windows in the shell, menus, file dialogs and the owned macOS backend are not.
+
 - Text layout, editing, selection, IME, clipboard, and font handling.
 - Pointer and keyboard events, focus, window lifecycle, DPI, and size changes.
 - Basic controls, scroll containers, and AccessKit accessibility integration.
@@ -41,6 +41,8 @@ Deliver desktop runtime capabilities for macOS, Windows, and Linux, completing t
 
 Native Modules, Native Islands, WebView, system APIs, and the extension SDK.
 
+> Status: Native Island on macOS (overlay web views, underlay maps, snapshots in captures); Windows and Linux are designed.
+
 - Provide Rust Traits and platform adaptation boundaries.
 - Verify how GPU and native components cooperate on layout, stacking, clipping, input, and focus.
 - Report unsupported platform capabilities and property combinations.
@@ -49,6 +51,9 @@ Native Modules, Native Islands, WebView, system APIs, and the extension SDK.
 ## P3 — Agent-Native Toolchain
 
 Extend the minimal P0 capabilities into the Inspector, Source Map, Headless, event replay, structured diagnostics, and CLI.
+
+> Status: the inspector protocol, captures, `check`, registered diagnostics, recording and replay of input, the `octara`
+> CLI and skill are implemented; the evaluation task set is not.
 
 - Form a complete Generate → Compile → Run → Inspect → Test → Fix workflow.
 - Define versioned semantic and interaction protocols, diagnostic output, and test targeting.

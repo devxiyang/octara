@@ -4,15 +4,6 @@ Scope: what Octara's single-line `text_input()` needs to become a multi-line tex
 
 Sources: Octara (`crates/octara/src/kernel/edit.rs`, `app/edit.rs`, `kernel/text.rs`, `kernel/a11y.rs`, `docs/design/input.md`); Parley 0.12.0 and winit 0.30.13 and accesskit 0.25.2 in `~/.cargo/registry/src/*/`; clones under `~/code/archive/reference/` (`zed`, `rune`, `exact`). Items marked "known" are general knowledge, not checked against source.
 
-## Octara today
-
-- `kernel/edit.rs:60-120`: `Line` holds `shown` (value with preedit spliced at the caret), `stops: Vec<(byte, x)>` for ONE line, `scroll` (x only). `line()` re-measures with `Wrap::None` and recomputes scroll each call (paint, hit test, caret).
-- `kernel/text.rs:106` `caret_stops` only reads `lines().next()` of the first paragraph after `break_all_lines(None)`. No y, no line index, no wrap. The paragraph cache is keyed `(node, slot)` per `\n` paragraph and per width (`text.rs:7-8`, `:203-213`), so wrapping and incremental reshape already exist for static text.
-- `app/edit.rs:197-290`: commands are pure string ops on `(value, anchor, caret)` (`prev_grapheme`, `prev_word`, `0`, `v.len()`); no layout is consulted. `edit.move_to_start/end` are text-wide. Paste turns newlines into spaces (`:262`). Undo is whole-value snapshots (128 steps).
-- `docs/design/input.md:116`: model is the runtime's own, not Parley `PlainEditor` (bypasses `TextEngine` and the paragraph cache). `:130`: "Single-line first; the multi-line text field comes later." `docs/TODO.md:148`: multi-line, password, deferring app rewrites during composition, caret inside composition are open. `ui-primitives.md:31`: multi-line, password, direct platform text protocols to do.
-- Shell: winit `Ime::Preedit/Commit` plus `set_ime_cursor_area` from `caret()` (`octara-shell/src/lib.rs:296-300, :425`). `Kernel::caret` is one `line_height` tall at the line top (`edit.rs:140-146`): wrong once lines stack.
-- A11y: `kernel/a11y.rs:176-177` sets the full `value` for every `Kind::TextInput`; `:267` copies it to the info that `inspect` serializes. Nothing masks it today.
-
 ## Parley 0.12 (verified in `parley-0.12.0/src/editing/`)
 
 - `Layout::break_all_lines(Some(w))` wraps; `lines()`, `line_for_offset(y)`, per-line `metrics()` (block min/max coords) give rows. Octara already calls it in `text.rs:358`.

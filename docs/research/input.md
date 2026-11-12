@@ -119,18 +119,6 @@ to native controls as much as possible (AppKit / UIKit on Apple), the opposite o
   scrolls into view first; the reply states whether the input was delivered semantically or as a real touch (`delivery`). Virtual
   clock `clock +N`; a held key repeats after 500 ms and every 83 ms thereafter.
 
-## Octara today
-
-`app/input.rs`: `pointer_move / leave / down / up`, `click_at`, `wheel`, `Key {Tab, BackTab, Enter, Space, Backspace, Escape}`,
-`type_text`, `set_preedit`, `caret`, accessibility `Click / Focus`. The target is the hit point or the nearest ancestor with a
-handler / that is focusable (consistent with Rune's single target); a click requires press and release on the same element; the
-wheel goes to the innermost scroll container on that axis; Tab cycles in tree order.
-
-Missing: pointer ids and `Cancel`; capture after press (move out / move back, scroll cancellation); distinguishing input modality
-and focus-visible (the focus ring is currently shown whenever focused); focus scopes and modal traps; multiple clicks, right click,
-drag, long press, multi-finger; modifier keys and shortcuts; text selection, caret movement, undo, clipboard; platform text
-protocols; virtual clock.
-
 ## Conclusions
 
 1. **Single target + capture** (Rune) is simpler than capture / bubble (GPUI) and sufficient; GPUI's own click-cancellation bug

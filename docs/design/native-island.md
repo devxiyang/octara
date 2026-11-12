@@ -1,6 +1,8 @@
 # Native Island
 
-Based on the [research](../research/native-island.md). Status: confirmed; steps 1 to 3 implemented.
+Based on the [research](../research/native-island.md). Status: confirmed; the elements, the headless fake, the macOS overlay (web views) and the macOS
+underlay (maps) are implemented; focus, accessibility joining, lazy creation and the other
+platforms are not.
 
 ## What is native
 
@@ -45,7 +47,7 @@ Based on the [research](../research/native-island.md). Status: confirmed; steps 
   them on the main thread, stale ones dropped.
 - Input: AppKit hit-tests overlay views before the content view, so they get their own pointer
   events. An underlay view is under the Metal view: where Octara's hit test finds the underlay
-  view topmost, the event goes to it (a map's drags and pinches). As built: each underlay
+  view topmost, the event goes to it (a map's drags and pinches). Each underlay
   placement carries the rects Octara content covers (`covered`: what is hit before the view),
   and the underlay host's `hitTest:` takes the point only inside a visible underlay view and
   outside those rects, so AppKit delivers the view's own gestures, scrolling and magnification;
@@ -104,57 +106,53 @@ Based on the [research](../research/native-island.md). Status: confirmed; steps 
 
 ## Headless and tests
 
-- Without a shell, a native view is a placeholder box with its semantics and test id. A fake
-  host records props and placements and lets tests send the view's events; `inspect` shows its
-  kind, props and placement.
-- As built (step 1): `native_view(kind)` with `.slot(..)`, `.props(..)` (one JSON value, bindable)
-  and `.on_native(..)`; `web_view(url)`. A view is 300 × 150 until it reports its size
-  (`App::native_size`). After each frame the app tells its `NativeHost` what changed (create,
-  update, place, destroy); headless, a `RecordingHost` keeps the calls. The display list marks
-  each view's place in paint order (`Item::Native`) after its placeholder.
-- As built (step 2, `octara-shell`'s macOS host): kind `web` is a `WKWebView` (props `url`, or
-  `html` with an optional `base_url`; a change of these reloads, other props do not; events
-  `load` `{url}`, `title` `{title}` (observed, so a script's title change is seen too) and
-  `fail` `{error}`). Each view sits in a clip container added to winit's view when first placed.
-  The app's settle hands placements to the host, which keeps them; the shell settles before
-  taking the surface texture, opens a `CATransaction` (actions off) while views exist, draws,
-  applies the placements, presents and commits, and turns the Metal layer's
-  `presentsWithTransaction` on for frames where a view moves, resizes or shows, or the window
-  resizes. Delegate events go to an inbox and wake the loop; the shell hands them to
-  `App::native_event`. Other kinds and underlay views keep their placeholder (step 3).
-- As built (step 3): `NativeHost::create` takes the slot and answers whether the platform shows
-  the view; a shown view draws no placeholder, and a shown underlay view's `Item::Native` is
-  `cut`: both renderers clear its rounded rect to transparent (destination-out; the GPU renderer
-  switches pipelines for that instance). On macOS kind `map` is an `MKMapView` in the underlay
-  (props `center`, `span`, `style`; event `region`; busy while tiles load; snapshots from
-  `MKMapSnapshotter`). The underlay host is made with the first underlay view, below every
-  subview, the Metal layer kept above it (z position 1, overlay containers at 2) and configured
-  non-opaque. A view inside a group-opacity layer is not cut through the layer (a known limit).
-- Since [the core](core.md)'s step 2 the host calls below are data: each frame presents its
-  `NativeChange`s (create, update, place, destroy) to the platform window, whose
-  `shows_native`, `snapshot_native` and `native_busy` answer the app's questions; events, natural
-  sizes and snapshots come back as `InputEvent`s (`Native`, `NativeSize`, `NativeSnapshot`).
-  `NativeHost` and `RecordingHost` are gone; the headless window keeps the changes it was
-  presented.
-- Snapshots belong to [captures](capture.md): `App::capture_begin()` asks the host
-  (`NativeHost::snapshot`, which says what the snapshot misses or why it takes none) for an
-  image of every visible view; it comes back with `App::native_snapshot(id, image)` and is
-  drawn in the view's place instead of the placeholder until the capture ends. `NativeHost::busy`
-  (a page loading) keeps a capture waiting. The macOS host uses `WKWebView`'s snapshot (not
-  waiting for a screen update), redrawn into straight RGBA. The shell's capture prints each
-  view's AppKit frame next to its placement.
+- Without a platform that shows a kind, a native view is a placeholder box with its semantics
+  and test id. The headless window keeps the changes it was presented and lets tests send the
+  view's events; `inspect` shows its kind, props and placement.
+
+## Implemented
+
+- Elements: `native_view(kind)` with `.slot(..)`, `.props(..)` (one JSON value, bindable) and
+  `.on_native(..)`; `web_view(url)`. A view is 300 × 150 until it reports its size. The display
+  list marks each view's place in paint order (`Item::Native`) after its placeholder.
+- Frames: each frame presents its `NativeChange`s (create, update, place, destroy) to the
+  platform window, whose `shows_native`, `snapshot_native` and `native_busy` answer the app's
+  questions; events, natural sizes and snapshots come back as `InputEvent`s (`Native`,
+  `NativeSize`, `NativeSnapshot`). A shown view draws no placeholder, and a shown underlay
+  view's `Item::Native` is `cut`: both renderers clear its rounded rect to transparent
+  (destination-out; the GPU renderer switches pipelines for that instance).
+- macOS overlay (`octara-shell`'s host): kind `web` is a `WKWebView` (props `url`, or `html` with
+  an optional `base_url`; a change of these reloads, other props do not; events `load` `{url}`,
+  `title` `{title}` (observed, so a script's title change is seen too) and `fail` `{error}`).
+  Each view sits in a clip container added to winit's view when first placed. The host keeps
+  the placements a frame presents; the shell settles before taking the surface texture, opens a
+  `CATransaction` (actions off) while views exist, draws, applies the placements, presents and
+  commits, and turns the Metal layer's `presentsWithTransaction` on for frames where a view
+  moves, resizes or shows, or the window resizes. Delegate events go to an inbox and wake the
+  loop; the shell sends them to the window as `InputEvent::Native`.
+- macOS underlay: kind `map` is an `MKMapView` (props `center`, `span`, `style`; event `region`;
+  busy while tiles load; snapshots from `MKMapSnapshotter`). The underlay host is made with the
+  first underlay view, below every subview, the Metal layer kept above it (z position 1, overlay
+  containers at 2) and configured non-opaque. A view inside a group-opacity layer is not cut
+  through the layer (a known limit).
+- Snapshots belong to [captures](capture.md): `Window::capture_begin()` asks the platform window
+  (`snapshot_native`, which says what the snapshot misses or why it takes none) for an image of
+  every visible view; it comes back as `InputEvent::NativeSnapshot` and is drawn in the view's
+  place instead of the placeholder until the capture ends. `native_busy` (a page loading) keeps
+  a capture waiting. The macOS host uses `WKWebView`'s snapshot (not waiting for a screen
+  update), redrawn into straight RGBA. The shell's capture prints each view's AppKit frame next
+  to its placement.
+- Not yet: per-corner radii (the style has one radius), keyboard focus of a clicked map.
 
 ## Steps
 
 1. Elements, placements, the headless fake and `check` rules (slot conflicts, clips, labels).
-   Done.
-2. macOS overlay: WKWebView (`url` or `html` props; `load` and `title` events), clip containers,
-   placements in the frame's transaction with `presentsWithTransaction` while moving, view
-   snapshots for captures. Done as built below; per-corner radii wait for the style to have
-   them.
+   Implemented.
+2. macOS overlay: WKWebView, clip containers, placements in the frame's transaction, view
+   snapshots for captures. Implemented.
 3. macOS underlay: the host view below, a non-opaque Metal layer, the cutout cleared in paint
    order, pointer input to the underlay view where Octara does not cover it; a map
-   (`MKMapView`) as the first kind. Done; keyboard focus of a clicked map is step 4's.
+   (`MKMapView`) as the first kind. Implemented.
 4. Focus targets in the Tab order, Escape back, accessibility joining; views created near the
    viewport and hidden when far; the agent input channel.
 5. Windows: DirectComposition hosting, WebView2 in visual hosting (input, focus, cursor,

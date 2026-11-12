@@ -1,5 +1,6 @@
-//! Captures: the `capture` request settles, asks the host for snapshots, paints, and reports
-//! what each native view shows; snapshots draw in their views' places and are cleared after.
+//! Captures: the `capture` request settles, asks the platform window for snapshots, paints, and
+//! reports what each native view shows; snapshots draw in their views' places and are cleared
+//! after.
 
 use octara::capture::{Painter, Picture, Pixels, Shown};
 use octara::inspect::{Request, handle};

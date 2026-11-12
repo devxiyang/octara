@@ -30,8 +30,7 @@ Based on the [research](../research/vector-graphics.md). Status: confirmed; step
   at most 1024 pixels in a 4096 mask atlas.
 - Content that changes every frame (a canvas animating) makes new keys: the reference renderer
   drops masks unused for 120 frames; when a GPU atlas fills up, every atlas starts over and the
-  frame is built again with only what it draws (glyphs and images included, which before kept
-  failing once their atlas was full).
+  frame is built again with only what it draws (glyphs and images included).
 
 ## Icons
 

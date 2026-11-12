@@ -1,4 +1,4 @@
-//! Several windows of one app ([core](../../../../docs/design/core.md) step 1): they share
+//! Several windows of one app ([core](../../../../docs/design/core.md)): they share
 //! signals, theme and fonts; each has its own tree; code runs as the window it belongs to;
 //! closing one disposes its scope and frees it.
 
