@@ -90,7 +90,8 @@ pub fn find(manifest_path: Option<&Path>, package: Option<&str>) -> Result<Targe
         .and_then(|t| t["name"].as_str())
         .ok_or_else(|| format!("`{name}` has no library target: put the view in `src/lib.rs` so the harness can use it"))?
         .replace('-', "_");
-    let manifest_dir = PathBuf::from(pkg["manifest_path"].as_str().unwrap_or_default()).parent().map(Path::to_path_buf).unwrap_or_default();
+    let manifest_dir =
+        crate::api::plain(Path::new(pkg["manifest_path"].as_str().unwrap_or_default())).parent().map(Path::to_path_buf).unwrap_or_default();
     let dep = pkg["dependencies"]
         .as_array()
         .and_then(|ds| ds.iter().find(|d| d["name"] == "octara" && d["kind"].is_null()))
@@ -101,7 +102,7 @@ pub fn find(manifest_path: Option<&Path>, package: Option<&str>) -> Result<Targe
         package: name,
         lib,
         manifest_dir,
-        workspace_root: PathBuf::from(meta["workspace_root"].as_str().unwrap_or_default()),
+        workspace_root: crate::api::plain(Path::new(meta["workspace_root"].as_str().unwrap_or_default())),
         target_dir: PathBuf::from(meta["target_directory"].as_str().unwrap_or_default()),
         view,
         options,
@@ -284,6 +285,14 @@ mod tests {
         let windows =
             serde_json::json!({"name":"octara","path":"D:\\w\\crates\\octara","req":"*","uses_default_features":true,"features":[]});
         assert_eq!(render_dependency(&windows), r#"{ path = "D:\\w\\crates\\octara-render", default-features = false }"#);
+    }
+
+    #[test]
+    fn windows_verbatim_paths_are_made_plain() {
+        use crate::api::plain;
+        assert_eq!(plain(Path::new(r"\\?\D:\a\octara")), PathBuf::from(r"D:\a\octara"));
+        assert_eq!(plain(Path::new(r"\\?\UNC\server\share\x")), PathBuf::from(r"\\server\share\x"));
+        assert_eq!(plain(Path::new("/w/octara")), PathBuf::from("/w/octara"));
     }
 
     #[test]

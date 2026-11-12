@@ -23,7 +23,17 @@ pub fn checked_in_path() -> PathBuf {
 }
 
 pub fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("workspace root")
+    plain(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("workspace root"))
+}
+
+/// A path without Windows' verbatim prefix (`\\?\`, which `canonicalize` adds there), so it
+/// compares with the paths cargo and rustc write.
+pub fn plain(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    match s.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => PathBuf::from(format!(r"\\{rest}")),
+        None => s.strip_prefix(r"\\?\").map_or_else(|| path.to_path_buf(), PathBuf::from),
+    }
 }
 
 /// The API this build was made with.
