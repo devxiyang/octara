@@ -135,3 +135,89 @@ fn selection_rectangles_pointer_paste() {
     app.press_key("mod+v").unwrap();
     assert!(value(&app).starts_with("1\n2"), "{:?}", value(&app));
 }
+
+fn rows_app(chat: bool) -> App {
+    let mut app = App::new(move || {
+        let v = state("v", String::new);
+        let sent = state("sent", || 0u32);
+        let field = text_input()
+            .id("area")
+            .label("Notes")
+            .text_size(px(16.0))
+            .line_height(px(24.0))
+            .w(px(200.0))
+            .value(move || v.get())
+            .on_input(move |s| v.set(s))
+            .on_submit(move || sent.update(|n| *n += 1));
+        let field = if chat { field.submit_on_enter() } else { field.rows(2, 4) };
+        col().size_full().items_start().child(field).child(text(move || format!("sent {}", sent.get())).id("sent")).into()
+    });
+    app.kernel_mut().set_text_engine(Box::new(MonoEngine));
+    app.set_platform(Platform::MacOs);
+    app.tap("area").unwrap();
+    app
+}
+
+#[test]
+fn rows_bound_the_height_and_the_text_scrolls_inside() {
+    let mut app = rows_app(false);
+    assert_eq!(height(&app), 48.0, "two lines at least");
+    app.type_text("1");
+    for c in ["2", "3", "4", "5", "6"] {
+        app.press_key("enter").unwrap();
+        app.type_text(c);
+    }
+    assert_eq!(height(&app), 96.0, "four lines at most");
+    let n = app.kernel().find("area").unwrap();
+    let (_, y, _, h) = app.kernel().rect(n);
+    let caret = app.text_field().unwrap().caret;
+    assert!(caret.1 >= y && caret.1 + caret.3 <= y + h, "the caret's line shows: {caret:?} in {y}..{}", y + h);
+    assert_eq!(app.kernel().scroll_offset(n), (0.0, 48.0), "two lines scrolled away");
+    // A wheel scrolls the text, away from the caret, and it stays there.
+    let (x, y, ..) = app.kernel().rect(n);
+    app.wheel(x + 10.0, y + 10.0, 0.0, -30.0);
+    assert_eq!(app.kernel().scroll_offset(n), (0.0, 18.0));
+    let _ = app.display_list();
+    assert_eq!(app.kernel().scroll_offset(n), (0.0, 18.0), "drawing does not pull it back");
+    // Typing brings the caret back.
+    app.type_text("!");
+    assert_eq!(app.kernel().scroll_offset(n), (0.0, 48.0));
+}
+
+#[test]
+fn a_growing_field_keeps_its_caret_in_view_in_a_scroll_container() {
+    let mut app = App::new(|| {
+        let v = state("v", String::new);
+        col()
+            .id("page")
+            .h(px(100.0))
+            .w(px(300.0))
+            .overflow_y_scroll()
+            .child(el().h(px(60.0)))
+            .child(text_input().id("area").label("Notes").multiline().line_height(px(24.0)).w(px(200.0)).value(move || v.get()).on_input(move |s| v.set(s)))
+            .into()
+    });
+    app.kernel_mut().set_text_engine(Box::new(MonoEngine));
+    app.tap("area").unwrap();
+    for _ in 0..5 {
+        app.press_key("enter").unwrap();
+    }
+    let page = app.kernel().find("page").unwrap();
+    let (_, py, _, ph) = app.kernel().rect(page);
+    let caret = app.text_field().unwrap().caret;
+    assert!(app.kernel().scroll_offset(page).1 > 0.0, "the page scrolled");
+    assert!(caret.1 >= py && caret.1 + caret.3 <= py + ph + 0.01, "the caret shows: {caret:?} in {py}..{}", py + ph);
+}
+
+#[test]
+fn a_chat_composer_submits_on_enter() {
+    let mut app = rows_app(true);
+    app.type_text("hi");
+    app.press_key("shift+enter").unwrap();
+    app.type_text("there");
+    assert_eq!(value(&app), "hi\nthere");
+    assert_eq!(height(&app), 48.0, "it grows");
+    app.press_key("enter").unwrap();
+    assert_eq!(app.kernel().text_of("sent").unwrap(), "sent 1");
+    assert_eq!(value(&app), "hi\nthere", "submitting does not break the line");
+}

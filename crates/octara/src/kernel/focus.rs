@@ -286,7 +286,7 @@ impl Kernel {
     pub fn key_context(&self, id: NodeId) -> Option<&str> {
         let n = self.node(id);
         n.key_context.as_deref().or(match n.input() {
-            Some(i) if i.multiline => Some("text_area"),
+            Some(i) if i.multiline && !i.submit_on_enter => Some("text_area"),
             Some(_) => Some("text_input"),
             None => None,
         })

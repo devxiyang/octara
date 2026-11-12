@@ -23,7 +23,7 @@ Members of prelude types (`.name(..)`):
 - Canvas: clip, fill, fill_with, height, image, into_ops, new, ops, rect, size, stroke, text, transform, width
 - ContainerStep: Lg, Md, Sm, Xl, Xl2, Xl3, Xl4, Xl5, Xl6, Xl7, Xs, Xs2, Xs3
 - Derived: filter, group_by, is_empty, join, keys, len, map, sort_by, source
-- El: a11y_hidden, active, autofocus, bg, border_color, checked, child, children, description, disabled, expanded, focus, focus_{group,visible}, focusable, group, group_hover, hover, hover_alone, id, img, key_context, label, modal, multiline, object_fit, on_{command,drag,input,key,press,submit,toggle}, on_double_press, on_long_press, on_secondary_press, opacity, overlay, role, screen, selected, stroke_width, style_when, tab_index, text_color, value, when_{expanded,large,medium,touch}, when_extra_large
+- El: a11y_hidden, active, autofocus, bg, border_color, checked, child, children, description, disabled, expanded, focus, focus_{group,visible}, focusable, group, group_hover, hover, hover_alone, id, img, key_context, label, modal, multiline, object_fit, on_{command,drag,input,key,press,submit,toggle}, on_double_press, on_long_press, on_secondary_press, opacity, overlay, role, rows, screen, selected, stroke_width, style_when, submit_on_enter, tab_index, text_color, value, when_{expanded,large,medium,touch}, when_extra_large
 - Event: Blur, Focus, Hover, Input, Press, Scroll, ScrollTo, Send, Toggle
 - Icon: bounds, name, named, path, shapes, stroked, svg, view_box
 - Key: Backspace, Char, Delete, Down, End, Enter, Escape, F, Home, Left, Menu, PageDown, PageUp, Right, Space, Tab, Up

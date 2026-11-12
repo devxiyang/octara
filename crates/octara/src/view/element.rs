@@ -182,6 +182,8 @@ pub struct El {
     stroke_width: Option<f32>,
     canvas: Option<Draw>,
     multiline: bool,
+    rows: Option<(u16, u16)>,
+    submit_on_enter: bool,
     group: Option<&'static str>,
     hover_alone: bool,
     overlays: Vec<Overlay>,
@@ -234,6 +236,8 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         stroke_width: None,
         canvas: None,
         multiline: false,
+        rows: None,
+        submit_on_enter: false,
         group: None,
         hover_alone: false,
         overlays: Vec::new(),
@@ -589,6 +593,20 @@ impl El {
         self.multiline = true;
         self
     }
+    /// A multi-line text input's height: it follows its text from `min` to `max` lines and
+    /// scrolls inside beyond (the caret kept in view). Makes the input multi-line.
+    pub fn rows(mut self, min: u16, max: u16) -> Self {
+        self.multiline = true;
+        self.rows = Some((min, max));
+        self
+    }
+    /// A multi-line text input as a chat composer: Enter submits, Shift+Enter (or Option+Enter)
+    /// breaks the line. Makes the input multi-line.
+    pub fn submit_on_enter(mut self) -> Self {
+        self.multiline = true;
+        self.submit_on_enter = true;
+        self
+    }
     /// An icon's stroke width on its grid (2 for the bundled icons; 1.5 is lighter).
     pub fn stroke_width(mut self, width: f32) -> Self {
         self.stroke_width = Some(width);
@@ -762,6 +780,12 @@ pub(crate) fn build_el(e: El) -> NodeId {
         }
         if e.multiline {
             k.set_multiline(node, true);
+        }
+        if let Some((min, max)) = e.rows {
+            k.set_rows(node, min, max);
+        }
+        if e.submit_on_enter {
+            k.set_submit_on_enter(node, true);
         }
         if let Some(img) = e.image {
             k.set_image(node, Some((img, e.object_fit)));

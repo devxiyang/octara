@@ -401,6 +401,13 @@ struct InputContent {
     multiline: bool,
     /// The caret's x kept across moves by lines (Up, Down, Page Up, Page Down).
     goal: Cell<Option<f32>>,
+    /// Lines shown (multi-line): the height follows the text between these.
+    rows: (u16, u16),
+    /// Enter submits and Shift+Enter breaks lines (a chat composer), instead of the reverse.
+    submit_on_enter: bool,
+    /// The caret (and text length) the scroll last kept in view: the text scrolls back to the
+    /// caret only when it moves, not after a wheel moved the text away from it.
+    kept: Cell<Option<(usize, usize)>>,
 }
 
 impl Node {
@@ -480,12 +487,13 @@ fn input_size(engine: &mut dyn TextEngine, n: &Node, id: NodeId, known: Option<f
     let Some(i) = n.input().filter(|i| i.multiline) else { return (INPUT_WIDTH, lh) };
     let width = known.unwrap_or(INPUT_WIDTH);
     if i.value.is_empty() {
-        return (width, lh);
+        return (width, f32::from(i.rows.0.max(1)) * lh);
     }
     let style = edit::input_style(n.visual.text_style(), true);
     // The value alone: a composition in progress does not resize the field.
     let m = text::measure(engine, TextKey { node: id, slot: 1 }, &i.value, 0, &style, width_limit(Some(width), avail));
-    (width, (m.lines.max(1) as f32 * lh).ceil())
+    let lines = m.lines.clamp(u32::from(i.rows.0.max(1)), u32::from(i.rows.1.max(1)));
+    (width, (lines as f32 * lh).ceil())
 }
 
 fn anchor_layout(l: &mut taffy::Style, placed: Option<Placed>) {
@@ -845,7 +853,7 @@ impl Kernel {
         let visual = Unresolved::new(&self.theme, &root_inh).resolve(&self.theme, &mut Vec::new());
         let content = match kind {
             Kind::Text => Content::Text(TextContent::default()),
-            Kind::TextInput => Content::Input(Box::default()),
+            Kind::TextInput => Content::Input(Box::new(InputContent { rows: (1, u16::MAX), ..InputContent::default() })),
             Kind::Root | Kind::Box => Content::None,
         };
         let id = self.nodes.insert(Node {
@@ -1734,8 +1742,12 @@ impl Kernel {
 
     // ---- scrolling (CSS `overflow`) ----
 
-    /// Whether the node scrolls on (x, y): `overflow_*_auto` / `_scroll`.
+    /// Whether the node scrolls on (x, y): `overflow_*_auto` / `_scroll`, or a multi-line text
+    /// input whose text is taller than it.
     pub fn scrollable(&self, id: NodeId) -> (bool, bool) {
+        if self.is_multiline(id) {
+            return (false, self.field(id).is_some_and(|f| f.text_height() > f.height + 0.5));
+        }
         let o = self.node(id).layout.overflow;
         (o.x == taffy::Overflow::Scroll, o.y == taffy::Overflow::Scroll)
     }
@@ -1753,12 +1765,29 @@ impl Kernel {
         let (cw, ch) = self.client_size(id);
         (l.scrollable_overflow_rect.right.max(cw), l.scrollable_overflow_rect.bottom.max(ch))
     }
-    /// The current scroll offset (CSS `scrollLeft` / `scrollTop`).
+    /// The current scroll offset (CSS `scrollLeft` / `scrollTop`); a multi-line text input's
+    /// is how far its text is scrolled.
     pub fn scroll_offset(&self, id: NodeId) -> (f32, f32) {
-        self.node(id).scroll
+        match self.node(id).input() {
+            Some(i) if i.multiline => (0.0, i.scroll.get()),
+            _ => self.node(id).scroll,
+        }
     }
     /// Scrolls to `(x, y)`, clamped to the scrollable range. Returns whether it moved.
     pub fn scroll_to(&mut self, id: NodeId, x: f32, y: f32) -> bool {
+        // A multi-line text input scrolls its text (the caret may leave the view).
+        if self.is_multiline(id) {
+            let Some(f) = self.field(id) else { return false };
+            let to = y.clamp(0.0, (f.text_height() - f.height).max(0.0));
+            let i = self.node(id).input().expect("a text input");
+            if i.scroll.get() == to {
+                return false;
+            }
+            i.scroll.set(to);
+            self.a11y_touch(id);
+            self.changed(id, Dirty::PAINT, "scroll", || format!("{to:?}"));
+            return true;
+        }
         let (cw, ch) = self.client_size(id);
         let (sw, sh) = self.scroll_size(id);
         let to = (x.clamp(0.0, (sw - cw).max(0.0)), y.clamp(0.0, (sh - ch).max(0.0)));
@@ -1774,6 +1803,46 @@ impl Kernel {
         self.changed(id, Dirty::PAINT, "scroll", || format!("{to:?}"));
         true
     }
+    /// Scrolls the containers around `id`, innermost first and each as little as possible, so
+    /// that `rect` (window coordinates) shows. Returns whether anything moved.
+    pub fn reveal(&mut self, id: NodeId, mut rect: crate::paint::Rect) -> bool {
+        let mut moved = false;
+        let mut p = self.node(id).parent;
+        while let Some(c) = p {
+            p = self.node(c).parent;
+            let (sx, sy) = self.scrollable(c);
+            if !(sx || sy) || self.is_multiline(c) {
+                continue;
+            }
+            let (x, y, _, _) = self.shown_rect(c);
+            let l = self.taffy.layout(self.node(c).taffy).expect("taffy");
+            let (cx, cy) = (x + l.border.left, y + l.border.top);
+            let (cw, ch) = self.client_size(c);
+            let need = |at: f32, size: f32, start: f32, room: f32| {
+                if at + size > start + room {
+                    (at + size) - (start + room)
+                } else if at < start {
+                    at - start
+                } else {
+                    0.0
+                }
+            };
+            let dx = if sx { need(rect.x, rect.w, cx, cw) } else { 0.0 };
+            let dy = if sy { need(rect.y, rect.h, cy, ch) } else { 0.0 };
+            if dx == 0.0 && dy == 0.0 {
+                continue;
+            }
+            let (ox, oy) = self.scroll_offset(c);
+            if self.scroll_to(c, ox + dx, oy + dy) {
+                let (nx, ny) = self.scroll_offset(c);
+                rect.x -= nx - ox;
+                rect.y -= ny - oy;
+                moved = true;
+            }
+        }
+        moved
+    }
+
     /// Every scrolled node with a test id and its offset.
     pub fn scroll_offsets(&self) -> Vec<(String, (f32, f32))> {
         self.nodes

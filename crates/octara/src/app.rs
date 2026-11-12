@@ -136,6 +136,9 @@ struct Interaction {
     forced: Vec<(String, State, bool)>,
     /// Scroll offsets by test id, carried over a hot reload.
     scrolls: Vec<(String, (f32, f32))>,
+    /// A text field whose caret moved: scroll containers around it bring the caret into view
+    /// once the frame is laid out.
+    reveal: Option<NodeId>,
 }
 
 /// The offset a scroll event starts from: the current one for `Scroll`, the origin for `ScrollTo`.
@@ -204,6 +207,16 @@ impl App {
             }
             if !self.ui.sched.has_ready() {
                 break;
+            }
+        }
+        // A caret that moved shows: the scroll containers around its field follow it.
+        let reveal = self.interaction.borrow_mut().reveal.take();
+        if let Some(n) = reveal {
+            let caret = self.ui.kernel.borrow().caret(n);
+            if let Some(r) = caret
+                && self.ui.kernel.borrow_mut().reveal(n, r)
+            {
+                self.settle_layout(at);
             }
         }
         // An `instant` transaction covers the frame it was made in.

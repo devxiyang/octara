@@ -160,6 +160,23 @@ impl Kernel {
         (floor_boundary(&i.value, i.selection.0), floor_boundary(&i.value, i.selection.1))
     }
 
+    /// A multi-line text input's height in lines: it follows the text from `min` to `max`
+    /// lines, and scrolls beyond.
+    pub fn set_rows(&mut self, id: NodeId, min: u16, max: u16) {
+        let Some(i) = self.node_mut(id).input_mut() else { return };
+        let rows = (min.max(1), max.max(min.max(1)));
+        if i.rows != rows {
+            i.rows = rows;
+            self.update_measure(id);
+            self.changed(id, Dirty::LAYOUT, "rows", || format!("{rows:?}"));
+        }
+    }
+    /// Enter submits and Shift+Enter breaks the line (a chat composer).
+    pub fn set_submit_on_enter(&mut self, id: NodeId, on: bool) {
+        let Some(i) = self.node_mut(id).input_mut() else { return };
+        i.submit_on_enter = on;
+    }
+
     /// Makes a text input multi-line (wrapping at its width, Enter breaking lines) or single-line.
     pub fn set_multiline(&mut self, id: NodeId, on: bool) {
         let Some(i) = self.node_mut(id).input_mut() else { return };
@@ -223,7 +240,14 @@ impl Kernel {
             s.min((extent - room).max(0.0)).max(0.0)
         };
         if input.multiline {
-            let sy = keep(caret_y, f.line_height, height, f.text_height(), input.scroll.get());
+            // Back to the caret when it (or the text) changed; else where a wheel left it.
+            let now = (f.caret, f.shown.len());
+            let sy = if input.kept.get() == Some(now) {
+                input.scroll.get().min((f.text_height() - height).max(0.0)).max(0.0)
+            } else {
+                input.kept.set(Some(now));
+                keep(caret_y, f.line_height, height, f.text_height(), input.scroll.get())
+            };
             input.scroll.set(sy);
             f.scroll = (0.0, sy);
         } else {

@@ -230,6 +230,9 @@ impl Keymap {
         b("enter", Some("edit.newline"), Some("text_area"));
         b("shift+enter", Some("edit.newline"), Some("text_area"));
         b("mod+enter", Some("submit"), Some("text_area"));
+        // A chat composer (multi-line, Enter submits) breaks lines with Shift or Option.
+        b("shift+enter", Some("edit.newline"), Some("text_input"));
+        b("alt+enter", Some("edit.newline"), Some("text_input"));
         let word = if platform.is_apple() { "alt" } else { "ctrl" };
         // The same editing chords in both kinds of field: lines are visual lines, and a
         // single-line field is one line (Up goes to its start, Down to its end).

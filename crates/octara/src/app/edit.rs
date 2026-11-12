@@ -36,11 +36,62 @@ impl Clipboard for MemoryClipboard {
     }
 }
 
+/// One undo step: at byte `at`, `removed` was replaced by `inserted`; the selection
+/// `(anchor, caret)` before and after. Only the change is kept, so long texts cost their edits,
+/// not a copy per step.
 #[derive(Clone, PartialEq, Eq, Debug)]
-struct Snapshot {
-    value: String,
-    anchor: usize,
-    caret: usize,
+struct Step {
+    at: usize,
+    removed: String,
+    inserted: String,
+    before: (usize, usize),
+    after: (usize, usize),
+}
+
+impl Step {
+    /// The step from `old` to `new` (their common start and end left out).
+    fn between(old: &str, new: &str, before: (usize, usize), after: (usize, usize)) -> Step {
+        let mut p = old.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
+        while !old.is_char_boundary(p) || !new.is_char_boundary(p) {
+            p -= 1;
+        }
+        let max = old.len().min(new.len()) - p;
+        let mut q = old.bytes().rev().zip(new.bytes().rev()).take(max).take_while(|(a, b)| a == b).count();
+        while !old.is_char_boundary(old.len() - q) || !new.is_char_boundary(new.len() - q) {
+            q -= 1;
+        }
+        Step { at: p, removed: old[p..old.len() - q].to_owned(), inserted: new[p..new.len() - q].to_owned(), before, after }
+    }
+    /// `v` with this step undone (`back`) or done again.
+    fn apply(&self, v: &str, back: bool) -> String {
+        let (out, ins) = if back { (&self.inserted, &self.removed) } else { (&self.removed, &self.inserted) };
+        let end = (self.at + out.len()).min(v.len());
+        format!("{}{ins}{}", &v[..self.at.min(v.len())], &v[end..])
+    }
+    /// This step followed by `next` as one step, if `next` continues it (typing on, deleting
+    /// back or forward from where it stopped).
+    fn merge(&mut self, next: &Step) -> bool {
+        if next.removed.is_empty() && self.removed.is_empty() && next.at == self.at + self.inserted.len() {
+            self.inserted.push_str(&next.inserted);
+        } else if next.inserted.is_empty() && self.inserted.is_empty() && next.at + next.removed.len() == self.at {
+            self.removed.insert_str(0, &next.removed);
+            self.at = next.at;
+        } else if next.inserted.is_empty() && self.inserted.is_empty() && next.at == self.at {
+            self.removed.push_str(&next.removed);
+        } else {
+            return false;
+        }
+        self.after = next.after;
+        true
+    }
+}
+
+/// A fingerprint of a field's value: the history applies only to the value it left.
+fn fingerprint(v: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = rustc_hash::FxHasher::default();
+    v.hash(&mut h);
+    h.finish()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -53,10 +104,11 @@ enum Kind {
 /// A field's editing history.
 #[derive(Default, Debug)]
 pub(crate) struct EditState {
-    undo: Vec<Snapshot>,
-    redo: Vec<Snapshot>,
-    /// The last edit, for merging a run of typing into one step.
-    last: Option<(Kind, Snapshot)>,
+    undo: Vec<Step>,
+    redo: Vec<Step>,
+    /// The kind of the last edit (a run of typing or deleting merges into one step), the value
+    /// it left and the selection after it.
+    last: Option<(Kind, u64, (usize, usize))>,
 }
 
 /// The focused text field, as platform text protocols see it.
@@ -155,20 +207,21 @@ impl App {
         if value != old {
             let mut i = self.interaction.borrow_mut();
             let st = i.edits.entry(n).or_default();
-            let before = Snapshot { value: old.clone(), anchor: a0, caret: c0 };
+            let step = Step::between(&old, &value, (a0, c0), (anchor, caret));
             // Typing on from where the last edit of the same kind left off continues its step.
-            let continues = st.last.as_ref().is_some_and(|(k, s)| *k == kind && kind != Kind::Other && *s == before);
-            if !continues {
-                st.undo.push(before);
+            let continues = st.last.is_some_and(|(k, h, sel)| k == kind && kind != Kind::Other && sel == (a0, c0) && h == fingerprint(&old));
+            if !(continues && st.undo.last_mut().is_some_and(|last| last.merge(&step))) {
+                st.undo.push(step);
                 if st.undo.len() > UNDO_LIMIT {
                     st.undo.remove(0);
                 }
             }
             st.redo.clear();
-            st.last = Some((kind, Snapshot { value: value.clone(), anchor, caret }));
+            st.last = Some((kind, fingerprint(&value), (anchor, caret)));
         }
         // Typing is direct manipulation: what it changes lands at once.
         self.ui.kernel.borrow_mut().set_instant(true);
+        self.interaction.borrow_mut().reveal = Some(n);
         self.ui.kernel.borrow_mut().set_selection(n, anchor, caret);
         if value != old {
             self.run(n, &[HandlerKind::Input], Some(value));
@@ -178,6 +231,7 @@ impl App {
     /// Moves the caret (extending the selection with `extend`).
     fn select(&self, n: NodeId, anchor: usize, caret: usize) {
         self.ui.kernel.borrow_mut().set_selection(n, anchor, caret);
+        self.interaction.borrow_mut().reveal = Some(n);
         if let Some(st) = self.interaction.borrow_mut().edits.get_mut(&n) {
             st.last = None;
         }
@@ -300,24 +354,26 @@ impl App {
             }
             "edit.undo" | "edit.redo" => {
                 let undo = command == "edit.undo";
-                let step = {
+                let done = {
                     let mut i = self.interaction.borrow_mut();
                     let st = i.edits.entry(n).or_default();
                     // The app changed the value itself since: the history no longer applies.
-                    if st.last.as_ref().is_some_and(|(_, s)| s.value != v) {
+                    if st.last.is_some_and(|(_, h, _)| h != fingerprint(&v)) {
                         *st = EditState::default();
                     }
-                    let now = Snapshot { value: v.clone(), anchor: a, caret: c };
                     let step = if undo { st.undo.pop() } else { st.redo.pop() };
-                    if step.is_some() {
-                        if undo { st.redo.push(now) } else { st.undo.push(now) }
-                    }
-                    st.last = step.clone().map(|s| (Kind::Other, s));
-                    step
+                    step.map(|step| {
+                        let value = step.apply(&v, undo);
+                        let sel = if undo { step.before } else { step.after };
+                        st.last = Some((Kind::Other, fingerprint(&value), sel));
+                        if undo { st.redo.push(step) } else { st.undo.push(step) }
+                        (value, sel)
+                    })
                 };
-                if let Some(s) = step {
-                    self.ui.kernel.borrow_mut().set_selection(n, s.anchor, s.caret);
-                    self.run(n, &[HandlerKind::Input], Some(s.value));
+                if let Some((value, (anchor, caret))) = done {
+                    self.ui.kernel.borrow_mut().set_selection(n, anchor, caret);
+                    self.interaction.borrow_mut().reveal = Some(n);
+                    self.run(n, &[HandlerKind::Input], Some(value));
                 }
             }
             _ => return false,
@@ -416,5 +472,39 @@ impl App {
         let len = value.len();
         self.ui.kernel.borrow_mut().set_selection(n, len, len);
         self.run(n, &[HandlerKind::Input], Some(value))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Step;
+
+    #[test]
+    fn steps_keep_only_the_change_and_round_trip() {
+        let old = "héllo wörld";
+        let new = "héllo, wörld";
+        let s = Step::between(old, new, (6, 6), (7, 7));
+        assert_eq!((s.at, s.removed.as_str(), s.inserted.as_str()), (6, "", ","), "the first difference");
+        let both = Step::between("aé", "aè", (0, 0), (0, 0));
+        assert_eq!((both.at, both.removed.as_str(), both.inserted.as_str()), (1, "é", "è"), "whole characters");
+        for (a, b) in [(old, new), (old, "héllo, wörld!"), ("", "abc"), ("abc", ""), ("aaa", "aaaa"), ("日本語", "日本")] {
+            let s = Step::between(a, b, (0, 0), (0, 0));
+            assert_eq!(s.apply(a, false), b);
+            assert_eq!(s.apply(b, true), a);
+        }
+    }
+
+    #[test]
+    fn runs_of_typing_and_deleting_merge() {
+        let mut typing = Step::between("ab", "abc", (2, 2), (3, 3));
+        assert!(typing.merge(&Step::between("abc", "abcd", (3, 3), (4, 4))));
+        assert_eq!((typing.at, typing.inserted.as_str(), typing.after), (2, "cd", (4, 4)));
+        let mut back = Step::between("abcd", "abc", (4, 4), (3, 3));
+        assert!(back.merge(&Step::between("abc", "ab", (3, 3), (2, 2))));
+        assert_eq!((back.at, back.removed.as_str()), (2, "cd"));
+        let mut forward = Step::between("abcd", "acd", (1, 1), (1, 1));
+        assert!(forward.merge(&Step::between("acd", "ad", (1, 1), (1, 1))));
+        assert_eq!((forward.at, forward.removed.as_str()), (1, "bc"));
+        assert!(!typing.merge(&Step::between("abcd", "xabcd", (0, 0), (1, 1))), "elsewhere: a new step");
     }
 }

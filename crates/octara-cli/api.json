@@ -5120,6 +5120,13 @@
           ]
         },
         {
+          "path": "octara::kernel::Kernel::reveal",
+          "kind": "method",
+          "sig": "pub fn reveal(&mut self, id: NodeId, rect: Rect) -> bool",
+          "docs": "Scrolls the containers around `id`, innermost first and each as little as possible, so\nthat `rect` (window coordinates) shows. Returns whether anything moved.",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::role",
           "kind": "method",
           "sig": "pub fn role(&self, id: NodeId) -> Role",
@@ -5148,7 +5155,7 @@
           "path": "octara::kernel::Kernel::scroll_offset",
           "kind": "method",
           "sig": "pub fn scroll_offset(&self, id: NodeId) -> (f32, f32)",
-          "docs": "The current scroll offset (CSS `scrollLeft` / `scrollTop`).",
+          "docs": "The current scroll offset (CSS `scrollLeft` / `scrollTop`); a multi-line text input's\nis how far its text is scrolled.",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -5183,7 +5190,7 @@
           "path": "octara::kernel::Kernel::scrollable",
           "kind": "method",
           "sig": "pub fn scrollable(&self, id: NodeId) -> (bool, bool)",
-          "docs": "Whether the node scrolls on (x, y): `overflow_*_auto` / `_scroll`.",
+          "docs": "Whether the node scrolls on (x, y): `overflow_*_auto` / `_scroll`, or a multi-line text\ninput whose text is taller than it.",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -5382,6 +5389,13 @@
           "file": "crates/octara/src/kernel.rs"
         },
         {
+          "path": "octara::kernel::Kernel::set_rows",
+          "kind": "method",
+          "sig": "pub fn set_rows(&mut self, id: NodeId, min: u16, max: u16)",
+          "docs": "A multi-line text input's height in lines: it follows the text from `min` to `max`\nlines, and scrolls beyond.",
+          "file": "crates/octara/src/kernel/edit.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::set_selection",
           "kind": "method",
           "sig": "pub fn set_selection(&mut self, id: NodeId, anchor: usize, caret: usize)",
@@ -5408,6 +5422,13 @@
           "sig": "pub fn set_styles(&mut self, id: NodeId, props: impl IntoIterator<Item = StyleProp>, overrides: Vec<(When, Vec<StyleProp>)>) -> bool",
           "docs": "Sets several base properties and state overrides with one resolve (a new element's\nfixed styles).",
           "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::set_submit_on_enter",
+          "kind": "method",
+          "sig": "pub fn set_submit_on_enter(&mut self, id: NodeId, on: bool)",
+          "docs": "Enter submits and Shift+Enter breaks the line (a chat composer).",
+          "file": "crates/octara/src/kernel/edit.rs"
         },
         {
           "path": "octara::kernel::Kernel::set_tab_index",
@@ -11243,6 +11264,13 @@
           "file": "crates/octara/src/view/element.rs"
         },
         {
+          "path": "octara::view::El::rows",
+          "kind": "method",
+          "sig": "pub fn rows(self, min: u16, max: u16) -> Self",
+          "docs": "A multi-line text input's height: it follows its text from `min` to `max` lines and\nscrolls inside beyond (the caret kept in view). Makes the input multi-line.",
+          "file": "crates/octara/src/view/element.rs"
+        },
+        {
           "path": "octara::view::El::screen",
           "kind": "method",
           "sig": "pub fn screen(self, bp: Breakpoint, f: impl FnOnce(Patch) -> Patch) -> Self",
@@ -11267,6 +11295,13 @@
           "kind": "method",
           "sig": "pub fn style_when(self, state: State, f: impl FnOnce(Patch) -> Patch) -> Self",
           "docs": "Style while `state` is active (for `SELECTED` and `DISABLED`, set with `selected` / `disabled`).",
+          "file": "crates/octara/src/view/element.rs"
+        },
+        {
+          "path": "octara::view::El::submit_on_enter",
+          "kind": "method",
+          "sig": "pub fn submit_on_enter(self) -> Self",
+          "docs": "A multi-line text input as a chat composer: Enter submits, Shift+Enter (or Option+Enter)\nbreaks the line. Makes the input multi-line.",
           "file": "crates/octara/src/view/element.rs"
         },
         {
