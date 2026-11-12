@@ -264,3 +264,20 @@ fn a_clock_steps_while_someone_reads_it() {
     w.tap("hide").unwrap();
     assert_eq!(w.app().next_deadline(), None, "no reader left: the timer stopped");
 }
+
+#[test]
+fn timers_at_fractional_milliseconds_come_due() {
+    use std::time::Duration;
+    let w = Window::headless(|| {
+        let n = state("n", || 0u32);
+        spawn(async move {
+            for _ in 0..50 {
+                sleep(Duration::from_micros(16_667)).await;
+                n.update(|n| *n += 1);
+            }
+        });
+        text(move || n.get().to_string()).id("n").into()
+    });
+    assert!(w.app().run_until_idle(Duration::from_secs(5)).is_ok(), "{:?}", w.app().pending());
+    assert_eq!(w.kernel().text_of("n").unwrap(), "50", "advancing to each deadline fires its timer");
+}

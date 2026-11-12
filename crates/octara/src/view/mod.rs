@@ -417,6 +417,25 @@ fn show_else_at(
     then: impl Fn() -> View + 'static,
     els: impl Fn() -> View + 'static,
 ) -> View {
+    switch_at(at, cond, |c| if *c { "then".into() } else { "else".into() }, move |c| if *c { then() } else { els() })
+}
+
+/// Shows `view(key)` for the current `key`; when the key changes, the view is built anew (React's
+/// `key`, SwiftUI's `.id`): the open conversation's transcript, a form for the selected record.
+/// Each build is a scope named by the key, so its state lives while the key stays (and comes back
+/// by name across a hot reload).
+#[track_caller]
+pub fn keyed<K: PartialEq + Display + 'static>(key: impl Fn() -> K + 'static, view: impl Fn(&K) -> View + 'static) -> View {
+    switch_at(Location::caller(), key, |k| k.to_string(), view)
+}
+
+/// A view rebuilt whenever `key` changes, in a scope named by `name(key)`.
+fn switch_at<K: PartialEq + 'static>(
+    at: &'static Location<'static>,
+    key: impl Fn() -> K + 'static,
+    name: impl Fn(&K) -> String + 'static,
+    view: impl Fn(&K) -> View + 'static,
+) -> View {
     let made = building();
     View::Dyn(Mount(Box::new(move |parent, target| {
         let region = Slots::default();
@@ -426,11 +445,12 @@ fn show_else_at(
             (owner, rt.child_name(owner, "show"))
         });
         let parent = parent.clone();
-        let last: Rc<Cell<Option<bool>>> = Rc::default();
+        let last: Rc<RefCell<Option<K>>> = Rc::default();
         let branch: Rc<Cell<Option<ScopeId>>> = Rc::default();
+        let (name, view) = (Rc::new(name), Rc::new(view));
         graph::binding(at, move || {
-            let c = cond();
-            if last.replace(Some(c)) == Some(c) {
+            let k = key();
+            if last.borrow().as_ref() == Some(&k) {
                 return;
             }
             rt(|rt| {
@@ -447,12 +467,11 @@ fn show_else_at(
                     rt.dispose_scope(old);
                 }
                 region.borrow_mut().clear();
-                let s = rt.create_scope(Some(owner), &format!("{base}:{}", if c { "then" } else { "else" }));
+                let s = rt.create_scope(Some(owner), &format!("{base}:{}", name(&k)));
                 branch.set(Some(s));
-                rt.with_frame(Ctx::Build, None, Some(Some(s)), || {
-                    mount(as_part_of(made, || if c { then() } else { els() }), &parent, &region)
-                });
+                rt.with_frame(Ctx::Build, None, Some(Some(s)), || mount(as_part_of(made, || view(&k)), &parent, &region));
             });
+            *last.borrow_mut() = Some(k);
         });
     })))
 }
@@ -598,6 +617,23 @@ pub fn clock(period: std::time::Duration) -> ReadSignal<std::time::Duration> {
         }))
     });
     signal.read_only()
+}
+
+/// Adds the app's key bindings (GPUI's `bind_keys`): `(chord, command, context)`, a context
+/// naming a `key_context` the focus must be in (`None`: anywhere). A binding added again (a hot
+/// reload) replaces itself. `Err` names a chord that does not parse.
+pub fn bind_keys<'a>(bindings: impl IntoIterator<Item = (&'a str, &'a str, Option<&'a str>)>) -> Result<(), String> {
+    let app = crate::app::app_state();
+    app.keymap_changed();
+    let mut keymap = app.keymap.borrow_mut();
+    for (chord, command, context) in bindings {
+        let mut one = crate::app::Keymap::default();
+        one.bind(chord, Some(command), context)?;
+        let b = one.bindings.remove(0);
+        keymap.bindings.retain(|x| x != &b);
+        keymap.bindings.push(b);
+    }
+    Ok(())
 }
 
 /// Moves keyboard focus to the element with test id `id` once this frame is built (GPUI's

@@ -26,6 +26,9 @@ channels, optionally named; a subscription is a scope-owned handle.
 - The only clock is the app clock, kept by the scheduler (tasks and `sleep` both read it). Before each event and frame the shell
   calls `advance_to(time since launch)`; tests call `advance(d)`.
 - `sleep(d)`, `sleep_until(t)`, `now()`, `interval(d, f)` (each firing time is computed from the start, no drift).
+- The clock's resolution is a nanosecond (`Duration`'s): the clock and every due time are whole
+  nanoseconds, so moving the clock to a deadline handed out reaches it exactly, and
+  `next_deadline` is always after now (a deadline reached means "as soon as possible").
 - `clock(period)`: the app's clock as a tracked value moving in steps of `period` (SwiftUI's
   periodic `TimelineView`), for what shows time (a spinner's step, "5 minutes ago"). Readers in a
   window with one period share one timer; it stops when the last reader's scope goes, and as a

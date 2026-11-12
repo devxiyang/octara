@@ -149,7 +149,9 @@ pub(crate) struct AppState {
     tuning: Cell<Tuning>,
     platform: Cell<TargetPlatform>,
     /// The app's own bindings (after the platform's standard ones).
-    keymap: RefCell<keys::Keymap>,
+    pub(crate) keymap: RefCell<keys::Keymap>,
+    /// The platform's standard bindings then the app's, built once until either changes.
+    keymap_full: RefCell<Option<(TargetPlatform, Rc<keys::Keymap>)>>,
     /// The system the app runs on (clipboard, waking the loop, windows).
     pub(crate) system: RefCell<Box<dyn crate::platform::Platform>>,
     /// The app's menus as declared (`set_menus`), as last presented to the platform (each
@@ -302,6 +304,27 @@ pub struct Window {
     w: Rc<WindowState>,
 }
 
+impl AppState {
+    /// The keymap in use: the platform's standard bindings, then the app's (cached).
+    pub(crate) fn full_keymap(&self) -> Rc<keys::Keymap> {
+        let platform = self.platform.get();
+        if let Some((p, k)) = self.keymap_full.borrow().as_ref()
+            && *p == platform
+        {
+            return k.clone();
+        }
+        let mut k = keys::Keymap::standard(platform);
+        k.bindings.extend(self.keymap.borrow().bindings.iter().cloned());
+        let k = Rc::new(k);
+        *self.keymap_full.borrow_mut() = Some((platform, k.clone()));
+        k
+    }
+    /// The app's bindings changed: the keymap in use is built again when next read.
+    pub(crate) fn keymap_changed(&self) {
+        self.keymap_full.borrow_mut().take();
+    }
+}
+
 impl WindowState {
     pub(crate) fn interaction_request_focus(&self, id: &str) {
         self.interaction.borrow_mut().focus_request = Some(id.to_owned());
@@ -427,6 +450,7 @@ impl App {
             tuning: Cell::new(Tuning::default()),
             platform: Cell::new(TargetPlatform::current()),
             keymap: RefCell::new(keys::Keymap::default()),
+            keymap_full: RefCell::new(None),
             system: RefCell::new(Box::new(platform)),
             menus: RefCell::new(vec![crate::menu::Menu::edit()]),
             menus_presented: RefCell::new(None),

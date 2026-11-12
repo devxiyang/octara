@@ -16,6 +16,11 @@ const BACKGROUND_WAIT: Duration = Duration::from_secs(10);
 fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
+/// A due time (whole nanoseconds, see `whole_ns`) as a `Duration`: moving the clock there reaches
+/// exactly the time it stands for.
+fn due(ms: f64) -> Duration {
+    Duration::from_nanos((ms * 1e6).round() as u64)
+}
 fn duration(ms: f64) -> Duration {
     Duration::from_secs_f64(ms / 1000.0)
 }
@@ -41,7 +46,7 @@ impl App {
     /// launch). Whatever comes due on the way runs at its own time. Time never goes back.
     pub fn advance_to(&self, t: Duration) {
         let sched = self.app.sched.clone();
-        let t = ms(t).max(sched.now_ms());
+        let t = crate::task::whole_ns(ms(t)).max(sched.now_ms());
         for _ in 0..100_000 {
             let windows = self.each();
             let presses = windows.iter().filter_map(|w| w.pointer_due());
@@ -72,10 +77,13 @@ impl App {
 
     /// When the app next needs the clock advanced (a timer, a long press coming due, the next
     /// frame of momentum or of motion in any window), if anything is pending. Shells wake up then.
+    /// Always after now (by a nanosecond at least): a deadline reached means "as soon as
+    /// possible", so moving the clock to it always moves it on.
     pub fn next_deadline(&self) -> Option<Duration> {
         let windows = self.each();
         let own = windows.iter().filter_map(|w| w.deadline());
-        self.app.sched.next_timer().into_iter().chain(own).min_by(f64::total_cmp).map(duration)
+        let soonest = crate::task::whole_ns(self.app.sched.now_ms() + 1e-6);
+        self.app.sched.next_timer().into_iter().chain(own).min_by(f64::total_cmp).map(|d| due(d.max(soonest)))
     }
 
     /// Moves the clock: the scheduler's and the time each window's kernel shows.

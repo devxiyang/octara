@@ -155,7 +155,7 @@ impl Scheduler {
         self.now.get()
     }
     pub(crate) fn set_now_ms(&self, ms: f64) {
-        self.now.set(ms);
+        self.now.set(whole_ns(ms));
     }
     pub(crate) fn set_waker(&self, wake: Arc<dyn Fn() + Send + Sync>) {
         *self.shared.wake.lock().expect("wake") = Some(wake);
@@ -422,12 +422,19 @@ impl Future for Sleep {
 
 /// Waits `d` on the app's clock.
 pub fn sleep(d: Duration) -> Sleep {
-    Sleep { due: sched().now_ms() + d.as_secs_f64() * 1000.0 }
+    Sleep { due: whole_ns(sched().now_ms() + d.as_secs_f64() * 1000.0) }
 }
 
 /// Waits until the app's clock reads `t`.
 pub fn sleep_until(t: Duration) -> Sleep {
-    Sleep { due: t.as_secs_f64() * 1000.0 }
+    Sleep { due: whole_ns(t.as_secs_f64() * 1000.0) }
+}
+
+/// A time in milliseconds rounded to the clock's resolution, the nanosecond (`Duration`'s): the
+/// clock and every due time go through it, so a due time handed out as a `Duration` and moved
+/// to is reached exactly.
+pub(crate) fn whole_ns(ms: f64) -> f64 {
+    (ms * 1e6).round() / 1e6
 }
 
 /// Calls `f` every `period` on the app's clock while the current scope lives (ticks are counted

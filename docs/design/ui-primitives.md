@@ -25,7 +25,7 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | | `TextBuffer`, `text_buffer`, `paced` | Implemented |
 | | Context `provide` / `use_context` | Implemented |
 | | Tasks, subscriptions, resources, `clock` | Implemented ([async](async.md)) |
-| Structure | `component_keyed` / `component`, `show` / `show_else`, `each`, `virtual_each` | Implemented |
+| Structure | `component_keyed` / `component`, `show` / `show_else`, `keyed` (a view built anew when its key changes), `each`, `virtual_each` | Implemented |
 | | `.child(..)` / `.children(iter)`, `El::overlay`, modals (Escape, press outside, focus kept inside) | Implemented |
 | Elements | `el`, `row`, `col`, `spacer`; `text(fixed value \| closure \| TextBuffer)` | Implemented |
 | | `text_input`: single line, `.multiline()`, `.rows(min, max)`, `.submit_on_enter()`, `.secure()` / `.revealed(..)`, selection, undo, clipboard, IME composition | Implemented headless and through the shell; direct platform text protocols to do ([text input](text-input.md)) |

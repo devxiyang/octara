@@ -61,7 +61,7 @@ impl Window {
             t.anchor = want;
             t.spent = false;
             let warm = was_shown || now - t.hidden_at < WARM_MS;
-            t.due = want.map(|_| if warm { now } else { now + DELAY_MS });
+            t.due = want.map(|_| if warm { now } else { crate::task::whole_ns(now + DELAY_MS) });
             warm
         };
         if want.is_some() && warm {

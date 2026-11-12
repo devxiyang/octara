@@ -362,17 +362,18 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
 impl Window {
     /// The keymap in use: the platform's standard bindings, then the app's.
     pub fn keymap(&self) -> Keymap {
-        let mut k = Keymap::standard(self.app.platform.get());
-        k.bindings.extend(self.app.keymap.borrow().bindings.iter().cloned());
-        k
+        (*self.app.full_keymap()).clone()
     }
     /// Replaces the app's bindings (the standard ones stay; unbind them with `None` commands).
     pub fn set_keymap(&mut self, keymap: Keymap) {
         *self.app.keymap.borrow_mut() = keymap;
+        self.app.keymap_changed();
     }
     /// Adds a binding (see [`Keymap::bind`]).
     pub fn bind(&mut self, chord: &str, command: Option<&str>, context: Option<&str>) -> Result<(), String> {
-        self.app.keymap.borrow_mut().bind(chord, command, context)
+        let r = self.app.keymap.borrow_mut().bind(chord, command, context);
+        self.app.keymap_changed();
+        r
     }
 
     /// The focus path, innermost first: from the focused element (else the open modal, else
@@ -405,7 +406,7 @@ impl Window {
         let depth_of = |ctx: &str| -> Option<usize> {
             path.iter().enumerate().find(|(_, id)| k.key_context(**id) == Some(ctx)).map(|(i, _)| path.len() - i)
         };
-        let keymap = self.keymap();
+        let keymap = self.app.full_keymap();
         let found = |key: Key| -> Vec<(usize, usize, Option<String>)> {
             keymap
                 .bindings
@@ -564,7 +565,8 @@ impl Window {
             let k = self.w.kernel.borrow();
             path.iter().filter_map(|id| k.key_context(*id).map(str::to_owned)).collect()
         };
-        self.keymap()
+        self.app
+            .full_keymap()
             .bindings
             .iter()
             .rev()
@@ -631,7 +633,7 @@ impl Window {
                 names.push(c.clone());
             }
         }
-        let keymap = self.keymap();
+        let keymap = self.app.full_keymap();
         // Chords bound where focus is now: everywhere, or in a context on the focus path.
         let contexts: Vec<String> = {
             let k = self.w.kernel.borrow();

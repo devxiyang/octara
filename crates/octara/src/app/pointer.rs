@@ -368,7 +368,7 @@ impl Window {
         let i = self.w.interaction.borrow();
         let h = i.pointer.held.as_ref()?;
         (h.kind == PointerKind::Touch && h.mode == Mode::Pending && h.button == Button::Primary)
-            .then(|| h.down_at + self.app.tuning.get().long_press.as_secs_f64() * 1000.0)
+            .then(|| crate::task::whole_ns(h.down_at + self.app.tuning.get().long_press.as_secs_f64() * 1000.0))
     }
 
     fn down(&self, ev: PointerEvent) {

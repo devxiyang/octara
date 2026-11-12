@@ -109,8 +109,10 @@ catches up after the animation ends or the pointer moves (Rune).
   (`code`); a chord with modifiers is matched by physical key when the logical key is not a Latin letter, so shortcuts still work after changing keyboard
   layout (Exact).
 - The keymap is data: `Binding { chord, command, context }`. `context` is a `key_context("editor")` name that
-  must appear on the focus path; a deeper context takes priority, and at the same depth the later one added wins (GPUI). The app can append and
-  override; `app.keymap()` lists everything.
+  must appear on the focus path; a deeper context takes priority, and at the same depth the later one added wins (GPUI). The app adds its own
+  with `bind_keys([(chord, command, context)])` from its code (GPUI's `bind_keys`; adding one again replaces it), or `Window::bind` from
+  outside; `app.keymap()` lists everything. The platform's standard bindings and the app's are kept as one keymap, built again only when
+  either changes, so resolving a key and finding a menu item's chord read it without parsing.
 - Commands are string ids (`"focus.next"`, `"edit.copy"`), and an agent can directly `app.invoke("edit.copy")`.
 - Handling: `.on_command("save", f)` attaches to an element and is looked up along the focus path from inside out; `on_command("save", f)` (a free
   function) is app-level.
