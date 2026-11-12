@@ -225,3 +225,79 @@ fn chips_and_callouts() {
     let error = k.find("error").unwrap();
     assert_eq!(k.test_id(*k.children(error).last().unwrap()), Some("retry"), "actions go after the text");
 }
+
+#[test]
+fn a_collapsible_opens_and_closes_its_content() {
+    let mut app = Window::headless(|| {
+        let open = state("open", || false);
+        col()
+            .child(collapsible("thinking", open, text("Thought for 3 s"), || text("Step one.").id("step").into()))
+            .child(button("Open").id("open").on_press(move || open.set(true)))
+            .into()
+    });
+    let k = app.kernel();
+    assert_eq!(k.role_of("thinking-trigger"), Some(Role::Button));
+    assert_eq!(k.expanded_of("thinking-trigger"), Some(false));
+    assert!(k.find("step").is_none(), "closed: its content is not built");
+    drop(k);
+    app.tap("thinking-trigger").unwrap();
+    assert!(app.kernel().find("step").is_some());
+    app.tap("thinking-trigger").unwrap();
+    assert!(app.kernel().find("step").is_none());
+    app.tap("open").unwrap();
+    assert!(app.kernel().find("step").is_some(), "the caller holds whether it is open");
+}
+
+#[test]
+fn a_list_selects_and_moves_by_arrow_keys() {
+    let mut app = Window::headless(|| {
+        let selected = state("selected", || 0u32);
+        list()
+            .id("chats")
+            .child(list_header("Today").id("today"))
+            .children((0..3u32).map(move |i| {
+                list_item(text(format!("Chat {i}")))
+                    .id(format!("chat-{i}"))
+                    .selected(move || selected.get() == i)
+                    .on_press(move || selected.set(i))
+                    .on_focus(move || selected.set(i))
+            }))
+            .into()
+    });
+    let k = app.kernel();
+    assert_eq!(k.role_of("chats"), Some(Role::ListBox));
+    assert_eq!(k.role_of("today"), Some(Role::Heading));
+    assert_eq!(k.role_of("chat-1"), Some(Role::ListBoxOption));
+    assert!(k.state_of("chat-0").unwrap().contains(State::SELECTED));
+    drop(k);
+    app.tap("chat-1").unwrap();
+    assert!(app.kernel().state_of("chat-1").unwrap().contains(State::SELECTED));
+    app.press_key("down").unwrap();
+    let k = app.kernel();
+    assert!(k.state_of("chat-2").unwrap().contains(State::FOCUSED), "the arrow moved focus down");
+    assert!(k.state_of("chat-2").unwrap().contains(State::SELECTED), "and selection followed it");
+}
+
+#[test]
+fn a_split_resizes_its_leading_pane() {
+    let mut app = Window::headless(|| {
+        let width = state("width", || 240.0f32);
+        split("panes", width, el().id("side").size_full(), el().id("main").size_full())
+            .child(text(move || format!("{}", width.get())).id("w"))
+            .into()
+    });
+    let pane = |app: &Window, id: &str| {
+        let k = app.kernel();
+        k.rect(k.find(id).unwrap()).2
+    };
+    assert_eq!(pane(&app, "side"), 240.0);
+    let id = "panes-divider";
+    assert_eq!(app.kernel().role_of(id), Some(Role::Splitter));
+    app.drag(id, 60.0, 0.0).unwrap();
+    assert_eq!(pane(&app, "side"), 300.0, "dragged 60 to the right");
+    app.drag(id, -400.0, 0.0).unwrap();
+    assert_eq!(pane(&app, "side"), 120.0, "no narrower than 120");
+    app.tap(id).unwrap();
+    app.press_key("right").unwrap();
+    assert_eq!(pane(&app, "side"), 128.0);
+}

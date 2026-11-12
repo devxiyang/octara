@@ -159,5 +159,6 @@ Designed in [the text core](text.md); what the core decided:
 7. What an AI chat app needs, as general mechanisms and components, and the AI chat reference app
    built from them (no chat-specific framework parts): following a scroll container's tail
    (implemented), one selection across nested selectable regions (implemented), paced `TextBuffer`,
-   focus and blur events, and tooltips (implemented); the kit's components planned for this step
-   ([UI primitives](ui-primitives.md)); the reference app with an offline scripted model.
+   focus and blur events, tooltips, `clock`, `style_with` (implemented); the kit's components for
+   it ([UI primitives](ui-primitives.md), implemented); the reference app with an offline scripted
+   model.

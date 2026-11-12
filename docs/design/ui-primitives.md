@@ -33,7 +33,7 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | | Vector paths (`Path`, fills, strokes); `icon` with the Lucide set (`octara-icons`), `Icon::svg` | Implemented ([vector graphics](vector-graphics.md)) |
 | | `canvas` (declarative recording: paths, rects, text, images, transforms, clips) | Implemented; labeled regions to do |
 | | Native Island: `native_view(kind)`, `web_view(url)`, slots, placements, the host protocol, headless host | Implemented headless; platform views in the shells to do ([Native Island](native-island.md)) |
-| Style | `Styled`: GPUI method names, 4 px scale, `px` / `relative` / `rems`; semantic `Token` and `Theme`; state, window size class, touch and group-hover overrides; `absolute` / `top` / `left`; shadows, gradients, opacity layers; motion | Implemented |
+| Style | `Styled` (and `style_with` for bound styles): GPUI method names, 4 px scale, `px` / `relative` / `rems`; semantic `Token` and `Theme`; state, window size class, touch and group-hover overrides; `absolute` / `top` / `left`; shadows, gradients, opacity layers; motion | Implemented |
 | Semantics | `role`, `label`, `description`, `expanded`, `checked`, `value`, `a11y_hidden`, `focusable`; test id is the semantic id | Implemented |
 | Interaction | `on_press` / `on_input` / `on_toggle` / `on_submit` / `on_focus` / `on_blur`; `tooltip`; hover chain and groups; disabled elements reject events | Implemented |
 | | `on_key`, gestures (tap, double, long press, secondary, drag, swipe, momentum), focus order and groups, keymap and commands | Implemented ([input](input.md)) |
@@ -97,7 +97,7 @@ After each layout it is positioned relative to the anchor (as in Rune's `anchore
 - A component is a function returning `El` (or `View`), and the caller continues to chain `id`, styles, `disabled` and events; no builder structs, which saves forwarding all of `El`'s methods;
 - A controlled component takes a `Model<T>`: a `Signal<T>`, or `(getter, setter)` when the value lives elsewhere (such as a list entry);
 - Components bring their own accessibility semantics (role, checked, expanded, selected; decorative nodes are `a11y_hidden`); disabling is handled by the core rejecting events;
-- Components that need internal state use the id as key (`select(id, ..)`), so the open state is kept after hot reload.
+- Components that need internal state use the id as key (`select(id, ..)`), so the open state is kept after hot reload. A `#[component]` function has no scope of its own: one returning `El` keeps no named state (what is open, selected or how wide comes from the caller's `Model`).
 
 | Component | Semantics | Event |
 | --- | --- | --- |
@@ -109,6 +109,9 @@ After each layout it is positioned relative to the anchor (as in Rune's `anchore
 | `icon_button(icon, label)` | `Button` named `label`, which is also its tooltip | Press |
 | `spinner()` | `ProgressIndicator` named "Loading"; its arc steps round on the app's clock, every spinner in one phase | — |
 | `chip(label)` / `removable_chip(label, remove)` | A small label; the second has a button named "Remove {label}" | Press (remove) |
+| `collapsible(id, open, header, content)` | A `Group`; its trigger `{id}-trigger` is a `Button` with `expanded`; the content `{id}-content` is built while open | Press |
+| `list()` / `list_item(content)` / `list_header(label)` | `ListBox` (a focus group: arrow keys move between items) / `ListBoxOption` with hovered, focused and selected looks / a `Heading` | Press, secondary press |
+| `split(id, width, leading, trailing)` | Two panes; the divider `{id}-divider` is a `Splitter` whose value is the width; drag or arrow keys (Shift: by 40) change it, at least 120 | Drag, keys |
 | `callout(level, message, detail)` | A live region; `Alert` for a warning or a critical one, else `Group`; the level's icon and color (`Accent`, `Warning`, `Danger`); actions chained as children go after the text | — |
 
 ```rust
@@ -118,7 +121,7 @@ checkbox((move || t.with(|t| t.done), move |v| todos.update(&id, |t| t.done = v)
 select("model", model, [(Model::Fast, "Fast"), (Model::Best, "Best")])
 ```
 
-Planned, by kind (step 7 of the [core](core.md) builds those marked ●). Names say what a
+Planned, by kind. Names say what a
 component is, not where it is used (no sidebar, composer or message components: an app composes
 those), take the name most frameworks share (Zed's `ui`, Rune's kit, SwiftUI / AppKit), avoid one
 platform's jargon and names Octara already uses for something else (`prompt` is the dialog), and a
@@ -128,10 +131,10 @@ variant is a chained method, not a new name (`text_field(m).multiline().rows(1, 
 | --- | --- |
 | Actions | `segmented` |
 | Inputs | `radio`, `combobox`, `slider` |
-| Collections | `list` / `list_item` / `list_header` ● (groups, one selected, arrow keys, context menu through `popup_menu`), `tree`, `table` |
-| Disclosure and navigation | `collapsible` ● (a header that opens and closes its content), `tabs` |
+| Collections | `tree`, `table` |
+| Disclosure and navigation | `tabs` |
 | Status | `progress_bar`, `badge`, `keybinding` |
 | Overlays | `popover`, `toast` (the core has `overlay`, modals, `popup_menu`, `prompt`, and `tooltip`: it needs hover timing, one per window, and a native form) |
-| Layout | `split` ● (two panes, a draggable divider), `divider` |
+| Layout | `divider` |
 
 Adding one todo in the example app (`examples/src/apps.rs`) costs about 5 µs: each component adds a few style and model closures; the fixed styles of a new node are resolved once.

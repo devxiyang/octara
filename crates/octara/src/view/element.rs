@@ -182,6 +182,8 @@ impl IntoText for &TextBuffer {
 enum StyleValue {
     Static(StyleProp),
     Dyn(Box<dyn Fn() -> StyleProp>),
+    /// Styles a closure gives (`style_with`), re-run when what it reads changes.
+    Patch(Box<dyn Fn(Patch) -> Patch>),
 }
 
 struct Overlay {
@@ -464,6 +466,14 @@ impl El {
             Prop::Static(v) => StyleValue::Static(StyleProp::Opacity(v)),
             Prop::Dyn(f) => StyleValue::Dyn(Box::new(move || StyleProp::Opacity(f()))),
         });
+        self
+    }
+
+    /// Styles from a closure, re-run when what it reads changes: any style method, bound
+    /// (`.style_with(move |s| s.w(width.get()))`, a pane a person resizes). Set the same
+    /// properties every run; for styles that come and go with a state use `style_when`.
+    pub fn style_with(mut self, f: impl Fn(Patch) -> Patch + 'static) -> Self {
+        self.styles.push(StyleValue::Patch(Box::new(f)));
         self
     }
 
@@ -969,7 +979,7 @@ pub(crate) fn build_el(e: El) -> NodeId {
         // Fixed styles and overrides resolve once; bound styles follow (and win over fixed ones).
         let fixed = e.styles.iter().filter_map(|s| match s {
             StyleValue::Static(p) => Some(*p),
-            StyleValue::Dyn(_) => None,
+            StyleValue::Dyn(_) | StyleValue::Patch(_) => None,
         });
         k.set_styles(node, fixed, e.overrides);
     }
@@ -981,6 +991,16 @@ pub(crate) fn build_el(e: El) -> NodeId {
                 graph::binding(at, move || {
                     let p = f();
                     u.kernel.borrow_mut().set_style(node, p);
+                })
+            }
+            StyleValue::Patch(f) => {
+                let u = u.clone();
+                graph::binding(at, move || {
+                    let ps = f(Patch(Vec::new())).0;
+                    let mut k = u.kernel.borrow_mut();
+                    for p in ps {
+                        k.set_style(node, p);
+                    }
                 })
             }
         }

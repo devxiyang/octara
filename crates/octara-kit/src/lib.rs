@@ -11,8 +11,10 @@ use std::rc::Rc;
 
 pub mod markdown;
 mod status;
+mod structure;
 
 pub use status::{callout, chip, removable_chip, spinner};
+pub use structure::{collapsible, list, list_header, list_item, split};
 
 // ---- models ----
 
