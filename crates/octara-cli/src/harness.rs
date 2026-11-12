@@ -151,8 +151,13 @@ fn dependency(d: &serde_json::Value) -> String {
 fn render_dependency(d: &serde_json::Value) -> String {
     let mut parts = Vec::new();
     if let Some(path) = d["path"].as_str() {
-        let sibling = Path::new(path).parent().map(|p| p.join("octara-render")).unwrap_or_else(|| PathBuf::from("octara-render"));
-        parts.push(format!("path = {}", toml_str(&sibling.to_string_lossy())));
+        // The sibling directory, keeping the path's own separators (cargo writes `\` on Windows).
+        let trimmed = path.trim_end_matches(['/', '\\']);
+        let sibling = match trimmed.rfind(['/', '\\']) {
+            Some(i) => format!("{}octara-render", &trimmed[..=i]),
+            None => "octara-render".to_owned(),
+        };
+        parts.push(format!("path = {}", toml_str(&sibling)));
     } else {
         // Git and registry sources are written as for `octara` itself.
         let octara = dependency(&serde_json::json!({ "source": d["source"], "req": d["req"], "registry": d["registry"] }));
@@ -276,6 +281,9 @@ mod tests {
             r#"{ git = "https://github.com/octoii-works/octara", branch = "main", default-features = false }"#
         );
         assert_eq!(render_dependency(&registry), r#"{ version = "^0.3", default-features = false }"#);
+        let windows =
+            serde_json::json!({"name":"octara","path":"D:\\w\\crates\\octara","req":"*","uses_default_features":true,"features":[]});
+        assert_eq!(render_dependency(&windows), r#"{ path = "D:\\w\\crates\\octara-render", default-features = false }"#);
     }
 
     #[test]
