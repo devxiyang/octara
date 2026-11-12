@@ -666,7 +666,8 @@ impl Runtime {
             panic!("state(\"{key}\") outside a component at {}", loc(at));
         };
         let path = self.scope_path(scope);
-        if !self.scopes.borrow_mut()[scope.i as usize].state_keys.insert(key) {
+        let duplicate = !self.scopes.borrow_mut()[scope.i as usize].state_keys.insert(key);
+        if duplicate {
             self.diag(
                 &codes::DUPLICATE_STATE_KEY,
                 format!("state key \"{key}\" used twice in {path}; both calls would share one signal"),
@@ -678,6 +679,11 @@ impl Runtime {
             if self.alive(idx) && old_ty == ty {
                 self.scopes.borrow_mut()[scope.i as usize].nodes.push(idx);
                 return idx;
+            }
+            // The same key for another type in this build: the first keeps it, this call gets
+            // a state of its own (not kept across reloads); the diagnostic above says why.
+            if self.alive(idx) && duplicate {
+                return self.create_node(Kind::Source, Some(init()), None, true, None, at);
             }
             if self.alive(idx) {
                 self.diag(&codes::STATE_TYPE_CHANGED, format!("state \"{key}\" in {path} changed type across a reload; reset"), at);
