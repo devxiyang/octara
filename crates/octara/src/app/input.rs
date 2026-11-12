@@ -29,6 +29,21 @@ impl Window {
             }
             kinds.iter().find_map(|kind| k.handler(n, *kind)).and_then(|h| self.w.handlers.borrow().get(&h.0).cloned())
         };
+        // A link pressed: the nearest `on_link` above it gets its target.
+        if handler.is_none() && kinds.contains(&HandlerKind::Press) {
+            let link = {
+                let k = self.w.kernel.borrow();
+                k.link_target(n).and_then(|target| {
+                    let at = k.handler_above(k.parent(n), HandlerKind::Link)?;
+                    let h = k.handler(at, HandlerKind::Link)?;
+                    Some((target, self.w.handlers.borrow().get(&h.0).cloned()?))
+                })
+            };
+            if let Some((target, Handler::Link(f))) = link {
+                self.app.rt.with_frame(Ctx::Handler, None, Some(None), || f(&target));
+                return true;
+            }
+        }
         let Some(h) = handler else { return false };
         self.app.rt.with_frame(Ctx::Handler, None, Some(None), || match (h, input) {
             (Handler::Press(f) | Handler::Toggle(f), _) => f(),

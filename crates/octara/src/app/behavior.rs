@@ -23,6 +23,6 @@ pub(crate) trait Behavior: Sync {
 pub(crate) fn behavior(kind: Kind) -> Option<&'static dyn Behavior> {
     match kind {
         Kind::TextInput => Some(&super::edit::FIELD),
-        Kind::Root | Kind::Box | Kind::Text => None,
+        Kind::Root | Kind::Box | Kind::Text | Kind::Link => None,
     }
 }

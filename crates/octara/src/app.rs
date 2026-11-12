@@ -829,6 +829,16 @@ impl Window {
         if k.state(node).contains(State::DISABLED) {
             return Err(format!("`{id}` is disabled"));
         }
+        // A link's press is the `on_link` above it, given its target.
+        if kind == HandlerKind::Press
+            && k.handler(node, kind).is_none()
+            && let Some(target) = k.link_target(node)
+        {
+            let at = k.handler_above(k.parent(node), HandlerKind::Link).ok_or(format!("no `on_link` above link `{id}`"))?;
+            let hid = k.handler(at, HandlerKind::Link).expect("found by kind");
+            let Some(Handler::Link(f)) = self.w.handlers.borrow().get(&hid.0).cloned() else { return Err("on_link was disposed".into()) };
+            return Ok(Handler::Press(std::rc::Rc::new(move || f(&target))));
+        }
         let hid = k.handler(node, kind).ok_or(format!("`{id}` has no {kind:?} handler"))?;
         self.w.handlers.borrow().get(&hid.0).cloned().ok_or(format!("handler of `{id}` was disposed"))
     }

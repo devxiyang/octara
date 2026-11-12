@@ -4,11 +4,13 @@
 use super::style::{Patch, Styled};
 use super::{Children, Handler, IntoElement, Parent, Slot, Slots, View, mount, show};
 use crate::app::{Drag, KeyEvent};
+use crate::kernel::rich::Rich;
 
 type DragHandler = Rc<dyn Fn(&Drag)>;
 type KeyHandler = Rc<dyn Fn(&KeyEvent) -> bool>;
 type Draw = Rc<dyn Fn(&mut crate::canvas::Canvas)>;
 type OnNative = Rc<dyn Fn(&crate::native::NativeEvent)>;
+type OnLink = Rc<dyn Fn(&str)>;
 use crate::kernel::{
     Breakpoint, Color, Fill, HandlerId, HandlerKind, Kernel, Kind, NodeId, Paint, Placement, Role, State, StyleProp, Token, When,
 };
@@ -114,18 +116,54 @@ impl<F: Fn() -> P + 'static, P: Into<Paint>> IntoProp<Paint> for F {
     }
 }
 
-/// What `text` accepts: a fixed string, a closure (re-computed whole) or a [`LiveText`] (its
-/// edits reach the kernel as edits: an append costs O(appended)).
+/// Rich text: a fixed one, or a closure returning a string or a `Rich`.
+impl IntoProp<Rich> for &str {
+    fn into_prop(self) -> Prop<Rich> {
+        Prop::Static(self.into())
+    }
+}
+impl IntoProp<Rich> for String {
+    fn into_prop(self) -> Prop<Rich> {
+        Prop::Static(self.into())
+    }
+}
+impl IntoProp<Rich> for &String {
+    fn into_prop(self) -> Prop<Rich> {
+        Prop::Static(self.into())
+    }
+}
+impl IntoProp<Rich> for Rich {
+    fn into_prop(self) -> Prop<Rich> {
+        Prop::Static(self)
+    }
+}
+impl<F: Fn() -> R + 'static, R: Into<Rich>> IntoProp<Rich> for F {
+    fn into_prop(self) -> Prop<Rich> {
+        Prop::Dyn(Box::new(move || self().into()))
+    }
+}
+/// A string property (a component's `label`) shown as text.
+impl IntoProp<Rich> for Prop<String> {
+    fn into_prop(self) -> Prop<Rich> {
+        match self {
+            Prop::Static(s) => Prop::Static(s.into()),
+            Prop::Dyn(f) => Prop::Dyn(Box::new(move || f().into())),
+        }
+    }
+}
+
+/// What `text` accepts: a string or [`Rich`] text, fixed or from a closure (re-computed whole),
+/// or a [`LiveText`] (its edits reach the kernel as edits: an append costs O(appended)).
 #[doc(hidden)]
 pub enum TextContent {
-    Prop(Prop<String>),
+    Prop(Prop<Rich>),
     Live(LiveText),
 }
 
 pub trait IntoText {
     fn into_text(self) -> TextContent;
 }
-impl<T: IntoProp<String>> IntoText for T {
+impl<T: IntoProp<Rich>> IntoText for T {
     fn into_text(self) -> TextContent {
         TextContent::Prop(self.into_prop())
     }
@@ -203,6 +241,7 @@ pub struct El {
     native: Option<(&'static str, crate::native::Slot)>,
     props: Option<Prop<serde_json::Value>>,
     on_native: Option<OnNative>,
+    on_link: Option<OnLink>,
     group: Option<&'static str>,
     hover_alone: bool,
     overlays: Vec<Overlay>,
@@ -263,6 +302,7 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         native: None,
         props: None,
         on_native: None,
+        on_link: None,
         group: None,
         hover_alone: false,
         overlays: Vec::new(),
@@ -694,6 +734,12 @@ impl El {
         self.on_native = Some(Rc::new(f));
         self
     }
+    /// A link in this element's rich text, or in its descendants', was pressed (a click, Enter
+    /// on it, assistive technology): `f` gets its target.
+    pub fn on_link(mut self, f: impl Fn(&str) + 'static) -> Self {
+        self.on_link = Some(Rc::new(f));
+        self
+    }
     /// An icon's stroke width on its grid (2 for the bundled icons; 1.5 is lighter).
     pub fn stroke_width(mut self, width: f32) -> Self {
         self.stroke_width = Some(width);
@@ -811,7 +857,7 @@ pub(crate) fn build_el(e: El) -> NodeId {
         bind(at, node, p, |k, n, v: &String| k.set_test_id(n, Some(v)));
     }
     match e.text {
-        Some(TextContent::Prop(p)) => bind(at, node, p, |k, n, v: &String| k.set_text(n, v)),
+        Some(TextContent::Prop(p)) => bind(at, node, p, |k, n, v: &Rich| k.set_rich(n, v.as_str(), v.runs())),
         Some(TextContent::Live(t)) => {
             let cursor = t.subscribe();
             u.kernel.borrow_mut().set_text(node, &t.get_untracked());
@@ -921,6 +967,7 @@ pub(crate) fn build_el(e: El) -> NodeId {
         (HandlerKind::Dismiss, e.modal.map(|(_, f)| Handler::Press(f))),
         (HandlerKind::Key, e.key.map(Handler::Key)),
         (HandlerKind::Native, e.on_native.map(Handler::Native)),
+        (HandlerKind::Link, e.on_link.map(Handler::Link)),
     ] {
         if let Some(h) = h {
             let id = u.register(h);

@@ -8,6 +8,7 @@ mod list;
 mod style;
 
 pub use crate::kernel::Component;
+pub use crate::kernel::rich::{Rich, Span, rich};
 pub(crate) use element::build_el;
 pub use element::{El, IntoProp, IntoText, Prop, TextContent, canvas, col, el, icon, native_view, row, spacer, text, text_input, web_view};
 pub use list::{each, virtual_each};
@@ -32,6 +33,7 @@ pub(crate) enum Handler {
     Drag(Rc<dyn Fn(&crate::app::Drag)>),
     Key(Rc<dyn Fn(&crate::app::KeyEvent) -> bool>),
     Native(Rc<dyn Fn(&crate::native::NativeEvent)>),
+    Link(Rc<dyn Fn(&str)>),
 }
 
 /// A hook run after each layout; returns whether it changed anything.

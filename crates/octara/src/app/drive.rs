@@ -40,7 +40,14 @@ impl Kernel {
     /// Where a person would touch `n`: its centre, if that point shows `n` (or something inside
     /// it) and lies in the window.
     pub fn reachable_point(&self, n: NodeId) -> Result<(f32, f32), String> {
-        let (x, y, w, h) = self.shown_rect(n);
+        // A link is pressed on its first line (its box may hold other words where it wraps).
+        let (x, y, w, h) = match (self.link_rects(n).first(), self.parent(n)) {
+            (Some(r), Some(text)) => {
+                let (tx, ty, _, _) = self.shown_rect(text);
+                (tx + r.x, ty + r.y, r.w, r.h)
+            }
+            _ => self.shown_rect(n),
+        };
         let (cx, cy) = (x + w / 2.0, y + h / 2.0);
         let (vw, vh) = self.viewport();
         if w <= 0.0 || h <= 0.0 {

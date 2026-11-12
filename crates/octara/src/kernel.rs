@@ -16,6 +16,7 @@ mod focus;
 mod issues;
 mod paint;
 mod pick;
+pub mod rich;
 pub mod style;
 pub mod text;
 pub mod theme;
@@ -196,6 +197,9 @@ pub enum Kind {
     Text,
     /// A text input (a fixed default size; the platform owns editing).
     TextInput,
+    /// A link inside a text: a range of its parent text's runs, not laid out on its own (its
+    /// frame is the lines the range covers).
+    Link,
 }
 
 impl Kind {
@@ -205,6 +209,7 @@ impl Kind {
             Kind::Box => Role::GenericContainer,
             Kind::Text => Role::Label,
             Kind::TextInput => Role::TextInput,
+            Kind::Link => Role::Link,
         }
     }
 }
@@ -234,10 +239,12 @@ pub enum HandlerKind {
     Submit,
     /// An event from a native view (`on_native`).
     Native,
+    /// A link inside the element's texts was pressed (`on_link`).
+    Link,
 }
 
 impl HandlerKind {
-    pub const COUNT: usize = 11;
+    pub const COUNT: usize = 12;
     /// Handlers that make an element a pointer target.
     pub const POINTER: [HandlerKind; 6] = [
         HandlerKind::Press,
@@ -387,12 +394,14 @@ type LastFrame = (u64, (f32, f32), std::rc::Rc<crate::paint::DisplayList>);
 enum Content {
     /// A plain box (or the root).
     None,
-    Text(TextContent),
+    Text(Box<TextContent>),
     Input(Box<InputContent>),
     Image(crate::image::Image, crate::image::ObjectFit),
     Icon(std::rc::Rc<NodeIcon>),
     Canvas(std::rc::Rc<Vec<crate::canvas::CanvasOp>>),
     Native(Box<NativeContent>),
+    /// A link: its range of the parent text and its target.
+    Link(Box<rich::LinkContent>),
 }
 
 /// A native view's element: its kind, slot, props (and their version, so the host hears of a
@@ -421,6 +430,16 @@ struct TextContent {
     text: String,
     /// Bytes known unchanged since the text engine last measured them.
     clean: Cell<usize>,
+    /// Styled ranges (rich text), sorted; plain text has none.
+    runs: Vec<(std::ops::Range<usize>, rich::Span)>,
+    /// The runs as the text engine shapes them (families resolved by the theme).
+    shape: Vec<text::StyleRun>,
+    /// Bumped by every change of the text or its runs: what kept layouts and glyphs are keyed by.
+    version: u64,
+    /// The glyphs painted last, for the same version, width and style.
+    painted: RefCell<Option<rich::Painted>>,
+    /// The lines laid out last, for the same version, width and style (links, selection).
+    lines: RefCell<Option<rich::Lines>>,
 }
 
 /// A text input's content: its value, the input method's composition, the selection and how
@@ -497,6 +516,7 @@ impl Node {
         match self.content {
             Content::Text(_) => Kind::Text,
             Content::Input(_) => Kind::TextInput,
+            Content::Link(_) => Kind::Link,
             _ => Kind::Box,
         }
     }
@@ -537,6 +557,7 @@ fn text_metrics(
     content: &str,
     clean: &Cell<usize>,
     style: &TextStyle,
+    shape: &[text::StyleRun],
     limit: Option<f32>,
 ) -> TextMetrics {
     if content.is_empty() {
@@ -544,10 +565,10 @@ fn text_metrics(
     }
     let c = clean.replace(content.len());
     match style.wrap {
-        Wrap::Words => text::measure(engine, key, content, c, style, limit),
-        Wrap::None => text::measure(engine, key, content, c, style, None),
+        Wrap::Words => text::measure(engine, key, content, c, style, shape, limit),
+        Wrap::None => text::measure(engine, key, content, c, style, shape, None),
         Wrap::Truncate => {
-            let natural = text::measure(engine, key, content, c, style, None);
+            let natural = text::measure(engine, key, content, c, style, shape, None);
             let width = limit.map_or(natural.width, |l| natural.width.min(l));
             let cut = natural.lines > 1 || width < natural.width;
             TextMetrics { width, height: style.line_height, lines: 1, truncated: cut }
@@ -557,7 +578,7 @@ fn text_metrics(
 
 fn text_size(engine: &mut dyn TextEngine, n: &Node, key: TextKey, known: Option<f32>, avail: taffy::AvailableSpace) -> (f32, f32) {
     let Some(t) = n.text_content() else { return (0.0, 0.0) };
-    let m = text_metrics(engine, key, &t.text, &t.clean, &n.visual.text_style(), width_limit(known, avail));
+    let m = text_metrics(engine, key, &t.text, &t.clean, &n.visual.text_style(), &t.shape, width_limit(known, avail));
     // Whole pixels, rounded up (as Rune): fractional line heights would make rows alternate.
     (m.width.ceil(), m.height.ceil())
 }
@@ -573,7 +594,7 @@ fn input_size(engine: &mut dyn TextEngine, n: &Node, key: TextKey, known: Option
     }
     let style = edit::input_style(n.visual.text_style(), true);
     // The value alone: a composition in progress does not resize the field.
-    let m = text::measure(engine, TextKey { slot: 1, ..key }, &i.value, 0, &style, width_limit(Some(width), avail));
+    let m = text::measure(engine, TextKey { slot: 1, ..key }, &i.value, 0, &style, &[], width_limit(Some(width), avail));
     let lines = m.lines.clamp(u32::from(i.rows.0.max(1)), u32::from(i.rows.1.max(1)));
     (width, (lines as f32 * lh).ceil())
 }
@@ -630,6 +651,10 @@ pub struct Kernel {
     needs_layout: bool,
     layout_enabled: bool,
     counters: Counters,
+    /// Text glyphs taken from the engine rather than reused (`glyph_extractions`).
+    glyphs_taken: Cell<u64>,
+    /// Bumped when the shared text system's fonts change: kept layouts and glyphs are stale.
+    fonts_generation: u64,
     cause: Option<u64>,
     log: Option<Vec<Op>>,
     /// The time shown (seconds on the app's clock).
@@ -732,6 +757,8 @@ impl Kernel {
             needs_layout: true,
             layout_enabled: true,
             counters: Counters::default(),
+            glyphs_taken: Cell::new(0),
+            fonts_generation: 0,
             cause: None,
             log: None,
             now: 0.0,
@@ -812,7 +839,15 @@ impl Kernel {
         let l = self.taffy.layout(n.taffy).expect("taffy");
         let inner = l.size.width - l.padding.left - l.padding.right - l.border.left - l.border.right;
         let Some(t) = n.text_content() else { return TextMetrics::default() };
-        text_metrics(&mut **self.res.text.borrow_mut(), self.key(id), &t.text, &t.clean, &n.visual.text_style(), Some(inner.max(0.0)))
+        text_metrics(
+            &mut **self.res.text.borrow_mut(),
+            self.key(id),
+            &t.text,
+            &t.clean,
+            &n.visual.text_style(),
+            &t.shape,
+            Some(inner.max(0.0)),
+        )
     }
     /// Parent of every overlay; always the root's last child.
     pub fn overlay_layer(&self) -> NodeId {
@@ -990,7 +1025,8 @@ impl Kernel {
         let root_inh = Inherited::root(&self.res.theme.borrow());
         let visual = Unresolved::new(&self.res.theme.borrow(), &root_inh).resolve(&self.res.theme.borrow(), &mut Vec::new());
         let content = match kind {
-            Kind::Text => Content::Text(TextContent::default()),
+            Kind::Text => Content::Text(Box::default()),
+            Kind::Link => Content::Link(Box::default()),
             Kind::TextInput => Content::Input({
                 let mut i = Box::<InputContent>::default();
                 i.rows = (1, u16::MAX);
@@ -1044,7 +1080,7 @@ impl Kernel {
         let measure = match kind {
             Kind::Text => Some(Measure::Text(id)),
             Kind::TextInput => Some(Measure::Input(id)),
-            Kind::Root | Kind::Box => None,
+            Kind::Root | Kind::Box | Kind::Link => None,
         };
         if measure.is_some() {
             self.taffy.set_node_context(t, measure).expect("taffy");
@@ -1260,6 +1296,9 @@ impl Kernel {
     }
 
     fn text_changed(&mut self, id: NodeId, prop: &'static str, value: &str) {
+        if let Content::Text(t) = &mut self.node_mut(id).content {
+            t.version += 1;
+        }
         self.update_measure(id);
         self.changed(id, Dirty::TEXT | Dirty::LAYOUT | Dirty::SEMANTICS, prop, || value.to_owned());
     }
@@ -1675,6 +1714,7 @@ impl Kernel {
             self.resolve(id, "theme");
             stack.extend(self.node(id).children.iter().copied());
         }
+        self.restyle_runs();
     }
     /// Custom tokens styles use but the theme does not define (drawn as [`MISSING`]).
     pub fn missing_tokens(&self) -> Vec<&'static str> {
@@ -1696,6 +1736,7 @@ impl Kernel {
     /// Every text measures again: shapes may now resolve to other faces (after the shared text
     /// system's fonts changed).
     pub fn fonts_changed(&mut self) {
+        self.fonts_generation += 1;
         let ids: Vec<NodeId> =
             self.nodes.iter().filter(|(_, n)| matches!(n.kind(), Kind::Text | Kind::TextInput)).map(|(id, _)| id).collect();
         for id in ids {
@@ -1960,6 +2001,13 @@ impl Kernel {
 
     /// Absolute rect `(x, y, w, h)` from the last layout.
     pub fn rect(&self, id: NodeId) -> (f32, f32, f32, f32) {
+        if matches!(self.node(id).content, Content::Link(_))
+            && let Some(text) = self.node(id).parent
+        {
+            let (tx, ty, _, _) = self.rect(text);
+            let (x, y, w, h) = self.link_frame(id);
+            return (tx + x, ty + y, w, h);
+        }
         let l = self.taffy.layout(self.node(id).taffy).expect("taffy");
         let (mut x, mut y) = (l.location.x, l.location.y);
         let mut p = self.node(id).parent;

@@ -81,6 +81,11 @@ assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 
 - Primitives: `el()` (a box, a row-direction flex container), `row()`, `col()`, `text(..)`,
   `text_input()`, `spacer()`. `.child(..)` takes an element, a `View` or a string.
+- Rich text is one `text` with styled runs:
+  `text(rich().text("Run ").code("cargo test").text(" or read ").link("the guide", url))`, with
+  `bold`, `italic`, `styled(s, |s| s.strike().color(Token::Danger))`. A link is an element of
+  its own (focusable, pressed by its words: `tap("the guide")`); `.on_link(|target| ..)` on the
+  text or an ancestor gets it.
 - Layout is flexbox (and grid): `flex_1`, `gap_2`, `items_center`, `justify_between`,
   `w_full`, `max_w_md`, `overflow_y_scroll`. Lengths: a number is logical pixels; `relative(0.5)`
   is half the parent; `sp(n)` and the `_N` methods are theme spacing steps (`p_4` = 16 px).

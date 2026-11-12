@@ -1,6 +1,6 @@
 # The text core
 
-Based on the [research](../research/text.md). Status: confirmed; not implemented yet. The [core](core.md)'s step 3: rich
+Based on the [research](../research/text.md). Status: confirmed; step 1 (rich text and links) implemented. The [core](core.md)'s step 3: rich
 text, blocks laid out and painted one at a time, a selection across blocks and rows of a
 virtual list, and accessible text. Designed for the AI chat app: messages streaming in as
 Markdown, long transcripts, select and copy across messages.
@@ -18,10 +18,21 @@ Markdown, long transcripts, select and copy across messages.
 - Layout: the engine builds the paragraph with Parley's style-run builder (a style table and the
   runs); its cache keys a node's paragraph by its text, its runs and the width, as today by text
   and width. Inline boxes (pills, images in a line) come later, on Parley's `InlineBox`.
-- Links: hit-tested on the link's line boxes (only its glyphs take the pointer); hover and press
-  states per link; `.on_link(|link: &str| ..)` on the text or an ancestor gets a click or Enter;
-  the cursor is the pointing hand (with the platform boundary's cursor). To assistive technology
-  and the inspector a link is a child `link` node with its bounds; Tab reaches it.
+- Links are nodes: each link run gets a `link` child of its text (kind `Link`), outside layout:
+  its frame is the box around the line pieces its range covers in the text's lines, and only
+  those pieces take the pointer. So a link has what every element has: focus (Tab reaches it,
+  Enter presses it), hover and press states (the run draws in `AccentHover` then), a test id
+  (`Span::id`), a name (its words) and its target as its value, the `press` action for agents
+  and `Click` for assistive technology. `.on_link(|target: &str| ..)` on the text or an
+  ancestor gets every press. The pointing-hand cursor comes with the platform boundary's
+  cursor.
+- Drawing: a run's color is its span's, else a link's accent, else the text's; backgrounds are
+  drawn behind the glyphs around their ascent and descent; underlines (links too) and
+  strikethroughs over them at the run's baseline.
+- Kept work: a text's glyphs are kept until its version (bumped by every change of its string
+  or runs), its width, its style or the fonts change; its lines (what links and selections are
+  placed by) the same. A color change re-draws without reshaping; a weight change reshapes that
+  paragraph.
 
 ## Blocks
 

@@ -295,10 +295,10 @@ impl Kernel {
         let style = input_style(n.visual.text_style(), input.multiline);
         let limit = input.multiline.then_some(width);
         let lines = if shown.is_empty() {
-            vec![VisualLine { start: 0, end: 0, top: 0.0, stops: vec![(0, 0.0)] }]
+            vec![VisualLine { start: 0, end: 0, top: 0.0, height: style.line_height, stops: vec![(0, 0.0)] }]
         } else {
             let mut engine = self.res.text.borrow_mut();
-            text::measure(&mut **engine, self.key(id), &shown, input.clean.replace(shown.len()), &style, limit);
+            text::measure(&mut **engine, self.key(id), &shown, input.clean.replace(shown.len()), &style, &[], limit);
             engine.visual_lines(self.key(id), &shown, &style, limit)
         };
         let mut f = Field {

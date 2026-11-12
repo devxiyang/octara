@@ -25,6 +25,7 @@ mod pointing;
 mod position;
 mod replay;
 mod responsive;
+mod rich;
 mod scroll;
 mod secure;
 mod size_of;

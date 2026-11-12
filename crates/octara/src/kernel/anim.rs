@@ -416,6 +416,10 @@ impl Kernel {
     /// A node's position relative to its parent and its size, as shown now.
     pub(crate) fn shown_frame(&self, id: NodeId) -> (f32, f32, f32, f32) {
         let n = self.node(id);
+        // A link is where its range is in its text.
+        if matches!(n.content, super::Content::Link(_)) {
+            return self.link_frame(id);
+        }
         if let Some(f) = n.anim.as_ref().and_then(|a| a.frame.as_ref())
             && f.iter().any(|tr| tr.moving(self.now))
         {

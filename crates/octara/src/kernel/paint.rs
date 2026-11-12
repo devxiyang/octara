@@ -339,30 +339,15 @@ impl Kernel {
                 Wrap::None | Wrap::Truncate => None,
             };
             if !s.is_empty() {
-                let mut engine = self.res.text.borrow_mut();
-                let clean = n.text_content().map_or(0, |t| t.clean.replace(s.len()));
-                text::measure(&mut **engine, self.key(id), s, clean, &style, limit);
                 // Cut text (one line, or `line_clamp`) ends in an ellipsis inside the box.
                 let fit = (style.wrap == Wrap::Truncate || style.max_lines.is_some()).then_some(inner);
-                let runs = engine.glyph_runs(self.key(id), &style, limit, fit);
-                drop(engine);
+                let runs = self.text_glyphs(id, &style, limit, fit);
                 // A truncated line is clipped to the box (an ellipsis comes with the renderer).
                 let clip_text = style.wrap == Wrap::Truncate;
                 if clip_text {
                     out.push(Item::PushClip { source: id, rect: Rect { x: cx, y: cy, w: inner, h: rect.h }, radius: 0.0 });
                 }
-                for r in runs {
-                    let glyphs: Vec<_> = r.glyphs.into_iter().map(|g| crate::paint::Glyph { id: g.id, x: g.x + cx, y: g.y + cy }).collect();
-                    out.push(Item::Glyphs(GlyphRun {
-                        source: id,
-                        font: r.font,
-                        size: r.size,
-                        coords: r.coords,
-                        embolden: r.embolden,
-                        color: fade(v.text, opacity),
-                        glyphs,
-                    }));
-                }
+                self.paint_runs(id, &runs, (cx, cy), v.text, opacity, out);
                 if clip_text {
                     out.push(Item::PopClip);
                 }
@@ -481,7 +466,7 @@ impl Kernel {
                     let limit = t.max_width.map(|w| w * t.scale);
                     let key = text::TextKey { kernel: self.serial, node: id, slot };
                     let mut engine = self.res.text.borrow_mut();
-                    let m = text::measure(&mut **engine, key, &t.text, 0, &style, limit);
+                    let m = text::measure(&mut **engine, key, &t.text, 0, &style, &[], limit);
                     let runs = engine.glyph_runs(key, &style, limit, None);
                     drop(engine);
                     let along = |a: Align, len: f32| match a {
@@ -534,7 +519,10 @@ impl Kernel {
         if !self.ink_meets(id, rect, &Rect { x, y, w: 1.0, h: 1.0 }) {
             return;
         }
-        if inside(&rect) && inside(&clip) && id != self.overlay_layer {
+        // A link takes the pointer on the lines it covers, not its whole box.
+        let on_link = || self.link_rects(id).iter().any(|r| inside(&Rect { x: origin.0 + r.x, y: origin.1 + r.y, w: r.w, h: r.h }));
+        let is_link = matches!(n.content, super::Content::Link(_));
+        if inside(&rect) && inside(&clip) && id != self.overlay_layer && (!is_link || on_link()) {
             *hit = Some(id);
         }
         let mut child_clip = clip;

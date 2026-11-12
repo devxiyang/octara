@@ -194,7 +194,7 @@ impl Kernel {
         if n.state.contains(State::DISABLED) {
             node.set_disabled();
         }
-        if [HandlerKind::Press, HandlerKind::Toggle].iter().any(|k| n.handlers[*k as usize].is_some()) {
+        if [HandlerKind::Press, HandlerKind::Toggle].iter().any(|k| n.handlers[*k as usize].is_some()) || n.kind() == Kind::Link {
             node.add_action(ak::Action::Click);
         }
         if n.handlers[HandlerKind::SecondaryPress as usize].is_some() {
@@ -226,6 +226,9 @@ impl Kernel {
     pub(crate) fn node_actions(&self, id: NodeId) -> Vec<String> {
         let n = self.node(id);
         let mut actions = Vec::new();
+        if n.kind() == Kind::Link {
+            actions.push("press".to_string());
+        }
         for (kind, a) in [
             (HandlerKind::Press, "press"),
             (HandlerKind::Toggle, "toggle"),

@@ -73,11 +73,26 @@ impl From<NodeId> for TextKey {
     }
 }
 
+/// A styled range of one paragraph as the engine shapes it: the properties that change shapes,
+/// and the brush its glyphs carry (the text's run number from 1; 0 is the text's own style).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct StyleRun {
+    pub start: usize,
+    pub end: usize,
+    pub brush: u16,
+    pub family: Option<&'static str>,
+    pub size: Option<f32>,
+    pub weight: Option<u16>,
+    pub italic: bool,
+}
+
 /// Measures paragraphs. Implementations cache per `(text, paragraph)`.
 pub trait TextEngine {
-    /// Width and line count of one paragraph broken at `max_width` (`None`: unbounded).
+    /// Width, line count and height of one paragraph broken at `max_width` (`None`:
+    /// unbounded), its `runs` styling ranges of it (byte offsets in the paragraph).
     /// `unchanged`: the kernel knows this paragraph's text is the same as when the engine last
     /// saw paragraph `index` of `key` (so a cache may skip comparing it).
+    #[allow(clippy::too_many_arguments)]
     fn paragraph(
         &mut self,
         key: TextKey,
@@ -85,8 +100,9 @@ pub trait TextEngine {
         text: &str,
         unchanged: bool,
         style: &TextStyle,
+        runs: &[StyleRun],
         max_width: Option<f32>,
-    ) -> (f32, u32);
+    ) -> (f32, u32, f32);
     /// Drops cached paragraphs from `count` on (the text now has fewer).
     fn truncate(&mut self, key: TextKey, count: usize);
     /// Forgets a destroyed node's texts.
@@ -107,17 +123,52 @@ pub trait TextEngine {
     /// (`None`: one line per paragraph): what editing places the caret, moves it by lines and
     /// draws selections with.
     fn visual_lines(&mut self, key: TextKey, text: &str, style: &TextStyle, max_width: Option<f32>) -> Vec<VisualLine>;
+    /// Paragraphs shaped so far (for tests and benchmarks; 0 where not counted).
+    fn shaped(&self) -> u64 {
+        0
+    }
 }
 
 /// One line of a laid-out text as shown: its byte range (a line break's `\n` is in neither
-/// line), its top (from the text's top) and where a caret can stand on it, `(byte, x)` in byte
-/// order from `(start, ..)` to `(end, ..)`. A line that wraps ends where the next one starts.
+/// line), its top (from the text's top) and height, and where a caret can stand on it, `(byte,
+/// x)` in byte order from `(start, ..)` to `(end, ..)`. A line that wraps ends where the next one
+/// starts.
 #[derive(Clone, PartialEq, Debug)]
 pub struct VisualLine {
     pub start: usize,
     pub end: usize,
     pub top: f32,
+    pub height: f32,
     pub stops: Vec<(usize, f32)>,
+}
+
+impl VisualLine {
+    /// Where on the line a caret at byte `at` stands (the nearest stop at or before it).
+    pub fn x_of(&self, at: usize) -> f32 {
+        self.stops.iter().rev().find(|(b, _)| *b <= at).or(self.stops.first()).map_or(0.0, |s| s.1)
+    }
+}
+
+/// The rects `range` covers in `lines`, line by line, relative to the text's top-left.
+pub fn range_rects(lines: &[VisualLine], range: std::ops::Range<usize>) -> Vec<crate::paint::Rect> {
+    let mut out = Vec::new();
+    for l in lines {
+        let (s, e) = (range.start.max(l.start), range.end.min(l.end));
+        if s >= e && !(range.is_empty() && s == e) {
+            continue;
+        }
+        let (x0, x1) = (l.x_of(s), l.x_of(e));
+        if x1 > x0 {
+            out.push(crate::paint::Rect { x: x0, y: l.top, w: x1 - x0, h: l.height });
+        }
+    }
+    out
+}
+
+/// The byte nearest `(x, y)` (relative to the text's top-left) in `lines`.
+pub fn offset_at(lines: &[VisualLine], x: f32, y: f32) -> usize {
+    let Some(line) = lines.iter().find(|l| y < l.top + l.height).or(lines.last()) else { return 0 };
+    line.stops.iter().min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs())).map_or(line.start, |s| s.0)
 }
 
 /// Monospace lines: `em` per character, broken at spaces to fit `max_width` (as
@@ -147,7 +198,7 @@ fn even_lines(text: &str, em: f32, line_height: f32, max_width: Option<f32>) -> 
             let mut stops: Vec<(usize, f32)> =
                 para[s..e].char_indices().enumerate().map(|(n, (b, _))| (base + s + b, n as f32 * em)).collect();
             stops.push((base + e, para[s..e].chars().count() as f32 * em));
-            out.push(VisualLine { start: base + s, end: base + e, top: out.len() as f32 * line_height, stops });
+            out.push(VisualLine { start: base + s, end: base + e, top: out.len() as f32 * line_height, height: line_height, stops });
         }
         base += para.len() + 1;
     }
@@ -162,31 +213,50 @@ pub struct ShapedRun {
     pub coords: Vec<i16>,
     pub embolden: bool,
     pub glyphs: Vec<crate::paint::Glyph>,
+    /// The text's run this is from (0: the text's own style).
+    pub brush: u16,
+    /// Where the run starts on its line and how far it advances.
+    pub x: f32,
+    pub width: f32,
+    /// Its baseline, and its line's top and height, from the text's top.
+    pub baseline: f32,
+    pub line_top: f32,
+    pub line_height: f32,
 }
 
-/// Lays out `text` (all paragraphs) at `max_width` with `style.max_lines` applied. The first
-/// `clean` bytes are known unchanged since the engine last measured this node: paragraphs that
-/// end within them are not compared again (appending to a long text touches only its tail).
+/// Lays out `text` (all paragraphs) at `max_width` with `style.max_lines` applied, `runs`
+/// styling ranges of it (byte offsets in the text, sorted). The first `clean` bytes are known
+/// unchanged since the engine last measured this node: paragraphs that end within them are not
+/// compared again (appending to a long text touches only its tail).
+#[allow(clippy::too_many_arguments)]
 pub fn measure(
     engine: &mut dyn TextEngine,
     key: TextKey,
     text: &str,
     clean: usize,
     style: &TextStyle,
+    runs: &[StyleRun],
     max_width: Option<f32>,
 ) -> TextMetrics {
-    let (mut width, mut lines, mut count, mut start) = (0.0f32, 0u32, 0, 0usize);
+    let (mut width, mut lines, mut height, mut count, mut start) = (0.0f32, 0u32, 0.0f32, 0, 0usize);
+    let mut local = Vec::new();
     for (i, p) in text.split('\n').enumerate() {
         let end = start + p.len();
-        let (w, l) = engine.paragraph(key, i, p, end < clean, style, max_width);
+        local.clear();
+        for r in runs.iter().filter(|r| r.end > start && r.start < end) {
+            local.push(StyleRun { start: r.start.max(start) - start, end: r.end.min(end) - start, ..*r });
+        }
+        let (w, l, h) = engine.paragraph(key, i, p, end < clean, style, &local, max_width);
         start = end + 1;
         width = width.max(w);
         lines += l.max(1);
+        height += if l == 0 { style.line_height } else { h };
         count = i + 1;
     }
     engine.truncate(key, count);
     let shown = style.max_lines.map_or(lines, |m| lines.min(m as u32));
-    TextMetrics { width, height: shown as f32 * style.line_height, lines: shown, truncated: shown < lines }
+    let height = if shown < lines { shown as f32 * style.line_height } else { height };
+    TextMetrics { width, height, lines: shown, truncated: shown < lines }
 }
 
 // ---- monospace ----
@@ -196,9 +266,18 @@ pub fn measure(
 pub struct MonoEngine;
 
 impl TextEngine for MonoEngine {
-    fn paragraph(&mut self, _: TextKey, _: usize, text: &str, _: bool, style: &TextStyle, max_width: Option<f32>) -> (f32, u32) {
+    fn paragraph(
+        &mut self,
+        _: TextKey,
+        _: usize,
+        text: &str,
+        _: bool,
+        style: &TextStyle,
+        _: &[StyleRun],
+        max_width: Option<f32>,
+    ) -> (f32, u32, f32) {
         let em = style.font_size * 0.5;
-        let Some(max) = max_width else { return (text.chars().count() as f32 * em, 1) };
+        let Some(max) = max_width else { return (text.chars().count() as f32 * em, 1, style.line_height) };
         let (mut widest, mut line, mut lines) = (0.0f32, 0.0f32, 1u32);
         for word in text.split(' ') {
             let w = word.chars().count() as f32 * em;
@@ -211,7 +290,7 @@ impl TextEngine for MonoEngine {
                 line = with_space;
             }
         }
-        (widest.max(line), lines)
+        (widest.max(line), lines, lines as f32 * style.line_height)
     }
     fn truncate(&mut self, _: TextKey, _: usize) {}
     fn forget(&mut self, _: u32, _: NodeId) {}
@@ -240,9 +319,10 @@ fn width_key(w: Option<f32>) -> WidthKey {
 struct Paragraph {
     hash: u64,
     style: TextStyle,
-    layout: Layout<()>,
+    runs: Vec<StyleRun>,
+    layout: Layout<u16>,
     /// Recent results by width: Taffy asks for min-content, max-content and the final width.
-    results: Vec<(WidthKey, f32, u32)>,
+    results: Vec<(WidthKey, f32, u32, f32)>,
 }
 
 /// A text node's paragraphs, by slot (a field's value and its placeholder are two).
@@ -252,7 +332,7 @@ type Slots = Vec<(u32, Vec<Paragraph>)>;
 /// the machine).
 pub struct ParleyEngine {
     fonts: FontContext,
-    layouts: LayoutContext<()>,
+    layouts: LayoutContext<u16>,
     /// Paragraphs by node, then by slot.
     cache: FxHashMap<(u32, NodeId), Slots>,
     /// "…" shaped per style, for truncated text.
@@ -292,7 +372,7 @@ impl ParleyEngine {
 
 /// A positioned run as the renderers want it, `top` down, with each glyph's advance (negative
 /// for a space, so an ellipsis can drop trailing ones).
-fn shaped_run(run: &parley::GlyphRun<'_, ()>, top: f32) -> (ShapedRun, Vec<f32>) {
+fn shaped_run(run: &parley::GlyphRun<'_, u16>, top: f32, line: &parley::LineMetrics) -> (ShapedRun, Vec<f32>) {
     let r = run.run();
     let spaces: Vec<bool> = r.visual_clusters().flat_map(|c| std::iter::repeat_n(c.is_space_or_nbsp(), c.glyphs().count())).collect();
     let (glyphs, advances) = run
@@ -309,6 +389,12 @@ fn shaped_run(run: &parley::GlyphRun<'_, ()>, top: f32) -> (ShapedRun, Vec<f32>)
         coords: r.normalized_coords().iter().map(|c| c.to_bits()).collect(),
         embolden: r.synthesis().embolden(),
         glyphs,
+        brush: run.style().brush,
+        x: run.offset(),
+        width: run.advance(),
+        baseline: top + run.baseline(),
+        line_top: top + line.block_min_coord,
+        line_height: line.block_max_coord - line.block_min_coord,
     };
     (shaped, advances)
 }
@@ -319,14 +405,14 @@ impl ParleyEngine {
         if let Some((_, runs, w)) = self.ellipses.iter().find(|(s, ..)| s == style) {
             return (runs.iter().map(|r| (r.clone(), Vec::new())).collect(), *w);
         }
-        let mut layout = self.shape("…", style);
+        let mut layout = self.shape("…", style, &[]);
         self.shaped -= 1;
         layout.break_all_lines(None);
         let mut runs = Vec::new();
         if let Some(line) = layout.lines().next() {
             for item in line.items() {
                 let parley::PositionedLayoutItem::GlyphRun(run) = item else { continue };
-                runs.push(shaped_run(&run, 0.0).0);
+                runs.push(shaped_run(&run, 0.0, line.metrics()).0);
             }
         }
         let w = layout.width();
@@ -334,13 +420,33 @@ impl ParleyEngine {
         (runs.into_iter().map(|r| (r, Vec::new())).collect(), w)
     }
 
-    fn shape(&mut self, text: &str, style: &TextStyle) -> Layout<()> {
+    fn shape(&mut self, text: &str, style: &TextStyle, runs: &[StyleRun]) -> Layout<u16> {
         self.shaped += 1;
         let mut b = self.layouts.ranged_builder(&mut self.fonts, text, 1.0, true);
+        b.push_default(StyleProperty::Brush(0));
         b.push_default(StyleProperty::FontFamily(style.family.into()));
         b.push_default(StyleProperty::FontSize(style.font_size));
         b.push_default(StyleProperty::FontWeight(FontWeight::new(style.weight as f32)));
         b.push_default(StyleProperty::LineHeight(parley::LineHeight::Absolute(style.line_height)));
+        let ratio = style.line_height / style.font_size.max(1.0);
+        for r in runs {
+            let range = r.start..r.end;
+            b.push(StyleProperty::Brush(r.brush), range.clone());
+            if let Some(f) = r.family {
+                b.push(StyleProperty::FontFamily(f.into()), range.clone());
+            }
+            if let Some(size) = r.size {
+                b.push(StyleProperty::FontSize(size), range.clone());
+                // A bigger run gets lines as tall for it as the text's are for the text.
+                b.push(StyleProperty::LineHeight(parley::LineHeight::FontSizeRelative(ratio)), range.clone());
+            }
+            if let Some(w) = r.weight {
+                b.push(StyleProperty::FontWeight(FontWeight::new(w as f32)), range.clone());
+            }
+            if r.italic {
+                b.push(StyleProperty::FontStyle(parley::FontStyle::Italic), range.clone());
+            }
+        }
         b.build(text)
     }
 }
@@ -372,10 +478,11 @@ impl TextEngine for ParleyEngine {
         text: &str,
         unchanged: bool,
         style: &TextStyle,
+        runs: &[StyleRun],
         max_width: Option<f32>,
-    ) -> (f32, u32) {
+    ) -> (f32, u32, f32) {
         let paras = self.paras_entry(key);
-        let known = unchanged && paras.get(index).is_some_and(|p| p.style == *style);
+        let known = unchanged && paras.get(index).is_some_and(|p| p.style == *style && p.runs == runs);
         let hash = if known {
             paras[index].hash
         } else {
@@ -383,11 +490,11 @@ impl TextEngine for ParleyEngine {
             text.hash(&mut h);
             h.finish()
         };
-        let fresh = !known && paras.get(index).is_none_or(|p| p.hash != hash || p.style != *style);
+        let fresh = !known && paras.get(index).is_none_or(|p| p.hash != hash || p.style != *style || p.runs != runs);
         if fresh {
-            let layout = self.shape(text, style);
+            let layout = self.shape(text, style, runs);
             let paras = self.paras_entry(key);
-            let p = Paragraph { hash, style: *style, layout, results: Vec::new() };
+            let p = Paragraph { hash, style: *style, runs: runs.to_vec(), layout, results: Vec::new() };
             if index < paras.len() {
                 paras[index] = p;
             } else {
@@ -396,16 +503,16 @@ impl TextEngine for ParleyEngine {
         }
         let p = &mut self.paras_entry(key)[index];
         let key = width_key(max_width);
-        if let Some(&(_, w, l)) = p.results.iter().find(|r| r.0 == key) {
-            return (w, l);
+        if let Some(&(_, w, l, h)) = p.results.iter().find(|r| r.0 == key) {
+            return (w, l, h);
         }
         p.layout.break_all_lines(max_width);
-        let (w, l) = (p.layout.width(), p.layout.len() as u32);
+        let (w, l, h) = (p.layout.width(), p.layout.len() as u32, p.layout.height());
         if p.results.len() == 4 {
             p.results.remove(0);
         }
-        p.results.push((key, w, l));
-        (w, l)
+        p.results.push((key, w, l, h));
+        (w, l, h)
     }
     fn truncate(&mut self, key: TextKey, count: usize) {
         if let Some(p) = self.paras(key) {
@@ -432,7 +539,7 @@ impl TextEngine for ParleyEngine {
                 let mut runs = Vec::new();
                 for item in line.items() {
                     let parley::PositionedLayoutItem::GlyphRun(run) = item else { continue };
-                    runs.push(shaped_run(&run, top));
+                    runs.push(shaped_run(&run, top, line.metrics()));
                 }
                 lines.push(runs);
             }
@@ -443,7 +550,7 @@ impl TextEngine for ParleyEngine {
                 }
                 lines.push(Vec::new());
             }
-            top += p.layout.len().max(1) as f32 * style.line_height;
+            top += if p.layout.is_empty() { style.line_height } else { p.layout.height() };
         }
         // The last line ends in an ellipsis if it does not fit or lines are hidden after it.
         if let (Some(fit), Some((dots, dots_w))) = (fit, ellipsis)
@@ -491,10 +598,13 @@ impl TextEngine for ParleyEngine {
         let Some(paras) = self.paras(key) else { return even_lines(text, style.font_size * 0.5, style.line_height, max_width) };
         let mut out = Vec::new();
         let mut base = 0;
+        let mut top = 0.0f32;
         for (para, p) in text.split('\n').zip(paras.iter_mut()) {
             p.layout.break_all_lines(max_width);
             let count = out.len();
             for line in p.layout.lines() {
+                let m = line.metrics();
+                let (line_top, line_height) = (top + m.block_min_coord, m.block_max_coord - m.block_min_coord);
                 let r = line.text_range();
                 let (s, e) = (base + r.start.min(para.len()), base + r.end.min(para.len()));
                 let mut stops: Vec<(usize, f32)> = Vec::new();
@@ -519,15 +629,19 @@ impl TextEngine for ParleyEngine {
                 }
                 stops.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
                 stops.dedup_by_key(|st| st.0);
-                out.push(VisualLine { start: s, end: e, top: out.len() as f32 * style.line_height, stops });
+                out.push(VisualLine { start: s, end: e, top: line_top, height: line_height, stops });
             }
             // An empty paragraph is one empty line.
             if out.len() == count {
-                out.push(VisualLine { start: base, end: base, top: out.len() as f32 * style.line_height, stops: vec![(base, 0.0)] });
+                out.push(VisualLine { start: base, end: base, top, height: style.line_height, stops: vec![(base, 0.0)] });
             }
+            top += if p.layout.is_empty() { style.line_height } else { p.layout.height() };
             base += para.len() + 1;
         }
         out
+    }
+    fn shaped(&self) -> u64 {
+        self.shaped
     }
     fn register_fallback_font(&mut self, data: &'static [u8], scripts: &[[u8; 4]]) {
         let mut families: Vec<_> =
@@ -560,23 +674,23 @@ mod tests {
     fn parley_wraps_and_caches_by_paragraph() {
         let mut e = ParleyEngine::default();
         let s = TextStyle::default();
-        let one = measure(&mut e, node().into(), "hello world", 0, &s, None);
+        let one = measure(&mut e, node().into(), "hello world", 0, &s, &[], None);
         assert!(one.width > 50.0 && one.width < 120.0, "{one:?}");
         assert_eq!((one.lines, one.height), (1, 24.0));
-        let narrow = measure(&mut e, node().into(), "hello world", 0, &s, Some(one.width / 2.0 + 10.0));
+        let narrow = measure(&mut e, node().into(), "hello world", 0, &s, &[], Some(one.width / 2.0 + 10.0));
         assert_eq!(narrow.lines, 2);
         assert!(narrow.width < one.width);
-        let min = measure(&mut e, node().into(), "hello world", 0, &s, Some(0.0));
+        let min = measure(&mut e, node().into(), "hello world", 0, &s, &[], Some(0.0));
         assert_eq!(min.lines, 2, "min-content breaks at every opportunity");
 
         let before = e.shaped;
-        measure(&mut e, node().into(), "first\nsecond", 0, &s, None);
-        measure(&mut e, node().into(), "first\nsecond more", 0, &s, None);
+        measure(&mut e, node().into(), "first\nsecond", 0, &s, &[], None);
+        measure(&mut e, node().into(), "first\nsecond more", 0, &s, &[], None);
         assert_eq!(e.shaped - before, 3, "appending reshapes only the last paragraph");
-        let mono = measure(&mut e, node().into(), "iiii", 0, &TextStyle { family: "IBM Plex Mono", ..s }, None);
-        let sans = measure(&mut e, node().into(), "iiii", 0, &s, None);
+        let mono = measure(&mut e, node().into(), "iiii", 0, &TextStyle { family: "IBM Plex Mono", ..s }, &[], None);
+        let sans = measure(&mut e, node().into(), "iiii", 0, &s, &[], None);
         assert!(mono.width > sans.width * 1.5, "mono is monospaced: {mono:?} vs {sans:?}");
-        let capped = measure(&mut e, node().into(), "a\nb\nc", 0, &TextStyle { max_lines: Some(2), ..s }, None);
+        let capped = measure(&mut e, node().into(), "a\nb\nc", 0, &TextStyle { max_lines: Some(2), ..s }, &[], None);
         assert_eq!((capped.lines, capped.truncated), (2, true));
     }
 
@@ -585,9 +699,9 @@ mod tests {
         let mut e = ParleyEngine::default();
         let s = TextStyle::default();
         let text = "hello world\nsecond";
-        let one = measure(&mut e, node().into(), "hello world", 0, &s, None);
+        let one = measure(&mut e, node().into(), "hello world", 0, &s, &[], None);
         let narrow = Some(one.width * 0.7);
-        measure(&mut e, node().into(), text, 0, &s, narrow);
+        measure(&mut e, node().into(), text, 0, &s, &[], narrow);
         let lines = e.visual_lines(node().into(), text, &s, narrow);
         assert_eq!(lines.len(), 3, "{lines:?}");
         assert_eq!((lines[0].start, lines[1].start, lines[1].end, lines[2].start, lines[2].end), (0, 6, 11, 12, 18));
@@ -603,8 +717,8 @@ mod tests {
     fn mono_is_half_an_em_per_char() {
         let mut e = MonoEngine;
         let s = TextStyle::default();
-        assert_eq!(measure(&mut e, node().into(), "abcd", 0, &s, None).width, 32.0);
-        let m = measure(&mut e, node().into(), "abcd efgh", 0, &s, Some(40.0));
+        assert_eq!(measure(&mut e, node().into(), "abcd", 0, &s, &[], None).width, 32.0);
+        let m = measure(&mut e, node().into(), "abcd efgh", 0, &s, &[], Some(40.0));
         assert_eq!((m.width, m.lines), (32.0, 2));
     }
 }

@@ -61,7 +61,7 @@ fn interactive(e: El) -> El {
 /// A secondary button: surface background, border, hover and pressed shades.
 #[component]
 #[track_caller]
-pub fn button(label: impl IntoProp<String>) -> El {
+pub fn button(label: impl IntoText) -> El {
     interactive(text(label).role(Role::Button))
         .px_3()
         .py_1p5()
@@ -79,7 +79,7 @@ pub fn button(label: impl IntoProp<String>) -> El {
 /// The main action of a view: accent background.
 #[component]
 #[track_caller]
-pub fn primary_button(label: impl IntoProp<String>) -> El {
+pub fn primary_button(label: impl IntoText) -> El {
     button(label)
         .bg(Token::Accent)
         .text_color(Token::AccentText)
@@ -91,14 +91,14 @@ pub fn primary_button(label: impl IntoProp<String>) -> El {
 /// A low-emphasis button: no background until hovered.
 #[component]
 #[track_caller]
-pub fn ghost_button(label: impl IntoProp<String>) -> El {
+pub fn ghost_button(label: impl IntoText) -> El {
     button(label).bg(Paint::Color(Color::TRANSPARENT)).border_color(Paint::Color(Color::TRANSPARENT))
 }
 
 /// A button that stays selected while `selected` holds (tabs, segmented controls, filters).
 #[component]
 #[track_caller]
-pub fn toggle_button(label: impl IntoProp<String>, selected: impl Fn() -> bool + 'static) -> El {
+pub fn toggle_button(label: impl IntoText, selected: impl Fn() -> bool + 'static) -> El {
     ghost_button(label)
         .selected(selected)
         .style_when(State::SELECTED, |p| p.bg(Token::Surface).border_color(Token::Border).text_color(Token::Accent))
