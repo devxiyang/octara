@@ -64,11 +64,11 @@ fn a_picking_window_outlines_then_picks_instead_of_pressing() {
     let mut w = Window::headless(app);
     let save = w.inspect().find("save").unwrap().bounds;
     let (x, y) = (save[0] + 4.0, save[1] + 4.0);
-    let plain = w.display_list().items.len();
+    let plain = w.display_list().items().len();
     w.set_picking(true);
     assert!(w.picking());
     w.pointer_move(x, y);
-    assert_eq!(w.display_list().items.len(), plain + 1, "the hovered element outlined");
+    assert_eq!(w.display_list().items().len(), plain + 1, "the hovered element outlined");
     w.click_at(x, y);
     assert!(!w.picking(), "a pick ends picking");
     assert_eq!(w.kernel().text_of("count").as_deref(), Some("saved 0"), "the click picked, it did not press");
@@ -80,7 +80,7 @@ fn a_picking_window_outlines_then_picks_instead_of_pressing() {
     assert_eq!(picked[0].node.id.as_deref(), Some("save"));
     let clipboard = w.app().platform().read_text();
     assert_eq!(clipboard.as_deref(), Some(picked[0].text.as_str()), "its line is on the clipboard");
-    assert_eq!(w.display_list().items.len(), plain);
+    assert_eq!(w.display_list().items().len(), plain);
     w.tap("save").unwrap();
     assert_eq!(w.kernel().text_of("count").as_deref(), Some("saved 1"), "after picking, input reaches the app");
 

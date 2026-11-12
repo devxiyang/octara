@@ -120,11 +120,16 @@ Designed in [the text core](text.md); what the core decided:
 
 ## Incremental frames
 
-- Painting keeps each subtree's items (shadows, quads, glyphs, paths) until that subtree's paint
-  changes; the display list is assembled from kept parts. Accessibility geometry is sent for the
-  nodes that moved, not by walking the tree.
-- Proof: while a message streams, the glyphs emitted per frame grow with the tail, not the
-  message; the accessibility nodes sent equal the nodes that changed.
+- Painting keeps each node's own drawing in its own coordinates until what it is drawn from
+  changes; a frame places kept drawings at their nodes' offsets with the clips and layers
+  between them ([rendering](rendering.md#2-display-list)). A node that moves or scrolls keeps
+  its drawing; culling by reach holds while something elsewhere moves.
+- Accessibility compares the places of what may have moved, not the whole tree: after a layout,
+  the children of each node whose layout changed and of its ancestors, and inside a node whose
+  size changed, its children; the nodes moving and those that just stopped. Places are in the
+  parent's space, so a subtree that moved is sent at its root. A resized window compares all.
+- Proof: while a message streams, the glyph runs built per frame are the tail's, whatever the
+  window holds; the accessibility nodes sent are the ones that changed (`bench -- --stream`).
 
 ## The platform boundary
 
@@ -144,7 +149,7 @@ Designed in [the text core](text.md); what the core decided:
    Implemented.
 3. The text core (its design first): runs, blocks, block layout, document selection, text runs and
    live regions in accessibility, Markdown. Implemented.
-4. Incremental paint and accessibility.
+4. Incremental paint and accessibility. Implemented.
 5. The platform boundary completed: rendering and accessibility in the backend, cursor, drops,
    image clipboard, URLs, file dialogs; the winit backend with several windows (it shows one);
    the conformance suite.

@@ -86,7 +86,7 @@ impl CpuRenderer {
         let (bg, bga) = rgb(dl.background);
         let base = [bg[0] * bga, bg[1] * bga, bg[2] * bga, bga];
         let mut t = Target { width, height, pixels: vec![base; (width * height) as usize], clips: Vec::new(), layers: Vec::new() };
-        for item in &dl.items {
+        for item in &dl.items() {
             match item {
                 Item::Shadow(s) => shadow(&mut t, s, scale),
                 Item::Quad(q) => quad(&mut t, q, scale),
@@ -154,7 +154,7 @@ impl CpuRenderer {
     fn glyph_run(&mut self, t: &mut Target, run: &GlyphRun, scale: f32) {
         let (color, alpha) = rgb(run.color);
         let size = run.size * scale;
-        for g in &run.glyphs {
+        for g in run.placed() {
             let (gx, gy) = (g.x * scale, g.y * scale);
             let (ix, fx) = (gx.floor(), gx - gx.floor());
             let subpixel = ((fx * SUBPIXEL_STEPS).floor() as u8).min(SUBPIXEL_STEPS as u8 - 1);

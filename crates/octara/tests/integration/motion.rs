@@ -166,7 +166,7 @@ fn shadows_move_between_steps() {
     let blur = |app: &Window| -> f32 {
         let n = app.kernel().find("card").unwrap();
         app.display_list()
-            .items
+            .items()
             .iter()
             .filter_map(|i| if let octara::paint::Item::Shadow(s) = i { (s.source == n).then_some(s.blur) } else { None })
             .fold(0.0, f32::max)
@@ -311,7 +311,7 @@ mod presence {
     /// How opaque the element is drawn: its group layer's opacity, else its fill's alpha.
     fn drawn(app: &Window, id: octara::kernel::NodeId) -> Option<f32> {
         let dl = app.display_list();
-        let layer = dl.items.iter().find_map(|i| {
+        let layer = dl.items().iter().find_map(|i| {
             if let octara::paint::Item::PushLayer { source, opacity } = i { (*source == id).then_some(*opacity) } else { None }
         });
         let fill = dl.quads().find(|q| q.source == id).and_then(|q| q.fill).map(|c| c.components[3]);

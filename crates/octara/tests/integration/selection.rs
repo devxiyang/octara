@@ -30,7 +30,7 @@ fn center(w: &Window, id: &str) -> (f32, f32) {
 fn highlighted(w: &Window, id: &str) -> bool {
     let n = w.kernel().find(id).unwrap();
     let accent = Theme::light().get(Token::Accent).multiply_alpha(0.3);
-    w.display_list().items.iter().any(|i| matches!(i, Item::Quad(q) if q.source == n && q.fill == Some(accent)))
+    w.display_list().items().iter().any(|i| matches!(i, Item::Quad(q) if q.source == n && q.fill == Some(accent)))
 }
 
 #[test]

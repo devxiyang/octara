@@ -314,6 +314,10 @@ struct Node {
     /// its box (left, top, right, bottom): shadows, overflowing text and children. Painting and
     /// hit testing skip subtrees whose reach misses the clip.
     ink: Cell<[f32; 4]>,
+    /// Its own drawing as last built, in its own coordinates, and what it was built from.
+    drawn: RefCell<Option<paint::Drawn>>,
+    /// Counts changes to what it draws (its own drawing is built again after one).
+    paint_ver: u64,
     /// The place last sent to assistive technology (`None`: not sent, or dropped since).
     a11y_sent: Cell<Option<[f32; 6]>>,
     role: Option<Role>,
@@ -712,10 +716,25 @@ pub struct Kernel {
     last_frame: RefCell<Option<LastFrame>>,
     /// Display lists built (not reused), for tests and benchmarks.
     frames_built: Cell<u64>,
+    /// Own drawings built and kept ones used (incremental paint's counters).
+    drawings_built: Cell<u64>,
+    drawings_reused: Cell<u64>,
+    glyph_runs_built: Cell<u64>,
+    /// Counts theme changes (a drawing depends on the theme).
+    theme_gen: u64,
+    /// Nodes moving now and their ancestors: their reach is not their resting one.
+    in_motion: RefCell<rustc_hash::FxHashSet<NodeId>>,
     /// Nodes whose semantics or children changed since the last accessibility update.
     a11y_dirty: RefCell<rustc_hash::FxHashSet<NodeId>>,
     /// A layout ran since the last accessibility update (places may have changed).
     a11y_geometry: Cell<bool>,
+    /// Nodes whose layout changed since the last accessibility update (what may have moved is
+    /// under them and their ancestors), the nodes that were moving then, and the viewport then.
+    a11y_relaid: RefCell<rustc_hash::FxHashSet<NodeId>>,
+    a11y_moving: RefCell<Vec<NodeId>>,
+    a11y_viewport: Cell<(f32, f32)>,
+    /// Places compared by accessibility updates (their work).
+    a11y_compared: Cell<u64>,
     /// Assistive technology has the tree (updates can be incremental), at this scale.
     a11y_live: Cell<bool>,
     a11y_scale: Cell<f64>,
@@ -801,8 +820,17 @@ impl Kernel {
             paint_gen: 0,
             last_frame: RefCell::new(None),
             frames_built: Cell::new(0),
+            drawings_built: Cell::new(0),
+            drawings_reused: Cell::new(0),
+            glyph_runs_built: Cell::new(0),
+            theme_gen: 0,
+            in_motion: RefCell::new(rustc_hash::FxHashSet::default()),
             a11y_dirty: RefCell::default(),
             a11y_geometry: Cell::new(true),
+            a11y_relaid: RefCell::new(rustc_hash::FxHashSet::default()),
+            a11y_moving: RefCell::new(Vec::new()),
+            a11y_viewport: Cell::new((0.0, 0.0)),
+            a11y_compared: Cell::new(0),
             a11y_live: Cell::new(false),
             a11y_scale: Cell::new(1.0),
             #[cfg(debug_assertions)]
@@ -931,6 +959,10 @@ impl Kernel {
     /// the root's).
     fn a11y_children_changed(&self, parent: NodeId) {
         self.a11y_touch(parent);
+        // The children after a change move.
+        if self.a11y_live.get() {
+            self.a11y_relaid.borrow_mut().insert(parent);
+        }
         if parent == self.overlay_layer {
             self.a11y_touch(self.root);
         }
@@ -951,6 +983,12 @@ impl Kernel {
     fn changed(&mut self, id: NodeId, d: Dirty, prop: &'static str, value: impl FnOnce() -> String) {
         if d.contains(Dirty::SEMANTICS) {
             self.a11y_touch(id);
+        }
+        if d.intersects(Dirty::PAINT | Dirty::TEXT | Dirty::LAYOUT) {
+            self.node_mut(id).paint_ver += 1;
+        }
+        if d.contains(Dirty::LAYOUT) && self.a11y_live.get() {
+            self.a11y_relaid.borrow_mut().insert(id);
         }
         self.counters.prop_changes += 1;
         self.mark(d);
@@ -1060,6 +1098,8 @@ impl Kernel {
         let id = self.nodes.insert(Node {
             content,
             ink: Cell::new([0.0; 4]),
+            drawn: RefCell::new(None),
+            paint_ver: 0,
             a11y_sent: Cell::new(None),
             role: None,
             parent: None,
@@ -1761,6 +1801,7 @@ impl Kernel {
     /// The shared theme changed: every node resolves against it again.
     pub fn theme_changed(&mut self) {
         self.paint_gen += 1;
+        self.theme_gen += 1;
         self.missing_tokens.clear();
         // Breakpoint widths may have changed too.
         self.screen = self.res.theme.borrow().breakpoint_of(self.viewport.0);

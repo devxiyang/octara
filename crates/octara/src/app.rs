@@ -951,7 +951,7 @@ impl Window {
         match self.picking_overlay() {
             Some(over) => {
                 let mut list = (*list).clone();
-                list.items.extend(over);
+                list.parts.extend(over.into_iter().map(crate::paint::Part::Item));
                 std::rc::Rc::new(list)
             }
             None => list,

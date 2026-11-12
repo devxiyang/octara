@@ -40,20 +40,20 @@ fn quads_glyphs_and_clips_in_order() {
     assert_eq!(hello.glyphs.len(), 5);
     assert_eq!(hello.size, 16.0);
     let r = app.kernel().rect(source(&app, "hello"));
-    assert!(hello.glyphs.iter().all(|g| g.x >= r.0 && g.x < r.0 + r.2 && g.y > r.1 && g.y <= r.1 + r.3));
+    assert!(hello.placed().all(|g| g.x >= r.0 && g.x < r.0 + r.2 && g.y > r.1 && g.y <= r.1 + r.3));
     assert!(hello.glyphs.windows(2).all(|w| w[0].y == w[1].y && w[0].x < w[1].x));
 
     // The scroll container clips its rows; rows outside it are not drawn.
     let list = source(&app, "list");
-    let i = dl.items.iter().position(|it| matches!(it, Item::PushClip { source: s, .. } if *s == list));
+    let i = dl.items().iter().position(|it| matches!(it, Item::PushClip { source: s, .. } if *s == list));
     let i = i.expect("list clip");
     let drawn: Vec<_> = dl.glyph_runs().filter(|g| (0..10).any(|k| g.source == source(&app, &format!("r{k}")))).collect();
     assert_eq!(drawn.len(), 2, "two 20 px rows fit in 40 px");
-    assert!(dl.items[i + 1..].iter().any(|it| matches!(it, Item::PopClip)));
+    assert!(dl.items()[i + 1..].iter().any(|it| matches!(it, Item::PopClip)));
 
     // line_clamp(2): only two lines of glyphs.
     let clamped = dl.glyph_runs().filter(|g| g.source == source(&app, "clamped"));
-    let mut baselines: Vec<f32> = clamped.flat_map(|g| g.glyphs.iter().map(|x| x.y)).collect();
+    let mut baselines: Vec<f32> = clamped.flat_map(|g| g.placed().map(|x| x.y).collect::<Vec<_>>()).collect();
     baselines.dedup();
     assert_eq!(baselines.len(), 2, "{baselines:?}");
 
@@ -79,7 +79,7 @@ mod ellipsis {
     fn glyphs(app: &Window, id: &str) -> Vec<(u32, f32, f32)> {
         let n = app.kernel().find(id).unwrap();
         let mut out = Vec::new();
-        for item in app.display_list().items.iter() {
+        for item in app.display_list().items().iter() {
             if let Item::Glyphs(g) = item
                 && g.source == n
             {
@@ -135,18 +135,16 @@ mod shadows {
         });
         let n = app.kernel().find("card").unwrap();
         let dl = app.display_list();
-        let items: Vec<_> = dl
-            .items
-            .iter()
-            .filter(|i| matches!(i, Item::Shadow(s) if s.source == n) || matches!(i, Item::Quad(q) if q.source == n))
-            .collect();
+        let all = dl.items();
+        let items: Vec<_> =
+            all.iter().filter(|i| matches!(i, Item::Shadow(s) if s.source == n) || matches!(i, Item::Quad(q) if q.source == n)).collect();
         // shadow-md is two shadows, drawn last-listed first, then the box.
         assert!(matches!(items.as_slice(), [Item::Shadow(a), Item::Shadow(b), Item::Quad(_)] if a.blur == 4.0 && b.blur == 6.0));
         let own = app.kernel().find("own").unwrap();
         let (x, y, w, _) = app.kernel().rect(own);
         let s = app
             .display_list()
-            .items
+            .items()
             .clone()
             .into_iter()
             .find_map(|i| if let Item::Shadow(s) = i { (s.source == own).then_some(s) } else { None })
@@ -154,7 +152,7 @@ mod shadows {
         assert_eq!((s.rect.x, s.rect.y, s.rect.w), (x + 2.0 - 1.0, y + 3.0 - 1.0, w + 2.0));
         // A theme can change the scale.
         app.app().set_theme(Theme::light().shadow(ShadowStep::Md, vec![]));
-        assert!(!app.display_list().items.iter().any(|i| matches!(i, Item::Shadow(s) if s.source == n)));
+        assert!(!app.display_list().items().iter().any(|i| matches!(i, Item::Shadow(s) if s.source == n)));
     }
 }
 
@@ -181,7 +179,7 @@ mod gradients {
         app.app().set_theme(Theme::dark());
         assert_eq!(app.kernel().visual_of("g").unwrap().gradient.unwrap().from.0, Theme::dark().get(Token::Accent));
         // The quad carries it; the color at the start and end of the line are the stops.
-        let q = app.display_list().quads().find(|q| q.gradient.is_some()).copied().unwrap();
+        let q = app.display_list().quads().find(|q| q.gradient.is_some()).unwrap();
         let g = q.gradient.unwrap();
         let r = q.rect;
         let left = g.at(r.x, r.y + r.h / 2.0, r.x, r.y, r.w, r.h);

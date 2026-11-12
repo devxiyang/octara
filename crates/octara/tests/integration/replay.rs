@@ -39,7 +39,7 @@ fn todos() -> View {
 /// What a window shows, for comparing two runs: its tree and its display list (font data
 /// handles are numbered per text system, so they are left out).
 fn shown(w: &Window) -> (String, String) {
-    let list = format!("{:?}", w.display_list().items);
+    let list = format!("{:?}", w.display_list().items());
     let mut out = String::new();
     let mut rest = list.as_str();
     while let Some(i) = rest.find("Blob { id: ") {

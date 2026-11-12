@@ -462,7 +462,8 @@ impl Kernel {
                 }
                 _ => color,
             };
-            let glyphs: Vec<_> = r.glyphs.iter().map(|g| crate::paint::Glyph { id: g.id, x: g.x + ox, y: g.y + oy }).collect();
+            let glyphs: std::sync::Arc<[_]> = r.glyphs.iter().map(|g| crate::paint::Glyph { id: g.id, x: g.x, y: g.y }).collect();
+            self.glyph_runs_built.set(self.glyph_runs_built.get() + 1);
             out.push(Item::Glyphs(GlyphRun {
                 source: id,
                 font: r.font.clone(),
@@ -470,6 +471,7 @@ impl Kernel {
                 coords: r.coords.clone(),
                 embolden: r.embolden,
                 color: fade(c),
+                origin: (ox, oy),
                 glyphs,
             }));
             let underline = span.is_some_and(|(_, s)| s.underline || s.link.is_some());

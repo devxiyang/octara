@@ -6,9 +6,8 @@ make the corresponding design document describe it.
 
 ## Priorities
 
-1. The [core](design/core.md): incremental paint and
-   accessibility; the [platform boundary](design/platform.md) completed (several winit windows
-   included); popups and menus; the AI chat components and reference app.
+1. The [core](design/core.md): the [platform boundary](design/platform.md) completed (several
+   winit windows included); popups and menus; the AI chat components and reference app.
 2. The owned macOS backend (NSTextInputClient, menus, live resize in the frame's transaction,
    panels), and agents driving a real window (the inspector protocol over a channel to it).
 3. Native chrome: menus and shortcuts, file dialogs, alerts.
@@ -56,8 +55,9 @@ Basis: [rendering research](research/rendering.md), [rendering design](design/re
 - [ ] More than two color stops, radial gradients.
 - [ ] Images: JPEG / WebP / SVG, async loading and caching (together with resources), mipmaps when
       scaled down, large images exceeding the atlas, re-layout after the shape changes.
-- [ ] Display list updated incrementally by `Dirty::PAINT`; a layer covers only its extent (it
-      covers the whole window).
+- [ ] The GPU renderer converts every item to instances each frame: keep a part's instances
+      and upload only the parts that changed. A layer covers only its extent (it covers the
+      whole window).
 
 ## Input
 

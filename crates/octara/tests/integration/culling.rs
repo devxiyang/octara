@@ -35,7 +35,7 @@ fn tricky() -> View {
 }
 
 fn describe(dl: &octara::paint::DisplayList) -> Vec<String> {
-    dl.items
+    dl.items()
         .iter()
         .map(|i| match i {
             Item::Glyphs(g) => format!("glyphs {:?} {} {:?}", g.source, g.glyphs.len(), g.glyphs.first().map(|g| (g.x, g.y))),
@@ -63,7 +63,7 @@ fn skipping_off_screen_subtrees_changes_nothing() {
         app.display_list()
     };
     assert_eq!(describe(&culled), describe(&full));
-    assert!(culled.items.iter().any(|i| matches!(i, Item::Shadow(_))), "the shadow reaching in is drawn");
+    assert!(culled.items().iter().any(|i| matches!(i, Item::Shadow(_))), "the shadow reaching in is drawn");
     let long = app.kernel().find("long").unwrap();
     assert!(culled.glyph_runs().any(|g| g.source == long), "the overflowing text is drawn");
 

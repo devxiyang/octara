@@ -75,7 +75,7 @@ impl Kernel {
         let dl = self.display_list();
         let mut overlays: Vec<(NodeId, Rect)> = Vec::new();
         let mut covered: Vec<(NodeId, NodeId)> = Vec::new();
-        for item in &dl.items {
+        for item in &dl.items() {
             let drawn = match item {
                 Item::Native { source, rect, slot: crate::native::Slot::Overlay, .. } => {
                     overlays.push((*source, *rect));
@@ -86,8 +86,7 @@ impl Kernel {
                 Item::Image(i) => Some((i.source, i.rect.intersect(&i.bounds))),
                 Item::Path(p) => Some((p.source, p.bounds)),
                 Item::Glyphs(g) => g
-                    .glyphs
-                    .iter()
+                    .placed()
                     .map(|gl| Rect { x: gl.x, y: gl.y - g.size, w: g.size * 0.5, h: g.size })
                     .reduce(|a, b| {
                         let (x, y) = (a.x.min(b.x), a.y.min(b.y));

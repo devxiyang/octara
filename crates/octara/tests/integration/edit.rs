@@ -240,10 +240,10 @@ fn what_a_field_draws_follows_every_edit_at_once() {
     keys(&mut app, &["shift+left"]);
     app.type_text("X");
     assert_eq!(value(&app), "heX");
-    let glyphs_before = app.display_list().glyph_runs().flat_map(|r| r.glyphs.iter().map(|g| g.id)).collect::<Vec<_>>();
+    let glyphs_before = app.display_list().glyph_runs().flat_map(|r| r.glyphs.iter().map(|g| g.id).collect::<Vec<_>>()).collect::<Vec<_>>();
     keys(&mut app, &["shift+left"]);
     app.type_text("Y");
-    let glyphs_after = app.display_list().glyph_runs().flat_map(|r| r.glyphs.iter().map(|g| g.id)).collect::<Vec<_>>();
+    let glyphs_after = app.display_list().glyph_runs().flat_map(|r| r.glyphs.iter().map(|g| g.id).collect::<Vec<_>>()).collect::<Vec<_>>();
     assert_ne!(glyphs_before, glyphs_after, "the new character is drawn, not the old one");
     // A composition moving with the caret.
     keys(&mut app, &["home"]);

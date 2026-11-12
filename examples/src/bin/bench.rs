@@ -1,5 +1,5 @@
 //! Benchmarks for the example apps. Run with `cargo run --release -p octara-examples --bin bench`
-//! (`-- --frames` or `-- --joins` for one section).
+//! (`-- --frames`, `-- --stream` or `-- --joins` for one section).
 //! Counts (closures, property changes, allocations) are exact; times are the minimum of 3 runs.
 
 use octara::app::Window;
@@ -258,7 +258,7 @@ fn frames() {
     for (name, view, target) in cases {
         let mut app = Window::headless(view);
         app.resize(1024.0, 768.0);
-        let items = app.display_list().items.len();
+        let items = app.display_list().items().len();
         let nodes = app.kernel().counters().nodes_created - app.kernel().counters().nodes_destroyed;
         let time = |app: &mut Window, press: bool| {
             let mut best = f64::MAX;
@@ -334,14 +334,94 @@ fn joins() {
     println!();
 }
 
+/// A chat of 40 Markdown answers with the last one streaming in (3 characters a token, the view
+/// following it), with and without layout motion: per token, the frame's cost and what it built,
+/// and the accessibility update's.
+fn stream() {
+    use octara::platform::{HeadlessPlatform, WindowOptions};
+    use octara_kit::markdown::markdown;
+    use std::time::Duration;
+    println!("## stream: a 41st answer streaming under 40 (per token, after the first second)\n");
+    println!("| motion | display list (µs) | parts | drawings built | glyph runs built | a11y update (µs) | a11y compared | a11y sent |");
+    println!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+    let para = "Some **answer** text with `code` and a [link](https://x.dev) that runs over a couple of lines in the window.\n\n";
+    let msg: String = (0..6).map(|_| para).collect::<String>() + "- a\n- b\n\n```\nfn f() {}\n```\n";
+    for motion in [false, true] {
+        let app = App::new(HeadlessPlatform::default());
+        let live = app.run(|| LiveText::new(""));
+        let stream = live.clone();
+        let m = msg.clone();
+        let mut w = app
+            .open_window(WindowOptions::new("Chat"), move || {
+                let m = m.clone();
+                let c = col()
+                    .id("list")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .gap_4()
+                    .p_4()
+                    .children((0..40).map(move |_| markdown(m.as_str())))
+                    .child(markdown(&stream));
+                if motion { c.motion(Spring::SNAP).into() } else { c.into() }
+            })
+            .unwrap();
+        w.resize(1024.0, 768.0);
+        let _ = w.accessibility_update();
+        let chars: Vec<char> = msg.chars().collect();
+        let tokens: Vec<String> = chars.chunks(3).map(|c| c.iter().collect()).collect();
+        let (mut paint, mut a11y, mut items, mut sent, mut n) = (0.0, 0.0, 0, 0, 0);
+        let mut start = None;
+        for (i, t) in tokens.iter().enumerate() {
+            app.run(|| live.append(t));
+            w.dispatch(Event::ScrollTo("list".into(), 0.0, 1.0e6)).unwrap();
+            app.advance(Duration::from_millis(16));
+            let t0 = Instant::now();
+            let dl = w.display_list();
+            let p = t0.elapsed().as_secs_f64();
+            let t0 = Instant::now();
+            let u = w.accessibility_update();
+            let a = t0.elapsed().as_secs_f64();
+            // What entered settles in the first second.
+            if i < 60 {
+                continue;
+            }
+            let k = w.kernel();
+            start.get_or_insert((k.drawings(), k.a11y_compared()));
+            paint += p;
+            a11y += a;
+            items += dl.parts.len();
+            sent += u.nodes.len();
+            n += 1;
+        }
+        let k = w.kernel();
+        let ((d0, c0), d1, c1) = (start.unwrap(), k.drawings(), k.a11y_compared());
+        let f = n as f64;
+        println!(
+            "| {motion} | {:.0} | {} | {:.1} | {:.1} | {:.0} | {:.0} | {:.1} |",
+            paint / f * 1e6,
+            items / n,
+            (d1.0 - d0.0) as f64 / f,
+            (d1.2 - d0.2) as f64 / f,
+            a11y / f * 1e6,
+            (c1 - c0) as f64 / f,
+            sent as f64 / f
+        );
+    }
+    println!();
+}
+
 fn main() {
     if std::env::args().any(|a| a == "--frames") {
         return frames();
+    }
+    if std::env::args().any(|a| a == "--stream") {
+        return stream();
     }
     if std::env::args().any(|a| a == "--joins") {
         return joins();
     }
     frames();
+    stream();
     joins();
     steps::<Apps>();
     scaling();

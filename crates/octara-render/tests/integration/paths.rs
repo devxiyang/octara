@@ -2,7 +2,7 @@
 //! gradients, transforms, clips; masks cached by content and dropped when unused.
 
 use octara::kernel::{Color, NodeId};
-use octara::paint::{DisplayList, Gradient, Item, PathPaint, Rect};
+use octara::paint::{DisplayList, Gradient, Item, Part, PathPaint, Rect};
 use octara::path::{FillRule, LineCap, LineJoin, Path, PathStyle, Stroke, Transform, point};
 use octara::prelude::rgb;
 use octara_render::{Bitmap, CpuRenderer};
@@ -13,7 +13,7 @@ fn paint(path: Path, style: PathStyle, color: Color) -> Item {
 }
 
 fn list(items: Vec<Item>) -> DisplayList {
-    DisplayList { size: (100.0, 60.0), background: Color::WHITE, items }
+    DisplayList { size: (100.0, 60.0), background: Color::WHITE, parts: items.into_iter().map(Part::Item).collect() }
 }
 
 fn rgb8(b: &Bitmap, x: u32, y: u32) -> [u8; 3] {

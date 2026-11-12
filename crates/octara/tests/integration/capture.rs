@@ -18,7 +18,7 @@ impl Painter for Counting {
         "test"
     }
     fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<Picture, String> {
-        self.0.borrow_mut().push(list.items.iter().filter(|i| matches!(i, Item::Image(_))).count());
+        self.0.borrow_mut().push(list.items().iter().filter(|i| matches!(i, Item::Image(_))).count());
         let (w, h) = ((list.size.0 * scale) as u32, (list.size.1 * scale) as u32);
         Ok(Picture { width: w, height: h, rgba: vec![255; (w * h * 4) as usize] })
     }
@@ -88,7 +88,7 @@ fn snapshots_draw_in_place_and_are_cleared() {
     std::fs::remove_file(&shot).unwrap();
     assert_eq!(*painted.borrow(), [1], "the snapshot was painted in the view's place");
     assert_eq!((c.native[0].shown, c.native[0].misses.as_slice()), (Shown::Snapshot, ["video shows black".to_string()].as_slice()));
-    let images = app.display_list().items.iter().filter(|i| matches!(i, Item::Image(_))).count();
+    let images = app.display_list().items().iter().filter(|i| matches!(i, Item::Image(_))).count();
     assert_eq!(images, 0, "cleared after: the live frame never shows a stale snapshot");
 
     // A snapshot that does not come is reported, not waited for forever.

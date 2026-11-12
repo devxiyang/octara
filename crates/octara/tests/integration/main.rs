@@ -11,6 +11,7 @@ mod focus;
 mod grid;
 mod hover;
 mod image;
+mod incremental;
 mod inherit;
 mod inspect;
 mod interaction;

@@ -52,7 +52,7 @@ fn the_display_list_draws_it_clipped_to_the_box() {
     });
     let n = app.kernel().find("pic").unwrap();
     let (x, y, w, h) = app.kernel().rect(n);
-    let p = app.display_list().items.clone().into_iter().find_map(|i| if let Item::Image(p) = i { Some(p) } else { None }).unwrap();
+    let p = app.display_list().items().clone().into_iter().find_map(|i| if let Item::Image(p) = i { Some(p) } else { None }).unwrap();
     assert_eq!(p.source, n);
     // Inside the border (padding does not inset it, as CSS backgrounds); cover crops vertically.
     assert_eq!((p.bounds.x, p.bounds.y, p.bounds.w, p.bounds.h), (x + 2.0, y + 2.0, w - 4.0, h - 4.0));
@@ -85,7 +85,7 @@ fn new_pixels_draw_without_rerunning_the_view() {
     img.set(4, 4, [255u8, 255, 255, 255].repeat(16));
     let frame = app
         .display_list()
-        .items
+        .items()
         .clone()
         .into_iter()
         .find_map(|i| if let Item::Image(p) = i { Some(p.image.frame()) } else { None })

@@ -197,7 +197,7 @@ fn gpu_matches_the_reference_renderer() {
 /// Paths of every kind, and one larger than an atlas tile.
 fn paths_list() -> octara::paint::DisplayList {
     use octara::kernel::NodeId;
-    use octara::paint::{DisplayList, Gradient, Item, PathPaint, Rect};
+    use octara::paint::{DisplayList, Gradient, Item, Part, PathPaint, Rect};
     use octara::path::{FillRule, LineCap, LineJoin, Path, PathStyle, Stroke, Transform, point};
     let item = |path: Path, style: PathStyle, color: Color, transform: Transform| {
         let b = path.bounds().unwrap_or_default();
@@ -250,7 +250,7 @@ fn paths_list() -> octara::paint::DisplayList {
         item(Path::circle(point(260.0, 180.0), 30.0), PathStyle::Fill(FillRule::NonZero), rgb(0xf97316), Transform::IDENTITY),
         Item::PopLayer,
     ];
-    DisplayList { size: (640.0, 400.0), background: Color::WHITE, items }
+    DisplayList { size: (640.0, 400.0), background: Color::WHITE, parts: items.into_iter().map(Part::Item).collect() }
 }
 
 #[test]

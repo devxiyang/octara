@@ -1,10 +1,27 @@
-//! Building the display list from the laid-out tree.
+//! Building the display list from the laid-out tree: each node's own drawing is built in its
+//! own coordinates and kept until what it is drawn from changes; a frame walks the shown nodes
+//! and places their drawings, with the clips and layers between them.
 
 use super::text::{self, Wrap};
-use super::{Align, Color, Kernel, Kind, NodeId, Token};
-use crate::paint::{DisplayList, GlyphRun, Item, PathPaint, Quad, Rect};
+use super::{Align, BoxShadow, Color, Kernel, Kind, NodeId, Token};
+use crate::paint::{DisplayList, GlyphRun, Item, Part, PathPaint, Quad, Rect};
 use crate::path::Transform;
 use std::rc::Rc;
+
+/// What a node's own drawing was built from: while it stays the same, the drawing is kept.
+#[derive(PartialEq)]
+pub(crate) struct DrawKey {
+    ver: u64,
+    size: (u32, u32),
+    /// What it shows now (opacity aside: that is the frame's to apply).
+    visual: super::Visual,
+    shadows: Vec<BoxShadow>,
+    theme: u64,
+    fonts: u64,
+}
+
+/// A node's kept drawing.
+pub(crate) type Drawn = (DrawKey, Rc<[Item]>);
 
 fn fade(c: Color, opacity: f32) -> Color {
     if opacity >= 1.0 { c } else { c.multiply_alpha(opacity) }
@@ -23,13 +40,20 @@ impl Kernel {
             // Debug builds check that reusing it is right: every change must bump the count.
             #[cfg(debug_assertions)]
             debug_assert_eq!(
-                format!("{:?}", self.build_display_list().items),
-                format!("{:?}", dl.items),
+                format!("{:?}", self.build_display_list(false).items()),
+                format!("{:?}", dl.items()),
                 "a change did not invalidate the last frame"
             );
             return dl.clone();
         }
-        let dl = Rc::new(self.build_display_list());
+        let dl = Rc::new(self.build_display_list(true));
+        // Debug builds check the kept drawings: the frame built without them is the same.
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            format!("{:?}", self.build_display_list(false).items()),
+            format!("{:?}", dl.items()),
+            "a change did not reach a kept drawing"
+        );
         self.frames_built.set(self.frames_built.get() + 1);
         *self.last_frame.borrow_mut() = still.then(|| (self.paint_gen, self.viewport, dl.clone()));
         dl
@@ -40,12 +64,55 @@ impl Kernel {
         self.frames_built.get()
     }
 
-    fn build_display_list(&self) -> DisplayList {
-        let mut items = Vec::new();
+    /// Own drawings built and kept ones used, and glyph runs built, since the kernel started.
+    pub fn drawings(&self) -> (u64, u64, u64) {
+        (self.drawings_built.get(), self.drawings_reused.get(), self.glyph_runs_built.get())
+    }
+
+    /// The frame: kept drawings used where nothing they are drawn from changed (`keep`), else
+    /// every drawing built again (without keeping it, and without counting it: a check).
+    fn build_display_list(&self, keep: bool) -> DisplayList {
+        let runs = self.glyph_runs_built.get();
+        let dl = self.assemble(keep);
+        if !keep {
+            self.glyph_runs_built.set(runs);
+        }
+        dl
+    }
+
+    fn assemble(&self, keep: bool) -> DisplayList {
+        let mut parts = Vec::new();
         self.update_ink();
+        self.update_motion();
         let window = Rect { x: 0.0, y: 0.0, w: self.viewport.0, h: self.viewport.1 };
-        self.paint(self.root, (0.0, 0.0), 1.0, window, &mut items);
-        DisplayList { size: self.viewport, background: self.res.theme.borrow().get(Token::Background), items }
+        self.paint(self.root, (0.0, 0.0), 1.0, window, &mut parts, keep);
+        DisplayList { size: self.viewport, background: self.res.theme.borrow().get(Token::Background), parts }
+    }
+
+    /// Notes the nodes moving now (their frames, colors or shadows) and their ancestors, and the
+    /// parents of nodes on their way out: their subtrees do not reach where they rest.
+    pub(crate) fn update_motion(&self) {
+        let mut set = self.in_motion.borrow_mut();
+        set.clear();
+        let t = self.now;
+        let mut mark = |mut n: Option<NodeId>| {
+            while let Some(id) = n {
+                if !set.insert(id) {
+                    break;
+                }
+                n = self.node(id).parent;
+            }
+        };
+        for id in &self.moving {
+            if self.is_alive(*id) && self.node(*id).anim.as_ref().is_some_and(|a| a.rest_at(t).is_some()) {
+                mark(Some(*id));
+            }
+        }
+        for g in &self.ghosts {
+            if self.is_alive(*g) {
+                mark(Some(*g));
+            }
+        }
     }
 
     /// Where the node is shown now (moving layout included), given where its parent's content
@@ -62,10 +129,10 @@ impl Kernel {
         (rect.x - sx, rect.y - sy)
     }
 
-    /// Whether subtrees can be skipped by their ink: not while anything moves (presented
-    /// positions and shadows differ from the resting ones the reaches are computed from).
-    fn culls(&self) -> bool {
-        self.culling && self.at_rest()
+    /// Whether `id`'s subtree can be skipped by its ink: not while something in it moves (its
+    /// presented positions and shadows differ from the resting ones the reach is computed from).
+    fn culls(&self, id: NodeId) -> bool {
+        self.culling && !self.in_motion.borrow().contains(&id)
     }
 
     /// Whether painting and hit testing skip subtrees that cannot show (on by default; off
@@ -77,7 +144,7 @@ impl Kernel {
 
     /// Whether `id`'s drawing (its subtree's included), shown at `r`, can show inside `clip`.
     fn ink_meets(&self, id: NodeId, r: Rect, clip: &Rect) -> bool {
-        if !self.culls() {
+        if !self.culls(id) {
             return true;
         }
         let [l, t, rr, b] = self.node(id).ink.get();
@@ -149,7 +216,7 @@ impl Kernel {
     /// Paints `id` and its subtree. Below full opacity, a subtree that draws more than one thing
     /// goes into a layer composited at that opacity (Rune's group opacity); a single thing is
     /// faded directly.
-    fn paint(&self, id: NodeId, origin: (f32, f32), opacity: f32, clip: Rect, out: &mut Vec<Item>) {
+    fn paint(&self, id: NodeId, origin: (f32, f32), opacity: f32, clip: Rect, out: &mut Vec<Part>, keep: bool) {
         let n = self.node(id);
         if n.layout.display == taffy::Display::None {
             return;
@@ -160,33 +227,142 @@ impl Kernel {
         }
         let own = self.presented(id).opacity;
         if own >= 1.0 {
-            return self.paint_node(id, rect, opacity, clip, out);
+            return self.paint_node(id, rect, opacity, clip, out, keep);
         }
         let k = opacity * own;
         if k <= 0.0 {
             return;
         }
         let mut inner = Vec::new();
-        self.paint_node(id, rect, 1.0, clip, &mut inner);
-        if inner.iter().filter(|i| i.draws()).count() <= 1 {
-            for mut i in inner {
-                i.fade(k);
-                out.push(i);
+        self.paint_node(id, rect, 1.0, clip, &mut inner, keep);
+        let draws: usize = inner
+            .iter()
+            .map(|p| match p {
+                Part::Drawing { items, .. } => items.iter().filter(|i| i.draws()).count(),
+                Part::Item(i) => usize::from(i.draws()),
+            })
+            .sum();
+        if draws <= 1 {
+            for mut p in inner {
+                match &mut p {
+                    Part::Drawing { fade, .. } => *fade *= k,
+                    Part::Item(i) => i.fade(k),
+                }
+                out.push(p);
             }
         } else {
-            out.push(Item::PushLayer { source: id, opacity: k });
+            out.push(Part::Item(Item::PushLayer { source: id, opacity: k }));
             out.extend(inner);
-            out.push(Item::PopLayer);
+            out.push(Part::Item(Item::PopLayer));
         }
     }
 
-    /// Paints `id` and its subtree, fading colors by `opacity` (the node's own opacity is the
-    /// caller's to apply).
-    fn paint_node(&self, id: NodeId, rect: Rect, opacity: f32, clip: Rect, out: &mut Vec<Item>) {
+    /// Paints `id` (its own drawing, kept or built) and its subtree, fading colors by `opacity`
+    /// (the node's own opacity is the caller's to apply).
+    fn paint_node(&self, id: NodeId, rect: Rect, opacity: f32, clip: Rect, out: &mut Vec<Part>, keep: bool) {
         let n = self.node(id);
         let l = self.taffy.layout(n.taffy).expect("taffy");
-        // Its own drawing shows: the box, or a line of text running past it.
-        let visible = !self.content_rect(id, rect).intersect(&clip).is_empty();
+        // Its own drawing shows: the box, a line of text running past it, or a shadow.
+        let shadows_show = || {
+            (n.visual.shadow != super::style::Shadows::None || n.anim.is_some())
+                && self.presented_shadows(id).iter().any(|s| {
+                    let reach = 1.5 * s.blur_radius + s.spread_radius;
+                    let r = Rect {
+                        x: rect.x + s.offset.0 - reach,
+                        y: rect.y + s.offset.1 - reach,
+                        w: rect.w + 2.0 * reach,
+                        h: rect.h + 2.0 * reach,
+                    };
+                    !r.intersect(&clip).is_empty()
+                })
+        };
+        let visible = !self.content_rect(id, rect).intersect(&clip).is_empty() || shadows_show();
+        if visible {
+            // Fields, canvases and native views draw where they are (what they show moves with
+            // more than their own changes); the others in their own coordinates, kept.
+            let local = n.kind() != Kind::TextInput && !matches!(n.content, super::Content::Canvas(_) | super::Content::Native(_));
+            let items = if local { self.own_drawing(id, rect, keep) } else { self.draw_own(id, rect).into() };
+            if !items.is_empty() {
+                let offset = if local { (rect.x, rect.y) } else { (0.0, 0.0) };
+                out.push(Part::Drawing { offset, fade: opacity, items });
+            }
+        }
+
+        // Children, clipped to the padding box when the node scrolls or clips.
+        if n.children.is_empty() && self.ghosts_of(id).is_empty() {
+            return;
+        }
+        let clips = n.layout.overflow.x != taffy::Overflow::Visible || n.layout.overflow.y != taffy::Overflow::Visible;
+        let mut child_clip = clip;
+        if clips {
+            let v = self.presented(id);
+            let inner = Rect {
+                x: rect.x + l.border.left,
+                y: rect.y + l.border.top,
+                w: (rect.w - l.border.left - l.border.right).max(0.0),
+                h: (rect.h - l.border.top - l.border.bottom).max(0.0),
+            };
+            child_clip = clip.intersect(&inner);
+            if child_clip.is_empty() {
+                return;
+            }
+            out.push(Part::Item(Item::PushClip { source: id, rect: inner, radius: (v.radius - l.border.left).max(0.0) }));
+        }
+        let origin = self.content_origin(id, rect);
+        for &c in &n.children {
+            self.paint(c, origin, opacity, child_clip, out, keep);
+        }
+        // Subtrees on their way out, where they were.
+        for g in self.ghosts_of(id) {
+            self.paint(g, origin, opacity, child_clip, out, keep);
+        }
+        if clips {
+            out.push(Part::Item(Item::PopClip));
+        }
+    }
+
+    /// `id`'s own drawing in its own coordinates: the kept one while what it is drawn from is the
+    /// same, else built (and kept, with `keep`).
+    fn own_drawing(&self, id: NodeId, rect: Rect, keep: bool) -> Rc<[Item]> {
+        let n = self.node(id);
+        let mut visual = self.presented(id);
+        visual.opacity = 1.0;
+        let key = DrawKey {
+            ver: n.paint_ver,
+            size: (rect.w.to_bits(), rect.h.to_bits()),
+            visual,
+            shadows: if n.visual.shadow == super::style::Shadows::None && n.anim.is_none() {
+                Vec::new()
+            } else {
+                self.presented_shadows(id)
+            },
+            theme: self.theme_gen,
+            fonts: self.fonts_generation,
+        };
+        if keep
+            && let Some((k, items)) = &*n.drawn.borrow()
+            && *k == key
+        {
+            self.drawings_reused.set(self.drawings_reused.get() + 1);
+            return items.clone();
+        }
+        let items: Rc<[Item]> = self.draw_own(id, Rect { x: 0.0, y: 0.0, ..rect }).into();
+        if keep {
+            self.drawings_built.set(self.drawings_built.get() + 1);
+            *n.drawn.borrow_mut() = Some((key, items.clone()));
+        }
+        items
+    }
+
+    /// `id`'s own drawing with its box at `rect`: shadows, background and border, its image,
+    /// icon, native view, canvas, field or text.
+    fn draw_own(&self, id: NodeId, rect: Rect) -> Vec<Item> {
+        let mut items = Vec::new();
+        let out = &mut items;
+        let opacity = 1.0;
+        let n = self.node(id);
+        let l = self.taffy.layout(n.taffy).expect("taffy");
+        let visible = true;
         // What is shown now: moving properties sampled at the kernel's time.
         let shown = self.presented(id);
         let v = &shown;
@@ -206,11 +382,7 @@ impl Kernel {
                 color: fade(s.color, opacity),
                 blur: s.blur_radius,
             };
-            let reach = shadow.reach();
-            let bounds = Rect { x: r.x - reach, y: r.y - reach, w: r.w + 2.0 * reach, h: r.h + 2.0 * reach };
-            if !bounds.intersect(&clip).is_empty() {
-                out.push(Item::Shadow(shadow));
-            }
+            out.push(Item::Shadow(shadow));
         }
 
         // Background and border.
@@ -369,36 +541,7 @@ impl Kernel {
             }
         }
 
-        // Children, clipped to the padding box when the node scrolls or clips.
-        if n.children.is_empty() && self.ghosts_of(id).is_empty() {
-            return;
-        }
-        let clips = n.layout.overflow.x != taffy::Overflow::Visible || n.layout.overflow.y != taffy::Overflow::Visible;
-        let mut child_clip = clip;
-        if clips {
-            let inner = Rect {
-                x: rect.x + l.border.left,
-                y: rect.y + l.border.top,
-                w: (rect.w - l.border.left - l.border.right).max(0.0),
-                h: (rect.h - l.border.top - l.border.bottom).max(0.0),
-            };
-            child_clip = clip.intersect(&inner);
-            if child_clip.is_empty() {
-                return;
-            }
-            out.push(Item::PushClip { source: id, rect: inner, radius: (v.radius - l.border.left).max(0.0) });
-        }
-        let origin = self.content_origin(id, rect);
-        for &c in &n.children {
-            self.paint(c, origin, opacity, child_clip, out);
-        }
-        // Subtrees on their way out, where they were.
-        for g in self.ghosts_of(id) {
-            self.paint(g, origin, opacity, child_clip, out);
-        }
-        if clips {
-            out.push(Item::PopClip);
-        }
+        items
     }
 }
 
@@ -489,7 +632,7 @@ impl Kernel {
                     let y = content.y + t.at.y - along(t.valign, m.height);
                     let color = t.color.map_or(fade(text_color, opacity), color);
                     for r in runs {
-                        let glyphs = r.glyphs.into_iter().map(|g| crate::paint::Glyph { id: g.id, x: g.x + x, y: g.y + y }).collect();
+                        let glyphs = r.glyphs.into_iter().map(|g| crate::paint::Glyph { id: g.id, x: g.x, y: g.y }).collect();
                         out.push(Item::Glyphs(GlyphRun {
                             source: id,
                             font: r.font,
@@ -497,6 +640,7 @@ impl Kernel {
                             coords: r.coords,
                             embolden: r.embolden,
                             color,
+                            origin: (x, y),
                             glyphs,
                         }));
                     }

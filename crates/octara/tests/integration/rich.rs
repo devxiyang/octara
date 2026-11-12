@@ -42,8 +42,8 @@ fn runs_draw_in_their_styles() {
     assert!(quads.iter().any(|q| q.fill == Some(theme.get(Token::SurfaceHover)) && q.rect.h > 10.0), "inline code on its background");
     assert!(quads.iter().any(|q| q.fill == Some(theme.get(Token::Accent)) && q.rect.h <= 2.0), "the link underlined");
     // The background is drawn before the glyphs it is behind.
-    let first_glyph = list.items.iter().position(|i| matches!(i, Item::Glyphs(g) if g.source == note)).unwrap();
-    let background = list.items.iter().position(|i| matches!(i, Item::Quad(q) if q.source == note && q.rect.h > 10.0)).unwrap();
+    let first_glyph = list.items().iter().position(|i| matches!(i, Item::Glyphs(g) if g.source == note)).unwrap();
+    let background = list.items().iter().position(|i| matches!(i, Item::Quad(q) if q.source == note && q.rect.h > 10.0)).unwrap();
     assert!(background < first_glyph);
 }
 

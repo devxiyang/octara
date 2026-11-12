@@ -7,7 +7,7 @@ instanced primitives directly, with no general-purpose vector engine.
 
 ```
 Kernel (retained tree, layout, text)
-  └─ Display list DisplayList: primitives in paint order, logical pixels, pure data (can cross threads)
+  └─ Display list DisplayList: parts in paint order (nodes' kept drawings at offsets, clips, layers), logical pixels, data
         ├─ CPU reference renderer: deterministic PNG (screenshots, golden images, the Agent's "eyes")
         └─ GPU renderer: wgpu, one set of WGSL instanced SDF shaders, shared by all platforms
 Platform layer: winit (desktop); a thin self-written layer on mobile (iOS UITextInput, Android InputConnection, safe areas)
@@ -20,6 +20,10 @@ Platform layer: winit (desktop); a thin self-written layer on mobile (iOS UIText
 ## 2. Display list
 
 - Depth-first traversal from the root in child order; the overlay layer is the root's last child, so it is painted on top.
+- A frame is a list of `Part`s: a node's own drawing (`Part::Drawing`: its items in its own coordinates, shared, shown at an
+  offset and faded by a factor), or one item in window coordinates (`Part::Item`: the clips and layers around children).
+  `DisplayList::items()` gives every item placed in window coordinates (the reference renderer, tests, checks); a glyph run's
+  positions are from its `origin`, so placing it is O(1).
 - Primitives:
   - `Quad`: rectangle, corner radii, fill color, per-edge border widths and border color;
   - `Glyphs`: a run of glyphs (font data, font size, color, each glyph's id and baseline position);
@@ -34,7 +38,13 @@ Platform layer: winit (desktop); a thin self-written layer on mobile (iOS UIText
   `PushLayer` / `PopLayer`, painted opaque within the layer, then composited by opacity, so overlapping parts do not show through each other. The GPU
   splits passes by layer, the layer texture has the same size as the target, and compositing reads per pixel (no filtering).
 - Coordinates are logical pixels with scroll offsets already included; screen scale is applied by the renderer.
-- Rebuild every frame at first (Rune's settings page takes 0.13 ms per frame); later update incrementally by `Dirty::PAINT`.
+- Incremental: a node's own drawing (shadows, box, image, icon, text and its selection) is built with its box at the origin
+  and kept with what it was built from: the node's paint version (bumped by every change that marks it `PAINT`, `TEXT` or
+  `LAYOUT`), its size, what it shows now (its presented visual, opacity aside, and shadows), and the theme and font
+  generations. A frame walks the shown nodes and places kept drawings; a node that moves, scrolls or fades keeps its
+  drawing. Text fields, canvases and native views draw in window coordinates each frame (their drawing follows field
+  state and placement). Subtrees are culled by their reach except where something in them moves (its presented place
+  and shadows are not its resting ones). Debug builds check every frame against one built without kept drawings.
 
 ## 3. Text
 

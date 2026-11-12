@@ -412,7 +412,7 @@ impl GpuRenderer {
         let mut passes = vec![Pass::default()];
         let mut open: Vec<usize> = vec![0];
         let mut clips: Vec<(f32, f32, f32, f32, f32)> = Vec::new();
-        for item in &dl.items {
+        for item in &dl.items() {
             let (clip, clip_r) = clips.last().map_or((NO_CLIP, 0.0), |c| ([c.0, c.1, c.2, c.3], c.4));
             let current = *open.last().expect("a pass");
             let out = &mut passes[current].insts;
@@ -426,7 +426,7 @@ impl GpuRenderer {
                 }
                 Item::Glyphs(run) => {
                     let size = run.size * scale;
-                    for g in &run.glyphs {
+                    for g in run.placed() {
                         let (gx, gy) = (g.x * scale, g.y * scale);
                         let (ix, fx) = (gx.floor(), gx - gx.floor());
                         let subpixel = ((fx * SUBPIXEL_STEPS).floor() as u8).min(SUBPIXEL_STEPS as u8 - 1);

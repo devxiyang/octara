@@ -98,7 +98,7 @@ fn revealing_shows_the_text_to_the_screen_only_for_agents() {
 /// The glyph ids the field draws.
 fn glyphs(app: &Window) -> Vec<u32> {
     let n = app.kernel().find("pw").unwrap();
-    app.display_list().glyph_runs().filter(|r| r.source == n).flat_map(|r| r.glyphs.iter().map(|g| g.id)).collect()
+    app.display_list().glyph_runs().filter(|r| r.source == n).flat_map(|r| r.glyphs.iter().map(|g| g.id).collect::<Vec<_>>()).collect()
 }
 
 #[test]

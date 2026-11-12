@@ -7,7 +7,7 @@ use octara::prelude::*;
 fn runs(app: &Window, id: &str) -> Vec<GlyphRun> {
     let n = app.kernel().find(id).unwrap();
     app.display_list()
-        .items
+        .items()
         .iter()
         .filter_map(|i| if let Item::Glyphs(g) = i { (g.source == n).then(|| g.clone()) } else { None })
         .collect()

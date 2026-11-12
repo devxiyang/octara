@@ -186,9 +186,27 @@ impl Kernel {
             return ak::TreeUpdate { nodes, tree: Some(ak::TreeInfo::new(a11y_id(self.root))), tree_id: ak::TreeId::ROOT, focus };
         }
         let mut dirty: Vec<NodeId> = self.a11y_dirty.borrow_mut().drain().collect();
-        // A layout (or motion) may have moved anything: compare each sent node's place.
-        if self.a11y_geometry.replace(false) || !self.at_rest() {
+        self.a11y_geometry.set(false);
+        let relaid: Vec<NodeId> = self.a11y_relaid.borrow_mut().drain().collect();
+        if self.a11y_viewport.replace(self.viewport) != self.viewport {
+            // The window resized: anything may have moved.
             self.a11y_moved(self.root, &mut dirty);
+        } else {
+            self.a11y_relaid_moved(&relaid, &mut dirty);
+            // Nodes moving now, and those that were (to send where they came to rest).
+            let t = self.now;
+            let now: Vec<NodeId> = self
+                .moving
+                .iter()
+                .copied()
+                .filter(|id| self.is_alive(*id) && self.node(*id).anim.as_ref().is_some_and(|a| a.rest_at(t).is_some()))
+                .collect();
+            let was = std::mem::replace(&mut *self.a11y_moving.borrow_mut(), now.clone());
+            for id in now.into_iter().chain(was) {
+                if self.is_alive(id) {
+                    self.a11y_place_check(id, &mut dirty);
+                }
+            }
         }
         dirty.sort();
         dirty.dedup();
@@ -202,6 +220,11 @@ impl Kernel {
         #[cfg(debug_assertions)]
         self.a11y_verify(&nodes, scale);
         ak::TreeUpdate { nodes, tree: None, tree_id: ak::TreeId::ROOT, focus }
+    }
+
+    /// How many sent nodes' places accessibility updates compared so far.
+    pub fn a11y_compared(&self) -> u64 {
+        self.a11y_compared.get()
     }
 
     /// The next [`accessibility_update`](Self::accessibility_update) sends the whole tree (the
@@ -234,8 +257,52 @@ impl Kernel {
         }
     }
 
+    /// Nodes already sent whose place may have changed with the layout of `relaid`: each one's
+    /// and its ancestors' children (a change moves the ones after it), and inside a node whose
+    /// size changed, its children. A node's place is in its parent's space, so a subtree that
+    /// only moved is sent at its root.
+    fn a11y_relaid_moved(&self, relaid: &[NodeId], out: &mut Vec<NodeId>) {
+        let mut parents = rustc_hash::FxHashSet::default();
+        for &r in relaid {
+            let mut n = self.is_alive(r).then_some(r);
+            while let Some(a) = n {
+                if !parents.insert(a) {
+                    break;
+                }
+                n = self.node(a).parent;
+            }
+        }
+        for a in parents {
+            for &c in &self.node(a).children {
+                if self.shown_to_a11y(c) {
+                    self.a11y_place_check(c, out);
+                }
+            }
+        }
+    }
+
+    /// `id` if its place changed since it was sent, and inside it too if its size did.
+    fn a11y_place_check(&self, id: NodeId, out: &mut Vec<NodeId>) {
+        self.a11y_compared.set(self.a11y_compared.get() + 1);
+        let n = self.node(id);
+        let Some(was) = n.a11y_sent.get() else { return };
+        let now = self.a11y_geometry_of(id);
+        if was == now {
+            return;
+        }
+        out.push(id);
+        if was[2..4] != now[2..4] {
+            for &c in &n.children {
+                if self.shown_to_a11y(c) {
+                    self.a11y_place_check(c, out);
+                }
+            }
+        }
+    }
+
     /// Nodes already sent whose place changed.
     fn a11y_moved(&self, id: NodeId, out: &mut Vec<NodeId>) {
+        self.a11y_compared.set(self.a11y_compared.get() + 1);
         let n = self.node(id);
         let Some(was) = n.a11y_sent.get() else { return };
         if was != self.a11y_geometry_of(id) {

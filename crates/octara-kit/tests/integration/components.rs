@@ -141,7 +141,7 @@ fn select_works_from_the_keyboard() {
     // The list floats on a shadow.
     app.press_key("enter").unwrap();
     let list = app.kernel().find("size-list").unwrap();
-    assert!(app.display_list().items.iter().any(|i| matches!(i, octara::paint::Item::Shadow(s) if s.source == list)));
+    assert!(app.display_list().items().iter().any(|i| matches!(i, octara::paint::Item::Shadow(s) if s.source == list)));
 }
 
 /// A kit component is a leaf: its elements' source is where the app called it, and the

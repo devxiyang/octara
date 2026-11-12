@@ -117,7 +117,7 @@ impl Anim {
         if k >= 1.0 { self.shadow_to.clone() } else { mix_shadows(&self.shadow_from, &self.shadow_to, k) }
     }
     /// When everything has come to rest, if anything moves at `t`.
-    fn rest_at(&self, t: f64) -> Option<f64> {
+    pub(crate) fn rest_at(&self, t: f64) -> Option<f64> {
         let frame = self.frame.iter().flatten().filter_map(|tr| tr.rest_at(t)).reduce(f64::max);
         [
             self.background.rest_at(t),

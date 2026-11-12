@@ -165,7 +165,7 @@ fn a_shown_underlay_view_is_cut_out_and_its_covered_parts_known() {
     use octara::paint::Item;
     let app = Window::headless(map_with_controls);
     let natives = |app: &Window| -> Vec<bool> {
-        app.display_list().items.iter().filter_map(|i| if let Item::Native { cut, .. } = i { Some(*cut) } else { None }).collect()
+        app.display_list().items().iter().filter_map(|i| if let Item::Native { cut, .. } = i { Some(*cut) } else { None }).collect()
     };
     assert_eq!(natives(&app), [false], "headless: a placeholder, no hole");
 
@@ -173,7 +173,7 @@ fn a_shown_underlay_view_is_cut_out_and_its_covered_parts_known() {
     let list = app.display_list();
     assert_eq!(natives(&app), [true], "shown by the platform: cut out");
     let map = app.kernel().find("map").unwrap();
-    assert!(!list.items.iter().any(|i| matches!(i, Item::Quad(q) if q.source == map)), "no placeholder under a view the platform shows");
+    assert!(!list.items().iter().any(|i| matches!(i, Item::Quad(q) if q.source == map)), "no placeholder under a view the platform shows");
     let placements = app.kernel().native_placements();
     let covered = &placements[0].1.covered;
     assert_eq!(covered.len(), 1, "{covered:?}");

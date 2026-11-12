@@ -71,8 +71,8 @@ fn drawn_in_the_content_box_clipped_and_themed() {
     let chart = k.find("chart").unwrap();
     let (x, y, ..) = k.rect(chart);
     drop(k);
-    let items: Vec<&Item> = dl
-        .items
+    let all = dl.items();
+    let items: Vec<&Item> = all
         .iter()
         .filter(|i| matches!(i, Item::Path(p) if p.source == chart) || matches!(i, Item::PushClip { source, .. } if *source == chart))
         .collect();
@@ -163,16 +163,17 @@ fn text_takes_the_canvas_style_and_its_anchor() {
     let runs: Vec<_> = dl.glyph_runs().filter(|r| r.source == n).collect();
     assert_eq!(runs.len(), 3);
     // "Mid": 14 px in the muted color, centered on the middle of the box.
-    let mid = runs[0];
+    let mid = runs[0].clone();
     assert_eq!((mid.size, mid.color), (14.0, Theme::light().get(Token::TextMuted)));
-    let (left, right) = (mid.glyphs[0].x, mid.glyphs.last().unwrap().x);
+    let (left, right) = (mid.placed().next().unwrap().x, mid.placed().last().unwrap().x);
     assert!(left > x + 80.0 && left < x + 100.0 && right > x + 100.0 && right < x + 120.0, "{left} {right}");
     // "Big": its own size and color, at the top-left.
-    let big = runs[1];
+    let big = runs[1].clone();
+    let b0 = big.placed().next().unwrap();
     assert_eq!((big.size, big.color), (28.0, rgb(0xff0000)));
-    assert!((big.glyphs[0].x - x).abs() < 2.0 && big.glyphs[0].y > y && big.glyphs[0].y < y + 40.0);
+    assert!((b0.x - x).abs() < 2.0 && b0.y > y && b0.y < y + 40.0);
     // Under a 2× scale: moved to (20, 20) and twice the size.
-    let twice = runs[2];
+    let twice = runs[2].clone();
     assert_eq!(twice.size, 28.0);
-    assert!((twice.glyphs[0].x - (x + 20.0)).abs() < 2.0);
+    assert!((twice.placed().next().unwrap().x - (x + 20.0)).abs() < 2.0);
 }

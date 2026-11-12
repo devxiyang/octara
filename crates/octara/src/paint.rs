@@ -1,9 +1,12 @@
 //! The display list: what a frame draws, in order, as plain data.
 //!
 //! The kernel produces it from the laid-out tree ([`Kernel::display_list`]); renderers consume
-//! it (a deterministic CPU reference renderer for screenshots, and a GPU renderer). Coordinates
-//! are logical pixels with scroll offsets applied; a renderer multiplies by the screen scale.
-//! Every item names the node it comes from, so a pixel can be traced back to an element.
+//! it (a deterministic CPU reference renderer for screenshots, and a GPU renderer). A frame is a
+//! list of [`Part`]s: each node's own drawing, kept from frame to frame in the node's own
+//! coordinates and shown at an offset (so a node that moves or scrolls keeps its items), and the
+//! clips and layers between them. Coordinates are logical pixels; a renderer multiplies by the
+//! screen scale. Every item names the node it comes from, so a pixel can be traced back to an
+//! element.
 //!
 //! [`Kernel::display_list`]: crate::kernel::Kernel::display_list
 
@@ -114,7 +117,7 @@ pub struct Glyph {
     pub y: f32,
 }
 
-/// Glyphs of one font at one size and color.
+/// Glyphs of one font at one size and color, positioned from `origin`.
 #[derive(Clone, Debug)]
 pub struct GlyphRun {
     pub source: NodeId,
@@ -125,7 +128,16 @@ pub struct GlyphRun {
     /// Synthetic bold for a family without that weight.
     pub embolden: bool,
     pub color: Color,
-    pub glyphs: Vec<Glyph>,
+    /// Where the glyphs' positions start from (moving the run moves only this).
+    pub origin: (f32, f32),
+    pub glyphs: std::sync::Arc<[Glyph]>,
+}
+
+impl GlyphRun {
+    /// Each glyph with its position (`origin` added).
+    pub fn placed(&self) -> impl Iterator<Item = Glyph> + '_ {
+        self.glyphs.iter().map(|g| Glyph { id: g.id, x: g.x + self.origin.0, y: g.y + self.origin.1 })
+    }
 }
 
 /// An image drawn into `rect` (where its fit put it), clipped to `bounds` rounded by `radius`
@@ -196,6 +208,45 @@ impl Item {
         matches!(self, Item::Shadow(_) | Item::Quad(_) | Item::Image(_) | Item::Glyphs(_) | Item::Path(_))
     }
 
+    /// Moves the item by `(dx, dy)`.
+    pub fn translate(&mut self, dx: f32, dy: f32) {
+        if dx == 0.0 && dy == 0.0 {
+            return;
+        }
+        let r = |r: &mut Rect| {
+            r.x += dx;
+            r.y += dy;
+        };
+        match self {
+            Item::Shadow(s) => r(&mut s.rect),
+            Item::Quad(q) => r(&mut q.rect),
+            Item::Image(i) => {
+                r(&mut i.rect);
+                r(&mut i.bounds);
+            }
+            Item::Glyphs(g) => {
+                g.origin.0 += dx;
+                g.origin.1 += dy;
+            }
+            Item::Path(p) => {
+                p.transform = p.transform.then(&crate::path::Transform::translate(dx, dy));
+                r(&mut p.bounds);
+            }
+            Item::Native { rect, .. } | Item::PushClip { rect, .. } => r(rect),
+            Item::PopClip | Item::PushLayer { .. } | Item::PopLayer => {}
+        }
+    }
+
+    /// The item shown at `offset` with its colors faded by `fade`.
+    pub fn placed(&self, offset: (f32, f32), fade: f32) -> Item {
+        let mut i = self.clone();
+        i.translate(offset.0, offset.1);
+        if fade < 1.0 {
+            i.fade(fade);
+        }
+        i
+    }
+
     /// Multiplies the item's colors' alpha by `k`.
     pub fn fade(&mut self, k: f32) {
         let f = |c: &mut Color| *c = c.multiply_alpha(k);
@@ -226,22 +277,47 @@ impl Item {
     }
 }
 
-/// A frame: the window size, its background and the items in drawing order.
+/// A step of a frame.
+#[derive(Clone, Debug)]
+pub enum Part {
+    /// A node's own drawing, in its own coordinates (kept while it does not change), shown at
+    /// `offset` with its colors faded by `fade`.
+    Drawing { offset: (f32, f32), fade: f32, items: std::rc::Rc<[Item]> },
+    /// One item in window coordinates: the clips and layers around children.
+    Item(Item),
+}
+
+/// A frame: the window size, its background and the parts in drawing order.
 #[derive(Clone, Debug)]
 pub struct DisplayList {
     pub size: (f32, f32),
     pub background: Color,
-    pub items: Vec<Item>,
+    pub parts: Vec<Part>,
 }
 
 impl DisplayList {
-    pub fn quads(&self) -> impl Iterator<Item = &Quad> {
-        self.items.iter().filter_map(|i| if let Item::Quad(q) = i { Some(q) } else { None })
+    /// Every item in drawing order, in window coordinates.
+    pub fn items(&self) -> Vec<Item> {
+        let mut out = Vec::new();
+        self.each_item(|i| out.push(i));
+        out
     }
-    pub fn paths(&self) -> impl Iterator<Item = &PathPaint> {
-        self.items.iter().filter_map(|i| if let Item::Path(p) = i { Some(p) } else { None })
+    /// Calls `f` with every item in drawing order, in window coordinates.
+    pub fn each_item(&self, mut f: impl FnMut(Item)) {
+        for p in &self.parts {
+            match p {
+                Part::Drawing { offset, fade, items } => items.iter().for_each(|i| f(i.placed(*offset, *fade))),
+                Part::Item(i) => f(i.clone()),
+            }
+        }
     }
-    pub fn glyph_runs(&self) -> impl Iterator<Item = &GlyphRun> {
-        self.items.iter().filter_map(|i| if let Item::Glyphs(g) = i { Some(g) } else { None })
+    pub fn quads(&self) -> impl Iterator<Item = Quad> {
+        self.items().into_iter().filter_map(|i| if let Item::Quad(q) = i { Some(q) } else { None })
+    }
+    pub fn paths(&self) -> impl Iterator<Item = PathPaint> {
+        self.items().into_iter().filter_map(|i| if let Item::Path(p) = i { Some(p) } else { None })
+    }
+    pub fn glyph_runs(&self) -> impl Iterator<Item = GlyphRun> {
+        self.items().into_iter().filter_map(|i| if let Item::Glyphs(g) = i { Some(g) } else { None })
     }
 }

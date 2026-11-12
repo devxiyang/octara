@@ -439,7 +439,8 @@ impl Kernel {
             let style = input_style(v.text_style(), multiline);
             let runs = self.shown_layout(id, &f.shown, &style).glyph_runs(multiline.then_some(f.width), None, None, None);
             for r in runs {
-                let glyphs = r.glyphs.into_iter().map(|g| crate::paint::Glyph { id: g.id, x: g.x + ox, y: g.y + oy }).collect();
+                let glyphs = r.glyphs.into_iter().map(|g| crate::paint::Glyph { id: g.id, x: g.x, y: g.y }).collect();
+                self.glyph_runs_built.set(self.glyph_runs_built.get() + 1);
                 out.push(Item::Glyphs(GlyphRun {
                     source: id,
                     font: r.font,
@@ -447,6 +448,7 @@ impl Kernel {
                     coords: r.coords,
                     embolden: r.embolden,
                     color: fade(v.text),
+                    origin: (ox, oy),
                     glyphs,
                 }));
             }
