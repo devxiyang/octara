@@ -6,13 +6,17 @@ and [Reactive core](design/reactive-core.md). Check off an item when it is done,
 ## Awaiting acceptance by hand
 
 Checked by tests and screenshots; to be tried in a real window (`cargo run -p octara-examples
---bin window -- showcase`, the "Text input" card at the bottom):
+--bin window -- showcase fields` shows the "Text input" card alone):
 
 - [ ] Multi-line notes: an input method (pinyin) on the third line puts its candidate window by
       that line; a trackpad scroll inside the field, then typing, comes back to the caret; Up,
       Down, Cmd+Left / Right and Cmd+Up / Down feel right.
 - [ ] Chat composer: Enter sends, Shift+Enter breaks the line, the field grows to 4 lines.
 - [ ] Password: no input method while it has focus, copy and undo do nothing, Show reveals it.
+- [ ] Web view (`window -- showcase web`, macOS): the page shows in the rounded box, "Other page"
+      loads the second page and the status shows its title; in the full `showcase`, scrolling and
+      resizing move the view with the page, without lag or a gap, and it clips at the window's
+      edge; clicks and scrolling inside the page go to the page.
 
 ## To research and design
 
