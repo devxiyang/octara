@@ -67,10 +67,12 @@ and closes leave nothing behind.
 - Recording: `App::start_recording` / `stop_recording` give a `Recording` (each input with its
   time on the app clock and its window; serde). `App::replay` plays one on an app built the same
   way, which ends with the same trees and display lists. A snapshot's pixels are not recorded.
-- After each operation the app settles every window (tasks, the reactive flush, then each
-  window's layout and after-layout hooks) and presents each window's `Frame` to its platform
-  window (`PlatformWindow::present`) when something changed: native view changes and placements
-  (`NativeChange`), the focused field's text input, and whether to draw. The display list is not
+- After each operation (an input, a clock step, `run`, a window opened or closed) the app
+  settles every window (tasks, the reactive flush, then each window's layout and after-layout
+  hooks) and presents each window's `Frame` to its platform window (`PlatformWindow::present`)
+  when something changed: native view changes and placements (`NativeChange`), the focused
+  field's text input, the pointer's look, and whether to draw (what changed, or what time moves:
+  motion, a caret's blink). That one exit is how a backend learns of every change. The display list is not
   in it: the backend takes it (`Window::display_list`) when it draws, on its own pacing.
   Questions with answers are methods (`shows_native`, `snapshot_native`, `native_busy`).
 - With consistency checks on (tests), every window is compared with a from-scratch rebuild after

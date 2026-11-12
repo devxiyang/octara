@@ -100,7 +100,8 @@ fn each_operation_presents_a_frame() {
     assert!(after_tap > frames);
     assert!(input.is_some_and(|t| t.secure), "the focused secure field: {input:?}");
 
-    // Nothing changed: nothing is presented.
+    // Nothing changed (no field focused: no caret blinks): nothing is presented.
+    w.press_key("escape").unwrap();
     w.app().advance(Duration::from_secs(10));
     let (idle, _, _) = window(&w);
     w.app().advance(Duration::from_secs(10));

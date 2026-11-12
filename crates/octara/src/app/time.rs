@@ -64,9 +64,10 @@ impl App {
                     w.w.kernel.borrow_mut().step_glides();
                 });
             }
-            // What time alone changed (motion's next frame, a caret's blink) reaches the platform.
-            w.present();
         }
+        // The clock moving is an operation like any other: it ends with a frame, which presents
+        // what time alone changed (motion's next frame, a caret's blink) to each platform window.
+        self.app.frame(std::panic::Location::caller());
     }
 
     /// When the app next needs the clock advanced (a timer, a long press coming due, the next
