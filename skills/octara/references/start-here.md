@@ -94,7 +94,8 @@ assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
   `.selected(..)`, and `.group("row")` + `.group_hover("row", |p| ..)` for a child that reacts to
   its row being hovered.
 - Components with styling built in come from `octara_kit`: `button`, `primary_button`,
-  `ghost_button`, `toggle_button`, `checkbox`, `switch`, `text_field`, `select`.
+  `ghost_button`, `toggle_button`, `icon_button`, `checkbox`, `switch`, `text_field`, `select`,
+  `spinner`, `chip`, `removable_chip`, `callout`.
 - `octara_kit::markdown::markdown(source)` renders Markdown as a selectable document (headings,
   lists, tasks, code blocks with a copy button, quotes, tables). Pass a `&LiveText` to stream an
   answer in: each token re-parses only the block it lands in; `paced(&reply)` shows a stream

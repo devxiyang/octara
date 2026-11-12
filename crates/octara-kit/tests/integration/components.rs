@@ -156,3 +156,71 @@ fn kit_components_point_at_the_app() {
     assert_eq!(save.source.as_deref(), Some(made.called_at.as_str()), "the app's line");
     assert!(made.called_at.contains("components.rs:"), "{}", made.called_at);
 }
+
+#[test]
+fn an_icon_button_is_named_by_its_label_and_tooltip() {
+    let pressed = state_cell();
+    let p = pressed.clone();
+    let mut app = Window::headless(move || {
+        let p = p.clone();
+        row().child(icon_button(octara_icons::COPY, "Copy").id("copy").on_press(move || p.set(p.get() + 1))).into()
+    });
+    let k = app.kernel();
+    let n = k.find("copy").unwrap();
+    assert_eq!((k.role(n), k.label(n)), (Role::Button, Some("Copy")));
+    assert_eq!(k.tooltip(n), Some("Copy"));
+    drop(k);
+    app.tap("copy").unwrap();
+    assert_eq!(pressed.get(), 1);
+}
+
+fn state_cell() -> std::rc::Rc<std::cell::Cell<u32>> {
+    std::rc::Rc::default()
+}
+
+#[test]
+fn a_spinner_steps_round_on_the_clock() {
+    let app = Window::headless(|| row().child(spinner().id("busy")).into());
+    let k = app.kernel();
+    let n = k.find("busy").unwrap();
+    assert_eq!((k.role(n), k.label(n)), (Role::ProgressIndicator, Some("Loading")));
+    let before = format!("{:?}", k.canvas(n));
+    drop(k);
+    app.app().advance(std::time::Duration::from_millis(100));
+    let k = app.kernel();
+    assert_ne!(format!("{:?}", k.canvas(k.find("busy").unwrap())), before, "the arc moved");
+    drop(k);
+    assert!(app.app().run_until_idle(std::time::Duration::from_secs(1)).is_ok(), "it does not keep the app busy");
+}
+
+#[test]
+fn chips_and_callouts() {
+    let removed = state_cell();
+    let r = removed.clone();
+    let mut app = Window::headless(move || {
+        let r = r.clone();
+        col()
+            .child(chip("draft").id("tag"))
+            .child(removable_chip("report.pdf", move || r.set(r.get() + 1)).id("file"))
+            .child(
+                callout(PromptLevel::Critical, "The reply failed", Some("The connection closed."))
+                    .id("error")
+                    .child(button("Retry").id("retry")),
+            )
+            .child(callout(PromptLevel::Info, "Saved", None).id("info"))
+            .into()
+    });
+    let k = app.kernel();
+    let file = k.find("file").unwrap();
+    let b = *k.children(file).last().unwrap();
+    assert_eq!(k.label(b), Some("Remove report.pdf"));
+    let (x, y, w, h) = k.shown_rect(b);
+    drop(k);
+    app.click_at(x + w / 2.0, y + h / 2.0);
+    assert_eq!(removed.get(), 1);
+    let k = app.kernel();
+    assert_eq!(k.role_of("error"), Some(Role::Alert));
+    assert_eq!(k.role_of("info"), Some(Role::Group));
+    let error = k.find("error").unwrap();
+    assert_eq!(k.test_id(*k.children(error).last().unwrap()), Some("retry"), "actions go after the text");
+}

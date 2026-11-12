@@ -8,4 +8,5 @@ publish.workspace = true
 
 [dependencies]
 octara.workspace = true
+octara-icons.workspace = true
 pulldown-cmark.workspace = true

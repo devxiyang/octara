@@ -2351,6 +2351,7 @@ name = "octara-kit"
 version = "0.0.0"
 dependencies = [
  "octara",
+ "octara-icons",
  "pulldown-cmark",
 ]
 

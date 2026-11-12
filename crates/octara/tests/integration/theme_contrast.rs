@@ -13,6 +13,9 @@ fn text_tokens_meet_wcag_on_their_surfaces() {
         (Token::TextMuted, Token::Surface),
         (Token::AccentText, Token::Accent),
         (Token::AccentText, Token::AccentHover),
+        (Token::Danger, Token::Background),
+        (Token::Warning, Token::Background),
+        (Token::Warning, Token::Surface),
     ];
     let mut failures = Vec::new();
     for theme in [Theme::light(), Theme::dark()] {

@@ -31,12 +31,14 @@ pub enum Token {
     AccentText,
     Focus,
     Danger,
+    /// Something to be careful about (a warning's icon and text).
+    Warning,
     /// An app-defined token: `const BRAND: Token = Token::custom("brand");`
     Custom(&'static str),
 }
 
 impl Token {
-    pub const BUILTIN: [Token; 12] = [
+    pub const BUILTIN: [Token; 13] = [
         Token::Background,
         Token::Surface,
         Token::SurfaceHover,
@@ -49,6 +51,7 @@ impl Token {
         Token::AccentText,
         Token::Focus,
         Token::Danger,
+        Token::Warning,
     ];
 
     pub const fn custom(name: &'static str) -> Token {
@@ -175,7 +178,7 @@ pub enum Family {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
     pub name: &'static str,
-    colors: [Color; 12],
+    colors: [Color; 13],
     custom: Vec<(&'static str, Color)>,
     /// Pixels per spacing step: `p_4` is `4 × spacing` (Tailwind `--spacing`, 4 px).
     pub spacing: f32,
@@ -193,7 +196,7 @@ pub struct Theme {
 }
 
 impl Theme {
-    fn base(name: &'static str, colors: [Color; 12]) -> Theme {
+    fn base(name: &'static str, colors: [Color; 13]) -> Theme {
         Theme {
             name,
             colors,
@@ -228,6 +231,8 @@ impl Theme {
                 rgb(0xffffff),
                 rgb(0x3b82f6),
                 rgb(0xdc2626),
+                // amber-700: 5.0:1 on white, readable as text.
+                rgb(0xb45309),
             ],
         )
     }
@@ -250,6 +255,7 @@ impl Theme {
                 rgb(0xffffff),
                 rgb(0x60a5fa),
                 rgb(0xef4444),
+                rgb(0xfbbf24),
             ],
         )
     }

@@ -106,6 +106,10 @@ After each layout it is positioned relative to the anchor (as in Rune's `anchore
 | `switch(model)` | `Switch` + checked (the thumb moves with `CHECKED`) | Toggle |
 | `text_field(model)` | `TextInput` + value | Input |
 | `select(id, model, options)` | The trigger is `ComboBox` + value + expanded; `{id}-list` is `ListBox`, and the options `{id}-option-{i}` are `ListBoxOption` + selected | Press |
+| `icon_button(icon, label)` | `Button` named `label`, which is also its tooltip | Press |
+| `spinner()` | `ProgressIndicator` named "Loading"; its arc steps round on the app's clock, every spinner in one phase | — |
+| `chip(label)` / `removable_chip(label, remove)` | A small label; the second has a button named "Remove {label}" | Press (remove) |
+| `callout(level, message, detail)` | A live region; `Alert` for a warning or a critical one, else `Group`; the level's icon and color (`Accent`, `Warning`, `Danger`); actions chained as children go after the text | — |
 
 ```rust
 primary_button("Save").id("save").disabled(move || busy.get()).on_press(save)
@@ -122,11 +126,11 @@ variant is a chained method, not a new name (`text_field(m).multiline().rows(1, 
 
 | Kind | Components |
 | --- | --- |
-| Actions | `icon_button` ●, `segmented` |
+| Actions | `segmented` |
 | Inputs | `radio`, `combobox`, `slider` |
 | Collections | `list` / `list_item` / `list_header` ● (groups, one selected, arrow keys, context menu through `popup_menu`), `tree`, `table` |
 | Disclosure and navigation | `collapsible` ● (a header that opens and closes its content), `tabs` |
-| Status | `spinner` ●, `callout` ● (a message with actions), `chip` ● (a small label, removable), `progress_bar`, `badge`, `keybinding` |
+| Status | `progress_bar`, `badge`, `keybinding` |
 | Overlays | `popover`, `toast` (the core has `overlay`, modals, `popup_menu`, `prompt`, and `tooltip`: it needs hover timing, one per window, and a native form) |
 | Layout | `split` ● (two panes, a draggable divider), `divider` |
 

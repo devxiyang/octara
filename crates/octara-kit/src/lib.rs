@@ -10,6 +10,9 @@ use octara::prelude::*;
 use std::rc::Rc;
 
 pub mod markdown;
+mod status;
+
+pub use status::{callout, chip, removable_chip, spinner};
 
 // ---- models ----
 
@@ -104,6 +107,28 @@ pub fn toggle_button(label: impl IntoText, selected: impl Fn() -> bool + 'static
     ghost_button(label)
         .selected(selected)
         .style_when(State::SELECTED, |p| p.bg(Token::Surface).border_color(Token::Border).text_color(Token::Accent))
+}
+
+/// A button showing only `icon`, named `label`: its name for assistive technology and its
+/// tooltip. Quiet until hovered (a toolbar's, a message's actions).
+#[component]
+#[track_caller]
+pub fn icon_button(icon: octara::icon::Icon, label: impl Into<String>) -> El {
+    let label = label.into();
+    interactive(el().role(Role::Button).child(octara::view::icon(icon).a11y_hidden()))
+        .label(label.clone())
+        .tooltip(label)
+        .items_center()
+        .justify_center()
+        .size(28.0)
+        .flex_shrink_0()
+        .when_touch(|p| p.size(TOUCH_TARGET))
+        .rounded_md()
+        .bg(Paint::Color(Color::TRANSPARENT))
+        .border_color(Paint::Color(Color::TRANSPARENT))
+        .text_color(Token::TextMuted)
+        .hover(|p| p.bg(Token::SurfaceHover).text_color(Token::Text))
+        .active(|p| p.bg(Token::SurfacePressed))
 }
 
 // ---- checkbox and switch ----
