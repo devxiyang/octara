@@ -1,7 +1,6 @@
 # The text core
 
-Based on the [research](../research/text.md). Status: confirmed; steps 1 (rich text and links) and 2 (selection) implemented; the engine's
-one owner and shape cache by content, and the system fonts by family, are next (step 2.5). The [core](core.md)'s step 3: rich
+Based on the [research](../research/text.md). Status: confirmed; steps 1 (rich text and links), 2 (selection) and 2.5 (the engine) implemented. The [core](core.md)'s step 3: rich
 text, blocks laid out and painted one at a time, a selection across blocks and rows of a
 virtual list, and accessible text. Designed for the AI chat app: messages streaming in as
 Markdown, long transcripts, select and copy across messages.

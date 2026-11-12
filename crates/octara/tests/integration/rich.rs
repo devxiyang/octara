@@ -147,3 +147,27 @@ fn a_stream_takes_only_its_own_glyphs_again() {
     }
     assert_eq!(w.kernel().glyph_extractions() - before, 3, "one text per frame, not twenty-one");
 }
+
+#[test]
+fn rows_scrolling_back_and_repeated_labels_shape_nothing_again() {
+    let mut w = Window::headless(|| {
+        let items = list("rows", || (0..1000u32).map(|i| (i, format!("Row {i}"))).collect::<Vec<_>>(), |r: &(u32, String)| r.0);
+        col()
+            .size_full()
+            .child(col().id("list").flex_1().overflow_y_scroll().child(virtual_each(
+                move || items.source(),
+                |_| 24.0,
+                |k, r| row().h(24.0).child(text(move || r.with(|r| r.1.clone())).id(format!("r{k}"))).child(text("Edit")).into(),
+            )))
+            .into()
+    });
+    let shaped = |w: &Window| w.kernel().text_engine_shaped();
+    // Every row has the label "Edit": shaped once, however many rows show it.
+    let first = shaped(&w);
+    assert!(first < 2 * 40, "a row's own text, and one shared label: {first}");
+    // Down and back: the rows that come back were shaped before.
+    w.dispatch(Event::ScrollTo("list".into(), 0.0, 5000.0)).unwrap();
+    let after_down = shaped(&w);
+    w.dispatch(Event::ScrollTo("list".into(), 0.0, 0.0)).unwrap();
+    assert_eq!(shaped(&w), after_down, "rows scrolling back shape nothing");
+}

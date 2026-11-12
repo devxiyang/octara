@@ -419,8 +419,6 @@ impl Kernel {
         let at = |r: Rect| Rect { x: r.x + content.x, y: r.y + content.y, ..r };
         let color = |p: crate::kernel::Paint| fade(p.resolve(&self.res.theme.borrow()).0, opacity);
         out.push(Item::PushClip { source: id, rect: content, radius: 0.0 });
-        // A canvas's texts are cached by the text engine as slots of its node, in order.
-        let mut slot = 0u32;
         for op in ops {
             match op {
                 CanvasOp::Path { path, style, fill, transform } => {
@@ -468,7 +466,6 @@ impl Kernel {
                     }));
                 }
                 CanvasOp::Text(t) => {
-                    slot += 1;
                     let size = t.size.unwrap_or(base.font_size) * t.scale;
                     let style = text::TextStyle {
                         font_size: size,
@@ -479,11 +476,10 @@ impl Kernel {
                         ..base
                     };
                     let limit = t.max_width.map(|w| w * t.scale);
-                    let key = text::TextKey { kernel: self.serial, node: id, slot };
-                    let mut engine = self.res.text.borrow_mut();
-                    let m = text::measure(&mut **engine, key, &t.text, 0, &style, &[], limit);
-                    let runs = engine.glyph_runs(key, &style, limit, None);
-                    drop(engine);
+                    // Found by content in the engine: a canvas redrawing the same text shapes nothing.
+                    let layout = self.res.text.borrow_mut().layout(&t.text, &style, &[], None, 0);
+                    let m = text::metrics(&layout, &style, limit);
+                    let runs = layout.glyph_runs(limit, None, None, None);
                     let along = |a: Align, len: f32| match a {
                         Align::Start => 0.0,
                         Align::Center => len / 2.0,

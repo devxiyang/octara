@@ -74,8 +74,8 @@ fn density_and_breakpoints_change_with_the_theme_without_running_closures() {
 fn mono_text_uses_the_theme_mono_family() {
     let app = Window::headless(view);
     let k = app.kernel();
-    assert_eq!(k.visual_of("code").unwrap().font_family, "IBM Plex Mono");
-    assert_eq!(k.visual_of("sans").unwrap().font_family, "Inter");
+    assert_eq!(k.visual_of("code").unwrap().font_family, "ui-monospace", "the platform's monospace (headless: IBM Plex Mono)");
+    assert_eq!(k.visual_of("sans").unwrap().font_family, "system-ui", "the platform's UI font (headless: Inter)");
     // Monospace text is wider than Inter for the same short word (both stretch to the column,
     // so compare the text itself).
     let code = k.text_metrics(k.find("code").unwrap()).width;

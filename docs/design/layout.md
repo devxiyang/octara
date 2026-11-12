@@ -26,10 +26,9 @@ Where the two disagree, Rune prevails.
   and what a child sets itself takes priority; in `row().text_sm().child("caption")` the text is 14 px. When an inherited value changes, it propagates only down to the affected subtree.
 - Measurement is a callback on a Taffy leaf, using the available width: min-content is the longest unbreakable segment, max-content is the width without wrapping.
 - The text engine is a replaceable part of the kernel (`TextEngine`):
-  - `ParleyEngine`: the default. It uses only the fonts bundled with the framework (Inter), so headless tests give identical results on any machine; real windows add system font fallback (Chinese, etc.).
+  - `ParleyEngine`: the default. Headless, `system-ui` and `ui-monospace` are the bundled Inter and IBM Plex Mono, so tests give identical results on any machine; real windows resolve them to the platform's fonts, with its fallback (Chinese, etc.). See [the text engine](text.md#the-engine).
   - `MonoEngine`: a deterministic monospace model, used for benchmarks that isolate text cost.
-- The cache is per node and per paragraph (separated by `\n`): appending text re-lays out only the last paragraph; a width change only re-breaks lines, without reshaping. The kernel records, for each
-  paragraph of text, the number of prefix bytes unchanged since the last measurement (the common prefix on append, range replacement and whole replacement), and the engine does not compare paragraphs that fall within it.
+- Each text node owns its layout; shaped paragraphs (separated by `\n`) are kept by content and shared ([the text engine](text.md#the-engine)): appending re-shapes only the last paragraph, a width change only re-breaks lines, and a row scrolling back reshapes nothing. The kernel records the prefix bytes unchanged since the last layout, whose paragraphs are reused without comparing them.
 - Known limitation: a very long paragraph with no line breaks is fully re-laid out every time (about 16 ms for 100 KB). As in Rune, this is mainly handled by splitting content into blocks (one text per Markdown block).
 
 ## 3. Viewport and window size classes

@@ -1092,17 +1092,13 @@ impl App {
         self.app.res.set_text_engine(engine);
         self.app.fonts_changed();
     }
-    /// Uses the platform's installed fonts and its fallback (CJK, emoji, …) besides the
-    /// bundled ones, and its UI font where the theme keeps the default sans family: what a
-    /// window shows. Headless screenshots for people and agents use it; deterministic tests
-    /// do not (results then depend on the machine).
+    /// Uses the platform's fonts: `system-ui` and `ui-monospace` (the theme's families) become
+    /// its UI and monospace fonts (San Francisco and Menlo, Segoe UI and Cascadia Mono, …), with
+    /// its fallback for scripts (CJK, emoji, …): what a window shows. Headless screenshots meant
+    /// to match a window use it; deterministic tests do not (results then depend on the machine).
     #[cfg(feature = "system-fonts")]
     pub fn use_system_fonts(&self) {
         self.set_text_engine(Box::new(crate::kernel::text::ParleyEngine::system()));
-        let theme = self.app.res.theme.borrow().clone();
-        if theme.font_sans == Theme::default().font_sans {
-            self.set_theme(theme.font_sans("system-ui, Inter"));
-        }
     }
     /// The theme every window shows.
     pub fn theme(&self) -> Theme {

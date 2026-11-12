@@ -319,10 +319,8 @@ impl Kernel {
         if let Some(l) = t.lines.borrow().as_ref().filter(|l| l.key == key) {
             return l.lines.clone();
         }
-        let mut engine = self.res.text.borrow_mut();
-        let clean = t.clean.replace(t.text.len());
-        text::measure(&mut **engine, self.key(id), &t.text, clean, &style, &t.shape, limit);
-        let lines = Rc::new(engine.visual_lines(self.key(id), &t.text, &style, limit));
+        let Some(layout) = super::node_layout(&mut **self.res.text.borrow_mut(), n, self.fonts_generation) else { return Rc::default() };
+        let lines = Rc::new(layout.visual_lines(limit));
         *t.lines.borrow_mut() = Some(Lines { key, lines: lines.clone() });
         lines
     }
@@ -337,9 +335,9 @@ impl Kernel {
             return p.runs.clone();
         }
         let mut engine = self.res.text.borrow_mut();
-        let clean = t.clean.replace(t.text.len());
-        text::measure(&mut **engine, self.key(id), &t.text, clean, style, &t.shape, limit);
-        let runs = Rc::new(engine.glyph_runs(self.key(id), style, limit, fit));
+        let Some(layout) = super::node_layout(&mut **engine, n, self.fonts_generation) else { return Rc::default() };
+        let ellipsis = fit.and_then(|_| engine.ellipsis(style));
+        let runs = Rc::new(layout.glyph_runs(limit, style.max_lines, fit, ellipsis.as_ref()));
         self.glyphs_taken.set(self.glyphs_taken.get() + 1);
         *t.painted.borrow_mut() = Some(Painted { key, runs: runs.clone() });
         runs

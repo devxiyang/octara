@@ -205,8 +205,8 @@ impl Theme {
             line_height: 1.25,
             containers: [256.0, 288.0, 320.0, 384.0, 448.0, 512.0, 576.0, 672.0, 768.0, 896.0, 1024.0, 1152.0, 1280.0],
             breakpoints: [600.0, 840.0, 1200.0, 1600.0],
-            font_sans: "Inter",
-            font_mono: "IBM Plex Mono",
+            font_sans: "system-ui",
+            font_mono: "ui-monospace",
             rem: 16.0,
         }
     }

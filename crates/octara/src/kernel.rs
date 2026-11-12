@@ -28,7 +28,7 @@ use std::cell::{Cell, RefCell};
 use std::fmt::Write as _;
 use std::rc::Rc;
 use style::{Inherited, Unresolved};
-use text::{TextEngine, TextKey, TextMetrics, TextStyle, Wrap};
+use text::{TextEngine, TextMetrics, TextStyle, Wrap};
 
 pub use accesskit::Role;
 pub use edit::floor_boundary;
@@ -433,8 +433,18 @@ pub struct NativeContent {
 /// A native view's size until it reports one (HTML's for an iframe).
 const NATIVE_DEFAULT: (f32, f32) = (300.0, 150.0);
 
+impl std::fmt::Debug for TextContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextContent")
+            .field("text", &self.text)
+            .field("runs", &self.runs)
+            .field("version", &self.version)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A text's content.
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct TextContent {
     text: String,
     /// Bytes known unchanged since the text engine last measured them.
@@ -449,6 +459,8 @@ struct TextContent {
     painted: RefCell<Option<rich::Painted>>,
     /// The lines laid out last, for the same version, width and style (links, selection).
     lines: RefCell<Option<rich::Lines>>,
+    /// Its layout (see `node_layout`): the one place its shaped paragraphs are held.
+    layout: RefCell<Option<(LayoutKey, text::TextLayout)>>,
 }
 
 /// A text input's content: its value, the input method's composition, the selection and how
@@ -463,6 +475,8 @@ struct InputContent {
     scroll: Cell<f32>,
     /// Bytes of the shown text (value with composition) known unchanged since last measured.
     clean: Cell<usize>,
+    /// The layout of what it shows last (its value, a composition spliced in), and of what.
+    layout: RefCell<Option<(String, TextStyle, text::TextLayout)>>,
     /// Wraps at the field's width; Enter breaks lines.
     multiline: bool,
     /// The caret's x kept across moves by lines (Up, Down, Page Up, Page Down).
@@ -559,42 +573,41 @@ fn width_limit(known: Option<f32>, avail: taffy::AvailableSpace) -> Option<f32> 
     })
 }
 
-/// Lays out a text node's content for Taffy and for diagnostics.
-fn text_metrics(
-    engine: &mut dyn TextEngine,
-    key: TextKey,
-    content: &str,
-    clean: &Cell<usize>,
-    style: &TextStyle,
-    shape: &[text::StyleRun],
-    limit: Option<f32>,
-) -> TextMetrics {
-    if content.is_empty() {
-        return TextMetrics::default();
+/// What a text node's layout was made for: its version, its shape style and the fonts.
+type LayoutKey = (u64, &'static str, u32, u16, u32, u64);
+
+/// A text node's layout, made again when its version, shape style or the fonts changed (its
+/// unchanged paragraphs reused).
+fn node_layout(engine: &mut dyn TextEngine, n: &Node, fonts: u64) -> Option<text::TextLayout> {
+    let t = n.text_content()?;
+    let style = n.visual.text_style();
+    let key: LayoutKey = (t.version, style.family, style.font_size.to_bits(), style.weight, style.line_height.to_bits(), fonts);
+    let mut kept = t.layout.borrow_mut();
+    if let Some((k, l)) = kept.as_ref()
+        && *k == key
+    {
+        return Some(l.clone());
     }
-    let c = clean.replace(content.len());
-    match style.wrap {
-        Wrap::Words => text::measure(engine, key, content, c, style, shape, limit),
-        Wrap::None => text::measure(engine, key, content, c, style, shape, None),
-        Wrap::Truncate => {
-            let natural = text::measure(engine, key, content, c, style, shape, None);
-            let width = limit.map_or(natural.width, |l| natural.width.min(l));
-            let cut = natural.lines > 1 || width < natural.width;
-            TextMetrics { width, height: style.line_height, lines: 1, truncated: cut }
-        }
-    }
+    let clean = t.clean.replace(t.text.len());
+    let layout = engine.layout(&t.text, &style, &t.shape, kept.as_ref().map(|(_, l)| l), clean);
+    *kept = Some((key, layout.clone()));
+    Some(layout)
 }
 
-fn text_size(engine: &mut dyn TextEngine, n: &Node, key: TextKey, known: Option<f32>, avail: taffy::AvailableSpace) -> (f32, f32) {
+fn text_size(engine: &mut dyn TextEngine, n: &Node, fonts: u64, known: Option<f32>, avail: taffy::AvailableSpace) -> (f32, f32) {
     let Some(t) = n.text_content() else { return (0.0, 0.0) };
-    let m = text_metrics(engine, key, &t.text, &t.clean, &n.visual.text_style(), &t.shape, width_limit(known, avail));
+    if t.text.is_empty() {
+        return (0.0, 0.0);
+    }
+    let Some(layout) = node_layout(engine, n, fonts) else { return (0.0, 0.0) };
+    let m = text::metrics(&layout, &n.visual.text_style(), width_limit(known, avail));
     // Whole pixels, rounded up (as Rune): fractional line heights would make rows alternate.
     (m.width.ceil(), m.height.ceil())
 }
 
 /// A text input's natural size: a fixed width; one line high, or (multi-line) as many lines as
 /// its value wraps into at its width.
-fn input_size(engine: &mut dyn TextEngine, n: &Node, key: TextKey, known: Option<f32>, avail: taffy::AvailableSpace) -> (f32, f32) {
+fn input_size(engine: &mut dyn TextEngine, n: &Node, known: Option<f32>, avail: taffy::AvailableSpace) -> (f32, f32) {
     let lh = n.visual.line_height;
     let Some(i) = n.input().filter(|i| i.multiline) else { return (INPUT_WIDTH, lh) };
     let width = known.unwrap_or(INPUT_WIDTH);
@@ -603,7 +616,8 @@ fn input_size(engine: &mut dyn TextEngine, n: &Node, key: TextKey, known: Option
     }
     let style = edit::input_style(n.visual.text_style(), true);
     // The value alone: a composition in progress does not resize the field.
-    let m = text::measure(engine, TextKey { slot: 1, ..key }, &i.value, 0, &style, &[], width_limit(Some(width), avail));
+    let layout = engine.layout(&i.value, &style, &[], None, 0);
+    let m = text::metrics(&layout, &style, width_limit(Some(width), avail));
     let lines = m.lines.clamp(u32::from(i.rows.0.max(1)), u32::from(i.rows.1.max(1)));
     (width, (lines as f32 * lh).ceil())
 }
@@ -654,8 +668,6 @@ pub struct Kernel {
     missing_tokens: FxHashMap<NodeId, Vec<&'static str>>,
     /// What every window's kernel shares: the theme, the text system, input conventions.
     res: Rc<Resources>,
-    /// This kernel among the app's (its texts' keys in the shared text system).
-    serial: u32,
     taffy: taffy::TaffyTree<Measure>,
     needs_layout: bool,
     layout_enabled: bool,
@@ -741,8 +753,6 @@ impl Resources {
     }
 }
 
-static NEXT_KERNEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
-
 impl Default for Kernel {
     fn default() -> Self {
         Self::new(Rc::default())
@@ -761,7 +771,6 @@ impl Kernel {
             screen: Breakpoint::Compact,
             missing_tokens: Default::default(),
             res,
-            serial: NEXT_KERNEL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             taffy: taffy::TaffyTree::new(),
             needs_layout: true,
             layout_enabled: true,
@@ -822,10 +831,6 @@ impl Kernel {
     pub fn root(&self) -> NodeId {
         self.root
     }
-    /// The key of `node`'s text in the shared text system.
-    pub(crate) fn key(&self, node: NodeId) -> TextKey {
-        TextKey { kernel: self.serial, node, slot: 0 }
-    }
     /// Bumped by every change that can alter what is drawn: unchanged and with nothing moving,
     /// the last frame still holds.
     pub fn paint_generation(&self) -> u64 {
@@ -847,16 +852,11 @@ impl Kernel {
         let n = self.node(id);
         let l = self.taffy.layout(n.taffy).expect("taffy");
         let inner = l.size.width - l.padding.left - l.padding.right - l.border.left - l.border.right;
-        let Some(t) = n.text_content() else { return TextMetrics::default() };
-        text_metrics(
-            &mut **self.res.text.borrow_mut(),
-            self.key(id),
-            &t.text,
-            &t.clean,
-            &n.visual.text_style(),
-            &t.shape,
-            Some(inner.max(0.0)),
-        )
+        if n.text_content().is_none_or(|t| t.text.is_empty()) {
+            return TextMetrics::default();
+        }
+        let Some(layout) = node_layout(&mut **self.res.text.borrow_mut(), n, self.fonts_generation) else { return TextMetrics::default() };
+        text::metrics(&layout, &n.visual.text_style(), Some(inner.max(0.0)))
     }
     /// Parent of every overlay; always the root's last child.
     pub fn overlay_layer(&self) -> NodeId {
@@ -1222,10 +1222,6 @@ impl Kernel {
         self.missing_tokens.remove(&id);
         self.modal_nodes.remove(&id);
         self.native_nodes.remove(&id);
-        // Texts and text inputs are measured by the text engine (keyed by node).
-        if matches!(n.content, Content::Text(_) | Content::Input(_)) {
-            self.res.text.borrow_mut().forget(self.serial, id);
-        }
         if n.anchor.is_some() {
             self.anchored.retain(|a| *a != id);
         }
@@ -1916,10 +1912,9 @@ impl Kernel {
     fn compute_layout(&mut self, width: f32, height: f32) {
         let root = self.node(self.root).taffy;
         let space = taffy::Size { width: taffy::AvailableSpace::Definite(width), height: taffy::AvailableSpace::Definite(height) };
-        let Kernel { taffy, nodes, res, serial, .. } = self;
-        let serial = *serial;
+        let Kernel { taffy, nodes, res, fonts_generation, .. } = self;
+        let fonts = *fonts_generation;
         let mut engine = res.text.borrow_mut();
-        let key = |node| TextKey { kernel: serial, node, slot: 0 };
         taffy
             .compute_layout_with_measure(root, space, |inputs, _node, ctx, style| {
                 let m = ctx.map(|c| *c);
@@ -1929,8 +1924,8 @@ impl Kernel {
                     |_, _| 0.0,
                     |known, avail| {
                         let (w, h) = match m {
-                            Some(Measure::Text(id)) => text_size(&mut **engine, &nodes[id], key(id), known.width, avail.width),
-                            Some(Measure::Input(id)) => input_size(&mut **engine, &nodes[id], key(id), known.width, avail.width),
+                            Some(Measure::Text(id)) => text_size(&mut **engine, &nodes[id], fonts, known.width, avail.width),
+                            Some(Measure::Input(id)) => input_size(&mut **engine, &nodes[id], known.width, avail.width),
                             Some(Measure::Native(id)) => match &nodes[id].content {
                                 Content::Native(v) => v.intrinsic.unwrap_or(NATIVE_DEFAULT),
                                 _ => (0.0, 0.0),

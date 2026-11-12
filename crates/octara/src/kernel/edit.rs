@@ -297,9 +297,7 @@ impl Kernel {
         let lines = if shown.is_empty() {
             vec![VisualLine { start: 0, end: 0, top: 0.0, height: style.line_height, stops: vec![(0, 0.0)] }]
         } else {
-            let mut engine = self.res.text.borrow_mut();
-            text::measure(&mut **engine, self.key(id), &shown, input.clean.replace(shown.len()), &style, &[], limit);
-            engine.visual_lines(self.key(id), &shown, &style, limit)
+            self.shown_layout(id, &shown, &style).visual_lines(limit)
         };
         let mut f = Field {
             shown,
@@ -439,7 +437,7 @@ impl Kernel {
         if !f.shown.is_empty() {
             let multiline = self.is_multiline(id);
             let style = input_style(v.text_style(), multiline);
-            let runs = self.res.text.borrow_mut().glyph_runs(self.key(id), &style, multiline.then_some(f.width), None);
+            let runs = self.shown_layout(id, &f.shown, &style).glyph_runs(multiline.then_some(f.width), None, None, None);
             for r in runs {
                 let glyphs = r.glyphs.into_iter().map(|g| crate::paint::Glyph { id: g.id, x: g.x + ox, y: g.y + oy }).collect();
                 out.push(Item::Glyphs(GlyphRun {
@@ -471,4 +469,23 @@ impl Kernel {
 /// How a text input's text is laid out: one line, or wrapped at the field's width.
 pub(crate) fn input_style(base: super::TextStyle, multiline: bool) -> super::TextStyle {
     super::TextStyle { wrap: if multiline { Wrap::Words } else { Wrap::None }, max_lines: None, ..base }
+}
+
+impl Kernel {
+    /// The layout of what field `id` shows (`shown`, in `style`): kept while they stay the same,
+    /// made from the last one otherwise (its unchanged paragraphs reused).
+    pub(crate) fn shown_layout(&self, id: NodeId, shown: &str, style: &text::TextStyle) -> text::TextLayout {
+        let input = self.node(id).input().expect("a text input");
+        let mut kept = input.layout.borrow_mut();
+        if let Some((s, st, l)) = kept.as_ref()
+            && s == shown
+            && st == style
+        {
+            return l.clone();
+        }
+        let clean = input.clean.replace(shown.len());
+        let layout = self.res.text.borrow_mut().layout(shown, style, &[], kept.as_ref().map(|k| &k.2), clean);
+        *kept = Some((shown.to_owned(), *style, layout.clone()));
+        layout
+    }
 }
