@@ -1264,7 +1264,6 @@ impl Window {
         scale: f32,
         pending: Vec<String>,
         fallback: Option<String>,
-        marks: bool,
     ) -> Result<crate::capture::Capture, String> {
         use crate::capture::{NativeShot, Shown};
         let asked = self.w.capturing.borrow_mut().take().map(|c| c.asked).unwrap_or_default();
@@ -1288,10 +1287,7 @@ impl Window {
                 misses,
             });
         }
-        let (over, marked) = if marks { crate::capture::marks(&self.w.kernel.borrow()) } else { Default::default() };
-        let mut list = (*self.display_list()).clone();
-        list.items.extend(over);
-        let painted = painter.paint(&list, scale).and_then(|p| p.save_png(path).map(|()| p));
+        let painted = painter.paint(&self.display_list(), scale).and_then(|p| p.save_png(path).map(|()| p));
         for (id, _) in &asked {
             self.on_native_snapshot(*id, None);
         }
@@ -1307,33 +1303,20 @@ impl Window {
             settled: pending.is_empty(),
             pending,
             native,
-            marks: marked,
         })
     }
 
     /// A `display` capture: the window server's `picture` of the window, written to `path` as a
-    /// PNG, with the native views reported live. With `marks`, `painter` draws the marks over
-    /// it.
+    /// PNG, with the native views reported live.
     pub fn capture_display(
         &mut self,
         picture: &crate::capture::Picture,
         path: &str,
         scale: f32,
         pending: Vec<String>,
-        marks: Option<&mut dyn crate::capture::Painter>,
     ) -> Result<crate::capture::Capture, String> {
         use crate::capture::{NativeShot, Shown};
-        let mut marked = Vec::new();
-        if let Some(painter) = marks {
-            let (items, report) = crate::capture::marks(&self.w.kernel.borrow());
-            let list = crate::paint::DisplayList { size: self.size(), background: crate::kernel::Color::TRANSPARENT, items };
-            let mut out = picture.clone();
-            out.over(&painter.paint(&list, scale)?);
-            out.save_png(path)?;
-            marked = report;
-        } else {
-            picture.save_png(path)?;
-        }
+        picture.save_png(path)?;
         let placements = self.w.kernel.borrow().native_placements();
         let k = self.w.kernel.borrow();
         let native = placements
@@ -1363,7 +1346,6 @@ impl Window {
             settled: pending.is_empty(),
             pending,
             native,
-            marks: marked,
         })
     }
 

@@ -113,7 +113,7 @@ fn check_finds_accessibility_problems() {
     let unnamed = r.findings.iter().find(|f| f.code == "UNNAMED_CONTROL").unwrap();
     assert_eq!(unnamed.id.as_deref(), Some("close"));
     assert_eq!(unnamed.cells.len(), 4, "merged across all cells");
-    assert!(!unnamed.fix.is_empty() && unnamed.doc.contains('#'), "the code's fix and doc come along");
+    assert!(!unnamed.cause.is_empty() && unnamed.doc.contains('#'), "the code's cause and doc come along");
     assert!(!r.clean);
 
     // Muted gray on gray.

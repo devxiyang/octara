@@ -1,12 +1,15 @@
 //! Picking ([core](https://github.com/octoii-works/octara/blob/main/docs/design/core.md)): a
 //! person points at an element in a running window to hand it to an agent. While a window is
-//! picking (`InputEvent::Picking(true)`), the element under the pointer is outlined with its
-//! number, pointer input goes to picking instead of the app, and a click picks: the result
+//! picking (`InputEvent::Picking(true)`), the element under the pointer is outlined, pointer
+//! input goes to picking instead of the app, and a click picks: the result
 //! goes to the clipboard as one line and to the platform in the next `Frame`, and picking ends.
 //! Escape ends it too. Wheels still scroll, to bring the element into view.
 
 use super::{InputEvent, Phase, PointerEvent, Window};
 use crate::kernel::NodeId;
+
+/// The picking outline's color: strong on light and dark surfaces alike.
+const PICKING: crate::kernel::Color = crate::kernel::rgb(0xe11d48);
 
 /// A window's picking state.
 #[derive(Default)]
@@ -88,7 +91,7 @@ impl Window {
         }
     }
 
-    /// What picking draws over the frame: the hovered element's outline and number.
+    /// What picking draws over the frame: the hovered element's outline, tinted inside.
     pub(super) fn picking_overlay(&self) -> Option<Vec<crate::paint::Item>> {
         let p = self.w.picking.borrow();
         let hover = p.hover.filter(|_| p.on)?;
@@ -96,8 +99,16 @@ impl Window {
         if !k.is_alive(hover) {
             return None;
         }
-        let number = k.mark_numbers().get(&hover).copied();
-        Some(crate::capture::outline(&k, hover, number, true, &mut Vec::new()))
+        let (x, y, w, h) = k.shown_rect(hover);
+        Some(vec![crate::paint::Item::Quad(crate::paint::Quad {
+            source: hover,
+            rect: crate::paint::Rect::new(x, y, w, h),
+            radius: 2.0,
+            fill: Some(PICKING.with_alpha(0.12)),
+            gradient: None,
+            border: [1.5; 4],
+            border_color: PICKING,
+        })])
     }
 
     /// What picking adds to the next frame: whether to draw again, and what was picked.

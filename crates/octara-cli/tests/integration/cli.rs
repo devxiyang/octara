@@ -5,7 +5,7 @@ use octara::app::BUILTIN_COMMANDS;
 use octara::kernel::{Theme, Token};
 use octara::motion::Spring;
 use octara_cli::api::{self, Kind};
-use octara_cli::catalog::{Catalog, compress};
+use octara_cli::catalog::Catalog;
 use std::process::Command;
 
 fn catalog() -> Catalog {
@@ -73,7 +73,7 @@ fn every_named_spring_is_in_the_table() {
 }
 
 #[test]
-fn diagnostics_link_to_the_api_their_fix_names() {
+fn diagnostics_link_to_the_api_their_cause_names() {
     let cat = catalog();
     let e = cat.code_in("thread 'main' panicked at '[READ_DISPOSED] at src/app.rs:3:9'").unwrap();
     assert_eq!(e.path, "READ_DISPOSED");
@@ -87,9 +87,7 @@ fn diagnostics_link_to_the_api_their_fix_names() {
 }
 
 #[test]
-fn members_are_listed_compactly() {
-    let names: Vec<String> = ["p", "p_0", "p_1", "p_2", "px_1", "hover"].iter().map(|s| s.to_string()).collect();
-    assert_eq!(compress(&names), ["p", "p_{0,1,2}", "px_1", "hover"]);
+fn a_type_lists_its_members() {
     let styled = catalog().get("octara::view::Styled").cloned().unwrap();
     assert!(styled.members.len() > 500);
 }
@@ -103,7 +101,7 @@ fn the_binary_prints_text_and_json() {
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(v["matches"][0]["facts"]["keys.macos"], "tab");
     let (ok, text) = run(&["explain", "collapsed"]);
-    assert!(ok && text.contains("fix: Give the parent a size"), "{text}");
+    assert!(ok && text.contains("cause: `flex_1`"), "{text}");
     let (ok, _) = run(&["explain", "not_a_code"]);
     assert!(!ok, "an unknown code fails");
     let (ok, _) = run(&["vocab", "no_such_name_anywhere"]);

@@ -14,7 +14,7 @@ use std::panic::Location;
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayoutIssue {
     /// `OVERFLOW`, `COLLAPSED`, `TEXT_TRUNCATED`, `OVERLAY_CLAMPED` or `MISSING_TOKEN`; the
-    /// code carries the severity and the general fix.
+    /// code carries the severity and the cause.
     pub code: &'static Code,
     pub test_id: Option<String>,
     /// Ancestors by test id or role, e.g. `col > #todos > #todo-3 > Label`.
@@ -22,8 +22,6 @@ pub struct LayoutIssue {
     /// Where the element was created (`file:line:column`), when known.
     pub at: Option<String>,
     pub message: String,
-    /// The fix for this case (the code's `fix` is the general one).
-    pub hint: &'static str,
 }
 
 /// Overflow smaller than this is rounding.
@@ -116,13 +114,12 @@ impl Kernel {
                         self.name(src),
                         self.name(view)
                     ),
-                    "move it out of the view's area, or put the view in the underlay (`.slot(Slot::Underlay)`) so content can draw over it",
                 )
             })
             .collect()
     }
 
-    fn issue(&self, id: NodeId, code: &'static Code, message: String, hint: &'static str) -> LayoutIssue {
+    fn issue(&self, id: NodeId, code: &'static Code, message: String) -> LayoutIssue {
         let n = self.node(id);
         LayoutIssue {
             code,
@@ -130,7 +127,6 @@ impl Kernel {
             path: self.path(id),
             at: n.origin.map(|l| format!("{}:{}:{}", crate::diagnostics::source_file(l), l.line(), l.column())),
             message,
-            hint,
         }
     }
 
@@ -162,7 +158,6 @@ impl Kernel {
                 id,
                 &codes::MISSING_TOKEN,
                 format!("{} uses {list}, which the theme does not define (drawn magenta)", self.name(id)),
-                "add it to the theme: `Theme::light().color(Token::custom(\"name\"), rgb(..))`",
             ));
         }
 
@@ -171,7 +166,6 @@ impl Kernel {
                 id,
                 &codes::OVERLAY_CLAMPED,
                 format!("overlay {} ({w} × {h}) fits neither side of its anchor and was pushed into the window", self.name(id)),
-                "pick another `Placement`, or bound the overlay (`max_h(..)`) so it fits",
             ));
         }
 
@@ -179,12 +173,7 @@ impl Kernel {
             let m = self.text_metrics(id);
             if m.truncated {
                 let how = if n.visual.wrap == Wrap::Truncate { "is truncated" } else { "is cut by `line_clamp`" };
-                out.push(self.issue(
-                    id,
-                    &codes::TEXT_TRUNCATED,
-                    format!("text {} {how}: {} of its lines shown", self.name(id), m.lines),
-                    "expected with `truncate()` / `line_clamp`; otherwise give it room or let it wrap",
-                ));
+                out.push(self.issue(id, &codes::TEXT_TRUNCATED, format!("text {} {how}: {} of its lines shown", self.name(id), m.lines)));
             }
         }
 
@@ -200,13 +189,7 @@ impl Kernel {
                 }),
             };
             if content && !sized_zero && n.anchor.is_none() && id != self.overlay_layer {
-                out.push(self.issue(
-                    id,
-                    &codes::COLLAPSED,
-                    format!("{} is {w} × {h} px although it has content", self.name(id)),
-                    "`flex_1` / `flex_grow` / `h_full` only take space the parent has; a parent sized by its content \
-                     has none. Give the parent a size (`size_full()` on the app root), or this element a `min_h`",
-                ));
+                out.push(self.issue(id, &codes::COLLAPSED, format!("{} is {w} × {h} px although it has content", self.name(id))));
             }
         }
 
@@ -251,16 +234,11 @@ impl Kernel {
             bottom.1.clear();
         }
         if !right.1.is_empty() {
-            let hint = if nowrap_text {
-                "let the text wrap (drop `whitespace_nowrap`) or `truncate()` it"
-            } else {
-                "`flex_shrink()` or `truncate()` on the wide child, `flex_wrap()` here, or a scroll container (`overflow_x_scroll`)"
-            };
+            let nowrap = if nowrap_text { "; text set not to wrap (`whitespace_nowrap`)" } else { "" };
             out.push(self.issue(
                 id,
                 &codes::OVERFLOW,
-                format!("content of {what} overflows its right edge by {} px ({})", right.0, list(&right.1)),
-                hint,
+                format!("content of {what} overflows its right edge by {} px ({}{nowrap})", right.0, list(&right.1)),
             ));
         }
         if !bottom.1.is_empty() {
@@ -268,7 +246,6 @@ impl Kernel {
                 id,
                 &codes::OVERFLOW,
                 format!("content of {what} overflows its bottom by {} px ({})", bottom.0, list(&bottom.1)),
-                "put the content in a scroll container (`flex_1().overflow_y_scroll()`), give this element more height (`size_full()` on the app root), or `flex_shrink()` on a child",
             ));
         }
     }
@@ -308,16 +285,7 @@ impl Kernel {
                 continue;
             }
             let how = if self.res.touch.get() { "touch targets" } else { "pointer targets this close to others" };
-            out.push(self.issue(
-                id,
-                &codes::SMALL_TARGET,
-                format!("{} is {w} × {h} px; {how} need {min} × {min}", self.name(id)),
-                if self.res.touch.get() {
-                    "make its box at least 44 × 44: padding, or `min_w(44.0).min_h(44.0)` (`when_touch(..)` keeps the desktop size)"
-                } else {
-                    "make its box at least 24 × 24 (padding, or `min_w` / `min_h`), or space it from its neighbors"
-                },
-            ));
+            out.push(self.issue(id, &codes::SMALL_TARGET, format!("{} is {w} × {h} px; {how} need {min} × {min}", self.name(id))));
         }
         out
     }
@@ -341,23 +309,13 @@ impl Kernel {
         if matches!(n.content, super::Content::Native(_)) && n.label.is_none() {
             let (.., w, h) = self.shown_rect(id);
             if w > 0.0 && h > 0.0 {
-                out.push(self.issue(
-                    id,
-                    &codes::UNLABELED_NATIVE_VIEW,
-                    format!("native view {} has no label", self.name(id)),
-                    "give it `.label(\"..\")` saying what it shows (\"Map of the venue\", \"Help page\")",
-                ));
+                out.push(self.issue(id, &codes::UNLABELED_NATIVE_VIEW, format!("native view {} has no label", self.name(id))));
             }
         }
         if matches!(n.content, super::Content::Canvas(_)) && n.label.is_none() {
             let (.., w, h) = self.shown_rect(id);
             if w > 0.0 && h > 0.0 {
-                out.push(self.issue(
-                    id,
-                    &codes::UNLABELED_CANVAS,
-                    format!("canvas {} has no label", self.name(id)),
-                    "give it `.label(\"..\")` saying what it shows, or `.a11y_hidden()` if it is decoration",
-                ));
+                out.push(self.issue(id, &codes::UNLABELED_CANVAS, format!("canvas {} has no label", self.name(id))));
             }
         }
         let disabled = n.state.contains(super::State::DISABLED);
@@ -369,15 +327,13 @@ impl Kernel {
                     id,
                     &codes::UNNAMED_CONTROL,
                     format!("{} can be operated but has no name for assistive technology", self.name(id)),
-                    "give it `.label(\"..\")`, or text inside it",
                 ));
             }
             if n.kind() == Kind::TextInput && n.label.is_none() {
                 out.push(self.issue(
                     id,
                     &codes::UNNAMED_CONTROL,
-                    format!("text field {} has no label", self.name(id)),
-                    "give it `.label(\"..\")` (a placeholder is not a name)",
+                    format!("text field {} has no label (a placeholder is not a name)", self.name(id)),
                 ));
             }
             if !disabled {
@@ -399,7 +355,6 @@ impl Kernel {
                     id,
                     &codes::LOW_CONTRAST,
                     format!("text {} has contrast {ratio:.2}:1 against its background; needs {need}:1", self.name(id)),
-                    "use `Token::Text` / `Token::TextMuted` on surfaces and `Token::AccentText` on accent fills, or adjust the theme",
                 ));
             }
         }

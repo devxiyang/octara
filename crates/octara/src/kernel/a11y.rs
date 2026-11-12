@@ -219,8 +219,7 @@ impl Kernel {
     /// The semantic tree as the Inspector protocol gives it (see [`crate::inspect`]): the nodes
     /// assistive technology sees, with test ids, presented bounds, actions and source locations.
     pub fn inspect_tree(&self) -> crate::inspect::Node {
-        let marks = self.mark_numbers();
-        self.inspect_node(self.root, &marks)
+        self.inspect_node(self.root)
     }
 
     /// What can be done to a node, as the inspector names it.
@@ -254,7 +253,7 @@ impl Kernel {
     }
 
     /// One node of the inspector's tree, without its children.
-    pub(crate) fn inspect_one(&self, id: NodeId, mark: Option<u32>) -> crate::inspect::Node {
+    pub(crate) fn inspect_one(&self, id: NodeId) -> crate::inspect::Node {
         use crate::inspect::{snake, tenth};
         let n = self.node(id);
         let role = if id == self.root { Role::Window } else { self.role(id) };
@@ -295,18 +294,16 @@ impl Kernel {
             },
             source: self.source_of(id),
             component: n.component.map(crate::inspect::ComponentInfo::of),
-            mark,
             children: Vec::new(),
         }
     }
 
-    fn inspect_node(&self, id: NodeId, marks: &rustc_hash::FxHashMap<NodeId, u32>) -> crate::inspect::Node {
-        let mut node = self.inspect_one(id, marks.get(&id).copied());
+    fn inspect_node(&self, id: NodeId) -> crate::inspect::Node {
+        let mut node = self.inspect_one(id);
         if self.node(id).parent.is_some_and(|p| self.node(p).component == self.node(id).component) {
             node.component = None;
         }
-        node.children =
-            self.node(id).children.iter().copied().filter(|c| self.shown_to_a11y(*c)).map(|c| self.inspect_node(c, marks)).collect();
+        node.children = self.node(id).children.iter().copied().filter(|c| self.shown_to_a11y(*c)).map(|c| self.inspect_node(c)).collect();
         node
     }
 }

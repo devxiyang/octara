@@ -31,11 +31,11 @@ pub struct Entry {
     pub file: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
-    /// Paths of related entries: the parent type, doc links, the API a fix names.
+    /// Paths of related entries: the parent type, doc links, the API a cause names.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub related: Vec<String>,
     /// Data from the kernel: a token's colors, a spring's duration, a command's keys, a code's
-    /// cause and fix.
+    /// cause.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub facts: BTreeMap<String, String>,
     /// Types and traits: their members' names.
@@ -293,10 +293,8 @@ impl Catalog {
         facts.insert("severity".into(), severity(c.severity).into());
         facts.insert("area".into(), area(c.area).into());
         facts.insert("cause".into(), c.cause.into());
-        facts.insert("fix".into(), c.fix.into());
         facts.insert("doc".into(), c.doc.into());
-        let mut related: Vec<String> =
-            backticked_names(c.fix).into_iter().chain(backticked_names(c.cause)).filter_map(|n| index.get(n).cloned()).collect();
+        let mut related: Vec<String> = backticked_names(c.cause).into_iter().filter_map(|n| index.get(n).cloned()).collect();
         related.dedup();
         Entry {
             path: c.id.into(),
@@ -360,8 +358,8 @@ impl Catalog {
         Found { query: query.to_string(), matches, similar }
     }
 
-    /// The compressed index (the skill's `references/index.md`): every name an app can use,
-    /// grouped, signatures left to `octara vocab`.
+    /// The index (the skill's `references/index.md`): every name an app can use, grouped,
+    /// signatures left to `octara vocab`.
     pub fn index(&self) -> String {
         // (heading before the line, label, names), factored together at the end.
         let mut lines: Vec<(Option<&str>, String, Vec<String>)> = Vec::new();
@@ -376,7 +374,7 @@ impl Catalog {
         let mut heading = Some("Prelude (`use octara::prelude::*`), by module:");
         for (m, mut names) in by_module {
             names.sort_by_key(|n| (n.starts_with(|c: char| c.is_uppercase()), n.clone()));
-            lines.push((heading.take(), m, compress(&names)));
+            lines.push((heading.take(), m, names));
         }
         let mut typed: Vec<&Entry> = self.prelude().filter(|e| !e.members.is_empty()).collect();
         typed.sort_by_key(|e| (e.members.len() < 8, e.name().to_string()));
@@ -398,42 +396,22 @@ impl Catalog {
                 names.retain(|n| n.chars().all(|c| c.is_ascii_uppercase() || c == '_'));
             }
             names.dedup();
-            lines.push((heading.take(), label, compress(&names)));
+            lines.push((heading.take(), label, names));
         }
         let mut heading = Some("Other crates and modules:");
-        for c in ["octara_kit", "octara_shell", "octara::testing", "octara::diagnostics", "octara_fonts", "octara_render"] {
+        for c in ["octara_kit", "octara_shell", "octara::inspect", "octara::diagnostics", "octara_fonts", "octara_render"] {
             if let Some(e) = self.get(c) {
                 let mut names = e.members.clone();
                 names.retain(|n| diagnostics::code(n).is_none() && n != "prelude");
-                lines.push((heading.take(), c.to_string(), compress(&names)));
+                lines.push((heading.take(), c.to_string(), names));
             }
         }
         let commands: Vec<String> = BUILTIN_COMMANDS.iter().map(|(c, _)| c.to_string()).collect();
-        // `edit.{move_{left,right},..}`: the tails compressed again on `_`.
-        let commands = compress_on(&commands, '.')
-            .into_iter()
-            .map(|c| match c.split_once(".{") {
-                Some((stem, tails)) => {
-                    let tails: Vec<String> = tails.trim_end_matches('}').split(',').map(str::to_owned).collect();
-                    format!("{stem}.{{{}}}", compress(&tails).join(","))
-                }
-                None => c,
-            })
-            .collect();
         lines.push((None, "commands (`App::invoke`, `on_command`)".into(), commands));
         lines.push((None, "diagnostic codes (`octara explain`)".into(), diagnostics::CODES.iter().map(|c| c.id.to_string()).collect()));
 
-        let mut names: Vec<Vec<String>> = lines.iter().map(|l| l.2.clone()).collect();
         let mut s = String::new();
-        for name in ["N", "M"] {
-            if let Some(set) = factor(&mut names, name) {
-                s += &format!("- `{{{name}}}` = the steps {set} (`0p5` = 0.5; Tailwind's scale)\n");
-            }
-        }
-        if !s.is_empty() {
-            s += "\n";
-        }
-        for ((heading, label, _), names) in lines.iter().zip(names) {
+        for (heading, label, names) in lines {
             if names.is_empty() {
                 continue;
             }
@@ -473,87 +451,5 @@ fn split_top(s: &str) -> Vec<&str> {
         }
     }
     out.push(s[start..].trim());
-    out
-}
-
-/// Numeric steps by value (`0p5` is 0.5), then the rest.
-fn step_order(t: &str) -> (bool, f32) {
-    match t.replace('p', ".").parse::<f32>() {
-        Ok(v) if t.starts_with(|c: char| c.is_ascii_digit()) => (false, v),
-        _ => (true, 0.0),
-    }
-}
-
-/// Factors out the step set most `stem_{..}` groups contain: such groups become
-/// `stem_{name,extra}`, and the set is returned to be defined once. Only a set of eight steps or
-/// more inside at least three groups is worth it.
-pub fn factor(lines: &mut [Vec<String>], name: &str) -> Option<String> {
-    let tails = |item: &str| -> Option<(String, Vec<String>)> {
-        let open = item.find('{')?;
-        item.ends_with('}').then(|| (item[..open].to_string(), item[open + 1..item.len() - 1].split(',').map(str::to_owned).collect()))
-    };
-    let mut counts: BTreeMap<Vec<String>, usize> = BTreeMap::new();
-    for line in lines.iter() {
-        for item in line {
-            if let Some((_, t)) = tails(item)
-                && t.len() >= 8
-            {
-                *counts.entry(t).or_default() += 1;
-            }
-        }
-    }
-    // The candidate saving most: groups containing it times its length.
-    let groups: Vec<Vec<String>> = lines.iter().flatten().filter_map(|i| tails(i).map(|(_, t)| t)).collect();
-    counts.retain(|t, _| t.iter().all(|s| !s.chars().any(|c| c.is_ascii_uppercase())));
-    let saving = |set: &Vec<String>| {
-        let within = groups.iter().filter(|g| set.iter().all(|s| g.contains(s))).count();
-        (within >= 3).then(|| within * set.join(",").len())
-    };
-    let set = counts.into_keys().filter_map(|t| saving(&t).map(|n| (n, t))).max()?.1;
-    for line in lines.iter_mut() {
-        for item in line.iter_mut() {
-            if let Some((stem, t)) = tails(item)
-                && set.iter().all(|s| t.contains(s))
-            {
-                let extra: Vec<&str> = t.iter().filter(|x| !set.contains(x)).map(String::as_str).collect();
-                *item = if extra.is_empty() { format!("{stem}{{{name}}}") } else { format!("{stem}{{{name},{}}}", extra.join(",")) };
-            }
-        }
-    }
-    Some(set.join(","))
-}
-
-/// `p_{0,0p5,1,2}`: names sharing a stem before their last `_` written once, when at least three do.
-pub fn compress(names: &[String]) -> Vec<String> {
-    compress_on(names, '_')
-}
-
-/// [`compress`] on another separator (`edit.{copy,cut,paste}`).
-pub fn compress_on(names: &[String], sep: char) -> Vec<String> {
-    let mut groups: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    let mut order: Vec<&str> = Vec::new();
-    for n in names {
-        let stem = n.rsplit_once(sep).map(|(s, _)| s).unwrap_or(n);
-        if !groups.contains_key(stem) {
-            order.push(stem);
-        }
-        groups.entry(stem).or_default().push(n);
-    }
-    let mut out = Vec::new();
-    for stem in order {
-        let g = &groups[stem];
-        if g.len() >= 3 {
-            let tails: Vec<&str> = g.iter().map(|n| n.strip_prefix(stem).and_then(|t| t.strip_prefix(sep)).unwrap_or("")).collect();
-            let has_bare = tails.contains(&"");
-            let mut tails: Vec<&str> = tails.into_iter().filter(|t| !t.is_empty()).collect();
-            tails.sort_by(|a, b| step_order(a).partial_cmp(&step_order(b)).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(b)));
-            if has_bare {
-                out.push(stem.to_string());
-            }
-            out.push(format!("{stem}{sep}{{{}}}", tails.join(",")));
-        } else {
-            out.extend(g.iter().map(|n| n.to_string()));
-        }
-    }
     out
 }

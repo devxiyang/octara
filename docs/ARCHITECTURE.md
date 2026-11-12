@@ -7,7 +7,7 @@ What is built, how its parts fit, and the decisions that shape them. Detailed de
 **Agent-first. Rust-native. Cross-platform.** Apps are written in Rust with fine-grained
 reactivity, drawn on the GPU, with native views and OS capabilities where the GPU cannot serve.
 The agent's loop is generate → compile → run → inspect → test → fix, and the framework answers
-the agent's questions itself (semantic tree, diagnostics with fixes, checks, scripted driving).
+the agent's questions itself (semantic tree, diagnostics with causes, checks, scripted driving).
 
 Principles:
 
@@ -122,11 +122,10 @@ owned by scopes on the app clock ([async](design/async.md)).
 - `octara::inspect`: the semantic tree with test ids, bounds, actions, source locations and
   component boundaries; requests (tap, type, key, advance, settle, size, theme, expect, …) over
   JSON lines; `check` across themes and sizes.
-- What people point at: marked captures number the interactive elements and components (the
-  snapshot repeats the numbers); `pick` names the element at a point; `layout` explains an
-  element's size; a picking window (`mod+shift+c` in debug shells) outlines what the pointer is
-  over and copies the clicked element's line.
-- Diagnostics are registered codes with cause, fix and doc anchor; tests keep the registry
+- What people point at: `pick` names the element at a point; a picking window (`mod+shift+c` in
+  debug shells) outlines what the pointer is over and copies the clicked element's line, with
+  the component that made it.
+- Diagnostics are registered codes with cause and doc anchor; tests keep the registry
   complete.
 - The CLI builds a harness around an app's view (`[package.metadata.octara] view`) and drives it;
   the `octara` skill teaches agents the framework ([agent knowledge](design/agent-knowledge.md)).

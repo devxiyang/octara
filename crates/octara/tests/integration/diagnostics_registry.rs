@@ -72,7 +72,7 @@ fn codes_are_unique_and_explained() {
     for c in CODES {
         assert!(seen.insert(c.id), "{} registered twice", c.id);
         assert!(code_shaped(c.id), "{} is not an upper-case code", c.id);
-        for (what, text) in [("summary", c.summary), ("cause", c.cause), ("fix", c.fix)] {
+        for (what, text) in [("summary", c.summary), ("cause", c.cause)] {
             assert!(text.ends_with('.'), "{}: the {what} is a sentence ending in a period: {text:?}", c.id);
         }
         assert_eq!(diagnostics::code(c.id), Some(*c));

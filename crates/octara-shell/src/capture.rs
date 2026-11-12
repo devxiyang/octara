@@ -5,8 +5,7 @@
 //! after `OCTARA_CAPTURE_AFTER_MS` (default 300), scrolled down `OCTARA_CAPTURE_SCROLL` pixels
 //! at the window's center, settling for at most `OCTARA_CAPTURE_SETTLE_MS` (default 5000).
 //! `OCTARA_CAPTURE_PIXELS=display` asks for the window server's picture (macOS), painted with a
-//! stated `fallback` where there is none. `OCTARA_CAPTURE_MARKS=1` draws each marked element's
-//! outline and number over the picture.
+//! stated `fallback` where there is none.
 
 use super::{Shell, ShellEvent};
 use octara::capture::Pixels;
@@ -26,7 +25,6 @@ pub(crate) struct Job {
     settle: Duration,
     scroll: Option<f32>,
     pixels: Pixels,
-    marks: bool,
     stage: Stage,
 }
 
@@ -69,7 +67,6 @@ impl Job {
             settle: Duration::from_millis(env("OCTARA_CAPTURE_SETTLE_MS").unwrap_or(5000)),
             scroll: env("OCTARA_CAPTURE_SCROLL"),
             pixels: if std::env::var("OCTARA_CAPTURE_PIXELS").as_deref() == Ok("display") { Pixels::Display } else { Pixels::Painted },
-            marks: std::env::var("OCTARA_CAPTURE_MARKS").is_ok_and(|v| v == "1"),
             stage: Stage::Start,
         })
     }
@@ -123,9 +120,7 @@ impl Shell {
             match self.window_picture() {
                 Ok(picture) => {
                     let scale = self.scale();
-                    let (Some(g), Some(app)) = (&mut self.gpu, &mut self.win) else { return };
-                    let painter = job.marks.then_some(&mut g.renderer as &mut dyn octara::capture::Painter);
-                    let result = app.capture_display(&picture, &job.path, scale, pending, painter);
+                    let result = self.win.as_mut().expect("app").capture_display(&picture, &job.path, scale, pending);
                     self.report(result, &job.path);
                     return;
                 }
@@ -142,7 +137,7 @@ impl Shell {
                 return;
             }
             let (pending, fallback) = (pending.clone(), fallback.clone());
-            self.finish(&job.path, pending, fallback, job.marks);
+            self.finish(&job.path, pending, fallback);
         }
     }
 
@@ -156,10 +151,10 @@ impl Shell {
     }
 
     /// Paints the frame with the window's renderer offscreen, prints the report, and exits.
-    fn finish(&mut self, path: &str, pending: Vec<String>, fallback: Option<String>, marks: bool) {
+    fn finish(&mut self, path: &str, pending: Vec<String>, fallback: Option<String>) {
         let scale = self.scale();
         let (Some(g), Some(app)) = (&mut self.gpu, &mut self.win) else { return };
-        let result = app.capture_finish(&mut g.renderer, path, scale, pending, fallback, marks);
+        let result = app.capture_finish(&mut g.renderer, path, scale, pending, fallback);
         self.report(result, path);
     }
 

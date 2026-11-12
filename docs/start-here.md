@@ -53,7 +53,7 @@ fn main() {
   hot reload. Use it for every piece of state a component owns.
 - `text(move || ..)` is a binding; `text("fixed")` is not.
 - `#[component]` marks a function that builds part of the view: every element it builds records
-  it and where it was called, so the inspector, picking and marked captures can say "made by
+  it and where it was called, so the inspector and picking can say "made by
   `counter()`, called at `src/main.rs:30`". Put it on every such function.
 - The app root gets `size_full()`: without it the root is only as big as its content.
 
@@ -290,17 +290,14 @@ work that never settles, accessibility); `octara inspect` prints the semantic tr
 (`{"op":"tap","id":"save"}`, `{"op":"expect","id":"total","text":"3 items"}`). The same requests
 work in a test: `octara::inspect::run_script(&mut app, script)`.
 
-What a person points at reaches you as a number, a point or a picked line:
-`{"op":"capture","path":"shot.png","marks":true}` numbers the interactive elements and the
-components in the picture (the snapshot's `mark` repeats each number);
-`{"op":"pick","x":120,"y":40}` names the element at a point; `{"op":"layout","mark":12}` (or
-`"id"`) explains why an element is the size it is. In a running debug window, `mod+shift+c`
-picks with the mouse and copies a line such as `#12 button "Save" (id save) at src/app.rs:52:9;
-made by toolbar() called at src/app.rs:30:5`.
+What a person points at reaches you as a point or a picked line: `{"op":"pick","x":120,"y":40}`
+names the element at a point. In a running debug window, `mod+shift+c` picks with the mouse and
+copies a line such as `button "Save" (id save) at src/app.rs:52:9; made by toolbar() called at
+src/app.rs:30:5`.
 
 ## When something is wrong
 
-- A diagnostic or layout issue names its code: `octara explain OVERFLOW` gives the cause and the
-  fix; it also finds the code inside a pasted panic or message.
+- A diagnostic or layout issue names its code: `octara explain OVERFLOW` gives its cause and the
+  rule behind it; it also finds the code inside a pasted panic or message.
 - Unsure what a method takes: `octara vocab hover`, `octara vocab Styled::p_4`,
   `octara vocab Spring::SNAP`. A type lists its members.

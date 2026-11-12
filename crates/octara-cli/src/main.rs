@@ -2,7 +2,7 @@
 
 use clap::{Parser, Subcommand};
 use octara_cli::api;
-use octara_cli::catalog::{Catalog, Entry, compress};
+use octara_cli::catalog::{Catalog, Entry};
 use std::fmt::Write as _;
 use std::process::ExitCode;
 
@@ -25,7 +25,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Explain a diagnostic code: what it means, why it happens, how to fix it.
+    /// Explain a diagnostic code: what it means and why it happens.
     ///
     /// Takes a code (`OVERFLOW`) or any text containing one (a message, a panic). Without one,
     /// lists every code.
@@ -72,7 +72,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Print the compressed index of every name an app can use (the skill's `references/index.md`).
+    /// Print the index of every name an app can use (the skill's `references/index.md`).
     Index,
     /// The `octara` skill for coding agents: install it into a project, or export it.
     Skill {
@@ -211,7 +211,7 @@ fn render(e: &Entry, full: bool) -> String {
             s += "\n";
         }
         if !e.members.is_empty() {
-            let _ = writeln!(s, "  members ({}): {}", e.members.len(), compress(&e.members).join(", "));
+            let _ = writeln!(s, "  members ({}): {}", e.members.len(), e.members.join(", "));
         }
         if !e.related.is_empty() {
             let _ = writeln!(s, "  see: {}", e.related.join(", "));
@@ -276,7 +276,6 @@ fn explain(out: &mut String, code: Option<&str>, json: bool) -> ExitCode {
             let _ = writeln!(out, "{}  ({}, {})", e.path, e.facts["severity"], e.facts["area"]);
             let _ = writeln!(out, "  {}", e.summary);
             let _ = writeln!(out, "  cause: {}", e.facts["cause"]);
-            let _ = writeln!(out, "  fix: {}", e.facts["fix"]);
             let _ = writeln!(out, "  docs: {}", e.facts["doc"]);
             if !e.related.is_empty() {
                 let _ = writeln!(out, "  see: {}", e.related.join(", "));
@@ -341,9 +340,9 @@ fn check_text(r: &serde_json::Value) -> String {
         let id = f["id"].as_str().map(|i| format!(" #{i}")).unwrap_or_default();
         let _ = writeln!(s, "{} {}{id} — {}", str_of(&f["severity"]), str_of(&f["code"]), cells.join(", "));
         let _ = writeln!(s, "  {}", str_of(&f["message"]));
-        let fix = f["hint"].as_str().map(str::to_owned).unwrap_or_else(|| str_of(&f["fix"]));
-        if !fix.is_empty() {
-            let _ = writeln!(s, "  fix: {fix}");
+        let cause = str_of(&f["cause"]);
+        if !cause.is_empty() {
+            let _ = writeln!(s, "  cause: {cause}");
         }
         if let Some(src) = f["source"].as_str() {
             let _ = writeln!(s, "  at {src}");

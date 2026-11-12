@@ -6,8 +6,7 @@ make the corresponding design document describe it.
 
 ## Priorities
 
-1. The [core](design/core.md): what people and agents point at (component boundaries, marked
-   captures, picking by point, size explanations); the text core; incremental paint and
+1. The [core](design/core.md): the text core; incremental paint and
    accessibility; the [platform boundary](design/platform.md) completed (several winit windows
    included); popups and menus; the AI chat components and reference app.
 2. The owned macOS backend (NSTextInputClient, menus, live resize in the frame's transaction,
@@ -42,7 +41,7 @@ Checked by tests and screenshots; to be tried in a real window (`cargo run -p oc
       reports `pixels: display`, and the picture holds the Metal frame and the live web page,
       cropped to the content view (no title bar), at the backing scale.
 - [ ] Picking (`window -- todo`, a debug build): `mod+shift+c`, then moving the pointer outlines
-      each element with its number; a click prints its line and copies it (a "Delete" button
+      each element; a click prints its line and copies it (a "Delete" button
       says `made by todo_row()`), the button does not press, and picking ends; Escape ends it
       too.
 - [ ] Web view (`window -- showcase web`, macOS): the page shows in the rounded box, "Other page"
@@ -115,11 +114,12 @@ Basis: [agent knowledge](design/agent-knowledge.md).
       methods): add docs.
 - [ ] Tests and agents read presented values (painted opacity, color): `visual_of` is the target
       value, and the presented value exists only in the display list.
-- [ ] Example ids (how an item is used in the examples), recipes and byte limits, `octara new`
-      (calls `skill install`), MCP, llms.txt.
+- [ ] `octara new` (calls `skill install`).
 - [ ] Causal tracing in the reactive layer (the causal chain reaches the cause id of kernel
       operations).
-- [ ] Agent evaluation retest: update the API docs, use harder tasks or a weaker model.
+- [ ] Evaluation by ablation ([agent knowledge](design/agent-knowledge.md#order)): a small fixed
+      task set, run with and without each piece of guidance; what does not change the result
+      goes.
 
 ## Known limitations
 

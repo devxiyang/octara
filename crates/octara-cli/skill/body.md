@@ -11,7 +11,7 @@ name you can use. Look anything up instead of guessing:
 - `octara vocab <name>`: signature, docs, members and related entries of any function, method,
   type, token, spring, command or diagnostic code (`octara vocab bg`, `octara vocab Styled::p_4`,
   `octara vocab Token`, `octara vocab focus.next`). `--json` for structured output.
-- `octara explain <CODE>`: what a diagnostic means, why it happens and how to fix it. It also finds
+- `octara explain <CODE>`: what a diagnostic means and why it happens. It also finds
   the code inside a pasted message or panic.
 
 If `octara` is not installed: `cargo install --git https://github.com/octoii-works/octara octara-cli`.
@@ -22,7 +22,7 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
   `text(move || format!("{}", n.get()))`, `.opacity(move || ..)`. Reading `.get()` in the body
   bakes the value in (`STRICT_READ_UNTRACKED`).
 - Mark every function that builds part of the view `#[component]`: elements then record which
-  component made them and where it was called, for the inspector, picking and marked captures.
+  component made them and where it was called, for the inspector and picking.
 - State in components is named: `state("key", || init)`, `list("key", init, key_fn)`,
   `live_text(..)`. Never `Signal::new` in a component (`UNKEYED_STATE`).
 - Write state only in handlers (`on_press`, ..), `watch` callbacks and tasks
@@ -71,9 +71,8 @@ view = "my_app::app"   # a `fn() -> View` in the library
   `{"op":"advance","ms":300}`, `{"op":"settle"}`, `{"op":"inspect"}`, `{"op":"issues"}`,
   `{"op":"expect","id":"total","text":"3 items"}`, `{"op":"expect","clean":true}`,
   `{"op":"capture","path":"shot.png"}` (a picture after settling, with a report: whether it
-  settled, what each native view shows; `"marks":true` numbers the interactive elements and
-  components, and the snapshot's `mark` repeats each number), `{"op":"pick","x":120,"y":40}`
-  (the element at a point, with its source and component), `{"op":"layout","mark":12}` (why an
-  element is the size it is) (`octara vocab octara::inspect::Request` lists them all). In a
+  settled, what each native view shows), `{"op":"pick","x":120,"y":40}` (the element at a
+  point, with its source and component) (`octara vocab octara::inspect::Request` lists them
+  all). In a
   running debug window, `mod+shift+c` picks with the mouse and copies the element's line. A window captures with `OCTARA_CAPTURE=shot.png` (the window's GPU renderer, native
   views from their own snapshots).

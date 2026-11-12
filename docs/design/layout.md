@@ -52,7 +52,7 @@ so that style-only responsiveness need not rerun closures.
 
 ## 4. Layout diagnostics
 
-(Implemented) Queryable after each layout; the result is structured data with the test id, path, creation location and fix (`Window::layout_issues()`), and tests and Agents can assert it is empty.
+(Implemented) Queryable after each layout; the result is structured data with the test id, path, creation location (`Window::layout_issues()`), and tests and Agents can assert it is empty.
 Overflow is summarized as one entry per container and edge (as in Flutter's "RenderFlex overflowed by N px"), listing the children that overflow:
 
 | Code | Situation | Suggestion |

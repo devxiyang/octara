@@ -39,7 +39,7 @@ fn the_skill_follows_the_agent_skills_format() {
     assert!(!start.contains("\n# use octara"), "doctest-hidden lines are dropped for readers");
     assert!(!start.contains("rust,no_run"));
     let (_, index) = files.iter().find(|(p, _)| *p == "references/index.md").unwrap();
-    assert!(index.len() <= 12 * 1024, "the index grew to {} bytes", index.len());
+    assert!(index.contains("- Styled (trait") && index.contains(" p_4,"), "every name, written out");
 }
 
 #[test]

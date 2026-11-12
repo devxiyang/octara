@@ -19,12 +19,15 @@ fn a_clean_layout_has_no_issues() {
 }
 
 #[test]
-fn overflow_names_the_element_where_it_was_made_and_the_fix() {
+fn overflow_names_the_element_and_where_it_was_made() {
     let v = issues(|| el().child(text("a long line that does not wrap").id("t").whitespace_nowrap()).id("box").w(60).into());
     assert_eq!(codes(&v), [("OVERFLOW", Some("box".into()))]);
     let i = &v[0];
-    assert!(i.message.contains("content of #box overflows its right edge") && i.message.contains("(#t)"), "{}", i.message);
-    assert!(i.hint.contains("truncate"), "{}", i.hint);
+    assert!(
+        i.message.contains("content of #box overflows its right edge") && i.message.contains("(#t; text set not to wrap"),
+        "{}",
+        i.message
+    );
     assert!(i.at.as_deref().unwrap().contains("layout_issues.rs"), "{:?}", i.at);
     assert_eq!(i.path, "#box");
 

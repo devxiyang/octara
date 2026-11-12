@@ -12,10 +12,10 @@
 pub mod a11y;
 mod anim;
 mod edit;
-mod explain;
 mod focus;
 mod issues;
 mod paint;
+mod pick;
 pub mod style;
 pub mod text;
 pub mod theme;

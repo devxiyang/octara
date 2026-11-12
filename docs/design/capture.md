@@ -56,13 +56,6 @@ the content view's rect in global display coordinates is taken from the window s
 (`CGSSessionScreenIsLocked`), the symbol is gone, the window is not visible, or the picture's
 size is not the window's (a sleeping display).
 
-## Marks
-
-`marks: true` numbers the interactive elements and the components in the picture (outline and
-badge; see [the core](core.md#what-people-and-agents-point-at)) and lists them in the report;
-the snapshot's `mark` repeats each number, and `layout` and `pick` take them. The window's
-`OCTARA_CAPTURE_MARKS=1` does the same.
-
 ## Entry points
 
 - The inspector protocol (`octara run --script`, interactive `octara run`): headless, reference

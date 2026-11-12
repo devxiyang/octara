@@ -19,7 +19,7 @@ tests that use the framework, and look names up with `cargo run -q -p octara-cli
 - After changing public API or its docs, regenerate `api.json` (needs a nightly toolchain) and the
   skill's copy: `cargo run -q -p octara-cli -- api`, then
   `cargo run -q -p octara-cli -- skill export skills`. Tests fail while either is stale.
-- A new diagnostic is a new entry in `octara::diagnostics` (cause, fix, doc anchor), reported with
+- A new diagnostic is a new entry in `octara::diagnostics` (cause, doc anchor), reported with
   `&codes::NAME`; tests fail for codes used anywhere but not registered.
 - Code blocks in `docs/start-here.md` run as doctests (`cargo test -p octara-cli --doc`); the
   skill ships that page as `references/start-here.md`.
