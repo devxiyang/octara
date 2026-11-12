@@ -7,7 +7,7 @@ fn solid(w: u32, h: u32, c: [u8; 4]) -> Image {
     Image::rgba(w, h, c.repeat((w * h) as usize))
 }
 
-fn size(app: &App, id: &str) -> (f32, f32) {
+fn size(app: &Window, id: &str) -> (f32, f32) {
     let k = app.kernel();
     let (_, _, w, h) = k.rect(k.find(id).unwrap());
     (w, h)
@@ -16,7 +16,7 @@ fn size(app: &App, id: &str) -> (f32, f32) {
 #[test]
 fn an_image_sizes_its_box() {
     let img = solid(40, 20, [255, 0, 0, 255]);
-    let mut app = App::new(move || {
+    let mut app = Window::headless(move || {
         col()
             .items_start()
             .child(el().id("natural").img(&img))
@@ -47,7 +47,7 @@ fn fits_place_the_image() {
 #[test]
 fn the_display_list_draws_it_clipped_to_the_box() {
     let img = solid(20, 20, [0, 0, 255, 255]);
-    let app = App::new(move || {
+    let app = Window::headless(move || {
         col().child(el().id("pic").w(100).h(50).p_2().border_2().rounded_lg().object_fit(ObjectFit::Cover).img(&img)).into()
     });
     let n = app.kernel().find("pic").unwrap();
@@ -80,8 +80,8 @@ fn png_decodes() {
 fn new_pixels_draw_without_rerunning_the_view() {
     let img = solid(4, 4, [0, 0, 0, 255]);
     let shown = img.clone();
-    let mut app = App::new(move || col().child(el().id("pic").w(40).img(&shown)).into());
-    app.reset_work();
+    let app = Window::headless(move || col().child(el().id("pic").w(40).img(&shown)).into());
+    app.app().reset_work();
     img.set(4, 4, [255u8, 255, 255, 255].repeat(16));
     let frame = app
         .display_list()
@@ -92,5 +92,5 @@ fn new_pixels_draw_without_rerunning_the_view() {
         .unwrap();
     assert_eq!(frame.version, 1);
     assert_eq!(frame.rgba[0], 255);
-    assert_eq!(app.work().closures_run, 0);
+    assert_eq!(app.app().work().closures_run, 0);
 }

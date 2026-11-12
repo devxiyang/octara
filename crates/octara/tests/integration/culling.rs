@@ -46,7 +46,7 @@ fn describe(dl: &octara::paint::DisplayList) -> Vec<String> {
 
 #[test]
 fn skipping_off_screen_subtrees_changes_nothing() {
-    let mut app = App::new(tricky);
+    let mut app = Window::headless(tricky);
     app.resize(600.0, 500.0);
     let list = app.kernel().find("list").unwrap();
     app.kernel_mut().scroll_to(list, 0.0, 4000.0);

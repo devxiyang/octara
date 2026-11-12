@@ -19,7 +19,7 @@ fn view() -> View {
 
 #[test]
 fn a_snapshot_is_the_semantic_tree() {
-    let app = App::new(view);
+    let app = Window::headless(view);
     let snap = app.inspect();
     assert_eq!(snap.schema, "octara.inspect/1");
     assert_eq!(snap.theme, "light");
@@ -38,7 +38,7 @@ fn a_snapshot_is_the_semantic_tree() {
 
 #[test]
 fn requests_drive_the_app() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     assert!(inspect::handle(&mut app, Request::Tap { id: "inc".into() }).ok);
     assert_eq!(app.kernel().text_of("count").as_deref(), Some("Count: 1"));
     let r = inspect::handle_line(&mut app, r#"{"op":"type","id":"name","text":"Ada"}"#);
@@ -50,7 +50,7 @@ fn requests_drive_the_app() {
 
 #[test]
 fn failures_name_their_code() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     let r = inspect::handle_line(&mut app, r#"{"op":"tap","id":"nope"}"#);
     assert_eq!(r.code.as_deref(), Some("NO_SUCH_ELEMENT"));
     let r = inspect::handle_line(&mut app, r#"{"op":"tap"}"#);
@@ -66,7 +66,7 @@ fn failures_name_their_code() {
 
 #[test]
 fn a_script_runs_line_by_line_and_stops_at_the_first_failure() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     let script = r#"
         // Count up twice, then check.
         {"op":"tap","id":"inc"}
@@ -151,11 +151,11 @@ fn accepted_findings_need_a_reason_and_leave_the_report_clean() {
 #[test]
 fn a_resource_in_a_component_reports_nothing() {
     // `resource` keeps its state in framework signals, not the app's `Signal::new`.
-    let app = App::new(|| {
+    let app = Window::headless(|| {
         let r = resource(|| 1u32, |n: u32| async move { Ok::<u32, String>(n) });
         text(move || format!("{:?}", r.value())).into()
     });
-    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 }
 
 #[test]

@@ -76,7 +76,7 @@ impl Shell {
     /// One step of the capture in progress.
     pub(crate) fn capture_step(&mut self) {
         let Some(mut job) = self.capture.take() else { return };
-        if self.app.is_none() || self.gpu.is_none() {
+        if self.win.is_none() || self.gpu.is_none() {
             self.capture = Some(job);
             return;
         }
@@ -84,7 +84,7 @@ impl Shell {
         if let Stage::Start = job.stage {
             if let Some(dy) = job.scroll {
                 let (w, h) = self.options.size;
-                if let Some(app) = &mut self.app {
+                if let Some(app) = &mut self.win {
                     app.wheel(w / 2.0, h / 2.0, 0.0, dy);
                 }
                 // Drawn, so the views are placed where the page now is.
@@ -94,7 +94,7 @@ impl Shell {
         }
         if let Stage::Settling { until } = job.stage {
             self.tick();
-            let app = self.app.as_mut().expect("app");
+            let app = self.win.as_mut().expect("app");
             let pending = app.unsettled();
             if !pending.is_empty() && now < until {
                 self.capture = Some(job);
@@ -120,18 +120,18 @@ impl Shell {
             match self.window_picture() {
                 Ok(picture) => {
                     let scale = self.scale();
-                    let result = self.app.as_mut().expect("app").capture_display(&picture, &job.path, scale, pending);
+                    let result = self.win.as_mut().expect("app").capture_display(&picture, &job.path, scale, pending);
                     self.report(result, &job.path);
                     return;
                 }
                 Err(why) => {
-                    self.app.as_mut().expect("app").capture_begin();
+                    self.win.as_mut().expect("app").capture_begin();
                     job.stage = Stage::Snapshots { until: now + SNAPSHOT_LIMIT, pending, fallback: Some(why) };
                 }
             }
         }
         if let Stage::Snapshots { until, ref pending, ref fallback } = job.stage {
-            let app = self.app.as_mut().expect("app");
+            let app = self.win.as_mut().expect("app");
             if !app.capture_awaiting().is_empty() && now < until {
                 self.capture = Some(job);
                 return;
@@ -153,7 +153,7 @@ impl Shell {
     /// Paints the frame with the window's renderer offscreen, prints the report, and exits.
     fn finish(&mut self, path: &str, pending: Vec<String>, fallback: Option<String>) {
         let scale = self.scale();
-        let (Some(g), Some(app)) = (&mut self.gpu, &mut self.app) else { return };
+        let (Some(g), Some(app)) = (&mut self.gpu, &mut self.win) else { return };
         let result = app.capture_finish(&mut g.renderer, path, scale, pending, fallback);
         self.report(result, path);
     }

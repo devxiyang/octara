@@ -183,9 +183,9 @@ fn gpu_matches_the_reference_renderer() {
         ("layers", layers),
     ];
     for (name, view) in cases {
-        let mut app = App::new(view);
+        let app = Window::headless(view);
         if name == "dark" {
-            app.set_theme(Theme::dark());
+            app.app().set_theme(Theme::dark());
         }
         for scale in [1.0, 2.0] {
             let dl = app.display_list();
@@ -332,8 +332,7 @@ fn underlay() -> View {
 
 #[test]
 fn underlay_cutouts_clear_to_transparent() {
-    let app =
-        App::with_platform(octara::platform::HeadlessPlatform::default(), octara::platform::HeadlessWindow::with_host(Shows), underlay);
+    let app = Window::headless_on(octara::platform::HeadlessPlatform::with_host(Shows), underlay);
     let dl = app.display_list();
     let cpu = CpuRenderer::new().render(&dl, 1.0);
     assert_eq!(cpu.pixel(150, 80)[3], 0, "the view shows through");

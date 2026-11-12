@@ -9,7 +9,7 @@
 //! text, which the shell sends separately.
 
 use super::pointer::Modifiers;
-use super::{App, Handler, Modality, TargetPlatform};
+use super::{Handler, Modality, TargetPlatform, Window};
 use crate::kernel::{Arrow, HandlerKind, NodeId, State};
 use crate::reactive::graph::Ctx;
 use std::fmt;
@@ -353,28 +353,28 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("edit.redo", "redo what was undone"),
 ];
 
-impl App {
+impl Window {
     /// The keymap in use: the platform's standard bindings, then the app's.
     pub fn keymap(&self) -> Keymap {
-        let mut k = Keymap::standard(self.platform.get());
-        k.bindings.extend(self.keymap.borrow().bindings.iter().cloned());
+        let mut k = Keymap::standard(self.app.platform.get());
+        k.bindings.extend(self.app.keymap.borrow().bindings.iter().cloned());
         k
     }
     /// Replaces the app's bindings (the standard ones stay; unbind them with `None` commands).
     pub fn set_keymap(&mut self, keymap: Keymap) {
-        *self.keymap.borrow_mut() = keymap;
+        *self.app.keymap.borrow_mut() = keymap;
     }
     /// Adds a binding (see [`Keymap::bind`]).
     pub fn bind(&mut self, chord: &str, command: Option<&str>, context: Option<&str>) -> Result<(), String> {
-        self.keymap.borrow_mut().bind(chord, command, context)
+        self.app.keymap.borrow_mut().bind(chord, command, context)
     }
 
     /// The focus path, innermost first: from the focused element (else the open modal, else
     /// the app's root element) up to the window.
     fn focus_path(&self) -> Vec<NodeId> {
-        let k = self.win().ui.kernel.borrow();
+        let k = self.w.kernel.borrow();
         let start = self
-            .win()
+            .w
             .interaction
             .borrow()
             .focused
@@ -393,8 +393,8 @@ impl App {
     /// The commands a key resolves to, best first: bindings whose context is on the focus path,
     /// deeper contexts first, later bindings first. `None` entries unbind.
     fn resolve(&self, ev: &KeyEvent, path: &[NodeId]) -> Vec<Option<String>> {
-        let k = self.win().ui.kernel.borrow();
-        let platform = self.platform.get();
+        let k = self.w.kernel.borrow();
+        let platform = self.app.platform.get();
         // Depth of each context on the path (the window is depth 0).
         let depth_of = |ctx: &str| -> Option<usize> {
             path.iter().enumerate().find(|(_, id)| k.key_context(**id) == Some(ctx)).map(|(i, _)| path.len() - i)
@@ -446,13 +446,13 @@ impl App {
         }
         // An input method composing owns Enter and Escape; a shortcut commits it first (Exact).
         if let Some((n, _)) = self.focused_input() {
-            let composing = !self.win().ui.kernel.borrow().preedit(n).is_empty();
+            let composing = !self.w.kernel.borrow().preedit(n).is_empty();
             if composing {
                 if matches!(ev.key, Key::Enter | Key::Escape) {
                     return true;
                 }
                 if ev.modifiers.intersects(Modifiers::CTRL | Modifiers::META) {
-                    let text = self.win().ui.kernel.borrow().preedit(n).to_owned();
+                    let text = self.w.kernel.borrow().preedit(n).to_owned();
                     self.insert_text(&text);
                 }
             }
@@ -461,15 +461,15 @@ impl App {
         // `on_key`, innermost first.
         for &n in &path {
             let handler = {
-                let k = self.win().ui.kernel.borrow();
+                let k = self.w.kernel.borrow();
                 if k.state(n).contains(State::DISABLED) {
                     continue;
                 }
-                k.handler(n, HandlerKind::Key).and_then(|h| self.win().ui.handlers.borrow().get(&h.0).cloned())
+                k.handler(n, HandlerKind::Key).and_then(|h| self.w.handlers.borrow().get(&h.0).cloned())
             };
             if let Some(Handler::Key(f)) = handler {
                 let mut took = false;
-                self.rt.with_frame(Ctx::Handler, None, Some(None), || took = f(ev));
+                self.app.rt.with_frame(Ctx::Handler, None, Some(None), || took = f(ev));
                 if took {
                     return true;
                 }
@@ -489,14 +489,14 @@ impl App {
     fn run_command(&self, command: &str, path: &[NodeId]) -> bool {
         for &n in path {
             let handler = {
-                let k = self.win().ui.kernel.borrow();
+                let k = self.w.kernel.borrow();
                 if k.state(n).contains(State::DISABLED) {
                     continue;
                 }
-                k.command_handler(n, command).and_then(|h| self.win().ui.handlers.borrow().get(&h.0).cloned())
+                k.command_handler(n, command).and_then(|h| self.w.handlers.borrow().get(&h.0).cloned())
             };
             if let Some(Handler::Press(f)) = handler {
-                self.rt.with_frame(Ctx::Handler, None, Some(None), || f());
+                self.app.rt.with_frame(Ctx::Handler, None, Some(None), || f());
                 return true;
             }
         }
@@ -504,18 +504,18 @@ impl App {
             return true;
         }
         let app_handler = {
-            let cmds = self.win().ui.commands.borrow();
-            cmds.iter().rev().find(|(c, _)| c == command).and_then(|(_, h)| self.win().ui.handlers.borrow().get(h).cloned())
+            let cmds = self.w.commands.borrow();
+            cmds.iter().rev().find(|(c, _)| c == command).and_then(|(_, h)| self.w.handlers.borrow().get(h).cloned())
         };
         if let Some(Handler::Press(f)) = app_handler {
-            self.rt.with_frame(Ctx::Handler, None, Some(None), || f());
+            self.app.rt.with_frame(Ctx::Handler, None, Some(None), || f());
             return true;
         }
         false
     }
 
     fn builtin(&self, command: &str) -> bool {
-        let focused = self.win().interaction.borrow().focused;
+        let focused = self.w.interaction.borrow().focused;
         match command {
             "focus.next" | "focus.prev" => {
                 self.tab(command == "focus.next");
@@ -538,7 +538,7 @@ impl App {
             // Without `on_submit` this is unhandled, and Enter falls through to `press`.
             "submit" => focused.is_some_and(|n| self.run(n, &[HandlerKind::Submit], None)),
             "menu" => {
-                let target = focused.and_then(|f| self.win().ui.kernel.borrow().handler_above(Some(f), HandlerKind::SecondaryPress));
+                let target = focused.and_then(|f| self.w.kernel.borrow().handler_above(Some(f), HandlerKind::SecondaryPress));
                 target.is_some_and(|n| self.run(n, &[HandlerKind::SecondaryPress], None))
             }
             c if c.starts_with("edit.") => self.edit_command(c),
@@ -553,20 +553,20 @@ impl App {
             let path = self.focus_path();
             done = self.run_command(command, &path);
         });
-        if done { Ok(()) } else { Err(format!("nothing handles `{command}` here (see `App::commands`)")) }
+        if done { Ok(()) } else { Err(format!("nothing handles `{command}` here (see `Window::commands`)")) }
     }
 
     /// Commands available now: those the focus path's elements handle, the built-ins, and the
     /// app's, each with the chords bound to it here.
     pub fn commands(&self) -> Vec<(String, Vec<String>)> {
         let path = self.focus_path();
-        let mut names = self.win().ui.kernel.borrow().commands_on(&path);
+        let mut names = self.w.kernel.borrow().commands_on(&path);
         for (c, _) in BUILTIN_COMMANDS {
             if !names.iter().any(|n| n == c) {
                 names.push((*c).to_owned());
             }
         }
-        for (c, _) in self.win().ui.commands.borrow().iter() {
+        for (c, _) in self.w.commands.borrow().iter() {
             if !names.contains(c) {
                 names.push(c.clone());
             }
@@ -574,7 +574,7 @@ impl App {
         let keymap = self.keymap();
         // Chords bound where focus is now: everywhere, or in a context on the focus path.
         let contexts: Vec<String> = {
-            let k = self.win().ui.kernel.borrow();
+            let k = self.w.kernel.borrow();
             path.iter().filter_map(|id| k.key_context(*id).map(str::to_owned)).collect()
         };
         names
@@ -595,7 +595,7 @@ impl App {
     /// Presses the keys of `chord` (`"mod+s"`, `"tab"`, `"a"`), as a keyboard would: what the
     /// keymap binds runs; an unbound character key types itself.
     pub fn press_key(&mut self, chord: &str) -> Result<(), String> {
-        let ev = Chord::parse(chord)?.event(self.platform.get());
+        let ev = Chord::parse(chord)?.event(self.app.platform.get());
         if !self.key_event(ev)
             && let Key::Char(c) = ev.key
             && !ev.modifiers.intersects(Modifiers::CTRL | Modifiers::META)

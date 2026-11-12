@@ -37,7 +37,7 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | Semantics | `role`, `label`, `description`, `expanded`, `checked`, `value`, `a11y_hidden`, `focusable`; test id is the semantic id | Implemented |
 | Interaction | `on_press` / `on_input` / `on_toggle` / `on_submit`; hover chain and groups; disabled elements reject events | Implemented |
 | | `on_key`, gestures (tap, double, long press, secondary, drag, swipe, momentum), focus order and groups, keymap and commands | Implemented ([input](input.md)) |
-| Agent | Structured diagnostics with registered codes, `testing::Checked`, `App::force_state` | Implemented |
+| Agent | Structured diagnostics with registered codes, `App::set_check_consistency`, `App::force_state` | Implemented |
 | | Inspector protocol, `octara check` / `inspect` / `run` | Implemented ([agent knowledge](agent-knowledge.md)) |
 
 ## 3. Naming

@@ -7,8 +7,8 @@ use octara::app::{Phase, PointerEvent, TargetPlatform};
 use octara::kernel::text::MonoEngine;
 use octara::prelude::*;
 
-fn app(initial: &'static str, width: f32) -> App {
-    let mut app = App::new(move || {
+fn app(initial: &'static str, width: f32) -> Window {
+    let mut app = Window::headless(move || {
         let v = state("v", move || initial.to_owned());
         let sent = state("sent", || 0u32);
         col()
@@ -30,22 +30,22 @@ fn app(initial: &'static str, width: f32) -> App {
             .into()
     });
     app.kernel_mut().set_text_engine(Box::new(MonoEngine));
-    app.set_target_platform(TargetPlatform::MacOs);
+    app.app().set_target_platform(TargetPlatform::MacOs);
     app.tap("area").unwrap();
     app
 }
 
-fn value(app: &App) -> String {
+fn value(app: &Window) -> String {
     app.kernel().value_of("area").unwrap()
 }
-fn caret(app: &App) -> usize {
+fn caret(app: &Window) -> usize {
     let f = app.text_field().unwrap();
     if f.reversed { f.selection.start } else { f.selection.end }
 }
-fn place(app: &mut App, at: usize) {
+fn place(app: &mut Window, at: usize) {
     app.set_selection(at, at);
 }
-fn height(app: &App) -> f32 {
+fn height(app: &Window) -> f32 {
     let k = app.kernel();
     k.rect(k.find("area").unwrap()).3
 }
@@ -130,14 +130,14 @@ fn selection_rectangles_pointer_paste() {
     assert_eq!(caret(&app), 14);
 
     // A paste keeps its line breaks.
-    app.platform().write_text("1\r\n2");
+    app.app().platform().write_text("1\r\n2");
     place(&mut app, 0);
     app.press_key("mod+v").unwrap();
     assert!(value(&app).starts_with("1\n2"), "{:?}", value(&app));
 }
 
-fn rows_app(chat: bool) -> App {
-    let mut app = App::new(move || {
+fn rows_app(chat: bool) -> Window {
+    let mut app = Window::headless(move || {
         let v = state("v", String::new);
         let sent = state("sent", || 0u32);
         let field = text_input()
@@ -153,7 +153,7 @@ fn rows_app(chat: bool) -> App {
         col().size_full().items_start().child(field).child(text(move || format!("sent {}", sent.get())).id("sent")).into()
     });
     app.kernel_mut().set_text_engine(Box::new(MonoEngine));
-    app.set_target_platform(TargetPlatform::MacOs);
+    app.app().set_target_platform(TargetPlatform::MacOs);
     app.tap("area").unwrap();
     app
 }
@@ -186,7 +186,7 @@ fn rows_bound_the_height_and_the_text_scrolls_inside() {
 
 #[test]
 fn a_growing_field_keeps_its_caret_in_view_in_a_scroll_container() {
-    let mut app = App::new(|| {
+    let mut app = Window::headless(|| {
         let v = state("v", String::new);
         col()
             .id("page")

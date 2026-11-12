@@ -26,14 +26,14 @@ fn view() -> View {
         .into()
 }
 
-fn rect(app: &App, id: &str) -> (f32, f32, f32, f32) {
+fn rect(app: &Window, id: &str) -> (f32, f32, f32, f32) {
     let k = app.kernel();
     k.rect(k.find(id).unwrap())
 }
 
 #[test]
 fn arbitrary_values_and_apply() {
-    let app = App::new(view);
+    let app = Window::headless(view);
     let (_, _, w, h) = rect(&app, "box");
     assert_eq!((w, h), (123.0, 46.0), "layout rounds to whole pixels");
     // card: p_4 = 16 px of padding around the text.
@@ -45,34 +45,34 @@ fn arbitrary_values_and_apply() {
 
 #[test]
 fn custom_tokens_and_missing_ones_are_reported() {
-    let mut app = App::new(view);
+    let app = Window::headless(view);
     assert_eq!(app.kernel().visual_of("brand").unwrap().text, MISSING);
     assert_eq!(app.kernel().missing_tokens(), vec!["brand", "ghost"]);
-    app.set_theme(Theme::light().color(BRAND, rgb(0xff6600)));
+    app.app().set_theme(Theme::light().color(BRAND, rgb(0xff6600)));
     assert_eq!(app.kernel().visual_of("brand").unwrap().text, rgb(0xff6600));
     assert_eq!(app.kernel().missing_tokens(), vec!["ghost"]);
 }
 
 #[test]
 fn density_and_breakpoints_change_with_the_theme_without_running_closures() {
-    let mut app = App::new(view);
-    app.reset_work();
-    app.set_theme(Theme::light().spacing(3.0));
+    let app = Window::headless(view);
+    app.app().reset_work();
+    app.app().set_theme(Theme::light().spacing(3.0));
     let (cx, cy, ..) = rect(&app, "card");
     let (ax, ay, ..) = rect(&app, "a");
     assert_eq!((ax - cx, ay - cy), (13.0, 13.0), "p_4 is now 12 px");
-    assert_eq!(app.work().closures_run, 0);
+    assert_eq!(app.app().work().closures_run, 0);
 
     // 800 px is medium by default: `wide` shows. Moving medium to 900 px makes it compact.
     assert_eq!(rect(&app, "wide").2, 12.0);
-    app.set_theme(Theme::light().breakpoint(Breakpoint::Medium, 900.0));
+    app.app().set_theme(Theme::light().breakpoint(Breakpoint::Medium, 900.0));
     assert_eq!(app.breakpoint(), Breakpoint::Compact);
     assert_eq!(rect(&app, "wide").2, 0.0, "hidden when compact");
 }
 
 #[test]
 fn mono_text_uses_the_theme_mono_family() {
-    let app = App::new(view);
+    let app = Window::headless(view);
     let k = app.kernel();
     assert_eq!(k.visual_of("code").unwrap().font_family, "IBM Plex Mono");
     assert_eq!(k.visual_of("sans").unwrap().font_family, "Inter");

@@ -1,7 +1,7 @@
 //! Example apps (specs: `examples/README.md`).
 
+use octara::app::Window;
 use octara::prelude::*;
-use octara::testing::Host;
 use octara_kit::{button, checkbox, ghost_button, primary_button, switch, text_field, toggle_button};
 
 pub fn counter() -> View {
@@ -544,17 +544,17 @@ pub struct Apps;
 
 impl crate::scenarios::Factory for Apps {
     const NAME: &'static str = "examples";
-    fn counter() -> Box<dyn Host> {
-        Box::new(App::new(counter))
+    fn counter() -> Window {
+        Window::headless(counter)
     }
-    fn todo_with(n: usize) -> Box<dyn Host> {
-        Box::new(App::new(move || todo(n)))
+    fn todo_with(n: usize) -> Window {
+        Window::headless(move || todo(n))
     }
-    fn chat_with(n: usize) -> Box<dyn Host> {
-        Box::new(App::new(move || chat(n)))
+    fn chat_with(n: usize) -> Window {
+        Window::headless(move || chat(n))
     }
-    fn settings() -> Box<dyn Host> {
-        Box::new(App::new(settings))
+    fn settings() -> Window {
+        Window::headless(settings)
     }
 }
 

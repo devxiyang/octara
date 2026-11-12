@@ -22,7 +22,7 @@ fn counter() -> View {
 
 #[test]
 fn readme_counter() {
-    let mut app = App::new(counter);
+    let mut app = Window::headless(counter);
     app.dispatch(Event::Press("inc".into())).unwrap();
     app.dispatch(Event::Toggle("fast".into())).unwrap();
     app.dispatch(Event::Press("inc".into())).unwrap();

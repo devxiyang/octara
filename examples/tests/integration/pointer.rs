@@ -3,7 +3,7 @@
 use octara::prelude::*;
 use octara_examples::apps;
 
-fn center(app: &App, id: &str) -> (f32, f32) {
+fn center(app: &Window, id: &str) -> (f32, f32) {
     let k = app.kernel();
     let (x, y, w, h) = k.rect(k.find(id).unwrap());
     (x + w / 2.0, y + h / 2.0)
@@ -11,7 +11,7 @@ fn center(app: &App, id: &str) -> (f32, f32) {
 
 #[test]
 fn type_click_toggle_scroll_and_tab_by_position() {
-    let mut app = App::new(|| apps::todo(30));
+    let mut app = Window::headless(|| apps::todo(30));
     // Click the text field: it takes focus, without a focus ring (that follows the keyboard).
     let (x, y) = center(&app, "new-todo");
     app.click_at(x, y);
@@ -53,12 +53,12 @@ fn type_click_toggle_scroll_and_tab_by_position() {
     assert!(app.kernel().state_of("new-todo").unwrap().contains(State::FOCUS_VISIBLE));
     app.press_key("tab").unwrap();
     assert!(app.kernel().state_of("add").unwrap().contains(State::FOCUS_VISIBLE));
-    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 }
 
 #[test]
 fn enter_in_the_new_todo_field_adds_it() {
-    let mut app = App::new(|| apps::todo(2));
+    let mut app = Window::headless(|| apps::todo(2));
     app.tap("new-todo").unwrap();
     app.type_text("Water plants");
     app.press_key("enter").unwrap();

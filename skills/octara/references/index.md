@@ -6,7 +6,7 @@ Every name an app can use, grouped. Signatures and docs: `octara vocab <name>`.
 - `{M}` = the steps 0,0p5,1,1p5,2,2p5,3,3p5,4,5,6,7,8,9,10,11,12,14,16,20,24 (`0p5` = 0.5; Tailwind's scale)
 
 Prelude (`use octara::prelude::*`), by module:
-- app: App, Drag, DragPhase, Event, Key, KeyEvent, Modifiers
+- app: App, Drag, DragPhase, Event, Key, KeyEvent, Modifiers, Window, WindowId
 - canvas: Canvas
 - icon: Icon
 - image: Image, ObjectFit
@@ -15,12 +15,14 @@ Prelude (`use octara::prelude::*`), by module:
 - native: NativeEvent, Slot
 - paint: Rect
 - path: point, FillRule, LineCap, LineJoin, Path, Stroke, Transform
+- platform: WindowKind, WindowOptions
 - reactive: list, live_text, memo, provide, state, untrack, use_context, watch, Derived, FlatItem, FlatKey, GroupInfo, Groups, List, LiveText, Memo, ReadSignal, Signal, Source
 - task: background, channel, interval, resource, sleep, spawn, Load, Receiver, Resource, Sender, Task
 - view: breakpoint, canvas, col, component, component_keyed, each, el, icon, instant, native_view, on_command, px, relative, rems, row, scroll_to, set_theme, settle_motion, show, show_else, size_of, sp, spacer, text, text_input, viewport, virtual_each, web_view, El, IntoElement, IntoProp, IntoText, Mount, Patch, Styled, View
+- window: close_window, current_window, open_window, windows
 
 Members of prelude types (`.name(..)`):
-- App: accessibility_{action,tree,update}, advance, advance_to, at_sizes, bind, breakpoint, capture_{awaiting,begin,display,finish}, caret, clear_forced, click_at, clipboard_text, commands, diagnostic_counts, diagnostics, dispatch, display_list, double_tap, drag, force_state, hot_reload, inspect, invoke, kernel, kernel_mut, key_event, keymap, layout_issues, long_press, main_window, native_{event,host,size,snapshot}, new, next_deadline, now, pending, platform, platform_window, pointer, pointer_{down,leave,move,up}, poll, press_key, register_fallback_font, register_font, replace_text, reset_work, resize, restart_accessibility, run_until_idle, secondary_tap, send, set_{composition,keymap,painter,selection,theme,tuning}, set_reduced_motion, set_target_platform, settle, settle_motion, size, swipe, tap, tap_with, target_platform, text_field, tuning, type_text, unsettled, use_system_fonts, wheel, with_platform, work
+- App: advance, advance_to, close_window, diagnostic_counts, diagnostics, hot_reload, new, next_deadline, now, open_window, pending, platform, poll, register_fallback_font, register_font, reset_work, run, run_until_idle, send, set_check_consistency, set_painter, set_theme, set_reduced_motion, set_target_platform, set_text_engine, settle, settle_motion, target_platform, theme, use_system_fonts, window, windows, work
 - Canvas: clip, fill, fill_with, height, image, into_ops, new, ops, rect, size, stroke, text, transform, width
 - ContainerStep: Lg, Md, Sm, Xl, Xl2, Xl3, Xl4, Xl5, Xl6, Xl7, Xs, Xs2, Xs3
 - Derived: filter, group_by, is_empty, join, keys, len, map, sort_by, source
@@ -45,6 +47,7 @@ Members of prelude types (`.name(..)`):
 - Theme: breakpoint, breakpoint_{of,width}, color, container, container_of, dark, family, font_mono, font_sans, get, light, line_height, name, radius, radius_of, rem, shadow, shadow_of, spacing, text, text_of, try_get
 - Token: Accent, AccentHover, AccentText, BUILTIN, Background, Border, Custom, Danger, Focus, Surface, SurfaceHover, SurfacePressed, Text, TextMuted, custom
 - Transform: IDENTITY, apply, invert, rotate, scale, then, translate, x, xx, xy, y, yx, yy
+- Window: accessibility_{action,tree,update}, app, at_sizes, bind, breakpoint, capture_{awaiting,begin,display,finish}, caret, clear_forced, click_at, clipboard_text, commands, dispatch, display_list, double_tap, drag, force_state, headless, headless_on, id, inspect, invoke, is_closed, kernel, kernel_mut, key_event, keymap, layout_issues, long_press, native_{event,host,size,snapshot}, options, platform_window, pointer, pointer_{down,leave,move,up}, press_key, replace_text, resize, restart_accessibility, secondary_tap, set_{composition,keymap,selection,tuning}, size, swipe, tap, tap_with, text_field, tuning, type_text, unsettled, wheel
 - Align: Center, End, Start
 - BoxShadow: blur_radius, color, new, offset, spread_radius
 - Breakpoint: ALL, Compact, Expanded, ExtraLarge, Large, Medium
@@ -81,11 +84,12 @@ Members of prelude types (`.name(..)`):
 - Slot: Overlay, Underlay
 - Task: cancel, detach, is_finished
 - View: Dyn, El, Empty, Fragment
+- WindowKind: Dialog, Normal
+- WindowOptions: kind, new, size, title
 
 Other crates and modules:
 - octara_kit: Model, button, checkbox, ghost_button, primary_button, select, switch, text_field, toggle_button
 - octara_shell: Options, ShellEvent, run, run_with
-- octara::testing: Checked, Host, check_consistent
 - octara::diagnostics: Area, CODES, Code, Diagnostic, Severity, code
 - octara_fonts: cjk
 - octara_render: Bitmap, CpuRenderer, GpuRenderer, cpu, glyphs, gpu, paths, reference_painter, screenshot, shape, wgpu

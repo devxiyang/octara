@@ -5,11 +5,11 @@
 use octara::prelude::*;
 use std::time::Duration;
 
-fn hovered(app: &App, id: &str) -> bool {
+fn hovered(app: &Window, id: &str) -> bool {
     app.kernel().state_of(id).unwrap().contains(State::HOVER)
 }
 
-fn center(app: &App, id: &str) -> (f32, f32) {
+fn center(app: &Window, id: &str) -> (f32, f32) {
     let k = app.kernel();
     let (x, y, w, h) = k.shown_rect(k.find(id).unwrap());
     (x + w / 2.0, y + h / 2.0)
@@ -52,7 +52,7 @@ fn view() -> View {
 
 #[test]
 fn an_element_and_its_ancestors_are_hovered() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     let (x, y) = (center(&app, "card").0 + 60.0, center(&app, "card").1);
     app.pointer_move(x, y);
     assert!(hovered(&app, "card"), "a card with only a hover style lights up");
@@ -72,7 +72,7 @@ fn an_element_and_its_ancestors_are_hovered() {
 
 #[test]
 fn group_members_follow_their_groups_hover() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     assert_eq!(app.kernel().visual_of("delete").unwrap().opacity, 0.0);
     let (x, y) = center(&app, "row");
     app.pointer_move(x - 60.0, y);
@@ -84,7 +84,7 @@ fn group_members_follow_their_groups_hover() {
 
 #[test]
 fn hover_alone_keeps_the_elements_around_it_unlit() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     let (x, y) = center(&app, "inner");
     app.pointer_move(x, y);
     assert!(hovered(&app, "inner") && !hovered(&app, "outer"));
@@ -95,7 +95,7 @@ fn hover_alone_keeps_the_elements_around_it_unlit() {
 
 #[test]
 fn hover_holds_while_layout_moves_under_a_still_pointer() {
-    let mut app = App::new(|| {
+    let mut app = Window::headless(|| {
         let items = list("items", || vec![1u32, 2, 3], |i: &u32| *i);
         let next = state("next", || 10u32);
         col()
@@ -116,18 +116,18 @@ fn hover_holds_while_layout_moves_under_a_still_pointer() {
     app.pointer_move(x, y);
     assert!(hovered(&app, "row-2"));
     app.dispatch(Event::Press("add".into())).unwrap();
-    app.advance(Duration::from_millis(80));
+    app.app().advance(Duration::from_millis(80));
     assert!(hovered(&app, "row-2"), "held while the rows slide under the still pointer");
-    assert!(app.run_until_idle(Duration::from_secs(3)).is_ok());
+    assert!(app.app().run_until_idle(Duration::from_secs(3)).is_ok());
     // Settled: hover is on what is under the pointer now (row-1 slid there).
     assert!(hovered(&app, "row-1") && !hovered(&app, "row-2"));
 }
 
 #[test]
 fn hover_survives_hot_reload() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     let (bx, by) = center(&app, "button");
     app.pointer_move(bx, by);
-    app.hot_reload();
+    app.app().hot_reload();
     assert!(hovered(&app, "button") && hovered(&app, "card"));
 }

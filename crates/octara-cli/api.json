@@ -23,145 +23,35 @@
           "path": "octara::app::App",
           "kind": "struct",
           "sig": "pub struct App { .. }",
-          "docs": "An app: the reactive runtime, the clock and the app's settings, and its windows\n([design](https://github.com/octoii-works/octara/blob/main/docs/design/windows.md)). The\nmethods without a window act on the main one.",
+          "docs": "An app: one reactive runtime and clock, its settings and platform, and its windows. Cloning\nit gives another handle on the same app.",
           "file": "crates/octara/src/app.rs",
           "aliases": [
             "octara::prelude::App"
           ],
           "traits": [
-            "Host"
-          ]
-        },
-        {
-          "path": "octara::app::App::accessibility_action",
-          "kind": "method",
-          "sig": "pub fn accessibility_action(&mut self, target: NodeId, action: Action, data: Option<ActionData>) -> bool",
-          "docs": "Performs an action assistive technology asked for. Returns whether it did anything.",
-          "file": "crates/octara/src/app/input.rs"
-        },
-        {
-          "path": "octara::app::App::accessibility_tree",
-          "kind": "method",
-          "sig": "pub fn accessibility_tree(&self, scale: f64) -> TreeUpdate",
-          "docs": "The accessibility tree, for an AccessKit adapter (and for agents): roles, names, values,\nstates, actions and bounds (logical pixels; the window node carries `scale`).",
-          "file": "crates/octara/src/app/input.rs"
-        },
-        {
-          "path": "octara::app::App::accessibility_update",
-          "kind": "method",
-          "sig": "pub fn accessibility_update(&self, scale: f64) -> TreeUpdate",
-          "docs": "What changed for assistive technology since the last update (the whole tree the first\ntime, and after [`restart_accessibility`](Self::restart_accessibility)).",
-          "file": "crates/octara/src/app/input.rs",
-          "links": [
-            "octara::app::App::restart_accessibility"
+            "Clone"
           ]
         },
         {
           "path": "octara::app::App::advance",
           "kind": "method",
-          "sig": "pub fn advance(&mut self, dt: Duration)",
+          "sig": "pub fn advance(&self, dt: Duration)",
           "docs": "Moves the clock forward by `dt`: timers and long presses due on the way fire in order,\nmomentum glides.",
           "file": "crates/octara/src/app/time.rs"
         },
         {
           "path": "octara::app::App::advance_to",
           "kind": "method",
-          "sig": "pub fn advance_to(&mut self, t: Duration)",
+          "sig": "pub fn advance_to(&self, t: Duration)",
           "docs": "Moves the clock to `t` (shells call this before each event and frame with the time since\nlaunch). Whatever comes due on the way runs at its own time. Time never goes back.",
           "file": "crates/octara/src/app/time.rs"
         },
         {
-          "path": "octara::app::App::at_sizes",
+          "path": "octara::app::App::close_window",
           "kind": "method",
-          "sig": "pub fn at_sizes(&mut self, sizes: &[(f32, f32)], check: impl FnMut(&mut App) -> Result<(), String>) -> Result<(), String>",
-          "docs": "Runs `check` at each window size in turn (e.g. phone and desktop), then restores the size.\nStops at the first error, naming the size.",
+          "sig": "pub fn close_window(&self, id: WindowId)",
+          "docs": "Closes window `id` now: its scope (state, watches, tasks) is disposed, its platform\nwindow let go, and the other windows settle.",
           "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::bind",
-          "kind": "method",
-          "sig": "pub fn bind(&mut self, chord: &str, command: Option<&str>, context: Option<&str>) -> Result<(), String>",
-          "docs": "Adds a binding (see [`Keymap::bind`]).",
-          "file": "crates/octara/src/app/keys.rs",
-          "links": [
-            "octara::app::keys::Keymap::bind"
-          ]
-        },
-        {
-          "path": "octara::app::App::breakpoint",
-          "kind": "method",
-          "sig": "pub fn breakpoint(&self) -> Breakpoint",
-          "docs": "The window's breakpoint (Tailwind `sm` … `2xl`).",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::capture_awaiting",
-          "kind": "method",
-          "sig": "pub fn capture_awaiting(&self) -> Vec<NativeId>",
-          "docs": "The snapshots asked for that have not come yet.",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::capture_begin",
-          "kind": "method",
-          "sig": "pub fn capture_begin(&mut self) -> Vec<NativeId>",
-          "docs": "Starts a capture: asks the host for a snapshot of every native view shown. Returns the\nviews whose snapshot is coming (through [`native_snapshot`](Self::native_snapshot)).",
-          "file": "crates/octara/src/app.rs",
-          "links": [
-            "octara::app::App::native_snapshot"
-          ]
-        },
-        {
-          "path": "octara::app::App::capture_display",
-          "kind": "method",
-          "sig": "pub fn capture_display(&mut self, picture: &Picture, path: &str, scale: f32, pending: Vec<String>) -> Result<Capture, String>",
-          "docs": "A `display` capture: the window server's `picture` of the window, written to `path` as a\nPNG, with the native views reported live.",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::capture_finish",
-          "kind": "method",
-          "sig": "pub fn capture_finish(&mut self, painter: &mut dyn Painter, path: &str, scale: f32, pending: Vec<String>, fallback: Option<String>) -> Result<Capture, String>",
-          "docs": "Ends a capture: paints the frame (snapshots in their views' places) with `painter`,\nwrites it to `path` as a PNG, clears the snapshots, and reports. `pending` is what was\nstill running when the wait ended ([`unsettled`](Self::unsettled)); `fallback` why a\n`display` capture was asked and this painted one given.",
-          "file": "crates/octara/src/app.rs",
-          "links": [
-            "octara::app::App::unsettled"
-          ]
-        },
-        {
-          "path": "octara::app::App::caret",
-          "kind": "method",
-          "sig": "pub fn caret(&self) -> Option<(f32, f32, f32, f32)>",
-          "docs": "The caret of the focused text field `(x, y, w, h)` in logical pixels, for placing an input\nmethod's candidate window.",
-          "file": "crates/octara/src/app/input.rs"
-        },
-        {
-          "path": "octara::app::App::clear_forced",
-          "kind": "method",
-          "sig": "pub fn clear_forced(&mut self)",
-          "docs": "Drops every forced state (the nodes keep their current state until it next changes).",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::click_at",
-          "kind": "method",
-          "sig": "pub fn click_at(&mut self, x: f32, y: f32)",
-          "docs": "A primary click at `(x, y)`: down and up.",
-          "file": "crates/octara/src/app/pointer.rs"
-        },
-        {
-          "path": "octara::app::App::clipboard_text",
-          "kind": "method",
-          "sig": "pub fn clipboard_text(&self) -> Option<String>",
-          "docs": "What the clipboard holds as text.",
-          "file": "crates/octara/src/app/edit.rs"
-        },
-        {
-          "path": "octara::app::App::commands",
-          "kind": "method",
-          "sig": "pub fn commands(&self) -> Vec<(String, Vec<String>)>",
-          "docs": "Commands available now: those the focus path's elements handle, the built-ins, and the\napp's, each with the chords bound to it here.",
-          "file": "crates/octara/src/app/keys.rs"
         },
         {
           "path": "octara::app::App::diagnostic_counts",
@@ -177,163 +67,24 @@
           "file": "crates/octara/src/app.rs"
         },
         {
-          "path": "octara::app::App::dispatch",
-          "kind": "method",
-          "sig": "pub fn dispatch(&mut self, ev: Event) -> Result<(), String>",
-          "docs": "Runs the event's handler, applies every update and lays out, like one frame.",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::display_list",
-          "kind": "method",
-          "sig": "pub fn display_list(&self) -> Rc<DisplayList>",
-          "docs": "What the current frame draws, in order (see [`crate::paint`]).",
-          "file": "crates/octara/src/app.rs",
-          "links": [
-            "octara::paint"
-          ]
-        },
-        {
-          "path": "octara::app::App::double_tap",
-          "kind": "method",
-          "sig": "pub fn double_tap(&mut self, target: &str) -> Result<(), String>",
-          "docs": "Two clicks on `target`, within the double-click interval.",
-          "file": "crates/octara/src/app/drive.rs"
-        },
-        {
-          "path": "octara::app::App::drag",
-          "kind": "method",
-          "sig": "pub fn drag(&mut self, target: &str, dx: f32, dy: f32) -> Result<(), String>",
-          "docs": "A mouse drag from `target`'s centre by `(dx, dy)`, in a few steps.",
-          "file": "crates/octara/src/app/drive.rs"
-        },
-        {
-          "path": "octara::app::App::force_state",
-          "kind": "method",
-          "sig": "pub fn force_state(&mut self, test_id: &str, state: State, on: bool) -> Result<(), String>",
-          "docs": "Holds an interaction state (`HOVER`, `FOCUSED`, `FOCUS_VISIBLE`, `PRESSED`) on or off, e.g. to check\npressed styles; kept across hot reload. `SELECTED` and `DISABLED` come from props.",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
           "path": "octara::app::App::hot_reload",
           "kind": "method",
-          "sig": "pub fn hot_reload(&mut self)",
-          "docs": "Rebuilds every scope from the current state, as after a code patch; named state survives.",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::inspect",
-          "kind": "method",
-          "sig": "pub fn inspect(&self) -> Snapshot",
-          "docs": "The semantic tree and app state as the Inspector protocol gives them (see\n[`crate::inspect`]).",
-          "file": "crates/octara/src/app.rs",
-          "links": [
-            "octara::inspect"
-          ]
-        },
-        {
-          "path": "octara::app::App::invoke",
-          "kind": "method",
-          "sig": "pub fn invoke(&mut self, command: &str) -> Result<(), String>",
-          "docs": "Runs a command as its key would, for the focused element (agents and menus call this).",
-          "file": "crates/octara/src/app/keys.rs"
-        },
-        {
-          "path": "octara::app::App::kernel",
-          "kind": "method",
-          "sig": "pub fn kernel(&self) -> Ref<'_, Kernel>",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::kernel_mut",
-          "kind": "method",
-          "sig": "pub fn kernel_mut(&mut self) -> RefMut<'_, Kernel>",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::key_event",
-          "kind": "method",
-          "sig": "pub fn key_event(&mut self, ev: KeyEvent) -> bool",
-          "docs": "A key press, as a window delivers it. Returns whether something handled it; if not, the\nshell sends the key's text with [`App::type_text`].",
-          "file": "crates/octara/src/app/keys.rs",
-          "links": [
-            "octara::app::App::type_text"
-          ]
-        },
-        {
-          "path": "octara::app::App::keymap",
-          "kind": "method",
-          "sig": "pub fn keymap(&self) -> Keymap",
-          "docs": "The keymap in use: the platform's standard bindings, then the app's.",
-          "file": "crates/octara/src/app/keys.rs"
-        },
-        {
-          "path": "octara::app::App::layout_issues",
-          "kind": "method",
-          "sig": "pub fn layout_issues(&self) -> Vec<LayoutIssue>",
-          "docs": "Layout problems in the current frame (overflow, collapsed elements, truncated text,\nclamped overlays, missing tokens). Tests and agents can assert there are none.",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::long_press",
-          "kind": "method",
-          "sig": "pub fn long_press(&mut self, target: &str) -> Result<(), String>",
-          "docs": "A finger held on `target` for the long-press duration, then lifted.",
-          "file": "crates/octara/src/app/drive.rs"
-        },
-        {
-          "path": "octara::app::App::main_window",
-          "kind": "method",
-          "sig": "pub fn main_window(&self) -> WindowId",
-          "docs": "The main window's id.",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::native_event",
-          "kind": "method",
-          "sig": "pub fn native_event(&mut self, id: NativeId, event: NativeEvent) -> bool",
-          "docs": "An event from native view `id` (the host calls this): runs its `on_native`.",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::native_host",
-          "kind": "method",
-          "sig": "pub fn native_host(&self) -> Ref<'_, dyn NativeHost>",
-          "docs": "The main window's native host (downcast with `as_any`; headless, a [`RecordingHost`]).\n\n[`RecordingHost`]: crate::native::RecordingHost",
-          "file": "crates/octara/src/app.rs",
-          "links": [
-            "octara::native::RecordingHost"
-          ]
-        },
-        {
-          "path": "octara::app::App::native_size",
-          "kind": "method",
-          "sig": "pub fn native_size(&mut self, id: NativeId, width: f32, height: f32)",
-          "docs": "The natural size native view `id` reports (the host calls this): used where no size is\nauthored.",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::native_snapshot",
-          "kind": "method",
-          "sig": "pub fn native_snapshot(&mut self, id: NativeId, image: Option<Image>)",
-          "docs": "An image of what native view `id` shows (the host calls this): drawn in its place\ninstead of the placeholder, until `None` clears it.",
+          "sig": "pub fn hot_reload(&self)",
+          "docs": "Rebuilds every window's scope from the current state, as after a code patch; named state\nsurvives.",
           "file": "crates/octara/src/app.rs"
         },
         {
           "path": "octara::app::App::new",
           "kind": "assoc_fn",
-          "sig": "pub fn new(root: impl Fn() -> View + 'static) -> Self",
-          "docs": "A headless app ([`HeadlessPlatform`](crate::platform::HeadlessPlatform)): tests, agents,\n`octara run`.",
-          "file": "crates/octara/src/app.rs",
-          "links": [
-            "octara::platform::HeadlessPlatform"
-          ]
+          "sig": "pub fn new(platform: impl Platform + 'static) -> App",
+          "docs": "An app on `platform` (a backend's; `HeadlessPlatform` for tests and agents), with no\nwindow yet.",
+          "file": "crates/octara/src/app.rs"
         },
         {
           "path": "octara::app::App::next_deadline",
           "kind": "method",
           "sig": "pub fn next_deadline(&self) -> Option<Duration>",
-          "docs": "When the app next needs the clock advanced (a timer, a long press coming due, the next\nframe of momentum or of motion), if anything is pending. Shells wake up then.",
+          "docs": "When the app next needs the clock advanced (a timer, a long press coming due, the next\nframe of momentum or of motion in any window), if anything is pending. Shells wake up then.",
           "file": "crates/octara/src/app/time.rs"
         },
         {
@@ -344,10 +95,17 @@
           "file": "crates/octara/src/app/time.rs"
         },
         {
+          "path": "octara::app::App::open_window",
+          "kind": "method",
+          "sig": "pub fn open_window(&self, options: WindowOptions, root: impl Fn() -> View + 'static) -> Result<Window, String>",
+          "docs": "Opens a window showing `root`, built and laid out now.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
           "path": "octara::app::App::pending",
           "kind": "method",
           "sig": "pub fn pending(&self) -> Vec<PendingWork>",
-          "docs": "What is pending: tasks, subscriptions and background jobs, with their scope, where they\nstarted, and when the timer each waits on is due.",
+          "docs": "What is pending: tasks, subscriptions and background jobs, with their scope, where they\nstarted, and when the timer each waits on is due; and motion in every window.",
           "file": "crates/octara/src/app/time.rs"
         },
         {
@@ -361,224 +119,108 @@
           ]
         },
         {
-          "path": "octara::app::App::platform_window",
-          "kind": "method",
-          "sig": "pub fn platform_window(&self) -> Ref<'_, dyn PlatformWindow>",
-          "docs": "The main window on the platform (downcast with `as_any`; headless, a\n[`HeadlessWindow`](crate::platform::HeadlessWindow)).",
-          "file": "crates/octara/src/app.rs",
-          "links": [
-            "octara::platform::HeadlessWindow"
-          ]
-        },
-        {
-          "path": "octara::app::App::pointer",
-          "kind": "method",
-          "sig": "pub fn pointer(&mut self, ev: PointerEvent)",
-          "docs": "One raw pointer event, as a window delivers it.",
-          "file": "crates/octara/src/app/pointer.rs"
-        },
-        {
-          "path": "octara::app::App::pointer_down",
-          "kind": "method",
-          "sig": "pub fn pointer_down(&mut self, x: f32, y: f32)",
-          "docs": "The primary mouse button went down at `(x, y)`.",
-          "file": "crates/octara/src/app/pointer.rs"
-        },
-        {
-          "path": "octara::app::App::pointer_leave",
-          "kind": "method",
-          "sig": "pub fn pointer_leave(&mut self)",
-          "docs": "The mouse left the window: nothing is hovered.",
-          "file": "crates/octara/src/app/pointer.rs"
-        },
-        {
-          "path": "octara::app::App::pointer_move",
-          "kind": "method",
-          "sig": "pub fn pointer_move(&mut self, x: f32, y: f32)",
-          "docs": "The mouse moved to `(x, y)` with no button down (or with one down: the press follows).",
-          "file": "crates/octara/src/app/pointer.rs"
-        },
-        {
-          "path": "octara::app::App::pointer_up",
-          "kind": "method",
-          "sig": "pub fn pointer_up(&mut self, x: f32, y: f32)",
-          "docs": "The primary mouse button came up at `(x, y)`.",
-          "file": "crates/octara/src/app/pointer.rs"
-        },
-        {
           "path": "octara::app::App::poll",
           "kind": "method",
-          "sig": "pub fn poll(&mut self)",
+          "sig": "pub fn poll(&self)",
           "docs": "Runs what other threads woke (background results, channel messages). Shells call this\nwhen the app's waker fires.",
           "file": "crates/octara/src/app/time.rs"
         },
         {
-          "path": "octara::app::App::press_key",
-          "kind": "method",
-          "sig": "pub fn press_key(&mut self, chord: &str) -> Result<(), String>",
-          "docs": "Presses the keys of `chord` (`\"mod+s\"`, `\"tab\"`, `\"a\"`), as a keyboard would: what the\nkeymap binds runs; an unbound character key types itself.",
-          "file": "crates/octara/src/app/keys.rs"
-        },
-        {
           "path": "octara::app::App::register_fallback_font",
           "kind": "method",
-          "sig": "pub fn register_fallback_font(&mut self, data: &'static [u8], scripts: &[[u8; 4]])",
+          "sig": "pub fn register_fallback_font(&self, data: &'static [u8], scripts: &[[u8; 4]])",
           "docs": "Adds a font text falls back to for `scripts` (ISO 15924 tags: `*b\"Hani\"` for hanzi,\n`*b\"Hira\"`, `*b\"Kana\"`, `*b\"Hang\"`, …) when its own family lacks a character.",
           "file": "crates/octara/src/app.rs"
         },
         {
           "path": "octara::app::App::register_font",
           "kind": "method",
-          "sig": "pub fn register_font(&mut self, data: &'static [u8])",
-          "docs": "Adds font data (TTF/OTF); its families can then be named by the theme or `font_family`.",
+          "sig": "pub fn register_font(&self, data: &'static [u8])",
+          "docs": "Adds font data (TTF/OTF); its families can then be named by the theme or `font_family`,\nin every window.",
           "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::replace_text",
-          "kind": "method",
-          "sig": "pub fn replace_text(&mut self, range: Range<usize>, text: &str)",
-          "docs": "Replaces `range` (bytes) of the focused field's text with `text`, ending any\ncomposition; the caret goes after it. (NSTextInputClient `insertText:replacementRange:`.)",
-          "file": "crates/octara/src/app/edit.rs"
         },
         {
           "path": "octara::app::App::reset_work",
           "kind": "method",
-          "sig": "pub fn reset_work(&mut self)",
+          "sig": "pub fn reset_work(&self)",
           "file": "crates/octara/src/app.rs"
         },
         {
-          "path": "octara::app::App::resize",
+          "path": "octara::app::App::run",
           "kind": "method",
-          "sig": "pub fn resize(&mut self, width: f32, height: f32)",
-          "docs": "Resizes the window: bindings that read `viewport()` update, then everything is laid out\nagain at the new size (text re-breaks; nothing else reruns).",
+          "sig": "pub fn run<R>(&self, f: impl FnOnce() -> R) -> R",
+          "docs": "Runs `f` in the app's runtime, outside any window: makes or reads state the windows\nshare (a signal made here belongs to the app), then lets every window settle.",
           "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::restart_accessibility",
-          "kind": "method",
-          "sig": "pub fn restart_accessibility(&self)",
-          "docs": "The next accessibility update is the whole tree (the platform asked for it again).",
-          "file": "crates/octara/src/app/input.rs"
         },
         {
           "path": "octara::app::App::run_until_idle",
           "kind": "method",
-          "sig": "pub fn run_until_idle(&mut self, limit: Duration) -> Result<(), Vec<PendingWork>>",
+          "sig": "pub fn run_until_idle(&self, limit: Duration) -> Result<(), Vec<PendingWork>>",
           "docs": "Settles, then moves the clock from deadline to deadline (at most `limit` ahead) until no\ntask is left: subscriptions (intervals, channel listeners) do not count. `Err` lists what\nis still running at the limit.",
           "file": "crates/octara/src/app/time.rs"
         },
         {
-          "path": "octara::app::App::secondary_tap",
-          "kind": "method",
-          "sig": "pub fn secondary_tap(&mut self, target: &str) -> Result<(), String>",
-          "docs": "A right click on `target`.",
-          "file": "crates/octara/src/app/drive.rs"
-        },
-        {
           "path": "octara::app::App::send",
           "kind": "method",
-          "sig": "pub fn send(&mut self, name: &str, payload: &str) -> Result<(), String>",
+          "sig": "pub fn send(&self, name: &str, payload: &str) -> Result<(), String>",
           "docs": "Sends `payload` to the channel named `name` (see `Receiver::named`), as the outside world\nwould; it lands at once.",
           "file": "crates/octara/src/app/time.rs"
         },
         {
-          "path": "octara::app::App::set_composition",
+          "path": "octara::app::App::set_check_consistency",
           "kind": "method",
-          "sig": "pub fn set_composition(&mut self, text: &str)",
-          "docs": "What an input method is composing in the focused field (pinyin before it becomes 汉字):\nshown underlined at the caret, not yet part of the value; it replaces the selection.\nEmpty ends it. [`App::type_text`] commits.",
-          "file": "crates/octara/src/app/edit.rs",
-          "links": [
-            "octara::app::App::type_text"
-          ]
-        },
-        {
-          "path": "octara::app::App::set_keymap",
-          "kind": "method",
-          "sig": "pub fn set_keymap(&mut self, keymap: Keymap)",
-          "docs": "Replaces the app's bindings (the standard ones stay; unbind them with `None` commands).",
-          "file": "crates/octara/src/app/keys.rs"
+          "sig": "pub fn set_check_consistency(&self, on: bool)",
+          "docs": "Checks every window against a from-scratch rebuild after each operation (an event, a\nclock step, a theme change): the tree an operation updated incrementally must equal the\ntree built again from the same state, as a hot reload builds it (self-adjusting\ncomputation, Nominal Adapton). A difference panics with both trees. The rebuild drops\nwhat a hot reload drops (undo history, the modal stack): for tests of the runtime itself.",
+          "file": "crates/octara/src/app.rs"
         },
         {
           "path": "octara::app::App::set_painter",
           "kind": "method",
-          "sig": "pub fn set_painter(&mut self, painter: Box<dyn Painter>)",
+          "sig": "pub fn set_painter(&self, painter: Box<dyn Painter>)",
           "docs": "Installs what paints `capture` requests headless (`octara-render`'s reference renderer).",
           "file": "crates/octara/src/app.rs"
         },
         {
           "path": "octara::app::App::set_reduced_motion",
           "kind": "method",
-          "sig": "pub fn set_reduced_motion(&mut self, on: bool)",
+          "sig": "pub fn set_reduced_motion(&self, on: bool)",
           "docs": "Reduce Motion (the system setting): positions and sizes land at once; opacity and\ncolors fade briefly instead of moving on their springs.",
           "file": "crates/octara/src/app/time.rs"
         },
         {
-          "path": "octara::app::App::set_selection",
-          "kind": "method",
-          "sig": "pub fn set_selection(&mut self, anchor: usize, caret: usize)",
-          "docs": "Selects `anchor..caret` (bytes) in the focused field (the platform moved the selection).",
-          "file": "crates/octara/src/app/edit.rs"
-        },
-        {
           "path": "octara::app::App::set_target_platform",
           "kind": "method",
-          "sig": "pub fn set_target_platform(&mut self, p: TargetPlatform)",
-          "docs": "The platform whose conventions input follows: its keymap, and on touch platforms the\ncontrols' touch sizes (`when_touch`).",
+          "sig": "pub fn set_target_platform(&self, p: TargetPlatform)",
+          "docs": "The platform whose conventions input follows: its keymap, and on touch platforms the\ncontrols' touch sizes (`when_touch`), in every window.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::App::set_text_engine",
+          "kind": "method",
+          "sig": "pub fn set_text_engine(&self, engine: Box<dyn TextEngine>)",
+          "docs": "Replaces the text engine (e.g. `MonoEngine` for benchmarks): every window measures again\n(fonts registered with the old one are not carried over).",
           "file": "crates/octara/src/app.rs"
         },
         {
           "path": "octara::app::App::set_theme",
           "kind": "method",
-          "sig": "pub fn set_theme(&mut self, theme: Theme)",
+          "sig": "pub fn set_theme(&self, theme: Theme)",
+          "docs": "Switches the theme of every window. Token colors resolve in the kernels, so no closure\nreruns; only nodes whose resolved colors change are repainted.",
           "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::set_tuning",
-          "kind": "method",
-          "sig": "pub fn set_tuning(&mut self, tuning: Tuning)",
-          "file": "crates/octara/src/app/pointer.rs"
         },
         {
           "path": "octara::app::App::settle",
           "kind": "method",
-          "sig": "pub fn settle(&mut self) -> Vec<PendingWork>",
+          "sig": "pub fn settle(&self) -> Vec<PendingWork>",
           "docs": "Lands asynchronous work without moving the clock: waits (in real time) for background\njobs, and runs every woken task, until none is left. Returns what is still pending\n(tasks waiting on timers or channels, subscriptions).",
           "file": "crates/octara/src/app/time.rs"
         },
         {
           "path": "octara::app::App::settle_motion",
           "kind": "method",
-          "sig": "pub fn settle_motion(&mut self)",
-          "docs": "Lands everything in motion on its target now.",
+          "sig": "pub fn settle_motion(&self)",
+          "docs": "Lands everything in motion on its target now, in every window.",
           "file": "crates/octara/src/app/time.rs"
-        },
-        {
-          "path": "octara::app::App::size",
-          "kind": "method",
-          "sig": "pub fn size(&self) -> (f32, f32)",
-          "docs": "The current window size.",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::App::swipe",
-          "kind": "method",
-          "sig": "pub fn swipe(&mut self, target: &str, dx: f32, dy: f32, duration: Duration) -> Result<(), String>",
-          "docs": "A finger swiping from `target`'s centre by `(dx, dy)` over `duration`, then lifting\n(content follows the finger and may glide on).",
-          "file": "crates/octara/src/app/drive.rs"
-        },
-        {
-          "path": "octara::app::App::tap",
-          "kind": "method",
-          "sig": "pub fn tap(&mut self, target: &str) -> Result<(), String>",
-          "docs": "Clicks `target` with the primary mouse button.",
-          "file": "crates/octara/src/app/drive.rs"
-        },
-        {
-          "path": "octara::app::App::tap_with",
-          "kind": "method",
-          "sig": "pub fn tap_with(&mut self, target: &str, kind: PointerKind) -> Result<(), String>",
-          "docs": "Presses `target` with a mouse, a finger or a pen.",
-          "file": "crates/octara/src/app/drive.rs"
         },
         {
           "path": "octara::app::App::target_platform",
@@ -588,52 +230,31 @@
           "file": "crates/octara/src/app.rs"
         },
         {
-          "path": "octara::app::App::text_field",
+          "path": "octara::app::App::theme",
           "kind": "method",
-          "sig": "pub fn text_field(&self) -> Option<TextField>",
-          "docs": "The focused text field, for platform text protocols.",
-          "file": "crates/octara/src/app/edit.rs"
-        },
-        {
-          "path": "octara::app::App::tuning",
-          "kind": "method",
-          "sig": "pub fn tuning(&self) -> Tuning",
-          "docs": "The recognizers' timing (thresholds, double press, long press, momentum).",
-          "file": "crates/octara/src/app/pointer.rs"
-        },
-        {
-          "path": "octara::app::App::type_text",
-          "kind": "method",
-          "sig": "pub fn type_text(&mut self, text: &str)",
-          "docs": "Text typed (or committed by an input method) into the focused text field. Ends any\ncomposition.",
-          "file": "crates/octara/src/app/input.rs"
-        },
-        {
-          "path": "octara::app::App::unsettled",
-          "kind": "method",
-          "sig": "pub fn unsettled(&self) -> Vec<String>",
-          "docs": "What keeps the app from being settled now: tasks, timers and motion (not subscriptions,\nwhich run for good) and native views that are busy (a page loading). A capture waits for\nthis to be empty.",
+          "sig": "pub fn theme(&self) -> Theme",
+          "docs": "The theme every window shows.",
           "file": "crates/octara/src/app.rs"
         },
         {
           "path": "octara::app::App::use_system_fonts",
           "kind": "method",
-          "sig": "pub fn use_system_fonts(&mut self)",
+          "sig": "pub fn use_system_fonts(&self)",
           "docs": "Uses the platform's installed fonts and its fallback (CJK, emoji, …) besides the\nbundled ones, and its UI font where the theme keeps the default sans family: what a\nwindow shows. Headless screenshots for people and agents use it; deterministic tests\ndo not (results then depend on the machine).",
           "file": "crates/octara/src/app.rs"
         },
         {
-          "path": "octara::app::App::wheel",
+          "path": "octara::app::App::window",
           "kind": "method",
-          "sig": "pub fn wheel(&mut self, x: f32, y: f32, dx: f32, dy: f32)",
-          "docs": "A wheel or trackpad scroll of `(dx, dy)` at `(x, y)`: the innermost scroll container\nthere that scrolls on that axis takes it (no hand-off to outer ones at the edge, as in\nRune). A press being held is cancelled, unless it is dragging.",
-          "file": "crates/octara/src/app/pointer.rs"
+          "sig": "pub fn window(&self, id: WindowId) -> Option<Window>",
+          "docs": "Window `id`, while it is open.",
+          "file": "crates/octara/src/app.rs"
         },
         {
-          "path": "octara::app::App::with_platform",
-          "kind": "assoc_fn",
-          "sig": "pub fn with_platform(platform: impl Platform + 'static, window: impl PlatformWindow + 'static, root: impl Fn() -> View + 'static) -> Self",
-          "docs": "An app on `platform`, its main window `window` (a shell's backend).",
+          "path": "octara::app::App::windows",
+          "kind": "method",
+          "sig": "pub fn windows(&self) -> Vec<WindowId>",
+          "docs": "The open windows, in the order they opened.",
           "file": "crates/octara/src/app.rs"
         },
         {
@@ -771,10 +392,7 @@
           "kind": "const",
           "sig": "pub const DEFAULT_VIEWPORT: (f32, f32)",
           "docs": "The window size an app starts with; change it with [`App::resize`].",
-          "file": "crates/octara/src/app.rs",
-          "links": [
-            "octara::app::App::resize"
-          ]
+          "file": "crates/octara/src/app.rs"
         },
         {
           "path": "octara::app::Drag",
@@ -1695,11 +1313,489 @@
           "file": "crates/octara/src/app/pointer.rs"
         },
         {
+          "path": "octara::app::Window",
+          "kind": "struct",
+          "sig": "pub struct Window { .. }",
+          "docs": "One window of an app: drive it (pointer, keys, text, test ids), read what it shows (the\ndisplay list, the semantic tree, the kernel). Cloning it gives another handle.",
+          "file": "crates/octara/src/app.rs",
+          "aliases": [
+            "octara::prelude::Window"
+          ],
+          "traits": [
+            "Clone"
+          ]
+        },
+        {
+          "path": "octara::app::Window::accessibility_action",
+          "kind": "method",
+          "sig": "pub fn accessibility_action(&mut self, target: NodeId, action: Action, data: Option<ActionData>) -> bool",
+          "docs": "Performs an action assistive technology asked for. Returns whether it did anything.",
+          "file": "crates/octara/src/app/input.rs"
+        },
+        {
+          "path": "octara::app::Window::accessibility_tree",
+          "kind": "method",
+          "sig": "pub fn accessibility_tree(&self, scale: f64) -> TreeUpdate",
+          "docs": "The accessibility tree, for an AccessKit adapter (and for agents): roles, names, values,\nstates, actions and bounds (logical pixels; the window node carries `scale`).",
+          "file": "crates/octara/src/app/input.rs"
+        },
+        {
+          "path": "octara::app::Window::accessibility_update",
+          "kind": "method",
+          "sig": "pub fn accessibility_update(&self, scale: f64) -> TreeUpdate",
+          "docs": "What changed for assistive technology since the last update (the whole tree the first\ntime, and after [`restart_accessibility`](Self::restart_accessibility)).",
+          "file": "crates/octara/src/app/input.rs",
+          "links": [
+            "octara::app::Window::restart_accessibility"
+          ]
+        },
+        {
+          "path": "octara::app::Window::app",
+          "kind": "method",
+          "sig": "pub fn app(&self) -> App",
+          "docs": "The app it belongs to.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::at_sizes",
+          "kind": "method",
+          "sig": "pub fn at_sizes(&mut self, sizes: &[(f32, f32)], check: impl FnMut(&mut Window) -> Result<(), String>) -> Result<(), String>",
+          "docs": "Runs `check` at each window size in turn (e.g. phone and desktop), then restores the size.\nStops at the first error, naming the size.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::bind",
+          "kind": "method",
+          "sig": "pub fn bind(&mut self, chord: &str, command: Option<&str>, context: Option<&str>) -> Result<(), String>",
+          "docs": "Adds a binding (see [`Keymap::bind`]).",
+          "file": "crates/octara/src/app/keys.rs",
+          "links": [
+            "octara::app::keys::Keymap::bind"
+          ]
+        },
+        {
+          "path": "octara::app::Window::breakpoint",
+          "kind": "method",
+          "sig": "pub fn breakpoint(&self) -> Breakpoint",
+          "docs": "The window's breakpoint (Tailwind `sm` … `2xl`).",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::capture_awaiting",
+          "kind": "method",
+          "sig": "pub fn capture_awaiting(&self) -> Vec<NativeId>",
+          "docs": "The snapshots asked for that have not come yet.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::capture_begin",
+          "kind": "method",
+          "sig": "pub fn capture_begin(&mut self) -> Vec<NativeId>",
+          "docs": "Starts a capture: asks the host for a snapshot of every native view shown. Returns the\nviews whose snapshot is coming (through [`native_snapshot`](Self::native_snapshot)).",
+          "file": "crates/octara/src/app.rs",
+          "links": [
+            "octara::app::Window::native_snapshot"
+          ]
+        },
+        {
+          "path": "octara::app::Window::capture_display",
+          "kind": "method",
+          "sig": "pub fn capture_display(&mut self, picture: &Picture, path: &str, scale: f32, pending: Vec<String>) -> Result<Capture, String>",
+          "docs": "A `display` capture: the window server's `picture` of the window, written to `path` as a\nPNG, with the native views reported live.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::capture_finish",
+          "kind": "method",
+          "sig": "pub fn capture_finish(&mut self, painter: &mut dyn Painter, path: &str, scale: f32, pending: Vec<String>, fallback: Option<String>) -> Result<Capture, String>",
+          "docs": "Ends a capture: paints the frame (snapshots in their views' places) with `painter`,\nwrites it to `path` as a PNG, clears the snapshots, and reports. `pending` is what was\nstill running when the wait ended ([`unsettled`](Self::unsettled)); `fallback` why a\n`display` capture was asked and this painted one given.",
+          "file": "crates/octara/src/app.rs",
+          "links": [
+            "octara::app::Window::unsettled"
+          ]
+        },
+        {
+          "path": "octara::app::Window::caret",
+          "kind": "method",
+          "sig": "pub fn caret(&self) -> Option<(f32, f32, f32, f32)>",
+          "docs": "The caret of the focused text field `(x, y, w, h)` in logical pixels, for placing an input\nmethod's candidate window.",
+          "file": "crates/octara/src/app/input.rs"
+        },
+        {
+          "path": "octara::app::Window::clear_forced",
+          "kind": "method",
+          "sig": "pub fn clear_forced(&mut self)",
+          "docs": "Drops every forced state (the nodes keep their current state until it next changes).",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::click_at",
+          "kind": "method",
+          "sig": "pub fn click_at(&mut self, x: f32, y: f32)",
+          "docs": "A primary click at `(x, y)`: down and up.",
+          "file": "crates/octara/src/app/pointer.rs"
+        },
+        {
+          "path": "octara::app::Window::clipboard_text",
+          "kind": "method",
+          "sig": "pub fn clipboard_text(&self) -> Option<String>",
+          "docs": "What the clipboard holds as text.",
+          "file": "crates/octara/src/app/edit.rs"
+        },
+        {
+          "path": "octara::app::Window::commands",
+          "kind": "method",
+          "sig": "pub fn commands(&self) -> Vec<(String, Vec<String>)>",
+          "docs": "Commands available now: those the focus path's elements handle, the built-ins, and the\napp's, each with the chords bound to it here.",
+          "file": "crates/octara/src/app/keys.rs"
+        },
+        {
+          "path": "octara::app::Window::dispatch",
+          "kind": "method",
+          "sig": "pub fn dispatch(&mut self, ev: Event) -> Result<(), String>",
+          "docs": "Runs the event's handler, applies every update and lays out, like one frame.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::display_list",
+          "kind": "method",
+          "sig": "pub fn display_list(&self) -> Rc<DisplayList>",
+          "docs": "What the current frame draws, in order (see [`crate::paint`]).",
+          "file": "crates/octara/src/app.rs",
+          "links": [
+            "octara::paint"
+          ]
+        },
+        {
+          "path": "octara::app::Window::double_tap",
+          "kind": "method",
+          "sig": "pub fn double_tap(&mut self, target: &str) -> Result<(), String>",
+          "docs": "Two clicks on `target`, within the double-click interval.",
+          "file": "crates/octara/src/app/drive.rs"
+        },
+        {
+          "path": "octara::app::Window::drag",
+          "kind": "method",
+          "sig": "pub fn drag(&mut self, target: &str, dx: f32, dy: f32) -> Result<(), String>",
+          "docs": "A mouse drag from `target`'s centre by `(dx, dy)`, in a few steps.",
+          "file": "crates/octara/src/app/drive.rs"
+        },
+        {
+          "path": "octara::app::Window::force_state",
+          "kind": "method",
+          "sig": "pub fn force_state(&mut self, test_id: &str, state: State, on: bool) -> Result<(), String>",
+          "docs": "The platform whose conventions input follows (the build's by default).\nHolds an interaction state (`HOVER`, `FOCUSED`, `FOCUS_VISIBLE`, `PRESSED`) on or off, e.g. to check\npressed styles; kept across hot reload. `SELECTED` and `DISABLED` come from props.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::headless",
+          "kind": "assoc_fn",
+          "sig": "pub fn headless(root: impl Fn() -> View + 'static) -> Window",
+          "docs": "`root` in an 800 × 600 window of a new headless app: what tests and agents drive. The\napp is [`app`](Self::app)'s (its clock, theme, fonts, other windows).",
+          "file": "crates/octara/src/app.rs",
+          "links": [
+            "octara::app::Window::app"
+          ]
+        },
+        {
+          "path": "octara::app::Window::headless_on",
+          "kind": "assoc_fn",
+          "sig": "pub fn headless_on(platform: HeadlessPlatform, root: impl Fn() -> View + 'static) -> Window",
+          "docs": "[`headless`](Self::headless) on `platform` (a fake native host, a clipboard).",
+          "file": "crates/octara/src/app.rs",
+          "links": [
+            "octara::app::Window::headless"
+          ]
+        },
+        {
+          "path": "octara::app::Window::id",
+          "kind": "method",
+          "sig": "pub fn id(&self) -> WindowId",
+          "docs": "Its id.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::inspect",
+          "kind": "method",
+          "sig": "pub fn inspect(&self) -> Snapshot",
+          "docs": "The semantic tree and app state as the Inspector protocol gives them (see\n[`crate::inspect`]).",
+          "file": "crates/octara/src/app.rs",
+          "links": [
+            "octara::inspect"
+          ]
+        },
+        {
+          "path": "octara::app::Window::invoke",
+          "kind": "method",
+          "sig": "pub fn invoke(&mut self, command: &str) -> Result<(), String>",
+          "docs": "Runs a command as its key would, for the focused element (agents and menus call this).",
+          "file": "crates/octara/src/app/keys.rs"
+        },
+        {
+          "path": "octara::app::Window::is_closed",
+          "kind": "method",
+          "sig": "pub fn is_closed(&self) -> bool",
+          "docs": "Whether it was closed (a handle outlives its window).",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::kernel",
+          "kind": "method",
+          "sig": "pub fn kernel(&self) -> Ref<'_, Kernel>",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::kernel_mut",
+          "kind": "method",
+          "sig": "pub fn kernel_mut(&mut self) -> RefMut<'_, Kernel>",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::key_event",
+          "kind": "method",
+          "sig": "pub fn key_event(&mut self, ev: KeyEvent) -> bool",
+          "docs": "A key press, as a window delivers it. Returns whether something handled it; if not, the\nshell sends the key's text with [`App::type_text`].",
+          "file": "crates/octara/src/app/keys.rs"
+        },
+        {
+          "path": "octara::app::Window::keymap",
+          "kind": "method",
+          "sig": "pub fn keymap(&self) -> Keymap",
+          "docs": "The keymap in use: the platform's standard bindings, then the app's.",
+          "file": "crates/octara/src/app/keys.rs"
+        },
+        {
+          "path": "octara::app::Window::layout_issues",
+          "kind": "method",
+          "sig": "pub fn layout_issues(&self) -> Vec<LayoutIssue>",
+          "docs": "Layout problems in the current frame (overflow, collapsed elements, truncated text,\nclamped overlays, missing tokens). Tests and agents can assert there are none.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::long_press",
+          "kind": "method",
+          "sig": "pub fn long_press(&mut self, target: &str) -> Result<(), String>",
+          "docs": "A finger held on `target` for the long-press duration, then lifted.",
+          "file": "crates/octara/src/app/drive.rs"
+        },
+        {
+          "path": "octara::app::Window::native_event",
+          "kind": "method",
+          "sig": "pub fn native_event(&mut self, id: NativeId, event: NativeEvent) -> bool",
+          "docs": "An event from native view `id` (the host calls this): runs its `on_native`.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::native_host",
+          "kind": "method",
+          "sig": "pub fn native_host(&self) -> Ref<'_, dyn NativeHost>",
+          "docs": "The main window's native host (downcast with `as_any`; headless, a [`RecordingHost`]).\n\n[`RecordingHost`]: crate::native::RecordingHost",
+          "file": "crates/octara/src/app.rs",
+          "links": [
+            "octara::native::RecordingHost"
+          ]
+        },
+        {
+          "path": "octara::app::Window::native_size",
+          "kind": "method",
+          "sig": "pub fn native_size(&mut self, id: NativeId, width: f32, height: f32)",
+          "docs": "The natural size native view `id` reports (the host calls this): used where no size is\nauthored.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::native_snapshot",
+          "kind": "method",
+          "sig": "pub fn native_snapshot(&mut self, id: NativeId, image: Option<Image>)",
+          "docs": "An image of what native view `id` shows (the host calls this): drawn in its place\ninstead of the placeholder, until `None` clears it.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::options",
+          "kind": "method",
+          "sig": "pub fn options(&self) -> WindowOptions",
+          "docs": "What it was opened with.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::platform_window",
+          "kind": "method",
+          "sig": "pub fn platform_window(&self) -> Ref<'_, dyn PlatformWindow>",
+          "docs": "The main window on the platform (downcast with `as_any`; headless, a\n[`HeadlessWindow`](crate::platform::HeadlessWindow)).",
+          "file": "crates/octara/src/app.rs",
+          "links": [
+            "octara::platform::HeadlessWindow"
+          ]
+        },
+        {
+          "path": "octara::app::Window::pointer",
+          "kind": "method",
+          "sig": "pub fn pointer(&mut self, ev: PointerEvent)",
+          "docs": "One raw pointer event, as a window delivers it.",
+          "file": "crates/octara/src/app/pointer.rs"
+        },
+        {
+          "path": "octara::app::Window::pointer_down",
+          "kind": "method",
+          "sig": "pub fn pointer_down(&mut self, x: f32, y: f32)",
+          "docs": "The primary mouse button went down at `(x, y)`.",
+          "file": "crates/octara/src/app/pointer.rs"
+        },
+        {
+          "path": "octara::app::Window::pointer_leave",
+          "kind": "method",
+          "sig": "pub fn pointer_leave(&mut self)",
+          "docs": "The mouse left the window: nothing is hovered.",
+          "file": "crates/octara/src/app/pointer.rs"
+        },
+        {
+          "path": "octara::app::Window::pointer_move",
+          "kind": "method",
+          "sig": "pub fn pointer_move(&mut self, x: f32, y: f32)",
+          "docs": "The mouse moved to `(x, y)` with no button down (or with one down: the press follows).",
+          "file": "crates/octara/src/app/pointer.rs"
+        },
+        {
+          "path": "octara::app::Window::pointer_up",
+          "kind": "method",
+          "sig": "pub fn pointer_up(&mut self, x: f32, y: f32)",
+          "docs": "The primary mouse button came up at `(x, y)`.",
+          "file": "crates/octara/src/app/pointer.rs"
+        },
+        {
+          "path": "octara::app::Window::press_key",
+          "kind": "method",
+          "sig": "pub fn press_key(&mut self, chord: &str) -> Result<(), String>",
+          "docs": "Presses the keys of `chord` (`\"mod+s\"`, `\"tab\"`, `\"a\"`), as a keyboard would: what the\nkeymap binds runs; an unbound character key types itself.",
+          "file": "crates/octara/src/app/keys.rs"
+        },
+        {
+          "path": "octara::app::Window::replace_text",
+          "kind": "method",
+          "sig": "pub fn replace_text(&mut self, range: Range<usize>, text: &str)",
+          "docs": "Replaces `range` (bytes) of the focused field's text with `text`, ending any\ncomposition; the caret goes after it. (NSTextInputClient `insertText:replacementRange:`.)",
+          "file": "crates/octara/src/app/edit.rs"
+        },
+        {
+          "path": "octara::app::Window::resize",
+          "kind": "method",
+          "sig": "pub fn resize(&mut self, width: f32, height: f32)",
+          "docs": "Resizes the window: bindings that read `viewport()` update, then everything is laid out\nagain at the new size (text re-breaks; nothing else reruns).",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::restart_accessibility",
+          "kind": "method",
+          "sig": "pub fn restart_accessibility(&self)",
+          "docs": "The next accessibility update is the whole tree (the platform asked for it again).",
+          "file": "crates/octara/src/app/input.rs"
+        },
+        {
+          "path": "octara::app::Window::secondary_tap",
+          "kind": "method",
+          "sig": "pub fn secondary_tap(&mut self, target: &str) -> Result<(), String>",
+          "docs": "A right click on `target`.",
+          "file": "crates/octara/src/app/drive.rs"
+        },
+        {
+          "path": "octara::app::Window::set_composition",
+          "kind": "method",
+          "sig": "pub fn set_composition(&mut self, text: &str)",
+          "docs": "What an input method is composing in the focused field (pinyin before it becomes 汉字):\nshown underlined at the caret, not yet part of the value; it replaces the selection.\nEmpty ends it. [`App::type_text`] commits.",
+          "file": "crates/octara/src/app/edit.rs"
+        },
+        {
+          "path": "octara::app::Window::set_keymap",
+          "kind": "method",
+          "sig": "pub fn set_keymap(&mut self, keymap: Keymap)",
+          "docs": "Replaces the app's bindings (the standard ones stay; unbind them with `None` commands).",
+          "file": "crates/octara/src/app/keys.rs"
+        },
+        {
+          "path": "octara::app::Window::set_selection",
+          "kind": "method",
+          "sig": "pub fn set_selection(&mut self, anchor: usize, caret: usize)",
+          "docs": "Selects `anchor..caret` (bytes) in the focused field (the platform moved the selection).",
+          "file": "crates/octara/src/app/edit.rs"
+        },
+        {
+          "path": "octara::app::Window::set_tuning",
+          "kind": "method",
+          "sig": "pub fn set_tuning(&mut self, tuning: Tuning)",
+          "file": "crates/octara/src/app/pointer.rs"
+        },
+        {
+          "path": "octara::app::Window::size",
+          "kind": "method",
+          "sig": "pub fn size(&self) -> (f32, f32)",
+          "docs": "The current window size.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::swipe",
+          "kind": "method",
+          "sig": "pub fn swipe(&mut self, target: &str, dx: f32, dy: f32, duration: Duration) -> Result<(), String>",
+          "docs": "A finger swiping from `target`'s centre by `(dx, dy)` over `duration`, then lifting\n(content follows the finger and may glide on).",
+          "file": "crates/octara/src/app/drive.rs"
+        },
+        {
+          "path": "octara::app::Window::tap",
+          "kind": "method",
+          "sig": "pub fn tap(&mut self, target: &str) -> Result<(), String>",
+          "docs": "Clicks `target` with the primary mouse button.",
+          "file": "crates/octara/src/app/drive.rs"
+        },
+        {
+          "path": "octara::app::Window::tap_with",
+          "kind": "method",
+          "sig": "pub fn tap_with(&mut self, target: &str, kind: PointerKind) -> Result<(), String>",
+          "docs": "Presses `target` with a mouse, a finger or a pen.",
+          "file": "crates/octara/src/app/drive.rs"
+        },
+        {
+          "path": "octara::app::Window::text_field",
+          "kind": "method",
+          "sig": "pub fn text_field(&self) -> Option<TextField>",
+          "docs": "The focused text field, for platform text protocols.",
+          "file": "crates/octara/src/app/edit.rs"
+        },
+        {
+          "path": "octara::app::Window::tuning",
+          "kind": "method",
+          "sig": "pub fn tuning(&self) -> Tuning",
+          "docs": "The recognizers' timing (thresholds, double press, long press, momentum).",
+          "file": "crates/octara/src/app/pointer.rs"
+        },
+        {
+          "path": "octara::app::Window::type_text",
+          "kind": "method",
+          "sig": "pub fn type_text(&mut self, text: &str)",
+          "docs": "Text typed (or committed by an input method) into the focused text field. Ends any\ncomposition.",
+          "file": "crates/octara/src/app/input.rs"
+        },
+        {
+          "path": "octara::app::Window::unsettled",
+          "kind": "method",
+          "sig": "pub fn unsettled(&self) -> Vec<String>",
+          "docs": "What keeps the app from being settled now: tasks, timers and motion (not subscriptions,\nwhich run for good) and native views that are busy (a page loading). A capture waits for\nthis to be empty.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::Window::wheel",
+          "kind": "method",
+          "sig": "pub fn wheel(&mut self, x: f32, y: f32, dx: f32, dy: f32)",
+          "docs": "A wheel or trackpad scroll of `(dx, dy)` at `(x, y)`: the innermost scroll container\nthere that scrolls on that axis takes it (no hand-off to outer ones at the edge, as in\nRune). A press being held is cancelled, unless it is dragging.",
+          "file": "crates/octara/src/app/pointer.rs"
+        },
+        {
           "path": "octara::app::WindowId",
           "kind": "struct",
           "sig": "pub struct WindowId(_);",
           "docs": "A window's identity while it is open.",
           "file": "crates/octara/src/app.rs",
+          "aliases": [
+            "octara::prelude::WindowId",
+            "octara::window::WindowId"
+          ],
           "traits": [
             "Clone",
             "Copy",
@@ -1761,7 +1857,7 @@
           "path": "octara::canvas",
           "kind": "module",
           "sig": "pub mod canvas",
-          "docs": "Canvas: a drawing built by a closure, as data.\n\n[`canvas`](crate::view::canvas)`(move |c| ..)` is an element whose drawing a closure records\ninto a [`Canvas`]: paths filled or stroked, rectangles, text, images, under scoped transforms\nand clips, in the element's own coordinates (its content box, `(0, 0)` to\n[`size`](Canvas::size)). The closure is a binding: it reruns only when what it reads (signals,\nthe element's size) changes, and the recording is kept as plain data ([`CanvasOp`]) that tests\ncan compare. Nothing redraws per frame unless something changed (Rune's declarative canvas,\nExact's recorder; not GPUI's per-frame paint closures).\n\n```\nuse octara::prelude::*;\n\nfn meter() -> View {\n    let level = state(\"level\", || 0.6);\n    canvas(move |c| {\n        let (w, h) = c.size();\n        c.fill(&Path::rounded_rect(Rect::new(0.0, 0.0, w, h), h / 2.0), Token::Surface);\n        c.fill(&Path::rounded_rect(Rect::new(0.0, 0.0, w * level.get(), h), h / 2.0), Token::Accent);\n    })\n    .w(200)\n    .h(8)\n    .label(\"Level\")\n    .into()\n}\n# let app = App::new(meter);\n# assert_eq!(app.kernel().canvas(app.kernel().find_by_name(\"Level\")[0]).unwrap().len(), 2);\n```\n\nA canvas is an image to assistive technology: give it a `label` (`check` reports a visible\ncanvas without one, `UNLABELED_CANVAS`), or `a11y_hidden()` when it is decoration.",
+          "docs": "Canvas: a drawing built by a closure, as data.\n\n[`canvas`](crate::view::canvas)`(move |c| ..)` is an element whose drawing a closure records\ninto a [`Canvas`]: paths filled or stroked, rectangles, text, images, under scoped transforms\nand clips, in the element's own coordinates (its content box, `(0, 0)` to\n[`size`](Canvas::size)). The closure is a binding: it reruns only when what it reads (signals,\nthe element's size) changes, and the recording is kept as plain data ([`CanvasOp`]) that tests\ncan compare. Nothing redraws per frame unless something changed (Rune's declarative canvas,\nExact's recorder; not GPUI's per-frame paint closures).\n\n```\nuse octara::prelude::*;\n\nfn meter() -> View {\n    let level = state(\"level\", || 0.6);\n    canvas(move |c| {\n        let (w, h) = c.size();\n        c.fill(&Path::rounded_rect(Rect::new(0.0, 0.0, w, h), h / 2.0), Token::Surface);\n        c.fill(&Path::rounded_rect(Rect::new(0.0, 0.0, w * level.get(), h), h / 2.0), Token::Accent);\n    })\n    .w(200)\n    .h(8)\n    .label(\"Level\")\n    .into()\n}\n# let app = Window::headless(meter);\n# assert_eq!(app.kernel().canvas(app.kernel().find_by_name(\"Level\")[0]).unwrap().len(), 2);\n```\n\nA canvas is an image to assistive technology: give it a `label` (`check` reports a visible\ncanvas without one, `UNLABELED_CANVAS`), or `a11y_hidden()` when it is decoration.",
           "file": "crates/octara/src/canvas.rs",
           "links": [
             "octara::canvas::Canvas",
@@ -3957,21 +4053,21 @@
         {
           "path": "octara::inspect::handle",
           "kind": "fn",
-          "sig": "pub fn handle(app: &mut App, req: Request) -> Reply",
+          "sig": "pub fn handle(app: &mut Window, req: Request) -> Reply",
           "docs": "Runs one request against `app`.",
           "file": "crates/octara/src/inspect.rs"
         },
         {
           "path": "octara::inspect::handle_line",
           "kind": "fn",
-          "sig": "pub fn handle_line(app: &mut App, line: &str) -> Reply",
+          "sig": "pub fn handle_line(app: &mut Window, line: &str) -> Reply",
           "docs": "Reads one request line and runs it.",
           "file": "crates/octara/src/inspect.rs"
         },
         {
           "path": "octara::inspect::issues",
           "kind": "fn",
-          "sig": "pub fn issues(app: &App) -> Vec<Issue>",
+          "sig": "pub fn issues(app: &Window) -> Vec<Issue>",
           "docs": "Every layout issue and diagnostic of `app` now.",
           "file": "crates/octara/src/inspect.rs"
         },
@@ -4006,7 +4102,7 @@
         {
           "path": "octara::inspect::run_script",
           "kind": "fn",
-          "sig": "pub fn run_script(app: &mut App, script: &str) -> Vec<(usize, Reply)>",
+          "sig": "pub fn run_script(app: &mut Window, script: &str) -> Vec<(usize, Reply)>",
           "docs": "Runs a script (JSON lines; blank lines and `//` comments skipped), stopping at the first\nfailure. Returns each step's line number and reply.",
           "file": "crates/octara/src/inspect.rs"
         },
@@ -5191,6 +5287,13 @@
           "file": "crates/octara/src/kernel/focus.rs"
         },
         {
+          "path": "octara::kernel::Kernel::fonts_changed",
+          "kind": "method",
+          "sig": "pub fn fonts_changed(&mut self)",
+          "docs": "Every text measures again: shapes may now resolve to other faces (after the shared text\nsystem's fonts changed).",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::frames_built",
           "kind": "method",
           "sig": "pub fn frames_built(&self) -> u64",
@@ -5472,7 +5575,8 @@
         {
           "path": "octara::kernel::Kernel::new",
           "kind": "assoc_fn",
-          "sig": "pub fn new() -> Self",
+          "sig": "pub fn new(res: Rc<Resources>) -> Self",
+          "docs": "A kernel reading `res` (shared by an app's windows).",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -5578,6 +5682,13 @@
           "sig": "pub fn resolve_target(&self, target: &str) -> Result<NodeId, String>",
           "docs": "The element `target` names: a test id, else an accessible name (resolved to the element\na press there acts on).",
           "file": "crates/octara/src/app/drive.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::resources",
+          "kind": "method",
+          "sig": "pub fn resources(&self) -> &Rc<Resources>",
+          "docs": "The resources this kernel reads.",
+          "file": "crates/octara/src/kernel.rs"
         },
         {
           "path": "octara::kernel::Kernel::restart_accessibility",
@@ -5993,7 +6104,11 @@
           "path": "octara::kernel::Kernel::set_theme",
           "kind": "method",
           "sig": "pub fn set_theme(&mut self, theme: Theme)",
-          "file": "crates/octara/src/kernel.rs"
+          "docs": "Sets the shared theme and restyles this kernel (other kernels sharing it are told with\n[`theme_changed`](Self::theme_changed)).",
+          "file": "crates/octara/src/kernel.rs",
+          "links": [
+            "octara::kernel::Kernel::theme_changed"
+          ]
         },
         {
           "path": "octara::kernel::Kernel::set_time",
@@ -6091,7 +6206,15 @@
         {
           "path": "octara::kernel::Kernel::theme",
           "kind": "method",
-          "sig": "pub fn theme(&self) -> &Theme",
+          "sig": "pub fn theme(&self) -> Ref<'_, Theme>",
+          "docs": "The shared theme.",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::theme_changed",
+          "kind": "method",
+          "sig": "pub fn theme_changed(&mut self)",
+          "docs": "The shared theme changed: every node resolves against it again.",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -6105,6 +6228,13 @@
           "kind": "method",
           "sig": "pub fn touch(&self) -> bool",
           "docs": "Whether input is touch (`When::Touch` overrides apply).",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::touch_changed",
+          "kind": "method",
+          "sig": "pub fn touch_changed(&mut self)",
+          "docs": "The shared touch setting changed: the nodes with touch overrides resolve again.",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -6932,6 +7062,23 @@
           "kind": "variant",
           "sig": "Xs",
           "file": "crates/octara/src/kernel/theme.rs"
+        },
+        {
+          "path": "octara::kernel::Resources",
+          "kind": "struct",
+          "sig": "pub struct Resources { .. }",
+          "docs": "What every window's kernel shares ([design](https://github.com/octoii-works/octara/blob/main/docs/design/core.md)):\nthe theme, the text system (fonts, fallback, shaping and layout caches), whether input is\ntouch, and the reduced-motion preference. The app changes them and tells each kernel.",
+          "file": "crates/octara/src/kernel.rs",
+          "traits": [
+            "Default"
+          ]
+        },
+        {
+          "path": "octara::kernel::Resources::set_text_engine",
+          "kind": "method",
+          "sig": "pub fn set_text_engine(&self, engine: Box<dyn TextEngine>)",
+          "docs": "The text system's engine (e.g. `MonoEngine` for benchmarks); kernels sharing it then\nmeasure again (`fonts_changed`).",
+          "file": "crates/octara/src/kernel.rs"
         },
         {
           "path": "octara::kernel::Role",
@@ -8436,7 +8583,7 @@
         {
           "path": "octara::kernel::text::TextEngine::forget",
           "kind": "method",
-          "sig": "fn forget(&mut self, node: NodeId)",
+          "sig": "fn forget(&mut self, kernel: u32, node: NodeId)",
           "docs": "Forgets a destroyed node's texts.",
           "file": "crates/octara/src/kernel/text.rs"
         },
@@ -8497,6 +8644,13 @@
             "Hash",
             "PartialEq"
           ]
+        },
+        {
+          "path": "octara::kernel::text::TextKey::kernel",
+          "kind": "field",
+          "sig": "pub kernel: u32",
+          "docs": "The kernel the node is in: one text system serves every window.",
+          "file": "crates/octara/src/kernel/text.rs"
         },
         {
           "path": "octara::kernel::text::TextKey::node",
@@ -8951,8 +9105,6 @@
           "docs": "Native Island: platform views placed in Octara's layout ([design](../../../docs/design/native-island.md)).\n\n[`native_view`](crate::view::native_view)`(kind)` is a leaf box a platform view fills: a web\nview, a map, a platform picker. Views live in one of two [`Slot`]s per window: an\n**underlay** behind Octara's surface (shown through a cutout where the view is, so content\npainted after it draws over it, as map controls do) and an **overlay** above it (a web view,\na picker): Octara content painted over an overlay view would be hidden by it, so `check`\nreports it (`NATIVE_COVERED`).\n\nAfter each frame the app tells its [`NativeHost`] what changed: views created and destroyed,\nprops (one JSON value, handed over whole), and [`Placement`]s (where each view is, its corner\nradius, the clip around it, its opacity, whether it shows). The host sends events back with\n[`App::native_event`](crate::app::App::native_event) and reports a view's natural size with\n[`App::native_size`](crate::app::App::native_size). Headless, the [`RecordingHost`] keeps\nevery call, and the view draws as a placeholder box; a host's snapshot of a view (taken for a\n[capture](crate::capture)) draws in its place, so captures show the page or the map.",
           "file": "crates/octara/src/native.rs",
           "links": [
-            "octara::app::App::native_event",
-            "octara::app::App::native_size",
             "octara::capture",
             "octara::native::NativeHost",
             "octara::native::Placement",
@@ -9081,10 +9233,7 @@
           "kind": "method",
           "sig": "fn snapshot(&mut self, id: NativeId) -> Result<Vec<String>, String>",
           "docs": "Takes an image of what view `id` shows, handed back later with\n[`App::native_snapshot`](crate::app::App::native_snapshot): `Ok` with what the snapshot\ncannot show (WebKit: hardware video and WebGL come out black), or `Err` with why this\nhost takes none.",
-          "file": "crates/octara/src/native.rs",
-          "links": [
-            "octara::app::App::native_snapshot"
-          ]
+          "file": "crates/octara/src/native.rs"
         },
         {
           "path": "octara::native::NativeHost::update",
@@ -10435,8 +10584,6 @@
           "docs": "The platform layer ([design](../../../docs/design/platform.md)): what an app needs from the\nsystem it runs on, as traits a backend implements. The app and the kernel never see a\nwindowing library's types; headless runs (tests, agents, `octara run`) implement the same\ntraits with [`HeadlessPlatform`] and [`HeadlessWindow`].\n\nA backend drives the app with its input methods ([`App::pointer`](crate::app::App::pointer),\n[`App::key_event`](crate::app::App::key_event), …) and draws its display list; the app\ncalls back through these traits for the clipboard, waking the loop, native views and the\nstate of text input.",
           "file": "crates/octara/src/platform.rs",
           "links": [
-            "octara::app::App::key_event",
-            "octara::app::App::pointer",
             "octara::platform::HeadlessPlatform",
             "octara::platform::HeadlessWindow"
           ]
@@ -10445,18 +10592,34 @@
           "path": "octara::platform::HeadlessPlatform",
           "kind": "struct",
           "sig": "pub struct HeadlessPlatform { .. }",
-          "docs": "The platform of headless runs: a clipboard in memory, no waker.",
+          "docs": "The platform of headless runs: a clipboard in memory, no waker; its windows are\n[`HeadlessWindow`]s.",
           "file": "crates/octara/src/platform.rs",
           "traits": [
-            "Debug",
             "Default",
             "Platform"
+          ],
+          "links": [
+            "octara::platform::HeadlessWindow"
           ]
         },
         {
           "path": "octara::platform::HeadlessPlatform::clipboard",
           "kind": "field",
           "sig": "pub clipboard: Option<String>",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::HeadlessPlatform::next_host",
+          "kind": "field",
+          "sig": "pub next_host: Option<Box<dyn NativeHost>>",
+          "docs": "The native host the next window opened gets (a test's fake platform views).",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::HeadlessPlatform::with_host",
+          "kind": "assoc_fn",
+          "sig": "pub fn with_host(host: impl NativeHost + 'static) -> HeadlessPlatform",
+          "docs": "A headless platform whose next window's native views go to `host`.",
           "file": "crates/octara/src/platform.rs"
         },
         {
@@ -10506,6 +10669,13 @@
           "path": "octara::platform::Platform::as_any",
           "kind": "method",
           "sig": "fn as_any(&self) -> &dyn Any",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::Platform::open_window",
+          "kind": "method",
+          "sig": "fn open_window(&mut self, id: WindowId, options: &WindowOptions) -> Result<Box<dyn PlatformWindow>, String>",
+          "docs": "Opens window `id` as `options` asks (the id names it in the input it sends back).",
           "file": "crates/octara/src/platform.rs"
         },
         {
@@ -10597,6 +10767,95 @@
           "path": "octara::platform::TextInput::secure",
           "kind": "field",
           "sig": "pub secure: bool",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::WindowKind",
+          "kind": "enum",
+          "sig": "pub enum WindowKind",
+          "docs": "What kind of window: a document or tool window, or a dialog over its parent.",
+          "file": "crates/octara/src/platform.rs",
+          "aliases": [
+            "octara::prelude::WindowKind",
+            "octara::window::WindowKind"
+          ],
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "Default",
+            "Deserialize<'de>",
+            "Eq",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::platform::WindowKind::Dialog",
+          "kind": "variant",
+          "sig": "Dialog",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::WindowKind::Normal",
+          "kind": "variant",
+          "sig": "Normal",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::WindowOptions",
+          "kind": "struct",
+          "sig": "pub struct WindowOptions { .. }",
+          "docs": "A window to open.",
+          "file": "crates/octara/src/platform.rs",
+          "aliases": [
+            "octara::prelude::WindowOptions",
+            "octara::window::WindowOptions"
+          ],
+          "traits": [
+            "Clone",
+            "Debug",
+            "Default",
+            "Deserialize<'de>",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::platform::WindowOptions::kind",
+          "kind": "field",
+          "sig": "pub kind: WindowKind",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::WindowOptions::kind",
+          "kind": "method",
+          "sig": "pub fn kind(self, kind: WindowKind) -> Self",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::WindowOptions::new",
+          "kind": "assoc_fn",
+          "sig": "pub fn new(title: impl Into<String>) -> Self",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::WindowOptions::size",
+          "kind": "field",
+          "sig": "pub size: (f32, f32)",
+          "docs": "Its content size in logical pixels.",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::WindowOptions::size",
+          "kind": "method",
+          "sig": "pub fn size(self, width: f32, height: f32) -> Self",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::WindowOptions::title",
+          "kind": "field",
+          "sig": "pub title: String",
           "file": "crates/octara/src/platform.rs"
         },
         {
@@ -11997,83 +12256,6 @@
           "aliases": [
             "octara::prelude::spawn"
           ]
-        },
-        {
-          "path": "octara::testing",
-          "kind": "module",
-          "sig": "pub mod testing",
-          "docs": "Headless driving for tests and agents: the `Host` interface and a from-scratch consistency\ncheck (self-adjusting computation / Nominal Adapton): after every event, the incrementally\nupdated tree must equal the tree rebuilt from scratch from the same state.",
-          "file": "crates/octara/src/testing.rs"
-        },
-        {
-          "path": "octara::testing::Checked",
-          "kind": "struct",
-          "sig": "pub struct Checked(pub App);",
-          "docs": "An app checked against a from-scratch rebuild after every event.",
-          "file": "crates/octara/src/testing.rs",
-          "traits": [
-            "Host"
-          ]
-        },
-        {
-          "path": "octara::testing::Host",
-          "kind": "trait",
-          "sig": "pub trait Host",
-          "docs": "Something tests can drive: an app, or an app wrapped in a checker.",
-          "file": "crates/octara/src/testing.rs",
-          "implementors": [
-            "App",
-            "Checked"
-          ]
-        },
-        {
-          "path": "octara::testing::Host::diagnostics",
-          "kind": "method",
-          "sig": "fn diagnostics(&self) -> Vec<Diagnostic>",
-          "file": "crates/octara/src/testing.rs"
-        },
-        {
-          "path": "octara::testing::Host::dispatch",
-          "kind": "method",
-          "sig": "fn dispatch(&mut self, ev: Event) -> Result<(), String>",
-          "file": "crates/octara/src/testing.rs"
-        },
-        {
-          "path": "octara::testing::Host::hot_reload",
-          "kind": "method",
-          "sig": "fn hot_reload(&mut self)",
-          "file": "crates/octara/src/testing.rs"
-        },
-        {
-          "path": "octara::testing::Host::kernel",
-          "kind": "method",
-          "sig": "fn kernel(&self) -> Ref<'_, Kernel>",
-          "file": "crates/octara/src/testing.rs"
-        },
-        {
-          "path": "octara::testing::Host::kernel_mut",
-          "kind": "method",
-          "sig": "fn kernel_mut(&mut self) -> RefMut<'_, Kernel>",
-          "file": "crates/octara/src/testing.rs"
-        },
-        {
-          "path": "octara::testing::Host::reset_work",
-          "kind": "method",
-          "sig": "fn reset_work(&mut self)",
-          "file": "crates/octara/src/testing.rs"
-        },
-        {
-          "path": "octara::testing::Host::work",
-          "kind": "method",
-          "sig": "fn work(&self) -> Work",
-          "file": "crates/octara/src/testing.rs"
-        },
-        {
-          "path": "octara::testing::check_consistent",
-          "kind": "fn",
-          "sig": "pub fn check_consistent(app: &mut App) -> Result<(), String>",
-          "docs": "Fails if the incremental tree differs from a from-scratch rebuild right now.",
-          "file": "crates/octara/src/testing.rs"
         },
         {
           "path": "octara::view",
@@ -19665,7 +19847,7 @@
           "path": "octara::view::set_theme",
           "kind": "fn",
           "sig": "pub fn set_theme(theme: Theme)",
-          "docs": "Switches the theme. Token colors resolve in the kernel, so no closure reruns; only nodes\nwhose resolved colors change are repainted. Callable from handlers.",
+          "docs": "Switches the theme of every window. Token colors resolve in the kernels, so no closure\nreruns; only nodes whose resolved colors change are repainted. Callable from handlers.",
           "file": "crates/octara/src/view/mod.rs",
           "aliases": [
             "octara::prelude::set_theme"
@@ -19784,6 +19966,53 @@
           "file": "crates/octara/src/view/element.rs",
           "aliases": [
             "octara::prelude::web_view"
+          ]
+        },
+        {
+          "path": "octara::window",
+          "kind": "module",
+          "sig": "pub mod window",
+          "docs": "Windows ([design](../../../docs/design/windows.md)): one runtime, any number of windows, each\nwith its own tree, focus and size; signals and lists are shared by all of them.\n\n```ignore\nbutton(\"Preferences\").on_press(|| {\n    let _ = open_window(WindowOptions::new(\"Preferences\").size(480.0, 360.0), preferences);\n})\n```\n\nA window opened from app code is built at the end of the frame that asked for it, in a scope\nof its own; closing it disposes that scope (its state, watches and tasks) and nothing else.",
+          "file": "crates/octara/src/window.rs"
+        },
+        {
+          "path": "octara::window::close_window",
+          "kind": "fn",
+          "sig": "pub fn close_window(id: WindowId)",
+          "docs": "Closes window `id` at the end of the frame: its scope (state, watches, tasks) is disposed.",
+          "file": "crates/octara/src/window.rs",
+          "aliases": [
+            "octara::prelude::close_window"
+          ]
+        },
+        {
+          "path": "octara::window::current_window",
+          "kind": "fn",
+          "sig": "pub fn current_window() -> WindowId",
+          "docs": "The window whose view is being built, or whose handler, binding, watch or task is running.",
+          "file": "crates/octara/src/window.rs",
+          "aliases": [
+            "octara::prelude::current_window"
+          ]
+        },
+        {
+          "path": "octara::window::open_window",
+          "kind": "fn",
+          "sig": "pub fn open_window(options: WindowOptions, root: impl Fn() -> View + 'static) -> Result<WindowId, String>",
+          "docs": "Opens a window showing `root` (built at the end of the frame); `Err` when the platform\nrefuses.",
+          "file": "crates/octara/src/window.rs",
+          "aliases": [
+            "octara::prelude::open_window"
+          ]
+        },
+        {
+          "path": "octara::window::windows",
+          "kind": "fn",
+          "sig": "pub fn windows() -> Vec<WindowId>",
+          "docs": "The open windows, in the order they opened.",
+          "file": "crates/octara/src/window.rs",
+          "aliases": [
+            "octara::prelude::windows"
           ]
         }
       ]
@@ -20276,8 +20505,8 @@
         {
           "path": "octara_render::screenshot",
           "kind": "fn",
-          "sig": "pub fn screenshot(app: &App, scale: f32) -> Bitmap",
-          "docs": "A screenshot of `app`'s current frame at `scale` device pixels per logical pixel, rendered\nby the reference renderer.",
+          "sig": "pub fn screenshot(window: &Window, scale: f32) -> Bitmap",
+          "docs": "A screenshot of `window`'s current frame at `scale` device pixels per logical pixel,\nrendered by the reference renderer.",
           "file": "crates/octara-render/src/lib.rs"
         },
         {
@@ -20445,7 +20674,7 @@
     },
     {
       "name": "octara-fonts",
-      "docs": "Fonts for deterministic tests and screenshots: the core bundles only Latin faces (Inter, IBM\nPlex Mono), and windows use the platform's fonts, so text in other scripts renders as\nmissing glyphs headless. A test registers these instead of relying on the machine's fonts:\n\n```\nlet mut app = octara::app::App::new(|| octara::view::text(\"你好\").into());\noctara_fonts::cjk::install(&mut app);\n```\n\nThey are a dev-dependency, not part of an app.",
+      "docs": "Fonts for deterministic tests and screenshots: the core bundles only Latin faces (Inter, IBM\nPlex Mono), and windows use the platform's fonts, so text in other scripts renders as\nmissing glyphs headless. A test registers these instead of relying on the machine's fonts:\n\n```\nlet mut app = octara::app::Window::headless(|| octara::view::text(\"你好\").into());\noctara_fonts::cjk::install(&app.app());\n```\n\nThey are a dev-dependency, not part of an app.",
       "items": [
         {
           "path": "octara_fonts::cjk",
@@ -20483,7 +20712,7 @@
         {
           "path": "octara_fonts::cjk::install",
           "kind": "fn",
-          "sig": "pub fn install(app: &mut App)",
+          "sig": "pub fn install(app: &App)",
           "docs": "Registers both weights as the fallback for hanzi and kana.",
           "file": "crates/octara-fonts/src/lib.rs"
         }

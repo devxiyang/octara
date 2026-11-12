@@ -4,7 +4,7 @@
 use octara::paint::{GlyphRun, Item};
 use octara::prelude::*;
 
-fn runs(app: &App, id: &str) -> Vec<GlyphRun> {
+fn runs(app: &Window, id: &str) -> Vec<GlyphRun> {
     let n = app.kernel().find(id).unwrap();
     app.display_list()
         .items
@@ -27,11 +27,11 @@ fn view() -> View {
 
 #[test]
 fn cjk_falls_back_to_the_subset() {
-    let mut app = App::new(view);
+    let app = Window::headless(view);
     // Without it: missing glyphs (glyph 0) for every CJK character.
-    let missing = |app: &App, id: &str| runs(app, id).iter().flat_map(|r| r.glyphs.iter()).filter(|g| g.id == 0).count();
+    let missing = |app: &Window, id: &str| runs(app, id).iter().flat_map(|r| r.glyphs.iter()).filter(|g| g.id == 0).count();
     assert!(missing(&app, "mixed") > 0);
-    octara_fonts::cjk::install(&mut app);
+    octara_fonts::cjk::install(&app.app());
     for id in ["mixed", "bold", "field"] {
         assert_eq!(missing(&app, id), 0, "{id} has missing glyphs");
     }
@@ -45,8 +45,8 @@ fn cjk_falls_back_to_the_subset() {
 #[test]
 fn screenshots_are_deterministic_with_it() {
     let shot = || {
-        let mut app = App::new(view);
-        octara_fonts::cjk::install(&mut app);
+        let app = Window::headless(view);
+        octara_fonts::cjk::install(&app.app());
         octara_render::screenshot(&app, 2.0)
     };
     let (a, b) = (shot(), shot());

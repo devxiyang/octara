@@ -6,7 +6,7 @@
 //! # fn octara_examples_counter() -> octara::view::View { unimplemented!() }
 //! ```
 
-use octara::app::{App, Button, Key, KeyEvent, Modifiers, Phase, PointerEvent};
+use octara::app::{App, Button, Key, KeyEvent, Modifiers, Phase, PointerEvent, Window as AppWindow};
 use octara::view::View;
 use octara_render::GpuRenderer;
 use octara_render::wgpu;
@@ -74,7 +74,7 @@ pub fn run_with(options: Options, root: impl Fn() -> View + 'static) {
     let mut shell = Shell {
         options,
         root: Some(Box::new(root)),
-        app: None,
+        win: None,
         gpu: None,
         a11y: None,
         proxy,
@@ -104,7 +104,8 @@ struct Gpu {
 struct Shell {
     options: Options,
     root: Option<Box<dyn Fn() -> View>>,
-    app: Option<App>,
+    /// The app's (main) window.
+    win: Option<AppWindow>,
     gpu: Option<Gpu>,
     a11y: Option<accesskit_winit::Adapter>,
     proxy: EventLoopProxy<ShellEvent>,
@@ -201,8 +202,8 @@ impl Shell {
     /// Brings the app's clock to now (before each event and frame).
     fn tick(&mut self) {
         let now = self.started.elapsed();
-        if let Some(app) = &mut self.app {
-            app.advance_to(now);
+        if let Some(app) = &mut self.win {
+            app.app().advance_to(now);
         }
     }
 
@@ -210,7 +211,7 @@ impl Shell {
     fn pointer(&mut self, ev: PointerEvent) {
         let at = Instant::now();
         self.tick();
-        if let Some(app) = &mut self.app {
+        if let Some(app) = &mut self.win {
             app.pointer(ev);
         }
         // Moves come in bursts, and a cancel (the window losing focus) shows nothing new.
@@ -241,7 +242,7 @@ impl Shell {
             self.draw();
         }
         let scale = self.scale() as f64;
-        if let (Some(a11y), Some(app)) = (&mut self.a11y, &self.app) {
+        if let (Some(a11y), Some(app)) = (&mut self.a11y, &self.win) {
             a11y.update_if_active(|| app.accessibility_update(scale));
         }
     }
@@ -253,7 +254,7 @@ impl Shell {
             g.config.height = height.max(1);
             g.surface.configure(g.renderer.device(), &g.config);
         }
-        if let Some(app) = &mut self.app {
+        if let Some(app) = &mut self.win {
             app.resize(width as f32 / scale, height as f32 / scale);
         }
         self.resized = true;
@@ -262,7 +263,7 @@ impl Shell {
 
     fn draw(&mut self) {
         let scale = self.scale();
-        let (Some(g), Some(app)) = (&mut self.gpu, &self.app) else { return };
+        let (Some(g), Some(app)) = (&mut self.gpu, &self.win) else { return };
         // Settling the frame hands native views their placements; they are applied with this
         // frame's present, in one transaction.
         let list = app.display_list();
@@ -331,7 +332,7 @@ impl Shell {
     /// A key press: the app's key routing first (focus, keymap, commands); if nothing took it,
     /// the text it typed goes to the focused field.
     fn key(&mut self, event: &winit::event::KeyEvent) {
-        let Some(app) = &mut self.app else { return };
+        let Some(app) = &mut self.win else { return };
         let key = match &event.logical_key {
             WKey::Named(n) => match n {
                 NamedKey::Tab => Some(Key::Tab),
@@ -401,7 +402,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
             event_loop.exit();
             return;
         }
-        let deadline = self.app.as_ref().and_then(|a| a.next_deadline());
+        let deadline = self.win.as_ref().and_then(|a| a.app().next_deadline());
         event_loop.set_control_flow(match deadline {
             Some(d) => ControlFlow::WaitUntil(self.started + d),
             None => ControlFlow::Wait,
@@ -412,8 +413,8 @@ impl ApplicationHandler<ShellEvent> for Shell {
         let e = match event {
             ShellEvent::Wake => {
                 self.tick();
-                if let Some(app) = &mut self.app {
-                    app.poll();
+                if let Some(app) = &mut self.win {
+                    app.app().poll();
                     // Events native views sent (a page loaded, its title changed).
                     #[cfg(target_os = "macos")]
                     if let Some(n) = &self.native {
@@ -437,13 +438,13 @@ impl ApplicationHandler<ShellEvent> for Shell {
         let scale = self.scale() as f64;
         match e.window_event {
             accesskit_winit::WindowEvent::InitialTreeRequested => {
-                if let (Some(a11y), Some(app)) = (&mut self.a11y, &self.app) {
+                if let (Some(a11y), Some(app)) = (&mut self.a11y, &self.win) {
                     app.restart_accessibility();
                     a11y.update_if_active(|| app.accessibility_update(scale));
                 }
             }
             accesskit_winit::WindowEvent::ActionRequested(req) => {
-                if let Some(app) = &mut self.app {
+                if let Some(app) = &mut self.win {
                     app.accessibility_action(req.target_node, req.action, req.data);
                 }
                 self.redraw();
@@ -510,14 +511,16 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 self.native = Some(native);
             }
         }
-        let mut app =
-            App::with_platform(platform::WinitPlatform::new(self.proxy.clone()), platform::WinitWindow::new(window.clone(), host), root);
+        let platform = platform::WinitPlatform::new(self.proxy.clone(), platform::WinitWindow::new(window.clone(), host));
+        let app = App::new(platform);
+        let options = octara::platform::WindowOptions::new(self.options.title.clone()).size(self.options.size.0, self.options.size.1);
+        let mut app = app.open_window(options, root).expect("the window");
         if self.options.system_fonts {
-            app.use_system_fonts();
+            app.app().use_system_fonts();
         }
         app.resize(size.width as f32 / scale, size.height as f32 / scale);
         self.capture = capture::Job::from_env(&self.proxy);
-        self.app = Some(app);
+        self.win = Some(app);
         self.gpu = Some(Gpu { window, surface, config, renderer });
         self.redraw();
     }
@@ -540,7 +543,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 self.pointer(PointerEvent::mouse(Phase::Move, x, y).modifiers(modifiers(self.modifiers)));
             }
             WindowEvent::CursorLeft { .. } => {
-                if let Some(app) = &mut self.app {
+                if let Some(app) = &mut self.win {
                     app.pointer_leave();
                 }
                 self.redraw();
@@ -581,7 +584,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 };
                 let (x, y) = self.cursor;
                 self.tick();
-                if let Some(app) = &mut self.app {
+                if let Some(app) = &mut self.win {
                     app.wheel(x, y, dx, dy);
                 }
                 self.redraw();
@@ -595,14 +598,14 @@ impl ApplicationHandler<ShellEvent> for Shell {
             }
             WindowEvent::Ime(Ime::Preedit(text, _)) => {
                 self.traced(Instant::now(), "input method composition");
-                if let Some(app) = &mut self.app {
+                if let Some(app) = &mut self.win {
                     app.set_composition(&text);
                 }
                 self.redraw();
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
                 self.traced(Instant::now(), "input method commit");
-                if let Some(app) = &mut self.app {
+                if let Some(app) = &mut self.win {
                     app.type_text(&text);
                 }
                 self.redraw();

@@ -16,14 +16,14 @@ fn page() -> View {
         .into()
 }
 
-fn y(app: &App, id: &str) -> f32 {
+fn y(app: &Window, id: &str) -> f32 {
     let k = app.kernel();
     k.rect(k.find(id).unwrap()).1
 }
 
 #[test]
 fn a_scroll_container_bounds_its_content_and_scrolls() {
-    let mut app = App::new(page);
+    let mut app = Window::headless(page);
     assert!(app.layout_issues().is_empty(), "{:#?}", app.layout_issues());
     let k = app.kernel();
     let list = k.find("list").unwrap();
@@ -71,11 +71,11 @@ fn feed() -> View {
 
 #[test]
 fn virtual_list_follows_its_scroll_container_and_measures_rows() {
-    let mut app = App::new(feed);
+    let mut app = Window::headless(feed);
     let mounted = app.kernel().child_ids("feed").len();
     assert!(mounted < 40, "only rows near the window exist: {mounted}");
     assert!(app.layout_issues().is_empty(), "{:#?}", app.layout_issues());
-    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 
     // Jump far down: the window follows (rows near the estimated position exist).
     app.dispatch(Event::ScrollTo("feed".into(), 0.0, 24.0 * 5_000.0)).unwrap();
@@ -97,7 +97,7 @@ fn virtual_list_follows_its_scroll_container_and_measures_rows() {
 }
 
 /// The row covering the top edge of the feed, and its y.
-fn top_row(app: &App) -> (String, f32) {
+fn top_row(app: &Window) -> (String, f32) {
     let k = app.kernel();
     let feed = k.find("feed").unwrap();
     let top = k.content_origin_y(feed);
@@ -115,9 +115,9 @@ fn top_row(app: &App) -> (String, f32) {
 
 #[test]
 fn a_virtual_list_outside_a_scroll_container_is_reported() {
-    let app = App::new(|| {
+    let app = Window::headless(|| {
         let items = list("items", || (0..10u32).collect(), |i: &u32| *i);
         col().child(virtual_each(move || items.all(), |_| 20.0, |i, _| text(format!("{i}")).into())).into()
     });
-    assert!(app.diagnostics().iter().any(|d| d.code == "VIRTUAL_LIST_NOT_SCROLLABLE"), "{:?}", app.diagnostics());
+    assert!(app.app().diagnostics().iter().any(|d| d.code == "VIRTUAL_LIST_NOT_SCROLLABLE"), "{:?}", app.app().diagnostics());
 }

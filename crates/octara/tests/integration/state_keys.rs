@@ -6,7 +6,7 @@ use octara::prelude::*;
 
 #[test]
 fn a_repeated_key_of_another_type_does_not_destroy_the_first() {
-    let mut app = App::new(|| {
+    let mut app = Window::headless(|| {
         let items = list("notes", || vec![(1u32, "first".to_string())], |n: &(u32, String)| n.0);
         let draft = state("notes", || "draft".to_string());
         col()
@@ -21,5 +21,5 @@ fn a_repeated_key_of_another_type_does_not_destroy_the_first() {
     app.tap("add").unwrap();
     assert_eq!(app.kernel().text_of("count").unwrap(), "2 items");
     assert_eq!(app.kernel().text_of("draft").unwrap(), "edited");
-    assert!(app.diagnostics().iter().any(|d| d.code.id == "DUPLICATE_STATE_KEY"), "{:?}", app.diagnostics());
+    assert!(app.app().diagnostics().iter().any(|d| d.code.id == "DUPLICATE_STATE_KEY"), "{:?}", app.app().diagnostics());
 }

@@ -30,19 +30,19 @@ fn trigger_at(left: f32, top: f32, placement: Placement) -> impl Fn() -> View {
     }
 }
 
-fn rect(app: &App, id: &str) -> (f32, f32, f32, f32) {
+fn rect(app: &Window, id: &str) -> (f32, f32, f32, f32) {
     let k = app.kernel();
     k.rect(k.find(id).unwrap())
 }
 
-fn side(app: &App) -> Option<Side> {
+fn side(app: &Window) -> Option<Side> {
     let k = app.kernel();
     k.placed_side(k.find("panel").unwrap())
 }
 
 #[test]
 fn opens_below_its_anchor_and_closes() {
-    let mut app = App::new(trigger_at(10.0, 20.0, Placement::BELOW));
+    let mut app = Window::headless(trigger_at(10.0, 20.0, Placement::BELOW));
     assert!(!app.kernel().exists("panel"));
     app.dispatch(Event::Press("trigger".into())).unwrap();
     let (tx, ty, _, th) = rect(&app, "trigger");
@@ -62,7 +62,7 @@ fn opens_below_its_anchor_and_closes() {
 #[test]
 fn flips_when_there_is_no_room_and_clamps_into_the_window() {
     let (vw, vh) = DEFAULT_VIEWPORT;
-    let mut app = App::new(trigger_at(vw - 20.0, vh - 40.0, Placement::BELOW));
+    let mut app = Window::headless(trigger_at(vw - 20.0, vh - 40.0, Placement::BELOW));
     app.dispatch(Event::Press("trigger".into())).unwrap();
     let (_, ty, _, _) = rect(&app, "trigger");
     let (px, py, pw, ph) = rect(&app, "panel");
@@ -73,11 +73,11 @@ fn flips_when_there_is_no_room_and_clamps_into_the_window() {
 
 #[test]
 fn overlay_state_survives_hot_reload_and_leaves_no_residue() {
-    let mut app = App::new(trigger_at(0.0, 0.0, Placement::BELOW));
+    let mut app = Window::headless(trigger_at(0.0, 0.0, Placement::BELOW));
     app.dispatch(Event::Press("trigger".into())).unwrap();
     app.dispatch(Event::Press("pick".into())).unwrap();
     let before = app.kernel().tree_dump();
-    app.hot_reload();
+    app.app().hot_reload();
     assert_eq!(app.kernel().tree_dump(), before);
     assert_eq!(rect(&app, "panel").1, rect(&app, "trigger").3 + 4.0);
     app.dispatch(Event::Press("trigger".into())).unwrap();

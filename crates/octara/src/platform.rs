@@ -24,7 +24,47 @@ pub trait Platform {
     fn waker(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
         None
     }
+    /// Opens window `id` as `options` asks (the id names it in the input it sends back).
+    fn open_window(&mut self, id: crate::app::WindowId, options: &WindowOptions) -> Result<Box<dyn PlatformWindow>, String>;
     fn as_any(&self) -> &dyn Any;
+}
+
+/// What kind of window: a document or tool window, or a dialog over its parent.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowKind {
+    #[default]
+    Normal,
+    Dialog,
+}
+
+/// A window to open.
+#[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+pub struct WindowOptions {
+    pub title: String,
+    /// Its content size in logical pixels.
+    pub size: (f32, f32),
+    pub kind: WindowKind,
+}
+
+impl Default for WindowOptions {
+    fn default() -> Self {
+        WindowOptions { title: String::new(), size: (800.0, 600.0), kind: WindowKind::Normal }
+    }
+}
+
+impl WindowOptions {
+    pub fn new(title: impl Into<String>) -> Self {
+        WindowOptions { title: title.into(), ..WindowOptions::default() }
+    }
+    pub fn size(mut self, width: f32, height: f32) -> Self {
+        self.size = (width, height);
+        self
+    }
+    pub fn kind(mut self, kind: WindowKind) -> Self {
+        self.kind = kind;
+        self
+    }
 }
 
 /// One window on that system.
@@ -48,10 +88,20 @@ pub struct TextInput {
     pub multiline: bool,
 }
 
-/// The platform of headless runs: a clipboard in memory, no waker.
-#[derive(Default, Debug)]
+/// The platform of headless runs: a clipboard in memory, no waker; its windows are
+/// [`HeadlessWindow`]s.
+#[derive(Default)]
 pub struct HeadlessPlatform {
     pub clipboard: Option<String>,
+    /// The native host the next window opened gets (a test's fake platform views).
+    pub next_host: Option<Box<dyn NativeHost>>,
+}
+
+impl HeadlessPlatform {
+    /// A headless platform whose next window's native views go to `host`.
+    pub fn with_host(host: impl NativeHost + 'static) -> HeadlessPlatform {
+        HeadlessPlatform { clipboard: None, next_host: Some(Box::new(host)) }
+    }
 }
 
 impl Platform for HeadlessPlatform {
@@ -60,6 +110,12 @@ impl Platform for HeadlessPlatform {
     }
     fn write_text(&mut self, text: &str) {
         self.clipboard = Some(text.to_owned());
+    }
+    fn open_window(&mut self, _: crate::app::WindowId, _: &WindowOptions) -> Result<Box<dyn PlatformWindow>, String> {
+        Ok(Box::new(match self.next_host.take() {
+            Some(host) => HeadlessWindow { host, text_input: None },
+            None => HeadlessWindow::default(),
+        }))
     }
     fn as_any(&self) -> &dyn Any {
         self

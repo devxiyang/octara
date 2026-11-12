@@ -16,7 +16,7 @@ fn example_apps_have_no_layout_issues_at_phone_and_desktop_sizes() {
         ("contacts_virtual", || apps::contacts_virtual(10_000)),
     ];
     for (name, view) in cases {
-        let mut app = App::new(view);
+        let mut app = Window::headless(view);
         let r = app.at_sizes(&[(375.0, 667.0), (1280.0, 800.0)], |app| {
             let issues: Vec<_> =
                 app.layout_issues().into_iter().filter(|i| i.code.severity != octara::diagnostics::Severity::Info).collect();

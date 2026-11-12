@@ -5,7 +5,7 @@ use octara::kernel::LayoutIssue;
 use octara::prelude::*;
 
 fn issues(view: fn() -> View) -> Vec<LayoutIssue> {
-    App::new(view).layout_issues()
+    Window::headless(view).layout_issues()
 }
 
 fn codes(v: &[LayoutIssue]) -> Vec<(&'static str, Option<String>)> {
@@ -63,7 +63,7 @@ fn clamped_overlays_and_missing_tokens() {
     assert!(codes(&v).iter().any(|c| c.0 == "OVERLAY_CLAMPED"), "{v:#?}");
     // With `fit` (the default for BELOW) it takes the roomier side, is limited to the room there
     // and scrolls: nothing to report.
-    let app = App::new(|| menu(Placement::BELOW));
+    let app = Window::headless(|| menu(Placement::BELOW));
     assert!(app.layout_issues().is_empty(), "{:#?}", app.layout_issues());
     let k = app.kernel();
     let wrapper = k.parent(k.find("menu").unwrap()).unwrap();

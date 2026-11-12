@@ -57,13 +57,13 @@ fn path(name: &str) -> String {
 
 #[test]
 fn a_headless_capture_reports_placeholders() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     let shot = path("headless");
     let reply = handle(&mut app, Request::Capture { path: shot.clone(), settle_ms: None, scale: Some(1.0), pixels: Pixels::Painted });
     assert_eq!(reply.code.as_deref(), Some("CAPTURE_FAILED"), "nothing paints without a painter");
 
     let painted = Rc::new(RefCell::new(Vec::new()));
-    app.set_painter(Box::new(Counting(painted.clone())));
+    app.app().set_painter(Box::new(Counting(painted.clone())));
     let reply = handle(&mut app, Request::Capture { path: shot.clone(), settle_ms: None, scale: Some(1.0), pixels: Pixels::Display });
     let c = reply.capture.expect("a report");
     assert!(std::fs::read(&shot).unwrap().starts_with(b"\x89PNG"));
@@ -79,8 +79,7 @@ fn a_headless_capture_reports_placeholders() {
 fn snapshots_draw_in_place_and_are_cleared() {
     let host = Snapping::default();
     let busy = host.busy.clone();
-    let mut app =
-        App::with_platform(octara::platform::HeadlessPlatform::default(), octara::platform::HeadlessWindow::with_host(host), view);
+    let mut app = Window::headless_on(octara::platform::HeadlessPlatform::with_host(host), view);
 
     // A busy view keeps the app unsettled.
     *busy.borrow_mut() = Some("loading https://example.com".into());
@@ -113,7 +112,7 @@ fn snapshots_draw_in_place_and_are_cleared() {
 
 #[test]
 fn a_display_capture_shows_views_live() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     let shot = path("display");
     let picture = Picture { width: 2, height: 1, rgba: vec![0, 0, 0, 255, 255, 255, 255, 255] };
     let c = app.capture_display(&picture, &shot, 2.0, vec![]).unwrap();

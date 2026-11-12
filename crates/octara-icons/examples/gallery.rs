@@ -66,7 +66,7 @@ fn main() {
     let mut shots = Vec::new();
     for theme in [Theme::light(), Theme::dark()] {
         let q = query.clone();
-        let mut app = App::new(move || match &q {
+        let mut app = Window::headless(move || match &q {
             Some(q) => {
                 let found = icons::search(q);
                 row()
@@ -82,7 +82,7 @@ fn main() {
             None => sample(),
         });
         app.resize(720.0, 520.0);
-        app.set_theme(theme);
+        app.app().set_theme(theme);
         shots.push(octara_render::screenshot(&app, 2.0));
     }
     // Light above dark.

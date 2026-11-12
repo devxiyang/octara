@@ -29,11 +29,11 @@ pub mod path;
 pub mod platform;
 pub mod reactive;
 pub mod task;
-pub mod testing;
 pub mod view;
+pub mod window;
 
 pub mod prelude {
-    pub use crate::app::{App, Drag, DragPhase, Event, Key, KeyEvent, Modifiers};
+    pub use crate::app::{App, Drag, DragPhase, Event, Key, KeyEvent, Modifiers, Window};
     pub use crate::canvas::Canvas;
     pub use crate::icon::Icon;
     pub use crate::image::{Image, ObjectFit};
@@ -50,5 +50,6 @@ pub mod prelude {
     pub use crate::reactive::text::{LiveText, live_text};
     pub use crate::task::{Load, Receiver, Resource, Sender, Task, background, channel, interval, resource, sleep, spawn};
     pub use crate::view::*;
+    pub use crate::window::{WindowId, WindowKind, WindowOptions, close_window, current_window, open_window, windows};
     pub use serde_json::json;
 }

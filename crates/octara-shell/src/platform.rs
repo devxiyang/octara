@@ -10,15 +10,18 @@ use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
 
-/// The desktop the app runs on: arboard's clipboard, the event loop's proxy as the waker.
+/// The desktop the app runs on: arboard's clipboard, the event loop's proxy as the waker, and
+/// the window the shell made (winit makes windows inside its loop; opening more comes with the
+/// backend's several windows).
 pub(crate) struct WinitPlatform {
     clipboard: Option<arboard::Clipboard>,
     proxy: EventLoopProxy<ShellEvent>,
+    first: Option<WinitWindow>,
 }
 
 impl WinitPlatform {
-    pub(crate) fn new(proxy: EventLoopProxy<ShellEvent>) -> Self {
-        WinitPlatform { clipboard: arboard::Clipboard::new().ok(), proxy }
+    pub(crate) fn new(proxy: EventLoopProxy<ShellEvent>, first: WinitWindow) -> Self {
+        WinitPlatform { clipboard: arboard::Clipboard::new().ok(), proxy, first: Some(first) }
     }
 }
 
@@ -30,6 +33,10 @@ impl Platform for WinitPlatform {
         if let Some(c) = &mut self.clipboard {
             let _ = c.set_text(text);
         }
+    }
+    fn open_window(&mut self, _: octara::app::WindowId, _: &octara::platform::WindowOptions) -> Result<Box<dyn PlatformWindow>, String> {
+        let w = self.first.take().ok_or("this backend shows one window for now")?;
+        Ok(Box::new(w))
     }
     fn waker(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
         let proxy = self.proxy.clone();

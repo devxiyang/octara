@@ -45,7 +45,7 @@ impl Kernel {
         self.update_ink();
         let window = Rect { x: 0.0, y: 0.0, w: self.viewport.0, h: self.viewport.1 };
         self.paint(self.root, (0.0, 0.0), 1.0, window, &mut items);
-        DisplayList { size: self.viewport, background: self.theme.get(Token::Background), items }
+        DisplayList { size: self.viewport, background: self.res.theme.borrow().get(Token::Background), items }
     }
 
     /// Where the node is shown now (moving layout included), given where its parent's content
@@ -116,7 +116,7 @@ impl Kernel {
             return e;
         }
         let l = self.taffy.layout(n.taffy).expect("taffy");
-        for s in n.visual.shadow.resolve(&self.theme) {
+        for s in n.visual.shadow.resolve(&self.res.theme.borrow()) {
             let reach = 1.5 * s.blur_radius + s.spread_radius;
             e[0] = e[0].max(reach - s.offset.0);
             e[1] = e[1].max(reach - s.offset.1);
@@ -301,10 +301,10 @@ impl Kernel {
                     source: id,
                     rect,
                     radius,
-                    fill: Some(fade(self.theme.get(Token::Surface), opacity)),
+                    fill: Some(fade(self.res.theme.borrow().get(Token::Surface), opacity)),
                     gradient: None,
                     border: [1.0; 4],
-                    border_color: fade(self.theme.get(Token::Border), opacity),
+                    border_color: fade(self.res.theme.borrow().get(Token::Border), opacity),
                 }));
             }
             let cut = nv.live && nv.snapshot.is_none() && nv.slot == crate::native::Slot::Underlay;
@@ -339,12 +339,12 @@ impl Kernel {
                 Wrap::None | Wrap::Truncate => None,
             };
             if !s.is_empty() {
-                let mut engine = self.text.borrow_mut();
+                let mut engine = self.res.text.borrow_mut();
                 let clean = n.text_content().map_or(0, |t| t.clean.replace(s.len()));
-                text::measure(&mut **engine, id.into(), s, clean, &style, limit);
+                text::measure(&mut **engine, self.key(id), s, clean, &style, limit);
                 // Cut text (one line, or `line_clamp`) ends in an ellipsis inside the box.
                 let fit = (style.wrap == Wrap::Truncate || style.max_lines.is_some()).then_some(inner);
-                let runs = engine.glyph_runs(id.into(), &style, limit, fit);
+                let runs = engine.glyph_runs(self.key(id), &style, limit, fit);
                 drop(engine);
                 // A truncated line is clipped to the box (an ellipsis comes with the renderer).
                 let clip_text = style.wrap == Wrap::Truncate;
@@ -417,7 +417,7 @@ impl Kernel {
         use crate::kernel::Fill;
         let origin = Transform::translate(content.x, content.y);
         let at = |r: Rect| Rect { x: r.x + content.x, y: r.y + content.y, ..r };
-        let color = |p: crate::kernel::Paint| fade(p.resolve(&self.theme).0, opacity);
+        let color = |p: crate::kernel::Paint| fade(p.resolve(&self.res.theme.borrow()).0, opacity);
         out.push(Item::PushClip { source: id, rect: content, radius: 0.0 });
         // A canvas's texts are cached by the text engine as slots of its node, in order.
         let mut slot = 0u32;
@@ -479,8 +479,8 @@ impl Kernel {
                         ..base
                     };
                     let limit = t.max_width.map(|w| w * t.scale);
-                    let key = text::TextKey { node: id, slot };
-                    let mut engine = self.text.borrow_mut();
+                    let key = text::TextKey { kernel: self.serial, node: id, slot };
+                    let mut engine = self.res.text.borrow_mut();
                     let m = text::measure(&mut **engine, key, &t.text, 0, &style, limit);
                     let runs = engine.glyph_runs(key, &style, limit, None);
                     drop(engine);

@@ -6,8 +6,8 @@ use octara_kit::button;
 use std::cell::Cell;
 use std::rc::Rc;
 
-fn app(probe: Rc<Cell<usize>>) -> App {
-    App::new(move || {
+fn app(probe: Rc<Cell<usize>>) -> Window {
+    Window::headless(move || {
         let items = list("items", || (0..10u32).collect::<Vec<_>>(), |x| *x);
         let evens = items.filter(|x| x % 2 == 0);
         let shown = state("shown", || true);
@@ -45,21 +45,21 @@ fn filtered_rows_follow_changes_and_logs_stay_bounded() {
     assert_eq!(kids[..3], ["e0", "e2", "e4"]);
     press(&mut a, "drop").unwrap();
     assert_eq!(a.kernel().child_ids("evens")[..3], ["e2", "e6", "e10"]);
-    assert!(a.diagnostics().is_empty(), "{:?}", a.diagnostics());
+    assert!(a.app().diagnostics().is_empty(), "{:?}", a.app().diagnostics());
 }
 
 #[test]
 fn items_are_reclaimed_and_reload_does_not_leak() {
     let mut a = app(Rc::default());
-    let start = a.work().reactive_nodes;
+    let start = a.app().work().reactive_nodes;
     for _ in 0..3 {
-        a.hot_reload();
+        a.app().hot_reload();
     }
-    assert_eq!(a.work().reactive_nodes, start, "hot reload leaked nodes");
+    assert_eq!(a.app().work().reactive_nodes, start, "hot reload leaked nodes");
     press(&mut a, "drop").unwrap();
-    let after_drop = a.work().reactive_nodes;
+    let after_drop = a.app().work().reactive_nodes;
     assert!(after_drop < start, "removed items were not reclaimed");
     press(&mut a, "hide").unwrap();
     press(&mut a, "hide").unwrap();
-    assert_eq!(a.work().reactive_nodes, after_drop);
+    assert_eq!(a.app().work().reactive_nodes, after_drop);
 }

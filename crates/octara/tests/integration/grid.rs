@@ -2,14 +2,14 @@
 
 use octara::prelude::*;
 
-fn rect(app: &App, id: &str) -> (f32, f32, f32, f32) {
+fn rect(app: &Window, id: &str) -> (f32, f32, f32, f32) {
     let k = app.kernel();
     k.rect(k.find(id).unwrap())
 }
 
 #[test]
 fn equal_columns_spans_and_full_rows() {
-    let app = App::new(|| {
+    let app = Window::headless(|| {
         el().id("grid")
             .grid()
             .grid_cols(3)

@@ -1,22 +1,22 @@
 //! Shared scenarios for the example apps: acceptance tests, hot-reload scenarios and benchmark
 //! steps, written against `octara::testing::Host`. Specs: `examples/README.md`.
 
+pub use octara::app::Window;
 pub use octara::app::{DEFAULT_VIEWPORT, Event, Work};
 pub use octara::diagnostics::{Diagnostic, Severity};
 pub use octara::kernel::{Kernel, State, Theme, Token};
-pub use octara::testing::Host;
 
 /// Builds the four spec apps.
 pub trait Factory {
     const NAME: &'static str;
-    fn counter() -> Box<dyn Host>;
-    fn todo_with(n: usize) -> Box<dyn Host>;
-    fn chat_with(n: usize) -> Box<dyn Host>;
-    fn settings() -> Box<dyn Host>;
-    fn todo() -> Box<dyn Host> {
+    fn counter() -> Window;
+    fn todo_with(n: usize) -> Window;
+    fn chat_with(n: usize) -> Window;
+    fn settings() -> Window;
+    fn todo() -> Window {
         Self::todo_with(0)
     }
-    fn chat() -> Box<dyn Host> {
+    fn chat() -> Window {
         Self::chat_with(0)
     }
 }
@@ -40,38 +40,38 @@ macro_rules! ensure_eq {
     }};
 }
 
-pub fn press(h: &mut dyn Host, id: &str) -> Check {
+pub fn press(h: &mut Window, id: &str) -> Check {
     h.dispatch(Event::Press(id.into()))
 }
-pub fn input(h: &mut dyn Host, id: &str, text: &str) -> Check {
+pub fn input(h: &mut Window, id: &str, text: &str) -> Check {
     h.dispatch(Event::Input(id.into(), text.into()))
 }
-pub fn toggle(h: &mut dyn Host, id: &str) -> Check {
+pub fn toggle(h: &mut Window, id: &str) -> Check {
     h.dispatch(Event::Toggle(id.into()))
 }
-pub fn external(h: &mut dyn Host, name: &str, payload: &str) -> Check {
+pub fn external(h: &mut Window, name: &str, payload: &str) -> Check {
     h.dispatch(Event::Send(name.into(), payload.into()))
 }
 
-fn text(h: &dyn Host, id: &str) -> Option<String> {
+fn text(h: &Window, id: &str) -> Option<String> {
     h.kernel().text_of(id)
 }
 
-fn selected(h: &dyn Host, id: &str) -> Option<bool> {
+fn selected(h: &Window, id: &str) -> Option<bool> {
     h.kernel().state_of(id).map(|s| s.contains(State::SELECTED))
 }
 
-fn text_color(h: &dyn Host, id: &str) -> Option<octara::kernel::Color> {
+fn text_color(h: &Window, id: &str) -> Option<octara::kernel::Color> {
     h.kernel().visual_of(id).map(|v| v.text)
 }
 
 /// Fails with the tree dump attached, to make failures self-explanatory.
-pub fn dump(h: &dyn Host) -> String {
+pub fn dump(h: &Window) -> String {
     h.kernel().tree_dump()
 }
 
-fn no_errors(h: &dyn Host) -> Check {
-    let errors: Vec<_> = h.diagnostics().into_iter().filter(|d| d.severity() == Severity::Error).collect();
+fn no_errors(h: &Window) -> Check {
+    let errors: Vec<_> = h.app().diagnostics().into_iter().filter(|d| d.severity() == Severity::Error).collect();
     ensure!(errors.is_empty(), "unexpected error diagnostics: {errors:?}");
     Ok(())
 }
@@ -80,7 +80,7 @@ fn no_errors(h: &dyn Host) -> Check {
 // Acceptance
 // ---------------------------------------------------------------------------------------------
 
-pub fn counter_acceptance(h: &mut dyn Host) -> Check {
+pub fn counter_acceptance(h: &mut Window) -> Check {
     ensure_eq!(text(h, "count"), Some("Count: 0".into()));
     ensure_eq!(text(h, "double"), Some("Double: 0".into()));
     for _ in 0..3 {
@@ -94,8 +94,8 @@ pub fn counter_acceptance(h: &mut dyn Host) -> Check {
     no_errors(h)
 }
 
-pub fn todo_acceptance(h: &mut dyn Host) -> Check {
-    let k = |h: &dyn Host| h.kernel().child_ids("todos");
+pub fn todo_acceptance(h: &mut Window) -> Check {
+    let k = |h: &Window| h.kernel().child_ids("todos");
     ensure_eq!(text(h, "left"), Some("0 left".into()));
     ensure!(h.kernel().exists("todos"), "group#todos missing");
     ensure!(k(h).is_empty(), "todos should start empty");
@@ -152,7 +152,7 @@ pub fn todo_acceptance(h: &mut dyn Host) -> Check {
     no_errors(h)
 }
 
-pub fn chat_acceptance(h: &mut dyn Host) -> Check {
+pub fn chat_acceptance(h: &mut Window) -> Check {
     ensure_eq!(text(h, "header"), Some("0 messages".into()));
     ensure_eq!(text(h, "status"), Some("idle".into()));
 
@@ -190,7 +190,7 @@ fn summary(n: &str, s: &str, v: &str, t: &str, tel: &str) -> Option<String> {
     Some(format!("notifications={n} sound={s} volume={v} theme={t} telemetry={tel}"))
 }
 
-pub fn settings_acceptance(h: &mut dyn Host) -> Check {
+pub fn settings_acceptance(h: &mut Window) -> Check {
     ensure_eq!(text(h, "summary"), summary("off", "on", "50", "system", "off"));
     ensure!(!h.kernel().exists("notification-options"), "options should start hidden");
     ensure_eq!(selected(h, "theme-system"), Some(true));
@@ -234,15 +234,15 @@ pub fn settings_acceptance(h: &mut dyn Host) -> Check {
 // Hot reload: interact, reload, compare the semantic dump, keep interacting.
 // ---------------------------------------------------------------------------------------------
 
-fn reload_keeps_tree(h: &mut dyn Host) -> Check {
+fn reload_keeps_tree(h: &mut Window) -> Check {
     let before = h.kernel().tree_dump();
-    h.hot_reload();
+    h.app().hot_reload();
     let after = h.kernel().tree_dump();
     ensure!(before == after, "tree changed across hot reload:\n--- before\n{before}--- after\n{after}");
     no_errors(h)
 }
 
-pub fn counter_hot_reload(h: &mut dyn Host) -> Check {
+pub fn counter_hot_reload(h: &mut Window) -> Check {
     press(h, "inc")?;
     press(h, "inc")?;
     reload_keeps_tree(h)?;
@@ -251,7 +251,7 @@ pub fn counter_hot_reload(h: &mut dyn Host) -> Check {
     Ok(())
 }
 
-pub fn todo_hot_reload(h: &mut dyn Host) -> Check {
+pub fn todo_hot_reload(h: &mut Window) -> Check {
     for t in ["a", "b", "c"] {
         input(h, "new-todo", t)?;
         press(h, "add")?;
@@ -267,7 +267,7 @@ pub fn todo_hot_reload(h: &mut dyn Host) -> Check {
     Ok(())
 }
 
-pub fn chat_hot_reload(h: &mut dyn Host) -> Check {
+pub fn chat_hot_reload(h: &mut Window) -> Check {
     external(h, "user", "hi")?;
     external(h, "token", "par")?;
     input(h, "composer", "typing")?;
@@ -278,7 +278,7 @@ pub fn chat_hot_reload(h: &mut dyn Host) -> Check {
     Ok(())
 }
 
-pub fn settings_hot_reload(h: &mut dyn Host) -> Check {
+pub fn settings_hot_reload(h: &mut Window) -> Check {
     toggle(h, "notifications")?;
     input(h, "volume", "30")?;
     press(h, "account-toggle")?;
@@ -294,27 +294,27 @@ pub fn settings_hot_reload(h: &mut dyn Host) -> Check {
 /// Runs every acceptance and hot-reload scenario, returning `(name, result)` pairs.
 pub fn run_all<F: Factory>() -> Vec<(&'static str, Check)> {
     vec![
-        ("counter", counter_acceptance(&mut *F::counter())),
-        ("todo", todo_acceptance(&mut *F::todo())),
-        ("chat", chat_acceptance(&mut *F::chat())),
-        ("settings", settings_acceptance(&mut *F::settings())),
-        ("counter/hot-reload", counter_hot_reload(&mut *F::counter())),
-        ("todo/hot-reload", todo_hot_reload(&mut *F::todo())),
-        ("chat/hot-reload", chat_hot_reload(&mut *F::chat())),
-        ("settings/hot-reload", settings_hot_reload(&mut *F::settings())),
-        ("todo_with(1000) shape", todo_with_shape(&mut *F::todo_with(1000))),
-        ("chat_with(1000) shape", chat_with_shape(&mut *F::chat_with(1000))),
+        ("counter", counter_acceptance(&mut F::counter())),
+        ("todo", todo_acceptance(&mut F::todo())),
+        ("chat", chat_acceptance(&mut F::chat())),
+        ("settings", settings_acceptance(&mut F::settings())),
+        ("counter/hot-reload", counter_hot_reload(&mut F::counter())),
+        ("todo/hot-reload", todo_hot_reload(&mut F::todo())),
+        ("chat/hot-reload", chat_hot_reload(&mut F::chat())),
+        ("settings/hot-reload", settings_hot_reload(&mut F::settings())),
+        ("todo_with(1000) shape", todo_with_shape(&mut F::todo_with(1000))),
+        ("chat_with(1000) shape", chat_with_shape(&mut F::chat_with(1000))),
     ]
 }
 
-pub fn todo_with_shape(h: &mut dyn Host) -> Check {
+pub fn todo_with_shape(h: &mut Window) -> Check {
     ensure_eq!(h.kernel().child_ids("todos").len(), 1000);
     ensure_eq!(text(h, "title-500"), Some("Item 500".into()));
     ensure_eq!(text(h, "left"), Some("1000 left".into()));
     Ok(())
 }
 
-fn chat_with_shape(h: &mut dyn Host) -> Check {
+fn chat_with_shape(h: &mut Window) -> Check {
     ensure_eq!(h.kernel().child_ids("messages").len(), 1000);
     ensure_eq!(text(h, "msg-role-999"), Some("user".into()));
     ensure_eq!(text(h, "msg-body-1000"), Some("message 1000".into()));
@@ -337,8 +337,8 @@ pub fn assert_all<F: Factory>() {
 pub struct BenchStep {
     pub name: &'static str,
     pub app: BenchApp,
-    pub prepare: fn(&mut dyn Host) -> Check,
-    pub op: fn(&mut dyn Host, usize) -> Check,
+    pub prepare: fn(&mut Window) -> Check,
+    pub op: fn(&mut Window, usize) -> Check,
     pub repeat: usize,
 }
 
@@ -351,7 +351,7 @@ pub enum BenchApp {
 }
 
 impl BenchApp {
-    pub fn build<F: Factory>(self) -> Box<dyn Host> {
+    pub fn build<F: Factory>(self) -> Window {
         match self {
             BenchApp::Counter => F::counter(),
             BenchApp::Todo(n) => F::todo_with(n),
@@ -361,7 +361,7 @@ impl BenchApp {
     }
 }
 
-fn ok(_: &mut dyn Host) -> Check {
+fn ok(_: &mut Window) -> Check {
     Ok(())
 }
 

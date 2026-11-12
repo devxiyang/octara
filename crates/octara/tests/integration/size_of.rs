@@ -17,22 +17,22 @@ fn view() -> View {
 
 #[test]
 fn content_follows_its_containers_size() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     assert!(app.kernel().exists("wide"), "400 px panel");
     app.resize(500.0, 600.0);
     assert!(app.kernel().exists("compact"), "250 px panel");
     // Within the same side of 320 px only the memo reruns.
-    app.reset_work();
+    app.app().reset_work();
     app.resize(520.0, 600.0);
-    assert!(app.work().closures_run <= 1, "{:?}", app.work());
-    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    assert!(app.app().work().closures_run <= 1, "{:?}", app.app().work());
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 }
 
 #[test]
 fn a_size_that_feeds_back_into_itself_is_cut_and_reported() {
-    let app = App::new(|| {
+    let app = Window::headless(|| {
         // Each layout adds a character, so the text is wider than it was: never settles.
         row().child(text(move || "x".repeat(size_of("grower").get().0 as usize / 4 + 1)).id("grower").whitespace_nowrap()).into()
     });
-    assert!(app.diagnostics().iter().any(|d| d.code == "LAYOUT_LOOP"), "{:?}", app.diagnostics());
+    assert!(app.app().diagnostics().iter().any(|d| d.code == "LAYOUT_LOOP"), "{:?}", app.app().diagnostics());
 }

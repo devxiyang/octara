@@ -12,7 +12,6 @@
 //! - Pending work is listed (`App::pending`), with the scope and source location of each.
 
 use crate::reactive::graph::{Ctx, ScopeId, Signal, rt, watch};
-use crate::view::ui;
 use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -75,6 +74,8 @@ struct Entry {
     label: String,
     at: &'static Location<'static>,
     cancelled: bool,
+    /// The owner (window) it was spawned under, restored when it runs.
+    owner: Option<crate::reactive::graph::Owner>,
 }
 
 /// What other threads can touch: the ready queue, the count of background jobs in flight, and
@@ -146,7 +147,7 @@ impl Default for Scheduler {
 }
 
 fn sched() -> Rc<Scheduler> {
-    ui().sched.clone()
+    crate::app::app_state().sched.clone()
 }
 
 impl Scheduler {
@@ -172,7 +173,8 @@ impl Scheduler {
             g[slot]
         };
         let id = TaskId::new(slot, generation);
-        self.slots.borrow_mut()[slot] = Some(Entry { id, future: Some(future), scope, kind, label, at, cancelled: false });
+        let owner = rt(|r| r.owner());
+        self.slots.borrow_mut()[slot] = Some(Entry { id, future: Some(future), scope, kind, label, at, cancelled: false, owner });
         self.shared.ready.lock().expect("ready").push(id);
         id
     }
@@ -227,19 +229,20 @@ impl Scheduler {
     }
 
     fn poll(&self, id: TaskId) -> bool {
-        let (mut future, scope) = {
+        let (mut future, scope, owner) = {
             let mut slots = self.slots.borrow_mut();
             let Some(Some(e)) = slots.get_mut(id.slot()) else { return false };
             if e.id != id || e.cancelled {
                 return false;
             }
             let Some(f) = e.future.take() else { return false };
-            (f, e.scope)
+            (f, e.scope, e.owner)
         };
         let waker = Waker::from(Arc::new(TaskWaker { id, shared: Arc::downgrade(&self.shared) }));
         let mut cx = Context::from_waker(&waker);
         let prev = self.current.replace(Some(id));
-        let done = rt(|r| r.with_frame(Ctx::Handler, None, Some(scope), || future.as_mut().poll(&mut cx).is_ready()));
+        let done =
+            rt(|r| r.with_owner(owner, || r.with_frame(Ctx::Handler, None, Some(scope), || future.as_mut().poll(&mut cx).is_ready())));
         self.current.set(prev);
         let mut slots = self.slots.borrow_mut();
         let cancelled = slots.get(id.slot()).and_then(|e| e.as_ref()).is_none_or(|e| e.id != id || e.cancelled);

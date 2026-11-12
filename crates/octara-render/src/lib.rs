@@ -79,8 +79,8 @@ pub fn reference_painter() -> Box<dyn octara::capture::Painter> {
     Box::new(CpuRenderer::new())
 }
 
-/// A screenshot of `app`'s current frame at `scale` device pixels per logical pixel, rendered
-/// by the reference renderer.
-pub fn screenshot(app: &octara::app::App, scale: f32) -> Bitmap {
-    CpuRenderer::new().render(&app.display_list(), scale)
+/// A screenshot of `window`'s current frame at `scale` device pixels per logical pixel,
+/// rendered by the reference renderer.
+pub fn screenshot(window: &octara::app::Window, scale: f32) -> Bitmap {
+    CpuRenderer::new().render(&window.display_list(), scale)
 }

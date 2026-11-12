@@ -3,7 +3,7 @@
 use octara::paint::{DisplayList, Item};
 use octara::prelude::*;
 
-fn source(app: &App, id: &str) -> octara::kernel::NodeId {
+fn source(app: &Window, id: &str) -> octara::kernel::NodeId {
     app.kernel().find(id).unwrap()
 }
 
@@ -25,7 +25,7 @@ fn view() -> View {
 
 #[test]
 fn quads_glyphs_and_clips_in_order() {
-    let app = App::new(view);
+    let app = Window::headless(view);
     let dl: std::rc::Rc<DisplayList> = app.display_list();
     assert_eq!(dl.size, (800.0, 600.0));
     assert_eq!(dl.background, Theme::light().get(Token::Background));
@@ -64,10 +64,10 @@ fn quads_glyphs_and_clips_in_order() {
 
 #[test]
 fn opacity_and_theme_reach_the_colors() {
-    let mut app = App::new(|| el().id("box").size_8().bg(Token::Accent).opacity(0.5).into());
+    let app = Window::headless(|| el().id("box").size_8().bg(Token::Accent).opacity(0.5).into());
     let fill = app.display_list().quads().next().unwrap().fill.unwrap();
     assert!((fill.components[3] - 0.5).abs() < 1e-6);
-    app.set_theme(Theme::dark());
+    app.app().set_theme(Theme::dark());
     let fill = app.display_list().quads().next().unwrap().fill.unwrap();
     assert_eq!(fill.components[..3], Theme::dark().get(Token::Accent).components[..3]);
 }
@@ -76,7 +76,7 @@ mod ellipsis {
     use octara::paint::Item;
     use octara::prelude::*;
 
-    fn glyphs(app: &App, id: &str) -> Vec<(u32, f32, f32)> {
+    fn glyphs(app: &Window, id: &str) -> Vec<(u32, f32, f32)> {
         let n = app.kernel().find(id).unwrap();
         let mut out = Vec::new();
         for item in app.display_list().items.iter() {
@@ -89,8 +89,8 @@ mod ellipsis {
         out
     }
 
-    fn app() -> App {
-        App::new(|| {
+    fn app() -> Window {
+        Window::headless(|| {
             col()
                 .child(text("A sentence far too long for its box").id("cut").w(px(120.0)).truncate())
                 .child(text("Fits").id("fits").w(px(120.0)).truncate())
@@ -126,7 +126,7 @@ mod shadows {
 
     #[test]
     fn shadows_come_before_their_box_offset_and_spread() {
-        let mut app = App::new(|| {
+        let app = Window::headless(|| {
             col()
                 .p_8()
                 .child(el().id("card").size_16().rounded_md().bg(Token::Surface).shadow_md())
@@ -153,7 +153,7 @@ mod shadows {
             .unwrap();
         assert_eq!((s.rect.x, s.rect.y, s.rect.w), (x + 2.0 - 1.0, y + 3.0 - 1.0, w + 2.0));
         // A theme can change the scale.
-        app.set_theme(Theme::light().shadow(ShadowStep::Md, vec![]));
+        app.app().set_theme(Theme::light().shadow(ShadowStep::Md, vec![]));
         assert!(!app.display_list().items.iter().any(|i| matches!(i, Item::Shadow(s) if s.source == n)));
     }
 }
@@ -164,7 +164,7 @@ mod gradients {
     #[test]
     fn gradients_resolve_tokens_and_follow_states_and_themes() {
         let mut app =
-            App::new(|| {
+            Window::headless(|| {
                 col()
                     .child(el().id("g").size_16().bg(Token::Surface).hover(|p| {
                         p.bg(linear_gradient(90.0, linear_color_stop(Token::Accent, 0.0), linear_color_stop(Token::Surface, 1.0)))
@@ -178,7 +178,7 @@ mod gradients {
         assert_eq!(v.background, None);
         let g = v.gradient.unwrap();
         assert_eq!((g.angle, g.from, g.to), (90.0, (Theme::light().get(Token::Accent), 0.0), (Theme::light().get(Token::Surface), 1.0)));
-        app.set_theme(Theme::dark());
+        app.app().set_theme(Theme::dark());
         assert_eq!(app.kernel().visual_of("g").unwrap().gradient.unwrap().from.0, Theme::dark().get(Token::Accent));
         // The quad carries it; the color at the start and end of the line are the stops.
         let q = app.display_list().quads().find(|q| q.gradient.is_some()).copied().unwrap();
@@ -191,7 +191,7 @@ mod gradients {
 
 #[test]
 fn an_unchanged_frame_is_reused() {
-    let mut app = App::new(|| {
+    let mut app = Window::headless(|| {
         let on = state("on", || false);
         col()
             .child(
@@ -203,7 +203,7 @@ fn an_unchanged_frame_is_reused() {
             .child(el().id("moving").size_8().bg(move || if on.get() { Token::Danger } else { Token::Surface }).motion(Spring::SNAP))
             .into()
     });
-    let built = |app: &App| app.kernel().frames_built();
+    let built = |app: &Window| app.kernel().frames_built();
     let first = app.display_list();
     let n = built(&app);
     let again = app.display_list();
@@ -216,7 +216,7 @@ fn an_unchanged_frame_is_reused() {
     assert!(!std::rc::Rc::ptr_eq(&first, &pressed));
     let _ = app.display_list();
     assert_eq!(built(&app), n + 2, "rebuilt while something moves");
-    app.advance(std::time::Duration::from_secs(2));
+    app.app().advance(std::time::Duration::from_secs(2));
     let rest = app.display_list();
     assert!(std::rc::Rc::ptr_eq(&rest, &app.display_list()), "at rest: reused again");
 
@@ -224,6 +224,6 @@ fn an_unchanged_frame_is_reused() {
     app.resize(400.0, 300.0);
     assert!(!std::rc::Rc::ptr_eq(&rest, &app.display_list()));
     let before = app.display_list();
-    app.set_theme(Theme::dark());
+    app.app().set_theme(Theme::dark());
     assert!(!std::rc::Rc::ptr_eq(&before, &app.display_list()));
 }

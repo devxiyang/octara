@@ -23,6 +23,7 @@ use rustc_hash::FxHashMap;
 use slotmap::{SlotMap, new_key_type};
 use std::cell::{Cell, RefCell};
 use std::fmt::Write as _;
+use std::rc::Rc;
 use style::{Inherited, Unresolved};
 use text::{TextEngine, TextKey, TextMetrics, TextStyle, Wrap};
 
@@ -520,7 +521,7 @@ fn width_limit(known: Option<f32>, avail: taffy::AvailableSpace) -> Option<f32> 
 /// Lays out a text node's content for Taffy and for diagnostics.
 fn text_metrics(
     engine: &mut dyn TextEngine,
-    id: NodeId,
+    key: TextKey,
     content: &str,
     clean: &Cell<usize>,
     style: &TextStyle,
@@ -531,10 +532,10 @@ fn text_metrics(
     }
     let c = clean.replace(content.len());
     match style.wrap {
-        Wrap::Words => text::measure(engine, id.into(), content, c, style, limit),
-        Wrap::None => text::measure(engine, id.into(), content, c, style, None),
+        Wrap::Words => text::measure(engine, key, content, c, style, limit),
+        Wrap::None => text::measure(engine, key, content, c, style, None),
         Wrap::Truncate => {
-            let natural = text::measure(engine, id.into(), content, c, style, None);
+            let natural = text::measure(engine, key, content, c, style, None);
             let width = limit.map_or(natural.width, |l| natural.width.min(l));
             let cut = natural.lines > 1 || width < natural.width;
             TextMetrics { width, height: style.line_height, lines: 1, truncated: cut }
@@ -542,16 +543,16 @@ fn text_metrics(
     }
 }
 
-fn text_size(engine: &mut dyn TextEngine, n: &Node, id: NodeId, known: Option<f32>, avail: taffy::AvailableSpace) -> (f32, f32) {
+fn text_size(engine: &mut dyn TextEngine, n: &Node, key: TextKey, known: Option<f32>, avail: taffy::AvailableSpace) -> (f32, f32) {
     let Some(t) = n.text_content() else { return (0.0, 0.0) };
-    let m = text_metrics(engine, id, &t.text, &t.clean, &n.visual.text_style(), width_limit(known, avail));
+    let m = text_metrics(engine, key, &t.text, &t.clean, &n.visual.text_style(), width_limit(known, avail));
     // Whole pixels, rounded up (as Rune): fractional line heights would make rows alternate.
     (m.width.ceil(), m.height.ceil())
 }
 
 /// A text input's natural size: a fixed width; one line high, or (multi-line) as many lines as
 /// its value wraps into at its width.
-fn input_size(engine: &mut dyn TextEngine, n: &Node, id: NodeId, known: Option<f32>, avail: taffy::AvailableSpace) -> (f32, f32) {
+fn input_size(engine: &mut dyn TextEngine, n: &Node, key: TextKey, known: Option<f32>, avail: taffy::AvailableSpace) -> (f32, f32) {
     let lh = n.visual.line_height;
     let Some(i) = n.input().filter(|i| i.multiline) else { return (INPUT_WIDTH, lh) };
     let width = known.unwrap_or(INPUT_WIDTH);
@@ -560,7 +561,7 @@ fn input_size(engine: &mut dyn TextEngine, n: &Node, id: NodeId, known: Option<f
     }
     let style = edit::input_style(n.visual.text_style(), true);
     // The value alone: a composition in progress does not resize the field.
-    let m = text::measure(engine, TextKey { node: id, slot: 1 }, &i.value, 0, &style, width_limit(Some(width), avail));
+    let m = text::measure(engine, TextKey { slot: 1, ..key }, &i.value, 0, &style, width_limit(Some(width), avail));
     let lines = m.lines.clamp(u32::from(i.rows.0.max(1)), u32::from(i.rows.1.max(1)));
     (width, (lines as f32 * lh).ceil())
 }
@@ -608,12 +609,12 @@ pub struct Kernel {
     anchored: Vec<NodeId>,
     viewport: (f32, f32),
     screen: Breakpoint,
-    /// Input is touch: `When::Touch` overrides apply.
-    touch: bool,
     missing_tokens: FxHashMap<NodeId, Vec<&'static str>>,
-    text: RefCell<Box<dyn TextEngine>>,
+    /// What every window's kernel shares: the theme, the text system, input conventions.
+    res: Rc<Resources>,
+    /// This kernel among the app's (its texts' keys in the shared text system).
+    serial: u32,
     taffy: taffy::TaffyTree<Measure>,
-    theme: Theme,
     needs_layout: bool,
     layout_enabled: bool,
     counters: Counters,
@@ -623,7 +624,6 @@ pub struct Kernel {
     now: f64,
     /// Changes in this frame land at once.
     instant: bool,
-    reduced_motion: bool,
     /// Nodes with properties in motion.
     moving: rustc_hash::FxHashSet<NodeId>,
     /// Ink reaches must be computed again (after a layout, or a shadow changed).
@@ -666,14 +666,46 @@ pub struct Kernel {
     index: FxHashMap<String, Vec<NodeId>>,
 }
 
+/// What every window's kernel shares ([design](https://github.com/octoii-works/octara/blob/main/docs/design/core.md)):
+/// the theme, the text system (fonts, fallback, shaping and layout caches), whether input is
+/// touch, and the reduced-motion preference. The app changes them and tells each kernel.
+pub struct Resources {
+    pub(crate) theme: RefCell<Theme>,
+    pub(crate) text: RefCell<Box<dyn TextEngine>>,
+    pub(crate) touch: Cell<bool>,
+    pub(crate) reduced_motion: Cell<bool>,
+}
+
+impl Default for Resources {
+    fn default() -> Self {
+        Resources {
+            theme: RefCell::new(Theme::default()),
+            text: RefCell::new(Box::new(text::ParleyEngine::default())),
+            touch: Cell::new(false),
+            reduced_motion: Cell::new(false),
+        }
+    }
+}
+
+impl Resources {
+    /// The text system's engine (e.g. `MonoEngine` for benchmarks); kernels sharing it then
+    /// measure again (`fonts_changed`).
+    pub fn set_text_engine(&self, engine: Box<dyn TextEngine>) {
+        *self.text.borrow_mut() = engine;
+    }
+}
+
+static NEXT_KERNEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
 impl Default for Kernel {
     fn default() -> Self {
-        Self::new()
+        Self::new(Rc::default())
     }
 }
 
 impl Kernel {
-    pub fn new() -> Self {
+    /// A kernel reading `res` (shared by an app's windows).
+    pub fn new(res: Rc<Resources>) -> Self {
         let mut k = Kernel {
             nodes: SlotMap::with_key(),
             root: NodeId::default(),
@@ -681,11 +713,10 @@ impl Kernel {
             anchored: Vec::new(),
             viewport: (0.0, 0.0),
             screen: Breakpoint::Compact,
-            touch: false,
             missing_tokens: Default::default(),
-            text: RefCell::new(Box::new(text::ParleyEngine::default())),
+            res,
+            serial: NEXT_KERNEL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             taffy: taffy::TaffyTree::new(),
-            theme: Theme::default(),
             needs_layout: true,
             layout_enabled: true,
             counters: Counters::default(),
@@ -693,7 +724,6 @@ impl Kernel {
             log: None,
             now: 0.0,
             instant: false,
-            reduced_motion: false,
             moving: rustc_hash::FxHashSet::default(),
             ink_dirty: Cell::new(true),
             culling: true,
@@ -744,10 +774,18 @@ impl Kernel {
     pub fn root(&self) -> NodeId {
         self.root
     }
+    /// The key of `node`'s text in the shared text system.
+    pub(crate) fn key(&self, node: NodeId) -> TextKey {
+        TextKey { kernel: self.serial, node, slot: 0 }
+    }
+    /// The resources this kernel reads.
+    pub fn resources(&self) -> &Rc<Resources> {
+        &self.res
+    }
     /// Replaces the text engine (e.g. `MonoEngine` for benchmarks) and remeasures every text.
     /// Replaces the text engine (fonts registered with the old one are not carried over).
     pub fn set_text_engine(&mut self, engine: Box<dyn TextEngine>) {
-        self.text = RefCell::new(engine);
+        self.res.set_text_engine(engine);
         self.fonts_changed();
     }
     /// How a text node's content is laid out at its current width: lines shown and whether
@@ -757,7 +795,7 @@ impl Kernel {
         let l = self.taffy.layout(n.taffy).expect("taffy");
         let inner = l.size.width - l.padding.left - l.padding.right - l.border.left - l.border.right;
         let Some(t) = n.text_content() else { return TextMetrics::default() };
-        text_metrics(&mut **self.text.borrow_mut(), id, &t.text, &t.clean, &n.visual.text_style(), Some(inner.max(0.0)))
+        text_metrics(&mut **self.res.text.borrow_mut(), self.key(id), &t.text, &t.clean, &n.visual.text_style(), Some(inner.max(0.0)))
     }
     /// Parent of every overlay; always the root's last child.
     pub fn overlay_layer(&self) -> NodeId {
@@ -922,8 +960,9 @@ impl Kernel {
     pub fn viewport(&self) -> (f32, f32) {
         self.viewport
     }
-    pub fn theme(&self) -> &Theme {
-        &self.theme
+    /// The shared theme.
+    pub fn theme(&self) -> std::cell::Ref<'_, Theme> {
+        self.res.theme.borrow()
     }
 
     // ---- structure ----
@@ -931,8 +970,8 @@ impl Kernel {
     pub fn create(&mut self, kind: Kind) -> NodeId {
         let layout = default_layout(kind);
         let t = self.taffy.new_leaf(layout.clone()).expect("taffy");
-        let root_inh = Inherited::root(&self.theme);
-        let visual = Unresolved::new(&self.theme, &root_inh).resolve(&self.theme, &mut Vec::new());
+        let root_inh = Inherited::root(&self.res.theme.borrow());
+        let visual = Unresolved::new(&self.res.theme.borrow(), &root_inh).resolve(&self.res.theme.borrow(), &mut Vec::new());
         let content = match kind {
             Kind::Text => Content::Text(TextContent::default()),
             Kind::TextInput => Content::Input({
@@ -1118,7 +1157,7 @@ impl Kernel {
         self.native_nodes.remove(&id);
         // Texts and text inputs are measured by the text engine (keyed by node).
         if matches!(n.content, Content::Text(_) | Content::Input(_)) {
-            self.text.get_mut().forget(id);
+            self.res.text.borrow_mut().forget(self.serial, id);
         }
         if n.anchor.is_some() {
             self.anchored.retain(|a| *a != id);
@@ -1597,15 +1636,21 @@ impl Kernel {
         changed || semantic
     }
 
+    /// Sets the shared theme and restyles this kernel (other kernels sharing it are told with
+    /// [`theme_changed`](Self::theme_changed)).
     pub fn set_theme(&mut self, theme: Theme) {
-        if theme == self.theme {
+        if theme == *self.res.theme.borrow() {
             return;
         }
-        self.theme = theme;
+        *self.res.theme.borrow_mut() = theme;
+        self.theme_changed();
+    }
+    /// The shared theme changed: every node resolves against it again.
+    pub fn theme_changed(&mut self) {
         self.paint_gen += 1;
         self.missing_tokens.clear();
         // Breakpoint widths may have changed too.
-        self.screen = self.theme.breakpoint_of(self.viewport.0);
+        self.screen = self.res.theme.borrow().breakpoint_of(self.viewport.0);
         // Parents before children, so inherited text styles are current.
         let mut stack: Vec<NodeId> = self.nodes.iter().filter(|(_, n)| n.parent.is_none()).map(|(id, _)| id).collect();
         while let Some(id) = stack.pop() {
@@ -1622,16 +1667,17 @@ impl Kernel {
     }
     /// Adds font data; its families become available to `font_family` and the theme.
     pub fn register_font(&mut self, data: &'static [u8]) {
-        self.text.get_mut().register_font(data);
+        self.res.text.borrow_mut().register_font(data);
         self.fonts_changed();
     }
     /// Adds a font text falls back to for `scripts` (see [`TextEngine::register_fallback_font`]).
     pub fn register_fallback_font(&mut self, data: &'static [u8], scripts: &[[u8; 4]]) {
-        self.text.get_mut().register_fallback_font(data, scripts);
+        self.res.text.borrow_mut().register_fallback_font(data, scripts);
         self.fonts_changed();
     }
-    /// Every text measures again: shapes may now resolve to other faces.
-    fn fonts_changed(&mut self) {
+    /// Every text measures again: shapes may now resolve to other faces (after the shared text
+    /// system's fonts changed).
+    pub fn fonts_changed(&mut self) {
         let ids: Vec<NodeId> =
             self.nodes.iter().filter(|(_, n)| matches!(n.kind(), Kind::Text | Kind::TextInput)).map(|(id, _)| id).collect();
         for id in ids {
@@ -1649,26 +1695,26 @@ impl Kernel {
     fn resolve(&mut self, id: NodeId, why: &'static str) -> bool {
         let n = self.node(id);
         let mut layout = default_layout(n.kind());
-        let from = n.parent.map_or_else(|| Inherited::root(&self.theme), |p| self.node(p).inherited);
-        let mut v = Unresolved::new(&self.theme, &from);
+        let from = n.parent.map_or_else(|| Inherited::root(&self.res.theme.borrow()), |p| self.node(p).inherited);
+        let mut v = Unresolved::new(&self.res.theme.borrow(), &from);
         let n = {
             self.node_mut(id).inherited_from = from;
             self.node(id)
         };
         for p in &n.base {
-            p.apply(&mut layout, &mut v, &self.theme);
+            p.apply(&mut layout, &mut v, &self.res.theme.borrow());
         }
         for bp in Breakpoint::ALL.into_iter().filter(|b| *b <= self.screen) {
             for (_, props) in n.overrides.iter().filter(|(w, _)| *w == When::Screen(bp)) {
                 for p in props {
-                    p.apply(&mut layout, &mut v, &self.theme);
+                    p.apply(&mut layout, &mut v, &self.res.theme.borrow());
                 }
             }
         }
-        if self.touch {
+        if self.res.touch.get() {
             for (_, props) in n.overrides.iter().filter(|(w, _)| *w == When::Touch) {
                 for p in props {
-                    p.apply(&mut layout, &mut v, &self.theme);
+                    p.apply(&mut layout, &mut v, &self.res.theme.borrow());
                 }
             }
         }
@@ -1676,7 +1722,7 @@ impl Kernel {
             if n.state.contains(flag) {
                 for (_, props) in n.overrides.iter().filter(|(w, _)| *w == When::State(flag)) {
                     for p in props {
-                        p.apply(&mut layout, &mut v, &self.theme);
+                        p.apply(&mut layout, &mut v, &self.res.theme.borrow());
                     }
                 }
             }
@@ -1686,7 +1732,7 @@ impl Kernel {
                 && self.group_hovered(id, g)
             {
                 for p in props {
-                    p.apply(&mut layout, &mut v, &self.theme);
+                    p.apply(&mut layout, &mut v, &self.res.theme.borrow());
                 }
             }
         }
@@ -1707,7 +1753,7 @@ impl Kernel {
             }
         }
         let mut missing = Vec::new();
-        let visual = v.resolve(&self.theme, &mut missing);
+        let visual = v.resolve(&self.res.theme.borrow(), &mut missing);
         let inherited = v.inherited();
         let (layout_changed, old_visual, t) = (layout != n.layout, n.visual, n.taffy);
         // What the children inherit changed: they resolve again (and so on, while it changes).
@@ -1776,7 +1822,8 @@ impl Kernel {
             return false;
         }
         self.viewport = (width, height);
-        self.set_screen(self.theme.breakpoint_of(width));
+        let screen = self.res.theme.borrow().breakpoint_of(width);
+        self.set_screen(screen);
         self.compute_layout(width, height);
         // Overlays are placed from the first pass; being absolute, moving them affects nothing
         // else, so one more (mostly cached) pass settles them.
@@ -1797,8 +1844,10 @@ impl Kernel {
     fn compute_layout(&mut self, width: f32, height: f32) {
         let root = self.node(self.root).taffy;
         let space = taffy::Size { width: taffy::AvailableSpace::Definite(width), height: taffy::AvailableSpace::Definite(height) };
-        let Kernel { taffy, nodes, text, .. } = self;
-        let engine = text.get_mut();
+        let Kernel { taffy, nodes, res, serial, .. } = self;
+        let serial = *serial;
+        let mut engine = res.text.borrow_mut();
+        let key = |node| TextKey { kernel: serial, node, slot: 0 };
         taffy
             .compute_layout_with_measure(root, space, |inputs, _node, ctx, style| {
                 let m = ctx.map(|c| *c);
@@ -1808,8 +1857,8 @@ impl Kernel {
                     |_, _| 0.0,
                     |known, avail| {
                         let (w, h) = match m {
-                            Some(Measure::Text(id)) => text_size(&mut **engine, &nodes[id], id, known.width, avail.width),
-                            Some(Measure::Input(id)) => input_size(&mut **engine, &nodes[id], id, known.width, avail.width),
+                            Some(Measure::Text(id)) => text_size(&mut **engine, &nodes[id], key(id), known.width, avail.width),
+                            Some(Measure::Input(id)) => input_size(&mut **engine, &nodes[id], key(id), known.width, avail.width),
                             Some(Measure::Native(id)) => match &nodes[id].content {
                                 Content::Native(v) => v.intrinsic.unwrap_or(NATIVE_DEFAULT),
                                 _ => (0.0, 0.0),
@@ -1830,16 +1879,20 @@ impl Kernel {
 
     /// Whether input is touch (`When::Touch` overrides apply).
     pub fn touch(&self) -> bool {
-        self.touch
+        self.res.touch.get()
     }
 
     /// Switching between touch and pointer input re-resolves the nodes with touch overrides (no
     /// closure runs).
     pub fn set_touch(&mut self, on: bool) {
-        if on == self.touch {
+        if on == self.res.touch.get() {
             return;
         }
-        self.touch = on;
+        self.res.touch.set(on);
+        self.touch_changed();
+    }
+    /// The shared touch setting changed: the nodes with touch overrides resolve again.
+    pub fn touch_changed(&mut self) {
         let ids: Vec<NodeId> =
             self.nodes.iter().filter(|(_, n)| n.overrides.iter().any(|(w, _)| *w == When::Touch)).map(|(id, _)| id).collect();
         for id in ids {
@@ -2147,7 +2200,8 @@ impl Kernel {
         if !state.is_empty() {
             let _ = write!(out, " state={state:?}");
         }
-        let default = Unresolved::new(&self.theme, &Inherited::root(&self.theme)).resolve(&self.theme, &mut Vec::new());
+        let default = Unresolved::new(&self.res.theme.borrow(), &Inherited::root(&self.res.theme.borrow()))
+            .resolve(&self.res.theme.borrow(), &mut Vec::new());
         if let Some(bg) = n.visual.background {
             let _ = write!(out, " bg={}", hex(bg));
         }
@@ -2169,7 +2223,7 @@ mod tests {
     use super::*;
 
     fn tree() -> (Kernel, NodeId, NodeId) {
-        let mut k = Kernel::new();
+        let mut k = Kernel::default();
         let col = k.create(Kind::Box);
         k.set_test_id(col, Some("col"));
         k.set_style(col, StyleProp::Direction(FlexDirection::Column));
@@ -2205,7 +2259,7 @@ mod tests {
 
     #[test]
     fn parley_text_follows_the_viewport() {
-        let mut k = Kernel::new();
+        let mut k = Kernel::default();
         let t = k.create(Kind::Text);
         k.set_text(t, &"word ".repeat(60));
         k.append_child(k.root(), t);
@@ -2275,7 +2329,7 @@ mod tests {
 
     #[test]
     fn removing_the_last_absolute_child_keeps_layout_valid() {
-        let mut k = Kernel::new();
+        let mut k = Kernel::default();
         let root = k.root();
         let host = k.create(Kind::Box);
         k.set_style(host, StyleProp::Position(Position::Absolute));
@@ -2292,7 +2346,7 @@ mod tests {
 
     #[test]
     fn moves_and_log() {
-        let mut k = Kernel::new();
+        let mut k = Kernel::default();
         k.enable_log(true);
         k.set_cause(Some(7));
         let root = k.root();

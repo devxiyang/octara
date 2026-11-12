@@ -15,7 +15,6 @@ pub use style::{Length, Patch, Styled, px, relative, rems, sp};
 use crate::diagnostics as codes;
 use crate::kernel::{Breakpoint, NodeId, Theme};
 use crate::reactive::graph::{self, Ctx, ReadSignal, ScopeId, Signal, rt};
-use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
 use std::fmt::Display;
 use std::panic::Location;
@@ -33,27 +32,6 @@ pub(crate) enum Handler {
     Native(Rc<dyn Fn(&crate::native::NativeEvent)>),
 }
 
-#[derive(Default)]
-pub(crate) struct Ui {
-    pub kernel: RefCell<crate::kernel::Kernel>,
-    pub handlers: RefCell<FxHashMap<u64, Handler>>,
-    /// The app's command handlers (`on_command`), in registration order.
-    pub commands: RefCell<Vec<(String, u64)>>,
-    /// Regions of the kernel's overlay layer, one per `overlay` of a mounted element.
-    pub overlay_slots: Slots,
-    pub viewport: Cell<Option<Signal<(f32, f32)>>>,
-    pub breakpoint: Cell<Option<Signal<Breakpoint>>>,
-    /// Scroll containers someone follows (virtual lists), with their state as a signal.
-    pub scrolls: RefCell<FxHashMap<NodeId, Signal<ScrollState>>>,
-    /// Element sizes someone follows (`size_of`), by test id.
-    pub sizes: RefCell<FxHashMap<String, Signal<(f32, f32)>>>,
-    /// Run after each layout; return whether they changed anything (then the app lays out again).
-    pub after_layout: RefCell<Vec<(u64, AfterLayout)>>,
-    /// Tasks, timers and channels, and the app's clock.
-    pub sched: Rc<crate::task::Scheduler>,
-    next: Cell<u64>,
-}
-
 /// A hook run after each layout; returns whether it changed anything.
 pub(crate) type AfterLayout = Rc<dyn Fn() -> bool>;
 
@@ -64,22 +42,7 @@ pub(crate) struct ScrollState {
     pub client: (f32, f32),
 }
 
-thread_local! {
-    static UI: RefCell<Option<Rc<Ui>>> = const { RefCell::new(None) };
-}
-
-pub(crate) fn ui() -> Rc<Ui> {
-    UI.with(|u| u.borrow().clone()).expect("no UI context")
-}
-
-pub(crate) fn enter_ui<R>(u: &Rc<Ui>, f: impl FnOnce() -> R) -> R {
-    let prev = UI.with(|c| c.replace(Some(u.clone())));
-    let r = f();
-    UI.with(|c| *c.borrow_mut() = prev);
-    r
-}
-
-impl Ui {
+impl crate::app::WindowState {
     /// The (shared) scroll state signal of `node`, kept in step after every layout and scroll.
     pub(crate) fn scroll_state(&self, node: NodeId) -> Signal<ScrollState> {
         *self.scrolls.borrow_mut().entry(node).or_insert_with(|| Signal::detached(ScrollState::default()))
@@ -307,7 +270,7 @@ pub(crate) fn mount(view: View, parent: &Parent, target: &Slots) {
         View::El(e) => {
             let node = build_el(*e);
             let index = offset(&parent.root, &Target::Slots(target)).expect("region in parent") + flat_len(target);
-            ui().kernel.borrow_mut().insert_child(parent.node, node, index);
+            crate::app::window().kernel.borrow_mut().insert_child(parent.node, node, index);
             target.borrow_mut().push(Slot::Node);
         }
         View::Fragment(vs) => vs.into_iter().for_each(|v| mount(v, parent, target)),
@@ -404,7 +367,7 @@ fn show_else_at(
                 if let Some(old) = branch.take() {
                     // The branch's top nodes leave (fading out where motion is set) before their
                     // scope is disposed.
-                    let u = ui();
+                    let u = crate::app::window();
                     let start = offset(&parent.root, &Target::Slots(&region)).expect("region in parent");
                     let len = flat_len(&region);
                     let tops: Vec<NodeId> = u.kernel.borrow().children(parent.node).iter().skip(start).take(len).copied().collect();
@@ -424,14 +387,14 @@ fn show_else_at(
 
 /// The window size `(width, height)`, tracked: a binding that reads it reruns on resize.
 pub fn viewport() -> ReadSignal<(f32, f32)> {
-    ui().viewport.get().expect("viewport() outside an app").read_only()
+    crate::app::window().viewport.read_only()
 }
 
 /// The window's breakpoint, tracked: a binding that reads it reruns only when the window
 /// crosses a size class boundary. For styles alone prefer `.when_medium(..)` and friends, which
 /// rerun nothing.
 pub fn breakpoint() -> ReadSignal<Breakpoint> {
-    ui().breakpoint.get().expect("breakpoint() outside an app").read_only()
+    crate::app::window().breakpoint.read_only()
 }
 
 /// The laid-out size `(width, height)` of the element with test id `id` ((0, 0) while it does not
@@ -440,7 +403,7 @@ pub fn breakpoint() -> ReadSignal<Breakpoint> {
 /// `let narrow = memo(|| size_of("panel").get().0 < 320.0);`. A size that feeds back into
 /// itself is cut after a few rounds and reported as `LAYOUT_LOOP`.
 pub fn size_of(id: &str) -> ReadSignal<(f32, f32)> {
-    let u = ui();
+    let u = crate::app::window();
     let mut sizes = u.sizes.borrow_mut();
     if let Some(s) = sizes.get(id) {
         return s.read_only();
@@ -457,35 +420,23 @@ pub fn size_of(id: &str) -> ReadSignal<(f32, f32)> {
     s.read_only()
 }
 
-/// Switches the theme. Token colors resolve in the kernel, so no closure reruns; only nodes
-/// whose resolved colors change are repainted. Callable from handlers.
+/// Switches the theme of every window. Token colors resolve in the kernels, so no closure
+/// reruns; only nodes whose resolved colors change are repainted. Callable from handlers.
 pub fn set_theme(theme: Theme) {
-    let u = ui();
-    let bp = {
-        let mut k = u.kernel.borrow_mut();
-        k.set_theme(theme);
-        let width = u.viewport.get().map_or(0.0, |v| v.get_untracked().0);
-        k.theme().breakpoint_of(width)
-    };
-    // The theme may move the breakpoints.
-    if let Some(sig) = u.breakpoint.get()
-        && sig.get_untracked() != bp
-    {
-        sig.set(bp);
-    }
+    crate::app::app_state().set_theme(theme);
 }
 
 /// Runs `f`; what it changes lands at once this frame, even where `motion` is set (Rune's
 /// `tx.instant`): a value jumping to where the user put it.
 pub fn instant<R>(f: impl FnOnce() -> R) -> R {
-    ui().kernel.borrow_mut().set_instant(true);
+    crate::app::window().kernel.borrow_mut().set_instant(true);
     f()
 }
 
 /// Scrolls the scroll container with test id `id` to `(x, y)`: it glides there where its layout
 /// moves (`layout_motion` / `motion`), else jumps. Returns whether there is such a container.
 pub fn scroll_to(id: &str, x: f32, y: f32) -> bool {
-    let u = ui();
+    let u = crate::app::window();
     let mut k = u.kernel.borrow_mut();
     let Some(n) = k.find(id) else { return false };
     k.glide_scroll(n, x, y);
@@ -494,7 +445,7 @@ pub fn scroll_to(id: &str, x: f32, y: f32) -> bool {
 
 /// Lands everything in motion on its target now (Rune's `tx.settle`).
 pub fn settle_motion() {
-    let u = ui();
+    let u = crate::app::window();
     let mut k = u.kernel.borrow_mut();
     k.land_motion();
     k.set_instant(true);
@@ -503,7 +454,7 @@ pub fn settle_motion() {
 /// Handles `command` for the whole app (when no focused element handles it): the keymap's
 /// chords, `App::invoke` and menus run it. Lives as long as the current scope.
 pub fn on_command(command: &str, f: impl Fn() + 'static) {
-    let u = ui();
+    let u = crate::app::window();
     let id = u.register(Handler::Press(Rc::new(f)));
     u.commands.borrow_mut().push((command.to_owned(), id));
     let me = u.clone();

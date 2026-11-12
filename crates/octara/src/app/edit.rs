@@ -9,7 +9,7 @@
 
 use super::behavior::Behavior;
 use super::pointer::{Modifiers, PointerEvent, PointerKind};
-use super::{App, Modality};
+use super::{Modality, Window};
 use crate::kernel::{HandlerKind, NodeId};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -161,22 +161,22 @@ pub(super) struct Field;
 pub(super) static FIELD: Field = Field;
 
 impl Behavior for Field {
-    fn down(&self, app: &App, n: NodeId, ev: &PointerEvent, clicks: u32) {
+    fn down(&self, app: &Window, n: NodeId, ev: &PointerEvent, clicks: u32) {
         app.press_in_field(n, (ev.x, ev.y), clicks, ev.modifiers.contains(Modifiers::SHIFT));
     }
     fn drags(&self, kind: PointerKind) -> bool {
         kind != PointerKind::Touch
     }
-    fn drag(&self, app: &App, n: NodeId, at: (f32, f32)) {
+    fn drag(&self, app: &Window, n: NodeId, at: (f32, f32)) {
         app.drag_in_field(n, at);
     }
 }
 
-impl App {
+impl Window {
     /// The focused text field's value and selection `(anchor, caret)`.
     fn field(&self) -> Option<(NodeId, String, usize, usize)> {
         let (n, value) = self.focused_input()?;
-        let (a, c) = self.win().ui.kernel.borrow().selection(n);
+        let (a, c) = self.w.kernel.borrow().selection(n);
         Some((n, value, a, c))
     }
 
@@ -184,14 +184,14 @@ impl App {
     /// undo step (a run of typing or deleting is one step).
     fn apply(&self, n: NodeId, value: String, anchor: usize, caret: usize, kind: Kind) {
         let (old, a0, c0) = {
-            let k = self.win().ui.kernel.borrow();
+            let k = self.w.kernel.borrow();
             let (a, c) = k.selection(n);
             (k.value(n).to_owned(), a, c)
         };
         // A secure field keeps no history.
-        let secure = self.win().ui.kernel.borrow().is_secure(n);
+        let secure = self.w.kernel.borrow().is_secure(n);
         if value != old && !secure {
-            let mut i = self.win().interaction.borrow_mut();
+            let mut i = self.w.interaction.borrow_mut();
             let st = i.edits.entry(n).or_default();
             let step = Step::between(&old, &value, (a0, c0), (anchor, caret));
             // Typing on from where the last edit of the same kind left off continues its step.
@@ -207,9 +207,9 @@ impl App {
             st.last = Some((kind, fingerprint(&value), (anchor, caret)));
         }
         // Typing is direct manipulation: what it changes lands at once.
-        self.win().ui.kernel.borrow_mut().set_instant(true);
-        self.win().interaction.borrow_mut().reveal = Some(n);
-        self.win().ui.kernel.borrow_mut().set_selection(n, anchor, caret);
+        self.w.kernel.borrow_mut().set_instant(true);
+        self.w.interaction.borrow_mut().reveal = Some(n);
+        self.w.kernel.borrow_mut().set_selection(n, anchor, caret);
         if value != old {
             self.run(n, &[HandlerKind::Input], Some(value));
         }
@@ -217,9 +217,9 @@ impl App {
 
     /// Moves the caret (extending the selection with `extend`).
     fn select(&self, n: NodeId, anchor: usize, caret: usize) {
-        self.win().ui.kernel.borrow_mut().set_selection(n, anchor, caret);
-        self.win().interaction.borrow_mut().reveal = Some(n);
-        if let Some(st) = self.win().interaction.borrow_mut().edits.get_mut(&n) {
+        self.w.kernel.borrow_mut().set_selection(n, anchor, caret);
+        self.w.interaction.borrow_mut().reveal = Some(n);
+        if let Some(st) = self.w.interaction.borrow_mut().edits.get_mut(&n) {
             st.last = None;
         }
     }
@@ -227,27 +227,27 @@ impl App {
     /// Text typed or committed into the focused field: replaces the selection.
     pub(super) fn insert_text(&self, text: &str) {
         let Some((n, value, a, c)) = self.field() else { return };
-        self.win().ui.kernel.borrow_mut().set_preedit(n, "");
+        self.w.kernel.borrow_mut().set_preedit(n, "");
         let (s, e) = (a.min(c), a.max(c));
         let new = format!("{}{text}{}", &value[..s], &value[e..]);
         let at = s + text.len();
         // On touch platforms a secure field shows what was just typed, for a moment.
         let reveal = {
-            let k = self.win().ui.kernel.borrow();
+            let k = self.w.kernel.borrow();
             (k.is_secure(n) && k.touch()).then(|| new[..at].grapheme_indices(true).next_back().map(|(b, _)| b)).flatten()
         };
         self.apply(n, new, at, at, Kind::Insert);
-        if self.win().ui.kernel.borrow().is_secure(n) {
-            self.win().ui.kernel.borrow_mut().reveal_typed(n, reveal);
+        if self.w.kernel.borrow().is_secure(n) {
+            self.w.kernel.borrow_mut().reveal_typed(n, reveal);
         }
     }
 
     /// Moves the caret `lines` visual lines (extending the selection with `extend`), keeping
     /// its x from where the moves by lines began.
     fn by_lines(&self, n: NodeId, anchor: usize, lines: i32, extend: bool) {
-        let Some((to, goal)) = self.win().ui.kernel.borrow().input_offset_by_lines(n, lines) else { return };
+        let Some((to, goal)) = self.w.kernel.borrow().input_offset_by_lines(n, lines) else { return };
         self.select(n, if extend { anchor } else { to }, to);
-        self.win().ui.kernel.borrow_mut().keep_goal(n, goal);
+        self.w.kernel.borrow_mut().keep_goal(n, goal);
     }
 
     /// Runs a text-editing command on the focused field; `false` if there is none.
@@ -255,10 +255,10 @@ impl App {
         let Some((n, v, a, c)) = self.field() else { return false };
         let (s, e) = (a.min(c), a.max(c));
         let collapsed = s == e;
-        let multiline = self.win().ui.kernel.borrow().is_multiline(n);
-        let secure = self.win().ui.kernel.borrow().is_secure(n);
-        let page = self.win().ui.kernel.borrow().input_page_lines(n) as i32;
-        let edges = || self.win().ui.kernel.borrow().input_line_edges(n).unwrap_or((0, v.len()));
+        let multiline = self.w.kernel.borrow().is_multiline(n);
+        let secure = self.w.kernel.borrow().is_secure(n);
+        let page = self.w.kernel.borrow().input_page_lines(n) as i32;
+        let edges = || self.w.kernel.borrow().input_line_edges(n).unwrap_or((0, v.len()));
         // A secure field: words are not revealed (word moves go to the ends), and nothing is
         // copied out or kept in a history.
         type Word = fn(&str, usize) -> usize;
@@ -267,7 +267,7 @@ impl App {
             return true;
         }
         if secure && command.starts_with("edit.") {
-            self.win().ui.kernel.borrow_mut().reveal_typed(n, None);
+            self.w.kernel.borrow_mut().reveal_typed(n, None);
         }
         match command {
             "edit.move_up" => self.by_lines(n, a, -1, false),
@@ -344,13 +344,13 @@ impl App {
                 if collapsed {
                     return true;
                 }
-                self.system.borrow_mut().write_text(&v[s..e]);
+                self.app.system.borrow_mut().write_text(&v[s..e]);
                 if command == "edit.cut" {
                     self.apply(n, format!("{}{}", &v[..s], &v[e..]), s, s, Kind::Other);
                 }
             }
             "edit.paste" => {
-                let text = self.system.borrow_mut().read_text();
+                let text = self.app.system.borrow_mut().read_text();
                 if let Some(t) = text {
                     // A multi-line field keeps line breaks; one line turns them into spaces.
                     let t = if multiline {
@@ -365,7 +365,7 @@ impl App {
             "edit.undo" | "edit.redo" => {
                 let undo = command == "edit.undo";
                 let done = {
-                    let mut i = self.win().interaction.borrow_mut();
+                    let mut i = self.w.interaction.borrow_mut();
                     let st = i.edits.entry(n).or_default();
                     // The app changed the value itself since: the history no longer applies.
                     if st.last.is_some_and(|(_, h, _)| h != fingerprint(&v)) {
@@ -385,8 +385,8 @@ impl App {
                     })
                 };
                 if let Some((value, (anchor, caret))) = done {
-                    self.win().ui.kernel.borrow_mut().set_selection(n, anchor, caret);
-                    self.win().interaction.borrow_mut().reveal = Some(n);
+                    self.w.kernel.borrow_mut().set_selection(n, anchor, caret);
+                    self.w.interaction.borrow_mut().reveal = Some(n);
                     self.run(n, &[HandlerKind::Input], Some(value));
                 }
             }
@@ -398,9 +398,9 @@ impl App {
     /// A primary press at window point `at` in text field `n`: `clicks` 1 places the caret (or
     /// extends the selection with Shift), 2 selects a word, 3 selects everything.
     fn press_in_field(&self, n: NodeId, (x, y): (f32, f32), clicks: u32, extend: bool) {
-        let Some(at) = self.win().ui.kernel.borrow().input_offset_at(n, x, y, clicks == 2) else { return };
-        let v = self.win().ui.kernel.borrow().value(n).to_owned();
-        let (a, _) = self.win().ui.kernel.borrow().selection(n);
+        let Some(at) = self.w.kernel.borrow().input_offset_at(n, x, y, clicks == 2) else { return };
+        let v = self.w.kernel.borrow().value(n).to_owned();
+        let (a, _) = self.w.kernel.borrow().selection(n);
         match clicks {
             1 if extend => self.select(n, a, at),
             1 => self.select(n, at, at),
@@ -414,20 +414,20 @@ impl App {
 
     /// A drag in text field `n` to window point `(x, y)`: the caret follows, the anchor stays.
     fn drag_in_field(&self, n: NodeId, (x, y): (f32, f32)) {
-        let Some(at) = self.win().ui.kernel.borrow().input_offset_at(n, x, y, false) else { return };
-        let (a, _) = self.win().ui.kernel.borrow().selection(n);
+        let Some(at) = self.w.kernel.borrow().input_offset_at(n, x, y, false) else { return };
+        let (a, _) = self.w.kernel.borrow().selection(n);
         self.select(n, a, at);
     }
 
     /// What the clipboard holds as text.
     pub fn clipboard_text(&self) -> Option<String> {
-        self.system.borrow_mut().read_text()
+        self.app.system.borrow_mut().read_text()
     }
 
     /// The focused text field, for platform text protocols.
     pub fn text_field(&self) -> Option<TextField> {
         let (n, text, a, c) = self.field()?;
-        let k = self.win().ui.kernel.borrow();
+        let k = self.w.kernel.borrow();
         let r = k.caret(n)?;
         Some(TextField {
             secure: k.is_secure(n),
@@ -446,7 +446,7 @@ impl App {
             let Some((n, v, _, _)) = self.field() else { return };
             let s = crate::kernel::floor_boundary(&v, range.start);
             let e = crate::kernel::floor_boundary(&v, range.end.max(s));
-            self.win().ui.kernel.borrow_mut().set_preedit(n, "");
+            self.w.kernel.borrow_mut().set_preedit(n, "");
             let at = s + text.len();
             self.apply(n, format!("{}{text}{}", &v[..s], &v[e..]), at, at, Kind::Insert);
         });
@@ -468,7 +468,7 @@ impl App {
         self.input_frame(|| {
             let Some((n, v, a, c)) = self.field() else { return };
             // No input method in a secure field.
-            if self.win().ui.kernel.borrow().is_secure(n) {
+            if self.w.kernel.borrow().is_secure(n) {
                 return;
             }
             if !text.is_empty() && a != c {
@@ -476,7 +476,7 @@ impl App {
                 let (s, e) = (a.min(c), a.max(c));
                 self.apply(n, format!("{}{}", &v[..s], &v[e..]), s, s, Kind::Other);
             }
-            self.win().ui.kernel.borrow_mut().set_preedit(n, text);
+            self.w.kernel.borrow_mut().set_preedit(n, text);
         });
     }
 
@@ -485,7 +485,7 @@ impl App {
     pub(super) fn set_value_of(&self, n: NodeId, value: String) -> bool {
         self.set_modality(Modality::Keyboard);
         let len = value.len();
-        self.win().ui.kernel.borrow_mut().set_selection(n, len, len);
+        self.w.kernel.borrow_mut().set_selection(n, len, len);
         self.run(n, &[HandlerKind::Input], Some(value))
     }
 }

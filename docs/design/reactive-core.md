@@ -86,7 +86,7 @@ Diagnostics carry a fixed code and source location, are deduplicated and counted
 | I10 | `Signal::new` in a component | `UNKEYED_STATE` |
 | M1 | Write state inside a Memo | `WRITE_IN_DERIVE`, the write is rejected |
 
-There is also a **check of agreement with from-scratch computation** (`octara::testing::Checked`): after every event, the whole tree is rebuilt from scratch from the current state and compared with the incremental result byte for byte.
+There is also a **check of agreement with from-scratch computation** (`App::set_check_consistency`): after every operation, each window's tree is rebuilt from scratch from the current state and compared with the incremental result byte for byte.
 In mutation tests it pinpoints the problem at the first erroneous event; this is the regression safeguard for all later optimizations.
 
 ## 8. Key evidence

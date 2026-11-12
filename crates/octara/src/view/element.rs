@@ -2,7 +2,7 @@
 //! element becomes a kernel node.
 
 use super::style::{Patch, Styled};
-use super::{Children, Handler, IntoElement, Parent, Slot, Slots, View, mount, show, ui};
+use super::{Children, Handler, IntoElement, Parent, Slot, Slots, View, mount, show};
 use crate::app::{Drag, KeyEvent};
 
 type DragHandler = Rc<dyn Fn(&Drag)>;
@@ -715,7 +715,7 @@ impl El {
 // ---- building ----
 
 fn bind<T: 'static>(at: &'static Location<'static>, node: NodeId, prop: Prop<T>, set: impl Fn(&mut Kernel, NodeId, &T) -> bool + 'static) {
-    let u = ui();
+    let u = crate::app::window();
     match prop {
         Prop::Static(v) => {
             set(&mut u.kernel.borrow_mut(), node, &v);
@@ -730,7 +730,7 @@ fn bind<T: 'static>(at: &'static Location<'static>, node: NodeId, prop: Prop<T>,
 /// Builds a detached node for `e` with its bindings, handlers and children. The node is
 /// destroyed when the current scope is disposed.
 pub(crate) fn build_el(e: El) -> NodeId {
-    let u = ui();
+    let u = crate::app::window();
     let at = e.at;
     let node = u.kernel.borrow_mut().create(e.kind);
     u.kernel.borrow_mut().set_origin(node, at);
@@ -929,7 +929,7 @@ pub(crate) fn build_el(e: El) -> NodeId {
 /// A canvas's drawing: a binding over the content size (kept in step after each layout) and
 /// whatever `draw` reads.
 fn mount_canvas(at: &'static Location<'static>, node: NodeId, draw: Draw) {
-    let u = ui();
+    let u = crate::app::window();
     let size = graph::Signal::detached((0.0f32, 0.0f32));
     let hook = {
         let u = u.clone();
@@ -969,7 +969,7 @@ fn mount_canvas(at: &'static Location<'static>, node: NodeId, draw: Draw) {
 /// Mounts an overlay's `show` into its own region of the overlay layer; the region is removed
 /// with the anchor's scope.
 fn mount_overlay(anchor: NodeId, o: Overlay) {
-    let u = ui();
+    let u = crate::app::window();
     let region = Slots::default();
     u.overlay_slots.borrow_mut().push(Slot::Region(region.clone()));
     {

@@ -56,12 +56,12 @@ fn main() {
 The same app, tested headlessly — no window, no GPU, deterministic:
 
 ```rust
-let mut app = App::new(counter);
+let mut app = Window::headless(counter);
 app.tap("inc").unwrap();
 assert_eq!(app.kernel().text_of("count").as_deref(), Some("Count: 1"));
 // Done means clean: no layout problems and no diagnostics.
 assert!(app.layout_issues().is_empty(), "{:?}", app.layout_issues());
-assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 ```
 
 ## Elements and style
@@ -97,11 +97,11 @@ Reading a value in the view body bakes it in, and the runtime says so:
 ```rust
 use octara::prelude::*;
 
-let app = App::new(|| {
+let app = Window::headless(|| {
     let n = state("n", || 1);
     text(format!("{}", n.get())).into() // read once: this text never updates
 });
-assert!(app.diagnostics().iter().any(|d| d.code == "STRICT_READ_UNTRACKED"));
+assert!(app.app().diagnostics().iter().any(|d| d.code == "STRICT_READ_UNTRACKED"));
 // Fix: text(move || format!("{}", n.get())), or n.get_untracked() if one read is meant.
 ```
 
@@ -145,7 +145,7 @@ fn todos() -> View {
         .into()
 }
 
-let mut app = App::new(todos);
+let mut app = Window::headless(todos);
 app.tap("add").unwrap();
 assert!(app.kernel().exists("todo-2"));
 app.tap("remove-1").unwrap();
@@ -179,7 +179,7 @@ assert!(!app.kernel().exists("todo-1"));
 ```rust
 use octara::prelude::*;
 
-let mut app = App::new(|| {
+let mut app = Window::headless(|| {
     let saved = state("saved", || 0);
     on_command("save", move || saved.update(|n| *n += 1));
     col().size_full().child(text(move || format!("saved {}", saved.get())).id("saved")).into()
@@ -204,7 +204,7 @@ sizes, including hover and theme changes. Springs: `Spring::SNAP` (hover, press)
 use octara::prelude::*;
 use std::time::Duration;
 
-let mut app = App::new(|| {
+let mut app = Window::headless(|| {
     let open = state("open", || false);
     col()
         .size_full()
@@ -216,10 +216,10 @@ let mut app = App::new(|| {
 app.tap("toggle").unwrap();
 // The style is the target at once; the drawn value moves toward it frame by frame.
 assert_eq!(app.kernel().visual_of("panel").unwrap().opacity, 1.0);
-app.advance(Duration::from_millis(50));
-assert!(app.next_deadline().is_some(), "still moving: another frame is due");
-app.run_until_idle(Duration::from_secs(1)).unwrap();
-assert!(app.next_deadline().is_none(), "at rest");
+app.app().advance(Duration::from_millis(50));
+assert!(app.app().next_deadline().is_some(), "still moving: another frame is due");
+app.app().run_until_idle(Duration::from_secs(1)).unwrap();
+assert!(app.app().next_deadline().is_none(), "at rest");
 ```
 
 `instant(|| ..)` makes one change land at once; `App::set_reduced_motion(true)` turns movement into
@@ -234,7 +234,7 @@ use the app's clock, so tests are deterministic.
 use octara::prelude::*;
 use std::time::Duration;
 
-let mut app = App::new(|| {
+let mut app = Window::headless(|| {
     let status = state("status", || "loading".to_string());
     spawn(async move {
         sleep(Duration::from_millis(300)).await;
@@ -243,7 +243,7 @@ let mut app = App::new(|| {
     text(move || status.get()).id("status").into()
 });
 assert_eq!(app.kernel().text_of("status").as_deref(), Some("loading"));
-app.run_until_idle(Duration::from_secs(1)).unwrap();
+app.app().run_until_idle(Duration::from_secs(1)).unwrap();
 assert_eq!(app.kernel().text_of("status").as_deref(), Some("ready"));
 ```
 
@@ -255,16 +255,18 @@ assert_eq!(app.kernel().text_of("status").as_deref(), Some("ready"));
 
 ## Testing and checking
 
-- `App::new(view)` runs headlessly. Drive it by test id: `tap`, `double_tap`, `long_press`,
-  `drag`, `swipe`; by keys: `press_key("tab")`, `type_text("hello")`; or with events:
-  `dispatch(Event::Press("save".into()))`.
+- `Window::headless(view)` is `view` in a window of a headless app. Drive the window by test id:
+  `tap`, `double_tap`, `long_press`, `drag`, `swipe`; by keys: `press_key("tab")`,
+  `type_text("hello")`; or with events: `dispatch(Event::Press("save".into()))`.
 - Read back: `app.kernel().text_of(id)`, `state_of(id)` (hovered, focused, pressed, ..),
   `visual_of(id)` (colors, opacity), `exists(id)`, `app.accessibility_tree()`.
+- What is the app's, not the window's, is `app.app()`'s: the clock (`advance(d)`,
+  `run_until_idle(limit)`, `settle()`), `diagnostics()`, the theme and fonts, other windows
+  (`open_window`, `windows`).
 - Check: `layout_issues()` (overflow, collapsed elements, truncated text, clamped overlays,
-  missing tokens) and `diagnostics()` should be empty; `at_sizes(..)` runs a check at phone and
-  desktop sizes. `octara::testing::Checked` rebuilds the tree from scratch after every event and
-  compares.
-- Time: `advance(d)`, `run_until_idle(limit)`, `settle()`.
+  missing tokens) and `app.app().diagnostics()` should be empty; `at_sizes(..)` runs a check at
+  phone and desktop sizes. `app.app().set_check_consistency(true)` rebuilds every window from
+  scratch after each operation and panics where the incremental tree differs.
 
 ## Checking the running app
 

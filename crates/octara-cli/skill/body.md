@@ -39,10 +39,10 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
 ## Done means
 
 ```rust,ignore
-let mut app = App::new(view);
+let mut app = Window::headless(view);
 // drive it: app.tap("id"), app.press_key("mod+s"), app.type_text("hi"), app.dispatch(Event::..)
 assert!(app.layout_issues().is_empty(), "{:?}", app.layout_issues());
-assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 ```
 
 Tests pass, layout issues and diagnostics are empty, and `octara check` is clean. For any code,

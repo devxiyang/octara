@@ -61,13 +61,15 @@ pub struct TextMetrics {
 /// of them.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TextKey {
+    /// The kernel the node is in: one text system serves every window.
+    pub kernel: u32,
     pub node: NodeId,
     pub slot: u32,
 }
 
 impl From<NodeId> for TextKey {
     fn from(node: NodeId) -> TextKey {
-        TextKey { node, slot: 0 }
+        TextKey { kernel: 0, node, slot: 0 }
     }
 }
 
@@ -88,7 +90,7 @@ pub trait TextEngine {
     /// Drops cached paragraphs from `count` on (the text now has fewer).
     fn truncate(&mut self, key: TextKey, count: usize);
     /// Forgets a destroyed node's texts.
-    fn forget(&mut self, node: NodeId);
+    fn forget(&mut self, kernel: u32, node: NodeId);
     /// Adds font data (TTF/OTF, possibly a collection); its families become available by name.
     fn register_font(&mut self, _data: &'static [u8]) {}
     /// Adds font data whose families text falls back to for `scripts` (ISO 15924 tags such as
@@ -212,7 +214,7 @@ impl TextEngine for MonoEngine {
         (widest.max(line), lines)
     }
     fn truncate(&mut self, _: TextKey, _: usize) {}
-    fn forget(&mut self, _: NodeId) {}
+    fn forget(&mut self, _: u32, _: NodeId) {}
     fn visual_lines(&mut self, _: TextKey, text: &str, style: &TextStyle, max_width: Option<f32>) -> Vec<VisualLine> {
         even_lines(text, style.font_size * 0.5, style.line_height, max_width)
     }
@@ -243,13 +245,16 @@ struct Paragraph {
     results: Vec<(WidthKey, f32, u32)>,
 }
 
+/// A text node's paragraphs, by slot (a field's value and its placeholder are two).
+type Slots = Vec<(u32, Vec<Paragraph>)>;
+
 /// Parley over bundled and registered fonts only (no system fonts, so results do not depend on
 /// the machine).
 pub struct ParleyEngine {
     fonts: FontContext,
     layouts: LayoutContext<()>,
     /// Paragraphs by node, then by slot.
-    cache: FxHashMap<NodeId, Vec<(u32, Vec<Paragraph>)>>,
+    cache: FxHashMap<(u32, NodeId), Slots>,
     /// "…" shaped per style, for truncated text.
     ellipses: Vec<(TextStyle, Vec<ShapedRun>, f32)>,
     /// Paragraphs shaped, for tests and benchmarks.
@@ -343,11 +348,11 @@ impl ParleyEngine {
 impl ParleyEngine {
     /// The cached paragraphs of `key`, if any.
     fn paras(&mut self, key: TextKey) -> Option<&mut Vec<Paragraph>> {
-        self.cache.get_mut(&key.node)?.iter_mut().find(|(s, _)| *s == key.slot).map(|(_, p)| p)
+        self.cache.get_mut(&(key.kernel, key.node))?.iter_mut().find(|(s, _)| *s == key.slot).map(|(_, p)| p)
     }
     /// The cached paragraphs of `key`, made on first use.
     fn paras_entry(&mut self, key: TextKey) -> &mut Vec<Paragraph> {
-        let slots = self.cache.entry(key.node).or_default();
+        let slots = self.cache.entry((key.kernel, key.node)).or_default();
         let at = match slots.iter().position(|(s, _)| *s == key.slot) {
             Some(i) => i,
             None => {
@@ -407,8 +412,8 @@ impl TextEngine for ParleyEngine {
             p.truncate(count);
         }
     }
-    fn forget(&mut self, node: NodeId) {
-        self.cache.remove(&node);
+    fn forget(&mut self, kernel: u32, node: NodeId) {
+        self.cache.remove(&(kernel, node));
     }
     fn glyph_runs(&mut self, key: TextKey, style: &TextStyle, max_width: Option<f32>, fit: Option<f32>) -> Vec<ShapedRun> {
         let ellipsis = fit.map(|_| self.ellipsis(style));

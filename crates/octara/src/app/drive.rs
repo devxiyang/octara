@@ -5,7 +5,7 @@
 //! A target is a test id, else an exact accessible name (a label, or a text's own text). A
 //! name several elements share, a covered element and one outside the window are errors.
 
-use super::App;
+use super::Window;
 use super::pointer::{Button, Phase, PointerEvent, PointerKind};
 use crate::kernel::{Kernel, NodeId};
 
@@ -66,9 +66,9 @@ impl Kernel {
     }
 }
 
-impl App {
+impl Window {
     fn point_of(&self, target: &str) -> Result<(f32, f32), String> {
-        let k = self.win().ui.kernel.borrow();
+        let k = self.w.kernel.borrow();
         let n = k.resolve_target(target)?;
         if let Some(m) = self.top_modal()
             && !k.is_within(n, m)
@@ -102,7 +102,7 @@ impl App {
     pub fn double_tap(&mut self, target: &str) -> Result<(), String> {
         let at = self.point_of(target)?;
         self.press_at(at, PointerKind::Mouse, Button::Primary);
-        self.advance(std::time::Duration::from_millis(50));
+        self.app().advance(std::time::Duration::from_millis(50));
         self.press_at(at, PointerKind::Mouse, Button::Primary);
         Ok(())
     }
@@ -116,7 +116,7 @@ impl App {
     pub fn long_press(&mut self, target: &str) -> Result<(), String> {
         let (x, y) = self.point_of(target)?;
         self.pointer(PointerEvent::touch(1, Phase::Down, x, y));
-        self.advance(self.tuning().long_press);
+        self.app().advance(self.tuning().long_press);
         self.pointer(PointerEvent::touch(1, Phase::Up, x, y));
         Ok(())
     }
@@ -128,7 +128,7 @@ impl App {
         const STEPS: u32 = 4;
         for i in 1..=STEPS {
             let f = i as f32 / STEPS as f32;
-            self.advance(std::time::Duration::from_millis(16));
+            self.app().advance(std::time::Duration::from_millis(16));
             self.pointer(PointerEvent::mouse(Phase::Move, x + dx * f, y + dy * f));
         }
         self.pointer(PointerEvent::mouse(Phase::Up, x + dx, y + dy));
@@ -142,7 +142,7 @@ impl App {
         let steps = ((duration.as_secs_f64() * 60.0).ceil() as u32).max(1);
         for i in 1..=steps {
             let f = i as f32 / steps as f32;
-            self.advance(duration / steps);
+            self.app().advance(duration / steps);
             self.pointer(PointerEvent::touch(1, Phase::Move, x + dx * f, y + dy * f));
         }
         self.pointer(PointerEvent::touch(1, Phase::Up, x + dx, y + dy));

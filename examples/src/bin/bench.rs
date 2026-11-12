@@ -2,8 +2,8 @@
 //! (`-- --frames` or `-- --joins` for one section).
 //! Counts (closures, property changes, allocations) are exact; times are the minimum of 3 runs.
 
+use octara::app::Window;
 use octara::prelude::*;
-use octara::testing::Host;
 use octara_examples::apps::{self, Apps};
 use octara_examples::scenarios::{Factory, bench_steps, press, toggle};
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -38,19 +38,19 @@ fn steps<F: Factory>() {
         for _ in 0..3 {
             let mut h = step.app.build::<F>();
             h.kernel_mut().set_layout_enabled(false);
-            (step.prepare)(&mut *h).unwrap();
-            h.reset_work();
+            (step.prepare)(&mut h).unwrap();
+            h.app().reset_work();
             h.kernel_mut().reset_counters();
             let a0 = ALLOCS.load(Ordering::Relaxed);
             let t0 = Instant::now();
             for i in 0..step.repeat {
-                (step.op)(&mut *h, i).unwrap();
+                (step.op)(&mut h, i).unwrap();
             }
             let n = step.repeat as f64;
             let us = t0.elapsed().as_secs_f64() * 1e6 / n;
             let c = h.kernel().counters();
             row = (
-                h.work().closures_run as f64 / n,
+                h.app().work().closures_run as f64 / n,
                 c.prop_changes as f64 / n,
                 c.structural_ops as f64 / n,
                 (ALLOCS.load(Ordering::Relaxed) - a0) as f64 / n,
@@ -66,7 +66,7 @@ fn scaling() {
     println!("## scaling: µs per op, layout off, min of 3 runs (allocs per op)\n");
     println!("| variant | n | toggle #500 | add one | remove #500 |");
     println!("| --- | ---: | ---: | ---: | ---: |");
-    fn one<F: Factory>(n: usize, op: &dyn Fn(&mut dyn Host, usize)) -> (f64, f64) {
+    fn one<F: Factory>(n: usize, op: &dyn Fn(&mut Window, usize)) -> (f64, f64) {
         let mut best = (f64::MAX, 0.0);
         for _ in 0..3 {
             let mut h = F::todo_with(n);
@@ -74,7 +74,7 @@ fn scaling() {
             let a0 = ALLOCS.load(Ordering::Relaxed);
             let t0 = Instant::now();
             for i in 0..20 {
-                op(&mut *h, i);
+                op(&mut h, i);
             }
             let us = t0.elapsed().as_secs_f64() * 1e6 / 20.0;
             if us < best.0 {
@@ -106,7 +106,7 @@ fn virtualization() {
         let (mut mount, mut token, mut scroll, mut nodes, mut visible) = (f64::MAX, f64::MAX, f64::MAX, 0, f64::MAX);
         for _ in 0..3 {
             let t0 = Instant::now();
-            let mut h = App::new(move || build(n));
+            let mut h = Window::headless(move || build(n));
             mount = mount.min(t0.elapsed().as_secs_f64() * 1e3);
             nodes = h.kernel().live_nodes();
             octara_examples::scenarios::external(&mut h, "user", "go").unwrap();
@@ -144,10 +144,10 @@ fn operators() {
     println!("| n | rename (move in group) | change team (move across groups) | star (no move) |");
     println!("| ---: | ---: | ---: | ---: |");
     for n in [1_000usize, 10_000, 100_000] {
-        let time = |op: &dyn Fn(&mut App, usize)| {
+        let time = |op: &dyn Fn(&mut Window, usize)| {
             let mut best = (f64::MAX, 0.0);
             for _ in 0..3 {
-                let mut h = App::new(move || apps::contacts(n));
+                let mut h = Window::headless(move || apps::contacts(n));
                 h.kernel_mut().set_layout_enabled(false);
                 let a0 = ALLOCS.load(Ordering::Relaxed);
                 let t0 = Instant::now();
@@ -177,7 +177,7 @@ fn grouped_virtual() {
         let (mut mount, mut nodes, mut rename, mut team) = (f64::MAX, 0, f64::MAX, f64::MAX);
         for _ in 0..3 {
             let t0 = Instant::now();
-            let mut h = App::new(move || build(n));
+            let mut h = Window::headless(move || build(n));
             mount = mount.min(t0.elapsed().as_secs_f64() * 1e3);
             nodes = h.kernel().live_nodes();
             let t0 = Instant::now();
@@ -210,7 +210,7 @@ fn streaming_text() {
     fn run(build: fn(usize) -> View, body: usize, paragraphs: bool) -> (f64, u64) {
         let mut best = (f64::MAX, 0);
         for _ in 0..3 {
-            let mut h = App::new(move || build(1_000));
+            let mut h = Window::headless(move || build(1_000));
             octara_examples::scenarios::external(&mut h, "user", "go").unwrap();
             h.dispatch(Event::ScrollTo("messages".into(), 0.0, 1e9)).unwrap();
             // 500 bytes of words, ending a paragraph or not.
@@ -256,11 +256,11 @@ fn frames() {
         ("showcase", octara_examples::showcase::showcase, "add"),
     ];
     for (name, view, target) in cases {
-        let mut app = App::new(view);
+        let mut app = Window::headless(view);
         app.resize(1024.0, 768.0);
         let items = app.display_list().items.len();
         let nodes = app.kernel().counters().nodes_created - app.kernel().counters().nodes_destroyed;
-        let time = |app: &mut App, press: bool| {
+        let time = |app: &mut Window, press: bool| {
             let mut best = f64::MAX;
             for _ in 0..3 {
                 let t0 = Instant::now();
@@ -312,7 +312,7 @@ fn joins() {
         let time = |event: &str, payload: &str| {
             let mut best = (f64::MAX, 0u64);
             for _ in 0..3 {
-                let mut h = App::new(move || apps::inbox(n));
+                let mut h = Window::headless(move || apps::inbox(n));
                 h.kernel_mut().set_layout_enabled(false);
                 h.kernel_mut().reset_counters();
                 let t0 = Instant::now();

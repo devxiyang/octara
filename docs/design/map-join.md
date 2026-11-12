@@ -58,7 +58,7 @@ their own state incrementally, and are stages themselves, so they compose
 
 - Proptest: random inserts, updates, removes and moves on both sides, compared after every
   event with the operators computed from scratch (as the existing views are).
-- `Checked` apps using `map` and `join`; bench rows for a right-side fan-out and a `map` over
+- Consistency-checked apps (`App::set_check_consistency`) using `map` and `join`; bench rows for a right-side fan-out and a `map` over
   100 000 items.
 
 ## Steps

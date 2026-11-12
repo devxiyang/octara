@@ -5,8 +5,8 @@ use octara::accesskit;
 use octara::app::{Phase, PointerEvent, TargetPlatform, byte_offset, utf16_offset};
 use octara::prelude::*;
 
-fn app(initial: &'static str) -> App {
-    let mut app = App::new(move || {
+fn app(initial: &'static str) -> Window {
+    let mut app = Window::headless(move || {
         let v = state("v", move || initial.to_owned());
         col()
             .size_full()
@@ -14,20 +14,20 @@ fn app(initial: &'static str) -> App {
             .child(text_input().id("narrow").w(px(60.0)).value("").on_input(|_| {}))
             .into()
     });
-    app.set_target_platform(TargetPlatform::MacOs);
+    app.app().set_target_platform(TargetPlatform::MacOs);
     app.tap("field").unwrap();
     app
 }
 
-fn value(app: &App) -> String {
+fn value(app: &Window) -> String {
     app.kernel().value_of("field").unwrap()
 }
 
-fn selection(app: &App) -> std::ops::Range<usize> {
+fn selection(app: &Window) -> std::ops::Range<usize> {
     app.text_field().unwrap().selection
 }
 
-fn keys(app: &mut App, chords: &[&str]) {
+fn keys(app: &mut Window, chords: &[&str]) {
     for c in chords {
         app.press_key(c).unwrap();
     }
@@ -65,7 +65,7 @@ fn typing_replaces_the_selection_and_deletes_by_word() {
     keys(&mut app, &["home", "delete"]);
     assert_eq!(value(&app), "ello brave ");
     // Off Apple platforms words move with Control.
-    app.set_target_platform(TargetPlatform::Windows);
+    app.app().set_target_platform(TargetPlatform::Windows);
     keys(&mut app, &["ctrl+delete"]);
     assert_eq!(value(&app), " brave ");
 }
@@ -81,7 +81,7 @@ fn cut_copy_paste() {
     keys(&mut app, &["home", "cmd+v"]);
     assert_eq!(value(&app), "twoone ");
     assert_eq!(selection(&app), 3..3);
-    app.platform().write_text("a\nb");
+    app.app().platform().write_text("a\nb");
     keys(&mut app, &["cmd+v"]);
     assert_eq!(value(&app), "twoa bone ", "one line: breaks become spaces");
 }
@@ -114,7 +114,7 @@ fn undo_takes_back_a_run_of_typing_at_once() {
 
 #[test]
 fn a_value_the_app_refuses_keeps_the_caret_in_range() {
-    let mut app = App::new(|| col().child(text_input().id("fixed").w(px(200.0)).value("abc").on_input(|_| {})).into());
+    let mut app = Window::headless(|| col().child(text_input().id("fixed").w(px(200.0)).value("abc").on_input(|_| {})).into());
     app.tap("fixed").unwrap();
     app.press_key("end").unwrap();
     app.type_text("zzzz");
@@ -152,15 +152,15 @@ fn pointer_places_the_caret_and_selects() {
     // Far right: the end. Far left: the start.
     app.click_at(x + w - 2.0, cy);
     assert_eq!(selection(&app), 16..16);
-    app.advance(std::time::Duration::from_secs(1));
+    app.app().advance(std::time::Duration::from_secs(1));
     app.click_at(x + 1.0, cy);
     assert_eq!(selection(&app), 0..0);
     // Shift-click extends; double-click selects a word; triple-click everything.
-    app.advance(std::time::Duration::from_secs(1));
+    app.app().advance(std::time::Duration::from_secs(1));
     app.pointer(PointerEvent::mouse(Phase::Down, x + w - 2.0, cy).modifiers(Modifiers::SHIFT));
     app.pointer(PointerEvent::mouse(Phase::Up, x + w - 2.0, cy));
     assert_eq!(selection(&app), 0..16);
-    app.advance(std::time::Duration::from_secs(1));
+    app.app().advance(std::time::Duration::from_secs(1));
     let caret_after_beta = {
         app.press_key("home").unwrap();
         keys(&mut app, &["alt+right", "alt+right"]);
@@ -172,7 +172,7 @@ fn pointer_places_the_caret_and_selects() {
     app.click_at(caret_after_beta - 4.0, cy);
     assert_eq!(selection(&app), 0..16);
     // A drag selects from where it started.
-    app.advance(std::time::Duration::from_secs(1));
+    app.app().advance(std::time::Duration::from_secs(1));
     app.pointer_down(x + 1.0, cy);
     app.pointer_move(caret_after_beta, cy);
     app.pointer_up(caret_after_beta, cy);
@@ -220,7 +220,7 @@ fn assistive_technology_sets_the_value() {
 }
 
 /// The glyphs a field draws, as text: one glyph per character with the bundled Latin fonts.
-fn drawn_glyphs(app: &App, id: &str) -> usize {
+fn drawn_glyphs(app: &Window, id: &str) -> usize {
     let n = app.kernel().find(id).unwrap();
     app.display_list().glyph_runs().filter(|r| r.source == n).map(|r| r.glyphs.len()).sum()
 }

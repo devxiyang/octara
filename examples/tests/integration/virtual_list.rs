@@ -2,11 +2,11 @@ use octara::prelude::*;
 use octara_examples::apps::{MSG_ROW_HEIGHT, chat_virtual};
 use octara_examples::scenarios::external;
 
-fn rows(h: &App) -> Vec<String> {
+fn rows(h: &Window) -> Vec<String> {
     h.kernel().child_ids("messages").into_iter().filter(|id| id.starts_with("msg-")).collect()
 }
 
-fn spacer(h: &App, name: &str) -> f32 {
+fn spacer(h: &Window, name: &str) -> f32 {
     let k = h.kernel();
     let id = k.find(name).unwrap();
     k.rect(id).3
@@ -14,7 +14,7 @@ fn spacer(h: &App, name: &str) -> f32 {
 
 #[test]
 fn only_the_window_exists_and_scrolling_moves_it() {
-    let mut h = App::new(|| chat_virtual(100_000));
+    let mut h = Window::headless(|| chat_virtual(100_000));
     let r = rows(&h);
     // Rows partly or fully inside the scroll container, plus 5 overscan on each side.
     let client = {
@@ -43,7 +43,7 @@ fn only_the_window_exists_and_scrolling_moves_it() {
 
 #[test]
 fn changes_outside_the_window_touch_nothing_visible() {
-    let mut h = App::new(|| chat_virtual(10_000));
+    let mut h = Window::headless(|| chat_virtual(10_000));
     external(&mut h, "user", "hi").unwrap(); // appends far below the window
     h.kernel_mut().reset_counters();
     for _ in 0..10 {
@@ -56,14 +56,14 @@ fn changes_outside_the_window_touch_nothing_visible() {
     // Scrolling to the end shows the streamed text.
     h.dispatch(Event::ScrollTo("messages".into(), 0.0, 1e9)).unwrap();
     assert_eq!(h.kernel().text_of("msg-body-10002").as_deref(), Some("xxxxxxxxxx"));
-    assert!(h.diagnostics().is_empty(), "{:?}", h.diagnostics());
+    assert!(h.app().diagnostics().is_empty(), "{:?}", h.app().diagnostics());
 }
 
 #[test]
 fn hot_reload_keeps_scroll_and_window() {
-    let mut h = App::new(|| chat_virtual(1_000));
+    let mut h = Window::headless(|| chat_virtual(1_000));
     h.dispatch(Event::ScrollTo("messages".into(), 0.0, 3200.0)).unwrap();
     let before = h.kernel().tree_dump();
-    h.hot_reload();
+    h.app().hot_reload();
     assert_eq!(h.kernel().tree_dump(), before);
 }

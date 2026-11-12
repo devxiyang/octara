@@ -2,7 +2,7 @@ use octara::prelude::*;
 use octara_examples::apps::contacts;
 use octara_examples::scenarios::{external, press, toggle};
 
-fn names(h: &App, team: &str) -> Vec<String> {
+fn names(h: &Window, team: &str) -> Vec<String> {
     let k = h.kernel();
     k.child_ids(&format!("members-{team}"))
         .iter()
@@ -11,15 +11,15 @@ fn names(h: &App, team: &str) -> Vec<String> {
 }
 
 /// After every operation the incremental tree must equal a from-scratch rebuild.
-fn consistent(h: &mut App) {
+fn consistent(h: &mut Window) {
     let incremental = h.kernel().tree_dump();
-    h.hot_reload();
+    h.app().hot_reload();
     assert_eq!(incremental, h.kernel().tree_dump(), "incremental and from-scratch trees differ");
 }
 
 #[test]
 fn sorted_groups_follow_renames_moves_and_adds() {
-    let mut h = App::new(|| contacts(30));
+    let mut h = Window::headless(|| contacts(30));
     assert_eq!(h.kernel().text_of("teams").as_deref(), Some("3 teams"));
     assert_eq!(h.kernel().child_ids("groups"), ["group-blue", "group-green", "group-red"]);
     assert_eq!(h.kernel().text_of("team-blue").as_deref(), Some("blue (10)"));
@@ -64,7 +64,7 @@ fn sorted_groups_follow_renames_moves_and_adds() {
     assert_eq!(h.kernel().child_ids("groups"), ["group-blue", "group-green", "group-red"]);
     assert_eq!(h.kernel().text_of("team-green").as_deref(), Some("green (1)"));
     consistent(&mut h);
-    assert!(h.diagnostics().is_empty(), "{:?}", h.diagnostics());
+    assert!(h.app().diagnostics().is_empty(), "{:?}", h.app().diagnostics());
 }
 
 mod virtualized {
@@ -73,11 +73,11 @@ mod virtualized {
     use octara_examples::apps::{CONTACT_HEIGHT, HEADER_HEIGHT, contacts_virtual};
     use octara_examples::scenarios::{external, press};
 
-    fn window(h: &App) -> Vec<String> {
+    fn window(h: &Window) -> Vec<String> {
         h.kernel().child_ids("contacts").into_iter().filter(|c| !c.ends_with("-top") && !c.ends_with("-bottom")).collect()
     }
 
-    fn height(h: &App, id: &str) -> f32 {
+    fn height(h: &Window, id: &str) -> f32 {
         let k = h.kernel();
         let n = k.find(id).unwrap();
         k.rect(n).3
@@ -85,7 +85,7 @@ mod virtualized {
 
     #[test]
     fn grouped_list_virtualizes_with_two_row_heights() {
-        let mut h = App::new(|| contacts_virtual(90_000));
+        let mut h = Window::headless(|| contacts_virtual(90_000));
         let w = window(&h);
         assert_eq!(w[0], "team-blue");
         // 600 px: one 24 px header, then 16 px rows: (600 - 24) / 16 = 36 rows, + overscan.
@@ -116,10 +116,10 @@ mod virtualized {
         let c = h.kernel().counters();
         assert_eq!((c.nodes_created, c.nodes_destroyed), (5, 6), "one row in; the moved row (with its open detail) out");
         consistent_flat(&mut h);
-        assert!(h.diagnostics().is_empty(), "{:?}", h.diagnostics());
+        assert!(h.app().diagnostics().is_empty(), "{:?}", h.app().diagnostics());
     }
 
-    fn consistent_flat(h: &mut App) {
+    fn consistent_flat(h: &mut Window) {
         consistent(h);
     }
 }

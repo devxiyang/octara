@@ -6,7 +6,8 @@ use octara::prelude::*;
 
 #[test]
 fn cjk_falls_back_to_a_system_font_and_system_ui_resolves() {
-    let mut app = App::new(|| col().child(text("Hello 世界").id("mixed")).child(text("System").id("ui").font_family("system-ui")).into());
+    let mut app =
+        Window::headless(|| col().child(text("Hello 世界").id("mixed")).child(text("System").id("ui").font_family("system-ui")).into());
     app.kernel_mut().set_text_engine(Box::new(ParleyEngine::system()));
     app.resize(800.0, 600.0);
     let dl = app.display_list();

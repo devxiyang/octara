@@ -31,7 +31,7 @@ fn view() -> View {
 
 #[test]
 fn deterministic_and_pixels_where_expected() {
-    let app = App::new(view);
+    let app = Window::headless(view);
     let a = screenshot(&app, 2.0);
     let b = CpuRenderer::new().render(&app.display_list(), 2.0);
     assert_eq!((a.width, a.height), (1600, 1200));

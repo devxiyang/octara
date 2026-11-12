@@ -44,15 +44,15 @@ fn view() -> View {
         .into()
 }
 
-fn log(app: &mut App) -> String {
+fn log(app: &mut Window) -> String {
     let s = app.kernel().text_of("log").unwrap();
-    app.send("clear", "").unwrap();
+    app.app().send("clear", "").unwrap();
     s
 }
 
-fn app() -> App {
-    let mut app = App::new(view);
-    app.set_target_platform(TargetPlatform::MacOs);
+fn app() -> Window {
+    let mut app = Window::headless(view);
+    app.app().set_target_platform(TargetPlatform::MacOs);
     app.bind("mod+s", Some("save"), None).unwrap();
     app.bind("mod+o", Some("open"), None).unwrap();
     app.bind("mod+shift+f", Some("format"), Some("editor")).unwrap();
@@ -84,7 +84,7 @@ fn commands_resolve_along_the_focus_path() {
     app.press_key("cmd+o").unwrap();
     assert_eq!(log(&mut app), "editor-save,format,app-open", "the innermost handler wins; others fall through to the app");
     // Off Apple platforms `mod` is Control.
-    app.set_target_platform(TargetPlatform::Linux);
+    app.app().set_target_platform(TargetPlatform::Linux);
     app.press_key("ctrl+s").unwrap();
     app.press_key("cmd+s").unwrap();
     assert_eq!(log(&mut app), "editor-save");
@@ -182,7 +182,7 @@ fn an_input_method_owns_enter_and_escape_while_composing() {
 
 #[test]
 fn enter_submits_a_field_and_presses_one_without_on_submit() {
-    let mut app = App::new(|| {
+    let mut app = Window::headless(|| {
         let log = state("log", Vec::<String>::new);
         let push = move |s: &'static str| log.update(|l| l.push(s.into()));
         col()

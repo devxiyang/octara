@@ -73,7 +73,7 @@ Primitives that are implemented and kept:
 | Interaction states | `hover` / `active` / `focus_visible` / `style_when(State, ..)`; `selected`, `disabled`, `focusable` |
 | Semantics | `role`, `label`, `description`, `expanded`, `checked`, `value`, `a11y_hidden` |
 | Events | `on_press` / `on_input` / `on_toggle`; `Event::Hover` / `Focus` / `Blur`; disabled elements reject events |
-| Runtime and testing | `App` (`force_state`, `set_theme`), `Event`, `testing::Host`, `Checked`, `check_consistent` |
+| Runtime and testing | `App` (`force_state`, `set_theme`), `Event`, `Window::headless`, `App::set_check_consistency` |
 
 ## This Round: Adjusting Existing Primitives
 

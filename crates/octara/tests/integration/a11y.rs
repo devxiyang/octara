@@ -25,7 +25,7 @@ fn view() -> View {
 
 #[test]
 fn roles_names_states_actions_and_bounds() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     let tree = app.accessibility_tree(2.0);
     let node = |id: &str| {
         let n = app.kernel().find(id).unwrap();
@@ -57,7 +57,7 @@ fn roles_names_states_actions_and_bounds() {
 #[test]
 fn a_value_is_announced_for_any_control() {
     // A combo box's choice is its value, as a text input's content is.
-    let app = App::new(|| {
+    let app = Window::headless(|| {
         col()
             .child(el().id("theme").role(Role::ComboBox).label("Theme").value("Dark").focusable().on_press(|| {}))
             .child(text_input().id("name").label("Name").value("Ada"))
@@ -120,14 +120,14 @@ fn busy() -> View {
 
 #[test]
 fn updates_send_only_what_changed() {
-    let mut app = App::new(busy);
+    let mut app = Window::headless(busy);
     let full = app.accessibility_update(2.0);
     assert!(full.tree.is_some() && full.nodes.len() > 10, "the first update is the whole tree");
     let quiet = app.accessibility_update(2.0);
     assert!(quiet.nodes.is_empty(), "nothing changed: nothing sent");
 
     // Every update below is checked against the whole tree in debug builds.
-    let sizes = |app: &mut App, what: &str, op: &dyn Fn(&mut App)| {
+    let sizes = |app: &mut Window, what: &str, op: &dyn Fn(&mut Window)| {
         op(app);
         let u = app.accessibility_update(2.0);
         assert!(u.tree.is_none(), "{what}: incremental");
@@ -135,7 +135,7 @@ fn updates_send_only_what_changed() {
     };
     let n = sizes(&mut app, "press", &|a| a.tap("inc").unwrap());
     assert!(n <= 3, "a press sends the text and the button: {n}");
-    app.advance(std::time::Duration::from_secs(1));
+    app.app().advance(std::time::Duration::from_secs(1));
     sizes(&mut app, "motion settles", &|_| {});
     let shown = sizes(&mut app, "show", &|a| a.tap("toggle").unwrap());
     assert!(shown >= 4, "the panel's subtree is new: {shown}");
@@ -151,7 +151,7 @@ fn updates_send_only_what_changed() {
     sizes(&mut app, "overlay", &|a| a.tap("menu-button").unwrap());
     sizes(&mut app, "overlay closes", &|a| a.tap("menu-button").unwrap());
     sizes(&mut app, "resize", &|a| a.resize(500.0, 400.0));
-    sizes(&mut app, "theme", &|a| a.set_theme(Theme::dark()));
+    sizes(&mut app, "theme", &|a| a.app().set_theme(Theme::dark()));
 
     // Restarting sends the whole tree again.
     app.restart_accessibility();

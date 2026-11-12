@@ -5,7 +5,7 @@ use octara::prelude::*;
 
 #[test]
 fn absolute_children_are_placed_against_their_parent() {
-    let app = App::new(|| {
+    let app = Window::headless(|| {
         col()
             .p_8()
             .child(el().h(40))

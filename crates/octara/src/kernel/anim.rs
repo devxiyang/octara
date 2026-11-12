@@ -170,16 +170,16 @@ impl Kernel {
     }
     /// Reduce Motion: spatial motion lands at once, opacity and colors fade briefly.
     pub fn set_reduced_motion(&mut self, on: bool) {
-        self.reduced_motion = on;
+        self.res.reduced_motion.set(on);
     }
     pub fn reduced_motion(&self) -> bool {
-        self.reduced_motion
+        self.res.reduced_motion.get()
     }
 
     fn curve(&self, c: Curve, class: PropClass) -> Curve {
         if self.instant {
             Curve::Instant
-        } else if self.reduced_motion {
+        } else if self.res.reduced_motion.get() {
             class.reduced(c)
         } else {
             c
@@ -193,7 +193,7 @@ impl Kernel {
         if m.is_none() && self.node(id).anim.is_none() {
             return;
         }
-        let new_shadows = new.shadow.resolve(&self.theme);
+        let new_shadows = new.shadow.resolve(&self.res.theme.borrow());
         if !matches!(m.layout, Curve::Instant) {
             self.framed.insert(id);
         }
@@ -205,7 +205,7 @@ impl Kernel {
         }
         let t = self.now;
         let (color, opacity) = (self.curve(m.color, PropClass::Color), self.curve(m.opacity, PropClass::Opacity));
-        let old_shadows = old.shadow.resolve(&self.theme);
+        let old_shadows = old.shadow.resolve(&self.res.theme.borrow());
         let n = self.node_mut(id);
         let a = n.anim.get_or_insert_with(|| Box::new(Anim::at(old, old_shadows)));
         a.background.retarget(new.background, t, color);
@@ -470,7 +470,7 @@ impl Kernel {
         let n = self.node(id);
         match &n.anim {
             Some(a) => a.shadows(self.now),
-            None => n.visual.shadow.resolve(&self.theme),
+            None => n.visual.shadow.resolve(&self.res.theme.borrow()),
         }
     }
 

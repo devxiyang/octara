@@ -16,8 +16,8 @@ pub use pointer::{Button, Drag, DragPhase, Modifiers, Phase, PointerEvent, Point
 use crate::diagnostics::{self as codes, Diagnostic};
 use crate::kernel::{Breakpoint, HandlerKind, Kernel, NodeId, State, Theme};
 use crate::reactive::graph::Signal;
-use crate::reactive::graph::{Ctx, Runtime, ScopeId};
-use crate::view::{Handler, Parent, Slots, Ui, View, enter_ui, mount};
+use crate::reactive::graph::{Ctx, Owner, Runtime, ScopeId};
+use crate::view::{Handler, Parent, Slots, View, mount};
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::rc::Rc;
 
@@ -103,34 +103,76 @@ slotmap::new_key_type! {
     pub struct WindowId;
 }
 
-/// An app: the reactive runtime, the clock and the app's settings, and its windows
-/// ([design](https://github.com/octoii-works/octara/blob/main/docs/design/windows.md)). The
-/// methods without a window act on the main one.
-pub struct App {
-    rt: Rc<Runtime>,
-    windows: slotmap::SlotMap<WindowId, Window>,
-    main: WindowId,
+impl WindowId {
+    /// The reactive owner code of this window runs as.
+    fn owner(self) -> Owner {
+        Owner(slotmap::Key::data(&self).as_ffi())
+    }
+    fn of(owner: Owner) -> WindowId {
+        slotmap::KeyData::from_ffi(owner.0).into()
+    }
+}
+
+/// What the whole app shares ([design](https://github.com/octoii-works/octara/blob/main/docs/design/core.md)):
+/// the reactive runtime, the scheduler and its clock, settings and the platform, and the
+/// windows.
+pub(crate) struct AppState {
+    pub(crate) rt: Rc<Runtime>,
+    /// Tasks, timers and channels, and the clock: one for all the windows.
+    pub(crate) sched: Rc<crate::task::Scheduler>,
+    /// The theme, the text system and input conventions every window's kernel reads.
+    pub(crate) res: Rc<crate::kernel::Resources>,
+    windows: RefCell<slotmap::SlotMap<WindowId, Rc<WindowState>>>,
+    /// The open windows, in the order they opened.
+    order: RefCell<Vec<WindowId>>,
+    /// Windows opened from app code, mounted at the end of the frame; windows to close then.
+    opening: RefCell<Vec<WindowId>>,
+    closing: RefCell<Vec<WindowId>>,
     next_cause: Cell<u64>,
     tuning: Cell<Tuning>,
     platform: Cell<TargetPlatform>,
     /// The app's own bindings (after the platform's standard ones).
     keymap: RefCell<keys::Keymap>,
-    /// The system the app runs on (clipboard, waking the loop).
+    /// The system the app runs on (clipboard, waking the loop, windows).
     system: RefCell<Box<dyn crate::platform::Platform>>,
     /// What paints `capture` requests (the harness installs the reference renderer).
     painter: RefCell<Option<Box<dyn crate::capture::Painter>>>,
+    /// How deep the app's entry points are nested: an operation ends when it returns to 0.
+    depth: Cell<u32>,
+    /// Check every window against a from-scratch rebuild after each operation (tests).
+    check: Cell<bool>,
+    /// A check is running (its rebuild is an operation too).
+    checking: Cell<bool>,
 }
 
-/// What is one window's own: its kernel and view context, root view and scope, interaction
-/// state, size and the signals derived from it, its native views and a capture in progress.
-pub(crate) struct Window {
-    ui: Rc<Ui>,
+/// What is one window's own: its kernel and view context (handlers, commands, overlay slots,
+/// followed scroll states and sizes, after-layout hooks), its root view and scope, interaction
+/// state, size and the signals derived from it, its platform window and what it was last sent,
+/// and a capture in progress.
+pub(crate) struct WindowState {
+    pub(crate) id: WindowId,
+    pub(crate) kernel: RefCell<Kernel>,
+    pub(crate) handlers: RefCell<rustc_hash::FxHashMap<u64, Handler>>,
+    /// The window's command handlers (`on_command`), in registration order.
+    pub(crate) commands: RefCell<Vec<(String, u64)>>,
+    /// Regions of the kernel's overlay layer, one per `overlay` of a mounted element.
+    pub(crate) overlay_slots: Slots,
+    pub(crate) viewport: Signal<(f32, f32)>,
+    pub(crate) breakpoint: Signal<Breakpoint>,
+    /// Scroll containers someone follows (virtual lists), with their state as a signal.
+    pub(crate) scrolls: RefCell<rustc_hash::FxHashMap<NodeId, Signal<crate::view::ScrollState>>>,
+    /// Element sizes someone follows (`size_of`), by test id.
+    pub(crate) sizes: RefCell<rustc_hash::FxHashMap<String, Signal<(f32, f32)>>>,
+    /// Run after each layout; return whether they changed anything (then the window lays out again).
+    pub(crate) after_layout: RefCell<Vec<(u64, crate::view::AfterLayout)>>,
+    pub(crate) next: Cell<u64>,
+    options: crate::platform::WindowOptions,
+    /// Closed: its scope is disposed and it left the app.
+    closed: Cell<bool>,
     root: Rc<dyn Fn() -> View>,
     root_scope: Cell<Option<ScopeId>>,
     root_slots: Slots,
     interaction: RefCell<Interaction>,
-    viewport: Signal<(f32, f32)>,
-    breakpoint: Signal<Breakpoint>,
     size: Cell<(f32, f32)>,
     /// The window on the system: its native views and text input (headless: a recording host).
     platform: RefCell<Box<dyn crate::platform::PlatformWindow>>,
@@ -140,6 +182,60 @@ pub(crate) struct Window {
     native_sent: RefCell<rustc_hash::FxHashMap<NodeId, (u64, Option<crate::native::Placement>)>>,
     /// A capture in progress: the snapshots asked for.
     capturing: RefCell<Option<crate::capture::Capturing>>,
+}
+
+thread_local! {
+    static APP: RefCell<Option<Rc<AppState>>> = const { RefCell::new(None) };
+}
+
+/// The app whose code is running (panics outside one).
+pub(crate) fn app_state() -> Rc<AppState> {
+    APP.with(|a| a.borrow().clone()).expect("no app: call inside an app's frame")
+}
+
+/// The window whose code is running: the reactive owner of the running binding, watch, task or
+/// handler (panics outside one).
+pub(crate) fn window() -> Rc<WindowState> {
+    let owner = crate::reactive::graph::current_owner().expect("no window: this runs only inside a window's code");
+    let app = app_state();
+    let w = app.windows.borrow().get(WindowId::of(owner)).cloned();
+    w.expect("the window this code belongs to is closed")
+}
+
+fn enter_app<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<Rc<AppState>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let prev = self.0.take();
+            APP.with(|a| *a.borrow_mut() = prev);
+        }
+    }
+    let r = {
+        let _restore = Restore(APP.with(|a| a.replace(Some(app.clone()))));
+        app.depth.set(app.depth.get() + 1);
+        let r = app.rt.enter(f);
+        app.depth.set(app.depth.get() - 1);
+        r
+    };
+    if app.depth.get() == 0 {
+        app.check_consistency();
+    }
+    r
+}
+
+/// An app: one reactive runtime and clock, its settings and platform, and its windows. Cloning
+/// it gives another handle on the same app.
+#[derive(Clone)]
+pub struct App {
+    app: Rc<AppState>,
+}
+
+/// One window of an app: drive it (pointer, keys, text, test ids), read what it shows (the
+/// display list, the semantic tree, the kernel). Cloning it gives another handle.
+#[derive(Clone)]
+pub struct Window {
+    app: Rc<AppState>,
+    w: Rc<WindowState>,
 }
 
 /// Runtime-owned interaction states. A hot reload carries them over by test id.
@@ -167,31 +263,39 @@ struct Interaction {
     reveal: Option<NodeId>,
 }
 
-impl Window {
+impl WindowState {
     fn new(
-        rt: &Rc<Runtime>,
+        app: &AppState,
+        id: WindowId,
+        options: crate::platform::WindowOptions,
         root: Rc<dyn Fn() -> View>,
-        platform: TargetPlatform,
-        window: Box<dyn crate::platform::PlatformWindow>,
-    ) -> Window {
-        let window = Window {
-            ui: Rc::new(Ui::default()),
+        platform: Box<dyn crate::platform::PlatformWindow>,
+    ) -> WindowState {
+        let size = options.size;
+        WindowState {
+            id,
+            kernel: RefCell::new(Kernel::new(app.res.clone())),
+            handlers: RefCell::default(),
+            commands: RefCell::default(),
+            overlay_slots: Slots::default(),
+            viewport: app.rt.enter(|| Signal::detached(size)),
+            breakpoint: app.rt.enter(|| Signal::detached(Theme::default().breakpoint_of(size.0))),
+            scrolls: RefCell::default(),
+            sizes: RefCell::default(),
+            after_layout: RefCell::default(),
+            next: Cell::new(0),
+            options,
+            closed: Cell::new(false),
             root,
             root_scope: Cell::new(None),
             root_slots: Slots::default(),
             interaction: RefCell::default(),
-            viewport: rt.enter(|| Signal::detached(DEFAULT_VIEWPORT)),
-            breakpoint: rt.enter(|| Signal::detached(Theme::default().breakpoint_of(DEFAULT_VIEWPORT.0))),
-            size: Cell::new(DEFAULT_VIEWPORT),
-            platform: RefCell::new(window),
+            size: Cell::new(size),
+            platform: RefCell::new(platform),
             text_input: Cell::new(None),
             native_sent: RefCell::default(),
             capturing: RefCell::default(),
-        };
-        window.ui.viewport.set(Some(window.viewport));
-        window.ui.breakpoint.set(Some(window.breakpoint));
-        window.ui.kernel.borrow_mut().set_touch(platform.is_touch());
-        window
+        }
     }
 }
 
@@ -204,62 +308,268 @@ fn n_offset(k: &Kernel, n: crate::kernel::NodeId, relative: bool) -> (f32, f32) 
 const RUNTIME_STATES: State = State::HOVER.union(State::FOCUSED).union(State::FOCUS_VISIBLE).union(State::PRESSED);
 
 impl App {
-    /// A headless app ([`HeadlessPlatform`](crate::platform::HeadlessPlatform)): tests, agents,
-    /// `octara run`.
-    pub fn new(root: impl Fn() -> View + 'static) -> Self {
-        Self::with_platform(crate::platform::HeadlessPlatform::default(), crate::platform::HeadlessWindow::default(), root)
-    }
-
-    /// An app on `platform`, its main window `window` (a shell's backend).
-    pub fn with_platform(
-        platform: impl crate::platform::Platform + 'static,
-        window: impl crate::platform::PlatformWindow + 'static,
-        root: impl Fn() -> View + 'static,
-    ) -> Self {
-        let rt = Runtime::new();
-        let target = TargetPlatform::current();
-        let window = Window::new(&rt, Rc::new(root), target, Box::new(window));
-        let mut windows = slotmap::SlotMap::with_key();
-        let main = windows.insert(window);
-        let app = App {
-            rt,
-            windows,
-            main,
+    /// An app on `platform` (a backend's; `HeadlessPlatform` for tests and agents), with no
+    /// window yet.
+    pub fn new(platform: impl crate::platform::Platform + 'static) -> App {
+        let state = AppState {
+            rt: Runtime::new(),
+            sched: Rc::new(crate::task::Scheduler::default()),
+            res: Rc::default(),
+            windows: RefCell::default(),
+            order: RefCell::default(),
+            opening: RefCell::default(),
+            closing: RefCell::default(),
             next_cause: Cell::new(0),
             tuning: Cell::new(Tuning::default()),
-            platform: Cell::new(target),
-            painter: RefCell::default(),
+            platform: Cell::new(TargetPlatform::current()),
             keymap: RefCell::new(keys::Keymap::default()),
             system: RefCell::new(Box::new(platform)),
+            painter: RefCell::default(),
+            depth: Cell::new(0),
+            check: Cell::new(false),
+            checking: Cell::new(false),
         };
-        if let Some(wake) = app.system.borrow().waker() {
-            app.win().ui.sched.set_waker(wake);
+        if let Some(wake) = state.system.borrow().waker() {
+            state.sched.set_waker(wake);
         }
-        app.enter(|| app.mount_root());
-        app
+        App { app: Rc::new(state) }
     }
 
-    /// The window methods without one act on: the main window.
-    pub(crate) fn win(&self) -> &Window {
-        &self.windows[self.main]
+    /// Opens a window showing `root`, built and laid out now.
+    pub fn open_window(&self, options: crate::platform::WindowOptions, root: impl Fn() -> View + 'static) -> Result<Window, String> {
+        let id = self.app.insert_window(options, Rc::new(root))?;
+        let w = self.app.handle(id).expect("just opened");
+        w.enter(|| w.mount_root());
+        Ok(w)
     }
 
-    /// The main window's id.
-    pub fn main_window(&self) -> WindowId {
-        self.main
+    /// Window `id`, while it is open.
+    pub fn window(&self, id: WindowId) -> Option<Window> {
+        self.app.handle(id)
     }
 
+    /// The open windows, in the order they opened.
+    pub fn windows(&self) -> Vec<WindowId> {
+        self.app.order.borrow().clone()
+    }
+
+    /// Closes window `id` now: its scope (state, watches, tasks) is disposed, its platform
+    /// window let go, and the other windows settle.
+    pub fn close_window(&self, id: WindowId) {
+        self.app.closing.borrow_mut().push(id);
+        self.app.frame(std::panic::Location::caller());
+    }
+
+    /// Runs `f` as the app (not as one of its windows).
     pub(crate) fn enter<R>(&self, f: impl FnOnce() -> R) -> R {
-        enter_ui(&self.win().ui, || self.rt.enter(f))
+        enter_app(&self.app, f)
+    }
+
+    /// Checks every window against a from-scratch rebuild after each operation (an event, a
+    /// clock step, a theme change): the tree an operation updated incrementally must equal the
+    /// tree built again from the same state, as a hot reload builds it (self-adjusting
+    /// computation, Nominal Adapton). A difference panics with both trees. The rebuild drops
+    /// what a hot reload drops (undo history, the modal stack): for tests of the runtime itself.
+    pub fn set_check_consistency(&self, on: bool) {
+        self.app.check.set(on);
+    }
+
+    /// Runs `f` in the app's runtime, outside any window: makes or reads state the windows
+    /// share (a signal made here belongs to the app), then lets every window settle.
+    pub fn run<R>(&self, f: impl FnOnce() -> R) -> R {
+        let r = self.enter(f);
+        self.app.frame(std::panic::Location::caller());
+        r
+    }
+}
+
+impl AppState {
+    /// Makes window `id` with its platform window; `root` is mounted by the caller.
+    fn insert_window(&self, options: crate::platform::WindowOptions, root: Rc<dyn Fn() -> View>) -> Result<WindowId, String> {
+        let id = self.windows.borrow_mut().try_insert_with_key(|id| {
+            let platform = self.system.borrow_mut().open_window(id, &options)?;
+            Ok::<_, String>(Rc::new(WindowState::new(self, id, options, root, platform)))
+        })?;
+        self.order.borrow_mut().push(id);
+        Ok(id)
+    }
+
+    /// After an operation: with consistency checks on, every window's tree must equal its
+    /// from-scratch rebuild.
+    fn check_consistency(self: &Rc<Self>) {
+        if !self.check.get() || self.checking.replace(true) {
+            return;
+        }
+        for id in self.order.borrow().clone() {
+            let Some(w) = self.handle(id) else { continue };
+            let incremental = w.w.kernel.borrow().tree_dump();
+            w.reload();
+            let scratch = w.w.kernel.borrow().tree_dump();
+            if incremental != scratch {
+                self.checking.set(false);
+                panic!(
+                    "window `{}`: incremental and from-scratch trees differ\n--- incremental\n{incremental}--- scratch\n{scratch}",
+                    w.w.options.title
+                );
+            }
+        }
+        self.checking.set(false);
+    }
+
+    /// Switches the theme every window shows; each window's kernel restyles and its breakpoint
+    /// follows (the theme may move the breakpoints).
+    pub(crate) fn set_theme(self: &Rc<Self>, theme: Theme) {
+        if theme == *self.res.theme.borrow() {
+            return;
+        }
+        *self.res.theme.borrow_mut() = theme;
+        for id in self.order.borrow().clone() {
+            let Some(w) = self.handle(id) else { continue };
+            w.w.kernel.borrow_mut().theme_changed();
+            let bp = self.res.theme.borrow().breakpoint_of(w.w.size.get().0);
+            if w.w.breakpoint.get_untracked() != bp {
+                w.enter(|| w.w.breakpoint.set(bp));
+            }
+        }
+    }
+
+    /// The shared text system's fonts changed: every window measures its text again.
+    fn fonts_changed(self: &Rc<Self>) {
+        for id in self.order.borrow().clone() {
+            if let Some(w) = self.handle(id) {
+                w.w.kernel.borrow_mut().fonts_changed();
+            }
+        }
+        self.frame(std::panic::Location::caller());
+    }
+
+    /// Opens a window from app code: made now, built at the end of the frame.
+    pub(crate) fn request_open(&self, options: crate::platform::WindowOptions, root: Rc<dyn Fn() -> View>) -> Result<WindowId, String> {
+        let id = self.insert_window(options, root)?;
+        self.opening.borrow_mut().push(id);
+        Ok(id)
+    }
+
+    /// Closes window `id` at the end of the frame.
+    pub(crate) fn request_close(&self, id: WindowId) {
+        self.closing.borrow_mut().push(id);
+    }
+
+    pub(crate) fn open_windows(&self) -> Vec<WindowId> {
+        self.order.borrow().clone()
+    }
+
+    fn handle(self: &Rc<Self>, id: WindowId) -> Option<Window> {
+        let w = self.windows.borrow().get(id).cloned()?;
+        Some(Window { app: self.clone(), w })
+    }
+
+    /// A frame for the whole app: every window settles (shared state may have changed what any
+    /// of them shows), then windows asked for open and windows asked to close go.
+    fn frame(self: &Rc<Self>, at: &'static std::panic::Location<'static>) {
+        self.frame_except(None, at);
+    }
+
+    /// [`frame`](Self::frame) for every window but `settled` (which just settled).
+    fn frame_except(self: &Rc<Self>, settled: Option<WindowId>, at: &'static std::panic::Location<'static>) {
+        let mut skip = settled;
+        loop {
+            for id in self.order.borrow().clone() {
+                if skip == Some(id) {
+                    continue;
+                }
+                if let Some(w) = self.handle(id) {
+                    w.enter(|| w.settle_window(at));
+                }
+            }
+            let opening = std::mem::take(&mut *self.opening.borrow_mut());
+            let closing = std::mem::take(&mut *self.closing.borrow_mut());
+            if opening.is_empty() && closing.is_empty() {
+                return;
+            }
+            skip = None;
+            for id in opening {
+                if let Some(w) = self.handle(id) {
+                    w.enter(|| w.mount_root());
+                }
+            }
+            for id in closing {
+                self.close(id);
+            }
+        }
+    }
+
+    /// Closes window `id`: its scope is disposed, it leaves the app, its platform window is let
+    /// go when the last handle on it goes.
+    fn close(self: &Rc<Self>, id: WindowId) {
+        let Some(w) = self.handle(id) else { return };
+        if let Some(s) = w.w.root_scope.take() {
+            w.enter(|| self.rt.dispose_scope(s));
+        }
+        // The signals the window itself holds (no scope owns them).
+        w.enter(|| {
+            w.w.viewport.dispose();
+            w.w.breakpoint.dispose();
+            for (_, s) in w.w.scrolls.borrow_mut().drain() {
+                s.dispose();
+            }
+            for (_, s) in w.w.sizes.borrow_mut().drain() {
+                s.dispose();
+            }
+        });
+        w.w.closed.set(true);
+        w.w.root_slots.borrow_mut().clear();
+        *w.w.platform.borrow_mut() = Box::new(crate::platform::HeadlessWindow::default());
+        self.order.borrow_mut().retain(|x| *x != id);
+        self.windows.borrow_mut().remove(id);
+    }
+}
+
+impl Window {
+    /// `root` in an 800 × 600 window of a new headless app: what tests and agents drive. The
+    /// app is [`app`](Self::app)'s (its clock, theme, fonts, other windows).
+    pub fn headless(root: impl Fn() -> View + 'static) -> Window {
+        Window::headless_on(crate::platform::HeadlessPlatform::default(), root)
+    }
+
+    /// [`headless`](Self::headless) on `platform` (a fake native host, a clipboard).
+    pub fn headless_on(platform: crate::platform::HeadlessPlatform, root: impl Fn() -> View + 'static) -> Window {
+        let app = App::new(platform);
+        app.open_window(crate::platform::WindowOptions::new("Headless"), root).expect("a headless window opens")
+    }
+
+    /// Its id.
+    pub fn id(&self) -> WindowId {
+        self.w.id
+    }
+
+    /// The app it belongs to.
+    pub fn app(&self) -> App {
+        App { app: self.app.clone() }
+    }
+
+    /// Whether it was closed (a handle outlives its window).
+    pub fn is_closed(&self) -> bool {
+        self.w.closed.get()
+    }
+
+    /// What it was opened with.
+    pub fn options(&self) -> crate::platform::WindowOptions {
+        self.w.options.clone()
+    }
+
+    /// Runs `f` as this window's code.
+    pub(crate) fn enter<R>(&self, f: impl FnOnce() -> R) -> R {
+        enter_app(&self.app, || self.app.rt.with_owner(Some(self.w.id.owner()), f))
     }
 
     fn mount_root(&self) {
-        let s = self.rt.create_scope(None, "app");
-        self.win().root_scope.set(Some(s));
-        let parent = Parent { node: self.win().ui.kernel.borrow().root(), root: self.win().root_slots.clone() };
-        let root = self.win().root.clone();
-        self.rt.with_frame(Ctx::Build, None, Some(Some(s)), || mount(root(), &parent, &self.win().root_slots));
-        self.rt.flush();
+        let s = self.app.rt.create_scope(None, "app");
+        self.w.root_scope.set(Some(s));
+        let parent = Parent { node: self.w.kernel.borrow().root(), root: self.w.root_slots.clone() };
+        let root = self.w.root.clone();
+        self.app.rt.with_frame(Ctx::Build, None, Some(Some(s)), || mount(root(), &parent, &self.w.root_slots));
+        self.app.rt.flush();
         self.restore_interaction();
         self.settle_frame();
     }
@@ -267,28 +577,36 @@ impl App {
     /// Applies pending updates and lays out until nothing changes: after a layout, virtual
     /// lists measure their rows and scroll containers report their state, which may change the
     /// view again. Gives up after a few rounds and reports `LAYOUT_LOOP`.
+    /// This window's frame, then the app's: the other windows settle (shared state may have
+    /// changed them) and windows asked for open or close.
     #[track_caller]
     fn settle_frame(&self) {
         let at = std::panic::Location::caller();
+        self.settle_window(at);
+        self.app.frame_except(Some(self.w.id), at);
+    }
+
+    /// One window's part of a frame: tasks, layout, native views, text input, focus and hover.
+    fn settle_window(&self, at: &'static std::panic::Location<'static>) {
         // Tasks woken (or spawned) by what just happened run to their next wait first; what they
         // change is laid out with the rest. They may wake or spawn more, so repeat (bounded).
         for _ in 0..16 {
-            self.win().ui.sched.run_ready();
+            self.app.sched.run_ready();
             self.settle_layout(at);
             // Modals that opened or closed move focus (which restyles).
             if self.sync_modals() {
                 self.settle_layout(at);
             }
-            if !self.win().ui.sched.has_ready() {
+            if !self.app.sched.has_ready() {
                 break;
             }
         }
         // A caret that moved shows: the scroll containers around its field follow it.
-        let reveal = self.win().interaction.borrow_mut().reveal.take();
+        let reveal = self.w.interaction.borrow_mut().reveal.take();
         if let Some(n) = reveal {
-            let caret = self.win().ui.kernel.borrow().caret(n);
+            let caret = self.w.kernel.borrow().caret(n);
             if let Some(r) = caret
-                && self.win().ui.kernel.borrow_mut().reveal(n, r)
+                && self.w.kernel.borrow_mut().reveal(n, r)
             {
                 self.settle_layout(at);
             }
@@ -296,15 +614,13 @@ impl App {
         self.sync_native();
         self.sync_text_input();
         // An `instant` transaction covers the frame it was made in.
-        self.win().ui.kernel.borrow_mut().set_instant(false);
+        self.w.kernel.borrow_mut().set_instant(false);
         // What is on its way out can no longer be focused or hovered.
         let (focused, hovered) = {
-            let i = self.win().interaction.borrow();
+            let i = self.w.interaction.borrow();
             (i.focused, i.hovered)
         };
-        let gone = |n: Option<NodeId>| {
-            n.is_some_and(|n| !self.win().ui.kernel.borrow().is_alive(n) || self.win().ui.kernel.borrow().is_exiting(n))
-        };
+        let gone = |n: Option<NodeId>| n.is_some_and(|n| !self.w.kernel.borrow().is_alive(n) || self.w.kernel.borrow().is_exiting(n));
         if gone(focused) {
             let _ = self.set_focus(None);
         }
@@ -316,16 +632,16 @@ impl App {
 
     fn settle_layout(&self, at: &'static std::panic::Location<'static>) {
         for _ in 0..4 {
-            self.rt.flush();
-            self.win().ui.kernel.borrow_mut().layout(self.size().0, self.size().1);
-            let changed = self.rt.with_frame(Ctx::Handler, None, Some(None), || self.win().ui.sync_after_layout());
+            self.app.rt.flush();
+            self.w.kernel.borrow_mut().layout(self.size().0, self.size().1);
+            let changed = self.app.rt.with_frame(Ctx::Handler, None, Some(None), || self.w.sync_after_layout());
             if !changed {
                 return;
             }
         }
-        self.rt.flush();
-        self.win().ui.kernel.borrow_mut().layout(self.size().0, self.size().1);
-        self.rt.diag(
+        self.app.rt.flush();
+        self.w.kernel.borrow_mut().layout(self.size().0, self.size().1);
+        self.app.rt.diag(
             &codes::LAYOUT_LOOP,
             "layout did not settle in 4 rounds: something keeps changing what it measures (a size read feeding the size it reads)".into(),
             at,
@@ -333,8 +649,8 @@ impl App {
     }
 
     fn restore_interaction(&self) {
-        let mut i = self.win().interaction.borrow_mut();
-        let mut k = self.win().ui.kernel.borrow_mut();
+        let mut i = self.w.interaction.borrow_mut();
+        let mut k = self.w.kernel.borrow_mut();
         let (hover, focus) = std::mem::take(&mut i.reload);
         let hovered = hover.and_then(|id| k.find(&id));
         i.hovered = hovered;
@@ -366,11 +682,11 @@ impl App {
     /// The mouse is over `n` (the topmost node there): it and its ancestors are hovered, up to
     /// the innermost `hover_alone` one (GPUI, Rune, CSS).
     pub(crate) fn set_hover(&self, n: Option<NodeId>) {
-        let mut i = self.win().interaction.borrow_mut();
+        let mut i = self.w.interaction.borrow_mut();
         if i.hovered == n {
             return;
         }
-        let mut k = self.win().ui.kernel.borrow_mut();
+        let mut k = self.w.kernel.borrow_mut();
         let chain = k.hover_chain(n);
         for p in std::mem::take(&mut i.hover_chain) {
             if k.is_alive(p) && !chain.contains(&p) {
@@ -387,13 +703,13 @@ impl App {
 
     /// Records how input last arrived; the focus ring follows it.
     pub(crate) fn set_modality(&self, m: Modality) {
-        let mut i = self.win().interaction.borrow_mut();
+        let mut i = self.w.interaction.borrow_mut();
         if i.modality == m {
             return;
         }
         i.modality = m;
         if let Some(n) = i.focused {
-            let mut k = self.win().ui.kernel.borrow_mut();
+            let mut k = self.w.kernel.borrow_mut();
             if k.is_alive(n) {
                 k.set_state(n, State::FOCUS_VISIBLE, m == Modality::Keyboard);
             }
@@ -403,8 +719,8 @@ impl App {
     /// Moves keyboard focus to `n`, which must be focusable and enabled (`None` blurs). The
     /// ring shows if the last input was the keyboard.
     pub(crate) fn set_focus(&self, n: Option<NodeId>) -> Result<(), String> {
-        let mut i = self.win().interaction.borrow_mut();
-        let mut k = self.win().ui.kernel.borrow_mut();
+        let mut i = self.w.interaction.borrow_mut();
+        let mut k = self.w.kernel.borrow_mut();
         if let Some(n) = n {
             let name = k.test_id(n).unwrap_or("element").to_owned();
             if !k.is_focusable(n) {
@@ -434,13 +750,13 @@ impl App {
 
     /// Applies a runtime-driven state change; `Err` if the target cannot take it.
     fn interact(&self, ev: &Event) -> Result<(), String> {
-        let find = |id: &str| self.win().ui.kernel.borrow().find(id).ok_or(format!("no node with test id `{id}`"));
+        let find = |id: &str| self.w.kernel.borrow().find(id).ok_or(format!("no node with test id `{id}`"));
         match ev {
             Event::Hover(id, on) => {
                 let n = find(id)?;
                 if *on {
                     self.set_hover(Some(n));
-                } else if self.win().interaction.borrow().hover_chain.contains(&n) {
+                } else if self.w.interaction.borrow().hover_chain.contains(&n) {
                     self.set_hover(None);
                 }
             }
@@ -451,7 +767,7 @@ impl App {
             }
             Event::Blur => self.set_focus(None)?,
             Event::Scroll(id, dx, dy) | Event::ScrollTo(id, dx, dy) => {
-                let mut k = self.win().ui.kernel.borrow_mut();
+                let mut k = self.w.kernel.borrow_mut();
                 let n = k.find(id).ok_or(format!("no node with test id `{id}`"))?;
                 let (sx, sy) = k.scrollable(n);
                 let o = n_offset(&k, n, matches!(ev, Event::Scroll(..)));
@@ -481,31 +797,31 @@ impl App {
             }
             Event::Send(..) => unreachable!("sends go to channels"),
         };
-        let k = self.win().ui.kernel.borrow();
+        let k = self.w.kernel.borrow();
         let node = k.find(id).ok_or(format!("no node with test id `{id}`"))?;
         if k.state(node).contains(State::DISABLED) {
             return Err(format!("`{id}` is disabled"));
         }
         let hid = k.handler(node, kind).ok_or(format!("`{id}` has no {kind:?} handler"))?;
-        self.win().ui.handlers.borrow().get(&hid.0).cloned().ok_or(format!("handler of `{id}` was disposed"))
+        self.w.handlers.borrow().get(&hid.0).cloned().ok_or(format!("handler of `{id}` was disposed"))
     }
 }
 
-impl App {
+impl Window {
     /// The current window size.
     pub fn size(&self) -> (f32, f32) {
-        self.win().size.get()
+        self.w.size.get()
     }
     /// Resizes the window: bindings that read `viewport()` update, then everything is laid out
     /// again at the new size (text re-breaks; nothing else reruns).
     pub fn resize(&mut self, width: f32, height: f32) {
-        self.win().size.set((width, height));
+        self.w.size.set((width, height));
         self.enter(|| {
-            self.rt.with_frame(Ctx::Handler, None, Some(None), || {
-                self.win().viewport.set((width, height));
-                let bp = self.win().ui.kernel.borrow().theme().breakpoint_of(width);
-                if self.win().breakpoint.get_untracked() != bp {
-                    self.win().breakpoint.set(bp);
+            self.app.rt.with_frame(Ctx::Handler, None, Some(None), || {
+                self.w.viewport.set((width, height));
+                let bp = self.w.kernel.borrow().theme().breakpoint_of(width);
+                if self.w.breakpoint.get_untracked() != bp {
+                    self.w.breakpoint.set(bp);
                 }
             });
             self.settle_frame();
@@ -513,11 +829,11 @@ impl App {
     }
     /// The window's breakpoint (Tailwind `sm` … `2xl`).
     pub fn breakpoint(&self) -> Breakpoint {
-        self.kernel().theme().breakpoint_of(self.win().size.get().0)
+        self.kernel().theme().breakpoint_of(self.w.size.get().0)
     }
     /// Runs `check` at each window size in turn (e.g. phone and desktop), then restores the size.
     /// Stops at the first error, naming the size.
-    pub fn at_sizes(&mut self, sizes: &[(f32, f32)], mut check: impl FnMut(&mut App) -> Result<(), String>) -> Result<(), String> {
+    pub fn at_sizes(&mut self, sizes: &[(f32, f32)], mut check: impl FnMut(&mut Window) -> Result<(), String>) -> Result<(), String> {
         let before = self.size();
         let mut result = Ok(());
         for &(w, h) in sizes {
@@ -533,86 +849,76 @@ impl App {
     /// Layout problems in the current frame (overflow, collapsed elements, truncated text,
     /// clamped overlays, missing tokens). Tests and agents can assert there are none.
     pub fn layout_issues(&self) -> Vec<crate::kernel::LayoutIssue> {
-        self.win().ui.kernel.borrow().layout_issues()
+        self.w.kernel.borrow().layout_issues()
     }
     /// The semantic tree and app state as the Inspector protocol gives them (see
     /// [`crate::inspect`]).
     pub fn inspect(&self) -> crate::inspect::Snapshot {
         let (w, h) = self.size();
-        let k = self.win().ui.kernel.borrow();
-        let focus = self.win().interaction.borrow().focused.filter(|n| k.is_alive(*n)).and_then(|n| k.test_id(n).map(str::to_owned));
+        let k = self.w.kernel.borrow();
+        let focus = self.w.interaction.borrow().focused.filter(|n| k.is_alive(*n)).and_then(|n| k.test_id(n).map(str::to_owned));
         crate::inspect::Snapshot {
             schema: crate::inspect::SCHEMA.into(),
             octara: env!("CARGO_PKG_VERSION").into(),
             viewport: [w, h],
             theme: k.theme().name.into(),
             breakpoint: crate::inspect::snake(&format!("{:?}", self.breakpoint())),
-            time_ms: self.now().as_millis() as u64,
+            time_ms: self.app().now().as_millis() as u64,
             focus,
-            pending: self.pending().len(),
+            pending: self.app().pending().len(),
             root: k.inspect_tree(),
         }
     }
     /// What the current frame draws, in order (see [`crate::paint`]).
     pub fn display_list(&self) -> std::rc::Rc<crate::paint::DisplayList> {
-        self.win().ui.kernel.borrow().display_list()
+        self.w.kernel.borrow().display_list()
     }
     pub fn kernel(&self) -> Ref<'_, Kernel> {
-        self.win().ui.kernel.borrow()
+        self.w.kernel.borrow()
     }
     pub fn kernel_mut(&mut self) -> RefMut<'_, Kernel> {
-        self.win().ui.kernel.borrow_mut()
+        self.w.kernel.borrow_mut()
     }
     /// Runs the event's handler, applies every update and lays out, like one frame.
     pub fn dispatch(&mut self, ev: Event) -> Result<(), String> {
         self.enter(|| {
-            let cause = self.next_cause.get() + 1;
+            let cause = self.app.next_cause.get() + 1;
             if matches!(ev, Event::Hover(..) | Event::Focus(_) | Event::Blur | Event::Scroll(..) | Event::ScrollTo(..)) {
-                self.win().ui.kernel.borrow_mut().set_cause(Some(cause));
+                self.w.kernel.borrow_mut().set_cause(Some(cause));
                 let r = self.interact(&ev);
                 if r.is_err() {
-                    self.win().ui.kernel.borrow_mut().set_cause(None);
+                    self.w.kernel.borrow_mut().set_cause(None);
                     return r;
                 }
-                self.next_cause.set(cause);
+                self.app.next_cause.set(cause);
                 self.settle_frame();
-                self.win().ui.kernel.borrow_mut().set_cause(None);
+                self.w.kernel.borrow_mut().set_cause(None);
                 return Ok(());
             }
             if let Event::Send(name, payload) = &ev {
-                self.win().ui.kernel.borrow_mut().set_cause(Some(cause));
-                let r = self.win().ui.sched.send_named(name, payload);
+                self.w.kernel.borrow_mut().set_cause(Some(cause));
+                let r = self.app.sched.send_named(name, payload);
                 if r.is_ok() {
-                    self.next_cause.set(cause);
+                    self.app.next_cause.set(cause);
                     self.settle_frame();
                 }
-                self.win().ui.kernel.borrow_mut().set_cause(None);
+                self.w.kernel.borrow_mut().set_cause(None);
                 return r;
             }
             let h = self.handler_for(&ev)?;
-            self.next_cause.set(cause);
-            self.win().ui.kernel.borrow_mut().set_cause(Some(cause));
-            self.rt.with_frame(Ctx::Handler, None, Some(None), || match (h, ev) {
+            self.app.next_cause.set(cause);
+            self.w.kernel.borrow_mut().set_cause(Some(cause));
+            self.app.rt.with_frame(Ctx::Handler, None, Some(None), || match (h, ev) {
                 (Handler::Press(f), _) | (Handler::Toggle(f), _) => f(),
                 (Handler::Input(f), Event::Input(_, v)) => f(v),
                 _ => unreachable!("handler kind matches event kind"),
             });
             self.settle_frame();
-            self.win().ui.kernel.borrow_mut().set_cause(None);
+            self.w.kernel.borrow_mut().set_cause(None);
             Ok(())
         })
     }
     /// The platform whose conventions input follows (the build's by default).
-    pub fn target_platform(&self) -> TargetPlatform {
-        self.platform.get()
-    }
-    /// The platform whose conventions input follows: its keymap, and on touch platforms the
-    /// controls' touch sizes (`when_touch`).
-    pub fn set_target_platform(&mut self, p: TargetPlatform) {
-        self.platform.set(p);
-        self.win().ui.kernel.borrow_mut().set_touch(p.is_touch());
-        self.enter(|| self.settle_frame());
-    }
     /// Holds an interaction state (`HOVER`, `FOCUSED`, `FOCUS_VISIBLE`, `PRESSED`) on or off, e.g. to check
     /// pressed styles; kept across hot reload. `SELECTED` and `DISABLED` come from props.
     pub fn force_state(&mut self, test_id: &str, state: State, on: bool) -> Result<(), String> {
@@ -620,57 +926,27 @@ impl App {
             return Err(format!("{state:?} is set by element props, not forced"));
         }
         {
-            let mut k = self.win().ui.kernel.borrow_mut();
+            let mut k = self.w.kernel.borrow_mut();
             let n = k.find(test_id).ok_or(format!("no node with test id `{test_id}`"))?;
             k.set_state(n, state, on);
         }
         self.enter(|| self.settle_frame());
-        let mut i = self.win().interaction.borrow_mut();
+        let mut i = self.w.interaction.borrow_mut();
         i.forced.retain(|(id, s, _)| !(id == test_id && *s == state));
         i.forced.push((test_id.to_owned(), state, on));
         Ok(())
     }
     /// Drops every forced state (the nodes keep their current state until it next changes).
     pub fn clear_forced(&mut self) {
-        self.win().interaction.borrow_mut().forced.clear();
+        self.w.interaction.borrow_mut().forced.clear();
     }
-    pub fn set_theme(&mut self, theme: Theme) {
-        self.enter(|| {
-            self.rt.with_frame(Ctx::Handler, None, Some(None), || crate::view::set_theme(theme));
-            self.settle_frame();
-        })
-    }
-    /// Adds font data (TTF/OTF); its families can then be named by the theme or `font_family`.
-    pub fn register_font(&mut self, data: &'static [u8]) {
-        self.win().ui.kernel.borrow_mut().register_font(data);
-        self.enter(|| self.settle_frame());
-    }
-    /// Adds a font text falls back to for `scripts` (ISO 15924 tags: `*b"Hani"` for hanzi,
-    /// `*b"Hira"`, `*b"Kana"`, `*b"Hang"`, …) when its own family lacks a character.
-    pub fn register_fallback_font(&mut self, data: &'static [u8], scripts: &[[u8; 4]]) {
-        self.win().ui.kernel.borrow_mut().register_fallback_font(data, scripts);
-        self.enter(|| self.settle_frame());
-    }
-    /// Uses the platform's installed fonts and its fallback (CJK, emoji, …) besides the
-    /// bundled ones, and its UI font where the theme keeps the default sans family: what a
-    /// window shows. Headless screenshots for people and agents use it; deterministic tests
-    /// do not (results then depend on the machine).
-    #[cfg(feature = "system-fonts")]
-    pub fn use_system_fonts(&mut self) {
-        self.win().ui.kernel.borrow_mut().set_text_engine(Box::new(crate::kernel::text::ParleyEngine::system()));
-        let theme = self.kernel().theme().clone();
-        if theme.font_sans == Theme::default().font_sans {
-            self.set_theme(theme.font_sans("system-ui, Inter"));
-        } else {
-            self.enter(|| self.settle_frame());
-        }
-    }
-    /// Rebuilds every scope from the current state, as after a code patch; named state survives.
-    pub fn hot_reload(&mut self) {
+    /// Rebuilds this window's scope from the current state, keeping hover, focus and scroll by
+    /// test id.
+    fn reload(&self) {
         self.enter(|| {
             {
-                let mut i = self.win().interaction.borrow_mut();
-                let k = self.win().ui.kernel.borrow();
+                let mut i = self.w.interaction.borrow_mut();
+                let k = self.w.kernel.borrow();
                 i.scrolls = k.scroll_offsets();
                 let id = |n: Option<NodeId>| n.filter(|n| k.is_alive(*n)).and_then(|n| k.test_id(n).map(str::to_owned));
                 // The innermost hovered element with a test id (the node under the mouse may be
@@ -682,45 +958,109 @@ impl App {
                 i.modals.clear();
                 i.edits.clear();
             }
-            if let Some(s) = self.win().root_scope.take() {
-                self.rt.set_reloading(true);
-                self.rt.dispose_scope(s);
-                self.rt.set_reloading(false);
+            if let Some(s) = self.w.root_scope.take() {
+                self.app.rt.set_reloading(true);
+                self.app.rt.dispose_scope(s);
+                self.app.rt.set_reloading(false);
             }
-            self.win().root_slots.borrow_mut().clear();
+            self.w.root_slots.borrow_mut().clear();
             // A rebuild is not content arriving: nothing enters.
-            self.win().ui.kernel.borrow_mut().set_quiet(true);
+            self.w.kernel.borrow_mut().set_quiet(true);
             self.mount_root();
-            self.win().ui.kernel.borrow_mut().set_quiet(false);
+            self.w.kernel.borrow_mut().set_quiet(false);
         });
     }
+}
+
+impl App {
+    /// The platform whose conventions input follows (the build's by default).
+    pub fn target_platform(&self) -> TargetPlatform {
+        self.app.platform.get()
+    }
+    /// The platform whose conventions input follows: its keymap, and on touch platforms the
+    /// controls' touch sizes (`when_touch`), in every window.
+    pub fn set_target_platform(&self, p: TargetPlatform) {
+        self.app.platform.set(p);
+        self.app.res.touch.set(p.is_touch());
+        for w in self.each() {
+            w.w.kernel.borrow_mut().touch_changed();
+        }
+        self.app.frame(std::panic::Location::caller());
+    }
+    /// Switches the theme of every window. Token colors resolve in the kernels, so no closure
+    /// reruns; only nodes whose resolved colors change are repainted.
+    pub fn set_theme(&self, theme: Theme) {
+        self.enter(|| self.app.set_theme(theme));
+        self.app.frame(std::panic::Location::caller());
+    }
+    /// Adds font data (TTF/OTF); its families can then be named by the theme or `font_family`,
+    /// in every window.
+    pub fn register_font(&self, data: &'static [u8]) {
+        self.app.res.text.borrow_mut().register_font(data);
+        self.app.fonts_changed();
+    }
+    /// Adds a font text falls back to for `scripts` (ISO 15924 tags: `*b"Hani"` for hanzi,
+    /// `*b"Hira"`, `*b"Kana"`, `*b"Hang"`, …) when its own family lacks a character.
+    pub fn register_fallback_font(&self, data: &'static [u8], scripts: &[[u8; 4]]) {
+        self.app.res.text.borrow_mut().register_fallback_font(data, scripts);
+        self.app.fonts_changed();
+    }
+    /// Replaces the text engine (e.g. `MonoEngine` for benchmarks): every window measures again
+    /// (fonts registered with the old one are not carried over).
+    pub fn set_text_engine(&self, engine: Box<dyn crate::kernel::text::TextEngine>) {
+        self.app.res.set_text_engine(engine);
+        self.app.fonts_changed();
+    }
+    /// Uses the platform's installed fonts and its fallback (CJK, emoji, …) besides the
+    /// bundled ones, and its UI font where the theme keeps the default sans family: what a
+    /// window shows. Headless screenshots for people and agents use it; deterministic tests
+    /// do not (results then depend on the machine).
+    #[cfg(feature = "system-fonts")]
+    pub fn use_system_fonts(&self) {
+        self.set_text_engine(Box::new(crate::kernel::text::ParleyEngine::system()));
+        let theme = self.app.res.theme.borrow().clone();
+        if theme.font_sans == Theme::default().font_sans {
+            self.set_theme(theme.font_sans("system-ui, Inter"));
+        }
+    }
+    /// The theme every window shows.
+    pub fn theme(&self) -> Theme {
+        self.app.res.theme.borrow().clone()
+    }
+    /// Rebuilds every window's scope from the current state, as after a code patch; named state
+    /// survives.
+    pub fn hot_reload(&self) {
+        for w in self.each() {
+            w.reload();
+        }
+    }
     pub fn diagnostics(&self) -> Vec<Diagnostic> {
-        self.rt.diagnostics()
+        self.app.rt.diagnostics()
     }
     /// Each stored diagnostic's code with how many times it occurred (repeats are not stored).
     pub fn diagnostic_counts(&self) -> Vec<(&'static str, u32)> {
-        self.rt.diagnostic_counts()
+        self.app.rt.diagnostic_counts()
     }
     pub fn work(&self) -> Work {
-        Work { closures_run: self.rt.closures_run(), reactive_nodes: self.rt.live_nodes() }
+        Work { closures_run: self.app.rt.closures_run(), reactive_nodes: self.app.rt.live_nodes() }
     }
-    pub fn reset_work(&mut self) {
-        self.rt.reset_closures_run();
+    pub fn reset_work(&self) {
+        self.app.rt.reset_closures_run();
     }
 }
 
 // ---- native views ----
 
-impl App {
+impl Window {
     /// Tells the native host what changed this frame: views created (with their props), props
     /// changed, placements changed, views gone.
     fn sync_native(&self) {
-        let k = self.win().ui.kernel.borrow();
-        let mut sent = self.win().native_sent.borrow_mut();
+        let k = self.w.kernel.borrow();
+        let mut sent = self.w.native_sent.borrow_mut();
         if k.native_nodes().is_empty() && sent.is_empty() {
             return;
         }
-        let mut window = self.win().platform.borrow_mut();
+        let mut window = self.w.platform.borrow_mut();
         let host = window.native_host_mut();
         let placements = k.native_placements();
         let mut moved = Vec::new();
@@ -758,13 +1098,13 @@ impl App {
         drop((k, window, sent));
         // Painted next as the platform shows them: no placeholder, a cutout for the underlay.
         for (n, shown) in live {
-            self.win().ui.kernel.borrow_mut().set_native_live(n, shown);
+            self.w.kernel.borrow_mut().set_native_live(n, shown);
         }
     }
 
     /// The node of a native view's id, if it still exists.
     fn native_node(&self, id: crate::native::NativeId) -> Option<NodeId> {
-        let k = self.win().ui.kernel.borrow();
+        let k = self.w.kernel.borrow();
         k.node_of_a11y(accesskit::NodeId(id.0)).filter(|n| k.native(*n).is_some())
     }
 
@@ -772,11 +1112,11 @@ impl App {
     pub fn native_event(&mut self, id: crate::native::NativeId, event: crate::native::NativeEvent) -> bool {
         let Some(n) = self.native_node(id) else { return false };
         let handler = {
-            let k = self.win().ui.kernel.borrow();
-            k.handler(n, HandlerKind::Native).and_then(|h| self.win().ui.handlers.borrow().get(&h.0).cloned())
+            let k = self.w.kernel.borrow();
+            k.handler(n, HandlerKind::Native).and_then(|h| self.w.handlers.borrow().get(&h.0).cloned())
         };
         let Some(crate::view::Handler::Native(f)) = handler else { return false };
-        self.input_frame(|| self.rt.with_frame(Ctx::Handler, None, Some(None), || f(&event)));
+        self.input_frame(|| self.app.rt.with_frame(Ctx::Handler, None, Some(None), || f(&event)));
         true
     }
 
@@ -784,7 +1124,7 @@ impl App {
     /// authored.
     pub fn native_size(&mut self, id: crate::native::NativeId, width: f32, height: f32) {
         let Some(n) = self.native_node(id) else { return };
-        self.input_frame(|| self.win().ui.kernel.borrow_mut().set_native_size(n, (width, height)));
+        self.input_frame(|| self.w.kernel.borrow_mut().set_native_size(n, (width, height)));
     }
 
     /// What keeps the app from being settled now: tasks, timers and motion (not subscriptions,
@@ -792,13 +1132,14 @@ impl App {
     /// this to be empty.
     pub fn unsettled(&self) -> Vec<String> {
         let mut out: Vec<String> = self
+            .app()
             .pending()
             .into_iter()
             .filter(|p| p.kind != crate::task::WorkKind::Subscription)
             .map(|p| if p.at.is_empty() { p.label } else { format!("{} ({})", p.label, p.at) })
             .collect();
-        let placements = self.win().ui.kernel.borrow().native_placements();
-        let window = self.win().platform.borrow();
+        let placements = self.w.kernel.borrow().native_placements();
+        let window = self.w.platform.borrow();
         let host = window.native_host();
         for (n, p) in placements.into_iter().filter(|(_, p)| p.visible) {
             if let Some(what) = host.busy(p.id) {
@@ -810,7 +1151,7 @@ impl App {
 
     /// A native view as reports name it: its test id, else its kind.
     fn native_name(&self, n: NodeId) -> String {
-        let k = self.win().ui.kernel.borrow();
+        let k = self.w.kernel.borrow();
         let kind = k.native(n).map(|v| v.kind.clone()).unwrap_or_default();
         match k.test_id(n) {
             Some(id) => format!("{kind} view #{id}"),
@@ -818,28 +1159,23 @@ impl App {
         }
     }
 
-    /// Installs what paints `capture` requests headless (`octara-render`'s reference renderer).
-    pub fn set_painter(&mut self, painter: Box<dyn crate::capture::Painter>) {
-        *self.painter.borrow_mut() = Some(painter);
-    }
-
     /// Starts a capture: asks the host for a snapshot of every native view shown. Returns the
     /// views whose snapshot is coming (through [`native_snapshot`](Self::native_snapshot)).
     pub fn capture_begin(&mut self) -> Vec<crate::native::NativeId> {
-        let placements = self.win().ui.kernel.borrow().native_placements();
-        let mut window = self.win().platform.borrow_mut();
+        let placements = self.w.kernel.borrow().native_placements();
+        let mut window = self.w.platform.borrow_mut();
         let host = window.native_host_mut();
         let asked: Vec<_> = placements.into_iter().filter(|(_, p)| p.visible).map(|(_, p)| (p.id, host.snapshot(p.id))).collect();
         let coming = asked.iter().filter(|(_, r)| r.is_ok()).map(|(id, _)| *id).collect();
-        *self.win().capturing.borrow_mut() = Some(crate::capture::Capturing { asked });
+        *self.w.capturing.borrow_mut() = Some(crate::capture::Capturing { asked });
         coming
     }
 
     /// The snapshots asked for that have not come yet.
     pub fn capture_awaiting(&self) -> Vec<crate::native::NativeId> {
-        let capturing = self.win().capturing.borrow();
+        let capturing = self.w.capturing.borrow();
         let Some(c) = capturing.as_ref() else { return Vec::new() };
-        let k = self.win().ui.kernel.borrow();
+        let k = self.w.kernel.borrow();
         c.asked
             .iter()
             .filter(|(id, r)| r.is_ok() && self.native_node(*id).is_some_and(|n| k.native(n).is_some_and(|v| v.snapshot.is_none())))
@@ -860,11 +1196,11 @@ impl App {
         fallback: Option<String>,
     ) -> Result<crate::capture::Capture, String> {
         use crate::capture::{NativeShot, Shown};
-        let asked = self.win().capturing.borrow_mut().take().map(|c| c.asked).unwrap_or_default();
+        let asked = self.w.capturing.borrow_mut().take().map(|c| c.asked).unwrap_or_default();
         let mut native = Vec::new();
         for (id, result) in &asked {
             let Some(n) = self.native_node(*id) else { continue };
-            let k = self.win().ui.kernel.borrow();
+            let k = self.w.kernel.borrow();
             let Some(v) = k.native(n) else { continue };
             let (x, y, w, h) = k.rect(n);
             let (shown, reason, misses) = match result {
@@ -911,8 +1247,8 @@ impl App {
     ) -> Result<crate::capture::Capture, String> {
         use crate::capture::{NativeShot, Shown};
         picture.save_png(path)?;
-        let placements = self.win().ui.kernel.borrow().native_placements();
-        let k = self.win().ui.kernel.borrow();
+        let placements = self.w.kernel.borrow().native_placements();
+        let k = self.w.kernel.borrow();
         let native = placements
             .into_iter()
             .filter(|(_, p)| p.visible)
@@ -943,48 +1279,55 @@ impl App {
         })
     }
 
-    /// Takes the installed painter out while it paints (see [`set_painter`](Self::set_painter)).
-    pub(crate) fn take_painter(&self) -> Option<Box<dyn crate::capture::Painter>> {
-        self.painter.borrow_mut().take()
-    }
-
     /// An image of what native view `id` shows (the host calls this): drawn in its place
     /// instead of the placeholder, until `None` clears it.
     pub fn native_snapshot(&mut self, id: crate::native::NativeId, image: Option<crate::image::Image>) {
         let Some(n) = self.native_node(id) else { return };
-        self.input_frame(|| self.win().ui.kernel.borrow_mut().set_native_snapshot(n, image));
+        self.input_frame(|| self.w.kernel.borrow_mut().set_native_snapshot(n, image));
     }
 
     /// The main window's native host (downcast with `as_any`; headless, a [`RecordingHost`]).
     ///
     /// [`RecordingHost`]: crate::native::RecordingHost
     pub fn native_host(&self) -> std::cell::Ref<'_, dyn crate::native::NativeHost> {
-        std::cell::Ref::map(self.win().platform.borrow(), |w| w.native_host())
-    }
-
-    /// The system the app runs on (downcast with `as_any`; headless, a
-    /// [`HeadlessPlatform`](crate::platform::HeadlessPlatform), whose clipboard tests set).
-    pub fn platform(&self) -> std::cell::RefMut<'_, dyn crate::platform::Platform> {
-        std::cell::RefMut::map(self.system.borrow_mut(), |p| &mut **p)
+        std::cell::Ref::map(self.w.platform.borrow(), |w| w.native_host())
     }
 
     /// The main window on the platform (downcast with `as_any`; headless, a
     /// [`HeadlessWindow`](crate::platform::HeadlessWindow)).
     pub fn platform_window(&self) -> std::cell::Ref<'_, dyn crate::platform::PlatformWindow> {
-        std::cell::Ref::map(self.win().platform.borrow(), |w| &**w)
+        std::cell::Ref::map(self.w.platform.borrow(), |w| &**w)
     }
 
     /// Tells the window's platform about the focused text field when it changed: where its
     /// caret is, whether it is secure or multi-line.
     fn sync_text_input(&self) {
         let now = self.focused_input().and_then(|(n, _)| {
-            let k = self.win().ui.kernel.borrow();
+            let k = self.w.kernel.borrow();
             let caret = k.caret(n)?;
             Some(crate::platform::TextInput { caret, secure: k.is_secure(n), multiline: k.is_multiline(n) })
         });
-        if self.win().text_input.get() != now {
-            self.win().text_input.set(now);
-            self.win().platform.borrow_mut().set_text_input(now.as_ref());
+        if self.w.text_input.get() != now {
+            self.w.text_input.set(now);
+            self.w.platform.borrow_mut().set_text_input(now.as_ref());
         }
+    }
+}
+
+impl App {
+    /// Installs what paints `capture` requests headless (`octara-render`'s reference renderer).
+    pub fn set_painter(&self, painter: Box<dyn crate::capture::Painter>) {
+        *self.app.painter.borrow_mut() = Some(painter);
+    }
+
+    /// Takes the installed painter out while it paints (see [`set_painter`](Self::set_painter)).
+    pub(crate) fn take_painter(&self) -> Option<Box<dyn crate::capture::Painter>> {
+        self.app.painter.borrow_mut().take()
+    }
+
+    /// The system the app runs on (downcast with `as_any`; headless, a
+    /// [`HeadlessPlatform`](crate::platform::HeadlessPlatform), whose clipboard tests set).
+    pub fn platform(&self) -> std::cell::RefMut<'_, dyn crate::platform::Platform> {
+        std::cell::RefMut::map(self.app.system.borrow_mut(), |p| &mut **p)
     }
 }

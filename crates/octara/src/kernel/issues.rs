@@ -292,7 +292,7 @@ impl Kernel {
         let mut controls = Vec::new();
         let page = self.theme().get(crate::kernel::Token::Background);
         self.a11y_check(self.root, Some(page), &mut controls, &mut out);
-        let (min, spaced_ok) = if self.touch { (MIN_TOUCH_TARGET, false) } else { (MIN_POINTER_TARGET, true) };
+        let (min, spaced_ok) = if self.res.touch.get() { (MIN_TOUCH_TARGET, false) } else { (MIN_POINTER_TARGET, true) };
         let center = |(x, y, w, h): (f32, f32, f32, f32)| (x + w / 2.0, y + h / 2.0);
         for &(id, rect) in &controls {
             let (.., w, h) = rect;
@@ -307,12 +307,12 @@ impl Kernel {
             if spaced_ok && spaced {
                 continue;
             }
-            let how = if self.touch { "touch targets" } else { "pointer targets this close to others" };
+            let how = if self.res.touch.get() { "touch targets" } else { "pointer targets this close to others" };
             out.push(self.issue(
                 id,
                 &codes::SMALL_TARGET,
                 format!("{} is {w} × {h} px; {how} need {min} × {min}", self.name(id)),
-                if self.touch {
+                if self.res.touch.get() {
                     "make its box at least 44 × 44: padding, or `min_w(44.0).min_h(44.0)` (`when_touch(..)` keeps the desktop size)"
                 } else {
                     "make its box at least 24 × 24 (padding, or `min_w` / `min_h`), or space it from its neighbors"

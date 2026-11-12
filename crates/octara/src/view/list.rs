@@ -1,6 +1,6 @@
 //! Rendering collections: [`each`] and [`virtual_each`] apply a stage's change log row by row.
 
-use super::{Mount, Parent, Slot, Slots, View, build_el, col, count_offset, ui};
+use super::{Mount, Parent, Slot, Slots, View, build_el, col, count_offset};
 use crate::diagnostics as codes;
 use crate::kernel::NodeId;
 use crate::reactive::graph::{Ctx, ReadSignal, ScopeId, Signal, rt};
@@ -35,7 +35,7 @@ fn build_row<K: Display, T: Clone + 'static>(
 
 /// Places `nodes` as consecutive kernel children starting at `base_index`.
 fn place(parent: NodeId, base_index: usize, nodes: impl Iterator<Item = NodeId>) {
-    let u = ui();
+    let u = crate::app::window();
     let mut kn = u.kernel.borrow_mut();
     for (i, node) in nodes.enumerate() {
         let want = base_index + i;
@@ -77,7 +77,7 @@ where
             src.track();
             rt(|rt| {
                 rt.with_frame(Ctx::Untracked, None, Some(Some(owner)), || {
-                    let u = ui();
+                    let u = crate::app::window();
                     let same = current.borrow().as_ref().is_some_and(|(s, _)| *s == src);
                     if same {
                         let changes = {
@@ -169,7 +169,7 @@ where
         });
         let parent = parent.clone();
         let container = parent.node;
-        let u = ui();
+        let u = crate::app::window();
         if !u.kernel.borrow().scrollable(container).1 {
             rt(|rt| {
                 rt.diag(&codes::VIRTUAL_LIST_NOT_SCROLLABLE, "virtual_each must sit directly in a scroll container: give its parent `overflow_y_scroll()` and a bounded height (e.g. `flex_1()` in a `size_full()` column)".into(),
@@ -326,7 +326,7 @@ where
                     drop(m);
                     // 3. Reconcile the window's rows by key: rows coming into and leaving the
                     // window neither enter nor exit (they are not added or removed).
-                    ui().kernel.borrow_mut().set_quiet(true);
+                    crate::app::window().kernel.borrow_mut().set_quiet(true);
                     let mut old = std::mem::take(&mut *rows.borrow_mut());
                     let mut built = false;
                     let order: Vec<(K, (ScopeId, NodeId))> = want
@@ -342,13 +342,13 @@ where
                     // The window moved: rows shift in the list's own coordinates without moving on
                     // screen, so nothing here is layout motion.
                     if built || !old.is_empty() {
-                        ui().kernel.borrow_mut().set_instant(true);
+                        crate::app::window().kernel.borrow_mut().set_instant(true);
                     }
                     for (_, (scope, _)) in old {
                         rt.dispose_scope(scope);
                     }
                     {
-                        let u = ui();
+                        let u = crate::app::window();
                         let mut kn = u.kernel.borrow_mut();
                         let height = |h: f64| crate::kernel::StyleProp::Height(crate::kernel::Length::Px(h as f32));
                         kn.set_style(top, height(top_h));
@@ -358,7 +358,7 @@ where
                     place(parent.node, count_offset(&parent, &count), nodes);
                     count.set(order.len() + 2);
                     *rows.borrow_mut() = order.into_iter().collect();
-                    ui().kernel.borrow_mut().set_quiet(false);
+                    crate::app::window().kernel.borrow_mut().set_quiet(false);
                 })
             });
         });

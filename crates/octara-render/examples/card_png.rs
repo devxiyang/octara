@@ -4,7 +4,7 @@ use octara_render::{CpuRenderer, GpuRenderer};
 
 fn main() {
     let dir = std::env::args().nth(1).unwrap_or_else(|| ".".into());
-    let app = App::new(|| {
+    let app = Window::headless(|| {
         col()
             .size_full()
             .p_4()

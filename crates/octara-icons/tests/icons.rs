@@ -33,7 +33,7 @@ fn view() -> View {
 
 #[test]
 fn icons_draw_in_the_text_color_and_hide_unless_labeled() {
-    let app = App::new(view);
+    let app = Window::headless(view);
     let k = app.kernel();
     let (x, check) = (k.find("x").unwrap(), k.find("check").unwrap());
     assert_eq!(k.rect(k.find("glass").unwrap()).2, 16.0, "16 px by default");

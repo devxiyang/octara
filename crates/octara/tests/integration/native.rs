@@ -3,10 +3,9 @@
 //! finds content an overlay view would hide, and views without a label.
 
 use octara::native::{HostCall, NativeEvent, NativeId, RecordingHost, Slot};
-use octara::platform::{HeadlessPlatform, HeadlessWindow};
 use octara::prelude::*;
 
-fn calls(app: &App) -> Vec<HostCall> {
+fn calls(app: &Window) -> Vec<HostCall> {
     app.native_host().as_any().downcast_ref::<RecordingHost>().unwrap().calls.clone()
 }
 
@@ -46,7 +45,7 @@ fn view() -> View {
 
 #[test]
 fn the_host_follows_the_view() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     let c = calls(&app);
     let HostCall::Create { id, kind, props, .. } = &c[0] else { panic!("{c:?}") };
     assert_eq!((kind.as_str(), props["url"].as_str()), ("web", Some("https://example.com")));
@@ -85,7 +84,7 @@ fn the_host_follows_the_view() {
 
 #[test]
 fn inspect_shows_the_view() {
-    let app = App::new(view);
+    let app = Window::headless(view);
     let snap = app.inspect();
     let web = snap.find("web").unwrap();
     assert_eq!(web.role, "web_view");
@@ -94,8 +93,8 @@ fn inspect_shows_the_view() {
     let _ = NativeId(0);
 }
 
-fn badge_over(slot: Slot, label: bool) -> App {
-    App::new(move || {
+fn badge_over(slot: Slot, label: bool) -> Window {
+    Window::headless(move || {
         let view = native_view("map").slot(slot).id("map").w(px(200.0)).h(px(120.0));
         let view = if label { view.label("Map of the venue") } else { view };
         el().w(px(300.0))
@@ -108,7 +107,7 @@ fn badge_over(slot: Slot, label: bool) -> App {
 
 #[test]
 fn content_over_an_overlay_view_is_reported() {
-    let codes = |app: &App| -> Vec<(String, Option<String>)> {
+    let codes = |app: &Window| -> Vec<(String, Option<String>)> {
         let mut v: Vec<_> = app.layout_issues().iter().map(|i| (i.code.id.to_owned(), i.test_id.clone())).collect();
         v.extend(app.kernel().accessibility_issues().iter().map(|i| (i.code.id.to_owned(), i.test_id.clone())));
         v.sort();
@@ -168,13 +167,13 @@ fn map_with_controls() -> View {
 #[test]
 fn a_shown_underlay_view_is_cut_out_and_its_covered_parts_known() {
     use octara::paint::Item;
-    let app = App::new(map_with_controls);
-    let natives = |app: &App| -> Vec<bool> {
+    let app = Window::headless(map_with_controls);
+    let natives = |app: &Window| -> Vec<bool> {
         app.display_list().items.iter().filter_map(|i| if let Item::Native { cut, .. } = i { Some(*cut) } else { None }).collect()
     };
     assert_eq!(natives(&app), [false], "headless: a placeholder, no hole");
 
-    let app = App::with_platform(HeadlessPlatform::default(), HeadlessWindow::with_host(Shows), map_with_controls);
+    let app = Window::headless_on(octara::platform::HeadlessPlatform::with_host(Shows), map_with_controls);
     let list = app.display_list();
     assert_eq!(natives(&app), [true], "shown by the platform: cut out");
     let map = app.kernel().find("map").unwrap();

@@ -3,7 +3,7 @@
 
 use octara::prelude::*;
 
-fn focused(app: &App) -> Option<String> {
+fn focused(app: &Window) -> Option<String> {
     let k = app.kernel();
     let all = ["a", "b", "c", "late", "first", "tab-1", "tab-2", "tab-3", "row-1", "row-2", "row-3", "name", "ok", "cancel", "open"];
     all.iter().find(|id| k.state_of(id).is_some_and(|s| s.contains(State::FOCUSED))).map(|s| s.to_string())
@@ -15,7 +15,7 @@ fn button(id: &str) -> El {
 
 #[test]
 fn tab_index_orders_and_skips() {
-    let mut app = App::new(|| {
+    let mut app = Window::headless(|| {
         col()
             .child(button("a"))
             .child(button("b").tab_index(-1))
@@ -40,7 +40,7 @@ fn tab_index_orders_and_skips() {
 #[test]
 fn focus_groups_move_on_arrows_and_stop_once_for_tab() {
     let mut app =
-        App::new(|| {
+        Window::headless(|| {
             let tab = state("tab", || 2);
             col()
                 .child(button("a"))
@@ -76,8 +76,8 @@ fn focus_groups_move_on_arrows_and_stop_once_for_tab() {
     assert_eq!(focused(&app).as_deref(), Some("c"));
 }
 
-fn dialog_app(click_outside: bool) -> App {
-    App::new(move || {
+fn dialog_app(click_outside: bool) -> Window {
+    Window::headless(move || {
         let open = state("open", || false);
         let closes = state("closes", || 0);
         col()

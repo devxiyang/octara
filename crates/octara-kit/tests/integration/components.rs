@@ -32,7 +32,7 @@ fn view() -> View {
 
 #[test]
 fn buttons_have_roles_states_and_refuse_when_disabled() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     let k = app.kernel();
     assert_eq!(k.role_of("save"), Some(Role::Button));
     assert_eq!(k.visual_of("save").unwrap().background, Some(tok(Token::Accent)));
@@ -48,13 +48,13 @@ fn buttons_have_roles_states_and_refuse_when_disabled() {
 
 #[test]
 fn switch_and_checkbox_are_controlled() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     // The switch is a press area around its track; the thumb sits in the track.
-    let track = |app: &App| {
+    let track = |app: &Window| {
         let k = app.kernel();
         k.children(k.find("wifi").unwrap())[0]
     };
-    let thumb_x = |app: &App| {
+    let thumb_x = |app: &Window| {
         let k = app.kernel();
         k.rect(k.children(track(app))[0]).0
     };
@@ -71,7 +71,7 @@ fn switch_and_checkbox_are_controlled() {
 
 #[test]
 fn text_field_is_bound_both_ways() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     assert_eq!(app.kernel().value_of("name").unwrap(), "Ada");
     app.dispatch(Event::Input("name".into(), "Grace".into())).unwrap();
     assert_eq!(app.kernel().text_of("greeting").unwrap(), "hello Grace");
@@ -81,7 +81,7 @@ fn text_field_is_bound_both_ways() {
 
 #[test]
 fn select_opens_a_listbox_and_picks() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     let k = app.kernel();
     assert_eq!(k.role_of("size"), Some(Role::ComboBox));
     assert_eq!(k.value_of("size").unwrap(), "Medium");
@@ -96,7 +96,7 @@ fn select_opens_a_listbox_and_picks() {
     let (_, ly, _, _) = k.rect(k.find("size-list").unwrap());
     assert_eq!(ly, ty + th + 4.0, "opens below the trigger");
     drop(k);
-    app.hot_reload();
+    app.app().hot_reload();
     assert!(app.kernel().exists("size-list"), "open state survives hot reload");
     app.dispatch(Event::Press("size-option-2".into())).unwrap();
     let k = app.kernel();
@@ -108,20 +108,20 @@ fn select_opens_a_listbox_and_picks() {
 
 #[test]
 fn no_diagnostics() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     app.dispatch(Event::Press("size".into())).unwrap();
-    app.hot_reload();
-    let d = app.diagnostics();
+    app.app().hot_reload();
+    let d = app.app().diagnostics();
     assert!(d.is_empty(), "{d:?}");
 }
 
 #[test]
 fn select_works_from_the_keyboard() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     app.dispatch(Event::Focus("size".into())).unwrap();
     app.press_key("enter").unwrap();
     assert!(app.kernel().exists("size-list"));
-    let focused = |app: &App, id: &str| app.kernel().state_of(id).unwrap().contains(State::FOCUSED);
+    let focused = |app: &Window, id: &str| app.kernel().state_of(id).unwrap().contains(State::FOCUSED);
     assert!(focused(&app, "size-option-1"), "the list opens on the selected option");
     app.press_key("down").unwrap();
     assert!(focused(&app, "size-option-2"));

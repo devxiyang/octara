@@ -10,8 +10,8 @@ use octara::prelude::*;
 
 const SECRET: &str = "pässwörd🙂";
 
-fn app(platform: TargetPlatform) -> App {
-    let mut app = App::new(|| {
+fn app(platform: TargetPlatform) -> Window {
+    let mut app = Window::headless(|| {
         let v = state("v", || SECRET.to_owned());
         let show = state("show", || false);
         col()
@@ -28,12 +28,12 @@ fn app(platform: TargetPlatform) -> App {
             .child(el().id("show").role(Role::Button).label("Show").on_press(move || show.update(|s| *s = !*s)).size_8())
             .into()
     });
-    app.set_target_platform(platform);
+    app.app().set_target_platform(platform);
     app.tap("pw").unwrap();
     app
 }
 
-fn value(app: &App) -> String {
+fn value(app: &Window) -> String {
     app.kernel().value_of("pw").unwrap()
 }
 
@@ -48,7 +48,7 @@ fn nothing_reports_the_value() {
     let n = app.kernel().find("pw").unwrap();
     let node = &tree.nodes.iter().find(|(i, _)| *i == a11y_id(n)).unwrap().1;
     assert_eq!((node.role(), node.value()), (AkRole::PasswordInput, Some(bullets.as_str())));
-    let everything = format!("{} {} {:?}", snap.to_json(), app.kernel().tree_dump(), app.diagnostics());
+    let everything = format!("{} {} {:?}", snap.to_json(), app.kernel().tree_dump(), app.app().diagnostics());
     for part in ["pässwörd", "wörd", "🙂"] {
         assert!(!everything.contains(part), "`{part}` leaked");
     }
@@ -58,7 +58,7 @@ fn nothing_reports_the_value() {
 #[test]
 fn editing_keeps_it_in() {
     let mut app = app(TargetPlatform::MacOs);
-    app.platform().write_text("clip");
+    app.app().platform().write_text("clip");
     app.press_key("mod+a").unwrap();
     app.press_key("mod+c").unwrap();
     app.press_key("mod+x").unwrap();
@@ -89,14 +89,14 @@ fn revealing_shows_the_text_to_the_screen_only_for_agents() {
     assert_eq!(app.inspect().find("pw").unwrap().value.as_deref(), Some("•".repeat(9).as_str()), "agents still see bullets");
     // Copy stays off while revealed.
     app.tap("pw").unwrap();
-    app.platform().write_text("before");
+    app.app().platform().write_text("before");
     app.press_key("mod+a").unwrap();
     app.press_key("mod+c").unwrap();
     assert_eq!(app.clipboard_text().as_deref(), Some("before"), "copy left the clipboard alone");
 }
 
 /// The glyph ids the field draws.
-fn glyphs(app: &App) -> Vec<u32> {
+fn glyphs(app: &Window) -> Vec<u32> {
     let n = app.kernel().find("pw").unwrap();
     app.display_list().glyph_runs().filter(|r| r.source == n).flat_map(|r| r.glyphs.iter().map(|g| g.id)).collect()
 }
@@ -111,9 +111,9 @@ fn touch_shows_the_last_character_for_a_moment() {
     let shown = glyphs(&app);
     assert_eq!(shown.len(), 2);
     assert_ne!(shown[0], shown[1], "a bullet, then the b");
-    let due = app.next_deadline().expect("it hides later");
+    let due = app.app().next_deadline().expect("it hides later");
     assert!(due.as_secs_f64() <= 1.5 + 1e-6);
-    app.advance(std::time::Duration::from_millis(1600));
+    app.app().advance(std::time::Duration::from_millis(1600));
     let hidden = glyphs(&app);
     assert_eq!(hidden[0], hidden[1], "two bullets");
     assert_eq!(value(&app), "ab");
@@ -123,7 +123,7 @@ fn touch_shows_the_last_character_for_a_moment() {
 fn the_platform_hears_of_the_focused_field() {
     use octara::platform::HeadlessWindow;
     let mut app = app(TargetPlatform::MacOs);
-    let sent = |app: &App| app.platform_window().as_any().downcast_ref::<HeadlessWindow>().unwrap().text_input;
+    let sent = |app: &Window| app.platform_window().as_any().downcast_ref::<HeadlessWindow>().unwrap().text_input;
     let input = sent(&app).expect("the focused field");
     assert!(input.secure && !input.multiline, "{input:?}");
     let n = app.kernel().find("pw").unwrap();

@@ -1,6 +1,6 @@
 # The core: ownership, context, input and frames
 
-Status: confirmed; in progress. Based on an architecture review against the first product (an AI
+Status: confirmed; step 1 implemented. Based on an architecture review against the first product (an AI
 chat app), several windows, the [platform layer](platform.md) and agents; it supersedes the
 single-window structure (one `App`, one `Kernel`, an implicit current window). There is no
 compatibility layer: what this replaces is removed.
@@ -62,8 +62,8 @@ first, so no binding, watch or task of it runs again.
   (`PlatformWindow::present`), then the next frame is requested by the app when something
   changes or moves.
 - Agents and tests: the inspector protocol names a window in every request (default: the only
-  one); its high-level steps (`tap`, `type`, …) lower to `InputEvent`s. `Harness` (in
-  `octara::testing`) is a headless app with one window and the driving methods tests use.
+  one); its high-level steps (`tap`, `type`, …) lower to `InputEvent`s. `Window::headless(view)`
+  is a window of a new headless app: what tests and agents drive.
 
 ## Text (decided here; its own design comes with step 3)
 
@@ -96,7 +96,8 @@ first, so no binding, watch or task of it runs again.
 
 ## Removed
 
-`App`'s implicit window methods (they live on the window and the `Harness`), `App::with_window`,
+`App`'s implicit window methods (they live on `Window`), `App::with_window`, the `Host` trait
+and `Checked` wrapper (consistency checks are an app setting),
 the thread-local view context and the ambient value, `Ui`, the per-kernel theme, text engine
 and clock, the shell's polling of app state, the scale passed per call, and the window storage
 that could not free a window.
@@ -104,8 +105,8 @@ that could not free a window.
 ## Steps
 
 1. Ownership and context: `AppState`, `Resources`, windows in a slot map, one typed owner,
-   `window()`, `App::new(platform)` and `open_window` / `close_window` headless, the `Harness`;
-   every test on it. Proof: two windows share a signal and update together; closing one
+   `window()`, `App::new(platform)` and `open_window` / `close_window` headless,
+   `Window::headless`; every test on it. Proof: two windows share a signal and update together; closing one
    disposes its bindings, watches and tasks and frees it (a thousand opens and closes leave
    nothing); a font registered once is used in both; theme changes restyle both.
 2. Input as data and frames out: `InputEvent`, `app.event`, `Frame`, `present`, the recorder and
@@ -119,3 +120,27 @@ that could not free a window.
    suite.
 6. Popups and menus ([windows](windows.md) steps 4 and on).
 7. The AI chat components and the AI chat reference app.
+
+## As built (step 1)
+
+- `App` is a handle on `AppState` (the runtime, the scheduler, `Resources`, the platform, the
+  windows in a slot map); `Window` is a handle on an `App` and a `WindowState` (today's `Ui` and
+  window merged). Both are `Clone`; a window handle outlives its window (`is_closed`).
+- One context: the runtime's `Owner` (a window's number), set by the entry points, recorded by
+  every binding, memo, watch and task and restored when it runs; `window()` looks the window up.
+- `Resources` (`kernel::Resources`): the theme, the text engine, touch and reduced motion, read by
+  every kernel; texts are keyed by kernel and node in the shared text system. App-level setters
+  (`set_theme`, `register_font`, `set_text_engine`, `use_system_fonts`, `set_target_platform`,
+  `set_reduced_motion`) change them and tell each kernel.
+- App-level (`App`): the clock (`advance`, `run_until_idle`, `settle`, `poll`, `pending`,
+  `next_deadline`, `send`), diagnostics and work, hot reload of every window, theme and fonts,
+  the painter, `platform()`, `run(f)` for state shared by windows, `open_window`,
+  `close_window`, `windows`, `window(id)`, `set_check_consistency`. Window-level (`Window`):
+  input, focus, inspection, the display list, the kernel, size, native views, captures, the
+  platform window. App code opens and closes windows with `open_window` / `close_window`
+  (built and disposed at the end of the frame) and asks `current_window()`.
+- Each window's root scope is its own (the first window's is `app`); closing a window disposes
+  it and the signals the window holds, and frees it.
+- The winit backend shows one window (opening more is step 5); `Window::headless` and the
+  headless platform open any number.
+

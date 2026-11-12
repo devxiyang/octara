@@ -39,7 +39,7 @@ fn bars(runs: Rc<Cell<u32>>) -> impl Fn() -> View {
 #[test]
 fn the_recording_follows_size_and_reads() {
     let runs = Rc::new(Cell::new(0));
-    let mut app = App::new(bars(runs.clone()));
+    let mut app = Window::headless(bars(runs.clone()));
     let k = app.kernel();
     let chart = k.find("chart").unwrap();
     // The content box: 800 wide less 2 × 8 padding, 100 high less 16.
@@ -65,7 +65,7 @@ fn the_recording_follows_size_and_reads() {
 
 #[test]
 fn drawn_in_the_content_box_clipped_and_themed() {
-    let mut app = App::new(bars(Rc::default()));
+    let app = Window::headless(bars(Rc::default()));
     let dl = app.display_list();
     let k = app.kernel();
     let chart = k.find("chart").unwrap();
@@ -81,14 +81,14 @@ fn drawn_in_the_content_box_clipped_and_themed() {
     let Item::Path(bar) = items[1] else { panic!() };
     assert_eq!((bar.transform.x, bar.transform.y), (x + 8.0, y + 8.0), "offset to the content box");
     assert_eq!(bar.color, Theme::light().get(Token::Accent));
-    app.set_theme(Theme::dark());
+    app.app().set_theme(Theme::dark());
     let dark = app.display_list();
     assert!(dark.paths().any(|p| p.source == chart && p.color == Theme::dark().get(Token::Accent)), "tokens follow the theme");
 }
 
 #[test]
 fn transforms_clips_gradients_and_semantics() {
-    let app = App::new(|| {
+    let app = Window::headless(|| {
         row()
             .child(
                 canvas(|c| {
@@ -135,7 +135,7 @@ fn transforms_clips_gradients_and_semantics() {
 
 #[test]
 fn text_takes_the_canvas_style_and_its_anchor() {
-    let app = App::new(|| {
+    let app = Window::headless(|| {
         row()
             .child(
                 canvas(|c| {

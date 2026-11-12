@@ -5,7 +5,7 @@ use octara_examples::apps;
 
 #[test]
 fn composition_is_shown_underlined_and_committed_text_replaces_it() {
-    let mut app = App::new(|| apps::todo(3));
+    let mut app = Window::headless(|| apps::todo(3));
     let (x, y, w, h) = {
         let k = app.kernel();
         k.rect(k.find("new-todo").unwrap())

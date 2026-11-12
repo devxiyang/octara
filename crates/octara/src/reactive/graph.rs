@@ -64,6 +64,8 @@ struct Node {
     /// `(observer, epoch)` of the last run that tracked this node: O(1) edge dedupe.
     tracked: Option<(Idx, u64)>,
     defined_at: &'static Location<'static>,
+    /// The owner it was made under, restored when it runs.
+    owner: Option<Owner>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -125,6 +127,19 @@ pub(crate) struct Runtime {
     flushing: Cell<bool>,
     reloading: Cell<bool>,
     closures_run: Cell<u64>,
+    /// Who the running code belongs to (the view layer's window): set by the app's entry points,
+    /// kept by every node and task made meanwhile and restored when it runs, so code runs as
+    /// its owner whoever triggered it.
+    owner: Cell<Option<Owner>>,
+}
+
+/// Who reactive code belongs to: an opaque number the layer above gives meaning (a window).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct Owner(pub u64);
+
+/// The current runtime's owner, if any (outside a runtime: none).
+pub(crate) fn current_owner() -> Option<Owner> {
+    CURRENT.with(|c| c.borrow().as_ref().and_then(|r| r.owner.get()))
 }
 
 thread_local! {
@@ -199,6 +214,24 @@ impl Runtime {
         self.ctx.get().unwrap_or(Ctx::Idle)
     }
 
+    /// The owner now.
+    pub(crate) fn owner(&self) -> Option<Owner> {
+        self.owner.get()
+    }
+
+    /// Runs `f` as `owner` (none: as the current one).
+    pub(crate) fn with_owner<R>(&self, owner: Option<Owner>, f: impl FnOnce() -> R) -> R {
+        let Some(o) = owner else { return f() };
+        struct Restore<'a>(&'a Cell<Option<Owner>>, Option<Owner>);
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                self.0.set(self.1);
+            }
+        }
+        let _restore = Restore(&self.owner, self.owner.replace(Some(o)));
+        f()
+    }
+
     pub fn with_frame<R>(&self, ctx: Ctx, observer: Option<Idx>, scope: Option<Option<ScopeId>>, f: impl FnOnce() -> R) -> R {
         let prev_ctx = self.ctx.replace(Some(ctx));
         let prev_obs = self.observer.replace(observer);
@@ -236,6 +269,7 @@ impl Runtime {
     ) -> Idx {
         let seq = self.seq.get();
         self.seq.set(seq + 1);
+        let run_as = self.owner.get();
         let make = |g| Node {
             g,
             alive: true,
@@ -251,6 +285,7 @@ impl Runtime {
             named,
             tracked: None,
             defined_at: at,
+            owner: run_as,
         };
         let idx = {
             let mut nodes = self.nodes.borrow_mut();
@@ -453,11 +488,11 @@ impl Runtime {
     }
 
     fn run_node(&self, idx: Idx) {
-        let (kind, mut compute, old, sources) = {
+        let (kind, mut compute, old, sources, owner) = {
             let mut nodes = self.nodes.borrow_mut();
             let n = &mut nodes[idx.i as usize];
             n.computing = true;
-            (n.kind, n.compute.take().expect("compute"), n.value.clone(), std::mem::take(&mut n.sources))
+            (n.kind, n.compute.take().expect("compute"), n.value.clone(), std::mem::take(&mut n.sources), n.owner)
         };
         {
             let mut nodes = self.nodes.borrow_mut();
@@ -472,7 +507,7 @@ impl Runtime {
         let epoch = self.epochs.get() + 1;
         self.epochs.set(epoch);
         let prev_epoch = self.epoch.replace(epoch);
-        let changed = self.with_frame(ctx, Some(idx), None, || compute(old.as_ref()));
+        let changed = self.with_owner(owner, || self.with_frame(ctx, Some(idx), None, || compute(old.as_ref())));
         self.epoch.set(prev_epoch);
         let observers = {
             let mut nodes = self.nodes.borrow_mut();

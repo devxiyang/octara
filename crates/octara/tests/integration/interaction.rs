@@ -29,13 +29,13 @@ fn view() -> View {
         .into()
 }
 
-fn bg(app: &App, id: &str) -> Option<Color> {
+fn bg(app: &Window, id: &str) -> Option<Color> {
     app.kernel().visual_of(id).unwrap().background
 }
 
 #[test]
 fn hover_and_focus_move_between_elements() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     assert_eq!(bg(&app, "go"), Some(tok(Token::Surface)));
     app.dispatch(Event::Hover("go".into(), true)).unwrap();
     assert_eq!(bg(&app, "go"), Some(tok(Token::SurfaceHover)));
@@ -54,7 +54,7 @@ fn hover_and_focus_move_between_elements() {
 
 #[test]
 fn disabled_refuses_events_and_applies_its_style() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     app.dispatch(Event::Press("go".into())).unwrap();
     assert_eq!(app.kernel().text_of("count").unwrap(), "1");
     app.dispatch(Event::Press("lock".into())).unwrap();
@@ -66,11 +66,11 @@ fn disabled_refuses_events_and_applies_its_style() {
 
 #[test]
 fn forced_and_interaction_states_survive_hot_reload() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     app.force_state("go", State::PRESSED, true).unwrap();
     assert_eq!(bg(&app, "go"), Some(tok(Token::SurfacePressed)));
     app.dispatch(Event::Focus("lock".into())).unwrap();
-    app.hot_reload();
+    app.app().hot_reload();
     assert_eq!(bg(&app, "go"), Some(tok(Token::SurfacePressed)));
     assert!(app.kernel().state_of("lock").unwrap().contains(State::FOCUS_VISIBLE));
     assert!(app.force_state("go", State::DISABLED, true).is_err(), "props own DISABLED");
@@ -78,9 +78,9 @@ fn forced_and_interaction_states_survive_hot_reload() {
 
 #[test]
 fn theme_switch_repaints_without_running_closures() {
-    let mut app = App::new(view);
-    app.reset_work();
-    app.set_theme(Theme::dark());
+    let app = Window::headless(view);
+    app.app().reset_work();
+    app.app().set_theme(Theme::dark());
     assert_eq!(bg(&app, "go"), Some(Theme::dark().get(Token::Surface)));
-    assert_eq!(app.work().closures_run, 0);
+    assert_eq!(app.app().work().closures_run, 0);
 }

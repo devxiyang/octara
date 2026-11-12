@@ -28,8 +28,9 @@ narrow set of traits (GPUI's names, about 45 methods to start); headless runs (t
 - As built (step 1, `octara::platform`): `Platform` (the clipboard, the waker) and
   `PlatformWindow` (the native host, `set_text_input` with the focused field's caret rect,
   secure and multi-line flags, sent when it changes after a frame); `HeadlessPlatform` and
-  `HeadlessWindow` are `App::new`'s; `App::with_platform(platform, window, root)` takes a
-  backend's; `App::platform()` and `App::platform_window()` reach them. The shell's
+  `HeadlessWindow` are `Window::headless`'s; `App::new(platform)` takes a backend's, whose
+  `open_window` makes each window's; `App::platform()` and `Window::platform_window()` reach
+  them. The shell's
   `WinitPlatform` (arboard, the event loop's proxy) and `WinitWindow` (the native host, the
   input method's position, secure input) implement them: the app no longer installs a clipboard,
   a waker or a host, and the shell no longer polls the caret. The enum of platform conventions

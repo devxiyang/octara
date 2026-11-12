@@ -30,14 +30,14 @@ fn main() {
         ("chat_virtual", || apps::chat_virtual(1000)),
     ];
     for (name, view) in cases {
-        let mut app = App::new(view);
+        let mut app = Window::headless(view);
         if let Some((w, h)) = size {
             app.resize(w, h);
         }
         if bundled {
-            octara_fonts::cjk::install(&mut app);
+            octara_fonts::cjk::install(&app.app());
         } else {
-            app.use_system_fonts();
+            app.app().use_system_fonts();
         }
         let path = format!("{dir}/{name}.png");
         octara_render::screenshot(&app, scale).save_png(&path).expect("write png");

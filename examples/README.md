@@ -8,7 +8,7 @@ cargo run --release -p octara-examples --bin bench      # benchmark tables
 ```
 
 - `src/apps.rs`: the apps below.
-- `src/scenarios.rs`: acceptance, hot-reload and benchmark scenarios, written against `octara::testing::Host`.
+- `src/scenarios.rs`: acceptance, hot-reload and benchmark scenarios, written against a headless `octara::app::Window`.
 - `tests/`: acceptance (`acceptance`), from-scratch consistency (`consistency`), diagnostics regression (`diagnostics`),
   list rendering, sorting and grouping, virtualization and streamed text.
 

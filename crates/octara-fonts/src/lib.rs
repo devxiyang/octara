@@ -3,8 +3,8 @@
 //! missing glyphs headless. A test registers these instead of relying on the machine's fonts:
 //!
 //! ```
-//! let mut app = octara::app::App::new(|| octara::view::text("你好").into());
-//! octara_fonts::cjk::install(&mut app);
+//! let mut app = octara::app::Window::headless(|| octara::view::text("你好").into());
+//! octara_fonts::cjk::install(&app.app());
 //! ```
 //!
 //! They are a dev-dependency, not part of an app.
@@ -24,7 +24,7 @@ pub mod cjk {
     pub const SCRIPTS: [[u8; 4]; 3] = [*b"Hani", *b"Hira", *b"Kana"];
 
     /// Registers both weights as the fallback for hanzi and kana.
-    pub fn install(app: &mut App) {
+    pub fn install(app: &App) {
         for data in [REGULAR, SEMIBOLD] {
             app.register_fallback_font(data, &SCRIPTS);
         }

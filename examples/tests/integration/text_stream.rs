@@ -5,13 +5,13 @@ use octara_kit::button;
 
 #[test]
 fn streamed_chat_passes_the_chat_scenarios() {
-    octara_examples::scenarios::chat_acceptance(&mut App::new(|| chat_stream(0))).unwrap();
-    octara_examples::scenarios::chat_hot_reload(&mut App::new(|| chat_stream(0))).unwrap();
+    octara_examples::scenarios::chat_acceptance(&mut Window::headless(|| chat_stream(0))).unwrap();
+    octara_examples::scenarios::chat_hot_reload(&mut Window::headless(|| chat_stream(0))).unwrap();
 }
 
 #[test]
 fn a_token_costs_its_own_length() {
-    let mut h = App::new(|| chat_stream(1_000));
+    let mut h = Window::headless(|| chat_stream(1_000));
     external(&mut h, "user", "go").unwrap();
     h.dispatch(Event::ScrollTo("messages".into(), 0.0, 1e9)).unwrap();
     for _ in 0..2_000 {
@@ -24,9 +24,9 @@ fn a_token_costs_its_own_length() {
     assert_eq!(c.prop_changes, 1);
     assert_eq!(h.kernel().text_of("msg-body-1002").unwrap().len(), 20_003);
     let before = h.kernel().tree_dump();
-    h.hot_reload();
+    h.app().hot_reload();
     assert_eq!(h.kernel().tree_dump(), before, "incremental and from-scratch trees differ");
-    assert!(h.diagnostics().is_empty(), "{:?}", h.diagnostics());
+    assert!(h.app().diagnostics().is_empty(), "{:?}", h.app().diagnostics());
 }
 
 #[test]
@@ -34,7 +34,7 @@ fn random_edits_match_a_reference_and_logs_stay_bounded() {
     thread_local! {
         static HANDLE: std::cell::RefCell<Option<LiveText>> = const { std::cell::RefCell::new(None) };
     }
-    let mut h = App::new(|| {
+    let mut h = Window::headless(|| {
         let t = live_text("t", || "hello".into());
         HANDLE.with(|c| *c.borrow_mut() = Some(t.clone()));
         let t2 = t.clone();

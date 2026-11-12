@@ -287,7 +287,7 @@ impl Reply {
     }
 }
 
-use crate::app::App;
+use crate::app::Window;
 use crate::diagnostics::{self as codes, Code, Severity};
 
 pub(crate) fn severity_name(s: Severity) -> &'static str {
@@ -299,7 +299,7 @@ pub(crate) fn severity_name(s: Severity) -> &'static str {
 }
 
 /// Every layout issue and diagnostic of `app` now.
-pub fn issues(app: &App) -> Vec<Issue> {
+pub fn issues(app: &Window) -> Vec<Issue> {
     let mut out: Vec<Issue> = app
         .layout_issues()
         .into_iter()
@@ -312,7 +312,7 @@ pub fn issues(app: &App) -> Vec<Issue> {
             hint: Some(i.hint.into()),
         })
         .collect();
-    out.extend(app.diagnostics().into_iter().map(|d| Issue {
+    out.extend(app.app().diagnostics().into_iter().map(|d| Issue {
         code: d.code.id.into(),
         severity: severity_name(d.code.severity).into(),
         message: d.message,
@@ -324,10 +324,10 @@ pub fn issues(app: &App) -> Vec<Issue> {
 }
 
 /// Runs one request against `app`.
-pub fn handle(app: &mut App, req: Request) -> Reply {
+pub fn handle(app: &mut Window, req: Request) -> Reply {
     use std::time::Duration;
-    let exists = |app: &App, id: &str| app.kernel().find(id).is_some();
-    let target = |app: &App, id: &str| -> Result<(), Box<Reply>> {
+    let exists = |app: &Window, id: &str| app.kernel().find(id).is_some();
+    let target = |app: &Window, id: &str| -> Result<(), Box<Reply>> {
         if exists(app, id) { Ok(()) } else { Err(Box::new(Reply::fail(&codes::NO_SUCH_ELEMENT, format!("no element has test id `{id}`")))) }
     };
     let step = |r: Result<(), String>| match r {
@@ -369,10 +369,10 @@ pub fn handle(app: &mut App, req: Request) -> Reply {
         }
         Request::Invoke { command } => step(app.invoke(&command)),
         Request::Advance { ms } => {
-            app.advance(Duration::from_millis(ms));
+            app.app().advance(Duration::from_millis(ms));
             Reply::ok()
         }
-        Request::Settle { limit_ms } => match app.run_until_idle(Duration::from_millis(limit_ms.unwrap_or(10_000))) {
+        Request::Settle { limit_ms } => match app.app().run_until_idle(Duration::from_millis(limit_ms.unwrap_or(10_000))) {
             Ok(()) => Reply::ok(),
             Err(pending) => Reply::fail(&codes::STEP_FAILED, format!("still running at the limit: {pending:?}")),
         },
@@ -382,34 +382,34 @@ pub fn handle(app: &mut App, req: Request) -> Reply {
         }
         Request::Theme { name } => match name.as_str() {
             "light" => {
-                app.set_theme(crate::kernel::Theme::light());
+                app.app().set_theme(crate::kernel::Theme::light());
                 Reply::ok()
             }
             "dark" => {
-                app.set_theme(crate::kernel::Theme::dark());
+                app.app().set_theme(crate::kernel::Theme::dark());
                 Reply::ok()
             }
             other => Reply::fail(&codes::BAD_REQUEST, format!("unknown theme `{other}`: `light` or `dark`")),
         },
         Request::ReducedMotion { on } => {
-            app.set_reduced_motion(on);
+            app.app().set_reduced_motion(on);
             Reply::ok()
         }
         Request::Expect(e) => expect(app, &e),
         Request::Capture { path, settle_ms, scale, pixels } => {
-            let Some(mut painter) = app.take_painter() else {
+            let Some(mut painter) = app.app().take_painter() else {
                 return Reply::fail(
                     &codes::CAPTURE_FAILED,
                     "nothing paints captures here: run through `octara run`, whose harness links the reference renderer",
                 );
             };
-            let _ = app.run_until_idle(Duration::from_millis(settle_ms.unwrap_or(5_000)));
+            let _ = app.app().run_until_idle(Duration::from_millis(settle_ms.unwrap_or(5_000)));
             let pending = app.unsettled();
             app.capture_begin();
             let fallback =
                 (pixels == crate::capture::Pixels::Display).then(|| "headless: there is no window to take a picture of".to_owned());
             let result = app.capture_finish(&mut *painter, &path, scale.unwrap_or(2.0), pending, fallback);
-            app.set_painter(painter);
+            app.app().set_painter(painter);
             match result {
                 Ok(c) => Reply { capture: Some(Box::new(c)), ..Reply::ok() },
                 Err(e) => Reply::fail(&codes::CAPTURE_FAILED, e),
@@ -418,7 +418,7 @@ pub fn handle(app: &mut App, req: Request) -> Reply {
     }
 }
 
-fn expect(app: &App, e: &Expect) -> Reply {
+fn expect(app: &Window, e: &Expect) -> Reply {
     let mismatch = |what: &str, want: serde_json::Value, got: serde_json::Value| Reply {
         actual: Some(got.clone()),
         ..Reply::fail(&codes::EXPECTATION_FAILED, format!("expected {what} {want}, found {got}"))
@@ -469,7 +469,7 @@ fn expect(app: &App, e: &Expect) -> Reply {
 }
 
 /// Reads one request line and runs it.
-pub fn handle_line(app: &mut App, line: &str) -> Reply {
+pub fn handle_line(app: &mut Window, line: &str) -> Reply {
     match serde_json::from_str::<Request>(line) {
         Ok(req) => handle(app, req),
         Err(e) => Reply::fail(&codes::BAD_REQUEST, format!("{e}: {line}")),
@@ -478,7 +478,7 @@ pub fn handle_line(app: &mut App, line: &str) -> Reply {
 
 /// Runs a script (JSON lines; blank lines and `//` comments skipped), stopping at the first
 /// failure. Returns each step's line number and reply.
-pub fn run_script(app: &mut App, script: &str) -> Vec<(usize, Reply)> {
+pub fn run_script(app: &mut Window, script: &str) -> Vec<(usize, Reply)> {
     let mut out = Vec::new();
     for (i, line) in script.lines().enumerate() {
         let line = line.trim();
@@ -614,13 +614,13 @@ pub fn check(view: fn() -> crate::view::View, opts: &CheckOptions) -> CheckRepor
         for size in &opts.sizes {
             let cell = format!("{theme}/{}", size.name);
             cells.push(cell.clone());
-            let mut app = App::new(view);
+            let mut app = Window::headless(view);
             let platform = platform(&size.platform).unwrap_or(crate::app::TargetPlatform::current());
-            app.set_target_platform(platform);
-            app.set_theme(if theme == "dark" { crate::kernel::Theme::dark() } else { crate::kernel::Theme::light() });
+            app.app().set_target_platform(platform);
+            app.app().set_theme(if theme == "dark" { crate::kernel::Theme::dark() } else { crate::kernel::Theme::light() });
             app.resize(size.width, size.height);
             let mut found = issues(&app);
-            if let Err(pending) = app.run_until_idle(SETTLE_LIMIT) {
+            if let Err(pending) = app.app().run_until_idle(SETTLE_LIMIT) {
                 found.push(Issue {
                     code: codes::NOT_SETTLED.id.into(),
                     severity: severity_name(codes::NOT_SETTLED.severity).into(),
@@ -728,9 +728,9 @@ fn run_main(view: fn() -> crate::view::View, painter: Option<fn() -> Box<dyn cra
         eprintln!("octara harness: {msg}");
         std::process::exit(2)
     };
-    let setup = |app: &mut App| {
+    let setup = |app: &mut Window| {
         if let Some(p) = painter {
-            app.set_painter(p());
+            app.app().set_painter(p());
         }
         if let Some(size) = flag("--size") {
             let parsed = size.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)));
@@ -739,7 +739,7 @@ fn run_main(view: fn() -> crate::view::View, painter: Option<fn() -> Box<dyn cra
         }
         match flag("--theme").as_deref() {
             None | Some("light") => {}
-            Some("dark") => app.set_theme(crate::kernel::Theme::dark()),
+            Some("dark") => app.app().set_theme(crate::kernel::Theme::dark()),
             Some(other) => fail(format!("unknown theme `{other}`")),
         }
     };
@@ -755,13 +755,13 @@ fn run_main(view: fn() -> crate::view::View, painter: Option<fn() -> Box<dyn cra
             println!("{}", check(view, &opts).to_json());
         }
         Some("inspect") => {
-            let mut app = App::new(view);
+            let mut app = Window::headless(view);
             setup(&mut app);
-            let _ = app.run_until_idle(SETTLE_LIMIT);
+            let _ = app.app().run_until_idle(SETTLE_LIMIT);
             println!("{}", serde_json::to_string_pretty(&app.inspect()).expect("serializes"));
         }
         Some("run") => {
-            let mut app = App::new(view);
+            let mut app = Window::headless(view);
             setup(&mut app);
             let stop = args.iter().any(|a| a == "--stop");
             let stdout = std::io::stdout();

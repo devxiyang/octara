@@ -297,9 +297,9 @@ impl Kernel {
         let lines = if shown.is_empty() {
             vec![VisualLine { start: 0, end: 0, top: 0.0, stops: vec![(0, 0.0)] }]
         } else {
-            let mut engine = self.text.borrow_mut();
-            text::measure(&mut **engine, id.into(), &shown, input.clean.replace(shown.len()), &style, limit);
-            engine.visual_lines(id.into(), &shown, &style, limit)
+            let mut engine = self.res.text.borrow_mut();
+            text::measure(&mut **engine, self.key(id), &shown, input.clean.replace(shown.len()), &style, limit);
+            engine.visual_lines(self.key(id), &shown, &style, limit)
         };
         let mut f = Field {
             shown,
@@ -430,7 +430,7 @@ impl Kernel {
         };
         let focused = n.state.contains(State::FOCUSED);
         if f.sel.0 != f.sel.1 {
-            let accent = self.theme.get(Token::Accent);
+            let accent = self.res.theme.borrow().get(Token::Accent);
             let fill = if focused { accent.multiply_alpha(0.3) } else { accent.multiply_alpha(0.15) };
             for r in f.rects(f.sel.0, f.sel.1) {
                 out.push(quad(r, fade(fill)));
@@ -439,7 +439,7 @@ impl Kernel {
         if !f.shown.is_empty() {
             let multiline = self.is_multiline(id);
             let style = input_style(v.text_style(), multiline);
-            let runs = self.text.borrow_mut().glyph_runs(id.into(), &style, multiline.then_some(f.width), None);
+            let runs = self.res.text.borrow_mut().glyph_runs(self.key(id), &style, multiline.then_some(f.width), None);
             for r in runs {
                 let glyphs = r.glyphs.into_iter().map(|g| crate::paint::Glyph { id: g.id, x: g.x + ox, y: g.y + oy }).collect();
                 out.push(Item::Glyphs(GlyphRun {

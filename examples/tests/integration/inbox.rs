@@ -7,7 +7,7 @@ use octara_examples::scenarios::external;
 
 #[test]
 fn a_rename_reaches_its_rows_only() {
-    let mut h = App::new(|| inbox(200));
+    let mut h = Window::headless(|| inbox(200));
     // Person 4 sent messages 3, 23, 43, … (10 of 200).
     h.kernel_mut().reset_counters();
     external(&mut h, "rename", "4:Ada").unwrap();
@@ -23,7 +23,7 @@ fn a_rename_reaches_its_rows_only() {
     assert_eq!(h.kernel().text_of("from-3").as_deref(), Some("unknown"));
     assert!(h.kernel().find("message-3").is_some(), "the row stays");
     let before = h.kernel().tree_dump();
-    h.hot_reload();
+    h.app().hot_reload();
     assert_eq!(h.kernel().tree_dump(), before, "incremental and from-scratch trees differ");
-    assert!(h.diagnostics().is_empty(), "{:?}", h.diagnostics());
+    assert!(h.app().diagnostics().is_empty(), "{:?}", h.app().diagnostics());
 }

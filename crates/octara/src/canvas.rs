@@ -23,7 +23,7 @@
 //!     .label("Level")
 //!     .into()
 //! }
-//! # let app = App::new(meter);
+//! # let app = Window::headless(meter);
 //! # assert_eq!(app.kernel().canvas(app.kernel().find_by_name("Level")[0]).unwrap().len(), 2);
 //! ```
 //!

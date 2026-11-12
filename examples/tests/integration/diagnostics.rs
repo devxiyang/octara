@@ -11,15 +11,15 @@ use std::rc::Rc;
 struct Variant {
     id: &'static str,
     intent: &'static str,
-    build: fn() -> App,
-    check: fn(&mut App) -> Check,
+    build: fn() -> Window,
+    check: fn(&mut Window) -> Check,
 }
 
 thread_local! {
     static PATCHED: Cell<bool> = const { Cell::new(false) };
 }
 
-fn expect_count(h: &mut App, presses: usize, want: &str) -> Check {
+fn expect_count(h: &mut Window, presses: usize, want: &str) -> Check {
     for _ in 0..presses {
         press(h, "inc")?;
     }
@@ -58,10 +58,10 @@ fn panels(keyed: bool) -> View {
     col().children(kids).into()
 }
 
-fn reload_keeps_panel(h: &mut App) -> Check {
+fn reload_keeps_panel(h: &mut Window) -> Check {
     press(h, "account-toggle")?;
     PATCHED.with(|p| p.set(true));
-    h.hot_reload();
+    h.app().hot_reload();
     let (a, n) = (h.kernel().exists("account-body"), h.kernel().exists("new-body"));
     if a && !n { Ok(()) } else { Err(format!("after the patch: account open = {a}, new open = {n}")) }
 }
@@ -72,7 +72,7 @@ fn variants() -> Vec<Variant> {
             id: "I1",
             intent: "display state without subscribing",
             build: || {
-                App::new(|| {
+                Window::headless(|| {
                     let count = state("count", || 0i64);
                     col()
                         .child(text(format!("Count: {}", count.get())).id("count"))
@@ -85,14 +85,14 @@ fn variants() -> Vec<Variant> {
         Variant {
             id: "I2",
             intent: "write state while building",
-            build: || App::new(|| counter_with(|c| c.set(10))),
+            build: || Window::headless(|| counter_with(|c| c.set(10))),
             check: |h| expect_count(h, 1, "Count: 11"),
         },
         Variant {
             id: "I3",
             intent: "duplicate list keys",
             build: || {
-                App::new(|| {
+                Window::headless(|| {
                     let items = list("items", || vec![1u32, 2, 3], |_| 0u32);
                     col().child(each(move || items.all(), |k, _| text(format!("{k}")).into())).id("list").into()
                 })
@@ -106,7 +106,7 @@ fn variants() -> Vec<Variant> {
             id: "I4-watch",
             intent: "clamp written with `watch`",
             build: || {
-                App::new(|| {
+                Window::headless(|| {
                     counter_with(|c| {
                         watch(
                             move || c.get(),
@@ -125,7 +125,7 @@ fn variants() -> Vec<Variant> {
             id: "I4b",
             intent: "two watches feeding each other",
             build: || {
-                App::new(|| {
+                Window::headless(|| {
                     let a = state("a", || 0i64);
                     let b = state("b", || 0i64);
                     watch(move || a.get(), move |v, _| b.set(v + 1));
@@ -145,7 +145,7 @@ fn variants() -> Vec<Variant> {
             id: "I5",
             intent: "use the item of a removed row",
             build: || {
-                App::new(|| {
+                Window::headless(|| {
                     let items = list("items", || vec![1u32, 2], |x| *x);
                     let kept: Rc<RefCell<Vec<ReadSignal<u32>>>> = Rc::default();
                     let k2 = kept.clone();
@@ -174,7 +174,7 @@ fn variants() -> Vec<Variant> {
             id: "I6",
             intent: "handler captures a stale value",
             build: || {
-                App::new(|| {
+                Window::headless(|| {
                     let count = state("count", || 0i64);
                     let n = count.get_untracked();
                     col()
@@ -188,15 +188,20 @@ fn variants() -> Vec<Variant> {
         Variant {
             id: "I7",
             intent: "patch inserts a same-named component first",
-            build: || App::new(|| panels(false)),
+            build: || Window::headless(|| panels(false)),
             check: reload_keeps_panel,
         },
-        Variant { id: "I7-keyed", intent: "same patch, `component_keyed`", build: || App::new(|| panels(true)), check: reload_keeps_panel },
+        Variant {
+            id: "I7-keyed",
+            intent: "same patch, `component_keyed`",
+            build: || Window::headless(|| panels(true)),
+            check: reload_keeps_panel,
+        },
         Variant {
             id: "I8-watch",
             intent: "helper reading other state inside a `watch` callback",
             build: || {
-                App::new(|| {
+                Window::headless(|| {
                     let count = state("count", || 0i64);
                     let theme = state("theme", || "light");
                     let log = state("log", Vec::<String>::new);
@@ -228,7 +233,7 @@ fn variants() -> Vec<Variant> {
             id: "I9",
             intent: "list row reads its item once",
             build: || {
-                App::new(|| {
+                Window::headless(|| {
                     let items = list("items", || vec![(1u32, false)], |t| t.0);
                     col()
                         .child(col().child(each(move || items.all(), |_, t| el().role(Role::CheckBox).id("box").checked(t.get().1).into())))
@@ -248,7 +253,7 @@ fn variants() -> Vec<Variant> {
             id: "I10",
             intent: "component state without a key",
             build: || {
-                App::new(|| {
+                Window::headless(|| {
                     let count = Signal::new(0i64);
                     col()
                         .child(text(move || format!("Count: {}", count.get())).id("count"))
@@ -258,7 +263,7 @@ fn variants() -> Vec<Variant> {
             },
             check: |h| {
                 expect_count(h, 2, "Count: 2")?;
-                h.hot_reload();
+                h.app().hot_reload();
                 match h.kernel().text_of("count") {
                     Some(t) if t == "Count: 2" => Ok(()),
                     other => Err(format!("after reload count shows {other:?}")),
@@ -269,7 +274,7 @@ fn variants() -> Vec<Variant> {
             id: "M1",
             intent: "memo writes state",
             build: || {
-                App::new(|| {
+                Window::headless(|| {
                     let count = state("count", || 0i64);
                     let doubled = memo(move || {
                         count.set(99);
@@ -326,7 +331,7 @@ fn every_mistake_surfaces_as_expected() {
             let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
                 let mut app = build();
                 let res = check(&mut app);
-                *o2.borrow_mut() = app.diagnostics().iter().map(|d| d.code.id).collect();
+                *o2.borrow_mut() = app.app().diagnostics().iter().map(|d| d.code.id).collect();
                 res.is_ok()
             }));
             let codes = out.take();

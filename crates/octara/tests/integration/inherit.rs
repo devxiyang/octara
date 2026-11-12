@@ -28,7 +28,7 @@ fn view() -> View {
 
 #[test]
 fn text_inherits_from_its_container_and_overrides_win() {
-    let mut app = App::new(view);
+    let mut app = Window::headless(view);
     let k = app.kernel();
     let plain = k.visual_of("plain").unwrap();
     assert_eq!((plain.font_size, plain.font_weight, plain.text), (14.0, 600, tok(Token::TextMuted)));
@@ -44,23 +44,23 @@ fn text_inherits_from_its_container_and_overrides_win() {
     assert_eq!(app.kernel().visual_of("late").unwrap().font_size, 14.0);
 
     // A bound style on the container reaches its text; only that binding reruns.
-    app.reset_work();
+    app.app().reset_work();
     app.dispatch(Event::Press("toggle".into())).unwrap();
     let k = app.kernel();
     assert_eq!(k.visual_of("plain").unwrap().text, tok(Token::Accent));
     assert_eq!(k.visual_of("late").unwrap().text, tok(Token::Accent));
     assert_eq!(k.visual_of("own").unwrap().text, tok(Token::Danger), "an explicit color stays");
     drop(k);
-    assert_eq!(app.work().closures_run, 1);
+    assert_eq!(app.app().work().closures_run, 1);
 
     // Inherited tokens follow the theme.
-    app.set_theme(Theme::dark());
+    app.app().set_theme(Theme::dark());
     assert_eq!(app.kernel().visual_of("plain").unwrap().text, Theme::dark().get(Token::Accent));
 }
 
 #[test]
 fn a_string_child_takes_the_container_style() {
-    let app = App::new(|| row().id("r").text_xs().child("tiny").into());
+    let app = Window::headless(|| row().id("r").text_xs().child("tiny").into());
     let k = app.kernel();
     let r = k.find("r").unwrap();
     let t = k.children(r)[0];
