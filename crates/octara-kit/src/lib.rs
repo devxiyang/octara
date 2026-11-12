@@ -9,6 +9,8 @@
 use octara::prelude::*;
 use std::rc::Rc;
 
+pub mod markdown;
+
 // ---- models ----
 
 /// A value a component reads (tracked) and writes.

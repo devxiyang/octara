@@ -477,6 +477,11 @@ pub fn set_theme(theme: Theme) {
     crate::app::app_state().set_theme(theme);
 }
 
+/// Puts `text` on the clipboard (GPUI's `write_to_clipboard`). Callable from handlers.
+pub fn write_to_clipboard(text: &str) {
+    crate::app::app_state().write_clipboard(text);
+}
+
 /// Runs `f`; what it changes lands at once this frame, even where `motion` is set (Rune's
 /// `tx.instant`): a value jumping to where the user put it.
 pub fn instant<R>(f: impl FnOnce() -> R) -> R {

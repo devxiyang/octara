@@ -425,6 +425,10 @@ impl App {
 }
 
 impl AppState {
+    pub(crate) fn write_clipboard(&self, text: &str) {
+        self.system.borrow_mut().write_text(text);
+    }
+
     /// Makes window `id` with its platform window; `root` is mounted by the caller.
     fn insert_window(&self, options: crate::platform::WindowOptions, root: Rc<dyn Fn() -> View>) -> Result<WindowId, String> {
         let id = self.windows.borrow_mut().try_insert_with_key(|id| {

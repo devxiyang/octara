@@ -72,6 +72,12 @@ impl LiveText {
         f(&self.0.value.borrow())
     }
 
+    /// Which edit the text is at; tracks it (to follow a text without copying it).
+    #[track_caller]
+    pub fn version(&self) -> u64 {
+        self.0.version.get()
+    }
+
     pub fn get_untracked(&self) -> String {
         self.0.value.borrow().clone()
     }

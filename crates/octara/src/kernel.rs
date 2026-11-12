@@ -364,6 +364,8 @@ struct Node {
     /// A region's selection as assistive technology gets it: anchor and focus, each a mounted
     /// text and a byte offset in it.
     doc_selection: Option<[(NodeId, usize); 2]>,
+    /// Copies the selected part of it as Markdown (`copy_markdown`).
+    copy_markdown: Option<select::CopyMarkdown>,
     /// Its level (a heading's, a list item's nesting), for assistive technology.
     level: Option<u8>,
     /// How assistive technology announces its changes (a live region).
@@ -1086,6 +1088,7 @@ impl Kernel {
             row_key: None,
             selected: None,
             doc_selection: None,
+            copy_markdown: None,
             level: None,
             live: None,
             anchor: None,

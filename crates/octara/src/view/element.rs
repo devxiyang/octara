@@ -247,6 +247,7 @@ pub struct El {
     region: bool,
     level: Option<u8>,
     live: Option<accesskit::Live>,
+    copy_markdown: Option<crate::kernel::select::CopyMarkdown>,
     select_none: bool,
     overlays: Vec<Overlay>,
     anchor: Option<(NodeId, Placement)>,
@@ -312,6 +313,7 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         region: false,
         level: None,
         live: None,
+        copy_markdown: None,
         select_none: false,
         overlays: Vec::new(),
         anchor: None,
@@ -569,6 +571,13 @@ impl El {
     }
     pub fn value(mut self, v: impl IntoProp<String>) -> Self {
         self.value = Some(v.into_prop());
+        self
+    }
+    /// Copies the selected texts in it as Markdown (`edit.copy_markdown`, `mod+alt+c`): `f` gets
+    /// them in order (the keys of the list rows below this element, the selected part, whether
+    /// it is the whole text) and gives the Markdown, or `None` to copy their text.
+    pub fn copy_markdown(mut self, f: impl Fn(&[crate::kernel::select::Copied]) -> Option<String> + 'static) -> Self {
+        self.copy_markdown = Some(Rc::new(f));
         self
     }
     /// Its level for assistive technology: a heading's (1 to 6), a list item's nesting.
@@ -984,6 +993,9 @@ pub(crate) fn build_el(e: El) -> NodeId {
         }
         if let Some(l) = e.level {
             k.set_level(node, l);
+        }
+        if let Some(f) = e.copy_markdown {
+            k.set_copy_markdown(node, Some(f));
         }
         if let Some(l) = e.live {
             k.set_live(node, l);

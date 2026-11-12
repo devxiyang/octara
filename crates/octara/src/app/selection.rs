@@ -7,8 +7,8 @@
 //! range each mounted text covers; the kernel draws it.
 
 use super::Window;
-use crate::kernel::select::Seg;
-use crate::kernel::{Kernel, NodeId};
+use crate::kernel::select::{Copied, CopyMarkdown, Seg};
+use crate::kernel::{Kernel, NodeId, Role};
 use std::cmp::Ordering;
 use std::rc::Rc;
 
@@ -31,8 +31,6 @@ pub(crate) struct DocSelection {
 pub(crate) type IndexOf = Rc<dyn Fn(&str) -> Option<usize>>;
 /// Builds a row off screen: its root node, and what disposes it.
 pub(crate) type BuildRow = Rc<dyn Fn(&str) -> Option<(NodeId, Box<dyn FnOnce()>)>>;
-/// A row built off screen: its path, and its texts' paths and strings.
-type Built = (Vec<Seg>, Vec<(Vec<Seg>, String)>);
 
 /// How a list orders its rows (registered by `each` and `virtual_each` on their container), and
 /// how it builds a row it has not mounted (a virtual list's).
@@ -192,41 +190,57 @@ impl Window {
         }
     }
 
-    /// The selected text of the document selection, as copying takes it: texts joined by a
-    /// newline, rows of a list by a blank line; rows not mounted are built to read theirs.
+    /// The selected text of the document selection, as copying takes it: texts joined by their
+    /// roles (cells by a tab, rows, list items and lines of code by a newline, blocks by a blank
+    /// line), else by a newline, and rows of a list by a blank line; rows not mounted are built
+    /// to read theirs.
     pub fn selected_text(&self) -> Option<String> {
         // Rows built to read them run as this window's code.
-        self.enter(|| self.selected_text_here())
+        self.enter(|| {
+            let (region, start, end) = self.ordered()?;
+            let out = join(&self.selected_pieces(region, &start, &end));
+            (!out.is_empty()).then_some(out)
+        })
     }
 
-    fn selected_text_here(&self) -> Option<String> {
-        let (region, start, end) = self.ordered()?;
-        let pieces = self.selected_pieces(region, &start, &end);
-        let mut out = String::new();
-        let mut last_rows: Option<Vec<Rc<str>>> = None;
-        for (rows, piece) in pieces {
-            if let Some(prev) = &last_rows {
-                out.push_str(if *prev == rows { "\n" } else { "\n\n" });
+    /// The selection as Markdown: what the elements that copy as Markdown (the kit's `markdown`)
+    /// give for their selected texts, the text of the others.
+    pub fn selected_markdown(&self) -> Option<String> {
+        self.enter(|| {
+            let (region, start, end) = self.ordered()?;
+            let pieces = self.selected_pieces(region, &start, &end);
+            let mut out: Vec<String> = Vec::new();
+            let mut i = 0;
+            while i < pieces.len() {
+                // Pieces under one copier together.
+                let same = |a: &Piece, b: &Piece| match (&a.copier, &b.copier) {
+                    (Some((d, f)), Some((e, g))) => d == e && Rc::ptr_eq(f, g) && a.path[..*d] == b.path[..*e],
+                    _ => false,
+                };
+                let mut j = i + 1;
+                while j < pieces.len() && same(&pieces[i], &pieces[j]) {
+                    j += 1;
+                }
+                let group = &pieces[i..j];
+                let md = group[0].copier.as_ref().and_then(|(d, f)| {
+                    let copied: Vec<Copied> =
+                        group.iter().map(|p| Copied { rows: rows_of(&p.path[*d..]), text: p.text.clone(), whole: p.whole }).collect();
+                    f(&copied)
+                });
+                out.push(md.unwrap_or_else(|| join(group)));
+                i = j;
             }
-            out.push_str(&piece);
-            last_rows = Some(rows);
-        }
-        (!out.is_empty()).then_some(out)
+            let out = out.join("\n\n");
+            (!out.is_empty()).then_some(out)
+        })
     }
 
-    /// Each selected text's piece in document order, with the row keys on its path.
-    fn selected_pieces(&self, region: NodeId, start: &TextPoint, end: &TextPoint) -> Vec<(Vec<Rc<str>>, String)> {
+    /// Each selected text's piece in document order: its path, the roles along it, what part of
+    /// its text is selected, and the element that copies it as Markdown.
+    fn selected_pieces(&self, region: NodeId, start: &TextPoint, end: &TextPoint) -> Vec<Piece> {
         let mut out = Vec::new();
         let k = self.w.kernel.borrow();
         let lists = self.w.lists.borrow();
-        let rows_of = |path: &[Seg]| -> Vec<Rc<str>> {
-            path.iter()
-                .filter_map(|s| match s {
-                    Seg::Row { key, .. } => Some(key.clone()),
-                    Seg::Child(_) => None,
-                })
-                .collect()
-        };
         let mounted: Vec<(NodeId, Vec<Seg>)> =
             k.selectable_texts(region).into_iter().filter_map(|t| k.path_to(region, t).map(|p| (t, p))).collect();
         // Rows of virtual lists between the ends that are not mounted are built to read them.
@@ -258,48 +272,55 @@ impl Window {
         }
         drop(lists);
         drop(k);
-        // Everything in document order: mounted texts and the rows to build, by path.
-        let mut built: Vec<Built> = Vec::new();
+        // Everything in document order: mounted texts and the texts of rows built to read them.
+        // Each text whole for now; its selected part is cut below.
+        let mut all: Vec<Piece> = Vec::new();
+        {
+            let k = self.w.kernel.borrow();
+            for (t, p) in mounted {
+                let roles = k.roles_down(region, t);
+                let copier = k.copier_above(region, t);
+                all.push(Piece { path: p, roles, text: k.text_str(t).to_owned(), whole: true, copier });
+            }
+        }
         for (row_path, key) in missing {
             let container_path = &row_path[..row_path.len() - 1];
-            let order = {
+            let (order, container) = {
                 let k = self.w.kernel.borrow();
                 let lists = self.w.lists.borrow();
-                k.resolve_path(region, container_path).and_then(|c| lists.get(&c).cloned())
+                let c = k.resolve_path(region, container_path);
+                (c.and_then(|c| lists.get(&c).cloned()), c)
             };
-            let Some(build) = order.and_then(|o| o.build) else { continue };
+            let (Some(build), Some(container)) = (order.and_then(|o| o.build), container) else { continue };
             let Some((root, dispose)) = build(&key) else { continue };
-            let texts = {
+            {
                 let k = self.w.kernel.borrow();
-                k.selectable_texts(root)
-                    .into_iter()
-                    .filter_map(|t| {
-                        let mut p = row_path.clone();
-                        p.extend(k.path_to(root, t)?);
-                        Some((p, k.text_str(t).to_owned()))
-                    })
-                    .collect()
-            };
+                // Above the row: the mounted container's roles and copier.
+                let mut above = k.roles_down(region, container);
+                above.push(k.role(root));
+                let outer = k.copier_above(region, container);
+                for t in k.selectable_texts(root) {
+                    let Some(below) = k.path_to(root, t) else { continue };
+                    let mut p = row_path.clone();
+                    p.extend(below.iter().cloned());
+                    let mut roles = above.clone();
+                    roles.extend(k.roles_down(root, t));
+                    let copier = k.copier_above(root, t).map(|(d, f)| (row_path.len() + d, f)).or_else(|| outer.clone());
+                    all.push(Piece { path: p, roles, text: k.text_str(t).to_owned(), whole: true, copier });
+                }
+            }
             dispose();
-            built.push((row_path, texts));
         }
         let k = self.w.kernel.borrow();
         let lists = self.w.lists.borrow();
-        let mut all: Vec<(Vec<Seg>, Option<NodeId>, Option<String>)> = mounted.into_iter().map(|(t, p)| (p, Some(t), None)).collect();
-        for (_, texts) in built {
-            all.extend(texts.into_iter().map(|(p, s)| (p, None, Some(s))));
-        }
-        all.sort_by(|a, b| cmp_paths(&k, &lists, region, &a.0, &b.0));
-        for (path, node, text) in all {
-            let s = match (node, &text) {
-                (Some(t), _) => k.text_str(t),
-                (None, Some(s)) => s.as_str(),
-                _ => continue,
-            };
-            if let Some(r) = covered(&k, &lists, region, &path, s.len(), start, end)
+        all.sort_by(|a, b| cmp_paths(&k, &lists, region, &a.path, &b.path));
+        for mut p in all {
+            if let Some(r) = covered(&k, &lists, region, &p.path, p.text.len(), start, end)
                 && r.start < r.end
             {
-                out.push((rows_of(&path), s[r].to_owned()));
+                p.whole = r.start == 0 && r.end == p.text.len();
+                p.text = p.text[r].to_owned();
+                out.push(p);
             }
         }
         out
@@ -330,6 +351,13 @@ impl Window {
     pub(super) fn document_command(&self, command: &str) -> bool {
         match command {
             "edit.copy" => self.copy_doc_selection(),
+            "edit.copy_markdown" => match self.selected_markdown() {
+                Some(md) => {
+                    self.app.system.borrow_mut().write_text(&md);
+                    true
+                }
+                None => false,
+            },
             "edit.select_all" => {
                 let region = self.w.selection.borrow().as_ref().map(|s| s.region).or_else(|| {
                     let at = self.w.interaction.borrow().pointer.hover_at;
@@ -390,6 +418,54 @@ impl Window {
 const MAX_ROWS: usize = 10_000;
 
 /// The child a path step leads to under `parent`, when mounted.
+/// A selected text, as copying reads it.
+struct Piece {
+    path: Vec<Seg>,
+    /// The roles along the path (one per step).
+    roles: Vec<Role>,
+    text: String,
+    whole: bool,
+    /// The element that copies it as Markdown, and its depth on the path.
+    copier: Option<(usize, CopyMarkdown)>,
+}
+
+fn rows_of(path: &[Seg]) -> Vec<Rc<str>> {
+    path.iter()
+        .filter_map(|s| match s {
+            Seg::Row { key, .. } => Some(key.clone()),
+            Seg::Child(_) => None,
+        })
+        .collect()
+}
+
+/// What goes between two selected texts: by the role of what holds the second below where their
+/// paths part (a cell a tab; a row or a list item a newline; a block a blank line), a newline
+/// between lines of code, else a newline, or a blank line between rows of a list.
+fn separator(a: &Piece, b: &Piece) -> &'static str {
+    let common = a.path.iter().zip(&b.path).take_while(|(x, y)| x == y).count();
+    if b.roles[..common.min(b.roles.len())].contains(&Role::Code) {
+        return "\n";
+    }
+    match b.roles.get(common) {
+        Some(Role::Cell) => "\t",
+        Some(Role::Row | Role::ListItem) => "\n",
+        Some(Role::Paragraph | Role::Heading | Role::List | Role::Table | Role::Blockquote | Role::Code) => "\n\n",
+        _ if rows_of(&a.path) == rows_of(&b.path) => "\n",
+        _ => "\n\n",
+    }
+}
+
+fn join(pieces: &[Piece]) -> String {
+    let mut out = String::new();
+    for (i, p) in pieces.iter().enumerate() {
+        if i > 0 {
+            out.push_str(separator(&pieces[i - 1], p));
+        }
+        out.push_str(&p.text);
+    }
+    out
+}
+
 fn step(k: &Kernel, parent: NodeId, seg: &Seg) -> Option<NodeId> {
     let children = k.children(parent);
     match seg {

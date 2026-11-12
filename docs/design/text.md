@@ -1,6 +1,6 @@
 # The text core
 
-Based on the [research](../research/text.md). Status: confirmed; steps 1 (rich text and links), 2 (selection), 2.5 (the engine) and 3 (accessibility) implemented. The [core](core.md)'s step 3: rich
+Based on the [research](../research/text.md). Status: implemented (steps 1 to 4). The [core](core.md)'s step 3: rich
 text, blocks laid out and painted one at a time, a selection across blocks and rows of a
 virtual list, and accessible text. Designed for the AI chat app: messages streaming in as
 Markdown, long transcripts, select and copy across messages.
@@ -91,23 +91,44 @@ renderers  glyph runs in the display list; swash rasterizes into an atlas both r
   ([incremental frames](core.md#incremental-frames)); this one makes a stream's per-frame shaping
   cost its tail.
 - A very long single block (a code fence of thousands of lines) is laid out per hard line inside
-  the block: the code block element holds one text per line (virtualized when long), so a stream
-  into it reshapes its last line.
+  the block: the code block element holds one text per line, so a stream into it reshapes its
+  last line.
 
 ## Markdown (octara-kit)
 
-- `markdown(source)` (a string, a closure or a `LiveText`): pulldown-cmark into blocks, each a
-  kit element with stable keys (`b{i}`, list items `i{j}`, their blocks `b{k}`), inline styles
-  as runs. Headings, paragraphs, emphasis, inline code, links, code blocks (monospace, a copy
-  button), lists (ordered, unordered, tasks), quotes, rules, tables (GFM); images when images
-  load.
-- Streaming: when the source grows (it starts with the last one), parsing restarts at the last
-  top-level block that starts on a finished line; earlier blocks keep their keys and are not
-  touched. A reference definition or footnote makes a full parse. The tail is repaired for the
-  parse only (closing emphasis, code spans and strike opened at a word start, completing a
-  partial link, holding back a lone table row and a trailing run of markers), never in the
-  source.
-- Each block maps rendered byte ranges to source ranges, for `edit.copy_markdown`.
+- `octara_kit::markdown::markdown(source)`: a string, a closure (followed), or a `LiveText` (a
+  stream: its end is repaired). pulldown-cmark (strikethrough, tables, task lists) into blocks:
+  headings, paragraphs (strong, emphasis, strike, inline code, links as runs), code blocks,
+  lists (ordered from their start, unordered, tasks), quotes, rules, tables; HTML shows as
+  written. Soft breaks are spaces.
+- Each block is an element under a stable key: top-level blocks `b{i}` (also the blocks inside a
+  list item or quote), list items `i{j}`, code lines `l{n}`, table rows `r{k}` and cells `c{j}`.
+  A block whose kind changes is made again; one that changed updates its text. Roles: `Heading`
+  with its level, `Paragraph`, `List` / `ListItem`, `Code`, `Blockquote`, `Table` / `Row` /
+  `Cell`; a task's box is a `CheckBox`. Markers are not selected and not read.
+- A code block: its language, a copy button (`write_to_clipboard`), and one text per line, so a
+  stream into it re-lays out its last line.
+- **Streaming**: when the source grows, parsing restarts at the last top-level block whose first
+  line is finished (the start of a line may still change what block it starts); earlier blocks
+  keep their keys and nodes, and the list is synced from the first block that changed. A source
+  that changed otherwise, or holds `]:` (a reference definition or footnote may change links
+  anywhere), parses whole.
+- **The end of a stream** is repaired for the parse only, never in the source, within the last
+  inline run (a paragraph until a blank line, a heading's line, a table cell): emphasis, strong
+  and strike opened at a word start, code spans and links are closed; a trailing run of markers,
+  a `[`, a trailing `!` and openers with nothing after them are left out; `snake_case`, `2 * 3`
+  and a single `~` stay text. A repair whose parse would still show a marker falls back to the
+  parse without it. Trailing `|` lines wait for their delimiter row; a header of two or more cells
+  starting a block shows as a table's head meanwhile. A finished paragraph keeps its markers as
+  written; an open code fence shows as code.
+- **Copy**: `mod+c` copies the text, joined by roles (see Selection). `edit.copy_markdown`
+  (`mod+alt+c`) asks the elements that copy as Markdown (`.copy_markdown(f)`; `markdown` is
+  one): a selection inside one block copies its text; one touching several blocks copies their
+  source whole, from the first block's line to the next block after the last; one covering every
+  block copies the source as written.
+- **Assistive technology**: the document is a `Document` of text runs (see Accessibility). A
+  stream adds a live region (polite) whose label is the block that just finished, so a screen
+  reader hears each block once, not each token.
 
 ## Selection
 
@@ -135,15 +156,16 @@ renderers  glyph runs in the display list; swash rasterizes into an atlas both r
   break included), in the accent at 30 % as fields draw theirs.
 - **Copy** reads the source: mounted texts their strings; rows between that are not mounted are
   built view-only (the row's view run in a detached scope, its texts read, the scope disposed),
-  capped at 10 000 rows. Texts join with a newline, list rows with a blank line (Markdown's
-  blocks, table cells and list markers join by their roles in step 4).
+  capped at 10 000 rows. Texts join by the role of what holds the second below where their paths
+  part: a cell by a tab; a row or a list item by a newline; a paragraph, heading, list, table,
+  quote or code block by a blank line; lines of a code block by a newline; otherwise by a newline,
+  and rows of a list by a blank line.
 - **Lists**: each row's root carries its key; a virtual list registers on the window how it
   orders keys (through its weighted mirror) and how it builds a row off screen. Selecting all
   uses two points outside every text (before the first, after the last), so it covers rows that
-  were never mounted. `mod+c` copies that plain text, always. `edit.copy_markdown` (`mod+shift+c`, and the
-  context menu) copies Markdown: a region can supply its own source for the blocks it covers
-  (`markdown` gives the touched blocks' source; partly selected blocks are cut at the selection
-  through their source maps).
+  were never mounted. `mod+c` copies that plain text, always. `edit.copy_markdown` (`mod+alt+c`)
+  copies Markdown: an element can give its own for the selected texts in it (`copy_markdown`;
+  `markdown` gives the touched blocks' source, whole).
 - **Agents and tests**: `Window::select(from: (id, offset), to: (id, offset))`,
   `Window::select_all(region)`, `Window::selected_text()`; the snapshot's region nodes carry
   `selection` (`[from, to]` as test ids and offsets); requests `select` and `copy`.

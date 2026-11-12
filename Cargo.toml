@@ -38,6 +38,7 @@ swash = "0.2.10"
 kurbo = "0.13.1"
 zeno = { version = "0.3.3", default-features = false, features = ["std", "eval"] }
 proptest = "1.12.0"
+pulldown-cmark = { version = "0.13.6", default-features = false }
 parley = { version = "0.12.0", default-features = false, features = ["std", "complex-scripts"] }
 png = "0.18.1"
 roxmltree = "0.21.2"

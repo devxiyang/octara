@@ -6,7 +6,7 @@ make the corresponding design document describe it.
 
 ## Priorities
 
-1. The [core](design/core.md): the text core; incremental paint and
+1. The [core](design/core.md): incremental paint and
    accessibility; the [platform boundary](design/platform.md) completed (several winit windows
    included); popups and menus; the AI chat components and reference app.
 2. The owned macOS backend (NSTextInputClient, menus, live resize in the frame's transaction,
@@ -81,6 +81,17 @@ Basis: [platform design](design/platform.md); done with the core's platform boun
       web content process first, and a map takes it to pan; the page around them should scroll
       as a native nested scroll does (the inner view at its edge, or not scrollable on that
       axis, hands the scroll on).
+
+## Text
+
+Basis: [text design](design/text.md).
+
+- [ ] Markdown: images (with image loading), syntax colors in code blocks, a long code block's
+      lines virtualized, inline code sized to its text (a span size relative to the text's), a
+      task box pressable (`on_task`).
+- [ ] An empty text has no height: a code block's empty line shows a space (copied as one).
+- [ ] Nested regions (a transcript of selectable messages): the nearest region holds the
+      selection, so it does not cross messages; the chat components decide.
 
 ## Async and motion
 

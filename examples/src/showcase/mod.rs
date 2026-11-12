@@ -12,6 +12,7 @@ mod hero;
 mod images;
 mod layers;
 mod map;
+mod markdown;
 mod search;
 mod text;
 mod web;
@@ -20,7 +21,7 @@ mod web;
 pub type Card = (&'static str, fn() -> El);
 
 /// The cards by name, in the tour's order.
-pub const CARDS: [Card; 11] = [
+pub const CARDS: [Card; 12] = [
     ("hero", hero::card),
     ("images", images::card),
     ("layers", layers::card),
@@ -28,6 +29,7 @@ pub const CARDS: [Card; 11] = [
     ("editing", editing::card),
     ("search", search::card),
     ("text", text::card),
+    ("markdown", markdown::card),
     ("cut", cut::card),
     ("fields", fields::card),
     ("web", web::card),
@@ -81,7 +83,7 @@ pub fn showcase() -> View {
             .child(wrap().child(images::card()).child(layers::card()))
             .child(wrap().child(drawing::card()))
             .child(wrap().child(editing::card()).child(col().gap_6().child(search::card()).child(cut::card())))
-            .child(wrap().child(text::card()))
+            .child(wrap().child(text::card()).child(markdown::card()))
             .child(wrap().child(fields::card()).child(web::card()).child(map::card())),
     )
 }

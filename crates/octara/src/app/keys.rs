@@ -299,6 +299,7 @@ impl Keymap {
         }
         // A document selection (a selectable region's), where no field has focus.
         b("mod+c", Some("edit.copy"), None);
+        b("mod+alt+c", Some("edit.copy_markdown"), None);
         b("mod+a", Some("edit.select_all"), None);
         k
     }
@@ -351,6 +352,7 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("edit.delete_to_line_start", "delete the selection, else back to the start of the visual line"),
     ("edit.newline", "break the line (multi-line fields)"),
     ("edit.copy", "copy the selection"),
+    ("edit.copy_markdown", "copy the selection as Markdown (a document's)"),
     ("edit.cut", "cut the selection"),
     ("edit.paste", "paste at the caret"),
     ("edit.undo", "undo the last edit"),

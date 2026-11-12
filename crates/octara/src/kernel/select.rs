@@ -161,6 +161,57 @@ impl Kernel {
     }
 }
 
+/// A selected text as a copy as Markdown gets it: the keys of the list rows between the element
+/// that copies and the text, the selected part of the text, and whether that is all of it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Copied {
+    pub rows: Vec<Rc<str>>,
+    pub text: String,
+    pub whole: bool,
+}
+
+/// What an element copies as Markdown for the selected texts in it (`None`: their text).
+pub type CopyMarkdown = Rc<dyn Fn(&[Copied]) -> Option<String>>;
+
+impl Kernel {
+    pub fn set_copy_markdown(&mut self, id: NodeId, f: Option<CopyMarkdown>) {
+        self.node_mut(id).copy_markdown = f;
+    }
+    pub fn copy_markdown(&self, id: NodeId) -> Option<CopyMarkdown> {
+        self.node(id).copy_markdown.clone()
+    }
+
+    /// The roles from below `top` down to `node`, one per step of the path between them.
+    pub fn roles_down(&self, top: NodeId, node: NodeId) -> Vec<super::Role> {
+        let mut out = Vec::new();
+        let mut n = node;
+        while n != top {
+            out.push(self.role(n));
+            let Some(p) = self.node(n).parent else { break };
+            n = p;
+        }
+        out.reverse();
+        out
+    }
+
+    /// The nearest element from `node` up to `top` (both included) that copies as Markdown,
+    /// and how many steps below `top` it is.
+    pub fn copier_above(&self, top: NodeId, node: NodeId) -> Option<(usize, CopyMarkdown)> {
+        let mut n = node;
+        let mut depth = self.path_to(top, node)?.len();
+        loop {
+            if let Some(f) = &self.node(n).copy_markdown {
+                return Some((depth, f.clone()));
+            }
+            if n == top {
+                return None;
+            }
+            n = self.node(n).parent?;
+            depth -= 1;
+        }
+    }
+}
+
 /// Where a node is, as a rebuild finds it again: the nearest element at or above it with a test
 /// id (or the root), and the child indices from there down.
 #[derive(Clone, Debug, PartialEq, Eq)]

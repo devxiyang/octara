@@ -143,7 +143,7 @@ Designed in [the text core](text.md); what the core decided:
 2.5. What people point at: component boundaries, picking by point and in a picking window.
    Implemented.
 3. The text core (its design first): runs, blocks, block layout, document selection, text runs and
-   live regions in accessibility.
+   live regions in accessibility, Markdown. Implemented.
 4. Incremental paint and accessibility.
 5. The platform boundary completed: rendering and accessibility in the backend, cursor, drops,
    image clipboard, URLs, file dialogs; the winit backend with several windows (it shows one);
