@@ -14,6 +14,14 @@ Checked by tests and screenshots; to be tried in a real window (`cargo run -p oc
 - [ ] Chat composer: Enter sends, Shift+Enter breaks the line, the field grows to 4 lines.
 - [ ] Password: no input method while it has focus, copy and undo do nothing, Show reveals it.
 
+## To research and design
+
+- [ ] Platform shells and native chrome: menus (`muda` / `NSMenu`), toolbars (`NSToolbar`),
+      title bar and traffic lights, sidebars (system material underlay with drawn content, as
+      Rune), dialogs; on iOS / Android, native navigation (navigation bars, edge-swipe back, tab
+      bars): drawn to match the platform, or one Octara surface per screen inside the platform's
+      navigation container; whether winit stays on each platform.
+
 ## Existing Primitives
 
 Primitives that are implemented and kept:

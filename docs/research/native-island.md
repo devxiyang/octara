@@ -28,6 +28,41 @@ React Native, Compose, SwiftUI and desktop toolkits (marked "known" below; not r
   primitive, not a view. Text input is the window view's own `NSTextInputClient` (macOS) and the
   equivalent on iOS, not a hosted native field.
 
+## Verified from source (2026-11)
+
+A second pass read the clones line by line.
+
+- **Rune**, implemented with tests: the **underlay** for system materials
+  (`crates/rune/src/system_material/macos.rs`). The CAMetalLayer is a sublayer of winit's
+  content view and non-opaque (post-multiplied alpha); a flipped host `NSView` is inserted below
+  every subview, returns nil from `hitTest:` (materials take no input) and holds the material
+  views, built at alpha 0; the Metal layer is kept above the host (`zPosition` 1). The hole is
+  made in paint order by **omission**: the element's own fill is skipped and its shadow gets a
+  rounded hole (`runtime/paint/build.rs`), so children and later content draw over the
+  material, and anything opaque painted before it hides it. One corner radius (continuous
+  curve), ancestor clips ignored, at most 4 materials.
+- **Rune, frame sync measured** (`research/26`, 120 Hz, frame-by-frame screen capture): view
+  frames set and the drawable presented inside one `CATransaction` with
+  `presentsWithTransaction`: 1.8 % of moving frames off by more than 4 px (every miss one frame
+  ahead); unsynced: 29 %. `presentsWithTransaction` is owned by one flag ORing its causes
+  (materials present, window move, live resize) and is on only while something moves: it costs
+  a wait for the GPU to schedule each frame.
+- **Rune, not implemented**: the overlay slot, `WKWebView`, `MKMapView`, `AVPlayerLayer` (research
+  prose only). Video is a texture: `NativeSurface` imports IOSurface-backed `CVPixelBuffer`s
+  through `CVMetalTextureCache` into wgpu-hal, drawn in its own pass with clips, radii and
+  opacity. Flutter-style interleaving is rejected (extra full-size Metal layers, clip masks,
+  touch buffering across threads).
+- **Exact** never faces a native view over a GPU surface on Apple: every node is an AppKit or
+  UIKit view and a native view is a subview of its node's view (AppKit hit testing, main-thread
+  layout, no extra sync). Its Metal-painted Apple carrier is a benchmark without native views.
+  On Android (one painted canvas) a native view is attached off screen and its drawing recorded
+  into the canvas at the element's place (`RenderNode`), so it interleaves, clips and
+  transforms. Worth taking: a `snapshot()` per view (PNG) that captures draw in place of the
+  live view; views created when near the viewport and hidden when far (a map is 110–135 MB on
+  Android); a focus target put into the Tab order; an input channel for agents
+  (`agentInput`); per-corner radii (the Linux frame command carries eight values); events from
+  any thread hopped to the main one, stale ones dropped.
+
 ## Elsewhere (known)
 
 - **Flutter**: Android virtual display (offscreen texture; touch, a11y and text input are
@@ -48,6 +83,13 @@ React Native, Compose, SwiftUI and desktop toolkits (marked "known" below; not r
 - **Texture sharing**: Apple `CVPixelBuffer` / `IOSurface` into Metal, then wgpu through
   `wgpu-hal`; Android `AHardwareBuffer` into Vulkan, or `SurfaceTexture`. Zero-copy video and
   camera.
+
+Not re-verified (from memory): wry, Avalonia `NativeControlHost`, Compose desktop `SwingPanel`
+and Compose iOS `UIKitView` default to native views above the content, rectangular clips, and
+often lag a frame on moves; Flutter iOS splits its output into overlay Metal layers around a
+real `UIView` (full interleaving, high cost); WebView2 in visual hosting mode and Chromium's
+surface layers composite web content as part of the compositor tree; a `WKWebView` snapshot
+takes tens of milliseconds (screenshots, not frames).
 
 ## Conclusions
 

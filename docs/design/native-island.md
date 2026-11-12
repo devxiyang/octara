@@ -16,12 +16,31 @@ Based on the [research](../research/native-island.md). Status: confirmed; step 1
 - Each window has an **underlay** (views behind Octara's surface, shown through a cutout the
   renderer clears to transparent: maps, materials) and an **overlay** (views above it: web views,
   pickers). Octara content is never drawn between two native views or over an overlay view.
-- The underlay's cutout is cleared where the view is in paint order, so content painted after
-  it draws over it (a map's controls). An element painted after an overlay view and overlapping
+- The underlay's cutout is **cleared to transparent** where the view is in paint order, so
+  content painted after it draws over it (a map's controls) and what was painted before it (the
+  page, the card the map sits in) does not hide it. (Rune leaves a hole by not painting the
+  element's fill, which works only when nothing opaque lies below.) An element painted after an overlay view and overlapping
   it would be hidden by the view: `check` reports it (`NATIVE_COVERED`), so the layout the
   author sees is the layout the user gets.
 - Clipping is a rect with corner radii (what platforms support). A view clipped by anything else
   (a path, a rotated ancestor) is hidden and reported.
+
+## Hosting on macOS (Rune's structure)
+
+- winit's content view and its CAMetalLayer stay as they are. Overlay views (and a clip
+  container around each) are subviews above the Metal layer. Underlay views go in a host view
+  inserted below every subview, the Metal layer kept above it; the Metal layer becomes
+  non-opaque (premultiplied alpha) when the first underlay view appears.
+- A view's clip is its container's frame with `masksToBounds` and a corner radius; the view sits
+  inside at its offset. Corner radii are per corner (four values).
+- Placements and the frame's present happen inside one `CATransaction` (actions disabled), with
+  `presentsWithTransaction` on only while a native view moves or the window is resized (one flag
+  owning its causes, as Rune's); wgpu-hal exposes the switch on the Metal surface.
+- Events from views (delegates, any thread) are queued and the event loop woken; the app gets
+  them on the main thread, stale ones dropped.
+- Input: AppKit hit-tests overlay views before the content view, so they get their own pointer
+  events. An underlay view is under the Metal view: where Octara's hit test finds the underlay
+  view topmost, the shell forwards the event to it (a map's drags and pinches).
 
 ## Placement and lifecycle
 
@@ -31,12 +50,19 @@ Based on the [research](../research/native-island.md). Status: confirmed; step 1
   shell applies changed placements on the main thread in the same transaction as the frame's
   present, so views move with the content they sit in.
 - Props are one value handed over whole when it changes; events come back typed; the view's
-  timers follow the app clock (Exact). Created when mounted, destroyed when unmounted.
+  timers follow the app clock (Exact). Created when mounted, destroyed when unmounted; a view
+  in a scroll container is created when it comes near the viewport and hidden (later released)
+  when it goes far (Exact: maps are heavy).
+- Every host can snapshot a view (an image): screenshots, `inspect` captures and the CPU
+  renderer draw the snapshot in its place instead of the placeholder (Exact).
 
 ## Input, focus, accessibility
 
 - Pointer input inside a view's visible rect goes to the view; elsewhere to Octara. A view is one
-  Tab stop; focusing it makes it first responder, and Escape (or Tab past it) returns focus.
+  Tab stop: the host names its focus target, which joins the Tab order; focusing it makes it
+  first responder, and Escape (or Tab past it) returns focus (Exact).
+- Agents type into and press inside a native view through the host (`agent_input`), refused
+  when the view is hidden or not focused (Exact).
 - The view is a node with a role and a label in the accessibility tree; its own subtree is joined
   where the platform adapter allows, else it is one labeled element. `check` asks a label
   (`UNLABELED_NATIVE_VIEW`).
@@ -55,8 +81,13 @@ Based on the [research](../research/native-island.md). Status: confirmed; step 1
 ## Steps
 
 1. Elements, placements, the headless fake and `check` rules (slot conflicts, clips, labels).
-2. The macOS shell: overlay and underlay hosting, placement sync in the frame's transaction, hit
-   routing; the web view (WKWebView) first.
-3. Focus handoff and accessibility joining; a map as the first underlay.
-4. `surface`: frames from AVFoundation into the renderer; video and camera.
-5. iOS, then Android; the platform text field as an overlay kind.
+   Done.
+2. macOS overlay: WKWebView (`url` or `html` props; `load` and `title` events), clip containers,
+   per-corner radii, placements in the frame's transaction with `presentsWithTransaction` while
+   moving, view snapshots for captures.
+3. macOS underlay: the host view below, a non-opaque Metal layer, the cutout cleared in paint
+   order, events forwarded to the underlay view; a map (`MKMapView`) as the first kind.
+4. Focus targets in the Tab order, Escape back, accessibility joining; views created near the
+   viewport and hidden when far; the agent input channel.
+5. `surface`: video and camera frames as zero-copy textures (Rune's `NativeSurface` path).
+6. iOS, then Android; the platform text field as an overlay kind.
