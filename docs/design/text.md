@@ -1,6 +1,6 @@
 # The text core
 
-Based on the [research](../research/text.md). Status: proposed. The [core](core.md)'s step 3: rich
+Based on the [research](../research/text.md). Status: confirmed; not implemented yet. The [core](core.md)'s step 3: rich
 text, blocks laid out and painted one at a time, a selection across blocks and rows of a
 virtual list, and accessible text. Designed for the AI chat app: messages streaming in as
 Markdown, long transcripts, select and copy across messages.
@@ -50,7 +50,7 @@ Markdown, long transcripts, select and copy across messages.
   parse only (closing emphasis, code spans and strike opened at a word start, completing a
   partial link, holding back a lone table row and a trailing run of markers), never in the
   source.
-- Each block maps rendered byte ranges to source ranges, for copying as Markdown.
+- Each block maps rendered byte ranges to source ranges, for `edit.copy_markdown`.
 
 ## Selection
 
@@ -79,8 +79,10 @@ Markdown, long transcripts, select and copy across messages.
   built view-only (the row's view run in a detached scope, its texts read, the scope disposed),
   capped at 10 000 rows and 4 MiB. Texts join with a newline, blocks (paragraph, heading, code
   block, list item, quote) with a blank line, table cells with a tab; list items get their
-  markers. A region can supply its own text for whole blocks (`markdown` copies whole blocks as
-  their Markdown source, partial ones as text).
+  markers. `mod+c` copies that plain text, always. `edit.copy_markdown` (`mod+shift+c`, and the
+  context menu) copies Markdown: a region can supply its own source for the blocks it covers
+  (`markdown` gives the touched blocks' source; partly selected blocks are cut at the selection
+  through their source maps).
 - **Agents and tests**: `Window::select(from: (id, offset), to: (id, offset))`,
   `Window::select_all(region)`, `Window::selected_text()`; the snapshot's region nodes carry
   `selection` (`[from, to]` as test ids and offsets); requests `select` and `copy`.
