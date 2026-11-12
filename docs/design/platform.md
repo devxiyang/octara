@@ -1,6 +1,8 @@
 # The platform layer
 
 Based on the [research](../research/windows-and-platform.md). Status: confirmed; step 1 implemented.
+[The core](core.md) moves the boundary to frames out (`PlatformWindow::present`) and input in
+(`InputEvent`).
 
 The app and the kernel never see a windowing library's types. A platform backend implements a
 narrow set of traits (GPUI's names, about 45 methods to start); headless runs (tests, agents,

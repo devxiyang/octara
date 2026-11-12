@@ -1,6 +1,7 @@
 # Windows and popups
 
-Based on the [research](../research/windows-and-platform.md). Status: confirmed; in progress.
+Based on the [research](../research/windows-and-platform.md). Status: confirmed; in progress. The
+ownership and context it runs on are [the core's](core.md), which supersedes step 1 below.
 
 ## Model
 
