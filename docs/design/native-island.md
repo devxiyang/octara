@@ -95,7 +95,12 @@ platforms are not.
 
 ## Input, focus, accessibility
 
-- Pointer input inside a view's visible rect goes to the view; elsewhere to Octara. A view is one
+- Pointer input inside a view's visible rect goes to the view; elsewhere to Octara. A scroll
+  (wheel or trackpad) goes to a view only while focus is in it: a person clicks into a web view
+  or map to scroll it, and otherwise the page around it scrolls, as a page's embedded map does
+  (macOS: the views' `hitTest:` passes a scroll gesture to winit's view unless the window's
+  first responder is inside the view; AppKit keeps a gesture with the view its start went to).
+  Presses, drags and pinches always go to the view. A view is one
   Tab stop: the host names its focus target, which joins the Tab order; focusing it makes it
   first responder, and Escape (or Tab past it) returns focus (Exact).
 - Agents type into and press inside a native view through the host (`agent_input`), refused

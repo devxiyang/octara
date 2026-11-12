@@ -76,10 +76,6 @@ Basis: [platform design](design/platform.md); done with the core's platform boun
 - [ ] Windows' frame clock: a thread waiting on `DwmFlush` sending frame ticks (GPUI's
       `vsync.rs`), when Windows has native views or a measurement shows the swap chain's
       present does not pace.
-- [ ] Scrolling over native views: a wheel or trackpad scroll over a web view goes through the
-      web content process first, and a map takes it to pan; the page around them should scroll
-      as a native nested scroll does (the inner view at its edge, or not scrollable on that
-      axis, hands the scroll on).
 
 ## Text
 

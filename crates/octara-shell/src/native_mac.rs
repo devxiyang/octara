@@ -167,15 +167,35 @@ define_class!(
         }
 
         /// The container is as large as the view's clip: only its view takes the pointer, the
-        /// rest of it goes to what is below (Octara's content).
+        /// rest of it goes to what is below (Octara's content). A scroll goes to the view only
+        /// while focus is in it (see [`takes_scroll`]).
         #[unsafe(method_id(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
             let hit: Option<Retained<NSView>> = unsafe { msg_send![super(self), hitTest: point] };
             let me: *const NSView = (self as *const Self).cast();
-            hit.filter(|v| !std::ptr::eq(&**v, me))
+            hit.filter(|v| !std::ptr::eq(&**v, me)).filter(|_| takes_scroll(self))
         }
     }
 );
+
+/// Whether the native view in `clip` takes the event being dispatched: a scroll (wheel or
+/// trackpad) only while the window's focus is in it, so a page scrolls over an embedded web view
+/// or map a person has not clicked into (as a page's embedded map does); every other event (a
+/// press, a pinch) always. AppKit keeps a gesture's events with the view its start went to.
+fn takes_scroll(clip: &NSView) -> bool {
+    let Some(mtm) = MainThreadMarker::new() else { return true };
+    let scrolling = objc2_app_kit::NSApplication::sharedApplication(mtm)
+        .currentEvent()
+        .is_some_and(|e| e.r#type() == objc2_app_kit::NSEventType::ScrollWheel);
+    if !scrolling {
+        return true;
+    }
+    let focus = clip.window().and_then(|w| w.firstResponder());
+    focus.is_some_and(|r| {
+        let any: &AnyObject = &r;
+        any.downcast_ref::<NSView>().is_some_and(|v| v.isDescendantOf(clip))
+    })
+}
 
 impl Clip {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
