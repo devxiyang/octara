@@ -1,5 +1,5 @@
 //! Benchmarks for the example apps. Run with `cargo run --release -p octara-examples --bin bench`
-//! (`-- --frames` for the frame costs only).
+//! (`-- --frames` or `-- --joins` for one section).
 //! Counts (closures, property changes, allocations) are exact; times are the minimum of 3 runs.
 
 use octara::prelude::*;
@@ -300,11 +300,47 @@ fn frames() {
     println!();
 }
 
+/// A lookup join (`inbox`): each person is on 1/20 of the messages. A rename updates their rows;
+/// a change the rows do not show updates none.
+fn joins() {
+    println!("## join: inbox, layout off, min of 3 (µs per op; rows rewritten)\n");
+    println!("| messages | rename one person | toggle a field rows do not show |");
+    println!("| ---: | ---: | ---: |");
+    for n in [1_000usize, 10_000] {
+        let time = |event: &str, payload: &str| {
+            let mut best = (f64::MAX, 0u64);
+            for _ in 0..3 {
+                let mut h = App::new(move || apps::inbox(n));
+                h.kernel_mut().set_layout_enabled(false);
+                h.kernel_mut().reset_counters();
+                let t0 = Instant::now();
+                for i in 0..20 {
+                    let p = if event == "rename" { format!("{payload}:n{i}") } else { payload.to_string() };
+                    octara_examples::scenarios::external(&mut h, event, &p).unwrap();
+                }
+                let us = t0.elapsed().as_secs_f64() * 1e6 / 20.0;
+                if us < best.0 {
+                    best = (us, h.kernel().counters().prop_changes / 20);
+                }
+            }
+            best
+        };
+        let (r, ru) = time("rename", "4");
+        let (o, ou) = time("online", "4");
+        println!("| {n} | {r:.1} ({ru}) | {o:.1} ({ou}) |");
+    }
+    println!();
+}
+
 fn main() {
     if std::env::args().any(|a| a == "--frames") {
         return frames();
     }
+    if std::env::args().any(|a| a == "--joins") {
+        return joins();
+    }
     frames();
+    joins();
     steps::<Apps>();
     scaling();
     virtualization();

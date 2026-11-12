@@ -160,6 +160,11 @@ pub(crate) trait Stage<K, T> {
     fn emitter(&self) -> &Emitter<K, T>;
 }
 
+/// A two-argument view closure, run as one (see [`view_fn`]).
+fn view_fn2<A: ?Sized + 'static, B: ?Sized + 'static, R: 'static>(f: impl Fn(&A, Option<&B>) -> R + 'static) -> impl Fn(&A, Option<&B>) -> R + 'static {
+    move |a, b| rt(|rt| rt.with_frame(Ctx::View, None, None, || f(a, b)))
+}
+
 /// A view's closure, run as one: untracked (even when the view is built inside a binding), a
 /// signal read reported (`VIEW_READS_STATE`), a write rejected.
 fn view_fn<A: ?Sized + 'static, R: 'static>(f: impl Fn(&A) -> R + 'static) -> impl Fn(&A) -> R + 'static {
@@ -189,6 +194,36 @@ pub struct Source<K: 'static, T: 'static>(Rc<dyn Stage<K, T>>);
 impl<K, T> Clone for Source<K, T> {
     fn clone(&self) -> Self {
         Source(self.0.clone())
+    }
+}
+
+impl<K, T> From<&Source<K, T>> for Source<K, T> {
+    fn from(s: &Source<K, T>) -> Self {
+        s.clone()
+    }
+}
+
+impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<List<K, T>> for Source<K, T> {
+    fn from(l: List<K, T>) -> Self {
+        l.source()
+    }
+}
+
+impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<&List<K, T>> for Source<K, T> {
+    fn from(l: &List<K, T>) -> Self {
+        l.source()
+    }
+}
+
+impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<Derived<K, T>> for Source<K, T> {
+    fn from(d: Derived<K, T>) -> Self {
+        d.source()
+    }
+}
+
+impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<&Derived<K, T>> for Source<K, T> {
+    fn from(d: &Derived<K, T>) -> Self {
+        d.source()
     }
 }
 
@@ -283,6 +318,52 @@ where
         up.emitter().observers.borrow_mut().push(Rc::downgrade(&obs));
         let version = m.emitter.version;
         Derived { holder: Signal::scoped(m as Rc<dyn Stage<K, U>>), version }
+    }
+
+    /// Each item with the one item of `right` it points at (a lookup join): `key` gives the
+    /// right key, `f` builds the output from the item and the right item (`None` while there is
+    /// none). Keys and order are this stage's; a row stays when its right item is missing, and
+    /// updates (not inserts or removes) when it appears or goes. A right change updates the rows
+    /// that point at it, and only those whose output differs (so `f` should take only what the
+    /// row shows). Both closures are pure functions of their arguments.
+    #[track_caller]
+    pub fn join<RK, R, U>(
+        &self,
+        right: impl Into<Source<RK, R>>,
+        key: impl Fn(&T) -> RK + 'static,
+        f: impl Fn(&T, Option<&R>) -> U + 'static,
+    ) -> Derived<K, U>
+    where
+        RK: Eq + Hash + Clone + 'static,
+        R: Clone + 'static,
+        U: Clone + PartialEq + 'static,
+    {
+        let at = Location::caller();
+        let (key, f) = (view_fn(key), view_fn2(f));
+        let (left, right) = (self.0.clone(), right.into().0);
+        let j = Rc::new(JoinInner {
+            left: left.clone(),
+            right: right.clone(),
+            key: Box::new(key),
+            f: Box::new(f),
+            out: RefCell::new(HashMap::new()),
+            by_right: RefCell::new(HashMap::new()),
+            adapter: RefCell::new(None),
+            at,
+            emitter: Emitter::new(),
+        });
+        for k in left.snapshot() {
+            if let Some(it) = left.item(&k) {
+                it.with_untracked(|t| j.attach_row(&k, t));
+            }
+        }
+        let obs: Rc<dyn Observer<K, T>> = j.clone();
+        left.emitter().observers.borrow_mut().push(Rc::downgrade(&obs));
+        let adapter: Rc<dyn Observer<RK, R>> = Rc::new(JoinRight { join: Rc::downgrade(&j) });
+        right.emitter().observers.borrow_mut().push(Rc::downgrade(&adapter));
+        *j.adapter.borrow_mut() = Some(adapter);
+        let version = j.emitter.version;
+        Derived { holder: Signal::scoped(j as Rc<dyn Stage<K, U>>), version }
     }
 
     /// The items ordered by `key` (ties keep the order in which they entered the view);
@@ -464,6 +545,21 @@ where
     pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> Derived<K, U> {
         self.source().map(f)
     }
+    /// Each item with the item of `right` it points at ([`Source::join`]).
+    #[track_caller]
+    pub fn join<RK, R, U>(
+        &self,
+        right: impl Into<Source<RK, R>>,
+        key: impl Fn(&T) -> RK + 'static,
+        f: impl Fn(&T, Option<&R>) -> U + 'static,
+    ) -> Derived<K, U>
+    where
+        RK: Eq + Hash + Clone + 'static,
+        R: Clone + 'static,
+        U: Clone + PartialEq + 'static,
+    {
+        self.source().join(right, key, f)
+    }
     pub fn sort_by<S: Ord + Clone + 'static>(&self, key: impl Fn(&T) -> S + 'static) -> Derived<K, T> {
         self.source().sort_by(key)
     }
@@ -590,6 +686,21 @@ where
     /// The items transformed by `f`, same keys and order ([`Source::map`]).
     pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> Derived<K, U> {
         self.source().map(f)
+    }
+    /// Each item with the item of `right` it points at ([`Source::join`]).
+    #[track_caller]
+    pub fn join<RK, R, U>(
+        &self,
+        right: impl Into<Source<RK, R>>,
+        key: impl Fn(&T) -> RK + 'static,
+        f: impl Fn(&T, Option<&R>) -> U + 'static,
+    ) -> Derived<K, U>
+    where
+        RK: Eq + Hash + Clone + 'static,
+        R: Clone + 'static,
+        U: Clone + PartialEq + 'static,
+    {
+        self.source().join(right, key, f)
     }
     pub fn sort_by<S: Ord + Clone + 'static>(&self, key: impl Fn(&T) -> S + 'static) -> Derived<K, T> {
         self.source().sort_by(key)
@@ -811,6 +922,207 @@ impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static, U: Clone + PartialEq + 
     }
     fn item(&self, k: &K) -> Option<ReadSignal<U>> {
         self.out.borrow().get(k).map(|s| s.read_only())
+    }
+    fn emitter(&self) -> &Emitter<K, U> {
+        &self.emitter
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// join
+// ---------------------------------------------------------------------------------------------
+
+/// A right-side change that updates more rows than this is reported (`JOIN_FANOUT`).
+pub const JOIN_FANOUT_ROWS: usize = 10_000;
+
+/// A join's output closure.
+type JoinFn<T, R, U> = Box<dyn Fn(&T, Option<&R>) -> U>;
+
+/// `join`: per left key, its right key and output signal; per right key, the left keys pointing
+/// at it (present or not), in the order they started to.
+struct JoinInner<K, T, RK, R, U> {
+    left: Rc<dyn Stage<K, T>>,
+    right: Rc<dyn Stage<RK, R>>,
+    key: Box<dyn Fn(&T) -> RK>,
+    f: JoinFn<T, R, U>,
+    out: RefCell<HashMap<K, (RK, Signal<U>)>>,
+    by_right: RefCell<HashMap<RK, Vec<K>>>,
+    /// Observes the right stage (kept alive here; the right stage holds it weakly).
+    adapter: RefCell<Option<Rc<dyn Observer<RK, R>>>>,
+    at: &'static Location<'static>,
+    emitter: Emitter<K, U>,
+}
+
+/// Forwards the right stage's events to its join.
+struct JoinRight<K, T, RK, R, U> {
+    join: Weak<JoinInner<K, T, RK, R, U>>,
+}
+
+impl<K, T, RK, R, U> Drop for JoinInner<K, T, RK, R, U> {
+    fn drop(&mut self) {
+        for (_, s) in self.out.get_mut().values() {
+            s.dispose();
+        }
+    }
+}
+
+impl<K, T, RK, R, U> JoinInner<K, T, RK, R, U>
+where
+    K: Eq + Hash + Clone + 'static,
+    T: Clone + 'static,
+    RK: Eq + Hash + Clone + 'static,
+    R: Clone + 'static,
+    U: Clone + PartialEq + 'static,
+{
+    fn compute(&self, t: &T, rk: &RK) -> U {
+        match self.right.item(rk) {
+            Some(r) => r.with_untracked(|r| (self.f)(t, Some(r))),
+            None => (self.f)(t, None),
+        }
+    }
+    /// Adds a left row (building, or an insert): its output, and its place in the reverse index.
+    fn attach_row(&self, k: &K, t: &T) -> U {
+        let rk = (self.key)(t);
+        let u = self.compute(t, &rk);
+        self.by_right.borrow_mut().entry(rk.clone()).or_default().push(k.clone());
+        self.out.borrow_mut().insert(k.clone(), (rk, Signal::detached(u.clone())));
+        u
+    }
+    fn unlink(&self, rk: &RK, k: &K) {
+        let mut by = self.by_right.borrow_mut();
+        if let Some(v) = by.get_mut(rk) {
+            if let Some(i) = v.iter().position(|x| x == k) {
+                v.remove(i);
+            }
+            if v.is_empty() {
+                by.remove(rk);
+            }
+        }
+    }
+    /// Sets a row's output; passes it on if it differs. Returns whether it did.
+    fn set(&self, k: &K, u: U) -> bool {
+        let s = self.out.borrow().get(k).map(|(_, s)| *s);
+        let Some(s) = s else { return false };
+        let old = s.get_untracked();
+        if old == u {
+            return false;
+        }
+        s.set_internal(u.clone());
+        self.emitter.update(k, &old, &u);
+        true
+    }
+    /// The right item under `rk` changed (or appeared, or went): every row pointing at it again.
+    fn right_changed(&self, rk: &RK) {
+        let rows = self.by_right.borrow().get(rk).cloned().unwrap_or_default();
+        let mut updated = 0;
+        for k in &rows {
+            let Some(item) = self.left.item(k) else { continue };
+            let u = item.with_untracked(|t| self.compute(t, rk));
+            updated += usize::from(self.set(k, u));
+        }
+        if updated > JOIN_FANOUT_ROWS {
+            rt(|rt| {
+                rt.diag(
+                    &codes::JOIN_FANOUT,
+                    format!("one change on the right side of a join updated {updated} rows; the join's output takes something many rows share"),
+                    self.at,
+                )
+            });
+        }
+    }
+}
+
+impl<K, T, RK, R, U> Observer<K, T> for JoinInner<K, T, RK, R, U>
+where
+    K: Eq + Hash + Clone + 'static,
+    T: Clone + 'static,
+    RK: Eq + Hash + Clone + 'static,
+    R: Clone + 'static,
+    U: Clone + PartialEq + 'static,
+{
+    fn inserted(&self, index: usize, k: &K, t: &T) {
+        let u = self.attach_row(k, t);
+        self.emitter.insert(index, k, &u);
+    }
+    fn removed(&self, index: usize, k: &K, _: &T) {
+        let row = self.out.borrow_mut().remove(k);
+        if let Some((rk, s)) = row {
+            self.unlink(&rk, k);
+            let u = s.get_untracked();
+            self.emitter.remove(index, k, &u);
+            s.dispose();
+        }
+    }
+    fn updated(&self, k: &K, _: &T, new: &T) {
+        let rk = (self.key)(new);
+        let old_rk = self.out.borrow().get(k).map(|(rk, _)| rk.clone());
+        if let Some(old_rk) = old_rk
+            && old_rk != rk
+        {
+            self.unlink(&old_rk, k);
+            self.by_right.borrow_mut().entry(rk.clone()).or_default().push(k.clone());
+            if let Some(row) = self.out.borrow_mut().get_mut(k) {
+                row.0 = rk.clone();
+            }
+        }
+        let u = self.compute(new, &rk);
+        self.set(k, u);
+    }
+    fn moved(&self, k: &K, from: usize, to: usize, _: &T) {
+        let s = self.out.borrow().get(k).map(|(_, s)| *s);
+        if let Some(s) = s {
+            self.emitter.moved(from, to, k, &s.get_untracked());
+        }
+    }
+}
+
+impl<K, T, RK, R, U> Observer<RK, R> for JoinRight<K, T, RK, R, U>
+where
+    K: Eq + Hash + Clone + 'static,
+    T: Clone + 'static,
+    RK: Eq + Hash + Clone + 'static,
+    R: Clone + 'static,
+    U: Clone + PartialEq + 'static,
+{
+    fn inserted(&self, _: usize, rk: &RK, _: &R) {
+        if let Some(j) = self.join.upgrade() {
+            j.right_changed(rk);
+        }
+    }
+    fn removed(&self, _: usize, rk: &RK, _: &R) {
+        if let Some(j) = self.join.upgrade() {
+            j.right_changed(rk);
+        }
+    }
+    fn updated(&self, rk: &RK, _: &R, _: &R) {
+        if let Some(j) = self.join.upgrade() {
+            j.right_changed(rk);
+        }
+    }
+    fn moved(&self, _: &RK, _: usize, _: usize, _: &R) {
+        // Right-side order does not matter to a lookup.
+    }
+}
+
+impl<K, T, RK, R, U> Stage<K, U> for JoinInner<K, T, RK, R, U>
+where
+    K: Eq + Hash + Clone + 'static,
+    T: Clone + 'static,
+    RK: Eq + Hash + Clone + 'static,
+    R: Clone + 'static,
+    U: Clone + PartialEq + 'static,
+{
+    fn index_of(&self, k: &K) -> Option<usize> {
+        self.left.index_of(k)
+    }
+    fn len(&self) -> usize {
+        self.left.len()
+    }
+    fn snapshot(&self) -> Vec<K> {
+        self.left.snapshot()
+    }
+    fn item(&self, k: &K) -> Option<ReadSignal<U>> {
+        self.out.borrow().get(k).map(|(_, s)| s.read_only())
     }
     fn emitter(&self) -> &Emitter<K, U> {
         &self.emitter
@@ -1447,5 +1759,133 @@ mod tests {
         });
         let d = rt.diagnostics();
         assert_eq!(d.iter().filter(|d| d.code.id == "VIEW_READS_STATE").count(), 1, "{d:?}");
+    }
+
+    #[derive(Clone, PartialEq, Debug)]
+    struct User {
+        id: u32,
+        name: u8,
+        role: u8,
+    }
+    #[derive(Clone, PartialEq, Debug)]
+    struct Msg {
+        id: u32,
+        user: u32,
+        body: u8,
+    }
+
+    /// A lookup join against from-scratch results while both sides change at random; its log
+    /// replays; views after it compose.
+    #[test]
+    fn join_matches_from_scratch() {
+        let rt = Runtime::new();
+        rt.enter(|| {
+            let scope = rt.create_scope(None, "t");
+            rt.with_frame(Ctx::Idle, None, Some(Some(scope)), || {
+                let users = list("users", Vec::<User>::new, |u| u.id);
+                let msgs = list("msgs", Vec::<Msg>::new, |m| m.id);
+                let j = msgs.join(users, |m| m.user, |m, u| (m.body, u.map(|u| u.name)));
+                let named = j.filter(|(_, n)| n.is_some()).sort_by(|(b, n)| (*n, *b));
+                let cursor = j.source().0.emitter().log.borrow_mut().subscribe();
+                let mut replay: Vec<u32> = Vec::new();
+                let mut x: u64 = 7;
+                let mut rnd = |m: u64| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    x % m.max(1)
+                };
+                let (mut next_u, mut next_m) = (0u32, 0u32);
+                for step in 0..3_000 {
+                    rt.with_frame(Ctx::Handler, None, None, || {
+                        let (uk, mk) = (users.keys(), msgs.keys());
+                        match rnd(12) {
+                            0 | 1 => {
+                                users.push(User { id: next_u, name: rnd(4) as u8, role: 0 });
+                                next_u += 1;
+                            }
+                            2 if !uk.is_empty() => users.remove(&uk[rnd(uk.len() as u64) as usize]),
+                            3 if !uk.is_empty() => users.update(&uk[rnd(uk.len() as u64) as usize], |u| u.name = (u.name + 1) % 4),
+                            4 if !uk.is_empty() => users.update(&uk[rnd(uk.len() as u64) as usize], |u| u.role += 1),
+                            5..=7 => {
+                                // Messages may point at users that do not exist (yet).
+                                let at = rnd(mk.len() as u64 + 1) as usize;
+                                msgs.insert(at, Msg { id: next_m, user: rnd(next_u as u64 + 3) as u32, body: rnd(3) as u8 });
+                                next_m += 1;
+                            }
+                            8 if !mk.is_empty() => msgs.remove(&mk[rnd(mk.len() as u64) as usize]),
+                            9 | 10 if !mk.is_empty() => {
+                                let to = rnd(next_u as u64 + 3) as u32;
+                                msgs.update(&mk[rnd(mk.len() as u64) as usize], |m| m.user = to);
+                            }
+                            11 if !mk.is_empty() => msgs.update(&mk[rnd(mk.len() as u64) as usize], |m| m.body = (m.body + 1) % 3),
+                            _ => {}
+                        }
+                    });
+                    rt.flush();
+                    let name_of = |id: u32| users.item(&id).map(|u| u.get_untracked().name);
+                    let all: Vec<Msg> = msgs.keys().iter().map(|k| msgs.item(k).unwrap().get_untracked()).collect();
+                    assert_eq!(j.keys(), msgs.keys(), "join keys at step {step}");
+                    for m in &all {
+                        assert_eq!(j.source().item(&m.id).unwrap().get_untracked(), (m.body, name_of(m.user)), "join value at step {step}");
+                    }
+                    let mut want: Vec<&Msg> = all.iter().filter(|m| name_of(m.user).is_some()).collect();
+                    want.sort_by_key(|m| (name_of(m.user), m.body));
+                    let want: Vec<(u8, Option<u8>)> = want.iter().map(|m| (m.body, name_of(m.user))).collect();
+                    let got: Vec<(u8, Option<u8>)> = named.keys().iter().map(|k| named.source().item(k).unwrap().get_untracked()).collect();
+                    assert_eq!(got, want, "filter + sort after the join at step {step}");
+                    for ch in j.source().0.emitter().log.borrow_mut().take(&cursor) {
+                        match ch {
+                            Change::Insert { key, index } => replay.insert(index, key),
+                            Change::Remove { key, index } => assert_eq!(replay.remove(index), key),
+                            Change::Move { key, from, to } => {
+                                assert_eq!(replay.remove(from), key);
+                                replay.insert(to, key);
+                            }
+                        }
+                    }
+                    assert_eq!(replay, msgs.keys(), "join log replay at step {step}");
+                }
+            });
+        });
+        assert!(rt.diagnostics().is_empty(), "{:?}", rt.diagnostics());
+    }
+
+    /// A right change updates the rows pointing at it whose output differs, and only those; a
+    /// change that reaches too many rows is reported.
+    #[test]
+    fn join_updates_only_what_its_output_takes() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let rt = Runtime::new();
+        rt.enter(|| {
+            let scope = rt.create_scope(None, "t");
+            rt.with_frame(Ctx::Idle, None, Some(Some(scope)), || {
+                let users = list("users", || vec![User { id: 1, name: 1, role: 0 }, User { id: 2, name: 2, role: 0 }], |u| u.id);
+                let n = super::JOIN_FANOUT_ROWS as u32 + 5;
+                let msgs = list("msgs", move || (0..n).map(|id| Msg { id, user: if id < 3 { 2 } else { 1 }, body: 0 }).collect(), |m| m.id);
+                let j = msgs.join(users, |m| m.user, |_, u| u.map(|u| u.name));
+                let seen = Rc::new(Cell::new(0));
+                let s2 = seen.clone();
+                let _after = j.filter(move |_| {
+                    s2.set(s2.get() + 1);
+                    true
+                });
+                let s0 = seen.get();
+                rt.with_frame(Ctx::Handler, None, None, || users.update(&2, |u| u.role = 9));
+                assert_eq!(seen.get(), s0, "a field the rows do not show: no update");
+                rt.with_frame(Ctx::Handler, None, None, || users.update(&2, |u| u.name = 7));
+                assert_eq!(seen.get(), s0 + 3, "the three rows of user 2");
+                assert_eq!(j.source().item(&0).unwrap().get_untracked(), Some(7));
+                rt.with_frame(Ctx::Handler, None, None, || users.remove(&2));
+                assert_eq!(j.source().item(&0).unwrap().get_untracked(), None, "kept, without its user");
+                assert_eq!(j.keys().len(), n as usize);
+                assert!(rt.diagnostics().is_empty());
+                // User 1 is on every other message: renaming it fans out.
+                rt.with_frame(Ctx::Handler, None, None, || users.update(&1, |u| u.name = 5));
+            });
+        });
+        let d = rt.diagnostics();
+        assert_eq!(d.iter().map(|d| d.code.id).collect::<Vec<_>>(), ["JOIN_FANOUT"], "{d:?}");
     }
 }

@@ -1,6 +1,6 @@
 # Collection operators: `map` and `join`
 
-Based on the [research](../research/map-join.md). Status: confirmed; step 1 implemented.
+Based on the [research](../research/map-join.md). Status: confirmed; implemented.
 
 Both are stages like `filter`, `sort_by` and `group_by`: they observe an upstream stage, keep
 their own state incrementally, and are stages themselves, so they compose
@@ -16,8 +16,9 @@ their own state incrementally, and are stages themselves, so they compose
   own, O(1) plus one call per event.
 - The closure is a pure function of the item, run untracked, as `filter`'s predicate (see
   "View closures" below). A row's reactive scope stays `each`'s.
-- `flatten` is rebuilt on `map`'s per-key output, which removes its second signal per item
-  (reactive core, known limitation: about twice the memory). No API change.
+- `flatten` keeps its own entry per item: a `map` output is also one signal per key, so
+  rebuilding `flatten` on it would not save the second copy (reactive core, known limitation).
+  Removing it needs read signals that project another signal on read: a later design.
 
 ## `join`
 
@@ -32,7 +33,9 @@ their own state incrementally, and are stages themselves, so they compose
   show the name only).
 - Cost: a left event is O(1) (one lookup, one index update); a right event updates the m left
   rows that point at its key, through a reverse index (right key → left keys, absent keys
-  included). Memory O(|left|).
+  included). Memory O(|left|). A right change computes the output of each of those m rows
+  to compare it (`bench -- --joins`: 500 rows in 186 µs renamed, 72 µs for a field they do not
+  show, release build).
 - Many-to-many (todos ⋈ tags) is a link list keyed by the pair, joined to each side; no
   operator of its own yet.
 
@@ -47,7 +50,7 @@ their own state incrementally, and are stages themselves, so they compose
 ## Diagnostics
 
 - `VIEW_READS_STATE` (above).
-- JOIN_FANOUT (warning): one right-side change updated more than 10 000 rows; the cause is a
+- `JOIN_FANOUT` (warning): one right-side change updated more than 10 000 rows; the cause is a
   hot key (one tag on everything); the fix is a narrower projection, or joining after
   `virtual_each`'s window instead of before.
 
@@ -61,5 +64,5 @@ their own state incrementally, and are stages themselves, so they compose
 ## Steps
 
 1. `map`, `VIEW_READS_STATE` for every view.
-2. `flatten` on `map`'s outputs.
-3. `join`, JOIN_FANOUT; the contacts example joins a teams list.
+2. `join`, `JOIN_FANOUT`; the `inbox` example (messages joined with their senders; the contacts
+   example keeps its shape for the benchmarks).

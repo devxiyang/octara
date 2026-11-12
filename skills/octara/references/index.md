@@ -22,12 +22,12 @@ Members of prelude types (`.name(..)`):
 - App: accessibility_{action,tree,update}, advance, advance_to, at_sizes, bind, breakpoint, caret, clear_forced, click_at, clipboard_text, commands, diagnostic_counts, diagnostics, dispatch, display_list, double_tap, drag, force_state, hot_reload, inspect, invoke, kernel, kernel_mut, key_event, keymap, layout_issues, long_press, new, next_deadline, now, pending, platform, pointer, pointer_{down,leave,move,up}, poll, press_key, register_fallback_font, register_font, replace_text, reset_work, resize, restart_accessibility, run_until_idle, secondary_tap, send, set_{clipboard,composition,keymap,platform,selection,theme,tuning,waker}, set_reduced_motion, settle, settle_motion, size, swipe, tap, tap_with, text_field, tuning, type_text, use_system_fonts, wheel, work
 - Canvas: clip, fill, fill_with, height, image, into_ops, new, ops, rect, size, stroke, text, transform, width
 - ContainerStep: Lg, Md, Sm, Xl, Xl2, Xl3, Xl4, Xl5, Xl6, Xl7, Xs, Xs2, Xs3
-- Derived: filter, group_by, is_empty, keys, len, map, sort_by, source
+- Derived: filter, group_by, is_empty, join, keys, len, map, sort_by, source
 - El: a11y_hidden, active, autofocus, bg, border_color, checked, child, children, description, disabled, expanded, focus, focus_{group,visible}, focusable, group, group_hover, hover, hover_alone, id, img, key_context, label, modal, object_fit, on_{command,drag,input,key,press,submit,toggle}, on_double_press, on_long_press, on_secondary_press, opacity, overlay, role, screen, selected, stroke_width, style_when, tab_index, text_color, value, when_{expanded,large,medium,touch}, when_extra_large
 - Event: Blur, Focus, Hover, Input, Press, Scroll, ScrollTo, Send, Toggle
 - Icon: bounds, name, named, path, shapes, stroked, svg, view_box
 - Key: Backspace, Char, Delete, Down, End, Enter, Escape, F, Home, Left, Menu, PageDown, PageUp, Right, Space, Tab, Up
-- List: all, filter, group_by, index_of, insert, is_empty, item, keys, last_key, len, map, push, remove, retain, sort_by, source, update
+- List: all, filter, group_by, index_of, insert, is_empty, item, join, keys, last_key, len, map, push, remove, retain, sort_by, source, update
 - LiveText: append, get, get_untracked, is_empty, len, log_len, new, set, splice, with
 - Modifiers: ALT, CTRL, META, SHIFT
 - Path: add_polygon, append, arc_to, bounds, circle, close, commands, contains, content_hash, cubic_bezier_to, curve_to, ellipse, is_empty, line_to, move_to, new, rect, rounded_rect, svg, to_svg, transform
@@ -35,7 +35,7 @@ Members of prelude types (`.name(..)`):
 - RadiusStep: Lg, Md, Sm, Xl, Xl2, Xl3, Xl4, Xs
 - Rect: bottom, h, intersect, is_empty, new, right, w, x, y
 - Signal: get, get_untracked, new, read_only, set, update, with, with_untracked
-- Source: filter, group_by, is_empty, item, keys, len, log_len, map, sort_by
+- Source: filter, group_by, is_empty, item, join, keys, len, log_len, map, sort_by
 - Spring: GLIDE, MORPH, NAMED, POP, REFLOW, SETTLE, SNAP, bounce, duration, new
 - State: CHECKED, DISABLED, EXPANDED, FOCUSED, FOCUS_VISIBLE, HOVER, PRESSED, SELECTED
 - Stroke: cap, dash, dash_offset, join, miter_limit, new, reach, width
@@ -87,4 +87,4 @@ Other crates and modules:
 - octara_fonts: cjk
 - octara_render: Bitmap, CpuRenderer, GpuRenderer, cpu, glyphs, gpu, paths, screenshot, shape, wgpu
 - commands (`App::invoke`, `on_command`): focus.{dismiss,down,first,last,left,next,prev,right,up}, press, submit, menu, edit.{copy,cut,delete_backward,delete_forward,delete_to_start,delete_word_backward,delete_word_forward,move_left,move_right,move_to_end,move_to_start,move_word_left,move_word_right,paste,redo,select_{all,left,right},select_to_end,select_to_start,select_word_left,select_word_right,undo}
-- diagnostic codes (`octara explain`): STRICT_READ_UNTRACKED, WRITE_IN_BUILD, WRITE_IN_DERIVE, READ_DISPOSED, WRITE_DISPOSED, CYCLE, FLUSH_RUNAWAY, NO_OWNER, DUPLICATE_STATE_KEY, STATE_TYPE_CHANGED, UNKEYED_STATE, VIEW_READS_STATE, DUPLICATE_KEY, AMBIGUOUS_COMPONENT, DUPLICATE_COMPONENT_KEY, EACH_ROW_NOT_ELEMENT, VIRTUAL_LIST_NOT_SCROLLABLE, LAYOUT_LOOP, OVERFLOW, COLLAPSED, TEXT_TRUNCATED, OVERLAY_CLAMPED, UNNAMED_CONTROL, UNLABELED_CANVAS, SMALL_TARGET, LOW_CONTRAST, NOT_SETTLED, BAD_REQUEST, NO_SUCH_ELEMENT, STEP_FAILED, EXPECTATION_FAILED, MISSING_TOKEN
+- diagnostic codes (`octara explain`): STRICT_READ_UNTRACKED, WRITE_IN_BUILD, WRITE_IN_DERIVE, READ_DISPOSED, WRITE_DISPOSED, CYCLE, FLUSH_RUNAWAY, NO_OWNER, DUPLICATE_STATE_KEY, STATE_TYPE_CHANGED, UNKEYED_STATE, VIEW_READS_STATE, JOIN_FANOUT, DUPLICATE_KEY, AMBIGUOUS_COMPONENT, DUPLICATE_COMPONENT_KEY, EACH_ROW_NOT_ELEMENT, VIRTUAL_LIST_NOT_SCROLLABLE, LAYOUT_LOOP, OVERFLOW, COLLAPSED, TEXT_TRUNCATED, OVERLAY_CLAMPED, UNNAMED_CONTROL, UNLABELED_CANVAS, SMALL_TARGET, LOW_CONTRAST, NOT_SETTLED, BAD_REQUEST, NO_SUCH_ELEMENT, STEP_FAILED, EXPECTATION_FAILED, MISSING_TOKEN

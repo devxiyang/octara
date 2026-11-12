@@ -559,6 +559,67 @@ impl crate::scenarios::Factory for Apps {
 }
 
 /// Text from outside (a test, an agent, a model's stream) on the channel named `name`.
+// ---- Inbox: join ----
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct Person {
+    pub id: u32,
+    pub name: String,
+    pub online: bool,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct Message {
+    pub id: u32,
+    pub from: u32,
+    pub body: String,
+}
+
+/// `n` messages from 20 people, each row showing its sender's name (a `join`): renaming someone
+/// rewrites their rows only, and a change the rows do not show (going online) rewrites none.
+/// Events: `Send("rename", "id:name")`, `Send("online", "id")`, `Send("forget", "id")` (the
+/// person goes; their rows stay, from "unknown").
+pub fn inbox(n: usize) -> View {
+    let people = list(
+        "people",
+        || (1..=20u32).map(|id| Person { id, name: format!("Person {id}"), online: false }).collect(),
+        |p: &Person| p.id,
+    );
+    let messages = list(
+        "messages",
+        || (1..=n as u32).map(|id| Message { id, from: id % 20 + 1, body: format!("Message {id}") }).collect(),
+        |m: &Message| m.id,
+    );
+    let rows = messages.join(people, |m| m.from, |m, p| (p.map_or_else(|| "unknown".to_string(), |p| p.name.clone()), m.body.clone()));
+    let split = |s: &str| s.split_once(':').map(|(a, b)| (a.to_owned(), b.to_owned())).unwrap_or_default();
+    listen("rename", move |p| {
+        let (id, name) = split(&p);
+        people.update(&id.parse().unwrap_or(0), |p| p.name = name);
+    });
+    listen("online", move |id| people.update(&id.parse().unwrap_or(0), |p| p.online = !p.online));
+    listen("forget", move |id| people.remove(&id.parse().unwrap_or(0)));
+    col()
+        .size_full()
+        .child(
+            col()
+                .id("messages")
+                .flex_1()
+                .overflow_y_scroll()
+                .child(each(
+                    move || rows.source(),
+                    |id, msg| {
+                        row()
+                            .gap_2()
+                            .child(text(move || msg.with(|r| r.0.clone())).font_semibold().id(format!("from-{id}")))
+                            .child(text(move || msg.with(|r| r.1.clone())))
+                            .id(format!("message-{id}"))
+                            .into()
+                    },
+                )),
+        )
+        .into()
+}
+
 fn listen(name: &str, f: impl Fn(String) + 'static) {
     let (_, rx) = channel::<String>();
     rx.named(name).on(f);

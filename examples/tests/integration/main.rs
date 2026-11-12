@@ -4,6 +4,7 @@ mod acceptance;
 mod consistency;
 mod diagnostics;
 mod ime;
+mod inbox;
 mod layout;
 mod list_render;
 mod pointer;

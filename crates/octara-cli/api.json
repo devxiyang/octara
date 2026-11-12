@@ -2175,6 +2175,13 @@
           "file": "crates/octara/src/diagnostics.rs"
         },
         {
+          "path": "octara::diagnostics::JOIN_FANOUT",
+          "kind": "static",
+          "sig": "pub static JOIN_FANOUT: Code",
+          "docs": "One change on the right side of a join updated more than 10 000 rows.",
+          "file": "crates/octara/src/diagnostics.rs"
+        },
+        {
           "path": "octara::diagnostics::LAYOUT_LOOP",
           "kind": "static",
           "sig": "pub static LAYOUT_LOOP: Code",
@@ -9657,7 +9664,8 @@
           ],
           "traits": [
             "Clone",
-            "Copy"
+            "Copy",
+            "Into<Source<K, T>>"
           ]
         },
         {
@@ -9680,6 +9688,17 @@
           "sig": "pub fn is_empty(&self) -> bool",
           "within": "impl<K, T> Derived<K, T> where K: Eq + Hash + Clone + 'static, T: Clone + 'static",
           "file": "crates/octara/src/reactive/list.rs"
+        },
+        {
+          "path": "octara::reactive::list::Derived::join",
+          "kind": "method",
+          "sig": "pub fn join<RK, R, U>(&self, right: impl Into<Source<RK, R>>, key: impl Fn(&T) -> RK + 'static, f: impl Fn(&T, Option<&R>) -> U + 'static) -> Derived<K, U> where RK: Eq + Hash + Clone + 'static, R: Clone + 'static, U: Clone + PartialEq + 'static",
+          "within": "impl<K, T> Derived<K, T> where K: Eq + Hash + Clone + 'static, T: Clone + 'static",
+          "docs": "Each item with the item of `right` it points at ([`Source::join`]).",
+          "file": "crates/octara/src/reactive/list.rs",
+          "links": [
+            "octara::reactive::list::Source::join"
+          ]
         },
         {
           "path": "octara::reactive::list::Derived::keys",
@@ -9873,6 +9892,13 @@
           "file": "crates/octara/src/reactive/list.rs"
         },
         {
+          "path": "octara::reactive::list::JOIN_FANOUT_ROWS",
+          "kind": "const",
+          "sig": "pub const JOIN_FANOUT_ROWS: usize",
+          "docs": "A right-side change that updates more rows than this is reported (`JOIN_FANOUT`).",
+          "file": "crates/octara/src/reactive/list.rs"
+        },
+        {
           "path": "octara::reactive::list::List",
           "kind": "struct",
           "sig": "pub struct List<K, T> { .. }",
@@ -9883,7 +9909,8 @@
           ],
           "traits": [
             "Clone",
-            "Copy"
+            "Copy",
+            "Into<Source<K, T>>"
           ],
           "links": [
             "octara::reactive::graph::state"
@@ -9941,6 +9968,17 @@
           "sig": "pub fn item(&self, k: &K) -> Option<ReadSignal<T>>",
           "within": "impl<K, T> List<K, T> where K: Eq + Hash + Clone + 'static, T: Clone + 'static",
           "file": "crates/octara/src/reactive/list.rs"
+        },
+        {
+          "path": "octara::reactive::list::List::join",
+          "kind": "method",
+          "sig": "pub fn join<RK, R, U>(&self, right: impl Into<Source<RK, R>>, key: impl Fn(&T) -> RK + 'static, f: impl Fn(&T, Option<&R>) -> U + 'static) -> Derived<K, U> where RK: Eq + Hash + Clone + 'static, R: Clone + 'static, U: Clone + PartialEq + 'static",
+          "within": "impl<K, T> List<K, T> where K: Eq + Hash + Clone + 'static, T: Clone + 'static",
+          "docs": "Each item with the item of `right` it points at ([`Source::join`]).",
+          "file": "crates/octara/src/reactive/list.rs",
+          "links": [
+            "octara::reactive::list::Source::join"
+          ]
         },
         {
           "path": "octara::reactive::list::List::keys",
@@ -10029,6 +10067,11 @@
           ],
           "traits": [
             "Clone",
+            "From<&Derived<K, T>>",
+            "From<&List<K, T>>",
+            "From<&Source<K, T>>",
+            "From<Derived<K, T>>",
+            "From<List<K, T>>",
             "PartialEq"
           ]
         },
@@ -10060,6 +10103,14 @@
           "kind": "method",
           "sig": "pub fn item(&self, k: &K) -> Option<ReadSignal<T>>",
           "within": "impl<K, T> Source<K, T> where K: Eq + Hash + Clone + 'static, T: Clone + 'static",
+          "file": "crates/octara/src/reactive/list.rs"
+        },
+        {
+          "path": "octara::reactive::list::Source::join",
+          "kind": "method",
+          "sig": "pub fn join<RK, R, U>(&self, right: impl Into<Source<RK, R>>, key: impl Fn(&T) -> RK + 'static, f: impl Fn(&T, Option<&R>) -> U + 'static) -> Derived<K, U> where RK: Eq + Hash + Clone + 'static, R: Clone + 'static, U: Clone + PartialEq + 'static",
+          "within": "impl<K, T> Source<K, T> where K: Eq + Hash + Clone + 'static, T: Clone + 'static",
+          "docs": "Each item with the one item of `right` it points at (a lookup join): `key` gives the\nright key, `f` builds the output from the item and the right item (`None` while there is\nnone). Keys and order are this stage's; a row stays when its right item is missing, and\nupdates (not inserts or removes) when it appears or goes. A right change updates the rows\nthat point at it, and only those whose output differs (so `f` should take only what the\nrow shows). Both closures are pure functions of their arguments.",
           "file": "crates/octara/src/reactive/list.rs"
         },
         {
