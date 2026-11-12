@@ -46,7 +46,7 @@ fn kernel_tables_are_merged_in() {
     for (command, _) in BUILTIN_COMMANDS {
         assert_eq!(cat.get(command).unwrap().kind, "command");
     }
-    assert_eq!(cat.get("edit.undo").unwrap().facts["keys.macos"], "mod+z (in text_input)", "chords as `bind` takes them");
+    assert_eq!(cat.get("edit.undo").unwrap().facts["keys.macos"], "mod+z (in text_input), mod+z (in text_area)", "chords as `bind` takes them");
     let overflow = cat.lookup("overflow");
     assert!(overflow.matches.iter().any(|e| e.kind == "diagnostic"), "codes are found in any case");
 }
