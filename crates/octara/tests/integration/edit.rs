@@ -284,3 +284,14 @@ fn the_caret_blinks_and_shows_while_typing() {
     app.tap("other").unwrap();
     assert!(!caret(&app) && app.app().next_deadline().is_none(), "no field focused: no blink");
 }
+
+#[test]
+fn the_platform_is_told_when_the_caret_blinks() {
+    use std::time::Duration;
+    let mut app = Window::headless(|| text_input().id("f").into());
+    app.tap("f").unwrap();
+    let frames = |app: &Window| app.platform_window().as_any().downcast_ref::<octara::platform::HeadlessWindow>().unwrap().frames;
+    let before = frames(&app);
+    app.app().advance(Duration::from_millis(550));
+    assert!(frames(&app) > before, "the blink is presented, not only drawn when asked");
+}

@@ -64,6 +64,8 @@ impl App {
                     w.w.kernel.borrow_mut().step_glides();
                 });
             }
+            // What time alone changed (motion's next frame, a caret's blink) reaches the platform.
+            w.present();
         }
     }
 
