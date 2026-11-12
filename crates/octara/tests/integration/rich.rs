@@ -171,3 +171,38 @@ fn rows_scrolling_back_and_repeated_labels_shape_nothing_again() {
     w.dispatch(Event::ScrollTo("list".into(), 0.0, 0.0)).unwrap();
     assert_eq!(shaped(&w), after_down, "rows scrolling back shape nothing");
 }
+
+#[test]
+fn hovering_a_link_redraws_its_text() {
+    let (mut w, _) = app();
+    w.app().set_check_consistency(true);
+    let link = w.kernel().find_by_role(Role::Link).unwrap();
+    let (x, y, _, h) = w.kernel().shown_rect(link);
+    let before = w.display_list();
+    w.pointer_move(x + 2.0, y + h / 2.0);
+    let after = w.display_list();
+    let accent = Theme::light().get(Token::AccentHover);
+    assert!(after.glyph_runs().any(|g| g.color == accent), "the hovered link in its hover color");
+    assert!(!std::rc::Rc::ptr_eq(&before, &after), "a new frame, not the last one reused");
+}
+
+#[test]
+fn a_field_losing_focus_redraws_without_its_caret() {
+    let mut w = Window::headless(|| {
+        let v = state("v", String::new);
+        col()
+            .selectable()
+            .child(text_input().id("f").label("F").value(move || v.get()).on_input(move |s| v.set(s)))
+            .child(text("words").id("t"))
+            .into()
+    });
+    w.tap("f").unwrap();
+    let caret = |w: &Window| {
+        let f = w.kernel().find("f").unwrap();
+        w.display_list().quads().any(|q| q.source == f && q.rect.w <= 2.0)
+    };
+    assert!(caret(&w));
+    let (x, y, _, h) = w.kernel().shown_rect(w.kernel().find("t").unwrap());
+    w.click_at(x + 2.0, y + h / 2.0);
+    assert!(!caret(&w), "the caret went with the focus");
+}

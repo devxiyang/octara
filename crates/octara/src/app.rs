@@ -284,7 +284,7 @@ struct Interaction {
     /// Text fields' editing history.
     edits: rustc_hash::FxHashMap<NodeId, edit::EditState>,
     /// Test ids of the hovered and focused elements across a hot reload.
-    reload: (Option<String>, Option<String>),
+    reload: (Option<crate::kernel::Address>, Option<crate::kernel::Address>),
     forced: Vec<(String, State, bool)>,
     /// Scroll offsets by test id, carried over a hot reload.
     scrolls: Vec<(String, (f32, f32))>,
@@ -690,13 +690,13 @@ impl Window {
         let mut i = self.w.interaction.borrow_mut();
         let mut k = self.w.kernel.borrow_mut();
         let (hover, focus) = std::mem::take(&mut i.reload);
-        let hovered = hover.and_then(|id| k.find(&id));
+        let hovered = hover.and_then(|a| k.find_address(&a));
         i.hovered = hovered;
         i.hover_chain = k.hover_chain(hovered);
         for n in i.hover_chain.clone() {
             k.set_state(n, State::HOVER, true);
         }
-        i.focused = focus.and_then(|id| k.find(&id));
+        i.focused = focus.and_then(|a| k.find_address(&a));
         if let Some(n) = i.focused {
             k.set_state(n, State::FOCUSED, true);
             k.set_state(n, State::FOCUS_VISIBLE, i.modality == Modality::Keyboard);
@@ -1021,19 +1021,16 @@ impl Window {
     pub fn clear_forced(&mut self) {
         self.w.interaction.borrow_mut().forced.clear();
     }
-    /// Rebuilds this window's scope from the current state, keeping hover, focus and scroll by
-    /// test id.
+    /// Rebuilds this window's scope from the current state, keeping hover and focus by address
+    /// (the nearest test id and the child indices below it) and scroll by test id.
     fn reload(&self) {
         self.enter(|| {
             {
                 let mut i = self.w.interaction.borrow_mut();
                 let k = self.w.kernel.borrow();
                 i.scrolls = k.scroll_offsets();
-                let id = |n: Option<NodeId>| n.filter(|n| k.is_alive(*n)).and_then(|n| k.test_id(n).map(str::to_owned));
-                // The innermost hovered element with a test id (the node under the mouse may be
-                // a text inside it).
-                let hover = i.hover_chain.iter().copied().find(|n| k.is_alive(*n) && k.test_id(*n).is_some());
-                i.reload = (id(hover), id(i.focused));
+                let address = |n: Option<NodeId>| n.filter(|n| k.is_alive(*n)).map(|n| k.address(n));
+                i.reload = (address(i.hovered), address(i.focused));
                 i.hover_chain.clear();
                 i.pointer = pointer::PointerState::default();
                 i.modals.clear();

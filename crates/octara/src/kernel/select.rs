@@ -148,3 +148,42 @@ impl Kernel {
         }
     }
 }
+
+/// Where a node is, as a rebuild finds it again: the nearest element at or above it with a test
+/// id (or the root), and the child indices from there down.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Address {
+    pub id: Option<String>,
+    pub path: Vec<u32>,
+}
+
+impl Kernel {
+    /// `n`'s address.
+    pub fn address(&self, n: NodeId) -> Address {
+        let mut path = Vec::new();
+        let mut at = n;
+        loop {
+            if let Some(id) = self.test_id(at) {
+                path.reverse();
+                return Address { id: Some(id.to_owned()), path };
+            }
+            let Some(parent) = self.node(at).parent else { break };
+            path.push(self.node(parent).children.iter().position(|c| *c == at).unwrap_or(0) as u32);
+            at = parent;
+        }
+        path.reverse();
+        Address { id: None, path }
+    }
+
+    /// The node at `address`, if it is there.
+    pub fn find_address(&self, a: &Address) -> Option<NodeId> {
+        let mut n = match &a.id {
+            Some(id) => self.find(id)?,
+            None => self.root,
+        };
+        for i in &a.path {
+            n = *self.node(n).children.get(*i as usize)?;
+        }
+        Some(n)
+    }
+}

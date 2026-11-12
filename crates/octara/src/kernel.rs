@@ -34,6 +34,7 @@ pub use accesskit::Role;
 pub use edit::floor_boundary;
 pub use focus::Arrow;
 pub use issues::LayoutIssue;
+pub use select::Address;
 pub use style::{BoxShadow, Dirty, FontSize, GridPos, Length, LineHeight, Motion, Radius, Shadows, State, StyleProp, Visual, When};
 pub use taffy::{AlignItems, Dimension, Display, FlexDirection, FlexWrap, JustifyContent, LengthPercentageAuto, Overflow, Position};
 pub use theme::{
@@ -1700,7 +1701,17 @@ impl Kernel {
         if semantic {
             self.changed(id, Dirty::SEMANTICS, "state", || format!("{state:?}={on}"));
         }
-        changed || semantic
+        // What the kernel draws itself follows states too: a field's caret and selection its
+        // focus, a link (drawn by its text) its hover and press.
+        let drawn = match &self.node(id).content {
+            Content::Input(_) if state.intersects(State::FOCUSED | State::FOCUS_VISIBLE) => Some(id),
+            Content::Link(_) if state.intersects(State::HOVER | State::PRESSED) => self.node(id).parent,
+            _ => None,
+        };
+        if let Some(n) = drawn {
+            self.changed(n, Dirty::PAINT, "drawn state", || format!("{state:?}={on}"));
+        }
+        changed || semantic || drawn.is_some()
     }
 
     /// Sets the shared theme and restyles this kernel (other kernels sharing it are told with
