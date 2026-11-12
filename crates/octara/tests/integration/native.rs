@@ -42,7 +42,7 @@ fn view() -> View {
 fn the_host_follows_the_view() {
     let mut app = App::new(view);
     let c = calls(&app);
-    let HostCall::Create { id, kind, props } = &c[0] else { panic!("{c:?}") };
+    let HostCall::Create { id, kind, props, .. } = &c[0] else { panic!("{c:?}") };
     assert_eq!((kind.as_str(), props["url"].as_str()), ("web", Some("https://example.com")));
     let id = *id;
     let HostCall::Place { placements } = &c[1] else { panic!("{c:?}") };
@@ -114,4 +114,50 @@ fn content_over_an_overlay_view_is_reported() {
     assert!(codes(&under).is_empty(), "content draws over an underlay view: {:?}", codes(&under));
     let unlabeled = badge_over(Slot::Underlay, false);
     assert_eq!(codes(&unlabeled), [("UNLABELED_NATIVE_VIEW".to_string(), Some("map".to_string()))]);
+}
+
+/// A host whose platform shows every view (a shell's).
+#[derive(Default)]
+struct Shows;
+
+impl octara::native::NativeHost for Shows {
+    fn create(&mut self, _: NativeId, _: &str, _: Slot, _: &serde_json::Value) -> bool {
+        true
+    }
+    fn update(&mut self, _: NativeId, _: &serde_json::Value) {}
+    fn place(&mut self, _: &[octara::native::Placement]) {}
+    fn destroy(&mut self, _: NativeId) {}
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+fn map_with_controls() -> View {
+    el().size_full()
+        .child(native_view("map").slot(Slot::Underlay).id("map").label("Map").absolute().top(px(10.0)).left(px(10.0)).w(px(200.0)).h(px(100.0)))
+        .child(el().id("zoom").role(Role::Button).label("Zoom").absolute().top(px(20.0)).left(px(20.0)).size_8().bg(Token::Accent).on_press(|| {}))
+        .into()
+}
+
+#[test]
+fn a_shown_underlay_view_is_cut_out_and_its_covered_parts_known() {
+    use octara::paint::Item;
+    let mut app = App::new(map_with_controls);
+    let natives = |app: &App| -> Vec<bool> { app.display_list().items.iter().filter_map(|i| if let Item::Native { cut, .. } = i { Some(*cut) } else { None }).collect() };
+    assert_eq!(natives(&app), [false], "headless: a placeholder, no hole");
+
+    app.set_native_host(Box::new(Shows));
+    let list = app.display_list();
+    assert_eq!(natives(&app), [true], "shown by the platform: cut out");
+    let map = app.kernel().find("map").unwrap();
+    assert!(
+        !list.items.iter().any(|i| matches!(i, Item::Quad(q) if q.source == map)),
+        "no placeholder under a view the platform shows"
+    );
+    let placements = app.kernel().native_placements();
+    let covered = &placements[0].1.covered;
+    assert_eq!(covered.len(), 1, "{covered:?}");
+    let zoom = app.kernel().find("zoom").unwrap();
+    let (x, y, w, h) = app.kernel().rect(zoom);
+    assert_eq!((covered[0].x, covered[0].y, covered[0].w, covered[0].h), (x, y, w, h), "the button over the map is Octara's");
 }

@@ -30,7 +30,9 @@ struct Snapping {
 }
 
 impl NativeHost for Snapping {
-    fn create(&mut self, _: NativeId, _: &str, _: &serde_json::Value) {}
+    fn create(&mut self, _: NativeId, _: &str, _: octara::native::Slot, _: &serde_json::Value) -> bool {
+        true
+    }
     fn update(&mut self, _: NativeId, _: &serde_json::Value) {}
     fn place(&mut self, _: &[Placement]) {}
     fn destroy(&mut self, _: NativeId) {}

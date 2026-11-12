@@ -50,6 +50,10 @@ pub struct Placement {
     pub opacity: f32,
     /// Whether any of it shows (in the window, inside its clip, displayed, not transparent).
     pub visible: bool,
+    /// An underlay view's parts Octara content covers (what is painted after it and overlaps
+    /// it, clipped): pointer input there goes to Octara, elsewhere in the view to the view.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub covered: Vec<Rect>,
 }
 
 /// An event a native view sends back: a name and its data (`load` with a URL, `region` with a
@@ -63,8 +67,10 @@ pub struct NativeEvent {
 /// The platform side: creates, updates, places and destroys native views. A shell implements it
 /// with the platform's views; [`RecordingHost`] records the calls (headless and tests).
 pub trait NativeHost: Any {
-    /// A view of `kind` appears with `props`.
-    fn create(&mut self, id: NativeId, kind: &str, props: &Value);
+    /// A view of `kind` appears in `slot` with `props`. Returns whether the platform shows it:
+    /// when it does, the frame leaves the view's place to it (an underlay view gets a cutout);
+    /// when not, a placeholder box is drawn there.
+    fn create(&mut self, id: NativeId, kind: &str, slot: Slot, props: &Value) -> bool;
     /// A view's props changed (handed over whole).
     fn update(&mut self, id: NativeId, props: &Value);
     /// Views whose placement changed this frame (shells apply them with the frame's present).
@@ -91,7 +97,7 @@ pub trait NativeHost: Any {
 #[derive(Clone, PartialEq, Debug, Serialize)]
 #[serde(tag = "call", rename_all = "snake_case")]
 pub enum HostCall {
-    Create { id: NativeId, kind: String, props: Value },
+    Create { id: NativeId, kind: String, slot: Slot, props: Value },
     Update { id: NativeId, props: Value },
     Place { placements: Vec<Placement> },
     Destroy { id: NativeId },
@@ -104,8 +110,9 @@ pub struct RecordingHost {
 }
 
 impl NativeHost for RecordingHost {
-    fn create(&mut self, id: NativeId, kind: &str, props: &Value) {
-        self.calls.push(HostCall::Create { id, kind: kind.to_owned(), props: props.clone() });
+    fn create(&mut self, id: NativeId, kind: &str, slot: Slot, props: &Value) -> bool {
+        self.calls.push(HostCall::Create { id, kind: kind.to_owned(), slot, props: props.clone() });
+        false
     }
     fn update(&mut self, id: NativeId, props: &Value) {
         self.calls.push(HostCall::Update { id, props: props.clone() });

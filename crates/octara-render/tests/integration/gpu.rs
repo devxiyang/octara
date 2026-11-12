@@ -1,5 +1,5 @@
 //! The GPU renderer against the reference renderer: same display list, same pixels within two
-//! levels per channel. Skipped when there is no GPU.
+//! levels per channel (premultiplied). Skipped when there is no GPU.
 
 use octara::prelude::*;
 use octara_render::{Bitmap, CpuRenderer, GpuRenderer};
@@ -9,8 +9,11 @@ fn compare(name: &str, cpu: &Bitmap, gpu: &Bitmap) {
     let (mut worst, mut off, mut at) = (0u8, 0usize, (0, 0));
     for y in 0..cpu.height {
         for x in 0..cpu.width {
+            // Premultiplied: a nearly transparent pixel's straight color is ill-conditioned
+            // (8-bit premultiplied targets keep few levels of it), its contribution is not.
+            let pre = |p: [u8; 4]| [0, 1, 2].map(|i| ((p[i] as u32 * p[3] as u32 + 127) / 255) as u8);
             let (a, b) = (cpu.pixel(x, y), gpu.pixel(x, y));
-            let d = a.iter().zip(b).map(|(a, b)| a.abs_diff(b)).max().unwrap();
+            let d = pre(a).iter().zip(pre(b)).map(|(a, b)| a.abs_diff(b)).max().unwrap().max(a[3].abs_diff(b[3]));
             if d > 0 {
                 off += 1;
             }
@@ -281,5 +284,52 @@ mod octara_examples_like {
             .child(row().w_8().h_5().p(1.0).rounded_full().bg(Token::Border).child(el().size_4().rounded_full().bg(Token::Background)))
             .child(text("notifications=off sound=on volume=50 theme=system").text_color(Token::TextMuted))
             .into()
+    }
+}
+
+/// A host whose platform shows every view (a shell's).
+struct Shows;
+
+impl octara::native::NativeHost for Shows {
+    fn create(&mut self, _: octara::native::NativeId, _: &str, _: octara::native::Slot, _: &octara::serde_json::Value) -> bool {
+        true
+    }
+    fn update(&mut self, _: octara::native::NativeId, _: &octara::serde_json::Value) {}
+    fn place(&mut self, _: &[octara::native::Placement]) {}
+    fn destroy(&mut self, _: octara::native::NativeId) {}
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// An underlay view in a card, a button painted over it: the card is cut to transparent where
+/// the view is, the button stays.
+fn underlay() -> View {
+    el().size_full()
+        .bg(Token::Surface)
+        .child(
+            el().absolute().top(px(10.0)).left(px(10.0)).p_4().rounded_xl().bg(Token::Background).child(
+                native_view("map").slot(octara::native::Slot::Underlay).label("Map").w(px(160.0)).h(px(90.0)).rounded_lg(),
+            ),
+        )
+        .child(el().absolute().top(px(40.0)).left(px(40.0)).size_8().rounded_full().bg(Token::Accent))
+        .into()
+}
+
+#[test]
+fn underlay_cutouts_clear_to_transparent() {
+    let mut app = App::new(underlay);
+    app.set_native_host(Box::new(Shows));
+    let dl = app.display_list();
+    let cpu = CpuRenderer::new().render(&dl, 1.0);
+    assert_eq!(cpu.pixel(150, 80)[3], 0, "the view shows through");
+    assert_eq!(cpu.pixel(56, 56)[3], 255, "the button painted after it stays");
+    assert_eq!(cpu.pixel(5, 5)[3], 255, "the page around it stays");
+    let Some(mut gpu) = GpuRenderer::new() else {
+        eprintln!("no GPU adapter: skipped");
+        return;
+    };
+    for scale in [1.0, 2.0] {
+        compare(&format!("underlay@{scale}x"), &CpuRenderer::new().render(&dl, scale), &gpu.render(&dl, scale));
     }
 }

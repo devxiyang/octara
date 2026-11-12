@@ -658,11 +658,12 @@ impl App {
         let mut host = self.native_host.borrow_mut();
         let placements = k.native_placements();
         let mut moved = Vec::new();
+        let mut live = Vec::new();
         for (n, p) in &placements {
             let Some(v) = k.native(*n) else { continue };
             match sent.get_mut(n) {
                 None => {
-                    host.create(p.id, &v.kind, &v.props);
+                    live.push((*n, host.create(p.id, &v.kind, v.slot, &v.props)));
                     sent.insert(*n, (v.version, None));
                 }
                 Some((version, _)) if *version != v.version => {
@@ -680,14 +681,19 @@ impl App {
         if !moved.is_empty() {
             host.place(&moved);
         }
-        let live: Vec<NodeId> = placements.iter().map(|(n, _)| *n).collect();
+        let mounted: Vec<NodeId> = placements.iter().map(|(n, _)| *n).collect();
         sent.retain(|n, _| {
-            let keep = live.contains(n);
+            let keep = mounted.contains(n);
             if !keep {
                 host.destroy(crate::native::NativeId(crate::kernel::a11y::a11y_id(*n).0));
             }
             keep
         });
+        drop((k, host, sent));
+        // Painted next as the platform shows them: no placeholder, a cutout for the underlay.
+        for (n, shown) in live {
+            self.ui.kernel.borrow_mut().set_native_live(n, shown);
+        }
     }
 
     /// The node of a native view's id, if it still exists.

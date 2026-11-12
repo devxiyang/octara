@@ -55,6 +55,8 @@ struct Pass {
     insts: Vec<Inst>,
     /// Instances that composite a layer: (index in `insts`, the layer's pass).
     composites: Vec<(usize, usize)>,
+    /// Instances that cut an underlay view's hole (drawn with the cutout pipeline).
+    cutouts: Vec<usize>,
     opacity: f32,
 }
 
@@ -119,6 +121,8 @@ pub struct GpuRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
+    /// The same shader blending destination-out: clears toward transparent by coverage.
+    cutout: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     globals: wgpu::Buffer,
     mask: wgpu::Texture,
@@ -199,35 +203,46 @@ impl GpuRenderer {
             dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
             operation: wgpu::BlendOperation::Add,
         };
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("octara"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Inst>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &attributes,
-                })],
+        let make = |label: &'static str, blend: wgpu::BlendComponent| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<Inst>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &attributes,
+                    })],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState { color: blend, alpha: blend }),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipeline = make("octara", premultiplied);
+        let cutout = make(
+            "octara cutout",
+            wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
             },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState { color: premultiplied, alpha: premultiplied }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("octara globals"),
             size: std::mem::size_of::<Globals>() as u64,
@@ -264,6 +279,7 @@ impl GpuRenderer {
             device,
             queue,
             pipeline,
+            cutout,
             layout,
             globals,
             mask,
@@ -453,7 +469,22 @@ impl GpuRenderer {
                         });
                     }
                 }
-                // Platform views are the shell's (an underlay's cutout comes with the shell).
+                // An underlay view the platform shows: its hole, drawn destination-out.
+                Item::Native { source, rect, radius, cut: true, .. } => {
+                    let hole = Quad {
+                        source: *source,
+                        rect: *rect,
+                        radius: *radius,
+                        fill: Some(Color::BLACK),
+                        gradient: None,
+                        border: [0.0; 4],
+                        border_color: Color::TRANSPARENT,
+                    };
+                    let at = out.len();
+                    out.push(quad(&hole, scale, clip, clip_r));
+                    passes[current].cutouts.push(at);
+                }
+                // Otherwise its placeholder or snapshot, drawn before, shows.
                 Item::Native { .. } => {}
                 Item::PushClip { rect, radius, .. } => {
                     let outer = clips.last().map(|c| (c.0, c.1, c.2, c.3));
@@ -580,14 +611,27 @@ impl GpuRenderer {
             pass.set_vertex_buffer(0, buffer.slice(..));
             let base = offsets[i];
             let mut from = 0u32;
-            for &(at, layer) in &p.composites {
+            // Instances drawn on their own, in order: layer composites and cutouts.
+            let mut special: Vec<(usize, Option<usize>)> = p.composites.iter().map(|&(at, layer)| (at, Some(layer))).collect();
+            special.extend(p.cutouts.iter().map(|&at| (at, None)));
+            special.sort_unstable_by_key(|s| s.0);
+            for (at, layer) in special {
                 let at = at as u32;
                 if at > from {
                     pass.draw(0..6, base + from..base + at);
                 }
-                pass.set_bind_group(0, &layer_binds[layer - 1], &[]);
-                pass.draw(0..6, base + at..base + at + 1);
-                pass.set_bind_group(0, &bind, &[]);
+                match layer {
+                    Some(layer) => {
+                        pass.set_bind_group(0, &layer_binds[layer - 1], &[]);
+                        pass.draw(0..6, base + at..base + at + 1);
+                        pass.set_bind_group(0, &bind, &[]);
+                    }
+                    None => {
+                        pass.set_pipeline(&self.cutout);
+                        pass.draw(0..6, base + at..base + at + 1);
+                        pass.set_pipeline(&self.pipeline);
+                    }
+                }
                 from = at + 1;
             }
             let end = p.insts.len() as u32;

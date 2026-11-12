@@ -170,6 +170,9 @@ pub enum Item {
         rect: Rect,
         radius: f32,
         slot: crate::native::Slot,
+        /// The platform shows an underlay view here: the renderer clears the rect (rounded by
+        /// `radius`) to transparent, so the view behind the surface shows through.
+        cut: bool,
     },
     /// Clip what follows to `rect` (rounded by `radius`) until the matching `PopClip`.
     PushClip {

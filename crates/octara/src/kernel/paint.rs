@@ -294,6 +294,8 @@ impl Kernel {
         {
             if let Some(image) = &nv.snapshot {
                 out.push(Item::Image(crate::paint::ImagePaint { source: id, image: image.clone(), rect, bounds: rect, radius, opacity }));
+            } else if nv.live {
+                // The platform draws it.
             } else {
                 out.push(Item::Quad(Quad {
                     source: id,
@@ -305,7 +307,8 @@ impl Kernel {
                     border_color: fade(self.theme.get(Token::Border), opacity),
                 }));
             }
-            out.push(Item::Native { source: id, rect, radius, slot: nv.slot });
+            let cut = nv.live && nv.snapshot.is_none() && nv.slot == crate::native::Slot::Underlay;
+            out.push(Item::Native { source: id, rect, radius, slot: nv.slot, cut });
         }
 
         // A canvas's recording, in its content box, clipped to it.
@@ -539,6 +542,49 @@ impl Kernel {
 }
 
 impl Kernel {
+    /// What is hit before native view `view` inside `area`: the boxes (clipped) of the nodes
+    /// after it in hit order (painted later) that overlap it, as [`hit_test`](Self::hit_test)
+    /// would find them topmost there.
+    fn covering(&self, view: NodeId, area: Rect) -> Vec<Rect> {
+        let window = Rect { x: 0.0, y: 0.0, w: self.viewport.0, h: self.viewport.1 };
+        let mut out = Vec::new();
+        let mut passed = false;
+        self.cover(self.root, (0.0, 0.0), window, view, &area, &mut passed, &mut out);
+        out
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn cover(&self, id: NodeId, origin: (f32, f32), clip: Rect, view: NodeId, area: &Rect, passed: &mut bool, out: &mut Vec<Rect>) {
+        let n = self.node(id);
+        if n.layout.display == taffy::Display::None {
+            return;
+        }
+        let rect = self.rect_at(id, origin);
+        if id == view {
+            *passed = true;
+            return;
+        }
+        if *passed && id != self.overlay_layer {
+            let r = rect.intersect(&clip).intersect(area);
+            if !r.is_empty() {
+                out.push(r);
+            }
+        }
+        // A later subtree that cannot reach the view's area adds nothing; an earlier one may
+        // still hold the view.
+        if *passed && !self.ink_meets(id, rect, area) {
+            return;
+        }
+        let mut child_clip = clip;
+        if n.layout.overflow.x != taffy::Overflow::Visible || n.layout.overflow.y != taffy::Overflow::Visible {
+            child_clip = clip.intersect(&rect);
+        }
+        let origin = self.content_origin(id, rect);
+        for &c in &n.children {
+            self.cover(c, origin, child_clip, view, area, passed, out);
+        }
+    }
+
     /// Where each native view goes now: its box, corner radius, the clip around it (the
     /// innermost clipping ancestor's padding box, intersected with the outer ones, rounded by
     /// the innermost), its opacity and whether any of it shows.
@@ -579,6 +625,7 @@ impl Kernel {
                 p = an.parent;
             }
             let visible = shown && opacity > 0.0 && !rect.intersect(&clip).is_empty();
+            let covered = if nv.slot == crate::native::Slot::Underlay && visible { self.covering(id, rect.intersect(&clip)) } else { Vec::new() };
             out.push((
                 id,
                 crate::native::Placement {
@@ -590,6 +637,7 @@ impl Kernel {
                     clip_radius,
                     opacity,
                     visible,
+                    covered,
                 },
             ));
         }

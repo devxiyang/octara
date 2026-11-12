@@ -280,9 +280,10 @@ fn rect(x: f32, y: f32, w: f32, h: f32) -> NSRect {
 }
 
 impl Views {
-    fn create(&mut self, id: NativeId, kind: &str, props: &Value) {
-        if kind != "web" {
-            return;
+    /// Whether the platform shows it: web views in the overlay (underlay views come next).
+    fn create(&mut self, id: NativeId, kind: &str, slot: Slot, props: &Value) -> bool {
+        if kind != "web" || slot != Slot::Overlay {
+            return false;
         }
         let mtm = self.mtm;
         let config = unsafe { WKWebViewConfiguration::new(mtm) };
@@ -302,6 +303,7 @@ impl Views {
         clip.setHidden(true);
         load(&web, props);
         self.hosted.insert(id, Hosted { clip, web, delegate, loaded: source(props), placed: None });
+        true
     }
 
     fn update(&mut self, id: NativeId, props: &Value) {
@@ -396,8 +398,8 @@ impl Views {
 struct MacHost(Rc<RefCell<Views>>);
 
 impl NativeHost for MacHost {
-    fn create(&mut self, id: NativeId, kind: &str, props: &Value) {
-        self.0.borrow_mut().create(id, kind, props);
+    fn create(&mut self, id: NativeId, kind: &str, slot: Slot, props: &Value) -> bool {
+        self.0.borrow_mut().create(id, kind, slot, props)
     }
     fn update(&mut self, id: NativeId, props: &Value) {
         self.0.borrow_mut().update(id, props);

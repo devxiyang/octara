@@ -5838,6 +5838,13 @@
           "file": "crates/octara/src/kernel.rs"
         },
         {
+          "path": "octara::kernel::Kernel::set_native_live",
+          "kind": "method",
+          "sig": "pub fn set_native_live(&mut self, id: NodeId, live: bool)",
+          "docs": "Whether the platform shows a native view (its host's answer to `create`).",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::set_native_props",
           "kind": "method",
           "sig": "pub fn set_native_props(&mut self, id: NodeId, props: &Value) -> bool",
@@ -6457,6 +6464,13 @@
           "path": "octara::kernel::NativeContent::kind",
           "kind": "field",
           "sig": "pub kind: String",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::NativeContent::live",
+          "kind": "field",
+          "sig": "pub live: bool",
+          "docs": "The platform shows it (its host said so): no placeholder; an underlay view gets a\ncutout.",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -8965,7 +8979,7 @@
         {
           "path": "octara::native::HostCall::Create",
           "kind": "variant",
-          "sig": "Create { id: NativeId, kind: String, props: Value }",
+          "sig": "Create { id: NativeId, kind: String, slot: Slot, props: Value }",
           "file": "crates/octara/src/native.rs"
         },
         {
@@ -9043,8 +9057,8 @@
         {
           "path": "octara::native::NativeHost::create",
           "kind": "method",
-          "sig": "fn create(&mut self, id: NativeId, kind: &str, props: &Value)",
-          "docs": "A view of `kind` appears with `props`.",
+          "sig": "fn create(&mut self, id: NativeId, kind: &str, slot: Slot, props: &Value) -> bool",
+          "docs": "A view of `kind` appears in `slot` with `props`. Returns whether the platform shows it:\nwhen it does, the frame leaves the view's place to it (an underlay view gets a cutout);\nwhen not, a placeholder box is drawn there.",
           "file": "crates/octara/src/native.rs"
         },
         {
@@ -9152,6 +9166,13 @@
           "path": "octara::native::Placement::clip_radius",
           "kind": "field",
           "sig": "pub clip_radius: f32",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::Placement::covered",
+          "kind": "field",
+          "sig": "pub covered: Vec<Rect>",
+          "docs": "An underlay view's parts Octara content covers (what is painted after it and overlaps\nit, clipped): pointer input there goes to Octara, elsewhere in the view to the view.",
           "file": "crates/octara/src/native.rs"
         },
         {
@@ -9505,7 +9526,7 @@
         {
           "path": "octara::paint::Item::Native",
           "kind": "variant",
-          "sig": "Native { source: NodeId, rect: Rect, radius: f32, slot: Slot }",
+          "sig": "Native { source: NodeId, rect: Rect, radius: f32, slot: Slot, cut: bool }",
           "docs": "Where a native view is in paint order (it draws nothing here): renderers with platform\nviews clear an underlay view's cutout; `check` finds content painted over an overlay one.",
           "file": "crates/octara/src/paint.rs"
         },

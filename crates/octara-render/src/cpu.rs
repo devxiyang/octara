@@ -93,7 +93,9 @@ impl CpuRenderer {
                 Item::Image(i) => image(&mut t, i, scale),
                 Item::Glyphs(g) => self.glyph_run(&mut t, g, scale),
                 Item::Path(p) => self.path(&mut t, p, scale),
-                // Platform views are the shell's; the placeholder before it shows here.
+                // An underlay view the platform shows: a hole down to transparent.
+                Item::Native { rect, radius, cut: true, .. } => cutout(&mut t, *rect, *radius, scale),
+                // Otherwise its placeholder or snapshot, painted before, shows.
                 Item::Native { .. } => {}
                 Item::PushClip { rect, radius, .. } => {
                     let c = crate::shape::push_clip(t.clips.last().map(|c| (c.x, c.y, c.w, c.h)), *rect, *radius, scale);
@@ -232,6 +234,26 @@ fn image(t: &mut Target, i: &ImagePaint, scale: f32) {
                 continue;
             }
             blend_premultiplied(&mut t.pixels[(py * t.width + px) as usize], c.map(|v| v * k));
+        }
+    }
+}
+
+/// Clears `rect` (rounded by `radius`, inside the clip) toward transparent by its coverage: the
+/// cutout an underlay view shows through (destination-out).
+fn cutout(t: &mut Target, rect: Rect, radius: f32, scale: f32) {
+    let (x, y, w, h, r) = (rect.x * scale, rect.y * scale, rect.w * scale, rect.h * scale, radius * scale);
+    let x0 = (x.floor().max(0.0)) as u32;
+    let y0 = (y.floor().max(0.0)) as u32;
+    let x1 = ((x + w).ceil().max(0.0) as u32).min(t.width);
+    let y1 = ((y + h).ceil().max(0.0) as u32).min(t.height);
+    for py in y0..y1 {
+        for px in x0..x1 {
+            let (cx, cy) = (px as f32 + 0.5, py as f32 + 0.5);
+            let k = coverage(sd_round_rect(cx, cy, x, y, w, h, r)) * t.clip_coverage(cx, cy);
+            if k > 0.0 {
+                let p = &mut t.pixels[(py * t.width + px) as usize];
+                *p = p.map(|v| v * (1.0 - k));
+            }
         }
     }
 }
