@@ -42,7 +42,18 @@ pub struct Snapshot {
     pub selection: Option<String>,
     /// The app's open windows.
     pub windows: Vec<WindowInfo>,
+    /// What the window asks a person and waits for (a menu, a prompt, a file dialog): answer
+    /// with the `answer` request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asks: Vec<AskInfo>,
     pub root: Node,
+}
+
+/// A request waiting for its answer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AskInfo {
+    pub id: crate::ask::AskId,
+    pub ask: crate::ask::Ask,
 }
 
 /// One of the app's windows, as a snapshot lists it.
@@ -245,6 +256,12 @@ pub enum Request {
     },
     /// Copies the document selection (`mod+c`); the reply's `text` is what was copied.
     Copy,
+    /// Answers request `id` (see the snapshot's `asks`): `{"menu": "copy"}`, `{"prompt": 1}`,
+    /// `{"paths": ["/tmp/a"]}`, `{"new_path": null}`, …
+    Answer {
+        id: crate::ask::AskId,
+        answer: crate::ask::Answer,
+    },
     /// Fails unless every given property holds for the element `id` (or, with only `clean`, for
     /// the app).
     Expect(Expect),
@@ -488,6 +505,10 @@ pub fn handle(app: &mut Window, req: Request) -> Reply {
             (Some(f), Some(t), _) => step(app.select((&f.0, f.1), (&t.0, t.1))),
             (None, None, Some(r)) => step(app.select_all(&r)),
             _ => Reply::fail(&codes::BAD_REQUEST, "`select` takes `from` and `to` ([id, offset] each), or a `region`"),
+        },
+        Request::Answer { id, answer } => match app.answer(id, answer) {
+            Ok(()) => Reply::ok(),
+            Err(e) => Reply::fail(&codes::STEP_FAILED, &e),
         },
         Request::Copy => match app.selected_text() {
             Some(text) => {

@@ -11,7 +11,6 @@
 use crate::native::NativeChange;
 use crate::paint::Rect;
 use std::any::Any;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// The system an app runs on (one per app).
@@ -31,18 +30,6 @@ pub trait Platform {
     /// driven step by step.
     fn waker(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
         None
-    }
-    /// Asks for files or directories to open; `reply` gets them (`None`: cancelled), at once or
-    /// later from any thread.
-    fn prompt_for_paths(&mut self, options: &PathPromptOptions, reply: Reply<Option<Vec<PathBuf>>>) {
-        let _ = options;
-        reply(None)
-    }
-    /// Asks where to save, in `directory`, suggesting `name`; `reply` gets the path (`None`:
-    /// cancelled).
-    fn prompt_for_new_path(&mut self, directory: &Path, name: Option<&str>, reply: Reply<Option<PathBuf>>) {
-        let _ = (directory, name);
-        reply(None)
     }
     /// Opens `url` with the system (the browser, the mail app).
     fn open_url(&mut self, url: &str) {
@@ -98,6 +85,12 @@ pub trait PlatformWindow {
     /// What changed since the last frame: apply native view changes (placements with the next
     /// present), follow the text input, draw again when asked.
     fn present(&mut self, frame: Frame);
+    /// Whether the platform shows `ask` itself (a native menu, alert or file dialog); else the
+    /// app draws menus and prompts in the window, and other requests wait for an answer.
+    fn shows_ask(&self, ask: &crate::ask::Ask) -> bool {
+        let _ = ask;
+        false
+    }
     /// Whether the platform shows native views of `kind` in `slot` (else they draw as
     /// placeholders, and an underlay view gets no cutout).
     fn shows_native(&self, kind: &str, slot: crate::native::Slot) -> bool {
@@ -122,23 +115,6 @@ pub trait PlatformWindow {
 
 /// Where a platform's answer goes (from any thread).
 pub type Reply<T> = Box<dyn FnOnce(T) + Send>;
-
-/// What a dialog for paths to open lets a person pick (GPUI's `PathPromptOptions`).
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct PathPromptOptions {
-    pub files: bool,
-    pub directories: bool,
-    pub multiple: bool,
-    /// The dialog's prompt (its title or button).
-    pub prompt: Option<String>,
-}
-
-/// A dialog a headless run was asked for.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Prompted {
-    Paths(PathPromptOptions),
-    NewPath { directory: PathBuf, name: Option<String> },
-}
 
 /// What the clipboard holds: text, an image, or both (a copied picture with its description).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -221,6 +197,13 @@ pub struct Frame {
     pub redraw: bool,
     /// How the pointer looks now (over the element it is on).
     pub cursor: CursorStyle,
+    /// Requests opened since the last frame that the platform shows ([`shows_ask`]).
+    ///
+    /// [`shows_ask`]: PlatformWindow::shows_ask
+    pub asks: Vec<(crate::ask::AskId, crate::ask::Ask)>,
+    /// Requests shown that the app no longer waits for (answered otherwise, or withdrawn): the
+    /// platform closes them.
+    pub withdrawn: Vec<crate::ask::AskId>,
     /// The element a person picked ([`Window::set_picking`](crate::app::Window::set_picking)),
     /// its line already on the clipboard: a backend may print or show it.
     pub picked: Option<crate::inspect::Picked>,
@@ -244,11 +227,6 @@ pub struct HeadlessPlatform {
     pub clipboard_image: Option<crate::image::Image>,
     /// Every URL opened, in order.
     pub opened_urls: Vec<String>,
-    /// Every dialog asked for, in order.
-    pub prompted: Vec<Prompted>,
-    /// The answers dialogs get, in order (none left: cancelled). A dialog for a new path gets
-    /// the first path of its answer.
-    pub answers: std::collections::VecDeque<Option<Vec<PathBuf>>>,
     /// The window the next one opened is (a test's fake platform views).
     pub next_window: Option<HeadlessWindow>,
 }
@@ -269,14 +247,6 @@ impl Platform for HeadlessPlatform {
     }
     fn read_image(&mut self) -> Option<crate::image::Image> {
         self.clipboard_image.clone()
-    }
-    fn prompt_for_paths(&mut self, options: &PathPromptOptions, reply: Reply<Option<Vec<PathBuf>>>) {
-        self.prompted.push(Prompted::Paths(options.clone()));
-        reply(self.answers.pop_front().flatten())
-    }
-    fn prompt_for_new_path(&mut self, directory: &Path, name: Option<&str>, reply: Reply<Option<PathBuf>>) {
-        self.prompted.push(Prompted::NewPath { directory: directory.to_owned(), name: name.map(str::to_owned) });
-        reply(self.answers.pop_front().flatten().and_then(|p| p.into_iter().next()))
     }
     fn write_image(&mut self, image: &crate::image::Image) {
         self.clipboard = None;
@@ -315,6 +285,11 @@ pub struct HeadlessWindow {
     pub picked: Vec<crate::inspect::Picked>,
     /// How the pointer looks.
     pub cursor: CursorStyle,
+    /// Pretend the platform shows every request (it waits for an answer as input).
+    pub shows_asks: bool,
+    /// Every request presented, and those withdrawn.
+    pub asks: Vec<(crate::ask::AskId, crate::ask::Ask)>,
+    pub withdrawn: Vec<crate::ask::AskId>,
 }
 
 impl PlatformWindow for HeadlessWindow {
@@ -322,8 +297,13 @@ impl PlatformWindow for HeadlessWindow {
         self.native.extend(frame.native);
         self.text_input = frame.text_input;
         self.cursor = frame.cursor;
+        self.asks.extend(frame.asks);
+        self.withdrawn.extend(frame.withdrawn);
         self.picked.extend(frame.picked);
         self.frames += 1;
+    }
+    fn shows_ask(&self, _: &crate::ask::Ask) -> bool {
+        self.shows_asks
     }
     fn shows_native(&self, _: &str, _: crate::native::Slot) -> bool {
         self.shows_native

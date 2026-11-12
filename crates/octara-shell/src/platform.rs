@@ -55,38 +55,6 @@ impl Platform for WinitPlatform {
             let _ = c.set_image(data);
         }
     }
-    fn prompt_for_paths(
-        &mut self,
-        o: &octara::platform::PathPromptOptions,
-        reply: octara::platform::Reply<Option<Vec<std::path::PathBuf>>>,
-    ) {
-        let mut d = rfd::AsyncFileDialog::new();
-        if let Some(p) = &o.prompt {
-            d = d.set_title(p);
-        }
-        // Made here (the main thread: the panel shows now), awaited on a thread of its own.
-        let paths: std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<std::path::PathBuf>>> + Send>> =
-            match (o.directories && !o.files, o.multiple) {
-                (true, true) => Box::pin(async move { Some(d.pick_folders().await?.iter().map(|h| h.path().to_owned()).collect()) }),
-                (true, false) => Box::pin(async move { Some(vec![d.pick_folder().await?.path().to_owned()]) }),
-                (false, true) => Box::pin(async move { Some(d.pick_files().await?.iter().map(|h| h.path().to_owned()).collect()) }),
-                (false, false) => Box::pin(async move { Some(vec![d.pick_file().await?.path().to_owned()]) }),
-            };
-        std::thread::spawn(move || reply(pollster::block_on(paths)));
-    }
-    fn prompt_for_new_path(
-        &mut self,
-        directory: &std::path::Path,
-        name: Option<&str>,
-        reply: octara::platform::Reply<Option<std::path::PathBuf>>,
-    ) {
-        let mut d = rfd::AsyncFileDialog::new().set_directory(directory);
-        if let Some(n) = name {
-            d = d.set_file_name(n);
-        }
-        let path = d.save_file();
-        std::thread::spawn(move || reply(pollster::block_on(path).map(|h| h.path().to_owned())));
-    }
     fn open_url(&mut self, url: &str) {
         if let Err(e) = open::that_detached(url) {
             eprintln!("octara-shell: cannot open {url}: {e}");
@@ -361,6 +329,44 @@ impl WinitWindow {
         true
     }
 
+    /// Shows a request the platform takes (file dialogs: rfd's, made here on the main thread so
+    /// the panel shows now, awaited on a thread of their own); its answer comes back as input.
+    fn show_ask(&self, id: octara::ask::AskId, ask: octara::ask::Ask) {
+        use octara::ask::{Answer, Ask};
+        use std::future::Future;
+        use std::pin::Pin;
+        let answer: Pin<Box<dyn Future<Output = Answer> + Send>> = match ask {
+            Ask::Paths(o) => {
+                let mut d = rfd::AsyncFileDialog::new();
+                if let Some(p) = &o.prompt {
+                    d = d.set_title(p);
+                }
+                let to_paths =
+                    |hs: Option<Vec<rfd::FileHandle>>| Answer::Paths(hs.map(|hs| hs.iter().map(|h| h.path().to_owned()).collect()));
+                match (o.directories && !o.files, o.multiple) {
+                    (true, true) => Box::pin(async move { to_paths(d.pick_folders().await) }),
+                    (true, false) => Box::pin(async move { to_paths(d.pick_folder().await.map(|h| vec![h])) }),
+                    (false, true) => Box::pin(async move { to_paths(d.pick_files().await) }),
+                    (false, false) => Box::pin(async move { to_paths(d.pick_file().await.map(|h| vec![h])) }),
+                }
+            }
+            Ask::NewPath { directory, name } => {
+                let mut d = rfd::AsyncFileDialog::new().set_directory(directory);
+                if let Some(n) = name {
+                    d = d.set_file_name(n);
+                }
+                let path = d.save_file();
+                Box::pin(async move { Answer::NewPath(path.await.map(|h| h.path().to_owned())) })
+            }
+            _ => return,
+        };
+        let (proxy, window) = (self.shared.proxy.clone(), self.window.id());
+        std::thread::spawn(move || {
+            let answer = pollster::block_on(answer);
+            let _ = proxy.send_event(ShellEvent::Answer { window, id, answer });
+        });
+    }
+
     /// Records an input for latency tracing (the first one not yet shown).
     pub(crate) fn traced(&mut self, at: Instant, what: &'static str) {
         if self.shared.trace && self.unshown.is_none() {
@@ -406,6 +412,12 @@ impl PlatformWindow for WinitWindow {
         if frame.redraw || placed {
             self.pending = true;
         }
+        for (id, ask) in frame.asks {
+            self.show_ask(id, ask);
+        }
+    }
+    fn shows_ask(&self, ask: &octara::ask::Ask) -> bool {
+        matches!(ask, octara::ask::Ask::Paths(_) | octara::ask::Ask::NewPath { .. })
     }
     fn shows_native(&self, kind: &str, slot: octara::native::Slot) -> bool {
         #[cfg(target_os = "macos")]

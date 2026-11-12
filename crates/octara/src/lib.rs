@@ -20,6 +20,7 @@ pub use accesskit;
 pub use serde_json;
 
 pub mod app;
+pub mod ask;
 pub mod canvas;
 pub mod capture;
 pub mod conformance;
@@ -40,6 +41,7 @@ pub mod window;
 
 pub mod prelude {
     pub use crate::app::{App, Drag, DragPhase, Event, InputEvent, Key, KeyEvent, Modifiers, Window};
+    pub use crate::ask::{Menu, MenuItem, PathPromptOptions, PromptLevel, popup_menu, prompt, prompt_for_new_path, prompt_for_paths};
     pub use crate::canvas::Canvas;
     pub use crate::icon::Icon;
     pub use crate::image::{Image, ObjectFit};
@@ -52,7 +54,7 @@ pub mod prelude {
     pub use crate::native::{NativeEvent, Slot};
     pub use crate::paint::Rect;
     pub use crate::path::{FillRule, LineCap, LineJoin, Path, Stroke, Transform, point};
-    pub use crate::platform::{ClipboardItem, CursorStyle, PathPromptOptions};
+    pub use crate::platform::{ClipboardItem, CursorStyle};
     pub use crate::reactive::graph::{Memo, ReadSignal, Signal, memo, provide, state, untrack, use_context, watch};
     pub use crate::reactive::list::{Derived, FlatItem, FlatKey, GroupInfo, Groups, List, Source, list};
     pub use crate::reactive::text::{LiveText, live_text};

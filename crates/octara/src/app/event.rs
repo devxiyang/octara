@@ -18,6 +18,8 @@ pub enum InputEvent {
     FileDrag(FileDrag),
     /// The window became the active one (key on macOS, foreground elsewhere) or stopped being.
     Active(bool),
+    /// A person answered a request (a menu, a prompt, a file dialog: [`crate::ask`]).
+    Answer { id: crate::ask::AskId, answer: crate::ask::Answer },
     /// A mouse, touch or pen event, in logical pixels from the window's top-left corner.
     Pointer(PointerEvent),
     /// The pointer left the window: nothing is hovered.
@@ -63,6 +65,7 @@ impl Window {
         }
         match event {
             InputEvent::FileDrag(ev) => self.on_file_drag(ev),
+            InputEvent::Answer { id, answer } => self.on_answer(id, answer),
             InputEvent::Active(on) => {
                 self.input_frame(|| self.w.kernel.borrow_mut().set_window_active(on));
                 true

@@ -61,11 +61,16 @@ platform is presented a `Frame` after each operation.
 - The clipboard holds text, an image or both: `ClipboardItem` (`new_string`, `new_image`, `text`,
   `image`); `write_to_clipboard(item)` and `read_from_clipboard()` (GPUI's names); the
   platform's `read_text` / `write_text` and `read_image` / `write_image` (the shell: arboard).
-- File dialogs: `prompt_for_paths(PathPromptOptions { files, directories, multiple, prompt })`
-  and `prompt_for_new_path(directory, name)` (GPUI's names) are awaited in a task; `None` when
-  cancelled. The platform answers through a reply callable from any thread (the shell: rfd's
-  async dialogs, made on the main thread and awaited on a thread of their own; headless: the
-  answers queued in `HeadlessPlatform::answers`, the dialogs asked recorded in `prompted`).
+- Requests ([`octara::ask`]): what an app asks a person (a menu, a prompt, paths to open, where
+  to save) is its window's state: `Window::asks` and the snapshot's `asks` list it. A window
+  presents a request in its `Frame` (`asks`) when its platform window shows that kind
+  (`shows_ask`), and tells it when one no longer waits (`withdrawn`); the answer comes back as
+  input (`InputEvent::Answer { id, answer }`), so a session that answered one replays, and tests
+  and agents answer with `Window::answer` or the `answer` request. A task awaits it:
+  `prompt_for_paths(PathPromptOptions { files, directories, multiple, prompt })` and
+  `prompt_for_new_path(directory, name)` (GPUI's names), `None` when cancelled. The shell shows
+  file dialogs with rfd (made on the main thread, awaited on a thread of their own, the answer
+  sent through the loop's proxy).
 - Files dragged from the system arrive as `InputEvent::FileDrag` (`Over` a point with their
   paths, `Drop`, `Leave`): the element at or above the point with `on_drop` is `DRAG_OVER`
   (styled by `drag_over`), and gets the paths when they drop. The shell turns winit's

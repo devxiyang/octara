@@ -47,6 +47,12 @@ pub enum ShellEvent {
     Capture,
     /// A window's frame clock ticked (a display refresh).
     Frame(WindowId),
+    /// A person answered a request a window's platform showed (a file dialog, a menu).
+    Answer {
+        window: WindowId,
+        id: octara::ask::AskId,
+        answer: octara::ask::Answer,
+    },
 }
 
 impl From<accesskit_winit::Event> for ShellEvent {
@@ -464,6 +470,14 @@ impl ApplicationHandler<ShellEvent> for Shell {
             }
             ShellEvent::Capture => {
                 self.capture_step();
+                return;
+            }
+            ShellEvent::Answer { window, id, answer } => {
+                self.tick();
+                if let Some(mut w) = self.window_of(window) {
+                    w.event(InputEvent::Answer { id, answer });
+                }
+                self.show();
                 return;
             }
             ShellEvent::Accessibility(e) => e,

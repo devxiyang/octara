@@ -1,5 +1,6 @@
 //! The app runtime: mounts a root view, dispatches events, lays out, and rebuilds for hot reload.
 
+mod asks;
 mod behavior;
 mod drive;
 mod edit;
@@ -216,6 +217,11 @@ pub(crate) struct WindowState {
     selected_texts: RefCell<Vec<NodeId>>,
     /// The region whose selection assistive technology was given.
     selection_region: Cell<Option<NodeId>>,
+    /// Requests waiting for an answer, those to present, those withdrawn, the next number.
+    asks: RefCell<Vec<asks::Pending>>,
+    asks_new: RefCell<Vec<(crate::ask::AskId, crate::ask::Ask)>>,
+    asks_withdrawn: RefCell<Vec<crate::ask::AskId>>,
+    ask_next: Cell<crate::ask::AskId>,
     /// How lists order their rows, by container (for selections through them).
     pub(crate) lists: RefCell<std::collections::HashMap<NodeId, selection::ListOrder>>,
 }
@@ -236,6 +242,11 @@ pub(crate) fn window() -> Rc<WindowState> {
     let app = app_state();
     let w = app.windows.borrow().get(WindowId::of(owner)).cloned();
     w.expect("the window this code belongs to is closed")
+}
+
+/// A handle on the window whose code is running.
+pub(crate) fn current() -> Window {
+    Window { app: app_state(), w: window() }
 }
 
 fn enter_app<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
@@ -342,6 +353,10 @@ impl WindowState {
             selection: RefCell::default(),
             selected_texts: RefCell::default(),
             selection_region: Cell::new(None),
+            asks: RefCell::default(),
+            asks_new: RefCell::default(),
+            asks_withdrawn: RefCell::default(),
+            ask_next: Cell::new(1),
             lists: RefCell::default(),
         }
     }
@@ -959,6 +974,7 @@ impl Window {
             pending: self.app().pending().len(),
             window: self.w.id.number(),
             selection: self.selected_text().map(|t| t.chars().take(2000).collect()),
+            asks: self.asks().into_iter().map(|(id, ask)| crate::inspect::AskInfo { id, ask }).collect(),
             windows: self
                 .app()
                 .each()
@@ -1486,14 +1502,23 @@ impl Window {
         let redraw = picking || generation != self.w.presented.get() || self.w.kernel.borrow_mut().in_motion();
         let native = std::mem::take(&mut *self.w.native_changes.borrow_mut());
         let cursor = self.cursor();
-        if native.is_empty() && !redraw && picked.is_none() && text_input == self.w.text_input.get() && cursor == self.w.cursor.get() {
+        let asks = std::mem::take(&mut *self.w.asks_new.borrow_mut());
+        let withdrawn = std::mem::take(&mut *self.w.asks_withdrawn.borrow_mut());
+        if native.is_empty()
+            && !redraw
+            && picked.is_none()
+            && text_input == self.w.text_input.get()
+            && cursor == self.w.cursor.get()
+            && asks.is_empty()
+            && withdrawn.is_empty()
+        {
             return;
         }
         self.w.text_input.set(text_input);
         self.w.cursor.set(cursor);
         self.w.presented.set(generation);
         self.w.frames.set(self.w.frames.get() + 1);
-        self.w.platform.borrow_mut().present(crate::platform::Frame { native, text_input, redraw, cursor, picked });
+        self.w.platform.borrow_mut().present(crate::platform::Frame { native, text_input, redraw, cursor, picked, asks, withdrawn });
     }
 }
 

@@ -237,34 +237,64 @@ fn the_clipboard_takes_text_or_an_image() {
 }
 
 #[test]
-fn dialogs_answer_the_task_that_asked() {
-    let platform = octara::platform::HeadlessPlatform {
-        answers: [Some(vec!["/tmp/a.md".into(), "/tmp/b.md".into()]), None].into(),
-        ..Default::default()
-    };
+fn a_request_waits_in_the_window_and_its_answer_comes_as_input() {
+    use octara::ask::{Answer, Ask};
+    let mut w = Window::headless(|| {
+        let picked = state("picked", String::new);
+        col()
+            .child(el().id("open").size_4().on_press(move || {
+                spawn(async move {
+                    let options = PathPromptOptions { files: true, multiple: true, ..Default::default() };
+                    let paths = prompt_for_paths(options).await;
+                    picked.set(format!("{paths:?}"));
+                });
+            }))
+            .child(text(move || picked.get()).id("picked"))
+            .into()
+    });
+    w.app().start_recording();
+    w.tap("open").unwrap();
+    let asks = w.asks();
+    assert!(matches!(asks.as_slice(), [(_, Ask::Paths(o))] if o.multiple), "{asks:?}");
+    let id = asks[0].0;
+    assert!(w.answer(id, Answer::Prompt(Some(0))).is_err(), "an answer of another kind");
+    w.answer(id, Answer::Paths(Some(vec!["/tmp/a.md".into(), "/tmp/b.md".into()]))).unwrap();
+    assert!(w.asks().is_empty());
+    assert_eq!(w.kernel().text(w.kernel().find("picked").unwrap()), r#"Some(["/tmp/a.md", "/tmp/b.md"])"#);
+    // The answer was input: a replay ends the same.
+    let recording = w.app().stop_recording();
+    assert!(recording.events.iter().any(|r| matches!(r.event, InputEvent::Answer { .. })));
+    // Dismissed.
+    w.tap("open").unwrap();
+    let id = w.asks()[0].0;
+    w.answer(id, Answer::Paths(None)).unwrap();
+    assert_eq!(w.kernel().text(w.kernel().find("picked").unwrap()), "None", "cancelled");
+}
+
+#[test]
+fn a_platform_that_shows_requests_is_presented_them_and_told_when_they_go() {
+    use octara::ask::{Answer, Ask};
+    use octara::platform::{HeadlessPlatform, HeadlessWindow, WindowOptions};
+    let platform = HeadlessPlatform::with_window(HeadlessWindow { shows_asks: true, ..Default::default() });
     let app = App::new(platform);
     let mut w = app
-        .open_window(octara::platform::WindowOptions::new("Files"), || {
-            let picked = state("picked", String::new);
-            col()
-                .child(el().id("open").size_4().on_press(move || {
-                    spawn(async move {
-                        let options = PathPromptOptions { files: true, multiple: true, ..Default::default() };
-                        let paths = prompt_for_paths(options).await;
-                        picked.set(format!("{paths:?}"));
+        .open_window(WindowOptions::new("Files"), || {
+            el().id("save")
+                .size_4()
+                .on_press(|| {
+                    spawn(async {
+                        let _ = prompt_for_new_path(std::path::Path::new("/tmp"), Some("note.md")).await;
                     });
-                }))
-                .child(text(move || picked.get()).id("picked"))
+                })
                 .into()
         })
         .unwrap();
-    w.tap("open").unwrap();
-    app.settle();
-    assert_eq!(w.kernel().text(w.kernel().find("picked").unwrap()), r#"Some(["/tmp/a.md", "/tmp/b.md"])"#);
-    w.tap("open").unwrap();
-    app.settle();
-    assert_eq!(w.kernel().text(w.kernel().find("picked").unwrap()), "None", "cancelled");
-    let p = app.platform();
-    let prompted = &p.as_any().downcast_ref::<octara::platform::HeadlessPlatform>().unwrap().prompted;
-    assert_eq!(prompted.len(), 2);
+    w.tap("save").unwrap();
+    let presented = |w: &Window| w.platform_window().as_any().downcast_ref::<HeadlessWindow>().unwrap().asks.clone();
+    let shown = presented(&w);
+    assert!(matches!(shown.as_slice(), [(_, Ask::NewPath { name: Some(n), .. })] if n == "note.md"), "{shown:?}");
+    // Answered elsewhere (an agent): the platform is told to close it.
+    w.answer(shown[0].0, Answer::NewPath(None)).unwrap();
+    let withdrawn = w.platform_window().as_any().downcast_ref::<HeadlessWindow>().unwrap().withdrawn.clone();
+    assert_eq!(withdrawn, vec![shown[0].0]);
 }
