@@ -19,6 +19,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{Key as WKey, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+#[cfg(target_os = "macos")]
+mod native_mac;
+
 /// Events sent to the loop from elsewhere: AccessKit's requests, and the app's waker (another
 /// thread finished background work or sent on a channel).
 #[derive(Debug)]
@@ -92,6 +95,9 @@ pub fn run_with(options: Options, root: impl Fn() -> View + 'static) {
         presented: None,
         done: false,
         secure: false,
+        resized: false,
+        #[cfg(target_os = "macos")]
+        native: None,
     };
     event_loop.run_app(&mut shell).expect("event loop");
 }
@@ -161,6 +167,11 @@ struct Shell {
     done: bool,
     /// A secure field has focus: the input method is off and (macOS) secure input on.
     secure: bool,
+    /// The window resized since the last frame (native views present with the frame).
+    resized: bool,
+    /// The window's native views (web views), placed with each frame.
+    #[cfg(target_os = "macos")]
+    native: Option<native_mac::Native>,
 }
 
 fn modifiers(m: ModifiersState) -> Modifiers {
@@ -289,26 +300,49 @@ impl Shell {
         if let Some(app) = &mut self.app {
             app.resize(width as f32 / scale, height as f32 / scale);
         }
+        self.resized = true;
         self.redraw();
     }
 
     fn draw(&mut self) {
         let scale = self.scale();
         let (Some(g), Some(app)) = (&mut self.gpu, &self.app) else { return };
+        // Settling the frame hands native views their placements; they are applied with this
+        // frame's present, in one transaction.
+        let list = app.display_list();
+        #[cfg(target_os = "macos")]
+        let transaction = self.native.as_ref().is_some_and(|n| n.begin_frame(&g.surface, self.resized));
+        self.resized = false;
         let frame = match g.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => Some(f),
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 g.surface.configure(g.renderer.device(), &g.config);
                 g.window.request_redraw();
-                return;
+                None
             }
-            _ => return,
+            _ => None,
         };
-        let view = frame.texture.create_view(&Default::default());
         let drawing = Instant::now();
-        g.renderer.draw(&app.display_list(), scale, &view, (g.config.width, g.config.height));
-        g.window.pre_present_notify();
-        g.renderer.queue().present(frame);
+        if let Some(frame) = &frame {
+            let view = frame.texture.create_view(&Default::default());
+            g.renderer.draw(&list, scale, &view, (g.config.width, g.config.height));
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(n) = &self.native {
+            n.place();
+        }
+        let shown = frame.is_some();
+        if let Some(frame) = frame {
+            g.window.pre_present_notify();
+            g.renderer.queue().present(frame);
+        }
+        #[cfg(target_os = "macos")]
+        if transaction {
+            native_mac::Native::end_frame();
+        }
+        if !shown {
+            return;
+        }
         self.presented = Some(Instant::now());
         if let Some((at, what, handled)) = self.unshown.take() {
             let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
@@ -432,6 +466,13 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 self.tick();
                 if let Some(app) = &mut self.app {
                     app.poll();
+                    // Events native views sent (a page loaded, its title changed).
+                    #[cfg(target_os = "macos")]
+                    if let Some(n) = &self.native {
+                        for (id, event) in n.inbox.take() {
+                            app.native_event(id, event);
+                        }
+                    }
                 }
                 self.redraw();
                 return;
@@ -506,6 +547,16 @@ impl ApplicationHandler<ShellEvent> for Shell {
         app.set_waker(move || {
             let _ = proxy.send_event(ShellEvent::Wake);
         });
+        #[cfg(target_os = "macos")]
+        {
+            let proxy = self.proxy.clone();
+            if let Some((native, host)) = native_mac::Native::new(&window, move || {
+                let _ = proxy.send_event(ShellEvent::Wake);
+            }) {
+                app.set_native_host(host);
+                self.native = Some(native);
+            }
+        }
         if let Ok(c) = arboard::Clipboard::new() {
             app.set_clipboard(Box::new(SystemClipboard(c)));
         }

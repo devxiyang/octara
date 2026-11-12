@@ -1,6 +1,6 @@
 # Native Island
 
-Based on the [research](../research/native-island.md). Status: confirmed; step 1 implemented.
+Based on the [research](../research/native-island.md). Status: confirmed; steps 1 and 2 implemented (step 2 without snapshots, below).
 
 ## What is native
 
@@ -32,7 +32,9 @@ Based on the [research](../research/native-island.md). Status: confirmed; step 1
   inserted below every subview, the Metal layer kept above it; the Metal layer becomes
   non-opaque (premultiplied alpha) when the first underlay view appears.
 - A view's clip is its container's frame with `masksToBounds` and a corner radius; the view sits
-  inside at its offset. Corner radii are per corner (four values).
+  inside at its offset. One radius per corner box, as Octara's style has (four values when the
+  style gets per-corner radii). The container (flipped, top-left origin) passes the pointer
+  through except over its view.
 - Placements and the frame's present happen inside one `CATransaction` (actions disabled), with
   `presentsWithTransaction` on only while a native view moves or the window is resized (one flag
   owning its causes, as Rune's); wgpu-hal exposes the switch on the Metal surface.
@@ -77,14 +79,25 @@ Based on the [research](../research/native-island.md). Status: confirmed; step 1
   (`App::native_size`). After each frame the app tells its `NativeHost` what changed (create,
   update, place, destroy); headless, a `RecordingHost` keeps the calls. The display list marks
   each view's place in paint order (`Item::Native`) after its placeholder.
+- As built (step 2, `octara-shell`'s macOS host): kind `web` is a `WKWebView` (props `url`, or
+  `html` with an optional `base_url`; a change of these reloads, other props do not; events
+  `load` `{url}`, `title` `{title}` (observed, so a script's title change is seen too) and
+  `fail` `{error}`). Each view sits in a clip container added to winit's view when first placed.
+  The app's settle hands placements to the host, which keeps them; the shell settles before
+  taking the surface texture, opens a `CATransaction` (actions off) while views exist, draws,
+  applies the placements, presents and commits, and turns the Metal layer's
+  `presentsWithTransaction` on for frames where a view moves, resizes or shows, or the window
+  resizes. Delegate events go to an inbox and wake the loop; the shell hands them to
+  `App::native_event`. Other kinds and underlay views keep their placeholder (step 3).
 
 ## Steps
 
 1. Elements, placements, the headless fake and `check` rules (slot conflicts, clips, labels).
    Done.
 2. macOS overlay: WKWebView (`url` or `html` props; `load` and `title` events), clip containers,
-   per-corner radii, placements in the frame's transaction with `presentsWithTransaction` while
-   moving, view snapshots for captures.
+   placements in the frame's transaction with `presentsWithTransaction` while moving. Done as
+   built below; snapshots move to step 4, where the shell first captures (inspect, agents), and
+   per-corner radii wait for the style to have them.
 3. macOS underlay: the host view below, a non-opaque Metal layer, the cutout cleared in paint
    order, events forwarded to the underlay view; a map (`MKMapView`) as the first kind.
 4. Focus targets in the Tab order, Escape back, accessibility joining; views created near the

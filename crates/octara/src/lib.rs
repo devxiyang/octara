@@ -11,6 +11,8 @@
 //! Most apps only need the [`prelude`].
 
 pub use accesskit;
+/// Native views' props and events are JSON values.
+pub use serde_json;
 
 pub mod app;
 pub mod canvas;
@@ -40,9 +42,11 @@ pub mod prelude {
         TextStep, Theme, Token, linear_color_stop, linear_gradient, rgb,
     };
     pub use crate::motion::{Curve, Spring};
+    pub use crate::native::{NativeEvent, Slot};
     pub use crate::reactive::graph::{Memo, ReadSignal, Signal, memo, provide, state, untrack, use_context, watch};
     pub use crate::reactive::list::{Derived, FlatItem, FlatKey, GroupInfo, Groups, List, Source, list};
     pub use crate::reactive::text::{LiveText, live_text};
     pub use crate::task::{Load, Receiver, Resource, Sender, Task, background, channel, interval, resource, sleep, spawn};
     pub use crate::view::*;
+    pub use serde_json::json;
 }

@@ -8607,6 +8607,9 @@
           "sig": "pub struct NativeEvent { .. }",
           "docs": "An event a native view sends back: a name and its data (`load` with a URL, `region` with a\nmap's bounds).",
           "file": "crates/octara/src/native.rs",
+          "aliases": [
+            "octara::prelude::NativeEvent"
+          ],
           "traits": [
             "Clone",
             "Debug",
@@ -8813,6 +8816,9 @@
           "sig": "pub enum Slot",
           "docs": "Where a native view is stacked: behind Octara's surface or above it.",
           "file": "crates/octara/src/native.rs",
+          "aliases": [
+            "octara::prelude::Slot"
+          ],
           "traits": [
             "Clone",
             "Copy",
@@ -10012,6 +10018,13 @@
           "target": "accesskit::Role"
         },
         {
+          "path": "octara::prelude::json",
+          "kind": "reexport",
+          "sig": "pub use serde_json::json",
+          "file": "crates/octara/src/lib.rs",
+          "target": "serde_json::json"
+        },
+        {
           "path": "octara::reactive",
           "kind": "module",
           "sig": "pub mod reactive",
@@ -11003,6 +11016,14 @@
           "aliases": [
             "octara::prelude::live_text"
           ]
+        },
+        {
+          "path": "octara::serde_json",
+          "kind": "reexport",
+          "sig": "pub use serde_json",
+          "docs": "Native views' props and events are JSON values.",
+          "file": "crates/octara/src/lib.rs",
+          "target": "serde_json"
         },
         {
           "path": "octara::task",

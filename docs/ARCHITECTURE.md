@@ -28,7 +28,7 @@ Principles:
 | `octara` | The core: reactive runtime, retained kernel, views, app runtime, tasks, motion, display list, paths, icons, canvas, inspector and checks, diagnostics |
 | `octara-kit` | Components (buttons, fields, select, switch, …) built only on `octara`'s public API and theme tokens |
 | `octara-render` | Display list → pixels: the CPU reference renderer and the wgpu renderer |
-| `octara-shell` | Desktop window (winit): input, IME, scale, redraw on demand, AccessKit |
+| `octara-shell` | Desktop window (winit): input, IME, scale, redraw on demand, AccessKit, native views (macOS: WKWebView, placed with the frame) |
 | `octara-icons` | The Lucide set as path data (generated, checked in) |
 | `octara-fonts` | A CJK subset for deterministic tests and screenshots |
 | `octara-cli` | The `octara` command: `check`, `inspect`, `run`, `vocab`, `explain`, `skill`, `api` |

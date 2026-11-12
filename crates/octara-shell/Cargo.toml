@@ -13,3 +13,12 @@ octara = { workspace = true, features = ["system-fonts"] }
 octara-render.workspace = true
 pollster.workspace = true
 winit.workspace = true
+
+# Native views (AppKit, WebKit) and the frame's Core Animation transaction.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true
+objc2-quartz-core.workspace = true
+objc2-web-kit.workspace = true
+serde_json.workspace = true

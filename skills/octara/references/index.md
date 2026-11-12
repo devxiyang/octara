@@ -12,6 +12,7 @@ Prelude (`use octara::prelude::*`), by module:
 - image: Image, ObjectFit
 - kernel: linear_color_stop, linear_gradient, rgb, Align, BoxShadow, Breakpoint, Color, ContainerStep, Family, Fill, Length, Paint, Placement, RadiusStep, ShadowStep, Side, State, TextStep, Theme, Token
 - motion: Curve, Spring
+- native: NativeEvent, Slot
 - paint: Rect
 - path: point, FillRule, LineCap, LineJoin, Path, Stroke, Transform
 - reactive: list, live_text, memo, provide, state, untrack, use_context, watch, Derived, FlatItem, FlatKey, GroupInfo, Groups, List, LiveText, Memo, ReadSignal, Signal, Source
@@ -67,6 +68,7 @@ Members of prelude types (`.name(..)`):
 - LineJoin: Bevel, Miter, Round
 - Load: error, loading, value
 - Memo: get, get_untracked, with
+- NativeEvent: data, name
 - ObjectFit: Contain, Cover, Fill, None, ScaleDown, place
 - Paint: Color, Token
 - Patch: bg, border_color, opacity, text_color
@@ -76,6 +78,7 @@ Members of prelude types (`.name(..)`):
 - Sender: send
 - ShadowStep: Lg, Md, Sm, Xl, Xl2, Xs, Xs2
 - Side: Bottom, Left, Right, Top
+- Slot: Overlay, Underlay
 - Task: cancel, detach, is_finished
 - View: Dyn, El, Empty, Fragment
 
