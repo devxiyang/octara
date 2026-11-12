@@ -189,6 +189,8 @@ pub(crate) struct WindowState {
     /// Whether scroll containers follow their tail, as someone reads it (`following_tail`), by
     /// test id.
     pub(crate) tails: RefCell<rustc_hash::FxHashMap<String, Signal<bool>>>,
+    /// Paced texts (`paced`) in this window, by number.
+    pub(crate) paced: RefCell<Vec<(u64, Rc<crate::view::Paced>)>>,
     /// Run after each layout; return whether they changed anything (then the window lays out again).
     pub(crate) after_layout: RefCell<Vec<(u64, crate::view::AfterLayout)>>,
     pub(crate) next: Cell<u64>,
@@ -344,6 +346,7 @@ impl WindowState {
             scrolls: RefCell::default(),
             sizes: RefCell::default(),
             tails: RefCell::default(),
+            paced: RefCell::default(),
             after_layout: RefCell::default(),
             next: Cell::new(0),
             options,
@@ -879,11 +882,13 @@ impl Window {
         if i.focused == n {
             return Ok(());
         }
+        let mut blurred = None;
         if let Some(p) = i.focused.take()
             && k.is_alive(p)
         {
             k.set_state(p, State::FOCUSED, false);
             k.set_state(p, State::FOCUS_VISIBLE, false);
+            blurred = (!k.is_exiting(p)).then_some(p);
         }
         if let Some(n) = n {
             k.set_state(n, State::FOCUSED, true);
@@ -891,6 +896,16 @@ impl Window {
             k.focused_in_group(n);
         }
         i.focused = n;
+        drop((i, k));
+        // What lost focus hears it first, then what got it.
+        if let Some(p) = blurred {
+            self.run(p, &[HandlerKind::Blur], None);
+        }
+        if let Some(n) = n
+            && self.w.interaction.borrow().focused == Some(n)
+        {
+            self.run(n, &[HandlerKind::Focus], None);
+        }
         Ok(())
     }
 

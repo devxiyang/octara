@@ -94,6 +94,16 @@ renderers  glyph runs in the display list; swash rasterizes into an atlas both r
   the block: the code block element holds one text per line, so a stream into it reshapes its
   last line.
 
+## Paced text
+
+`paced(&source)` is a `LiveText` that follows `source`, showing what is appended to it over a few
+frames instead of in bursts (a model's reply arriving in chunks): each frame shows a quarter of
+the backlog (at least 8 bytes, cut on a character boundary), so a burst of a few hundred bytes
+shows within about a quarter of a second and a trickle shows as it comes. Edits other than
+appends, and Reduce Motion, show at once. It is motion: pending work lists it while it is behind,
+`settle_motion` lands it, `run_until_idle` runs it out. Pass it where the source would go
+(`text(paced(&reply))`, `markdown(&paced(&reply))`).
+
 ## Markdown (octara-kit)
 
 - `octara_kit::markdown::markdown(source)`: a string, a closure (followed), or a `LiveText` (a

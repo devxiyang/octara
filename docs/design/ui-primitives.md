@@ -22,7 +22,7 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | --- | --- | --- |
 | Reactive | `state`, `memo`, `watch`, `untrack` | Implemented |
 | | `list` and `filter` / `sort_by` / `group_by` / `map` / `join` / `flatten` | Implemented ([map and join](map-join.md)) |
-| | `LiveText`, `live_text` | Implemented |
+| | `LiveText`, `live_text`, `paced` | Implemented |
 | | Context `provide` / `use_context` | Implemented |
 | | Tasks, subscriptions, resources | Implemented ([async](async.md)) |
 | Structure | `component_keyed` / `component`, `show` / `show_else`, `each`, `virtual_each` | Implemented |
@@ -35,7 +35,7 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | | Native Island: `native_view(kind)`, `web_view(url)`, slots, placements, the host protocol, headless host | Implemented headless; platform views in the shells to do ([Native Island](native-island.md)) |
 | Style | `Styled`: GPUI method names, 4 px scale, `px` / `relative` / `rems`; semantic `Token` and `Theme`; state, window size class, touch and group-hover overrides; `absolute` / `top` / `left`; shadows, gradients, opacity layers; motion | Implemented |
 | Semantics | `role`, `label`, `description`, `expanded`, `checked`, `value`, `a11y_hidden`, `focusable`; test id is the semantic id | Implemented |
-| Interaction | `on_press` / `on_input` / `on_toggle` / `on_submit`; hover chain and groups; disabled elements reject events | Implemented |
+| Interaction | `on_press` / `on_input` / `on_toggle` / `on_submit` / `on_focus` / `on_blur`; hover chain and groups; disabled elements reject events | Implemented |
 | | `on_key`, gestures (tap, double, long press, secondary, drag, swipe, momentum), focus order and groups, keymap and commands | Implemented ([input](input.md)) |
 | Agent | Structured diagnostics with registered codes, `App::set_check_consistency`, `Window::force_state` | Implemented |
 | | Inspector protocol, `octara check` / `inspect` / `run` | Implemented ([agent knowledge](agent-knowledge.md)) |

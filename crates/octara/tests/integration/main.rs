@@ -25,6 +25,7 @@ mod motion;
 mod multiline;
 mod native;
 mod overlay;
+mod paced;
 mod pointer;
 mod pointing;
 mod position;

@@ -97,7 +97,8 @@ assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
   `ghost_button`, `toggle_button`, `checkbox`, `switch`, `text_field`, `select`.
 - `octara_kit::markdown::markdown(source)` renders Markdown as a selectable document (headings,
   lists, tasks, code blocks with a copy button, quotes, tables). Pass a `&LiveText` to stream an
-  answer in: each token re-parses only the block it lands in. `mod+c` copies the text,
+  answer in: each token re-parses only the block it lands in; `paced(&reply)` shows a stream
+  arriving in bursts over a few frames. `mod+c` copies the text,
   `mod+alt+c` the Markdown source of the blocks the selection touches.
 
 ## State and the four layers

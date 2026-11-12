@@ -221,6 +221,8 @@ pub struct El {
     long_press: Option<Rc<dyn Fn()>>,
     drag: Option<DragHandler>,
     submit: Option<Rc<dyn Fn()>>,
+    focus: Option<Rc<dyn Fn()>>,
+    blur: Option<Rc<dyn Fn()>>,
     tab_index: i32,
     focus_group: bool,
     autofocus: bool,
@@ -290,6 +292,8 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         long_press: None,
         drag: None,
         submit: None,
+        focus: None,
+        blur: None,
         tab_index: 0,
         focus_group: false,
         autofocus: false,
@@ -707,6 +711,18 @@ impl El {
         self.submit = Some(Rc::new(f));
         self
     }
+    /// It got keyboard focus (GPUI's `on_focus`).
+    pub fn on_focus(mut self, f: impl Fn() + 'static) -> Self {
+        self.focus = Some(Rc::new(f));
+        self
+    }
+    /// It lost keyboard focus (GPUI's `on_blur`): focus moved elsewhere or was cleared, not the
+    /// window going inactive (it keeps its focus) nor the element leaving the tree. A field
+    /// edited in place commits here.
+    pub fn on_blur(mut self, f: impl Fn() + 'static) -> Self {
+        self.blur = Some(Rc::new(f));
+        self
+    }
     /// The second press of a double click or double tap (after its `on_press`).
     pub fn on_double_press(mut self, f: impl Fn() + 'static) -> Self {
         self.double_press = Some(Rc::new(f));
@@ -1080,6 +1096,8 @@ pub(crate) fn build_el(e: El) -> NodeId {
         (HandlerKind::Native, e.on_native.map(Handler::Native)),
         (HandlerKind::Link, e.on_link.map(Handler::Link)),
         (HandlerKind::Drop, e.on_drop.map(Handler::Drop)),
+        (HandlerKind::Focus, e.focus.map(Handler::Press)),
+        (HandlerKind::Blur, e.blur.map(Handler::Press)),
     ] {
         if let Some(h) = h {
             let id = u.register(h);

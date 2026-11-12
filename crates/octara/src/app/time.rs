@@ -98,6 +98,7 @@ impl App {
     pub fn settle_motion(&self) {
         for w in self.each() {
             w.w.kernel.borrow_mut().land_motion();
+            w.input_frame(|| w.w.land_paced());
         }
     }
 
@@ -177,6 +178,20 @@ impl Window {
     /// This window's motion, as pending work.
     fn motion_work(&self) -> Vec<PendingWork> {
         let k = self.w.kernel.borrow();
+        let paced = self
+            .w
+            .paced
+            .borrow()
+            .iter()
+            .filter(|(_, p)| p.behind())
+            .map(|(_, p)| PendingWork {
+                kind: WorkKind::Motion,
+                label: "paced text".into(),
+                scope: String::new(),
+                at: format!("{}:{}", crate::diagnostics::source_file(p.at), p.at.line()),
+                due: None,
+            })
+            .collect::<Vec<_>>();
         k.motions()
             .into_iter()
             .map(|(id, rest)| PendingWork {
@@ -186,6 +201,7 @@ impl Window {
                 at: k.origin(id).map(|l| format!("{}:{}", crate::diagnostics::source_file(l), l.line())).unwrap_or_default(),
                 due: Some(duration(rest * 1000.0)),
             })
+            .chain(paced)
             .collect()
     }
 }

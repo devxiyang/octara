@@ -129,6 +129,21 @@ impl LiveText {
 
     // ---- for the UI layer ----
 
+    pub(crate) fn len_untracked(&self) -> usize {
+        self.0.value.borrow().len()
+    }
+    pub(crate) fn slice_untracked(&self, range: Range<usize>) -> String {
+        self.0.value.borrow()[range].to_owned()
+    }
+    /// The nearest char boundary at or after byte `i`.
+    pub(crate) fn char_boundary_at(&self, mut i: usize) -> usize {
+        let v = self.0.value.borrow();
+        while i < v.len() && !v.is_char_boundary(i) {
+            i += 1;
+        }
+        i.min(v.len())
+    }
+
     pub(crate) fn subscribe(&self) -> Cursor {
         self.0.log.borrow_mut().subscribe()
     }

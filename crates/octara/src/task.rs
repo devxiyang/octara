@@ -360,7 +360,12 @@ impl Task {
     }
 }
 
-fn spawn_with(future: impl Future<Output = ()> + 'static, kind: WorkKind, label: String, at: &'static Location<'static>) -> Task {
+pub(crate) fn spawn_with(
+    future: impl Future<Output = ()> + 'static,
+    kind: WorkKind,
+    label: String,
+    at: &'static Location<'static>,
+) -> Task {
     let s = sched();
     let scope = rt(|r| r.current_scope());
     let id = s.insert(Box::pin(future), scope, kind, label, at);

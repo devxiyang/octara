@@ -81,6 +81,10 @@ catches up after the animation ends or the pointer moves (Rune).
   outside the modal) calls `dismiss`; after unmount, focus returns to the element from before it opened. With multiple modals only the topmost takes
   effect (Rune's modal stack).
 - With no focus, Escape does nothing; with focus and not inside a modal, Escape moves focus away.
+- `on_focus` / `on_blur` (GPUI's names): an element hears that it got or lost keyboard focus, the
+  one losing it first. Focus moving or being cleared blurs; the window going inactive does not
+  (the element keeps its focus), nor does the element leaving the tree. A field edited in place
+  (a rename) commits on blur.
 
 ## Keyboard: keymap and commands
 
@@ -134,6 +138,8 @@ catches up after the animation ends or the pointer moves (Rune).
 - The wheel goes to the innermost scroll container for that axis at the hit point; at the edge it is not passed to the outer one (Rune).
 - Touch pan likewise finds the innermost container; after release, inertia (see Touch).
 - Scrolling while held cancels the press.
+- A container following its tail lets go of it when scrolled away from the end and follows again
+  at the end ([layout](layout.md)).
 
 ## Accessibility actions
 

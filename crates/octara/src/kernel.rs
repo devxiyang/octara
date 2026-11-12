@@ -245,10 +245,14 @@ pub enum HandlerKind {
     Link,
     /// Files dragged from the system were dropped on it (`on_drop`).
     Drop,
+    /// It got keyboard focus (`on_focus`).
+    Focus,
+    /// It lost keyboard focus (`on_blur`).
+    Blur,
 }
 
 impl HandlerKind {
-    pub const COUNT: usize = 13;
+    pub const COUNT: usize = 15;
     /// Handlers that make an element a pointer target.
     pub const POINTER: [HandlerKind; 6] = [
         HandlerKind::Press,

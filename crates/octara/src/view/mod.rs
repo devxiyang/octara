@@ -5,6 +5,7 @@
 
 mod element;
 mod list;
+mod pace;
 mod style;
 
 pub use crate::kernel::Component;
@@ -13,6 +14,8 @@ pub(crate) use element::build_el;
 pub use element::{El, IntoProp, IntoText, Prop, TextContent, canvas, col, el, icon, native_view, row, spacer, text, text_input, web_view};
 pub use list::{each, virtual_each};
 pub use octara_macros::component;
+pub(crate) use pace::Paced;
+pub use pace::paced;
 pub use style::{Length, Patch, Styled, px, relative, rems, sp};
 
 use crate::diagnostics as codes;
@@ -54,6 +57,13 @@ impl crate::app::WindowState {
     /// The (shared) scroll state signal of `node`, kept in step after every layout and scroll.
     pub(crate) fn scroll_state(&self, node: NodeId) -> Signal<ScrollState> {
         *self.scrolls.borrow_mut().entry(node).or_insert_with(|| Signal::detached(ScrollState::default()))
+    }
+    /// Shows all of every paced text now.
+    pub(crate) fn land_paced(&self) {
+        let paced: Vec<_> = self.paced.borrow().iter().map(|(_, p)| p.clone()).collect();
+        for p in paced {
+            p.land();
+        }
     }
     pub(crate) fn after_layout(&self, f: Rc<dyn Fn() -> bool>) -> u64 {
         let id = self.next.get() + 1;
@@ -555,9 +565,12 @@ pub fn following_tail(id: &str) -> ReadSignal<bool> {
 /// Lands everything in motion on its target now (Rune's `tx.settle`).
 pub fn settle_motion() {
     let u = crate::app::window();
-    let mut k = u.kernel.borrow_mut();
-    k.land_motion();
-    k.set_instant(true);
+    {
+        let mut k = u.kernel.borrow_mut();
+        k.land_motion();
+        k.set_instant(true);
+    }
+    u.land_paced();
 }
 
 /// Handles `command` for the whole app (when no focused element handles it): the keymap's

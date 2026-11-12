@@ -159,3 +159,51 @@ fn a_press_outside_dismisses_when_allowed() {
     assert_eq!(app.kernel().text_of("closes").unwrap(), "1");
     assert_eq!(focused(&app).as_deref(), Some("open"));
 }
+
+#[test]
+fn focus_and_blur_are_heard() {
+    let log: std::rc::Rc<std::cell::RefCell<Vec<String>>> = Default::default();
+    let l = log.clone();
+    let mut app = Window::headless(move || {
+        let shown = state("shown", || true);
+        let ev = |l: &std::rc::Rc<std::cell::RefCell<Vec<String>>>, what: &str| {
+            let (l, what) = (l.clone(), what.to_owned());
+            move || l.borrow_mut().push(what.clone())
+        };
+        col()
+            .child(show(move || shown.get(), {
+                let l = l.clone();
+                move || {
+                    text_input()
+                        .id("name")
+                        .on_focus(ev(&l, "focus name"))
+                        .on_blur(ev(&l, "blur name"))
+                        .on_key(move |k| {
+                            if k.key == Key::Escape {
+                                shown.set(false);
+                            }
+                            k.key == Key::Escape
+                        })
+                        .into()
+                }
+            }))
+            .child(button("ok").on_focus(ev(&l, "focus ok")).on_blur(ev(&l, "blur ok")))
+            .into()
+    });
+    app.tap("name").unwrap();
+    app.press_key("tab").unwrap();
+    assert_eq!(*log.borrow(), ["focus name", "blur name", "focus ok"]);
+
+    // The window going inactive keeps focus: nothing is blurred.
+    log.borrow_mut().clear();
+    app.event(InputEvent::Active(false));
+    app.event(InputEvent::Active(true));
+    assert!(log.borrow().is_empty(), "{:?}", log.borrow());
+
+    // A focused element leaving the tree is not blurred.
+    app.tap("name").unwrap();
+    log.borrow_mut().clear();
+    app.press_key("escape").unwrap();
+    assert!(app.kernel().find("name").is_none());
+    assert!(log.borrow().is_empty(), "{:?}", log.borrow());
+}
