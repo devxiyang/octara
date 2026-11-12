@@ -8,20 +8,24 @@
 //! turns the Metal layer's `presentsWithTransaction` on while views move or the window resizes,
 //! so a view and the content around it reach the screen in the same frame.
 //!
+//! Snapshots (for captures) come from `WKWebView`'s own snapshot, redrawn into straight RGBA.
+//!
 //! Kinds: `web` (`WKWebView`: props `url`, or `html` with an optional `base_url`; events
 //! `load` `{url}`, `title` `{title}`, `fail` `{error}`). Other kinds keep their placeholder, as do
 //! views in the underlay slot (a later step).
 
+use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::NSView;
+use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2_app_kit::{NSBitmapImageRep, NSDeviceRGBColorSpace, NSGraphicsContext, NSImage, NSView};
 use objc2_foundation::{
     NSDictionary, NSError, NSKeyValueChangeKey, NSKeyValueObservingOptions, NSObjectNSKeyValueObserverRegistration,
     NSPoint, NSRect, NSSize, NSString, NSURL, NSURLRequest, ns_string,
 };
 use objc2_quartz_core::CATransaction;
-use objc2_web_kit::{WKNavigation, WKNavigationDelegate, WKWebView, WKWebViewConfiguration};
+use objc2_web_kit::{WKNavigation, WKNavigationDelegate, WKSnapshotConfiguration, WKWebView, WKWebViewConfiguration};
+use octara::image::Image;
 use octara::native::{NativeEvent, NativeHost, NativeId, Placement, Slot};
 use octara_render::wgpu;
 use serde_json::{Value, json};
@@ -36,6 +40,8 @@ use winit::window::Window;
 /// AppKit's dispatch; the shell hands them to the app when it wakes).
 pub(crate) struct Inbox {
     events: RefCell<Vec<(NativeId, NativeEvent)>>,
+    /// Snapshots taken (none when the view could not take one).
+    snapshots: RefCell<Vec<(NativeId, Option<Image>)>>,
     wake: Box<dyn Fn()>,
 }
 
@@ -48,6 +54,59 @@ impl Inbox {
     pub(crate) fn take(&self) -> Vec<(NativeId, NativeEvent)> {
         std::mem::take(&mut *self.events.borrow_mut())
     }
+
+    pub(crate) fn take_snapshots(&self) -> Vec<(NativeId, Option<Image>)> {
+        std::mem::take(&mut *self.snapshots.borrow_mut())
+    }
+}
+
+/// An `NSImage` as straight RGBA at `scale` pixels per point (drawn into a bitmap of a known
+/// format, whatever the image's own representation).
+fn rgba(image: &NSImage, scale: f64) -> Option<Image> {
+    let size = image.size();
+    let (w, h) = ((size.width * scale).round() as isize, (size.height * scale).round() as isize);
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let rep = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            w,
+            h,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            w * 4,
+            32,
+        )
+    }?;
+    rep.setSize(size);
+    let ctx = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
+    NSGraphicsContext::saveGraphicsState_class();
+    NSGraphicsContext::setCurrentContext(Some(&ctx));
+    image.drawInRect(NSRect::new(NSPoint::new(0.0, 0.0), size));
+    ctx.flushGraphics();
+    NSGraphicsContext::restoreGraphicsState_class();
+    let (data, stride) = (rep.bitmapData(), rep.bytesPerRow() as usize);
+    if data.is_null() {
+        return None;
+    }
+    let (w, h) = (w as usize, h as usize);
+    let mut px = Vec::with_capacity(w * h * 4);
+    for y in 0..h {
+        // SAFETY: the rep owns `h` rows of `stride` bytes.
+        let row = unsafe { std::slice::from_raw_parts(data.add(y * stride), w * 4) };
+        for p in row.as_chunks::<4>().0 {
+            // Premultiplied in the bitmap; straight in an `Image`.
+            let a = p[3] as u32;
+            let un = |c: u8| ((c as u32 * 255 + a / 2).checked_div(a).unwrap_or(0)).min(255) as u8;
+            px.extend([un(p[0]), un(p[1]), un(p[2]), p[3]]);
+        }
+    }
+    Some(Image::rgba(w as u32, h as u32, px))
 }
 
 define_class!(
@@ -234,6 +293,24 @@ impl Views {
         h.clip.removeFromSuperview();
     }
 
+    /// Takes a snapshot of view `id`, handed to the inbox when WebKit has it.
+    fn snapshot(&self, id: NativeId) -> bool {
+        let Some(h) = self.hosted.get(&id) else { return false };
+        let scale = self.parent.window().map_or(2.0, |w| w.backingScaleFactor());
+        let config = unsafe { WKSnapshotConfiguration::new(self.mtm) };
+        // Not waiting for the next screen update: a hidden or occluded window gets none.
+        unsafe { config.setAfterScreenUpdates(false) };
+        let inbox = self.inbox.clone();
+        let done = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
+            // SAFETY: WebKit passes an image or null.
+            let image = unsafe { image.as_ref() }.and_then(|i| rgba(i, scale));
+            inbox.snapshots.borrow_mut().push((id, image));
+            (inbox.wake)();
+        });
+        unsafe { h.web.takeSnapshotWithConfiguration_completionHandler(Some(&config), &done) };
+        true
+    }
+
     /// Placements waiting that move or resize a view (or show one for the first time).
     fn moving(&self) -> bool {
         self.pending.iter().any(|p| {
@@ -296,6 +373,9 @@ impl NativeHost for MacHost {
         v.pending.retain(|q| q.id != id);
         v.destroy(id);
     }
+    fn snapshot(&mut self, id: NativeId) -> bool {
+        self.0.borrow().snapshot(id)
+    }
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -314,7 +394,7 @@ impl Native {
         let RawWindowHandle::AppKit(handle) = window.window_handle().ok()?.as_raw() else { return None };
         // SAFETY: winit's content view, alive as long as the window.
         let parent: Retained<NSView> = unsafe { Retained::retain(handle.ns_view.as_ptr().cast()) }?;
-        let inbox = Rc::new(Inbox { events: RefCell::default(), wake: Box::new(wake) });
+        let inbox = Rc::new(Inbox { events: RefCell::default(), snapshots: RefCell::default(), wake: Box::new(wake) });
         let views = Rc::new(RefCell::new(Views {
             mtm,
             parent,
@@ -350,6 +430,31 @@ impl Native {
     /// After the frame is drawn, before it is presented: places the views.
     pub(crate) fn place(&self) {
         self.views.borrow_mut().apply();
+    }
+
+    /// Where each view is in AppKit (in winit's view, logical pixels) next to its placement:
+    /// a capture prints it, so the platform's frames are checked, not only the layout's.
+    pub(crate) fn frames(&self) -> Vec<String> {
+        let v = self.views.borrow();
+        let mut out: Vec<_> = v
+            .hosted
+            .iter()
+            .map(|(id, h)| {
+                let f = h.web.convertRect_toView(h.web.bounds(), Some(&v.parent));
+                let p = h.placed.as_ref().map(|p| p.rect);
+                format!(
+                    "view {}: in AppKit at {:.0},{:.0} {:.0}×{:.0}, placed at {}",
+                    id.0,
+                    f.origin.x,
+                    f.origin.y,
+                    f.size.width,
+                    f.size.height,
+                    p.map_or("nowhere".into(), |r| format!("{:.0},{:.0} {:.0}×{:.0}", r.x, r.y, r.w, r.h)),
+                )
+            })
+            .collect();
+        out.sort();
+        out
     }
 
     /// After the present: commits the transaction.

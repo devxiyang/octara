@@ -391,6 +391,9 @@ pub struct NativeContent {
     pub props: serde_json::Value,
     pub version: u64,
     pub intrinsic: Option<(f32, f32)>,
+    /// What the view last showed, from its host: drawn in its place instead of the placeholder
+    /// (captures and screenshots).
+    pub snapshot: Option<crate::image::Image>,
 }
 
 /// A native view's size until it reports one (HTML's for an iframe).
@@ -1410,7 +1413,7 @@ impl Kernel {
     /// Makes the box a native view of `kind` in `slot`, sized by the size it reports until an
     /// authored one.
     pub fn set_native(&mut self, id: NodeId, kind: &str, slot: crate::native::Slot) {
-        let content = NativeContent { kind: kind.to_owned(), slot, props: serde_json::Value::Null, version: 0, intrinsic: None };
+        let content = NativeContent { kind: kind.to_owned(), slot, props: serde_json::Value::Null, version: 0, intrinsic: None, snapshot: None };
         self.set_content(id, Content::Native(Box::new(content)));
         let t = self.node(id).taffy;
         self.taffy.set_node_context(t, Some(Measure::Native(id))).expect("taffy");
@@ -1440,6 +1443,12 @@ impl Kernel {
         let t = self.node(id).taffy;
         self.taffy.mark_dirty(t).expect("taffy");
         self.changed(id, Dirty::LAYOUT, "native size", || format!("{size:?}"));
+    }
+    /// An image of what a native view shows (or none, back to the placeholder).
+    pub fn set_native_snapshot(&mut self, id: NodeId, snapshot: Option<crate::image::Image>) {
+        let Content::Native(v) = &mut self.node_mut(id).content else { return };
+        v.snapshot = snapshot;
+        self.changed(id, Dirty::PAINT, "native snapshot", String::new);
     }
     pub fn native(&self, id: NodeId) -> Option<&NativeContent> {
         if let Content::Native(v) = &self.node(id).content { Some(v) } else { None }

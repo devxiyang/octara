@@ -709,6 +709,21 @@ impl App {
         self.input_frame(|| self.ui.kernel.borrow_mut().set_native_size(n, (width, height)));
     }
 
+    /// Asks the host for an image of every native view shown (for a capture); returns the views
+    /// it will send one for, through [`native_snapshot`](Self::native_snapshot).
+    pub fn snapshot_native(&mut self) -> Vec<crate::native::NativeId> {
+        let placements = self.ui.kernel.borrow().native_placements();
+        let mut host = self.native_host.borrow_mut();
+        placements.into_iter().filter(|(_, p)| p.visible).map(|(_, p)| p.id).filter(|id| host.snapshot(*id)).collect()
+    }
+
+    /// An image of what native view `id` shows (the host calls this): drawn in its place
+    /// instead of the placeholder, until `None` clears it.
+    pub fn native_snapshot(&mut self, id: crate::native::NativeId, image: Option<crate::image::Image>) {
+        let Some(n) = self.native_node(id) else { return };
+        self.input_frame(|| self.ui.kernel.borrow_mut().set_native_snapshot(n, image));
+    }
+
     /// Replaces the native host (a shell installs the platform's). Views already shown are
     /// created again on the new one.
     pub fn set_native_host(&mut self, host: Box<dyn crate::native::NativeHost>) {

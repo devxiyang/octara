@@ -1,6 +1,6 @@
 # Native Island
 
-Based on the [research](../research/native-island.md). Status: confirmed; steps 1 and 2 implemented (step 2 without snapshots, below).
+Based on the [research](../research/native-island.md). Status: confirmed; steps 1 and 2 implemented.
 
 ## What is native
 
@@ -89,15 +89,22 @@ Based on the [research](../research/native-island.md). Status: confirmed; steps 
   `presentsWithTransaction` on for frames where a view moves, resizes or shows, or the window
   resizes. Delegate events go to an inbox and wake the loop; the shell hands them to
   `App::native_event`. Other kinds and underlay views keep their placeholder (step 3).
+- Snapshots: `App::snapshot_native()` asks the host (`NativeHost::snapshot`) for an image of
+  every visible view; it comes back with `App::native_snapshot(id, image)` and is drawn in the
+  view's place instead of the placeholder. The macOS host uses `WKWebView`'s snapshot (not
+  waiting for a screen update), redrawn into straight RGBA. The shell's capture mode
+  (`OCTARA_CAPTURE=out.png`, `OCTARA_CAPTURE_AFTER_MS`, `OCTARA_CAPTURE_SCROLL=px`) writes the
+  frame with the snapshots through the reference renderer and prints each view's AppKit frame
+  next to its placement, then exits: screenshots without the screen-recording permission.
 
 ## Steps
 
 1. Elements, placements, the headless fake and `check` rules (slot conflicts, clips, labels).
    Done.
 2. macOS overlay: WKWebView (`url` or `html` props; `load` and `title` events), clip containers,
-   placements in the frame's transaction with `presentsWithTransaction` while moving. Done as
-   built below; snapshots move to step 4, where the shell first captures (inspect, agents), and
-   per-corner radii wait for the style to have them.
+   placements in the frame's transaction with `presentsWithTransaction` while moving, view
+   snapshots for captures. Done as built below; per-corner radii wait for the style to have
+   them.
 3. macOS underlay: the host view below, a non-opaque Metal layer, the cutout cleared in paint
    order, events forwarded to the underlay view; a map (`MKMapView`) as the first kind.
 4. Focus targets in the Tab order, Escape back, accessibility joining; views created near the

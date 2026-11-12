@@ -115,3 +115,22 @@ fn content_over_an_overlay_view_is_reported() {
     let unlabeled = badge_over(Slot::Underlay, false);
     assert_eq!(codes(&unlabeled), [("UNLABELED_NATIVE_VIEW".to_string(), Some("map".to_string()))]);
 }
+
+#[test]
+fn a_snapshot_draws_in_the_views_place() {
+    let mut app = App::new(view);
+    let HostCall::Create { id, .. } = calls(&app)[0].clone() else { panic!() };
+    let images = |app: &App| app.display_list().items.iter().filter(|i| matches!(i, octara::paint::Item::Image(_))).count();
+    assert_eq!(images(&app), 0, "a placeholder box");
+    assert!(app.snapshot_native().is_empty(), "the recording host takes no snapshots");
+
+    app.native_snapshot(id, Some(Image::rgba(1, 1, vec![255, 0, 0, 255])));
+    let list = app.display_list();
+    let Some(octara::paint::Item::Image(i)) = list.items.iter().find(|i| matches!(i, octara::paint::Item::Image(_))) else { panic!() };
+    let web = app.kernel().find("web").unwrap();
+    let (x, y, w, h) = app.kernel().rect(web);
+    assert_eq!((i.rect.x, i.rect.y, i.rect.w, i.rect.h), (x, y, w, h), "the snapshot fills the view's box");
+
+    app.native_snapshot(id, None);
+    assert_eq!(images(&app), 0, "cleared: the placeholder again");
+}

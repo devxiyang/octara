@@ -287,20 +287,24 @@ impl Kernel {
             }
         }
 
-        // A native view: a placeholder box where it goes (what headless runs and screenshots
-        // show), then its place in paint order.
+        // A native view: its snapshot, else a placeholder box where it goes (what headless runs
+        // and screenshots show), then its place in paint order.
         if let super::Content::Native(nv) = &n.content
             && visible
         {
-            out.push(Item::Quad(Quad {
-                source: id,
-                rect,
-                radius,
-                fill: Some(fade(self.theme.get(Token::Surface), opacity)),
-                gradient: None,
-                border: [1.0; 4],
-                border_color: fade(self.theme.get(Token::Border), opacity),
-            }));
+            if let Some(image) = &nv.snapshot {
+                out.push(Item::Image(crate::paint::ImagePaint { source: id, image: image.clone(), rect, bounds: rect, radius, opacity }));
+            } else {
+                out.push(Item::Quad(Quad {
+                    source: id,
+                    rect,
+                    radius,
+                    fill: Some(fade(self.theme.get(Token::Surface), opacity)),
+                    gradient: None,
+                    border: [1.0; 4],
+                    border_color: fade(self.theme.get(Token::Border), opacity),
+                }));
+            }
             out.push(Item::Native { source: id, rect, radius, slot: nv.slot });
         }
 

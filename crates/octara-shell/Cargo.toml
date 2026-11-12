@@ -16,6 +16,7 @@ winit.workspace = true
 
 # Native views (AppKit, WebKit) and the frame's Core Animation transaction.
 [target.'cfg(target_os = "macos")'.dependencies]
+block2.workspace = true
 objc2.workspace = true
 objc2-app-kit.workspace = true
 objc2-foundation.workspace = true

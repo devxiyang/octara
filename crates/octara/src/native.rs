@@ -12,7 +12,9 @@
 //! radius, the clip around it, its opacity, whether it shows). The host sends events back with
 //! [`App::native_event`](crate::app::App::native_event) and reports a view's natural size with
 //! [`App::native_size`](crate::app::App::native_size). Headless, the [`RecordingHost`] keeps
-//! every call, and the view draws as a placeholder box.
+//! every call, and the view draws as a placeholder box; a host's snapshot of a view
+//! ([`App::snapshot_native`](crate::app::App::snapshot_native)) draws in its place, so captures
+//! show the page or the map.
 
 use crate::paint::Rect;
 use serde::Serialize;
@@ -70,6 +72,12 @@ pub trait NativeHost: Any {
     fn place(&mut self, placements: &[Placement]);
     /// A view goes away.
     fn destroy(&mut self, id: NativeId);
+    /// Takes an image of what view `id` shows, handed back later with
+    /// [`App::native_snapshot`](crate::app::App::native_snapshot); `false` when this host cannot.
+    fn snapshot(&mut self, id: NativeId) -> bool {
+        let _ = id;
+        false
+    }
     fn as_any(&self) -> &dyn Any;
 }
 

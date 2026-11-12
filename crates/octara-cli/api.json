@@ -271,6 +271,13 @@
           "file": "crates/octara/src/app.rs"
         },
         {
+          "path": "octara::app::App::native_snapshot",
+          "kind": "method",
+          "sig": "pub fn native_snapshot(&mut self, id: NativeId, image: Option<Image>)",
+          "docs": "An image of what native view `id` shows (the host calls this): drawn in its place\ninstead of the placeholder, until `None` clears it.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
           "path": "octara::app::App::new",
           "kind": "assoc_fn",
           "sig": "pub fn new(root: impl Fn() -> View + 'static) -> Self",
@@ -509,6 +516,16 @@
           "sig": "pub fn size(&self) -> (f32, f32)",
           "docs": "The current window size.",
           "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::App::snapshot_native",
+          "kind": "method",
+          "sig": "pub fn snapshot_native(&mut self) -> Vec<NativeId>",
+          "docs": "Asks the host for an image of every native view shown (for a capture); returns the views\nit will send one for, through [`native_snapshot`](Self::native_snapshot).",
+          "file": "crates/octara/src/app.rs",
+          "links": [
+            "octara::app::App::native_snapshot"
+          ]
         },
         {
           "path": "octara::app::App::swipe",
@@ -5482,6 +5499,13 @@
           "file": "crates/octara/src/kernel.rs"
         },
         {
+          "path": "octara::kernel::Kernel::set_native_snapshot",
+          "kind": "method",
+          "sig": "pub fn set_native_snapshot(&mut self, id: NodeId, snapshot: Option<Image>)",
+          "docs": "An image of what a native view shows (or none, back to the placeholder).",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::set_origin",
           "kind": "method",
           "sig": "pub fn set_origin(&mut self, id: NodeId, at: &'static Location<'static>)",
@@ -6092,6 +6116,13 @@
           "path": "octara::kernel::NativeContent::slot",
           "kind": "field",
           "sig": "pub slot: Slot",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::NativeContent::snapshot",
+          "kind": "field",
+          "sig": "pub snapshot: Option<Image>",
+          "docs": "What the view last showed, from its host: drawn in its place instead of the placeholder\n(captures and screenshots).",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -8549,11 +8580,12 @@
           "path": "octara::native",
           "kind": "module",
           "sig": "pub mod native",
-          "docs": "Native Island: platform views placed in Octara's layout ([design](../../../docs/design/native-island.md)).\n\n[`native_view`](crate::view::native_view)`(kind)` is a leaf box a platform view fills: a web\nview, a map, a platform picker. Views live in one of two [`Slot`]s per window: an\n**underlay** behind Octara's surface (shown through a cutout where the view is, so content\npainted after it draws over it, as map controls do) and an **overlay** above it (a web view,\na picker): Octara content painted over an overlay view would be hidden by it, so `check`\nreports it (`NATIVE_COVERED`).\n\nAfter each frame the app tells its [`NativeHost`] what changed: views created and destroyed,\nprops (one JSON value, handed over whole), and [`Placement`]s (where each view is, its corner\nradius, the clip around it, its opacity, whether it shows). The host sends events back with\n[`App::native_event`](crate::app::App::native_event) and reports a view's natural size with\n[`App::native_size`](crate::app::App::native_size). Headless, the [`RecordingHost`] keeps\nevery call, and the view draws as a placeholder box.",
+          "docs": "Native Island: platform views placed in Octara's layout ([design](../../../docs/design/native-island.md)).\n\n[`native_view`](crate::view::native_view)`(kind)` is a leaf box a platform view fills: a web\nview, a map, a platform picker. Views live in one of two [`Slot`]s per window: an\n**underlay** behind Octara's surface (shown through a cutout where the view is, so content\npainted after it draws over it, as map controls do) and an **overlay** above it (a web view,\na picker): Octara content painted over an overlay view would be hidden by it, so `check`\nreports it (`NATIVE_COVERED`).\n\nAfter each frame the app tells its [`NativeHost`] what changed: views created and destroyed,\nprops (one JSON value, handed over whole), and [`Placement`]s (where each view is, its corner\nradius, the clip around it, its opacity, whether it shows). The host sends events back with\n[`App::native_event`](crate::app::App::native_event) and reports a view's natural size with\n[`App::native_size`](crate::app::App::native_size). Headless, the [`RecordingHost`] keeps\nevery call, and the view draws as a placeholder box; a host's snapshot of a view\n([`App::snapshot_native`](crate::app::App::snapshot_native)) draws in its place, so captures\nshow the page or the map.",
           "file": "crates/octara/src/native.rs",
           "links": [
             "octara::app::App::native_event",
             "octara::app::App::native_size",
+            "octara::app::App::snapshot_native",
             "octara::native::NativeHost",
             "octara::native::Placement",
             "octara::native::RecordingHost",
@@ -8668,6 +8700,16 @@
           "sig": "fn place(&mut self, placements: &[Placement])",
           "docs": "Views whose placement changed this frame (shells apply them with the frame's present).",
           "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::NativeHost::snapshot",
+          "kind": "method",
+          "sig": "fn snapshot(&mut self, id: NativeId) -> bool",
+          "docs": "Takes an image of what view `id` shows, handed back later with\n[`App::native_snapshot`](crate::app::App::native_snapshot); `false` when this host cannot.",
+          "file": "crates/octara/src/native.rs",
+          "links": [
+            "octara::app::App::native_snapshot"
+          ]
         },
         {
           "path": "octara::native::NativeHost::update",
@@ -19804,6 +19846,13 @@
           "path": "octara_shell::ShellEvent::Accessibility",
           "kind": "variant",
           "sig": "Accessibility(Event)",
+          "file": "crates/octara-shell/src/lib.rs"
+        },
+        {
+          "path": "octara_shell::ShellEvent::Capture",
+          "kind": "variant",
+          "sig": "Capture",
+          "docs": "`OCTARA_CAPTURE`'s time came: take snapshots, then write the capture (a second one\nwrites it with what arrived).",
           "file": "crates/octara-shell/src/lib.rs"
         },
         {

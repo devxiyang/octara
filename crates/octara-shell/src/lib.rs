@@ -28,6 +28,9 @@ mod native_mac;
 pub enum ShellEvent {
     Accessibility(accesskit_winit::Event),
     Wake,
+    /// `OCTARA_CAPTURE`'s time came: take snapshots, then write the capture (a second one
+    /// writes it with what arrived).
+    Capture,
 }
 
 impl From<accesskit_winit::Event> for ShellEvent {
@@ -96,6 +99,8 @@ pub fn run_with(options: Options, root: impl Fn() -> View + 'static) {
         done: false,
         secure: false,
         resized: false,
+        capture: std::env::var("OCTARA_CAPTURE").ok(),
+        awaiting: None,
         #[cfg(target_os = "macos")]
         native: None,
     };
@@ -169,6 +174,12 @@ struct Shell {
     secure: bool,
     /// The window resized since the last frame (native views present with the frame).
     resized: bool,
+    /// `OCTARA_CAPTURE=out.png`: after `OCTARA_CAPTURE_AFTER_MS` (default 1500), the frame
+    /// with every native view's snapshot in its place is written there, and the app exits;
+    /// `OCTARA_CAPTURE_SCROLL=px` first scrolls that far down at the window's center.
+    capture: Option<String>,
+    /// Snapshots asked for and not yet back.
+    awaiting: Option<Vec<octara::native::NativeId>>,
     /// The window's native views (web views), placed with each frame.
     #[cfg(target_os = "macos")]
     native: Option<native_mac::Native>,
@@ -365,6 +376,32 @@ impl Shell {
         }
     }
 
+    /// Writes the capture once every snapshot asked for is back.
+    fn capture_if_ready(&mut self) {
+        if self.awaiting.as_ref().is_some_and(|a| a.is_empty()) {
+            self.write_capture();
+        }
+    }
+
+    /// The frame drawn by the reference renderer at the window's scale, native views as their
+    /// snapshots; then the app exits.
+    fn write_capture(&mut self) {
+        let (Some(path), Some(app)) = (self.capture.take(), &self.app) else { return };
+        let scale = self.scale();
+        match octara_render::screenshot(app, scale).save_png(&path) {
+            Ok(()) => eprintln!("octara-shell: captured {path}"),
+            Err(e) => eprintln!("octara-shell: capture {path}: {e}"),
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(n) = &self.native {
+            for line in n.frames() {
+                eprintln!("octara-shell: {line}");
+            }
+        }
+        self.awaiting = None;
+        self.done = true;
+    }
+
     /// Tells the input method where the caret is, so its candidate window opens next to it; a
     /// secure field turns the input method off and the platform's secure input on.
     fn place_ime(&mut self) {
@@ -472,9 +509,35 @@ impl ApplicationHandler<ShellEvent> for Shell {
                         for (id, event) in n.inbox.take() {
                             app.native_event(id, event);
                         }
+                        for (id, image) in n.inbox.take_snapshots() {
+                            app.native_snapshot(id, image);
+                            if let Some(a) = &mut self.awaiting {
+                                a.retain(|x| *x != id);
+                            }
+                        }
                     }
                 }
+                self.capture_if_ready();
                 self.redraw();
+                return;
+            }
+            ShellEvent::Capture => {
+                if self.awaiting.is_some() {
+                    self.write_capture();
+                } else if self.app.is_some() {
+                    if let Some(dy) = std::env::var("OCTARA_CAPTURE_SCROLL").ok().and_then(|v| v.parse::<f32>().ok()) {
+                        let (w, h) = self.options.size;
+                        if let Some(app) = &mut self.app {
+                            app.wheel(w / 2.0, h / 2.0, 0.0, dy);
+                        }
+                        // Drawn, so the views are placed where the page now is.
+                        self.draw();
+                    }
+                    let Some(app) = &mut self.app else { return };
+                    let ids = app.snapshot_native();
+                    self.awaiting = Some(ids);
+                    self.capture_if_ready();
+                }
                 return;
             }
             ShellEvent::Accessibility(e) => e,
@@ -564,6 +627,17 @@ impl ApplicationHandler<ShellEvent> for Shell {
             app.use_system_fonts();
         }
         app.resize(size.width as f32 / scale, size.height as f32 / scale);
+        if self.capture.is_some() {
+            let after = std::env::var("OCTARA_CAPTURE_AFTER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500u64);
+            let proxy = self.proxy.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(after));
+                let _ = proxy.send_event(ShellEvent::Capture);
+                // Snapshots that never come do not hold the capture forever.
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let _ = proxy.send_event(ShellEvent::Capture);
+            });
+        }
         self.app = Some(app);
         self.gpu = Some(Gpu { window, surface, config, renderer });
         self.redraw();

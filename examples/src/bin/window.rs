@@ -17,7 +17,7 @@ fn main() {
         "todo" => Box::new(|| apps::todo(30)),
         _ => match card {
             Some(card) => {
-                if showcase::page(&card).is_none() {
+                if !showcase::CARDS.iter().any(|(n, _)| *n == card) {
                     let names: Vec<_> = showcase::CARDS.iter().map(|(n, _)| *n).collect();
                     eprintln!("no showcase card {card:?}; the cards: {}", names.join(", "));
                     std::process::exit(2);
