@@ -232,3 +232,47 @@ fn instances_keep_their_own_blocks() {
     let first = |id: &str| texts(&k, k.find(id).unwrap())[0].clone();
     assert_eq!([first("s0"), first("s1"), first("t")], ["static 0", "static 1", "live one two"]);
 }
+
+/// A selectable transcript of selectable messages: one document.
+fn transcript() -> View {
+    let messages = list("messages", || (0..200u32).collect(), |i: &u32| *i);
+    col()
+        .child(virtual_each(move || messages.all(), |_| 40.0, |i, _| markdown(format!("**m{i}** says *hi*")).id(format!("m{i}")).into()))
+        .id("t")
+        .selectable()
+        .h(300.0)
+        .w(400.0)
+        .overflow_y_scroll()
+        .into()
+}
+
+#[test]
+fn a_selection_crosses_the_regions_inside_a_region() {
+    let mut w = Window::headless(transcript);
+    {
+        let k = w.kernel();
+        assert_eq!(k.role(k.find("t").unwrap()), Role::Document);
+        assert_ne!(k.role(k.find("m0").unwrap()), Role::Document, "a message is part of the transcript's document");
+    }
+    let first = |w: &Window, id: &str| {
+        let k = w.kernel();
+        let m = k.find(id).unwrap();
+        let mut stack = vec![m];
+        while let Some(n) = stack.pop() {
+            if !k.text(n).is_empty() {
+                return n;
+            }
+            stack.extend(k.children(n).iter().rev().copied());
+        }
+        panic!("no text in {id}")
+    };
+    let (a, b) = (first(&w, "m0"), first(&w, "m2"));
+    drag(&mut w, a, b, 1000.0);
+    assert_eq!(w.selected_text().as_deref(), Some("m0 says hi\n\nm1 says hi\n\nm2 says hi"));
+    assert_eq!(copy(&mut w, "mod+alt+c"), "**m0** says *hi*\n\n**m1** says *hi*\n\n**m2** says *hi*", "each message copies its source");
+
+    // Everything, rows not mounted included.
+    w.select_all("t").unwrap();
+    let all: Vec<String> = (0..200).map(|i| format!("**m{i}** says *hi*")).collect();
+    assert_eq!(copy(&mut w, "mod+alt+c"), all.join("\n\n"));
+}

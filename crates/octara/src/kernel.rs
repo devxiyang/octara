@@ -1038,7 +1038,8 @@ impl Kernel {
         if let (None, Content::Native(v)) = (n.role, &n.content) {
             return if v.kind == "web" { Role::WebView } else { Role::GenericContainer };
         }
-        if n.region && n.role.is_none() {
+        // A region is a document unless it is part of an outer one.
+        if n.region && n.role.is_none() && self.region_of(id) == Some(id) {
             return Role::Document;
         }
         n.role.unwrap_or(match n.input() {

@@ -90,8 +90,6 @@ Basis: [text design](design/text.md).
       lines virtualized, inline code sized to its text (a span size relative to the text's), a
       task box pressable (`on_task`).
 - [ ] An empty text has no height: a code block's empty line shows a space (copied as one).
-- [ ] Nested regions (a transcript of selectable messages): the nearest region holds the
-      selection, so it does not cross messages; the chat components decide.
 
 ## Async and motion
 

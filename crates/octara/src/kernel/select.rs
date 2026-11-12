@@ -31,16 +31,19 @@ impl Kernel {
         self.node(id).row_key.as_ref()
     }
 
-    /// The selectable region `id` is in, if any (the nearest).
+    /// The selectable region `id` is in, if any: the outermost, as regions inside a region are
+    /// one document with it (a selectable transcript of selectable messages selects across them;
+    /// each message still copies its part as Markdown its own way).
     pub fn region_of(&self, id: NodeId) -> Option<NodeId> {
+        let mut out = None;
         let mut n = Some(id);
         while let Some(x) = n {
             if self.node(x).region {
-                return Some(x);
+                out = Some(x);
             }
             n = self.node(x).parent;
         }
-        None
+        out
     }
 
     /// Whether `text` can be selected in `region`: a shown text in it, nothing between marked

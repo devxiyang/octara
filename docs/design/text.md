@@ -134,7 +134,10 @@ renderers  glyph runs in the display list; swash rasterizes into an atlas both r
 
 - **A selectable region** (`.selectable()` on a container, the kit's `markdown` and a chat
   transcript use it): its texts can be selected as one document. Texts outside a region, and a
-  region's texts marked `.select_none()` (list markers, buttons' labels), are not.
+  region's texts marked `.select_none()` (list markers, buttons' labels), are not. Regions
+  inside a region are one document with it: the outermost holds the selection, so a selectable
+  transcript of Markdown messages selects across messages, and copying as Markdown still asks
+  each message for its part (the nearest `copy_markdown` above each text).
 - **A selection is data**, the region's: an anchor and a focus, each a `TextPoint { path, offset
   }`. The path is stable across a row unmounting and mounting again: the keys of the `each` /
   `virtual_each` rows between the region and the text, then the text's ordinal among the
@@ -172,7 +175,7 @@ renderers  glyph runs in the display list; swash rasterizes into an atlas both r
 
 ## Accessibility
 
-- A selectable region is a `Document` (unless it states a role). Its texts keep their roles
+- A selectable region is a `Document` (unless it states a role, or is inside another region). Its texts keep their roles
   (a `Label` by default; `.role(Role::Heading).level(1)` for a heading) and hold `TextRun`
   children, one per laid-out line: a hard break ends the run before it, and a line longer than
   255 characters is split into runs on the same line (`next_on_line`), since AccessKit's word
