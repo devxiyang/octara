@@ -475,8 +475,9 @@ struct InputContent {
     scroll: Cell<f32>,
     /// Bytes of the shown text (value with composition) known unchanged since last measured.
     clean: Cell<usize>,
-    /// The layout of what it shows last (its value, a composition spliced in), and of what.
-    layout: RefCell<Option<(String, TextStyle, text::TextLayout)>>,
+    /// The layout of what it shows last (its value, a composition spliced in), of what, in
+    /// what, with which fonts.
+    layout: RefCell<Option<(String, TextStyle, u64, text::TextLayout)>>,
     /// Wraps at the field's width; Enter breaks lines.
     multiline: bool,
     /// The caret's x kept across moves by lines (Up, Down, Page Up, Page Down).

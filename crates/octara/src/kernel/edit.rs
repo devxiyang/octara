@@ -477,15 +477,16 @@ impl Kernel {
     pub(crate) fn shown_layout(&self, id: NodeId, shown: &str, style: &text::TextStyle) -> text::TextLayout {
         let input = self.node(id).input().expect("a text input");
         let mut kept = input.layout.borrow_mut();
-        if let Some((s, st, l)) = kept.as_ref()
+        if let Some((s, st, fonts, l)) = kept.as_ref()
             && s == shown
             && st == style
+            && *fonts == self.fonts_generation
         {
             return l.clone();
         }
         let clean = input.clean.replace(shown.len());
-        let layout = self.res.text.borrow_mut().layout(shown, style, &[], kept.as_ref().map(|k| &k.2), clean);
-        *kept = Some((shown.to_owned(), *style, layout.clone()));
+        let layout = self.res.text.borrow_mut().layout(shown, style, &[], kept.as_ref().map(|k| &k.3), clean);
+        *kept = Some((shown.to_owned(), *style, self.fonts_generation, layout.clone()));
         layout
     }
 }
