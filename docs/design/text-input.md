@@ -27,6 +27,9 @@ One constructor, `text_input()`, with modifiers (Rune's names); the model stays 
 - Painting: one selection rectangle per line fragment, the caret at its real line, the
   composition underlined per fragment; the input method's candidate window follows the
   composition's rectangle.
+- The caret blinks while its field has focus: shown half a second, hidden half (AppKit's and
+  GPUI's period), from when it last moved or the text changed, so it shows steadily while
+  typing. The kernel's clock flips it (`caret_deadline` wakes the shell).
 - Accessibility: `Role::MultilineTextInput`.
 
 ## Secure

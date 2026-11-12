@@ -159,6 +159,15 @@ impl Kernel {
                 self.hide_typed(id);
             }
         }
+        // The focused field's caret shows or hides now: the frame changes.
+        if let Some(t) = self.caret_deadline()
+            && seconds >= t
+        {
+            self.paint_gen += 1;
+            if let Some((f, _)) = self.caret {
+                self.node_mut(f).paint_ver += 1;
+            }
+        }
         self.now = seconds;
     }
     pub fn time(&self) -> f64 {

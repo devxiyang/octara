@@ -167,7 +167,8 @@ impl Window {
     fn deadline(&self) -> Option<f64> {
         let frame = self.w.kernel.borrow_mut().in_motion().then(|| self.app.sched.now_ms() + MOTION_FRAME_MS);
         let reveal = self.w.kernel.borrow().reveal_deadline().map(|t| t * 1000.0);
-        [self.pointer_deadline(), frame, reveal].into_iter().flatten().min_by(f64::total_cmp)
+        let caret = self.w.kernel.borrow().caret_deadline().map(|t| t * 1000.0);
+        [self.pointer_deadline(), frame, reveal, caret].into_iter().flatten().min_by(f64::total_cmp)
     }
 
     /// This window's motion, as pending work.

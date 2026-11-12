@@ -253,3 +253,34 @@ fn what_a_field_draws_follows_every_edit_at_once() {
     app.event(InputEvent::Composition(("a").into()));
     assert_eq!(drawn_glyphs(&app, "field"), 4);
 }
+
+#[test]
+fn the_caret_blinks_and_shows_while_typing() {
+    use std::time::Duration;
+    let mut app = Window::headless(|| {
+        let v = state("v", String::new);
+        col()
+            .child(text_input().id("f").value(move || v.get()).on_input(move |s| v.set(s)))
+            .child(el().id("other").size_8().focusable())
+            .into()
+    });
+    app.tap("f").unwrap();
+    let caret = |app: &Window| {
+        let f = app.kernel().find("f").unwrap();
+        app.display_list().quads().any(|q| q.source == f && q.rect.w <= 2.0)
+    };
+    assert!(caret(&app), "shown when focused");
+    assert!(app.app().next_deadline().is_some(), "a blink is due");
+    app.app().advance(Duration::from_millis(550));
+    assert!(!caret(&app), "hidden half a second later");
+    app.app().advance(Duration::from_millis(500));
+    assert!(caret(&app), "and shown again");
+    app.app().advance(Duration::from_millis(500));
+    assert!(!caret(&app));
+    app.type_text("a");
+    assert!(caret(&app), "typing shows it at once");
+    app.app().advance(Duration::from_millis(300));
+    assert!(caret(&app), "and its blink starts over");
+    app.tap("other").unwrap();
+    assert!(!caret(&app) && app.app().next_deadline().is_none(), "no field focused: no blink");
+}

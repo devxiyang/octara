@@ -7,6 +7,9 @@ use super::{Color, Dirty, Kernel, NodeId, State, Token};
 use crate::paint::{GlyphRun, Item, Quad, Rect};
 use unicode_segmentation::UnicodeSegmentation;
 
+/// Half a caret blink, in seconds (shown this long, then hidden this long; AppKit's and GPUI's).
+pub const CARET_BLINK: f64 = 0.5;
+
 /// What a secure field shows for each grapheme of its value.
 const MASK: char = '•';
 
@@ -221,6 +224,22 @@ impl Kernel {
         self.mark(Dirty::PAINT);
     }
     /// When a secure field's shown character hides (kernel time), if one shows.
+    /// Whether the caret of field `id` shows now: always, but while it blinks, the first half of
+    /// each second since it last moved.
+    pub fn caret_shown(&self, id: NodeId) -> bool {
+        match self.caret {
+            Some((f, since)) if f == id => ((self.now - since) / CARET_BLINK).floor() as i64 % 2 == 0,
+            _ => true,
+        }
+    }
+
+    /// When the focused field's caret next shows or hides.
+    pub fn caret_deadline(&self) -> Option<f64> {
+        let (f, since) = self.caret.filter(|(f, _)| self.is_alive(*f))?;
+        let _ = f;
+        Some(since + (((self.now - since) / CARET_BLINK).floor() + 1.0) * CARET_BLINK)
+    }
+
     pub fn reveal_deadline(&self) -> Option<f64> {
         self.revealing.filter(|(id, _)| self.is_alive(*id)).map(|(_, t)| t).filter(|t| *t > self.now)
     }
@@ -458,7 +477,7 @@ impl Kernel {
                 out.push(quad(Rect { y: r.y + lh - 2.0, h: 1.0, ..r }, fade(v.text)));
             }
         }
-        if focused && f.sel.0 == f.sel.1 {
+        if focused && f.sel.0 == f.sel.1 && self.caret_shown(id) {
             let (cx, cy) = f.pos(f.caret);
             // A single line's caret stays inside the box (its last position may be past it).
             let x = if self.is_multiline(id) { cx } else { (cx - f.scroll.0).min(f.width - 1.0).max(0.0) + f.scroll.0 };

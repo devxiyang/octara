@@ -708,6 +708,9 @@ pub struct Kernel {
     culling: bool,
     /// A secure field showing its last typed character, and when it hides.
     revealing: Option<(NodeId, f64)>,
+    /// The focused text field and when its caret last moved or its text changed: the caret
+    /// blinks from then on (shown for half a second, hidden for half).
+    caret: Option<(NodeId, f64)>,
     /// Nodes made modals (shown or not, attached or not): `modals` filters them.
     modal_nodes: rustc_hash::FxHashSet<NodeId>,
     /// Native views (mounted or not): placements and the host follow them.
@@ -819,6 +822,7 @@ impl Kernel {
             ink_dirty: Cell::new(true),
             culling: true,
             revealing: None,
+            caret: None,
             modal_nodes: rustc_hash::FxHashSet::default(),
             native_nodes: rustc_hash::FxHashSet::default(),
             paint_gen: 0,
@@ -990,6 +994,12 @@ impl Kernel {
         }
         if d.intersects(Dirty::PAINT | Dirty::TEXT | Dirty::LAYOUT) {
             self.node_mut(id).paint_ver += 1;
+        }
+        // An edit or a move of the focused field's caret: it shows, and blinks from now.
+        if let Some((field, since)) = &mut self.caret
+            && *field == id
+        {
+            *since = self.now;
         }
         if d.contains(Dirty::LAYOUT) && self.a11y_live.get() {
             self.a11y_relaid.borrow_mut().insert(id);
@@ -1806,6 +1816,14 @@ impl Kernel {
         }
         // What the kernel draws itself follows states too: a field's caret and selection its
         // focus, a link (drawn by its text) its hover and press.
+        // A field gaining focus shows its caret, blinking from now; losing it, none.
+        if matches!(self.node(id).content, Content::Input(_)) && state.contains(State::FOCUSED) {
+            if on {
+                self.caret = Some((id, self.now));
+            } else if self.caret.is_some_and(|(f, _)| f == id) {
+                self.caret = None;
+            }
+        }
         let drawn = match &self.node(id).content {
             Content::Input(_) if state.intersects(State::FOCUSED | State::FOCUS_VISIBLE) => Some(id),
             Content::Link(_) if state.intersects(State::HOVER | State::PRESSED) => self.node(id).parent,
