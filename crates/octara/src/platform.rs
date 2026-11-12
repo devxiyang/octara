@@ -18,6 +18,13 @@ pub trait Platform {
     /// The clipboard's text, if it holds text.
     fn read_text(&mut self) -> Option<String>;
     fn write_text(&mut self, text: &str);
+    /// The clipboard's image, if it holds one.
+    fn read_image(&mut self) -> Option<crate::image::Image> {
+        None
+    }
+    fn write_image(&mut self, image: &crate::image::Image) {
+        let _ = image;
+    }
     /// What wakes the event loop from another thread (background work finished, a channel
     /// sent); the app then [polls](crate::app::App::poll). `None` headless, where the app is
     /// driven step by step.
@@ -100,6 +107,52 @@ pub trait PlatformWindow {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
+/// What the clipboard holds: text, an image, or both (a copied picture with its description).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClipboardItem {
+    text: Option<String>,
+    image: Option<crate::image::Image>,
+}
+
+impl ClipboardItem {
+    pub fn new_string(text: impl Into<String>) -> ClipboardItem {
+        ClipboardItem { text: Some(text.into()), image: None }
+    }
+    pub fn new_image(image: &crate::image::Image) -> ClipboardItem {
+        ClipboardItem { text: None, image: Some(image.clone()) }
+    }
+    pub fn text(&self) -> Option<&str> {
+        self.text.as_deref()
+    }
+    pub fn image(&self) -> Option<&crate::image::Image> {
+        self.image.as_ref()
+    }
+    pub(crate) fn parts(text: Option<String>, image: Option<crate::image::Image>) -> Option<ClipboardItem> {
+        (text.is_some() || image.is_some()).then_some(ClipboardItem { text, image })
+    }
+}
+
+impl From<&str> for ClipboardItem {
+    fn from(s: &str) -> Self {
+        ClipboardItem::new_string(s)
+    }
+}
+impl From<String> for ClipboardItem {
+    fn from(s: String) -> Self {
+        ClipboardItem::new_string(s)
+    }
+}
+impl From<&String> for ClipboardItem {
+    fn from(s: &String) -> Self {
+        ClipboardItem::new_string(s.clone())
+    }
+}
+impl From<crate::image::Image> for ClipboardItem {
+    fn from(i: crate::image::Image) -> Self {
+        ClipboardItem { text: None, image: Some(i) }
+    }
+}
+
 /// How the pointer looks (GPUI's names).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -154,6 +207,8 @@ pub struct TextInput {
 #[derive(Default)]
 pub struct HeadlessPlatform {
     pub clipboard: Option<String>,
+    /// The clipboard's image (writing text clears it, and writing an image clears the text).
+    pub clipboard_image: Option<crate::image::Image>,
     /// Every URL opened, in order.
     pub opened_urls: Vec<String>,
     /// The window the next one opened is (a test's fake platform views).
@@ -174,8 +229,16 @@ impl Platform for HeadlessPlatform {
     fn open_url(&mut self, url: &str) {
         self.opened_urls.push(url.to_owned());
     }
+    fn read_image(&mut self) -> Option<crate::image::Image> {
+        self.clipboard_image.clone()
+    }
+    fn write_image(&mut self, image: &crate::image::Image) {
+        self.clipboard = None;
+        self.clipboard_image = Some(image.clone());
+    }
     fn write_text(&mut self, text: &str) {
         self.clipboard = Some(text.to_owned());
+        self.clipboard_image = None;
     }
     fn open_window(&mut self, _: crate::app::WindowId, _: &WindowOptions) -> Result<Box<dyn PlatformWindow>, String> {
         Ok(Box::new(self.next_window.take().unwrap_or_default()))

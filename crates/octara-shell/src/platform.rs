@@ -44,6 +44,17 @@ impl Platform for WinitPlatform {
             let _ = c.set_text(text);
         }
     }
+    fn read_image(&mut self) -> Option<octara::image::Image> {
+        let i = self.clipboard.as_mut()?.get_image().ok()?;
+        Some(octara::image::Image::rgba(i.width as u32, i.height as u32, i.bytes.into_owned()))
+    }
+    fn write_image(&mut self, image: &octara::image::Image) {
+        let f = image.frame();
+        let data = arboard::ImageData { width: f.width as usize, height: f.height as usize, bytes: std::borrow::Cow::Borrowed(&f.rgba) };
+        if let Some(c) = &mut self.clipboard {
+            let _ = c.set_image(data);
+        }
+    }
     fn open_url(&mut self, url: &str) {
         if let Err(e) = open::that_detached(url) {
             eprintln!("octara-shell: cannot open {url}: {e}");

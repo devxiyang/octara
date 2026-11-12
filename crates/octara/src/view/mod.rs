@@ -483,9 +483,15 @@ pub fn open_url(url: &str) {
     crate::app::app_state().open_url(url);
 }
 
-/// Puts `text` on the clipboard (GPUI's `write_to_clipboard`). Callable from handlers.
-pub fn write_to_clipboard(text: &str) {
-    crate::app::app_state().write_clipboard(text);
+/// Puts text or an image on the clipboard (GPUI's `write_to_clipboard`):
+/// `write_to_clipboard("text")`, `write_to_clipboard(image)`. Callable from handlers.
+pub fn write_to_clipboard(item: impl Into<crate::platform::ClipboardItem>) {
+    crate::app::app_state().write_clipboard(&item.into());
+}
+
+/// What the clipboard holds (GPUI's `read_from_clipboard`): its text, its image.
+pub fn read_from_clipboard() -> Option<crate::platform::ClipboardItem> {
+    crate::app::app_state().read_clipboard()
 }
 
 /// Runs `f`; what it changes lands at once this frame, even where `motion` is set (Rune's

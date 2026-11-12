@@ -57,6 +57,9 @@ platform is presented a `Frame` after each operation.
   the arrow elsewhere (buttons included). Each `Frame` carries the look over the hovered element.
 - URLs: `open_url(url)` asks the system to open it (the shell: the `open` crate; headless:
   recorded). A link that no `on_link` above it takes opens this way.
+- The clipboard holds text, an image or both: `ClipboardItem` (`new_string`, `new_image`, `text`,
+  `image`); `write_to_clipboard(item)` and `read_from_clipboard()` (GPUI's names); the
+  platform's `read_text` / `write_text` and `read_image` / `write_image` (the shell: arboard).
 - Not yet: `InputHandler`, menus, file dialogs, displays, lifecycle.
 
 ## Backends

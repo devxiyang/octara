@@ -188,7 +188,7 @@ fn code_view(b: ReadSignal<Keyed<Block>>) -> View {
                 .py_1()
                 .child(text(lang).text_xs().text_color(Token::TextMuted))
                 .child(spacer())
-                .child(crate::ghost_button("Copy").text_xs().on_press(move || write_to_clipboard(&code()))),
+                .child(crate::ghost_button("Copy").text_xs().on_press(move || write_to_clipboard(code()))),
         )
         .child(el().h(1.0).bg(Token::Border).a11y_hidden())
         .child(col().p_3().overflow_x_scroll().child(each(

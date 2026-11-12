@@ -8,7 +8,7 @@ publish.workspace = true
 
 [dependencies]
 accesskit_winit.workspace = true
-arboard.workspace = true
+arboard = { workspace = true, features = ["image-data"] }
 open.workspace = true
 octara = { workspace = true, features = ["system-fonts"] }
 octara-render.workspace = true

@@ -432,8 +432,19 @@ impl AppState {
         self.system.borrow_mut().open_url(url);
     }
 
-    pub(crate) fn write_clipboard(&self, text: &str) {
-        self.system.borrow_mut().write_text(text);
+    pub(crate) fn write_clipboard(&self, item: &crate::platform::ClipboardItem) {
+        let mut system = self.system.borrow_mut();
+        match (item.image(), item.text()) {
+            (Some(image), _) => system.write_image(image),
+            (None, Some(text)) => system.write_text(text),
+            (None, None) => {}
+        }
+    }
+
+    pub(crate) fn read_clipboard(&self) -> Option<crate::platform::ClipboardItem> {
+        let mut system = self.system.borrow_mut();
+        let (text, image) = (system.read_text(), system.read_image());
+        crate::platform::ClipboardItem::parts(text, image)
     }
 
     /// Makes window `id` with its platform window; `root` is mounted by the caller.

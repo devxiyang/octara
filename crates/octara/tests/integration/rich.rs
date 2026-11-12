@@ -216,3 +216,22 @@ fn a_link_no_handler_takes_opens_with_the_system() {
     let opened = &p.as_any().downcast_ref::<octara::platform::HeadlessPlatform>().unwrap().opened_urls;
     assert_eq!(opened, &["https://x.dev/docs"]);
 }
+
+#[test]
+fn the_clipboard_takes_text_or_an_image() {
+    let mut w = Window::headless(|| {
+        let image = octara::image::Image::rgba(2, 1, vec![255, 0, 0, 255, 0, 0, 255, 255]);
+        col()
+            .child(el().id("text").size_4().on_press(|| write_to_clipboard("words")))
+            .child(el().id("image").size_4().on_press(move || write_to_clipboard(image.clone())))
+            .into()
+    });
+    w.tap("text").unwrap();
+    let read = || w.app().run(read_from_clipboard);
+    let item = read().unwrap();
+    assert_eq!((item.text(), item.image().is_some()), (Some("words"), false));
+    w.tap("image").unwrap();
+    let item = w.app().run(read_from_clipboard).unwrap();
+    assert_eq!(item.text(), None, "an image replaces the text");
+    assert_eq!(item.image().unwrap().size(), (2, 1));
+}
