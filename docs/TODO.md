@@ -13,6 +13,11 @@ Checked by tests and screenshots; to be tried in a real window (`cargo run -p oc
       Down, Cmd+Left / Right and Cmd+Up / Down feel right.
 - [ ] Chat composer: Enter sends, Shift+Enter breaks the line, the field grows to 4 lines.
 - [ ] Password: no input method while it has focus, copy and undo do nothing, Show reveals it.
+- [ ] Map (`window -- showcase map`, macOS): the map shows through the card's cutout with
+      rounded corners; dragging, scrolling and pinching it move it and the status line follows;
+      the + and − buttons over it zoom and are not taken by the map; in the full `showcase`,
+      scrolling and resizing keep it in place with its frame, no flicker. A clicked map takes the
+      keyboard (Tab back is step 4).
 - [ ] Display captures with the screen unlocked: `OCTARA_CAPTURE=shot.png
       OCTARA_CAPTURE_PIXELS=display cargo run -p octara-examples --bin window -- showcase web`
       reports `pixels: display`, and the picture holds the Metal frame and the live web page,

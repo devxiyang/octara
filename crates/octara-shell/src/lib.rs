@@ -316,6 +316,13 @@ impl Shell {
         // Settling the frame hands native views their placements; they are applied with this
         // frame's present, in one transaction.
         let list = app.display_list();
+        // An underlay view shows through the frame's cutouts: the layer becomes non-opaque
+        // (premultiplied, as the renderer draws).
+        #[cfg(target_os = "macos")]
+        if self.native.as_ref().is_some_and(|n| n.transparent()) && g.config.alpha_mode != wgpu::CompositeAlphaMode::PostMultiplied {
+            g.config.alpha_mode = wgpu::CompositeAlphaMode::PostMultiplied;
+            g.surface.configure(g.renderer.device(), &g.config);
+        }
         #[cfg(target_os = "macos")]
         let transaction = self.native.as_ref().is_some_and(|n| n.begin_frame(&g.surface, self.resized));
         self.resized = false;

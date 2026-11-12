@@ -2,31 +2,44 @@
 //! winit's content view, placed with the frame they belong to.
 //!
 //! Each view sits in a clip container (a flipped `NSView` whose frame is the view's clip, its
-//! layer masking to a rounded rect); containers are subviews of winit's view, above its Metal
-//! layer (the overlay slot). The app's settle hands over placements; the shell applies them
-//! between the frame's draw and its present, inside one `CATransaction` with actions off, and
-//! turns the Metal layer's `presentsWithTransaction` on while views move or the window resizes,
-//! so a view and the content around it reach the screen in the same frame.
+//! layer masking to a rounded rect). Overlay containers are subviews of winit's view above its
+//! Metal layer. Underlay containers live in a host view below every subview, the Metal layer
+//! kept above it (z position) and made non-opaque, so the view shows through the cutout Octara's
+//! renderers clear (Rune's structure). The host takes the pointer only where an underlay view is
+//! and Octara content does not cover it; everywhere else it falls through to winit's view.
 //!
-//! Snapshots (for captures) come from `WKWebView`'s own snapshot, redrawn into straight RGBA.
+//! The app's settle hands over placements; the shell applies them between the frame's draw and
+//! its present, inside one `CATransaction` with actions off, and turns the Metal layer's
+//! `presentsWithTransaction` on while views move or the window resizes, so a view and the
+//! content around it reach the screen in the same frame.
 //!
-//! Kinds: `web` (`WKWebView`: props `url`, or `html` with an optional `base_url`; events
-//! `load` `{url}`, `title` `{title}`, `fail` `{error}`). Other kinds keep their placeholder, as do
-//! views in the underlay slot (a later step).
+//! Kinds:
+//! - `web` (`WKWebView`, overlay): props `url`, or `html` with an optional `base_url`; events
+//!   `load` `{url}`, `title` `{title}`, `fail` `{error}`. Snapshots from WebKit's own.
+//! - `map` (`MKMapView`, underlay): props `center` `[lat, lon]`, `span` `[lat, lon]` degrees,
+//!   `style` (`standard`, `satellite`, `hybrid`); event `region` `{center, span}` after the user
+//!   moves it. Snapshots from `MKMapSnapshotter` (the region, without annotations).
+//!
+//! Other kinds, and kinds in the other slot, keep their placeholder.
 
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSBitmapImageRep, NSDeviceRGBColorSpace, NSGraphicsContext, NSImage, NSView};
+use objc2_app_kit::{NSBitmapImageRep, NSDeviceRGBColorSpace, NSGraphicsContext, NSImage, NSView, NSWindowOrderingMode};
+use objc2_map_kit::{
+    MKCoordinateRegion, MKCoordinateSpan, MKHybridMapConfiguration, MKImageryMapConfiguration, MKMapConfiguration, MKMapSnapshot,
+    MKMapSnapshotOptions, MKMapSnapshotter, MKMapView, MKMapViewDelegate, MKStandardMapConfiguration,
+};
 use objc2_foundation::{
     NSDictionary, NSError, NSKeyValueChangeKey, NSKeyValueObservingOptions, NSObjectNSKeyValueObserverRegistration,
     NSPoint, NSRect, NSSize, NSString, NSURL, NSURLRequest, ns_string,
 };
-use objc2_quartz_core::CATransaction;
+use objc2_quartz_core::{CAMetalLayer, CATransaction};
 use objc2_web_kit::{WKNavigation, WKNavigationDelegate, WKSnapshotConfiguration, WKWebView, WKWebViewConfiguration};
 use octara::image::Image;
 use octara::native::{NativeEvent, NativeHost, NativeId, Placement, Slot};
+use octara::paint::Rect;
 use octara_render::wgpu;
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
@@ -175,9 +188,146 @@ impl Clip {
     }
 }
 
+/// Where the underlay host takes the pointer: an underlay view's visible area, minus what
+/// Octara content covers there.
+#[derive(Default)]
+struct Regions(RefCell<Vec<(Rect, Vec<Rect>)>>);
+
+impl Regions {
+    fn takes(&self, x: f32, y: f32) -> bool {
+        let inside = |r: &Rect| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+        self.0.borrow().iter().any(|(area, covered)| inside(area) && !covered.iter().any(inside))
+    }
+}
+
+define_class!(
+    // SAFETY: NSView has no subclassing requirements; `Underlay` does not implement `Drop`.
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "OctaraNativeUnderlay"]
+    #[ivars = Regions]
+    struct Underlay;
+
+    impl Underlay {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        /// An underlay view takes the pointer where it shows and nothing of Octara's covers it;
+        /// elsewhere the event falls through to winit's view (`point` is in the superview's
+        /// coordinates, which the host shares, flipped: Octara's logical pixels).
+        #[unsafe(method_id(hitTest:))]
+        fn hit_test(&self, point: NSPoint) -> Option<Retained<NSView>> {
+            let hit: Option<Retained<NSView>> =
+                if self.ivars().takes(point.x as f32, point.y as f32) { unsafe { msg_send![super(self), hitTest: point] } } else { None };
+            let me: *const NSView = (self as *const Self).cast();
+            hit.filter(|v| !std::ptr::eq(&**v, me))
+        }
+    }
+);
+
+impl Underlay {
+    fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(Regions::default());
+        let host: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+        // Width and height follow winit's view.
+        host.setAutoresizingMask(objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable | objc2_app_kit::NSAutoresizingMaskOptions::ViewHeightSizable);
+        host.setWantsLayer(true);
+        host
+    }
+}
+
 struct DelegateIvars {
     id: NativeId,
     inbox: Rc<Inbox>,
+}
+
+struct MapIvars {
+    id: NativeId,
+    inbox: Rc<Inbox>,
+    /// Tiles are loading.
+    loading: Cell<bool>,
+}
+
+fn region_json(r: MKCoordinateRegion) -> Value {
+    json!({ "center": [r.center.latitude, r.center.longitude], "span": [r.span.latitudeDelta, r.span.longitudeDelta] })
+}
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements; `MapDelegate` does not implement `Drop`.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "OctaraMapDelegate"]
+    #[ivars = MapIvars]
+    struct MapDelegate;
+
+    unsafe impl NSObjectProtocol for MapDelegate {}
+
+    unsafe impl MKMapViewDelegate for MapDelegate {
+        #[unsafe(method(mapView:regionDidChangeAnimated:))]
+        fn region_changed(&self, map: &MKMapView, _animated: bool) {
+            let i = self.ivars();
+            i.inbox.push(i.id, "region", region_json(unsafe { map.region() }));
+        }
+
+        #[unsafe(method(mapViewWillStartLoadingMap:))]
+        fn will_load(&self, _map: &MKMapView) {
+            self.ivars().loading.set(true);
+        }
+
+        #[unsafe(method(mapViewDidFinishLoadingMap:))]
+        fn did_load(&self, _map: &MKMapView) {
+            self.ivars().loading.set(false);
+        }
+    }
+);
+
+impl MapDelegate {
+    fn new(mtm: MainThreadMarker, id: NativeId, inbox: Rc<Inbox>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(MapIvars { id, inbox, loading: Cell::new(false) });
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// A map's region and style from its props (`None` for what the props leave out).
+fn map_region(props: &Value) -> Option<MKCoordinateRegion> {
+    let pair = |k: &str| -> Option<(f64, f64)> {
+        let a = props.get(k)?.as_array()?;
+        Some((a.first()?.as_f64()?, a.get(1)?.as_f64()?))
+    };
+    let (lat, lon) = pair("center")?;
+    let (dlat, dlon) = pair("span").unwrap_or((0.05, 0.05));
+    Some(MKCoordinateRegion {
+        center: objc2_core_location::CLLocationCoordinate2D { latitude: lat, longitude: lon },
+        span: MKCoordinateSpan { latitudeDelta: dlat, longitudeDelta: dlon },
+    })
+}
+
+fn map_style(props: &Value) -> Retained<MKMapConfiguration> {
+    unsafe {
+        match props.get("style").and_then(Value::as_str) {
+            Some("satellite") => MKImageryMapConfiguration::new().into_super(),
+            Some("hybrid") => MKHybridMapConfiguration::new().into_super(),
+            _ => MKStandardMapConfiguration::new().into_super(),
+        }
+    }
+}
+
+/// Applies a map's props (region and style) when they changed since last applied: the user's
+/// own panning stays until the app sets another region.
+fn apply_map(map: &MKMapView, props: &Value, applied: &mut Value) {
+    let now = json!({ "center": props.get("center"), "span": props.get("span"), "style": props.get("style") });
+    if now == *applied {
+        return;
+    }
+    unsafe {
+        map.setPreferredConfiguration(&map_style(props));
+        if let Some(r) = map_region(props) {
+            map.setRegion_animated(r, false);
+        }
+    }
+    *applied = now;
 }
 
 define_class!(
@@ -238,13 +388,29 @@ impl WebDelegate {
     }
 }
 
+/// The platform view behind a kind.
+enum Platform {
+    Web {
+        web: Retained<WKWebView>,
+        delegate: Retained<WebDelegate>,
+        /// What was last loaded (`url`, `html`, `base_url`): other props changing does not reload.
+        loaded: Value,
+    },
+    Map {
+        map: Retained<MKMapView>,
+        delegate: Retained<MapDelegate>,
+        /// The props last applied (region and style).
+        applied: Value,
+    },
+}
+
 /// One hosted view.
 struct Hosted {
     clip: Retained<Clip>,
-    web: Retained<WKWebView>,
-    delegate: Retained<WebDelegate>,
-    /// What was last loaded (`url`, `html`, `base_url`): other props changing does not reload.
-    loaded: Value,
+    /// The platform view (the clip's subview).
+    view: Retained<NSView>,
+    platform: Platform,
+    slot: Slot,
     placed: Option<Placement>,
 }
 
@@ -259,6 +425,10 @@ pub(crate) struct Views {
     pending: Vec<Placement>,
     /// The Metal layer presents inside the transaction (views are moving).
     presenting: Cell<bool>,
+    /// The host of underlay views, below winit's view's subviews (made with the first one).
+    underlay: Option<Retained<Underlay>>,
+    /// The window's Metal layer, kept above the underlay host.
+    metal: Option<Retained<CAMetalLayer>>,
 }
 
 fn source(props: &Value) -> Value {
@@ -280,11 +450,37 @@ fn rect(x: f32, y: f32, w: f32, h: f32) -> NSRect {
 }
 
 impl Views {
-    /// Whether the platform shows it: web views in the overlay (underlay views come next).
+    /// Whether the platform shows it: web views in the overlay, maps in the underlay.
     fn create(&mut self, id: NativeId, kind: &str, slot: Slot, props: &Value) -> bool {
-        if kind != "web" || slot != Slot::Overlay {
-            return false;
+        let mtm = self.mtm;
+        let (view, platform): (Retained<NSView>, Platform) = match (kind, slot) {
+            ("web", Slot::Overlay) => {
+                let (web, delegate) = self.make_web(id, props);
+                (web.clone().into_super(), Platform::Web { web, delegate, loaded: source(props) })
+            }
+            ("map", Slot::Underlay) => {
+                let map = unsafe { MKMapView::initWithFrame(MKMapView::alloc(mtm), NSRect::ZERO) };
+                let delegate = MapDelegate::new(mtm, id, self.inbox.clone());
+                unsafe { map.setDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
+                let mut applied = Value::Null;
+                apply_map(&map, props, &mut applied);
+                (map.clone().into_super(), Platform::Map { map, delegate, applied })
+            }
+            _ => return false,
+        };
+        view.setWantsLayer(true);
+        if let Some(layer) = view.layer() {
+            layer.setMasksToBounds(true);
         }
+        let clip = Clip::new(mtm);
+        clip.addSubview(&view);
+        // Shown once placed.
+        clip.setHidden(true);
+        self.hosted.insert(id, Hosted { clip, view, platform, slot, placed: None });
+        true
+    }
+
+    fn make_web(&self, id: NativeId, props: &Value) -> (Retained<WKWebView>, Retained<WebDelegate>) {
         let mtm = self.mtm;
         let config = unsafe { WKWebViewConfiguration::new(mtm) };
         let web = unsafe { WKWebView::initWithFrame_configuration(WKWebView::alloc(mtm), NSRect::ZERO, &config) };
@@ -293,66 +489,134 @@ impl Views {
             web.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate)));
             web.addObserver_forKeyPath_options_context(&delegate, ns_string!("title"), NSKeyValueObservingOptions::New, std::ptr::null_mut());
         }
-        web.setWantsLayer(true);
-        if let Some(layer) = web.layer() {
-            layer.setMasksToBounds(true);
-        }
-        let clip = Clip::new(mtm);
-        clip.addSubview(&web);
-        // Shown once placed.
-        clip.setHidden(true);
         load(&web, props);
-        self.hosted.insert(id, Hosted { clip, web, delegate, loaded: source(props), placed: None });
-        true
+        (web, delegate)
     }
 
     fn update(&mut self, id: NativeId, props: &Value) {
         let Some(h) = self.hosted.get_mut(&id) else { return };
-        let src = source(props);
-        if src != h.loaded {
-            load(&h.web, props);
-            h.loaded = src;
+        match &mut h.platform {
+            Platform::Web { web, loaded, .. } => {
+                let src = source(props);
+                if src != *loaded {
+                    load(web, props);
+                    *loaded = src;
+                }
+            }
+            Platform::Map { map, applied, .. } => apply_map(map, props, applied),
         }
     }
 
     fn destroy(&mut self, id: NativeId) {
         let Some(h) = self.hosted.remove(&id) else { return };
-        unsafe {
-            h.web.removeObserver_forKeyPath(&h.delegate, ns_string!("title"));
-            h.web.setNavigationDelegate(None);
-            h.web.stopLoading();
+        match &h.platform {
+            Platform::Web { web, delegate, .. } => unsafe {
+                web.removeObserver_forKeyPath(delegate, ns_string!("title"));
+                web.setNavigationDelegate(None);
+                web.stopLoading();
+            },
+            Platform::Map { map, .. } => unsafe { map.setDelegate(None) },
         }
         h.clip.removeFromSuperview();
+        self.update_regions();
     }
 
-    /// Takes a snapshot of view `id`, handed to the inbox when WebKit has it.
+    /// Takes a snapshot of view `id`, handed to the inbox when the platform has it.
     fn snapshot(&self, id: NativeId) -> Result<Vec<String>, String> {
         let Some(h) = self.hosted.get(&id) else { return Err("no platform view of this kind on macOS yet".into()) };
-        if h.placed.as_ref().is_none_or(|p| p.slot == Slot::Underlay) {
-            return Err("not shown by the platform yet (underlay views come later)".into());
+        if h.placed.is_none() {
+            return Err("not placed yet".into());
         }
         let scale = self.parent.window().map_or(2.0, |w| w.backingScaleFactor());
-        let config = unsafe { WKSnapshotConfiguration::new(self.mtm) };
-        // Not waiting for the next screen update: a hidden or occluded window gets none.
-        unsafe { config.setAfterScreenUpdates(false) };
         let inbox = self.inbox.clone();
-        let done = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
-            // SAFETY: WebKit passes an image or null.
-            let image = unsafe { image.as_ref() }.and_then(|i| rgba(i, scale));
+        let send = move |image: Option<Image>| {
             inbox.snapshots.borrow_mut().push((id, image));
             (inbox.wake)();
-        });
-        unsafe { h.web.takeSnapshotWithConfiguration_completionHandler(Some(&config), &done) };
-        Ok(vec!["hardware-decoded video and WebGL show black (WebKit's snapshot)".into()])
+        };
+        match &h.platform {
+            Platform::Web { web, .. } => {
+                let config = unsafe { WKSnapshotConfiguration::new(self.mtm) };
+                // Not waiting for the next screen update: a hidden or occluded window gets none.
+                unsafe { config.setAfterScreenUpdates(false) };
+                let done = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
+                    // SAFETY: WebKit passes an image or null.
+                    send(unsafe { image.as_ref() }.and_then(|i| rgba(i, scale)));
+                });
+                unsafe { web.takeSnapshotWithConfiguration_completionHandler(Some(&config), &done) };
+                Ok(vec!["hardware-decoded video and WebGL show black (WebKit's snapshot)".into()])
+            }
+            Platform::Map { map, .. } => {
+                let options = unsafe { MKMapSnapshotOptions::new() };
+                unsafe {
+                    options.setRegion(map.region());
+                    options.setPreferredConfiguration(&map.preferredConfiguration());
+                    options.setSize(map.bounds().size);
+                }
+                let snapshotter = unsafe { MKMapSnapshotter::initWithOptions(MKMapSnapshotter::alloc(), &options) };
+                let keep = RefCell::new(Some(snapshotter.clone()));
+                let done = RcBlock::new(move |shot: *mut MKMapSnapshot, _error: *mut NSError| {
+                    // SAFETY: MapKit passes a snapshot or null.
+                    let image = unsafe { shot.as_ref() }.and_then(|s| rgba(&*unsafe { s.image() }, scale));
+                    // The snapshotter lives until it answers.
+                    keep.borrow_mut().take();
+                    send(image);
+                });
+                unsafe { snapshotter.startWithCompletionHandler(RcBlock::as_ptr(&done)) };
+                Ok(vec!["annotations and overlays are not drawn (MapKit's snapshotter)".into()])
+            }
+        }
     }
 
-    /// A page still loading.
+    /// A page or map tiles still loading.
     fn busy(&self, id: NativeId) -> Option<String> {
         let h = self.hosted.get(&id)?;
-        unsafe { h.web.isLoading() }.then(|| {
-            let url = unsafe { h.web.URL() }.and_then(|u| u.absoluteString()).map(|s| s.to_string()).unwrap_or_default();
-            format!("loading {url}").trim_end().to_owned()
-        })
+        match &h.platform {
+            Platform::Web { web, .. } => unsafe { web.isLoading() }.then(|| {
+                let url = unsafe { web.URL() }.and_then(|u| u.absoluteString()).map(|s| s.to_string()).unwrap_or_default();
+                format!("loading {url}").trim_end().to_owned()
+            }),
+            Platform::Map { delegate, .. } => delegate.ivars().loading.get().then(|| "loading map tiles".to_owned()),
+        }
+    }
+
+    /// The underlay host: made with the first underlay view, below every subview of winit's
+    /// view, with the Metal layer above it.
+    fn underlay_host(&mut self) -> Retained<Underlay> {
+        if let Some(h) = &self.underlay {
+            return h.clone();
+        }
+        let host = Underlay::new(self.mtm, self.parent.bounds());
+        self.parent.addSubview_positioned_relativeTo(&host, NSWindowOrderingMode::Below, None);
+        if let (Some(root), Some(host_layer), Some(metal)) = (self.parent.layer(), host.layer(), self.metal.as_ref()) {
+            let inside = unsafe { root.sublayers() }.is_some_and(|ls| ls.iter().any(|l| std::ptr::eq(&*l, &***metal)));
+            if !inside {
+                root.insertSublayer_above(metal, Some(&host_layer));
+            }
+            // AppKit re-sorts sublayers to its subviews' order when it updates the layer tree;
+            // siblings composite by z position first (Rune).
+            metal.setZPosition(1.0);
+        }
+        self.underlay = Some(host.clone());
+        host
+    }
+
+    /// The pointer regions of the underlay host: each placed, visible underlay view.
+    fn update_regions(&self) {
+        let Some(host) = &self.underlay else { return };
+        let regions = self
+            .hosted
+            .values()
+            .filter(|h| h.slot == Slot::Underlay)
+            .filter_map(|h| h.placed.as_ref())
+            .filter(|p| p.visible)
+            .map(|p| (p.rect.intersect(&p.clip), p.covered.clone()))
+            .collect();
+        *host.ivars().0.borrow_mut() = regions;
+    }
+
+    /// Whether the Metal layer must be non-opaque (an underlay view shows through it).
+    fn transparent(&self) -> bool {
+        self.hosted.values().any(|h| h.slot == Slot::Underlay)
     }
 
     /// Placements waiting that move or resize a view (or show one for the first time).
@@ -368,14 +632,22 @@ impl Views {
     fn apply(&mut self) {
         let flipped = self.parent.isFlipped();
         let height = self.parent.bounds().size.height as f32;
-        for p in std::mem::take(&mut self.pending) {
+        let pending = std::mem::take(&mut self.pending);
+        let underlay = pending.iter().any(|p| self.hosted.get(&p.id).is_some_and(|h| h.slot == Slot::Underlay && h.placed.is_none()));
+        let host = underlay.then(|| self.underlay_host());
+        for p in pending {
             let Some(h) = self.hosted.get_mut(&p.id) else { continue };
-            if p.slot == Slot::Underlay {
-                // The underlay host comes with step 3: the placeholder stays.
-                continue;
-            }
             if h.placed.is_none() {
-                self.parent.addSubview(&h.clip);
+                match h.slot {
+                    Slot::Overlay => {
+                        self.parent.addSubview(&h.clip);
+                        // Above the Metal layer, which sits at z 1 once an underlay exists.
+                        if let Some(layer) = h.clip.layer() {
+                            layer.setZPosition(2.0);
+                        }
+                    }
+                    Slot::Underlay => host.as_ref().expect("the underlay host").addSubview(&h.clip),
+                }
             }
             let c = p.clip;
             let y = if flipped { c.y } else { height - c.y - c.h };
@@ -383,14 +655,15 @@ impl Views {
             if let Some(layer) = h.clip.layer() {
                 layer.setCornerRadius(p.clip_radius as f64);
             }
-            h.web.setFrame(rect(p.rect.x - c.x, p.rect.y - c.y, p.rect.w, p.rect.h));
-            if let Some(layer) = h.web.layer() {
+            h.view.setFrame(rect(p.rect.x - c.x, p.rect.y - c.y, p.rect.w, p.rect.h));
+            if let Some(layer) = h.view.layer() {
                 layer.setCornerRadius(p.radius as f64);
             }
             h.clip.setAlphaValue(p.opacity as f64);
             h.clip.setHidden(!p.visible);
             h.placed = Some(p);
         }
+        self.update_regions();
     }
 }
 
@@ -449,24 +722,35 @@ impl Native {
             hosted: HashMap::new(),
             pending: Vec::new(),
             presenting: Cell::new(false),
+            underlay: None,
+            metal: None,
         }));
         Some((Native { views: views.clone(), inbox }, Box::new(MacHost(views))))
+    }
+
+    /// Whether the Metal layer must be non-opaque now (an underlay view shows through it): the
+    /// shell configures the surface with a non-opaque alpha mode.
+    pub(crate) fn transparent(&self) -> bool {
+        self.views.borrow().transparent()
     }
 
     /// Before the frame's surface texture is taken: opens the transaction the placements and
     /// the present go in, and presents inside it while views move or the window resizes.
     /// Returns whether a transaction is open (only while views exist).
     pub(crate) fn begin_frame(&self, surface: &wgpu::Surface<'_>, resized: bool) -> bool {
-        let v = self.views.borrow();
+        let mut v = self.views.borrow_mut();
         if v.hosted.is_empty() {
             return false;
+        }
+        if v.metal.is_none() {
+            // SAFETY: the Metal surface's layer, read on the main thread.
+            v.metal = unsafe { surface.as_hal::<wgpu::hal::api::Metal>() }.map(|hal| hal.render_layer().lock().clone());
         }
         let presenting = resized || v.moving();
         if presenting != v.presenting.get() {
             v.presenting.set(presenting);
-            // SAFETY: the Metal surface's layer, set on the main thread between frames.
-            if let Some(hal) = unsafe { surface.as_hal::<wgpu::hal::api::Metal>() } {
-                hal.render_layer().lock().setPresentsWithTransaction(presenting);
+            if let Some(metal) = &v.metal {
+                metal.setPresentsWithTransaction(presenting);
             }
         }
         CATransaction::begin();
@@ -487,7 +771,7 @@ impl Native {
             .hosted
             .iter()
             .map(|(id, h)| {
-                let f = h.web.convertRect_toView(h.web.bounds(), Some(&v.parent));
+                let f = h.view.convertRect_toView(h.view.bounds(), Some(&v.parent));
                 let p = h.placed.as_ref().map(|p| p.rect);
                 format!(
                     "view {}: in AppKit at {:.0},{:.0} {:.0}×{:.0}, placed at {}",

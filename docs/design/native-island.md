@@ -1,6 +1,6 @@
 # Native Island
 
-Based on the [research](../research/native-island.md). Status: confirmed; steps 1 and 2 implemented.
+Based on the [research](../research/native-island.md). Status: confirmed; steps 1 to 3 implemented.
 
 ## What is native
 
@@ -45,7 +45,11 @@ Based on the [research](../research/native-island.md). Status: confirmed; steps 
   them on the main thread, stale ones dropped.
 - Input: AppKit hit-tests overlay views before the content view, so they get their own pointer
   events. An underlay view is under the Metal view: where Octara's hit test finds the underlay
-  view topmost, the shell forwards the event to it (a map's drags and pinches).
+  view topmost, the event goes to it (a map's drags and pinches). As built: each underlay
+  placement carries the rects Octara content covers (`covered`: what is hit before the view),
+  and the underlay host's `hitTest:` takes the point only inside a visible underlay view and
+  outside those rects, so AppKit delivers the view's own gestures, scrolling and magnification;
+  everywhere else the event falls through to winit's view.
 
 ## Hosting on Windows (DirectComposition)
 
@@ -118,6 +122,14 @@ Based on the [research](../research/native-island.md). Status: confirmed; steps 
   `presentsWithTransaction` on for frames where a view moves, resizes or shows, or the window
   resizes. Delegate events go to an inbox and wake the loop; the shell hands them to
   `App::native_event`. Other kinds and underlay views keep their placeholder (step 3).
+- As built (step 3): `NativeHost::create` takes the slot and answers whether the platform shows
+  the view; a shown view draws no placeholder, and a shown underlay view's `Item::Native` is
+  `cut`: both renderers clear its rounded rect to transparent (destination-out; the GPU renderer
+  switches pipelines for that instance). On macOS kind `map` is an `MKMapView` in the underlay
+  (props `center`, `span`, `style`; event `region`; busy while tiles load; snapshots from
+  `MKMapSnapshotter`). The underlay host is made with the first underlay view, below every
+  subview, the Metal layer kept above it (z position 1, overlay containers at 2) and configured
+  non-opaque. A view inside a group-opacity layer is not cut through the layer (a known limit).
 - Snapshots belong to [captures](capture.md): `App::capture_begin()` asks the host
   (`NativeHost::snapshot`, which says what the snapshot misses or why it takes none) for an
   image of every visible view; it comes back with `App::native_snapshot(id, image)` and is
@@ -135,7 +147,8 @@ Based on the [research](../research/native-island.md). Status: confirmed; steps 
    snapshots for captures. Done as built below; per-corner radii wait for the style to have
    them.
 3. macOS underlay: the host view below, a non-opaque Metal layer, the cutout cleared in paint
-   order, events forwarded to the underlay view; a map (`MKMapView`) as the first kind.
+   order, pointer input to the underlay view where Octara does not cover it; a map
+   (`MKMapView`) as the first kind. Done; keyboard focus of a clicked map is step 4's.
 4. Focus targets in the Tab order, Escape back, accessibility joining; views created near the
    viewport and hidden when far; the agent input channel.
 5. Windows: DirectComposition hosting, WebView2 in visual hosting (input, focus, cursor,

@@ -1,6 +1,6 @@
 //! A tour of what Octara draws and does: shadows, gradients, images, a canvas chart, icons, group
-//! opacity, cut text, text editing, a select, focus, timers, an async resource, a web view, and
-//! motion. One file per card; [`page`] shows one card alone (`window -- showcase web`).
+//! opacity, cut text, text editing, a select, focus, timers, an async resource, a web view, a
+//! map, and motion. One file per card; [`page`] shows one card alone (`window -- showcase web`).
 
 use octara::prelude::*;
 
@@ -11,6 +11,7 @@ mod fields;
 mod hero;
 mod images;
 mod layers;
+mod map;
 mod search;
 mod web;
 
@@ -18,7 +19,7 @@ mod web;
 pub type Card = (&'static str, fn() -> El);
 
 /// The cards by name, in the tour's order.
-pub const CARDS: [Card; 9] = [
+pub const CARDS: [Card; 10] = [
     ("hero", hero::card),
     ("images", images::card),
     ("layers", layers::card),
@@ -28,6 +29,7 @@ pub const CARDS: [Card; 9] = [
     ("cut", cut::card),
     ("fields", fields::card),
     ("web", web::card),
+    ("map", map::card),
 ];
 
 /// The frame every card shares.
@@ -74,7 +76,7 @@ pub fn showcase() -> View {
             .child(wrap().child(images::card()).child(layers::card()))
             .child(wrap().child(drawing::card()))
             .child(wrap().child(editing::card()).child(col().gap_6().child(search::card()).child(cut::card())))
-            .child(wrap().child(fields::card()).child(web::card())),
+            .child(wrap().child(fields::card()).child(web::card()).child(map::card())),
     )
 }
 
