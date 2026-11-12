@@ -68,7 +68,7 @@ impl Kernel {
 
 impl App {
     fn point_of(&self, target: &str) -> Result<(f32, f32), String> {
-        let k = self.ui.kernel.borrow();
+        let k = self.win().ui.kernel.borrow();
         let n = k.resolve_target(target)?;
         if let Some(m) = self.top_modal()
             && !k.is_within(n, m)

@@ -308,7 +308,7 @@ impl Scheduler {
                     kind: e.kind,
                     label: e.label.clone(),
                     scope: e.scope.map_or_else(|| "detached".to_owned(), |s| rt(|r| r.scope_path(s))),
-                    at: format!("{}:{}", e.at.file(), e.at.line()),
+                    at: format!("{}:{}", crate::diagnostics::source_file(e.at), e.at.line()),
                     due: due.map(|ms| Duration::from_secs_f64(ms / 1000.0)),
                 }
             })

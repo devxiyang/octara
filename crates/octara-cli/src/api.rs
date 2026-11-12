@@ -59,7 +59,9 @@ pub fn generate() -> Result<Api, String> {
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         if err.contains(&format!("toolchain '{toolchain}")) || err.contains("is not installed") {
-            return Err(format!("generating api.json needs a nightly toolchain for rustdoc's JSON: `rustup toolchain install {toolchain}`"));
+            return Err(format!(
+                "generating api.json needs a nightly toolchain for rustdoc's JSON: `rustup toolchain install {toolchain}`"
+            ));
         }
         return Err(format!("rustdoc failed:\n{err}"));
     }

@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Toolchain (rust-toolchain.toml) and components
         run: rustup component add rustfmt clippy
       - name: Linux libraries
@@ -43,7 +43,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Nightly for rustdoc's JSON
         run: rustup toolchain install ${{ env.OCTARA_RUSTDOC_TOOLCHAIN }} --profile minimal
       - name: Linux libraries
@@ -62,7 +62,7 @@ jobs:
           echo '{"op":"capture","path":"screenshots/capture.png","scale":1}' \
             | cargo run -q -p octara-cli -- run --manifest-path examples/Cargo.toml --json | tee capture.json
           grep -q '"ok":true' capture.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: screenshots-${{ matrix.os }}

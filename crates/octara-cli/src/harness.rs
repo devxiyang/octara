@@ -235,7 +235,8 @@ pub fn build(t: &Target) -> Result<PathBuf, String> {
 
 /// Source locations relative to the app's workspace (the harness sees them as absolute paths).
 pub fn relative_sources(t: &Target, text: &str) -> String {
-    let root = format!("{}/", t.workspace_root.display());
+    // Sources are written with `/` on every platform; so is the root they are relative to.
+    let root = format!("{}/", t.workspace_root.display().to_string().replace('\\', "/"));
     text.replace(&root, "")
 }
 

@@ -94,6 +94,12 @@ impl Diagnostic {
 }
 
 /// The registered code `id`, if any.
+/// A source file as reports name it: with `/` on every platform, so snapshots, diagnostics
+/// and pending work read the same on Windows.
+pub(crate) fn source_file(at: &std::panic::Location<'_>) -> String {
+    at.file().replace('\\', "/")
+}
+
 pub fn code(id: &str) -> Option<&'static Code> {
     CODES.iter().copied().find(|c| c.id == id)
 }

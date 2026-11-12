@@ -22,7 +22,7 @@ fn duration(ms: f64) -> Duration {
 impl App {
     /// The app's clock: time since it started, as the shell (or a test) advances it.
     pub fn now(&self) -> Duration {
-        duration(self.ui.sched.now_ms())
+        duration(self.win().ui.sched.now_ms())
     }
 
     /// Moves the clock forward by `dt`: timers and long presses due on the way fire in order,
@@ -35,7 +35,7 @@ impl App {
     /// Moves the clock to `t` (shells call this before each event and frame with the time since
     /// launch). Whatever comes due on the way runs at its own time. Time never goes back.
     pub fn advance_to(&mut self, t: Duration) {
-        let sched = self.ui.sched.clone();
+        let sched = self.win().ui.sched.clone();
         let t = ms(t).max(sched.now_ms());
         for _ in 0..100_000 {
             let next = [sched.next_timer(), self.long_press_due()].into_iter().flatten().min_by(f64::total_cmp);
@@ -47,13 +47,13 @@ impl App {
             });
         }
         self.set_clock(t);
-        let glides = self.ui.kernel.borrow().gliding_scrolls();
+        let glides = self.win().ui.kernel.borrow().gliding_scrolls();
         // Hover held while layout moved catches up once it has settled.
-        let catch_up = self.hover_held() && !self.ui.kernel.borrow().layout_in_motion();
+        let catch_up = self.hover_held() && !self.win().ui.kernel.borrow().layout_in_motion();
         if self.gliding() || glides || catch_up {
             self.input_frame(|| {
                 self.pointer_time();
-                self.ui.kernel.borrow_mut().step_glides();
+                self.win().ui.kernel.borrow_mut().step_glides();
             });
         }
     }
@@ -61,27 +61,31 @@ impl App {
     /// When the app next needs the clock advanced (a timer, a long press coming due, the next
     /// frame of momentum or of motion), if anything is pending. Shells wake up then.
     pub fn next_deadline(&self) -> Option<Duration> {
-        let frame = self.ui.kernel.borrow_mut().in_motion().then(|| self.ui.sched.now_ms() + MOTION_FRAME_MS);
+        let frame = self.win().ui.kernel.borrow_mut().in_motion().then(|| self.win().ui.sched.now_ms() + MOTION_FRAME_MS);
         // A secure field's shown character hides.
-        let reveal = self.ui.kernel.borrow().reveal_deadline().map(|t| t * 1000.0);
-        [self.ui.sched.next_timer(), self.pointer_deadline(), frame, reveal].into_iter().flatten().min_by(f64::total_cmp).map(duration)
+        let reveal = self.win().ui.kernel.borrow().reveal_deadline().map(|t| t * 1000.0);
+        [self.win().ui.sched.next_timer(), self.pointer_deadline(), frame, reveal]
+            .into_iter()
+            .flatten()
+            .min_by(f64::total_cmp)
+            .map(duration)
     }
 
     /// Moves the clock: the scheduler's and the time the kernel shows.
     fn set_clock(&self, ms: f64) {
-        self.ui.sched.set_now_ms(ms);
-        self.ui.kernel.borrow_mut().set_time(ms / 1000.0);
+        self.win().ui.sched.set_now_ms(ms);
+        self.win().ui.kernel.borrow_mut().set_time(ms / 1000.0);
     }
 
     /// Reduce Motion (the system setting): positions and sizes land at once; opacity and
     /// colors fade briefly instead of moving on their springs.
     pub fn set_reduced_motion(&mut self, on: bool) {
-        self.ui.kernel.borrow_mut().set_reduced_motion(on);
+        self.win().ui.kernel.borrow_mut().set_reduced_motion(on);
     }
 
     /// Lands everything in motion on its target now.
     pub fn settle_motion(&mut self) {
-        self.ui.kernel.borrow_mut().land_motion();
+        self.win().ui.kernel.borrow_mut().land_motion();
     }
 
     /// Runs what other threads woke (background results, channel messages). Shells call this
@@ -92,14 +96,14 @@ impl App {
 
     /// Lets the shell know when another thread woke the app (call [`App::poll`] then).
     pub fn set_waker(&mut self, wake: impl Fn() + Send + Sync + 'static) {
-        self.ui.sched.set_waker(std::sync::Arc::new(wake));
+        self.win().ui.sched.set_waker(std::sync::Arc::new(wake));
     }
 
     /// Lands asynchronous work without moving the clock: waits (in real time) for background
     /// jobs, and runs every woken task, until none is left. Returns what is still pending
     /// (tasks waiting on timers or channels, subscriptions).
     pub fn settle(&mut self) -> Vec<PendingWork> {
-        let sched = self.ui.sched.clone();
+        let sched = self.win().ui.sched.clone();
         for _ in 0..1000 {
             sched.wait_background(BACKGROUND_WAIT);
             self.poll();
@@ -131,13 +135,13 @@ impl App {
     /// What is pending: tasks, subscriptions and background jobs, with their scope, where they
     /// started, and when the timer each waits on is due.
     pub fn pending(&self) -> Vec<PendingWork> {
-        let mut out = self.enter(|| self.ui.sched.pending());
-        let k = self.ui.kernel.borrow();
+        let mut out = self.enter(|| self.win().ui.sched.pending());
+        let k = self.win().ui.kernel.borrow();
         out.extend(k.motions().into_iter().map(|(id, rest)| PendingWork {
             kind: WorkKind::Motion,
             label: format!("motion of {}", k.describe(id)),
             scope: k.test_id(id).unwrap_or("").to_owned(),
-            at: k.origin(id).map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default(),
+            at: k.origin(id).map(|l| format!("{}:{}", crate::diagnostics::source_file(l), l.line())).unwrap_or_default(),
             due: Some(duration(rest * 1000.0)),
         }));
         out
@@ -146,7 +150,7 @@ impl App {
     /// Sends `payload` to the channel named `name` (see `Receiver::named`), as the outside world
     /// would; it lands at once.
     pub fn send(&mut self, name: &str, payload: &str) -> Result<(), String> {
-        self.ui.sched.send_named(name, payload)?;
+        self.win().ui.sched.send_named(name, payload)?;
         self.poll();
         Ok(())
     }

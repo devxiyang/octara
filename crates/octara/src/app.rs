@@ -98,28 +98,43 @@ pub struct Work {
     pub reactive_nodes: u64,
 }
 
+slotmap::new_key_type! {
+    /// A window's identity while it is open.
+    pub struct WindowId;
+}
+
+/// An app: the reactive runtime, the clock and the app's settings, and its windows
+/// ([design](https://github.com/octoii-works/octara/blob/main/docs/design/windows.md)). The
+/// methods without a window act on the main one.
 pub struct App {
     rt: Rc<Runtime>,
-    ui: Rc<Ui>,
-    root: Rc<dyn Fn() -> View>,
-    root_scope: Cell<Option<ScopeId>>,
-    root_slots: Slots,
+    windows: slotmap::SlotMap<WindowId, Window>,
+    main: WindowId,
     next_cause: Cell<u64>,
-    interaction: RefCell<Interaction>,
-    viewport: Signal<(f32, f32)>,
-    breakpoint: Signal<Breakpoint>,
-    size: Cell<(f32, f32)>,
     tuning: Cell<Tuning>,
     platform: Cell<Platform>,
     /// The app's own bindings (after the platform's standard ones).
     keymap: RefCell<keys::Keymap>,
     clipboard: RefCell<Box<dyn edit::Clipboard>>,
+    /// What paints `capture` requests (the harness installs the reference renderer).
+    painter: RefCell<Option<Box<dyn crate::capture::Painter>>>,
+}
+
+/// What is one window's own: its kernel and view context, root view and scope, interaction
+/// state, size and the signals derived from it, its native views and a capture in progress.
+pub(crate) struct Window {
+    ui: Rc<Ui>,
+    root: Rc<dyn Fn() -> View>,
+    root_scope: Cell<Option<ScopeId>>,
+    root_slots: Slots,
+    interaction: RefCell<Interaction>,
+    viewport: Signal<(f32, f32)>,
+    breakpoint: Signal<Breakpoint>,
+    size: Cell<(f32, f32)>,
     /// Where native views live: the platform's in a shell, a recording one headless.
     native_host: RefCell<Box<dyn crate::native::NativeHost>>,
     /// What the host was last told of each native view: its props version and placement.
     native_sent: RefCell<rustc_hash::FxHashMap<NodeId, (u64, Option<crate::native::Placement>)>>,
-    /// What paints `capture` requests (the harness installs the reference renderer).
-    painter: RefCell<Option<Box<dyn crate::capture::Painter>>>,
     /// A capture in progress: the snapshots asked for.
     capturing: RefCell<Option<crate::capture::Capturing>>,
 }
@@ -149,6 +164,28 @@ struct Interaction {
     reveal: Option<NodeId>,
 }
 
+impl Window {
+    fn new(rt: &Rc<Runtime>, root: Rc<dyn Fn() -> View>, platform: Platform) -> Window {
+        let window = Window {
+            ui: Rc::new(Ui::default()),
+            root,
+            root_scope: Cell::new(None),
+            root_slots: Slots::default(),
+            interaction: RefCell::default(),
+            viewport: rt.enter(|| Signal::detached(DEFAULT_VIEWPORT)),
+            breakpoint: rt.enter(|| Signal::detached(Theme::default().breakpoint_of(DEFAULT_VIEWPORT.0))),
+            size: Cell::new(DEFAULT_VIEWPORT),
+            native_host: RefCell::new(Box::<crate::native::RecordingHost>::default()),
+            native_sent: RefCell::default(),
+            capturing: RefCell::default(),
+        };
+        window.ui.viewport.set(Some(window.viewport));
+        window.ui.breakpoint.set(Some(window.breakpoint));
+        window.ui.kernel.borrow_mut().set_touch(platform.is_touch());
+        window
+    }
+}
+
 /// The offset a scroll event starts from: the current one for `Scroll`, the origin for `ScrollTo`.
 fn n_offset(k: &Kernel, n: crate::kernel::NodeId, relative: bool) -> (f32, f32) {
     if relative { k.scroll_offset(n) } else { (0.0, 0.0) }
@@ -160,43 +197,45 @@ const RUNTIME_STATES: State = State::HOVER.union(State::FOCUSED).union(State::FO
 impl App {
     pub fn new(root: impl Fn() -> View + 'static) -> Self {
         let rt = Runtime::new();
+        let platform = Platform::current();
+        let window = Window::new(&rt, Rc::new(root), platform);
+        let mut windows = slotmap::SlotMap::with_key();
+        let main = windows.insert(window);
         let app = App {
-            rt: rt.clone(),
-            ui: Rc::new(Ui::default()),
-            root: Rc::new(root),
-            root_scope: Cell::new(None),
-            root_slots: Slots::default(),
+            rt,
+            windows,
+            main,
             next_cause: Cell::new(0),
-            interaction: RefCell::default(),
-            viewport: rt.enter(|| Signal::detached(DEFAULT_VIEWPORT)),
-            breakpoint: rt.enter(|| Signal::detached(Theme::default().breakpoint_of(DEFAULT_VIEWPORT.0))),
-            size: Cell::new(DEFAULT_VIEWPORT),
             tuning: Cell::new(Tuning::default()),
-            platform: Cell::new(Platform::current()),
-            native_host: RefCell::new(Box::<crate::native::RecordingHost>::default()),
-            native_sent: RefCell::default(),
+            platform: Cell::new(platform),
             painter: RefCell::default(),
-            capturing: RefCell::default(),
             keymap: RefCell::new(keys::Keymap::default()),
             clipboard: RefCell::new(Box::new(edit::MemoryClipboard::default())),
         };
-        app.ui.viewport.set(Some(app.viewport));
-        app.ui.breakpoint.set(Some(app.breakpoint));
-        app.ui.kernel.borrow_mut().set_touch(app.platform.get().is_touch());
         app.enter(|| app.mount_root());
         app
     }
 
+    /// The window methods without one act on: the main window.
+    pub(crate) fn win(&self) -> &Window {
+        &self.windows[self.main]
+    }
+
+    /// The main window's id.
+    pub fn main_window(&self) -> WindowId {
+        self.main
+    }
+
     pub(crate) fn enter<R>(&self, f: impl FnOnce() -> R) -> R {
-        enter_ui(&self.ui, || self.rt.enter(f))
+        enter_ui(&self.win().ui, || self.rt.enter(f))
     }
 
     fn mount_root(&self) {
         let s = self.rt.create_scope(None, "app");
-        self.root_scope.set(Some(s));
-        let parent = Parent { node: self.ui.kernel.borrow().root(), root: self.root_slots.clone() };
-        let root = self.root.clone();
-        self.rt.with_frame(Ctx::Build, None, Some(Some(s)), || mount(root(), &parent, &self.root_slots));
+        self.win().root_scope.set(Some(s));
+        let parent = Parent { node: self.win().ui.kernel.borrow().root(), root: self.win().root_slots.clone() };
+        let root = self.win().root.clone();
+        self.rt.with_frame(Ctx::Build, None, Some(Some(s)), || mount(root(), &parent, &self.win().root_slots));
         self.rt.flush();
         self.restore_interaction();
         self.settle_frame();
@@ -211,35 +250,37 @@ impl App {
         // Tasks woken (or spawned) by what just happened run to their next wait first; what they
         // change is laid out with the rest. They may wake or spawn more, so repeat (bounded).
         for _ in 0..16 {
-            self.ui.sched.run_ready();
+            self.win().ui.sched.run_ready();
             self.settle_layout(at);
             // Modals that opened or closed move focus (which restyles).
             if self.sync_modals() {
                 self.settle_layout(at);
             }
-            if !self.ui.sched.has_ready() {
+            if !self.win().ui.sched.has_ready() {
                 break;
             }
         }
         // A caret that moved shows: the scroll containers around its field follow it.
-        let reveal = self.interaction.borrow_mut().reveal.take();
+        let reveal = self.win().interaction.borrow_mut().reveal.take();
         if let Some(n) = reveal {
-            let caret = self.ui.kernel.borrow().caret(n);
+            let caret = self.win().ui.kernel.borrow().caret(n);
             if let Some(r) = caret
-                && self.ui.kernel.borrow_mut().reveal(n, r)
+                && self.win().ui.kernel.borrow_mut().reveal(n, r)
             {
                 self.settle_layout(at);
             }
         }
         self.sync_native();
         // An `instant` transaction covers the frame it was made in.
-        self.ui.kernel.borrow_mut().set_instant(false);
+        self.win().ui.kernel.borrow_mut().set_instant(false);
         // What is on its way out can no longer be focused or hovered.
         let (focused, hovered) = {
-            let i = self.interaction.borrow();
+            let i = self.win().interaction.borrow();
             (i.focused, i.hovered)
         };
-        let gone = |n: Option<NodeId>| n.is_some_and(|n| !self.ui.kernel.borrow().is_alive(n) || self.ui.kernel.borrow().is_exiting(n));
+        let gone = |n: Option<NodeId>| {
+            n.is_some_and(|n| !self.win().ui.kernel.borrow().is_alive(n) || self.win().ui.kernel.borrow().is_exiting(n))
+        };
         if gone(focused) {
             let _ = self.set_focus(None);
         }
@@ -252,14 +293,14 @@ impl App {
     fn settle_layout(&self, at: &'static std::panic::Location<'static>) {
         for _ in 0..4 {
             self.rt.flush();
-            self.ui.kernel.borrow_mut().layout(self.size().0, self.size().1);
-            let changed = self.rt.with_frame(Ctx::Handler, None, Some(None), || self.ui.sync_after_layout());
+            self.win().ui.kernel.borrow_mut().layout(self.size().0, self.size().1);
+            let changed = self.rt.with_frame(Ctx::Handler, None, Some(None), || self.win().ui.sync_after_layout());
             if !changed {
                 return;
             }
         }
         self.rt.flush();
-        self.ui.kernel.borrow_mut().layout(self.size().0, self.size().1);
+        self.win().ui.kernel.borrow_mut().layout(self.size().0, self.size().1);
         self.rt.diag(
             &codes::LAYOUT_LOOP,
             "layout did not settle in 4 rounds: something keeps changing what it measures (a size read feeding the size it reads)".into(),
@@ -268,8 +309,8 @@ impl App {
     }
 
     fn restore_interaction(&self) {
-        let mut i = self.interaction.borrow_mut();
-        let mut k = self.ui.kernel.borrow_mut();
+        let mut i = self.win().interaction.borrow_mut();
+        let mut k = self.win().ui.kernel.borrow_mut();
         let (hover, focus) = std::mem::take(&mut i.reload);
         let hovered = hover.and_then(|id| k.find(&id));
         i.hovered = hovered;
@@ -301,11 +342,11 @@ impl App {
     /// The mouse is over `n` (the topmost node there): it and its ancestors are hovered, up to
     /// the innermost `hover_alone` one (GPUI, Rune, CSS).
     pub(crate) fn set_hover(&self, n: Option<NodeId>) {
-        let mut i = self.interaction.borrow_mut();
+        let mut i = self.win().interaction.borrow_mut();
         if i.hovered == n {
             return;
         }
-        let mut k = self.ui.kernel.borrow_mut();
+        let mut k = self.win().ui.kernel.borrow_mut();
         let chain = k.hover_chain(n);
         for p in std::mem::take(&mut i.hover_chain) {
             if k.is_alive(p) && !chain.contains(&p) {
@@ -322,13 +363,13 @@ impl App {
 
     /// Records how input last arrived; the focus ring follows it.
     pub(crate) fn set_modality(&self, m: Modality) {
-        let mut i = self.interaction.borrow_mut();
+        let mut i = self.win().interaction.borrow_mut();
         if i.modality == m {
             return;
         }
         i.modality = m;
         if let Some(n) = i.focused {
-            let mut k = self.ui.kernel.borrow_mut();
+            let mut k = self.win().ui.kernel.borrow_mut();
             if k.is_alive(n) {
                 k.set_state(n, State::FOCUS_VISIBLE, m == Modality::Keyboard);
             }
@@ -338,8 +379,8 @@ impl App {
     /// Moves keyboard focus to `n`, which must be focusable and enabled (`None` blurs). The
     /// ring shows if the last input was the keyboard.
     pub(crate) fn set_focus(&self, n: Option<NodeId>) -> Result<(), String> {
-        let mut i = self.interaction.borrow_mut();
-        let mut k = self.ui.kernel.borrow_mut();
+        let mut i = self.win().interaction.borrow_mut();
+        let mut k = self.win().ui.kernel.borrow_mut();
         if let Some(n) = n {
             let name = k.test_id(n).unwrap_or("element").to_owned();
             if !k.is_focusable(n) {
@@ -369,13 +410,13 @@ impl App {
 
     /// Applies a runtime-driven state change; `Err` if the target cannot take it.
     fn interact(&self, ev: &Event) -> Result<(), String> {
-        let find = |id: &str| self.ui.kernel.borrow().find(id).ok_or(format!("no node with test id `{id}`"));
+        let find = |id: &str| self.win().ui.kernel.borrow().find(id).ok_or(format!("no node with test id `{id}`"));
         match ev {
             Event::Hover(id, on) => {
                 let n = find(id)?;
                 if *on {
                     self.set_hover(Some(n));
-                } else if self.interaction.borrow().hover_chain.contains(&n) {
+                } else if self.win().interaction.borrow().hover_chain.contains(&n) {
                     self.set_hover(None);
                 }
             }
@@ -386,7 +427,7 @@ impl App {
             }
             Event::Blur => self.set_focus(None)?,
             Event::Scroll(id, dx, dy) | Event::ScrollTo(id, dx, dy) => {
-                let mut k = self.ui.kernel.borrow_mut();
+                let mut k = self.win().ui.kernel.borrow_mut();
                 let n = k.find(id).ok_or(format!("no node with test id `{id}`"))?;
                 let (sx, sy) = k.scrollable(n);
                 let o = n_offset(&k, n, matches!(ev, Event::Scroll(..)));
@@ -416,31 +457,31 @@ impl App {
             }
             Event::Send(..) => unreachable!("sends go to channels"),
         };
-        let k = self.ui.kernel.borrow();
+        let k = self.win().ui.kernel.borrow();
         let node = k.find(id).ok_or(format!("no node with test id `{id}`"))?;
         if k.state(node).contains(State::DISABLED) {
             return Err(format!("`{id}` is disabled"));
         }
         let hid = k.handler(node, kind).ok_or(format!("`{id}` has no {kind:?} handler"))?;
-        self.ui.handlers.borrow().get(&hid.0).cloned().ok_or(format!("handler of `{id}` was disposed"))
+        self.win().ui.handlers.borrow().get(&hid.0).cloned().ok_or(format!("handler of `{id}` was disposed"))
     }
 }
 
 impl App {
     /// The current window size.
     pub fn size(&self) -> (f32, f32) {
-        self.size.get()
+        self.win().size.get()
     }
     /// Resizes the window: bindings that read `viewport()` update, then everything is laid out
     /// again at the new size (text re-breaks; nothing else reruns).
     pub fn resize(&mut self, width: f32, height: f32) {
-        self.size.set((width, height));
+        self.win().size.set((width, height));
         self.enter(|| {
             self.rt.with_frame(Ctx::Handler, None, Some(None), || {
-                self.viewport.set((width, height));
-                let bp = self.ui.kernel.borrow().theme().breakpoint_of(width);
-                if self.breakpoint.get_untracked() != bp {
-                    self.breakpoint.set(bp);
+                self.win().viewport.set((width, height));
+                let bp = self.win().ui.kernel.borrow().theme().breakpoint_of(width);
+                if self.win().breakpoint.get_untracked() != bp {
+                    self.win().breakpoint.set(bp);
                 }
             });
             self.settle_frame();
@@ -448,7 +489,7 @@ impl App {
     }
     /// The window's breakpoint (Tailwind `sm` … `2xl`).
     pub fn breakpoint(&self) -> Breakpoint {
-        self.kernel().theme().breakpoint_of(self.size.get().0)
+        self.kernel().theme().breakpoint_of(self.win().size.get().0)
     }
     /// Runs `check` at each window size in turn (e.g. phone and desktop), then restores the size.
     /// Stops at the first error, naming the size.
@@ -468,14 +509,14 @@ impl App {
     /// Layout problems in the current frame (overflow, collapsed elements, truncated text,
     /// clamped overlays, missing tokens). Tests and agents can assert there are none.
     pub fn layout_issues(&self) -> Vec<crate::kernel::LayoutIssue> {
-        self.ui.kernel.borrow().layout_issues()
+        self.win().ui.kernel.borrow().layout_issues()
     }
     /// The semantic tree and app state as the Inspector protocol gives them (see
     /// [`crate::inspect`]).
     pub fn inspect(&self) -> crate::inspect::Snapshot {
         let (w, h) = self.size();
-        let k = self.ui.kernel.borrow();
-        let focus = self.interaction.borrow().focused.filter(|n| k.is_alive(*n)).and_then(|n| k.test_id(n).map(str::to_owned));
+        let k = self.win().ui.kernel.borrow();
+        let focus = self.win().interaction.borrow().focused.filter(|n| k.is_alive(*n)).and_then(|n| k.test_id(n).map(str::to_owned));
         crate::inspect::Snapshot {
             schema: crate::inspect::SCHEMA.into(),
             octara: env!("CARGO_PKG_VERSION").into(),
@@ -490,50 +531,50 @@ impl App {
     }
     /// What the current frame draws, in order (see [`crate::paint`]).
     pub fn display_list(&self) -> std::rc::Rc<crate::paint::DisplayList> {
-        self.ui.kernel.borrow().display_list()
+        self.win().ui.kernel.borrow().display_list()
     }
     pub fn kernel(&self) -> Ref<'_, Kernel> {
-        self.ui.kernel.borrow()
+        self.win().ui.kernel.borrow()
     }
     pub fn kernel_mut(&mut self) -> RefMut<'_, Kernel> {
-        self.ui.kernel.borrow_mut()
+        self.win().ui.kernel.borrow_mut()
     }
     /// Runs the event's handler, applies every update and lays out, like one frame.
     pub fn dispatch(&mut self, ev: Event) -> Result<(), String> {
         self.enter(|| {
             let cause = self.next_cause.get() + 1;
             if matches!(ev, Event::Hover(..) | Event::Focus(_) | Event::Blur | Event::Scroll(..) | Event::ScrollTo(..)) {
-                self.ui.kernel.borrow_mut().set_cause(Some(cause));
+                self.win().ui.kernel.borrow_mut().set_cause(Some(cause));
                 let r = self.interact(&ev);
                 if r.is_err() {
-                    self.ui.kernel.borrow_mut().set_cause(None);
+                    self.win().ui.kernel.borrow_mut().set_cause(None);
                     return r;
                 }
                 self.next_cause.set(cause);
                 self.settle_frame();
-                self.ui.kernel.borrow_mut().set_cause(None);
+                self.win().ui.kernel.borrow_mut().set_cause(None);
                 return Ok(());
             }
             if let Event::Send(name, payload) = &ev {
-                self.ui.kernel.borrow_mut().set_cause(Some(cause));
-                let r = self.ui.sched.send_named(name, payload);
+                self.win().ui.kernel.borrow_mut().set_cause(Some(cause));
+                let r = self.win().ui.sched.send_named(name, payload);
                 if r.is_ok() {
                     self.next_cause.set(cause);
                     self.settle_frame();
                 }
-                self.ui.kernel.borrow_mut().set_cause(None);
+                self.win().ui.kernel.borrow_mut().set_cause(None);
                 return r;
             }
             let h = self.handler_for(&ev)?;
             self.next_cause.set(cause);
-            self.ui.kernel.borrow_mut().set_cause(Some(cause));
+            self.win().ui.kernel.borrow_mut().set_cause(Some(cause));
             self.rt.with_frame(Ctx::Handler, None, Some(None), || match (h, ev) {
                 (Handler::Press(f), _) | (Handler::Toggle(f), _) => f(),
                 (Handler::Input(f), Event::Input(_, v)) => f(v),
                 _ => unreachable!("handler kind matches event kind"),
             });
             self.settle_frame();
-            self.ui.kernel.borrow_mut().set_cause(None);
+            self.win().ui.kernel.borrow_mut().set_cause(None);
             Ok(())
         })
     }
@@ -545,7 +586,7 @@ impl App {
     /// controls' touch sizes (`when_touch`).
     pub fn set_platform(&mut self, p: Platform) {
         self.platform.set(p);
-        self.ui.kernel.borrow_mut().set_touch(p.is_touch());
+        self.win().ui.kernel.borrow_mut().set_touch(p.is_touch());
         self.enter(|| self.settle_frame());
     }
     /// Holds an interaction state (`HOVER`, `FOCUSED`, `FOCUS_VISIBLE`, `PRESSED`) on or off, e.g. to check
@@ -555,19 +596,19 @@ impl App {
             return Err(format!("{state:?} is set by element props, not forced"));
         }
         {
-            let mut k = self.ui.kernel.borrow_mut();
+            let mut k = self.win().ui.kernel.borrow_mut();
             let n = k.find(test_id).ok_or(format!("no node with test id `{test_id}`"))?;
             k.set_state(n, state, on);
         }
         self.enter(|| self.settle_frame());
-        let mut i = self.interaction.borrow_mut();
+        let mut i = self.win().interaction.borrow_mut();
         i.forced.retain(|(id, s, _)| !(id == test_id && *s == state));
         i.forced.push((test_id.to_owned(), state, on));
         Ok(())
     }
     /// Drops every forced state (the nodes keep their current state until it next changes).
     pub fn clear_forced(&mut self) {
-        self.interaction.borrow_mut().forced.clear();
+        self.win().interaction.borrow_mut().forced.clear();
     }
     pub fn set_theme(&mut self, theme: Theme) {
         self.enter(|| {
@@ -577,13 +618,13 @@ impl App {
     }
     /// Adds font data (TTF/OTF); its families can then be named by the theme or `font_family`.
     pub fn register_font(&mut self, data: &'static [u8]) {
-        self.ui.kernel.borrow_mut().register_font(data);
+        self.win().ui.kernel.borrow_mut().register_font(data);
         self.enter(|| self.settle_frame());
     }
     /// Adds a font text falls back to for `scripts` (ISO 15924 tags: `*b"Hani"` for hanzi,
     /// `*b"Hira"`, `*b"Kana"`, `*b"Hang"`, …) when its own family lacks a character.
     pub fn register_fallback_font(&mut self, data: &'static [u8], scripts: &[[u8; 4]]) {
-        self.ui.kernel.borrow_mut().register_fallback_font(data, scripts);
+        self.win().ui.kernel.borrow_mut().register_fallback_font(data, scripts);
         self.enter(|| self.settle_frame());
     }
     /// Uses the platform's installed fonts and its fallback (CJK, emoji, …) besides the
@@ -592,7 +633,7 @@ impl App {
     /// do not (results then depend on the machine).
     #[cfg(feature = "system-fonts")]
     pub fn use_system_fonts(&mut self) {
-        self.ui.kernel.borrow_mut().set_text_engine(Box::new(crate::kernel::text::ParleyEngine::system()));
+        self.win().ui.kernel.borrow_mut().set_text_engine(Box::new(crate::kernel::text::ParleyEngine::system()));
         let theme = self.kernel().theme().clone();
         if theme.font_sans == Theme::default().font_sans {
             self.set_theme(theme.font_sans("system-ui, Inter"));
@@ -604,8 +645,8 @@ impl App {
     pub fn hot_reload(&mut self) {
         self.enter(|| {
             {
-                let mut i = self.interaction.borrow_mut();
-                let k = self.ui.kernel.borrow();
+                let mut i = self.win().interaction.borrow_mut();
+                let k = self.win().ui.kernel.borrow();
                 i.scrolls = k.scroll_offsets();
                 let id = |n: Option<NodeId>| n.filter(|n| k.is_alive(*n)).and_then(|n| k.test_id(n).map(str::to_owned));
                 // The innermost hovered element with a test id (the node under the mouse may be
@@ -617,16 +658,16 @@ impl App {
                 i.modals.clear();
                 i.edits.clear();
             }
-            if let Some(s) = self.root_scope.take() {
+            if let Some(s) = self.win().root_scope.take() {
                 self.rt.set_reloading(true);
                 self.rt.dispose_scope(s);
                 self.rt.set_reloading(false);
             }
-            self.root_slots.borrow_mut().clear();
+            self.win().root_slots.borrow_mut().clear();
             // A rebuild is not content arriving: nothing enters.
-            self.ui.kernel.borrow_mut().set_quiet(true);
+            self.win().ui.kernel.borrow_mut().set_quiet(true);
             self.mount_root();
-            self.ui.kernel.borrow_mut().set_quiet(false);
+            self.win().ui.kernel.borrow_mut().set_quiet(false);
         });
     }
     pub fn diagnostics(&self) -> Vec<Diagnostic> {
@@ -650,12 +691,12 @@ impl App {
     /// Tells the native host what changed this frame: views created (with their props), props
     /// changed, placements changed, views gone.
     fn sync_native(&self) {
-        let k = self.ui.kernel.borrow();
-        let mut sent = self.native_sent.borrow_mut();
+        let k = self.win().ui.kernel.borrow();
+        let mut sent = self.win().native_sent.borrow_mut();
         if k.native_nodes().is_empty() && sent.is_empty() {
             return;
         }
-        let mut host = self.native_host.borrow_mut();
+        let mut host = self.win().native_host.borrow_mut();
         let placements = k.native_placements();
         let mut moved = Vec::new();
         let mut live = Vec::new();
@@ -692,13 +733,13 @@ impl App {
         drop((k, host, sent));
         // Painted next as the platform shows them: no placeholder, a cutout for the underlay.
         for (n, shown) in live {
-            self.ui.kernel.borrow_mut().set_native_live(n, shown);
+            self.win().ui.kernel.borrow_mut().set_native_live(n, shown);
         }
     }
 
     /// The node of a native view's id, if it still exists.
     fn native_node(&self, id: crate::native::NativeId) -> Option<NodeId> {
-        let k = self.ui.kernel.borrow();
+        let k = self.win().ui.kernel.borrow();
         k.node_of_a11y(accesskit::NodeId(id.0)).filter(|n| k.native(*n).is_some())
     }
 
@@ -706,8 +747,8 @@ impl App {
     pub fn native_event(&mut self, id: crate::native::NativeId, event: crate::native::NativeEvent) -> bool {
         let Some(n) = self.native_node(id) else { return false };
         let handler = {
-            let k = self.ui.kernel.borrow();
-            k.handler(n, HandlerKind::Native).and_then(|h| self.ui.handlers.borrow().get(&h.0).cloned())
+            let k = self.win().ui.kernel.borrow();
+            k.handler(n, HandlerKind::Native).and_then(|h| self.win().ui.handlers.borrow().get(&h.0).cloned())
         };
         let Some(crate::view::Handler::Native(f)) = handler else { return false };
         self.input_frame(|| self.rt.with_frame(Ctx::Handler, None, Some(None), || f(&event)));
@@ -718,7 +759,7 @@ impl App {
     /// authored.
     pub fn native_size(&mut self, id: crate::native::NativeId, width: f32, height: f32) {
         let Some(n) = self.native_node(id) else { return };
-        self.input_frame(|| self.ui.kernel.borrow_mut().set_native_size(n, (width, height)));
+        self.input_frame(|| self.win().ui.kernel.borrow_mut().set_native_size(n, (width, height)));
     }
 
     /// What keeps the app from being settled now: tasks, timers and motion (not subscriptions,
@@ -731,8 +772,8 @@ impl App {
             .filter(|p| p.kind != crate::task::WorkKind::Subscription)
             .map(|p| if p.at.is_empty() { p.label } else { format!("{} ({})", p.label, p.at) })
             .collect();
-        let placements = self.ui.kernel.borrow().native_placements();
-        let host = self.native_host.borrow();
+        let placements = self.win().ui.kernel.borrow().native_placements();
+        let host = self.win().native_host.borrow();
         for (n, p) in placements.into_iter().filter(|(_, p)| p.visible) {
             if let Some(what) = host.busy(p.id) {
                 out.push(format!("{}: {what}", self.native_name(n)));
@@ -743,7 +784,7 @@ impl App {
 
     /// A native view as reports name it: its test id, else its kind.
     fn native_name(&self, n: NodeId) -> String {
-        let k = self.ui.kernel.borrow();
+        let k = self.win().ui.kernel.borrow();
         let kind = k.native(n).map(|v| v.kind.clone()).unwrap_or_default();
         match k.test_id(n) {
             Some(id) => format!("{kind} view #{id}"),
@@ -759,19 +800,19 @@ impl App {
     /// Starts a capture: asks the host for a snapshot of every native view shown. Returns the
     /// views whose snapshot is coming (through [`native_snapshot`](Self::native_snapshot)).
     pub fn capture_begin(&mut self) -> Vec<crate::native::NativeId> {
-        let placements = self.ui.kernel.borrow().native_placements();
-        let mut host = self.native_host.borrow_mut();
+        let placements = self.win().ui.kernel.borrow().native_placements();
+        let mut host = self.win().native_host.borrow_mut();
         let asked: Vec<_> = placements.into_iter().filter(|(_, p)| p.visible).map(|(_, p)| (p.id, host.snapshot(p.id))).collect();
         let coming = asked.iter().filter(|(_, r)| r.is_ok()).map(|(id, _)| *id).collect();
-        *self.capturing.borrow_mut() = Some(crate::capture::Capturing { asked });
+        *self.win().capturing.borrow_mut() = Some(crate::capture::Capturing { asked });
         coming
     }
 
     /// The snapshots asked for that have not come yet.
     pub fn capture_awaiting(&self) -> Vec<crate::native::NativeId> {
-        let capturing = self.capturing.borrow();
+        let capturing = self.win().capturing.borrow();
         let Some(c) = capturing.as_ref() else { return Vec::new() };
-        let k = self.ui.kernel.borrow();
+        let k = self.win().ui.kernel.borrow();
         c.asked
             .iter()
             .filter(|(id, r)| r.is_ok() && self.native_node(*id).is_some_and(|n| k.native(n).is_some_and(|v| v.snapshot.is_none())))
@@ -792,11 +833,11 @@ impl App {
         fallback: Option<String>,
     ) -> Result<crate::capture::Capture, String> {
         use crate::capture::{NativeShot, Shown};
-        let asked = self.capturing.borrow_mut().take().map(|c| c.asked).unwrap_or_default();
+        let asked = self.win().capturing.borrow_mut().take().map(|c| c.asked).unwrap_or_default();
         let mut native = Vec::new();
         for (id, result) in &asked {
             let Some(n) = self.native_node(*id) else { continue };
-            let k = self.ui.kernel.borrow();
+            let k = self.win().ui.kernel.borrow();
             let Some(v) = k.native(n) else { continue };
             let (x, y, w, h) = k.rect(n);
             let (shown, reason, misses) = match result {
@@ -843,8 +884,8 @@ impl App {
     ) -> Result<crate::capture::Capture, String> {
         use crate::capture::{NativeShot, Shown};
         picture.save_png(path)?;
-        let placements = self.ui.kernel.borrow().native_placements();
-        let k = self.ui.kernel.borrow();
+        let placements = self.win().ui.kernel.borrow().native_placements();
+        let k = self.win().ui.kernel.borrow();
         let native = placements
             .into_iter()
             .filter(|(_, p)| p.visible)
@@ -884,14 +925,14 @@ impl App {
     /// instead of the placeholder, until `None` clears it.
     pub fn native_snapshot(&mut self, id: crate::native::NativeId, image: Option<crate::image::Image>) {
         let Some(n) = self.native_node(id) else { return };
-        self.input_frame(|| self.ui.kernel.borrow_mut().set_native_snapshot(n, image));
+        self.input_frame(|| self.win().ui.kernel.borrow_mut().set_native_snapshot(n, image));
     }
 
     /// Replaces the native host (a shell installs the platform's). Views already shown are
     /// created again on the new one.
     pub fn set_native_host(&mut self, host: Box<dyn crate::native::NativeHost>) {
-        *self.native_host.borrow_mut() = host;
-        self.native_sent.borrow_mut().clear();
+        *self.win().native_host.borrow_mut() = host;
+        self.win().native_sent.borrow_mut().clear();
         self.sync_native();
     }
 
@@ -899,6 +940,6 @@ impl App {
     ///
     /// [`RecordingHost`]: crate::native::RecordingHost
     pub fn native_host(&self) -> std::cell::Ref<'_, Box<dyn crate::native::NativeHost>> {
-        self.native_host.borrow()
+        self.win().native_host.borrow()
     }
 }

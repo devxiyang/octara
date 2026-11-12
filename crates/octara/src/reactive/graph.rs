@@ -140,7 +140,7 @@ pub(crate) fn rt<R>(f: impl FnOnce(&Runtime) -> R) -> R {
 const FLUSH_ROUNDS_LIMIT: u32 = 1000;
 
 fn loc(at: &Location<'_>) -> String {
-    format!("{}:{}", at.file(), at.line())
+    format!("{}:{}", crate::diagnostics::source_file(at), at.line())
 }
 
 impl Runtime {

@@ -23,6 +23,7 @@
           "path": "octara::app::App",
           "kind": "struct",
           "sig": "pub struct App { .. }",
+          "docs": "An app: the reactive runtime, the clock and the app's settings, and its windows\n([design](https://github.com/octoii-works/octara/blob/main/docs/design/windows.md)). The\nmethods without a window act on the main one.",
           "file": "crates/octara/src/app.rs",
           "aliases": [
             "octara::prelude::App"
@@ -279,6 +280,13 @@
           "sig": "pub fn long_press(&mut self, target: &str) -> Result<(), String>",
           "docs": "A finger held on `target` for the long-press duration, then lifted.",
           "file": "crates/octara/src/app/drive.rs"
+        },
+        {
+          "path": "octara::app::App::main_window",
+          "kind": "method",
+          "sig": "pub fn main_window(&self) -> WindowId",
+          "docs": "The main window's id.",
+          "file": "crates/octara/src/app.rs"
         },
         {
           "path": "octara::app::App::native_event",
@@ -1713,6 +1721,26 @@
           "file": "crates/octara/src/app/pointer.rs"
         },
         {
+          "path": "octara::app::WindowId",
+          "kind": "struct",
+          "sig": "pub struct WindowId(_);",
+          "docs": "A window's identity while it is open.",
+          "file": "crates/octara/src/app.rs",
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "Default",
+            "Eq",
+            "From<KeyData>",
+            "Hash",
+            "Key",
+            "Ord",
+            "PartialEq",
+            "PartialOrd"
+          ]
+        },
+        {
           "path": "octara::app::Work",
           "kind": "struct",
           "sig": "pub struct Work { .. }",
@@ -2772,7 +2800,6 @@
           "path": "octara::diagnostics::code",
           "kind": "fn",
           "sig": "pub fn code(id: &str) -> Option<&'static Code>",
-          "docs": "The registered code `id`, if any.",
           "file": "crates/octara/src/diagnostics.rs"
         },
         {

@@ -128,7 +128,7 @@ impl Kernel {
             code,
             test_id: n.test_id.clone(),
             path: self.path(id),
-            at: n.origin.map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())),
+            at: n.origin.map(|l| format!("{}:{}:{}", crate::diagnostics::source_file(l), l.line(), l.column())),
             message,
             hint,
         }

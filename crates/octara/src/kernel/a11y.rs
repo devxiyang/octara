@@ -286,7 +286,7 @@ impl Kernel {
                 super::Content::Icon(i) => Some(i.name.clone()),
                 _ => None,
             },
-            source: n.origin.map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())),
+            source: n.origin.map(|l| format!("{}:{}:{}", crate::diagnostics::source_file(l), l.line(), l.column())),
             children,
         }
     }
