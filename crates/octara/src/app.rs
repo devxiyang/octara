@@ -197,6 +197,8 @@ pub(crate) struct WindowState {
     platform: RefCell<Box<dyn crate::platform::PlatformWindow>>,
     /// The text input state last sent to it.
     text_input: Cell<Option<crate::platform::TextInput>>,
+    /// The pointer's look last presented.
+    cursor: Cell<crate::platform::CursorStyle>,
     /// What the platform was last told of each native view: its props version and placement.
     native_sent: RefCell<rustc_hash::FxHashMap<NodeId, (u64, Option<crate::native::Placement>)>>,
     /// Native changes not presented yet.
@@ -326,6 +328,7 @@ impl WindowState {
             scale: Cell::new(1.0),
             platform: RefCell::new(platform),
             text_input: Cell::new(None),
+            cursor: Cell::new(crate::platform::CursorStyle::Arrow),
             native_sent: RefCell::default(),
             native_changes: RefCell::default(),
             presented: Cell::new(u64::MAX),
@@ -1392,6 +1395,13 @@ impl Window {
 
     /// Tells the window's platform about the focused text field when it changed: where its
     /// caret is, whether it is secure or multi-line.
+    /// How the pointer looks now: over the element it is on (an arrow off the window).
+    pub fn cursor(&self) -> crate::platform::CursorStyle {
+        let hovered = self.w.interaction.borrow().hovered;
+        let k = self.w.kernel.borrow();
+        hovered.filter(|n| k.is_alive(*n)).map_or(crate::platform::CursorStyle::Arrow, |n| k.cursor_over(n))
+    }
+
     /// Presents what changed to the window's platform: native view changes, the text input,
     /// whether to draw again (after every settle; nothing when nothing changed).
     fn present(&self) {
@@ -1405,12 +1415,14 @@ impl Window {
         let (picking, picked) = self.picking_frame();
         let redraw = picking || generation != self.w.presented.get() || self.w.kernel.borrow_mut().in_motion();
         let native = std::mem::take(&mut *self.w.native_changes.borrow_mut());
-        if native.is_empty() && !redraw && picked.is_none() && text_input == self.w.text_input.get() {
+        let cursor = self.cursor();
+        if native.is_empty() && !redraw && picked.is_none() && text_input == self.w.text_input.get() && cursor == self.w.cursor.get() {
             return;
         }
         self.w.text_input.set(text_input);
+        self.w.cursor.set(cursor);
         self.w.presented.set(generation);
-        self.w.platform.borrow_mut().present(crate::platform::Frame { native, text_input, redraw, picked });
+        self.w.platform.borrow_mut().present(crate::platform::Frame { native, text_input, redraw, cursor, picked });
     }
 }
 

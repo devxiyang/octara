@@ -51,7 +51,11 @@ platform is presented a `Frame` after each operation.
   the compositor's frame callbacks (Wayland, through `pre_present_notify`) or the swap chain's
   blocking present. Metal's drawable pool is no frame clock (it does not hold back while the
   layer presents with its transaction), as Rune found.
-- Not yet: `InputHandler`, menus, file dialogs, URLs, cursor, displays, lifecycle.
+- The pointer's look: `CursorStyle` (GPUI's names) set on an element with `.cursor(..)`
+  (`cursor_pointer`, `cursor_text`, `cursor_grab`, …) for it and its descendants; else the
+  platform's conventions: the I-beam over a text field or selectable text, the hand over a link,
+  the arrow elsewhere (buttons included). Each `Frame` carries the look over the hovered element.
+- Not yet: `InputHandler`, menus, file dialogs, URLs, displays, lifecycle.
 
 ## Backends
 

@@ -370,6 +370,8 @@ struct Node {
     doc_selection: Option<[(NodeId, usize); 2]>,
     /// Copies the selected part of it as Markdown (`copy_markdown`).
     copy_markdown: Option<select::CopyMarkdown>,
+    /// How the pointer looks over it (else as its kind and ancestors say).
+    cursor: Option<crate::platform::CursorStyle>,
     /// Its level (a heading's, a list item's nesting), for assistive technology.
     level: Option<u8>,
     /// How assistive technology announces its changes (a live region).
@@ -1129,6 +1131,7 @@ impl Kernel {
             selected: None,
             doc_selection: None,
             copy_markdown: None,
+            cursor: None,
             level: None,
             live: None,
             anchor: None,
@@ -1311,6 +1314,29 @@ impl Kernel {
     }
 
     // ---- content and semantics ----
+
+    pub fn set_cursor(&mut self, id: NodeId, cursor: crate::platform::CursorStyle) {
+        self.node_mut(id).cursor = Some(cursor);
+    }
+
+    /// How the pointer looks over `id` (the node it is on): the nearest style set on it or an
+    /// ancestor; else a text field's or selectable text's I-beam, a link's hand, an arrow.
+    pub fn cursor_over(&self, id: NodeId) -> crate::platform::CursorStyle {
+        use crate::platform::CursorStyle;
+        let mut n = Some(id);
+        while let Some(a) = n {
+            if let Some(c) = self.node(a).cursor {
+                return c;
+            }
+            n = self.node(a).parent;
+        }
+        match self.kind(id) {
+            Kind::TextInput => CursorStyle::IBeam,
+            Kind::Link => CursorStyle::PointingHand,
+            Kind::Text if self.region_of(id).is_some_and(|r| self.selectable_in(r, id)) => CursorStyle::IBeam,
+            _ => CursorStyle::Arrow,
+        }
+    }
 
     pub fn set_level(&mut self, id: NodeId, level: u8) -> bool {
         if self.node(id).level == Some(level) {

@@ -4,6 +4,7 @@ mod a11y;
 mod canvas;
 mod capture;
 mod culling;
+mod cursor;
 mod diagnostics_registry;
 mod display_list;
 mod edit;

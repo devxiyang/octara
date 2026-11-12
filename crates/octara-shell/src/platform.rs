@@ -5,7 +5,7 @@
 
 use super::{Shared, ShellEvent};
 use octara::paint::DisplayList;
-use octara::platform::{Frame, Platform, PlatformWindow, TextInput};
+use octara::platform::{CursorStyle, Frame, Platform, PlatformWindow, TextInput};
 use octara_render::{GpuRenderer, wgpu};
 use std::any::Any;
 use std::rc::Rc;
@@ -113,6 +113,7 @@ impl Platform for WinitPlatform {
             #[cfg(target_os = "macos")]
             link,
             secure: false,
+            cursor_style: CursorStyle::Arrow,
             cursor: (0.0, 0.0),
             pending: true,
             presented: None,
@@ -170,6 +171,8 @@ pub(crate) struct WinitWindow {
     link: Option<super::pace_mac::DisplayLink>,
     /// A secure field has focus: the input method is off and (macOS) secure input on.
     secure: bool,
+    /// How the pointer looks.
+    cursor_style: CursorStyle,
     /// The pointer, in logical pixels.
     pub(crate) cursor: (f32, f32),
     /// The app has something new to show.
@@ -328,6 +331,10 @@ impl PlatformWindow for WinitWindow {
             }
         }
         self.text_input(frame.text_input.as_ref());
+        if frame.cursor != self.cursor_style {
+            self.cursor_style = frame.cursor;
+            self.window.set_cursor(cursor_icon(frame.cursor));
+        }
         if let Some(p) = &frame.picked {
             eprintln!("octara-shell: picked {} (on the clipboard)", p.text);
             println!("{}", octara::serde_json::to_string(p).expect("a pick serializes"));
@@ -365,6 +372,23 @@ impl PlatformWindow for WinitWindow {
     }
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+}
+
+fn cursor_icon(c: CursorStyle) -> winit::window::CursorIcon {
+    use winit::window::CursorIcon as I;
+    match c {
+        CursorStyle::Arrow => I::Default,
+        CursorStyle::IBeam => I::Text,
+        CursorStyle::PointingHand => I::Pointer,
+        CursorStyle::Crosshair => I::Crosshair,
+        CursorStyle::OpenHand => I::Grab,
+        CursorStyle::ClosedHand => I::Grabbing,
+        CursorStyle::ResizeLeftRight => I::EwResize,
+        CursorStyle::ResizeUpDown => I::NsResize,
+        CursorStyle::ResizeColumn => I::ColResize,
+        CursorStyle::ResizeRow => I::RowResize,
+        CursorStyle::OperationNotAllowed => I::NotAllowed,
     }
 }
 

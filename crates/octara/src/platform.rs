@@ -96,6 +96,28 @@ pub trait PlatformWindow {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
+/// How the pointer looks (GPUI's names).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CursorStyle {
+    #[default]
+    Arrow,
+    /// Over text that can be selected or typed in.
+    IBeam,
+    /// Over a link.
+    PointingHand,
+    Crosshair,
+    /// Over something that can be dragged.
+    OpenHand,
+    /// While dragging it.
+    ClosedHand,
+    ResizeLeftRight,
+    ResizeUpDown,
+    ResizeColumn,
+    ResizeRow,
+    OperationNotAllowed,
+}
+
 /// What a window's platform is told after an operation.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Frame {
@@ -107,6 +129,8 @@ pub struct Frame {
     pub text_input: Option<TextInput>,
     /// What the window shows changed or moves: draw again.
     pub redraw: bool,
+    /// How the pointer looks now (over the element it is on).
+    pub cursor: CursorStyle,
     /// The element a person picked ([`Window::set_picking`](crate::app::Window::set_picking)),
     /// its line already on the clipboard: a backend may print or show it.
     pub picked: Option<crate::inspect::Picked>,
@@ -171,12 +195,15 @@ pub struct HeadlessWindow {
     pub busy: Option<String>,
     /// Every element picked, in order.
     pub picked: Vec<crate::inspect::Picked>,
+    /// How the pointer looks.
+    pub cursor: CursorStyle,
 }
 
 impl PlatformWindow for HeadlessWindow {
     fn present(&mut self, frame: Frame) {
         self.native.extend(frame.native);
         self.text_input = frame.text_input;
+        self.cursor = frame.cursor;
         self.picked.extend(frame.picked);
         self.frames += 1;
     }

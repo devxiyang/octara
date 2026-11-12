@@ -248,6 +248,7 @@ pub struct El {
     level: Option<u8>,
     live: Option<accesskit::Live>,
     copy_markdown: Option<crate::kernel::select::CopyMarkdown>,
+    cursor: Option<crate::platform::CursorStyle>,
     select_none: bool,
     overlays: Vec<Overlay>,
     anchor: Option<(NodeId, Placement)>,
@@ -314,6 +315,7 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         level: None,
         live: None,
         copy_markdown: None,
+        cursor: None,
         select_none: false,
         overlays: Vec::new(),
         anchor: None,
@@ -579,6 +581,31 @@ impl El {
     pub fn copy_markdown(mut self, f: impl Fn(&[crate::kernel::select::Copied]) -> Option<String> + 'static) -> Self {
         self.copy_markdown = Some(Rc::new(f));
         self
+    }
+    /// How the pointer looks over it and its descendants (unless one sets its own).
+    pub fn cursor(mut self, style: crate::platform::CursorStyle) -> Self {
+        self.cursor = Some(style);
+        self
+    }
+    /// The pointing hand (a link's look; native buttons keep the arrow).
+    pub fn cursor_pointer(self) -> Self {
+        self.cursor(crate::platform::CursorStyle::PointingHand)
+    }
+    /// The I-beam, as over text.
+    pub fn cursor_text(self) -> Self {
+        self.cursor(crate::platform::CursorStyle::IBeam)
+    }
+    /// The arrow (over selectable text or a field inside it too).
+    pub fn cursor_default(self) -> Self {
+        self.cursor(crate::platform::CursorStyle::Arrow)
+    }
+    /// The open hand (something to drag).
+    pub fn cursor_grab(self) -> Self {
+        self.cursor(crate::platform::CursorStyle::OpenHand)
+    }
+    /// The closed hand (dragging it).
+    pub fn cursor_grabbing(self) -> Self {
+        self.cursor(crate::platform::CursorStyle::ClosedHand)
     }
     /// Its level for assistive technology: a heading's (1 to 6), a list item's nesting.
     pub fn level(mut self, level: u8) -> Self {
@@ -996,6 +1023,9 @@ pub(crate) fn build_el(e: El) -> NodeId {
         }
         if let Some(f) = e.copy_markdown {
             k.set_copy_markdown(node, Some(f));
+        }
+        if let Some(c) = e.cursor {
+            k.set_cursor(node, c);
         }
         if let Some(l) = e.live {
             k.set_live(node, l);
