@@ -477,6 +477,12 @@ pub fn set_theme(theme: Theme) {
     crate::app::app_state().set_theme(theme);
 }
 
+/// Opens `url` with the system: the browser, the mail app (GPUI's `open_url`). A link no
+/// `on_link` takes opens this way. Callable from handlers.
+pub fn open_url(url: &str) {
+    crate::app::app_state().open_url(url);
+}
+
 /// Puts `text` on the clipboard (GPUI's `write_to_clipboard`). Callable from handlers.
 pub fn write_to_clipboard(text: &str) {
     crate::app::app_state().write_clipboard(text);

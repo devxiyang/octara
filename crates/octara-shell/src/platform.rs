@@ -44,6 +44,11 @@ impl Platform for WinitPlatform {
             let _ = c.set_text(text);
         }
     }
+    fn open_url(&mut self, url: &str) {
+        if let Err(e) = open::that_detached(url) {
+            eprintln!("octara-shell: cannot open {url}: {e}");
+        }
+    }
     fn open_window(
         &mut self,
         id: octara::app::WindowId,

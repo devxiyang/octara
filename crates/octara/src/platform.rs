@@ -24,6 +24,10 @@ pub trait Platform {
     fn waker(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
         None
     }
+    /// Opens `url` with the system (the browser, the mail app).
+    fn open_url(&mut self, url: &str) {
+        let _ = url;
+    }
     /// Opens window `id` as `options` asks (the id names it in the input it sends back).
     fn open_window(&mut self, id: crate::app::WindowId, options: &WindowOptions) -> Result<Box<dyn PlatformWindow>, String>;
     fn as_any(&self) -> &dyn Any;
@@ -150,6 +154,8 @@ pub struct TextInput {
 #[derive(Default)]
 pub struct HeadlessPlatform {
     pub clipboard: Option<String>,
+    /// Every URL opened, in order.
+    pub opened_urls: Vec<String>,
     /// The window the next one opened is (a test's fake platform views).
     pub next_window: Option<HeadlessWindow>,
 }
@@ -157,13 +163,16 @@ pub struct HeadlessPlatform {
 impl HeadlessPlatform {
     /// A headless platform whose next window is `window`.
     pub fn with_window(window: HeadlessWindow) -> HeadlessPlatform {
-        HeadlessPlatform { clipboard: None, next_window: Some(window) }
+        HeadlessPlatform { next_window: Some(window), ..HeadlessPlatform::default() }
     }
 }
 
 impl Platform for HeadlessPlatform {
     fn read_text(&mut self) -> Option<String> {
         self.clipboard.clone()
+    }
+    fn open_url(&mut self, url: &str) {
+        self.opened_urls.push(url.to_owned());
     }
     fn write_text(&mut self, text: &str) {
         self.clipboard = Some(text.to_owned());

@@ -43,6 +43,12 @@ impl Window {
                 self.app.rt.with_frame(Ctx::Handler, None, Some(None), || f(&target));
                 return true;
             }
+            // No `on_link` takes it: the system opens it.
+            let target = self.w.kernel.borrow().link_target(n);
+            if let Some(target) = target {
+                self.app.open_url(&target);
+                return true;
+            }
         }
         let Some(h) = handler else { return false };
         self.app.rt.with_frame(Ctx::Handler, None, Some(None), || match (h, input) {

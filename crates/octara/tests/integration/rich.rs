@@ -206,3 +206,13 @@ fn a_field_losing_focus_redraws_without_its_caret() {
     w.click_at(x + 2.0, y + h / 2.0);
     assert!(!caret(&w), "the caret went with the focus");
 }
+
+#[test]
+fn a_link_no_handler_takes_opens_with_the_system() {
+    let mut w = Window::headless(|| text(rich().text("See ").link("the docs", "https://x.dev/docs")).into());
+    w.tap("the docs").unwrap();
+    let app = w.app();
+    let p = app.platform();
+    let opened = &p.as_any().downcast_ref::<octara::platform::HeadlessPlatform>().unwrap().opened_urls;
+    assert_eq!(opened, &["https://x.dev/docs"]);
+}

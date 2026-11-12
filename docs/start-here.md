@@ -85,7 +85,7 @@ assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
   `text(rich().text("Run ").code("cargo test").text(" or read ").link("the guide", url))`, with
   `bold`, `italic`, `styled(s, |s| s.strike().color(Token::Danger))`. A link is an element of
   its own (focusable, pressed by its words: `tap("the guide")`); `.on_link(|target| ..)` on the
-  text or an ancestor gets it.
+  text or an ancestor gets it; with none, the system opens it (`open_url`).
 - `.selectable()` on a container (a transcript, a message) makes its texts select as one
   document: drag, double press a word, triple press a text, Shift to extend, `mod+a`, `mod+c`.
   Rows of its lists keep their part while they scroll away. Tests: `select(("a", 0), ("b", 4))`,

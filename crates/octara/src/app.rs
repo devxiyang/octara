@@ -428,6 +428,10 @@ impl App {
 }
 
 impl AppState {
+    pub(crate) fn open_url(&self, url: &str) {
+        self.system.borrow_mut().open_url(url);
+    }
+
     pub(crate) fn write_clipboard(&self, text: &str) {
         self.system.borrow_mut().write_text(text);
     }
@@ -855,7 +859,11 @@ impl Window {
             && k.handler(node, kind).is_none()
             && let Some(target) = k.link_target(node)
         {
-            let at = k.handler_above(k.parent(node), HandlerKind::Link).ok_or(format!("no `on_link` above link `{id}`"))?;
+            // No `on_link` takes it: the system opens it.
+            let Some(at) = k.handler_above(k.parent(node), HandlerKind::Link) else {
+                let app = self.app.clone();
+                return Ok(Handler::Press(std::rc::Rc::new(move || app.open_url(&target))));
+            };
             let hid = k.handler(at, HandlerKind::Link).expect("found by kind");
             let Some(Handler::Link(f)) = self.w.handlers.borrow().get(&hid.0).cloned() else { return Err("on_link was disposed".into()) };
             return Ok(Handler::Press(std::rc::Rc::new(move || f(&target))));

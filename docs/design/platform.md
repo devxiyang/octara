@@ -55,7 +55,9 @@ platform is presented a `Frame` after each operation.
   (`cursor_pointer`, `cursor_text`, `cursor_grab`, …) for it and its descendants; else the
   platform's conventions: the I-beam over a text field or selectable text, the hand over a link,
   the arrow elsewhere (buttons included). Each `Frame` carries the look over the hovered element.
-- Not yet: `InputHandler`, menus, file dialogs, URLs, displays, lifecycle.
+- URLs: `open_url(url)` asks the system to open it (the shell: the `open` crate; headless:
+  recorded). A link that no `on_link` above it takes opens this way.
+- Not yet: `InputHandler`, menus, file dialogs, displays, lifecycle.
 
 ## Backends
 
