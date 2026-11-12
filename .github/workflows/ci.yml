@@ -1,0 +1,70 @@
+# Builds and tests on the three desktop platforms, and keeps screenshots from each.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # rustdoc's JSON (api.json) from a nightly whose format matches `rustdoc-types`.
+  OCTARA_RUSTDOC_TOOLCHAIN: nightly-2026-11-10
+
+jobs:
+  lint:
+    name: Format and clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (rust-toolchain.toml) and components
+        run: rustup component add rustfmt clippy
+      - name: Linux libraries
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Nightly for rustdoc's JSON
+        run: rustup toolchain install ${{ env.OCTARA_RUSTDOC_TOOLCHAIN }} --profile minimal
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --workspace --all-targets
+      - name: Test
+        run: cargo test --workspace
+      - name: Screenshots (reference renderer, bundled fonts)
+        run: cargo run -p octara-examples --bin screenshot -- screenshots 1 --bundled
+      - name: A capture through `octara run`
+        shell: bash
+        run: |
+          echo '{"op":"capture","path":"screenshots/capture.png","scale":1}' \
+            | cargo run -q -p octara-cli -- run --manifest-path examples/Cargo.toml --json | tee capture.json
+          grep -q '"ok":true' capture.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots-${{ matrix.os }}
+          path: screenshots/
+          if-no-files-found: warn

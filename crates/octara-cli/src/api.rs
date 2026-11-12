@@ -36,12 +36,16 @@ pub fn to_json(api: &Api) -> String {
     serde_json::to_string_pretty(api).expect("serializes") + "\n"
 }
 
-/// Runs nightly rustdoc's JSON output over the public crates and converts it.
+/// Runs nightly rustdoc's JSON output over the public crates and converts it. The toolchain is
+/// `nightly`, or `OCTARA_RUSTDOC_TOOLCHAIN` (CI pins a dated nightly, whose JSON format matches
+/// `rustdoc-types`).
 pub fn generate() -> Result<Api, String> {
     let root = workspace_root();
+    let toolchain = std::env::var("OCTARA_RUSTDOC_TOOLCHAIN").unwrap_or_else(|_| "nightly".into());
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&root)
-        .args(["+nightly", "doc", "--lib", "--no-deps", "--all-features", "--quiet"])
+        .arg(format!("+{toolchain}"))
+        .args(["doc", "--lib", "--no-deps", "--all-features", "--quiet"])
         // Nested under `cargo test` or `cargo run`, the outer toolchain's settings must not leak in.
         .env_remove("RUSTUP_TOOLCHAIN")
         .env_remove("RUSTC")
@@ -54,8 +58,8 @@ pub fn generate() -> Result<Api, String> {
     let out = cmd.output().map_err(|e| format!("could not run cargo: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        if err.contains("toolchain 'nightly'") || err.contains("is not installed") {
-            return Err("generating api.json needs a nightly toolchain for rustdoc's JSON: `rustup toolchain install nightly`".into());
+        if err.contains(&format!("toolchain '{toolchain}")) || err.contains("is not installed") {
+            return Err(format!("generating api.json needs a nightly toolchain for rustdoc's JSON: `rustup toolchain install {toolchain}`"));
         }
         return Err(format!("rustdoc failed:\n{err}"));
     }
