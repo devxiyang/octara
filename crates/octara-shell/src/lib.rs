@@ -1,5 +1,8 @@
 //! Desktop windows for Octara apps (winit): window events become [`App`] input by position and
-//! key, and frames are the app's display list drawn by the GPU renderer into the window.
+//! key, and frames are each window's display list drawn by the GPU renderer into it. The app
+//! opens and closes windows (`open_window`, `close_window`); each one has its own surface,
+//! accessibility adapter, native views and frame clock (macOS: its view's display link), and the
+//! loop ends when the last one closes.
 //!
 //! Picking: in debug builds `mod+shift+c` (as browsers' "inspect element") starts picking, and
 //! `OCTARA_PICK=1` starts the window picking. Click an element: its line (number, role, test id,
@@ -12,30 +15,34 @@
 
 use octara::app::{App, Button, InputEvent, Key, KeyEvent, Modifiers, Phase, PointerEvent, Window as AppWindow};
 use octara::view::View;
-use octara_render::GpuRenderer;
-use octara_render::wgpu;
-use std::sync::Arc;
+use platform::WinitWindow;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, StartCause, Touch, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key as WKey, KeyCode, ModifiersState, NamedKey, PhysicalKey};
-use winit::window::{Window, WindowId};
+use winit::window::WindowId;
 
 mod capture;
 #[cfg(target_os = "macos")]
 mod native_mac;
+#[cfg(target_os = "macos")]
+mod pace_mac;
 mod platform;
 
-/// Events sent to the loop from elsewhere: AccessKit's requests, and the app's waker (another
-/// thread finished background work or sent on a channel).
+/// Events sent to the loop from elsewhere: AccessKit's requests, the app's waker (another
+/// thread finished background work or sent on a channel), a window's frame clock ticking.
 #[derive(Debug)]
 pub enum ShellEvent {
     Accessibility(accesskit_winit::Event),
     Wake,
     /// A capture in progress looks again (`OCTARA_CAPTURE`).
     Capture,
+    /// A window's frame clock ticked (a display refresh).
+    Frame(WindowId),
 }
 
 impl From<accesskit_winit::Event> for ShellEvent {
@@ -53,7 +60,7 @@ pub struct Options {
     pub title: String,
     /// Initial size in logical pixels.
     pub size: (f32, f32),
-    /// Exit after drawing this many frames (smoke tests).
+    /// Exit after the first window drew this many frames (smoke tests).
     pub exit_after_frames: Option<u32>,
     /// Use the platform's fonts and fallback (CJK, emoji, …), and its UI font when the app's
     /// theme keeps the default sans family. On by default.
@@ -67,73 +74,90 @@ impl Default for Options {
     }
 }
 
-/// Opens a window showing `root` and runs until it is closed.
+/// Opens a window showing `root` and runs until the app's last window is closed.
 pub fn run(title: &str, root: impl Fn() -> View + 'static) {
     run_with(Options { title: title.into(), ..Options::default() }, root)
 }
 
 pub fn run_with(options: Options, root: impl Fn() -> View + 'static) {
     let event_loop = EventLoop::<ShellEvent>::with_user_event().build().expect("event loop");
-    let proxy = event_loop.create_proxy();
+    let shared = Rc::new(Shared {
+        proxy: event_loop.create_proxy(),
+        active: Cell::new(std::ptr::null()),
+        gpu: RefCell::new(None),
+        windows: RefCell::new(HashMap::new()),
+        trace: std::env::var_os("OCTARA_TRACE_INPUT").is_some_and(|v| v != "0"),
+    });
     let mut shell = Shell {
         options,
         root: Some(Box::new(root)),
-        win: None,
-        gpu: None,
-        a11y: None,
-        proxy,
-        cursor: (0.0, 0.0),
+        shared,
+        app: None,
+        main: None,
         modifiers: ModifiersState::empty(),
-        frames: 0,
         started: Instant::now(),
-        trace: std::env::var_os("OCTARA_TRACE_INPUT").is_some_and(|v| v != "0"),
-        unshown: None,
-        presented: None,
         done: false,
-        resized: false,
         capture: None,
-        #[cfg(target_os = "macos")]
-        native: None,
     };
     event_loop.run_app(&mut shell).expect("event loop");
 }
 
-struct Gpu {
-    window: Arc<Window>,
-    surface: wgpu::Surface<'static>,
-    config: wgpu::SurfaceConfiguration,
-    renderer: GpuRenderer,
+/// What the shell and its platform share: the loop's proxy, the loop running a callback now
+/// (windows are made inside one), the GPU, and which app window each winit window shows.
+pub(crate) struct Shared {
+    pub(crate) proxy: EventLoopProxy<ShellEvent>,
+    active: Cell<*const ActiveEventLoop>,
+    pub(crate) gpu: RefCell<Option<platform::Gpu>>,
+    pub(crate) windows: RefCell<HashMap<WindowId, octara::app::WindowId>>,
+    /// `OCTARA_TRACE_INPUT=1`: each input's latency to the frame that shows it, on stderr.
+    pub(crate) trace: bool,
+}
+
+impl Shared {
+    /// The loop whose callback runs now.
+    pub(crate) fn event_loop(&self) -> Option<&ActiveEventLoop> {
+        let p = self.active.get();
+        // SAFETY: set only for the duration of a callback, which holds the loop.
+        (!p.is_null()).then(|| unsafe { &*p })
+    }
+}
+
+/// While a callback of the loop runs: windows can be made in it.
+struct InLoop(Rc<Shared>);
+
+impl InLoop {
+    fn enter(shared: &Rc<Shared>, event_loop: &ActiveEventLoop) -> InLoop {
+        shared.active.set(event_loop);
+        InLoop(shared.clone())
+    }
+}
+
+impl Drop for InLoop {
+    fn drop(&mut self) {
+        self.0.active.set(std::ptr::null());
+    }
 }
 
 struct Shell {
     options: Options,
     root: Option<Box<dyn Fn() -> View>>,
-    /// The app's (main) window.
-    win: Option<AppWindow>,
-    gpu: Option<Gpu>,
-    a11y: Option<accesskit_winit::Adapter>,
-    proxy: EventLoopProxy<ShellEvent>,
-    /// Pointer position in logical pixels.
-    cursor: (f32, f32),
+    shared: Rc<Shared>,
+    app: Option<App>,
+    /// The first window (captures and `exit_after_frames` are its).
+    main: Option<octara::app::WindowId>,
     modifiers: ModifiersState,
-    frames: u32,
     /// The app's clock starts at launch.
     started: Instant,
-    /// `OCTARA_TRACE_INPUT=1`: each input's latency to the frame that shows it, on stderr.
-    trace: bool,
-    /// The oldest input not yet shown: when it arrived, what it was, and when handling ended.
-    unshown: Option<(Instant, &'static str, Instant)>,
-    /// When the last frame was presented.
-    presented: Option<Instant>,
-    /// `exit_after_frames` was reached.
+    /// `exit_after_frames` was reached, or a capture finished.
     done: bool,
-    /// The window resized since the last frame (native views present with the frame).
-    resized: bool,
     /// A capture in progress (`OCTARA_CAPTURE`, see [`capture`]).
     capture: Option<capture::Job>,
-    /// The window's native views (web views), placed with each frame.
-    #[cfg(target_os = "macos")]
-    native: Option<native_mac::Native>,
+}
+
+/// `f` on the winit window behind app window `w`.
+fn ww<R>(w: &AppWindow, f: impl FnOnce(&mut WinitWindow) -> R) -> Option<R> {
+    let mut pw = w.platform_window_mut();
+    pw.as_any_mut().downcast_mut::<WinitWindow>().map(f)
 }
 
 fn modifiers(m: ModifiersState) -> Modifiers {
@@ -196,146 +220,87 @@ fn physical_char(key: PhysicalKey) -> Option<char> {
 }
 
 impl Shell {
-    /// Records an input for latency tracing (the first one not yet shown).
-    fn traced(&mut self, at: Instant, what: &'static str) {
-        if self.trace && self.unshown.is_none() {
-            self.unshown = Some((at, what, Instant::now()));
-        }
+    /// The app window winit window `id` shows.
+    fn window_of(&self, id: WindowId) -> Option<AppWindow> {
+        let w = *self.shared.windows.borrow().get(&id)?;
+        self.app.as_ref()?.window(w)
+    }
+
+    fn main_window(&self) -> Option<AppWindow> {
+        self.app.as_ref()?.window(self.main?)
     }
 
     /// Brings the app's clock to now (before each event and frame).
-    fn tick(&mut self) {
-        let now = self.started.elapsed();
-        if let Some(app) = &mut self.win {
-            app.app().advance_to(now);
+    fn tick(&self) {
+        if let Some(app) = &self.app {
+            app.advance_to(self.started.elapsed());
         }
     }
 
-    /// One pointer event at the current position (mouse) or the touch's (finger).
-    fn pointer(&mut self, ev: PointerEvent) {
+    /// One pointer event at the window's pointer (mouse) or the touch's (finger).
+    fn pointer(&mut self, w: &mut AppWindow, ev: PointerEvent) {
         let at = Instant::now();
         self.tick();
-        if let Some(app) = &mut self.win {
-            app.event(InputEvent::Pointer(ev));
-        }
+        w.event(InputEvent::Pointer(ev));
         // Moves come in bursts, and a cancel (the window losing focus) shows nothing new.
-        match ev.phase {
-            Phase::Down => self.traced(at, "pointer down"),
-            Phase::Up => self.traced(at, "pointer up"),
-            Phase::Move | Phase::Cancel => {}
-        }
-        self.redraw();
-    }
-
-    fn scale(&self) -> f32 {
-        self.gpu.as_ref().map_or(1.0, |g| g.window.scale_factor() as f32)
-    }
-
-    /// Something may have changed: draw again, and tell assistive technology if it listens.
-    /// Something changed: show it. After a quiet spell the frame is drawn now, rather than at
-    /// the display's next refresh callback (which an idle ProMotion display slows to ~24 Hz, so
-    /// the first keystroke after a pause waited ~45 ms); within a burst, changes coalesce into
-    /// the next refresh.
-    fn redraw(&mut self) {
-        let recent = self.presented.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(8));
-        if recent {
-            if let Some(g) = &self.gpu {
-                g.window.request_redraw();
-            }
-        } else {
-            self.draw();
-        }
-        if let (Some(a11y), Some(app)) = (&mut self.a11y, &self.win) {
-            a11y.update_if_active(|| app.accessibility_update());
-        }
-    }
-
-    fn resize(&mut self, width: u32, height: u32) {
-        let scale = self.scale();
-        if let Some(g) = &mut self.gpu {
-            g.config.width = width.max(1);
-            g.config.height = height.max(1);
-            g.surface.configure(g.renderer.device(), &g.config);
-        }
-        if let Some(app) = &mut self.win {
-            app.event(InputEvent::Resize { width: width as f32 / scale, height: height as f32 / scale, scale });
-        }
-        self.resized = true;
-        self.redraw();
-    }
-
-    fn draw(&mut self) {
-        let scale = self.scale();
-        let (Some(g), Some(app)) = (&mut self.gpu, &self.win) else { return };
-        // Settling the frame hands native views their placements; they are applied with this
-        // frame's present, in one transaction.
-        let list = app.display_list();
-        // An underlay view shows through the frame's cutouts: the layer becomes non-opaque
-        // (premultiplied, as the renderer draws).
-        #[cfg(target_os = "macos")]
-        if self.native.as_ref().is_some_and(|n| n.transparent()) && g.config.alpha_mode != wgpu::CompositeAlphaMode::PostMultiplied {
-            g.config.alpha_mode = wgpu::CompositeAlphaMode::PostMultiplied;
-            g.surface.configure(g.renderer.device(), &g.config);
-        }
-        #[cfg(target_os = "macos")]
-        let transaction = self.native.as_ref().is_some_and(|n| n.begin_frame(&g.surface, self.resized));
-        self.resized = false;
-        let frame = match g.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => Some(f),
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                g.surface.configure(g.renderer.device(), &g.config);
-                g.window.request_redraw();
-                None
-            }
-            _ => None,
+        let what = match ev.phase {
+            Phase::Down => "pointer down",
+            Phase::Up => "pointer up",
+            Phase::Move | Phase::Cancel => return,
         };
-        let drawing = Instant::now();
-        if let Some(frame) = &frame {
-            let view = frame.texture.create_view(&Default::default());
-            g.renderer.draw(&list, scale, &view, (g.config.width, g.config.height));
+        ww(w, |x| x.traced(at, what));
+    }
+
+    /// After anything: each window learns its size once, shows what the app has new (now after
+    /// a quiet spell, else on its clock's next tick), and tells assistive technology if it
+    /// listens.
+    fn show(&mut self) {
+        let Some(app) = self.app.clone() else { return };
+        for id in app.windows() {
+            let Some(mut w) = app.window(id) else { continue };
+            if let Some((size, scale)) = ww(&w, |x| (!x.sized).then(|| (x.window.inner_size(), x.scale()))).flatten() {
+                ww(&w, |x| x.sized = true);
+                w.event(InputEvent::Resize { width: size.width as f32 / scale, height: size.height as f32 / scale, scale });
+            }
+            match ww(&w, |x| (x.pending, x.rested())) {
+                Some((true, true)) => self.draw(&w),
+                Some((true, false)) => {
+                    ww(&w, |x| x.want_frame());
+                }
+                _ => {}
+            }
+            ww(&w, |x| x.a11y.update_if_active(|| w.accessibility_update()));
         }
-        #[cfg(target_os = "macos")]
-        if let Some(n) = &self.native {
-            n.place();
-        }
-        let shown = frame.is_some();
-        if let Some(frame) = frame {
-            g.window.pre_present_notify();
-            g.renderer.queue().present(frame);
-        }
-        #[cfg(target_os = "macos")]
-        if transaction {
-            native_mac::Native::end_frame();
-        }
-        if !shown {
-            return;
-        }
-        self.presented = Some(Instant::now());
-        if let Some((at, what, handled)) = self.unshown.take() {
-            let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
-            eprintln!(
-                "octara-shell: {what}: shown after {:.1} ms (handling {:.1}, waiting for the frame {:.1}, drawing {:.1})",
-                ms(at.elapsed()),
-                ms(handled - at),
-                ms(drawing - handled),
-                ms(drawing.elapsed()),
-            );
-        }
-        self.frames += 1;
-        if let Some(n) = self.options.exit_after_frames {
-            if self.frames >= n {
-                eprintln!("octara-shell: drew {} frames at {}×{} (scale {scale}), exiting", self.frames, g.config.width, g.config.height);
+    }
+
+    /// Draws window `w` now.
+    fn draw(&mut self, w: &AppWindow) {
+        let list = w.display_list();
+        let shown = {
+            let mut gpu = self.shared.gpu.borrow_mut();
+            let Some(g) = gpu.as_mut() else { return };
+            ww(w, |x| x.draw(&list, &mut g.renderer)).unwrap_or(false)
+        };
+        if shown
+            && Some(w.id()) == self.main
+            && let Some(n) = self.options.exit_after_frames
+        {
+            let (frames, (width, height), scale) = ww(w, |x| (x.frames, (x.config.width, x.config.height), x.scale())).unwrap_or_default();
+            if frames >= n {
+                eprintln!("octara-shell: drew {frames} frames at {width}×{height} (scale {scale}), exiting");
                 self.done = true;
             } else {
-                g.window.request_redraw();
+                ww(w, |x| {
+                    x.pending = true;
+                    x.want_frame();
+                });
             }
         }
     }
 
     /// A key press: the app's key routing first (focus, keymap, commands); if nothing took it,
     /// the text it typed goes to the focused field.
-    fn key(&mut self, event: &winit::event::KeyEvent) {
-        let Some(app) = &mut self.win else { return };
+    fn key(&mut self, app: &mut AppWindow, event: &winit::event::KeyEvent) {
         // `mod+shift+c` starts and ends picking in debug builds.
         let command = if cfg!(target_os = "macos") { self.modifiers.super_key() } else { self.modifiers.control_key() };
         if cfg!(debug_assertions)
@@ -404,44 +369,59 @@ impl Shell {
 }
 
 impl ApplicationHandler<ShellEvent> for Shell {
-    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
         // A deadline the app asked for (a long press coming due, momentum's next frame).
         if let StartCause::ResumeTimeReached { .. } = cause {
+            let _in = InLoop::enter(&self.shared, event_loop);
             self.tick();
-            self.redraw();
+            self.show();
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.done {
+        let last_closed = self.app.as_ref().is_some_and(|a| a.windows().is_empty());
+        if self.done || last_closed {
             event_loop.exit();
             return;
         }
-        let deadline = self.win.as_ref().and_then(|a| a.app().next_deadline());
+        let deadline = self.app.as_ref().and_then(|a| a.next_deadline());
         event_loop.set_control_flow(match deadline {
             Some(d) => ControlFlow::WaitUntil(self.started + d),
             None => ControlFlow::Wait,
         });
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: ShellEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: ShellEvent) {
+        let _in = InLoop::enter(&self.shared, event_loop);
         let e = match event {
             ShellEvent::Wake => {
                 self.tick();
-                if let Some(app) = &mut self.win {
-                    app.app().poll();
+                if let Some(app) = self.app.clone() {
+                    app.poll();
                     // Events native views sent (a page loaded, its title changed).
                     #[cfg(target_os = "macos")]
-                    if let Some(n) = &self.native {
-                        for (id, event) in n.inbox.take() {
-                            app.event(InputEvent::Native { id, event });
+                    for id in app.windows() {
+                        let Some(mut w) = app.window(id) else { continue };
+                        let (events, snapshots) =
+                            ww(&w, |x| x.native.as_ref().map(|n| (n.inbox.take(), n.inbox.take_snapshots()))).flatten().unwrap_or_default();
+                        for (id, event) in events {
+                            w.event(InputEvent::Native { id, event });
                         }
-                        for (id, image) in n.inbox.take_snapshots() {
-                            app.event(InputEvent::NativeSnapshot { id, image });
+                        for (id, image) in snapshots {
+                            w.event(InputEvent::NativeSnapshot { id, image });
                         }
                     }
                 }
-                self.redraw();
+                self.show();
+                return;
+            }
+            ShellEvent::Frame(id) => {
+                self.tick();
+                if let Some(w) = self.window_of(id)
+                    && ww(&w, |x| x.on_tick()).unwrap_or(false)
+                {
+                    self.draw(&w);
+                }
                 return;
             }
             ShellEvent::Capture => {
@@ -450,122 +430,77 @@ impl ApplicationHandler<ShellEvent> for Shell {
             }
             ShellEvent::Accessibility(e) => e,
         };
+        let Some(mut w) = self.window_of(e.window_id) else { return };
         match e.window_event {
             accesskit_winit::WindowEvent::InitialTreeRequested => {
-                if let (Some(a11y), Some(app)) = (&mut self.a11y, &self.win) {
-                    app.restart_accessibility();
-                    a11y.update_if_active(|| app.accessibility_update());
-                }
+                w.restart_accessibility();
+                ww(&w, |x| x.a11y.update_if_active(|| w.accessibility_update()));
             }
             accesskit_winit::WindowEvent::ActionRequested(req) => {
-                if let Some(app) = &mut self.win {
-                    app.event(InputEvent::Accessibility { target: req.target_node, action: req.action, data: req.data });
-                }
-                self.redraw();
+                w.event(InputEvent::Accessibility { target: req.target_node, action: req.action, data: req.data });
+                self.show();
             }
             accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
         }
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.gpu.is_some() {
+        if self.app.is_some() {
             return;
         }
-        let (w, h) = self.options.size;
-        // Hidden until the accessibility adapter is attached (AccessKit requires it).
-        let attrs =
-            Window::default_attributes().with_title(&self.options.title).with_inner_size(LogicalSize::new(w, h)).with_visible(false);
-        let window = Arc::new(event_loop.create_window(attrs).expect("window"));
-        self.a11y = Some(accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone()));
-        window.set_visible(true);
-        window.set_ime_allowed(true);
-        // An app started from a terminal comes to the front.
-        window.focus_window();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let surface = instance.create_surface(window.clone()).expect("surface");
-        let adapter = pollster::block_on(
-            instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(&surface), ..Default::default() }),
-        )
-        .expect("a GPU adapter for the window");
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("device");
-        let caps = surface.get_capabilities(&adapter);
-        // Colors are blended in sRGB-encoded space: present a non-sRGB format.
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| matches!(f, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm))
-            .unwrap_or(caps.formats[0]);
-        let size = window.inner_size();
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width: size.width.max(1),
-            height: size.height.max(1),
-            present_mode: wgpu::PresentMode::Fifo,
-            desired_maximum_frame_latency: 2,
-            alpha_mode: caps.alpha_modes[0],
-            view_formats: vec![],
-            color_space: wgpu::SurfaceColorSpace::Auto,
-        };
-        surface.configure(&device, &config);
-        let renderer = GpuRenderer::with_device(device, queue, format);
-        let scale = window.scale_factor() as f32;
+        let _in = InLoop::enter(&self.shared, event_loop);
         let root = self.root.take().expect("root view");
-        // The window's native views: AppKit's on macOS, placeholders elsewhere for now.
-        #[cfg(target_os = "macos")]
-        let first = {
-            let proxy = self.proxy.clone();
-            let host = native_mac::Native::new(&window, move || {
-                let _ = proxy.send_event(ShellEvent::Wake);
-            })
-            .map(|(native, host)| {
-                self.native = Some(native);
-                host
-            });
-            platform::WinitWindow::new(window.clone(), host)
-        };
-        #[cfg(not(target_os = "macos"))]
-        let first = platform::WinitWindow::new(window.clone());
-        let platform = platform::WinitPlatform::new(self.proxy.clone(), first);
-        let app = App::new(platform);
+        let app = App::new(platform::WinitPlatform::new(self.shared.clone()));
         let options = octara::platform::WindowOptions::new(self.options.title.clone()).size(self.options.size.0, self.options.size.1);
-        let mut app = app.open_window(options, root).expect("the window");
+        let mut w = app.open_window(options, root).expect("the window");
         if self.options.system_fonts {
-            app.app().use_system_fonts();
+            app.use_system_fonts();
         }
-        app.event(InputEvent::Resize { width: size.width as f32 / scale, height: size.height as f32 / scale, scale });
-        self.capture = capture::Job::from_env(&self.proxy);
+        self.capture = capture::Job::from_env(&self.shared.proxy);
         if std::env::var("OCTARA_PICK").is_ok_and(|v| v == "1") {
-            app.set_picking(true);
+            w.set_picking(true);
         }
-        self.win = Some(app);
-        self.gpu = Some(Gpu { window, surface, config, renderer });
-        self.redraw();
+        self.main = Some(w.id());
+        self.app = Some(app);
+        self.show();
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        if let (Some(a11y), Some(g)) = (&mut self.a11y, &self.gpu) {
-            a11y.process_event(&g.window, &event);
-        }
-        let scale = self.scale();
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        let _in = InLoop::enter(&self.shared, event_loop);
+        let Some(mut w) = self.window_of(id) else { return };
+        ww(&w, |x| x.a11y.process_event(&x.window, &event));
+        let scale = ww(&w, |x| x.scale()).unwrap_or(1.0);
+        let cursor = ww(&w, |x| x.cursor).unwrap_or_default();
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => self.resize(size.width, size.height),
-            WindowEvent::RedrawRequested => self.draw(),
+            WindowEvent::CloseRequested => {
+                if let Some(app) = &self.app {
+                    app.close_window(w.id());
+                }
+                return;
+            }
+            WindowEvent::Resized(size) => {
+                if let Some(g) = &*self.shared.gpu.borrow() {
+                    ww(&w, |x| x.resize(size.width, size.height, &g.renderer));
+                }
+                w.event(InputEvent::Resize { width: size.width as f32 / scale, height: size.height as f32 / scale, scale });
+            }
+            // The system asks (exposure), or the clock does where it is winit's.
+            WindowEvent::RedrawRequested => {
+                self.tick();
+                self.draw(&w);
+            }
             // Hidden windows get no drawables; draw again once visible.
-            WindowEvent::Occluded(false) => self.redraw(),
+            WindowEvent::Occluded(false) => {
+                ww(&w, |x| x.pending = true);
+            }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = (position.x as f32 / scale, position.y as f32 / scale);
-                let (x, y) = self.cursor;
-                self.pointer(PointerEvent::mouse(Phase::Move, x, y).modifiers(modifiers(self.modifiers)));
+                let at = (position.x as f32 / scale, position.y as f32 / scale);
+                ww(&w, |x| x.cursor = at);
+                self.pointer(&mut w, PointerEvent::mouse(Phase::Move, at.0, at.1).modifiers(modifiers(self.modifiers)));
             }
             WindowEvent::CursorLeft { .. } => {
-                if let Some(app) = &mut self.win {
-                    app.event(InputEvent::PointerLeave);
-                }
-                self.redraw();
+                w.event(InputEvent::PointerLeave);
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let button = match button {
@@ -578,8 +513,8 @@ impl ApplicationHandler<ShellEvent> for Shell {
                     ElementState::Pressed => Phase::Down,
                     ElementState::Released => Phase::Up,
                 };
-                let (x, y) = self.cursor;
-                self.pointer(PointerEvent::mouse(phase, x, y).button(button).modifiers(modifiers(self.modifiers)));
+                let (x, y) = cursor;
+                self.pointer(&mut w, PointerEvent::mouse(phase, x, y).button(button).modifiers(modifiers(self.modifiers)));
             }
             WindowEvent::Touch(Touch { phase, location, id, .. }) => {
                 let phase = match phase {
@@ -589,47 +524,38 @@ impl ApplicationHandler<ShellEvent> for Shell {
                     TouchPhase::Cancelled => Phase::Cancel,
                 };
                 let (x, y) = (location.x as f32 / scale, location.y as f32 / scale);
-                self.pointer(PointerEvent::touch(id, phase, x, y));
+                self.pointer(&mut w, PointerEvent::touch(id, phase, x, y));
             }
             WindowEvent::Focused(false) => {
                 // The window lost the pointer: a held press or drag is cancelled.
-                let (x, y) = self.cursor;
-                self.pointer(PointerEvent::mouse(Phase::Cancel, x, y));
+                let (x, y) = cursor;
+                self.pointer(&mut w, PointerEvent::mouse(Phase::Cancel, x, y));
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (-x * LINE, -y * LINE),
                     MouseScrollDelta::PixelDelta(p) => (-p.x as f32 / scale, -p.y as f32 / scale),
                 };
-                let (x, y) = self.cursor;
+                let (x, y) = cursor;
                 self.tick();
-                if let Some(app) = &mut self.win {
-                    app.wheel(x, y, dx, dy);
-                }
-                self.redraw();
+                w.wheel(x, y, dx, dy);
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 let at = Instant::now();
                 self.tick();
-                self.key(&event);
-                self.traced(at, if event.repeat { "key (repeat)" } else { "key" });
-                self.redraw();
+                self.key(&mut w, &event);
+                ww(&w, |x| x.traced(at, if event.repeat { "key (repeat)" } else { "key" }));
             }
             WindowEvent::Ime(Ime::Preedit(text, _)) => {
-                self.traced(Instant::now(), "input method composition");
-                if let Some(app) = &mut self.win {
-                    app.event(InputEvent::Composition(text));
-                }
-                self.redraw();
+                ww(&w, |x| x.traced(Instant::now(), "input method composition"));
+                w.event(InputEvent::Composition(text));
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
-                self.traced(Instant::now(), "input method commit");
-                if let Some(app) = &mut self.win {
-                    app.type_text(&text);
-                }
-                self.redraw();
+                ww(&w, |x| x.traced(Instant::now(), "input method commit"));
+                w.type_text(&text);
             }
-            _ => {}
+            _ => return,
         }
+        self.show();
     }
 }

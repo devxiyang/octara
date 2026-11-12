@@ -627,3 +627,34 @@ fn listen(name: &str, f: impl Fn(String) + 'static) {
     let (_, rx) = channel::<String>();
     rx.named(name).on(f);
 }
+
+/// Several windows: the first opens notes, each in a window of its own that closes itself; the
+/// app ends with its last window.
+pub fn windows() -> View {
+    let opened = state("opened", || 0u32);
+    col()
+        .size_full()
+        .p_6()
+        .gap_3()
+        .child(text("Windows").text_xl().font_semibold())
+        .child(text(move || format!("{} notes opened", opened.get())).id("opened").text_color(Token::TextMuted))
+        .child(primary_button("New note").id("new").self_start().on_press(move || {
+            let n = opened.get() + 1;
+            opened.set(n);
+            let options = WindowOptions::new(format!("Note {n}")).size(360.0, 240.0);
+            let _ = open_window(options, move || note(n));
+        }))
+        .into()
+}
+
+fn note(n: u32) -> View {
+    let body = state("body", String::new);
+    col()
+        .size_full()
+        .p_4()
+        .gap_3()
+        .child(text(format!("Note {n}")).font_semibold())
+        .child(text_field(body).id("body").label("Note"))
+        .child(button("Close").id("close").self_start().on_press(|| close_window(current_window())))
+        .into()
+}

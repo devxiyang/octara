@@ -73,42 +73,39 @@ impl Job {
 }
 
 impl Shell {
-    /// One step of the capture in progress.
+    /// One step of the capture in progress (of the first window).
     pub(crate) fn capture_step(&mut self) {
         let Some(mut job) = self.capture.take() else { return };
-        if self.win.is_none() || self.gpu.is_none() {
+        let Some(mut w) = self.main_window() else {
             self.capture = Some(job);
             return;
-        }
+        };
         let now = Instant::now();
         if let Stage::Start = job.stage {
             if let Some(dy) = job.scroll {
-                let (w, h) = self.options.size;
-                if let Some(app) = &mut self.win {
-                    app.wheel(w / 2.0, h / 2.0, 0.0, dy);
-                }
+                let (width, height) = self.options.size;
+                w.wheel(width / 2.0, height / 2.0, 0.0, dy);
                 // Drawn, so the views are placed where the page now is.
-                self.draw();
+                self.draw(&w);
             }
             job.stage = Stage::Settling { until: now + job.settle };
         }
         if let Stage::Settling { until } = job.stage {
             self.tick();
-            let app = self.win.as_mut().expect("app");
-            let pending = app.unsettled();
+            let pending = w.unsettled();
             if !pending.is_empty() && now < until {
                 self.capture = Some(job);
-                self.redraw();
+                self.show();
                 return;
             }
             if job.pixels == Pixels::Display {
                 // The latest frame, presented; the window server shows it a little later.
-                self.draw();
+                self.draw(&w);
                 job.stage = Stage::Display { at: now + SHOWN, pending };
                 self.capture = Some(job);
                 return;
             }
-            app.capture_begin();
+            w.capture_begin();
             job.stage = Stage::Snapshots { until: now + SNAPSHOT_LIMIT, pending, fallback: None };
         }
         if let Stage::Display { at, ref pending } = job.stage {
@@ -117,59 +114,57 @@ impl Shell {
                 return;
             }
             let pending = pending.clone();
-            match self.window_picture() {
+            match window_picture(&w) {
                 Ok(picture) => {
-                    let scale = self.scale();
-                    let result = self.win.as_mut().expect("app").capture_display(&picture, &job.path, scale, pending);
-                    self.report(result, &job.path);
+                    let scale = super::ww(&w, |x| x.scale()).unwrap_or(1.0);
+                    let result = w.capture_display(&picture, &job.path, scale, pending);
+                    self.report(&w, result, &job.path);
                     return;
                 }
                 Err(why) => {
-                    self.win.as_mut().expect("app").capture_begin();
+                    w.capture_begin();
                     job.stage = Stage::Snapshots { until: now + SNAPSHOT_LIMIT, pending, fallback: Some(why) };
                 }
             }
         }
         if let Stage::Snapshots { until, ref pending, ref fallback } = job.stage {
-            let app = self.win.as_mut().expect("app");
-            if !app.capture_awaiting().is_empty() && now < until {
+            if !w.capture_awaiting().is_empty() && now < until {
                 self.capture = Some(job);
                 return;
             }
             let (pending, fallback) = (pending.clone(), fallback.clone());
-            self.finish(&job.path, pending, fallback);
+            // Painted with the window's renderer offscreen.
+            let scale = super::ww(&w, |x| x.scale()).unwrap_or(1.0);
+            let result = {
+                let mut gpu = self.shared.gpu.borrow_mut();
+                let Some(g) = gpu.as_mut() else { return };
+                w.capture_finish(&mut g.renderer, &job.path, scale, pending, fallback)
+            };
+            self.report(&w, result, &job.path);
         }
-    }
-
-    /// The window server's picture of the window, or why there is none.
-    fn window_picture(&self) -> Result<octara::capture::Picture, String> {
-        #[cfg(target_os = "macos")]
-        if let Some(n) = &self.native {
-            return n.window_picture();
-        }
-        Err("the window server's picture is taken on macOS only so far".into())
-    }
-
-    /// Paints the frame with the window's renderer offscreen, prints the report, and exits.
-    fn finish(&mut self, path: &str, pending: Vec<String>, fallback: Option<String>) {
-        let scale = self.scale();
-        let (Some(g), Some(app)) = (&mut self.gpu, &mut self.win) else { return };
-        let result = app.capture_finish(&mut g.renderer, path, scale, pending, fallback);
-        self.report(result, path);
     }
 
     /// Prints the report (stdout) and each native view's AppKit frame (stderr), and exits.
-    fn report(&mut self, result: Result<octara::capture::Capture, String>, path: &str) {
+    fn report(&mut self, w: &octara::app::Window, result: Result<octara::capture::Capture, String>, path: &str) {
         match result {
             Ok(report) => println!("{}", report.to_json()),
             Err(e) => eprintln!("octara-shell: capture {path}: {e}"),
         }
         #[cfg(target_os = "macos")]
-        if let Some(n) = &self.native {
-            for line in n.frames() {
-                eprintln!("octara-shell: {line}");
-            }
+        for line in super::ww(w, |x| x.native.as_ref().map(|n| n.frames())).flatten().unwrap_or_default() {
+            eprintln!("octara-shell: {line}");
         }
+        let _ = w;
         self.done = true;
     }
+}
+
+/// The window server's picture of the window, or why there is none.
+fn window_picture(w: &octara::app::Window) -> Result<octara::capture::Picture, String> {
+    #[cfg(target_os = "macos")]
+    if let Some(p) = super::ww(w, |x| x.native.as_ref().map(|n| n.window_picture())).flatten() {
+        return p;
+    }
+    let _ = w;
+    Err("the window server's picture is taken on macOS only so far".into())
 }

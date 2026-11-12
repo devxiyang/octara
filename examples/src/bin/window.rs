@@ -1,5 +1,5 @@
 //! Opens an example app in a window:
-//! `cargo run -p octara-examples --bin window -- [showcase [card]|counter|todo|chat|settings|contacts|chat_virtual]`
+//! `cargo run -p octara-examples --bin window -- [showcase [card]|counter|todo|chat|settings|contacts|chat_virtual|windows]`
 //! (`showcase web` shows the web view card alone; the cards are `showcase::CARDS`).
 
 use octara::view::View;
@@ -15,6 +15,7 @@ fn main() {
         "contacts" => Box::new(|| apps::contacts(200)),
         "chat_virtual" => Box::new(|| apps::chat_virtual(100_000)),
         "todo" => Box::new(|| apps::todo(30)),
+        "windows" => Box::new(apps::windows),
         _ => match card {
             Some(card) => {
                 if !showcase::CARDS.iter().any(|(n, _)| *n == card) {

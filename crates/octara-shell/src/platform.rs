@@ -1,27 +1,38 @@
 //! The winit backend's side of the platform layer ([`octara::platform`]): the system's clipboard
-//! and the event loop's waker, and one winit window's native views and text input.
+//! and the event loop's waker, and its windows, each with what shows it: its GPU surface (all
+//! windows share one renderer), its accessibility adapter, its native views, its text input and
+//! its frame clock.
 
-use super::ShellEvent;
+use super::{Shared, ShellEvent};
+use octara::paint::DisplayList;
 use octara::platform::{Frame, Platform, PlatformWindow, TextInput};
+use octara_render::{GpuRenderer, wgpu};
 use std::any::Any;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use winit::dpi::{LogicalPosition, LogicalSize};
-use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
 
 /// The desktop the app runs on: arboard's clipboard, the event loop's proxy as the waker, and
-/// the window the shell made (winit makes windows inside its loop; opening more comes with the
-/// backend's several windows).
+/// windows made in the loop's callback the app runs in.
 pub(crate) struct WinitPlatform {
     clipboard: Option<arboard::Clipboard>,
-    proxy: EventLoopProxy<ShellEvent>,
-    first: Option<WinitWindow>,
+    shared: Rc<Shared>,
 }
 
 impl WinitPlatform {
-    pub(crate) fn new(proxy: EventLoopProxy<ShellEvent>, first: WinitWindow) -> Self {
-        WinitPlatform { clipboard: arboard::Clipboard::new().ok(), proxy, first: Some(first) }
+    pub(crate) fn new(shared: Rc<Shared>) -> Self {
+        WinitPlatform { clipboard: arboard::Clipboard::new().ok(), shared }
     }
+}
+
+/// The GPU all windows draw with: the adapter, one renderer, the surfaces' format.
+pub(crate) struct Gpu {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    pub(crate) renderer: GpuRenderer,
+    format: wgpu::TextureFormat,
 }
 
 impl Platform for WinitPlatform {
@@ -33,12 +44,86 @@ impl Platform for WinitPlatform {
             let _ = c.set_text(text);
         }
     }
-    fn open_window(&mut self, _: octara::app::WindowId, _: &octara::platform::WindowOptions) -> Result<Box<dyn PlatformWindow>, String> {
-        let w = self.first.take().ok_or("this backend shows one window for now")?;
-        Ok(Box::new(w))
+    fn open_window(
+        &mut self,
+        id: octara::app::WindowId,
+        options: &octara::platform::WindowOptions,
+    ) -> Result<Box<dyn PlatformWindow>, String> {
+        let shared = &self.shared;
+        let event_loop = shared.event_loop().ok_or("windows open while the event loop runs")?;
+        let (w, h) = options.size;
+        // Hidden until the accessibility adapter is attached (AccessKit requires it).
+        let attrs = Window::default_attributes().with_title(&options.title).with_inner_size(LogicalSize::new(w, h)).with_visible(false);
+        let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
+        let a11y = accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, shared.proxy.clone());
+        window.set_visible(true);
+        window.set_ime_allowed(true);
+        // An app started from a terminal comes to the front.
+        window.focus_window();
+        let mut gpu = shared.gpu.borrow_mut();
+        let instance = match &*gpu {
+            Some(g) => g.instance.clone(),
+            None => wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env()),
+        };
+        let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
+        if gpu.is_none() {
+            *gpu = Some(new_gpu(instance, &surface)?);
+        }
+        let g = gpu.as_ref().expect("the GPU");
+        let caps = surface.get_capabilities(&g.adapter);
+        let size = window.inner_size();
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: g.format,
+            width: size.width.max(1),
+            height: size.height.max(1),
+            present_mode: wgpu::PresentMode::Fifo,
+            desired_maximum_frame_latency: 2,
+            alpha_mode: caps.alpha_modes[0],
+            view_formats: vec![],
+            color_space: wgpu::SurfaceColorSpace::Auto,
+        };
+        surface.configure(g.renderer.device(), &config);
+        drop(gpu);
+        let wid = window.id();
+        #[cfg(target_os = "macos")]
+        let (native, host, link) = {
+            let proxy = shared.proxy.clone();
+            let (native, host) = super::native_mac::Native::new(&window, move || {
+                let _ = proxy.send_event(ShellEvent::Wake);
+            })
+            .map_or((None, None), |(n, h)| (Some(n), Some(h)));
+            let proxy = shared.proxy.clone();
+            let link = super::pace_mac::DisplayLink::new(&window, move || {
+                let _ = proxy.send_event(ShellEvent::Frame(wid));
+            });
+            (native, host, link)
+        };
+        shared.windows.borrow_mut().insert(wid, id);
+        Ok(Box::new(WinitWindow {
+            window,
+            shared: shared.clone(),
+            surface,
+            config,
+            a11y,
+            #[cfg(target_os = "macos")]
+            native,
+            #[cfg(target_os = "macos")]
+            host,
+            #[cfg(target_os = "macos")]
+            link,
+            secure: false,
+            cursor: (0.0, 0.0),
+            pending: true,
+            presented: None,
+            resized: false,
+            sized: false,
+            unshown: None,
+            frames: 0,
+        }))
     }
     fn waker(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
-        let proxy = self.proxy.clone();
+        let proxy = self.shared.proxy.clone();
         Some(Arc::new(move || {
             let _ = proxy.send_event(ShellEvent::Wake);
         }))
@@ -48,23 +133,171 @@ impl Platform for WinitPlatform {
     }
 }
 
-/// One winit window: its native views (macOS: AppKit's; elsewhere none, so they draw as
-/// placeholders) and the input method.
+/// The adapter for the first window's surface, and the renderer.
+fn new_gpu(instance: wgpu::Instance, surface: &wgpu::Surface<'static>) -> Result<Gpu, String> {
+    let adapter = pollster::block_on(
+        instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(surface), ..Default::default() }),
+    )
+    .map_err(|e| format!("no GPU adapter for the window: {e}"))?;
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| e.to_string())?;
+    let caps = surface.get_capabilities(&adapter);
+    // Colors are blended in sRGB-encoded space: present a non-sRGB format.
+    let format = caps
+        .formats
+        .iter()
+        .copied()
+        .find(|f| matches!(f, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Rgba8Unorm))
+        .unwrap_or(caps.formats[0]);
+    let renderer = GpuRenderer::with_device(device, queue, format);
+    Ok(Gpu { instance, adapter, renderer, format })
+}
+
+/// One winit window and what shows it.
 pub(crate) struct WinitWindow {
-    window: Arc<Window>,
+    pub(crate) window: Arc<Window>,
+    shared: Rc<Shared>,
+    surface: wgpu::Surface<'static>,
+    pub(crate) config: wgpu::SurfaceConfiguration,
+    pub(crate) a11y: accesskit_winit::Adapter,
+    /// Its native views (macOS: AppKit's; elsewhere none, so they draw as placeholders).
+    #[cfg(target_os = "macos")]
+    pub(crate) native: Option<super::native_mac::Native>,
     #[cfg(target_os = "macos")]
     host: Option<super::native_mac::Host>,
+    /// Its frame clock (macOS); elsewhere winit's redraw requests, paced by the compositor
+    /// (Wayland) or the swap chain's blocking present.
+    #[cfg(target_os = "macos")]
+    link: Option<super::pace_mac::DisplayLink>,
     /// A secure field has focus: the input method is off and (macOS) secure input on.
     secure: bool,
+    /// The pointer, in logical pixels.
+    pub(crate) cursor: (f32, f32),
+    /// The app has something new to show.
+    pub(crate) pending: bool,
+    /// When the last frame was presented.
+    pub(crate) presented: Option<Instant>,
+    /// It resized since the last frame (native views present with the frame).
+    pub(crate) resized: bool,
+    /// The app was told its size.
+    pub(crate) sized: bool,
+    /// `OCTARA_TRACE_INPUT`: the oldest input not yet shown, when it arrived, what it was, and
+    /// when handling ended.
+    pub(crate) unshown: Option<(Instant, &'static str, Instant)>,
+    pub(crate) frames: u32,
 }
 
 impl WinitWindow {
-    pub(crate) fn new(window: Arc<Window>, #[cfg(target_os = "macos")] host: Option<super::native_mac::Host>) -> Self {
-        WinitWindow {
-            window,
-            #[cfg(target_os = "macos")]
-            host,
-            secure: false,
+    pub(crate) fn scale(&self) -> f32 {
+        self.window.scale_factor() as f32
+    }
+
+    /// One refresh of the display it is on (60 Hz when that is unknown).
+    fn refresh(&self) -> Duration {
+        let mhz = self.window.current_monitor().and_then(|m| m.refresh_rate_millihertz()).filter(|r| *r > 0).unwrap_or(60_000);
+        Duration::from_secs_f64(1000.0 / f64::from(mhz))
+    }
+
+    /// Nothing was shown for a refresh: a new frame is drawn at once, not at the next refresh
+    /// (which an idle ProMotion display slows to ~24 Hz).
+    pub(crate) fn rested(&self) -> bool {
+        self.presented.is_none_or(|t| t.elapsed() >= self.refresh())
+    }
+
+    /// Asks for the next frame on the clock.
+    pub(crate) fn want_frame(&self) {
+        #[cfg(target_os = "macos")]
+        if let Some(link) = &self.link {
+            link.start();
+            return;
+        }
+        self.window.request_redraw();
+    }
+
+    /// A tick of the clock: whether to draw now (else the clock pauses while nothing waits).
+    pub(crate) fn on_tick(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        if let Some(link) = &self.link {
+            if !self.pending {
+                link.stop();
+                return false;
+            }
+            return super::pace_mac::tick_draws(self.presented);
+        }
+        self.pending
+    }
+
+    pub(crate) fn resize(&mut self, width: u32, height: u32, renderer: &GpuRenderer) {
+        self.config.width = width.max(1);
+        self.config.height = height.max(1);
+        self.surface.configure(renderer.device(), &self.config);
+        self.resized = true;
+        self.pending = true;
+    }
+
+    /// Draws `list` and presents it (native views placed with it, in one transaction): whether a
+    /// frame was shown.
+    pub(crate) fn draw(&mut self, list: &DisplayList, renderer: &mut GpuRenderer) -> bool {
+        let scale = self.scale();
+        // An underlay view shows through the frame's cutouts: the layer becomes non-opaque
+        // (premultiplied, as the renderer draws).
+        #[cfg(target_os = "macos")]
+        if self.native.as_ref().is_some_and(|n| n.transparent()) && self.config.alpha_mode != wgpu::CompositeAlphaMode::PostMultiplied {
+            self.config.alpha_mode = wgpu::CompositeAlphaMode::PostMultiplied;
+            self.surface.configure(renderer.device(), &self.config);
+        }
+        #[cfg(target_os = "macos")]
+        let transaction = self.native.as_ref().is_some_and(|n| n.begin_frame(&self.surface, self.resized));
+        self.resized = false;
+        let frame = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => Some(f),
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(renderer.device(), &self.config);
+                self.want_frame();
+                None
+            }
+            _ => None,
+        };
+        let drawing = Instant::now();
+        if let Some(frame) = &frame {
+            let view = frame.texture.create_view(&Default::default());
+            renderer.draw(list, scale, &view, (self.config.width, self.config.height));
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(n) = &self.native {
+            n.place();
+        }
+        let shown = frame.is_some();
+        if let Some(frame) = frame {
+            self.window.pre_present_notify();
+            renderer.queue().present(frame);
+        }
+        #[cfg(target_os = "macos")]
+        if transaction {
+            super::native_mac::Native::end_frame();
+        }
+        if !shown {
+            return false;
+        }
+        self.pending = false;
+        self.presented = Some(Instant::now());
+        self.frames += 1;
+        if let Some((at, what, handled)) = self.unshown.take() {
+            let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+            eprintln!(
+                "octara-shell: {what}: shown after {:.1} ms (handling {:.1}, waiting for the frame {:.1}, drawing {:.1})",
+                ms(at.elapsed()),
+                ms(handled - at),
+                ms(drawing - handled),
+                ms(drawing.elapsed()),
+            );
+        }
+        true
+    }
+
+    /// Records an input for latency tracing (the first one not yet shown).
+    pub(crate) fn traced(&mut self, at: Instant, what: &'static str) {
+        if self.shared.trace && self.unshown.is_none() {
+            self.unshown = Some((at, what, Instant::now()));
         }
     }
 
@@ -86,6 +319,8 @@ impl WinitWindow {
 
 impl PlatformWindow for WinitWindow {
     fn present(&mut self, frame: Frame) {
+        // Placements are applied with the next frame: one is needed.
+        let placed = !frame.native.is_empty();
         #[cfg(target_os = "macos")]
         if let Some(host) = &self.host {
             for change in frame.native {
@@ -97,8 +332,8 @@ impl PlatformWindow for WinitWindow {
             eprintln!("octara-shell: picked {} (on the clipboard)", p.text);
             println!("{}", octara::serde_json::to_string(p).expect("a pick serializes"));
         }
-        if frame.redraw {
-            self.window.request_redraw();
+        if frame.redraw || placed {
+            self.pending = true;
         }
     }
     fn shows_native(&self, kind: &str, slot: octara::native::Slot) -> bool {
@@ -138,6 +373,7 @@ impl Drop for WinitWindow {
         if self.secure {
             secure_input::set(false);
         }
+        self.shared.windows.borrow_mut().remove(&self.window.id());
     }
 }
 

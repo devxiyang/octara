@@ -36,11 +36,22 @@ platform is presented a `Frame` after each operation.
   to show native views, take snapshots or be busy (`HeadlessPlatform::with_window`).
 - `App::new(platform)` takes a backend's platform, whose `open_window` makes each window's
   platform window; `App::platform()` and `Window::platform_window()` reach them.
-- The shell's `WinitPlatform` (arboard, the event loop's proxy) and `WinitWindow` (the macOS
-  native view host, the input method's position, secure input) implement them. The enum of
-  platform conventions is `TargetPlatform` (`App::target_platform`).
-- Not yet: `InputHandler`, menus, file dialogs, URLs, cursor, displays, lifecycle, more than one
-  winit window.
+- The shell's `WinitPlatform` (arboard, the event loop's proxy) and `WinitWindow` implement
+  them. The platform opens a winit window inside the loop callback the app runs in (the shell
+  holds the active loop for each callback); every window has its own surface (one adapter and
+  renderer for all), accessibility adapter, native view host, input method position and secure
+  input, and frame clock. The app's `open_window` and `close_window` open and close real
+  windows; the loop ends with the last one. The enum of platform conventions is
+  `TargetPlatform` (`App::target_platform`).
+- Frames: a window draws when the app presents something new (`Frame::redraw`, native
+  changes). After a quiet spell (no frame for a refresh of its display) it draws at once; within
+  a burst, on its frame clock's next tick: on macOS its view's display link (macOS 14), which
+  ticks while a frame waits and pauses otherwise, skipping ticks closer than a 60 Hz frame in Low
+  Power Mode (the link reports the panel's rate); elsewhere winit's redraw requests, paced by
+  the compositor's frame callbacks (Wayland, through `pre_present_notify`) or the swap chain's
+  blocking present. Metal's drawable pool is no frame clock (it does not hold back while the
+  layer presents with its transaction), as Rune found.
+- Not yet: `InputHandler`, menus, file dialogs, URLs, cursor, displays, lifecycle.
 
 ## Backends
 

@@ -28,7 +28,7 @@ Principles:
 | `octara-macros` | `#[component]`: elements record the component function that built them and where it was called |
 | `octara-kit` | Components (buttons, fields, select, switch, …) and streaming Markdown, built only on `octara`'s public API and theme tokens |
 | `octara-render` | Display list → pixels: the CPU reference renderer and the wgpu renderer |
-| `octara-shell` | Desktop window (winit): input, IME, scale, redraw on demand, AccessKit, native views (macOS: WKWebView, placed with the frame) |
+| `octara-shell` | Desktop windows (winit): input, IME, scale, frames on a display clock, AccessKit, native views (macOS: WKWebView, placed with the frame) |
 | `octara-icons` | The Lucide set as path data (generated, checked in) |
 | `octara-fonts` | A CJK subset for deterministic tests and screenshots |
 | `octara-cli` | The `octara` command: `check`, `inspect`, `run`, `vocab`, `explain`, `skill`, `api` |
