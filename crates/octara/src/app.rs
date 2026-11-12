@@ -118,6 +118,10 @@ pub struct App {
     native_host: RefCell<Box<dyn crate::native::NativeHost>>,
     /// What the host was last told of each native view: its props version and placement.
     native_sent: RefCell<rustc_hash::FxHashMap<NodeId, (u64, Option<crate::native::Placement>)>>,
+    /// What paints `capture` requests (the harness installs the reference renderer).
+    painter: RefCell<Option<Box<dyn crate::capture::Painter>>>,
+    /// A capture in progress: the snapshots asked for.
+    capturing: RefCell<Option<crate::capture::Capturing>>,
 }
 
 /// Runtime-owned interaction states. A hot reload carries them over by test id.
@@ -171,6 +175,8 @@ impl App {
             platform: Cell::new(Platform::current()),
             native_host: RefCell::new(Box::<crate::native::RecordingHost>::default()),
             native_sent: RefCell::default(),
+            painter: RefCell::default(),
+            capturing: RefCell::default(),
             keymap: RefCell::new(keys::Keymap::default()),
             clipboard: RefCell::new(Box::new(edit::MemoryClipboard::default())),
         };
@@ -709,12 +715,113 @@ impl App {
         self.input_frame(|| self.ui.kernel.borrow_mut().set_native_size(n, (width, height)));
     }
 
-    /// Asks the host for an image of every native view shown (for a capture); returns the views
-    /// it will send one for, through [`native_snapshot`](Self::native_snapshot).
-    pub fn snapshot_native(&mut self) -> Vec<crate::native::NativeId> {
+    /// What keeps the app from being settled now: tasks, timers and motion (not subscriptions,
+    /// which run for good) and native views that are busy (a page loading). A capture waits for
+    /// this to be empty.
+    pub fn unsettled(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .pending()
+            .into_iter()
+            .filter(|p| p.kind != crate::task::WorkKind::Subscription)
+            .map(|p| if p.at.is_empty() { p.label } else { format!("{} ({})", p.label, p.at) })
+            .collect();
+        let placements = self.ui.kernel.borrow().native_placements();
+        let host = self.native_host.borrow();
+        for (n, p) in placements.into_iter().filter(|(_, p)| p.visible) {
+            if let Some(what) = host.busy(p.id) {
+                out.push(format!("{}: {what}", self.native_name(n)));
+            }
+        }
+        out
+    }
+
+    /// A native view as reports name it: its test id, else its kind.
+    fn native_name(&self, n: NodeId) -> String {
+        let k = self.ui.kernel.borrow();
+        let kind = k.native(n).map(|v| v.kind.clone()).unwrap_or_default();
+        match k.test_id(n) {
+            Some(id) => format!("{kind} view #{id}"),
+            None => format!("{kind} view"),
+        }
+    }
+
+    /// Installs what paints `capture` requests headless (`octara-render`'s reference renderer).
+    pub fn set_painter(&mut self, painter: Box<dyn crate::capture::Painter>) {
+        *self.painter.borrow_mut() = Some(painter);
+    }
+
+    /// Starts a capture: asks the host for a snapshot of every native view shown. Returns the
+    /// views whose snapshot is coming (through [`native_snapshot`](Self::native_snapshot)).
+    pub fn capture_begin(&mut self) -> Vec<crate::native::NativeId> {
         let placements = self.ui.kernel.borrow().native_placements();
         let mut host = self.native_host.borrow_mut();
-        placements.into_iter().filter(|(_, p)| p.visible).map(|(_, p)| p.id).filter(|id| host.snapshot(*id)).collect()
+        let asked: Vec<_> = placements.into_iter().filter(|(_, p)| p.visible).map(|(_, p)| (p.id, host.snapshot(p.id))).collect();
+        let coming = asked.iter().filter(|(_, r)| r.is_ok()).map(|(id, _)| *id).collect();
+        *self.capturing.borrow_mut() = Some(crate::capture::Capturing { asked });
+        coming
+    }
+
+    /// The snapshots asked for that have not come yet.
+    pub fn capture_awaiting(&self) -> Vec<crate::native::NativeId> {
+        let capturing = self.capturing.borrow();
+        let Some(c) = capturing.as_ref() else { return Vec::new() };
+        let k = self.ui.kernel.borrow();
+        c.asked
+            .iter()
+            .filter(|(id, r)| r.is_ok() && self.native_node(*id).is_some_and(|n| k.native(n).is_some_and(|v| v.snapshot.is_none())))
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// Ends a capture: paints the frame (snapshots in their views' places) with `painter`,
+    /// writes it to `path` as a PNG, clears the snapshots, and reports. `pending` is what was
+    /// still running when the wait ended ([`unsettled`](Self::unsettled)); `fallback` why a
+    /// `display` capture was asked and this painted one given.
+    pub fn capture_finish(
+        &mut self,
+        painter: &mut dyn crate::capture::Painter,
+        path: &str,
+        scale: f32,
+        pending: Vec<String>,
+        fallback: Option<String>,
+    ) -> Result<crate::capture::Capture, String> {
+        use crate::capture::{NativeShot, Shown};
+        let asked = self.capturing.borrow_mut().take().map(|c| c.asked).unwrap_or_default();
+        let mut native = Vec::new();
+        for (id, result) in &asked {
+            let Some(n) = self.native_node(*id) else { continue };
+            let k = self.ui.kernel.borrow();
+            let Some(v) = k.native(n) else { continue };
+            let (x, y, w, h) = k.rect(n);
+            let (shown, reason, misses) = match result {
+                Ok(misses) if v.snapshot.is_some() => (Shown::Snapshot, None, misses.clone()),
+                Ok(misses) => (Shown::Failed, Some("its snapshot did not come in time".to_owned()), misses.clone()),
+                Err(why) => (Shown::Placeholder, Some(why.clone()), Vec::new()),
+            };
+            native.push(NativeShot { id: k.test_id(n).map(str::to_owned), kind: v.kind.clone(), rect: [x, y, w, h], shown, reason, misses });
+        }
+        let painted = painter.paint(&self.display_list(), scale).and_then(|p| p.save_png(path).map(|()| p));
+        for (id, _) in &asked {
+            self.native_snapshot(*id, None);
+        }
+        let picture = painted?;
+        Ok(crate::capture::Capture {
+            path: path.to_owned(),
+            width: picture.width,
+            height: picture.height,
+            scale,
+            pixels: crate::capture::Pixels::Painted,
+            fallback,
+            renderer: painter.renderer().to_owned(),
+            settled: pending.is_empty(),
+            pending,
+            native,
+        })
+    }
+
+    /// Takes the installed painter out while it paints (see [`set_painter`](Self::set_painter)).
+    pub(crate) fn take_painter(&self) -> Option<Box<dyn crate::capture::Painter>> {
+        self.painter.borrow_mut().take()
     }
 
     /// An image of what native view `id` shows (the host calls this): drawn in its place

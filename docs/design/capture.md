@@ -1,6 +1,6 @@
 # Captures
 
-Based on the [research](../research/capture.md). Status: confirmed; in progress.
+Based on the [research](../research/capture.md). Status: confirmed; steps 1 and 2 implemented.
 
 An agent's picture of the app: what the window shows, native views included, with a report of
 what the picture can be trusted for. One request, the same on every platform and headless.

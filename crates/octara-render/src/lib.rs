@@ -73,6 +73,12 @@ impl Bitmap {
     }
 }
 
+/// The reference renderer as a capture painter: what the `octara` harness installs
+/// ([`octara::inspect::main_with`]).
+pub fn reference_painter() -> Box<dyn octara::capture::Painter> {
+    Box::new(CpuRenderer::new())
+}
+
 /// A screenshot of `app`'s current frame at `scale` device pixels per logical pixel, rendered
 /// by the reference renderer.
 pub fn screenshot(app: &octara::app::App, scale: f32) -> Bitmap {

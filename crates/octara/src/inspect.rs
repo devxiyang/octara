@@ -190,6 +190,20 @@ pub enum Request {
     ReducedMotion {
         on: bool,
     },
+    /// Settles the app (at most `settle_ms`, default 5000) and writes a picture of it to `path`
+    /// (PNG): the frame with each native view's snapshot in its place, at `scale` (default 2
+    /// headless). The reply's `capture` reports what the picture can be trusted for
+    /// ([design](https://github.com/octoii-works/octara/blob/main/docs/design/capture.md)).
+    Capture {
+        path: String,
+        #[serde(default)]
+        settle_ms: Option<u64>,
+        #[serde(default)]
+        scale: Option<f32>,
+        /// `painted` (default) or `display` (the window server's picture, where there is one).
+        #[serde(default)]
+        pixels: crate::capture::Pixels,
+    },
     /// Fails unless every given property holds for the element `id` (or, with only `clean`, for
     /// the app).
     Expect(Expect),
@@ -236,6 +250,9 @@ pub struct Reply {
     pub snapshot: Option<Box<Snapshot>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issues: Option<Vec<Issue>>,
+    /// A `capture`'s report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<Box<crate::capture::Capture>>,
 }
 
 /// A layout issue or diagnostic, as tools see it.
@@ -258,7 +275,7 @@ pub struct Issue {
 
 impl Reply {
     pub fn ok() -> Reply {
-        Reply { ok: true, code: None, message: None, actual: None, snapshot: None, issues: None }
+        Reply { ok: true, code: None, message: None, actual: None, snapshot: None, issues: None, capture: None }
     }
 
     pub fn fail(code: &'static Code, message: impl Into<String>) -> Reply {
@@ -310,8 +327,8 @@ pub fn issues(app: &App) -> Vec<Issue> {
 pub fn handle(app: &mut App, req: Request) -> Reply {
     use std::time::Duration;
     let exists = |app: &App, id: &str| app.kernel().find(id).is_some();
-    let target = |app: &App, id: &str| -> Result<(), Reply> {
-        if exists(app, id) { Ok(()) } else { Err(Reply::fail(&codes::NO_SUCH_ELEMENT, format!("no element has test id `{id}`"))) }
+    let target = |app: &App, id: &str| -> Result<(), Box<Reply>> {
+        if exists(app, id) { Ok(()) } else { Err(Box::new(Reply::fail(&codes::NO_SUCH_ELEMENT, format!("no element has test id `{id}`")))) }
     };
     let step = |r: Result<(), String>| match r {
         Ok(()) => Reply::ok(),
@@ -320,7 +337,7 @@ pub fn handle(app: &mut App, req: Request) -> Reply {
     macro_rules! on {
         ($id:expr, $e:expr) => {{
             if let Err(r) = target(app, $id) {
-                return r;
+                return *r;
             }
             step($e)
         }};
@@ -338,7 +355,7 @@ pub fn handle(app: &mut App, req: Request) -> Reply {
         Request::Type { id, text } => {
             if let Some(id) = id {
                 if let Err(r) = target(app, &id) {
-                    return r;
+                    return *r;
                 }
                 if let Err(e) = app.dispatch(crate::app::Event::Focus(id.clone())) {
                     return Reply::fail(&codes::STEP_FAILED, e);
@@ -379,6 +396,21 @@ pub fn handle(app: &mut App, req: Request) -> Reply {
             Reply::ok()
         }
         Request::Expect(e) => expect(app, &e),
+        Request::Capture { path, settle_ms, scale, pixels } => {
+            let Some(mut painter) = app.take_painter() else {
+                return Reply::fail(&codes::CAPTURE_FAILED, "nothing paints captures here: run through `octara run`, whose harness links the reference renderer");
+            };
+            let _ = app.run_until_idle(Duration::from_millis(settle_ms.unwrap_or(5_000)));
+            let pending = app.unsettled();
+            app.capture_begin();
+            let fallback = (pixels == crate::capture::Pixels::Display).then(|| "headless: there is no window to take a picture of".to_owned());
+            let result = app.capture_finish(&mut *painter, &path, scale.unwrap_or(2.0), pending, fallback);
+            app.set_painter(painter);
+            match result {
+                Ok(c) => Reply { capture: Some(Box::new(c)), ..Reply::ok() },
+                Err(e) => Reply::fail(&codes::CAPTURE_FAILED, e),
+            }
+        }
     }
 }
 
@@ -675,6 +707,16 @@ pub fn check(view: fn() -> crate::view::View, opts: &CheckOptions) -> CheckRepor
 ///
 /// Exits 2 on bad arguments.
 pub fn main(view: fn() -> crate::view::View) {
+    run_main(view, None)
+}
+
+/// [`main`], with `painter` painting `capture` requests (the harness passes `octara-render`'s
+/// reference renderer).
+pub fn main_with(view: fn() -> crate::view::View, painter: fn() -> Box<dyn crate::capture::Painter>) {
+    run_main(view, Some(painter))
+}
+
+fn run_main(view: fn() -> crate::view::View, painter: Option<fn() -> Box<dyn crate::capture::Painter>>) {
     use std::io::{BufRead, Write};
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
@@ -683,6 +725,9 @@ pub fn main(view: fn() -> crate::view::View) {
         std::process::exit(2)
     };
     let setup = |app: &mut App| {
+        if let Some(p) = painter {
+            app.set_painter(p());
+        }
         if let Some(size) = flag("--size") {
             let parsed = size.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)));
             let Some((w, h)) = parsed else { fail(format!("--size takes <width>x<height>, not `{size}`")) };

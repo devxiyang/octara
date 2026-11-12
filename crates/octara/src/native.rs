@@ -12,9 +12,8 @@
 //! radius, the clip around it, its opacity, whether it shows). The host sends events back with
 //! [`App::native_event`](crate::app::App::native_event) and reports a view's natural size with
 //! [`App::native_size`](crate::app::App::native_size). Headless, the [`RecordingHost`] keeps
-//! every call, and the view draws as a placeholder box; a host's snapshot of a view
-//! ([`App::snapshot_native`](crate::app::App::snapshot_native)) draws in its place, so captures
-//! show the page or the map.
+//! every call, and the view draws as a placeholder box; a host's snapshot of a view (taken for a
+//! [capture](crate::capture)) draws in its place, so captures show the page or the map.
 
 use crate::paint::Rect;
 use serde::Serialize;
@@ -73,10 +72,17 @@ pub trait NativeHost: Any {
     /// A view goes away.
     fn destroy(&mut self, id: NativeId);
     /// Takes an image of what view `id` shows, handed back later with
-    /// [`App::native_snapshot`](crate::app::App::native_snapshot); `false` when this host cannot.
-    fn snapshot(&mut self, id: NativeId) -> bool {
+    /// [`App::native_snapshot`](crate::app::App::native_snapshot): `Ok` with what the snapshot
+    /// cannot show (WebKit: hardware video and WebGL come out black), or `Err` with why this
+    /// host takes none.
+    fn snapshot(&mut self, id: NativeId) -> Result<Vec<String>, String> {
         let _ = id;
-        false
+        Err("this host takes no snapshots".into())
+    }
+    /// What view `id` is busy with (a page loading), so a capture waits for it.
+    fn busy(&self, id: NativeId) -> Option<String> {
+        let _ = id;
+        None
     }
     fn as_any(&self) -> &dyn Any;
 }
@@ -109,6 +115,9 @@ impl NativeHost for RecordingHost {
     }
     fn destroy(&mut self, id: NativeId) {
         self.calls.push(HostCall::Destroy { id });
+    }
+    fn snapshot(&mut self, _: NativeId) -> Result<Vec<String>, String> {
+        Err("headless: no platform view to take a snapshot of".into())
     }
     fn as_any(&self) -> &dyn Any {
         self

@@ -269,3 +269,13 @@ fn quad(t: &mut Target, q: &Quad, scale: f32) {
         }
     }
 }
+
+impl octara::capture::Painter for CpuRenderer {
+    fn renderer(&self) -> &'static str {
+        "reference"
+    }
+    fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<octara::capture::Picture, String> {
+        let b = self.render(list, scale);
+        Ok(octara::capture::Picture { width: b.width, height: b.height, rgba: b.rgba })
+    }
+}

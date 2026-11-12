@@ -598,9 +598,14 @@ impl GpuRenderer {
         self.queue.submit([encoder.finish()]);
     }
 
-    /// Renders offscreen and reads the pixels back (tests and screenshots).
+    /// Renders offscreen and reads the pixels back (tests, screenshots, a window's captures), in
+    /// the renderer's format (RGBA or BGRA, 8 bits).
     pub fn render(&mut self, dl: &DisplayList, scale: f32) -> Bitmap {
-        assert_eq!(self.format, FORMAT, "offscreen rendering needs a renderer made with `new()`");
+        let bgra = match self.format {
+            wgpu::TextureFormat::Rgba8Unorm => false,
+            wgpu::TextureFormat::Bgra8Unorm => true,
+            f => panic!("offscreen rendering reads RGBA8 or BGRA8, not {f:?}"),
+        };
         let width = (dl.size.0 * scale).ceil().max(1.0) as u32;
         let height = (dl.size.1 * scale).ceil().max(1.0) as u32;
         let target = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -609,7 +614,7 @@ impl GpuRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: FORMAT,
+            format: self.format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
@@ -649,7 +654,8 @@ impl GpuRenderer {
                         ((v as u32 * 255 + a as u32 / 2) / a as u32).min(255) as u8
                     }
                 };
-                rgba.extend_from_slice(&[un(p[0]), un(p[1]), un(p[2]), a]);
+                let (r, b) = if bgra { (p[2], p[0]) } else { (p[0], p[2]) };
+                rgba.extend_from_slice(&[un(r), un(p[1]), un(b), a]);
             }
         }
         drop(data);
@@ -705,5 +711,15 @@ fn quad(q: &Quad, scale: f32, clip: [f32; 4], clip_r: f32) -> Inst {
         uv: [0.0; 4],
         grad_color,
         grad,
+    }
+}
+
+impl octara::capture::Painter for GpuRenderer {
+    fn renderer(&self) -> &'static str {
+        "gpu"
+    }
+    fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<octara::capture::Picture, String> {
+        let b = self.render(list, scale);
+        Ok(octara::capture::Picture { width: b.width, height: b.height, rgba: b.rgba })
     }
 }

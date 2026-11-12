@@ -89,13 +89,13 @@ Based on the [research](../research/native-island.md). Status: confirmed; steps 
   `presentsWithTransaction` on for frames where a view moves, resizes or shows, or the window
   resizes. Delegate events go to an inbox and wake the loop; the shell hands them to
   `App::native_event`. Other kinds and underlay views keep their placeholder (step 3).
-- Snapshots: `App::snapshot_native()` asks the host (`NativeHost::snapshot`) for an image of
-  every visible view; it comes back with `App::native_snapshot(id, image)` and is drawn in the
-  view's place instead of the placeholder. The macOS host uses `WKWebView`'s snapshot (not
-  waiting for a screen update), redrawn into straight RGBA. The shell's capture mode
-  (`OCTARA_CAPTURE=out.png`, `OCTARA_CAPTURE_AFTER_MS`, `OCTARA_CAPTURE_SCROLL=px`) writes the
-  frame with the snapshots through the reference renderer and prints each view's AppKit frame
-  next to its placement, then exits: screenshots without the screen-recording permission.
+- Snapshots belong to [captures](capture.md): `App::capture_begin()` asks the host
+  (`NativeHost::snapshot`, which says what the snapshot misses or why it takes none) for an
+  image of every visible view; it comes back with `App::native_snapshot(id, image)` and is
+  drawn in the view's place instead of the placeholder until the capture ends. `NativeHost::busy`
+  (a page loading) keeps a capture waiting. The macOS host uses `WKWebView`'s snapshot (not
+  waiting for a screen update), redrawn into straight RGBA. The shell's capture prints each
+  view's AppKit frame next to its placement.
 
 ## Steps
 

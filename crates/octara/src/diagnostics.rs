@@ -259,6 +259,10 @@ codes! {
         "A script's `expect` did not hold.",
         cause: "The app is not in the state the script expected at that step.",
         fix: "Compare the reply's `actual` with the expectation; inspect the tree at that step to see why.";
+    CAPTURE_FAILED: Error, Inspect, "docs/design/capture.md#request",
+        "A capture could not be made.",
+        cause: "Nothing paints captures where the app runs (a bare `inspect::main` has no renderer), or the PNG could not be written.",
+        fix: "Capture through `octara run` (its harness links the reference renderer) or a window; check that the path's directory exists and is writable.";
     MISSING_TOKEN: Warning, Layout, "docs/design/ui-primitives.md#4-style",
         "An element uses a custom token the theme does not define (drawn magenta).",
         cause: "`Token::custom(name)` is looked up in the theme at paint time.",

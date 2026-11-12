@@ -94,6 +94,33 @@
           "file": "crates/octara/src/app.rs"
         },
         {
+          "path": "octara::app::App::capture_awaiting",
+          "kind": "method",
+          "sig": "pub fn capture_awaiting(&self) -> Vec<NativeId>",
+          "docs": "The snapshots asked for that have not come yet.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::App::capture_begin",
+          "kind": "method",
+          "sig": "pub fn capture_begin(&mut self) -> Vec<NativeId>",
+          "docs": "Starts a capture: asks the host for a snapshot of every native view shown. Returns the\nviews whose snapshot is coming (through [`native_snapshot`](Self::native_snapshot)).",
+          "file": "crates/octara/src/app.rs",
+          "links": [
+            "octara::app::App::native_snapshot"
+          ]
+        },
+        {
+          "path": "octara::app::App::capture_finish",
+          "kind": "method",
+          "sig": "pub fn capture_finish(&mut self, painter: &mut dyn Painter, path: &str, scale: f32, pending: Vec<String>, fallback: Option<String>) -> Result<Capture, String>",
+          "docs": "Ends a capture: paints the frame (snapshots in their views' places) with `painter`,\nwrites it to `path` as a PNG, clears the snapshots, and reports. `pending` is what was\nstill running when the wait ended ([`unsettled`](Self::unsettled)); `fallback` why a\n`display` capture was asked and this painted one given.",
+          "file": "crates/octara/src/app.rs",
+          "links": [
+            "octara::app::App::unsettled"
+          ]
+        },
+        {
           "path": "octara::app::App::caret",
           "kind": "method",
           "sig": "pub fn caret(&self) -> Option<(f32, f32, f32, f32)>",
@@ -454,6 +481,13 @@
           "file": "crates/octara/src/app.rs"
         },
         {
+          "path": "octara::app::App::set_painter",
+          "kind": "method",
+          "sig": "pub fn set_painter(&mut self, painter: Box<dyn Painter>)",
+          "docs": "Installs what paints `capture` requests headless (`octara-render`'s reference renderer).",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
           "path": "octara::app::App::set_platform",
           "kind": "method",
           "sig": "pub fn set_platform(&mut self, p: Platform)",
@@ -518,16 +552,6 @@
           "file": "crates/octara/src/app.rs"
         },
         {
-          "path": "octara::app::App::snapshot_native",
-          "kind": "method",
-          "sig": "pub fn snapshot_native(&mut self) -> Vec<NativeId>",
-          "docs": "Asks the host for an image of every native view shown (for a capture); returns the views\nit will send one for, through [`native_snapshot`](Self::native_snapshot).",
-          "file": "crates/octara/src/app.rs",
-          "links": [
-            "octara::app::App::native_snapshot"
-          ]
-        },
-        {
           "path": "octara::app::App::swipe",
           "kind": "method",
           "sig": "pub fn swipe(&mut self, target: &str, dx: f32, dy: f32, duration: Duration) -> Result<(), String>",
@@ -568,6 +592,13 @@
           "sig": "pub fn type_text(&mut self, text: &str)",
           "docs": "Text typed (or committed by an input method) into the focused text field. Ends any\ncomposition.",
           "file": "crates/octara/src/app/input.rs"
+        },
+        {
+          "path": "octara::app::App::unsettled",
+          "kind": "method",
+          "sig": "pub fn unsettled(&self) -> Vec<String>",
+          "docs": "What keeps the app from being settled now: tasks, timers and motion (not subscriptions,\nwhich run for good) and native views that are busy (a page loading). A capture waits for\nthis to be empty.",
+          "file": "crates/octara/src/app.rs"
         },
         {
           "path": "octara::app::App::use_system_fonts",
@@ -1996,6 +2027,290 @@
           "file": "crates/octara/src/canvas.rs"
         },
         {
+          "path": "octara::capture",
+          "kind": "module",
+          "sig": "pub mod capture",
+          "docs": "Captures: an agent's picture of the app, native views included, with a report of what the\npicture can be trusted for ([design](../../../docs/design/capture.md)).\n\nThe `capture` request of the [inspector protocol](crate::inspect::Request) settles the app,\nasks the [native host](crate::native::NativeHost) for each shown view's snapshot, and paints\nthe frame with the snapshots in place through a [`Painter`]: the window's GPU renderer in a\nshell, the reference renderer headless (`octara-render` implements both). The reply is a\n[`Capture`] report.",
+          "file": "crates/octara/src/capture.rs",
+          "links": [
+            "octara::capture::Capture",
+            "octara::capture::Painter",
+            "octara::inspect::Request",
+            "octara::native::NativeHost"
+          ]
+        },
+        {
+          "path": "octara::capture::Capture",
+          "kind": "struct",
+          "sig": "pub struct Capture { .. }",
+          "docs": "A capture's report: the picture, and what it can be trusted for.",
+          "file": "crates/octara/src/capture.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Deserialize<'de>",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::capture::Capture::fallback",
+          "kind": "field",
+          "sig": "pub fallback: Option<String>",
+          "docs": "Why `display` was asked and `painted` given.",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Capture::height",
+          "kind": "field",
+          "sig": "pub height: u32",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Capture::native",
+          "kind": "field",
+          "sig": "pub native: Vec<NativeShot>",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Capture::path",
+          "kind": "field",
+          "sig": "pub path: String",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Capture::pending",
+          "kind": "field",
+          "sig": "pub pending: Vec<String>",
+          "docs": "What was still running when the wait ended: tasks, motion, native views loading.",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Capture::pixels",
+          "kind": "field",
+          "sig": "pub pixels: Pixels",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Capture::renderer",
+          "kind": "field",
+          "sig": "pub renderer: String",
+          "docs": "`gpu`, `reference` or `display`.",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Capture::scale",
+          "kind": "field",
+          "sig": "pub scale: f32",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Capture::settled",
+          "kind": "field",
+          "sig": "pub settled: bool",
+          "docs": "Nothing was running when the picture was taken.",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Capture::to_json",
+          "kind": "method",
+          "sig": "pub fn to_json(&self) -> String",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Capture::width",
+          "kind": "field",
+          "sig": "pub width: u32",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::NativeShot",
+          "kind": "struct",
+          "sig": "pub struct NativeShot { .. }",
+          "docs": "One native view in a capture.",
+          "file": "crates/octara/src/capture.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Deserialize<'de>",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::capture::NativeShot::id",
+          "kind": "field",
+          "sig": "pub id: Option<String>",
+          "docs": "Its test id, when it has one.",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::NativeShot::kind",
+          "kind": "field",
+          "sig": "pub kind: String",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::NativeShot::misses",
+          "kind": "field",
+          "sig": "pub misses: Vec<String>",
+          "docs": "What the snapshot cannot show (WebKit: hardware video and WebGL come out black).",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::NativeShot::reason",
+          "kind": "field",
+          "sig": "pub reason: Option<String>",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::NativeShot::rect",
+          "kind": "field",
+          "sig": "pub rect: [f32; 4]",
+          "docs": "`[x, y, width, height]` in logical pixels.",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::NativeShot::shown",
+          "kind": "field",
+          "sig": "pub shown: Shown",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Painter",
+          "kind": "trait",
+          "sig": "pub trait Painter",
+          "docs": "What renders a capture's frame.",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Painter::paint",
+          "kind": "method",
+          "sig": "fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<Picture, String>",
+          "docs": "The display list at `scale` device pixels per logical pixel.",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Painter::renderer",
+          "kind": "method",
+          "sig": "fn renderer(&self) -> &'static str",
+          "docs": "`gpu` or `reference`, for the report.",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Picture",
+          "kind": "struct",
+          "sig": "pub struct Picture { .. }",
+          "docs": "A painted frame: RGBA8, straight alpha, sRGB.",
+          "file": "crates/octara/src/capture.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Eq",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::capture::Picture::height",
+          "kind": "field",
+          "sig": "pub height: u32",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Picture::rgba",
+          "kind": "field",
+          "sig": "pub rgba: Vec<u8>",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Picture::save_png",
+          "kind": "method",
+          "sig": "pub fn save_png(&self, path: &str) -> Result<(), String>",
+          "docs": "Writes it as an 8-bit sRGB PNG.",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Picture::width",
+          "kind": "field",
+          "sig": "pub width: u32",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Pixels",
+          "kind": "enum",
+          "sig": "pub enum Pixels",
+          "docs": "Where a capture's pixels come from.",
+          "file": "crates/octara/src/capture.rs",
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "Default",
+            "Deserialize<'de>",
+            "Eq",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::capture::Pixels::Display",
+          "kind": "variant",
+          "sig": "Display",
+          "docs": "The window server's picture of the window: what the user sees.",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Pixels::Painted",
+          "kind": "variant",
+          "sig": "Painted",
+          "docs": "Octara composed it: its frame with each native view's snapshot in place.",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Shown",
+          "kind": "enum",
+          "sig": "pub enum Shown",
+          "docs": "What a native view shows in a capture.",
+          "file": "crates/octara/src/capture.rs",
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "Deserialize<'de>",
+            "Eq",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::capture::Shown::Failed",
+          "kind": "variant",
+          "sig": "Failed",
+          "docs": "The snapshot was asked for and did not come (`reason` says why).",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Shown::Live",
+          "kind": "variant",
+          "sig": "Live",
+          "docs": "The view itself (the window server's picture).",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Shown::Placeholder",
+          "kind": "variant",
+          "sig": "Placeholder",
+          "docs": "The placeholder box: its host takes no snapshots (`reason` says why).",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
+          "path": "octara::capture::Shown::Snapshot",
+          "kind": "variant",
+          "sig": "Snapshot",
+          "docs": "Its own snapshot, drawn in its place.",
+          "file": "crates/octara/src/capture.rs"
+        },
+        {
           "path": "octara::diagnostics",
           "kind": "module",
           "sig": "pub mod diagnostics",
@@ -2066,6 +2381,13 @@
           "kind": "static",
           "sig": "pub static BAD_REQUEST: Code",
           "docs": "An Inspector request or script line could not be read.",
+          "file": "crates/octara/src/diagnostics.rs"
+        },
+        {
+          "path": "octara::diagnostics::CAPTURE_FAILED",
+          "kind": "static",
+          "sig": "pub static CAPTURE_FAILED: Code",
+          "docs": "A capture could not be made.",
           "file": "crates/octara/src/diagnostics.rs"
         },
         {
@@ -3283,6 +3605,13 @@
           "file": "crates/octara/src/inspect.rs"
         },
         {
+          "path": "octara::inspect::Reply::capture",
+          "kind": "field",
+          "sig": "pub capture: Option<Box<Capture>>",
+          "docs": "A `capture`'s report.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
           "path": "octara::inspect::Reply::code",
           "kind": "field",
           "sig": "pub code: Option<String>",
@@ -3350,6 +3679,13 @@
           "kind": "variant",
           "sig": "Advance { ms: u64 }",
           "docs": "Moves the app clock forward.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::Request::Capture",
+          "kind": "variant",
+          "sig": "Capture { path: String, settle_ms: Option<u64>, scale: Option<f32>, pixels: Pixels }",
+          "docs": "Settles the app (at most `settle_ms`, default 5000) and writes a picture of it to `path`\n(PNG): the frame with each native view's snapshot in its place, at `scale` (default 2\nheadless). The reply's `capture` reports what the picture can be trusted for\n([design](https://github.com/octoii-works/octara/blob/main/docs/design/capture.md)).",
           "file": "crates/octara/src/inspect.rs"
         },
         {
@@ -3640,6 +3976,16 @@
           "links": [
             "octara::inspect::CheckReport",
             "octara::inspect::Snapshot"
+          ]
+        },
+        {
+          "path": "octara::inspect::main_with",
+          "kind": "fn",
+          "sig": "pub fn main_with(view: fn() -> View, painter: fn() -> Box<dyn Painter>)",
+          "docs": "[`main`], with `painter` painting `capture` requests (the harness passes `octara-render`'s\nreference renderer).",
+          "file": "crates/octara/src/inspect.rs",
+          "links": [
+            "octara::inspect::main"
           ]
         },
         {
@@ -8580,12 +8926,12 @@
           "path": "octara::native",
           "kind": "module",
           "sig": "pub mod native",
-          "docs": "Native Island: platform views placed in Octara's layout ([design](../../../docs/design/native-island.md)).\n\n[`native_view`](crate::view::native_view)`(kind)` is a leaf box a platform view fills: a web\nview, a map, a platform picker. Views live in one of two [`Slot`]s per window: an\n**underlay** behind Octara's surface (shown through a cutout where the view is, so content\npainted after it draws over it, as map controls do) and an **overlay** above it (a web view,\na picker): Octara content painted over an overlay view would be hidden by it, so `check`\nreports it (`NATIVE_COVERED`).\n\nAfter each frame the app tells its [`NativeHost`] what changed: views created and destroyed,\nprops (one JSON value, handed over whole), and [`Placement`]s (where each view is, its corner\nradius, the clip around it, its opacity, whether it shows). The host sends events back with\n[`App::native_event`](crate::app::App::native_event) and reports a view's natural size with\n[`App::native_size`](crate::app::App::native_size). Headless, the [`RecordingHost`] keeps\nevery call, and the view draws as a placeholder box; a host's snapshot of a view\n([`App::snapshot_native`](crate::app::App::snapshot_native)) draws in its place, so captures\nshow the page or the map.",
+          "docs": "Native Island: platform views placed in Octara's layout ([design](../../../docs/design/native-island.md)).\n\n[`native_view`](crate::view::native_view)`(kind)` is a leaf box a platform view fills: a web\nview, a map, a platform picker. Views live in one of two [`Slot`]s per window: an\n**underlay** behind Octara's surface (shown through a cutout where the view is, so content\npainted after it draws over it, as map controls do) and an **overlay** above it (a web view,\na picker): Octara content painted over an overlay view would be hidden by it, so `check`\nreports it (`NATIVE_COVERED`).\n\nAfter each frame the app tells its [`NativeHost`] what changed: views created and destroyed,\nprops (one JSON value, handed over whole), and [`Placement`]s (where each view is, its corner\nradius, the clip around it, its opacity, whether it shows). The host sends events back with\n[`App::native_event`](crate::app::App::native_event) and reports a view's natural size with\n[`App::native_size`](crate::app::App::native_size). Headless, the [`RecordingHost`] keeps\nevery call, and the view draws as a placeholder box; a host's snapshot of a view (taken for a\n[capture](crate::capture)) draws in its place, so captures show the page or the map.",
           "file": "crates/octara/src/native.rs",
           "links": [
             "octara::app::App::native_event",
             "octara::app::App::native_size",
-            "octara::app::App::snapshot_native",
+            "octara::capture",
             "octara::native::NativeHost",
             "octara::native::Placement",
             "octara::native::RecordingHost",
@@ -8681,6 +9027,13 @@
           "file": "crates/octara/src/native.rs"
         },
         {
+          "path": "octara::native::NativeHost::busy",
+          "kind": "method",
+          "sig": "fn busy(&self, id: NativeId) -> Option<String>",
+          "docs": "What view `id` is busy with (a page loading), so a capture waits for it.",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
           "path": "octara::native::NativeHost::create",
           "kind": "method",
           "sig": "fn create(&mut self, id: NativeId, kind: &str, props: &Value)",
@@ -8704,8 +9057,8 @@
         {
           "path": "octara::native::NativeHost::snapshot",
           "kind": "method",
-          "sig": "fn snapshot(&mut self, id: NativeId) -> bool",
-          "docs": "Takes an image of what view `id` shows, handed back later with\n[`App::native_snapshot`](crate::app::App::native_snapshot); `false` when this host cannot.",
+          "sig": "fn snapshot(&mut self, id: NativeId) -> Result<Vec<String>, String>",
+          "docs": "Takes an image of what view `id` shows, handed back later with\n[`App::native_snapshot`](crate::app::App::native_snapshot): `Ok` with what the snapshot\ncannot show (WebKit: hardware video and WebGL come out black), or `Err` with why this\nhost takes none.",
           "file": "crates/octara/src/native.rs",
           "links": [
             "octara::app::App::native_snapshot"
@@ -19385,7 +19738,8 @@
             "octara_render::cpu::CpuRenderer"
           ],
           "traits": [
-            "Default"
+            "Default",
+            "Painter"
           ]
         },
         {
@@ -19416,6 +19770,9 @@
           "file": "crates/octara-render/src/gpu.rs",
           "aliases": [
             "octara_render::gpu::GpuRenderer"
+          ],
+          "traits": [
+            "Painter"
           ]
         },
         {
@@ -19448,7 +19805,7 @@
           "path": "octara_render::GpuRenderer::render",
           "kind": "method",
           "sig": "pub fn render(&mut self, dl: &DisplayList, scale: f32) -> Bitmap",
-          "docs": "Renders offscreen and reads the pixels back (tests and screenshots).",
+          "docs": "Renders offscreen and reads the pixels back (tests, screenshots, a window's captures), in\nthe renderer's format (RGBA or BGRA, 8 bits).",
           "file": "crates/octara-render/src/gpu.rs"
         },
         {
@@ -19707,6 +20064,16 @@
           "file": "crates/octara-render/src/paths.rs"
         },
         {
+          "path": "octara_render::reference_painter",
+          "kind": "fn",
+          "sig": "pub fn reference_painter() -> Box<dyn Painter>",
+          "docs": "The reference renderer as a capture painter: what the `octara` harness installs\n([`octara::inspect::main_with`]).",
+          "file": "crates/octara-render/src/lib.rs",
+          "links": [
+            "octara::inspect::main_with"
+          ]
+        },
+        {
           "path": "octara_render::screenshot",
           "kind": "fn",
           "sig": "pub fn screenshot(app: &App, scale: f32) -> Bitmap",
@@ -19852,7 +20219,7 @@
           "path": "octara_shell::ShellEvent::Capture",
           "kind": "variant",
           "sig": "Capture",
-          "docs": "`OCTARA_CAPTURE`'s time came: take snapshots, then write the capture (a second one\nwrites it with what arrived).",
+          "docs": "A capture in progress looks again (`OCTARA_CAPTURE`).",
           "file": "crates/octara-shell/src/lib.rs"
         },
         {

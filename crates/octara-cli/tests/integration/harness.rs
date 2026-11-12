@@ -63,6 +63,17 @@ fn check_inspect_and_run_drive_the_app() {
     let replies: Vec<serde_json::Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(replies[0]["ok"], true);
     assert_eq!(replies[1]["code"], "NO_SUCH_ELEMENT");
+
+    // capture: the harness paints with the reference renderer.
+    let shot = dir.join("counter.png");
+    let request = serde_json::json!({ "op": "capture", "path": shot, "scale": 1.0 }).to_string() + "\n";
+    let (code, out, err) = octara(&["run"], Some(&request));
+    assert_eq!(code, 0, "{err}");
+    let reply: serde_json::Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+    assert_eq!((reply["ok"].as_bool(), reply["capture"]["renderer"].as_str(), reply["capture"]["settled"].as_bool()), (Some(true), Some("reference"), Some(true)), "{reply}");
+    let png = std::fs::read(&shot).unwrap();
+    std::fs::remove_file(&shot).unwrap();
+    assert_eq!(&png[1..4], b"PNG");
 }
 
 #[test]

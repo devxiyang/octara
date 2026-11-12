@@ -294,8 +294,11 @@ impl Views {
     }
 
     /// Takes a snapshot of view `id`, handed to the inbox when WebKit has it.
-    fn snapshot(&self, id: NativeId) -> bool {
-        let Some(h) = self.hosted.get(&id) else { return false };
+    fn snapshot(&self, id: NativeId) -> Result<Vec<String>, String> {
+        let Some(h) = self.hosted.get(&id) else { return Err("no platform view of this kind on macOS yet".into()) };
+        if h.placed.as_ref().is_none_or(|p| p.slot == Slot::Underlay) {
+            return Err("not shown by the platform yet (underlay views come later)".into());
+        }
         let scale = self.parent.window().map_or(2.0, |w| w.backingScaleFactor());
         let config = unsafe { WKSnapshotConfiguration::new(self.mtm) };
         // Not waiting for the next screen update: a hidden or occluded window gets none.
@@ -308,7 +311,16 @@ impl Views {
             (inbox.wake)();
         });
         unsafe { h.web.takeSnapshotWithConfiguration_completionHandler(Some(&config), &done) };
-        true
+        Ok(vec!["hardware-decoded video and WebGL show black (WebKit's snapshot)".into()])
+    }
+
+    /// A page still loading.
+    fn busy(&self, id: NativeId) -> Option<String> {
+        let h = self.hosted.get(&id)?;
+        unsafe { h.web.isLoading() }.then(|| {
+            let url = unsafe { h.web.URL() }.and_then(|u| u.absoluteString()).map(|s| s.to_string()).unwrap_or_default();
+            format!("loading {url}").trim_end().to_owned()
+        })
     }
 
     /// Placements waiting that move or resize a view (or show one for the first time).
@@ -373,8 +385,11 @@ impl NativeHost for MacHost {
         v.pending.retain(|q| q.id != id);
         v.destroy(id);
     }
-    fn snapshot(&mut self, id: NativeId) -> bool {
+    fn snapshot(&mut self, id: NativeId) -> Result<Vec<String>, String> {
         self.0.borrow().snapshot(id)
+    }
+    fn busy(&self, id: NativeId) -> Option<String> {
+        self.0.borrow().busy(id)
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self

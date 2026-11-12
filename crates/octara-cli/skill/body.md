@@ -67,5 +67,8 @@ view = "my_app::app"   # a `fn() -> View` in the library
   without `--script`, requests from stdin. Requests: `{"op":"tap","id":"save"}`,
   `{"op":"type","id":"title","text":"Milk"}`, `{"op":"key","chord":"mod+s"}`,
   `{"op":"advance","ms":300}`, `{"op":"settle"}`, `{"op":"inspect"}`, `{"op":"issues"}`,
-  `{"op":"expect","id":"total","text":"3 items"}`, `{"op":"expect","clean":true}`
-  (`octara vocab octara::inspect::Request` lists them all).
+  `{"op":"expect","id":"total","text":"3 items"}`, `{"op":"expect","clean":true}`,
+  `{"op":"capture","path":"shot.png"}` (a picture after settling, with a report: whether it
+  settled, what each native view shows) (`octara vocab octara::inspect::Request` lists them
+  all). A window captures with `OCTARA_CAPTURE=shot.png` (the window's GPU renderer, native
+  views from their own snapshots).
