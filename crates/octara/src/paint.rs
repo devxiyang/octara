@@ -12,7 +12,7 @@ pub use parley::FontData;
 use crate::kernel::{Color, NodeId};
 
 /// An axis-aligned rectangle in logical pixels.
-#[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize)]
+#[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,

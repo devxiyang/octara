@@ -145,7 +145,7 @@ fn the_window_behind_a_modal_is_inert() {
     assert!(app.kernel().exists("dialog"));
     assert_eq!(focused(&app).as_deref(), Some("cancel"));
     // The accessibility tree marks the dialog modal.
-    let tree = app.accessibility_tree(1.0);
+    let tree = app.accessibility_tree();
     let id = octara::kernel::a11y::a11y_id(app.kernel().find("dialog").unwrap());
     assert!(tree.nodes.iter().find(|(n, _)| *n == id).unwrap().1.is_modal());
 }

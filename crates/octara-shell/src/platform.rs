@@ -2,8 +2,7 @@
 //! and the event loop's waker, and one winit window's native views and text input.
 
 use super::ShellEvent;
-use octara::native::NativeHost;
-use octara::platform::{Platform, PlatformWindow, TextInput};
+use octara::platform::{Frame, Platform, PlatformWindow, TextInput};
 use std::any::Any;
 use std::sync::Arc;
 use winit::dpi::{LogicalPosition, LogicalSize};
@@ -49,31 +48,29 @@ impl Platform for WinitPlatform {
     }
 }
 
-/// One winit window: its native views (macOS: AppKit's; elsewhere placeholders, as headless)
-/// and the input method.
+/// One winit window: its native views (macOS: AppKit's; elsewhere none, so they draw as
+/// placeholders) and the input method.
 pub(crate) struct WinitWindow {
     window: Arc<Window>,
-    host: Box<dyn NativeHost>,
+    #[cfg(target_os = "macos")]
+    host: Option<super::native_mac::Host>,
     /// A secure field has focus: the input method is off and (macOS) secure input on.
     secure: bool,
 }
 
 impl WinitWindow {
-    pub(crate) fn new(window: Arc<Window>, host: Box<dyn NativeHost>) -> Self {
-        WinitWindow { window, host, secure: false }
+    pub(crate) fn new(window: Arc<Window>, #[cfg(target_os = "macos")] host: Option<super::native_mac::Host>) -> Self {
+        WinitWindow {
+            window,
+            #[cfg(target_os = "macos")]
+            host,
+            secure: false,
+        }
     }
-}
 
-impl PlatformWindow for WinitWindow {
-    fn native_host(&self) -> &dyn NativeHost {
-        &*self.host
-    }
-    fn native_host_mut(&mut self) -> &mut dyn NativeHost {
-        &mut *self.host
-    }
     /// The input method's candidate window follows the caret; a secure field turns the input
     /// method off and the platform's secure input on.
-    fn set_text_input(&mut self, input: Option<&TextInput>) {
+    fn text_input(&mut self, input: Option<&TextInput>) {
         if let Some(t) = input {
             let c = t.caret;
             self.window.set_ime_cursor_area(LogicalPosition::new(c.x, c.y), LogicalSize::new(c.w.max(1.0), c.h));
@@ -85,7 +82,49 @@ impl PlatformWindow for WinitWindow {
             secure_input::set(secure);
         }
     }
+}
+
+impl PlatformWindow for WinitWindow {
+    fn present(&mut self, frame: Frame) {
+        #[cfg(target_os = "macos")]
+        if let Some(host) = &self.host {
+            for change in frame.native {
+                host.apply(change);
+            }
+        }
+        self.text_input(frame.text_input.as_ref());
+        if frame.redraw {
+            self.window.request_redraw();
+        }
+    }
+    fn shows_native(&self, kind: &str, slot: octara::native::Slot) -> bool {
+        #[cfg(target_os = "macos")]
+        if self.host.is_some() {
+            return super::native_mac::Host::shows(kind, slot);
+        }
+        let _ = (kind, slot);
+        false
+    }
+    fn snapshot_native(&mut self, id: octara::native::NativeId) -> Result<Vec<String>, String> {
+        #[cfg(target_os = "macos")]
+        if let Some(host) = &self.host {
+            return host.snapshot(id);
+        }
+        let _ = id;
+        Err("this platform takes no snapshots of native views yet".into())
+    }
+    fn native_busy(&self, id: octara::native::NativeId) -> Option<String> {
+        #[cfg(target_os = "macos")]
+        if let Some(host) = &self.host {
+            return host.busy(id);
+        }
+        let _ = id;
+        None
+    }
     fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 }

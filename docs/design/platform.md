@@ -24,10 +24,11 @@ narrow set of traits (GPUI's names, about 45 methods to start); headless runs (t
   marked ranges, replace text in a range, replace and mark, unmark, bounds for a range, the
   character index at a point. Backends without a direct text protocol (winit's IME events) feed
   it the same way.
-- What exists now becomes part of it: `Clipboard`, `NativeHost`, the waker.
-- As built (step 1, `octara::platform`): `Platform` (the clipboard, the waker) and
-  `PlatformWindow` (the native host, `set_text_input` with the focused field's caret rect,
-  secure and multi-line flags, sent when it changes after a frame); `HeadlessPlatform` and
+- What existed became part of it: the clipboard, the native host, the waker.
+- As built (step 1, `octara::platform`; frames since [the core](core.md)'s step 2): `Platform`
+  (the clipboard, the waker, `open_window`) and `PlatformWindow` (`present(Frame)`: native
+  changes, the focused field's text input, whether to redraw; `shows_native`,
+  `snapshot_native`, `native_busy`); `HeadlessPlatform` and
   `HeadlessWindow` are `Window::headless`'s; `App::new(platform)` takes a backend's, whose
   `open_window` makes each window's; `App::platform()` and `Window::platform_window()` reach
   them. The shell's

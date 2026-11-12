@@ -130,6 +130,12 @@ Based on the [research](../research/native-island.md). Status: confirmed; steps 
   `MKMapSnapshotter`). The underlay host is made with the first underlay view, below every
   subview, the Metal layer kept above it (z position 1, overlay containers at 2) and configured
   non-opaque. A view inside a group-opacity layer is not cut through the layer (a known limit).
+- Since [the core](core.md)'s step 2 the host calls below are data: each frame presents its
+  `NativeChange`s (create, update, place, destroy) to the platform window, whose
+  `shows_native`, `snapshot_native` and `native_busy` answer the app's questions; events, natural
+  sizes and snapshots come back as `InputEvent`s (`Native`, `NativeSize`, `NativeSnapshot`).
+  `NativeHost` and `RecordingHost` are gone; the headless window keeps the changes it was
+  presented.
 - Snapshots belong to [captures](capture.md): `App::capture_begin()` asks the host
   (`NativeHost::snapshot`, which says what the snapshot misses or why it takes none) for an
   image of every visible view; it comes back with `App::native_snapshot(id, image)` and is

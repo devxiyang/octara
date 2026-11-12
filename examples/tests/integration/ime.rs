@@ -12,7 +12,7 @@ fn composition_is_shown_underlined_and_committed_text_replaces_it() {
     };
     app.click_at(x + w / 2.0, y + h / 2.0);
     let caret0 = app.caret().expect("a focused field has a caret");
-    app.set_composition("ni hao");
+    app.event(InputEvent::Composition(("ni hao").into()));
     let caret1 = app.caret().unwrap();
     assert!(caret1.0 > caret0.0, "the caret follows the composition");
     assert_eq!(app.kernel().value_of("new-todo").unwrap(), "", "composition is not the value yet");

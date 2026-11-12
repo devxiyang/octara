@@ -33,7 +33,7 @@ pub mod view;
 pub mod window;
 
 pub mod prelude {
-    pub use crate::app::{App, Drag, DragPhase, Event, Key, KeyEvent, Modifiers, Window};
+    pub use crate::app::{App, Drag, DragPhase, Event, InputEvent, Key, KeyEvent, Modifiers, Window};
     pub use crate::canvas::Canvas;
     pub use crate::icon::Icon;
     pub use crate::image::{Image, ObjectFit};

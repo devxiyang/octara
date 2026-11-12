@@ -6,12 +6,14 @@
 //! the press on, that pointer belongs to the target until it lifts or is cancelled.
 
 use super::behavior::{Behavior, behavior};
+use super::event::InputEvent;
 use super::{Handler, Modality, Window};
 use crate::kernel::{HandlerKind, Kernel, NodeId, State};
 use bitflags::bitflags;
 use std::time::Duration;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PointerKind {
     #[default]
     Mouse,
@@ -19,7 +21,8 @@ pub enum PointerKind {
     Pen,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Phase {
     Down,
     Move,
@@ -28,7 +31,8 @@ pub enum Phase {
     Cancel,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Button {
     #[default]
     Primary,
@@ -38,7 +42,7 @@ pub enum Button {
 
 bitflags! {
     /// Modifier keys held during an input.
-    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, serde::Serialize, serde::Deserialize)]
     pub struct Modifiers: u8 {
         const SHIFT = 1;
         const CTRL = 2;
@@ -49,7 +53,7 @@ bitflags! {
 }
 
 /// One raw pointer event, in logical pixels from the window's top-left corner.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PointerEvent {
     /// Tells pointers apart: one per finger; the mouse is 0.
     pub id: u64,
@@ -266,7 +270,7 @@ impl Window {
     }
 
     /// One raw pointer event, as a window delivers it.
-    pub fn pointer(&mut self, ev: PointerEvent) {
+    pub(super) fn on_pointer(&mut self, ev: PointerEvent) {
         self.input_frame(|| match ev.phase {
             Phase::Down => self.down(ev),
             Phase::Move => self.moved(ev),
@@ -277,10 +281,10 @@ impl Window {
 
     /// The mouse moved to `(x, y)` with no button down (or with one down: the press follows).
     pub fn pointer_move(&mut self, x: f32, y: f32) {
-        self.pointer(PointerEvent::mouse(Phase::Move, x, y));
+        self.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Move, x, y)));
     }
     /// The mouse left the window: nothing is hovered.
-    pub fn pointer_leave(&mut self) {
+    pub(super) fn on_pointer_leave(&mut self) {
         self.input_frame(|| {
             self.w.interaction.borrow_mut().pointer.hover_at = None;
             self.set_hover(None);
@@ -288,11 +292,11 @@ impl Window {
     }
     /// The primary mouse button went down at `(x, y)`.
     pub fn pointer_down(&mut self, x: f32, y: f32) {
-        self.pointer(PointerEvent::mouse(Phase::Down, x, y));
+        self.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Down, x, y)));
     }
     /// The primary mouse button came up at `(x, y)`.
     pub fn pointer_up(&mut self, x: f32, y: f32) {
-        self.pointer(PointerEvent::mouse(Phase::Up, x, y));
+        self.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Up, x, y)));
     }
     /// A primary click at `(x, y)`: down and up.
     pub fn click_at(&mut self, x: f32, y: f32) {
@@ -304,6 +308,9 @@ impl Window {
     /// there that scrolls on that axis takes it (no hand-off to outer ones at the edge, as in
     /// Rune). A press being held is cancelled, unless it is dragging.
     pub fn wheel(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
+        self.event(InputEvent::Wheel { x, y, dx, dy });
+    }
+    pub(super) fn on_wheel(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
         self.input_frame(|| {
             self.w.interaction.borrow_mut().pointer.momentum = None;
             let target = {

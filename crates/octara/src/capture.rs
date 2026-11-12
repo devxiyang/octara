@@ -2,7 +2,7 @@
 //! picture can be trusted for ([design](../../../docs/design/capture.md)).
 //!
 //! The `capture` request of the [inspector protocol](crate::inspect::Request) settles the app,
-//! asks the [native host](crate::native::NativeHost) for each shown view's snapshot, and paints
+//! asks the platform window for each shown view's snapshot, and paints
 //! the frame with the snapshots in place through a [`Painter`]: the window's GPU renderer in a
 //! shell, the reference renderer headless (`octara-render` implements both). The reply is a
 //! [`Capture`] report.

@@ -61,7 +61,7 @@ fn app() -> Window {
 }
 
 fn touch(app: &mut Window, phase: Phase, (x, y): (f32, f32)) {
-    app.pointer(PointerEvent::touch(1, phase, x, y));
+    app.event(InputEvent::Pointer(PointerEvent::touch(1, phase, x, y)));
 }
 
 #[test]
@@ -99,17 +99,17 @@ fn right_click_and_control_click_ask_for_a_context_menu() {
     let mut app = app();
     let (x, y) = center(&app, "inner");
     let right = |phase| PointerEvent::mouse(phase, x, y).button(Button::Secondary);
-    app.pointer(right(Phase::Down));
-    app.pointer(right(Phase::Up));
+    app.event(InputEvent::Pointer(right(Phase::Down)));
+    app.event(InputEvent::Pointer(right(Phase::Up)));
     assert_eq!(log(&mut app), "menu", "the nearest element with a context menu, from the pointer up");
     app.app().set_target_platform(TargetPlatform::MacOs);
     let ctrl = |phase| PointerEvent::mouse(phase, x, y).modifiers(Modifiers::CTRL);
-    app.pointer(ctrl(Phase::Down));
-    app.pointer(ctrl(Phase::Up));
+    app.event(InputEvent::Pointer(ctrl(Phase::Down)));
+    app.event(InputEvent::Pointer(ctrl(Phase::Up)));
     assert_eq!(log(&mut app), "menu");
     app.app().set_target_platform(TargetPlatform::Windows);
-    app.pointer(ctrl(Phase::Down));
-    app.pointer(ctrl(Phase::Up));
+    app.event(InputEvent::Pointer(ctrl(Phase::Down)));
+    app.event(InputEvent::Pointer(ctrl(Phase::Up)));
     assert_eq!(log(&mut app), "inner", "Control-click is a click off Apple platforms");
 }
 
@@ -149,7 +149,7 @@ fn drag_starts_past_the_slop_and_is_not_a_press() {
     assert_eq!(log(&mut app), "Start 10 2,Move 20 2,End 20 2");
     app.pointer_down(x, y);
     app.pointer_move(x + 10.0, y);
-    app.pointer(PointerEvent::mouse(Phase::Cancel, x + 10.0, y));
+    app.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Cancel, x + 10.0, y)));
     assert_eq!(log(&mut app), "Start 10 0,Cancel 10 0");
 }
 

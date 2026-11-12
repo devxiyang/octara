@@ -154,7 +154,7 @@ Basis: [rendering and platform layer research](research/rendering.md), [renderin
       `tools/subset_cjk.py` can regenerate them; the screenshot tool's `--bundled` uses them
 - [ ] More deterministic fallback fonts: Korean, Traditional Chinese, emoji (color), Arabic, etc., adding features as needed
 - [x] Accessibility: `Kernel::accessibility_tree` / `App::accessibility_tree` (role, name, value, checked, expanded, selected, disabled, bounds, test id, Click / Focus actions;
-      decorative nodes do not appear), `App::accessibility_action`; the window integrates `accesskit_winit` 0.34.2 (macOS / Windows / Linux adapters)
+      decorative nodes do not appear), `InputEvent::Accessibility`; the window integrates `accesskit_winit` 0.34.2 (macOS / Windows / Linux adapters)
 - [x] Ellipsis for truncated text: `truncate` / `text_ellipsis` and the last line of `line_clamp` end with "…" inside the box (laid out and cached in the same style, with the space before it removed)
 - [x] Shadows: `shadow_2xs` ... `shadow_2xl` / `shadow_none` (GPUI names, Tailwind v4 values, changeable in theme data) and `shadow([BoxShadow])`;
       `Item::Shadow`, blur radius per CSS (= 2σ, same as Rune); both renderers use the same formula (Evan Wallace: closed-form erf in x, 4 samples in y, same as GPUI), difference ≤ 1;
@@ -196,7 +196,7 @@ Basis: [input research](research/input.md), [input design](design/input.md). Con
 - [x] Text editing (owned by the runtime; the app is still `value` + `on_input`): selection; movement, selection, and deletion by grapheme and Unicode word; select all, copy, cut, paste
       (the platform's clipboard; the shell's backend uses arboard 3.7.0); undo / redo (consecutive typing or deletion merges into one step, 128 steps, cleared when the app rewrites the value); IME composition is shown at the caret
       and replaces the selection; click, Shift+click, double-click to select a word, triple-click to select all, drag to select; long lines scroll horizontally to keep the caret visible; platform protocol `text_field` / `replace_text` /
-      `set_selection` / `set_composition` with UTF-16 conversion; standard per-platform keybindings (Apple uses Alt by word, Cmd+arrow to the ends); accessibility `SetValue`
+      `set_selection` / `InputEvent::Composition` with UTF-16 conversion; standard per-platform keybindings (Apple uses Alt by word, Cmd+arrow to the ends); accessibility `SetValue`
 - [x] Multi-line text fields; password fields ([text input](design/text-input.md))
 - [ ] Deferring the app's rewrites of the value during composition (Exact); touch long-press word selection and selection handles; the caret position within an IME composition
 - [ ] Accessibility `ScrollIntoView`, text selection (AccessKit text runs); scroll into view before driving; multi-finger gestures, edge back swipe; direct platform text protocols (NSTextInputClient, etc.)

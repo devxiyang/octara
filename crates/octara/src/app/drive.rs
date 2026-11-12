@@ -6,6 +6,7 @@
 //! name several elements share, a covered element and one outside the window are errors.
 
 use super::Window;
+use super::event::InputEvent;
 use super::pointer::{Button, Phase, PointerEvent, PointerKind};
 use crate::kernel::{Kernel, NodeId};
 
@@ -82,10 +83,10 @@ impl Window {
         let ev =
             |phase| PointerEvent { kind, button, id: if kind == PointerKind::Mouse { 0 } else { 1 }, ..PointerEvent::mouse(phase, x, y) };
         if kind != PointerKind::Touch {
-            self.pointer(ev(Phase::Move));
+            self.event(InputEvent::Pointer(ev(Phase::Move)));
         }
-        self.pointer(ev(Phase::Down));
-        self.pointer(ev(Phase::Up));
+        self.event(InputEvent::Pointer(ev(Phase::Down)));
+        self.event(InputEvent::Pointer(ev(Phase::Up)));
     }
 
     /// Clicks `target` with the primary mouse button.
@@ -115,37 +116,37 @@ impl Window {
     /// A finger held on `target` for the long-press duration, then lifted.
     pub fn long_press(&mut self, target: &str) -> Result<(), String> {
         let (x, y) = self.point_of(target)?;
-        self.pointer(PointerEvent::touch(1, Phase::Down, x, y));
+        self.event(InputEvent::Pointer(PointerEvent::touch(1, Phase::Down, x, y)));
         self.app().advance(self.tuning().long_press);
-        self.pointer(PointerEvent::touch(1, Phase::Up, x, y));
+        self.event(InputEvent::Pointer(PointerEvent::touch(1, Phase::Up, x, y)));
         Ok(())
     }
     /// A mouse drag from `target`'s centre by `(dx, dy)`, in a few steps.
     pub fn drag(&mut self, target: &str, dx: f32, dy: f32) -> Result<(), String> {
         let (x, y) = self.point_of(target)?;
-        self.pointer(PointerEvent::mouse(Phase::Move, x, y));
-        self.pointer(PointerEvent::mouse(Phase::Down, x, y));
+        self.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Move, x, y)));
+        self.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Down, x, y)));
         const STEPS: u32 = 4;
         for i in 1..=STEPS {
             let f = i as f32 / STEPS as f32;
             self.app().advance(std::time::Duration::from_millis(16));
-            self.pointer(PointerEvent::mouse(Phase::Move, x + dx * f, y + dy * f));
+            self.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Move, x + dx * f, y + dy * f)));
         }
-        self.pointer(PointerEvent::mouse(Phase::Up, x + dx, y + dy));
+        self.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Up, x + dx, y + dy)));
         Ok(())
     }
     /// A finger swiping from `target`'s centre by `(dx, dy)` over `duration`, then lifting
     /// (content follows the finger and may glide on).
     pub fn swipe(&mut self, target: &str, dx: f32, dy: f32, duration: std::time::Duration) -> Result<(), String> {
         let (x, y) = self.point_of(target)?;
-        self.pointer(PointerEvent::touch(1, Phase::Down, x, y));
+        self.event(InputEvent::Pointer(PointerEvent::touch(1, Phase::Down, x, y)));
         let steps = ((duration.as_secs_f64() * 60.0).ceil() as u32).max(1);
         for i in 1..=steps {
             let f = i as f32 / steps as f32;
             self.app().advance(duration / steps);
-            self.pointer(PointerEvent::touch(1, Phase::Move, x + dx * f, y + dy * f));
+            self.event(InputEvent::Pointer(PointerEvent::touch(1, Phase::Move, x + dx * f, y + dy * f)));
         }
-        self.pointer(PointerEvent::touch(1, Phase::Up, x + dx, y + dy));
+        self.event(InputEvent::Pointer(PointerEvent::touch(1, Phase::Up, x + dx, y + dy)));
         Ok(())
     }
 }

@@ -33,7 +33,21 @@ pub struct Snapshot {
     pub focus: Option<String>,
     /// Tasks, subscriptions and background jobs still pending.
     pub pending: usize,
+    /// This window's number (what a request's `window` names).
+    pub window: u64,
+    /// The app's open windows.
+    pub windows: Vec<WindowInfo>,
     pub root: Node,
+}
+
+/// One of the app's windows, as a snapshot lists it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WindowInfo {
+    /// What a request's `window` names.
+    pub window: u64,
+    pub title: String,
+    /// Its size in logical pixels.
+    pub size: [f32; 2],
 }
 
 /// One element of the semantic tree. Absent fields are left out.
@@ -469,9 +483,26 @@ fn expect(app: &Window, e: &Expect) -> Reply {
 }
 
 /// Reads one request line and runs it.
-pub fn handle_line(app: &mut Window, line: &str) -> Reply {
-    match serde_json::from_str::<Request>(line) {
-        Ok(req) => handle(app, req),
+/// Runs one request line in `window`, or in the window its `"window"` field names (a number
+/// from the snapshot's `windows`).
+pub fn handle_line(window: &mut Window, line: &str) -> Reply {
+    let mut value: serde_json::Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(e) => return Reply::fail(&codes::BAD_REQUEST, format!("{e}: {line}")),
+    };
+    let named = value.as_object_mut().and_then(|o| o.remove("window"));
+    let mut target = match named {
+        None => window.clone(),
+        Some(n) => {
+            let found = n.as_u64().map(crate::app::WindowId::from_number).and_then(|id| window.app().window(id));
+            match found {
+                Some(w) => w,
+                None => return Reply::fail(&codes::BAD_REQUEST, format!("no open window {n}: {line}")),
+            }
+        }
+    };
+    match serde_json::from_value::<Request>(value) {
+        Ok(req) => handle(&mut target, req),
         Err(e) => Reply::fail(&codes::BAD_REQUEST, format!("{e}: {line}")),
     }
 }

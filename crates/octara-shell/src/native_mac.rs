@@ -38,7 +38,7 @@ use objc2_map_kit::{
 use objc2_quartz_core::{CAMetalLayer, CATransaction};
 use objc2_web_kit::{WKNavigation, WKNavigationDelegate, WKSnapshotConfiguration, WKWebView, WKWebViewConfiguration};
 use octara::image::Image;
-use octara::native::{NativeEvent, NativeHost, NativeId, Placement, Slot};
+use octara::native::{NativeChange, NativeEvent, NativeId, Placement, Slot};
 use octara::paint::Rect;
 use octara_render::wgpu;
 use serde_json::{Value, json};
@@ -674,37 +674,41 @@ impl Views {
     }
 }
 
-/// The host the app talks to.
-struct MacHost(Rc<RefCell<Views>>);
+/// The window's native views as its platform window drives them: changes from each frame,
+/// and the questions the app asks.
+pub(crate) struct Host(Rc<RefCell<Views>>);
 
-impl NativeHost for MacHost {
-    fn create(&mut self, id: NativeId, kind: &str, slot: Slot, props: &Value) -> bool {
-        self.0.borrow_mut().create(id, kind, slot, props)
-    }
-    fn update(&mut self, id: NativeId, props: &Value) {
-        self.0.borrow_mut().update(id, props);
-    }
-    fn place(&mut self, placements: &[Placement]) {
+impl Host {
+    /// Applies one frame's change (placements wait for the present).
+    pub(crate) fn apply(&self, change: NativeChange) {
         let mut v = self.0.borrow_mut();
-        for p in placements {
-            // A later placement of the same view replaces one not yet applied.
-            v.pending.retain(|q| q.id != p.id);
-            v.pending.push(p.clone());
+        match change {
+            NativeChange::Create { id, kind, slot, props } => {
+                v.create(id, &kind, slot, &props);
+            }
+            NativeChange::Update { id, props } => v.update(id, &props),
+            NativeChange::Place { placements } => {
+                for p in placements {
+                    // A later placement of the same view replaces one not yet applied.
+                    v.pending.retain(|q| q.id != p.id);
+                    v.pending.push(p);
+                }
+            }
+            NativeChange::Destroy { id } => {
+                v.pending.retain(|q| q.id != id);
+                v.destroy(id);
+            }
         }
     }
-    fn destroy(&mut self, id: NativeId) {
-        let mut v = self.0.borrow_mut();
-        v.pending.retain(|q| q.id != id);
-        v.destroy(id);
+    /// The kinds this backend shows: web views in the overlay, maps in the underlay.
+    pub(crate) fn shows(kind: &str, slot: Slot) -> bool {
+        matches!((kind, slot), ("web", Slot::Overlay) | ("map", Slot::Underlay))
     }
-    fn snapshot(&mut self, id: NativeId) -> Result<Vec<String>, String> {
+    pub(crate) fn snapshot(&self, id: NativeId) -> Result<Vec<String>, String> {
         self.0.borrow().snapshot(id)
     }
-    fn busy(&self, id: NativeId) -> Option<String> {
+    pub(crate) fn busy(&self, id: NativeId) -> Option<String> {
         self.0.borrow().busy(id)
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 
@@ -716,7 +720,7 @@ pub(crate) struct Native {
 
 impl Native {
     /// The window's native views, and the host to give the app; `None` without an AppKit view.
-    pub(crate) fn new(window: &Window, wake: impl Fn() + 'static) -> Option<(Self, Box<dyn NativeHost>)> {
+    pub(crate) fn new(window: &Window, wake: impl Fn() + 'static) -> Option<(Self, Host)> {
         let mtm = MainThreadMarker::new()?;
         let RawWindowHandle::AppKit(handle) = window.window_handle().ok()?.as_raw() else { return None };
         // SAFETY: winit's content view, alive as long as the window.
@@ -732,7 +736,7 @@ impl Native {
             underlay: None,
             metal: None,
         }));
-        Some((Native { views: views.clone(), inbox }, Box::new(MacHost(views))))
+        Some((Native { views: views.clone(), inbox }, Host(views)))
     }
 
     /// Whether the Metal layer must be non-opaque now (an underlay view shows through it): the

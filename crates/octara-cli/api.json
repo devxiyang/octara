@@ -140,6 +140,13 @@
           "file": "crates/octara/src/app.rs"
         },
         {
+          "path": "octara::app::App::replay",
+          "kind": "method",
+          "sig": "pub fn replay(&self, recording: &Recording) -> Result<(), String>",
+          "docs": "Replays `recording` on this app: the clock moves to each input's time, then the input\nreaches its window. Built the same way (the same view, windows opened in the same order),\nthe app ends where the recorded one did.",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
           "path": "octara::app::App::reset_work",
           "kind": "method",
           "sig": "pub fn reset_work(&self)",
@@ -221,6 +228,20 @@
           "sig": "pub fn settle_motion(&self)",
           "docs": "Lands everything in motion on its target now, in every window.",
           "file": "crates/octara/src/app/time.rs"
+        },
+        {
+          "path": "octara::app::App::start_recording",
+          "kind": "method",
+          "sig": "pub fn start_recording(&self)",
+          "docs": "Starts recording every input the app's windows get (a recording in progress starts\nover).",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
+          "path": "octara::app::App::stop_recording",
+          "kind": "method",
+          "sig": "pub fn stop_recording(&self) -> Recording",
+          "docs": "Stops recording and returns what was recorded.",
+          "file": "crates/octara/src/app/event.rs"
         },
         {
           "path": "octara::app::App::target_platform",
@@ -310,8 +331,10 @@
             "Copy",
             "Debug",
             "Default",
+            "Deserialize<'de>",
             "Eq",
-            "PartialEq"
+            "PartialEq",
+            "Serialize"
           ]
         },
         {
@@ -493,7 +516,10 @@
           ],
           "traits": [
             "Clone",
-            "Debug"
+            "Debug",
+            "Deserialize<'de>",
+            "PartialEq",
+            "Serialize"
           ]
         },
         {
@@ -557,6 +583,107 @@
           "file": "crates/octara/src/app.rs"
         },
         {
+          "path": "octara::app::InputEvent",
+          "kind": "enum",
+          "sig": "pub enum InputEvent",
+          "docs": "One input to a window.",
+          "file": "crates/octara/src/app/event.rs",
+          "aliases": [
+            "octara::prelude::InputEvent"
+          ],
+          "traits": [
+            "Clone",
+            "Debug",
+            "Deserialize<'de>",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::app::InputEvent::Accessibility",
+          "kind": "variant",
+          "sig": "Accessibility { target: NodeId, action: Action, data: Option<ActionData> }",
+          "docs": "An assistive technology's request.",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
+          "path": "octara::app::InputEvent::Composition",
+          "kind": "variant",
+          "sig": "Composition(String)",
+          "docs": "What an input method is composing in the focused field (empty ends it).",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
+          "path": "octara::app::InputEvent::Key",
+          "kind": "variant",
+          "sig": "Key(KeyEvent)",
+          "docs": "A key press. What nothing handles types its text only when the backend sends `Text`.",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
+          "path": "octara::app::InputEvent::Native",
+          "kind": "variant",
+          "sig": "Native { id: NativeId, event: NativeEvent }",
+          "docs": "What a native view reports.",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
+          "path": "octara::app::InputEvent::NativeSize",
+          "kind": "variant",
+          "sig": "NativeSize { id: NativeId, width: f32, height: f32 }",
+          "docs": "A native view's natural size.",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
+          "path": "octara::app::InputEvent::NativeSnapshot",
+          "kind": "variant",
+          "sig": "NativeSnapshot { id: NativeId, image: Option<Image> }",
+          "docs": "A native view's snapshot (for a capture); a recording keeps that it came, not its pixels.",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
+          "path": "octara::app::InputEvent::Pointer",
+          "kind": "variant",
+          "sig": "Pointer(PointerEvent)",
+          "docs": "A mouse, touch or pen event, in logical pixels from the window's top-left corner.",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
+          "path": "octara::app::InputEvent::PointerLeave",
+          "kind": "variant",
+          "sig": "PointerLeave",
+          "docs": "The pointer left the window: nothing is hovered.",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
+          "path": "octara::app::InputEvent::Resize",
+          "kind": "variant",
+          "sig": "Resize { width: f32, height: f32, scale: f32 }",
+          "docs": "The window's content size (logical pixels) and its scale (device pixels per logical one).",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
+          "path": "octara::app::InputEvent::Semantic",
+          "kind": "variant",
+          "sig": "Semantic(Event)",
+          "docs": "A step by test id or by name (press, input, toggle, hover, focus, scroll, send).",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
+          "path": "octara::app::InputEvent::Text",
+          "kind": "variant",
+          "sig": "Text(String)",
+          "docs": "Text typed, or committed by an input method, into the focused field (it ends any\ncomposition).",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
+          "path": "octara::app::InputEvent::Wheel",
+          "kind": "variant",
+          "sig": "Wheel { x: f32, y: f32, dx: f32, dy: f32 }",
+          "docs": "A wheel or trackpad scroll of `(dx, dy)` at `(x, y)`.",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
           "path": "octara::app::Key",
           "kind": "enum",
           "sig": "pub enum Key",
@@ -569,9 +696,11 @@
             "Clone",
             "Copy",
             "Debug",
+            "Deserialize<'de>",
             "Eq",
             "Hash",
-            "PartialEq"
+            "PartialEq",
+            "Serialize"
           ]
         },
         {
@@ -691,8 +820,10 @@
             "Clone",
             "Copy",
             "Debug",
+            "Deserialize<'de>",
             "Eq",
-            "PartialEq"
+            "PartialEq",
+            "Serialize"
           ]
         },
         {
@@ -781,6 +912,7 @@
             "Copy",
             "Debug",
             "Default",
+            "Deserialize<'de>",
             "Eq",
             "Extend<Modifiers>",
             "Flags",
@@ -792,6 +924,7 @@
             "Octal",
             "PartialEq",
             "PublicFlags",
+            "Serialize",
             "Sub",
             "SubAssign",
             "UpperHex"
@@ -985,8 +1118,10 @@
             "Clone",
             "Copy",
             "Debug",
+            "Deserialize<'de>",
             "Eq",
-            "PartialEq"
+            "PartialEq",
+            "Serialize"
           ]
         },
         {
@@ -1024,7 +1159,9 @@
             "Clone",
             "Copy",
             "Debug",
-            "PartialEq"
+            "Deserialize<'de>",
+            "PartialEq",
+            "Serialize"
           ]
         },
         {
@@ -1104,8 +1241,10 @@
             "Copy",
             "Debug",
             "Default",
+            "Deserialize<'de>",
             "Eq",
-            "PartialEq"
+            "PartialEq",
+            "Serialize"
           ]
         },
         {
@@ -1125,6 +1264,60 @@
           "kind": "variant",
           "sig": "Touch",
           "file": "crates/octara/src/app/pointer.rs"
+        },
+        {
+          "path": "octara::app::Recorded",
+          "kind": "struct",
+          "sig": "pub struct Recorded { .. }",
+          "docs": "One recorded input: when on the app's clock, to which window, what.",
+          "file": "crates/octara/src/app/event.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Deserialize<'de>",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::app::Recorded::at",
+          "kind": "field",
+          "sig": "pub at: f64",
+          "docs": "Milliseconds on the app's clock.",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
+          "path": "octara::app::Recorded::event",
+          "kind": "field",
+          "sig": "pub event: InputEvent",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
+          "path": "octara::app::Recorded::window",
+          "kind": "field",
+          "sig": "pub window: WindowId",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
+          "path": "octara::app::Recording",
+          "kind": "struct",
+          "sig": "pub struct Recording { .. }",
+          "docs": "A session's inputs, in order (JSON with serde).",
+          "file": "crates/octara/src/app/event.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Default",
+            "Deserialize<'de>",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::app::Recording::events",
+          "kind": "field",
+          "sig": "pub events: Vec<Recorded>",
+          "file": "crates/octara/src/app/event.rs"
         },
         {
           "path": "octara::app::TargetPlatform",
@@ -1326,23 +1519,16 @@
           ]
         },
         {
-          "path": "octara::app::Window::accessibility_action",
-          "kind": "method",
-          "sig": "pub fn accessibility_action(&mut self, target: NodeId, action: Action, data: Option<ActionData>) -> bool",
-          "docs": "Performs an action assistive technology asked for. Returns whether it did anything.",
-          "file": "crates/octara/src/app/input.rs"
-        },
-        {
           "path": "octara::app::Window::accessibility_tree",
           "kind": "method",
-          "sig": "pub fn accessibility_tree(&self, scale: f64) -> TreeUpdate",
+          "sig": "pub fn accessibility_tree(&self) -> TreeUpdate",
           "docs": "The accessibility tree, for an AccessKit adapter (and for agents): roles, names, values,\nstates, actions and bounds (logical pixels; the window node carries `scale`).",
           "file": "crates/octara/src/app/input.rs"
         },
         {
           "path": "octara::app::Window::accessibility_update",
           "kind": "method",
-          "sig": "pub fn accessibility_update(&self, scale: f64) -> TreeUpdate",
+          "sig": "pub fn accessibility_update(&self) -> TreeUpdate",
           "docs": "What changed for assistive technology since the last update (the whole tree the first\ntime, and after [`restart_accessibility`](Self::restart_accessibility)).",
           "file": "crates/octara/src/app/input.rs",
           "links": [
@@ -1392,10 +1578,7 @@
           "kind": "method",
           "sig": "pub fn capture_begin(&mut self) -> Vec<NativeId>",
           "docs": "Starts a capture: asks the host for a snapshot of every native view shown. Returns the\nviews whose snapshot is coming (through [`native_snapshot`](Self::native_snapshot)).",
-          "file": "crates/octara/src/app.rs",
-          "links": [
-            "octara::app::Window::native_snapshot"
-          ]
+          "file": "crates/octara/src/app.rs"
         },
         {
           "path": "octara::app::Window::capture_display",
@@ -1481,6 +1664,13 @@
           "file": "crates/octara/src/app/drive.rs"
         },
         {
+          "path": "octara::app::Window::event",
+          "kind": "method",
+          "sig": "pub fn event(&mut self, event: InputEvent) -> bool",
+          "docs": "Delivers one input to this window and runs its frame. Returns whether something handled\nit (a key nothing took types nothing until the backend sends its text; a native event\nfor a view gone, an assistive request for a node gone, go nowhere).",
+          "file": "crates/octara/src/app/event.rs"
+        },
+        {
           "path": "octara::app::Window::force_state",
           "kind": "method",
           "sig": "pub fn force_state(&mut self, test_id: &str, state: State, on: bool) -> Result<(), String>",
@@ -1551,13 +1741,6 @@
           "file": "crates/octara/src/app.rs"
         },
         {
-          "path": "octara::app::Window::key_event",
-          "kind": "method",
-          "sig": "pub fn key_event(&mut self, ev: KeyEvent) -> bool",
-          "docs": "A key press, as a window delivers it. Returns whether something handled it; if not, the\nshell sends the key's text with [`App::type_text`].",
-          "file": "crates/octara/src/app/keys.rs"
-        },
-        {
           "path": "octara::app::Window::keymap",
           "kind": "method",
           "sig": "pub fn keymap(&self) -> Keymap",
@@ -1579,37 +1762,6 @@
           "file": "crates/octara/src/app/drive.rs"
         },
         {
-          "path": "octara::app::Window::native_event",
-          "kind": "method",
-          "sig": "pub fn native_event(&mut self, id: NativeId, event: NativeEvent) -> bool",
-          "docs": "An event from native view `id` (the host calls this): runs its `on_native`.",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::Window::native_host",
-          "kind": "method",
-          "sig": "pub fn native_host(&self) -> Ref<'_, dyn NativeHost>",
-          "docs": "The main window's native host (downcast with `as_any`; headless, a [`RecordingHost`]).\n\n[`RecordingHost`]: crate::native::RecordingHost",
-          "file": "crates/octara/src/app.rs",
-          "links": [
-            "octara::native::RecordingHost"
-          ]
-        },
-        {
-          "path": "octara::app::Window::native_size",
-          "kind": "method",
-          "sig": "pub fn native_size(&mut self, id: NativeId, width: f32, height: f32)",
-          "docs": "The natural size native view `id` reports (the host calls this): used where no size is\nauthored.",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
-          "path": "octara::app::Window::native_snapshot",
-          "kind": "method",
-          "sig": "pub fn native_snapshot(&mut self, id: NativeId, image: Option<Image>)",
-          "docs": "An image of what native view `id` shows (the host calls this): drawn in its place\ninstead of the placeholder, until `None` clears it.",
-          "file": "crates/octara/src/app.rs"
-        },
-        {
           "path": "octara::app::Window::options",
           "kind": "method",
           "sig": "pub fn options(&self) -> WindowOptions",
@@ -1627,24 +1779,17 @@
           ]
         },
         {
-          "path": "octara::app::Window::pointer",
+          "path": "octara::app::Window::platform_window_mut",
           "kind": "method",
-          "sig": "pub fn pointer(&mut self, ev: PointerEvent)",
-          "docs": "One raw pointer event, as a window delivers it.",
-          "file": "crates/octara/src/app/pointer.rs"
+          "sig": "pub fn platform_window_mut(&self) -> RefMut<'_, dyn PlatformWindow>",
+          "docs": "The window on the platform, to change (a headless window's pretences in tests).",
+          "file": "crates/octara/src/app.rs"
         },
         {
           "path": "octara::app::Window::pointer_down",
           "kind": "method",
           "sig": "pub fn pointer_down(&mut self, x: f32, y: f32)",
           "docs": "The primary mouse button went down at `(x, y)`.",
-          "file": "crates/octara/src/app/pointer.rs"
-        },
-        {
-          "path": "octara::app::Window::pointer_leave",
-          "kind": "method",
-          "sig": "pub fn pointer_leave(&mut self)",
-          "docs": "The mouse left the window: nothing is hovered.",
           "file": "crates/octara/src/app/pointer.rs"
         },
         {
@@ -1690,18 +1835,18 @@
           "file": "crates/octara/src/app/input.rs"
         },
         {
+          "path": "octara::app::Window::scale",
+          "kind": "method",
+          "sig": "pub fn scale(&self) -> f32",
+          "docs": "Its scale: device pixels per logical pixel (what the last resize said).",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
           "path": "octara::app::Window::secondary_tap",
           "kind": "method",
           "sig": "pub fn secondary_tap(&mut self, target: &str) -> Result<(), String>",
           "docs": "A right click on `target`.",
           "file": "crates/octara/src/app/drive.rs"
-        },
-        {
-          "path": "octara::app::Window::set_composition",
-          "kind": "method",
-          "sig": "pub fn set_composition(&mut self, text: &str)",
-          "docs": "What an input method is composing in the focused field (pinyin before it becomes 汉字):\nshown underlined at the caret, not yet part of the value; it replaces the selection.\nEmpty ends it. [`App::type_text`] commits.",
-          "file": "crates/octara/src/app/edit.rs"
         },
         {
           "path": "octara::app::Window::set_keymap",
@@ -1801,14 +1946,30 @@
             "Copy",
             "Debug",
             "Default",
+            "Deserialize<'de>",
             "Eq",
             "From<KeyData>",
             "Hash",
             "Key",
             "Ord",
             "PartialEq",
-            "PartialOrd"
+            "PartialOrd",
+            "Serialize"
           ]
+        },
+        {
+          "path": "octara::app::WindowId::from_number",
+          "kind": "assoc_fn",
+          "sig": "pub fn from_number(number: u64) -> WindowId",
+          "docs": "The window `number` names.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::WindowId::number",
+          "kind": "method",
+          "sig": "pub fn number(self) -> u64",
+          "docs": "The number agents and the inspector protocol name it by.",
+          "file": "crates/octara/src/app.rs"
         },
         {
           "path": "octara::app::Work",
@@ -2135,13 +2296,12 @@
           "path": "octara::capture",
           "kind": "module",
           "sig": "pub mod capture",
-          "docs": "Captures: an agent's picture of the app, native views included, with a report of what the\npicture can be trusted for ([design](../../../docs/design/capture.md)).\n\nThe `capture` request of the [inspector protocol](crate::inspect::Request) settles the app,\nasks the [native host](crate::native::NativeHost) for each shown view's snapshot, and paints\nthe frame with the snapshots in place through a [`Painter`]: the window's GPU renderer in a\nshell, the reference renderer headless (`octara-render` implements both). The reply is a\n[`Capture`] report.",
+          "docs": "Captures: an agent's picture of the app, native views included, with a report of what the\npicture can be trusted for ([design](../../../docs/design/capture.md)).\n\nThe `capture` request of the [inspector protocol](crate::inspect::Request) settles the app,\nasks the platform window for each shown view's snapshot, and paints\nthe frame with the snapshots in place through a [`Painter`]: the window's GPU renderer in a\nshell, the reference renderer headless (`octara-render` implements both). The reply is a\n[`Capture`] report.",
           "file": "crates/octara/src/capture.rs",
           "links": [
             "octara::capture::Capture",
             "octara::capture::Painter",
-            "octara::inspect::Request",
-            "octara::native::NativeHost"
+            "octara::inspect::Request"
           ]
         },
         {
@@ -4044,6 +4204,54 @@
           "file": "crates/octara/src/inspect.rs"
         },
         {
+          "path": "octara::inspect::Snapshot::window",
+          "kind": "field",
+          "sig": "pub window: u64",
+          "docs": "This window's number (what a request's `window` names).",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::Snapshot::windows",
+          "kind": "field",
+          "sig": "pub windows: Vec<WindowInfo>",
+          "docs": "The app's open windows.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::WindowInfo",
+          "kind": "struct",
+          "sig": "pub struct WindowInfo { .. }",
+          "docs": "One of the app's windows, as a snapshot lists it.",
+          "file": "crates/octara/src/inspect.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Deserialize<'de>",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::inspect::WindowInfo::size",
+          "kind": "field",
+          "sig": "pub size: [f32; 2]",
+          "docs": "Its size in logical pixels.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::WindowInfo::title",
+          "kind": "field",
+          "sig": "pub title: String",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::WindowInfo::window",
+          "kind": "field",
+          "sig": "pub window: u64",
+          "docs": "What a request's `window` names.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
           "path": "octara::inspect::check",
           "kind": "fn",
           "sig": "pub fn check(view: fn() -> View, opts: &CheckOptions) -> CheckReport",
@@ -4060,8 +4268,8 @@
         {
           "path": "octara::inspect::handle_line",
           "kind": "fn",
-          "sig": "pub fn handle_line(app: &mut Window, line: &str) -> Reply",
-          "docs": "Reads one request line and runs it.",
+          "sig": "pub fn handle_line(window: &mut Window, line: &str) -> Reply",
+          "docs": "Reads one request line and runs it.\nRuns one request line in `window`, or in the window its `\"window\"` field names (a number\nfrom the snapshot's `windows`).",
           "file": "crates/octara/src/inspect.rs"
         },
         {
@@ -5601,6 +5809,13 @@
           "file": "crates/octara/src/kernel.rs"
         },
         {
+          "path": "octara::kernel::Kernel::paint_generation",
+          "kind": "method",
+          "sig": "pub fn paint_generation(&self) -> u64",
+          "docs": "Bumped by every change that can alter what is drawn: unchanged and with nothing moving,\nthe last frame still holds.",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::parent",
           "kind": "method",
           "sig": "pub fn parent(&self, id: NodeId) -> Option<NodeId>",
@@ -6670,6 +6885,7 @@
             "Copy",
             "Debug",
             "Default",
+            "Deserialize<'de>",
             "Eq",
             "From<KeyData>",
             "Hash",
@@ -6677,7 +6893,8 @@
             "Key",
             "Ord",
             "PartialEq",
-            "PartialOrd"
+            "PartialOrd",
+            "Serialize"
           ]
         },
         {
@@ -9102,55 +9319,60 @@
           "path": "octara::native",
           "kind": "module",
           "sig": "pub mod native",
-          "docs": "Native Island: platform views placed in Octara's layout ([design](../../../docs/design/native-island.md)).\n\n[`native_view`](crate::view::native_view)`(kind)` is a leaf box a platform view fills: a web\nview, a map, a platform picker. Views live in one of two [`Slot`]s per window: an\n**underlay** behind Octara's surface (shown through a cutout where the view is, so content\npainted after it draws over it, as map controls do) and an **overlay** above it (a web view,\na picker): Octara content painted over an overlay view would be hidden by it, so `check`\nreports it (`NATIVE_COVERED`).\n\nAfter each frame the app tells its [`NativeHost`] what changed: views created and destroyed,\nprops (one JSON value, handed over whole), and [`Placement`]s (where each view is, its corner\nradius, the clip around it, its opacity, whether it shows). The host sends events back with\n[`App::native_event`](crate::app::App::native_event) and reports a view's natural size with\n[`App::native_size`](crate::app::App::native_size). Headless, the [`RecordingHost`] keeps\nevery call, and the view draws as a placeholder box; a host's snapshot of a view (taken for a\n[capture](crate::capture)) draws in its place, so captures show the page or the map.",
+          "docs": "Native Island: platform views placed in Octara's layout ([design](../../../docs/design/native-island.md)).\n\n[`native_view`](crate::view::native_view)`(kind)` is a leaf box a platform view fills: a web\nview, a map, a platform picker. Views live in one of two [`Slot`]s per window: an\n**underlay** behind Octara's surface (shown through a cutout where the view is, so content\npainted after it draws over it, as map controls do) and an **overlay** above it (a web view,\na picker): Octara content painted over an overlay view would be hidden by it, so `check`\nreports it (`NATIVE_COVERED`).\n\nAfter each frame the app presents what changed to the window's platform window as\n[`NativeChange`]s: views created and destroyed, props (one JSON value, handed over whole), and\n[`Placement`]s (where each view is, its corner radius, the clip around it, its opacity,\nwhether it shows). Events and natural sizes come back as input\n([`InputEvent::Native`](crate::app::InputEvent::Native), `NativeSize`). A view the platform\ndoes not show draws as a placeholder box; its snapshot (taken for a\n[capture](crate::capture)) draws in its place, so captures show the page or the map.",
           "file": "crates/octara/src/native.rs",
           "links": [
+            "octara::app::event::InputEvent::Native",
             "octara::capture",
-            "octara::native::NativeHost",
+            "octara::native::NativeChange",
             "octara::native::Placement",
-            "octara::native::RecordingHost",
             "octara::native::Slot",
             "octara::view::native_view"
           ]
         },
         {
-          "path": "octara::native::HostCall",
+          "path": "octara::native::NativeChange",
           "kind": "enum",
-          "sig": "pub enum HostCall",
-          "docs": "One call a [`RecordingHost`] received.",
+          "sig": "pub enum NativeChange",
+          "docs": "What changed about a window's native views in a frame: the app presents these to its\nplatform window ([`Frame::native`](crate::platform::Frame::native)), which applies them\nwith the frame (placements in its transaction). Headless they are kept for tests.",
           "file": "crates/octara/src/native.rs",
           "traits": [
             "Clone",
             "Debug",
+            "Deserialize<'de>",
             "PartialEq",
             "Serialize"
           ],
           "links": [
-            "octara::native::RecordingHost"
+            "octara::platform::Frame::native"
           ]
         },
         {
-          "path": "octara::native::HostCall::Create",
+          "path": "octara::native::NativeChange::Create",
           "kind": "variant",
           "sig": "Create { id: NativeId, kind: String, slot: Slot, props: Value }",
+          "docs": "A view of `kind` appears in `slot` with `props`.",
           "file": "crates/octara/src/native.rs"
         },
         {
-          "path": "octara::native::HostCall::Destroy",
+          "path": "octara::native::NativeChange::Destroy",
           "kind": "variant",
           "sig": "Destroy { id: NativeId }",
+          "docs": "A view goes away.",
           "file": "crates/octara/src/native.rs"
         },
         {
-          "path": "octara::native::HostCall::Place",
+          "path": "octara::native::NativeChange::Place",
           "kind": "variant",
           "sig": "Place { placements: Vec<Placement> }",
+          "docs": "Views whose placement changed.",
           "file": "crates/octara/src/native.rs"
         },
         {
-          "path": "octara::native::HostCall::Update",
+          "path": "octara::native::NativeChange::Update",
           "kind": "variant",
           "sig": "Update { id: NativeId, props: Value }",
+          "docs": "A view's props changed (handed over whole).",
           "file": "crates/octara/src/native.rs"
         },
         {
@@ -9165,6 +9387,7 @@
           "traits": [
             "Clone",
             "Debug",
+            "Deserialize<'de>",
             "PartialEq",
             "Serialize"
           ]
@@ -9182,67 +9405,6 @@
           "file": "crates/octara/src/native.rs"
         },
         {
-          "path": "octara::native::NativeHost",
-          "kind": "trait",
-          "sig": "pub trait NativeHost: Any",
-          "docs": "The platform side: creates, updates, places and destroys native views. A shell implements it\nwith the platform's views; [`RecordingHost`] records the calls (headless and tests).",
-          "file": "crates/octara/src/native.rs",
-          "implementors": [
-            "RecordingHost"
-          ],
-          "links": [
-            "octara::native::RecordingHost"
-          ]
-        },
-        {
-          "path": "octara::native::NativeHost::as_any",
-          "kind": "method",
-          "sig": "fn as_any(&self) -> &dyn Any",
-          "file": "crates/octara/src/native.rs"
-        },
-        {
-          "path": "octara::native::NativeHost::busy",
-          "kind": "method",
-          "sig": "fn busy(&self, id: NativeId) -> Option<String>",
-          "docs": "What view `id` is busy with (a page loading), so a capture waits for it.",
-          "file": "crates/octara/src/native.rs"
-        },
-        {
-          "path": "octara::native::NativeHost::create",
-          "kind": "method",
-          "sig": "fn create(&mut self, id: NativeId, kind: &str, slot: Slot, props: &Value) -> bool",
-          "docs": "A view of `kind` appears in `slot` with `props`. Returns whether the platform shows it:\nwhen it does, the frame leaves the view's place to it (an underlay view gets a cutout);\nwhen not, a placeholder box is drawn there.",
-          "file": "crates/octara/src/native.rs"
-        },
-        {
-          "path": "octara::native::NativeHost::destroy",
-          "kind": "method",
-          "sig": "fn destroy(&mut self, id: NativeId)",
-          "docs": "A view goes away.",
-          "file": "crates/octara/src/native.rs"
-        },
-        {
-          "path": "octara::native::NativeHost::place",
-          "kind": "method",
-          "sig": "fn place(&mut self, placements: &[Placement])",
-          "docs": "Views whose placement changed this frame (shells apply them with the frame's present).",
-          "file": "crates/octara/src/native.rs"
-        },
-        {
-          "path": "octara::native::NativeHost::snapshot",
-          "kind": "method",
-          "sig": "fn snapshot(&mut self, id: NativeId) -> Result<Vec<String>, String>",
-          "docs": "Takes an image of what view `id` shows, handed back later with\n[`App::native_snapshot`](crate::app::App::native_snapshot): `Ok` with what the snapshot\ncannot show (WebKit: hardware video and WebGL come out black), or `Err` with why this\nhost takes none.",
-          "file": "crates/octara/src/native.rs"
-        },
-        {
-          "path": "octara::native::NativeHost::update",
-          "kind": "method",
-          "sig": "fn update(&mut self, id: NativeId, props: &Value)",
-          "docs": "A view's props changed (handed over whole).",
-          "file": "crates/octara/src/native.rs"
-        },
-        {
           "path": "octara::native::NativeId",
           "kind": "struct",
           "sig": "pub struct NativeId(pub u64);",
@@ -9252,6 +9414,7 @@
             "Clone",
             "Copy",
             "Debug",
+            "Deserialize<'de>",
             "Eq",
             "Hash",
             "Ord",
@@ -9301,6 +9464,7 @@
           "traits": [
             "Clone",
             "Debug",
+            "Deserialize<'de>",
             "PartialEq",
             "Serialize"
           ]
@@ -9366,24 +9530,6 @@
           "file": "crates/octara/src/native.rs"
         },
         {
-          "path": "octara::native::RecordingHost",
-          "kind": "struct",
-          "sig": "pub struct RecordingHost { .. }",
-          "docs": "A host that records what it is told: the headless app's, and tests'.",
-          "file": "crates/octara/src/native.rs",
-          "traits": [
-            "Debug",
-            "Default",
-            "NativeHost"
-          ]
-        },
-        {
-          "path": "octara::native::RecordingHost::calls",
-          "kind": "field",
-          "sig": "pub calls: Vec<HostCall>",
-          "file": "crates/octara/src/native.rs"
-        },
-        {
           "path": "octara::native::Slot",
           "kind": "enum",
           "sig": "pub enum Slot",
@@ -9396,6 +9542,7 @@
             "Clone",
             "Copy",
             "Debug",
+            "Deserialize<'de>",
             "Eq",
             "PartialEq",
             "Serialize"
@@ -9865,6 +10012,7 @@
             "Copy",
             "Debug",
             "Default",
+            "Deserialize<'de>",
             "PartialEq",
             "Serialize"
           ]
@@ -10581,12 +10729,49 @@
           "path": "octara::platform",
           "kind": "module",
           "sig": "pub mod platform",
-          "docs": "The platform layer ([design](../../../docs/design/platform.md)): what an app needs from the\nsystem it runs on, as traits a backend implements. The app and the kernel never see a\nwindowing library's types; headless runs (tests, agents, `octara run`) implement the same\ntraits with [`HeadlessPlatform`] and [`HeadlessWindow`].\n\nA backend drives the app with its input methods ([`App::pointer`](crate::app::App::pointer),\n[`App::key_event`](crate::app::App::key_event), …) and draws its display list; the app\ncalls back through these traits for the clipboard, waking the loop, native views and the\nstate of text input.",
+          "docs": "The platform layer ([design](../../../docs/design/platform.md)): what an app needs from the\nsystem it runs on, as traits a backend implements. The app and the kernel never see a\nwindowing library's types; headless runs (tests, agents, `octara run`) implement the same\ntraits with [`HeadlessPlatform`] and [`HeadlessWindow`].\n\nA backend sends its windows' input as [`InputEvent`](crate::app::InputEvent)s\n([`Window::event`](crate::app::Window::event)) and draws each window's display list; the app\npresents a [`Frame`] to each platform window after every operation (native view changes, the\ntext input) and asks the platform for the clipboard, waking the loop and new windows.",
           "file": "crates/octara/src/platform.rs",
           "links": [
+            "octara::app::InputEvent",
+            "octara::app::Window::event",
+            "octara::platform::Frame",
             "octara::platform::HeadlessPlatform",
             "octara::platform::HeadlessWindow"
           ]
+        },
+        {
+          "path": "octara::platform::Frame",
+          "kind": "struct",
+          "sig": "pub struct Frame { .. }",
+          "docs": "What a window's platform is told after an operation.",
+          "file": "crates/octara/src/platform.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Default",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::platform::Frame::native",
+          "kind": "field",
+          "sig": "pub native: Vec<NativeChange>",
+          "docs": "Native views created, updated, placed and destroyed, in order.",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::Frame::redraw",
+          "kind": "field",
+          "sig": "pub redraw: bool",
+          "docs": "What the window shows changed or moves: draw again.",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::Frame::text_input",
+          "kind": "field",
+          "sig": "pub text_input: Option<TextInput>",
+          "docs": "The focused text field (none: no field has focus): where its caret is, so the input\nmethod's window opens next to it, and whether it is secure (the input method off and, on\nmacOS, secure keyboard input on) or multi-line.",
+          "file": "crates/octara/src/platform.rs"
         },
         {
           "path": "octara::platform::HeadlessPlatform",
@@ -10609,50 +10794,71 @@
           "file": "crates/octara/src/platform.rs"
         },
         {
-          "path": "octara::platform::HeadlessPlatform::next_host",
+          "path": "octara::platform::HeadlessPlatform::next_window",
           "kind": "field",
-          "sig": "pub next_host: Option<Box<dyn NativeHost>>",
-          "docs": "The native host the next window opened gets (a test's fake platform views).",
+          "sig": "pub next_window: Option<HeadlessWindow>",
+          "docs": "The window the next one opened is (a test's fake platform views).",
           "file": "crates/octara/src/platform.rs"
         },
         {
-          "path": "octara::platform::HeadlessPlatform::with_host",
+          "path": "octara::platform::HeadlessPlatform::with_window",
           "kind": "assoc_fn",
-          "sig": "pub fn with_host(host: impl NativeHost + 'static) -> HeadlessPlatform",
-          "docs": "A headless platform whose next window's native views go to `host`.",
+          "sig": "pub fn with_window(window: HeadlessWindow) -> HeadlessPlatform",
+          "docs": "A headless platform whose next window is `window`.",
           "file": "crates/octara/src/platform.rs"
         },
         {
           "path": "octara::platform::HeadlessWindow",
           "kind": "struct",
           "sig": "pub struct HeadlessWindow { .. }",
-          "docs": "The window of headless runs: native views in a [`RecordingHost`] (or the host given), the\ntext input state kept for tests.",
+          "docs": "The window of headless runs: keeps what it was presented (native changes, the text input,\nhow many frames) for tests. By default it shows no native view (they draw as placeholders);\na test can pretend it does, take snapshots, or be busy.",
           "file": "crates/octara/src/platform.rs",
           "traits": [
+            "Debug",
             "Default",
             "PlatformWindow"
-          ],
-          "links": [
-            "octara::native::RecordingHost"
           ]
         },
         {
-          "path": "octara::platform::HeadlessWindow::host",
+          "path": "octara::platform::HeadlessWindow::busy",
           "kind": "field",
-          "sig": "pub host: Box<dyn NativeHost>",
+          "sig": "pub busy: Option<String>",
+          "docs": "Pretend every native view is busy with this.",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::HeadlessWindow::frames",
+          "kind": "field",
+          "sig": "pub frames: u64",
+          "docs": "Frames presented.",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::HeadlessWindow::native",
+          "kind": "field",
+          "sig": "pub native: Vec<NativeChange>",
+          "docs": "Every native change presented, in order.",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::HeadlessWindow::shows_native",
+          "kind": "field",
+          "sig": "pub shows_native: bool",
+          "docs": "Pretend the platform shows every native view.",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::HeadlessWindow::snapshots",
+          "kind": "field",
+          "sig": "pub snapshots: Option<Vec<String>>",
+          "docs": "Pretend snapshots are taken, missing these (`None`: no snapshots).",
           "file": "crates/octara/src/platform.rs"
         },
         {
           "path": "octara::platform::HeadlessWindow::text_input",
           "kind": "field",
           "sig": "pub text_input: Option<TextInput>",
-          "file": "crates/octara/src/platform.rs"
-        },
-        {
-          "path": "octara::platform::HeadlessWindow::with_host",
-          "kind": "assoc_fn",
-          "sig": "pub fn with_host(host: impl NativeHost + 'static) -> HeadlessWindow",
-          "docs": "A headless window whose native views go to `host` (a test's fake platform views).",
+          "docs": "The last text input state presented.",
           "file": "crates/octara/src/platform.rs"
         },
         {
@@ -10705,10 +10911,14 @@
           "path": "octara::platform::PlatformWindow",
           "kind": "trait",
           "sig": "pub trait PlatformWindow",
-          "docs": "One window on that system.",
+          "docs": "One window on that system. The app presents a [`Frame`] after each operation; the backend\ndraws the window's display list ([`Window::display_list`](crate::app::Window::display_list))\non its own pacing. Questions that need an answer are methods.",
           "file": "crates/octara/src/platform.rs",
           "implementors": [
             "HeadlessWindow"
+          ],
+          "links": [
+            "octara::app::Window::display_list",
+            "octara::platform::Frame"
           ]
         },
         {
@@ -10718,23 +10928,37 @@
           "file": "crates/octara/src/platform.rs"
         },
         {
-          "path": "octara::platform::PlatformWindow::native_host",
+          "path": "octara::platform::PlatformWindow::as_any_mut",
           "kind": "method",
-          "sig": "fn native_host(&self) -> &dyn NativeHost",
-          "docs": "Where the window's native views live.",
+          "sig": "fn as_any_mut(&mut self) -> &mut dyn Any",
           "file": "crates/octara/src/platform.rs"
         },
         {
-          "path": "octara::platform::PlatformWindow::native_host_mut",
+          "path": "octara::platform::PlatformWindow::native_busy",
           "kind": "method",
-          "sig": "fn native_host_mut(&mut self) -> &mut dyn NativeHost",
+          "sig": "fn native_busy(&self, id: NativeId) -> Option<String>",
+          "docs": "What view `id` is busy with (a page loading), so a capture waits for it.",
           "file": "crates/octara/src/platform.rs"
         },
         {
-          "path": "octara::platform::PlatformWindow::set_text_input",
+          "path": "octara::platform::PlatformWindow::present",
           "kind": "method",
-          "sig": "fn set_text_input(&mut self, input: Option<&TextInput>)",
-          "docs": "The focused text field changed (or none has focus): where its caret is, so the input\nmethod's window opens next to it, and whether it is secure (the input method off and,\non macOS, secure keyboard input on) or multi-line. Sent when it changes, after a frame.",
+          "sig": "fn present(&mut self, frame: Frame)",
+          "docs": "What changed since the last frame: apply native view changes (placements with the next\npresent), follow the text input, draw again when asked.",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::PlatformWindow::shows_native",
+          "kind": "method",
+          "sig": "fn shows_native(&self, kind: &str, slot: Slot) -> bool",
+          "docs": "Whether the platform shows native views of `kind` in `slot` (else they draw as\nplaceholders, and an underlay view gets no cutout).",
+          "file": "crates/octara/src/platform.rs"
+        },
+        {
+          "path": "octara::platform::PlatformWindow::snapshot_native",
+          "kind": "method",
+          "sig": "fn snapshot_native(&mut self, id: NativeId) -> Result<Vec<String>, String>",
+          "docs": "Takes a snapshot of view `id`, sent back as input (`NativeSnapshot`): `Ok` with what the\nsnapshot cannot show (WebKit: hardware video and WebGL come out black), or `Err` with why\nthis platform takes none.",
           "file": "crates/octara/src/platform.rs"
         },
         {

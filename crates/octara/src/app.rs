@@ -3,6 +3,7 @@
 mod behavior;
 mod drive;
 mod edit;
+mod event;
 mod focus;
 mod input;
 mod keys;
@@ -10,6 +11,7 @@ mod pointer;
 mod time;
 
 pub use edit::{TextField, byte_offset, utf16_offset};
+pub use event::{InputEvent, Recorded, Recording};
 pub use keys::{BUILTIN_COMMANDS, Binding, Chord, Key, KeyEvent, Keymap};
 pub use pointer::{Button, Drag, DragPhase, Modifiers, Phase, PointerEvent, PointerKind, Tuning};
 
@@ -25,7 +27,8 @@ use std::rc::Rc;
 pub const DEFAULT_VIEWPORT: (f32, f32) = (800.0, 600.0);
 
 /// An input event, addressed by test id (or by name for external events).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Event {
     Press(String),
     Input(String, String),
@@ -104,6 +107,14 @@ slotmap::new_key_type! {
 }
 
 impl WindowId {
+    /// The number agents and the inspector protocol name it by.
+    pub fn number(self) -> u64 {
+        slotmap::Key::data(&self).as_ffi()
+    }
+    /// The window `number` names.
+    pub fn from_number(number: u64) -> WindowId {
+        slotmap::KeyData::from_ffi(number).into()
+    }
     /// The reactive owner code of this window runs as.
     fn owner(self) -> Owner {
         Owner(slotmap::Key::data(&self).as_ffi())
@@ -143,6 +154,8 @@ pub(crate) struct AppState {
     check: Cell<bool>,
     /// A check is running (its rebuild is an operation too).
     checking: Cell<bool>,
+    /// The inputs recorded, while recording.
+    recording: RefCell<Option<Recording>>,
 }
 
 /// What is one window's own: its kernel and view context (handlers, commands, overlay slots,
@@ -174,12 +187,18 @@ pub(crate) struct WindowState {
     root_slots: Slots,
     interaction: RefCell<Interaction>,
     size: Cell<(f32, f32)>,
+    /// Device pixels per logical pixel.
+    scale: Cell<f32>,
     /// The window on the system: its native views and text input (headless: a recording host).
     platform: RefCell<Box<dyn crate::platform::PlatformWindow>>,
     /// The text input state last sent to it.
     text_input: Cell<Option<crate::platform::TextInput>>,
-    /// What the host was last told of each native view: its props version and placement.
+    /// What the platform was last told of each native view: its props version and placement.
     native_sent: RefCell<rustc_hash::FxHashMap<NodeId, (u64, Option<crate::native::Placement>)>>,
+    /// Native changes not presented yet.
+    native_changes: RefCell<Vec<crate::native::NativeChange>>,
+    /// The paint generation last presented.
+    presented: Cell<u64>,
     /// A capture in progress: the snapshots asked for.
     capturing: RefCell<Option<crate::capture::Capturing>>,
 }
@@ -291,9 +310,12 @@ impl WindowState {
             root_slots: Slots::default(),
             interaction: RefCell::default(),
             size: Cell::new(size),
+            scale: Cell::new(1.0),
             platform: RefCell::new(platform),
             text_input: Cell::new(None),
             native_sent: RefCell::default(),
+            native_changes: RefCell::default(),
+            presented: Cell::new(u64::MAX),
             capturing: RefCell::default(),
         }
     }
@@ -328,6 +350,7 @@ impl App {
             depth: Cell::new(0),
             check: Cell::new(false),
             checking: Cell::new(false),
+            recording: RefCell::default(),
         };
         if let Some(wake) = state.system.borrow().waker() {
             state.sched.set_waker(wake);
@@ -612,7 +635,7 @@ impl Window {
             }
         }
         self.sync_native();
-        self.sync_text_input();
+        self.present();
         // An `instant` transaction covers the frame it was made in.
         self.w.kernel.borrow_mut().set_instant(false);
         // What is on its way out can no longer be focused or hovered.
@@ -815,6 +838,15 @@ impl Window {
     /// Resizes the window: bindings that read `viewport()` update, then everything is laid out
     /// again at the new size (text re-breaks; nothing else reruns).
     pub fn resize(&mut self, width: f32, height: f32) {
+        let scale = self.w.scale.get();
+        self.event(InputEvent::Resize { width, height, scale });
+    }
+    /// Its scale: device pixels per logical pixel (what the last resize said).
+    pub fn scale(&self) -> f32 {
+        self.w.scale.get()
+    }
+    pub(crate) fn on_resize(&mut self, width: f32, height: f32, scale: f32) {
+        self.w.scale.set(scale);
         self.w.size.set((width, height));
         self.enter(|| {
             self.app.rt.with_frame(Ctx::Handler, None, Some(None), || {
@@ -866,6 +898,17 @@ impl Window {
             time_ms: self.app().now().as_millis() as u64,
             focus,
             pending: self.app().pending().len(),
+            window: self.w.id.number(),
+            windows: self
+                .app()
+                .each()
+                .iter()
+                .map(|w| crate::inspect::WindowInfo {
+                    window: w.w.id.number(),
+                    title: w.w.options.title.clone(),
+                    size: [w.w.size.get().0, w.w.size.get().1],
+                })
+                .collect(),
             root: k.inspect_tree(),
         }
     }
@@ -881,6 +924,10 @@ impl Window {
     }
     /// Runs the event's handler, applies every update and lays out, like one frame.
     pub fn dispatch(&mut self, ev: Event) -> Result<(), String> {
+        self.app.record(self.w.id, &InputEvent::Semantic(ev.clone()));
+        self.on_semantic(ev)
+    }
+    pub(crate) fn on_semantic(&mut self, ev: Event) -> Result<(), String> {
         self.enter(|| {
             let cause = self.app.next_cause.get() + 1;
             if matches!(ev, Event::Hover(..) | Event::Focus(_) | Event::Blur | Event::Scroll(..) | Event::ScrollTo(..)) {
@@ -1060,8 +1107,8 @@ impl Window {
         if k.native_nodes().is_empty() && sent.is_empty() {
             return;
         }
-        let mut window = self.w.platform.borrow_mut();
-        let host = window.native_host_mut();
+        let window = self.w.platform.borrow();
+        let mut changes = self.w.native_changes.borrow_mut();
         let placements = k.native_placements();
         let mut moved = Vec::new();
         let mut live = Vec::new();
@@ -1069,11 +1116,17 @@ impl Window {
             let Some(v) = k.native(*n) else { continue };
             match sent.get_mut(n) {
                 None => {
-                    live.push((*n, host.create(p.id, &v.kind, v.slot, &v.props)));
+                    live.push((*n, window.shows_native(&v.kind, v.slot)));
+                    changes.push(crate::native::NativeChange::Create {
+                        id: p.id,
+                        kind: v.kind.clone(),
+                        slot: v.slot,
+                        props: v.props.clone(),
+                    });
                     sent.insert(*n, (v.version, None));
                 }
                 Some((version, _)) if *version != v.version => {
-                    host.update(p.id, &v.props);
+                    changes.push(crate::native::NativeChange::Update { id: p.id, props: v.props.clone() });
                     *version = v.version;
                 }
                 Some(_) => {}
@@ -1085,17 +1138,17 @@ impl Window {
             }
         }
         if !moved.is_empty() {
-            host.place(&moved);
+            changes.push(crate::native::NativeChange::Place { placements: moved });
         }
         let mounted: Vec<NodeId> = placements.iter().map(|(n, _)| *n).collect();
         sent.retain(|n, _| {
             let keep = mounted.contains(n);
             if !keep {
-                host.destroy(crate::native::NativeId(crate::kernel::a11y::a11y_id(*n).0));
+                changes.push(crate::native::NativeChange::Destroy { id: crate::native::NativeId(crate::kernel::a11y::a11y_id(*n).0) });
             }
             keep
         });
-        drop((k, window, sent));
+        drop((k, window, sent, changes));
         // Painted next as the platform shows them: no placeholder, a cutout for the underlay.
         for (n, shown) in live {
             self.w.kernel.borrow_mut().set_native_live(n, shown);
@@ -1109,7 +1162,7 @@ impl Window {
     }
 
     /// An event from native view `id` (the host calls this): runs its `on_native`.
-    pub fn native_event(&mut self, id: crate::native::NativeId, event: crate::native::NativeEvent) -> bool {
+    pub(crate) fn on_native_event(&mut self, id: crate::native::NativeId, event: crate::native::NativeEvent) -> bool {
         let Some(n) = self.native_node(id) else { return false };
         let handler = {
             let k = self.w.kernel.borrow();
@@ -1122,9 +1175,10 @@ impl Window {
 
     /// The natural size native view `id` reports (the host calls this): used where no size is
     /// authored.
-    pub fn native_size(&mut self, id: crate::native::NativeId, width: f32, height: f32) {
-        let Some(n) = self.native_node(id) else { return };
+    pub(crate) fn on_native_size(&mut self, id: crate::native::NativeId, width: f32, height: f32) -> bool {
+        let Some(n) = self.native_node(id) else { return false };
         self.input_frame(|| self.w.kernel.borrow_mut().set_native_size(n, (width, height)));
+        true
     }
 
     /// What keeps the app from being settled now: tasks, timers and motion (not subscriptions,
@@ -1140,9 +1194,8 @@ impl Window {
             .collect();
         let placements = self.w.kernel.borrow().native_placements();
         let window = self.w.platform.borrow();
-        let host = window.native_host();
         for (n, p) in placements.into_iter().filter(|(_, p)| p.visible) {
-            if let Some(what) = host.busy(p.id) {
+            if let Some(what) = window.native_busy(p.id) {
                 out.push(format!("{}: {what}", self.native_name(n)));
             }
         }
@@ -1164,8 +1217,7 @@ impl Window {
     pub fn capture_begin(&mut self) -> Vec<crate::native::NativeId> {
         let placements = self.w.kernel.borrow().native_placements();
         let mut window = self.w.platform.borrow_mut();
-        let host = window.native_host_mut();
-        let asked: Vec<_> = placements.into_iter().filter(|(_, p)| p.visible).map(|(_, p)| (p.id, host.snapshot(p.id))).collect();
+        let asked: Vec<_> = placements.into_iter().filter(|(_, p)| p.visible).map(|(_, p)| (p.id, window.snapshot_native(p.id))).collect();
         let coming = asked.iter().filter(|(_, r)| r.is_ok()).map(|(id, _)| *id).collect();
         *self.w.capturing.borrow_mut() = Some(crate::capture::Capturing { asked });
         coming
@@ -1219,7 +1271,7 @@ impl Window {
         }
         let painted = painter.paint(&self.display_list(), scale).and_then(|p| p.save_png(path).map(|()| p));
         for (id, _) in &asked {
-            self.native_snapshot(*id, None);
+            self.on_native_snapshot(*id, None);
         }
         let picture = painted?;
         Ok(crate::capture::Capture {
@@ -1281,16 +1333,10 @@ impl Window {
 
     /// An image of what native view `id` shows (the host calls this): drawn in its place
     /// instead of the placeholder, until `None` clears it.
-    pub fn native_snapshot(&mut self, id: crate::native::NativeId, image: Option<crate::image::Image>) {
-        let Some(n) = self.native_node(id) else { return };
+    pub(crate) fn on_native_snapshot(&mut self, id: crate::native::NativeId, image: Option<crate::image::Image>) -> bool {
+        let Some(n) = self.native_node(id) else { return false };
         self.input_frame(|| self.w.kernel.borrow_mut().set_native_snapshot(n, image));
-    }
-
-    /// The main window's native host (downcast with `as_any`; headless, a [`RecordingHost`]).
-    ///
-    /// [`RecordingHost`]: crate::native::RecordingHost
-    pub fn native_host(&self) -> std::cell::Ref<'_, dyn crate::native::NativeHost> {
-        std::cell::Ref::map(self.w.platform.borrow(), |w| w.native_host())
+        true
     }
 
     /// The main window on the platform (downcast with `as_any`; headless, a
@@ -1299,18 +1345,30 @@ impl Window {
         std::cell::Ref::map(self.w.platform.borrow(), |w| &**w)
     }
 
+    /// The window on the platform, to change (a headless window's pretences in tests).
+    pub fn platform_window_mut(&self) -> std::cell::RefMut<'_, dyn crate::platform::PlatformWindow> {
+        std::cell::RefMut::map(self.w.platform.borrow_mut(), |w| &mut **w)
+    }
+
     /// Tells the window's platform about the focused text field when it changed: where its
     /// caret is, whether it is secure or multi-line.
-    fn sync_text_input(&self) {
-        let now = self.focused_input().and_then(|(n, _)| {
+    /// Presents what changed to the window's platform: native view changes, the text input,
+    /// whether to draw again (after every settle; nothing when nothing changed).
+    fn present(&self) {
+        let text_input = self.focused_input().and_then(|(n, _)| {
             let k = self.w.kernel.borrow();
             let caret = k.caret(n)?;
             Some(crate::platform::TextInput { caret, secure: k.is_secure(n), multiline: k.is_multiline(n) })
         });
-        if self.w.text_input.get() != now {
-            self.w.text_input.set(now);
-            self.w.platform.borrow_mut().set_text_input(now.as_ref());
+        let generation = self.w.kernel.borrow().paint_generation();
+        let redraw = generation != self.w.presented.get() || self.w.kernel.borrow_mut().in_motion();
+        let native = std::mem::take(&mut *self.w.native_changes.borrow_mut());
+        if native.is_empty() && !redraw && text_input == self.w.text_input.get() {
+            return;
         }
+        self.w.text_input.set(text_input);
+        self.w.presented.set(generation);
+        self.w.platform.borrow_mut().present(crate::platform::Frame { native, text_input, redraw });
     }
 }
 

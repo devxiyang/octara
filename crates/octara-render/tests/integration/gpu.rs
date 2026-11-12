@@ -297,21 +297,6 @@ mod octara_examples_like {
     }
 }
 
-/// A host whose platform shows every view (a shell's).
-struct Shows;
-
-impl octara::native::NativeHost for Shows {
-    fn create(&mut self, _: octara::native::NativeId, _: &str, _: octara::native::Slot, _: &octara::serde_json::Value) -> bool {
-        true
-    }
-    fn update(&mut self, _: octara::native::NativeId, _: &octara::serde_json::Value) {}
-    fn place(&mut self, _: &[octara::native::Placement]) {}
-    fn destroy(&mut self, _: octara::native::NativeId) {}
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
 /// An underlay view in a card, a button painted over it: the card is cut to transparent where
 /// the view is, the button stays.
 fn underlay() -> View {
@@ -332,7 +317,10 @@ fn underlay() -> View {
 
 #[test]
 fn underlay_cutouts_clear_to_transparent() {
-    let app = Window::headless_on(octara::platform::HeadlessPlatform::with_host(Shows), underlay);
+    let app = Window::headless_on(
+        octara::platform::HeadlessPlatform::with_window(octara::platform::HeadlessWindow { shows_native: true, ..Default::default() }),
+        underlay,
+    );
     let dl = app.display_list();
     let cpu = CpuRenderer::new().render(&dl, 1.0);
     assert_eq!(cpu.pixel(150, 80)[3], 0, "the view shows through");

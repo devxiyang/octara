@@ -26,7 +26,7 @@ fn view() -> View {
 #[test]
 fn roles_names_states_actions_and_bounds() {
     let mut app = Window::headless(view);
-    let tree = app.accessibility_tree(2.0);
+    let tree = app.accessibility_tree();
     let node = |id: &str| {
         let n = app.kernel().find(id).unwrap();
         tree.nodes.iter().find(|(i, _)| *i == a11y_id(n)).map(|(_, n)| n.clone()).unwrap()
@@ -47,11 +47,11 @@ fn roles_names_states_actions_and_bounds() {
 
     // Actions from assistive technology.
     let wifi = a11y_id(app.kernel().find("wifi").unwrap());
-    assert!(app.accessibility_action(wifi, Action::Click, None));
+    assert!(app.event(InputEvent::Accessibility { target: wifi, action: Action::Click, data: None }));
     assert_eq!(app.kernel().checked_of("wifi"), Some(true));
     let inc_id = a11y_id(app.kernel().find("inc").unwrap());
-    assert!(app.accessibility_action(inc_id, Action::Focus, None));
-    assert_eq!(app.accessibility_tree(1.0).focus, inc_id);
+    assert!(app.event(InputEvent::Accessibility { target: inc_id, action: Action::Focus, data: None }));
+    assert_eq!(app.accessibility_tree().focus, inc_id);
 }
 
 #[test]
@@ -66,7 +66,7 @@ fn a_value_is_announced_for_any_control() {
     let snap = app.inspect();
     assert_eq!(snap.find("theme").unwrap().value.as_deref(), Some("Dark"));
     assert_eq!(snap.find("name").unwrap().value.as_deref(), Some("Ada"));
-    let tree = app.accessibility_tree(1.0);
+    let tree = app.accessibility_tree();
     let theme = app.kernel().find("theme").unwrap();
     let node = tree.nodes.iter().find(|(i, _)| *i == a11y_id(theme)).unwrap();
     assert_eq!(node.1.value(), Some("Dark"));
@@ -121,15 +121,15 @@ fn busy() -> View {
 #[test]
 fn updates_send_only_what_changed() {
     let mut app = Window::headless(busy);
-    let full = app.accessibility_update(2.0);
+    let full = app.accessibility_update();
     assert!(full.tree.is_some() && full.nodes.len() > 10, "the first update is the whole tree");
-    let quiet = app.accessibility_update(2.0);
+    let quiet = app.accessibility_update();
     assert!(quiet.nodes.is_empty(), "nothing changed: nothing sent");
 
     // Every update below is checked against the whole tree in debug builds.
     let sizes = |app: &mut Window, what: &str, op: &dyn Fn(&mut Window)| {
         op(app);
-        let u = app.accessibility_update(2.0);
+        let u = app.accessibility_update();
         assert!(u.tree.is_none(), "{what}: incremental");
         u.nodes.len()
     };
@@ -155,5 +155,5 @@ fn updates_send_only_what_changed() {
 
     // Restarting sends the whole tree again.
     app.restart_accessibility();
-    assert!(app.accessibility_update(2.0).tree.is_some());
+    assert!(app.accessibility_update().tree.is_some());
 }

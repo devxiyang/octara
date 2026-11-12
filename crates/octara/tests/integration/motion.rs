@@ -378,10 +378,7 @@ mod presence {
         app.dispatch(Event::Focus("panel".into())).unwrap();
         app.tap("toggle").unwrap();
         assert!(app.kernel().state_of("toggle").is_some());
-        assert!(
-            app.accessibility_tree(1.0).nodes.iter().all(|(_, n)| n.label() != Some("inside")),
-            "assistive technology no longer sees it"
-        );
+        assert!(app.accessibility_tree().nodes.iter().all(|(_, n)| n.label() != Some("inside")), "assistive technology no longer sees it");
         app.app().settle_motion();
         app.tap("toggle").unwrap();
         assert!(app.app().run_until_idle(ms(2000)).is_ok());

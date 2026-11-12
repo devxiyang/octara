@@ -1,6 +1,6 @@
 # The core: ownership, context, input and frames
 
-Status: confirmed; step 1 implemented. Based on an architecture review against the first product (an AI
+Status: confirmed; steps 1 and 2 implemented. Based on an architecture review against the first product (an AI
 chat app), several windows, the [platform layer](platform.md) and agents; it supersedes the
 single-window structure (one `App`, one `Kernel`, an implicit current window). There is no
 compatibility layer: what this replaces is removed.
@@ -151,4 +151,24 @@ that could not free a window.
   it and the signals the window holds, and frees it.
 - The winit backend shows one window (opening more is step 5); `Window::headless` and the
   headless platform open any number.
+
+## As built (step 2)
+
+- `InputEvent` (`Pointer`, `PointerLeave`, `Wheel`, `Key`, `Text`, `Composition`, `Resize` with
+  the scale, `Accessibility`, `Native`, `NativeSize`, `NativeSnapshot`, `Semantic`) through one
+  entry, `Window::event`, which returns whether something handled it. The raw entries it
+  replaced are gone (`pointer`, `key_event`, `set_composition`, `pointer_leave`,
+  `accessibility_action`, `native_event`, `native_size`, `native_snapshot`); the drivers tests
+  and agents use (`tap`, `click_at`, `wheel`, `press_key`, `type_text`, `resize`, `dispatch`, …)
+  send events. A window keeps its scale (`Window::scale`); accessibility trees use it.
+- `App::start_recording` / `stop_recording` give a `Recording` (time on the app clock, window,
+  event; serde), `App::replay` plays one back. Snapshots' pixels are not recorded.
+- After each settle a window presents a `Frame` (native changes, text input, redraw) when
+  something changed; the backend takes the display list when it draws. `PlatformWindow`:
+  `present`, `shows_native`, `snapshot_native`, `native_busy`.
+- The inspector's snapshot names its window and lists the app's (`window`, `windows`); a request
+  line may name a window (`"window": n`, `WindowId::number`).
+- Proof: a session of taps, typing, keys, a task on the clock and a wheel replays (through JSON)
+  to the same tree and display list; frames carry native changes and the secure field's text
+  input, and an idle app presents nothing; requests reach the window they name.
 

@@ -778,6 +778,11 @@ impl Kernel {
     pub(crate) fn key(&self, node: NodeId) -> TextKey {
         TextKey { kernel: self.serial, node, slot: 0 }
     }
+    /// Bumped by every change that can alter what is drawn: unchanged and with nothing moving,
+    /// the last frame still holds.
+    pub fn paint_generation(&self) -> u64 {
+        self.paint_gen
+    }
     /// The resources this kernel reads.
     pub fn resources(&self) -> &Rc<Resources> {
         &self.res

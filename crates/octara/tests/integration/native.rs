@@ -2,11 +2,13 @@
 //! scrolling) and removal; events and sizes come back from it; inspect shows the view; check
 //! finds content an overlay view would hide, and views without a label.
 
-use octara::native::{HostCall, NativeEvent, NativeId, RecordingHost, Slot};
+use octara::native::{NativeChange, NativeEvent, Slot};
+use octara::platform::{HeadlessPlatform, HeadlessWindow};
 use octara::prelude::*;
 
-fn calls(app: &Window) -> Vec<HostCall> {
-    app.native_host().as_any().downcast_ref::<RecordingHost>().unwrap().calls.clone()
+/// The native changes the window's platform was presented.
+fn calls(app: &Window) -> Vec<NativeChange> {
+    app.platform_window().as_any().downcast_ref::<HeadlessWindow>().unwrap().native.clone()
 }
 
 fn view() -> View {
@@ -47,10 +49,10 @@ fn view() -> View {
 fn the_host_follows_the_view() {
     let mut app = Window::headless(view);
     let c = calls(&app);
-    let HostCall::Create { id, kind, props, .. } = &c[0] else { panic!("{c:?}") };
+    let NativeChange::Create { id, kind, props, .. } = &c[0] else { panic!("{c:?}") };
     assert_eq!((kind.as_str(), props["url"].as_str()), ("web", Some("https://example.com")));
     let id = *id;
-    let HostCall::Place { placements } = &c[1] else { panic!("{c:?}") };
+    let NativeChange::Place { placements } = &c[1] else { panic!("{c:?}") };
     let p = &placements[0];
     assert_eq!((p.id, p.slot, p.rect.w, p.rect.h, p.visible), (id, Slot::Overlay, 300.0, 150.0, true), "150 high until it reports a size");
     assert_eq!(p.clip.h, 200.0, "clipped by the scroll container");
@@ -59,27 +61,33 @@ fn the_host_follows_the_view() {
     let before = calls(&app).len();
     app.tap("next").unwrap();
     let c = calls(&app);
-    assert_eq!(c[before..], [HostCall::Update { id, props: serde_json::json!({ "url": "https://example.org" }) }]);
+    assert_eq!(c[before..], [NativeChange::Update { id, props: serde_json::json!({ "url": "https://example.org" }) }]);
 
     // Scrolling moves it; scrolled out of its clip, it is not visible.
     app.dispatch(Event::ScrollTo("page".into(), 0.0, 100.0)).unwrap();
-    let Some(HostCall::Place { placements }) = calls(&app).last().cloned() else { panic!() };
+    let Some(NativeChange::Place { placements }) = calls(&app).last().cloned() else { panic!() };
     assert_eq!(placements[0].rect.y + 100.0, p.rect.y);
     app.dispatch(Event::ScrollTo("page".into(), 0.0, 400.0)).unwrap();
-    let Some(HostCall::Place { placements }) = calls(&app).last().cloned() else { panic!() };
+    let Some(NativeChange::Place { placements }) = calls(&app).last().cloned() else { panic!() };
     assert!(!placements[0].visible);
 
     // Events and sizes come back.
-    assert!(app.native_event(id, NativeEvent { name: "load".into(), data: serde_json::json!({ "url": "https://example.org" }) }));
+    assert!(app.event(InputEvent::Native {
+        id,
+        event: NativeEvent { name: "load".into(), data: serde_json::json!({ "url": "https://example.org" }) }
+    }));
     assert_eq!(app.kernel().text_of("loaded").unwrap(), "https://example.org");
-    app.native_size(id, 300.0, 90.0);
+    app.event(InputEvent::NativeSize { id, width: 300.0, height: 90.0 });
     let web = app.kernel().find("web").unwrap();
     assert_eq!(app.kernel().rect(web).3, 90.0, "its reported height");
 
     // Removed: destroyed.
     app.tap("toggle").unwrap();
-    assert_eq!(calls(&app).last(), Some(&HostCall::Destroy { id }));
-    assert!(!app.native_event(id, NativeEvent { name: "load".into(), data: serde_json::Value::Null }), "a gone view's events go nowhere");
+    assert_eq!(calls(&app).last(), Some(&NativeChange::Destroy { id }));
+    assert!(
+        !app.event(InputEvent::Native { id, event: NativeEvent { name: "load".into(), data: serde_json::Value::Null } }),
+        "a gone view's events go nowhere"
+    );
 }
 
 #[test]
@@ -90,7 +98,6 @@ fn inspect_shows_the_view() {
     assert_eq!(web.role, "web_view");
     let n = web.native.as_ref().unwrap();
     assert_eq!((n.kind.as_str(), n.slot.as_str(), n.props["url"].as_str()), ("web", "overlay", Some("https://example.com")));
-    let _ = NativeId(0);
 }
 
 fn badge_over(slot: Slot, label: bool) -> Window {
@@ -121,20 +128,9 @@ fn content_over_an_overlay_view_is_reported() {
     assert_eq!(codes(&unlabeled), [("UNLABELED_NATIVE_VIEW".to_string(), Some("map".to_string()))]);
 }
 
-/// A host whose platform shows every view (a shell's).
-#[derive(Default)]
-struct Shows;
-
-impl octara::native::NativeHost for Shows {
-    fn create(&mut self, _: NativeId, _: &str, _: Slot, _: &serde_json::Value) -> bool {
-        true
-    }
-    fn update(&mut self, _: NativeId, _: &serde_json::Value) {}
-    fn place(&mut self, _: &[octara::native::Placement]) {}
-    fn destroy(&mut self, _: NativeId) {}
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
+/// A platform that shows every native view (a shell's).
+fn shows() -> HeadlessPlatform {
+    HeadlessPlatform::with_window(HeadlessWindow { shows_native: true, ..HeadlessWindow::default() })
 }
 
 fn map_with_controls() -> View {
@@ -173,7 +169,7 @@ fn a_shown_underlay_view_is_cut_out_and_its_covered_parts_known() {
     };
     assert_eq!(natives(&app), [false], "headless: a placeholder, no hole");
 
-    let app = Window::headless_on(octara::platform::HeadlessPlatform::with_host(Shows), map_with_controls);
+    let app = Window::headless_on(shows(), map_with_controls);
     let list = app.display_list();
     assert_eq!(natives(&app), [true], "shown by the platform: cut out");
     let map = app.kernel().find("map").unwrap();

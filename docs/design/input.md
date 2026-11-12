@@ -146,5 +146,5 @@ catches up after the animation ends or the pointer moves (Rune).
   all converted into a raw pointer sequence at the element center and passed through the recognizers. If the target is not in the test ids, it is found by
   accessibility name, and duplicate names are rejected; if the center is covered by another element or outside the window, an error is returned saying
   what blocks it (Exact).
-- `press_key("mod+s")`, `type_text("héllo")`, `set_composition("ni", ..)`, `invoke("edit.copy")`, `advance(ms)`.
+- `press_key("mod+s")`, `type_text("héllo")`, `event(InputEvent::Composition("ni".into()))`, `invoke("edit.copy")`, `advance(ms)`.
 - The coordinate versions (`pointer(..)`, `click_at(x, y)`, `wheel(..)`) remain available; they are exactly the entry points the shell calls.

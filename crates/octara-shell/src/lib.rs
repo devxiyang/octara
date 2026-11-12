@@ -6,7 +6,7 @@
 //! # fn octara_examples_counter() -> octara::view::View { unimplemented!() }
 //! ```
 
-use octara::app::{App, Button, Key, KeyEvent, Modifiers, Phase, PointerEvent, Window as AppWindow};
+use octara::app::{App, Button, InputEvent, Key, KeyEvent, Modifiers, Phase, PointerEvent, Window as AppWindow};
 use octara::view::View;
 use octara_render::GpuRenderer;
 use octara_render::wgpu;
@@ -212,7 +212,7 @@ impl Shell {
         let at = Instant::now();
         self.tick();
         if let Some(app) = &mut self.win {
-            app.pointer(ev);
+            app.event(InputEvent::Pointer(ev));
         }
         // Moves come in bursts, and a cancel (the window losing focus) shows nothing new.
         match ev.phase {
@@ -241,9 +241,8 @@ impl Shell {
         } else {
             self.draw();
         }
-        let scale = self.scale() as f64;
         if let (Some(a11y), Some(app)) = (&mut self.a11y, &self.win) {
-            a11y.update_if_active(|| app.accessibility_update(scale));
+            a11y.update_if_active(|| app.accessibility_update());
         }
     }
 
@@ -255,7 +254,7 @@ impl Shell {
             g.surface.configure(g.renderer.device(), &g.config);
         }
         if let Some(app) = &mut self.win {
-            app.resize(width as f32 / scale, height as f32 / scale);
+            app.event(InputEvent::Resize { width: width as f32 / scale, height: height as f32 / scale, scale });
         }
         self.resized = true;
         self.redraw();
@@ -375,7 +374,7 @@ impl Shell {
         };
         let handled = key.is_some_and(|key| {
             let code = physical_char(event.physical_key);
-            app.key_event(KeyEvent { key, code, modifiers: modifiers(self.modifiers), repeat: event.repeat })
+            app.event(InputEvent::Key(KeyEvent { key, code, modifiers: modifiers(self.modifiers), repeat: event.repeat }))
         });
         if handled {
             return;
@@ -419,10 +418,10 @@ impl ApplicationHandler<ShellEvent> for Shell {
                     #[cfg(target_os = "macos")]
                     if let Some(n) = &self.native {
                         for (id, event) in n.inbox.take() {
-                            app.native_event(id, event);
+                            app.event(InputEvent::Native { id, event });
                         }
                         for (id, image) in n.inbox.take_snapshots() {
-                            app.native_snapshot(id, image);
+                            app.event(InputEvent::NativeSnapshot { id, image });
                         }
                     }
                 }
@@ -435,17 +434,16 @@ impl ApplicationHandler<ShellEvent> for Shell {
             }
             ShellEvent::Accessibility(e) => e,
         };
-        let scale = self.scale() as f64;
         match e.window_event {
             accesskit_winit::WindowEvent::InitialTreeRequested => {
                 if let (Some(a11y), Some(app)) = (&mut self.a11y, &self.win) {
                     app.restart_accessibility();
-                    a11y.update_if_active(|| app.accessibility_update(scale));
+                    a11y.update_if_active(|| app.accessibility_update());
                 }
             }
             accesskit_winit::WindowEvent::ActionRequested(req) => {
                 if let Some(app) = &mut self.win {
-                    app.accessibility_action(req.target_node, req.action, req.data);
+                    app.event(InputEvent::Accessibility { target: req.target_node, action: req.action, data: req.data });
                 }
                 self.redraw();
             }
@@ -499,26 +497,28 @@ impl ApplicationHandler<ShellEvent> for Shell {
         let scale = window.scale_factor() as f32;
         let root = self.root.take().expect("root view");
         // The window's native views: AppKit's on macOS, placeholders elsewhere for now.
-        #[allow(unused_mut)]
-        let mut host: Box<dyn octara::native::NativeHost> = Box::<octara::native::RecordingHost>::default();
         #[cfg(target_os = "macos")]
-        {
+        let first = {
             let proxy = self.proxy.clone();
-            if let Some((native, mac)) = native_mac::Native::new(&window, move || {
+            let host = native_mac::Native::new(&window, move || {
                 let _ = proxy.send_event(ShellEvent::Wake);
-            }) {
-                host = mac;
+            })
+            .map(|(native, host)| {
                 self.native = Some(native);
-            }
-        }
-        let platform = platform::WinitPlatform::new(self.proxy.clone(), platform::WinitWindow::new(window.clone(), host));
+                host
+            });
+            platform::WinitWindow::new(window.clone(), host)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let first = platform::WinitWindow::new(window.clone());
+        let platform = platform::WinitPlatform::new(self.proxy.clone(), first);
         let app = App::new(platform);
         let options = octara::platform::WindowOptions::new(self.options.title.clone()).size(self.options.size.0, self.options.size.1);
         let mut app = app.open_window(options, root).expect("the window");
         if self.options.system_fonts {
             app.app().use_system_fonts();
         }
-        app.resize(size.width as f32 / scale, size.height as f32 / scale);
+        app.event(InputEvent::Resize { width: size.width as f32 / scale, height: size.height as f32 / scale, scale });
         self.capture = capture::Job::from_env(&self.proxy);
         self.win = Some(app);
         self.gpu = Some(Gpu { window, surface, config, renderer });
@@ -544,7 +544,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
             }
             WindowEvent::CursorLeft { .. } => {
                 if let Some(app) = &mut self.win {
-                    app.pointer_leave();
+                    app.event(InputEvent::PointerLeave);
                 }
                 self.redraw();
             }
@@ -599,7 +599,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
             WindowEvent::Ime(Ime::Preedit(text, _)) => {
                 self.traced(Instant::now(), "input method composition");
                 if let Some(app) = &mut self.win {
-                    app.set_composition(&text);
+                    app.event(InputEvent::Composition(text));
                 }
                 self.redraw();
             }

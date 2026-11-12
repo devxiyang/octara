@@ -4,7 +4,7 @@
 //!
 //! TargetPlatform text protocols (NSTextInputClient, UITextInput, InputConnection, TSF,
 //! text-input-v3) map onto [`App::text_field`], [`App::replace_text`], [`App::set_selection`]
-//! and [`App::set_composition`]; ranges are byte offsets, with [`utf16_offset`] and
+//! and `InputEvent::Composition`; ranges are byte offsets, with [`utf16_offset`] and
 //! [`byte_offset`] for the protocols that count UTF-16 units.
 
 use super::behavior::Behavior;
@@ -463,8 +463,8 @@ impl Window {
 
     /// What an input method is composing in the focused field (pinyin before it becomes 汉字):
     /// shown underlined at the caret, not yet part of the value; it replaces the selection.
-    /// Empty ends it. [`App::type_text`] commits.
-    pub fn set_composition(&mut self, text: &str) {
+    /// Empty ends it. `Text` commits.
+    pub(super) fn on_composition(&mut self, text: &str) {
         self.input_frame(|| {
             let Some((n, v, a, c)) = self.field() else { return };
             // No input method in a secure field.

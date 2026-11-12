@@ -3,8 +3,8 @@
 
 use octara::capture::{Painter, Picture, Pixels, Shown};
 use octara::inspect::{Request, handle};
-use octara::native::{NativeHost, NativeId, Placement};
 use octara::paint::{DisplayList, Item};
+use octara::platform::{HeadlessPlatform, HeadlessWindow};
 use octara::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -23,28 +23,18 @@ impl Painter for Counting {
     }
 }
 
-/// A host that takes snapshots (handed back by the test) and can be busy.
-#[derive(Default)]
-struct Snapping {
-    busy: Rc<RefCell<Option<String>>>,
+/// A platform that shows native views, takes snapshots (handed back by the test) and can be busy.
+fn snapping() -> HeadlessPlatform {
+    HeadlessPlatform::with_window(HeadlessWindow {
+        shows_native: true,
+        snapshots: Some(vec!["video shows black".into()]),
+        ..HeadlessWindow::default()
+    })
 }
 
-impl NativeHost for Snapping {
-    fn create(&mut self, _: NativeId, _: &str, _: octara::native::Slot, _: &serde_json::Value) -> bool {
-        true
-    }
-    fn update(&mut self, _: NativeId, _: &serde_json::Value) {}
-    fn place(&mut self, _: &[Placement]) {}
-    fn destroy(&mut self, _: NativeId) {}
-    fn snapshot(&mut self, _: NativeId) -> Result<Vec<String>, String> {
-        Ok(vec!["video shows black".into()])
-    }
-    fn busy(&self, _: NativeId) -> Option<String> {
-        self.busy.borrow().clone()
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
+/// Pretends every native view of `app` is busy with `what`.
+fn set_busy(app: &Window, what: Option<&str>) {
+    app.platform_window_mut().as_any_mut().downcast_mut::<HeadlessWindow>().unwrap().busy = what.map(str::to_owned);
 }
 
 fn view() -> View {
@@ -77,20 +67,18 @@ fn a_headless_capture_reports_placeholders() {
 
 #[test]
 fn snapshots_draw_in_place_and_are_cleared() {
-    let host = Snapping::default();
-    let busy = host.busy.clone();
-    let mut app = Window::headless_on(octara::platform::HeadlessPlatform::with_host(host), view);
+    let mut app = Window::headless_on(snapping(), view);
 
     // A busy view keeps the app unsettled.
-    *busy.borrow_mut() = Some("loading https://example.com".into());
+    set_busy(&app, Some("loading https://example.com"));
     assert_eq!(app.unsettled(), ["web view #web: loading https://example.com"]);
-    *busy.borrow_mut() = None;
+    set_busy(&app, None);
     assert!(app.unsettled().is_empty());
 
     let coming = app.capture_begin();
     assert_eq!(coming.len(), 1);
     assert_eq!(app.capture_awaiting(), coming);
-    app.native_snapshot(coming[0], Some(Image::rgba(1, 1, vec![255, 0, 0, 255])));
+    app.event(InputEvent::NativeSnapshot { id: coming[0], image: Some(Image::rgba(1, 1, vec![255, 0, 0, 255])) });
     assert!(app.capture_awaiting().is_empty());
 
     let painted = Rc::new(RefCell::new(Vec::new()));

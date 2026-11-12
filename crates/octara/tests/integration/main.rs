@@ -22,6 +22,7 @@ mod native;
 mod overlay;
 mod pointer;
 mod position;
+mod replay;
 mod responsive;
 mod scroll;
 mod secure;

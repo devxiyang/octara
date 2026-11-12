@@ -26,11 +26,12 @@ what the picture can be trusted for. One request, the same on every platform and
 ## Painted (default)
 
 1. Settle: run until no task, timer or motion is left (subscriptions do not count) and no
-   native view is busy (`NativeHost::busy`: a page loading), at most `settle_ms`. Headless this
+   native view is busy (`PlatformWindow::native_busy`: a page loading), at most `settle_ms`. Headless this
    runs on the app clock; in a window, on the wall clock.
-2. Snapshots: the host is asked for each shown view's snapshot (`NativeHost::snapshot`, which
+2. Snapshots: the platform window is asked for each shown view's snapshot
+   (`PlatformWindow::snapshot_native`, which
    says what the snapshot misses, or why it cannot take one); each comes back through
-   `App::native_snapshot` within 5 s or the view is reported `failed`.
+   `InputEvent::NativeSnapshot` within 5 s or the view is reported `failed`.
 3. Paint: the display list, with each snapshot drawn in its view's place, rendered by the
    window's GPU renderer offscreen (the renderer that ships) or, headless, the reference
    renderer; written as an 8-bit sRGB PNG. The snapshots are cleared afterwards, so the live
@@ -66,6 +67,6 @@ size is not the window's (a sleeping display).
 ## Steps
 
 1. The request, the report and painted captures headless (reference renderer); `busy` and
-   snapshot misses in `NativeHost`.
+   snapshot misses in the platform window.
 2. In a window: wall-clock settling, busy views, snapshot deadlines, the GPU renderer offscreen.
 3. `pixels: display` on macOS, with the fallback.

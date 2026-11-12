@@ -15,7 +15,8 @@ use crate::reactive::graph::Ctx;
 use std::fmt;
 
 /// A key, as the keyboard layout produces it.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Key {
     Tab,
     Enter,
@@ -39,7 +40,7 @@ pub enum Key {
 }
 
 /// A key press.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct KeyEvent {
     pub key: Key,
     /// The physical key, as the character it types on a US layout (`'k'`): shortcuts still
@@ -430,8 +431,8 @@ impl Window {
     }
 
     /// A key press, as a window delivers it. Returns whether something handled it; if not, the
-    /// shell sends the key's text with [`App::type_text`].
-    pub fn key_event(&mut self, ev: KeyEvent) -> bool {
+    /// backend sends the key's text (`InputEvent::Text`).
+    pub(super) fn on_key(&mut self, ev: KeyEvent) -> bool {
         let mut handled = false;
         self.input_frame(|| handled = self.route_key(&ev));
         handled
@@ -596,7 +597,7 @@ impl Window {
     /// keymap binds runs; an unbound character key types itself.
     pub fn press_key(&mut self, chord: &str) -> Result<(), String> {
         let ev = Chord::parse(chord)?.event(self.app.platform.get());
-        if !self.key_event(ev)
+        if !self.event(super::event::InputEvent::Key(ev))
             && let Key::Char(c) = ev.key
             && !ev.modifiers.intersects(Modifiers::CTRL | Modifiers::META)
         {

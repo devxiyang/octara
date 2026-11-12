@@ -125,8 +125,8 @@ fn selection_rectangles_pointer_paste() {
 
     // A click on the second line places the caret there.
     let at = (x + 4.0 * 8.0 + 1.0, y + 24.0 + 12.0);
-    app.pointer(PointerEvent::mouse(Phase::Down, at.0, at.1));
-    app.pointer(PointerEvent::mouse(Phase::Up, at.0, at.1));
+    app.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Down, at.0, at.1)));
+    app.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Up, at.0, at.1)));
     assert_eq!(caret(&app), 14);
 
     // A paste keeps its line breaks.

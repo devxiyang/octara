@@ -44,7 +44,7 @@ fn nothing_reports_the_value() {
     let snap = app.inspect();
     let pw = snap.find("pw").unwrap();
     assert_eq!((pw.role.as_str(), pw.value.as_deref()), ("password_input", Some(bullets.as_str())));
-    let tree = app.accessibility_tree(1.0);
+    let tree = app.accessibility_tree();
     let n = app.kernel().find("pw").unwrap();
     let node = &tree.nodes.iter().find(|(i, _)| *i == a11y_id(n)).unwrap().1;
     assert_eq!((node.role(), node.value()), (AkRole::PasswordInput, Some(bullets.as_str())));
@@ -74,7 +74,7 @@ fn editing_keeps_it_in() {
     app.type_text("x");
     app.press_key("mod+z").unwrap();
     assert_eq!(value(&app), "xpässwörd", "no undo history");
-    app.set_composition("ni");
+    app.event(InputEvent::Composition(("ni").into()));
     assert_eq!(app.text_field().unwrap().composition, "", "no input method");
 }
 
@@ -82,7 +82,7 @@ fn editing_keeps_it_in() {
 fn revealing_shows_the_text_to_the_screen_only_for_agents() {
     let mut app = app(TargetPlatform::MacOs);
     app.tap("show").unwrap();
-    let tree = app.accessibility_tree(1.0);
+    let tree = app.accessibility_tree();
     let n = app.kernel().find("pw").unwrap();
     let node = &tree.nodes.iter().find(|(i, _)| *i == a11y_id(n)).unwrap().1;
     assert_eq!((node.role(), node.value()), (AkRole::TextInput, Some(SECRET)), "assistive technology reads what shows");

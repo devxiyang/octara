@@ -7,21 +7,20 @@
 //! a picker): Octara content painted over an overlay view would be hidden by it, so `check`
 //! reports it (`NATIVE_COVERED`).
 //!
-//! After each frame the app tells its [`NativeHost`] what changed: views created and destroyed,
-//! props (one JSON value, handed over whole), and [`Placement`]s (where each view is, its corner
-//! radius, the clip around it, its opacity, whether it shows). The host sends events back with
-//! [`App::native_event`](crate::app::App::native_event) and reports a view's natural size with
-//! [`App::native_size`](crate::app::App::native_size). Headless, the [`RecordingHost`] keeps
-//! every call, and the view draws as a placeholder box; a host's snapshot of a view (taken for a
+//! After each frame the app presents what changed to the window's platform window as
+//! [`NativeChange`]s: views created and destroyed, props (one JSON value, handed over whole), and
+//! [`Placement`]s (where each view is, its corner radius, the clip around it, its opacity,
+//! whether it shows). Events and natural sizes come back as input
+//! ([`InputEvent::Native`](crate::app::InputEvent::Native), `NativeSize`). A view the platform
+//! does not show draws as a placeholder box; its snapshot (taken for a
 //! [capture](crate::capture)) draws in its place, so captures show the page or the map.
 
 use crate::paint::Rect;
 use serde::Serialize;
 use serde_json::Value;
-use std::any::Any;
 
 /// Where a native view is stacked: behind Octara's surface or above it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Slot {
     /// Behind the surface, through a cutout (maps, video layers, materials).
@@ -31,11 +30,11 @@ pub enum Slot {
 }
 
 /// A native view's identity across frames (stable while its element is mounted).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, serde::Deserialize, PartialOrd, Ord)]
 pub struct NativeId(pub u64);
 
 /// Where a native view goes this frame, in logical window coordinates.
-#[derive(Clone, PartialEq, Debug, Serialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, serde::Deserialize)]
 pub struct Placement {
     pub id: NativeId,
     pub slot: Slot,
@@ -58,77 +57,26 @@ pub struct Placement {
 
 /// An event a native view sends back: a name and its data (`load` with a URL, `region` with a
 /// map's bounds).
-#[derive(Clone, PartialEq, Debug, Serialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, serde::Deserialize)]
 pub struct NativeEvent {
     pub name: String,
     pub data: Value,
 }
 
-/// The platform side: creates, updates, places and destroys native views. A shell implements it
-/// with the platform's views; [`RecordingHost`] records the calls (headless and tests).
-pub trait NativeHost: Any {
-    /// A view of `kind` appears in `slot` with `props`. Returns whether the platform shows it:
-    /// when it does, the frame leaves the view's place to it (an underlay view gets a cutout);
-    /// when not, a placeholder box is drawn there.
-    fn create(&mut self, id: NativeId, kind: &str, slot: Slot, props: &Value) -> bool;
-    /// A view's props changed (handed over whole).
-    fn update(&mut self, id: NativeId, props: &Value);
-    /// Views whose placement changed this frame (shells apply them with the frame's present).
-    fn place(&mut self, placements: &[Placement]);
-    /// A view goes away.
-    fn destroy(&mut self, id: NativeId);
-    /// Takes an image of what view `id` shows, handed back later with
-    /// [`App::native_snapshot`](crate::app::App::native_snapshot): `Ok` with what the snapshot
-    /// cannot show (WebKit: hardware video and WebGL come out black), or `Err` with why this
-    /// host takes none.
-    fn snapshot(&mut self, id: NativeId) -> Result<Vec<String>, String> {
-        let _ = id;
-        Err("this host takes no snapshots".into())
-    }
-    /// What view `id` is busy with (a page loading), so a capture waits for it.
-    fn busy(&self, id: NativeId) -> Option<String> {
-        let _ = id;
-        None
-    }
-    fn as_any(&self) -> &dyn Any;
-}
-
-/// One call a [`RecordingHost`] received.
-#[derive(Clone, PartialEq, Debug, Serialize)]
-#[serde(tag = "call", rename_all = "snake_case")]
-pub enum HostCall {
+/// What changed about a window's native views in a frame: the app presents these to its
+/// platform window ([`Frame::native`](crate::platform::Frame::native)), which applies them
+/// with the frame (placements in its transaction). Headless they are kept for tests.
+#[derive(Clone, PartialEq, Debug, Serialize, serde::Deserialize)]
+#[serde(tag = "change", rename_all = "snake_case")]
+pub enum NativeChange {
+    /// A view of `kind` appears in `slot` with `props`.
     Create { id: NativeId, kind: String, slot: Slot, props: Value },
+    /// A view's props changed (handed over whole).
     Update { id: NativeId, props: Value },
+    /// Views whose placement changed.
     Place { placements: Vec<Placement> },
+    /// A view goes away.
     Destroy { id: NativeId },
-}
-
-/// A host that records what it is told: the headless app's, and tests'.
-#[derive(Default, Debug)]
-pub struct RecordingHost {
-    pub calls: Vec<HostCall>,
-}
-
-impl NativeHost for RecordingHost {
-    fn create(&mut self, id: NativeId, kind: &str, slot: Slot, props: &Value) -> bool {
-        self.calls.push(HostCall::Create { id, kind: kind.to_owned(), slot, props: props.clone() });
-        false
-    }
-    fn update(&mut self, id: NativeId, props: &Value) {
-        self.calls.push(HostCall::Update { id, props: props.clone() });
-    }
-    fn place(&mut self, placements: &[Placement]) {
-        self.calls.push(HostCall::Place { placements: placements.to_vec() });
-    }
-    fn destroy(&mut self, id: NativeId) {
-        self.calls.push(HostCall::Destroy { id });
-    }
-    fn snapshot(&mut self, _: NativeId) -> Result<Vec<String>, String> {
-        Err("headless: no platform view to take a snapshot of".into())
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 /// What `inspect` shows of a native view.

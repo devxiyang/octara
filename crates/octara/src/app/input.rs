@@ -47,9 +47,14 @@ impl Window {
     /// Text typed (or committed by an input method) into the focused text field. Ends any
     /// composition.
     pub fn type_text(&mut self, text: &str) {
-        if self.focused_input().is_some() {
-            self.input_frame(|| self.insert_text(text));
+        self.event(super::event::InputEvent::Text(text.to_owned()));
+    }
+    pub(super) fn on_text(&mut self, text: &str) -> bool {
+        if self.focused_input().is_none() {
+            return false;
         }
+        self.input_frame(|| self.insert_text(text));
+        true
     }
 
     /// The caret of the focused text field `(x, y, w, h)` in logical pixels, for placing an input
@@ -62,14 +67,16 @@ impl Window {
 
     /// The accessibility tree, for an AccessKit adapter (and for agents): roles, names, values,
     /// states, actions and bounds (logical pixels; the window node carries `scale`).
-    pub fn accessibility_tree(&self, scale: f64) -> accesskit::TreeUpdate {
+    pub fn accessibility_tree(&self) -> accesskit::TreeUpdate {
+        let scale = f64::from(self.w.scale.get());
         let focus = self.w.interaction.borrow().focused;
         self.w.kernel.borrow().accessibility_tree(focus, scale)
     }
 
     /// What changed for assistive technology since the last update (the whole tree the first
     /// time, and after [`restart_accessibility`](Self::restart_accessibility)).
-    pub fn accessibility_update(&self, scale: f64) -> accesskit::TreeUpdate {
+    pub fn accessibility_update(&self) -> accesskit::TreeUpdate {
+        let scale = f64::from(self.w.scale.get());
         let focus = self.w.interaction.borrow().focused;
         self.w.kernel.borrow().accessibility_update(focus, scale)
     }
@@ -80,7 +87,7 @@ impl Window {
     }
 
     /// Performs an action assistive technology asked for. Returns whether it did anything.
-    pub fn accessibility_action(
+    pub(super) fn on_accessibility(
         &mut self,
         target: accesskit::NodeId,
         action: accesskit::Action,

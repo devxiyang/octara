@@ -128,14 +128,14 @@ fn composition_shows_at_the_caret_and_replaces_the_selection() {
     let mut app = app("ab");
     keys(&mut app, &["home", "right"]);
     let before = app.text_field().unwrap().caret.0;
-    app.set_composition("ni");
+    app.event(InputEvent::Composition(("ni").into()));
     let f = app.text_field().unwrap();
     assert_eq!((f.text.as_str(), f.composition.as_str()), ("ab", "ni"));
     assert!(f.caret.0 > before, "the caret follows the composition");
     app.type_text("你");
     assert_eq!(value(&app), "a你b");
     keys(&mut app, &["shift+right"]);
-    app.set_composition("x");
+    app.event(InputEvent::Composition(("x").into()));
     assert_eq!(value(&app), "a你", "composing over a selection replaces it");
     app.type_text("y");
     assert_eq!(value(&app), "a你y");
@@ -157,8 +157,8 @@ fn pointer_places_the_caret_and_selects() {
     assert_eq!(selection(&app), 0..0);
     // Shift-click extends; double-click selects a word; triple-click everything.
     app.app().advance(std::time::Duration::from_secs(1));
-    app.pointer(PointerEvent::mouse(Phase::Down, x + w - 2.0, cy).modifiers(Modifiers::SHIFT));
-    app.pointer(PointerEvent::mouse(Phase::Up, x + w - 2.0, cy));
+    app.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Down, x + w - 2.0, cy).modifiers(Modifiers::SHIFT)));
+    app.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Up, x + w - 2.0, cy)));
     assert_eq!(selection(&app), 0..16);
     app.app().advance(std::time::Duration::from_secs(1));
     let caret_after_beta = {
@@ -213,7 +213,11 @@ fn the_platform_text_protocol() {
 fn assistive_technology_sets_the_value() {
     let mut app = app("old");
     let id = octara::kernel::a11y::a11y_id(app.kernel().find("field").unwrap());
-    let done = app.accessibility_action(id, accesskit::Action::SetValue, Some(accesskit::ActionData::Value("new".into())));
+    let done = app.event(InputEvent::Accessibility {
+        target: id,
+        action: accesskit::Action::SetValue,
+        data: Some(accesskit::ActionData::Value("new".into())),
+    });
     assert!(done);
     assert_eq!(value(&app), "new");
     assert_eq!(selection(&app), 3..3);
@@ -243,9 +247,9 @@ fn what_a_field_draws_follows_every_edit_at_once() {
     assert_ne!(glyphs_before, glyphs_after, "the new character is drawn, not the old one");
     // A composition moving with the caret.
     keys(&mut app, &["home"]);
-    app.set_composition("ab");
+    app.event(InputEvent::Composition(("ab").into()));
     assert_eq!(drawn_glyphs(&app, "field"), 5);
     keys(&mut app, &["right"]);
-    app.set_composition("a");
+    app.event(InputEvent::Composition(("a").into()));
     assert_eq!(drawn_glyphs(&app, "field"), 4);
 }

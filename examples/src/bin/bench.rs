@@ -280,19 +280,19 @@ fn frames() {
         for _ in 0..3 {
             let t0 = Instant::now();
             for _ in 0..20 {
-                std::hint::black_box(app.accessibility_tree(2.0));
+                std::hint::black_box(app.accessibility_tree());
             }
             a11y = a11y.min(t0.elapsed().as_secs_f64() * 1e6 / 20.0);
         }
         // Incremental: after a press, what the platform is sent (the press itself not timed).
-        let _ = app.accessibility_update(2.0);
+        let _ = app.accessibility_update();
         let (mut update, mut sent) = (f64::MAX, 0);
         for _ in 0..3 {
             let mut total = 0.0;
             for _ in 0..20 {
                 let _ = app.tap(target);
                 let t0 = Instant::now();
-                sent = std::hint::black_box(app.accessibility_update(2.0)).nodes.len();
+                sent = std::hint::black_box(app.accessibility_update()).nodes.len();
                 total += t0.elapsed().as_secs_f64();
             }
             update = update.min(total * 1e6 / 20.0);

@@ -133,7 +133,7 @@ fn shortcuts_follow_the_physical_key_under_other_layouts() {
     let mut app = app();
     // Cmd + the key that types `ы` on a Russian layout, where US has `s`.
     let ev = KeyEvent { key: Key::Char('ы'), code: Some('s'), modifiers: Modifiers::META, repeat: false };
-    assert!(app.key_event(ev));
+    assert!(app.event(InputEvent::Key(ev)));
     assert_eq!(log(&mut app), "app-save");
 }
 
@@ -169,7 +169,7 @@ fn a_text_field_keeps_its_keys() {
 fn an_input_method_owns_enter_and_escape_while_composing() {
     let mut app = app();
     app.tap("field").unwrap();
-    app.set_composition("ni");
+    app.event(InputEvent::Composition(("ni").into()));
     app.press_key("enter").unwrap();
     app.press_key("escape").unwrap();
     assert_eq!(log(&mut app), "", "Enter and Escape went to the input method");
