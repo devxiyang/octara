@@ -55,12 +55,13 @@ first, so no binding, watch or task of it runs again.
   Headless the clock is virtual (`advance`); a backend feeds the wall clock.
 - The recorder keeps `(time, window, InputEvent)`: a recorded session replays to the same
   snapshots and display lists on the virtual clock.
-- `app.frame()` settles every window (tasks, the reactive flush once, then each dirty window's
-  layout and after-layout hooks). `app.window_frame(window) -> Frame` gives what a window shows:
-  the display list, the accessibility update (when a reader listens), native view changes and
-  placements, the text input state, the cursor, the title. A backend presents it
-  (`PlatformWindow::present`), then the next frame is requested by the app when something
-  changes or moves.
+- After each operation the app settles every window (tasks, the reactive flush, then each
+  window's layout and after-layout hooks) and presents each window's `Frame` to its platform
+  window (`PlatformWindow::present`): native view changes and placements as data, the text input
+  state, the cursor, the accessibility update when a reader listens, and whether it must draw.
+  The display list is not in it: the backend takes it (`Window::display_list`) when it draws,
+  on its own pacing. Questions with answers stay methods (whether the platform shows a kind of
+  native view, a view's snapshot, whether it is busy).
 - Agents and tests: the inspector protocol names a window in every request (default: the only
   one); its high-level steps (`tap`, `type`, …) lower to `InputEvent`s. `Window::headless(view)`
   is a window of a new headless app: what tests and agents drive.
@@ -112,6 +113,13 @@ that could not free a window.
 2. Input as data and frames out: `InputEvent`, `app.event`, `Frame`, `present`, the recorder and
    replay; the inspector lowers to events and names windows. Proof: a recorded session replays
    to identical snapshots and display lists.
+2.5. What people and agents point at: each node knows the component that made it (its name and
+   call site, besides its own source); captures can mark the interactive elements and components
+   with numbers the snapshot repeats ("make #12 wider"); a point in a running window picks an
+   element (its number, test id, component and source, to paste to an agent) and the protocol
+   asks the same by coordinates; a request explains an element's size (the constraints on it:
+   flex, grid, minimum and maximum, text measurement). The accessibility label stays the user's;
+   a hand-written developer tag waits until these prove not enough.
 3. The text core (its design first): runs, blocks, block layout, document selection, text runs and
    live regions in accessibility.
 4. Incremental paint and accessibility.
