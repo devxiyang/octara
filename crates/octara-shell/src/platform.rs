@@ -19,11 +19,19 @@ use winit::window::Window;
 pub(crate) struct WinitPlatform {
     clipboard: Option<arboard::Clipboard>,
     shared: Rc<Shared>,
+    /// The menu bar (macOS), made with the first menus.
+    #[cfg(target_os = "macos")]
+    menubar: Option<super::menubar_mac::MenuBar>,
 }
 
 impl WinitPlatform {
     pub(crate) fn new(shared: Rc<Shared>) -> Self {
-        WinitPlatform { clipboard: arboard::Clipboard::new().ok(), shared }
+        WinitPlatform {
+            clipboard: arboard::Clipboard::new().ok(),
+            shared,
+            #[cfg(target_os = "macos")]
+            menubar: None,
+        }
     }
 }
 
@@ -54,6 +62,21 @@ impl Platform for WinitPlatform {
         if let Some(c) = &mut self.clipboard {
             let _ = c.set_image(data);
         }
+    }
+    fn set_menus(&mut self, menus: &[octara::menu::Menu]) {
+        #[cfg(target_os = "macos")]
+        {
+            if self.menubar.is_none() {
+                let proxy = self.shared.proxy.clone();
+                self.menubar = super::menubar_mac::MenuBar::new(move |name, chord| {
+                    let _ = proxy.send_event(ShellEvent::Command { name, chord });
+                });
+            }
+            if let Some(bar) = &mut self.menubar {
+                bar.set(menus);
+            }
+        }
+        let _ = menus;
     }
     fn open_url(&mut self, url: &str) {
         if let Err(e) = open::that_detached(url) {

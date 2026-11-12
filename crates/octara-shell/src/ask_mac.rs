@@ -149,7 +149,7 @@ fn build(mtm: MainThreadMarker, menu: &Menu, target: &Target, ids: &mut Vec<Stri
 
 /// A chord (`"mod+shift+c"`) as AppKit's key equivalent: its character and modifiers (keys
 /// without a character show none).
-fn key_equivalent(chord: &str) -> (String, NSEventModifierFlags) {
+pub(crate) fn key_equivalent(chord: &str) -> (String, NSEventModifierFlags) {
     let mut mask = NSEventModifierFlags::empty();
     let mut key = String::new();
     for part in chord.split('+') {

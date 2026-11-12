@@ -51,6 +51,18 @@ Ownership and context are [the core's](core.md).
   withdrawn request closes (`cancelTracking`, `endSheet`). After an answer the pointer is
   sampled again (no move came while the menu had it). Windows' native menus and alerts come
   later (drawn there now), with the menu bar's items running commands (GPUI's model).
+- The menu bar (GPUI's model): `set_menus(menus)` declares the app's menus (without a call,
+  `Menu::edit()` alone); an item's id is a command. At the end of each frame the app fills in
+  each item's state (enabled while the active window handles its command: `command_enabled`,
+  which finds the handler as running it does, with each command family saying when it does
+  something, as copy needs a selection) and its keys (`chord_for`: the keymap's binding, the one
+  source of keys), and presents the menus to the platform when they changed. A pick comes back
+  as input (`InputEvent::Command`) to the active window; picked by its keys, they go through the
+  keymap first (a binding in a context there wins, as without the menu), else the command runs.
+  macOS: the bar is the app's menu (About, Hide, Quit: the system's actions), the app's menus and
+  the Window menu; it is built again only when its shape changes, and `validateMenuItem:`
+  answers the states, enabling every item while a key is matched so a disabled one does not
+  swallow it.
 - Tooltips are drawn in the window.
 
 ## Agents
@@ -64,5 +76,5 @@ Ownership and context are [the core's](core.md).
 1. Several windows headless; windows in the inspector protocol and captures. Implemented.
 2. Several windows in the winit backend; the shell routes events by window. Implemented.
 3. Requests: the mechanism, file dialogs on it, menus and prompts drawn in the window.
-   Implemented. Native menus and alerts on macOS. Implemented. Then the macOS menu bar; Windows'
-   native menus and alerts, Wayland popups later.
+   Implemented. Native menus and alerts on macOS, the macOS menu bar. Implemented. Windows' native
+   menus and alerts and menu bar, Wayland popups, later.

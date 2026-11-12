@@ -348,6 +348,22 @@ impl Window {
     }
 
     /// The commands a document selection handles when no field has focus.
+    /// Whether document `command` does something now: copying a selection, selecting all of a
+    /// region (the selection's, or the one under the pointer).
+    pub(super) fn document_enabled(&self, command: &str) -> bool {
+        match command {
+            "edit.copy" | "edit.copy_markdown" => self.ordered().is_some(),
+            "edit.select_all" => {
+                self.w.selection.borrow().is_some() || {
+                    let at = self.w.interaction.borrow().pointer.hover_at;
+                    let k = self.w.kernel.borrow();
+                    at.and_then(|(x, y)| k.hit_test(x, y)).and_then(|h| k.region_of(h)).is_some()
+                }
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn document_command(&self, command: &str) -> bool {
         match command {
             "edit.copy" => self.copy_doc_selection(),

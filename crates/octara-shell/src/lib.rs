@@ -34,6 +34,8 @@ use winit::window::WindowId;
 mod ask_mac;
 mod capture;
 #[cfg(target_os = "macos")]
+mod menubar_mac;
+#[cfg(target_os = "macos")]
 mod native_mac;
 #[cfg(target_os = "macos")]
 mod pace_mac;
@@ -49,6 +51,11 @@ pub enum ShellEvent {
     Capture,
     /// A window's frame clock ticked (a display refresh).
     Frame(WindowId),
+    /// A menu bar item was picked (by its keys: the chord): its command for the active window.
+    Command {
+        name: String,
+        chord: Option<String>,
+    },
     /// A person answered a request a window's platform showed (a file dialog, a menu).
     Answer {
         window: WindowId,
@@ -106,6 +113,7 @@ pub fn run_with(options: Options, root: impl Fn() -> View + 'static) {
         shared,
         app: None,
         main: None,
+        active: None,
         modifiers: ModifiersState::empty(),
         started: Instant::now(),
         done: false,
@@ -161,6 +169,8 @@ struct Shell {
     app: Option<App>,
     /// The first window (captures and `exit_after_frames` are its).
     main: Option<octara::app::WindowId>,
+    /// The window that last became active (the menu bar's commands go to it).
+    active: Option<octara::app::WindowId>,
     modifiers: ModifiersState,
     /// The app's clock starts at launch.
     started: Instant,
@@ -474,6 +484,15 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 self.capture_step();
                 return;
             }
+            ShellEvent::Command { name, chord } => {
+                self.tick();
+                let w = self.active.and_then(|id| self.app.as_ref()?.window(id)).or_else(|| self.main_window());
+                if let Some(mut w) = w {
+                    w.event(InputEvent::Command { name, chord });
+                }
+                self.show();
+                return;
+            }
             ShellEvent::Answer { window, id, answer } => {
                 self.tick();
                 if let Some(mut w) = self.window_of(window) {
@@ -597,6 +616,9 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 self.pointer(&mut w, PointerEvent::touch(id, phase, x, y));
             }
             WindowEvent::Focused(on) => {
+                if on {
+                    self.active = Some(w.id());
+                }
                 if !on {
                     // The window lost the pointer: a held press or drag is cancelled.
                     let (x, y) = cursor;

@@ -520,6 +520,59 @@ impl Window {
         false
     }
 
+    /// A menu bar item picked: picked by its keys, they go through the keymap first (a binding in
+    /// a context here wins, as a key press's would); else, or unhandled, its command runs.
+    pub(super) fn on_menu_command(&mut self, command: &str, chord: Option<&str>) -> bool {
+        if let Some(ev) = chord.and_then(|c| Chord::parse(c).ok()).map(|c| c.event(self.app.platform.get()))
+            && self.on_key(ev)
+        {
+            return true;
+        }
+        self.invoke(command).is_ok()
+    }
+
+    /// Whether `command` would do something here now, found as running it finds its handler (the
+    /// focus path's elements, the built-ins, the app's): what a menu item for it shows.
+    pub fn command_enabled(&self, command: &str) -> bool {
+        let path = self.focus_path();
+        let handled = {
+            let k = self.w.kernel.borrow();
+            path.iter().any(|&n| !k.state(n).contains(State::DISABLED) && k.command_handler(n, command).is_some())
+        };
+        handled || self.builtin_enabled(command) || self.w.commands.borrow().iter().any(|(c, _)| c == command)
+    }
+
+    fn builtin_enabled(&self, command: &str) -> bool {
+        let focused = self.w.interaction.borrow().focused;
+        let handles = |kind: HandlerKind| focused.is_some_and(|f| self.w.kernel.borrow().handler_above(Some(f), kind).is_some());
+        match command {
+            "focus.next" | "focus.prev" | "focus.up" | "focus.down" | "focus.left" | "focus.right" | "focus.first" | "focus.last" => true,
+            "focus.dismiss" => self.top_modal().is_some() || focused.is_some() || self.w.selection.borrow().is_some(),
+            "press" => handles(HandlerKind::Press) || handles(HandlerKind::Toggle),
+            "submit" => handles(HandlerKind::Submit),
+            "menu" => handles(HandlerKind::SecondaryPress),
+            c if c.starts_with("edit.") => self.edit_enabled(c).unwrap_or_else(|| self.document_enabled(c)),
+            _ => false,
+        }
+    }
+
+    /// The keys the keymap binds to `command` here (everywhere, or in a context on the focus
+    /// path), as written (`"mod+c"`); the first such binding.
+    pub fn chord_for(&self, command: &str) -> Option<String> {
+        let path = self.focus_path();
+        let contexts: Vec<String> = {
+            let k = self.w.kernel.borrow();
+            path.iter().filter_map(|id| k.key_context(*id).map(str::to_owned)).collect()
+        };
+        self.keymap()
+            .bindings
+            .iter()
+            .rev()
+            .filter(|b| b.command.as_deref() == Some(command))
+            .find(|b| b.context.as_ref().is_none_or(|ctx| contexts.contains(ctx)))
+            .map(|b| b.chord.to_string())
+    }
+
     fn builtin(&self, command: &str) -> bool {
         let focused = self.w.interaction.borrow().focused;
         match command {

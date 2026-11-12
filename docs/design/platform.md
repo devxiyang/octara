@@ -85,7 +85,9 @@ platform is presented a `Frame` after each operation.
   pointer's look). The headless platform runs it in tests; the shell with
   `OCTARA_CONFORMANCE=1` (CI on macOS and Windows). URLs and file dialogs, which need a person
   or act outside the app, are not in it.
-- Not yet: `InputHandler`, menus, displays, lifecycle.
+- Menus: `set_menus` on the platform shows the app's menus with their states and keys filled in;
+  a pick comes back as `InputEvent::Command` (see [windows](windows.md#popups-and-menus)).
+- Not yet: `InputHandler`, displays, lifecycle.
 
 ## Backends
 

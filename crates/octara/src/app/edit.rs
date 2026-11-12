@@ -250,6 +250,29 @@ impl Window {
         self.w.kernel.borrow_mut().keep_goal(n, goal);
     }
 
+    /// Whether text-editing `command` does something in the focused field now (`None`: no field
+    /// has focus), as a menu item for it shows: copy and cut a selection (not of a secure
+    /// field), undo and redo a history, select all some text.
+    pub(super) fn edit_enabled(&self, command: &str) -> Option<bool> {
+        let (n, v, a, c) = self.field()?;
+        let k = self.w.kernel.borrow();
+        let secure = k.is_secure(n);
+        Some(match command {
+            "edit.copy" | "edit.cut" => a != c && !secure,
+            "edit.undo" | "edit.redo" => {
+                let i = self.w.interaction.borrow();
+                let fresh = |st: &EditState| st.last.is_none_or(|(_, h, _)| h == fingerprint(&v));
+                !secure
+                    && i.edits
+                        .get(&n)
+                        .is_some_and(|st| fresh(st) && if command == "edit.undo" { !st.undo.is_empty() } else { !st.redo.is_empty() })
+            }
+            "edit.select_all" => !v.is_empty(),
+            "edit.newline" => k.is_multiline(n),
+            _ => true,
+        })
+    }
+
     /// Runs a text-editing command on the focused field; `false` if there is none.
     pub(super) fn edit_command(&self, command: &str) -> bool {
         let Some((n, v, a, c)) = self.field() else { return false };

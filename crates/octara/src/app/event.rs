@@ -18,6 +18,9 @@ pub enum InputEvent {
     FileDrag(FileDrag),
     /// The window became the active one (key on macOS, foreground elsewhere) or stopped being.
     Active(bool),
+    /// A menu bar item was picked: its command runs in the window. Picked by its keys
+    /// (`chord`), those keys go through the keymap first, as a key press would.
+    Command { name: String, chord: Option<String> },
     /// A person answered a request (a menu, a prompt, a file dialog: [`crate::ask`]).
     Answer { id: crate::ask::AskId, answer: crate::ask::Answer },
     /// A mouse, touch or pen event, in logical pixels from the window's top-left corner.
@@ -67,9 +70,13 @@ impl Window {
             InputEvent::FileDrag(ev) => self.on_file_drag(ev),
             InputEvent::Answer { id, answer } => self.on_answer(id, answer),
             InputEvent::Active(on) => {
+                if on {
+                    self.app.active.set(Some(self.w.id));
+                }
                 self.input_frame(|| self.w.kernel.borrow_mut().set_window_active(on));
                 true
             }
+            InputEvent::Command { name, chord } => self.on_menu_command(&name, chord.as_deref()),
             InputEvent::Pointer(ev) => {
                 self.on_pointer(ev);
                 true

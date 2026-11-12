@@ -35,6 +35,12 @@ pub trait Platform {
     fn open_url(&mut self, url: &str) {
         let _ = url;
     }
+    /// Shows the app's menus (a menu bar: on macOS between the app's menu and the Window menu),
+    /// each item's state and keys filled in; a pick comes back as input
+    /// (`InputEvent::Command`) to the active window.
+    fn set_menus(&mut self, menus: &[crate::menu::Menu]) {
+        let _ = menus;
+    }
     /// Opens window `id` as `options` asks (the id names it in the input it sends back).
     fn open_window(&mut self, id: crate::app::WindowId, options: &WindowOptions) -> Result<Box<dyn PlatformWindow>, String>;
     fn as_any(&self) -> &dyn Any;
@@ -227,6 +233,8 @@ pub struct HeadlessPlatform {
     pub clipboard_image: Option<crate::image::Image>,
     /// Every URL opened, in order.
     pub opened_urls: Vec<String>,
+    /// The menus last shown.
+    pub menus: Vec<crate::menu::Menu>,
     /// The window the next one opened is (a test's fake platform views).
     pub next_window: Option<HeadlessWindow>,
 }
@@ -244,6 +252,9 @@ impl Platform for HeadlessPlatform {
     }
     fn open_url(&mut self, url: &str) {
         self.opened_urls.push(url.to_owned());
+    }
+    fn set_menus(&mut self, menus: &[crate::menu::Menu]) {
+        self.menus = menus.to_vec();
     }
     fn read_image(&mut self) -> Option<crate::image::Image> {
         self.clipboard_image.clone()

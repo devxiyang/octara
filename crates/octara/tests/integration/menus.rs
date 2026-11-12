@@ -96,3 +96,67 @@ fn a_prompt_answers_and_escape_dismisses_it() {
     w.press_key("escape").unwrap();
     assert_eq!(got(&w), "prompt None");
 }
+
+fn menus_shown(w: &Window) -> Vec<Menu> {
+    let app = w.app();
+    let p = app.platform();
+    p.as_any().downcast_ref::<octara::platform::HeadlessPlatform>().unwrap().menus.clone()
+}
+
+fn item<'a>(menus: &'a [Menu], id: &str) -> &'a MenuItem {
+    menus.iter().find_map(|m| m.find(id)).unwrap_or_else(|| panic!("no item {id}"))
+}
+
+fn enabled(menus: &[Menu], id: &str) -> bool {
+    matches!(item(menus, id), MenuItem::Action { enabled: true, .. })
+}
+
+#[test]
+fn the_menu_bar_follows_what_the_active_window_handles() {
+    let mut w = Window::headless(|| {
+        let saved = state("saved", || 0);
+        col()
+            .on_command("file.save", move || saved.update(|n| *n += 1))
+            .child(text_input().id("f").value("hello"))
+            .child(text(move || saved.get().to_string()).id("saved"))
+            .into()
+    });
+    w.app().run(|| set_menus([Menu::new("File").item(MenuItem::action("Save", "file.save")), Menu::edit()]));
+    w.tap("f").unwrap();
+    let menus = menus_shown(&w);
+    assert!(enabled(&menus, "file.save"), "the app handles it");
+    assert!(!enabled(&menus, "edit.copy"), "nothing selected in the field");
+    assert!(matches!(item(&menus, "edit.copy"), MenuItem::Action { shortcut: Some(s), .. } if s == "mod+c"), "keys from the keymap");
+    w.press_key("mod+a").unwrap();
+    assert!(enabled(&menus_shown(&w), "edit.copy"), "a selection: copy is enabled");
+    // A pick is input: the command runs in the window.
+    w.event(InputEvent::Command { name: "file.save".into(), chord: None });
+    assert_eq!(w.kernel().text(w.kernel().find("saved").unwrap()), "1");
+}
+
+#[test]
+fn a_menu_item_picked_by_its_keys_lets_the_keymap_decide() {
+    let mut w = Window::headless(|| {
+        let what = state("what", String::new);
+        col()
+            .on_command("app.close_window", move || what.set("closed the window".into()))
+            .child(
+                col()
+                    .id("editor")
+                    .size_8()
+                    .key_context("editor")
+                    .focusable()
+                    .on_command("editor.close_tab", move || what.set("closed a tab".into())),
+            )
+            .child(text(move || what.get()).id("what"))
+            .into()
+    });
+    w.bind("mod+w", Some("editor.close_tab"), Some("editor")).unwrap();
+    w.tap("editor").unwrap();
+    // The menu's item runs `app.close_window` on cmd+w, but in the editor the keymap binds it to
+    // closing a tab: the keys win, as they would without the menu.
+    w.event(InputEvent::Command { name: "app.close_window".into(), chord: Some("mod+w".into()) });
+    assert_eq!(w.kernel().text(w.kernel().find("what").unwrap()), "closed a tab");
+    w.event(InputEvent::Command { name: "app.close_window".into(), chord: None });
+    assert_eq!(w.kernel().text(w.kernel().find("what").unwrap()), "closed the window", "a click on the item runs its command");
+}

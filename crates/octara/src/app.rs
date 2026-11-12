@@ -151,6 +151,11 @@ pub(crate) struct AppState {
     keymap: RefCell<keys::Keymap>,
     /// The system the app runs on (clipboard, waking the loop, windows).
     pub(crate) system: RefCell<Box<dyn crate::platform::Platform>>,
+    /// The app's menus as declared (`set_menus`), as last presented to the platform (each
+    /// item's state and keys filled in), and the active window (whose commands they run).
+    menus: RefCell<Vec<crate::menu::Menu>>,
+    menus_presented: RefCell<Option<Vec<crate::menu::Menu>>>,
+    active: Cell<Option<WindowId>>,
     /// What paints `capture` requests (the harness installs the reference renderer).
     painter: RefCell<Option<Box<dyn crate::capture::Painter>>>,
     /// How deep the app's entry points are nested: an operation ends when it returns to 0.
@@ -390,6 +395,9 @@ impl App {
             platform: Cell::new(TargetPlatform::current()),
             keymap: RefCell::new(keys::Keymap::default()),
             system: RefCell::new(Box::new(platform)),
+            menus: RefCell::new(vec![crate::menu::Menu::edit()]),
+            menus_presented: RefCell::new(None),
+            active: Cell::new(None),
             painter: RefCell::default(),
             depth: Cell::new(0),
             check: Cell::new(false),
@@ -451,6 +459,37 @@ impl App {
 }
 
 impl AppState {
+    pub(crate) fn set_menus(self: &Rc<Self>, menus: Vec<crate::menu::Menu>) {
+        *self.menus.borrow_mut() = menus;
+    }
+
+    /// The window whose commands the menus run: the active one, else the first.
+    pub(crate) fn command_window(self: &Rc<Self>) -> Option<Window> {
+        self.active.get().and_then(|id| self.handle(id)).or_else(|| self.order.borrow().first().and_then(|id| self.handle(*id)))
+    }
+
+    /// At the end of a frame: the menus as they stand now (each item enabled while the active
+    /// window handles its command, with the keys the keymap binds to it there) go to the
+    /// platform when they changed.
+    fn present_menus(self: &Rc<Self>) {
+        let Some(w) = self.command_window() else { return };
+        let mut menus = self.menus.borrow().clone();
+        for m in &mut menus {
+            for item in m.actions_mut() {
+                if let crate::menu::MenuItem::Action { id, enabled, shortcut, .. } = item {
+                    *enabled = *enabled && w.command_enabled(id);
+                    if shortcut.is_none() {
+                        *shortcut = w.chord_for(id);
+                    }
+                }
+            }
+        }
+        if self.menus_presented.borrow().as_ref() != Some(&menus) {
+            self.system.borrow_mut().set_menus(&menus);
+            *self.menus_presented.borrow_mut() = Some(menus);
+        }
+    }
+
     pub(crate) fn open_url(&self, url: &str) {
         self.system.borrow_mut().open_url(url);
     }
@@ -571,6 +610,7 @@ impl AppState {
             let opening = std::mem::take(&mut *self.opening.borrow_mut());
             let closing = std::mem::take(&mut *self.closing.borrow_mut());
             if opening.is_empty() && closing.is_empty() {
+                self.present_menus();
                 return;
             }
             skip = None;

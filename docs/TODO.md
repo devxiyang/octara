@@ -72,6 +72,11 @@ Basis: [input research](research/input.md), [input design](design/input.md).
 
 Basis: [platform design](design/platform.md); done with the core's platform boundary step.
 
+- [ ] Windows: native context menus (`TrackPopupMenuEx`, opened from a posted message as Rune's)
+      and alerts (`TaskDialog`), and a menu bar; drawn menus and prompts until then. Linux: a
+      menu bar.
+- [ ] Close requests: Quit and a window's close ask the app first (`on_window_closed`), so it
+      can confirm unsaved work; Quit ends the process now.
 - [ ] Windows' frame clock: a thread waiting on `DwmFlush` sending frame ticks (GPUI's
       `vsync.rs`), when Windows has native views or a measurement shows the swap chain's
       present does not pace.

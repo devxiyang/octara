@@ -29,6 +29,7 @@ pub mod icon;
 pub mod image;
 pub mod inspect;
 pub mod kernel;
+pub mod menu;
 pub mod motion;
 pub mod native;
 pub mod paint;
@@ -41,7 +42,7 @@ pub mod window;
 
 pub mod prelude {
     pub use crate::app::{App, Drag, DragPhase, Event, InputEvent, Key, KeyEvent, Modifiers, Window};
-    pub use crate::ask::{Menu, MenuItem, PathPromptOptions, PromptLevel, popup_menu, prompt, prompt_for_new_path, prompt_for_paths};
+    pub use crate::ask::{PathPromptOptions, PromptLevel, popup_menu, prompt, prompt_for_new_path, prompt_for_paths};
     pub use crate::canvas::Canvas;
     pub use crate::icon::Icon;
     pub use crate::image::{Image, ObjectFit};
@@ -50,6 +51,7 @@ pub mod prelude {
         Align, BoxShadow, Breakpoint, Color, ContainerStep, Family, Fill, Paint, Placement, RadiusStep, Role, ShadowStep, Side, State,
         TextStep, Theme, Token, linear_color_stop, linear_gradient, rgb,
     };
+    pub use crate::menu::{Menu, MenuItem, set_menus};
     pub use crate::motion::{Curve, Spring};
     pub use crate::native::{NativeEvent, Slot};
     pub use crate::paint::Rect;

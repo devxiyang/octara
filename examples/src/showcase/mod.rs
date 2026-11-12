@@ -79,6 +79,18 @@ fn frame(content: El) -> View {
 #[component]
 pub fn showcase() -> View {
     let wrap = || row().gap_6().flex_wrap().items_start();
+    let dark = state("dark", || false);
+    // The menu bar (macOS): its items run commands the page handles, with the keys bound to them.
+    set_menus([
+        Menu::new("View").item(MenuItem::action("Dark appearance", "view.toggle_dark").checked(dark.get_untracked())),
+        Menu::edit(),
+    ]);
+    on_command("view.toggle_dark", move || {
+        let on = !dark.get_untracked();
+        dark.set(on);
+        set_theme(if on { Theme::dark() } else { Theme::light() });
+        set_menus([Menu::new("View").item(MenuItem::action("Dark appearance", "view.toggle_dark").checked(on)), Menu::edit()]);
+    });
     frame(
         col()
             .child(hero::card())
