@@ -106,7 +106,7 @@ and closes leave nothing behind.
 
 ## Text
 
-Its own design comes first; what is decided:
+Designed in [the text core](text.md); what the core decided:
 
 - A text node holds runs: one string and styled ranges (family, size, weight, slant, color,
   decoration, a link). Blocks (paragraphs, headings, code blocks, list items) are nodes; inline
