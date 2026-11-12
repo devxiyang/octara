@@ -101,15 +101,53 @@ pub trait TextEngine {
     fn glyph_runs(&mut self, _key: TextKey, _style: &TextStyle, _max_width: Option<f32>, _fit: Option<f32>) -> Vec<ShapedRun> {
         Vec::new()
     }
-    /// Where a caret can stand in `text` (one line, measured just before for `key`): `(byte
-    /// offset, x)` in byte order, from `(0, 0)` to `(text.len(), width)`.
-    fn caret_stops(&mut self, key: TextKey, text: &str, style: &TextStyle) -> Vec<(usize, f32)>;
+    /// The visual lines of `text` (measured just before for `key`) broken at `max_width`
+    /// (`None`: one line per paragraph): what editing places the caret, moves it by lines and
+    /// draws selections with.
+    fn visual_lines(&mut self, key: TextKey, text: &str, style: &TextStyle, max_width: Option<f32>) -> Vec<VisualLine>;
 }
 
-/// Caret stops for a monospace advance `em` per character.
-fn even_stops(text: &str, em: f32) -> Vec<(usize, f32)> {
-    let mut out: Vec<(usize, f32)> = text.char_indices().enumerate().map(|(i, (b, _))| (b, i as f32 * em)).collect();
-    out.push((text.len(), text.chars().count() as f32 * em));
+/// One line of a laid-out text as shown: its byte range (a line break's `\n` is in neither
+/// line), its top (from the text's top) and where a caret can stand on it, `(byte, x)` in byte
+/// order from `(start, ..)` to `(end, ..)`. A line that wraps ends where the next one starts.
+#[derive(Clone, PartialEq, Debug)]
+pub struct VisualLine {
+    pub start: usize,
+    pub end: usize,
+    pub top: f32,
+    pub stops: Vec<(usize, f32)>,
+}
+
+/// Monospace lines: `em` per character, broken at spaces to fit `max_width` (as
+/// [`MonoEngine::paragraph`] measures), a space that breaks a line staying at its end.
+fn even_lines(text: &str, em: f32, line_height: f32, max_width: Option<f32>) -> Vec<VisualLine> {
+    let mut out = Vec::new();
+    let mut base = 0;
+    for para in text.split('\n') {
+        // Line starts: a word that does not fit after the previous one begins a line.
+        let mut starts = vec![0usize];
+        if let Some(max) = max_width {
+            let (mut line, mut at) = (0.0f32, 0usize);
+            for word in para.split(' ') {
+                let w = word.chars().count() as f32 * em;
+                let with_space = if at > *starts.last().unwrap() { line + em + w } else { w };
+                if at > *starts.last().unwrap() && with_space > max {
+                    starts.push(at);
+                    line = w;
+                } else {
+                    line = with_space;
+                }
+                at += word.len() + 1;
+            }
+        }
+        for (i, &s) in starts.iter().enumerate() {
+            let e = starts.get(i + 1).copied().unwrap_or(para.len());
+            let mut stops: Vec<(usize, f32)> = para[s..e].char_indices().enumerate().map(|(n, (b, _))| (base + s + b, n as f32 * em)).collect();
+            stops.push((base + e, para[s..e].chars().count() as f32 * em));
+            out.push(VisualLine { start: base + s, end: base + e, top: out.len() as f32 * line_height, stops });
+        }
+        base += para.len() + 1;
+    }
     out
 }
 
@@ -174,8 +212,8 @@ impl TextEngine for MonoEngine {
     }
     fn truncate(&mut self, _: TextKey, _: usize) {}
     fn forget(&mut self, _: NodeId) {}
-    fn caret_stops(&mut self, _: TextKey, text: &str, style: &TextStyle) -> Vec<(usize, f32)> {
-        even_stops(text, style.font_size * 0.5)
+    fn visual_lines(&mut self, _: TextKey, text: &str, style: &TextStyle, max_width: Option<f32>) -> Vec<VisualLine> {
+        even_lines(text, style.font_size * 0.5, style.line_height, max_width)
     }
 }
 
@@ -443,27 +481,47 @@ impl TextEngine for ParleyEngine {
         }
         lines.into_iter().flatten().map(|(r, _)| r).collect()
     }
-    fn caret_stops(&mut self, key: TextKey, text: &str, style: &TextStyle) -> Vec<(usize, f32)> {
-        let Some(p) = self.paras(key).and_then(|p| p.first_mut()) else { return even_stops(text, style.font_size * 0.5) };
-        p.layout.break_all_lines(None);
-        let mut stops: Vec<(usize, f32)> = vec![(0, 0.0), (text.len(), p.layout.width())];
-        if let Some(line) = p.layout.lines().next() {
-            for item in line.items() {
-                let parley::PositionedLayoutItem::GlyphRun(run) = item else { continue };
-                let mut x = run.offset();
-                for c in run.run().visual_clusters() {
-                    let r = c.text_range();
-                    let (lead, trail) = if c.is_rtl() { (r.end, r.start) } else { (r.start, r.end) };
-                    stops.push((lead, x));
-                    x += c.advance();
-                    stops.push((trail, x));
+    fn visual_lines(&mut self, key: TextKey, text: &str, style: &TextStyle, max_width: Option<f32>) -> Vec<VisualLine> {
+        let Some(paras) = self.paras(key) else { return even_lines(text, style.font_size * 0.5, style.line_height, max_width) };
+        let mut out = Vec::new();
+        let mut base = 0;
+        for (para, p) in text.split('\n').zip(paras.iter_mut()) {
+            p.layout.break_all_lines(max_width);
+            let count = out.len();
+            for line in p.layout.lines() {
+                let r = line.text_range();
+                let (s, e) = (base + r.start.min(para.len()), base + r.end.min(para.len()));
+                let mut stops: Vec<(usize, f32)> = Vec::new();
+                for item in line.items() {
+                    let parley::PositionedLayoutItem::GlyphRun(run) = item else { continue };
+                    let mut x = run.offset();
+                    for c in run.run().visual_clusters() {
+                        let cr = c.text_range();
+                        let (lead, trail) = if c.is_rtl() { (cr.end, cr.start) } else { (cr.start, cr.end) };
+                        stops.push((base + lead, x));
+                        x += c.advance();
+                        stops.push((base + trail, x));
+                    }
                 }
+                stops.retain(|(b, _)| *b >= s && *b <= e);
+                if !stops.iter().any(|st| st.0 == s) {
+                    stops.push((s, 0.0));
+                }
+                if !stops.iter().any(|st| st.0 == e) {
+                    let right = stops.iter().map(|st| st.1).fold(0.0f32, f32::max);
+                    stops.push((e, right));
+                }
+                stops.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+                stops.dedup_by_key(|st| st.0);
+                out.push(VisualLine { start: s, end: e, top: out.len() as f32 * style.line_height, stops });
             }
+            // An empty paragraph is one empty line.
+            if out.len() == count {
+                out.push(VisualLine { start: base, end: base, top: out.len() as f32 * style.line_height, stops: vec![(base, 0.0)] });
+            }
+            base += para.len() + 1;
         }
-        stops.retain(|(b, _)| *b <= text.len());
-        stops.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
-        stops.dedup_by_key(|s| s.0);
-        stops
+        out
     }
     fn register_fallback_font(&mut self, data: &'static [u8], scripts: &[[u8; 4]]) {
         let mut families: Vec<_> =
@@ -514,6 +572,25 @@ mod tests {
         assert!(mono.width > sans.width * 1.5, "mono is monospaced: {mono:?} vs {sans:?}");
         let capped = measure(&mut e, node().into(), "a\nb\nc", 0, &TextStyle { max_lines: Some(2), ..s }, None);
         assert_eq!((capped.lines, capped.truncated), (2, true));
+    }
+
+    #[test]
+    fn parley_visual_lines_wrap_with_caret_stops() {
+        let mut e = ParleyEngine::default();
+        let s = TextStyle::default();
+        let text = "hello world\nsecond";
+        let one = measure(&mut e, node().into(), "hello world", 0, &s, None);
+        let narrow = Some(one.width * 0.7);
+        measure(&mut e, node().into(), text, 0, &s, narrow);
+        let lines = e.visual_lines(node().into(), text, &s, narrow);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!((lines[0].start, lines[1].start, lines[1].end, lines[2].start, lines[2].end), (0, 6, 11, 12, 18));
+        assert_eq!(lines.iter().map(|l| l.top).collect::<Vec<_>>(), [0.0, 24.0, 48.0]);
+        for l in &lines {
+            assert_eq!((l.stops[0].0, l.stops.last().unwrap().0), (l.start, l.end));
+            assert!(l.stops.windows(2).all(|w| w[0].0 < w[1].0 && w[0].1 <= w[1].1), "{:?}", l.stops);
+        }
+        assert_eq!(lines[1].stops[0].1, 0.0, "a wrapped line starts at the left edge");
     }
 
     #[test]

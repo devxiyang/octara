@@ -1,7 +1,8 @@
-//! A text input's line on screen: its selection and composition, where each caret stop is, the
-//! horizontal scroll that keeps the caret in view, and how it is painted.
+//! A text input on screen: its text laid out in visual lines (one for a single-line field,
+//! wrapped at the field's width for a multi-line one), its selection and composition, where each
+//! caret position is, the scroll that keeps the caret in view, and how it is painted.
 
-use super::text::{self, Wrap};
+use super::text::{self, VisualLine, Wrap};
 use super::{Color, Dirty, Kernel, NodeId, State, Token};
 use crate::paint::{GlyphRun, Item, Quad, Rect};
 
@@ -14,53 +15,136 @@ pub fn floor_boundary(s: &str, i: usize) -> usize {
     i
 }
 
-/// A text input's line, laid out.
-pub(crate) struct Line {
+/// A text input, laid out (after the last layout).
+pub(crate) struct Field {
     /// The text shown: the value with the composition at the caret.
     pub shown: String,
-    /// Caret stops of `shown`, `(byte, x)` from the line's start.
-    pub stops: Vec<(usize, f32)>,
     /// Where the composition is in `shown`.
     pub preedit: std::ops::Range<usize>,
     /// The selection in `shown` (start ≤ end) and the caret.
     pub sel: (usize, usize),
     pub caret: usize,
-    /// The content box's left and top, its width, and the line scroll.
+    /// The content box: left, top, width, height.
     pub x: f32,
     pub y: f32,
     pub width: f32,
-    pub scroll: f32,
+    pub height: f32,
+    pub line_height: f32,
+    pub lines: Vec<VisualLine>,
+    /// How far the text is scrolled (x for one line, y for several).
+    pub scroll: (f32, f32),
 }
 
-impl Line {
-    /// The x (from the line's start) of byte `b` of `shown`.
-    pub fn x_of(&self, b: usize) -> f32 {
-        match self.stops.binary_search_by_key(&b, |s| s.0) {
-            Ok(i) => self.stops[i].1,
+impl Field {
+    /// The line byte `b` is shown on: where a wrapped line ends, the next line (which starts
+    /// there).
+    pub fn line_of(&self, b: usize) -> usize {
+        self.lines.iter().rposition(|l| l.start <= b).unwrap_or(0)
+    }
+
+    /// Where a caret can stand on line `li`: its stops, without its end when the next line
+    /// starts there (that position shows on the next line).
+    fn stops(&self, li: usize) -> &[(usize, f32)] {
+        let l = &self.lines[li];
+        let wraps = self.lines.get(li + 1).is_some_and(|n| n.start == l.end);
+        if wraps && l.stops.len() > 1 { &l.stops[..l.stops.len() - 1] } else { &l.stops }
+    }
+
+    /// The x of byte `b` on line `li` (from the line's start).
+    fn x_on(&self, li: usize, b: usize) -> f32 {
+        let stops = &self.lines[li].stops;
+        match stops.binary_search_by_key(&b, |s| s.0) {
+            Ok(i) => stops[i].1,
             Err(i) => {
                 // Inside a ligature: interpolate between the stops around it.
-                let (a, z) = (self.stops[i.saturating_sub(1)], self.stops[i.min(self.stops.len() - 1)]);
+                let (a, z) = (stops[i.saturating_sub(1)], stops[i.min(stops.len() - 1)]);
                 if z.0 == a.0 { a.1 } else { a.1 + (z.1 - a.1) * (b - a.0) as f32 / (z.0 - a.0) as f32 }
             }
         }
     }
-    /// The last stop of `shown` at or before `x`: where the character under `x` starts.
-    pub fn stop_before(&self, x: f32) -> usize {
-        self.stops.iter().rev().find(|s| s.1 <= x).map_or(0, |s| s.0)
+
+    /// Where byte `b` is, from the content's top-left, unscrolled.
+    pub fn pos(&self, b: usize) -> (f32, f32) {
+        let li = self.line_of(b);
+        (self.x_on(li, b), self.lines[li].top)
     }
-    /// The stop of `shown` nearest to `x` (from the line's start).
-    pub fn stop_at(&self, x: f32) -> usize {
-        self.stops.iter().min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs())).map_or(0, |s| s.0)
+
+    /// The line at `y` (from the content's top, unscrolled), clamped to the text.
+    fn line_at(&self, y: f32) -> usize {
+        self.lines.iter().rposition(|l| l.top <= y).unwrap_or(0)
+    }
+
+    /// The caret position nearest `x` on line `li`; with `under`, the one where the character
+    /// under `x` starts.
+    fn stop_on(&self, li: usize, x: f32, under: bool) -> usize {
+        let stops = self.stops(li);
+        if under {
+            stops.iter().rev().find(|s| s.1 <= x).map_or(stops[0].0, |s| s.0)
+        } else {
+            stops.iter().min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs())).map_or(0, |s| s.0)
+        }
+    }
+
+    /// The caret position at `(x, y)` (from the content's top-left, unscrolled).
+    pub fn byte_at(&self, x: f32, y: f32, under: bool) -> usize {
+        self.stop_on(self.line_at(y), x, under)
+    }
+
+    /// The position `delta` lines from `b`, as near as possible to `goal_x`; past the first or
+    /// last line, the start or end of the text.
+    pub fn by_lines(&self, b: usize, goal_x: f32, delta: i32) -> usize {
+        let to = self.line_of(b) as i64 + delta as i64;
+        if to < 0 {
+            return 0;
+        }
+        if to >= self.lines.len() as i64 {
+            return self.shown.len();
+        }
+        self.stop_on(to as usize, goal_x, false)
+    }
+
+    /// The first and last caret positions of the line `b` is on.
+    pub fn line_edges(&self, b: usize) -> (usize, usize) {
+        let stops = self.stops(self.line_of(b));
+        (stops[0].0, stops[stops.len() - 1].0)
+    }
+
+    /// Rectangles covering `s..e` (from the content's top-left, unscrolled), one per line it
+    /// touches; a line the selection continues past shows its line break.
+    pub fn rects(&self, s: usize, e: usize) -> Vec<Rect> {
+        let mut out = Vec::new();
+        for (li, l) in self.lines.iter().enumerate() {
+            if l.end < s || l.start > e || (l.start == e && s != e) {
+                continue;
+            }
+            let (a, z) = (s.max(l.start), e.min(l.end));
+            let x0 = self.x_on(li, a);
+            let mut x1 = self.x_on(li, z);
+            if e > l.end && self.lines.get(li + 1).is_none_or(|n| n.start > l.end) {
+                x1 += self.line_height * 0.25;
+            }
+            if x1 > x0 {
+                out.push(Rect { x: x0, y: l.top, w: x1 - x0, h: self.line_height });
+            }
+        }
+        out
+    }
+
+    /// The text's height (its lines).
+    pub fn text_height(&self) -> f32 {
+        self.lines.len().max(1) as f32 * self.line_height
     }
 }
 
 impl Kernel {
-    /// Sets a text input's selection (`anchor`, `caret`: byte offsets into its value).
+    /// Sets a text input's selection (`anchor`, `caret`: byte offsets into its value); the
+    /// caret's goal x for moves by lines is forgotten.
     /// Kept as given: the value may be about to change (an edit sets the selection, then its
     /// handler sets the value); reads clamp to the value.
     pub fn set_selection(&mut self, id: NodeId, anchor: usize, caret: usize) {
         let sel = (anchor, caret);
         let Some(i) = self.node_mut(id).input_mut() else { return };
+        i.goal.set(None);
         if i.selection != sel {
             // A composition moves with the caret: the shown text changes from the earlier caret.
             if !i.preedit.is_empty() {
@@ -76,8 +160,22 @@ impl Kernel {
         (floor_boundary(&i.value, i.selection.0), floor_boundary(&i.value, i.selection.1))
     }
 
-    /// Lays out a text input's line (after the last layout).
-    pub(crate) fn line(&self, id: NodeId) -> Option<Line> {
+    /// Makes a text input multi-line (wrapping at its width, Enter breaking lines) or single-line.
+    pub fn set_multiline(&mut self, id: NodeId, on: bool) {
+        let Some(i) = self.node_mut(id).input_mut() else { return };
+        if i.multiline != on {
+            i.multiline = on;
+            i.clean.set(0);
+            self.update_measure(id);
+            self.changed(id, Dirty::LAYOUT | Dirty::SEMANTICS, "multiline", || on.to_string());
+        }
+    }
+    pub fn is_multiline(&self, id: NodeId) -> bool {
+        self.node(id).input().is_some_and(|i| i.multiline)
+    }
+
+    /// Lays out a text input (after the last layout).
+    pub(crate) fn field(&self, id: NodeId) -> Option<Field> {
         let n = self.node(id);
         let input = n.input()?;
         let (anchor, caret) = self.selection(id);
@@ -89,80 +187,146 @@ impl Kernel {
         let l = self.taffy.layout(n.taffy).expect("taffy");
         let (cx, cy) = (x + l.border.left + l.padding.left, y + l.border.top + l.padding.top);
         let width = (l.size.width - l.border.left - l.border.right - l.padding.left - l.padding.right).max(0.0);
-        let style = super::TextStyle { wrap: Wrap::None, ..n.visual.text_style() };
-        let stops = if shown.is_empty() {
-            vec![(0, 0.0)]
+        let height = (l.size.height - l.border.top - l.border.bottom - l.padding.top - l.padding.bottom).max(0.0);
+        let style = input_style(n.visual.text_style(), input.multiline);
+        let limit = input.multiline.then_some(width);
+        let lines = if shown.is_empty() {
+            vec![VisualLine { start: 0, end: 0, top: 0.0, stops: vec![(0, 0.0)] }]
         } else {
             let mut engine = self.text.borrow_mut();
-            text::measure(&mut **engine, id.into(), &shown, input.clean.replace(shown.len()), &style, None);
-            engine.caret_stops(id.into(), &shown, &style)
+            text::measure(&mut **engine, id.into(), &shown, input.clean.replace(shown.len()), &style, limit);
+            engine.visual_lines(id.into(), &shown, &style, limit)
         };
-        let mut line = Line { shown, stops, preedit, sel, caret: caret + input.preedit.len(), x: cx, y: cy, width, scroll: 0.0 };
-        // Keep the caret in view, moving the line as little as possible.
-        let (caret_x, end_x) = (line.x_of(line.caret), line.stops.last().map_or(0.0, |s| s.1));
-        let room = (width - 1.0).max(0.0);
-        let mut scroll = input.scroll.get();
-        if caret_x - scroll > room {
-            scroll = caret_x - room;
+        let mut f = Field {
+            shown,
+            preedit,
+            sel,
+            caret: caret + input.preedit.len(),
+            x: cx,
+            y: cy,
+            width,
+            height,
+            line_height: style.line_height,
+            lines,
+            scroll: (0.0, 0.0),
+        };
+        // Keep the caret in view, moving the text as little as possible.
+        let (caret_x, caret_y) = f.pos(f.caret);
+        let keep = |at: f32, size: f32, room: f32, extent: f32, scroll: f32| {
+            let mut s = scroll;
+            if at + size - s > room {
+                s = at + size - room;
+            }
+            if at < s {
+                s = at;
+            }
+            s.min((extent - room).max(0.0)).max(0.0)
+        };
+        if input.multiline {
+            let sy = keep(caret_y, f.line_height, height, f.text_height(), input.scroll.get());
+            input.scroll.set(sy);
+            f.scroll = (0.0, sy);
+        } else {
+            let end_x = f.lines[0].stops.last().map_or(0.0, |s| s.1);
+            let room = (width - 1.0).max(0.0);
+            let sx = keep(caret_x, 0.0, room, end_x, input.scroll.get());
+            input.scroll.set(sx);
+            f.scroll = (sx, 0.0);
         }
-        if caret_x < scroll {
-            scroll = caret_x;
-        }
-        scroll = scroll.min((end_x - room).max(0.0)).max(0.0);
-        input.scroll.set(scroll);
-        line.scroll = scroll;
-        Some(line)
+        Some(f)
     }
 
-    /// The value offset nearest window x `x` in a text input (where a click puts the caret);
-    /// with `under`, where the character under `x` starts (what a double click selects around).
-    pub fn input_offset_at(&self, id: NodeId, x: f32, under: bool) -> Option<usize> {
-        let line = self.line(id)?;
-        let lx = x - line.x + line.scroll;
-        let b = if under { line.stop_before(lx) } else { line.stop_at(lx) };
-        // Back to value coordinates (the composition is not part of the value).
-        Some(if b <= line.preedit.start { b } else { b.saturating_sub(line.preedit.len()).max(line.preedit.start) })
+    /// The value offset of a text field `field` shows at byte `b` (the composition is not part
+    /// of the value).
+    fn value_offset(field: &Field, b: usize) -> usize {
+        if b <= field.preedit.start { b } else { b.saturating_sub(field.preedit.len()).max(field.preedit.start) }
+    }
+
+    /// The value offset nearest window point `(x, y)` in a text input (where a click puts the
+    /// caret); with `under`, where the character under it starts (what a double click selects
+    /// around).
+    pub fn input_offset_at(&self, id: NodeId, x: f32, y: f32, under: bool) -> Option<usize> {
+        let f = self.field(id)?;
+        let b = f.byte_at(x - f.x + f.scroll.0, y - f.y + f.scroll.1, under);
+        Some(Self::value_offset(&f, b))
+    }
+
+    /// The value offset `lines` visual lines from the caret of a text input and the goal x to
+    /// keep: the caret's x when the moves by lines began.
+    pub fn input_offset_by_lines(&self, id: NodeId, lines: i32) -> Option<(usize, f32)> {
+        let f = self.field(id)?;
+        let goal = self.goal(id).unwrap_or_else(|| f.pos(f.caret).0);
+        Some((Self::value_offset(&f, f.by_lines(f.caret, goal, lines)), goal))
+    }
+
+    /// Keeps `goal` as the caret's x for the next move by lines (any other selection change
+    /// forgets it).
+    pub fn keep_goal(&mut self, id: NodeId, goal: f32) {
+        if let Some(i) = self.node(id).input() {
+            i.goal.set(Some(goal));
+        }
+    }
+    pub fn goal(&self, id: NodeId) -> Option<f32> {
+        self.node(id).input().and_then(|i| i.goal.get())
+    }
+
+    /// The first and last value offsets of the visual line the caret of a text input is on.
+    pub fn input_line_edges(&self, id: NodeId) -> Option<(usize, usize)> {
+        let f = self.field(id)?;
+        let (s, e) = f.line_edges(f.caret);
+        Some((Self::value_offset(&f, s), Self::value_offset(&f, e)))
+    }
+
+    /// How many lines of a text input show at once (at least 1).
+    pub fn input_page_lines(&self, id: NodeId) -> usize {
+        self.field(id).map_or(1, |f| ((f.height / f.line_height.max(1.0)).floor() as usize).max(1))
     }
 
     /// Where the caret of a text input is (logical pixels). Input methods place their
     /// candidate window next to it.
     pub fn caret(&self, id: NodeId) -> Option<Rect> {
-        let line = self.line(id)?;
-        let x = line.x + line.x_of(line.caret) - line.scroll;
-        Some(Rect { x, y: line.y, w: 1.0, h: self.node(id).visual.line_height })
+        let f = self.field(id)?;
+        let (cx, cy) = f.pos(f.caret);
+        Some(Rect { x: f.x + cx - f.scroll.0, y: f.y + cy - f.scroll.1, w: 1.0, h: f.line_height })
     }
 
     /// Paints a text input: selection, text, composition underline and caret, clipped to its
     /// content box and scrolled to keep the caret in view.
     pub(crate) fn paint_input(&self, id: NodeId, opacity: f32, out: &mut Vec<Item>) {
-        let Some(line) = self.line(id) else { return };
+        let Some(f) = self.field(id) else { return };
         let n = self.node(id);
         let shown = self.presented(id);
         let v = &shown;
         let fade = |c: Color| if opacity >= 1.0 { c } else { c.multiply_alpha(opacity) };
-        let lh = v.line_height;
-        let clip = Rect { x: line.x, y: line.y, w: line.width, h: lh };
+        let lh = f.line_height;
+        let (ox, oy) = (f.x - f.scroll.0, f.y - f.scroll.1);
+        let clip = Rect { x: f.x, y: f.y, w: f.width, h: f.height.max(lh) };
         out.push(Item::PushClip { source: id, rect: clip, radius: 0.0 });
-        let at = |b: usize| line.x + line.x_of(b) - line.scroll;
-        let quad = |rect: Rect, fill: Color| {
-            Item::Quad(Quad { source: id, rect, radius: 0.0, fill: Some(fill), gradient: None, border: [0.0; 4], border_color: fill })
+        let quad = |r: Rect, fill: Color| {
+            Item::Quad(Quad {
+                source: id,
+                rect: Rect { x: r.x + ox, y: r.y + oy, ..r },
+                radius: 0.0,
+                fill: Some(fill),
+                gradient: None,
+                border: [0.0; 4],
+                border_color: fill,
+            })
         };
         let focused = n.state.contains(State::FOCUSED);
-        if line.sel.0 != line.sel.1 {
+        if f.sel.0 != f.sel.1 {
             let accent = self.theme.get(Token::Accent);
             let fill = if focused { accent.multiply_alpha(0.3) } else { accent.multiply_alpha(0.15) };
-            let (x0, x1) = (at(line.sel.0), at(line.sel.1));
-            out.push(quad(Rect { x: x0, y: line.y, w: x1 - x0, h: lh }, fade(fill)));
+            for r in f.rects(f.sel.0, f.sel.1) {
+                out.push(quad(r, fade(fill)));
+            }
         }
-        if !line.shown.is_empty() {
-            let style = super::TextStyle { wrap: Wrap::None, ..v.text_style() };
-            let runs = self.text.borrow_mut().glyph_runs(id.into(), &style, None, None);
+        if !f.shown.is_empty() {
+            let multiline = self.is_multiline(id);
+            let style = input_style(v.text_style(), multiline);
+            let runs = self.text.borrow_mut().glyph_runs(id.into(), &style, multiline.then_some(f.width), None);
             for r in runs {
-                let glyphs = r
-                    .glyphs
-                    .into_iter()
-                    .map(|g| crate::paint::Glyph { id: g.id, x: g.x + line.x - line.scroll, y: g.y + line.y })
-                    .collect();
+                let glyphs = r.glyphs.into_iter().map(|g| crate::paint::Glyph { id: g.id, x: g.x + ox, y: g.y + oy }).collect();
                 out.push(Item::Glyphs(GlyphRun {
                     source: id,
                     font: r.font,
@@ -174,14 +338,22 @@ impl Kernel {
                 }));
             }
         }
-        if !line.preedit.is_empty() {
-            let (x0, x1) = (at(line.preedit.start), at(line.preedit.end));
-            out.push(quad(Rect { x: x0, y: line.y + lh - 2.0, w: x1 - x0, h: 1.0 }, fade(v.text)));
+        if !f.preedit.is_empty() {
+            for r in f.rects(f.preedit.start, f.preedit.end) {
+                out.push(quad(Rect { y: r.y + lh - 2.0, h: 1.0, ..r }, fade(v.text)));
+            }
         }
-        if focused && line.sel.0 == line.sel.1 {
-            let x = at(line.caret).min(line.x + line.width - 1.0).max(line.x);
-            out.push(quad(Rect { x, y: line.y, w: 1.0, h: lh }, fade(v.text)));
+        if focused && f.sel.0 == f.sel.1 {
+            let (cx, cy) = f.pos(f.caret);
+            // A single line's caret stays inside the box (its last position may be past it).
+            let x = if self.is_multiline(id) { cx } else { (cx - f.scroll.0).min(f.width - 1.0).max(0.0) + f.scroll.0 };
+            out.push(quad(Rect { x, y: cy, w: 1.0, h: lh }, fade(v.text)));
         }
         out.push(Item::PopClip);
     }
+}
+
+/// How a text input's text is laid out: one line, or wrapped at the field's width.
+pub(crate) fn input_style(base: super::TextStyle, multiline: bool) -> super::TextStyle {
+    super::TextStyle { wrap: if multiline { Wrap::Words } else { Wrap::None }, max_lines: None, ..base }
 }

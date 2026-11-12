@@ -1,7 +1,7 @@
 //! Focus structure: Tab order (with `tab_index` and focus groups), focus groups' arrow-key
 //! movement, and modals (Rune's model).
 
-use super::{Kernel, Kind, NodeId, Role, State};
+use super::{Kernel, NodeId, Role, State};
 
 /// How arrow keys move focus inside a focus group.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -285,7 +285,11 @@ impl Kernel {
     /// The key context `id` adds: its own, else `text_input` for a text input.
     pub fn key_context(&self, id: NodeId) -> Option<&str> {
         let n = self.node(id);
-        n.key_context.as_deref().or((n.kind() == Kind::TextInput).then_some("text_input"))
+        n.key_context.as_deref().or(match n.input() {
+            Some(i) if i.multiline => Some("text_area"),
+            Some(_) => Some("text_input"),
+            None => None,
+        })
     }
     pub fn add_command(&mut self, id: NodeId, command: &str, handler: super::HandlerId) {
         self.node_mut(id).commands.push((command.to_owned(), handler));

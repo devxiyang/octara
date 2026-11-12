@@ -24,7 +24,7 @@ use slotmap::{SlotMap, new_key_type};
 use std::cell::{Cell, RefCell};
 use std::fmt::Write as _;
 use style::{Inherited, Unresolved};
-use text::{TextEngine, TextMetrics, TextStyle, Wrap};
+use text::{TextEngine, TextKey, TextMetrics, TextStyle, Wrap};
 
 pub use accesskit::Role;
 pub use edit::floor_boundary;
@@ -393,9 +393,14 @@ struct InputContent {
     value: String,
     preedit: String,
     selection: (usize, usize),
+    /// How far the text is scrolled: x for a single line, y for a multi-line field.
     scroll: Cell<f32>,
-    /// Bytes of the shown line (value with composition) known unchanged since last measured.
+    /// Bytes of the shown text (value with composition) known unchanged since last measured.
     clean: Cell<usize>,
+    /// Wraps at the field's width; Enter breaks lines.
+    multiline: bool,
+    /// The caret's x kept across moves by lines (Up, Down, Page Up, Page Down).
+    goal: Cell<Option<f32>>,
 }
 
 impl Node {
@@ -466,6 +471,21 @@ fn text_size(engine: &mut dyn TextEngine, n: &Node, id: NodeId, known: Option<f3
     let m = text_metrics(engine, id, &t.text, &t.clean, &n.visual.text_style(), width_limit(known, avail));
     // Whole pixels, rounded up (as Rune): fractional line heights would make rows alternate.
     (m.width.ceil(), m.height.ceil())
+}
+
+/// A text input's natural size: a fixed width; one line high, or (multi-line) as many lines as
+/// its value wraps into at its width.
+fn input_size(engine: &mut dyn TextEngine, n: &Node, id: NodeId, known: Option<f32>, avail: taffy::AvailableSpace) -> (f32, f32) {
+    let lh = n.visual.line_height;
+    let Some(i) = n.input().filter(|i| i.multiline) else { return (INPUT_WIDTH, lh) };
+    let width = known.unwrap_or(INPUT_WIDTH);
+    if i.value.is_empty() {
+        return (width, lh);
+    }
+    let style = edit::input_style(n.visual.text_style(), true);
+    // The value alone: a composition in progress does not resize the field.
+    let m = text::measure(engine, TextKey { node: id, slot: 1 }, &i.value, 0, &style, width_limit(Some(width), avail));
+    (width, (m.lines.max(1) as f32 * lh).ceil())
 }
 
 fn anchor_layout(l: &mut taffy::Style, placed: Option<Placed>) {
@@ -763,7 +783,8 @@ impl Kernel {
         if id == self.root { Kind::Root } else { self.node(id).kind() }
     }
     pub fn role(&self, id: NodeId) -> Role {
-        self.node(id).role.unwrap_or(self.kind(id).default_role())
+        let n = self.node(id);
+        n.role.unwrap_or(if n.input().is_some_and(|i| i.multiline) { Role::MultilineTextInput } else { self.kind(id).default_role() })
     }
     /// A text's own text (empty for other nodes).
     pub fn text(&self, id: NodeId) -> &str {
@@ -1132,7 +1153,13 @@ impl Kernel {
                 i.clean.set(i.clean.get().min(same));
                 i.value.clear();
                 i.value.push_str(value);
-                self.changed(id, Dirty::TEXT | Dirty::SEMANTICS, "value", || value.to_owned());
+                // A multi-line field's height follows its text.
+                let grows = i.multiline;
+                if grows {
+                    self.update_measure(id);
+                }
+                let d = if grows { Dirty::TEXT | Dirty::LAYOUT | Dirty::SEMANTICS } else { Dirty::TEXT | Dirty::SEMANTICS };
+                self.changed(id, d, "value", || value.to_owned());
             }
             None => {
                 n.value = Some(value.to_owned());
@@ -1615,7 +1642,7 @@ impl Kernel {
                     |known, avail| {
                         let (w, h) = match m {
                             Some(Measure::Text(id)) => text_size(&mut **engine, &nodes[id], id, known.width, avail.width),
-                            Some(Measure::Input(id)) => (INPUT_WIDTH, nodes[id].visual.line_height),
+                            Some(Measure::Input(id)) => input_size(&mut **engine, &nodes[id], id, known.width, avail.width),
                             None => (0.0, 0.0),
                         };
                         taffy::Size { width: known.width.unwrap_or(w), height: known.height.unwrap_or(h) }

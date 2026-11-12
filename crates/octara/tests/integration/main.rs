@@ -16,6 +16,7 @@ mod interaction;
 mod keys;
 mod layout_issues;
 mod motion;
+mod multiline;
 mod overlay;
 mod pointer;
 mod position;

@@ -126,13 +126,13 @@ pub(super) static FIELD: Field = Field;
 
 impl Behavior for Field {
     fn down(&self, app: &App, n: NodeId, ev: &PointerEvent, clicks: u32) {
-        app.press_in_field(n, ev.x, clicks, ev.modifiers.contains(Modifiers::SHIFT));
+        app.press_in_field(n, (ev.x, ev.y), clicks, ev.modifiers.contains(Modifiers::SHIFT));
     }
     fn drags(&self, kind: PointerKind) -> bool {
         kind != PointerKind::Touch
     }
     fn drag(&self, app: &App, n: NodeId, at: (f32, f32)) {
-        app.drag_in_field(n, at.0);
+        app.drag_in_field(n, at);
     }
 }
 
@@ -193,12 +193,48 @@ impl App {
         self.apply(n, new, at, at, Kind::Insert);
     }
 
+    /// Moves the caret `lines` visual lines (extending the selection with `extend`), keeping
+    /// its x from where the moves by lines began.
+    fn by_lines(&self, n: NodeId, anchor: usize, lines: i32, extend: bool) {
+        let Some((to, goal)) = self.ui.kernel.borrow().input_offset_by_lines(n, lines) else { return };
+        self.select(n, if extend { anchor } else { to }, to);
+        self.ui.kernel.borrow_mut().keep_goal(n, goal);
+    }
+
     /// Runs a text-editing command on the focused field; `false` if there is none.
     pub(super) fn edit_command(&self, command: &str) -> bool {
         let Some((n, v, a, c)) = self.field() else { return false };
         let (s, e) = (a.min(c), a.max(c));
         let collapsed = s == e;
+        let multiline = self.ui.kernel.borrow().is_multiline(n);
+        let page = self.ui.kernel.borrow().input_page_lines(n) as i32;
+        let edges = || self.ui.kernel.borrow().input_line_edges(n).unwrap_or((0, v.len()));
         match command {
+            "edit.move_up" => self.by_lines(n, a, -1, false),
+            "edit.move_down" => self.by_lines(n, a, 1, false),
+            "edit.select_up" => self.by_lines(n, a, -1, true),
+            "edit.select_down" => self.by_lines(n, a, 1, true),
+            "edit.move_page_up" => self.by_lines(n, a, -page, false),
+            "edit.move_page_down" => self.by_lines(n, a, page, false),
+            "edit.select_page_up" => self.by_lines(n, a, -page, true),
+            "edit.select_page_down" => self.by_lines(n, a, page, true),
+            "edit.move_to_line_start" => {
+                let to = edges().0;
+                self.select(n, to, to)
+            }
+            "edit.move_to_line_end" => {
+                let to = edges().1;
+                self.select(n, to, to)
+            }
+            "edit.select_to_line_start" => self.select(n, a, edges().0),
+            "edit.select_to_line_end" => self.select(n, a, edges().1),
+            "edit.newline" => {
+                if !multiline {
+                    return false;
+                }
+                let new = format!("{}\n{}", &v[..s], &v[e..]);
+                self.apply(n, new, s + 1, s + 1, Kind::Insert);
+            }
             "edit.move_left" => {
                 self.select(n, if collapsed { prev_grapheme(&v, c) } else { s }, if collapsed { prev_grapheme(&v, c) } else { s })
             }
@@ -226,7 +262,8 @@ impl App {
             | "edit.delete_forward"
             | "edit.delete_word_backward"
             | "edit.delete_word_forward"
-            | "edit.delete_to_start" => {
+            | "edit.delete_to_start"
+            | "edit.delete_to_line_start" => {
                 let (from, to) = if !collapsed {
                     (s, e)
                 } else {
@@ -235,6 +272,7 @@ impl App {
                         "edit.delete_forward" => (c, next_grapheme(&v, c)),
                         "edit.delete_word_backward" => (prev_word(&v, c), c),
                         "edit.delete_word_forward" => (c, next_word(&v, c)),
+                        "edit.delete_to_line_start" => (edges().0.min(c), c),
                         _ => (0, c),
                     }
                 };
@@ -254,8 +292,8 @@ impl App {
             "edit.paste" => {
                 let text = self.clipboard.borrow_mut().read_text();
                 if let Some(t) = text {
-                    // One line: line breaks become spaces.
-                    let t = t.replace("\r\n", " ").replace(['\n', '\r'], " ");
+                    // A multi-line field keeps line breaks; one line turns them into spaces.
+                    let t = if multiline { t.replace("\r\n", "\n").replace('\r', "\n") } else { t.replace("\r\n", " ").replace(['\n', '\r'], " ") };
                     let new = format!("{}{t}{}", &v[..s], &v[e..]);
                     self.apply(n, new, s + t.len(), s + t.len(), Kind::Other);
                 }
@@ -287,10 +325,10 @@ impl App {
         true
     }
 
-    /// A primary press at window x `x` in text field `n`: `clicks` 1 places the caret (or
+    /// A primary press at window point `at` in text field `n`: `clicks` 1 places the caret (or
     /// extends the selection with Shift), 2 selects a word, 3 selects everything.
-    fn press_in_field(&self, n: NodeId, x: f32, clicks: u32, extend: bool) {
-        let Some(at) = self.ui.kernel.borrow().input_offset_at(n, x, clicks == 2) else { return };
+    fn press_in_field(&self, n: NodeId, (x, y): (f32, f32), clicks: u32, extend: bool) {
+        let Some(at) = self.ui.kernel.borrow().input_offset_at(n, x, y, clicks == 2) else { return };
         let v = self.ui.kernel.borrow().value(n).to_owned();
         let (a, _) = self.ui.kernel.borrow().selection(n);
         match clicks {
@@ -304,9 +342,9 @@ impl App {
         }
     }
 
-    /// A drag in text field `n` to window x `x`: the caret follows, the anchor stays.
-    fn drag_in_field(&self, n: NodeId, x: f32) {
-        let Some(at) = self.ui.kernel.borrow().input_offset_at(n, x, false) else { return };
+    /// A drag in text field `n` to window point `(x, y)`: the caret follows, the anchor stays.
+    fn drag_in_field(&self, n: NodeId, (x, y): (f32, f32)) {
+        let Some(at) = self.ui.kernel.borrow().input_offset_at(n, x, y, false) else { return };
         let (a, _) = self.ui.kernel.borrow().selection(n);
         self.select(n, a, at);
     }

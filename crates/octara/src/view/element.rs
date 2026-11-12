@@ -181,6 +181,7 @@ pub struct El {
     icon: Option<crate::icon::Icon>,
     stroke_width: Option<f32>,
     canvas: Option<Draw>,
+    multiline: bool,
     group: Option<&'static str>,
     hover_alone: bool,
     overlays: Vec<Overlay>,
@@ -232,6 +233,7 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         icon: None,
         stroke_width: None,
         canvas: None,
+        multiline: false,
         group: None,
         hover_alone: false,
         overlays: Vec::new(),
@@ -580,6 +582,13 @@ impl El {
         self.image = Some(image.clone());
         self
     }
+    /// Makes a text input multi-line: the text wraps at its width and the field grows with it,
+    /// Enter (and Shift+Enter) breaks the line, Cmd+Enter (Ctrl+Enter) submits; Up, Down, Page
+    /// Up, Page Down, Home and End move by visual lines; a paste keeps its line breaks.
+    pub fn multiline(mut self) -> Self {
+        self.multiline = true;
+        self
+    }
     /// An icon's stroke width on its grid (2 for the bundled icons; 1.5 is lighter).
     pub fn stroke_width(mut self, width: f32) -> Self {
         self.stroke_width = Some(width);
@@ -750,6 +759,9 @@ pub(crate) fn build_el(e: El) -> NodeId {
         }
         if let Some(c) = &e.key_context {
             k.set_key_context(node, Some(c));
+        }
+        if e.multiline {
+            k.set_multiline(node, true);
         }
         if let Some(img) = e.image {
             k.set_image(node, Some((img, e.object_fit)));

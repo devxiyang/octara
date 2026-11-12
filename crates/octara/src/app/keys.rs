@@ -224,53 +224,74 @@ impl Keymap {
         ] {
             b(chord, Some(command), None);
         }
-        // Text fields: Enter submits, Space types; arrows, Home and End edit.
-        let field = Some("text_input");
-        b("enter", Some("submit"), field);
-        b("space", None, field);
+        // Text fields: Enter submits (a multi-line field breaks the line; Cmd/Ctrl+Enter
+        // submits), Space types; arrows, Home and End edit (by visual line in a multi-line field).
+        b("enter", Some("submit"), Some("text_input"));
+        b("enter", Some("edit.newline"), Some("text_area"));
+        b("shift+enter", Some("edit.newline"), Some("text_area"));
+        b("mod+enter", Some("submit"), Some("text_area"));
         let word = if platform.is_apple() { "alt" } else { "ctrl" };
-        let mut edits = vec![
-            ("left".to_owned(), "edit.move_left"),
-            ("right".into(), "edit.move_right"),
-            (format!("{word}+left"), "edit.move_word_left"),
-            (format!("{word}+right"), "edit.move_word_right"),
-            ("home".into(), "edit.move_to_start"),
-            ("end".into(), "edit.move_to_end"),
-            ("up".into(), "edit.move_to_start"),
-            ("down".into(), "edit.move_to_end"),
-            ("shift+left".into(), "edit.select_left"),
-            ("shift+right".into(), "edit.select_right"),
-            (format!("{word}+shift+left"), "edit.select_word_left"),
-            (format!("{word}+shift+right"), "edit.select_word_right"),
-            ("shift+home".into(), "edit.select_to_start"),
-            ("shift+end".into(), "edit.select_to_end"),
-            ("shift+up".into(), "edit.select_to_start"),
-            ("shift+down".into(), "edit.select_to_end"),
-            ("mod+a".into(), "edit.select_all"),
-            ("backspace".into(), "edit.delete_backward"),
-            ("shift+backspace".into(), "edit.delete_backward"),
-            ("delete".into(), "edit.delete_forward"),
-            (format!("{word}+backspace"), "edit.delete_word_backward"),
-            (format!("{word}+delete"), "edit.delete_word_forward"),
-            ("mod+c".into(), "edit.copy"),
-            ("mod+x".into(), "edit.cut"),
-            ("mod+v".into(), "edit.paste"),
-            ("mod+z".into(), "edit.undo"),
-            ("mod+shift+z".into(), "edit.redo"),
+        // The same editing chords in both kinds of field: lines are visual lines, and a
+        // single-line field is one line (Up goes to its start, Down to its end).
+        let mut edits: Vec<(String, Option<&str>)> = vec![
+            ("space".into(), None),
+            ("left".into(), Some("edit.move_left")),
+            ("right".into(), Some("edit.move_right")),
+            (format!("{word}+left"), Some("edit.move_word_left")),
+            (format!("{word}+right"), Some("edit.move_word_right")),
+            ("home".into(), Some("edit.move_to_line_start")),
+            ("end".into(), Some("edit.move_to_line_end")),
+            ("up".into(), Some("edit.move_up")),
+            ("down".into(), Some("edit.move_down")),
+            ("pageup".into(), Some("edit.move_page_up")),
+            ("pagedown".into(), Some("edit.move_page_down")),
+            ("shift+left".into(), Some("edit.select_left")),
+            ("shift+right".into(), Some("edit.select_right")),
+            (format!("{word}+shift+left"), Some("edit.select_word_left")),
+            (format!("{word}+shift+right"), Some("edit.select_word_right")),
+            ("shift+home".into(), Some("edit.select_to_line_start")),
+            ("shift+end".into(), Some("edit.select_to_line_end")),
+            ("shift+up".into(), Some("edit.select_up")),
+            ("shift+down".into(), Some("edit.select_down")),
+            ("shift+pageup".into(), Some("edit.select_page_up")),
+            ("shift+pagedown".into(), Some("edit.select_page_down")),
+            ("mod+a".into(), Some("edit.select_all")),
+            ("backspace".into(), Some("edit.delete_backward")),
+            ("shift+backspace".into(), Some("edit.delete_backward")),
+            ("delete".into(), Some("edit.delete_forward")),
+            (format!("{word}+backspace"), Some("edit.delete_word_backward")),
+            (format!("{word}+delete"), Some("edit.delete_word_forward")),
+            ("mod+c".into(), Some("edit.copy")),
+            ("mod+x".into(), Some("edit.cut")),
+            ("mod+v".into(), Some("edit.paste")),
+            ("mod+z".into(), Some("edit.undo")),
+            ("mod+shift+z".into(), Some("edit.redo")),
         ];
         if platform.is_apple() {
             edits.extend([
-                ("cmd+left".to_owned(), "edit.move_to_start"),
-                ("cmd+right".into(), "edit.move_to_end"),
-                ("cmd+shift+left".into(), "edit.select_to_start"),
-                ("cmd+shift+right".into(), "edit.select_to_end"),
-                ("cmd+backspace".into(), "edit.delete_to_start"),
+                ("cmd+left".to_owned(), Some("edit.move_to_line_start")),
+                ("cmd+right".into(), Some("edit.move_to_line_end")),
+                ("cmd+shift+left".into(), Some("edit.select_to_line_start")),
+                ("cmd+shift+right".into(), Some("edit.select_to_line_end")),
+                ("cmd+up".into(), Some("edit.move_to_start")),
+                ("cmd+down".into(), Some("edit.move_to_end")),
+                ("cmd+shift+up".into(), Some("edit.select_to_start")),
+                ("cmd+shift+down".into(), Some("edit.select_to_end")),
+                ("cmd+backspace".into(), Some("edit.delete_to_line_start")),
             ]);
         } else {
-            edits.push(("ctrl+y".into(), "edit.redo"));
+            edits.extend([
+                ("ctrl+home".to_owned(), Some("edit.move_to_start")),
+                ("ctrl+end".into(), Some("edit.move_to_end")),
+                ("ctrl+shift+home".into(), Some("edit.select_to_start")),
+                ("ctrl+shift+end".into(), Some("edit.select_to_end")),
+                ("ctrl+y".into(), Some("edit.redo")),
+            ]);
         }
-        for (chord, command) in edits {
-            b(&chord, Some(command), field);
+        for field in ["text_input", "text_area"] {
+            for (chord, command) in &edits {
+                b(chord, *command, Some(field));
+            }
         }
         k
     }
@@ -302,12 +323,26 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("edit.select_word_right", "extend the selection a word right"),
     ("edit.select_to_start", "extend the selection to the start"),
     ("edit.select_to_end", "extend the selection to the end"),
+    ("edit.move_up", "caret one visual line up, keeping its x (at the first line: to the start)"),
+    ("edit.move_down", "caret one visual line down, keeping its x (at the last line: to the end)"),
+    ("edit.move_page_up", "caret up by the lines the field shows"),
+    ("edit.move_page_down", "caret down by the lines the field shows"),
+    ("edit.move_to_line_start", "caret to the start of its visual line"),
+    ("edit.move_to_line_end", "caret to the end of its visual line"),
+    ("edit.select_up", "extend the selection one visual line up"),
+    ("edit.select_down", "extend the selection one visual line down"),
+    ("edit.select_page_up", "extend the selection up by the lines the field shows"),
+    ("edit.select_page_down", "extend the selection down by the lines the field shows"),
+    ("edit.select_to_line_start", "extend the selection to the start of the visual line"),
+    ("edit.select_to_line_end", "extend the selection to the end of the visual line"),
     ("edit.select_all", "select everything"),
     ("edit.delete_backward", "delete the selection, else the character before the caret"),
     ("edit.delete_forward", "delete the selection, else the character after the caret"),
     ("edit.delete_word_backward", "delete the selection, else back to the word's start"),
     ("edit.delete_word_forward", "delete the selection, else to the word's end"),
     ("edit.delete_to_start", "delete the selection, else back to the start"),
+    ("edit.delete_to_line_start", "delete the selection, else back to the start of the visual line"),
+    ("edit.newline", "break the line (multi-line fields)"),
     ("edit.copy", "copy the selection"),
     ("edit.cut", "cut the selection"),
     ("edit.paste", "paste at the caret"),
@@ -533,11 +568,21 @@ impl App {
             }
         }
         let keymap = self.keymap();
+        // Chords bound where focus is now: everywhere, or in a context on the focus path.
+        let contexts: Vec<String> = {
+            let k = self.ui.kernel.borrow();
+            path.iter().filter_map(|id| k.key_context(*id).map(str::to_owned)).collect()
+        };
         names
             .into_iter()
             .map(|c| {
-                let chords =
-                    keymap.bindings.iter().filter(|b| b.command.as_deref() == Some(c.as_str())).map(|b| b.chord.to_string()).collect();
+                let chords = keymap
+                    .bindings
+                    .iter()
+                    .filter(|b| b.command.as_deref() == Some(c.as_str()))
+                    .filter(|b| b.context.as_ref().is_none_or(|ctx| contexts.contains(ctx)))
+                    .map(|b| b.chord.to_string())
+                    .collect();
                 (c, chords)
             })
             .collect()

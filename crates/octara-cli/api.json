@@ -4774,6 +4774,12 @@
           "file": "crates/octara/src/kernel/anim.rs"
         },
         {
+          "path": "octara::kernel::Kernel::goal",
+          "kind": "method",
+          "sig": "pub fn goal(&self, id: NodeId) -> Option<f32>",
+          "file": "crates/octara/src/kernel/edit.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::group_step",
           "kind": "method",
           "sig": "pub fn group_step(&self, focused: NodeId, arrow: Arrow) -> Option<NodeId>",
@@ -4827,10 +4833,31 @@
           "file": "crates/octara/src/kernel/focus.rs"
         },
         {
+          "path": "octara::kernel::Kernel::input_line_edges",
+          "kind": "method",
+          "sig": "pub fn input_line_edges(&self, id: NodeId) -> Option<(usize, usize)>",
+          "docs": "The first and last value offsets of the visual line the caret of a text input is on.",
+          "file": "crates/octara/src/kernel/edit.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::input_offset_at",
           "kind": "method",
-          "sig": "pub fn input_offset_at(&self, id: NodeId, x: f32, under: bool) -> Option<usize>",
-          "docs": "The value offset nearest window x `x` in a text input (where a click puts the caret);\nwith `under`, where the character under `x` starts (what a double click selects around).",
+          "sig": "pub fn input_offset_at(&self, id: NodeId, x: f32, y: f32, under: bool) -> Option<usize>",
+          "docs": "The value offset nearest window point `(x, y)` in a text input (where a click puts the\ncaret); with `under`, where the character under it starts (what a double click selects\naround).",
+          "file": "crates/octara/src/kernel/edit.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::input_offset_by_lines",
+          "kind": "method",
+          "sig": "pub fn input_offset_by_lines(&self, id: NodeId, lines: i32) -> Option<(usize, f32)>",
+          "docs": "The value offset `lines` visual lines from the caret of a text input and the goal x to\nkeep: the caret's x when the moves by lines began.",
+          "file": "crates/octara/src/kernel/edit.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::input_page_lines",
+          "kind": "method",
+          "sig": "pub fn input_page_lines(&self, id: NodeId) -> usize",
+          "docs": "How many lines of a text input show at once (at least 1).",
           "file": "crates/octara/src/kernel/edit.rs"
         },
         {
@@ -4870,11 +4897,24 @@
           "file": "crates/octara/src/kernel.rs"
         },
         {
+          "path": "octara::kernel::Kernel::is_multiline",
+          "kind": "method",
+          "sig": "pub fn is_multiline(&self, id: NodeId) -> bool",
+          "file": "crates/octara/src/kernel/edit.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::is_within",
           "kind": "method",
           "sig": "pub fn is_within(&self, node: NodeId, ancestor: NodeId) -> bool",
           "docs": "Whether `node` is `ancestor` or inside it.",
           "file": "crates/octara/src/kernel/focus.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::keep_goal",
+          "kind": "method",
+          "sig": "pub fn keep_goal(&mut self, id: NodeId, goal: f32)",
+          "docs": "Keeps `goal` as the caret's x for the next move by lines (any other selection change\nforgets it).",
+          "file": "crates/octara/src/kernel/edit.rs"
         },
         {
           "path": "octara::kernel::Kernel::key_context",
@@ -5294,6 +5334,13 @@
           "file": "crates/octara/src/kernel/focus.rs"
         },
         {
+          "path": "octara::kernel::Kernel::set_multiline",
+          "kind": "method",
+          "sig": "pub fn set_multiline(&mut self, id: NodeId, on: bool)",
+          "docs": "Makes a text input multi-line (wrapping at its width, Enter breaking lines) or single-line.",
+          "file": "crates/octara/src/kernel/edit.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::set_origin",
           "kind": "method",
           "sig": "pub fn set_origin(&mut self, id: NodeId, at: &'static Location<'static>)",
@@ -5338,7 +5385,7 @@
           "path": "octara::kernel::Kernel::set_selection",
           "kind": "method",
           "sig": "pub fn set_selection(&mut self, id: NodeId, anchor: usize, caret: usize)",
-          "docs": "Sets a text input's selection (`anchor`, `caret`: byte offsets into its value).\nKept as given: the value may be about to change (an edit sets the selection, then its\nhandler sets the value); reads clamp to the value.",
+          "docs": "Sets a text input's selection (`anchor`, `caret`: byte offsets into its value); the\ncaret's goal x for moves by lines is forgotten.\nKept as given: the value may be about to change (an edit sets the selection, then its\nhandler sets the value); reads clamp to the value.",
           "file": "crates/octara/src/kernel/edit.rs"
         },
         {
@@ -7779,13 +7826,6 @@
           ]
         },
         {
-          "path": "octara::kernel::text::TextEngine::caret_stops",
-          "kind": "method",
-          "sig": "fn caret_stops(&mut self, key: TextKey, text: &str, style: &TextStyle) -> Vec<(usize, f32)>",
-          "docs": "Where a caret can stand in `text` (one line, measured just before for `key`): `(byte\noffset, x)` in byte order, from `(0, 0)` to `(text.len(), width)`.",
-          "file": "crates/octara/src/kernel/text.rs"
-        },
-        {
           "path": "octara::kernel::text::TextEngine::forget",
           "kind": "method",
           "sig": "fn forget(&mut self, node: NodeId)",
@@ -7825,6 +7865,13 @@
           "kind": "method",
           "sig": "fn truncate(&mut self, key: TextKey, count: usize)",
           "docs": "Drops cached paragraphs from `count` on (the text now has fewer).",
+          "file": "crates/octara/src/kernel/text.rs"
+        },
+        {
+          "path": "octara::kernel::text::TextEngine::visual_lines",
+          "kind": "method",
+          "sig": "fn visual_lines(&mut self, key: TextKey, text: &str, style: &TextStyle, max_width: Option<f32>) -> Vec<VisualLine>",
+          "docs": "The visual lines of `text` (measured just before for `key`) broken at `max_width`\n(`None`: one line per paragraph): what editing places the caret, moves it by lines and\ndraws selections with.",
           "file": "crates/octara/src/kernel/text.rs"
         },
         {
@@ -7945,6 +7992,42 @@
           "path": "octara::kernel::text::TextStyle::wrap",
           "kind": "field",
           "sig": "pub wrap: Wrap",
+          "file": "crates/octara/src/kernel/text.rs"
+        },
+        {
+          "path": "octara::kernel::text::VisualLine",
+          "kind": "struct",
+          "sig": "pub struct VisualLine { .. }",
+          "docs": "One line of a laid-out text as shown: its byte range (a line break's `\\n` is in neither\nline), its top (from the text's top) and where a caret can stand on it, `(byte, x)` in byte\norder from `(start, ..)` to `(end, ..)`. A line that wraps ends where the next one starts.",
+          "file": "crates/octara/src/kernel/text.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "PartialEq"
+          ]
+        },
+        {
+          "path": "octara::kernel::text::VisualLine::end",
+          "kind": "field",
+          "sig": "pub end: usize",
+          "file": "crates/octara/src/kernel/text.rs"
+        },
+        {
+          "path": "octara::kernel::text::VisualLine::start",
+          "kind": "field",
+          "sig": "pub start: usize",
+          "file": "crates/octara/src/kernel/text.rs"
+        },
+        {
+          "path": "octara::kernel::text::VisualLine::stops",
+          "kind": "field",
+          "sig": "pub stops: Vec<(usize, f32)>",
+          "file": "crates/octara/src/kernel/text.rs"
+        },
+        {
+          "path": "octara::kernel::text::VisualLine::top",
+          "kind": "field",
+          "sig": "pub top: f32",
           "file": "crates/octara/src/kernel/text.rs"
         },
         {
@@ -11056,6 +11139,13 @@
           "kind": "method",
           "sig": "pub fn modal(self, click_outside: bool, dismiss: impl Fn() + 'static) -> Self",
           "docs": "While shown, the rest of the window is inert: presses outside reach nothing, and Tab\nstays inside. It takes focus when it opens and gives it back when it closes. Escape —\nand, with `click_outside`, a press outside — calls `dismiss`, which should close it.",
+          "file": "crates/octara/src/view/element.rs"
+        },
+        {
+          "path": "octara::view::El::multiline",
+          "kind": "method",
+          "sig": "pub fn multiline(self) -> Self",
+          "docs": "Makes a text input multi-line: the text wraps at its width and the field grows with it,\nEnter (and Shift+Enter) breaks the line, Cmd+Enter (Ctrl+Enter) submits; Up, Down, Page\nUp, Page Down, Home and End move by visual lines; a paste keeps its line breaks.",
           "file": "crates/octara/src/view/element.rs"
         },
         {

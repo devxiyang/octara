@@ -1,6 +1,6 @@
 # Text input: multi-line and secure fields
 
-Based on the [research](../research/text-input.md). Status: confirmed.
+Based on the [research](../research/text-input.md). Status: confirmed; step 1 implemented.
 
 One constructor, `text_input()`, with modifiers (Rune's names); the model stays `value` +
 `on_input`, and the editing model stays the runtime's own (not Parley's `PlainEditor`,
