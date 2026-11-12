@@ -75,7 +75,7 @@ inspect                          snapshots, scripts, `check` (the agent's protoc
 
 - **Nodes** live in a slotmap (`NodeId`); each has a role, semantics, handlers, styles and state
   overrides, and one **content**: none, text, a text input (value, composition, selection,
-  scroll), an image, an icon or a canvas recording. Its `Kind` follows from the content.
+  scroll), an image, an icon, a canvas recording or a native view. Its `Kind` follows from the content.
 - **Styles** resolve against the theme (semantic tokens, scales, breakpoints) and the node's
   states (hover, focus, pressed, disabled, touch, window size class); inherited text properties
   flow down. Missing tokens are diagnostics.
@@ -117,8 +117,8 @@ owned by scopes on the app clock ([async](design/async.md)).
 | Platform | GPU | Native views | Priority |
 | --- | --- | --- | --- |
 | macOS | Metal | AppKit | P0 (the shell runs today) |
-| Windows | D3D12 | Win32 / WinUI | P0 |
-| Linux | Vulkan / GLES | GTK4 | P0 |
+| Windows | D3D12 | WebView2 in DirectComposition | P0 |
+| Linux | Vulkan / GLES | textures (WPE WebKit) | P0 |
 | iOS | Metal | UIKit | P1 |
 | Android | Vulkan / GLES | Android Views | P1 |
 
@@ -133,7 +133,13 @@ owned by scopes on the app clock ([async](design/async.md)).
   about 70 µs for a 5000-node list after a change, release build). Accessibility updates are
   incremental (4 nodes and about 40 µs after a press in that list, against 0.4 ms for the whole
   tree). Debug builds check both against a full rebuild every time they are reused or sent.
-- **Native views** are designed, not built ([Native Island](design/native-island.md)).
+- **One window per app** today: the kernel has one root, viewport and overlay layer; several
+  windows and OS popups are [designed](design/windows.md), each window with its own kernel under
+  the one runtime.
+- **The shell is winit's**, and winit types reach the shell's code directly; a [platform
+  layer](design/platform.md) (traits the app sees, a headless platform, backends) is designed.
+- **Native views**: macOS overlay web views and underlay maps are built
+  ([Native Island](design/native-island.md)); Windows and Linux are designed.
 
 ## Out of scope
 

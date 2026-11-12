@@ -3,6 +3,26 @@
 Actionable to-do list (2026-11). For phase goals see [ROADMAP](ROADMAP.md); for the design basis see [UI primitives and component layering](design/ui-primitives.md)
 and [Reactive core](design/reactive-core.md). Check off an item when it is done, and update the status in the corresponding design document.
 
+## Priorities (2026-11-12)
+
+The architecture round comes first; then features, in this order.
+
+1. Architecture: [windows](design/windows.md) (the window's own state into `Window`, then
+   several windows, windows in the protocol); the [platform layer](design/platform.md) (traits,
+   the headless platform, the winit backend behind them); CI on macOS, Windows and Linux (done)
+   and what it finds there; [ARCHITECTURE](ARCHITECTURE.md) kept current.
+2. The owned macOS backend (NSTextInputClient, menus, live resize in the frame's transaction,
+   panels), and agents driving a real window (the inspector protocol over a channel to it).
+3. Native chrome: menus and shortcuts, file dialogs, alerts, several windows.
+4. Components: menus and popovers, dialogs and sheets, tabs, lists and tables, tooltips,
+   sliders, progress.
+5. Images: JPEG, WebP, SVG, loading and caching.
+6. [Native Island](design/native-island.md) step 4: focus, accessibility joining, lazy creation.
+7. Windows: WebView2 in DirectComposition; `surface` textures; Linux: WPE as a texture.
+8. Text depth: direct platform text protocols, incremental layout of long paragraphs.
+9. iOS, then Android.
+10. Evaluation, replay, causal tracing.
+
 ## Awaiting acceptance by hand
 
 Checked by tests and screenshots; to be tried in a real window (`cargo run -p octara-examples
@@ -177,7 +197,8 @@ Basis: [input research](research/input.md), [input design](design/input.md). Con
       (`Clipboard`, the shell connects arboard 3.7.0); undo / redo (consecutive typing or deletion merges into one step, 128 steps, cleared when the app rewrites the value); IME composition is shown at the caret
       and replaces the selection; click, Shift+click, double-click to select a word, triple-click to select all, drag to select; long lines scroll horizontally to keep the caret visible; platform protocol `text_field` / `replace_text` /
       `set_selection` / `set_composition` with UTF-16 conversion; standard per-platform keybindings (Apple uses Alt by word, Cmd+arrow to the ends); accessibility `SetValue`
-- [ ] Multi-line text fields; password fields; deferring the app's rewrites of the value during composition (Exact); touch long-press word selection and selection handles; the caret position within an IME composition
+- [x] Multi-line text fields; password fields ([text input](design/text-input.md))
+- [ ] Deferring the app's rewrites of the value during composition (Exact); touch long-press word selection and selection handles; the caret position within an IME composition
 - [ ] Accessibility `ScrollIntoView`, text selection (AccessKit text runs); scroll into view before driving; multi-finger gestures, edge back swipe; direct platform text protocols (NSTextInputClient, etc.)
 
 ## Later
@@ -188,8 +209,8 @@ Basis: [input research](research/input.md), [input design](design/input.md). Con
       `App::poll` / `settle` / `run_until_idle` / `pending`; the clock moves into the scheduler, with time logic in `app/time.rs`; `on_external` / `Event::External` are removed,
       replaced by `Event::Send`; the shell wakes through an event-loop proxy
 - [ ] After async: resource deduplication cache, deferred placeholders, record and replay at the loopback, forbidding real time in tests, stream backpressure and coalescing
-- [ ] Collection operators `map`, `join`; once `map` lands, remove the duplicate per-entry Signals in flattening
-- [ ] `icon` (scroll containers and images are done)
+- [x] Collection operators `map`, `join` ([design](design/map-join.md)); flattening keeps its own entry per item (a known limit there)
+- [x] `icon`, `octara-icons` (Lucide), vector paths and `canvas` ([vector graphics](design/vector-graphics.md))
 - [x] Animation step 1: the `motion` module — `Spring::new(duration, bounce)` (the SwiftUI / Rune mapping) and named presets, analytic tracks (same value at any frame rate,
       retargeting keeps position and velocity, the rest time is computed when a segment is built), `PropClass` (rest threshold and reduced motion)
 - [x] Animation step 2 ([Animation](design/animation.md), confirmed: declared on the element, inherited by the subtree): `.motion(..)` / `motion_none` / `color_motion` /
@@ -253,9 +274,10 @@ Basis: [input research](research/input.md), [input design](design/input.md). Con
         name a platform (phone: `ios`, desktop: `macos`); `SMALL_TARGET` asks 44 × 44 on touch and 24 × 24 with a pointer
         unless no other control's center is within 24 (WCAG 2.5.8)
   - [ ] Example ids (how an item is used in the examples), recipes and byte limits, `octara new` (calls `skill install`), MCP, llms.txt, evaluation
-- [ ] Inspector protocol; causal tracing in the reactive layer (currently only down to the cause id of kernel operations)
-- [ ] Window and GPU rendering; a real text stack (Parley) and per-paragraph incremental layout
-- [ ] Native Island, Canvas
+- [ ] Causal tracing in the reactive layer (currently only down to the cause id of kernel operations)
+- [x] Inspector protocol, window and GPU rendering, Parley text (per-paragraph caching), captures ([captures](design/capture.md))
+- [ ] Incremental layout inside one long paragraph
+- [x] Native Island steps 1 to 3 (macOS overlay web views, underlay maps); Canvas
 - [ ] Agent evaluation retest: update the API docs, use harder tasks or a weaker model
 
 ## Known Limitations
