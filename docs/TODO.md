@@ -6,7 +6,8 @@ make the corresponding design document describe it.
 
 ## Priorities
 
-1. The [core](design/core.md): popups and menus; the AI chat components and reference app.
+1. The [core](design/core.md): general mechanisms and components for the AI chat reference app,
+   and the app.
 2. The owned macOS backend (NSTextInputClient, menus, live resize in the frame's transaction,
    panels), and agents driving a real window (the inspector protocol over a channel to it).
 3. Native chrome: menus and shortcuts, file dialogs, alerts.

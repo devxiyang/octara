@@ -250,6 +250,7 @@ pub struct El {
     live: Option<accesskit::Live>,
     copy_markdown: Option<crate::kernel::select::CopyMarkdown>,
     cursor: Option<crate::platform::CursorStyle>,
+    follow_tail: bool,
     select_none: bool,
     overlays: Vec<Overlay>,
     anchor: Option<(NodeId, Placement)>,
@@ -318,6 +319,7 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         live: None,
         copy_markdown: None,
         cursor: None,
+        follow_tail: false,
         select_none: false,
         overlays: Vec::new(),
         anchor: None,
@@ -487,6 +489,14 @@ impl El {
     /// out and back.
     pub fn selectable(mut self) -> Self {
         self.region = true;
+        self
+    }
+    /// A scroll container keeping the end of its content in view as the content grows (a
+    /// transcript, a log, a terminal; GPUI's `FollowMode::Tail`). Scrolling away from the end
+    /// lets go of it; scrolling back to the end, or `scroll_to_end`, follows again. Read whether
+    /// it follows with `following_tail` (to offer a way back to the end).
+    pub fn follow_tail(mut self) -> Self {
+        self.follow_tail = true;
         self
     }
     /// Its texts are not selected (list markers, labels of controls inside a selectable region).
@@ -1038,6 +1048,9 @@ pub(crate) fn build_el(e: El) -> NodeId {
         }
         if let Some(c) = e.cursor {
             k.set_cursor(node, c);
+        }
+        if e.follow_tail {
+            k.set_follow_tail(node, true);
         }
         if let Some(l) = e.live {
             k.set_live(node, l);

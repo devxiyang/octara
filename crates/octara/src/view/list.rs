@@ -291,7 +291,9 @@ where
                         m.set_weight(key, *h);
                     }
                     let to = m.prefix_weight(anchor) - on_screen;
-                    if (to - y).abs() > 0.5 {
+                    // Following its tail, the container keeps its end in place instead (after the
+                    // next layout).
+                    if (to - y).abs() > 0.5 && !k.is_following_tail(container) {
                         k.scroll_to_unclamped(container, sx, (to as f32 + start).max(0.0));
                     }
                     changed = true;

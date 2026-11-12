@@ -384,6 +384,9 @@ struct Node {
     placed: Option<Placed>,
     /// Scroll offset of a scroll container.
     scroll: (f32, f32),
+    /// A scroll container keeping the end of its content in view (`follow_tail`): whether it
+    /// follows now (`None`: it does not follow at all).
+    follow: Option<bool>,
     /// Text properties passed down to children.
     inherited: Inherited,
     /// What the parent passed down when this node was last resolved.
@@ -1152,6 +1155,7 @@ impl Kernel {
             anchor: None,
             placed: None,
             scroll: (0.0, 0.0),
+            follow: None,
             inherited: root_inh,
             inherited_from: root_inh,
             origin: None,
@@ -2200,8 +2204,17 @@ impl Kernel {
             _ => self.node(id).scroll,
         }
     }
-    /// Scrolls to `(x, y)`, clamped to the scrollable range. Returns whether it moved.
+    /// Scrolls to `(x, y)`, clamped to the scrollable range: someone put it there (the person, a
+    /// reveal, the app), so a container following its tail follows from here on only if that is
+    /// the end. Returns whether it moved.
     pub fn scroll_to(&mut self, id: NodeId, x: f32, y: f32) -> bool {
+        let moved = self.move_scroll(id, x, y);
+        self.note_scrolled(id);
+        moved
+    }
+    /// Moves the offset, clamped, without anyone having put it there (clamping after a layout,
+    /// a glide's steps, following the tail).
+    fn move_scroll(&mut self, id: NodeId, x: f32, y: f32) -> bool {
         // A multi-line text input scrolls its text (the caret may leave the view).
         if self.is_multiline(id) {
             let Some(f) = self.field(id) else { return false };
@@ -2302,13 +2315,67 @@ impl Kernel {
         let l = self.taffy.layout(self.node(id).taffy).expect("taffy");
         self.rect(id).1 + l.border.top + l.padding.top
     }
-    /// After a layout, keeps every scroll offset inside its (possibly smaller) range.
+    /// After a layout, keeps every scroll offset inside its (possibly smaller) range, and every
+    /// container following its tail at its end (gliding there, if a glide is on its way).
     fn clamp_scrolls(&mut self) {
-        let ids: Vec<NodeId> = self.nodes.iter().filter(|(_, n)| n.scroll != (0.0, 0.0)).map(|(id, _)| id).collect();
+        let ids: Vec<NodeId> =
+            self.nodes.iter().filter(|(_, n)| n.scroll != (0.0, 0.0) || n.follow == Some(true)).map(|(id, _)| id).collect();
         for id in ids {
             let (x, y) = self.node(id).scroll;
-            self.scroll_to(id, x, y);
+            if self.node(id).follow != Some(true) {
+                self.move_scroll(id, x, y);
+            } else if self.glides.contains_key(&id) {
+                self.glide_scroll(id, x, f32::MAX);
+            } else {
+                self.move_scroll(id, x, f32::MAX);
+            }
         }
+    }
+
+    // ---- following the tail ----
+
+    /// Makes `id` keep the end of its content in view (GPUI's `FollowMode::Tail`), following
+    /// from now; `false` stops it.
+    pub fn set_follow_tail(&mut self, id: NodeId, on: bool) {
+        let n = self.node_mut(id);
+        match (on, n.follow) {
+            (true, None) => n.follow = Some(true),
+            (false, _) => n.follow = None,
+            _ => {}
+        }
+        if on {
+            self.needs_layout = true;
+        }
+    }
+    /// Whether `id` follows its tail now: it is set to (`follow_tail`), and nobody has scrolled
+    /// it away from the end since.
+    pub fn is_following_tail(&self, id: NodeId) -> bool {
+        self.node(id).follow == Some(true)
+    }
+    /// Lets go of the tail until `id` is next scrolled to its end (a hot reload restoring a
+    /// container the person had scrolled away).
+    pub fn release_tail(&mut self, id: NodeId) {
+        if let Some(f) = &mut self.node_mut(id).follow {
+            *f = false;
+        }
+    }
+    /// Containers following their tail that have let go of it, by test id.
+    pub fn released_tails(&self) -> Vec<String> {
+        self.nodes.values().filter(|n| n.follow == Some(false) && n.attached).filter_map(|n| n.test_id.clone()).collect()
+    }
+    /// Someone put `id`'s offset where it is: a container with a tail follows it again at the
+    /// end, and lets go of it anywhere else.
+    fn note_scrolled(&mut self, id: NodeId) {
+        if self.node(id).follow.is_some() {
+            let end = self.at_end(id);
+            self.node_mut(id).follow = Some(end);
+        }
+    }
+    /// Whether `id` is scrolled to the end of its content (within a pixel).
+    fn at_end(&self, id: NodeId) -> bool {
+        let (_, ch) = self.client_size(id);
+        let (_, sh) = self.scroll_size(id);
+        self.node(id).scroll.1 >= sh - ch - 1.0
     }
 
     // ---- queries by test id ----

@@ -187,6 +187,8 @@ assert!(!app.kernel().exists("todo-1"));
   `each(move || view.source(), ..)`.
 - Long lists: `virtual_each`, directly inside a scroll container with a bounded height
   (`VIRTUAL_LIST_NOT_SCROLLABLE` otherwise).
+- A transcript or log: `.follow_tail()` on its scroll container keeps the end in view until the
+  person scrolls away; `following_tail(id)` says whether it follows, `scroll_to_end(id)` goes back.
 
 ## Structure
 

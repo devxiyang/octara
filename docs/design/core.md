@@ -155,5 +155,9 @@ Designed in [the text core](text.md); what the core decided:
 5. The platform boundary completed: rendering and accessibility in the backend, cursor, drops,
    image clipboard, URLs, file dialogs; the winit backend with several windows; the conformance
    suite. Implemented.
-6. Popups and menus ([windows](windows.md)).
-7. The AI chat components and the AI chat reference app.
+6. Popups and menus ([windows](windows.md)). Implemented.
+7. What an AI chat app needs, as general mechanisms and components, and the AI chat reference app
+   built from them (no chat-specific framework parts): following a scroll container's tail
+   (implemented), one selection across nested selectable regions, paced `LiveText`, focus-out
+   commits; the kit's components planned for this step ([UI primitives](ui-primitives.md)); the
+   reference app with an offline scripted model.

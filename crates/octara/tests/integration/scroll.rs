@@ -121,3 +121,137 @@ fn a_virtual_list_outside_a_scroll_container_is_reported() {
     });
     assert!(app.app().diagnostics().iter().any(|d| d.code == "VIRTUAL_LIST_NOT_SCROLLABLE"), "{:?}", app.app().diagnostics());
 }
+
+// ---- following the tail ----
+
+/// A log that keeps its end in view, a "latest" button shown while it does not, and a button
+/// adding a line.
+fn log() -> View {
+    let lines = list("lines", || (0..40u32).collect(), |i: &u32| *i);
+    col()
+        .child(
+            col()
+                .child(each(move || lines.all(), |i, _| text(format!("line {i}")).id(format!("l{i}")).into()))
+                .id("log")
+                .flex_1()
+                .overflow_y_scroll()
+                .follow_tail(),
+        )
+        .child(show(
+            move || !following_tail("log").get(),
+            || {
+                button_like("latest", || {
+                    scroll_to_end("log");
+                })
+            },
+        ))
+        .child(button_like("add", move || {
+            let n = lines.len() as u32;
+            lines.push(n);
+        }))
+        .size_full()
+        .into()
+}
+
+fn button_like(id: &str, f: impl Fn() + 'static) -> View {
+    el().id(id).h(px(20.0)).on_press(f).child(text(id)).into()
+}
+
+fn offset(app: &Window, id: &str) -> f32 {
+    let k = app.kernel();
+    k.scroll_offset(k.find(id).unwrap()).1
+}
+
+fn end(app: &Window, id: &str) -> f32 {
+    let k = app.kernel();
+    let n = k.find(id).unwrap();
+    k.scroll_size(n).1 - k.client_size(n).1
+}
+
+fn following(app: &Window, id: &str) -> bool {
+    let k = app.kernel();
+    k.is_following_tail(k.find(id).unwrap())
+}
+
+#[test]
+fn a_container_following_its_tail_keeps_its_end_in_view() {
+    let mut app = Window::headless(log);
+    assert!(end(&app, "log") > 0.0);
+    assert_eq!(offset(&app, "log"), end(&app, "log"), "starts at the end");
+    assert!(app.kernel().find("latest").is_none());
+
+    app.tap("add").unwrap();
+    app.tap("add").unwrap();
+    assert_eq!(offset(&app, "log"), end(&app, "log"), "the end stays in view as lines come");
+
+    // The person scrolls up: it lets go, and new lines do not move what they read.
+    let (x, y, w, h) = app.kernel().shown_rect(app.kernel().find("log").unwrap());
+    app.wheel(x + w / 2.0, y + h / 2.0, 0.0, -100.0);
+    assert!(!following(&app, "log"));
+    let at = offset(&app, "log");
+    app.tap("add").unwrap();
+    assert_eq!(offset(&app, "log"), at);
+    assert!(app.kernel().find("latest").is_some(), "a way back shows");
+
+    // Scrolling back to the end follows again.
+    app.wheel(x + w / 2.0, y + h / 2.0, 0.0, 1e6);
+    assert!(following(&app, "log"));
+    assert!(app.kernel().find("latest").is_none());
+    app.tap("add").unwrap();
+    assert_eq!(offset(&app, "log"), end(&app, "log"));
+}
+
+#[test]
+fn scrolling_to_the_end_follows_the_tail_again() {
+    let mut app = Window::headless(log);
+    app.dispatch(Event::ScrollTo("log".into(), 0.0, 0.0)).unwrap();
+    assert!(!following(&app, "log"), "a program scrolling away lets go too");
+    app.tap("add").unwrap();
+    assert_eq!(offset(&app, "log"), 0.0);
+    app.tap("latest").unwrap();
+    app.tap("add").unwrap();
+    assert!(following(&app, "log"));
+    assert_eq!(offset(&app, "log"), end(&app, "log"));
+}
+
+#[test]
+fn a_virtual_list_following_its_tail_lands_on_its_measured_end() {
+    let mut app = Window::headless(|| {
+        let items = list("items", || (0..10_000).map(|i| Item { id: i, lines: if i % 3 == 0 { 3 } else { 1 } }).collect(), |i: &Item| i.id);
+        col()
+            .child(
+                col()
+                    .child(virtual_each(
+                        move || items.all(),
+                        |_| 24.0,
+                        |id, it| text(move || vec!["line"; it.with(|i| i.lines)].join("\n")).id(format!("item-{id}")).into(),
+                    ))
+                    .id("feed")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .follow_tail(),
+            )
+            .child(button_like("grow", move || {
+                let n = items.len() as u32;
+                items.push(Item { id: n, lines: 5 });
+            }))
+            .size_full()
+            .into()
+    });
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+    let bottom = |app: &Window, id: &str| {
+        let k = app.kernel();
+        let r = k.rect(k.find(id).unwrap());
+        r.1 + r.3
+    };
+    let feed_bottom = |app: &Window| {
+        let k = app.kernel();
+        let r = k.shown_rect(k.find("feed").unwrap());
+        r.1 + r.3
+    };
+    assert_eq!(bottom(&app, "item-9999"), feed_bottom(&app), "the last row sits at the bottom");
+    app.tap("grow").unwrap();
+    assert_eq!(bottom(&app, "item-10000"), feed_bottom(&app), "a taller new row is measured and kept at the bottom");
+    assert!(following(&app, "feed"));
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}

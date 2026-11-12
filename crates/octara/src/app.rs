@@ -186,6 +186,9 @@ pub(crate) struct WindowState {
     pub(crate) scrolls: RefCell<rustc_hash::FxHashMap<NodeId, Signal<crate::view::ScrollState>>>,
     /// Element sizes someone follows (`size_of`), by test id.
     pub(crate) sizes: RefCell<rustc_hash::FxHashMap<String, Signal<(f32, f32)>>>,
+    /// Whether scroll containers follow their tail, as someone reads it (`following_tail`), by
+    /// test id.
+    pub(crate) tails: RefCell<rustc_hash::FxHashMap<String, Signal<bool>>>,
     /// Run after each layout; return whether they changed anything (then the window lays out again).
     pub(crate) after_layout: RefCell<Vec<(u64, crate::view::AfterLayout)>>,
     pub(crate) next: Cell<u64>,
@@ -314,6 +317,8 @@ struct Interaction {
     forced: Vec<(String, State, bool)>,
     /// Scroll offsets by test id, carried over a hot reload.
     scrolls: Vec<(String, (f32, f32))>,
+    /// Containers following their tail that had let go of it, by test id.
+    released: Vec<String>,
     /// A text field whose caret moved: scroll containers around it bring the caret into view
     /// once the frame is laid out.
     reveal: Option<NodeId>,
@@ -338,6 +343,7 @@ impl WindowState {
             breakpoint: app.rt.enter(|| Signal::detached(Theme::default().breakpoint_of(size.0))),
             scrolls: RefCell::default(),
             sizes: RefCell::default(),
+            tails: RefCell::default(),
             after_layout: RefCell::default(),
             next: Cell::new(0),
             options,
@@ -642,6 +648,9 @@ impl AppState {
             for (_, s) in w.w.sizes.borrow_mut().drain() {
                 s.dispose();
             }
+            for (_, s) in w.w.tails.borrow_mut().drain() {
+                s.dispose();
+            }
         });
         w.w.closed.set(true);
         w.w.root_slots.borrow_mut().clear();
@@ -807,6 +816,11 @@ impl Window {
         for (id, (x, y)) in &i.scrolls {
             if let Some(n) = k.find(id) {
                 k.scroll_to_unclamped(n, *x, *y);
+            }
+        }
+        for id in &i.released {
+            if let Some(n) = k.find(id) {
+                k.release_tail(n);
             }
         }
     }
@@ -1128,6 +1142,7 @@ impl Window {
                 let mut i = self.w.interaction.borrow_mut();
                 let k = self.w.kernel.borrow();
                 i.scrolls = k.scroll_offsets();
+                i.released = k.released_tails();
                 let address = |n: Option<NodeId>| n.filter(|n| k.is_alive(*n)).map(|n| k.address(n));
                 i.reload = (address(i.hovered), address(i.focused));
                 i.hover_chain.clear();

@@ -461,6 +461,45 @@ mod scrolling {
     }
 
     #[test]
+    fn a_glide_to_the_end_follows_the_tail_as_it_grows() {
+        let mut app = Window::headless(|| {
+            let rows = list("rows", || (0..50u32).collect(), |i: &u32| *i);
+            col()
+                .size_full()
+                .child(
+                    col()
+                        .id("list")
+                        .h(100)
+                        .overflow_y_scroll()
+                        .follow_tail()
+                        .motion(Spring::GLIDE)
+                        .child(each(move || rows.all(), |i, _| el().id(format!("r{i}")).h(20).flex_shrink_0().into())),
+                )
+                .child(el().id("end").size_4().on_press(|| {
+                    scroll_to_end("list");
+                }))
+                .child(el().id("add").size_4().on_press(move || {
+                    for _ in 0..10 {
+                        rows.push(rows.len() as u32);
+                    }
+                }))
+                .into()
+        });
+        assert_eq!(y(&app), 900.0, "starts at the end");
+        app.dispatch(Event::ScrollTo("list".into(), 0.0, 0.0)).unwrap();
+        assert!(app.app().run_until_idle(ms(3000)).is_ok());
+        assert_eq!(y(&app), 0.0);
+        app.tap("end").unwrap();
+        app.app().advance(ms(60));
+        assert!(y(&app) > 0.0 && y(&app) < 900.0);
+        app.tap("add").unwrap();
+        assert!(app.app().run_until_idle(ms(3000)).is_ok());
+        assert_eq!(y(&app), 1100.0, "the glide went on to the new end");
+        let k = app.kernel();
+        assert!(k.is_following_tail(k.find("list").unwrap()));
+    }
+
+    #[test]
     fn without_motion_a_requested_scroll_jumps() {
         let mut app = app(false);
         app.tap("jump").unwrap();

@@ -29,7 +29,7 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | | `.child(..)` / `.children(iter)`, `El::overlay`, modals (Escape, press outside, focus kept inside) | Implemented |
 | Elements | `el`, `row`, `col`, `spacer`; `text(fixed value \| closure \| LiveText)` | Implemented |
 | | `text_input`: single line, `.multiline()`, `.rows(min, max)`, `.submit_on_enter()`, `.secure()` / `.revealed(..)`, selection, undo, clipboard, IME composition | Implemented headless and through the shell; direct platform text protocols to do ([text input](text-input.md)) |
-| | Scroll containers (`overflow_*_scroll`, `scroll_to`), images (`img`, `object_fit`) | Implemented |
+| | Scroll containers (`overflow_*_scroll`, `scroll_to`, `follow_tail` / `following_tail` / `scroll_to_end`), images (`img`, `object_fit`) | Implemented |
 | | Vector paths (`Path`, fills, strokes); `icon` with the Lucide set (`octara-icons`), `Icon::svg` | Implemented ([vector graphics](vector-graphics.md)) |
 | | `canvas` (declarative recording: paths, rects, text, images, transforms, clips) | Implemented; labeled regions to do |
 | | Native Island: `native_view(kind)`, `web_view(url)`, slots, placements, the host protocol, headless host | Implemented headless; platform views in the shells to do ([Native Island](native-island.md)) |
@@ -113,5 +113,21 @@ switch(sync).id("sync").label("Sync")
 checkbox((move || t.with(|t| t.done), move |v| todos.update(&id, |t| t.done = v)))
 select("model", model, [(Model::Fast, "Fast"), (Model::Best, "Best")])
 ```
+
+Planned, by kind (step 7 of the [core](core.md) builds those marked ●). Names say what a
+component is, not where it is used (no sidebar, composer or message components: an app composes
+those), take the name most frameworks share (Zed's `ui`, Rune's kit, SwiftUI / AppKit), avoid one
+platform's jargon and names Octara already uses for something else (`prompt` is the dialog), and a
+variant is a chained method, not a new name (`text_field(m).multiline().rows(1, 8)`).
+
+| Kind | Components |
+| --- | --- |
+| Actions | `icon_button` ●, `segmented` |
+| Inputs | `radio`, `combobox`, `slider` |
+| Collections | `list` / `list_item` / `list_header` ● (groups, one selected, arrow keys, context menu through `popup_menu`), `tree`, `table` |
+| Disclosure and navigation | `collapsible` ● (a header that opens and closes its content), `tabs` |
+| Status | `spinner` ●, `callout` ● (a message with actions), `chip` ● (a small label, removable), `progress_bar`, `badge`, `keybinding` |
+| Overlays | `tooltip` ●, `popover`, `toast` (the core has `overlay`, modals, `popup_menu`, `prompt`) |
+| Layout | `split` ● (two panes, a draggable divider), `divider` |
 
 Adding one todo in the example app (`examples/src/apps.rs`) costs about 5 µs: each component adds a few style and model closures; the fixed styles of a new node are resolved once.

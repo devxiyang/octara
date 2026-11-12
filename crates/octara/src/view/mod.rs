@@ -82,6 +82,13 @@ impl crate::app::WindowState {
                 changed = true;
             }
         }
+        for (id, sig) in self.tails.borrow().iter() {
+            let on = k.find(id).is_some_and(|n| k.is_following_tail(n));
+            if sig.get_untracked() != on {
+                sig.set(on);
+                changed = true;
+            }
+        }
         let mut dead = Vec::new();
         for (&node, sig) in self.scrolls.borrow().iter() {
             if !k.is_alive(node) {
@@ -513,6 +520,36 @@ pub fn scroll_to(id: &str, x: f32, y: f32) -> bool {
     let Some(n) = k.find(id) else { return false };
     k.glide_scroll(n, x, y);
     true
+}
+
+/// Scrolls the scroll container with test id `id` to the end of its content, gliding where its
+/// layout moves, and follows its tail from there if it is set to (`follow_tail`). Returns whether
+/// there is such a container.
+pub fn scroll_to_end(id: &str) -> bool {
+    let u = crate::app::window();
+    let mut k = u.kernel.borrow_mut();
+    let Some(n) = k.find(id) else { return false };
+    let x = k.scroll_offset(n).0;
+    k.glide_scroll(n, x, f32::MAX);
+    true
+}
+
+/// Whether the scroll container with test id `id` follows its tail now (`follow_tail`; `false`
+/// while it does not exist), tracked: a binding that reads it reruns when the person scrolls
+/// away from the end or back to it (to show a way back to the end).
+pub fn following_tail(id: &str) -> ReadSignal<bool> {
+    let u = crate::app::window();
+    let mut tails = u.tails.borrow_mut();
+    if let Some(s) = tails.get(id) {
+        return s.read_only();
+    }
+    let on = {
+        let k = u.kernel.borrow();
+        k.find(id).is_some_and(|n| k.is_following_tail(n))
+    };
+    let s = Signal::detached(on);
+    tails.insert(id.to_owned(), s);
+    s.read_only()
 }
 
 /// Lands everything in motion on its target now (Rune's `tx.settle`).

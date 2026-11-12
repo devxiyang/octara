@@ -273,6 +273,10 @@ impl Kernel {
             self.scroll_to(id, to.0 as f32, to.1 as f32);
             return;
         }
+        // Where it is going is where someone put it: the tail is followed if that is the end.
+        if self.node(id).follow.is_some() {
+            self.node_mut(id).follow = Some(to.1 >= (sh - ch - 1.0) as f64);
+        }
         let (t, now) = (self.now, self.node(id).scroll);
         let tracks = self.glides.entry(id).or_insert_with(|| [Track::new(now.0 as f64), Track::new(now.1 as f64)]);
         tracks[0].retarget(to.0, t, curve, PropClass::Spatial);
@@ -296,7 +300,7 @@ impl Kernel {
                 continue;
             }
             let [x, y] = self.glides[&id];
-            moved |= self.scroll_to(id, x.value(t) as f32, y.value(t) as f32);
+            moved |= self.move_scroll(id, x.value(t) as f32, y.value(t) as f32);
             if !x.moving(t) && !y.moving(t) {
                 self.glides.remove(&id);
             }
@@ -538,7 +542,9 @@ impl Kernel {
         let glides: Vec<(NodeId, [Track; 2])> = self.glides.drain().collect();
         for (id, [x, y]) in glides {
             if self.is_alive(id) {
-                self.scroll_to(id, x.value(t) as f32, y.value(t) as f32);
+                // A container following its tail lands on its end as it is now.
+                let y = if self.is_following_tail(id) { f32::MAX } else { y.value(t) as f32 };
+                self.move_scroll(id, x.value(t) as f32, y);
             }
         }
         for g in std::mem::take(&mut self.ghosts) {
