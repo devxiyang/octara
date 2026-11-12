@@ -119,3 +119,14 @@ These are architectural targets, not a current support matrix.
 
 The first milestone pairs the reactive core with a minimal semantic inspector and
 headless tests. Agent capabilities are part of the initial design.
+
+## License
+
+Octara is licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT), at your option. Bundled assets keep their own licenses: the Lucide
+icons ([ISC](crates/octara-icons/LICENSE-LUCIDE)), and the Inter and IBM Plex Mono fonts
+([SIL Open Font License](crates/octara/assets/fonts/)).
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion
+in Octara by you, as defined in the Apache-2.0 license, shall be dual licensed as above,
+without any additional terms or conditions.
