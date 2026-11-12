@@ -22,7 +22,7 @@ Based on Adapton's distinction between "internal incremental computation" and "e
 
 | Layer | Primitives | Can read | Can write | Tracks |
 | --- | --- | --- | --- | --- |
-| Input | `state`, `list`, `live_text`, external events | — | handlers, `watch` callbacks | — |
+| Input | `state`, `state_list`, `text_buffer`, external events | — | handlers, `watch` callbacks | — |
 | Derived | `memo`, collection operators | inputs, derived | No (rejected and reported) | Yes |
 | Observation | property bindings, `show` / `each`, the source of `watch` | inputs, derived | No | Yes |
 | Effect | handlers, `watch` callbacks | anything | inputs | No |
@@ -64,8 +64,8 @@ Based on: DBSP (incremental versions of operators compose), ILC (changes are fir
 
 ## 6. Text
 
-Based on ILC's change structure. `LiveText` holds a string, a version number and a bounded edit log (`Append` / `Splice`). `text(live)` writes the full text the first time,
-then passes edits as they are to the kernel (`append_text` / `splice_text`), so the cost of an append is O(amount appended). `LiveText` can be placed in list entries,
+Based on ILC's change structure. `TextBuffer` holds a string, a version number and a bounded edit log (`Append` / `Splice`). `text(live)` writes the full text the first time,
+then passes edits as they are to the kernel (`append_text` / `splice_text`), so the cost of an append is O(amount appended). `TextBuffer` can be placed in list entries,
 and editing it triggers no collection events.
 
 ## 7. Diagnostics

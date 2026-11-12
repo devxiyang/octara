@@ -33,7 +33,7 @@ Apps are driven by test id (`role#id` below). Components come from `octara-kit`;
 - `group#messages` holds `group#msg-{id}` with `text#msg-role-{id}` and `text#msg-body-{id}`;
 - `Send("user", text)` adds a user message and an empty streaming assistant message; `Send("token", s)` appends to the last message;
   `Send("done", "")` ends streaming; `text_field#composer` + `button#send` send the composer text;
-- `chat_virtual` virtualizes the list (scroll with `Event::ScrollTo("messages", 0, y)`); `chat_stream` also streams bodies as `LiveText`.
+- `chat_virtual` virtualizes the list (scroll with `Event::ScrollTo("messages", 0, y)`); `chat_stream` also streams bodies as `TextBuffer`.
 
 **Settings** (`settings`):
 

@@ -1,8 +1,8 @@
-//! `LiveText`: reactive text with a change structure (ILC): edits are first-class `TextChange`s.
+//! `TextBuffer`: reactive text with a change structure (ILC): edits are first-class `TextChange`s.
 //!
-//! A `LiveText` holds its string, a version signal and a bounded log of edits. Readers that need
-//! the whole value (`get`, `with`) track the version as usual. The UI's `text(live_text)` applies
-//! the log to the kernel: an append costs O(appended), not O(length). `LiveText` is a cheap,
+//! A `TextBuffer` holds its string, a version signal and a bounded log of edits. Readers that need
+//! the whole value (`get`, `with`) track the version as usual. The UI's `text(text_buffer)` applies
+//! the log to the kernel: an append costs O(appended), not O(length). `TextBuffer` is a cheap,
 //! reference-counted handle; it can live inside a list item and is reclaimed with it.
 
 use crate::reactive::graph::{Signal, state};
@@ -32,31 +32,31 @@ impl Drop for Inner {
 }
 
 #[derive(Clone)]
-pub struct LiveText(Rc<Inner>);
+pub struct TextBuffer(Rc<Inner>);
 
 /// Identity: two handles are equal when they are the same text.
-impl PartialEq for LiveText {
+impl PartialEq for TextBuffer {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }
 }
 
-impl std::fmt::Debug for LiveText {
+impl std::fmt::Debug for TextBuffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LiveText({:?})", self.0.value.borrow())
+        write!(f, "TextBuffer({:?})", self.0.value.borrow())
     }
 }
 
 /// Named text state for the current component (like `state`).
 #[track_caller]
-pub fn live_text(key: &'static str, init: impl FnOnce() -> String) -> LiveText {
-    state(key, || LiveText::new(init())).get_untracked()
+pub fn text_buffer(key: &'static str, init: impl FnOnce() -> String) -> TextBuffer {
+    state(key, || TextBuffer::new(init())).get_untracked()
 }
 
-impl LiveText {
+impl TextBuffer {
     /// A text owned by its handles (for example inside a list item).
-    pub fn new(init: impl Into<String>) -> LiveText {
-        LiveText(Rc::new(Inner { value: RefCell::new(init.into()), log: RefCell::new(Log::new()), version: Signal::detached(0) }))
+    pub fn new(init: impl Into<String>) -> TextBuffer {
+        TextBuffer(Rc::new(Inner { value: RefCell::new(init.into()), log: RefCell::new(Log::new()), version: Signal::detached(0) }))
     }
 
     /// The whole text (O(length)); tracks it.

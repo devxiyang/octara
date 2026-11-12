@@ -19,7 +19,7 @@ pub(super) fn keyed<T>(prefix: &str, items: impl IntoIterator<Item = T>) -> Vec<
 /// Brings `list` to `items` from position `from` on (earlier entries are the same): an entry
 /// whose value changed is updated, one whose kind changed is made again, extra ones are removed.
 pub(super) fn sync<T: Clone + PartialEq + 'static>(
-    list: List<String, Keyed<T>>,
+    list: StateList<String, Keyed<T>>,
     prefix: &str,
     items: &[T],
     from: usize,
@@ -59,7 +59,7 @@ pub(super) fn same_kind(a: &Block, b: &Block) -> bool {
 
 /// Blocks kept in step with `get`, each keyed `b{i}`.
 pub(super) fn blocks_view(get: impl Fn() -> Vec<Block> + 'static) -> El {
-    let blocks = list("blocks", || keyed("b", untrack(&get)), key_of::<Block>);
+    let blocks = state_list("blocks", || keyed("b", untrack(&get)), key_of::<Block>);
     watch(get, move |now, before| {
         if before.is_some() {
             sync(blocks, "b", now, 0, same_kind);
@@ -158,7 +158,7 @@ fn code_view(b: ReadSignal<Keyed<Block>>) -> View {
         })
     };
     let lines_of = |s: &str| s.split('\n').map(str::to_owned).collect::<Vec<_>>();
-    let lines = list("lines", || keyed("l", lines_of(&untrack(code))), key_of::<String>);
+    let lines = state_list("lines", || keyed("l", lines_of(&untrack(code))), key_of::<String>);
     watch(code, move |now, before| {
         if before.is_some() {
             let now = lines_of(now);
@@ -209,7 +209,7 @@ fn list_view(b: ReadSignal<Keyed<Block>>, start: Option<u64>) -> View {
             _ => Vec::new(),
         })
     };
-    let items = list("items", || keyed("i", untrack(items_of)), key_of::<Item>);
+    let items = state_list("items", || keyed("i", untrack(items_of)), key_of::<Item>);
     watch(items_of, move |now, before| {
         if before.is_some() {
             sync(items, "i", now, 0, |a, b| a.task.is_some() == b.task.is_some());
@@ -270,7 +270,7 @@ fn table_view(b: ReadSignal<Keyed<Block>>) -> View {
             _ => Vec::new(),
         })
     };
-    let rows = list("rows", || keyed("r", untrack(rows_of)), key_of::<Vec<(Inline, Align)>>);
+    let rows = state_list("rows", || keyed("r", untrack(rows_of)), key_of::<Vec<(Inline, Align)>>);
     watch(rows_of, move |now, before| {
         if before.is_some() {
             sync(rows, "r", now, 0, |_, _| true);
@@ -290,7 +290,7 @@ fn table_view(b: ReadSignal<Keyed<Block>>) -> View {
             |k, r| {
                 let head = k == "r0";
                 let cells_of = move || r.with(|(_, r)| r.clone());
-                let cells = list("cells", || keyed("c", untrack(cells_of)), key_of::<(Inline, Align)>);
+                let cells = state_list("cells", || keyed("c", untrack(cells_of)), key_of::<(Inline, Align)>);
                 watch(cells_of, move |now, before| {
                     if before.is_some() {
                         sync(cells, "c", now, 0, |_, _| true);

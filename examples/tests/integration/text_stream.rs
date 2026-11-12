@@ -32,10 +32,10 @@ fn a_token_costs_its_own_length() {
 #[test]
 fn random_edits_match_a_reference_and_logs_stay_bounded() {
     thread_local! {
-        static HANDLE: std::cell::RefCell<Option<LiveText>> = const { std::cell::RefCell::new(None) };
+        static HANDLE: std::cell::RefCell<Option<TextBuffer>> = const { std::cell::RefCell::new(None) };
     }
     let mut h = Window::headless(|| {
-        let t = live_text("t", || "hello".into());
+        let t = text_buffer("t", || "hello".into());
         HANDLE.with(|c| *c.borrow_mut() = Some(t.clone()));
         let t2 = t.clone();
         col()

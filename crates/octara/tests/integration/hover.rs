@@ -96,7 +96,7 @@ fn hover_alone_keeps_the_elements_around_it_unlit() {
 #[test]
 fn hover_holds_while_layout_moves_under_a_still_pointer() {
     let mut app = Window::headless(|| {
-        let items = list("items", || vec![1u32, 2, 3], |i: &u32| *i);
+        let items = state_list("items", || vec![1u32, 2, 3], |i: &u32| *i);
         let next = state("next", || 10u32);
         col()
             .size_full()

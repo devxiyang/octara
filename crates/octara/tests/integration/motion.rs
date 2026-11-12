@@ -188,7 +188,7 @@ mod layout {
     use octara::prelude::*;
 
     fn rows() -> View {
-        let items = list("items", || vec![1u32, 2, 3], |i: &u32| *i);
+        let items = state_list("items", || vec![1u32, 2, 3], |i: &u32| *i);
         let next = state("next", || 4u32);
         let tall = state("tall", || false);
         col()
@@ -207,10 +207,10 @@ mod layout {
     }
 
     trait EachExt {
-        fn children_each(self, items: List<u32, u32>) -> Self;
+        fn children_each(self, items: StateList<u32, u32>) -> Self;
     }
     impl EachExt for El {
-        fn children_each(self, items: List<u32, u32>) -> Self {
+        fn children_each(self, items: StateList<u32, u32>) -> Self {
             self.child(each(move || items.source(), |id, _| el().id(format!("row-{id}")).h(20).w(60).on_press(|| {}).into()))
         }
     }
@@ -290,7 +290,7 @@ mod presence {
     fn app(with_motion: bool) -> Window {
         Window::headless(move || {
             let open = state("open", || true);
-            let items = list("items", || vec![1u32, 2, 3], |i: &u32| *i);
+            let items = state_list("items", || vec![1u32, 2, 3], |i: &u32| *i);
             let root = col().size_full();
             let root = if with_motion { root.motion(Spring::SNAP) } else { root };
             root.child(el().id("toggle").size_4().on_press(move || open.update(|o| *o = !*o)))
@@ -389,7 +389,7 @@ mod presence {
     #[test]
     fn a_virtual_list_scrolling_does_not_fade_rows() {
         let mut app = Window::headless(|| {
-            let items = list("items", || (0..200u32).collect(), |i: &u32| *i);
+            let items = state_list("items", || (0..200u32).collect(), |i: &u32| *i);
             col()
                 .size_full()
                 .motion(Spring::SNAP)
@@ -463,7 +463,7 @@ mod scrolling {
     #[test]
     fn a_glide_to_the_end_follows_the_tail_as_it_grows() {
         let mut app = Window::headless(|| {
-            let rows = list("rows", || (0..50u32).collect(), |i: &u32| *i);
+            let rows = state_list("rows", || (0..50u32).collect(), |i: &u32| *i);
             col()
                 .size_full()
                 .child(

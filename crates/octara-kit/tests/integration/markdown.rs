@@ -78,7 +78,7 @@ fn a_stream_keeps_every_earlier_blocks_node() {
     let tokens: Vec<String> = chars.chunks(3).map(|c| c.iter().collect()).collect();
     assert!(tokens.len() >= 2000, "{} tokens", tokens.len());
     let app = App::new(HeadlessPlatform::default());
-    let live = app.run(|| LiveText::new(""));
+    let live = app.run(|| TextBuffer::new(""));
     let stream = live.clone();
     let w = app.open_window(WindowOptions::new("Chat"), move || markdown(&stream).id("md").into()).unwrap();
     // Each block's node when it finished (another block started after it).
@@ -110,7 +110,7 @@ fn a_stream_keeps_every_earlier_blocks_node() {
 #[test]
 fn a_fence_streams_as_code_and_prose_follows_its_close() {
     let app = App::new(HeadlessPlatform::default());
-    let live = app.run(|| LiveText::new(""));
+    let live = app.run(|| TextBuffer::new(""));
     let stream = live.clone();
     let w = app.open_window(WindowOptions::new("Chat"), move || markdown(&stream).id("md").into()).unwrap();
     let src = "Intro\n\n```py\nprint(1)\nx = **2**\n```\nAfter the *fence*.\n";
@@ -191,7 +191,7 @@ fn copies_text_joined_by_roles_and_markdown_by_blocks() {
 #[test]
 fn assistive_technology_hears_each_block_as_it_finishes() {
     let app = App::new(HeadlessPlatform::default());
-    let live = app.run(|| LiveText::new(""));
+    let live = app.run(|| TextBuffer::new(""));
     let stream = live.clone();
     let w = app.open_window(WindowOptions::new("Chat"), move || markdown(&stream).id("md").into()).unwrap();
     let heard = |w: &Window| {
@@ -216,7 +216,7 @@ fn assistive_technology_hears_each_block_as_it_finishes() {
 #[test]
 fn instances_keep_their_own_blocks() {
     let app = App::new(HeadlessPlatform::default());
-    let live = app.run(|| LiveText::new("live one"));
+    let live = app.run(|| TextBuffer::new("live one"));
     let stream = live.clone();
     let w = app
         .open_window(WindowOptions::new("Chat"), move || {
@@ -235,7 +235,7 @@ fn instances_keep_their_own_blocks() {
 
 /// A selectable transcript of selectable messages: one document.
 fn transcript() -> View {
-    let messages = list("messages", || (0..200u32).collect(), |i: &u32| *i);
+    let messages = state_list("messages", || (0..200u32).collect(), |i: &u32| *i);
     col()
         .child(virtual_each(move || messages.all(), |_| 40.0, |i, _| markdown(format!("**m{i}** says *hi*")).id(format!("m{i}")).into()))
         .id("t")

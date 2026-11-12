@@ -128,7 +128,7 @@ fn restyling_reshapes_only_what_changes_shape() {
 #[test]
 fn a_stream_takes_only_its_own_glyphs_again() {
     let app = App::new(octara::platform::HeadlessPlatform::default());
-    let live = app.run(|| LiveText::new("Streaming"));
+    let live = app.run(|| TextBuffer::new("Streaming"));
     let stream = live.clone();
     let w = app
         .open_window(octara::platform::WindowOptions::new("Stream"), move || {
@@ -151,7 +151,7 @@ fn a_stream_takes_only_its_own_glyphs_again() {
 #[test]
 fn rows_scrolling_back_and_repeated_labels_shape_nothing_again() {
     let mut w = Window::headless(|| {
-        let items = list("rows", || (0..1000u32).map(|i| (i, format!("Row {i}"))).collect::<Vec<_>>(), |r: &(u32, String)| r.0);
+        let items = state_list("rows", || (0..1000u32).map(|i| (i, format!("Row {i}"))).collect::<Vec<_>>(), |r: &(u32, String)| r.0);
         col()
             .size_full()
             .child(col().id("list").flex_1().overflow_y_scroll().child(virtual_each(

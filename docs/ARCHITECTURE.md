@@ -39,7 +39,7 @@ Everything but `octara` and `octara-macros` depends only on `octara`'s public AP
 ## Inside `octara`
 
 ```text
-diagnostics ◄── reactive        signals, memos, watch, scopes; incremental lists; LiveText
+diagnostics ◄── reactive        signals, memos, watch, scopes; incremental lists; TextBuffer
                     ▲
 kernel ─────────────┼──────────  retained node tree, styles and states, taffy layout, parley
   (paint, path,     │            text, motion, semantics, focus, display list, checks

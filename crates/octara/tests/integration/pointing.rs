@@ -16,13 +16,13 @@ fn save_button(saved: Signal<u32>) -> El {
 }
 
 #[component]
-fn rows(items: List<u32, (u32, String)>) -> El {
+fn rows(items: StateList<u32, (u32, String)>) -> El {
     col().id("rows").child(each(move || items.source(), |k, t| text(move || t.with(|t| t.1.clone())).id(format!("row-{k}")).into()))
 }
 
 fn app() -> View {
     let saved = state("saved", || 0u32);
-    let items = list("items", || vec![(1u32, "one".to_owned()), (2, "two".to_owned())], |t: &(u32, String)| t.0);
+    let items = state_list("items", || vec![(1u32, "one".to_owned()), (2, "two".to_owned())], |t: &(u32, String)| t.0);
     col().child(toolbar(saved)).child(rows(items)).into()
 }
 

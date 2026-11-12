@@ -11,7 +11,7 @@ const ANSWER: &str = "### Streaming Markdown\n\nEach block is an element of its 
 
 #[component]
 pub fn card() -> El {
-    let answer = live_text("answer", || ANSWER.to_owned());
+    let answer = text_buffer("answer", || ANSWER.to_owned());
     let streaming = state("streaming", || false);
     let stream = answer.clone();
     super::section("Markdown")

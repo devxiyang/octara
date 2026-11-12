@@ -93,7 +93,7 @@ fn variants() -> Vec<Variant> {
             intent: "duplicate list keys",
             build: || {
                 Window::headless(|| {
-                    let items = list("items", || vec![1u32, 2, 3], |_| 0u32);
+                    let items = state_list("items", || vec![1u32, 2, 3], |_| 0u32);
                     col().child(each(move || items.all(), |k, _| text(format!("{k}")).into())).id("list").into()
                 })
             },
@@ -146,7 +146,7 @@ fn variants() -> Vec<Variant> {
             intent: "use the item of a removed row",
             build: || {
                 Window::headless(|| {
-                    let items = list("items", || vec![1u32, 2], |x| *x);
+                    let items = state_list("items", || vec![1u32, 2], |x| *x);
                     let kept: Rc<RefCell<Vec<ReadSignal<u32>>>> = Rc::default();
                     let k2 = kept.clone();
                     col()
@@ -234,7 +234,7 @@ fn variants() -> Vec<Variant> {
             intent: "list row reads its item once",
             build: || {
                 Window::headless(|| {
-                    let items = list("items", || vec![(1u32, false)], |t| t.0);
+                    let items = state_list("items", || vec![(1u32, false)], |t| t.0);
                     col()
                         .child(col().child(each(move || items.all(), |_, t| el().role(Role::CheckBox).id("box").checked(t.get().1).into())))
                         .child(button("t").id("inc").on_press(move || items.update(&1, |t| t.1 = !t.1)))

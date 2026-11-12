@@ -10,7 +10,7 @@ use std::time::Duration;
 /// built, accessibility places compared and nodes sent.
 fn stream(n: usize, motion: bool) -> (f64, f64, f64, f64) {
     let app = App::new(HeadlessPlatform::default());
-    let live = app.run(|| LiveText::new("Streaming"));
+    let live = app.run(|| TextBuffer::new("Streaming"));
     let tail = live.clone();
     let mut w = app
         .open_window(WindowOptions::new("Chat"), move || {

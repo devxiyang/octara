@@ -25,8 +25,8 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
   bakes the value in (`STRICT_READ_UNTRACKED`).
 - Mark every function that builds part of the view `#[component]`: elements then record which
   component made them and where it was called, for the inspector and picking.
-- State in components is named: `state("key", || init)`, `list("key", init, key_fn)`,
-  `live_text(..)`. Never `Signal::new` in a component (`UNKEYED_STATE`).
+- State in components is named: `state("key", || init)`, `state_list("key", init, key_fn)`,
+  `text_buffer(..)`. Never `Signal::new` in a component (`UNKEYED_STATE`).
 - Write state only in handlers (`on_press`, ..), `watch` callbacks and tasks
   (`WRITE_IN_BUILD`, `WRITE_IN_DERIVE`). A value computed from others is a `memo`, not a second
   state kept in sync.

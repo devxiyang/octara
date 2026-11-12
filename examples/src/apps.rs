@@ -37,7 +37,7 @@ enum Show {
 #[component]
 pub fn todo(n: usize) -> View {
     let todos =
-        list("todos", || (1..=n as u32).map(|i| Todo { id: i, title: format!("Item {i}"), done: false }).collect(), |t: &Todo| t.id);
+        state_list("todos", || (1..=n as u32).map(|i| Todo { id: i, title: format!("Item {i}"), done: false }).collect(), |t: &Todo| t.id);
     let active = todos.filter(|t| !t.done);
     let done = todos.filter(|t| t.done);
     let next_id = state("next_id", || n as u32 + 1);
@@ -84,7 +84,7 @@ pub fn todo(n: usize) -> View {
 }
 
 #[component]
-fn todo_row(id: u32, t: ReadSignal<Todo>, todos: List<u32, Todo>) -> View {
+fn todo_row(id: u32, t: ReadSignal<Todo>, todos: StateList<u32, Todo>) -> View {
     row()
         .child(
             checkbox((move || t.with(|t| t.done), move |v| todos.update(&id, |t| t.done = v)))
@@ -110,7 +110,7 @@ pub struct Msg {
 
 #[component]
 pub fn chat(n: usize) -> View {
-    let messages = list(
+    let messages = state_list(
         "messages",
         || {
             (1..=n as u32)
@@ -231,7 +231,7 @@ pub const MSG_ROW_HEIGHT: f32 = 40.0;
 /// only messages near the visible area exist as nodes. `Event::ScrollTo("messages", 0, y)` scrolls.
 #[component]
 pub fn chat_virtual(n: usize) -> View {
-    let messages = list(
+    let messages = state_list(
         "messages",
         || {
             (1..=n as u32)
@@ -308,7 +308,7 @@ pub const TEAMS: [&str; 3] = ["blue", "green", "red"];
 /// `Toggle("star-{id}")`, `Press("open-{id}")` (row-local state).
 #[component]
 pub fn contacts(n: usize) -> View {
-    let people = list(
+    let people = state_list(
         "people",
         || {
             (1..=n as u32)
@@ -370,7 +370,7 @@ pub fn contacts(n: usize) -> View {
 }
 
 #[component]
-fn contact_row(id: u32, c: ReadSignal<Contact>, people: List<u32, Contact>) -> View {
+fn contact_row(id: u32, c: ReadSignal<Contact>, people: StateList<u32, Contact>) -> View {
     let open = state("open", || false);
     row()
         .child(text(move || c.with(|c| c.name.clone())).id(format!("name-{id}")))
@@ -394,7 +394,7 @@ pub const CONTACT_HEIGHT: f32 = 32.0;
 /// in one virtual list with two row heights. Same events, plus `Event::ScrollTo("contacts", 0, y)`.
 #[component]
 pub fn contacts_virtual(n: usize) -> View {
-    let people = list(
+    let people = state_list(
         "people",
         || {
             (1..=n as u32)
@@ -473,26 +473,26 @@ pub fn contacts_virtual(n: usize) -> View {
 
 // ---- Chat with streamed text ----
 
-/// A message whose body is live text: tokens are appended as edits.
+/// A message whose body is a text buffer: tokens are appended as edits.
 #[derive(Clone, PartialEq, Debug)]
 pub struct StreamMsg {
     pub id: u32,
     pub role: &'static str,
-    pub body: LiveText,
+    pub body: TextBuffer,
 }
 
-/// [`chat_virtual`] with bodies as `LiveText` rendered by `text(body)`: a token is an append edit
+/// [`chat_virtual`] with bodies as `TextBuffer` rendered by `text(body)`: a token is an append edit
 /// that reaches the kernel as an append, O(token) instead of O(body).
 #[component]
 pub fn chat_stream(n: usize) -> View {
-    let messages = list(
+    let messages = state_list(
         "messages",
         || {
             (1..=n as u32)
                 .map(|i| StreamMsg {
                     id: i,
                     role: if i % 2 == 1 { "user" } else { "assistant" },
-                    body: LiveText::new(format!("message {i}")),
+                    body: TextBuffer::new(format!("message {i}")),
                 })
                 .collect()
         },
@@ -504,8 +504,8 @@ pub fn chat_stream(n: usize) -> View {
     let send = move |text: String| {
         let id = next_id.get();
         next_id.set(id + 2);
-        messages.push(StreamMsg { id, role: "user", body: LiveText::new(text) });
-        messages.push(StreamMsg { id: id + 1, role: "assistant", body: LiveText::new("") });
+        messages.push(StreamMsg { id, role: "user", body: TextBuffer::new(text) });
+        messages.push(StreamMsg { id: id + 1, role: "assistant", body: TextBuffer::new("") });
         streaming.set(true);
     };
     listen("user", send);
@@ -592,9 +592,12 @@ pub struct Message {
 /// person goes; their rows stay, from "unknown").
 #[component]
 pub fn inbox(n: usize) -> View {
-    let people =
-        list("people", || (1..=20u32).map(|id| Person { id, name: format!("Person {id}"), online: false }).collect(), |p: &Person| p.id);
-    let messages = list(
+    let people = state_list(
+        "people",
+        || (1..=20u32).map(|id| Person { id, name: format!("Person {id}"), online: false }).collect(),
+        |p: &Person| p.id,
+    );
+    let messages = state_list(
         "messages",
         || (1..=n as u32).map(|id| Message { id, from: id % 20 + 1, body: format!("Message {id}") }).collect(),
         |m: &Message| m.id,

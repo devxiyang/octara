@@ -6,7 +6,7 @@ use octara_kit::{ghost_button, primary_button, text_field};
 
 #[component]
 pub fn card() -> El {
-    let notes = list("notes", || vec![(1u32, "Try Tab, arrows and Escape".to_owned())], |n: &(u32, String)| n.0);
+    let notes = state_list("notes", || vec![(1u32, "Try Tab, arrows and Escape".to_owned())], |n: &(u32, String)| n.0);
     let next = state("next", || 2u32);
     let draft = state("draft", String::new);
     let add = move || {

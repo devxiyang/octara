@@ -21,13 +21,13 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | Category | Primitives | Status |
 | --- | --- | --- |
 | Reactive | `state`, `memo`, `watch`, `untrack` | Implemented |
-| | `list` and `filter` / `sort_by` / `group_by` / `map` / `join` / `flatten` | Implemented ([map and join](map-join.md)) |
-| | `LiveText`, `live_text`, `paced` | Implemented |
+| | `state_list` and `filter` / `sort_by` / `group_by` / `map` / `join` / `flatten` | Implemented ([map and join](map-join.md)) |
+| | `TextBuffer`, `text_buffer`, `paced` | Implemented |
 | | Context `provide` / `use_context` | Implemented |
 | | Tasks, subscriptions, resources | Implemented ([async](async.md)) |
 | Structure | `component_keyed` / `component`, `show` / `show_else`, `each`, `virtual_each` | Implemented |
 | | `.child(..)` / `.children(iter)`, `El::overlay`, modals (Escape, press outside, focus kept inside) | Implemented |
-| Elements | `el`, `row`, `col`, `spacer`; `text(fixed value \| closure \| LiveText)` | Implemented |
+| Elements | `el`, `row`, `col`, `spacer`; `text(fixed value \| closure \| TextBuffer)` | Implemented |
 | | `text_input`: single line, `.multiline()`, `.rows(min, max)`, `.submit_on_enter()`, `.secure()` / `.revealed(..)`, selection, undo, clipboard, IME composition | Implemented headless and through the shell; direct platform text protocols to do ([text input](text-input.md)) |
 | | Scroll containers (`overflow_*_scroll`, `scroll_to`, `follow_tail` / `following_tail` / `scroll_to_end`), images (`img`, `object_fit`) | Implemented |
 | | Vector paths (`Path`, fills, strokes); `icon` with the Lucide set (`octara-icons`), `Icon::svg` | Implemented ([vector graphics](vector-graphics.md)) |
@@ -45,8 +45,8 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 - **Containers use `el` / `row` / `col` / `spacer`, not `div`.** `div` carries HTML block layout and DOM semantics; native UI frameworks generally use row / column plus a plain box
   (Rune, Exact, SwiftUI, Flutter, Compose). The four return the same element type, only with a different preset direction. `box` is a Rust reserved word, hence `el`;
   `col` matches Tailwind's `flex-col`, with `doc(alias = "column")`.
-- **Text is only `text(..)`.** The type of the value passed in decides how it updates: a string is a fixed value, a closure is a binding, and `LiveText` updates incrementally by edits.
-  The value type is called `LiveText` to avoid the repetition of `text(Text::new(..))`.
+- **Text is only `text(..)`.** The type of the value passed in decides how it updates: a string is a fixed value, a closure is a binding, and `TextBuffer` updates incrementally by edits.
+  The value type is called `TextBuffer` to avoid the repetition of `text(Text::new(..))`.
 
 ## 4. Style
 

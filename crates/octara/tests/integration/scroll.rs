@@ -51,7 +51,8 @@ struct Item {
 
 fn feed() -> View {
     // Rows are one 20 px line or three; the estimate says 24 for all.
-    let items = list("items", || (0..10_000).map(|i| Item { id: i, lines: if i % 3 == 0 { 3 } else { 1 } }).collect(), |i: &Item| i.id);
+    let items =
+        state_list("items", || (0..10_000).map(|i| Item { id: i, lines: if i % 3 == 0 { 3 } else { 1 } }).collect(), |i: &Item| i.id);
     col()
         .child(text("feed").id("title"))
         .child(
@@ -116,7 +117,7 @@ fn top_row(app: &Window) -> (String, f32) {
 #[test]
 fn a_virtual_list_outside_a_scroll_container_is_reported() {
     let app = Window::headless(|| {
-        let items = list("items", || (0..10u32).collect(), |i: &u32| *i);
+        let items = state_list("items", || (0..10u32).collect(), |i: &u32| *i);
         col().child(virtual_each(move || items.all(), |_| 20.0, |i, _| text(format!("{i}")).into())).into()
     });
     assert!(app.app().diagnostics().iter().any(|d| d.code == "VIRTUAL_LIST_NOT_SCROLLABLE"), "{:?}", app.app().diagnostics());
@@ -127,7 +128,7 @@ fn a_virtual_list_outside_a_scroll_container_is_reported() {
 /// A log that keeps its end in view, a "latest" button shown while it does not, and a button
 /// adding a line.
 fn log() -> View {
-    let lines = list("lines", || (0..40u32).collect(), |i: &u32| *i);
+    let lines = state_list("lines", || (0..40u32).collect(), |i: &u32| *i);
     col()
         .child(
             col()
@@ -217,7 +218,8 @@ fn scrolling_to_the_end_follows_the_tail_again() {
 #[test]
 fn a_virtual_list_following_its_tail_lands_on_its_measured_end() {
     let mut app = Window::headless(|| {
-        let items = list("items", || (0..10_000).map(|i| Item { id: i, lines: if i % 3 == 0 { 3 } else { 1 } }).collect(), |i: &Item| i.id);
+        let items =
+            state_list("items", || (0..10_000).map(|i| Item { id: i, lines: if i % 3 == 0 { 3 } else { 1 } }).collect(), |i: &Item| i.id);
         col()
             .child(
                 col()

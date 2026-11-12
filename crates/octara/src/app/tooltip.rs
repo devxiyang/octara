@@ -8,7 +8,7 @@
 use super::Window;
 use crate::app::InputEvent;
 use crate::kernel::NodeId;
-use crate::reactive::list::List;
+use crate::reactive::list::StateList;
 
 /// How long the mouse rests on an element before its tooltip shows (GPUI's 500 ms).
 const DELAY_MS: f64 = 500.0;
@@ -145,7 +145,7 @@ impl Window {
 }
 
 /// The tooltip as the window draws it.
-pub(crate) fn view(tips: List<u64, Shown>) -> crate::view::View {
+pub(crate) fn view(tips: StateList<u64, Shown>) -> crate::view::View {
     use crate::prelude::*;
     // Where the tooltip is mounted (its content is in the overlay layer).
     el().absolute()

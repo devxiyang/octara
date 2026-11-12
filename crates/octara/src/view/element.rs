@@ -15,7 +15,7 @@ use crate::kernel::{
     Breakpoint, Color, Fill, HandlerId, HandlerKind, Kernel, Kind, NodeId, Paint, Placement, Role, State, StyleProp, Token, When,
 };
 use crate::reactive::graph::{self, rt};
-use crate::reactive::text::{LiveText, TextChange};
+use crate::reactive::text::{TextBuffer, TextChange};
 use std::panic::Location;
 use std::rc::Rc;
 
@@ -153,11 +153,11 @@ impl IntoProp<Rich> for Prop<String> {
 }
 
 /// What `text` accepts: a string or [`Rich`] text, fixed or from a closure (re-computed whole),
-/// or a [`LiveText`] (its edits reach the kernel as edits: an append costs O(appended)).
+/// or a [`TextBuffer`] (its edits reach the kernel as edits: an append costs O(appended)).
 #[doc(hidden)]
 pub enum TextContent {
     Prop(Prop<Rich>),
-    Live(LiveText),
+    Buffer(TextBuffer),
 }
 
 pub trait IntoText {
@@ -168,14 +168,14 @@ impl<T: IntoProp<Rich>> IntoText for T {
         TextContent::Prop(self.into_prop())
     }
 }
-impl IntoText for LiveText {
+impl IntoText for TextBuffer {
     fn into_text(self) -> TextContent {
-        TextContent::Live(self)
+        TextContent::Buffer(self)
     }
 }
-impl IntoText for &LiveText {
+impl IntoText for &TextBuffer {
     fn into_text(self) -> TextContent {
-        TextContent::Live(self.clone())
+        TextContent::Buffer(self.clone())
     }
 }
 
@@ -367,7 +367,7 @@ pub fn spacer() -> El {
     el().flex_grow().a11y_hidden()
 }
 
-/// Text: `text("fixed")`, `text(move || format!(..))`, or `text(live)` for a [`LiveText`].
+/// Text: `text("fixed")`, `text(move || format!(..))`, or `text(live)` for a [`TextBuffer`].
 #[track_caller]
 pub fn text(t: impl IntoText) -> El {
     text_at(t, Location::caller())
@@ -990,7 +990,7 @@ pub(crate) fn build_el(e: El) -> NodeId {
     }
     match e.text {
         Some(TextContent::Prop(p)) => bind(at, node, p, |k, n, v: &Rich| k.set_rich(n, v.as_str(), v.runs())),
-        Some(TextContent::Live(t)) => {
+        Some(TextContent::Buffer(t)) => {
             let cursor = t.subscribe();
             u.kernel.borrow_mut().set_text(node, &t.get_untracked());
             let u = u.clone();

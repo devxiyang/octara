@@ -1,4 +1,4 @@
-//! Paced text: a `LiveText` revealing what is appended to another over a few frames.
+//! Paced text: a `TextBuffer` revealing what is appended to another over a few frames.
 
 use octara::platform::{HeadlessPlatform, WindowOptions};
 use octara::prelude::*;
@@ -8,9 +8,9 @@ use std::time::Duration;
 const FRAME: Duration = Duration::from_micros(16_667);
 
 /// An app showing `paced(source)` as the text `shown`.
-fn setup() -> (App, Window, LiveText) {
+fn setup() -> (App, Window, TextBuffer) {
     let app = App::new(HeadlessPlatform::default());
-    let source = app.run(|| LiveText::new("Hi. "));
+    let source = app.run(|| TextBuffer::new("Hi. "));
     let s = source.clone();
     let w = app.open_window(WindowOptions::new("Paced"), move || text(paced(&s)).id("shown").into()).unwrap();
     (app, w, source)

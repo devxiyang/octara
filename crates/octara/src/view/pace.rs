@@ -1,4 +1,4 @@
-//! Paced text ([text core](../../../../docs/design/text.md)): a `LiveText` that follows another
+//! Paced text ([text core](../../../../docs/design/text.md)): a `TextBuffer` that follows another
 //! one, revealing what is appended to it over a few frames instead of in bursts (a model's reply
 //! arriving in chunks). A backlog drains by a share each frame, so a burst shows within about a
 //! quarter of a second and a steady trickle shows as it comes. Edits other than appends, and
@@ -6,7 +6,7 @@
 //! while it is behind.
 
 use crate::reactive::graph::{rt, watch};
-use crate::reactive::text::{LiveText, TextChange};
+use crate::reactive::text::{TextBuffer, TextChange};
 use crate::task::{WorkKind, channel, sleep, spawn_with};
 use std::panic::Location;
 use std::rc::Rc;
@@ -21,8 +21,8 @@ const MIN_STEP: usize = 8;
 
 /// A paced text the window knows of: what it follows and what it shows.
 pub(crate) struct Paced {
-    pub(crate) source: LiveText,
-    pub(crate) shown: LiveText,
+    pub(crate) source: TextBuffer,
+    pub(crate) shown: TextBuffer,
     pub(crate) at: &'static Location<'static>,
 }
 
@@ -55,9 +55,9 @@ impl Paced {
 /// it to `text` or the kit's `markdown` in place of the source). It lives as long as the current
 /// scope.
 #[track_caller]
-pub fn paced(source: &LiveText) -> LiveText {
+pub fn paced(source: &TextBuffer) -> TextBuffer {
     let at = Location::caller();
-    let shown = LiveText::new(source.get_untracked());
+    let shown = TextBuffer::new(source.get_untracked());
     let u = crate::app::window();
     let p = Rc::new(Paced { source: source.clone(), shown: shown.clone(), at });
     let id = {

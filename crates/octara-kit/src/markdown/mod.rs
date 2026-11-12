@@ -16,12 +16,12 @@ use render::{Keyed, keyed, sync};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-/// What [`markdown`] renders: a text, a closure (followed), or a [`LiveText`] (a stream: its end
+/// What [`markdown`] renders: a text, a closure (followed), or a [`TextBuffer`] (a stream: its end
 /// is repaired as it arrives).
 pub enum Source {
     Text(String),
     Dyn(Rc<dyn Fn() -> String>),
-    Live(LiveText),
+    Buffer(TextBuffer),
 }
 
 pub trait IntoMarkdown {
@@ -42,14 +42,14 @@ impl IntoMarkdown for &String {
         Source::Text(self.clone())
     }
 }
-impl IntoMarkdown for LiveText {
+impl IntoMarkdown for TextBuffer {
     fn into_markdown(self) -> Source {
-        Source::Live(self)
+        Source::Buffer(self)
     }
 }
-impl IntoMarkdown for &LiveText {
+impl IntoMarkdown for &TextBuffer {
     fn into_markdown(self) -> Source {
-        Source::Live(self.clone())
+        Source::Buffer(self.clone())
     }
 }
 impl<F: Fn() -> String + 'static> IntoMarkdown for F {
@@ -62,19 +62,19 @@ impl<F: Fn() -> String + 'static> IntoMarkdown for F {
 /// inline code, links), code blocks (a copy button, one text per line), lists (ordered,
 /// unordered, tasks), quotes, rules and tables. Top-level blocks are keyed `b{i}`, list items
 /// `i{j}`, code lines `l{n}`, table rows `r{k}` and cells `c{j}`. A growing source (a
-/// [`LiveText`] streaming in) parses again from its last finished block, and the blocks before
+/// [`TextBuffer`] streaming in) parses again from its last finished block, and the blocks before
 /// keep their nodes; a stream's end shows open spans styled and no stray markers, and assistive
 /// technology hears each block as it finishes, not each token. Links come to `on_link`.
 #[component]
 #[track_caller]
 pub fn markdown(source: impl IntoMarkdown) -> El {
     let source = source.into_markdown();
-    let streaming = matches!(source, Source::Live(_));
+    let streaming = matches!(source, Source::Buffer(_));
     let doc = Rc::new(RefCell::new(Doc::new(streaming)));
     untrack(|| match &source {
         Source::Text(s) => doc.borrow_mut().update(s),
         Source::Dyn(f) => doc.borrow_mut().update(&f()),
-        Source::Live(t) => t.with(|s| doc.borrow_mut().update(s)),
+        Source::Buffer(t) => t.with(|s| doc.borrow_mut().update(s)),
     });
     let source_of = doc.clone();
     // Its blocks live in a scope of its own: what it keeps is made from its source, so each
@@ -90,7 +90,7 @@ pub fn markdown(source: impl IntoMarkdown) -> El {
 
 /// The blocks of a document, kept in step with its source.
 fn blocks(doc: Rc<RefCell<Doc>>, source: Source, streaming: bool) -> View {
-    let blocks = list("blocks", || keyed("b", doc.borrow().blocks().to_vec()), |e: &Keyed<Block>| e.0.clone());
+    let blocks = state_list("blocks", || keyed("b", doc.borrow().blocks().to_vec()), |e: &Keyed<Block>| e.0.clone());
     // What assistive technology hears: each block as it finishes (the one before the last).
     let heard = state("heard", String::new);
     let finished = Rc::new(Cell::new(doc.borrow().blocks().len().saturating_sub(1)));
@@ -114,7 +114,7 @@ fn blocks(doc: Rc<RefCell<Doc>>, source: Source, streaming: bool) -> View {
                 }
             },
         ),
-        Source::Live(t) => {
+        Source::Buffer(t) => {
             let live = t.clone();
             watch(
                 move || live.version(),

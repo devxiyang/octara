@@ -12,7 +12,7 @@ the platform's text engines: the same layout in every window, headless run and r
 what lets agents and tests see what people see.
 
 ```
-view       text("..") / text(rich()..) / text(&live_text)
+view       text("..") / text(rich()..) / text(&text_buffer)
 kernel     a text node: its string, runs, version, and a TextLayout handle
              (glyphs, lines, links, selections and accessibility runs derive from it)
 engine     TextEngine::layout(text, style, runs, previous) -> TextLayout
@@ -59,7 +59,7 @@ renderers  glyph runs in the display list; swash rasterizes into an atlas both r
   app's handler gets).
 - Built with `rich()`, a value: `rich().text("See ").link("the docs", url).text(" or ").code("cargo
   run")` (`bold`, `italic`, `code`, `color(..)`, `span(text, |s| s.weight(600).underline())`).
-  `text(..)` takes a `Rich` like a string, fixed or from a closure; `LiveText` stays plain (a
+  `text(..)` takes a `Rich` like a string, fixed or from a closure; `TextBuffer` stays plain (a
   stream of prose is Markdown's job, below).
 - Layout: the engine builds the paragraph with Parley's style-run builder (a style table and the
   runs); its cache keys a node's paragraph by its text, its runs and the width, as today by text
@@ -96,7 +96,7 @@ renderers  glyph runs in the display list; swash rasterizes into an atlas both r
 
 ## Paced text
 
-`paced(&source)` is a `LiveText` that follows `source`, showing what is appended to it over a few
+`paced(&source)` is a `TextBuffer` that follows `source`, showing what is appended to it over a few
 frames instead of in bursts (a model's reply arriving in chunks): each frame shows a quarter of
 the backlog (at least 8 bytes, cut on a character boundary), so a burst of a few hundred bytes
 shows within about a quarter of a second and a trickle shows as it comes. Edits other than
@@ -106,7 +106,7 @@ appends, and Reduce Motion, show at once. It is motion: pending work lists it wh
 
 ## Markdown (octara-kit)
 
-- `octara_kit::markdown::markdown(source)`: a string, a closure (followed), or a `LiveText` (a
+- `octara_kit::markdown::markdown(source)`: a string, a closure (followed), or a `TextBuffer` (a
   stream: its end is repaired). pulldown-cmark (strikethrough, tables, task lists) into blocks:
   headings, paragraphs (strong, emphasis, strike, inline code, links as runs), code blocks,
   lists (ordered from their start, unordered, tasks), quotes, rules, tables; HTML shows as

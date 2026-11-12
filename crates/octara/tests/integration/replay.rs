@@ -10,7 +10,7 @@ use std::time::Duration;
 
 /// A list with a field, an add button and a delayed counter.
 fn todos() -> View {
-    let items = list("items", Vec::<(u32, String)>::new, |t: &(u32, String)| t.0);
+    let items = state_list("items", Vec::<(u32, String)>::new, |t: &(u32, String)| t.0);
     let draft = state("draft", String::new);
     let next = state("next", || 1u32);
     let ticks = state("ticks", || 0u32);

@@ -8,7 +8,7 @@ their own state incrementally, and are stages themselves, so they compose
 
 ## `map`
 
-- `source.map(|t: &T| -> U) -> Derived<K, U>` (on `List`, `Derived` and `Source`, as `filter`),
+- `source.map(|t: &T| -> U) -> Derived<K, U>` (on `StateList`, `Derived` and `Source`, as `filter`),
   `U: Clone + PartialEq`. Same keys, same order.
 - Each key has its own output signal; an upstream insert or update calls the closure once for
   that key, and an update reaches downstream only when the new output differs (`PartialEq`).
@@ -23,7 +23,7 @@ their own state incrementally, and are stages themselves, so they compose
 ## `join`
 
 - A lookup join: `left.join(&right, |l: &L| -> RK, |l: &L, r: Option<&R>| -> U)
-  -> Derived<LK, U>`. `right` is any keyed stage (`List`, `Derived`, `Source`) whose key type
+  -> Derived<LK, U>`. `right` is any keyed stage (`StateList`, `Derived`, `Source`) whose key type
   is `RK`, so each left item matches at most one right item.
 - Output keys and order are the left side's. A left item whose right key is missing is kept,
   with `None` (a left outer join); when the right item appears or goes, the row updates, it is

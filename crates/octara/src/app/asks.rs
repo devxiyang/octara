@@ -7,7 +7,7 @@ use crate::platform::Reply;
 
 /// The lists of the requests a window draws: menus, prompts.
 pub(crate) type Drawn = (DrawnList, DrawnList);
-type DrawnList = crate::reactive::list::List<AskId, (AskId, Ask)>;
+type DrawnList = crate::reactive::list::StateList<AskId, (AskId, Ask)>;
 
 /// A request waiting for its answer.
 pub(crate) struct Pending {
@@ -152,10 +152,10 @@ impl Window {
 /// in a layer over the window, there only while one is open (it takes the pointer then).
 pub(crate) fn layer() -> crate::view::View {
     use crate::prelude::*;
-    let menus = list("menus", Vec::new, |e: &(AskId, Ask)| e.0);
-    let prompts = list("prompts", Vec::new, |e: &(AskId, Ask)| e.0);
+    let menus = state_list("menus", Vec::new, |e: &(AskId, Ask)| e.0);
+    let prompts = state_list("prompts", Vec::new, |e: &(AskId, Ask)| e.0);
     *super::window().drawn.borrow_mut() = Some((menus, prompts));
-    let tips = list("tooltips", Vec::new, |e: &super::tooltip::Shown| e.0);
+    let tips = state_list("tooltips", Vec::new, |e: &super::tooltip::Shown| e.0);
     *super::window().tip.borrow_mut() = Some(tips);
     View::Fragment(vec![
         super::tooltip::view(tips),

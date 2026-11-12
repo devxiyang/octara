@@ -236,7 +236,7 @@ pub(crate) struct WindowState {
     /// The requests the window draws itself: its asks layer's menus and prompts.
     drawn: RefCell<Option<asks::Drawn>>,
     /// The tooltip the window draws (one at most).
-    tip: RefCell<Option<crate::reactive::list::List<u64, tooltip::Shown>>>,
+    tip: RefCell<Option<crate::reactive::list::StateList<u64, tooltip::Shown>>>,
     /// How lists order their rows, by container (for selections through them).
     pub(crate) lists: RefCell<std::collections::HashMap<NodeId, selection::ListOrder>>,
 }

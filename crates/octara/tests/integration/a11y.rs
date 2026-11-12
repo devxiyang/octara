@@ -78,7 +78,7 @@ fn busy() -> View {
     let count = state("count", || 0);
     let open = state("open", || false);
     let menu = state("menu", || false);
-    let items = list("items", || (0..20u32).collect::<Vec<_>>(), |i| *i);
+    let items = state_list("items", || (0..20u32).collect::<Vec<_>>(), |i| *i);
     let next = state("next", || 20u32);
     col()
         .size_full()
@@ -256,7 +256,7 @@ fn a_selectable_region_is_a_document_of_runs_with_its_selection() {
 #[test]
 fn runs_and_the_selection_follow_changes() {
     let app = App::new(octara::platform::HeadlessPlatform::default());
-    let live = app.run(|| LiveText::new("streaming"));
+    let live = app.run(|| TextBuffer::new("streaming"));
     let stream = live.clone();
     let mut w = app
         .open_window(octara::platform::WindowOptions::new("Chat"), move || {
@@ -283,7 +283,7 @@ fn runs_and_the_selection_follow_changes() {
 #[test]
 fn a_selection_through_unmounted_rows_ends_at_the_mounted_runs() {
     let mut w = Window::headless(|| {
-        let items = list("rows", || (0..1000u32).map(|i| (i, format!("Message {i}"))).collect::<Vec<_>>(), |m: &(u32, String)| m.0);
+        let items = state_list("rows", || (0..1000u32).map(|i| (i, format!("Message {i}"))).collect::<Vec<_>>(), |m: &(u32, String)| m.0);
         col()
             .size_full()
             .child(col().id("list").selectable().flex_1().overflow_y_scroll().child(virtual_each(

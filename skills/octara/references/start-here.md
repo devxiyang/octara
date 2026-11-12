@@ -97,7 +97,7 @@ assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
   `ghost_button`, `toggle_button`, `icon_button`, `checkbox`, `switch`, `text_field`, `select`,
   `spinner`, `chip`, `removable_chip`, `callout`.
 - `octara_kit::markdown::markdown(source)` renders Markdown as a selectable document (headings,
-  lists, tasks, code blocks with a copy button, quotes, tables). Pass a `&LiveText` to stream an
+  lists, tasks, code blocks with a copy button, quotes, tables). Pass a `&TextBuffer` to stream an
   answer in: each token re-parses only the block it lands in; `paced(&reply)` shows a stream
   arriving in bursts over a few frames. `mod+c` copies the text,
   `mod+alt+c` the Markdown source of the blocks the selection touches.
@@ -106,7 +106,7 @@ assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 
 | Layer | What | May write state? |
 | --- | --- | --- |
-| Inputs | `state`, `list`, `live_text`, events | — |
+| Inputs | `state`, `state_list`, `text_buffer`, events | — |
 | Derived | `memo(|| ..)`, `list.filter(..)`, `sort_by`, `group_by` | no |
 | Observers | bindings (`text(move \|\| ..)`), `show`, `each`, `watch`'s source | no |
 | Effects | handlers (`on_press`), `watch`'s callback, tasks | yes |
@@ -143,7 +143,7 @@ struct Todo {
 }
 
 fn todos() -> View {
-    let items = list("todos", || vec![Todo { id: 1, title: "Write docs".into() }], |t: &Todo| t.id);
+    let items = state_list("todos", || vec![Todo { id: 1, title: "Write docs".into() }], |t: &Todo| t.id);
     let next = state("next", || 2u32);
     col()
         .size_full()

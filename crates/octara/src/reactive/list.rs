@@ -1,4 +1,4 @@
-//! Incremental collections (design §3; DBSP / ILC): a `List` and composable views over it.
+//! Incremental collections (design §3; DBSP / ILC): a `StateList` and composable views over it.
 //!
 //! Every collection is a *stage*: an ordered set of keys with an item per key, a bounded log of
 //! structural changes (`Insert` / `Remove` / `Move`, each with the index at that moment) and
@@ -205,14 +205,14 @@ impl<K, T> From<&Source<K, T>> for Source<K, T> {
     }
 }
 
-impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<List<K, T>> for Source<K, T> {
-    fn from(l: List<K, T>) -> Self {
+impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<StateList<K, T>> for Source<K, T> {
+    fn from(l: StateList<K, T>) -> Self {
         l.source()
     }
 }
 
-impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<&List<K, T>> for Source<K, T> {
-    fn from(l: &List<K, T>) -> Self {
+impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<&StateList<K, T>> for Source<K, T> {
+    fn from(l: &StateList<K, T>) -> Self {
         l.source()
     }
 }
@@ -420,7 +420,7 @@ where
 }
 
 // ---------------------------------------------------------------------------------------------
-// List
+// StateList
 // ---------------------------------------------------------------------------------------------
 
 struct ListInner<K, T> {
@@ -462,19 +462,19 @@ where
 
 /// A keyed list as named component state (like [`state`]): survives hot reload; its items are
 /// disposed when it is.
-pub struct List<K, T> {
+pub struct StateList<K, T> {
     holder: Signal<Rc<ListInner<K, T>>>,
 }
 
-impl<K, T> Clone for List<K, T> {
+impl<K, T> Clone for StateList<K, T> {
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<K, T> Copy for List<K, T> {}
+impl<K, T> Copy for StateList<K, T> {}
 
 #[track_caller]
-pub fn list<K, T>(key: &'static str, init: impl FnOnce() -> Vec<T>, key_fn: fn(&T) -> K) -> List<K, T>
+pub fn state_list<K, T>(key: &'static str, init: impl FnOnce() -> Vec<T>, key_fn: fn(&T) -> K) -> StateList<K, T>
 where
     K: Eq + Hash + Clone + 'static,
     T: Clone + 'static,
@@ -494,10 +494,10 @@ where
         }
         Rc::new(ListInner { seq: RefCell::new(seq), items: RefCell::new(items), emitter: Emitter::new(), key_fn })
     });
-    List { holder }
+    StateList { holder }
 }
 
-impl<K, T> List<K, T>
+impl<K, T> StateList<K, T>
 where
     K: Eq + Hash + Clone + 'static,
     T: Clone + 'static,
@@ -509,7 +509,7 @@ where
     pub fn source(&self) -> Source<K, T> {
         Source(self.inner())
     }
-    /// Alias of [`List::source`].
+    /// Alias of [`StateList::source`].
     pub fn all(&self) -> Source<K, T> {
         self.source()
     }
@@ -1583,7 +1583,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::reactive::graph::{Ctx, Runtime};
-    use crate::reactive::list::{Change, FlatKey, list};
+    use crate::reactive::list::{Change, FlatKey, state_list};
 
     #[derive(Clone, PartialEq, Debug)]
     struct Row {
@@ -1601,7 +1601,7 @@ mod tests {
             let scope = rt.create_scope(None, "t");
             // Idle, not Build: the checks below read views outside any binding on purpose.
             rt.with_frame(Ctx::Idle, None, Some(Some(scope)), || {
-                let l = list("rows", Vec::<Row>::new, |r| r.id);
+                let l = state_list("rows", Vec::<Row>::new, |r| r.id);
                 let f = l.filter(|r| r.a % 2 == 0);
                 let s = f.sort_by(|r| (r.b, r.id));
                 let g = l.group_by(|r| r.a % 3);
@@ -1726,7 +1726,7 @@ mod tests {
         rt.enter(|| {
             let scope = rt.create_scope(None, "t");
             rt.with_frame(Ctx::Idle, None, Some(Some(scope)), || {
-                let l = list("rows", || (0..100u32).map(|id| Row { id, a: 0, b: 0 }).collect(), |r| r.id);
+                let l = state_list("rows", || (0..100u32).map(|id| Row { id, a: 0, b: 0 }).collect(), |r| r.id);
                 let calls = Rc::new(Cell::new(0));
                 let c = calls.clone();
                 let m = l.map(move |r| {
@@ -1783,8 +1783,8 @@ mod tests {
         rt.enter(|| {
             let scope = rt.create_scope(None, "t");
             rt.with_frame(Ctx::Idle, None, Some(Some(scope)), || {
-                let users = list("users", Vec::<User>::new, |u| u.id);
-                let msgs = list("msgs", Vec::<Msg>::new, |m| m.id);
+                let users = state_list("users", Vec::<User>::new, |u| u.id);
+                let msgs = state_list("msgs", Vec::<Msg>::new, |m| m.id);
                 let j = msgs.join(users, |m| m.user, |m, u| (m.body, u.map(|u| u.name)));
                 let named = j.filter(|(_, n)| n.is_some()).sort_by(|(b, n)| (*n, *b));
                 let cursor = j.source().0.emitter().log.borrow_mut().subscribe();
@@ -1862,9 +1862,10 @@ mod tests {
         rt.enter(|| {
             let scope = rt.create_scope(None, "t");
             rt.with_frame(Ctx::Idle, None, Some(Some(scope)), || {
-                let users = list("users", || vec![User { id: 1, name: 1, role: 0 }, User { id: 2, name: 2, role: 0 }], |u| u.id);
+                let users = state_list("users", || vec![User { id: 1, name: 1, role: 0 }, User { id: 2, name: 2, role: 0 }], |u| u.id);
                 let n = super::JOIN_FANOUT_ROWS as u32 + 5;
-                let msgs = list("msgs", move || (0..n).map(|id| Msg { id, user: if id < 3 { 2 } else { 1 }, body: 0 }).collect(), |m| m.id);
+                let msgs =
+                    state_list("msgs", move || (0..n).map(|id| Msg { id, user: if id < 3 { 2 } else { 1 }, body: 0 }).collect(), |m| m.id);
                 let j = msgs.join(users, |m| m.user, |_, u| u.map(|u| u.name));
                 let seen = Rc::new(Cell::new(0));
                 let s2 = seen.clone();

@@ -348,7 +348,7 @@ fn stream() {
     let msg: String = (0..6).map(|_| para).collect::<String>() + "- a\n- b\n\n```\nfn f() {}\n```\n";
     for motion in [false, true] {
         let app = App::new(HeadlessPlatform::default());
-        let live = app.run(|| LiveText::new(""));
+        let live = app.run(|| TextBuffer::new(""));
         let stream = live.clone();
         let m = msg.clone();
         let mut w = app
