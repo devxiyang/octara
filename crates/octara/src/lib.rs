@@ -56,5 +56,6 @@ pub mod prelude {
     pub use crate::task::{Load, Receiver, Resource, Sender, Task, background, channel, interval, resource, sleep, spawn};
     pub use crate::view::*;
     pub use crate::window::{WindowId, WindowKind, WindowOptions, close_window, current_window, open_window, windows};
+    pub use accesskit::Live;
     pub use serde_json::json;
 }

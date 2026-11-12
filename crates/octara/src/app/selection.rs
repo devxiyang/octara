@@ -108,6 +108,23 @@ impl Window {
         *self.w.selection.borrow_mut() = Some(DocSelection { region, anchor, focus });
     }
 
+    /// Selects what assistive technology asked for: anchor and focus at run positions of one
+    /// region's texts.
+    pub(super) fn select_a11y(&self, sel: accesskit::TextSelection) -> bool {
+        let points = {
+            let k = self.w.kernel.borrow();
+            let point = |p| {
+                let (text, offset) = k.text_at_a11y(p)?;
+                let region = k.region_of(text)?;
+                Some((region, TextPoint { path: k.path_to(region, text)?, offset }))
+            };
+            point(sel.anchor).zip(point(sel.focus)).filter(|((a, _), (f, _))| a == f)
+        };
+        let Some(((region, anchor), (_, focus))) = points else { return false };
+        self.set_doc_selection(region, anchor, focus);
+        true
+    }
+
     /// Clears the document selection; whether there was one.
     pub(super) fn clear_doc_selection(&self) -> bool {
         self.w.selection.borrow_mut().take().is_some()
@@ -154,6 +171,24 @@ impl Window {
             if !now.contains(&t) && k.is_alive(t) {
                 k.set_selected(t, None);
             }
+        }
+        // Assistive technology gets anchor and focus where they are mounted, else where the
+        // mounted part of the selection begins or ends.
+        let region = ordered.as_ref().map(|o| o.0);
+        if let Some(old) = self.w.selection_region.replace(region)
+            && Some(old) != region
+            && k.is_alive(old)
+        {
+            k.set_doc_selection(old, None);
+        }
+        if let (Some((region, start, end)), Some(sel)) = (&ordered, self.w.selection.borrow().as_ref()) {
+            let mounted = |p: &TextPoint| k.resolve_path(*region, &p.path).filter(|t| now.contains(t) || k.selectable_in(*region, *t));
+            let first = now.first().and_then(|t| Some((*t, k.selected(*t)?.start)));
+            let last = now.last().and_then(|t| Some((*t, k.selected(*t)?.end)));
+            let s = mounted(start).map(|t| (t, start.offset)).or(first);
+            let e = mounted(end).map(|t| (t, end.offset)).or(last);
+            let ends = s.zip(e).map(|(s, e)| if sel.anchor == *start { [s, e] } else { [e, s] });
+            k.set_doc_selection(*region, ends);
         }
     }
 

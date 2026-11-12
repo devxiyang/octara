@@ -120,6 +120,18 @@ impl Kernel {
         self.changed(text, super::Dirty::PAINT, "selected", String::new);
         true
     }
+    /// Sets a region's selection as assistive technology gets it: anchor and focus in mounted
+    /// texts (`None`: none, or neither end mounted).
+    pub fn set_doc_selection(&mut self, region: NodeId, ends: Option<[(NodeId, usize); 2]>) {
+        if self.node(region).doc_selection != ends {
+            self.node_mut(region).doc_selection = ends;
+            self.a11y_touch(region);
+        }
+    }
+    pub fn doc_selection(&self, region: NodeId) -> Option<[(NodeId, usize); 2]> {
+        self.node(region).doc_selection
+    }
+
     pub fn selected(&self, text: NodeId) -> Option<Range<usize>> {
         self.node(text).selected.clone()
     }

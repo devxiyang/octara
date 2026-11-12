@@ -361,6 +361,13 @@ struct Node {
     row_key: Option<std::rc::Rc<str>>,
     /// The range of its text a document selection covers now.
     selected: Option<std::ops::Range<usize>>,
+    /// A region's selection as assistive technology gets it: anchor and focus, each a mounted
+    /// text and a byte offset in it.
+    doc_selection: Option<[(NodeId, usize); 2]>,
+    /// Its level (a heading's, a list item's nesting), for assistive technology.
+    level: Option<u8>,
+    /// How assistive technology announces its changes (a live region).
+    live: Option<accesskit::Live>,
     /// An overlay's anchor node and placement; the node is positioned absolutely in the overlay layer.
     anchor: Option<(NodeId, Placement)>,
     /// Where the last layout put an anchored node.
@@ -971,6 +978,9 @@ impl Kernel {
         if let (None, Content::Native(v)) = (n.role, &n.content) {
             return if v.kind == "web" { Role::WebView } else { Role::GenericContainer };
         }
+        if n.region && n.role.is_none() {
+            return Role::Document;
+        }
         n.role.unwrap_or(match n.input() {
             Some(i) if i.masked() => Role::PasswordInput,
             Some(i) if i.multiline => Role::MultilineTextInput,
@@ -1075,6 +1085,9 @@ impl Kernel {
             select_none: false,
             row_key: None,
             selected: None,
+            doc_selection: None,
+            level: None,
+            live: None,
             anchor: None,
             placed: None,
             scroll: (0.0, 0.0),
@@ -1255,6 +1268,25 @@ impl Kernel {
     }
 
     // ---- content and semantics ----
+
+    pub fn set_level(&mut self, id: NodeId, level: u8) -> bool {
+        if self.node(id).level == Some(level) {
+            self.counters.prop_noops += 1;
+            return false;
+        }
+        self.node_mut(id).level = Some(level);
+        self.changed(id, Dirty::SEMANTICS, "level", || level.to_string());
+        true
+    }
+    pub fn set_live(&mut self, id: NodeId, live: accesskit::Live) -> bool {
+        if self.node(id).live == Some(live) {
+            self.counters.prop_noops += 1;
+            return false;
+        }
+        self.node_mut(id).live = Some(live);
+        self.changed(id, Dirty::SEMANTICS, "live", || format!("{live:?}"));
+        true
+    }
 
     pub fn set_role(&mut self, id: NodeId, role: Role) -> bool {
         if self.node(id).role == Some(role) {

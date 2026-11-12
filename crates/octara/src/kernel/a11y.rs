@@ -4,17 +4,156 @@
 use super::{HandlerKind, Kernel, Kind, NodeId, Role, State};
 use accesskit as ak;
 use slotmap::{Key, KeyData};
+use std::ops::Range;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// The AccessKit id of a node.
 pub fn a11y_id(id: NodeId) -> ak::NodeId {
     ak::NodeId(id.data().as_ffi())
 }
 
+/// A text larger than this has no runs (its value only).
+const RUNS_LIMIT: usize = 64 * 1024;
+/// The most characters in one run (AccessKit's word starts are bytes): a longer line is split
+/// into runs on the same line.
+const RUN_CHARS: usize = 255;
+/// The most runs a text has.
+const MAX_RUNS: usize = 1 << 12;
+/// A run's id: this bit, the run's number, and its text's slot (the version's low 19 bits).
+const RUN_BIT: u64 = 1 << 63;
+
+fn run_id(text: NodeId, run: usize) -> ak::NodeId {
+    let ffi = text.data().as_ffi();
+    ak::NodeId(RUN_BIT | ((run as u64) << 51) | (((ffi >> 32) & 0x7_FFFF) << 32) | (ffi & 0xFFFF_FFFF))
+}
+
+/// One AccessKit node with its id.
+type AkNode = (ak::NodeId, ak::Node);
+
+/// One run of a text: its bytes, the line it is on, and its characters' byte ranges.
+struct Run {
+    bytes: Range<usize>,
+    line: usize,
+    chars: Vec<Range<usize>>,
+}
+
 impl Kernel {
-    /// The node an AccessKit id names, if it still exists.
+    /// The node an AccessKit id names, if it still exists (a text run names its text).
     pub fn node_of_a11y(&self, id: ak::NodeId) -> Option<NodeId> {
-        let n = NodeId::from(KeyData::from_ffi(id.0));
+        let ffi = if id.0 & RUN_BIT != 0 { id.0 & 0x7_FFFF_FFFF_FFFF } else { id.0 };
+        let n = NodeId::from(KeyData::from_ffi(ffi));
         self.is_alive(n).then_some(n)
+    }
+
+    /// Whether a text gets runs: a selectable text of a region.
+    fn has_runs(&self, id: NodeId) -> bool {
+        self.kind(id) == Kind::Text
+            && self.text_str(id).len() <= RUNS_LIMIT
+            && self.region_of(id).is_some_and(|r| self.selectable_in(r, id))
+    }
+
+    /// A text's runs: its laid-out lines, a hard break ending the line before it, split at
+    /// [`RUN_CHARS`]. Empty when it has none.
+    fn text_runs(&self, id: NodeId) -> Vec<Run> {
+        let text = self.text_str(id);
+        if text.is_empty() || !self.has_runs(id) {
+            return Vec::new();
+        }
+        let lines = self.text_lines(id);
+        let mut out = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            let end = lines.get(i + 1).map_or(text.len(), |n| n.start);
+            let start = if i == 0 { 0 } else { l.start };
+            let mut chars = Vec::new();
+            for (b, g) in text[start..end].grapheme_indices(true) {
+                if g.len() > usize::from(u8::MAX) {
+                    return Vec::new();
+                }
+                chars.push(start + b..start + b + g.len());
+                if chars.len() == RUN_CHARS {
+                    let c = std::mem::take(&mut chars);
+                    out.push(Run { bytes: c[0].start..c[c.len() - 1].end, line: i, chars: c });
+                }
+            }
+            if !chars.is_empty() {
+                out.push(Run { bytes: chars[0].start..chars[chars.len() - 1].end, line: i, chars });
+            }
+            if out.len() > MAX_RUNS {
+                return Vec::new();
+            }
+        }
+        out
+    }
+
+    /// The AccessKit nodes of a text's runs, in its node's space.
+    fn a11y_runs(&self, id: NodeId, runs: &[Run]) -> Vec<AkNode> {
+        let text = self.text_str(id);
+        let lines = self.text_lines(id);
+        let ((ox, oy), _, _) = self.text_box(id);
+        // Where words start: the first character of each segment that is not blank.
+        let starts: rustc_hash::FxHashSet<usize> =
+            text.split_word_bound_indices().filter(|(_, w)| !w.trim().is_empty()).map(|(b, _)| b).collect();
+        runs.iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let mut node = ak::Node::new(Role::TextRun);
+                node.set_value(&text[r.bytes.clone()]);
+                node.set_character_lengths(r.chars.iter().map(|c| c.len() as u8).collect::<Vec<_>>());
+                node.set_word_starts(
+                    r.chars.iter().enumerate().filter(|(_, c)| starts.contains(&c.start)).map(|(n, _)| n as u8).collect::<Vec<_>>(),
+                );
+                let line = &lines[r.line];
+                // Each character's edges: the stops at or before its bytes, in one pass.
+                let mut stop = 0;
+                let mut x_at = |b: usize| {
+                    while line.stops.get(stop + 1).is_some_and(|s| s.0 <= b) {
+                        stop += 1;
+                    }
+                    line.stops.get(stop).map_or(0.0, |s| s.1)
+                };
+                let xs: Vec<(f32, f32)> = r.chars.iter().map(|c| (x_at(c.start), x_at(c.end))).collect();
+                let x0 = xs.iter().map(|(a, b)| a.min(*b)).fold(f32::INFINITY, f32::min);
+                let x1 = xs.iter().map(|(a, b)| a.max(*b)).fold(f32::NEG_INFINITY, f32::max);
+                let x0 = if x0.is_finite() { x0 } else { 0.0 };
+                node.set_character_positions(xs.iter().map(|(a, b)| a.min(*b) - x0).collect::<Vec<_>>());
+                node.set_character_widths(xs.iter().map(|(a, b)| (b - a).abs()).collect::<Vec<_>>());
+                let (x, y) = (f64::from(ox + x0), f64::from(oy + line.top));
+                node.set_bounds(ak::Rect { x0: x, y0: y, x1: x + f64::from((x1 - x0).max(0.0)), y1: y + f64::from(line.height) });
+                // Runs split from one line are on it together.
+                if i > 0 && runs[i - 1].line == r.line {
+                    node.set_previous_on_line(run_id(id, i - 1));
+                }
+                if runs.get(i + 1).is_some_and(|n| n.line == r.line) {
+                    node.set_next_on_line(run_id(id, i + 1));
+                }
+                (run_id(id, i), node)
+            })
+            .collect()
+    }
+
+    /// Where byte `at` of a text is among its runs.
+    fn run_position(&self, id: NodeId, runs: &[Run], at: usize) -> Option<ak::TextPosition> {
+        let (i, r) = runs.iter().enumerate().find(|(_, r)| at < r.bytes.end).or_else(|| runs.iter().enumerate().next_back())?;
+        let index = r.chars.iter().position(|c| at < c.end).unwrap_or(r.chars.len());
+        Some(ak::TextPosition { node: run_id(id, i), character_index: index })
+    }
+
+    /// The text and byte a run position names (assistive technology setting a selection).
+    pub fn text_at_a11y(&self, pos: ak::TextPosition) -> Option<(NodeId, usize)> {
+        if pos.node.0 & RUN_BIT == 0 {
+            return None;
+        }
+        let text = self.node_of_a11y(pos.node)?;
+        let runs = self.text_runs(text);
+        let run = runs.get(((pos.node.0 >> 51) & 0xFFF) as usize)?;
+        Some((text, run.chars.get(pos.character_index).map_or(run.bytes.end, |c| c.start)))
+    }
+
+    /// A region's selection among its texts' runs.
+    fn a11y_selection(&self, region: NodeId) -> Option<ak::TextSelection> {
+        let [(a, ao), (f, fo)] = self.node(region).doc_selection?;
+        let at = |t: NodeId, o: usize| self.is_alive(t).then(|| self.run_position(t, &self.text_runs(t), o)).flatten();
+        Some(ak::TextSelection { anchor: at(a, ao)?, focus: at(f, fo)? })
     }
 
     /// The whole tree as an AccessKit update (a snapshot: it does not change what
@@ -72,11 +211,22 @@ impl Kernel {
     }
 
     /// Sends `id` and the subtrees of its children assistive technology has not seen.
-    fn a11y_emit(&self, id: NodeId, scale: f64, out: &mut Vec<(ak::NodeId, ak::Node)>, sent: &mut rustc_hash::FxHashSet<NodeId>) {
-        let (node, g, children) = self.a11y_build(id, scale);
+    fn a11y_emit(&self, id: NodeId, scale: f64, out: &mut Vec<AkNode>, sent: &mut rustc_hash::FxHashSet<NodeId>) {
+        let (node, g, children, runs) = self.a11y_build(id, scale);
         self.node(id).a11y_sent.set(Some(g));
         sent.insert(id);
         out.push((a11y_id(id), node));
+        // A text's runs place its region's selection: send that again too.
+        if !runs.is_empty()
+            && let Some(r) = self.region_of(id).filter(|r| self.node(*r).doc_selection.is_some_and(|s| s.iter().any(|e| e.0 == id)))
+            && !sent.contains(&r)
+        {
+            let (node, g, ..) = self.a11y_build(r, scale);
+            self.node(r).a11y_sent.set(Some(g));
+            sent.insert(r);
+            out.push((a11y_id(r), node));
+        }
+        out.extend(runs);
         for c in children {
             if self.node(c).a11y_sent.get().is_none() && !sent.contains(&c) {
                 self.a11y_emit(c, scale, out, sent);
@@ -121,10 +271,11 @@ impl Kernel {
     }
 
     /// `id` and its shown descendants, with `seen` called for each node and its geometry.
-    fn a11y_subtree(&self, id: NodeId, scale: f64, out: &mut Vec<(ak::NodeId, ak::Node)>, seen: &mut dyn FnMut(NodeId, [f32; 6])) {
-        let (node, g, children) = self.a11y_build(id, scale);
+    fn a11y_subtree(&self, id: NodeId, scale: f64, out: &mut Vec<AkNode>, seen: &mut dyn FnMut(NodeId, [f32; 6])) {
+        let (node, g, children, runs) = self.a11y_build(id, scale);
         seen(id, g);
         out.push((a11y_id(id), node));
+        out.extend(runs);
         for c in children {
             self.a11y_subtree(c, scale, out, seen);
         }
@@ -158,9 +309,10 @@ impl Kernel {
     }
 
     /// One node for AccessKit, its geometry, and its shown children.
-    fn a11y_build(&self, id: NodeId, scale: f64) -> (ak::Node, [f32; 6], Vec<NodeId>) {
+    fn a11y_build(&self, id: NodeId, scale: f64) -> (ak::Node, [f32; 6], Vec<NodeId>, Vec<AkNode>) {
         let n = self.node(id);
-        let mut node = ak::Node::new(if id == self.root { Role::Window } else { self.role(id) });
+        let role = if id == self.root { Role::Window } else { self.role(id) };
+        let mut node = ak::Node::new(role);
         // Placed in the parent's space; a scroll container's space moves with its offset, so its
         // children keep their transforms while it scrolls.
         let g = self.a11y_geometry_of(id);
@@ -168,11 +320,28 @@ impl Kernel {
         let place = ak::Affine::translate((x - sx, y - sy));
         node.set_transform(if id == self.root { ak::Affine::scale(scale) * place } else { place });
         node.set_bounds(ak::Rect { x0: sx, y0: sy, x1: sx + w, y1: sy + h });
-        // The name: an explicit label, else a text's own text.
+        // The name: an explicit label, else a text's own text (a label's value, AccessKit's
+        // static text).
         if let Some(label) = &n.label {
             node.set_label(label.as_str());
         } else if n.kind() == Kind::Text && !n.text().is_empty() {
-            node.set_label(n.text());
+            if role == Role::Label {
+                node.set_value(n.text());
+            } else {
+                node.set_label(n.text());
+            }
+        }
+        if let Some(l) = n.level {
+            node.set_level(usize::from(l));
+        }
+        if let Some(l) = n.live {
+            node.set_live(l);
+        }
+        if n.region {
+            node.add_action(ak::Action::SetTextSelection);
+            if let Some(sel) = self.a11y_selection(id) {
+                node.set_text_selection(sel);
+            }
         }
         if let Some(d) = &n.description {
             node.set_description(d.as_str());
@@ -210,8 +379,10 @@ impl Kernel {
             node.set_author_id(t.as_str());
         }
         let children: Vec<NodeId> = n.children.iter().copied().filter(|c| self.shown_to_a11y(*c)).collect();
-        node.set_children(children.iter().map(|c| a11y_id(*c)).collect::<Vec<_>>());
-        (node, g, children)
+        // A selectable text's runs come first, its links after.
+        let runs = if n.kind() == Kind::Text { self.a11y_runs(id, &self.text_runs(id)) } else { Vec::new() };
+        node.set_children(runs.iter().map(|(r, _)| *r).chain(children.iter().map(|c| a11y_id(*c))).collect::<Vec<_>>());
+        (node, g, children, runs)
     }
 }
 

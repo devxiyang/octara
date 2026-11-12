@@ -81,7 +81,9 @@ assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 - `.selectable()` on a container (a transcript, a message) makes its texts select as one
   document: drag, double press a word, triple press a text, Shift to extend, `mod+a`, `mod+c`.
   Rows of its lists keep their part while they scroll away. Tests: `select(("a", 0), ("b", 4))`,
-  `selected_text()`; `.select_none()` leaves texts out (markers, control labels).
+  `selected_text()`; `.select_none()` leaves texts out (markers, control labels). Assistive
+  technology reads it as a document, line by line: mark headings `.role(Role::Heading).level(1)`;
+  `.live(Live::Polite)` on an element announces its changes.
 - Layout is flexbox (and grid): `flex_1`, `gap_2`, `items_center`, `justify_between`,
   `w_full`, `max_w_md`, `overflow_y_scroll`. Lengths: a number is logical pixels; `relative(0.5)`
   is half the parent; `sp(n)` and the `_N` methods are theme spacing steps (`p_4` = 16 px).

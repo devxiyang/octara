@@ -65,7 +65,7 @@ Basis: [input research](research/input.md), [input design](design/input.md).
 
 - [ ] Deferring the app's rewrites of the value during composition (Exact); touch long-press word
       selection and selection handles; the caret position within an IME composition.
-- [ ] Accessibility `ScrollIntoView`, text selection (AccessKit text runs); scroll into view
+- [ ] Accessibility `ScrollIntoView`, text fields' runs and selection (AccessKit); scroll into view
       before driving; multi-finger gestures, edge back swipe; direct platform text protocols
       (NSTextInputClient, etc.).
 

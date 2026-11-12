@@ -1,6 +1,6 @@
 # The text core
 
-Based on the [research](../research/text.md). Status: confirmed; steps 1 (rich text and links), 2 (selection) and 2.5 (the engine) implemented. The [core](core.md)'s step 3: rich
+Based on the [research](../research/text.md). Status: confirmed; steps 1 (rich text and links), 2 (selection), 2.5 (the engine) and 3 (accessibility) implemented. The [core](core.md)'s step 3: rich
 text, blocks laid out and painted one at a time, a selection across blocks and rows of a
 virtual list, and accessible text. Designed for the AI chat app: messages streaming in as
 Markdown, long transcripts, select and copy across messages.
@@ -150,17 +150,26 @@ renderers  glyph runs in the display list; swash rasterizes into an atlas both r
 
 ## Accessibility
 
-- A selectable region is a `Document` node: its blocks are `Paragraph`, `Heading` (with level),
-  `ListItem`, `Code` …, each holding `TextRun` children, one per laid-out line, with
-  `character_lengths`, `word_starts` (within AccessKit's limits) and, cheaply from the layout,
-  `character_positions` and `character_widths`. A text larger than 64 KB has no runs (its value
-  only).
-- The region's selection is the `Document`'s `text_selection`, clamped to the runs that exist
-  (rows not mounted have none); copying still takes the whole selection.
-- Text outside regions stays a `Label` with its value.
-- **Live regions**: `.live(Live::Polite)` on an element; the kit's streaming message sets it, and
-  what assistive technology reads is the block that finished, not each token (the message's
-  label changes when a block commits).
+- A selectable region is a `Document` (unless it states a role). Its texts keep their roles
+  (a `Label` by default; `.role(Role::Heading).level(1)` for a heading) and hold `TextRun`
+  children, one per laid-out line: a hard break ends the run before it, and a line longer than
+  255 characters is split into runs on the same line (`next_on_line`), since AccessKit's word
+  starts are bytes. Each run carries `character_lengths` (graphemes), `word_starts` (where a
+  segment that is not blank starts), and `character_positions` / `character_widths` from the
+  layout's caret stops; its bounds are its line's. A text larger than 64 KB, a text marked
+  `select_none`, and text outside regions have no runs.
+- A run's AccessKit id is its text's slot with the run's number above it; an action on a run
+  goes to its text.
+- Static text is a `Label`'s value (AccessKit reads a label's text there); other roles take the
+  text as their name.
+- The region's selection is the `Document`'s `text_selection`: anchor and focus where they are
+  mounted, else where the mounted part of the selection begins or ends. Copying still takes the
+  whole selection. Assistive technology sets it with `SetTextSelection` on the region.
+- Runs derive from the text's kept lines and are sent with their text: a stream or a reflow
+  sends the text, its runs, and its region when the selection ends in it.
+- **Live regions**: `.live(Live::Polite)` (or `Assertive`) on an element; the kit's streaming
+  message sets it, and what assistive technology reads is the block that finished, not each
+  token (the message's label changes when a block commits).
 
 ## Steps
 

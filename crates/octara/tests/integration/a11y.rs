@@ -34,7 +34,7 @@ fn roles_names_states_actions_and_bounds() {
     let root = &tree.nodes.iter().find(|(i, _)| *i == tree.tree.as_ref().unwrap().root).unwrap().1;
     assert_eq!(root.role(), AkRole::Window);
     assert!(root.transform().is_some(), "the window scales logical bounds to device pixels");
-    assert_eq!(node("count").label(), Some("Count 0"));
+    assert_eq!((node("count").role(), node("count").value()), (AkRole::Label, Some("Count 0")), "static text is a label's value");
     let inc = node("inc");
     assert_eq!((inc.role(), inc.label()), (AkRole::Button, Some("Increment")));
     assert!(inc.supports_action(Action::Click) && inc.supports_action(Action::Focus));
@@ -156,4 +156,153 @@ fn updates_send_only_what_changed() {
     // Restarting sends the whole tree again.
     app.restart_accessibility();
     assert!(app.accessibility_update().tree.is_some());
+}
+
+// ---- Text ([text core](../../../../docs/design/text.md) step 3) ----
+
+fn article() -> View {
+    col()
+        .id("doc")
+        .selectable()
+        .w(160.0)
+        .child(text("Title").id("h").role(Role::Heading).level(1))
+        .child(text("A paragraph long enough to wrap over a few lines here.").id("p"))
+        .child(row().select_none().child(text("•").id("marker")))
+        .child(text("Last words\nafter a break").id("q"))
+        .child(text("news").id("status").live(Live::Polite))
+        .into()
+}
+
+fn nodes(u: &octara::accesskit::TreeUpdate) -> std::collections::HashMap<octara::accesskit::NodeId, octara::accesskit::Node> {
+    u.nodes.iter().cloned().collect()
+}
+
+/// A text's runs, checked: their values make up its text, their characters their values, and
+/// every per-character list is as long as the characters.
+fn runs_of(
+    app: &Window,
+    tree: &std::collections::HashMap<octara::accesskit::NodeId, octara::accesskit::Node>,
+    id: &str,
+) -> Vec<octara::accesskit::NodeId> {
+    let n = app.kernel().find(id).unwrap();
+    let node = &tree[&a11y_id(n)];
+    let runs: Vec<_> = node.children().iter().copied().filter(|c| tree[c].role() == AkRole::TextRun).collect();
+    let mut joined = String::new();
+    for r in &runs {
+        let run = &tree[r];
+        let value = run.value().unwrap();
+        let lengths = run.character_lengths();
+        assert_eq!(lengths.iter().map(|l| usize::from(*l)).sum::<usize>(), value.len(), "{id}: {value:?}");
+        assert_eq!(run.character_positions().map(<[f32]>::len), Some(lengths.len()));
+        assert_eq!(run.character_widths().map(<[f32]>::len), Some(lengths.len()));
+        assert!(run.word_starts().windows(2).all(|w| w[0] < w[1]) && run.word_starts().iter().all(|w| usize::from(*w) < lengths.len()));
+        assert_eq!(app.kernel().node_of_a11y(*r), Some(n), "a run names its text");
+        joined.push_str(value);
+    }
+    assert_eq!(joined, app.kernel().text(n), "{id}: the runs make up the text");
+    runs
+}
+
+#[test]
+fn a_selectable_region_is_a_document_of_runs_with_its_selection() {
+    let mut app = Window::headless(article);
+    app.select(("p", 2), ("q", 4)).unwrap();
+    let tree = nodes(&app.accessibility_tree());
+    let doc = &tree[&a11y_id(app.kernel().find("doc").unwrap())];
+    assert_eq!(doc.role(), AkRole::Document);
+    let h = &tree[&a11y_id(app.kernel().find("h").unwrap())];
+    assert_eq!((h.role(), h.level(), h.label()), (AkRole::Heading, Some(1), Some("Title")));
+    assert_eq!(tree[&a11y_id(app.kernel().find("status").unwrap())].live(), Some(Live::Polite));
+    runs_of(&app, &tree, "h");
+    let p = runs_of(&app, &tree, "p");
+    assert!(p.len() >= 3, "a run per line: {}", p.len());
+    let q = runs_of(&app, &tree, "q");
+    assert_eq!(tree[&q[0]].value(), Some("Last words\n"), "a hard break ends its line's run");
+    assert!(tree[&q[0]].word_starts().contains(&5), "\"words\" starts a word");
+    // The marker is not selectable: no runs.
+    let marker = &tree[&a11y_id(app.kernel().find("marker").unwrap())];
+    assert!(marker.children().is_empty() && marker.value() == Some("•"));
+
+    // The selection's ends are runs: offset 2 of the paragraph, offset 4 of the last text.
+    let sel = doc.text_selection().unwrap();
+    assert_eq!((sel.anchor.node, sel.anchor.character_index), (p[0], 2));
+    assert_eq!((sel.focus.node, sel.focus.character_index), (q[0], 4));
+    // Backwards, anchor and focus swap.
+    app.select(("q", 4), ("p", 2)).unwrap();
+    let tree = nodes(&app.accessibility_tree());
+    let sel = tree[&a11y_id(app.kernel().find("doc").unwrap())].text_selection().unwrap();
+    assert_eq!((sel.anchor.node, sel.focus.node), (q[0], p[0]));
+    // Assistive technology selects: from the start of the paragraph's second run to the
+    // heading's end, backwards.
+    let doc_id = a11y_id(app.kernel().find("doc").unwrap());
+    let h = runs_of(&app, &nodes(&app.accessibility_tree()), "h");
+    let at = |node, character_index| octara::accesskit::TextPosition { node, character_index };
+    let ask = octara::accesskit::TextSelection { anchor: at(p[1], 0), focus: at(h[0], 5) };
+    assert!(app.event(InputEvent::Accessibility {
+        target: doc_id,
+        action: Action::SetTextSelection,
+        data: Some(octara::accesskit::ActionData::SetTextSelection(ask)),
+    }));
+    // The heading's part is empty (its end): the paragraph's first line is what is selected.
+    assert_eq!(app.selected_text().as_deref(), tree[&p[0]].value());
+    let tree = nodes(&app.accessibility_tree());
+    assert_eq!(tree[&doc_id].text_selection(), Some(&ask), "the selection reads back as asked");
+    // Cleared, none.
+    app.clear_selection();
+    let tree = nodes(&app.accessibility_tree());
+    assert!(tree[&a11y_id(app.kernel().find("doc").unwrap())].text_selection().is_none());
+}
+
+#[test]
+fn runs_and_the_selection_follow_changes() {
+    let app = App::new(octara::platform::HeadlessPlatform::default());
+    let live = app.run(|| LiveText::new("streaming"));
+    let stream = live.clone();
+    let mut w = app
+        .open_window(octara::platform::WindowOptions::new("Chat"), move || {
+            col().id("chat").selectable().w(200.0).child(text("first").id("a")).child(text(&stream).id("live")).into()
+        })
+        .unwrap();
+    // Every update below is checked against the whole tree in debug builds.
+    w.accessibility_update();
+    w.select(("a", 1), ("live", 3)).unwrap();
+    assert!(!w.accessibility_update().nodes.is_empty());
+    app.run(|| live.append(" words that wrap the text over more lines than one"));
+    app.settle();
+    let u = w.accessibility_update();
+    let tree = nodes(&w.accessibility_tree());
+    let runs = runs_of(&w, &tree, "live");
+    assert!(runs.len() > 1, "the stream wrapped");
+    assert!(u.nodes.iter().any(|(id, _)| *id == runs[1]), "its new line is sent");
+    w.resize(500.0, 400.0);
+    w.accessibility_update();
+    w.clear_selection();
+    w.accessibility_update();
+}
+
+#[test]
+fn a_selection_through_unmounted_rows_ends_at_the_mounted_runs() {
+    let mut w = Window::headless(|| {
+        let items = list("rows", || (0..1000u32).map(|i| (i, format!("Message {i}"))).collect::<Vec<_>>(), |m: &(u32, String)| m.0);
+        col()
+            .size_full()
+            .child(col().id("list").selectable().flex_1().overflow_y_scroll().child(virtual_each(
+                move || items.source(),
+                |_| 24.0,
+                |k, m| text(move || m.with(|m| m.1.clone())).id(format!("m{k}")).into(),
+            )))
+            .into()
+    });
+    w.select(("m3", 2), ("m20", 4)).unwrap();
+    // Scroll row 3 out; row 20 stays.
+    w.dispatch(Event::ScrollTo("list".into(), 0.0, 300.0)).unwrap();
+    assert!(w.kernel().find("m3").is_none() && w.kernel().find("m20").is_some());
+    let mounted: Vec<String> = (0..1000).map(|i| format!("m{i}")).filter(|id| w.kernel().find(id).is_some()).collect();
+    let last = "m20".to_string();
+    let tree = nodes(&w.accessibility_tree());
+    let sel = tree[&a11y_id(w.kernel().find("list").unwrap())].text_selection().unwrap();
+    let first = runs_of(&w, &tree, &mounted[0]);
+    let end = runs_of(&w, &tree, &last);
+    assert_eq!((sel.anchor.node, sel.anchor.character_index), (first[0], 0), "the anchor's row is not mounted: the mounted part begins");
+    assert_eq!((sel.focus.node, sel.focus.character_index), (end[0], 4));
 }

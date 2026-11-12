@@ -245,6 +245,8 @@ pub struct El {
     group: Option<&'static str>,
     hover_alone: bool,
     region: bool,
+    level: Option<u8>,
+    live: Option<accesskit::Live>,
     select_none: bool,
     overlays: Vec<Overlay>,
     anchor: Option<(NodeId, Placement)>,
@@ -308,6 +310,8 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         group: None,
         hover_alone: false,
         region: false,
+        level: None,
+        live: None,
         select_none: false,
         overlays: Vec::new(),
         anchor: None,
@@ -565,6 +569,17 @@ impl El {
     }
     pub fn value(mut self, v: impl IntoProp<String>) -> Self {
         self.value = Some(v.into_prop());
+        self
+    }
+    /// Its level for assistive technology: a heading's (1 to 6), a list item's nesting.
+    pub fn level(mut self, level: u8) -> Self {
+        self.level = Some(level);
+        self
+    }
+    /// A live region: assistive technology announces its changes, politely (after what it is
+    /// saying) or assertively (at once).
+    pub fn live(mut self, live: accesskit::Live) -> Self {
+        self.live = Some(live);
         self
     }
     /// Hidden from assistive technology (decorative parts, spacers).
@@ -966,6 +981,12 @@ pub(crate) fn build_el(e: El) -> NodeId {
         }
         if e.region {
             k.set_region(node, true);
+        }
+        if let Some(l) = e.level {
+            k.set_level(node, l);
+        }
+        if let Some(l) = e.live {
+            k.set_live(node, l);
         }
         if e.select_none {
             k.set_select_none(node, true);

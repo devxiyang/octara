@@ -210,6 +210,8 @@ pub(crate) struct WindowState {
     /// The document selection (a selectable region's), and the texts it marked last.
     selection: RefCell<Option<selection::DocSelection>>,
     selected_texts: RefCell<Vec<NodeId>>,
+    /// The region whose selection assistive technology was given.
+    selection_region: Cell<Option<NodeId>>,
     /// How lists order their rows, by container (for selections through them).
     pub(crate) lists: RefCell<std::collections::HashMap<NodeId, selection::ListOrder>>,
 }
@@ -331,6 +333,7 @@ impl WindowState {
             picking: RefCell::default(),
             selection: RefCell::default(),
             selected_texts: RefCell::default(),
+            selection_region: Cell::new(None),
             lists: RefCell::default(),
         }
     }

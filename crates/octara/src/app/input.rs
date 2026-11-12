@@ -123,6 +123,11 @@ impl Window {
                 }
             }
             accesskit::Action::ShowContextMenu => self.input_frame(|| done = self.run(n, &[HandlerKind::SecondaryPress], None)),
+            accesskit::Action::SetTextSelection => {
+                if let Some(accesskit::ActionData::SetTextSelection(sel)) = data {
+                    self.input_frame(|| done = self.select_a11y(sel));
+                }
+            }
             _ => {}
         }
         done
