@@ -272,6 +272,11 @@ impl Kernel {
             bounds: [tenth(x), tenth(y), tenth(w), tenth(h)],
             actions,
             commands: n.commands.iter().map(|(c, _)| c.clone()).collect(),
+            native: self.native(id).map(|v| crate::native::NativeInfo {
+                kind: v.kind.clone(),
+                slot: snake(&format!("{:?}", v.slot)),
+                props: v.props.clone(),
+            }),
             icon: match &n.content {
                 super::Content::Icon(i) => Some(i.name.clone()),
                 _ => None,

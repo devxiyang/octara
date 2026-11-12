@@ -247,6 +247,30 @@
           "file": "crates/octara/src/app/drive.rs"
         },
         {
+          "path": "octara::app::App::native_event",
+          "kind": "method",
+          "sig": "pub fn native_event(&mut self, id: NativeId, event: NativeEvent) -> bool",
+          "docs": "An event from native view `id` (the host calls this): runs its `on_native`.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
+          "path": "octara::app::App::native_host",
+          "kind": "method",
+          "sig": "pub fn native_host(&self) -> Ref<'_, Box<dyn NativeHost>>",
+          "docs": "The native host (downcast with `as_any`; headless, a [`RecordingHost`]).\n\n[`RecordingHost`]: crate::native::RecordingHost",
+          "file": "crates/octara/src/app.rs",
+          "links": [
+            "octara::native::RecordingHost"
+          ]
+        },
+        {
+          "path": "octara::app::App::native_size",
+          "kind": "method",
+          "sig": "pub fn native_size(&mut self, id: NativeId, width: f32, height: f32)",
+          "docs": "The natural size native view `id` reports (the host calls this): used where no size is\nauthored.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
           "path": "octara::app::App::new",
           "kind": "assoc_fn",
           "sig": "pub fn new(root: impl Fn() -> View + 'static) -> Self",
@@ -414,6 +438,13 @@
           "sig": "pub fn set_keymap(&mut self, keymap: Keymap)",
           "docs": "Replaces the app's bindings (the standard ones stay; unbind them with `None` commands).",
           "file": "crates/octara/src/app/keys.rs"
+        },
+        {
+          "path": "octara::app::App::set_native_host",
+          "kind": "method",
+          "sig": "pub fn set_native_host(&mut self, host: Box<dyn NativeHost>)",
+          "docs": "Replaces the native host (a shell installs the platform's). Views already shown are\ncreated again on the new one.",
+          "file": "crates/octara/src/app.rs"
         },
         {
           "path": "octara::app::App::set_platform",
@@ -2210,6 +2241,13 @@
           "file": "crates/octara/src/diagnostics.rs"
         },
         {
+          "path": "octara::diagnostics::NATIVE_COVERED",
+          "kind": "static",
+          "sig": "pub static NATIVE_COVERED: Code",
+          "docs": "Content is painted over a native view in the overlay, which is drawn above Octara's surface and hides it.",
+          "file": "crates/octara/src/diagnostics.rs"
+        },
+        {
           "path": "octara::diagnostics::NOT_SETTLED",
           "kind": "static",
           "sig": "pub static NOT_SETTLED: Code",
@@ -2333,6 +2371,13 @@
           "kind": "static",
           "sig": "pub static UNLABELED_CANVAS: Code",
           "docs": "A canvas is shown without a label, so assistive technology cannot say what it shows.",
+          "file": "crates/octara/src/diagnostics.rs"
+        },
+        {
+          "path": "octara::diagnostics::UNLABELED_NATIVE_VIEW",
+          "kind": "static",
+          "sig": "pub static UNLABELED_NATIVE_VIEW: Code",
+          "docs": "A native view is shown without a label, so assistive technology cannot say what it is.",
           "file": "crates/octara/src/diagnostics.rs"
         },
         {
@@ -3156,6 +3201,13 @@
           "kind": "field",
           "sig": "pub name: Option<String>",
           "docs": "What assistive technology announces: the label, else a text's own text.",
+          "file": "crates/octara/src/inspect.rs"
+        },
+        {
+          "path": "octara::inspect::Node::native",
+          "kind": "field",
+          "sig": "pub native: Option<NativeInfo>",
+          "docs": "The native view it is: kind, slot and props.",
           "file": "crates/octara/src/inspect.rs"
         },
         {
@@ -4455,7 +4507,7 @@
         {
           "path": "octara::kernel::HandlerKind::COUNT",
           "kind": "assoc_const",
-          "sig": "pub const COUNT: usize = 10",
+          "sig": "pub const COUNT: usize = 11",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -4494,6 +4546,13 @@
           "path": "octara::kernel::HandlerKind::LongPress",
           "kind": "variant",
           "sig": "LongPress",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::HandlerKind::Native",
+          "kind": "variant",
+          "sig": "Native",
+          "docs": "An event from a native view (`on_native`).",
           "file": "crates/octara/src/kernel.rs"
         },
         {
@@ -5020,6 +5079,26 @@
           "file": "crates/octara/src/kernel.rs"
         },
         {
+          "path": "octara::kernel::Kernel::native",
+          "kind": "method",
+          "sig": "pub fn native(&self, id: NodeId) -> Option<&NativeContent>",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::native_nodes",
+          "kind": "method",
+          "sig": "pub fn native_nodes(&self) -> Vec<NodeId>",
+          "docs": "Every native view, mounted or not.",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::native_placements",
+          "kind": "method",
+          "sig": "pub fn native_placements(&self) -> Vec<(NodeId, Placement)>",
+          "docs": "Where each native view goes now: its box, corner radius, the clip around it (the\ninnermost clipping ancestor's padding box, intersected with the outer ones, rounded by\nthe innermost), its opacity and whether any of it shows.",
+          "file": "crates/octara/src/kernel/paint.rs"
+        },
+        {
           "path": "octara::kernel::Kernel::new",
           "kind": "assoc_fn",
           "sig": "pub fn new() -> Self",
@@ -5380,6 +5459,27 @@
           "sig": "pub fn set_multiline(&mut self, id: NodeId, on: bool)",
           "docs": "Makes a text input multi-line (wrapping at its width, Enter breaking lines) or single-line.",
           "file": "crates/octara/src/kernel/edit.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::set_native",
+          "kind": "method",
+          "sig": "pub fn set_native(&mut self, id: NodeId, kind: &str, slot: Slot)",
+          "docs": "Makes the box a native view of `kind` in `slot`, sized by the size it reports until an\nauthored one.",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::set_native_props",
+          "kind": "method",
+          "sig": "pub fn set_native_props(&mut self, id: NodeId, props: &Value) -> bool",
+          "docs": "A native view's props: handed to its host whole when they change.",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::Kernel::set_native_size",
+          "kind": "method",
+          "sig": "pub fn set_native_size(&mut self, id: NodeId, size: (f32, f32))",
+          "docs": "The size a native view reports (its natural size), used where none is authored.",
+          "file": "crates/octara/src/kernel.rs"
         },
         {
           "path": "octara::kernel::Kernel::set_origin",
@@ -5959,6 +6059,46 @@
           "kind": "field",
           "sig": "pub opacity: Curve",
           "file": "crates/octara/src/kernel/style.rs"
+        },
+        {
+          "path": "octara::kernel::NativeContent",
+          "kind": "struct",
+          "sig": "pub struct NativeContent { .. }",
+          "docs": "A native view's element: its kind, slot, props (and their version, so the host hears of a\nchange once) and the size the view reported.",
+          "file": "crates/octara/src/kernel.rs",
+          "traits": [
+            "Debug"
+          ]
+        },
+        {
+          "path": "octara::kernel::NativeContent::intrinsic",
+          "kind": "field",
+          "sig": "pub intrinsic: Option<(f32, f32)>",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::NativeContent::kind",
+          "kind": "field",
+          "sig": "pub kind: String",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::NativeContent::props",
+          "kind": "field",
+          "sig": "pub props: Value",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::NativeContent::slot",
+          "kind": "field",
+          "sig": "pub slot: Slot",
+          "file": "crates/octara/src/kernel.rs"
+        },
+        {
+          "path": "octara::kernel::NativeContent::version",
+          "kind": "field",
+          "sig": "pub version: u64",
+          "file": "crates/octara/src/kernel.rs"
         },
         {
           "path": "octara::kernel::NodeIcon",
@@ -8406,6 +8546,297 @@
           "file": "crates/octara/src/motion.rs"
         },
         {
+          "path": "octara::native",
+          "kind": "module",
+          "sig": "pub mod native",
+          "docs": "Native Island: platform views placed in Octara's layout ([design](../../../docs/design/native-island.md)).\n\n[`native_view`](crate::view::native_view)`(kind)` is a leaf box a platform view fills: a web\nview, a map, a platform picker. Views live in one of two [`Slot`]s per window: an\n**underlay** behind Octara's surface (shown through a cutout where the view is, so content\npainted after it draws over it, as map controls do) and an **overlay** above it (a web view,\na picker): Octara content painted over an overlay view would be hidden by it, so `check`\nreports it (`NATIVE_COVERED`).\n\nAfter each frame the app tells its [`NativeHost`] what changed: views created and destroyed,\nprops (one JSON value, handed over whole), and [`Placement`]s (where each view is, its corner\nradius, the clip around it, its opacity, whether it shows). The host sends events back with\n[`App::native_event`](crate::app::App::native_event) and reports a view's natural size with\n[`App::native_size`](crate::app::App::native_size). Headless, the [`RecordingHost`] keeps\nevery call, and the view draws as a placeholder box.",
+          "file": "crates/octara/src/native.rs",
+          "links": [
+            "octara::app::App::native_event",
+            "octara::app::App::native_size",
+            "octara::native::NativeHost",
+            "octara::native::Placement",
+            "octara::native::RecordingHost",
+            "octara::native::Slot",
+            "octara::view::native_view"
+          ]
+        },
+        {
+          "path": "octara::native::HostCall",
+          "kind": "enum",
+          "sig": "pub enum HostCall",
+          "docs": "One call a [`RecordingHost`] received.",
+          "file": "crates/octara/src/native.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "PartialEq",
+            "Serialize"
+          ],
+          "links": [
+            "octara::native::RecordingHost"
+          ]
+        },
+        {
+          "path": "octara::native::HostCall::Create",
+          "kind": "variant",
+          "sig": "Create { id: NativeId, kind: String, props: Value }",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::HostCall::Destroy",
+          "kind": "variant",
+          "sig": "Destroy { id: NativeId }",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::HostCall::Place",
+          "kind": "variant",
+          "sig": "Place { placements: Vec<Placement> }",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::HostCall::Update",
+          "kind": "variant",
+          "sig": "Update { id: NativeId, props: Value }",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::NativeEvent",
+          "kind": "struct",
+          "sig": "pub struct NativeEvent { .. }",
+          "docs": "An event a native view sends back: a name and its data (`load` with a URL, `region` with a\nmap's bounds).",
+          "file": "crates/octara/src/native.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::native::NativeEvent::data",
+          "kind": "field",
+          "sig": "pub data: Value",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::NativeEvent::name",
+          "kind": "field",
+          "sig": "pub name: String",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::NativeHost",
+          "kind": "trait",
+          "sig": "pub trait NativeHost: Any",
+          "docs": "The platform side: creates, updates, places and destroys native views. A shell implements it\nwith the platform's views; [`RecordingHost`] records the calls (headless and tests).",
+          "file": "crates/octara/src/native.rs",
+          "implementors": [
+            "RecordingHost"
+          ],
+          "links": [
+            "octara::native::RecordingHost"
+          ]
+        },
+        {
+          "path": "octara::native::NativeHost::as_any",
+          "kind": "method",
+          "sig": "fn as_any(&self) -> &dyn Any",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::NativeHost::create",
+          "kind": "method",
+          "sig": "fn create(&mut self, id: NativeId, kind: &str, props: &Value)",
+          "docs": "A view of `kind` appears with `props`.",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::NativeHost::destroy",
+          "kind": "method",
+          "sig": "fn destroy(&mut self, id: NativeId)",
+          "docs": "A view goes away.",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::NativeHost::place",
+          "kind": "method",
+          "sig": "fn place(&mut self, placements: &[Placement])",
+          "docs": "Views whose placement changed this frame (shells apply them with the frame's present).",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::NativeHost::update",
+          "kind": "method",
+          "sig": "fn update(&mut self, id: NativeId, props: &Value)",
+          "docs": "A view's props changed (handed over whole).",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::NativeId",
+          "kind": "struct",
+          "sig": "pub struct NativeId(pub u64);",
+          "docs": "A native view's identity across frames (stable while its element is mounted).",
+          "file": "crates/octara/src/native.rs",
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "Eq",
+            "Hash",
+            "Ord",
+            "PartialEq",
+            "PartialOrd",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::native::NativeInfo",
+          "kind": "struct",
+          "sig": "pub struct NativeInfo { .. }",
+          "docs": "What `inspect` shows of a native view.",
+          "file": "crates/octara/src/native.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "Deserialize<'de>",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::native::NativeInfo::kind",
+          "kind": "field",
+          "sig": "pub kind: String",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::NativeInfo::props",
+          "kind": "field",
+          "sig": "pub props: Value",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::NativeInfo::slot",
+          "kind": "field",
+          "sig": "pub slot: String",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::Placement",
+          "kind": "struct",
+          "sig": "pub struct Placement { .. }",
+          "docs": "Where a native view goes this frame, in logical window coordinates.",
+          "file": "crates/octara/src/native.rs",
+          "traits": [
+            "Clone",
+            "Debug",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::native::Placement::clip",
+          "kind": "field",
+          "sig": "pub clip: Rect",
+          "docs": "What clips it (scroll containers, `overflow_hidden`): a rect rounded by a radius.",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::Placement::clip_radius",
+          "kind": "field",
+          "sig": "pub clip_radius: f32",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::Placement::id",
+          "kind": "field",
+          "sig": "pub id: NativeId",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::Placement::opacity",
+          "kind": "field",
+          "sig": "pub opacity: f32",
+          "docs": "Its opacity (its own and its ancestors').",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::Placement::radius",
+          "kind": "field",
+          "sig": "pub radius: f32",
+          "docs": "Its corner radius.",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::Placement::rect",
+          "kind": "field",
+          "sig": "pub rect: Rect",
+          "docs": "The view's box.",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::Placement::slot",
+          "kind": "field",
+          "sig": "pub slot: Slot",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::Placement::visible",
+          "kind": "field",
+          "sig": "pub visible: bool",
+          "docs": "Whether any of it shows (in the window, inside its clip, displayed, not transparent).",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::RecordingHost",
+          "kind": "struct",
+          "sig": "pub struct RecordingHost { .. }",
+          "docs": "A host that records what it is told: the headless app's, and tests'.",
+          "file": "crates/octara/src/native.rs",
+          "traits": [
+            "Debug",
+            "Default",
+            "NativeHost"
+          ]
+        },
+        {
+          "path": "octara::native::RecordingHost::calls",
+          "kind": "field",
+          "sig": "pub calls: Vec<HostCall>",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::Slot",
+          "kind": "enum",
+          "sig": "pub enum Slot",
+          "docs": "Where a native view is stacked: behind Octara's surface or above it.",
+          "file": "crates/octara/src/native.rs",
+          "traits": [
+            "Clone",
+            "Copy",
+            "Debug",
+            "Eq",
+            "PartialEq",
+            "Serialize"
+          ]
+        },
+        {
+          "path": "octara::native::Slot::Overlay",
+          "kind": "variant",
+          "sig": "Overlay",
+          "docs": "Above the surface (web views, pickers, a platform text field).",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
+          "path": "octara::native::Slot::Underlay",
+          "kind": "variant",
+          "sig": "Underlay",
+          "docs": "Behind the surface, through a cutout (maps, video layers, materials).",
+          "file": "crates/octara/src/native.rs"
+        },
+        {
           "path": "octara::paint",
           "kind": "module",
           "sig": "pub mod paint",
@@ -8664,6 +9095,13 @@
           "file": "crates/octara/src/paint.rs"
         },
         {
+          "path": "octara::paint::Item::Native",
+          "kind": "variant",
+          "sig": "Native { source: NodeId, rect: Rect, radius: f32, slot: Slot }",
+          "docs": "Where a native view is in paint order (it draws nothing here): renderers with platform\nviews clear an underlay view's cutout; `check` finds content painted over an overlay one.",
+          "file": "crates/octara/src/paint.rs"
+        },
+        {
           "path": "octara::paint::Item::Path",
           "kind": "variant",
           "sig": "Path(PathPaint)",
@@ -8848,7 +9286,8 @@
             "Copy",
             "Debug",
             "Default",
-            "PartialEq"
+            "PartialEq",
+            "Serialize"
           ]
         },
         {
@@ -11266,6 +11705,13 @@
           "file": "crates/octara/src/view/element.rs"
         },
         {
+          "path": "octara::view::El::on_native",
+          "kind": "method",
+          "sig": "pub fn on_native(self, f: impl Fn(&NativeEvent) + 'static) -> Self",
+          "docs": "Events from a native view (a page loaded, a map moved).",
+          "file": "crates/octara/src/view/element.rs"
+        },
+        {
           "path": "octara::view::El::on_press",
           "kind": "method",
           "sig": "pub fn on_press(self, f: impl Fn() + 'static) -> Self",
@@ -11306,6 +11752,13 @@
           "file": "crates/octara/src/view/element.rs"
         },
         {
+          "path": "octara::view::El::props",
+          "kind": "method",
+          "sig": "pub fn props(self, props: impl IntoProp<Value>) -> Self",
+          "docs": "A native view's props: one JSON value, handed to its host whole when it changes.",
+          "file": "crates/octara/src/view/element.rs"
+        },
+        {
           "path": "octara::view::El::revealed",
           "kind": "method",
           "sig": "pub fn revealed(self, on: impl IntoProp<bool>) -> Self",
@@ -11343,6 +11796,13 @@
           "path": "octara::view::El::selected",
           "kind": "method",
           "sig": "pub fn selected(self, s: impl IntoProp<bool>) -> Self",
+          "file": "crates/octara/src/view/element.rs"
+        },
+        {
+          "path": "octara::view::El::slot",
+          "kind": "method",
+          "sig": "pub fn slot(self, slot: Slot) -> Self",
+          "docs": "Which side of Octara's surface a native view is on: `Slot::Overlay` (above it, the\ndefault: web views, pickers) or `Slot::Underlay` (behind it, through a cutout, so content\ncan draw over it: maps, video).",
           "file": "crates/octara/src/view/element.rs"
         },
         {
@@ -11458,11 +11918,13 @@
             "Paint",
             "String",
             "Token",
+            "Value",
             "bool",
             "f32",
             "impl<F: Fn() -> P + 'static, P: Into<Fill>> F",
             "impl<F: Fn() -> P + 'static, P: Into<Paint>> F",
             "impl<F: Fn() -> String + 'static> F",
+            "impl<F: Fn() -> Value + 'static> F",
             "impl<F: Fn() -> bool + 'static> F",
             "impl<F: Fn() -> f32 + 'static> F"
           ]
@@ -18511,6 +18973,19 @@
           ]
         },
         {
+          "path": "octara::view::native_view",
+          "kind": "fn",
+          "sig": "pub fn native_view(kind: &'static str) -> El",
+          "docs": "A native view of `kind` (a platform view the shell's host creates): a leaf box sized by its\nauthored size, else the size the view reports; in the overlay slot unless `.slot(..)` says\notherwise. Its props go to the host whole (`.props(..)`), its events come back through\n`.on_native(..)`. Headless, it draws as a placeholder box. See [`crate::native`].",
+          "file": "crates/octara/src/view/element.rs",
+          "aliases": [
+            "octara::prelude::native_view"
+          ],
+          "links": [
+            "octara::native"
+          ]
+        },
+        {
           "path": "octara::view::on_command",
           "kind": "fn",
           "sig": "pub fn on_command(command: &str, f: impl Fn() + 'static)",
@@ -18683,6 +19158,16 @@
           ],
           "links": [
             "octara::view::each"
+          ]
+        },
+        {
+          "path": "octara::view::web_view",
+          "kind": "fn",
+          "sig": "pub fn web_view(url: impl IntoProp<String>) -> El",
+          "docs": "A web view showing `url` (a native view of kind `web`, in the overlay): its props are\n`{\"url\": ..}`; its host sends `load` events (`{\"url\": ..}`) through `.on_native(..)`.",
+          "file": "crates/octara/src/view/element.rs",
+          "aliases": [
+            "octara::prelude::web_view"
           ]
         }
       ]

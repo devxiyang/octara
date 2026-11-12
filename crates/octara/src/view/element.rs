@@ -8,6 +8,7 @@ use crate::app::{Drag, KeyEvent};
 type DragHandler = Rc<dyn Fn(&Drag)>;
 type KeyHandler = Rc<dyn Fn(&KeyEvent) -> bool>;
 type Draw = Rc<dyn Fn(&mut crate::canvas::Canvas)>;
+type OnNative = Rc<dyn Fn(&crate::native::NativeEvent)>;
 use crate::kernel::{
     Breakpoint, Color, Fill, HandlerId, HandlerKind, Kernel, Kind, NodeId, Paint, Placement, Role, State, StyleProp, Token, When,
 };
@@ -62,6 +63,16 @@ impl IntoProp<f32> for f32 {
 }
 impl<F: Fn() -> f32 + 'static> IntoProp<f32> for F {
     fn into_prop(self) -> Prop<f32> {
+        Prop::Dyn(Box::new(self))
+    }
+}
+impl IntoProp<serde_json::Value> for serde_json::Value {
+    fn into_prop(self) -> Prop<serde_json::Value> {
+        Prop::Static(self)
+    }
+}
+impl<F: Fn() -> serde_json::Value + 'static> IntoProp<serde_json::Value> for F {
+    fn into_prop(self) -> Prop<serde_json::Value> {
         Prop::Dyn(Box::new(self))
     }
 }
@@ -186,6 +197,9 @@ pub struct El {
     submit_on_enter: bool,
     secure: bool,
     revealed: Option<Prop<bool>>,
+    native: Option<(&'static str, crate::native::Slot)>,
+    props: Option<Prop<serde_json::Value>>,
+    on_native: Option<OnNative>,
     group: Option<&'static str>,
     hover_alone: bool,
     overlays: Vec<Overlay>,
@@ -242,6 +256,9 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         submit_on_enter: false,
         secure: false,
         revealed: None,
+        native: None,
+        props: None,
+        on_native: None,
         group: None,
         hover_alone: false,
         overlays: Vec::new(),
@@ -314,6 +331,30 @@ pub fn icon(icon: crate::icon::Icon) -> El {
 pub fn canvas(draw: impl Fn(&mut crate::canvas::Canvas) + 'static) -> El {
     let mut e = new_el(Kind::Box, Location::caller());
     e.canvas = Some(Rc::new(draw));
+    e
+}
+
+/// A native view of `kind` (a platform view the shell's host creates): a leaf box sized by its
+/// authored size, else the size the view reports; in the overlay slot unless `.slot(..)` says
+/// otherwise. Its props go to the host whole (`.props(..)`), its events come back through
+/// `.on_native(..)`. Headless, it draws as a placeholder box. See [`crate::native`].
+#[track_caller]
+pub fn native_view(kind: &'static str) -> El {
+    let mut e = new_el(Kind::Box, Location::caller());
+    e.native = Some((kind, crate::native::Slot::Overlay));
+    e
+}
+
+/// A web view showing `url` (a native view of kind `web`, in the overlay): its props are
+/// `{"url": ..}`; its host sends `load` events (`{"url": ..}`) through `.on_native(..)`.
+#[track_caller]
+pub fn web_view(url: impl IntoProp<String>) -> El {
+    let props = match url.into_prop() {
+        Prop::Static(u) => Prop::Static(serde_json::json!({ "url": u })),
+        Prop::Dyn(f) => Prop::Dyn(Box::new(move || serde_json::json!({ "url": f() }))),
+    };
+    let mut e = native_view("web");
+    e.props = Some(props);
     e
 }
 
@@ -624,6 +665,25 @@ impl El {
         self.revealed = Some(on.into_prop());
         self
     }
+    /// Which side of Octara's surface a native view is on: `Slot::Overlay` (above it, the
+    /// default: web views, pickers) or `Slot::Underlay` (behind it, through a cutout, so content
+    /// can draw over it: maps, video).
+    pub fn slot(mut self, slot: crate::native::Slot) -> Self {
+        if let Some((_, s)) = &mut self.native {
+            *s = slot;
+        }
+        self
+    }
+    /// A native view's props: one JSON value, handed to its host whole when it changes.
+    pub fn props(mut self, props: impl IntoProp<serde_json::Value>) -> Self {
+        self.props = Some(props.into_prop());
+        self
+    }
+    /// Events from a native view (a page loaded, a map moved).
+    pub fn on_native(mut self, f: impl Fn(&crate::native::NativeEvent) + 'static) -> Self {
+        self.on_native = Some(Rc::new(f));
+        self
+    }
     /// An icon's stroke width on its grid (2 for the bundled icons; 1.5 is lighter).
     pub fn stroke_width(mut self, width: f32) -> Self {
         self.stroke_width = Some(width);
@@ -689,6 +749,10 @@ pub(crate) fn build_el(e: El) -> NodeId {
         let mut k = u.kernel.borrow_mut();
         if let Some(r) = e.role {
             k.set_role(node, r);
+        }
+        // A native view first: its props bind to it below.
+        if let Some((kind, slot)) = e.native {
+            k.set_native(node, kind, slot);
         }
         // A canvas is an image.
         if e.canvas.is_some() && e.role.is_none() {
@@ -760,6 +824,9 @@ pub(crate) fn build_el(e: El) -> NodeId {
     if let Some(p) = e.checked {
         bind(at, node, p, |k, n, v: &bool| k.set_checked(n, Some(*v)));
     }
+    if let Some(p) = e.props {
+        bind(at, node, p, |k, n, v: &serde_json::Value| k.set_native_props(n, v));
+    }
     if let Some(p) = e.revealed {
         bind(at, node, p, |k, n, v: &bool| {
             k.set_revealed(n, *v);
@@ -813,6 +880,7 @@ pub(crate) fn build_el(e: El) -> NodeId {
         if e.secure {
             k.set_secure(node, true);
         }
+
         if let Some(img) = e.image {
             k.set_image(node, Some((img, e.object_fit)));
         }
@@ -841,6 +909,7 @@ pub(crate) fn build_el(e: El) -> NodeId {
         (HandlerKind::Submit, e.submit.map(Handler::Press)),
         (HandlerKind::Dismiss, e.modal.map(|(_, f)| Handler::Press(f))),
         (HandlerKind::Key, e.key.map(Handler::Key)),
+        (HandlerKind::Native, e.on_native.map(Handler::Native)),
     ] {
         if let Some(h) = h {
             let id = u.register(h);

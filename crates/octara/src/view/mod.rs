@@ -8,7 +8,7 @@ mod list;
 mod style;
 
 pub(crate) use element::build_el;
-pub use element::{El, IntoProp, IntoText, Prop, TextContent, canvas, col, el, icon, row, spacer, text, text_input};
+pub use element::{El, IntoProp, IntoText, Prop, TextContent, canvas, col, el, icon, native_view, web_view, row, spacer, text, text_input};
 pub use list::{each, virtual_each};
 pub use style::{Length, Patch, Styled, px, relative, rems, sp};
 
@@ -30,6 +30,7 @@ pub(crate) enum Handler {
     Toggle(Rc<dyn Fn()>),
     Drag(Rc<dyn Fn(&crate::app::Drag)>),
     Key(Rc<dyn Fn(&crate::app::KeyEvent) -> bool>),
+    Native(Rc<dyn Fn(&crate::native::NativeEvent)>),
 }
 
 #[derive(Default)]

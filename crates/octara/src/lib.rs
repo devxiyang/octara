@@ -20,6 +20,7 @@ pub mod image;
 pub mod inspect;
 pub mod kernel;
 pub mod motion;
+pub mod native;
 pub mod paint;
 pub mod path;
 pub mod reactive;

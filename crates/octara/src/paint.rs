@@ -12,7 +12,7 @@ pub use parley::FontData;
 use crate::kernel::{Color, NodeId};
 
 /// An axis-aligned rectangle in logical pixels.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -163,6 +163,14 @@ pub enum Item {
     Image(ImagePaint),
     Glyphs(GlyphRun),
     Path(PathPaint),
+    /// Where a native view is in paint order (it draws nothing here): renderers with platform
+    /// views clear an underlay view's cutout; `check` finds content painted over an overlay one.
+    Native {
+        source: NodeId,
+        rect: Rect,
+        radius: f32,
+        slot: crate::native::Slot,
+    },
     /// Clip what follows to `rect` (rounded by `radius`) until the matching `PopClip`.
     PushClip {
         source: NodeId,
@@ -209,7 +217,7 @@ impl Item {
                     f(&mut g.to.0);
                 }
             }
-            Item::PushClip { .. } | Item::PopClip | Item::PopLayer => {}
+            Item::PushClip { .. } | Item::PopClip | Item::PopLayer | Item::Native { .. } => {}
             Item::PushLayer { opacity, .. } => *opacity *= k,
         }
     }

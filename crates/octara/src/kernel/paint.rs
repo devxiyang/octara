@@ -287,6 +287,23 @@ impl Kernel {
             }
         }
 
+        // A native view: a placeholder box where it goes (what headless runs and screenshots
+        // show), then its place in paint order.
+        if let super::Content::Native(nv) = &n.content
+            && visible
+        {
+            out.push(Item::Quad(Quad {
+                source: id,
+                rect,
+                radius,
+                fill: Some(fade(self.theme.get(Token::Surface), opacity)),
+                gradient: None,
+                border: [1.0; 4],
+                border_color: fade(self.theme.get(Token::Border), opacity),
+            }));
+            out.push(Item::Native { source: id, rect, radius, slot: nv.slot });
+        }
+
         // A canvas's recording, in its content box, clipped to it.
         if let super::Content::Canvas(ops) = &n.content
             && visible
@@ -516,3 +533,63 @@ impl Kernel {
         }
     }
 }
+
+impl Kernel {
+    /// Where each native view goes now: its box, corner radius, the clip around it (the
+    /// innermost clipping ancestor's padding box, intersected with the outer ones, rounded by
+    /// the innermost), its opacity and whether any of it shows.
+    pub fn native_placements(&self) -> Vec<(NodeId, crate::native::Placement)> {
+        let window = Rect { x: 0.0, y: 0.0, w: self.viewport.0, h: self.viewport.1 };
+        let mut out = Vec::new();
+        for id in self.native_nodes() {
+            let n = self.node(id);
+            let Some(nv) = self.native(id) else { continue };
+            let (x, y, w, h) = self.shown_rect(id);
+            let rect = Rect { x, y, w, h };
+            let own = self.presented(id);
+            let radius = own.radius.min(w / 2.0).min(h / 2.0).max(0.0);
+            let (mut clip, mut clip_radius, mut opacity) = (window, 0.0f32, own.opacity);
+            let mut shown = n.layout.display != taffy::Display::None && n.attached;
+            let mut inner = true;
+            let mut p = n.parent;
+            while let Some(a) = p {
+                let an = self.node(a);
+                shown &= an.layout.display != taffy::Display::None;
+                let v = self.presented(a);
+                opacity *= v.opacity;
+                if an.layout.overflow.x != taffy::Overflow::Visible || an.layout.overflow.y != taffy::Overflow::Visible {
+                    let (ax, ay, aw, ah) = self.shown_rect(a);
+                    let l = self.taffy.layout(an.taffy).expect("taffy");
+                    let pad = Rect {
+                        x: ax + l.border.left,
+                        y: ay + l.border.top,
+                        w: (aw - l.border.left - l.border.right).max(0.0),
+                        h: (ah - l.border.top - l.border.bottom).max(0.0),
+                    };
+                    clip = clip.intersect(&pad);
+                    if inner {
+                        clip_radius = (v.radius - l.border.left).max(0.0);
+                        inner = false;
+                    }
+                }
+                p = an.parent;
+            }
+            let visible = shown && opacity > 0.0 && !rect.intersect(&clip).is_empty();
+            out.push((
+                id,
+                crate::native::Placement {
+                    id: crate::native::NativeId(super::a11y::a11y_id(id).0),
+                    slot: nv.slot,
+                    rect,
+                    radius,
+                    clip,
+                    clip_radius,
+                    opacity,
+                    visible,
+                },
+            ));
+        }
+        out
+    }
+}
+

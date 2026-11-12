@@ -230,10 +230,12 @@ pub enum HandlerKind {
     Key,
     /// A text field's submission (Enter).
     Submit,
+    /// An event from a native view (`on_native`).
+    Native,
 }
 
 impl HandlerKind {
-    pub const COUNT: usize = 10;
+    pub const COUNT: usize = 11;
     /// Handlers that make an element a pointer target.
     pub const POINTER: [HandlerKind; 6] = [
         HandlerKind::Press,
@@ -291,6 +293,7 @@ pub struct Op {
 enum Measure {
     Text(NodeId),
     Input(NodeId),
+    Native(NodeId),
 }
 
 struct Node {
@@ -376,7 +379,22 @@ enum Content {
     Image(crate::image::Image, crate::image::ObjectFit),
     Icon(std::rc::Rc<NodeIcon>),
     Canvas(std::rc::Rc<Vec<crate::canvas::CanvasOp>>),
+    Native(Box<NativeContent>),
 }
+
+/// A native view's element: its kind, slot, props (and their version, so the host hears of a
+/// change once) and the size the view reported.
+#[derive(Debug)]
+pub struct NativeContent {
+    pub kind: String,
+    pub slot: crate::native::Slot,
+    pub props: serde_json::Value,
+    pub version: u64,
+    pub intrinsic: Option<(f32, f32)>,
+}
+
+/// A native view's size until it reports one (HTML's for an iframe).
+const NATIVE_DEFAULT: (f32, f32) = (300.0, 150.0);
 
 /// A text's content.
 #[derive(Debug, Default)]
@@ -609,6 +627,8 @@ pub struct Kernel {
     revealing: Option<(NodeId, f64)>,
     /// Nodes made modals (shown or not, attached or not): `modals` filters them.
     modal_nodes: rustc_hash::FxHashSet<NodeId>,
+    /// Native views (mounted or not): placements and the host follow them.
+    native_nodes: rustc_hash::FxHashSet<NodeId>,
     /// Bumped by every change that can alter the display list (paint, layout and text changes,
     /// layouts, theme): an unchanged count with nothing moving means the last frame still holds.
     paint_gen: u64,
@@ -673,6 +693,7 @@ impl Kernel {
             culling: true,
             revealing: None,
             modal_nodes: rustc_hash::FxHashSet::default(),
+            native_nodes: rustc_hash::FxHashSet::default(),
             paint_gen: 0,
             last_frame: RefCell::new(None),
             frames_built: Cell::new(0),
@@ -840,6 +861,9 @@ impl Kernel {
     }
     pub fn role(&self, id: NodeId) -> Role {
         let n = self.node(id);
+        if let (None, Content::Native(v)) = (n.role, &n.content) {
+            return if v.kind == "web" { Role::WebView } else { Role::GenericContainer };
+        }
         n.role.unwrap_or(match n.input() {
             Some(i) if i.masked() => Role::PasswordInput,
             Some(i) if i.multiline => Role::MultilineTextInput,
@@ -1085,6 +1109,7 @@ impl Kernel {
         let n = self.nodes.remove(id).expect("node");
         self.missing_tokens.remove(&id);
         self.modal_nodes.remove(&id);
+        self.native_nodes.remove(&id);
         // Texts and text inputs are measured by the text engine (keyed by node).
         if matches!(n.content, Content::Text(_) | Content::Input(_)) {
             self.text.get_mut().forget(id);
@@ -1382,6 +1407,50 @@ impl Kernel {
     pub fn canvas(&self, id: NodeId) -> Option<&[crate::canvas::CanvasOp]> {
         if let Content::Canvas(ops) = &self.node(id).content { Some(ops) } else { None }
     }
+    /// Makes the box a native view of `kind` in `slot`, sized by the size it reports until an
+    /// authored one.
+    pub fn set_native(&mut self, id: NodeId, kind: &str, slot: crate::native::Slot) {
+        let content = NativeContent { kind: kind.to_owned(), slot, props: serde_json::Value::Null, version: 0, intrinsic: None };
+        self.set_content(id, Content::Native(Box::new(content)));
+        let t = self.node(id).taffy;
+        self.taffy.set_node_context(t, Some(Measure::Native(id))).expect("taffy");
+        self.taffy.mark_dirty(t).expect("taffy");
+        self.native_nodes.insert(id);
+        self.changed(id, Dirty::LAYOUT | Dirty::PAINT | Dirty::SEMANTICS, "native", || kind.to_owned());
+    }
+    /// A native view's props: handed to its host whole when they change.
+    pub fn set_native_props(&mut self, id: NodeId, props: &serde_json::Value) -> bool {
+        let Content::Native(v) = &mut self.node_mut(id).content else { return false };
+        if v.props == *props {
+            return false;
+        }
+        v.props = props.clone();
+        v.version += 1;
+        self.changed(id, Dirty::SEMANTICS, "props", || props.to_string());
+        true
+    }
+    /// The size a native view reports (its natural size), used where none is authored.
+    pub fn set_native_size(&mut self, id: NodeId, size: (f32, f32)) {
+        let Content::Native(v) = &mut self.node_mut(id).content else { return };
+        if v.intrinsic == Some(size) {
+            return;
+        }
+        v.intrinsic = Some(size);
+        self.update_measure(id);
+        let t = self.node(id).taffy;
+        self.taffy.mark_dirty(t).expect("taffy");
+        self.changed(id, Dirty::LAYOUT, "native size", || format!("{size:?}"));
+    }
+    pub fn native(&self, id: NodeId) -> Option<&NativeContent> {
+        if let Content::Native(v) = &self.node(id).content { Some(v) } else { None }
+    }
+    /// Every native view, mounted or not.
+    pub fn native_nodes(&self) -> Vec<NodeId> {
+        let mut v: Vec<NodeId> = self.native_nodes.iter().copied().collect();
+        v.sort();
+        v
+    }
+
     /// The size of the node's content box (inside border and padding) in the last layout.
     pub fn content_size(&self, id: NodeId) -> (f32, f32) {
         let n = self.node(id);
@@ -1713,6 +1782,10 @@ impl Kernel {
                         let (w, h) = match m {
                             Some(Measure::Text(id)) => text_size(&mut **engine, &nodes[id], id, known.width, avail.width),
                             Some(Measure::Input(id)) => input_size(&mut **engine, &nodes[id], id, known.width, avail.width),
+                            Some(Measure::Native(id)) => match &nodes[id].content {
+                                Content::Native(v) => v.intrinsic.unwrap_or(NATIVE_DEFAULT),
+                                _ => (0.0, 0.0),
+                            },
                             None => (0.0, 0.0),
                         };
                         taffy::Size { width: known.width.unwrap_or(w), height: known.height.unwrap_or(h) }

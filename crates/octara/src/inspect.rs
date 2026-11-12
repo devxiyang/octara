@@ -66,6 +66,9 @@ pub struct Node {
     /// Commands it handles (`on_command`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commands: Vec<String>,
+    /// The native view it is: kind, slot and props.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<crate::native::NativeInfo>,
     /// The icon it draws, by name (`search`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,

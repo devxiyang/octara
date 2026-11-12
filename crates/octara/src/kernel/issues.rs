@@ -67,6 +67,52 @@ impl Kernel {
         (x + pl, y + pt, (w - pl - pr).max(0.0), (h - pt - pb).max(0.0))
     }
 
+    /// Content painted over an overlay native view (after it in paint order, overlapping it):
+    /// the view, above Octara's surface, would hide it.
+    fn native_issues(&self) -> Vec<LayoutIssue> {
+        use crate::paint::{Item, Rect};
+        if self.native_nodes.is_empty() {
+            return Vec::new();
+        }
+        let dl = self.display_list();
+        let mut overlays: Vec<(NodeId, Rect)> = Vec::new();
+        let mut covered: Vec<(NodeId, NodeId)> = Vec::new();
+        for item in &dl.items {
+            let drawn = match item {
+                Item::Native { source, rect, slot: crate::native::Slot::Overlay, .. } => {
+                    overlays.push((*source, *rect));
+                    continue;
+                }
+                Item::Quad(q) => Some((q.source, q.rect)),
+                Item::Shadow(s) => Some((s.source, s.rect)),
+                Item::Image(i) => Some((i.source, i.rect.intersect(&i.bounds))),
+                Item::Path(p) => Some((p.source, p.bounds)),
+                Item::Glyphs(g) => g.glyphs.iter().map(|gl| Rect { x: gl.x, y: gl.y - g.size, w: g.size * 0.5, h: g.size }).reduce(|a, b| {
+                    let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+                    Rect { x, y, w: a.right().max(b.right()) - x, h: a.bottom().max(b.bottom()) - y }
+                }).map(|r| (g.source, r)),
+                _ => None,
+            };
+            let Some((src, r)) = drawn else { continue };
+            for (view, vr) in &overlays {
+                if src != *view && !r.intersect(vr).is_empty() && !covered.contains(&(src, *view)) {
+                    covered.push((src, *view));
+                }
+            }
+        }
+        covered
+            .into_iter()
+            .map(|(src, view)| {
+                self.issue(
+                    src,
+                    &codes::NATIVE_COVERED,
+                    format!("{} is painted over {}, a native view above Octara's surface: the view hides it", self.name(src), self.name(view)),
+                    "move it out of the view's area, or put the view in the underlay (`.slot(Slot::Underlay)`) so content can draw over it",
+                )
+            })
+            .collect()
+    }
+
     fn issue(&self, id: NodeId, code: &'static Code, message: String, hint: &'static str) -> LayoutIssue {
         let n = self.node(id);
         LayoutIssue {
@@ -81,7 +127,7 @@ impl Kernel {
 
     /// Problems in the last layout, in tree order.
     pub fn layout_issues(&self) -> Vec<LayoutIssue> {
-        let mut out = Vec::new();
+        let mut out = self.native_issues();
         let mut stack = vec![self.root];
         while let Some(id) = stack.pop() {
             let n = self.node(id);
@@ -289,6 +335,17 @@ impl Kernel {
                 _ => under,
             }
         };
+        if matches!(n.content, super::Content::Native(_)) && n.label.is_none() {
+            let (.., w, h) = self.shown_rect(id);
+            if w > 0.0 && h > 0.0 {
+                out.push(self.issue(
+                    id,
+                    &codes::UNLABELED_NATIVE_VIEW,
+                    format!("native view {} has no label", self.name(id)),
+                    "give it `.label(\"..\")` saying what it shows (\"Map of the venue\", \"Help page\")",
+                ));
+            }
+        }
         if matches!(n.content, super::Content::Canvas(_)) && n.label.is_none() {
             let (.., w, h) = self.shown_rect(id);
             if w > 0.0 && h > 0.0 {

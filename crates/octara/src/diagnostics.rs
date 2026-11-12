@@ -209,6 +209,10 @@ codes! {
         "Text is cut by `truncate()` or `line_clamp`.",
         cause: "The text does not fit the lines it is allowed.",
         fix: "Expected with `truncate()` / `line_clamp`; otherwise give it room or let it wrap.";
+    NATIVE_COVERED: Warning, Layout, "docs/design/native-island.md#two-slots-no-interleaving-rune",
+        "Content is painted over a native view in the overlay, which is drawn above Octara's surface and hides it.",
+        cause: "An overlay view (a web view, a picker) sits above everything Octara draws; content after it in paint order that overlaps it ends up underneath.",
+        fix: "Move the content out of the view's area, or put the view in the underlay (`.slot(Slot::Underlay)`), behind the surface, so content draws over it.";
     OVERLAY_CLAMPED: Warning, Layout, "docs/design/ui-primitives.md#5-overlays",
         "An overlay fits neither side of its anchor and was pushed into the window.",
         cause: "The overlay is larger than the space on both sides of its anchor.",
@@ -222,6 +226,10 @@ codes! {
         "A canvas is shown without a label, so assistive technology cannot say what it shows.",
         cause: "A canvas is an image: its drawing has no text for a screen reader to read.",
         fix: "Give it `.label(\"Sales by month\")` saying what it shows, or `.a11y_hidden()` if it is only decoration.";
+    UNLABELED_NATIVE_VIEW: Warning, Accessibility, "docs/design/native-island.md#input-focus-accessibility",
+        "A native view is shown without a label, so assistive technology cannot say what it is.",
+        cause: "A platform view (a map, a web page) is one element to Octara's semantics; without a label it is announced as nothing.",
+        fix: "Give it `.label(\"Map of the venue\")` saying what it shows.";
     SMALL_TARGET: Warning, Accessibility, "docs/design/agent-knowledge.md#inspector-protocol-and-checks",
         "A control is smaller than the platform's minimum target: 44 × 44 on touch, 24 × 24 with a pointer.",
         cause: "The hit area is the element's box. Fingers need about 44 pt (Apple); with a mouse, WCAG 2.5.8 asks 24 × 24 unless the target is spaced that far from the others.",

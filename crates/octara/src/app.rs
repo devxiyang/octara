@@ -114,6 +114,10 @@ pub struct App {
     /// The app's own bindings (after the platform's standard ones).
     keymap: RefCell<keys::Keymap>,
     clipboard: RefCell<Box<dyn edit::Clipboard>>,
+    /// Where native views live: the platform's in a shell, a recording one headless.
+    native_host: RefCell<Box<dyn crate::native::NativeHost>>,
+    /// What the host was last told of each native view: its props version and placement.
+    native_sent: RefCell<rustc_hash::FxHashMap<NodeId, (u64, Option<crate::native::Placement>)>>,
 }
 
 /// Runtime-owned interaction states. A hot reload carries them over by test id.
@@ -165,6 +169,8 @@ impl App {
             size: Cell::new(DEFAULT_VIEWPORT),
             tuning: Cell::new(Tuning::default()),
             platform: Cell::new(Platform::current()),
+            native_host: RefCell::new(Box::<crate::native::RecordingHost>::default()),
+            native_sent: RefCell::default(),
             keymap: RefCell::new(keys::Keymap::default()),
             clipboard: RefCell::new(Box::new(edit::MemoryClipboard::default())),
         };
@@ -219,6 +225,7 @@ impl App {
                 self.settle_layout(at);
             }
         }
+        self.sync_native();
         // An `instant` transaction covers the frame it was made in.
         self.ui.kernel.borrow_mut().set_instant(false);
         // What is on its way out can no longer be focused or hovered.
@@ -630,3 +637,91 @@ impl App {
         self.rt.reset_closures_run();
     }
 }
+
+// ---- native views ----
+
+impl App {
+    /// Tells the native host what changed this frame: views created (with their props), props
+    /// changed, placements changed, views gone.
+    fn sync_native(&self) {
+        let k = self.ui.kernel.borrow();
+        let mut sent = self.native_sent.borrow_mut();
+        if k.native_nodes().is_empty() && sent.is_empty() {
+            return;
+        }
+        let mut host = self.native_host.borrow_mut();
+        let placements = k.native_placements();
+        let mut moved = Vec::new();
+        for (n, p) in &placements {
+            let Some(v) = k.native(*n) else { continue };
+            match sent.get_mut(n) {
+                None => {
+                    host.create(p.id, &v.kind, &v.props);
+                    sent.insert(*n, (v.version, None));
+                }
+                Some((version, _)) if *version != v.version => {
+                    host.update(p.id, &v.props);
+                    *version = v.version;
+                }
+                Some(_) => {}
+            }
+            let entry = sent.get_mut(n).expect("sent");
+            if entry.1.as_ref() != Some(p) {
+                entry.1 = Some(p.clone());
+                moved.push(p.clone());
+            }
+        }
+        if !moved.is_empty() {
+            host.place(&moved);
+        }
+        let live: Vec<NodeId> = placements.iter().map(|(n, _)| *n).collect();
+        sent.retain(|n, _| {
+            let keep = live.contains(n);
+            if !keep {
+                host.destroy(crate::native::NativeId(crate::kernel::a11y::a11y_id(*n).0));
+            }
+            keep
+        });
+    }
+
+    /// The node of a native view's id, if it still exists.
+    fn native_node(&self, id: crate::native::NativeId) -> Option<NodeId> {
+        let k = self.ui.kernel.borrow();
+        k.node_of_a11y(accesskit::NodeId(id.0)).filter(|n| k.native(*n).is_some())
+    }
+
+    /// An event from native view `id` (the host calls this): runs its `on_native`.
+    pub fn native_event(&mut self, id: crate::native::NativeId, event: crate::native::NativeEvent) -> bool {
+        let Some(n) = self.native_node(id) else { return false };
+        let handler = {
+            let k = self.ui.kernel.borrow();
+            k.handler(n, HandlerKind::Native).and_then(|h| self.ui.handlers.borrow().get(&h.0).cloned())
+        };
+        let Some(crate::view::Handler::Native(f)) = handler else { return false };
+        self.input_frame(|| self.rt.with_frame(Ctx::Handler, None, Some(None), || f(&event)));
+        true
+    }
+
+    /// The natural size native view `id` reports (the host calls this): used where no size is
+    /// authored.
+    pub fn native_size(&mut self, id: crate::native::NativeId, width: f32, height: f32) {
+        let Some(n) = self.native_node(id) else { return };
+        self.input_frame(|| self.ui.kernel.borrow_mut().set_native_size(n, (width, height)));
+    }
+
+    /// Replaces the native host (a shell installs the platform's). Views already shown are
+    /// created again on the new one.
+    pub fn set_native_host(&mut self, host: Box<dyn crate::native::NativeHost>) {
+        *self.native_host.borrow_mut() = host;
+        self.native_sent.borrow_mut().clear();
+        self.sync_native();
+    }
+
+    /// The native host (downcast with `as_any`; headless, a [`RecordingHost`]).
+    ///
+    /// [`RecordingHost`]: crate::native::RecordingHost
+    pub fn native_host(&self) -> std::cell::Ref<'_, Box<dyn crate::native::NativeHost>> {
+        self.native_host.borrow()
+    }
+}
+

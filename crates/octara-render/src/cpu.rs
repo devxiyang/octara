@@ -93,6 +93,8 @@ impl CpuRenderer {
                 Item::Image(i) => image(&mut t, i, scale),
                 Item::Glyphs(g) => self.glyph_run(&mut t, g, scale),
                 Item::Path(p) => self.path(&mut t, p, scale),
+                // Platform views are the shell's; the placeholder before it shows here.
+                Item::Native { .. } => {}
                 Item::PushClip { rect, radius, .. } => {
                     let c = crate::shape::push_clip(t.clips.last().map(|c| (c.x, c.y, c.w, c.h)), *rect, *radius, scale);
                     t.clips.push(Clip { x: c.0, y: c.1, w: c.2, h: c.3, r: c.4 });

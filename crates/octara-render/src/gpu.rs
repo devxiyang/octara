@@ -453,6 +453,8 @@ impl GpuRenderer {
                         });
                     }
                 }
+                // Platform views are the shell's (an underlay's cutout comes with the shell).
+                Item::Native { .. } => {}
                 Item::PushClip { rect, radius, .. } => {
                     let outer = clips.last().map(|c| (c.0, c.1, c.2, c.3));
                     clips.push(push_clip(outer, *rect, *radius, scale));
