@@ -11301,18 +11301,21 @@
           "path": "octara::view::Styled::aspect_square",
           "kind": "method",
           "sig": "fn aspect_square(self) -> Self",
+          "docs": "Width and height in a 1:1 ratio.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::aspect_video",
           "kind": "method",
           "sig": "fn aspect_video(self) -> Self",
+          "docs": "Width and height in a 16:9 ratio.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::bg_paint",
           "kind": "method",
           "sig": "fn bg_paint(self, p: impl Into<Fill>) -> Self",
+          "docs": "Background: a token, a color or a gradient (what `bg` takes, as a value).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -11326,30 +11329,35 @@
           "path": "octara::view::Styled::border_0",
           "kind": "method",
           "sig": "fn border_0(self) -> Self",
+          "docs": "No border.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::border_2",
           "kind": "method",
           "sig": "fn border_2(self) -> Self",
+          "docs": "A 2 px border on every side.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::border_4",
           "kind": "method",
           "sig": "fn border_4(self) -> Self",
+          "docs": "A 4 px border on every side.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::border_8",
           "kind": "method",
           "sig": "fn border_8(self) -> Self",
+          "docs": "A 8 px border on every side.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::border_paint",
           "kind": "method",
           "sig": "fn border_paint(self, p: impl Into<Paint>) -> Self",
+          "docs": "Border color: a token or a color (what `border_color` takes, as a value).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -11363,6 +11371,7 @@
           "path": "octara::view::Styled::bottom",
           "kind": "method",
           "sig": "fn bottom(self, l: impl Into<Length>) -> Self",
+          "docs": "Offset from the bottom of the containing box (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -11453,12 +11462,14 @@
           "path": "octara::view::Styled::col_end",
           "kind": "method",
           "sig": "fn col_end(self, n: i16) -> Self",
+          "docs": "Grid: the column line the item ends at (negative counts from the end).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::col_end_auto",
           "kind": "method",
           "sig": "fn col_end_auto(self) -> Self",
+          "docs": "Grid: the item's end column is placed automatically.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -11486,6 +11497,7 @@
           "path": "octara::view::Styled::col_start_auto",
           "kind": "method",
           "sig": "fn col_start_auto(self) -> Self",
+          "docs": "Grid: the item's start column is placed automatically.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -11520,6 +11532,7 @@
           "path": "octara::view::Styled::flex_basis",
           "kind": "method",
           "sig": "fn flex_basis(self, l: impl Into<Length>) -> Self",
+          "docs": "The size a flex item starts from before growing or shrinking (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -11532,6 +11545,7 @@
           "path": "octara::view::Styled::flex_col_reverse",
           "kind": "method",
           "sig": "fn flex_col_reverse(self) -> Self",
+          "docs": "Lays children out in a column, bottom to top.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -11552,18 +11566,21 @@
           "path": "octara::view::Styled::flex_nowrap",
           "kind": "method",
           "sig": "fn flex_nowrap(self) -> Self",
+          "docs": "Children stay on one line (the default).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::flex_row",
           "kind": "method",
           "sig": "fn flex_row(self) -> Self",
+          "docs": "Lays children out in a row, start to end (the default).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::flex_row_reverse",
           "kind": "method",
           "sig": "fn flex_row_reverse(self) -> Self",
+          "docs": "Lays children out in a row, end to start.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -11584,30 +11601,35 @@
           "path": "octara::view::Styled::flex_wrap",
           "kind": "method",
           "sig": "fn flex_wrap(self) -> Self",
+          "docs": "Children that do not fit wrap onto further lines.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::font_black",
           "kind": "method",
           "sig": "fn font_black(self) -> Self",
+          "docs": "Font weight 900 (black); inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::font_bold",
           "kind": "method",
           "sig": "fn font_bold(self) -> Self",
+          "docs": "Font weight 700 (bold); inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::font_extrabold",
           "kind": "method",
           "sig": "fn font_extrabold(self) -> Self",
+          "docs": "Font weight 800 (extrabold); inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::font_extralight",
           "kind": "method",
           "sig": "fn font_extralight(self) -> Self",
+          "docs": "Font weight 200 (extralight); inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -11621,12 +11643,14 @@
           "path": "octara::view::Styled::font_light",
           "kind": "method",
           "sig": "fn font_light(self) -> Self",
+          "docs": "Font weight 300 (light); inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::font_medium",
           "kind": "method",
           "sig": "fn font_medium(self) -> Self",
+          "docs": "Font weight 500 (medium); inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -11640,6 +11664,7 @@
           "path": "octara::view::Styled::font_normal",
           "kind": "method",
           "sig": "fn font_normal(self) -> Self",
+          "docs": "Font weight 400 (normal); inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -11653,24 +11678,28 @@
           "path": "octara::view::Styled::font_semibold",
           "kind": "method",
           "sig": "fn font_semibold(self) -> Self",
+          "docs": "Font weight 600 (semibold); inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::font_thin",
           "kind": "method",
           "sig": "fn font_thin(self) -> Self",
+          "docs": "Font weight 100 (thin); inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::font_weight",
           "kind": "method",
           "sig": "fn font_weight(self, w: u16) -> Self",
+          "docs": "Font weight, 100 to 900 (400 regular, 700 bold); inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::gap",
           "kind": "method",
           "sig": "fn gap(self, l: impl Into<Length>) -> Self",
+          "docs": "Space between children, both ways (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -12432,12 +12461,14 @@
           "path": "octara::view::Styled::h_auto",
           "kind": "method",
           "sig": "fn h_auto(self) -> Self",
+          "docs": "Height from the content (the default).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::h_full",
           "kind": "method",
           "sig": "fn h_full(self) -> Self",
+          "docs": "Height of the parent.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -12451,6 +12482,7 @@
           "path": "octara::view::Styled::inset",
           "kind": "method",
           "sig": "fn inset(self, l: impl Into<Length>) -> Self",
+          "docs": "Offsets from every side of the containing box (with `absolute`) (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -12527,78 +12559,91 @@
           "path": "octara::view::Styled::inset_x",
           "kind": "method",
           "sig": "fn inset_x(self, l: impl Into<Length>) -> Self",
+          "docs": "Offsets from the left and right of the containing box (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::inset_y",
           "kind": "method",
           "sig": "fn inset_y(self, l: impl Into<Length>) -> Self",
+          "docs": "Offsets from the top and bottom of the containing box (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::items_baseline",
           "kind": "method",
           "sig": "fn items_baseline(self) -> Self",
+          "docs": "Children align on their first text baseline across the cross axis.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::items_center",
           "kind": "method",
           "sig": "fn items_center(self) -> Self",
+          "docs": "Children are centered across the cross axis.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::items_end",
           "kind": "method",
           "sig": "fn items_end(self) -> Self",
+          "docs": "Children align to the end of the cross axis.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::items_start",
           "kind": "method",
           "sig": "fn items_start(self) -> Self",
+          "docs": "Children align to the start of the cross axis.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::items_stretch",
           "kind": "method",
           "sig": "fn items_stretch(self) -> Self",
+          "docs": "Children stretch across the cross axis (the default).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::justify_around",
           "kind": "method",
           "sig": "fn justify_around(self) -> Self",
+          "docs": "Free space along the main axis goes around each child.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::justify_between",
           "kind": "method",
           "sig": "fn justify_between(self) -> Self",
+          "docs": "Free space along the main axis goes between children.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::justify_center",
           "kind": "method",
           "sig": "fn justify_center(self) -> Self",
+          "docs": "Children are centered along the main axis.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::justify_end",
           "kind": "method",
           "sig": "fn justify_end(self) -> Self",
+          "docs": "Children are packed at the end of the main axis.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::justify_evenly",
           "kind": "method",
           "sig": "fn justify_evenly(self) -> Self",
+          "docs": "Free space along the main axis is split evenly, edges included.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::justify_start",
           "kind": "method",
           "sig": "fn justify_start(self) -> Self",
+          "docs": "Children are packed at the start of the main axis (the default).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -12612,6 +12657,7 @@
           "path": "octara::view::Styled::leading_loose",
           "kind": "method",
           "sig": "fn leading_loose(self) -> Self",
+          "docs": "Line height 2 × the font size; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -12625,30 +12671,35 @@
           "path": "octara::view::Styled::leading_normal",
           "kind": "method",
           "sig": "fn leading_normal(self) -> Self",
+          "docs": "Line height 1.5 × the font size; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::leading_relaxed",
           "kind": "method",
           "sig": "fn leading_relaxed(self) -> Self",
+          "docs": "Line height 1.625 × the font size; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::leading_snug",
           "kind": "method",
           "sig": "fn leading_snug(self) -> Self",
+          "docs": "Line height 1.375 × the font size; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::leading_tight",
           "kind": "method",
           "sig": "fn leading_tight(self) -> Self",
+          "docs": "Line height 1.25 × the font size; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::left",
           "kind": "method",
           "sig": "fn left(self, l: impl Into<Length>) -> Self",
+          "docs": "Offset from the left of the containing box (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -13011,6 +13062,7 @@
           "path": "octara::view::Styled::max_h",
           "kind": "method",
           "sig": "fn max_h(self, l: impl Into<Length>) -> Self",
+          "docs": "Maximum height (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -13122,12 +13174,14 @@
           "path": "octara::view::Styled::max_h_full",
           "kind": "method",
           "sig": "fn max_h_full(self) -> Self",
+          "docs": "At most the parent's height.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::max_w",
           "kind": "method",
           "sig": "fn max_w(self, l: impl Into<Length>) -> Self",
+          "docs": "Maximum width (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -13190,6 +13244,7 @@
           "path": "octara::view::Styled::max_w_full",
           "kind": "method",
           "sig": "fn max_w_full(self) -> Self",
+          "docs": "At most the parent's width.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -13231,6 +13286,7 @@
           "path": "octara::view::Styled::mb",
           "kind": "method",
           "sig": "fn mb(self, l: impl Into<Length>) -> Self",
+          "docs": "Margin on the bottom (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -13475,18 +13531,21 @@
           "path": "octara::view::Styled::mb_auto",
           "kind": "method",
           "sig": "fn mb_auto(self) -> Self",
+          "docs": "Automatic margin on the bottom: takes the free space (pushes the item away from that side).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::min_h",
           "kind": "method",
           "sig": "fn min_h(self, l: impl Into<Length>) -> Self",
+          "docs": "Minimum height (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::min_h_0",
           "kind": "method",
           "sig": "fn min_h_0(self) -> Self",
+          "docs": "No minimum height: a flex item may shrink below its content.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -13591,12 +13650,14 @@
           "path": "octara::view::Styled::min_w",
           "kind": "method",
           "sig": "fn min_w(self, l: impl Into<Length>) -> Self",
+          "docs": "Minimum width (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::min_w_0",
           "kind": "method",
           "sig": "fn min_w_0(self) -> Self",
+          "docs": "No minimum width: a flex item may shrink below its content.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -13701,12 +13762,14 @@
           "path": "octara::view::Styled::min_w_full",
           "kind": "method",
           "sig": "fn min_w_full(self) -> Self",
+          "docs": "At least the parent's width.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::ml",
           "kind": "method",
           "sig": "fn ml(self, l: impl Into<Length>) -> Self",
+          "docs": "Margin on the left (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -13951,6 +14014,7 @@
           "path": "octara::view::Styled::ml_auto",
           "kind": "method",
           "sig": "fn ml_auto(self) -> Self",
+          "docs": "Automatic margin on the left: takes the free space (pushes the item away from that side).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -13974,6 +14038,7 @@
           "path": "octara::view::Styled::mr",
           "kind": "method",
           "sig": "fn mr(self, l: impl Into<Length>) -> Self",
+          "docs": "Margin on the right (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -14218,12 +14283,14 @@
           "path": "octara::view::Styled::mr_auto",
           "kind": "method",
           "sig": "fn mr_auto(self) -> Self",
+          "docs": "Automatic margin on the right: takes the free space (pushes the item away from that side).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::mt",
           "kind": "method",
           "sig": "fn mt(self, l: impl Into<Length>) -> Self",
+          "docs": "Margin on the top (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -14468,12 +14535,14 @@
           "path": "octara::view::Styled::mt_auto",
           "kind": "method",
           "sig": "fn mt_auto(self) -> Self",
+          "docs": "Automatic margin on the top: takes the free space (pushes the item away from that side).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::mx",
           "kind": "method",
           "sig": "fn mx(self, l: impl Into<Length>) -> Self",
+          "docs": "Margin on the left and right (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -14725,6 +14794,7 @@
           "path": "octara::view::Styled::my",
           "kind": "method",
           "sig": "fn my(self, l: impl Into<Length>) -> Self",
+          "docs": "Margin on the top and bottom (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -14969,36 +15039,42 @@
           "path": "octara::view::Styled::my_auto",
           "kind": "method",
           "sig": "fn my_auto(self) -> Self",
+          "docs": "Automatic margin on the top and bottom: takes the free space (pushes the item away from that side).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::opacity_0",
           "kind": "method",
           "sig": "fn opacity_0(self) -> Self",
+          "docs": "Opacity 0 %.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::opacity_100",
           "kind": "method",
           "sig": "fn opacity_100(self) -> Self",
+          "docs": "Opacity 100 %.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::opacity_25",
           "kind": "method",
           "sig": "fn opacity_25(self) -> Self",
+          "docs": "Opacity 25 %.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::opacity_50",
           "kind": "method",
           "sig": "fn opacity_50(self) -> Self",
+          "docs": "Opacity 50 %.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::opacity_75",
           "kind": "method",
           "sig": "fn opacity_75(self) -> Self",
+          "docs": "Opacity 75 %.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -15012,6 +15088,7 @@
           "path": "octara::view::Styled::opacity_value",
           "kind": "method",
           "sig": "fn opacity_value(self, o: f32) -> Self",
+          "docs": "Opacity from 0 (invisible) to 1; a subtree drawing several things fades as one layer.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -15053,36 +15130,42 @@
           "path": "octara::view::Styled::overflow_x_auto",
           "kind": "method",
           "sig": "fn overflow_x_auto(self) -> Self",
+          "docs": "Scrolls content that overflows horizontally (as `overflow_x_scroll`: scroll bars are the platform's).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::overflow_x_hidden",
           "kind": "method",
           "sig": "fn overflow_x_hidden(self) -> Self",
+          "docs": "Clips content that overflows horizontally.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::overflow_x_scroll",
           "kind": "method",
           "sig": "fn overflow_x_scroll(self) -> Self",
+          "docs": "Scrolls content that overflows horizontally (and clips it).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::overflow_y_auto",
           "kind": "method",
           "sig": "fn overflow_y_auto(self) -> Self",
+          "docs": "Scrolls content that overflows vertically (as `overflow_y_scroll`: scroll bars are the platform's).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::overflow_y_hidden",
           "kind": "method",
           "sig": "fn overflow_y_hidden(self) -> Self",
+          "docs": "Clips content that overflows vertically.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::overflow_y_scroll",
           "kind": "method",
           "sig": "fn overflow_y_scroll(self) -> Self",
+          "docs": "Scrolls content that overflows vertically (and clips it).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -15333,6 +15416,7 @@
           "path": "octara::view::Styled::pb",
           "kind": "method",
           "sig": "fn pb(self, l: impl Into<Length>) -> Self",
+          "docs": "Padding on the bottom (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -15577,6 +15661,7 @@
           "path": "octara::view::Styled::pl",
           "kind": "method",
           "sig": "fn pl(self, l: impl Into<Length>) -> Self",
+          "docs": "Padding on the left (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -15821,6 +15906,7 @@
           "path": "octara::view::Styled::pr",
           "kind": "method",
           "sig": "fn pr(self, l: impl Into<Length>) -> Self",
+          "docs": "Padding on the right (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -16065,6 +16151,7 @@
           "path": "octara::view::Styled::pt",
           "kind": "method",
           "sig": "fn pt(self, l: impl Into<Length>) -> Self",
+          "docs": "Padding on the top (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -16799,12 +16886,14 @@
           "path": "octara::view::Styled::relative",
           "kind": "method",
           "sig": "fn relative(self) -> Self",
+          "docs": "Positioned in the flow; `top`/`left`/… move it from there (the default).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::right",
           "kind": "method",
           "sig": "fn right(self, l: impl Into<Length>) -> Self",
+          "docs": "Offset from the right of the containing box (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -16902,72 +16991,84 @@
           "path": "octara::view::Styled::rounded_2xl",
           "kind": "method",
           "sig": "fn rounded_2xl(self) -> Self",
+          "docs": "Corner radius: the theme's `2xl` step.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::rounded_3xl",
           "kind": "method",
           "sig": "fn rounded_3xl(self) -> Self",
+          "docs": "Corner radius: the theme's `3xl` step.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::rounded_4xl",
           "kind": "method",
           "sig": "fn rounded_4xl(self) -> Self",
+          "docs": "Corner radius: the theme's `4xl` step.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::rounded_full",
           "kind": "method",
           "sig": "fn rounded_full(self) -> Self",
+          "docs": "Fully rounded corners: a pill, or a circle for a square.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::rounded_lg",
           "kind": "method",
           "sig": "fn rounded_lg(self) -> Self",
+          "docs": "Corner radius: the theme's `lg` step.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::rounded_md",
           "kind": "method",
           "sig": "fn rounded_md(self) -> Self",
+          "docs": "Corner radius: the theme's `md` step.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::rounded_none",
           "kind": "method",
           "sig": "fn rounded_none(self) -> Self",
+          "docs": "Square corners.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::rounded_sm",
           "kind": "method",
           "sig": "fn rounded_sm(self) -> Self",
+          "docs": "Corner radius: the theme's `sm` step.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::rounded_xl",
           "kind": "method",
           "sig": "fn rounded_xl(self) -> Self",
+          "docs": "Corner radius: the theme's `xl` step.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::rounded_xs",
           "kind": "method",
           "sig": "fn rounded_xs(self) -> Self",
+          "docs": "Corner radius: the theme's `xs` step.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::row_end",
           "kind": "method",
           "sig": "fn row_end(self, n: i16) -> Self",
+          "docs": "Grid: the row line the item ends at (negative counts from the end).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::row_end_auto",
           "kind": "method",
           "sig": "fn row_end_auto(self) -> Self",
+          "docs": "Grid: the item's end row is placed automatically.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -16981,48 +17082,56 @@
           "path": "octara::view::Styled::row_span_full",
           "kind": "method",
           "sig": "fn row_span_full(self) -> Self",
+          "docs": "Grid: the item spans every row.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::row_start",
           "kind": "method",
           "sig": "fn row_start(self, n: i16) -> Self",
+          "docs": "Grid: the row line the item starts at.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::row_start_auto",
           "kind": "method",
           "sig": "fn row_start_auto(self) -> Self",
+          "docs": "Grid: the item's start row is placed automatically.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::self_auto",
           "kind": "method",
           "sig": "fn self_auto(self) -> Self",
+          "docs": "Cross-axis alignment from the parent's `items_*` (the default).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::self_center",
           "kind": "method",
           "sig": "fn self_center(self) -> Self",
+          "docs": "This child is centered across the parent's cross axis.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::self_end",
           "kind": "method",
           "sig": "fn self_end(self) -> Self",
+          "docs": "This child aligns to the end of the parent's cross axis.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::self_start",
           "kind": "method",
           "sig": "fn self_start(self) -> Self",
+          "docs": "This child aligns to the start of the parent's cross axis.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::self_stretch",
           "kind": "method",
           "sig": "fn self_stretch(self) -> Self",
+          "docs": "This child stretches across the parent's cross axis.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -17036,48 +17145,56 @@
           "path": "octara::view::Styled::shadow_2xl",
           "kind": "method",
           "sig": "fn shadow_2xl(self) -> Self",
+          "docs": "Shadow: the theme's `2xl` step.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::shadow_2xs",
           "kind": "method",
           "sig": "fn shadow_2xs(self) -> Self",
+          "docs": "Shadow: the theme's `2xs` step.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::shadow_lg",
           "kind": "method",
           "sig": "fn shadow_lg(self) -> Self",
+          "docs": "Shadow: the theme's `lg` step.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::shadow_md",
           "kind": "method",
           "sig": "fn shadow_md(self) -> Self",
+          "docs": "Shadow: the theme's `md` step.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::shadow_none",
           "kind": "method",
           "sig": "fn shadow_none(self) -> Self",
+          "docs": "No shadow.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::shadow_sm",
           "kind": "method",
           "sig": "fn shadow_sm(self) -> Self",
+          "docs": "Shadow: the theme's `sm` step.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::shadow_xl",
           "kind": "method",
           "sig": "fn shadow_xl(self) -> Self",
+          "docs": "Shadow: the theme's `xl` step.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::shadow_xs",
           "kind": "method",
           "sig": "fn shadow_xs(self) -> Self",
+          "docs": "Shadow: the theme's `xs` step.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -17329,6 +17446,7 @@
           "path": "octara::view::Styled::size_full",
           "kind": "method",
           "sig": "fn size_full(self) -> Self",
+          "docs": "Width and height of the parent.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -17342,48 +17460,56 @@
           "path": "octara::view::Styled::text_2xl",
           "kind": "method",
           "sig": "fn text_2xl(self) -> Self",
+          "docs": "Font size: the theme's `2xl` text step, with its line height; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::text_3xl",
           "kind": "method",
           "sig": "fn text_3xl(self) -> Self",
+          "docs": "Font size: the theme's `3xl` text step, with its line height; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::text_4xl",
           "kind": "method",
           "sig": "fn text_4xl(self) -> Self",
+          "docs": "Font size: the theme's `4xl` text step, with its line height; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::text_5xl",
           "kind": "method",
           "sig": "fn text_5xl(self) -> Self",
+          "docs": "Font size: the theme's `5xl` text step, with its line height; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::text_6xl",
           "kind": "method",
           "sig": "fn text_6xl(self) -> Self",
+          "docs": "Font size: the theme's `6xl` text step, with its line height; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::text_7xl",
           "kind": "method",
           "sig": "fn text_7xl(self) -> Self",
+          "docs": "Font size: the theme's `7xl` text step, with its line height; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::text_8xl",
           "kind": "method",
           "sig": "fn text_8xl(self) -> Self",
+          "docs": "Font size: the theme's `8xl` text step, with its line height; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::text_9xl",
           "kind": "method",
           "sig": "fn text_9xl(self) -> Self",
+          "docs": "Font size: the theme's `9xl` text step, with its line height; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -17404,12 +17530,14 @@
           "path": "octara::view::Styled::text_lg",
           "kind": "method",
           "sig": "fn text_lg(self) -> Self",
+          "docs": "Font size: the theme's `lg` text step, with its line height; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::text_paint",
           "kind": "method",
           "sig": "fn text_paint(self, p: impl Into<Paint>) -> Self",
+          "docs": "Text color: a token or a color (what `text_color` takes, as a value); inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -17423,30 +17551,35 @@
           "path": "octara::view::Styled::text_sm",
           "kind": "method",
           "sig": "fn text_sm(self) -> Self",
+          "docs": "Font size: the theme's `sm` text step, with its line height; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::text_step",
           "kind": "method",
           "sig": "fn text_step(self, s: TextStep) -> Self",
+          "docs": "Font size from the theme's text scale, with its line height; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::text_xl",
           "kind": "method",
           "sig": "fn text_xl(self) -> Self",
+          "docs": "Font size: the theme's `xl` text step, with its line height; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::text_xs",
           "kind": "method",
           "sig": "fn text_xs(self) -> Self",
+          "docs": "Font size: the theme's `xs` text step, with its line height; inherited.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::top",
           "kind": "method",
           "sig": "fn top(self, l: impl Into<Length>) -> Self",
+          "docs": "Offset from the top of the containing box (with `absolute` or `relative`) (a number is logical pixels; `relative`, `rems`, `sp` for others).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
@@ -17893,12 +18026,14 @@
           "path": "octara::view::Styled::w_auto",
           "kind": "method",
           "sig": "fn w_auto(self) -> Self",
+          "docs": "Width from the content (the default).",
           "file": "crates/octara/src/view/style.rs"
         },
         {
           "path": "octara::view::Styled::w_full",
           "kind": "method",
           "sig": "fn w_full(self) -> Self",
+          "docs": "Width of the parent.",
           "file": "crates/octara/src/view/style.rs"
         },
         {
