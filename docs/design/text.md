@@ -1,9 +1,56 @@
 # The text core
 
-Based on the [research](../research/text.md). Status: confirmed; steps 1 (rich text and links) and 2 (selection) implemented. The [core](core.md)'s step 3: rich
+Based on the [research](../research/text.md). Status: confirmed; steps 1 (rich text and links) and 2 (selection) implemented; the engine's
+one owner and shape cache by content, and the system fonts by family, are next (step 2.5). The [core](core.md)'s step 3: rich
 text, blocks laid out and painted one at a time, a selection across blocks and rows of a
 virtual list, and accessible text. Designed for the AI chat app: messages streaming in as
 Markdown, long transcripts, select and copy across messages.
+
+## The engine
+
+Parley (Linebender) lays text out, its fontique collects fonts, swash rasterizes glyphs. Not
+the platform's text engines: the same layout in every window, headless run and renderer is
+what lets agents and tests see what people see.
+
+```
+view       text("..") / text(rich()..) / text(&live_text)
+kernel     a text node: its string, runs, version, and a TextLayout handle
+             (glyphs, lines, links, selections and accessibility runs derive from it)
+engine     TextEngine::layout(text, style, runs, previous) -> TextLayout
+             a shape cache by content: (paragraph text, style, runs) -> a shaped paragraph,
+             shared by every text and window showing it, bounded by bytes (least recently
+             used out first, a superseded streaming tail out at once)
+Parley     shaping, bidi, line breaking; Layout<u16> (the brush is the run's number)
+renderers  glyph runs in the display list; swash rasterizes into an atlas both renderers share
+```
+
+- **One owner**: a text node owns its `TextLayout` (an `Rc` the engine made): its paragraphs,
+  each a shaped paragraph from the shape cache broken at the node's width, with the sizes it was
+  measured at. Measuring, glyphs, lines and every geometry come from it; it is made again only
+  when the node's version (its string or runs), style or the fonts change, reusing the previous
+  layout's unchanged paragraphs. Nothing else holds per-node text state, and a node's layout
+  goes with the node.
+- **By content**: a paragraph shaped once is found again by its text, style and runs: a row of a
+  virtual list scrolling back, a label repeated in every row, the same text in two windows reuse
+  it. Only what changes shape is in the key (family, size, weight, slant per run); colors and
+  decorations are drawn from the runs at paint time.
+- **Increments**: a paragraph (between `\n`s) is the unit of shaping; a block of Markdown is a
+  node; a code block is a node per line. Appending to a stream reshapes its last paragraph; a
+  new width only breaks lines again.
+- **Threads**: shaping runs on the main thread (about 0.2 ms per KB, Rune measured). A layout is
+  an immutable handle, so shaping a new block off the main thread, showing its estimated height
+  meanwhile, can come later without changing the model.
+- **Fonts**: the theme's families are `system-ui` and `monospace`. Headless (the default) they
+  are the bundled Inter and IBM Plex Mono, so a run measures the same on every machine; a
+  window's engine (`use_system_fonts`) resolves them to the platform's UI and monospace fonts
+  (San Francisco, Segoe UI, …) with the system's fallback for scripts. A headless run can use
+  the system fonts too, to match a window's pictures on that machine.
+- **Input**: text fields lay out with the same engine; their editing model (selection, history,
+  composition) is the runtime's. Platform text protocols (NSTextInputClient, TSF,
+  text-input-v3) come with the owned backends.
+- **Limits**: one paragraph without line breaks is shaped whole (100 KB: about 16 ms); mixed
+  sizes under `line_clamp` measure the clamped height approximately; no hyphenation, no vertical
+  text; inline boxes (pills, images in a line) come later on Parley's `InlineBox`.
 
 ## Rich text
 
@@ -125,6 +172,10 @@ Markdown, long transcripts, select and copy across messages.
    unmounted rows, `select` / `copy` requests. Proof: a selection from row 3 to row 900 of a
    virtual list survives scrolling both ends out and back and copies all 898 rows' text; an
    append to the focus text keeps it.
+2.5. The engine: text layouts owned by their nodes, the shape cache by content (bounded,
+   superseding), `system-ui` and `monospace` resolved per engine. Proof: a virtual list's row
+   scrolling out and back shapes nothing; a thousand rows of one label shape it once; a stream
+   keeps the cache's bytes flat.
 3. Accessibility: `Document`, block roles, text runs, the selection, live regions. Proof: the
    accessibility tree of a selected region has runs with lengths summing to their values and a
    selection whose ends are runs.
