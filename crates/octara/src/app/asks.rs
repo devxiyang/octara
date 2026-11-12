@@ -155,7 +155,10 @@ pub(crate) fn layer() -> crate::view::View {
     let menus = list("menus", Vec::new, |e: &(AskId, Ask)| e.0);
     let prompts = list("prompts", Vec::new, |e: &(AskId, Ask)| e.0);
     *super::window().drawn.borrow_mut() = Some((menus, prompts));
+    let tips = list("tooltips", Vec::new, |e: &super::tooltip::Shown| e.0);
+    *super::window().tip.borrow_mut() = Some(tips);
     View::Fragment(vec![
+        super::tooltip::view(tips),
         // Where menus anchor (their content is in the overlay layer).
         el().absolute()
             .top(0.0)

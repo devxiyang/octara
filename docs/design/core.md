@@ -158,6 +158,6 @@ Designed in [the text core](text.md); what the core decided:
 6. Popups and menus ([windows](windows.md)). Implemented.
 7. What an AI chat app needs, as general mechanisms and components, and the AI chat reference app
    built from them (no chat-specific framework parts): following a scroll container's tail
-   (implemented), one selection across nested selectable regions (implemented), paced `LiveText`
-   and focus and blur events (implemented); the kit's components planned for this step ([UI primitives](ui-primitives.md)); the
-   reference app with an offline scripted model.
+   (implemented), one selection across nested selectable regions (implemented), paced `LiveText`,
+   focus and blur events, and tooltips (implemented); the kit's components planned for this step
+   ([UI primitives](ui-primitives.md)); the reference app with an offline scripted model.

@@ -131,3 +131,80 @@ fn hover_survives_hot_reload() {
     app.app().hot_reload();
     assert!(hovered(&app, "button") && hovered(&app, "card"));
 }
+
+mod tooltips {
+    use octara::prelude::*;
+    use std::time::Duration;
+
+    fn app() -> Window {
+        Window::headless(|| {
+            row()
+                .child(el().id("copy").size(24.0).focusable().on_press(|| {}).tooltip("Copy"))
+                .child(el().id("retry").size(24.0).on_press(|| {}).tooltip("Retry"))
+                .child(el().id("plain").size(24.0))
+                .into()
+        })
+    }
+
+    fn center(w: &Window, id: &str) -> (f32, f32) {
+        let k = w.kernel();
+        let (x, y, ww, h) = k.shown_rect(k.find(id).unwrap());
+        (x + ww / 2.0, y + h / 2.0)
+    }
+
+    #[test]
+    fn a_tooltip_shows_after_the_mouse_rests_and_goes_when_it_leaves() {
+        let mut w = app();
+        let (x, y) = center(&w, "copy");
+        w.pointer_move(x, y);
+        assert_eq!(w.tooltip(), None, "not at once");
+        w.app().advance(Duration::from_millis(499));
+        assert_eq!(w.tooltip(), None);
+        w.app().advance(Duration::from_millis(1));
+        assert_eq!(w.tooltip().as_deref(), Some("Copy"));
+        let tip = w.kernel().find("tooltip").expect("drawn");
+        assert_eq!(w.kernel().role(tip), Role::Tooltip);
+        let (_, ty, _, _) = w.kernel().shown_rect(tip);
+        assert!(ty >= 24.0, "below the element: {ty}");
+
+        // Moving on along the row: the next shows at once.
+        let (x, y) = center(&w, "retry");
+        w.pointer_move(x, y);
+        assert_eq!(w.tooltip().as_deref(), Some("Retry"));
+        let (x, y) = center(&w, "plain");
+        w.pointer_move(x, y);
+        assert_eq!(w.tooltip(), None);
+        assert!(w.kernel().find("tooltip").is_none());
+    }
+
+    #[test]
+    fn a_press_puts_it_away_until_hover_leaves() {
+        let mut w = app();
+        let (x, y) = center(&w, "copy");
+        w.pointer_move(x, y);
+        w.app().advance(Duration::from_millis(600));
+        assert!(w.tooltip().is_some());
+        w.click_at(x, y);
+        assert_eq!(w.tooltip(), None);
+        w.app().advance(Duration::from_secs(2));
+        assert_eq!(w.tooltip(), None, "not again while the mouse stays");
+        assert_eq!(w.app().next_deadline(), None, "nothing waits");
+    }
+
+    #[test]
+    fn its_text_is_the_description_unless_it_repeats_the_label() {
+        let w = Window::headless(|| {
+            row()
+                .child(el().id("a").size(24.0).label("Copy").tooltip("Copy"))
+                .child(el().id("b").size(24.0).label("Copy").tooltip("Copy the reply as Markdown"))
+                .into()
+        });
+        let tree = w.accessibility_tree();
+        let desc = |id: &str| {
+            let n = octara::kernel::a11y::a11y_id(w.kernel().find(id).unwrap());
+            tree.nodes.iter().find(|(i, _)| *i == n).and_then(|(_, n)| n.description().map(str::to_owned))
+        };
+        assert_eq!(desc("a"), None);
+        assert_eq!(desc("b").as_deref(), Some("Copy the reply as Markdown"));
+    }
+}

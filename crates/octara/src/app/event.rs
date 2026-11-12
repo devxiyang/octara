@@ -66,6 +66,7 @@ impl Window {
         if self.picks(&event) {
             return true;
         }
+        self.tip_dismissed_by(&event);
         match event {
             InputEvent::FileDrag(ev) => self.on_file_drag(ev),
             InputEvent::Answer { id, answer } => self.on_answer(id, answer),

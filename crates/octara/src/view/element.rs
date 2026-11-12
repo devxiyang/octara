@@ -190,6 +190,8 @@ struct Overlay {
     content: Rc<dyn Fn() -> View>,
     at: &'static Location<'static>,
     made: Option<crate::kernel::Component>,
+    /// Placed by this node instead of the element (the window's tooltip, by its element).
+    by: Option<NodeId>,
 }
 
 // ---- elements ----
@@ -206,6 +208,7 @@ pub struct El {
     checked: Option<Prop<bool>>,
     label: Option<Prop<String>>,
     description: Option<Prop<String>>,
+    tooltip: Option<Prop<String>>,
     expanded: Option<Prop<bool>>,
     selected: Option<Prop<bool>>,
     disabled: Option<Prop<bool>>,
@@ -277,6 +280,7 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         checked: None,
         label: None,
         description: None,
+        tooltip: None,
         expanded: None,
         selected: None,
         disabled: None,
@@ -575,6 +579,14 @@ impl El {
         self.label = Some(l.into_prop());
         self
     }
+    /// Text that shows when the mouse rests on it (GPUI's `tooltip`): the window's one tooltip,
+    /// below it, gone when hover leaves or on a press, a scroll or a key. It is also its
+    /// description for assistive technology (unless it has one). An icon button names its action
+    /// this way.
+    pub fn tooltip(mut self, t: impl IntoProp<String>) -> Self {
+        self.tooltip = Some(t.into_prop());
+        self
+    }
     pub fn description(mut self, d: impl IntoProp<String>) -> Self {
         self.description = Some(d.into_prop());
         self
@@ -765,6 +777,20 @@ impl El {
             content: Rc::new(content),
             at: Location::caller(),
             made: super::building(),
+            by: None,
+        });
+        self
+    }
+    /// An overlay placed by node `by` (not this element), open while this element is mounted.
+    #[track_caller]
+    pub(crate) fn overlay_by(mut self, by: NodeId, placement: Placement, content: impl Fn() -> View + 'static) -> Self {
+        self.overlays.push(Overlay {
+            open: Box::new(|| true),
+            placement,
+            content: Rc::new(content),
+            at: Location::caller(),
+            made: super::building(),
+            by: Some(by),
         });
         self
     }
@@ -999,6 +1025,9 @@ pub(crate) fn build_el(e: El) -> NodeId {
     if let Some(p) = e.label {
         bind(at, node, p, |k, n, v: &String| k.set_label(n, Some(v)));
     }
+    if let Some(p) = e.tooltip {
+        bind(at, node, p, |k, n, v: &String| k.set_tooltip(n, Some(v)));
+    }
     if let Some(p) = e.description {
         bind(at, node, p, |k, n, v: &String| k.set_description(n, Some(v)));
     }
@@ -1169,11 +1198,11 @@ fn mount_overlay(anchor: NodeId, o: Overlay) {
         });
     }
     let layer = Parent { node: u.kernel.borrow().overlay_layer(), root: u.overlay_slots.clone() };
-    let (placement, content, at) = (o.placement, o.content, o.at);
+    let (placement, content, at, by) = (o.placement, o.content, o.at, o.by);
     let view = super::as_part_of(o.made, || {
         show(o.open, move || {
             let mut b = boxed(content(), at);
-            b.anchor = Some((anchor, placement));
+            b.anchor = Some((by.unwrap_or(anchor), placement));
             b.into()
         })
     });

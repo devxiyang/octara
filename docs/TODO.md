@@ -10,8 +10,8 @@ make the corresponding design document describe it.
    and the app.
 2. The owned macOS backend (NSTextInputClient, menus, live resize in the frame's transaction,
    panels), and agents driving a real window (the inspector protocol over a channel to it).
-3. Native chrome: menus and shortcuts, file dialogs, alerts.
-4. Components: menus and popovers, dialogs and sheets, tabs, lists and tables, tooltips,
+3. Native chrome: menus and shortcuts, file dialogs, alerts, tooltips (AppKit's).
+4. Components: menus and popovers, dialogs and sheets, tabs, lists and tables,
    sliders, progress.
 5. Images: JPEG, WebP, SVG, loading and caching.
 6. [Native Island](design/native-island.md): focus, accessibility joining, lazy creation.

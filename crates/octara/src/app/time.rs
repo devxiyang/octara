@@ -44,7 +44,7 @@ impl App {
         let t = ms(t).max(sched.now_ms());
         for _ in 0..100_000 {
             let windows = self.each();
-            let presses = windows.iter().filter_map(|w| w.long_press_due());
+            let presses = windows.iter().filter_map(|w| w.pointer_due());
             let next = sched.next_timer().into_iter().chain(presses).min_by(f64::total_cmp);
             let Some(due) = next.filter(|d| *d <= t) else { break };
             self.set_clock(due.max(sched.now_ms()));

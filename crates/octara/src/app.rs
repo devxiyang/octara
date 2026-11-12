@@ -12,6 +12,7 @@ mod pick;
 mod pointer;
 mod selection;
 mod time;
+mod tooltip;
 
 pub use edit::{TextField, byte_offset, utf16_offset};
 pub use event::{FileDrag, InputEvent, Recorded, Recording};
@@ -234,6 +235,8 @@ pub(crate) struct WindowState {
     ask_next: Cell<crate::ask::AskId>,
     /// The requests the window draws itself: its asks layer's menus and prompts.
     drawn: RefCell<Option<asks::Drawn>>,
+    /// The tooltip the window draws (one at most).
+    tip: RefCell<Option<crate::reactive::list::List<u64, tooltip::Shown>>>,
     /// How lists order their rows, by container (for selections through them).
     pub(crate) lists: RefCell<std::collections::HashMap<NodeId, selection::ListOrder>>,
 }
@@ -324,6 +327,8 @@ struct Interaction {
     /// A text field whose caret moved: scroll containers around it bring the caret into view
     /// once the frame is laid out.
     reveal: Option<NodeId>,
+    /// The window's tooltip.
+    tip: tooltip::Tip,
 }
 
 impl WindowState {
@@ -374,6 +379,7 @@ impl WindowState {
             asks_withdrawn: RefCell::default(),
             ask_next: Cell::new(1),
             drawn: RefCell::new(None),
+            tip: RefCell::new(None),
             lists: RefCell::default(),
         }
     }
@@ -848,6 +854,8 @@ impl Window {
         }
         i.hovered = n;
         i.hover_chain = chain;
+        drop((i, k));
+        self.tip_hovered();
     }
 
     /// Records how input last arrived; the focus ring follows it.

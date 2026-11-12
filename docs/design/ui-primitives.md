@@ -35,7 +35,7 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | | Native Island: `native_view(kind)`, `web_view(url)`, slots, placements, the host protocol, headless host | Implemented headless; platform views in the shells to do ([Native Island](native-island.md)) |
 | Style | `Styled`: GPUI method names, 4 px scale, `px` / `relative` / `rems`; semantic `Token` and `Theme`; state, window size class, touch and group-hover overrides; `absolute` / `top` / `left`; shadows, gradients, opacity layers; motion | Implemented |
 | Semantics | `role`, `label`, `description`, `expanded`, `checked`, `value`, `a11y_hidden`, `focusable`; test id is the semantic id | Implemented |
-| Interaction | `on_press` / `on_input` / `on_toggle` / `on_submit` / `on_focus` / `on_blur`; hover chain and groups; disabled elements reject events | Implemented |
+| Interaction | `on_press` / `on_input` / `on_toggle` / `on_submit` / `on_focus` / `on_blur`; `tooltip`; hover chain and groups; disabled elements reject events | Implemented |
 | | `on_key`, gestures (tap, double, long press, secondary, drag, swipe, momentum), focus order and groups, keymap and commands | Implemented ([input](input.md)) |
 | Agent | Structured diagnostics with registered codes, `App::set_check_consistency`, `Window::force_state` | Implemented |
 | | Inspector protocol, `octara check` / `inspect` / `run` | Implemented ([agent knowledge](agent-knowledge.md)) |
@@ -127,7 +127,7 @@ variant is a chained method, not a new name (`text_field(m).multiline().rows(1, 
 | Collections | `list` / `list_item` / `list_header` ● (groups, one selected, arrow keys, context menu through `popup_menu`), `tree`, `table` |
 | Disclosure and navigation | `collapsible` ● (a header that opens and closes its content), `tabs` |
 | Status | `spinner` ●, `callout` ● (a message with actions), `chip` ● (a small label, removable), `progress_bar`, `badge`, `keybinding` |
-| Overlays | `tooltip` ●, `popover`, `toast` (the core has `overlay`, modals, `popup_menu`, `prompt`) |
+| Overlays | `popover`, `toast` (the core has `overlay`, modals, `popup_menu`, `prompt`, and `tooltip`: it needs hover timing, one per window, and a native form) |
 | Layout | `split` ● (two panes, a draggable divider), `divider` |
 
 Adding one todo in the example app (`examples/src/apps.rs`) costs about 5 µs: each component adds a few style and model closures; the fixed styles of a new node are resolved once.

@@ -410,7 +410,8 @@ impl Kernel {
                 node.set_text_selection(sel);
             }
         }
-        if let Some(d) = &n.description {
+        // A tooltip saying what the label says is not said twice.
+        if let Some(d) = n.description.as_ref().or(n.tooltip.as_ref().filter(|t| n.label.as_ref() != Some(*t))) {
             node.set_description(d.as_str());
         }
         // A text input's content, or the value set for other controls (a combo box's choice).

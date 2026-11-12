@@ -340,7 +340,12 @@ impl Window {
         if self.w.interaction.borrow().pointer.momentum.is_some() {
             return Some(self.now_ms() + FRAME_MS);
         }
-        self.long_press_due()
+        self.pointer_due()
+    }
+
+    /// When something the pointer started comes due: a long press, a tooltip.
+    pub(super) fn pointer_due(&self) -> Option<f64> {
+        self.long_press_due().into_iter().chain(self.tip_due()).min_by(f64::total_cmp)
     }
 
     /// Whether momentum is gliding (it moves with every clock step).
@@ -353,6 +358,7 @@ impl Window {
         if self.long_press_due().is_some_and(|due| due <= self.now_ms()) {
             self.long_press_fire();
         }
+        self.tip_time();
         if self.w.interaction.borrow().pointer.momentum.is_some() {
             self.glide();
         }

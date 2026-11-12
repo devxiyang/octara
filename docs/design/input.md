@@ -86,6 +86,18 @@ catches up after the animation ends or the pointer moves (Rune).
   (the element keeps its focus), nor does the element leaving the tree. A field edited in place
   (a rename) commits on blur.
 
+## Tooltips
+
+- `.tooltip(text)` (GPUI's name): the window's one tooltip, for the innermost hovered element
+  that has one. It shows once the mouse has rested 500 ms (GPUI), at once within 300 ms of
+  another going (moving along a toolbar); it goes when hover leaves, and on a press, a scroll, a
+  key or the window going inactive, then not again until hover leaves the element. The window
+  draws it in its layer of requests, placed by the element (below, above where there is no room),
+  role `Tooltip`, test id `tooltip`; its timing is the window's pointer deadline, so it is
+  recorded, replayed and run by `advance`. Its text is the element's description for assistive
+  technology unless it repeats the label. `Window::tooltip()` gives the text showing.
+- Touch has no hover, so no tooltips; a native tooltip (AppKit's) is a later step.
+
 ## Keyboard: keymap and commands
 
 - `KeyEvent { key, modifiers, repeat }`; `key` is a named key (`Tab, Enter, Escape, Backspace, Delete, Left, Right, Up, Down,

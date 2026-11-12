@@ -335,6 +335,8 @@ struct Node {
     checked: Option<bool>,
     label: Option<String>,
     description: Option<String>,
+    /// What shows when the mouse rests on it (`tooltip`); its description where it has none.
+    tooltip: Option<String>,
     expanded: Option<bool>,
     hidden: bool,
     focusable: bool,
@@ -1133,6 +1135,7 @@ impl Kernel {
             checked: None,
             label: None,
             description: None,
+            tooltip: None,
             expanded: None,
             hidden: false,
             focusable: false,
@@ -1521,6 +1524,24 @@ impl Kernel {
 
     pub fn set_description(&mut self, id: NodeId, description: Option<&str>) -> bool {
         self.set_string(id, description, |n| &mut n.description, "description")
+    }
+
+    pub fn set_tooltip(&mut self, id: NodeId, tooltip: Option<&str>) -> bool {
+        self.set_string(id, tooltip, |n| &mut n.tooltip, "tooltip")
+    }
+    pub fn tooltip(&self, id: NodeId) -> Option<&str> {
+        self.node(id).tooltip.as_deref()
+    }
+    /// The nearest element from `id` up with a tooltip.
+    pub fn tooltip_above(&self, id: NodeId) -> Option<NodeId> {
+        let mut n = Some(id);
+        while let Some(x) = n {
+            if self.node(x).tooltip.is_some() {
+                return Some(x);
+            }
+            n = self.node(x).parent;
+        }
+        None
     }
 
     pub fn set_test_id(&mut self, id: NodeId, test_id: Option<&str>) -> bool {
