@@ -123,3 +123,18 @@ fn theme_and_fonts_are_the_apps() {
     };
     assert_eq!(width(&a), width(&b));
 }
+
+#[test]
+fn two_windows_of_one_view_keep_their_own_state() {
+    let app = App::new(HeadlessPlatform::default());
+    let view = || {
+        let n = state("n", || 0u32);
+        el().id("count").size_8().on_press(move || n.update(|n| *n += 1)).child(text(move || n.get().to_string()).id("n")).into()
+    };
+    let mut a = app.open_window(WindowOptions::new("A"), view).unwrap();
+    let b = app.open_window(WindowOptions::new("B"), view).unwrap();
+    a.tap("count").unwrap();
+    a.tap("count").unwrap();
+    let n = |w: &octara::app::Window| w.kernel().text(w.kernel().find("n").unwrap()).to_owned();
+    assert_eq!((n(&a), n(&b)), ("2".to_owned(), "0".to_owned()), "a root's state is its window's");
+}

@@ -43,7 +43,8 @@ there is no `useEffect`, and effects use `watch`.
 
 Based on Nominal Adapton: first-class names determine identity, and name ambiguity is detected.
 
-- Each stateful scope has a name path, for example `app/Disclosure[account]/open`; state, hot reload and the Inspector all locate by name path;
+- Each stateful scope has a name path, for example `window1/Disclosure[account]/open` (a window's root scope is named by the window, so
+  two windows' roots never share a key); state, hot reload and the Inspector all locate by name path;
 - The identity of `component_keyed(name, key, ..)` is independent of sibling order; `component(name, ..)` is named by its ordinal among same-named siblings, and `AMBIGUOUS_COMPONENT` is reported when a second one appears;
 - A state's lifetime is the lifetime of its scope: when a `show` branch is hidden or a list row is deleted, the state inside is destroyed with it;
 - Hot reload: destroy and rebuild all scopes; named state stays in the store and is found again by name, and is reset and reported when its type changes (migration functions to be added later).

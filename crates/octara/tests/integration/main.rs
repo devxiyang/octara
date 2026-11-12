@@ -20,6 +20,7 @@ mod inspect;
 mod interaction;
 mod keys;
 mod layout_issues;
+mod menus;
 mod motion;
 mod multiline;
 mod native;

@@ -222,6 +222,8 @@ pub(crate) struct WindowState {
     asks_new: RefCell<Vec<(crate::ask::AskId, crate::ask::Ask)>>,
     asks_withdrawn: RefCell<Vec<crate::ask::AskId>>,
     ask_next: Cell<crate::ask::AskId>,
+    /// The requests the window draws itself: its asks layer's menus and prompts.
+    drawn: RefCell<Option<asks::Drawn>>,
     /// How lists order their rows, by container (for selections through them).
     pub(crate) lists: RefCell<std::collections::HashMap<NodeId, selection::ListOrder>>,
 }
@@ -357,6 +359,7 @@ impl WindowState {
             asks_new: RefCell::default(),
             asks_withdrawn: RefCell::default(),
             ask_next: Cell::new(1),
+            drawn: RefCell::new(None),
             lists: RefCell::default(),
         }
     }
@@ -647,11 +650,17 @@ impl Window {
     }
 
     fn mount_root(&self) {
-        let s = self.app.rt.create_scope(None, "app");
+        // Named by the window: state is kept by its scope's path (across a hot reload), so two
+        // windows' roots never share a key.
+        let s = self.app.rt.create_scope(None, &format!("window{}", self.w.id.number()));
         self.w.root_scope.set(Some(s));
         let parent = Parent { node: self.w.kernel.borrow().root(), root: self.w.root_slots.clone() };
         let root = self.w.root.clone();
-        self.app.rt.with_frame(Ctx::Build, None, Some(Some(s)), || mount(root(), &parent, &self.w.root_slots));
+        self.app.rt.with_frame(Ctx::Build, None, Some(Some(s)), || {
+            mount(root(), &parent, &self.w.root_slots);
+            // What the window draws of its requests, above the app's view.
+            mount(asks::layer(), &parent, &self.w.root_slots);
+        });
         self.app.rt.flush();
         self.restore_interaction();
         self.settle_frame();

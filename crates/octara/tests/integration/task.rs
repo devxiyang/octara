@@ -76,7 +76,7 @@ fn disposing_the_scope_cancels_its_tasks() {
             .into()
     });
     assert_eq!(app.app().pending().len(), 1);
-    assert!(app.app().pending()[0].scope.starts_with("app"), "{:?}", app.app().pending());
+    assert!(app.app().pending()[0].scope.starts_with("window"), "{:?}", app.app().pending());
     app.tap("close").unwrap();
     assert!(dropped.get(), "the task (and what it holds) is dropped with its scope");
     assert!(app.app().pending().is_empty());
