@@ -21,37 +21,6 @@ make the corresponding design document describe it.
 9. iOS, then Android.
 10. Evaluation, causal tracing.
 
-## Awaiting acceptance by hand
-
-Checked by tests and screenshots; to be tried in a real window (`cargo run -p octara-examples
---bin window -- showcase fields` shows the "Text input" card alone):
-
-- [ ] Multi-line notes: an input method (pinyin) on the third line puts its candidate window by
-      that line; a trackpad scroll inside the field, then typing, comes back to the caret; Up,
-      Down, Cmd+Left / Right and Cmd+Up / Down feel right.
-- [ ] Chat composer: Enter sends, Shift+Enter breaks the line, the field grows to 4 lines.
-- [ ] Password: no input method while it has focus, copy and undo do nothing, Show reveals it.
-- [ ] Map (`window -- showcase map`, macOS): the map shows through the card's cutout with
-      rounded corners; dragging, scrolling and pinching it move it and the status line follows;
-      the + and − buttons over it zoom and are not taken by the map; in the full `showcase`,
-      scrolling and resizing keep it in place with its frame, no flicker. A clicked map takes the
-      keyboard (Tab back comes with native focus targets).
-- [ ] Display captures with the screen unlocked: `OCTARA_CAPTURE=shot.png
-      OCTARA_CAPTURE_PIXELS=display cargo run -p octara-examples --bin window -- showcase web`
-      reports `pixels: display`, and the picture holds the Metal frame and the live web page,
-      cropped to the content view (no title bar), at the backing scale.
-- [ ] Selection (`window -- showcase text`): dragging across the card's texts highlights as it
-      goes, a double click selects a word and a triple click the paragraph, Shift+click extends,
-      `cmd+c` copies, a click elsewhere clears; pressing a link still opens it.
-- [ ] Picking (`window -- todo`, a debug build): `mod+shift+c`, then moving the pointer outlines
-      each element; a click prints its line and copies it (a "Delete" button
-      says `made by todo_row()`), the button does not press, and picking ends; Escape ends it
-      too.
-- [ ] Web view (`window -- showcase web`, macOS): the page shows in the rounded box, "Other page"
-      loads the second page and the status shows its title; in the full `showcase`, scrolling and
-      resizing move the view with the page, without lag or a gap, and it clips at the window's
-      edge; clicks and scrolling inside the page go to the page.
-
 ## To research and design
 
 - [ ] Platform shells and native chrome: menus (`muda` / `NSMenu`), toolbars (`NSToolbar`),
