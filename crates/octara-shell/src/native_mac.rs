@@ -63,6 +63,12 @@ impl Inbox {
 /// An `NSImage` as straight RGBA at `scale` pixels per point (drawn into a bitmap of a known
 /// format, whatever the image's own representation).
 fn rgba(image: &NSImage, scale: f64) -> Option<Image> {
+    let (w, h, px) = pixels(image, scale)?;
+    Some(Image::rgba(w, h, px))
+}
+
+/// An `NSImage`'s pixels, straight RGBA, at `scale` pixels per point.
+fn pixels(image: &NSImage, scale: f64) -> Option<(u32, u32, Vec<u8>)> {
     let size = image.size();
     let (w, h) = ((size.width * scale).round() as isize, (size.height * scale).round() as isize);
     if w <= 0 || h <= 0 {
@@ -106,7 +112,31 @@ fn rgba(image: &NSImage, scale: f64) -> Option<Image> {
             px.extend([un(p[0]), un(p[1]), un(p[2]), p[3]]);
         }
     }
-    Some(Image::rgba(w as u32, h as u32, px))
+    Some((w as u32, h as u32, px))
+}
+
+/// The screen is locked: the window server draws no window.
+fn screen_locked() -> bool {
+    let Some(session) = objc2_core_graphics::CGSessionCopyCurrentDictionary() else { return false };
+    // SAFETY: CFDictionary is toll-free bridged to NSDictionary.
+    let dict: &NSDictionary<NSString, AnyObject> = unsafe { &*(&*session as *const _ as *const NSDictionary<NSString, AnyObject>) };
+    dict.objectForKey(ns_string!("CGSSessionScreenIsLocked"))
+        .and_then(|v| v.downcast::<objc2_foundation::NSNumber>().ok())
+        .is_some_and(|n| n.boolValue())
+}
+
+/// `CGWindowListCreateImage`, found at run time: obsoleted in the SDK (ScreenCaptureKit replaces
+/// it, but needs the screen-recording permission even for one's own window), still the window
+/// server's way to give a process its own window without that permission. Linking it would stop
+/// the app from launching on a system that drops it.
+fn window_list_create_image() -> Option<unsafe extern "C-unwind" fn(NSRect, u32, u32, u32) -> *mut objc2_core_graphics::CGImage> {
+    unsafe extern "C" {
+        fn dlsym(handle: *mut c_void, symbol: *const std::ffi::c_char) -> *mut c_void;
+    }
+    // RTLD_DEFAULT.
+    let sym = unsafe { dlsym(-2isize as *mut c_void, c"CGWindowListCreateImage".as_ptr()) };
+    // SAFETY: the function's C signature (CGRect, CGWindowListOption, CGWindowID, CGWindowImageOption).
+    (!sym.is_null()).then(|| unsafe { std::mem::transmute(sym) })
 }
 
 define_class!(
@@ -470,6 +500,40 @@ impl Native {
             .collect();
         out.sort();
         out
+    }
+
+    /// The window server's picture of the window's content (what the user sees, native views
+    /// live), straight RGBA at the window's backing scale; `Err` says why there is none.
+    pub(crate) fn window_picture(&self) -> Result<octara::capture::Picture, String> {
+        if screen_locked() {
+            return Err("the screen is locked: the window server draws no window".into());
+        }
+        let create = window_list_create_image().ok_or("this system has no CGWindowListCreateImage")?;
+        let v = self.views.borrow();
+        let window = v.parent.window().ok_or("the view is in no window")?;
+        if !window.isVisible() || !window.occlusionState().contains(objc2_app_kit::NSWindowOcclusionState::Visible) {
+            return Err("the window is not visible (hidden, minimized or covered)".into());
+        }
+        let scale = window.backingScaleFactor();
+        // The content view in global display coordinates (top-left origin of the main display).
+        let local = v.parent.convertRect_toView(v.parent.bounds(), None);
+        let screen = window.convertRectToScreen(local);
+        let main = objc2_app_kit::NSScreen::screens(self.views.borrow().mtm).firstObject().ok_or("no screen")?;
+        let top = main.frame().size.height;
+        let bounds = NSRect::new(NSPoint::new(screen.origin.x, top - screen.origin.y - screen.size.height), screen.size);
+        // Including the window only; framing ignored; best resolution.
+        let image = unsafe { create(bounds, 1 << 3, window.windowNumber() as u32, (1 << 0) | (1 << 3)) };
+        // SAFETY: a +1 CGImage or null (a Create function).
+        let image = std::ptr::NonNull::new(image).map(|p| unsafe { objc2_core_foundation::CFRetained::from_raw(p) });
+        let image = image.ok_or("the window server gave no picture")?;
+        let (w, h) = (objc2_core_graphics::CGImage::width(Some(&image)), objc2_core_graphics::CGImage::height(Some(&image)));
+        let (ew, eh) = ((screen.size.width * scale).round() as usize, (screen.size.height * scale).round() as usize);
+        if w.abs_diff(ew) > 2 || h.abs_diff(eh) > 2 {
+            return Err(format!("the window server's picture is not the window ({w}×{h}, the window is {ew}×{eh}): a sleeping display?"));
+        }
+        let ns = NSImage::initWithCGImage_size(NSImage::alloc(), &image, screen.size);
+        let (width, height, rgba) = pixels(&ns, scale).ok_or("the picture could not be read")?;
+        Ok(octara::capture::Picture { width, height, rgba })
     }
 
     /// After the present: commits the transaction.

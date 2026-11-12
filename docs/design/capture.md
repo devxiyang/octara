@@ -1,6 +1,6 @@
 # Captures
 
-Based on the [research](../research/capture.md). Status: confirmed; steps 1 and 2 implemented.
+Based on the [research](../research/capture.md). Status: confirmed; implemented (the window server's picture awaits a check with the screen unlocked).
 
 An agent's picture of the app: what the window shows, native views included, with a report of
 what the picture can be trusted for. One request, the same on every platform and headless.
@@ -48,6 +48,12 @@ run time), after the frame's transaction is flushed and two refreshes have passe
 Windows.Graphics.Capture of the own window (later). Where it is unavailable (headless, Wayland,
 a locked screen or a sleeping display, an empty picture) the capture is painted and `fallback`
 says why. Native views are `live` in it.
+
+As built (macOS): the latest frame is presented, and 40 ms later (two refreshes and a margin)
+the content view's rect in global display coordinates is taken from the window server
+(framing ignored, best resolution). It falls back when the session's screen is locked
+(`CGSSessionScreenIsLocked`), the symbol is gone, the window is not visible, or the picture's
+size is not the window's (a sleeping display).
 
 ## Entry points
 

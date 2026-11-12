@@ -108,3 +108,14 @@ fn snapshots_draw_in_place_and_are_cleared() {
     std::fs::remove_file(&shot).unwrap();
     assert_eq!((c.native[0].shown, c.settled, c.pending.as_slice()), (Shown::Failed, false, ["motion".to_string()].as_slice()));
 }
+
+#[test]
+fn a_display_capture_shows_views_live() {
+    let mut app = App::new(view);
+    let shot = path("display");
+    let picture = Picture { width: 2, height: 1, rgba: vec![0, 0, 0, 255, 255, 255, 255, 255] };
+    let c = app.capture_display(&picture, &shot, 2.0, vec![]).unwrap();
+    std::fs::remove_file(&shot).unwrap();
+    assert_eq!((c.pixels, c.renderer.as_str(), c.width, c.settled), (Pixels::Display, "display", 2, true));
+    assert_eq!((c.native[0].id.as_deref(), c.native[0].shown), (Some("web"), Shown::Live));
+}

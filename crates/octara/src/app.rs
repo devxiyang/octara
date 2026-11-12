@@ -819,6 +819,42 @@ impl App {
         })
     }
 
+    /// A `display` capture: the window server's `picture` of the window, written to `path` as a
+    /// PNG, with the native views reported live.
+    pub fn capture_display(
+        &mut self,
+        picture: &crate::capture::Picture,
+        path: &str,
+        scale: f32,
+        pending: Vec<String>,
+    ) -> Result<crate::capture::Capture, String> {
+        use crate::capture::{NativeShot, Shown};
+        picture.save_png(path)?;
+        let placements = self.ui.kernel.borrow().native_placements();
+        let k = self.ui.kernel.borrow();
+        let native = placements
+            .into_iter()
+            .filter(|(_, p)| p.visible)
+            .filter_map(|(n, p)| {
+                let v = k.native(n)?;
+                let r = p.rect;
+                Some(NativeShot { id: k.test_id(n).map(str::to_owned), kind: v.kind.clone(), rect: [r.x, r.y, r.w, r.h], shown: Shown::Live, reason: None, misses: Vec::new() })
+            })
+            .collect();
+        Ok(crate::capture::Capture {
+            path: path.to_owned(),
+            width: picture.width,
+            height: picture.height,
+            scale,
+            pixels: crate::capture::Pixels::Display,
+            fallback: None,
+            renderer: "display".to_owned(),
+            settled: pending.is_empty(),
+            pending,
+            native,
+        })
+    }
+
     /// Takes the installed painter out while it paints (see [`set_painter`](Self::set_painter)).
     pub(crate) fn take_painter(&self) -> Option<Box<dyn crate::capture::Painter>> {
         self.painter.borrow_mut().take()

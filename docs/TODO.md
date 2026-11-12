@@ -13,6 +13,10 @@ Checked by tests and screenshots; to be tried in a real window (`cargo run -p oc
       Down, Cmd+Left / Right and Cmd+Up / Down feel right.
 - [ ] Chat composer: Enter sends, Shift+Enter breaks the line, the field grows to 4 lines.
 - [ ] Password: no input method while it has focus, copy and undo do nothing, Show reveals it.
+- [ ] Display captures with the screen unlocked: `OCTARA_CAPTURE=shot.png
+      OCTARA_CAPTURE_PIXELS=display cargo run -p octara-examples --bin window -- showcase web`
+      reports `pixels: display`, and the picture holds the Metal frame and the live web page,
+      cropped to the content view (no title bar), at the backing scale.
 - [ ] Web view (`window -- showcase web`, macOS): the page shows in the rounded box, "Other page"
       loads the second page and the status shows its title; in the full `showcase`, scrolling and
       resizing move the view with the page, without lag or a gap, and it clips at the window's

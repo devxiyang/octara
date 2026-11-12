@@ -111,6 +111,13 @@
           ]
         },
         {
+          "path": "octara::app::App::capture_display",
+          "kind": "method",
+          "sig": "pub fn capture_display(&mut self, picture: &Picture, path: &str, scale: f32, pending: Vec<String>) -> Result<Capture, String>",
+          "docs": "A `display` capture: the window server's `picture` of the window, written to `path` as a\nPNG, with the native views reported live.",
+          "file": "crates/octara/src/app.rs"
+        },
+        {
           "path": "octara::app::App::capture_finish",
           "kind": "method",
           "sig": "pub fn capture_finish(&mut self, painter: &mut dyn Painter, path: &str, scale: f32, pending: Vec<String>, fallback: Option<String>) -> Result<Capture, String>",
