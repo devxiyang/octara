@@ -238,3 +238,29 @@ fn run_until_idle_reports_work_still_running_at_its_limit() {
     assert!(app.app().run_until_idle(ms(5000)).is_ok());
     assert_eq!(app.app().now(), ms(5000));
 }
+
+#[test]
+fn a_clock_steps_while_someone_reads_it() {
+    use std::time::Duration;
+    let mut w = Window::headless(|| {
+        let shown = state("shown", || true);
+        col()
+            .child(show(
+                move || shown.get(),
+                || {
+                    let t = clock(Duration::from_millis(100));
+                    let u = clock(Duration::from_millis(100));
+                    text(move || format!("{} {}", t.get().as_millis(), u.get().as_millis())).id("t").into()
+                },
+            ))
+            .child(el().id("hide").size(10.0).on_press(move || shown.set(false)))
+            .into()
+    });
+    assert_eq!(w.kernel().text_of("t").unwrap(), "0 0");
+    w.app().advance(Duration::from_millis(250));
+    assert_eq!(w.kernel().text_of("t").unwrap(), "200 200", "in steps of its period");
+    assert!(w.app().next_deadline().is_some());
+    assert!(w.app().run_until_idle(Duration::from_secs(1)).is_ok(), "it does not keep the app busy");
+    w.tap("hide").unwrap();
+    assert_eq!(w.app().next_deadline(), None, "no reader left: the timer stopped");
+}

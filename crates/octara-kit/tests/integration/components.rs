@@ -180,7 +180,8 @@ fn state_cell() -> std::rc::Rc<std::cell::Cell<u32>> {
 
 #[test]
 fn a_spinner_steps_round_on_the_clock() {
-    let app = Window::headless(|| row().child(spinner().id("busy")).into());
+    let app = Window::headless(|| row().child(spinner().id("busy")).child(spinner().id("busy2")).into());
+    assert!(app.app().diagnostics().is_empty(), "two spinners side by side: {:?}", app.app().diagnostics());
     let k = app.kernel();
     let n = k.find("busy").unwrap();
     assert_eq!((k.role(n), k.label(n)), (Role::ProgressIndicator, Some("Loading")));

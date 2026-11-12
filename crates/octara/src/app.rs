@@ -190,6 +190,8 @@ pub(crate) struct WindowState {
     /// Whether scroll containers follow their tail, as someone reads it (`following_tail`), by
     /// test id.
     pub(crate) tails: RefCell<rustc_hash::FxHashMap<String, Signal<bool>>>,
+    /// Clocks someone reads (`clock`), by period in nanoseconds.
+    pub(crate) clocks: RefCell<rustc_hash::FxHashMap<u128, Clock>>,
     /// Paced texts (`paced`) in this window, by number.
     pub(crate) paced: RefCell<Vec<(u64, Rc<crate::view::Paced>)>>,
     /// Run after each layout; return whether they changed anything (then the window lays out again).
@@ -300,6 +302,13 @@ pub struct Window {
     w: Rc<WindowState>,
 }
 
+/// A clock someone reads: its signal, the timer moving it, and how many scopes read it.
+pub(crate) struct Clock {
+    pub(crate) signal: Signal<std::time::Duration>,
+    pub(crate) task: crate::task::Task,
+    pub(crate) readers: usize,
+}
+
 /// Runtime-owned interaction states. A hot reload carries them over by test id.
 #[derive(Default)]
 struct Interaction {
@@ -351,6 +360,7 @@ impl WindowState {
             scrolls: RefCell::default(),
             sizes: RefCell::default(),
             tails: RefCell::default(),
+            clocks: RefCell::default(),
             paced: RefCell::default(),
             after_layout: RefCell::default(),
             next: Cell::new(0),
@@ -659,6 +669,10 @@ impl AppState {
             }
             for (_, s) in w.w.tails.borrow_mut().drain() {
                 s.dispose();
+            }
+            for (_, c) in w.w.clocks.borrow_mut().drain() {
+                c.task.cancel();
+                c.signal.dispose();
             }
         });
         w.w.closed.set(true);

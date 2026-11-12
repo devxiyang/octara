@@ -15,10 +15,9 @@ const STEP: Duration = Duration::from_millis(83);
 #[component]
 #[track_caller]
 pub fn spinner() -> El {
-    let at_now = || (octara::task::now().as_millis() / STEP.as_millis()) as u32 % 12;
-    let phase = state("phase", at_now);
-    interval(STEP, move || phase.set(at_now()));
+    let time = clock(STEP);
     canvas(move |c| {
+        let phase = (time.get().as_millis() / STEP.as_millis()) % 12;
         let (w, h) = c.size();
         let (cx, cy) = (w / 2.0, h / 2.0);
         let r = (w.min(h) / 2.0 - 1.5).max(1.0);
@@ -29,7 +28,7 @@ pub fn spinner() -> El {
         };
         let track = Path::new().move_to(at(0.0)).arc_to((r, r), 0.0, true, true, at(180.0)).arc_to((r, r), 0.0, true, true, at(360.0));
         c.stroke(&track, &stroke, Token::Border);
-        let from = phase.get() as f32 * 30.0 - 90.0;
+        let from = phase as f32 * 30.0 - 90.0;
         let arc = Path::new().move_to(at(from)).arc_to((r, r), 0.0, false, true, at(from + 90.0));
         c.stroke(&arc, &stroke, Token::TextMuted);
     })

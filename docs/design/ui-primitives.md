@@ -24,7 +24,7 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | | `state_list` and `filter` / `sort_by` / `group_by` / `map` / `join` / `flatten` | Implemented ([map and join](map-join.md)) |
 | | `TextBuffer`, `text_buffer`, `paced` | Implemented |
 | | Context `provide` / `use_context` | Implemented |
-| | Tasks, subscriptions, resources | Implemented ([async](async.md)) |
+| | Tasks, subscriptions, resources, `clock` | Implemented ([async](async.md)) |
 | Structure | `component_keyed` / `component`, `show` / `show_else`, `each`, `virtual_each` | Implemented |
 | | `.child(..)` / `.children(iter)`, `El::overlay`, modals (Escape, press outside, focus kept inside) | Implemented |
 | Elements | `el`, `row`, `col`, `spacer`; `text(fixed value \| closure \| TextBuffer)` | Implemented |

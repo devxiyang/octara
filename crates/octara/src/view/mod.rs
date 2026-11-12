@@ -562,6 +562,44 @@ pub fn following_tail(id: &str) -> ReadSignal<bool> {
     s.read_only()
 }
 
+/// The app's clock, tracked, moving in steps of `period` (SwiftUI's periodic `TimelineView`): a
+/// binding reading it reruns every `period` (a spinner's step, "5 minutes ago", a caret). Readers
+/// in a window with one period share one timer, which stops when the last of their scopes goes;
+/// it does not keep the app busy (`run_until_idle`).
+#[track_caller]
+pub fn clock(period: std::time::Duration) -> ReadSignal<std::time::Duration> {
+    let u = crate::app::window();
+    let step = period.as_nanos().max(1);
+    let at = move |t: std::time::Duration| std::time::Duration::from_nanos((t.as_nanos() / step * step) as u64);
+    let signal = {
+        let mut clocks = u.clocks.borrow_mut();
+        let e = clocks.entry(step).or_insert_with(|| {
+            let s = Signal::detached(at(crate::task::now()));
+            let task = crate::task::interval(period, move || s.set(at(crate::task::now())));
+            // The readers own it together, not the first one's scope.
+            task.clone().detach();
+            crate::app::Clock { signal: s, task, readers: 0 }
+        });
+        e.readers += 1;
+        e.signal
+    };
+    let u2 = u.clone();
+    rt(|rt| {
+        rt.on_cleanup(Box::new(move || {
+            let mut clocks = u2.clocks.borrow_mut();
+            if let Some(e) = clocks.get_mut(&step) {
+                e.readers -= 1;
+                if e.readers == 0 {
+                    let e = clocks.remove(&step).expect("the clock");
+                    e.task.cancel();
+                    e.signal.dispose();
+                }
+            }
+        }))
+    });
+    signal.read_only()
+}
+
 /// Lands everything in motion on its target now (Rune's `tx.settle`).
 pub fn settle_motion() {
     let u = crate::app::window();

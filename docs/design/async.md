@@ -26,6 +26,10 @@ channels, optionally named; a subscription is a scope-owned handle.
 - The only clock is the app clock, kept by the scheduler (tasks and `sleep` both read it). Before each event and frame the shell
   calls `advance_to(time since launch)`; tests call `advance(d)`.
 - `sleep(d)`, `sleep_until(t)`, `now()`, `interval(d, f)` (each firing time is computed from the start, no drift).
+- `clock(period)`: the app's clock as a tracked value moving in steps of `period` (SwiftUI's
+  periodic `TimelineView`), for what shows time (a spinner's step, "5 minutes ago"). Readers in a
+  window with one period share one timer; it stops when the last reader's scope goes, and as a
+  subscription it does not keep the app busy.
 - `advance_to` handles everything that expires along the way (timers, long presses) in time order, each at its own time; `next_deadline` aggregates
   timers, long presses and inertia. Time-related code is in `app/time.rs`; gesture recognizers only supply their own deadlines (`pointer_deadline` /
   `pointer_time`).
