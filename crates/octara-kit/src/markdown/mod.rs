@@ -76,22 +76,33 @@ pub fn markdown(source: impl IntoMarkdown) -> El {
         Source::Dyn(f) => doc.borrow_mut().update(&f()),
         Source::Live(t) => t.with(|s| doc.borrow_mut().update(s)),
     });
+    let source_of = doc.clone();
+    // Its blocks live in a scope of its own: what it keeps is made from its source, so each
+    // instance has its own, whatever its siblings.
+    static INSTANCES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let instance = INSTANCES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    col().selectable().copy_markdown(move |copied| source_copy(&source_of.borrow(), copied)).gap_3().child(component_keyed(
+        "markdown",
+        instance,
+        move || blocks(doc, source, streaming),
+    ))
+}
+
+/// The blocks of a document, kept in step with its source.
+fn blocks(doc: Rc<RefCell<Doc>>, source: Source, streaming: bool) -> View {
     let blocks = list("blocks", || keyed("b", doc.borrow().blocks().to_vec()), |e: &Keyed<Block>| e.0.clone());
     // What assistive technology hears: each block as it finishes (the one before the last).
     let heard = state("heard", String::new);
     let finished = Rc::new(Cell::new(doc.borrow().blocks().len().saturating_sub(1)));
-    let follow = {
-        let doc = doc.clone();
-        move |s: &str| {
-            let mut d = doc.borrow_mut();
-            d.update(s);
-            sync(blocks, "b", d.blocks(), d.kept(), render::same_kind);
-            let done = d.blocks().len().saturating_sub(1);
-            if streaming && done > finished.get() {
-                heard.set(d.blocks()[finished.get()..done].iter().map(plain).collect::<Vec<_>>().join("\n"));
-            }
-            finished.set(done);
+    let follow = move |s: &str| {
+        let mut d = doc.borrow_mut();
+        d.update(s);
+        sync(blocks, "b", d.blocks(), d.kept(), render::same_kind);
+        let done = d.blocks().len().saturating_sub(1);
+        if streaming && done > finished.get() {
+            heard.set(d.blocks()[finished.get()..done].iter().map(plain).collect::<Vec<_>>().join("\n"));
         }
+        finished.set(done);
     };
     match source {
         Source::Text(_) => {}
@@ -115,13 +126,11 @@ pub fn markdown(source: impl IntoMarkdown) -> El {
             );
         }
     }
-    let source_of = doc.clone();
-    col()
-        .selectable()
-        .copy_markdown(move |copied| source_copy(&source_of.borrow(), copied))
-        .gap_3()
-        .child(each(move || blocks.source(), |_, b| render::block_view(b)))
-        .children(streaming.then(|| el().w(0.0).h(0.0).live(Live::Polite).label(move || heard.get())))
+    let mut parts = vec![each(move || blocks.source(), |_, b| render::block_view(b))];
+    if streaming {
+        parts.push(el().w(0.0).h(0.0).live(Live::Polite).label(move || heard.get()).into());
+    }
+    View::Fragment(parts)
 }
 
 /// The Markdown for a selection: the source of the blocks it touches, whole; the whole source

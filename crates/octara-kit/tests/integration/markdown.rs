@@ -212,3 +212,23 @@ fn assistive_technology_hears_each_block_as_it_finishes() {
     app.settle();
     assert_eq!(heard(&w).as_deref(), Some("The first paragraph is here."), "not each token");
 }
+
+#[test]
+fn instances_keep_their_own_blocks() {
+    let app = App::new(HeadlessPlatform::default());
+    let live = app.run(|| LiveText::new("live one"));
+    let stream = live.clone();
+    let w = app
+        .open_window(WindowOptions::new("Chat"), move || {
+            col()
+                .children((0..2).map(|i| markdown(format!("static {i}").as_str()).id(format!("s{i}"))))
+                .child(markdown(&stream).id("t"))
+                .into()
+        })
+        .unwrap();
+    app.run(|| live.append(" two"));
+    app.settle();
+    let k = w.kernel();
+    let first = |id: &str| texts(&k, k.find(id).unwrap())[0].clone();
+    assert_eq!([first("s0"), first("s1"), first("t")], ["static 0", "static 1", "live one two"]);
+}
