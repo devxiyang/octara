@@ -16,10 +16,13 @@ pub struct Check {
     pub failure: Option<String>,
 }
 
+/// A scenario: it passes, or says why not.
+type Scenario = fn(&App) -> Result<(), String>;
+
 /// Runs every check on `app`, an app on the backend under test that can open windows now (a
 /// windowing backend calls this from inside its loop). The clipboard is restored afterwards.
 pub fn run(app: &App) -> Vec<Check> {
-    let checks: [(&'static str, fn(&App) -> Result<(), String>); 6] = [
+    let checks: [(&'static str, Scenario); 6] = [
         ("clipboard_text", clipboard_text),
         ("clipboard_image", clipboard_image),
         ("windows_open_and_close", windows_open_and_close),
