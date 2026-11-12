@@ -176,7 +176,8 @@ fn convert(name: &str, krate: &Crate, root: &Path) -> CrateApi {
             .as_ref()
             .map(|s| {
                 let f = &s.filename;
-                f.strip_prefix(root).unwrap_or(f).to_string_lossy().into_owned()
+                // With `/` on every platform, as everything Octara reports.
+                f.strip_prefix(root).unwrap_or(f).to_string_lossy().replace('\\', "/")
             })
             .unwrap_or_default()
     };

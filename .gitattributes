@@ -1,0 +1,6 @@
+# Text is LF in every checkout (Windows too): generated files (api.json, the skill) are
+# compared byte for byte with what the code writes.
+* text=auto eol=lf
+*.png binary
+*.ttf binary
+*.otf binary

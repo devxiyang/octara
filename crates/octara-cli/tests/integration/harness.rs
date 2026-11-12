@@ -39,7 +39,8 @@ fn check_inspect_and_run_drive_the_app() {
     let snap: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!((snap["schema"].as_str(), snap["theme"].as_str()), (Some("octara.inspect/1"), Some("dark")));
     assert!(json.contains("\"id\": \"inc\""));
-    assert!(json.contains("\"source\": \"examples/src/apps.rs:"), "sources are relative to the workspace");
+    let source = json.lines().find(|l| l.contains("\"source\""));
+    assert!(json.contains("\"source\": \"examples/src/apps.rs:"), "sources are relative to the workspace: {source:?}");
 
     // run: a script stops at the first failure.
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
