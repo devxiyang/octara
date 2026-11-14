@@ -3,6 +3,13 @@
 Run the normal app with `cargo run -p octara-chat`. It uses the offline scripted model and saves
 conversations in its application data directory (`OCTARA_CHAT_DIR` overrides that location).
 
+To use an HTTP model, configure `OCTARA_CHAT_ENDPOINT` with a complete Chat Completions
+endpoint and `OCTARA_CHAT_MODEL` with its model name. `OCTARA_CHAT_API_KEY` optionally
+supplies the bearer token. The configured model is selected first; Scripted remains
+available in the picker. Incomplete configuration fails at startup instead of silently
+falling back. See [NETWORK.md](NETWORK.md) for local HTTP verification, configuration,
+supported streaming events, cancellation and Agent observations.
+
 ## Long-session verification
 
 The `long_session` example opens the unchanged Chat UI with an isolated 1,000- or

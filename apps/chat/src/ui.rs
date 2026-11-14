@@ -337,7 +337,7 @@ fn transcript(thread: ThreadId) -> View {
                         .gap_2()
                         .p_8()
                         .child(icon(icons::MESSAGE_SQUARE).size_8().text_color(Token::TextMuted))
-                        .child(text("Ask anything. The scripted model answers offline.").text_sm().text_color(Token::TextMuted))
+                        .child(text("Ask anything to start a conversation.").text_sm().text_color(Token::TextMuted))
                         .select_none()
                         .into()
                 },
@@ -445,12 +445,13 @@ fn answer(id: u64, m: ReadSignal<Message>) -> El {
         .child(each(move || parts.source(), move |i, p| part(id, *i, p)))
         .child(show(
             move || status() == Status::Streaming && parts.is_empty(),
-            || {
+            move || {
                 row()
+                    .id(format!("waiting-{id}"))
                     .gap_2()
                     .items_center()
                     .child(spinner())
-                    .child(text("Thinking…").text_sm().text_color(Token::TextMuted))
+                    .child(text("Waiting for response…").text_sm().text_color(Token::TextMuted))
                     .select_none()
                     .into()
             },

@@ -13,7 +13,8 @@ platform capabilities with inspection and testing built into the runtime.
 retained UI tree, headless runtime, component kit, CPU/GPU renderers and CLI are implemented.
 The winit desktop shell supports multiple windows, with deeper native integration on macOS
 (web views, maps, menus and alerts). The AI chat reference app exercises streaming Markdown,
-tasks and conversation storage with an offline scripted model. Mobile shells, packaging and
+tasks and conversation storage with an offline scripted model or a configured HTTP streaming
+model. Mobile shells, packaging and
 the broader native SDK remain future work; see [Architecture](docs/ARCHITECTURE.md) and
 [TODO](docs/TODO.md) for the current boundaries.
 
@@ -127,7 +128,7 @@ These are architectural targets, not a current support matrix.
 | `crates/octara-icons` | Lucide icons as path data |
 | `crates/octara-fonts` | Bundled CJK subset for deterministic tests and screenshots |
 | `examples` | Example apps, shared scenarios, tests and the benchmark |
-| `apps/chat` | The AI chat reference app, built from the core and the kit, answered by an offline scripted model |
+| `apps/chat` | The AI chat reference app, with offline and HTTP streaming models |
 
 The core and agent tooling are exercised through headless interaction tests, incremental
 consistency checks, input replay and CPU/GPU rendering comparisons. CI is configured to build
