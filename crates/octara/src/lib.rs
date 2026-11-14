@@ -59,6 +59,7 @@ pub mod prelude {
     pub use crate::platform::{ClipboardItem, CursorStyle};
     pub use crate::reactive::graph::{Memo, ReadSignal, Signal, memo, provide, state, untrack, use_context, watch};
     pub use crate::reactive::list::{Derived, FlatItem, FlatKey, GroupInfo, Groups, Source, StateList, state_list};
+    pub use crate::reactive::on_cleanup;
     pub use crate::reactive::text::{TextBuffer, text_buffer};
     pub use crate::task::{Load, Receiver, Resource, Sender, Task, background, channel, interval, resource, sleep, spawn};
     pub use crate::view::*;

@@ -278,6 +278,9 @@ assert_eq!(app.kernel().text_of("status").as_deref(), Some("ready"));
 - `background(|| ..)`: blocking work on a worker thread, awaited in a task.
 - `channel()`: a `Sender` for other threads (a socket, an LLM's tokens) and a `Receiver` on the UI
   thread. `interval(period, f)` ticks while its scope lives.
+- Register `on_cleanup(..)` during component construction to retire external requests and cancel
+  retained task handles when that scope is disposed. Tasks created later by input handlers can
+  run outside that construction scope; retain their handles when the component must own them.
 - The system: `open_window(options, view)` / `close_window(id)`; `open_url(url)`;
   `write_to_clipboard(text or image)` / `read_from_clipboard()`; `prompt_for_paths(options)` and
   `prompt_for_new_path(dir, name)`, awaited in a task (`None`: cancelled); files dropped from the

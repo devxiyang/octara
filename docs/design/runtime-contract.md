@@ -1,9 +1,9 @@
 # Runtime architecture
 
 Status: selected architecture direction, 2026-11-14. Rust builders, Signals, scoped tasks, the
-retained Kernel and GPU rendering are the implemented foundation. Live attachment and the
-correctness work below remain implementation targets; [Architecture](../ARCHITECTURE.md) records
-what currently works.
+retained Kernel and GPU rendering are the implemented foundation. Live attachment is implemented;
+the remaining correctness work below is tracked separately. [Architecture](../ARCHITECTURE.md)
+records what currently works.
 
 Keep the application in Rust and update UI through fine-grained bindings. Give Agents direct
 access to the running app through a small tool interface. The [Exact comparison](../research/exact-runtime-simplicity.md)

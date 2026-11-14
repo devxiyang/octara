@@ -128,6 +128,9 @@ impl Message {
     /// reasoning, input to a tool's): the part's buffer grows and the message stays as it is.
     /// Returns whether it did; otherwise `apply` it.
     pub fn stream(&self, event: &Event) -> bool {
+        if self.status != Status::Streaming {
+            return false;
+        }
         match (event, self.parts.last()) {
             (Event::Text(s), Some(Part::Text(t))) => t.append(s),
             (Event::Reasoning(s), Some(Part::Reasoning { text, ended: None, .. })) => text.append(s),

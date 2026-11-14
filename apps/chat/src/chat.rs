@@ -42,8 +42,62 @@ struct Shared {
     store: Option<Store>,
     clock: Rc<dyn Fn() -> u64>,
     next_id: Cell<u64>,
-    /// What stops each answer streaming, by its message.
-    cancels: RefCell<HashMap<MessageId, Cancel>>,
+    answers: RefCell<HashMap<ThreadId, Running>>,
+    titles: RefCell<HashMap<ThreadId, Running>>,
+}
+
+/// One current request per conversation and purpose. The existing answer id is its owner key.
+struct Running {
+    id: MessageId,
+    receiver: Task,
+    cancel: Option<Cancel>,
+}
+
+#[derive(Clone, Copy)]
+enum PurposeOwner {
+    Answer,
+    Title,
+}
+
+impl Shared {
+    fn requests(&self, kind: PurposeOwner) -> &RefCell<HashMap<ThreadId, Running>> {
+        match kind {
+            PurposeOwner::Answer => &self.answers,
+            PurposeOwner::Title => &self.titles,
+        }
+    }
+
+    fn current(&self, kind: PurposeOwner, thread: ThreadId, id: MessageId) -> bool {
+        self.requests(kind).borrow().get(&thread).is_some_and(|r| r.id == id)
+    }
+
+    fn take(&self, kind: PurposeOwner, thread: ThreadId, id: MessageId) -> Option<Running> {
+        let mut requests = self.requests(kind).borrow_mut();
+        if requests.get(&thread).is_some_and(|r| r.id == id) { requests.remove(&thread) } else { None }
+    }
+
+    /// `respond` is application code and may already have stopped or replaced this request.
+    fn install_cancel(&self, kind: PurposeOwner, thread: ThreadId, id: MessageId, cancel: Cancel) {
+        let mut cancel = Some(cancel);
+        if let Some(request) = self.requests(kind).borrow_mut().get_mut(&thread).filter(|r| r.id == id) {
+            request.cancel = cancel.take();
+        }
+        if let Some(cancel) = cancel {
+            cancel();
+        }
+    }
+
+    fn close(&self) {
+        // Retire every owner before cancelling tasks or invoking application code.
+        let answers = std::mem::take(&mut *self.answers.borrow_mut());
+        let titles = std::mem::take(&mut *self.titles.borrow_mut());
+        for request in answers.into_values().chain(titles.into_values()) {
+            request.receiver.cancel();
+            if let Some(cancel) = request.cancel {
+                cancel();
+            }
+        }
+    }
 }
 
 /// The chat: its lists and signals, and the flows over them. Cheap to clone; views get it with
@@ -84,7 +138,7 @@ impl Chat {
         let threads_init: Vec<Thread> = saved.iter().map(|(t, _)| t.clone()).collect();
         let messages_init: Vec<Message> =
             saved.into_iter().flat_map(|(t, ms)| ms.into_iter().map(move |m| Message::load(m, t.id))).collect();
-        Chat {
+        let chat = Chat {
             threads: state_list("threads", move || threads_init, |t: &Thread| t.id),
             messages: state_list("messages", move || messages_init, |m: &Message| m.id),
             queue: state_list("queue", Vec::new, |q: &Queued| q.id),
@@ -100,9 +154,17 @@ impl Chat {
                 store: options.store,
                 clock: options.clock,
                 next_id: Cell::new(max + 1),
-                cancels: RefCell::default(),
+                answers: RefCell::default(),
+                titles: RefCell::default(),
             }),
-        }
+        };
+        let shared = Rc::downgrade(&chat.shared);
+        on_cleanup(move || {
+            if let Some(shared) = shared.upgrade() {
+                shared.close();
+            }
+        });
+        chat
     }
 
     pub fn models(&self) -> Vec<String> {
@@ -154,6 +216,7 @@ impl Chat {
     pub fn rename(&self, thread: ThreadId, title: &str) {
         let title = title.trim();
         if !title.is_empty() {
+            self.stop_title(thread);
             self.threads.update(&thread, |t| t.title = title.to_owned());
             self.save(thread);
         }
@@ -162,6 +225,7 @@ impl Chat {
     /// Deletes a conversation, its messages and what it queued (an answer streaming stops).
     pub fn delete(&self, thread: ThreadId) {
         self.stop(thread);
+        self.stop_title(thread);
         self.messages.retain(|m| m.thread != thread);
         self.queue.retain(|q| q.thread != thread);
         self.threads.remove(&thread);
@@ -287,45 +351,82 @@ impl Chat {
         self.answering.update(|a| a.push(thread));
         self.touch(thread);
         let (tx, rx) = channel::<Event>();
-        {
-            let chat = self.clone();
-            rx.on(move |ev| chat.on_event(thread, answer, ev));
-        }
+        let chat = self.clone();
+        let receiver = rx.on(move |ev| chat.on_event(thread, answer, ev));
+        self.shared.answers.borrow_mut().insert(thread, Running { id: answer, receiver, cancel: None });
         let cancel = self.model_now().respond(Request { purpose: Purpose::Reply, history: history.clone() }, tx);
-        self.shared.cancels.borrow_mut().insert(answer, cancel);
-        if first {
-            self.name(thread, history);
+        self.shared.install_cancel(PurposeOwner::Answer, thread, answer, cancel);
+        if first && self.shared.current(PurposeOwner::Answer, thread, answer) {
+            self.name(thread, answer, history);
         }
     }
 
     /// Asks the model for the conversation's title.
-    fn name(&self, thread: ThreadId, history: Vec<(Author, String)>) {
+    fn name(&self, thread: ThreadId, answer: MessageId, history: Vec<(Author, String)>) {
+        self.stop_title(thread);
         let (tx, rx) = channel::<Event>();
         let title = Rc::new(RefCell::new(String::new()));
         let chat = self.clone();
-        rx.on(move |ev| match ev {
-            Event::Text(s) => title.borrow_mut().push_str(&s),
-            Event::Done => {
-                let t = title.borrow().trim().to_owned();
-                if !t.is_empty() && chat.threads.item(&thread).is_some() {
-                    chat.threads.update(&thread, |th| th.title = t);
-                    chat.save(thread);
-                }
+        let receiver = rx.on(move |ev| {
+            if !chat.shared.current(PurposeOwner::Title, thread, answer) || chat.threads.item(&thread).is_none() {
+                return;
             }
-            _ => {}
+            match ev {
+                Event::Text(s) => title.borrow_mut().push_str(&s),
+                Event::Done | Event::Failed(_) => {
+                    let Some(request) = chat.shared.take(PurposeOwner::Title, thread, answer) else { return };
+                    request.receiver.cancel();
+                    if matches!(ev, Event::Done) {
+                        let t = title.borrow().trim().to_owned();
+                        if !t.is_empty() {
+                            chat.threads.update(&thread, |th| th.title = t);
+                            chat.save(thread);
+                        }
+                    }
+                    if let Some(cancel) = request.cancel {
+                        cancel();
+                    }
+                }
+                _ => {}
+            }
         });
-        drop(self.model_now().respond(Request { purpose: Purpose::Title, history }, tx));
+        self.shared.titles.borrow_mut().insert(thread, Running { id: answer, receiver, cancel: None });
+        let cancel = self.model_now().respond(Request { purpose: Purpose::Title, history }, tx);
+        self.shared.install_cancel(PurposeOwner::Title, thread, answer, cancel);
+    }
+
+    fn stop_title(&self, thread: ThreadId) {
+        let request = self.shared.titles.borrow_mut().remove(&thread);
+        if let Some(request) = request {
+            request.receiver.cancel();
+            if let Some(cancel) = request.cancel {
+                cancel();
+            }
+        }
     }
 
     fn on_event(&self, thread: ThreadId, answer: MessageId, ev: Event) {
+        if !self.shared.current(PurposeOwner::Answer, thread, answer) || self.threads.item(&thread).is_none() {
+            return;
+        }
         let Some(item) = self.messages.item(&answer) else { return };
+        if !item.with_untracked(|m| m.thread == thread && m.status == Status::Streaming) {
+            return;
+        }
         let end = matches!(ev, Event::Done | Event::Failed(_));
+        let retired = if end {
+            let Some(request) = self.shared.take(PurposeOwner::Answer, thread, answer) else { return };
+            request.receiver.cancel();
+            Some(request)
+        } else {
+            None
+        };
         if !item.with_untracked(|m| m.stream(&ev)) {
             let now = octara::task::now();
             self.messages.update(&answer, |m| m.apply(ev, now));
         }
         if end {
-            self.ended(thread, answer);
+            self.ended(thread);
             // The next queued message goes once an answer has come (not after a stop).
             let next =
                 self.queue.keys().into_iter().filter_map(|k| self.queue.item(&k)).map(|q| q.get_untracked()).find(|q| q.thread == thread);
@@ -334,28 +435,28 @@ impl Chat {
                 self.start(thread, &q.text, q.files);
             }
         }
+        if let Some(cancel) = retired.and_then(|request| request.cancel) {
+            cancel();
+        }
     }
 
     /// Stops the answer streaming in `thread`, if any; what came stays.
     pub fn stop(&self, thread: ThreadId) {
-        if !self.is_answering_now(thread) {
-            return;
-        }
-        let streaming = self.thread_messages(thread).into_iter().rev().find(|m| m.status == Status::Streaming).map(|m| m.id);
-        if let Some(id) = streaming {
-            if let Some(cancel) = self.shared.cancels.borrow_mut().remove(&id) {
+        let request = self.shared.answers.borrow_mut().remove(&thread);
+        if let Some(request) = request {
+            request.receiver.cancel();
+            let now = octara::task::now();
+            self.messages.update(&request.id, |m| m.finish(Status::Stopped, now));
+            self.ended(thread);
+            if let Some(cancel) = request.cancel {
                 cancel();
             }
-            let now = octara::task::now();
-            self.messages.update(&id, |m| m.finish(Status::Stopped, now));
-            self.ended(thread, id);
         } else {
             self.answering.update(|a| a.retain(|t| *t != thread));
         }
     }
 
-    fn ended(&self, thread: ThreadId, answer: MessageId) {
-        self.shared.cancels.borrow_mut().remove(&answer);
+    fn ended(&self, thread: ThreadId) {
         self.answering.update(|a| a.retain(|t| *t != thread));
         self.touch(thread);
         self.save(thread);

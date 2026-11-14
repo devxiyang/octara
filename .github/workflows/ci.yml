@@ -57,6 +57,9 @@ jobs:
       - name: Live Inspector (real windows)
         if: runner.os == 'macOS'
         run: python3 examples/live_inspect.py --output live-inspect
+      - name: Chat lifecycle (real window)
+        if: runner.os == 'macOS'
+        run: python3 apps/chat/live_lifecycle.py --output chat-lifecycle
       - name: Screenshots (reference renderer, bundled fonts)
         run: cargo run -p octara-examples --bin screenshot -- screenshots 1 --bundled
       - name: A capture through `octara run`
@@ -72,4 +75,5 @@ jobs:
           path: |
             screenshots/
             live-inspect/
+            chat-lifecycle/
           if-no-files-found: warn

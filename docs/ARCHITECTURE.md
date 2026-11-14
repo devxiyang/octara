@@ -155,6 +155,12 @@ owned by scopes on the app clock ([async](design/async.md)).
 Further dependency tracing or watch delivery must serve a concrete tool task. The Agent performs
 improvement through its ordinary edit, run and observe loop.
 
+The [Chat reference app](../apps/chat/README.md) tracks the current answer and title request per
+conversation. Stop, replacement and deletion retire receivers before cancelling the transport;
+queued or late events cannot update retired messages or release a newer answer's queue. Component
+cleanup closes outstanding requests. Store clones serialize disk effects and discard stale saves
+so an older worker cannot overwrite a newer save or recreate a deleted conversation.
+
 ## Platforms
 
 | Platform | GPU target | Current integration and remaining work |
