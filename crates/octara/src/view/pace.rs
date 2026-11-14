@@ -40,6 +40,10 @@ impl Paced {
     }
     /// Shows the next frame's share; whether it is still behind.
     fn step(&self) -> bool {
+        if crate::app::window().kernel.borrow().reduced_motion() {
+            self.land();
+            return false;
+        }
         let (from, to) = (self.shown.len_untracked(), self.source.len_untracked());
         if from >= to {
             return false;

@@ -130,7 +130,7 @@ impl Platform for WinitPlatform {
         #[cfg(target_os = "macos")]
         let text_input = {
             let proxy = shared.proxy.clone();
-            super::text_input_mac::TextInputMac::new(&window, move || {
+            super::text_input_mac::TextInputMac::new(&window, shared.trace, move || {
                 let _ = proxy.send_event(ShellEvent::Wake);
             })
         };
@@ -177,6 +177,7 @@ impl Platform for WinitPlatform {
             resized: false,
             sized: false,
             unshown: None,
+            occluded: None,
             frames: 0,
         }))
     }
@@ -254,9 +255,9 @@ pub(crate) struct WinitWindow {
     pub(crate) resized: bool,
     /// The app was told its size.
     pub(crate) sized: bool,
-    /// `OCTARA_TRACE_INPUT`: the oldest input not yet shown, when it arrived, what it was, and
-    /// when handling ended.
-    pub(crate) unshown: Option<(Instant, &'static str, Instant)>,
+    /// `OCTARA_TRACE_INPUT`: only the oldest input and bounded aggregate counts.
+    unshown: Option<super::trace::Input>,
+    pub(crate) occluded: Option<bool>,
     pub(crate) frames: u32,
 }
 
@@ -320,7 +321,7 @@ impl WinitWindow {
 
     /// Draws `list` and presents it (native views placed with it, in one transaction): whether a
     /// frame was shown.
-    pub(crate) fn draw(&mut self, list: &DisplayList, renderer: &mut GpuRenderer) -> bool {
+    pub(crate) fn draw(&mut self, list: &DisplayList, renderer: &mut GpuRenderer, mut trace: Option<super::trace::Frame>) -> bool {
         let scale = self.scale();
         // An underlay view shows through the frame's cutouts: the layer becomes non-opaque
         // (premultiplied, as the renderer draws).
@@ -332,6 +333,9 @@ impl WinitWindow {
         #[cfg(target_os = "macos")]
         let transaction = self.native.as_ref().is_some_and(|n| n.begin_frame(&self.surface, self.resized));
         self.resized = false;
+        if let Some(t) = &mut trace {
+            t.surface_start = Instant::now();
+        }
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => Some(f),
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
@@ -341,41 +345,71 @@ impl WinitWindow {
             }
             _ => None,
         };
-        let drawing = Instant::now();
+        if let Some(t) = &mut trace {
+            t.surface_ready = Instant::now();
+        }
         if let Some(frame) = &frame {
             let view = frame.texture.create_view(&Default::default());
             renderer.draw(list, scale, &view, (self.config.width, self.config.height));
+        }
+        if let Some(t) = &mut trace {
+            t.encoded = Instant::now();
         }
         #[cfg(target_os = "macos")]
         if let Some(n) = &self.native {
             n.place();
         }
+        if let Some(t) = &mut trace {
+            t.native_placed = Instant::now();
+        }
         let shown = frame.is_some();
         if let Some(frame) = frame {
             self.window.pre_present_notify();
+            if let Some(t) = &mut trace {
+                t.present_start = Some(Instant::now());
+            }
             renderer.queue().present(frame);
+            if let Some(t) = &mut trace {
+                t.present_returned = Some(Instant::now());
+            }
         }
         #[cfg(target_os = "macos")]
         if transaction {
             super::native_mac::Native::end_frame();
         }
-        if !shown {
+        if !shown && trace.is_none() {
             return false;
         }
-        self.pending = false;
-        self.presented = Some(Instant::now());
-        self.frames += 1;
-        if let Some((at, what, handled)) = self.unshown.take() {
-            let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        let finished = Instant::now();
+        if shown {
+            self.pending = false;
+            self.presented = Some(finished);
+            self.frames += 1;
+        }
+        if let Some(t) = trace {
             eprintln!(
-                "octara-shell: {what}: shown after {:.1} ms (handling {:.1}, waiting for the frame {:.1}, drawing {:.1})",
-                ms(at.elapsed()),
-                ms(handled - at),
-                ms(drawing - handled),
-                ms(drawing.elapsed()),
+                "{}",
+                json!({
+                    "schema": "octara.frame_trace/1",
+                    "window": format!("{:?}", self.window.id()),
+                    "frame": self.frames,
+                    "app_clock_ms": t.app_clock_ms,
+                    "visible": self.window.is_visible(),
+                    "occluded": self.occluded,
+                    "surface_acquired": shown,
+                    "size_px": [self.config.width, self.config.height],
+                    "scale": scale,
+                    "cpu_us": t.cpu_json(finished),
+                    "input": self.unshown.as_ref().map(|i| i.json(t.started, t.present_returned)),
+                    "gpu_execution_us": null,
+                    "physical_display_us": null,
+                })
             );
         }
-        true
+        if shown {
+            self.unshown = None;
+        }
+        shown
     }
 
     /// Shows a request the platform takes (file dialogs: rfd's, made here on the main thread so
@@ -426,9 +460,17 @@ impl WinitWindow {
     }
 
     /// Records an input for latency tracing (the first one not yet shown).
-    pub(crate) fn traced(&mut self, at: Instant, what: &'static str) {
-        if self.shared.trace && self.unshown.is_none() {
-            self.unshown = Some((at, what, Instant::now()));
+    pub(crate) fn traced(&mut self, at: Option<Instant>, what: &'static str) {
+        if let Some(at) = at {
+            self.record_input(super::trace::Input::handled(at, what));
+        }
+    }
+
+    pub(crate) fn record_input(&mut self, input: super::trace::Input) {
+        if let Some(pending) = &mut self.unshown {
+            pending.merge(input);
+        } else {
+            self.unshown = Some(input);
         }
     }
 

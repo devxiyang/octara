@@ -651,6 +651,8 @@ impl<T: Send + 'static> Receiver<T> {
     }
 
     /// Calls `f` with each value as it arrives, while the current scope lives.
+    /// After 64 values it yields a poll to other ready tasks. This is task cooperation;
+    /// the scheduler may continue polling in the same frame, without yielding to the OS.
     #[track_caller]
     pub fn on(self, f: impl Fn(T) + 'static) -> Task {
         let label = match &self.name {
@@ -658,8 +660,24 @@ impl<T: Send + 'static> Receiver<T> {
             None => "channel".to_owned(),
         };
         let fut = async move {
+            let mut batch = 0;
             while let Some(v) = self.recv().await {
                 f(v);
+                batch += 1;
+                if batch == 64 {
+                    batch = 0;
+                    let mut yielded = false;
+                    std::future::poll_fn(|cx| {
+                        if yielded {
+                            Poll::Ready(())
+                        } else {
+                            yielded = true;
+                            cx.waker().wake_by_ref();
+                            Poll::Pending
+                        }
+                    })
+                    .await;
+                }
             }
         };
         spawn_with(fut, WorkKind::Subscription, label, Location::caller())

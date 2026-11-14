@@ -57,6 +57,23 @@ fn copy_buttons_write_the_code() {
 }
 
 #[test]
+fn editing_an_earlier_code_line_updates_it_and_keeps_the_block() {
+    let app = App::new(HeadlessPlatform::default());
+    let live = app.run(|| TextBuffer::new("```rust\nlet first = 1;\nlet second = 2;\n```"));
+    let stream = live.clone();
+    let window = app.open_window(WindowOptions::new("Code"), move || markdown(&stream).id("md").into()).unwrap();
+    let code = blocks(&window.kernel())[0].1;
+
+    app.run(|| live.set("```rust\nlet first = 9;\nlet second = 2;\n```"));
+
+    assert_eq!(blocks(&window.kernel())[0].1, code, "editing the code does not replace its block");
+    assert_eq!(texts(&window.kernel(), code), ["rust", "Copy", "let first = 9;", "let second = 2;"]);
+    app.run(|| live.set("```rust\nshorter\n```"));
+    assert_eq!(texts(&window.kernel(), code), ["rust", "Copy", "shorter"], "a rewrite also removes old trailing lines");
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+}
+
+#[test]
 fn a_stream_keeps_every_earlier_blocks_node() {
     // A 2 000-token answer: paragraphs, a list, a code block, a table.
     let mut answer = String::new();
@@ -143,6 +160,36 @@ fn drag(w: &mut Window, a: NodeId, b: NodeId, to: f32) {
     w.pointer_down(ax + 1.0, ay + ah / 2.0);
     w.pointer_move(bx + to, by + bh / 2.0);
     w.pointer_up(bx + to, by + bh / 2.0);
+}
+
+#[test]
+fn the_pointer_selects_code_lines_as_it_selects_paragraphs() {
+    let mut w = Window::headless(|| markdown("alpha one\n\n```text\nalpha one\n```\n").id("md").w(600.0).into());
+    let nodes = {
+        let k = w.kernel();
+        let md = k.find("md").unwrap();
+        let nodes = k.selectable_texts(md);
+        assert_eq!(nodes.iter().map(|n| k.text(*n)).collect::<Vec<_>>(), ["alpha one", "alpha one"]);
+        nodes
+    };
+    for (label, node) in ["paragraph", "code line"].into_iter().zip(nodes) {
+        let (x, y, width, height) = w.kernel().shown_rect(node);
+        assert!(width > 4.0 && height > 0.0, "{label} is laid out");
+        let (x, y) = (x + 2.0, y + height / 2.0);
+        assert_eq!(w.kernel().hit_test(x, y), Some(node), "the coordinates hit the {label} text itself");
+        w.app().advance(std::time::Duration::from_secs(1));
+        w.click_at(x, y);
+        w.click_at(x, y);
+        assert_eq!(w.selected_text().as_deref(), Some("alpha"), "double clicking the {label} selects its word");
+        assert_eq!(copy(&mut w, "mod+c"), "alpha");
+
+        w.app().advance(std::time::Duration::from_secs(1));
+        drag(&mut w, node, node, width - 1.0);
+        assert_eq!(w.selected_text().as_deref(), Some("alpha one"), "dragging the {label} selects its text");
+        assert_eq!(copy(&mut w, "mod+c"), "alpha one");
+    }
+    assert!(w.layout_issues().is_empty(), "{:?}", w.layout_issues());
+    assert!(w.app().diagnostics().is_empty(), "{:?}", w.app().diagnostics());
 }
 
 #[test]

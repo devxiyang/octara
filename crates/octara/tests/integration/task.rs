@@ -142,6 +142,52 @@ fn values_from_other_threads_arrive_through_a_channel() {
 }
 
 #[test]
+fn a_bursting_channel_yields_to_a_ready_cancellation() {
+    const BURST: usize = 4_096;
+    let delivered = Rc::new(Cell::new(0));
+    let before_cancel = Rc::new(Cell::new(None));
+    let (seen, cancelled_at) = (delivered.clone(), before_cancel.clone());
+    let app = Window::headless(move || {
+        let (send, receive) = channel::<usize>();
+        let seen = seen.clone();
+        let counted = seen.clone();
+        let listener = receive.on(move |_| counted.set(counted.get() + 1));
+        for value in 0..BURST {
+            send.send(value).unwrap();
+        }
+        let cancelled_at = cancelled_at.clone();
+        spawn(async move {
+            cancelled_at.set(Some(seen.get()));
+            listener.cancel();
+        });
+        el().into()
+    });
+    let at = before_cancel.get().expect("the other ready task ran");
+    assert!(at > 0 && at < BURST, "the cancellation must run between bounded parts of the burst, received {at}/{BURST}");
+    assert_eq!(delivered.get(), at, "the cancelled listener must not drain the rest");
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
+fn a_channel_burst_keeps_fifo_and_drains_its_closed_tail_across_yields() {
+    let delivered = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let counted = delivered.clone();
+    let app = Window::headless(move || {
+        let (send, receive) = channel::<usize>();
+        for value in 0..257 {
+            send.send(value).unwrap();
+        }
+        drop(send);
+        let counted = counted.clone();
+        receive.on(move |value| counted.borrow_mut().push(value));
+        el().into()
+    });
+    assert_eq!(*delivered.borrow(), (0..257).collect::<Vec<_>>());
+    assert!(app.app().pending().is_empty(), "closed receiver finishes after delivering its tail");
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
 fn background_results_land_in_spawn_order() {
     let app = Window::headless(log_view(|log| {
         for (name, wait) in [("slow", 60u64), ("fast", 1)] {

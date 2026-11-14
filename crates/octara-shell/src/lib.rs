@@ -48,6 +48,7 @@ mod platform;
 mod resize;
 #[cfg(target_os = "macos")]
 mod text_input_mac;
+mod trace;
 
 /// Events sent to the loop from elsewhere: AccessKit's requests, the app's waker (another
 /// thread finished background work or sent on a channel), a window's frame clock ticking.
@@ -151,7 +152,7 @@ pub(crate) struct Shared {
     active: Cell<*const ActiveEventLoop>,
     pub(crate) gpu: RefCell<Option<platform::Gpu>>,
     pub(crate) windows: RefCell<HashMap<WindowId, octara::app::WindowId>>,
-    /// `OCTARA_TRACE_INPUT=1`: each input's latency to the frame that shows it, on stderr.
+    /// `OCTARA_TRACE_INPUT=1`: optional CPU frame/input timings as JSON on stderr.
     pub(crate) trace: bool,
 }
 
@@ -275,10 +276,11 @@ impl Shell {
         let Some(app) = self.app.clone() else { return };
         for id in app.windows() {
             let Some(mut w) = app.window(id) else { continue };
-            let edits = ww(&w, |x| x.text_input.as_ref().map(|i| i.take())).flatten().unwrap_or_default();
+            let (edits, input) = ww(&w, |x| x.text_input.as_ref().map(|i| i.take())).flatten().unwrap_or_default();
             if edits.is_empty() {
                 continue;
             }
+            let started = self.shared.trace.then(Instant::now);
             for edit in edits {
                 let current = ww(&w, |x| x.text_input.as_ref().is_some_and(|i| i.is_current(&edit))).unwrap_or(false);
                 if !current {
@@ -298,6 +300,9 @@ impl Shell {
             ww(&w, |x| {
                 if let Some(input) = &x.text_input {
                     input.reconcile();
+                }
+                if let Some((input, started)) = input.zip(started) {
+                    x.record_input(trace::Input::native(input, started));
                 }
             });
         }
@@ -319,7 +324,19 @@ impl Shell {
             if let Some(pending) = &self.inspect_pending {
                 pending.cancel_disconnected(app);
             }
+            let started = self.shared.trace.then(Instant::now);
             app.advance_to(self.started.elapsed());
+            if let Some(started) = started {
+                eprintln!(
+                    "{}",
+                    octara::serde_json::json!({
+                        "schema": "octara.update_trace/1",
+                        "phase": "advance_to",
+                        "app_clock_ms": app.now().as_millis() as u64,
+                        "elapsed_us": started.elapsed().as_secs_f64() * 1_000_000.0,
+                    })
+                );
+            }
         }
     }
 
@@ -337,7 +354,7 @@ impl Shell {
 
     /// One pointer event at the window's pointer (mouse) or the touch's (finger).
     fn pointer(&mut self, w: &mut AppWindow, ev: PointerEvent) {
-        let at = Instant::now();
+        let at = self.shared.trace.then(Instant::now);
         self.tick();
         w.event(InputEvent::Pointer(ev));
         #[cfg(target_os = "macos")]
@@ -381,11 +398,13 @@ impl Shell {
 
     /// Draws window `w` now.
     fn draw(&mut self, w: &AppWindow) {
+        let started = self.shared.trace.then(Instant::now);
         let list = w.display_list();
+        let trace = started.map(|at| trace::Frame::new(at, w.app().now().as_millis() as u64));
         let shown = {
             let mut gpu = self.shared.gpu.borrow_mut();
             let Some(g) = gpu.as_mut() else { return };
-            ww(w, |x| x.draw(&list, &mut g.renderer)).unwrap_or(false)
+            ww(w, |x| x.draw(&list, &mut g.renderer, trace)).unwrap_or(false)
         };
         if shown
             && Some(w.id()) == self.main
@@ -538,7 +557,19 @@ impl ApplicationHandler<ShellEvent> for Shell {
             ShellEvent::Wake => {
                 self.tick();
                 if let Some(app) = self.app.clone() {
+                    let started = self.shared.trace.then(Instant::now);
                     app.poll();
+                    if let Some(started) = started {
+                        eprintln!(
+                            "{}",
+                            octara::serde_json::json!({
+                                "schema": "octara.update_trace/1",
+                                "phase": "poll",
+                                "app_clock_ms": app.now().as_millis() as u64,
+                                "elapsed_us": started.elapsed().as_secs_f64() * 1_000_000.0,
+                            })
+                        );
+                    }
                     // Events native views sent (a page loaded, its title changed).
                     #[cfg(target_os = "macos")]
                     for id in app.windows() {
@@ -680,8 +711,13 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 self.draw(&w);
             }
             // Hidden windows get no drawables; draw again once visible.
-            WindowEvent::Occluded(false) => {
-                ww(&w, |x| x.pending = true);
+            WindowEvent::Occluded(occluded) => {
+                ww(&w, |x| {
+                    x.occluded = Some(occluded);
+                    if !occluded {
+                        x.pending = true;
+                    }
+                });
             }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::CursorMoved { position, .. } => {
@@ -728,6 +764,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 w.event(InputEvent::Active(on));
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                let at = self.shared.trace.then(Instant::now);
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (-x * LINE, -y * LINE),
                     MouseScrollDelta::PixelDelta(p) => (-p.x as f32 / scale, -p.y as f32 / scale),
@@ -735,9 +772,10 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 let (x, y) = cursor;
                 self.tick();
                 w.wheel(x, y, dx, dy);
+                ww(&w, |x| x.traced(at, "wheel"));
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                let at = Instant::now();
+                let at = self.shared.trace.then(Instant::now);
                 self.tick();
                 #[cfg(target_os = "macos")]
                 let native_key = ww(&w, |x| x.text_input.as_ref().and_then(|i| i.take_key(&event))).flatten();
@@ -769,10 +807,11 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 ww(&w, |x| x.ime_enabled());
             }
             WindowEvent::Ime(Ime::Preedit(text, selection)) => {
+                let at = self.shared.trace.then(Instant::now);
                 self.tick();
                 if ww(&w, |x| x.accepts_ime()).unwrap_or(false) {
-                    ww(&w, |x| x.traced(Instant::now(), "input method composition"));
                     w.event(InputEvent::Preedit { text, selection });
+                    ww(&w, |x| x.traced(at, "input method composition"));
                 }
             }
             WindowEvent::Ime(Ime::Disabled) => {
@@ -798,10 +837,11 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 w.event(InputEvent::FileDrag(FileDrag::Leave));
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
+                let at = self.shared.trace.then(Instant::now);
                 self.tick();
                 if ww(&w, |x| x.accepts_ime()).unwrap_or(false) {
-                    ww(&w, |x| x.traced(Instant::now(), "input method commit"));
                     w.type_text(&text);
+                    ww(&w, |x| x.traced(at, "input method commit"));
                 }
             }
             _ => return,

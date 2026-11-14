@@ -160,11 +160,27 @@ fn code_view(b: ReadSignal<Keyed<Block>>) -> View {
     let lines_of = |s: &str| s.split('\n').map(str::to_owned).collect::<Vec<_>>();
     let lines = state_list("lines", || keyed("l", lines_of(&untrack(code))), key_of::<String>);
     watch(code, move |now, before| {
-        if before.is_some() {
-            let now = lines_of(now);
-            // A stream changes the last line: earlier ones are kept.
-            let from = before.map_or(0, |b| b.matches('\n').count());
-            sync(lines, "l", &now, from, |_, _| true);
+        let Some(before) = before else { return };
+        let had = lines.len();
+        // Only a proven append keeps the earlier lines. Split its tail without allocating
+        // every previous line again; a rewrite can change any line, including the first.
+        let (from, cut) =
+            if now.starts_with(before.as_str()) { (had.saturating_sub(1), before.rfind('\n').map_or(0, |at| at + 1)) } else { (0, 0) };
+        let mut end = from;
+        for line in now[cut..].split('\n') {
+            let key = format!("l{end}");
+            match lines.item(&key) {
+                Some(old) if old.with_untracked(|(_, text)| text == line) => {}
+                Some(_) => lines.update(&key, |(_, text)| {
+                    text.clear();
+                    text.push_str(line);
+                }),
+                None => lines.push((key, line.to_owned())),
+            }
+            end += 1;
+        }
+        for index in end..had {
+            lines.remove(&format!("l{index}"));
         }
     });
     // The language follows too: a fence's info string may still be arriving.

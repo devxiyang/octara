@@ -1,6 +1,7 @@
 //! The focused Octara field as an AppKit text document. AppKit queries and edits a local
 //! mirror synchronously; application handlers run later, when the shell drains the edits.
 
+use super::trace::NativeInput;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, Sel};
 use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
@@ -177,6 +178,8 @@ struct InputIvars {
     first_rect_failure: Cell<Option<&'static str>>,
     keys: RefCell<VecDeque<NativeKey>>,
     anchor: Cell<Option<NSRect>>,
+    trace: bool,
+    trace_input: Cell<Option<NativeInput>>,
 }
 
 define_class!(
@@ -380,8 +383,21 @@ impl InputView {
         if self.ivars().discarding.get() {
             return;
         }
+        let input = self.ivars().trace.then(|| {
+            let kind = match &edit {
+                TextEdit::Mark { .. } => "native composition",
+                TextEdit::Insert { .. } | TextEdit::Unmark => "native commit",
+                TextEdit::Cancel => "native composition cancel",
+            };
+            let mut input = self.ivars().trace_input.get().unwrap_or_else(|| NativeInput::new(kind));
+            input.edit(kind);
+            input
+        });
         let changed = self.ivars().state.borrow_mut().edit(edit);
         if changed {
+            if let Some(input) = input {
+                self.ivars().trace_input.set(Some(input));
+            }
             (self.ivars().wake)();
         }
     }
@@ -403,7 +419,7 @@ pub(crate) struct TextInputMac {
 }
 
 impl TextInputMac {
-    pub(crate) fn new(window: &Window, wake: impl Fn() + 'static) -> Option<Self> {
+    pub(crate) fn new(window: &Window, trace: bool, wake: impl Fn() + 'static) -> Option<Self> {
         let mtm = MainThreadMarker::new()?;
         let RawWindowHandle::AppKit(handle) = window.window_handle().ok()?.as_raw() else { return None };
         // SAFETY: winit's AppKit handle is a live NSView, used only on the main thread.
@@ -421,6 +437,8 @@ impl TextInputMac {
             first_rect_failure: Cell::new(None),
             keys: RefCell::new(VecDeque::new()),
             anchor: Cell::new(None),
+            trace,
+            trace_input: Cell::new(None),
         });
         let view: Retained<InputView> = unsafe { msg_send![super(this), initWithFrame: parent.bounds()] };
         view.setAutoresizingMask(
@@ -464,11 +482,11 @@ impl TextInputMac {
         }
     }
 
-    pub(crate) fn take(&self) -> Vec<NativeEdit> {
+    pub(crate) fn take(&self) -> (Vec<NativeEdit>, Option<NativeInput>) {
         let mut state = self.view.ivars().state.borrow_mut();
         let edits = std::mem::take(&mut state.pending);
         state.inflight |= !edits.is_empty();
-        edits
+        (edits, self.view.ivars().trace_input.take())
     }
 
     pub(crate) fn take_key(&self, event: &winit::event::KeyEvent) -> Option<NativeKey> {

@@ -10,6 +10,9 @@ The `long_session` example opens the unchanged Chat UI with an isolated 1,000- o
 real-window recording commands, Release CPU benchmark, source references and observed
 results are documented in [LONG_SESSION.md](LONG_SESSION.md).
 
+High-rate input, selection, scrolling and cancellation workloads, measurement boundaries
+and the Exact/Rune design references are in [RESPONSIVENESS.md](RESPONSIVENESS.md).
+
 ## Request lifecycle verification
 
 The headless lifecycle tests and real-window fixture use a controllable model which retains its
