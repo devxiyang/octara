@@ -12,6 +12,38 @@ cargo run --release -p octara-examples --bin bench      # benchmark tables
 - `tests/`: acceptance (`acceptance`), from-scratch consistency (`consistency`), diagnostics regression (`diagnostics`),
   list rendering, sorting and grouping, virtualization and streamed text.
 
+## Inspect a real window
+
+On macOS/Linux, enable a private local socket when launching the normal window binary:
+
+```sh
+OCTARA_INSPECT=/tmp/octara-example.sock cargo run -p octara-examples --bin window -- counter
+```
+
+In another terminal, attach to that process; use an unused socket path for each app:
+
+```sh
+cargo run -q -p octara-cli -- inspect --connect /tmp/octara-example.sock --json
+cargo run -q -p octara-cli -- run --connect /tmp/octara-example.sock --json
+```
+
+The second command accepts JSON lines such as `{"op":"tap","id":"inc"}`,
+`{"op":"expect","id":"count","text":"Count: 1"}` and
+`{"op":"capture","path":"/tmp/octara-counter.png"}`. Capturing keeps the window open.
+Live replies identify framework input and the real-time host; GPU/native capture details remain
+in the capture report. The headless commands remain available for virtual-time scripts.
+
+For timed gestures, launch `window -- gestures` instead of `window -- counter`, then send
+`{"op":"double_tap","id":"double-target"}` or `{"op":"long_press","id":"hold-target"}`.
+These use the recognizers on real time. `{"op":"size","width":500,"height":560}` requests
+the native window's client-area size in logical pixels. Its reply confirms the actual window,
+GPU surface and layout agree; `live.resize` includes the requested and actual dimensions.
+
+After building the CLI and window binaries, run the desktop smoke check with
+`python3 examples/live_inspect.py`. It starts its own windows and checks input, timed gestures,
+native resize, captures, errors, window routing and reconnects. PNGs and transcripts stay in the
+printed temporary directory.
+
 ## Specs
 
 Apps are driven by test id (`role#id` below). Components come from `octara-kit`; colors are theme tokens

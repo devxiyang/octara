@@ -3,4 +3,6 @@
 mod api;
 mod cli;
 mod harness;
+#[cfg(unix)]
+mod live;
 mod skill;

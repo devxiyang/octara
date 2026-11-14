@@ -137,6 +137,56 @@ fn long_press_fires_on_time_and_replaces_the_press() {
 }
 
 #[test]
+fn a_long_press_timer_does_not_use_a_target_removed_in_the_same_clock_step() {
+    let mut app = Window::headless(|| {
+        let alive = state("alive", || true);
+        let count = state("count", || 0);
+        spawn(async move {
+            sleep(Duration::from_millis(150)).await;
+            alive.set(false);
+        });
+        col()
+            .size_full()
+            .child(text(move || count.get().to_string()).id("count"))
+            .child(show(move || alive.get(), move || el().id("hold").w(120).h(48).on_long_press(move || count.update(|n| *n += 1)).into()))
+            .into()
+    });
+    let at = center(&app, "hold");
+    touch(&mut app, Phase::Down, at);
+    assert_eq!(app.held_pointer(), Some((1, octara::app::PointerKind::Touch)));
+    app.app().advance(Duration::from_millis(600));
+    assert!(!app.kernel().exists("hold"));
+    assert_eq!(app.kernel().text_of("count").as_deref(), Some("0"));
+    assert!(!app.pointer_long_pressed(1));
+    touch(&mut app, Phase::Cancel, at);
+    assert_eq!(app.held_pointer(), None);
+}
+
+#[test]
+fn becoming_disabled_during_a_hold_does_not_report_long_press_recognition() {
+    let mut app = Window::headless(|| {
+        let disabled = state("disabled", || false);
+        let count = state("count", || 0);
+        spawn(async move {
+            sleep(Duration::from_millis(150)).await;
+            disabled.set(true);
+        });
+        col()
+            .size_full()
+            .child(text(move || count.get().to_string()).id("count"))
+            .child(el().id("hold").w(120).h(48).disabled(move || disabled.get()).on_long_press(move || count.update(|n| *n += 1)))
+            .into()
+    });
+    let at = center(&app, "hold");
+    touch(&mut app, Phase::Down, at);
+    app.app().advance(Duration::from_millis(500));
+    assert_eq!(app.kernel().text_of("count").as_deref(), Some("0"));
+    assert!(!app.pointer_long_pressed(1));
+    touch(&mut app, Phase::Up, at);
+    assert_eq!(app.held_pointer(), None);
+}
+
+#[test]
 fn drag_starts_past_the_slop_and_is_not_a_press() {
     let mut app = app();
     let (x, y) = center(&app, "knob");

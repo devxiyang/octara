@@ -4,6 +4,7 @@
 pub mod api;
 pub mod catalog;
 pub mod harness;
+pub mod live;
 pub mod reference;
 pub mod skill;
 

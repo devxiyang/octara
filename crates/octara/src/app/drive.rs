@@ -75,7 +75,10 @@ impl Kernel {
 }
 
 impl Window {
-    fn point_of(&self, target: &str) -> Result<(f32, f32), String> {
+    /// Resolves a pointer target and its reachable centre, including the current modal boundary.
+    /// The node key identifies this allocation; hosts waiting between inputs must resolve again
+    /// and compare it before dispatching the next phase.
+    pub fn pointer_target(&self, target: &str) -> Result<(NodeId, (f32, f32)), String> {
         let k = self.w.kernel.borrow();
         let n = k.resolve_target(target)?;
         if let Some(m) = self.top_modal()
@@ -83,7 +86,11 @@ impl Window {
         {
             return Err(format!("{} is behind the open modal {}", k.describe(n), k.describe(m)));
         }
-        k.reachable_point(n)
+        k.reachable_point(n).map(|point| (n, point))
+    }
+
+    fn point_of(&self, target: &str) -> Result<(f32, f32), String> {
+        self.pointer_target(target).map(|(_, point)| point)
     }
 
     fn press_at(&mut self, (x, y): (f32, f32), kind: PointerKind, button: Button) {

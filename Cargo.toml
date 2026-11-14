@@ -41,13 +41,13 @@ proptest = "1.12.0"
 pulldown-cmark = { version = "0.13.6", default-features = false }
 open = "5.4.5"
 rfd = "0.18.0"
-parley = { version = "0.12.0", default-features = false, features = ["std", "complex-scripts"] }
+parley = { version = "0.13.0", default-features = false, features = ["std", "complex-scripts"] }
 png = "0.18.1"
 roxmltree = "0.21.2"
 pollster = "1.0.1"
 unicode-segmentation = "1.13.3"
 taffy = { version = "0.15.1", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "content_size"] }
-wgpu = "30.0.1"
+wgpu = "30.0.2"
 winit = "0.30.13"
 octara = { path = "crates/octara" }
 octara-fonts = { path = "crates/octara-fonts" }

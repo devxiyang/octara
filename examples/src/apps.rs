@@ -20,6 +20,72 @@ pub fn counter() -> View {
         .into()
 }
 
+/// A small pointer playground used by the real-window Inspector smoke check.
+#[component]
+pub fn gestures() -> View {
+    let presses = state("presses", || 0u32);
+    let doubles = state("doubles", || 0u32);
+    let short = state("short", || 0u32);
+    let long = state("long", || 0u32);
+    let vanished = state("vanished", || false);
+    let vanished_doubles = state("vanished_doubles", || 0u32);
+    let volatile = state("volatile", || true);
+    let volatile_longs = state("volatile_longs", || 0u32);
+    col()
+        .id("gesture-root")
+        .size_full()
+        .p_4()
+        .gap_2()
+        .child(text(move || format!("Presses: {}", presses.get())).id("presses"))
+        .child(text(move || format!("Doubles: {}", doubles.get())).id("doubles"))
+        .child(text(move || format!("Short: {}", short.get())).id("short"))
+        .child(text(move || format!("Long: {}", long.get())).id("long"))
+        .child(
+            button("Double click")
+                .id("double-target")
+                .self_start()
+                .on_press(move || presses.update(|n| *n += 1))
+                .on_double_press(move || doubles.update(|n| *n += 1)),
+        )
+        .child(
+            button("Hold")
+                .id("hold-target")
+                .self_start()
+                .on_press(move || short.update(|n| *n += 1))
+                .on_long_press(move || long.update(|n| *n += 1)),
+        )
+        .child(text(move || format!("Removed doubles: {}", vanished_doubles.get())).id("vanished-doubles"))
+        .child(show(
+            move || !vanished.get(),
+            move || {
+                button("Remove on first click")
+                    .id("vanishing-double")
+                    .self_start()
+                    .on_press(move || vanished.set(true))
+                    .on_double_press(move || vanished_doubles.update(|n| *n += 1))
+                    .into()
+            },
+        ))
+        .child(text(move || format!("Removed long presses: {}", volatile_longs.get())).id("volatile-longs"))
+        .child(button("Remove hold target soon").id("arm-remove").self_start().on_press(move || {
+            spawn(async move {
+                sleep(std::time::Duration::from_millis(150)).await;
+                volatile.set(false);
+            });
+        }))
+        .child(show(
+            move || volatile.get(),
+            move || {
+                button("Hold while being removed")
+                    .id("volatile-hold")
+                    .self_start()
+                    .on_long_press(move || volatile_longs.update(|n| *n += 1))
+                    .into()
+            },
+        ))
+        .into()
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct Todo {
     pub id: u32,

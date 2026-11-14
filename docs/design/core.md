@@ -1,8 +1,9 @@
 # The core: ownership, context, input and frames
 
-Status: confirmed. Ownership and context, input as data, frames, recording and replay, and what
-people point at are implemented; the rest of the plan below is not. Designed for the first product (an AI chat app),
-several windows, the [platform layer](platform.md) and agents.
+Status: implemented baseline. The steps below describe the built ownership, input, text and
+platform structure. The selected [runtime architecture](runtime-contract.md) keeps this foundation
+and scopes the next work to live inspection and concrete lifecycle/output fixes;
+[Agent context](agent-context.md) describes the planned live interface.
 
 ## Goals
 
@@ -66,7 +67,8 @@ and closes leave nothing behind.
   (`advance`); a backend feeds the wall clock.
 - Recording: `App::start_recording` / `stop_recording` give a `Recording` (each input with its
   time on the app clock and its window; serde). `App::replay` plays one on an app built the same
-  way, which ends with the same trees and display lists. A snapshot's pixels are not recorded.
+  way. Reproduction requires the same initial state and external results; arbitrary background
+  work, clipboard and other I/O are not automatically captured. A snapshot's pixels are not recorded.
 - After each operation (an input, a clock step, `run`, a window opened or closed) the app
   settles every window (tasks, the reactive flush, then each window's layout and after-layout
   hooks) and presents each window's `Frame` to its platform window (`PlatformWindow::present`)

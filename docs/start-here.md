@@ -316,6 +316,17 @@ work that never settles, accessibility); `octara inspect` prints the semantic tr
 (`{"op":"tap","id":"save"}`, `{"op":"expect","id":"total","text":"3 items"}`). The same requests
 work in a test: `octara::inspect::run_script(&mut app, script)`.
 
+For an already running desktop window on macOS/Linux, set
+`OCTARA_INSPECT=/absolute/path/app.sock` when launching its normal shell, then attach with
+`octara inspect --connect /absolute/path/app.sock` or
+`octara run --connect /absolute/path/app.sock --script steps.jsonl --json`. Use an unused socket
+path. The connection reads and drives that process, with framework input and GPU captures.
+Live `double_tap`, `long_press` and `settle` wait on real time while the event loop continues.
+`size` requests logical client-area pixels from the native window; `live.resize` reports its
+actual size and whether the GPU surface and framework viewport agree. Virtual `advance` remains
+headless. Live captures keep the app running; replies name the actual input route. A lost reply
+does not prove an action failed: inspect before retrying it.
+
 What a person points at reaches you as a point or a picked line: `{"op":"pick","x":120,"y":40}`
 names the element at a point. In a running debug window, `mod+shift+c` picks with the mouse and
 copies a line such as `button "Save" (id save) at src/app.rs:52:9; made by toolbar() called at

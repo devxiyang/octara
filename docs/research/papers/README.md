@@ -11,6 +11,9 @@ come from third-party summaries. Paper PDFs are not stored in the repository; on
 
 | File | Topic | Octara problem addressed |
 | --- | --- | --- |
+| [exact-runtime-simplicity.md](../exact-runtime-simplicity.md) | Exact's task-oriented Agent interface, local identity, transactions and native boundaries | Which parts of the proposed observation/convergence architecture to simplify or defer |
+| [mature-runtime-identities.md](../mature-runtime-identities.md) | Fixed-source comparison of Chromium, Flutter/Dart, Compose and GPUI identities and completion stages | Which identity fields need public guarantees; limits of app-wide revision and layout convergence |
+| [runtime-foundations.md](../runtime-foundations.md) | Original sources on causal order, operation boundaries, FRP, superdense time, and Unix/platform failure modes | Baseline for the proposed runtime and Agent context contracts; includes its own source boundary |
 | [incremental-computation.md](incremental-computation.md) | Incremental computation: Self-adjusting computation, Adapton, Nominal Adapton, Salsa, Incremental / Bonsai | Theoretical basis of the reactive kernel; node identity and naming; durability |
 | [incremental-collections.md](incremental-collections.md) | Incremental maintenance of collections: DBSP, the incremental λ-calculus | Aggregation and filtering over `List` are still O(n) |
 | [effects.md](effects.md) | Modeling effects: the evolution of Elm, algebraic effects, reactive languages without functions | `useEffect`-style problems; I8 (reading under the wrong observer) |
@@ -20,8 +23,8 @@ come from third-party summaries. Paper PDFs are not stored in the repository; on
 
 ## Summary of conclusions
 
-- The research frontier does not propose anything to replace Signals. Fine-grained Signals can be seen as a specialization
-  of "demand-driven incremental computation" (the Adapton line of work) to UI, so Octara's direction has theoretical support.
+- Related incremental and reactive models motivate Octara's choices; they neither establish that Signals have no
+  alternatives nor prove the correctness of Octara's implementation.
 - Three improvements can be layered directly on top of Signals:
   1. **Incremental collections** (DBSP, ILC): `List` emits incremental changes, so the cost of derived collections and
      aggregates is proportional to the size of the change;

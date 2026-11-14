@@ -12,6 +12,9 @@
 //! `OCTARA_PICK=1` starts the window picking. Click an element: its line (number, role, test id,
 //! source, the component that made it) goes to the clipboard and to stderr, its JSON to stdout.
 //!
+//! Live inspection: `OCTARA_INSPECT=/absolute/path.sock` enables a local Unix socket on macOS
+//! and Linux. Requests use the existing Inspector JSON-lines protocol and run on the UI thread.
+//!
 //! ```no_run
 //! octara_shell::run("Counter", octara_examples_counter);
 //! # fn octara_examples_counter() -> octara::view::View { unimplemented!() }
@@ -33,6 +36,8 @@ use winit::window::WindowId;
 #[cfg(target_os = "macos")]
 mod ask_mac;
 mod capture;
+mod gesture;
+mod inspect;
 #[cfg(target_os = "macos")]
 mod menubar_mac;
 #[cfg(target_os = "macos")]
@@ -40,6 +45,7 @@ mod native_mac;
 #[cfg(target_os = "macos")]
 mod pace_mac;
 mod platform;
+mod resize;
 
 /// Events sent to the loop from elsewhere: AccessKit's requests, the app's waker (another
 /// thread finished background work or sent on a channel), a window's frame clock ticking.
@@ -49,6 +55,12 @@ pub enum ShellEvent {
     Wake,
     /// A capture in progress looks again (`OCTARA_CAPTURE`).
     Capture,
+    /// A local Inspector request, returned only to the connection that submitted it.
+    Inspect {
+        line: String,
+        reply: std::sync::mpsc::Sender<String>,
+        connected: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    },
     /// A window's frame clock ticked (a display refresh).
     Frame(WindowId),
     /// A menu bar item was picked (by its keys: the chord): its command for the active window.
@@ -119,8 +131,12 @@ pub fn run_with(options: Options, root: impl Fn() -> View + 'static) {
         done: false,
         failed: false,
         capture: None,
+        inspector: None,
+        inspect_pending: None,
     };
     event_loop.run_app(&mut shell).expect("event loop");
+    // `process::exit` below bypasses Drop, so shut down and clean the endpoint first.
+    drop(shell.inspector.take());
     if shell.failed {
         std::process::exit(1);
     }
@@ -180,6 +196,8 @@ struct Shell {
     failed: bool,
     /// A capture in progress (`OCTARA_CAPTURE`, see [`capture`]).
     capture: Option<capture::Job>,
+    inspector: Option<inspect::Server>,
+    inspect_pending: Option<inspect::Pending>,
 }
 
 /// `f` on the winit window behind app window `w`.
@@ -261,8 +279,23 @@ impl Shell {
     /// Brings the app's clock to now (before each event and frame).
     fn tick(&self) {
         if let Some(app) = &self.app {
+            if let Some(pending) = &self.inspect_pending {
+                pending.cancel_disconnected(app);
+            }
             app.advance_to(self.started.elapsed());
         }
+    }
+
+    /// Apply an actual native client-area size through the same path as a resize event.
+    fn resize_window(&mut self, w: &mut AppWindow, size: winit::dpi::PhysicalSize<u32>) {
+        let scale = ww(w, |x| x.scale()).unwrap_or(1.0);
+        if let Some(g) = &*self.shared.gpu.borrow() {
+            let limit = g.renderer.device().limits().max_texture_dimension_2d;
+            if size.width <= limit && size.height <= limit && u64::from(size.width) * u64::from(size.height) <= 32 * 1024 * 1024 {
+                ww(w, |x| x.resize(size.width, size.height, &g.renderer));
+            }
+        }
+        w.event(InputEvent::Resize { width: size.width as f32 / scale, height: size.height as f32 / scale, scale });
     }
 
     /// One pointer event at the window's pointer (mouse) or the touch's (finger).
@@ -481,7 +514,12 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 return;
             }
             ShellEvent::Capture => {
+                self.inspect_poll();
                 self.capture_step();
+                return;
+            }
+            ShellEvent::Inspect { line, reply, connected } => {
+                self.inspect_request(line, reply, connected);
                 return;
             }
             ShellEvent::Command { name, chord } => {
@@ -540,6 +578,15 @@ impl ApplicationHandler<ShellEvent> for Shell {
         self.main = Some(w.id());
         self.app = Some(app.clone());
         self.show();
+        match inspect::Server::from_env(self.shared.proxy.clone()) {
+            Ok(server) => self.inspector = server,
+            Err(why) => {
+                eprintln!("octara-shell: inspector: {why}");
+                self.failed = true;
+                self.done = true;
+                return;
+            }
+        }
         if std::env::var("OCTARA_CONFORMANCE").is_ok_and(|v| v == "1") {
             let checks = octara::conformance::run(&app);
             for c in &checks {
@@ -568,10 +615,10 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 return;
             }
             WindowEvent::Resized(size) => {
-                if let Some(g) = &*self.shared.gpu.borrow() {
-                    ww(&w, |x| x.resize(size.width, size.height, &g.renderer));
-                }
-                w.event(InputEvent::Resize { width: size.width as f32 / scale, height: size.height as f32 / scale, scale });
+                // A queued event can describe an older request; configure what the native
+                // window actually has now, just as Inspector feedback observes it.
+                let size = ww(&w, |x| x.window.inner_size()).unwrap_or(size);
+                self.resize_window(&mut w, size);
             }
             // The system asks (exposure), or the clock does where it is winit's.
             WindowEvent::RedrawRequested => {

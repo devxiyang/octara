@@ -54,6 +54,9 @@ jobs:
         if: runner.os != 'Linux'
         shell: bash
         run: OCTARA_CONFORMANCE=1 cargo run -q -p octara-examples --bin window -- counter
+      - name: Live Inspector (real windows)
+        if: runner.os == 'macOS'
+        run: python3 examples/live_inspect.py --output live-inspect
       - name: Screenshots (reference renderer, bundled fonts)
         run: cargo run -p octara-examples --bin screenshot -- screenshots 1 --bundled
       - name: A capture through `octara run`
@@ -66,5 +69,7 @@ jobs:
         if: always()
         with:
           name: screenshots-${{ matrix.os }}
-          path: screenshots/
+          path: |
+            screenshots/
+            live-inspect/
           if-no-files-found: warn

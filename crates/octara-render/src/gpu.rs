@@ -763,6 +763,27 @@ impl octara::capture::Painter for GpuRenderer {
         "gpu"
     }
     fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<octara::capture::Picture, String> {
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err("capture scale must be finite and positive".into());
+        }
+        if !list.size.0.is_finite() || !list.size.1.is_finite() || list.size.0 < 0.0 || list.size.1 < 0.0 {
+            return Err("capture dimensions must be finite and non-negative".into());
+        }
+        // Match render's pixel rounding before converting to integers or allocating GPU data.
+        let width = (list.size.0 * scale).ceil().max(1.0);
+        let height = (list.size.1 * scale).ceil().max(1.0);
+        let limits = self.device.limits();
+        let max_dimension = f64::from(limits.max_texture_dimension_2d);
+        if !width.is_finite() || !height.is_finite() || f64::from(width) > max_dimension || f64::from(height) > max_dimension {
+            return Err(format!("capture {width}×{height} exceeds the GPU texture dimension limit {}", limits.max_texture_dimension_2d));
+        }
+        let row = (width as u64 * 4).div_ceil(256) * 256;
+        let readback = row.checked_mul(height as u64);
+        // render indexes its rows with u32 arithmetic as well as honoring the device's limit.
+        let max_buffer = limits.max_buffer_size.min(u64::from(u32::MAX));
+        if readback.is_none_or(|bytes| bytes > max_buffer) {
+            return Err(format!("capture readback exceeds the GPU buffer limit of {max_buffer} bytes"));
+        }
         let b = self.render(list, scale);
         Ok(octara::capture::Picture { width: b.width, height: b.height, rgba: b.rgba })
     }

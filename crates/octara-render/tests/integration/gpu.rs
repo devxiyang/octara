@@ -194,6 +194,29 @@ fn gpu_matches_the_reference_renderer() {
     }
 }
 
+#[test]
+fn capture_painter_rejects_invalid_sizes_without_losing_the_renderer() {
+    use octara::capture::Painter;
+    use octara::paint::DisplayList;
+
+    let Some(mut gpu) = GpuRenderer::new() else {
+        eprintln!("no GPU adapter: skipped");
+        return;
+    };
+    let mut list = DisplayList { size: (3.25, 2.5), background: Color::WHITE, parts: Vec::new() };
+    for scale in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -1.0] {
+        assert!(gpu.paint(&list, scale).is_err(), "scale {scale} must be refused before rendering");
+    }
+    for size in [(f32::MAX, 1.0), (1.0, f32::MAX), (f32::NAN, 1.0), (1.0, f32::INFINITY), (-1.0, 1.0)] {
+        list.size = size;
+        assert!(gpu.paint(&list, 1.0).is_err(), "size {size:?} must be refused before rendering");
+    }
+    list.size = (3.25, 2.5);
+    let picture = gpu.paint(&list, 2.0).expect("a valid capture still works after refusals");
+    assert_eq!((picture.width, picture.height), (7, 5));
+    assert_eq!(picture.rgba, [255; 7 * 5 * 4]);
+}
+
 /// Paths of every kind, and one larger than an atlas tile.
 fn paths_list() -> octara::paint::DisplayList {
     use octara::kernel::NodeId;

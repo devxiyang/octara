@@ -32,7 +32,7 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | | Scroll containers (`overflow_*_scroll`, `scroll_to`, `follow_tail` / `following_tail` / `scroll_to_end`), images (`img`, `object_fit`) | Implemented |
 | | Vector paths (`Path`, fills, strokes); `icon` with the Lucide set (`octara-icons`), `Icon::svg` | Implemented ([vector graphics](vector-graphics.md)) |
 | | `canvas` (declarative recording: paths, rects, text, images, transforms, clips) | Implemented; labeled regions to do |
-| | Native Island: `native_view(kind)`, `web_view(url)`, slots, placements, the host protocol, headless host | Implemented headless; platform views in the shells to do ([Native Island](native-island.md)) |
+| | Native Island: `native_view(kind)`, `web_view(url)`, slots, placements, the host protocol, headless host | Implemented headless and on macOS (web views and maps); Windows/Linux hosts to do ([Native Island](native-island.md)) |
 | Style | `Styled` (and `style_with` for bound styles): GPUI method names, 4 px scale, `px` / `relative` / `rems`; semantic `Token` and `Theme`; state, window size class, touch and group-hover overrides; `absolute` / `top` / `left`; shadows, gradients, opacity layers; motion | Implemented |
 | Semantics | `role`, `label`, `description`, `expanded`, `checked`, `value`, `a11y_hidden`, `focusable`; test id is the semantic id | Implemented |
 | Interaction | `on_press` / `on_input` / `on_toggle` / `on_submit` / `on_focus` / `on_blur`; `tooltip`; hover chain and groups; disabled elements reject events | Implemented |
@@ -65,7 +65,7 @@ For layout semantics see [layout](layout.md).
 - For the same kind of property, the one written later wins; reusing a style is just a Rust function: `el().map(card)`.
 - State overrides: `hover`, `active`, `focus` / `focus_visible`, `style_when(State::SELECTED | CHECKED | EXPANDED | DISABLED, ..)`;
   window size class overrides: `when_medium` / `when_expanded` / `when_large` / `when_extra_large`. Size class is merged first, then state.
-- Fonts: Inter and IBM Plex Mono are bundled (headless tests use only them, so results are reproducible), `App::register_font` registers more; real windows will use the system UI font.
+- Fonts: Inter and IBM Plex Mono are bundled (headless tests use them for reproducible results), `App::register_font` registers more; real windows use the system UI font and fallback by default.
 - The kernel invalidates by change category: `Dirty::{LAYOUT, PAINT, TEXT, SEMANTICS}`, and changing a color does not trigger layout.
 
 ```rust

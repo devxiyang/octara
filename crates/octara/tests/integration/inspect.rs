@@ -49,6 +49,32 @@ fn requests_drive_the_app() {
 }
 
 #[test]
+fn a_host_can_parse_and_intercept_a_request_before_it_runs() {
+    let app = Window::headless(view);
+    let (mut target, request) = inspect::parse_request(&app, r#"{"op":"tap","id":"inc"}"#).unwrap();
+    assert_eq!(target.id(), app.id());
+    assert_eq!(app.kernel().text_of("count").as_deref(), Some("Count: 0"), "parsing does not deliver input");
+    assert!(inspect::handle(&mut target, request).ok);
+    assert_eq!(app.kernel().text_of("count").as_deref(), Some("Count: 1"));
+
+    // No painter is installed: parsing must let the host take over capture rather than trying
+    // to run the headless capture path first.
+    let (_, request) = inspect::parse_request(&app, r#"{"op":"capture","path":"host.png"}"#).unwrap();
+    assert!(matches!(request, Request::Capture { path, .. } if path == "host.png"));
+}
+
+#[test]
+fn hosts_share_request_validation_and_reject_closed_targets() {
+    let app = Window::headless(view);
+    for line in [r#"{"op":"tap","id":"inc","unexpected":1}"#, r#"{"op":"inspect","window":12345}"#, "not json"] {
+        assert_eq!(inspect::parse_request(&app, line).err().expect("invalid request").code.as_deref(), Some("BAD_REQUEST"));
+    }
+    assert_eq!(app.kernel().text_of("count").as_deref(), Some("Count: 0"));
+    app.app().close_window(app.id());
+    assert_eq!(inspect::parse_request(&app, r#"{"op":"inspect"}"#).err().expect("closed window").code.as_deref(), Some("BAD_REQUEST"));
+}
+
+#[test]
 fn failures_name_their_code() {
     let mut app = Window::headless(view);
     let r = inspect::handle_line(&mut app, r#"{"op":"tap","id":"nope"}"#);

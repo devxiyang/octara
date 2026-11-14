@@ -48,13 +48,16 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Print the app's semantic tree after its first screen settles: test ids, roles, names,
-    /// states, bounds, actions and source locations.
+    /// Print the app's semantic tree: test ids, roles, names, states, bounds, actions and source
+    /// locations. Builds a headless harness by default; --connect reads an existing window.
     Inspect {
         #[command(flatten)]
         app: AppArgs,
         #[command(flatten)]
         window: WindowArgs,
+        /// Inspect an existing window at its OCTARA_INSPECT Unix socket, without building a harness.
+        #[arg(long, value_name = "SOCKET", conflicts_with_all = ["manifest_path", "package", "size", "theme"])]
+        connect: Option<std::path::PathBuf>,
         /// Print the snapshot as JSON (`octara.inspect/1`).
         #[arg(long)]
         json: bool,
@@ -66,6 +69,9 @@ enum Command {
         app: AppArgs,
         #[command(flatten)]
         window: WindowArgs,
+        /// Drive an existing window at its OCTARA_INSPECT Unix socket, without building a harness.
+        #[arg(long, value_name = "SOCKET", conflicts_with_all = ["manifest_path", "package", "size", "theme"])]
+        connect: Option<std::path::PathBuf>,
         /// A file of requests, one JSON line each (`//` comments allowed).
         #[arg(long)]
         script: Option<std::path::PathBuf>,
@@ -146,8 +152,14 @@ fn main() -> ExitCode {
         Command::Vocab { name, json } => vocab(&mut out, name.as_deref(), json),
         Command::Explain { code, json } => explain(&mut out, code.as_deref(), json),
         Command::Check { app, json } => check(&mut out, &app, json),
-        Command::Inspect { app, window, json } => inspect(&mut out, &app, &window, json),
-        Command::Run { app, window, script, json } => run(&mut out, &app, &window, script.as_deref(), json),
+        Command::Inspect { app, window, connect, json } => match connect {
+            Some(path) => inspect_live(&mut out, &path, json),
+            None => inspect(&mut out, &app, &window, json),
+        },
+        Command::Run { app, window, connect, script, json } => match connect {
+            Some(path) => run_live(&mut out, &path, script.as_deref(), json),
+            None => run(&mut out, &app, &window, script.as_deref(), json),
+        },
         Command::Skill { action } => skill(&mut out, action),
     };
     // Written at once: a reader that stops early (`| head`) is not an error.
@@ -432,6 +444,128 @@ fn snapshot_text(snap: &serde_json::Value) -> String {
     s
 }
 
+fn live_client(path: &Path) -> Result<octara_cli::live::Client, ExitCode> {
+    octara_cli::live::Client::connect(path).map_err(|e| {
+        eprintln!("error: {e}");
+        ExitCode::from(2)
+    })
+}
+
+fn inspect_live(out: &mut String, path: &Path, json: bool) -> ExitCode {
+    let mut client = match live_client(path) {
+        Ok(client) => client,
+        Err(code) => return code,
+    };
+    let reply = match client.request(r#"{"op":"inspect"}"#) {
+        Ok(reply) => reply,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    if reply["ok"] != true {
+        eprintln!(
+            "error: {} — {}",
+            reply["code"].as_str().unwrap_or("inspect"),
+            reply["message"].as_str().unwrap_or("the live window refused inspection")
+        );
+        return ExitCode::FAILURE;
+    }
+    let Some(snapshot) = reply.get("snapshot").filter(|s| s.is_object()) else {
+        eprintln!("error: live inspect returned no snapshot");
+        return ExitCode::from(2);
+    };
+    if json {
+        json_to(out, snapshot);
+    } else {
+        *out += &snapshot_text(snapshot);
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_live(out: &mut String, path: &Path, script: Option<&Path>, json: bool) -> ExitCode {
+    use std::io::{BufRead, Write};
+    let stdin = std::io::stdin();
+    let input: Box<dyn BufRead + '_> = match script {
+        Some(path) => match std::fs::File::open(path) {
+            Ok(file) => Box::new(std::io::BufReader::new(file)),
+            Err(e) => {
+                eprintln!("error: {}: {e}", path.display());
+                return ExitCode::from(2);
+            }
+        },
+        None => Box::new(stdin.lock()),
+    };
+    let mut client = match live_client(path) {
+        Ok(client) => client,
+        Err(code) => return code,
+    };
+    let interactive = script.is_none();
+    let stdout = std::io::stdout();
+    let mut failed = false;
+    for (i, line) in input.lines().enumerate() {
+        let line = match line {
+            Ok(line) => line,
+            Err(e) => {
+                eprintln!("error: reading requests: {e}");
+                return ExitCode::from(2);
+            }
+        };
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        let mut reply = match client.request(line) {
+            Ok(reply) => reply,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(2);
+            }
+        };
+        reply.as_object_mut().expect("a checked reply is an object").insert("line".into(), (i + 1).into());
+        failed |= reply["ok"] == false;
+        if interactive {
+            // Reply before reading again: a caller can keep stdin open and await each answer.
+            let mut output = stdout.lock();
+            if writeln!(output, "{reply}").and_then(|()| output.flush()).is_err() {
+                break;
+            }
+        } else if json {
+            let _ = writeln!(out, "{reply}");
+        } else {
+            run_reply_text(out, &reply);
+        }
+        if failed && !interactive {
+            break;
+        }
+    }
+    if !interactive && !json {
+        let _ = writeln!(out, "run: {}", if failed { "failed" } else { "ok" });
+    }
+    if failed && !interactive { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+}
+
+fn run_reply_text(out: &mut String, reply: &serde_json::Value) {
+    let line = &reply["line"];
+    if reply["ok"] == true {
+        let _ = writeln!(out, "line {line}: ok");
+    } else {
+        let _ = writeln!(out, "line {line}: {} — {}", reply["code"].as_str().unwrap_or("?"), reply["message"].as_str().unwrap_or_default());
+    }
+    if let Some(snap) = reply.get("snapshot") {
+        *out += &snapshot_text(snap);
+    }
+    for issue in reply["issues"].as_array().into_iter().flatten() {
+        let _ = writeln!(
+            out,
+            "  {} {}: {}",
+            issue["severity"].as_str().unwrap_or_default(),
+            issue["code"].as_str().unwrap_or_default(),
+            issue["message"].as_str().unwrap_or_default()
+        );
+    }
+}
+
 fn run(out: &mut String, app: &AppArgs, window: &WindowArgs, script: Option<&std::path::Path>, json: bool) -> ExitCode {
     let (target, exe) = match harness(app) {
         Ok(e) => e,
@@ -476,24 +610,7 @@ fn run(out: &mut String, app: &AppArgs, window: &WindowArgs, script: Option<&std
         *out += &stdout;
     } else {
         for r in &replies {
-            let line = &r["line"];
-            if r["ok"] == true {
-                let _ = writeln!(out, "line {line}: ok");
-            } else {
-                let _ = writeln!(out, "line {line}: {} — {}", r["code"].as_str().unwrap_or("?"), r["message"].as_str().unwrap_or_default());
-            }
-            if let Some(snap) = r.get("snapshot") {
-                *out += &snapshot_text(snap);
-            }
-            for i in r["issues"].as_array().into_iter().flatten() {
-                let _ = writeln!(
-                    out,
-                    "  {} {}: {}",
-                    i["severity"].as_str().unwrap_or_default(),
-                    i["code"].as_str().unwrap_or_default(),
-                    i["message"].as_str().unwrap_or_default()
-                );
-            }
+            run_reply_text(out, r);
         }
         let _ = writeln!(out, "run: {}", if failed { "failed" } else { "ok" });
     }

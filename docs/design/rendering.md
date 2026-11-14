@@ -55,12 +55,12 @@ Platform layer: winit (desktop); a thin self-written layer on mobile (iOS UIText
 ## 4. Threads and frames
 
 - On the main thread first (Rune and GPUI both actually do this); the display list is data, leaving room to add a render thread later.
-- Redraw only on change, and paint nothing when still; presentation uses vsync (FIFO). Per-platform display link pacing and input latency statistics come later.
+- Redraw only on change, and paint nothing when still; presentation uses vsync (FIFO). On macOS each window has a display link; elsewhere winit redraw requests are paced by the compositor or blocking present. `OCTARA_TRACE_INPUT=1` reports input-to-frame latency on stderr.
 
 ## 5. Steps
 
 1. Display list (the kernel produces primitives, testable without a GPU);
 2. CPU reference renderer: deterministic PNG screenshots;
 3. wgpu renderer: offscreen rendering, differential tests against the reference renderer;
-4. macOS window (winit): mouse, wheel, keyboard, focus, input method (IME), scale factor, redraw on demand, system fonts, AccessKit;
-5. Later: Windows / Linux, animation, the mobile thin layer.
+4. Desktop windows (winit): mouse, wheel, keyboard, focus, input method (IME), scale factor, redraw on demand, system fonts and AccessKit. CI is configured for macOS, Windows and Linux, with real-window conformance checks on macOS and Windows; fuller platform verification remains open;
+5. Animation is implemented on the app clock ([animation](animation.md)); mobile shells and direct platform text protocols remain future work.

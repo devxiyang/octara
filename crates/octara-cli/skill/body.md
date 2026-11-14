@@ -78,3 +78,17 @@ view = "my_app::app"   # a `fn() -> View` in the library
   all). In a
   running debug window, `mod+shift+c` picks with the mouse and copies the element's line. A window captures with `OCTARA_CAPTURE=shot.png` (the window's GPU renderer, native
   views from their own snapshots).
+
+To inspect an existing desktop window on macOS/Linux, start its usual shell command with
+`OCTARA_INSPECT=/absolute/path/app.sock`, then use `octara inspect --connect /absolute/path/app.sock`
+or `octara run --connect /absolute/path/app.sock --script steps.jsonl --json`. These commands attach
+to that running process without building a headless harness. The socket is private to its owner;
+choose an unused path. One connection runs requests in order. Tap, key and typing use Octara's
+framework events; focus and invoke use semantic operations. Captures use the window's GPU renderer
+and keep it running. Replies report the actual route; a `run` request `{"op":"inspect"}` also
+lists `live.operations`. `double_tap` and `long_press` dispatch timed framework pointer events
+while the native event loop continues, using real time. `size` requests logical client-area pixels
+from the native window and waits for its actual size, GPU surface and framework viewport to agree;
+`live.resize` reports the requested and actual sizes, including a window-system constraint or
+timeout. Live settling also waits within a wall-clock budget. Virtual `advance` remains headless.
+If a connection fails after an action, inspect the app before retrying: it may already have run.

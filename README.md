@@ -10,11 +10,15 @@ It combines fine-grained reactivity, a retained UI tree, GPU rendering, and nati
 platform capabilities with inspection and testing built into the runtime.
 
 **Status:** early development. The reactive core, incremental collections, virtualization,
-the retained node tree and a headless runtime exist in `crates/octara`; components, windowed
-GPU rendering, the native SDK and the CLI are planned.
+retained UI tree, headless runtime, component kit, CPU/GPU renderers and CLI are implemented.
+The winit desktop shell supports multiple windows, with deeper native integration on macOS
+(web views, maps, menus and alerts). The AI chat reference app exercises streaming Markdown,
+tasks and conversation storage with an offline scripted model. Mobile shells, packaging and
+the broader native SDK remain future work; see [Architecture](docs/ARCHITECTURE.md) and
+[TODO](docs/TODO.md) for the current boundaries.
 
 ```sh
-cargo test                                            # everything, headless
+cargo test                                            # workspace tests; GPU checks where available
 cargo run --release -p octara-examples --bin bench    # benchmark tables
 cargo run -p octara-chat                              # the AI chat reference app
 ```
@@ -95,7 +99,7 @@ scope and child-lifecycle handling.
 | --- | --- | --- | --- |
 | macOS | Metal | AppKit | Initial desktop release |
 | Windows | D3D12 | Win32 / WinUI | Initial desktop release |
-| Linux | Vulkan / GLES | GTK4 | Initial desktop release |
+| Linux | Vulkan / GLES | Texture islands (WPE WebKit) | Initial desktop release |
 | iOS | Metal | UIKit | Later mobile phase |
 | Android | Vulkan / GLES | JNI / Android Views | Later mobile phase |
 
@@ -116,12 +120,19 @@ These are architectural targets, not a current support matrix.
 | --- | --- |
 | `crates/octara` | `reactive`, `kernel`, `view`, `app`, `platform`, `inspect`, `capture` |
 | `crates/octara-macros` | `#[component]` |
-| `crates/octara-kit` | Components (in progress) |
+| `crates/octara-kit` | Components and streaming Markdown |
+| `crates/octara-render` | CPU reference and wgpu renderers |
+| `crates/octara-shell` | Desktop windows, input, accessibility and native integration |
+| `crates/octara-cli` | Checks, semantic inspection, scripted driving, API lookup and agent skill installation |
+| `crates/octara-icons` | Lucide icons as path data |
+| `crates/octara-fonts` | Bundled CJK subset for deterministic tests and screenshots |
 | `examples` | Example apps, shared scenarios, tests and the benchmark |
 | `apps/chat` | The AI chat reference app, built from the core and the kit, answered by an offline scripted model |
 
-The first milestone pairs the reactive core with a minimal semantic inspector and
-headless tests. Agent capabilities are part of the initial design.
+The core and agent tooling are exercised through headless interaction tests, incremental
+consistency checks, input replay and CPU/GPU rendering comparisons. CI is configured to build
+and test on macOS, Windows and Linux, with real-window platform conformance checks on macOS
+and Windows. These checks do not establish complete platform support.
 
 ## License
 

@@ -2,10 +2,16 @@
 
 What is built, how its parts fit, and the decisions that shape them. Detailed designs are in [`docs/design/`](design/), research in [`docs/research/`](research/).
 
+The selected direction is in [Runtime architecture](design/runtime-contract.md): keep Rust and
+Signals, connect the existing Inspector to real windows, and improve concrete lifecycle/output
+boundaries. [Agent context and live inspection](design/agent-context.md) defines that small tool
+interface. These documents identify planned changes separately from the implementation below;
+the [Exact comparison](research/exact-runtime-simplicity.md) explains the reduced scope.
+
 ## Product
 
 **Agent-first. Rust-native. Cross-platform.** Apps are written in Rust with fine-grained
-reactivity, drawn on the GPU, with native views and OS capabilities where the GPU cannot serve.
+reactivity, drawn on the GPU, with native views and platform-owned interaction where appropriate.
 The agent's loop is generate → compile → run → inspect → test → fix, and the framework answers
 the agent's questions itself (semantic tree, diagnostics with causes, checks, scripted driving).
 
@@ -17,8 +23,9 @@ Principles:
    a component runs once ([reactive core](design/reactive-core.md)).
 4. **GPU first**, with native views as islands where they must be ([Native Island](design/native-island.md)).
 5. **Cross-platform**: desktop first; the architecture covers iOS and Android.
-6. **Deterministic by default**: headless runs, bundled fonts, an app clock and a CPU reference
-   renderer give the same results on every machine.
+6. **Reproducible tests**: headless runs, bundled fonts, an app clock and a CPU reference renderer
+   control framework inputs. Replay also requires the same initial state and ordered external
+   results; arbitrary I/O and host behavior are not controlled by input recording.
 
 ## Crates
 
@@ -28,10 +35,10 @@ Principles:
 | `octara-macros` | `#[component]`: elements record the component function that built them and where it was called |
 | `octara-kit` | Components (buttons, fields, select, switch, …) and streaming Markdown, built only on `octara`'s public API and theme tokens |
 | `octara-render` | Display list → pixels: the CPU reference renderer and the wgpu renderer |
-| `octara-shell` | Desktop windows (winit): input, IME, scale, frames on a display clock, AccessKit, native views (macOS: WKWebView, placed with the frame) |
+| `octara-shell` | Desktop windows (winit): multiple windows, input, IME, system fonts, scale, frames, AccessKit, file dialogs; macOS native web views, maps, menus and alerts |
 | `octara-icons` | The Lucide set as path data (generated, checked in) |
 | `octara-fonts` | A CJK subset for deterministic tests and screenshots |
-| `octara-cli` | The `octara` command: `check`, `inspect`, `run`, `vocab`, `explain`, `skill`, `api` |
+| `octara-cli` | The `octara` command: `check`, `inspect`, `run`, `vocab`, `explain`, `skill`; public API extraction from source |
 | `examples` | Example apps, their acceptance tests, benchmarks, screenshot and window tools |
 | `apps/chat` | The AI chat reference app: its data (threads, messages of parts, a model's events), a `Model` interface with an offline scripted model on the app's clock, conversations saved as JSON, and views composed from the kit |
 
@@ -128,18 +135,44 @@ owned by scopes on the app clock ([async](design/async.md)).
   the component that made it.
 - Diagnostics are registered codes with cause and doc anchor; tests keep the registry
   complete.
-- The CLI builds a harness around an app's view (`[package.metadata.octara] view`) and drives it;
-  the `octara` skill teaches agents the framework ([agent knowledge](design/agent-knowledge.md)).
+- By default the CLI builds a headless harness around an app's view (`[package.metadata.octara]
+  view`). `inspect --connect PATH` and `run --connect PATH` instead attach to a running desktop
+  app without building a harness. The `octara` skill teaches agents the framework
+  ([agent knowledge](design/agent-knowledge.md)).
+- The winit shell's [live inspector](design/agent-context.md) is opt-in through
+  `OCTARA_INSPECT=/absolute/path.sock` on Unix. One client sends ordered JSON-line requests;
+  the shell executes them on the main thread against the actual `App`, windows and Kernels.
+  Queries return the existing semantic values, bounds, source locations, diagnostics and pending
+  work. Replies identify the realtime clock, input route and supported operations.
+- Live tap/double-tap/long-press/type/key requests use framework input dispatch; they do not inject
+  OS input. Multi-stage gestures wait on wall time while the event loop continues, validating the
+  target again before completing. `size` requests the native client-area size and confirms the
+  actual window, GPU surface and framework viewport agree within five seconds; `live.resize`
+  reports the requested and actual dimensions. `settle` also waits on wall time. Captures run asynchronously through
+  the window's GPU renderer and return the existing capture report without exiting the app;
+  display-pixel requests retain the report's explicit fallback behavior.
+
+Further dependency tracing or watch delivery must serve a concrete tool task. The Agent performs
+improvement through its ordinary edit, run and observe loop.
 
 ## Platforms
 
-| Platform | GPU | Native views | Priority |
-| --- | --- | --- | --- |
-| macOS | Metal | AppKit | P0 (the winit shell runs) |
-| Windows | D3D12 | WebView2 in DirectComposition | P0 |
-| Linux | Vulkan / GLES | textures (WPE WebKit) | P0 |
-| iOS | Metal | UIKit | P1 |
-| Android | Vulkan / GLES | Android Views | P1 |
+| Platform | GPU target | Current integration and remaining work |
+| --- | --- | --- |
+| macOS | Metal | winit shell with AppKit web/map islands, menus and alert sheets; owned backend planned |
+| Windows | D3D12 | winit shell; native menus and WebView2 in DirectComposition planned |
+| Linux | Vulkan / GLES | winit shell; native menu bar and texture islands (WPE WebKit) planned |
+| iOS | Metal | UIKit integration and mobile shell planned (P4) |
+| Android | Vulkan / GLES | Android Views integration and mobile shell planned (P4) |
+
+CI is configured to build and test all three desktop platforms and run the platform conformance
+suite in real windows on macOS and Windows. Linux's real-window behavior and the full range of
+desktop input, accessibility and native integration still need platform verification.
+
+Desktop windows use system UI fonts and fallback by default. Headless tests and reference
+screenshots can use bundled fonts for deterministic output. File dialogs are provided by rfd;
+macOS uses AppKit for context menus, the menu bar and alert sheets. Other desktops draw menus
+and prompts in the window, and tooltips are currently drawn on every desktop.
 
 ## Known limits
 
@@ -152,14 +185,20 @@ owned by scopes on the app clock ([async](design/async.md)).
   about 70 µs for a 5000-node list after a change, release build). Accessibility updates are
   incremental (4 nodes and about 40 µs after a press in that list, against 0.4 ms for the whole
   tree). Debug builds check both against a full rebuild every time they are reused or sent.
-- **One window in the shell**: an app holds any number of windows (headless, in the protocol
-  and in captures), the winit shell shows one; OS popups and menus are
-  [designed](design/windows.md).
 - **The shell is winit's**: it implements the [platform layer](design/platform.md)'s traits
-  (clipboard, waker, native views, text input); several windows, menus and an owned macOS
-  backend are planned.
+  (clipboard, waker, multiple windows, native views, text input). Direct platform text protocols
+  such as NSTextInputClient, native tooltips and an owned macOS backend remain open.
 - **Native views**: macOS overlay web views and underlay maps are built
   ([Native Island](design/native-island.md)); Windows and Linux are designed.
+- **Live inspection**: the opt-in transport currently requires Unix sockets (macOS/Linux).
+  Live virtual `advance` remains rejected; the realtime host does not virtually advance the app
+  clock. Native resize can be constrained or refused by the window system and reports actual
+  dimensions on failure. Framework input does not qualify OS focus, IME or
+  native gesture behavior. Stronger build identity, stale-target validation across tree replacement
+  and richer sampled property information remain open.
+- **Update and sample boundaries**: frames are submitted per window and display lists are pulled
+  later. Request ownership, cross-window invalidation, cleanup ordering and coherent native/drawn
+  geometry remain concrete work in the [runtime architecture](design/runtime-contract.md).
 
 ## Out of scope
 

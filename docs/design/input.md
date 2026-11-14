@@ -42,7 +42,7 @@ drag handler, or is focusable). Single target, no bubbling (Rune). When a modal 
 - Secondary (right click, macOS Ctrl+click): the nearest `on_secondary_press` ancestor; on the keyboard, the Menu key and Shift+F10 do the same for the
   focused element, and so does a touch long press (see Touch). Three sources, one handler (Rune, Exact).
 
-**Element behavior**: the recognizer knows no element types. Built-in elements (text field, later multi-line text and sliders) receive gestures through the
+**Element behavior**: the recognizer knows no element types. Text fields (single- and multi-line) receive gestures through the
 `Behavior` interface: press (with this click sequence number), whether it handles drags for this pointer itself, and drag positions. The text field uses
 these to place the caret, select words, select all, and drag-select. The click sequence number is counted at press time (AppKit, Rune), and a drag ends a
 click sequence.
@@ -131,7 +131,7 @@ catches up after the animation ends or the pointer moves (Rune).
   `on_submit`, `submit` is not handled and Enter falls through to `press`. Selection, composition and undo records are kept by the runtime per node, and
   carried over by test id on hot reload.
 - Each edit computes a new value and calls `on_input`; if the app does not adopt it (the value is unchanged), the selection is clamped to the new value's
-  range. A different value written by the app during composition takes effect after the composition ends (Exact).
+  range. Values written by the app take effect immediately; deferring those writes during composition remains open.
 - Caret movement is by grapheme cluster, and word movement by Unicode word boundary (`unicode-segmentation`).
 - The model is the runtime's own (value, selection byte offsets, undo stack), not Parley's `PlainEditor`: the latter brings its own layout and font
   context, bypassing the kernel's `TextEngine` and paragraph cache. Caret geometry comes from `TextEngine::caret_stops` (Parley by cluster, the
@@ -141,13 +141,13 @@ catches up after the animation ends or the pointer moves (Rune).
 - A long line scrolls horizontally inside the box, keeping the caret visible with as little scrolling as possible.
 - Editing commands (context `text_input`): left and right, Home / End, extending the selection with Shift, move and delete by word (Alt on Apple, Ctrl
   elsewhere), Backspace / Delete, select all, copy / cut / paste, undo / redo.
-- Undo: snapshots (value, selection), consecutive typing merged into one step, at most 128 steps (Rune).
+- Undo: range edits with the inserted and removed text and selection before and after; consecutive typing or deletion merges into one step, at most 128 steps (Rune).
 - Clipboard: the [platform](platform.md)'s (`Platform::read_text` / `write_text`); headless it is in memory, and the shell's backend uses the system clipboard.
 - Input method (IME) composition is displayed at the caret with an underline, does not enter the value, and enters only after commit.
 - Platform protocol (the shape of GPUI's `InputHandler`): text, selection, composition range, replace by range, set composition, set selection, caret
   rectangle; internally byte offsets are used, with a UTF-16 conversion provided for NSTextInputClient, UITextInput and TSF. The winit shell uses only the
   composition and commit parts.
-- Single-line first; the multi-line text field comes later.
+- Multi-line fields wrap, grow or scroll within row limits, and support visual-line movement and selection. Enter inserts a line break and Cmd/Ctrl+Enter submits; `.submit_on_enter()` reverses the default for a chat composer ([text input](text-input.md)).
 
 ## Scrolling
 
@@ -160,7 +160,7 @@ catches up after the animation ends or the pointer moves (Rune).
 ## Accessibility actions
 
 `Click` → `on_press`, `Focus` → focus, `SetValue` → `on_input`, `ShowContextMenu` → `on_secondary_press`,
-`ScrollIntoView` → scroll into view.
+`SetTextSelection` → selection. Handling `ScrollIntoView` remains open.
 
 ## Tests and agents
 

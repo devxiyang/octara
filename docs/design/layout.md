@@ -80,5 +80,4 @@ Overflow is summarized as one entry per container and edge (as in Flutter's "Ren
 
 ## 6. Later
 
-- Real windows: system UI font and system fallback (like GPUI's `.SystemUIFont` and Rune's CJK fallback); headless tests still use only the bundled fonts.
 - Bounce at the scroll ends (render thread); mobile has no hover, and press feedback uses `active`.

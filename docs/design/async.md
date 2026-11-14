@@ -16,10 +16,16 @@ channels, optionally named; a subscription is a scope-owned handle.
 
 - Other threads cannot touch signals. They can only wake tasks: the result of `background(..)`, `Sender::send`. A wake puts the task id into the ready
   queue and calls the app's wake function (the shell sends `Wake` through the event loop proxy, then `App::poll`).
-- Each batch of ready tasks is polled in spawn order, so the order in which threads finish does not change the result (in tests, `settle` first waits
-  for all background work to finish, then polls).
+- Each batch of ready tasks is polled in spawn order. Thread completion timing still determines
+  which batch a result enters; this does not make arbitrary external work deterministic. Tests
+  can use `settle` to wait for background work within its real-time limit before polling.
 - Stale results naturally do not land: a cancelled task is dropped together with its receiver, and a channel whose scope has been destroyed rejects
   messages (`send` returns the original value).
+
+Task cancellation does not currently withdraw every pending platform ask: asks do not yet record
+scope/task ownership. The [runtime architecture](runtime-contract.md#lifetimes-and-external-work)
+adds request ownership, withdrawal where supported, and late-reply checks. Dropping interest in a
+result does not imply aborting its transport or undoing external effects.
 
 ## Time
 

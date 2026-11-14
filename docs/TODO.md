@@ -7,23 +7,53 @@ make the corresponding design document describe it.
 ## Priorities
 
 1. The AI chat reference app (`apps/chat`) as people use it: what a run in a real window shows.
-2. The owned macOS backend (NSTextInputClient, menus, live resize in the frame's transaction,
-   panels), and agents driving a real window (the inspector protocol over a channel to it).
-3. Native chrome: menus and shortcuts, file dialogs, alerts, tooltips (AppKit's).
-4. Components: menus and popovers, dialogs and sheets, tabs, lists and tables,
-   sliders, progress.
-5. Images: JPEG, WebP, SVG, loading and caching.
-6. [Native Island](design/native-island.md): focus, accessibility joining, lazy creation.
-7. Windows: WebView2 in DirectComposition; `surface` textures; Linux: WPE as a texture.
-8. Text depth: direct platform text protocols, incremental layout of long paragraphs.
-9. iOS, then Android.
-10. Evaluation, causal tracing.
+2. Extend Agent feedback from real windows: target/build identity, sampled properties and native input.
+3. The owned macOS backend (NSTextInputClient, live resize in the frame's transaction).
+4. Native chrome: Windows/Linux menu integration, AppKit tooltips, toolbars and title bars.
+   macOS menus and alert sheets, and rfd file dialogs are implemented in the winit shell.
+5. Components: richer menus and popovers, dialogs and sheets, tabs, tables, sliders and progress.
+   Basic list, list-item and list-header components are implemented.
+6. Images: JPEG, WebP, SVG, loading and caching.
+7. [Native Island](design/native-island.md): focus, accessibility joining, lazy creation.
+8. Windows: WebView2 in DirectComposition; `surface` textures; Linux: WPE as a texture.
+9. Text depth: direct platform text protocols, incremental layout of long paragraphs.
+10. iOS, then Android.
+
+## Runtime and Agent loop
+
+Basis: [runtime design](design/runtime-contract.md), [Agent context](design/agent-context.md),
+[agent knowledge](design/agent-knowledge.md), and [the Exact comparison](research/exact-runtime-simplicity.md).
+Build the loop with existing owners and inspector facilities, preserving Rust + Signals.
+
+- [ ] Add reliable attached-build identity and stronger target validation across tree replacement,
+      using existing handles and local generations where required.
+- [ ] Expose useful property origins and sampled opacity/color: `visual_of` currently gives the
+      target value. Semantic values, source, bounds, diagnostics and pending work already come
+      from the live owners. Business-value adapters stay optional; arbitrary Rust values need no
+      serialization bound.
+- [ ] Qualify native focus, keyboard/IME and gestures with real OS or simulator input. Current live
+      replies identify semantic/framework routes; framework dispatch does not exercise OS input injection.
+- [ ] Add a live transport for Windows. Any future live clock-control operation needs explicit
+      host/clock semantics; `advance` remains headless-only.
+- [ ] Give pending requests an owner and honor host lifetime when window-bound; cancel or withdraw
+      where supported, reject late replies, and validate content/measurement generations at asynchronous boundaries.
+- [ ] Fix cross-window dirty propagation and cleanup ordering where feedback exposes stale output;
+      revisit affected work rather than requiring an app-wide fixed point for every operation.
+- [ ] Keep each window's native placements, drawn output and interaction geometry consistent when
+      redraws coalesce; report the available capture/feedback stage honestly.
+- [ ] Define reset/restart for broken internal invariants separately from ordinary unfinished work;
+      live realtime settling already reports pending work when its bounded wait expires.
+- [ ] Complete the public API docs, especially undocumented variants, fields and methods.
+- [ ] `octara new` (calls `skill install`).
+
+Existing diagnostics and Kernel cause information remain. Add deeper dependency tracing, generic
+snapshot/watch or guidance evaluation only when a concrete debugging or development task needs it.
 
 ## To research and design
 
-- [ ] Platform shells and native chrome: menus (`muda` / `NSMenu`), toolbars (`NSToolbar`),
+- [ ] Platform shells and remaining native chrome: Windows/Linux menus, toolbars (`NSToolbar`),
       title bar and traffic lights, sidebars (system material underlay with drawn content, as
-      Rune), dialogs; on iOS / Android, native navigation (navigation bars, edge-swipe back, tab
+      Rune), native tooltips; on iOS / Android, native navigation (navigation bars, edge-swipe back, tab
       bars): drawn to match the platform, or one Octara surface per screen inside the platform's
       navigation container; whether winit stays on each platform.
 
@@ -39,8 +69,6 @@ Basis: [layout research](research/layout.md), [layout design](design/layout.md).
       texts by block (Rune's main technique).
 - [ ] Container queries (`.container()` + `.container_md(..)`) and styles by container size (the
       same mechanism as window size classes), with a feedback-loop limit (`LAYOUT_LOOP`).
-- [ ] System UI font for real windows (GPUI's `.SystemUIFont`) and system fallback (Rune's CJK
-      fallback).
 - [ ] Tailwind palette constants (`colors::BLUE_500`, etc.), for direct use in the prototyping
       stage.
 
@@ -80,6 +108,8 @@ Basis: [platform design](design/platform.md); done with the core's platform boun
 - [ ] Windows' frame clock: a thread waiting on `DwmFlush` sending frame ticks (GPUI's
       `vsync.rs`), when Windows has native views or a measurement shows the swap chain's
       present does not pace.
+- [ ] Verify a direct native text adapter, then one mobile host pilot with real simulator input:
+      composition, keyboard geometry, cancelled navigation and replies after scope disposal.
 
 ## Text
 
@@ -98,21 +128,6 @@ Basis: [text design](design/text.md).
       exiting children follow the parent ([animation](design/animation.md)).
 - [ ] The shell reads the system's reduced-motion setting (winit does not provide it;
       per-platform interfaces are needed).
-
-## Agents
-
-Basis: [agent knowledge](design/agent-knowledge.md).
-
-- [ ] About thirty percent of public items have no docs (707 / 2221, mostly variants, fields, and
-      methods): add docs.
-- [ ] Tests and agents read presented values (painted opacity, color): `visual_of` is the target
-      value, and the presented value exists only in the display list.
-- [ ] `octara new` (calls `skill install`).
-- [ ] Causal tracing in the reactive layer (the causal chain reaches the cause id of kernel
-      operations).
-- [ ] Evaluation by ablation ([agent knowledge](design/agent-knowledge.md#order)): a small fixed
-      task set, run with and without each piece of guidance; what does not change the result
-      goes.
 
 ## Known limitations
 

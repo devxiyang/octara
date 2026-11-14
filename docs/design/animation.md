@@ -39,8 +39,8 @@ bindings do not rerun because of animation.
 
 ## Reduced motion
 
-- Enforced by the runtime per class (Rune): spatial changes become instant; opacity and color become a 0.18 s fade. `App::set_reduced_motion`; the
-  shell reads the system setting.
+- Enforced by the runtime per class (Rune): spatial changes become instant; opacity and color become a 0.18 s fade. Apps set it with
+  `App::set_reduced_motion`; reading the system setting in the shell remains open.
 
 ## Time and frames
 

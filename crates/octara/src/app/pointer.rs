@@ -175,6 +175,8 @@ pub(crate) struct Held {
     /// Selecting text in this selectable region (the press landed on its text, not on
     /// anything pressable).
     selecting: Option<NodeId>,
+    /// A long/context handler ran for this held touch (not merely a spent press).
+    long_pressed: bool,
 }
 
 /// The last press, for counting double presses.
@@ -202,6 +204,7 @@ struct Momentum {
 pub(crate) struct PointerState {
     pub held: Option<Held>,
     last_press: Option<LastPress>,
+    click_sequence: u64,
     momentum: Option<Momentum>,
     /// Where the mouse (or pen) is, for hover after layout changes.
     pub hover_at: Option<(f32, f32)>,
@@ -335,6 +338,37 @@ impl Window {
         self.app.tuning.set(tuning);
     }
 
+    /// The pointer currently held by this window. A host can avoid starting synthetic input
+    /// while a person's pointer is already down, and release only the pointer it submitted.
+    pub fn held_pointer(&self) -> Option<(u64, PointerKind)> {
+        self.w.interaction.borrow().pointer.held.as_ref().map(|h| (h.pointer, h.kind))
+    }
+
+    /// Whether the current held pointer actually invoked a long-press or context-menu handler.
+    /// Cancellation, a stopped glide and a disabled control do not count as recognition.
+    pub fn pointer_long_pressed(&self, pointer: u64) -> bool {
+        self.w.interaction.borrow().pointer.held.as_ref().is_some_and(|h| h.pointer == pointer && h.long_pressed)
+    }
+
+    /// How long a host should wait before starting a new, independent mouse double click.
+    /// This reads the recognizer's existing click history without changing it or moving time.
+    pub fn pointer_click_cooldown(&self) -> Duration {
+        let i = self.w.interaction.borrow();
+        let Some(last) = i.pointer.last_press else { return Duration::ZERO };
+        let remaining = last.at + self.tuning().double_click.as_secs_f64() * 1000.0 - self.now_ms();
+        if remaining < 0.0 {
+            Duration::ZERO
+        } else {
+            Duration::try_from_secs_f64(remaining / 1000.0).unwrap_or(Duration::MAX).saturating_add(Duration::from_millis(1))
+        }
+    }
+
+    /// A local sequence number for counted pointer presses. Hosts can detect a completed
+    /// intervening click between phases of synthetic input. Reloading the tree resets it.
+    pub fn pointer_click_sequence(&self) -> u64 {
+        self.w.interaction.borrow().pointer.click_sequence
+    }
+
     /// The pointer's next deadline (ms): a long press coming due, or momentum's next frame.
     pub(super) fn pointer_deadline(&self) -> Option<f64> {
         if self.w.interaction.borrow().pointer.momentum.is_some() {
@@ -456,6 +490,7 @@ impl Window {
             clicks,
             samples: vec![(now, ev.x, ev.y)],
             selecting,
+            long_pressed: false,
         });
         // An element kind with behavior of its own acts on the press (a field's caret).
         if mode == Mode::Pending
@@ -633,6 +668,7 @@ impl Window {
             _ => 1,
         };
         i.pointer.last_press = Some(LastPress { node: n, at: now, pos, count });
+        i.pointer.click_sequence = i.pointer.click_sequence.wrapping_add(1);
         count
     }
 
@@ -680,11 +716,21 @@ impl Window {
 
     fn long_press_fire(&self) {
         let Some(h) = self.w.interaction.borrow().pointer.held.clone() else { return };
+        let current_hit = self.hit_at(h.at.0, h.at.1);
         let found = {
             let k = self.w.kernel.borrow();
-            k.handler_above(h.target, HandlerKind::LongPress)
-                .map(|n| (n, HandlerKind::LongPress))
-                .or_else(|| k.handler_above(h.hit, HandlerKind::SecondaryPress).map(|n| (n, HandlerKind::SecondaryPress)))
+            let live = |n: Option<NodeId>| n.filter(|n| k.is_alive(*n) && !k.is_exiting(*n));
+            let target = live(h.target);
+            // A timer can remove or cover the target in the same clock step that reaches
+            // this deadline. Check here as well as in a live host's next polling turn.
+            let inside = target.is_some_and(|target| current_hit.is_some_and(|hit| k.is_within(hit, target)));
+            inside
+                .then(|| {
+                    k.handler_above(target, HandlerKind::LongPress)
+                        .map(|n| (n, HandlerKind::LongPress))
+                        .or_else(|| k.handler_above(live(h.hit), HandlerKind::SecondaryPress).map(|n| (n, HandlerKind::SecondaryPress)))
+                })
+                .flatten()
         };
         if let Some(held) = self.w.interaction.borrow_mut().pointer.held.as_mut() {
             // Without a handler the touch may still become a tap or a scroll; a long press is
@@ -696,7 +742,13 @@ impl Window {
         }
         if let Some((n, kind)) = found {
             self.unpress(&h);
-            self.run(n, &[kind], None);
+            if self.run(n, &[kind], None)
+                && let Some(held) = self.w.interaction.borrow_mut().pointer.held.as_mut()
+                && held.pointer == h.pointer
+                && held.kind == h.kind
+            {
+                held.long_pressed = true;
+            }
         }
     }
 
