@@ -125,9 +125,10 @@ fn touch_shows_the_last_character_for_a_moment() {
 fn the_platform_hears_of_the_focused_field() {
     use octara::platform::HeadlessWindow;
     let mut app = app(TargetPlatform::MacOs);
-    let sent = |app: &Window| app.platform_window().as_any().downcast_ref::<HeadlessWindow>().unwrap().text_input;
+    let sent = |app: &Window| app.platform_window().as_any().downcast_ref::<HeadlessWindow>().unwrap().text_input.clone();
     let input = sent(&app).expect("the focused field");
     assert!(input.secure && !input.multiline, "{input:?}");
+    assert!(input.document.is_none() && input.geometry.is_none() && input.layout.is_none(), "secure text has no native query payload");
     let n = app.kernel().find("pw").unwrap();
     let (x, _, w, _) = app.kernel().rect(n);
     assert!(input.caret.x >= x && input.caret.x <= x + w, "the caret is in the field: {input:?}");

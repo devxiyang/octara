@@ -192,16 +192,20 @@ and prompts in the window, and tooltips are currently drawn on every desktop.
   incremental (4 nodes and about 40 µs after a press in that list, against 0.4 ms for the whole
   tree). Debug builds check both against a full rebuild every time they are reused or sent.
 - **The shell is winit's**: it implements the [platform layer](design/platform.md)'s traits
-  (clipboard, waker, multiple windows, native views, text input). Direct platform text protocols
-  such as NSTextInputClient, native tooltips and an owned macOS backend remain open.
+  (clipboard, waker, multiple windows, native views, text input). On macOS, an owned
+  `NSTextInputClient` child view answers document, selection, replacement and geometry queries
+  synchronously; winit still owns the window and ordinary input delivery. Native tooltips and
+  an owned macOS window backend remain open.
 - **Native views**: macOS overlay web views and underlay maps are built
   ([Native Island](design/native-island.md)); Windows and Linux are designed.
 - **Live inspection**: the opt-in transport currently requires Unix sockets (macOS/Linux).
   Live virtual `advance` remains rejected; the realtime host does not virtually advance the app
   clock. Native resize can be constrained or refused by the window system and reports actual
   dimensions on failure. A focused nonsecure editor exposes committed text, UTF-8/UTF-16
-  selection, preedit selection and caret geometry in the same snapshot; secure editors omit
-  this context. IME composition belongs to the focused field and is cancelled when that owner
+  selection, the displayed draft and marked range, preedit selection and caret geometry in the
+  same snapshot; secure editors omit this context. Native queries reuse the text layout engine
+  when the input method asks about a draft before its next frame. IME composition belongs to
+  the focused field and is cancelled when that owner
   changes. Framework input does not qualify OS focus, IME or native gesture behavior; the
   [OS-input fixture](../examples/IME.md) records real keyboard/Chinese IME checks separately.
   Stronger build identity, stale-target validation across tree replacement

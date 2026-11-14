@@ -46,6 +46,8 @@ mod native_mac;
 mod pace_mac;
 mod platform;
 mod resize;
+#[cfg(target_os = "macos")]
+mod text_input_mac;
 
 /// Events sent to the loop from elsewhere: AccessKit's requests, the app's waker (another
 /// thread finished background work or sent on a channel), a window's frame clock ticking.
@@ -266,6 +268,41 @@ fn physical_char(key: PhysicalKey) -> Option<char> {
 }
 
 impl Shell {
+    /// Native text callbacks only edit an owned mirror. Apply their ordered intents before
+    /// the next framework input, then reconcile with what application handlers accepted.
+    #[cfg(target_os = "macos")]
+    fn native_text(&mut self) {
+        let Some(app) = self.app.clone() else { return };
+        for id in app.windows() {
+            let Some(mut w) = app.window(id) else { continue };
+            let edits = ww(&w, |x| x.text_input.as_ref().map(|i| i.take())).flatten().unwrap_or_default();
+            if edits.is_empty() {
+                continue;
+            }
+            for edit in edits {
+                let current = ww(&w, |x| x.text_input.as_ref().is_some_and(|i| i.is_current(&edit))).unwrap_or(false);
+                if !current {
+                    break;
+                }
+                if !w.apply_text_edit(edit.owner, &edit.expected, &edit.edit) {
+                    ww(&w, |x| {
+                        if let Some(input) = &x.text_input
+                            && input.is_current(&edit)
+                        {
+                            input.reject();
+                        }
+                    });
+                    break;
+                }
+            }
+            ww(&w, |x| {
+                if let Some(input) = &x.text_input {
+                    input.reconcile();
+                }
+            });
+        }
+    }
+
     /// The app window winit window `id` shows.
     fn window_of(&self, id: WindowId) -> Option<AppWindow> {
         let w = *self.shared.windows.borrow().get(&id)?;
@@ -303,6 +340,14 @@ impl Shell {
         let at = Instant::now();
         self.tick();
         w.event(InputEvent::Pointer(ev));
+        #[cfg(target_os = "macos")]
+        if ev.phase == Phase::Down {
+            ww(w, |x| {
+                if let Some(input) = &x.text_input {
+                    input.focus();
+                }
+            });
+        }
         // Moves come in bursts, and a cancel (the window losing focus) shows nothing new.
         let what = match ev.phase {
             Phase::Down => "pointer down",
@@ -361,7 +406,7 @@ impl Shell {
 
     /// A key press: the app's key routing first (focus, keymap, commands); if nothing took it,
     /// the text it typed goes to the focused field.
-    fn key(&mut self, app: &mut AppWindow, event: &winit::event::KeyEvent) {
+    fn key(&mut self, app: &mut AppWindow, event: &winit::event::KeyEvent, text: bool) -> bool {
         // `mod+shift+c` starts and ends picking in debug builds.
         let command = if cfg!(target_os = "macos") { self.modifiers.super_key() } else { self.modifiers.control_key() };
         if cfg!(debug_assertions)
@@ -372,7 +417,7 @@ impl Shell {
         {
             let on = !app.picking();
             app.set_picking(on);
-            return;
+            return true;
         }
         let key = match &event.logical_key {
             WKey::Named(n) => match n {
@@ -419,13 +464,18 @@ impl Shell {
             app.event(InputEvent::Key(KeyEvent { key, code, modifiers: modifiers(self.modifiers), repeat: event.repeat }))
         });
         if handled {
-            return;
+            return true;
+        }
+        if !text {
+            return false;
         }
         // Option (Alt) types characters on macOS; Control and Command make shortcuts.
         let shortcut = self.modifiers.control_key() || self.modifiers.super_key();
         if let Some(t) = event.text.as_deref().filter(|t| !shortcut && !t.chars().any(char::is_control)) {
             app.type_text(t);
+            return true;
         }
+        false
     }
 }
 
@@ -482,6 +532,8 @@ impl ApplicationHandler<ShellEvent> for Shell {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: ShellEvent) {
         let _in = InLoop::enter(&self.shared, event_loop);
+        #[cfg(target_os = "macos")]
+        self.native_text();
         let e = match event {
             ShellEvent::Wake => {
                 self.tick();
@@ -603,6 +655,8 @@ impl ApplicationHandler<ShellEvent> for Shell {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let _in = InLoop::enter(&self.shared, event_loop);
+        #[cfg(target_os = "macos")]
+        self.native_text();
         let Some(mut w) = self.window_of(id) else { return };
         ww(&w, |x| x.a11y.process_event(&x.window, &event));
         let scale = ww(&w, |x| x.scale()).unwrap_or(1.0);
@@ -685,7 +739,30 @@ impl ApplicationHandler<ShellEvent> for Shell {
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 let at = Instant::now();
                 self.tick();
-                self.key(&mut w, &event);
+                #[cfg(target_os = "macos")]
+                let native_key = ww(&w, |x| x.text_input.as_ref().and_then(|i| i.take_key(&event))).flatten();
+                #[cfg(target_os = "macos")]
+                if let Some(native_key) = native_key {
+                    let marked = ww(&w, |x| x.text_input.as_ref().is_some_and(|i| i.has_marked_text())).unwrap_or(false);
+                    if marked {
+                        let handled = ww(&w, |x| x.text_input.as_ref().is_some_and(|i| i.interpret_key(native_key))).unwrap_or(false);
+                        self.native_text();
+                        if !handled {
+                            self.key(&mut w, &event, false);
+                        }
+                    } else if !self.key(&mut w, &event, false) {
+                        ww(&w, |x| {
+                            if let Some(input) = &x.text_input {
+                                input.interpret_key(native_key);
+                            }
+                        });
+                        self.native_text();
+                    }
+                } else {
+                    self.key(&mut w, &event, true);
+                }
+                #[cfg(not(target_os = "macos"))]
+                self.key(&mut w, &event, true);
                 ww(&w, |x| x.traced(at, if event.repeat { "key (repeat)" } else { "key" }));
             }
             WindowEvent::Ime(Ime::Enabled) => {

@@ -9,7 +9,7 @@
 
 use super::behavior::Behavior;
 use super::pointer::{Modifiers, PointerEvent, PointerKind};
-use super::{Modality, Window};
+use super::{Modality, TextDocument, TextEdit, Window};
 use crate::kernel::{HandlerKind, NodeId};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -99,7 +99,7 @@ pub struct TextField {
     /// The selection (bytes, start ≤ end) and whether the caret is at its start.
     pub selection: Range<usize>,
     pub reversed: bool,
-    /// What an input method is composing at the caret (not part of `text`).
+    /// The input method's marked text (not part of the committed `text`).
     pub composition: String,
     /// UTF-8 byte range within `composition`; none means the input method hides its cursor.
     /// The range is clamped to character boundaries and ordered from start to end.
@@ -232,6 +232,13 @@ impl Window {
     /// Text typed or committed into the focused field: replaces the selection.
     pub(super) fn insert_text(&self, text: &str) {
         let Some((n, value, a, c)) = self.field() else { return };
+        let document = self.w.kernel.borrow().text_document(n);
+        if let Some(mut document) = document.filter(|d| d.composition.is_some()) {
+            document.apply(&TextEdit::Insert { text: text.to_owned(), replacement: None });
+            self.w.kernel.borrow_mut().set_preedit(n, "");
+            self.apply(n, document.value, document.anchor, document.caret, Kind::Other);
+            return;
+        }
         self.w.kernel.borrow_mut().set_preedit(n, "");
         let (s, e) = (a.min(c), a.max(c));
         let new = format!("{}{text}{}", &value[..s], &value[e..]);
@@ -472,8 +479,9 @@ impl Window {
         })
     }
 
-    /// Replaces `range` (bytes) of the focused field's text with `text`, ending any
-    /// composition; the caret goes after it. (NSTextInputClient `insertText:replacementRange:`.)
+    /// Replaces `range` (bytes) of the focused field's committed text with `text`, ending any
+    /// composition; the caret goes after it. Platform edits in displayed-document coordinates
+    /// use [`apply_text_edit`](Self::apply_text_edit) instead.
     pub fn replace_text(&mut self, range: Range<usize>, text: &str) {
         self.input_frame(|| {
             let Some((n, v, _, _)) = self.field() else { return };
@@ -492,6 +500,41 @@ impl Window {
                 self.select_field(n, anchor, caret);
             }
         });
+    }
+
+    /// Applies a queued platform edit at a normal input boundary. The field must still own
+    /// input and its complete editing document must equal `expected`; otherwise nothing is
+    /// changed. Native callbacks edit their owned [`TextDocument`] first and enqueue this
+    /// operation rather than calling application handlers synchronously.
+    pub fn apply_text_edit(&mut self, owner: NodeId, expected: &TextDocument, edit: &TextEdit) -> bool {
+        let mut accepted = false;
+        self.input_frame(|| {
+            let Some((id, ..)) = self.field() else { return };
+            let mut document = {
+                let k = self.w.kernel.borrow();
+                if id != owner || k.is_secure(id) {
+                    return;
+                }
+                let Some(document) = k.text_document(id) else { return };
+                if &document != expected {
+                    return;
+                }
+                document
+            };
+            let composing = document.composition.is_some();
+            document.apply(edit);
+            accepted = true;
+            match edit {
+                TextEdit::Insert { .. } | TextEdit::Unmark if composing || matches!(edit, TextEdit::Insert { .. }) => {
+                    self.w.kernel.borrow_mut().set_composition(id, None);
+                    self.apply(id, document.value, document.anchor, document.caret, if composing { Kind::Other } else { Kind::Insert });
+                }
+                _ => {
+                    self.w.kernel.borrow_mut().set_composition(id, document.composition);
+                }
+            }
+        });
+        accepted
     }
 
     /// What an input method is composing in the focused field (pinyin before it becomes 汉字):

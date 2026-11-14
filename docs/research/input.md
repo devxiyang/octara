@@ -56,6 +56,32 @@ point rect**, and to accept **replacement by range**. NSTextInputClient, UITextI
 text-input-v3 can all be mapped onto this one model; Parley's `PlainEditor` already implements text, selection, composition and
 caret geometry.
 
+### 2026-11-14 correction: native interpretation precedes Rune's dispatch table
+
+The original Rune comparison used local `3686e94` (2026-11-10). Official `dev` at
+[`3faa09fddaa07be68ea424c806624c7cbe194231`](https://github.com/anomalyco/rune/commit/3faa09fddaa07be68ea424c806624c7cbe194231)
+was checked again for native input. The dispatch order above describes Rune's runtime after
+the platform has delivered an event. Before that, winit's `keyDown:` synchronously runs
+`interpretKeyEvents`, then decides whether the IME consumed the key or ordinary keyboard
+input should be delivered. Rune's runtime queues the resulting IME action; it does not defer
+interpretation by retaining and replaying the native key event.
+[Native ordering](https://github.com/anomalyco/rune/blob/3faa09fddaa07be68ea424c806624c7cbe194231/vendor/winit/src/platform_impl/macos/view.rs#L475),
+[runtime queue](https://github.com/anomalyco/rune/blob/3faa09fddaa07be68ea424c806624c7cbe194231/crates/rune/src/runtime/input/keys.rs#L288).
+
+Rune now patches vendored winit for surrounding text, marked clauses and limited reconversion.
+That is progress beyond the original Preedit/Commit-only snapshot, not completion of every
+direct protocol in its PLAN. See the
+[query and geometry gaps](text-input.md#2026-11-14-correction-runes-implemented-native-text-path).
+Standard menu shortcuts also explicitly finish the native composition and reset its state
+before sending the command, avoiding a swallowed following key.
+[Shortcut handling](https://github.com/anomalyco/rune/blob/3faa09fddaa07be68ea424c806624c7cbe194231/crates/rune/src/native_menu/standard_macos.rs#L120).
+
+Its lifecycle policy differs from Octara's current one: Rune `Finish` accepts preedit on a
+focus/caret move or inactive window, while `Cancel` discards it after an underlying edit,
+undo or secure-mode change. Octara's focus-loss cancellation preserves the committed value
+and original selection. These are distinct policies, separate from native event ordering.
+[Rune composition events](https://github.com/anomalyco/rune/blob/3faa09fddaa07be68ea424c806624c7cbe194231/crates/rune/src/edit/ime.rs#L103).
+
 ## Scrolling
 
 | | Rune | GPUI |

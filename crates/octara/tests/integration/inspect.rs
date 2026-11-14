@@ -68,6 +68,11 @@ fn a_snapshot_reads_committed_and_preedit_state_with_explicit_units() {
     assert_eq!(input.composition, "ni好");
     assert_eq!(input.composition_selection, Some([2, 5]));
     assert_eq!(input.composition_selection_utf16, Some([2, 3]));
+    assert_eq!(input.display_text, "Ani好B");
+    assert_eq!(input.display_selection, Some([3, 6]));
+    assert_eq!(input.display_selection_utf16, Some([3, 4]));
+    assert_eq!(input.marked, Some([1, 6]));
+    assert_eq!(input.marked_utf16, Some([1, 4]));
     assert!(!input.caret_visible);
     assert!(input.caret[2] > 0.0 && input.caret[3] > 0.0);
     assert_eq!(serde_json::from_str::<inspect::Snapshot>(&snapshot.to_json()).unwrap(), snapshot);
@@ -76,6 +81,9 @@ fn a_snapshot_reads_committed_and_preedit_state_with_explicit_units() {
     assert_eq!(input.text, "A🙂你B");
     assert_eq!(input.selection, [1, 8]);
     assert!(input.composition.is_empty());
+    assert_eq!(input.display_text, "A🙂你B");
+    assert_eq!(input.display_selection, Some([1, 8]));
+    assert!(input.marked.is_none());
 }
 
 #[test]

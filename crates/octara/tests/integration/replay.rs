@@ -89,7 +89,7 @@ fn each_operation_presents_a_frame() {
     let window = |w: &Window| {
         let p = w.platform_window();
         let h = p.as_any().downcast_ref::<HeadlessWindow>().unwrap();
-        (h.frames, h.native.len(), h.text_input)
+        (h.frames, h.native.len(), h.text_input.clone())
     };
     let (frames, native, input) = window(&w);
     assert!(frames >= 1 && native == 2, "the web view was created and placed: {frames} frames, {native} changes");
@@ -98,7 +98,7 @@ fn each_operation_presents_a_frame() {
     w.tap("name").unwrap();
     let (after_tap, _, input) = window(&w);
     assert!(after_tap > frames);
-    assert!(input.is_some_and(|t| t.secure), "the focused secure field: {input:?}");
+    assert!(input.as_ref().is_some_and(|t| t.secure), "the focused secure field: {input:?}");
 
     // Nothing changed (no field focused: no caret blinks): nothing is presented.
     w.press_key("escape").unwrap();

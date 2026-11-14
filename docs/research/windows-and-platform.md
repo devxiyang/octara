@@ -66,3 +66,28 @@ sources only.
   egui, Xilem, Floem and Blitz are on winit with weak IME.
 - **AccessKit** adapters, **muda** (menus), **rfd** (dialogs) and **tray-icon** take raw handles
   or nothing: they work with either choice.
+
+## 2026-11-14 correction: Rune's shell plan and running text path
+
+The observations above used the local Rune `3686e94` snapshot (2026-11-10). Its plan to own
+thin shells is not an implemented replacement for winit. Official `dev` was rechecked at
+[`3faa09fddaa07be68ea424c806624c7cbe194231`](https://github.com/anomalyco/rune/commit/3faa09fddaa07be68ea424c806624c7cbe194231)
+(2026-11-14): macOS text input still uses the original `WinitView`, now with a vendored winit
+patch for surrounding text, reconversion selection and marked clauses. The runtime
+`panel_bridge` patch and the vendored text-input patch solve different problems.
+[Current winit patch](https://github.com/anomalyco/rune/blob/3faa09fddaa07be68ea424c806624c7cbe194231/vendor/winit.patch).
+
+The original view synchronously interprets IME input inside `keyDown:`; Rune then queues
+application actions. Each built frame publishes owned context for native queries and retires
+the native composition when the runtime requests a reset. This preserves the native event
+boundary without requiring a full shell rewrite or an application callback during a text
+query. [Native interpretation](https://github.com/anomalyco/rune/blob/3faa09fddaa07be68ea424c806624c7cbe194231/vendor/winit/src/platform_impl/macos/view.rs#L475),
+[queued actions](https://github.com/anomalyco/rune/blob/3faa09fddaa07be68ea424c806624c7cbe194231/crates/rune/src/runtime/input/keys.rs#L288),
+[frame synchronization](https://github.com/anomalyco/rune/blob/3faa09fddaa07be68ea424c806624c7cbe194231/crates/rune/src/window/platform_sync.rs#L13).
+
+This remains partial protocol support: document coordinates during composition, explicit
+commit replacement and per-range geometry still have gaps. The detailed source check and
+Rune's accept-on-focus-loss policy are recorded in the
+[dated text-input correction](text-input.md#2026-11-14-correction-runes-implemented-native-text-path).
+It supports incremental native integration; it does not show that unmodified winit supplies
+the required protocol or that Rune has already completed its planned native shells.

@@ -65,12 +65,26 @@ pub struct TextInputState {
     pub selection_utf16: [usize; 2],
     /// The committed selection's active caret is at its start.
     pub reversed: bool,
-    /// Uncommitted text displayed in place of the committed selection.
+    /// The input method's marked text; a native draft can also contain pending changes
+    /// outside this range (for example, after a partial marked-text replacement).
     pub composition: String,
     /// UTF-8 byte offsets within `composition`; none means its cursor is hidden.
     pub composition_selection: Option<[usize; 2]>,
     /// The composition-relative selection measured in UTF-16 code units.
     pub composition_selection_utf16: Option<[usize; 2]>,
+    /// The complete displayed document, including the input method's uncommitted draft.
+    #[serde(default)]
+    pub display_text: String,
+    /// UTF-8 byte selection in `display_text`; none means the input method hides its cursor.
+    #[serde(default)]
+    pub display_selection: Option<[usize; 2]>,
+    #[serde(default)]
+    pub display_selection_utf16: Option<[usize; 2]>,
+    /// The marked range in `display_text`, in UTF-8 bytes and UTF-16 units respectively.
+    #[serde(default)]
+    pub marked: Option<[usize; 2]>,
+    #[serde(default)]
+    pub marked_utf16: Option<[usize; 2]>,
     /// Candidate-window anchor `[x, y, width, height]` in logical window pixels.
     pub caret: [f32; 4],
     /// Whether the framework currently paints the caret (blink, focus, selection and IME).
@@ -78,7 +92,7 @@ pub struct TextInputState {
 }
 
 impl TextInputState {
-    pub(crate) fn from_field(field: crate::app::TextField) -> Option<Self> {
+    pub(crate) fn from_field(field: crate::app::TextField, document: crate::app::TextDocument) -> Option<Self> {
         if field.secure {
             return None;
         }
@@ -91,6 +105,11 @@ impl TextInputState {
             reversed: field.reversed,
             composition_selection: field.composition_selection.as_ref().map(|range| [range.start, range.end]),
             composition_selection_utf16: field.composition_selection.as_ref().map(|range| units(&field.composition, range)),
+            display_text: document.text().to_owned(),
+            display_selection: document.selection().map(|range| [range.start, range.end]),
+            display_selection_utf16: document.selection().map(|range| units(document.text(), &range)),
+            marked: document.marked().map(|range| [range.start, range.end]),
+            marked_utf16: document.marked().map(|range| units(document.text(), &range)),
             text: field.text,
             composition: field.composition,
             caret: [field.caret.0, field.caret.1, field.caret.2, field.caret.3],

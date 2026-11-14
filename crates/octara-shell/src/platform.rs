@@ -12,7 +12,9 @@ use std::any::Any;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use winit::dpi::{LogicalPosition, LogicalSize};
+#[cfg(not(target_os = "macos"))]
+use winit::dpi::LogicalPosition;
+use winit::dpi::LogicalSize;
 use winit::window::Window;
 
 /// The desktop the app runs on: arboard's clipboard, the event loop's proxy as the waker, and
@@ -126,6 +128,13 @@ impl Platform for WinitPlatform {
         drop(gpu);
         let wid = window.id();
         #[cfg(target_os = "macos")]
+        let text_input = {
+            let proxy = shared.proxy.clone();
+            super::text_input_mac::TextInputMac::new(&window, move || {
+                let _ = proxy.send_event(ShellEvent::Wake);
+            })
+        };
+        #[cfg(target_os = "macos")]
         let (native, host, link) = {
             let proxy = shared.proxy.clone();
             let (native, host) = super::native_mac::Native::new(&window, move || {
@@ -145,6 +154,8 @@ impl Platform for WinitPlatform {
             surface,
             config,
             a11y,
+            #[cfg(target_os = "macos")]
+            text_input,
             #[cfg(target_os = "macos")]
             native,
             #[cfg(target_os = "macos")]
@@ -206,6 +217,8 @@ pub(crate) struct WinitWindow {
     surface: wgpu::Surface<'static>,
     pub(crate) config: wgpu::SurfaceConfiguration,
     pub(crate) a11y: accesskit_winit::Adapter,
+    #[cfg(target_os = "macos")]
+    pub(crate) text_input: Option<super::text_input_mac::TextInputMac>,
     /// Its native views (macOS: AppKit's; elsewhere none, so they draw as placeholders).
     #[cfg(target_os = "macos")]
     pub(crate) native: Option<super::native_mac::Native>,
@@ -461,6 +474,9 @@ impl WinitWindow {
                         .extend(fields.as_object().expect("native state is an object").clone());
                 }
             }
+            if let Some(input) = &self.text_input {
+                state["ime"] = input.inspect_state();
+            }
             state
         }
         #[cfg(not(target_os = "macos"))]
@@ -469,22 +485,38 @@ impl WinitWindow {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn set_ime_allowed(&mut self, allowed: bool) {
         if allowed == self.ime_allowed {
             return;
         }
         self.window.set_ime_allowed(allowed);
         self.ime_allowed = allowed;
-        #[cfg(target_os = "macos")]
-        if !allowed {
-            // winit clears its marked storage; IMKit also owns pending Pinyin syllables.
-            let _ = super::native_mac::discard_marked_text(&self.window);
-        }
     }
 
     /// The input method's candidate window follows the caret. Only a focused, non-secure field
     /// enables composition; secure fields also enable the platform's secure keyboard input.
     fn text_input(&mut self, input: Option<&TextInput>) {
+        #[cfg(target_os = "macos")]
+        {
+            // The owned native client interprets text; winit only translates physical keys.
+            self.ime_allowed = input.is_some_and(|i| !i.secure);
+            self.input_owner = input.map(|i| i.id);
+            let secure = input.is_some_and(|i| i.secure);
+            if secure != self.secure {
+                self.secure = secure;
+                secure_input::set(secure);
+            }
+            if let Some(client) = &self.text_input {
+                client.update(input);
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        self.winit_text_input(input);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn winit_text_input(&mut self, input: Option<&TextInput>) {
         let owner = input.map(|t| t.id);
         if owner != self.input_owner {
             self.input_owner = owner;

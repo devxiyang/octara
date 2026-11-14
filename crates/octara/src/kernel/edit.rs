@@ -31,7 +31,9 @@ pub(crate) struct Field {
     pub shown: String,
     /// Where the composition is in `shown`.
     pub preedit: std::ops::Range<usize>,
-    /// Which committed value range the composition replaces in the displayed text.
+    /// The changed ranges in the displayed draft and committed value. These can extend
+    /// beyond the current marked range after a native partial replacement.
+    pub overlay: std::ops::Range<usize>,
     pub replaced: std::ops::Range<usize>,
     /// The selection in `shown` (start ≤ end) and the caret.
     pub sel: (usize, usize),
@@ -51,6 +53,56 @@ pub(crate) struct Field {
 }
 
 impl Field {
+    fn new(shown: String, caret: usize, content: Rect, line_height: f32, lines: Vec<VisualLine>) -> Self {
+        Self {
+            shown,
+            caret,
+            preedit: caret..caret,
+            overlay: caret..caret,
+            replaced: caret..caret,
+            sel: (caret, caret),
+            show_caret: true,
+            x: content.x,
+            y: content.y,
+            width: content.w,
+            height: content.h,
+            line_height,
+            lines,
+            scroll: (0.0, 0.0),
+            masked: None,
+        }
+    }
+
+    /// The same caret reveal for a painted field and a native document not yet committed to
+    /// it. This changes only the owned layout, returning the multiline scroll's keep key.
+    fn reveal(&mut self, multiline: bool, scroll: f32, kept: Option<(usize, usize)>) -> Option<(usize, usize)> {
+        let (caret_x, caret_y) = self.pos(self.caret);
+        let keep = |at: f32, size: f32, room: f32, extent: f32| {
+            let mut s = scroll;
+            if at + size - s > room {
+                s = at + size - room;
+            }
+            if at < s {
+                s = at;
+            }
+            s.min((extent - room).max(0.0)).max(0.0)
+        };
+        if multiline {
+            let now = (self.caret, self.shown.len());
+            let sy = if kept == Some(now) {
+                scroll.min((self.text_height() - self.height).max(0.0)).max(0.0)
+            } else {
+                keep(caret_y, self.line_height, self.height, self.text_height())
+            };
+            self.scroll = (0.0, sy);
+            Some(now)
+        } else {
+            let end_x = self.lines[0].stops.last().map_or(0.0, |s| s.1);
+            self.scroll = (keep(caret_x, 0.0, (self.width - 1.0).max(0.0), end_x), 0.0);
+            kept
+        }
+    }
+
     /// The line byte `b` is shown on: where a wrapped line ends, the next line (which starts
     /// there).
     pub fn line_of(&self, b: usize) -> usize {
@@ -161,9 +213,9 @@ impl Kernel {
         let Some(i) = self.node_mut(id).input_mut() else { return };
         i.goal.set(None);
         if i.selection != sel {
-            // A composition moves with the caret: the shown text changes from the earlier caret.
-            if !i.preedit.is_empty() {
-                i.clean.set(i.clean.get().min(i.selection.0.min(i.selection.1).min(anchor.min(caret))));
+            // A direct selection change ends the input method's draft without committing it.
+            if i.composition.take().is_some() {
+                i.clean.set(0);
             }
             i.selection = sel;
             self.mark(Dirty::PAINT);
@@ -182,8 +234,7 @@ impl Kernel {
         if i.secure != on {
             i.secure = on;
             i.clean.set(0);
-            i.preedit.clear();
-            i.preedit_selection = None;
+            i.composition = None;
             self.changed(id, Dirty::PAINT | Dirty::TEXT | Dirty::SEMANTICS, "secure", || on.to_string());
         }
     }
@@ -316,8 +367,7 @@ impl Kernel {
             pairs.push((input.value.len(), shown.len()));
             (shown, pairs)
         });
-        let composing = !input.preedit.is_empty();
-        let replaced = if composing { anchor.min(caret)..anchor.max(caret) } else { caret..caret };
+        let composing = input.composition.is_some();
         let (shown, preedit, sel, shown_caret, show_caret, pairs) = match masked {
             Some((shown, pairs)) => {
                 let to_shown = |b| pairs[pairs.partition_point(|x| x.0 <= b).saturating_sub(1)].1;
@@ -326,18 +376,25 @@ impl Kernel {
                 (shown, caret..caret, sel, caret, true, Some(pairs))
             }
             None if composing => {
-                let start = replaced.start;
-                let selection = input.preedit_selection.clone().unwrap_or(input.preedit.len()..input.preedit.len());
-                (
-                    format!("{}{}{}", &input.value[..start], input.preedit, &input.value[replaced.end..]),
-                    start..start + input.preedit.len(),
-                    (start + selection.start, start + selection.end),
-                    start + selection.end,
-                    input.preedit_selection.is_some(),
-                    None,
-                )
+                let c = input.composition.as_ref().expect("a composition");
+                let selection = c.selection.clone().unwrap_or(c.marked.end..c.marked.end);
+                (c.text.clone(), c.marked.clone(), (selection.start, selection.end), selection.end, c.selection.is_some(), None)
             }
             None => (input.value.clone(), caret..caret, (anchor.min(caret), anchor.max(caret)), caret, true, None),
+        };
+        let (overlay, replaced) = if composing {
+            let mut prefix = input.value.bytes().zip(shown.bytes()).take_while(|(a, b)| a == b).count();
+            while !input.value.is_char_boundary(prefix) || !shown.is_char_boundary(prefix) {
+                prefix -= 1;
+            }
+            let limit = input.value.len().min(shown.len()) - prefix;
+            let mut suffix = input.value.bytes().rev().zip(shown.bytes().rev()).take(limit).take_while(|(a, b)| a == b).count();
+            while !input.value.is_char_boundary(input.value.len() - suffix) || !shown.is_char_boundary(shown.len() - suffix) {
+                suffix -= 1;
+            }
+            (prefix..shown.len() - suffix, prefix..input.value.len() - suffix)
+        } else {
+            (caret..caret, caret..caret)
         };
         let (x, y, _, _) = self.shown_rect(id);
         let l = self.taffy.layout(n.taffy).expect("taffy");
@@ -351,53 +408,30 @@ impl Kernel {
         } else {
             self.shown_layout(id, &shown, &style).visual_lines(limit)
         };
-        let mut f = Field {
-            shown,
-            preedit,
-            replaced,
-            sel,
-            caret: shown_caret,
-            show_caret,
-            x: cx,
-            y: cy,
-            width,
-            height,
-            line_height: style.line_height,
-            lines,
-            scroll: (0.0, 0.0),
-            masked: pairs,
-        };
-        // Keep the caret in view, moving the text as little as possible.
-        let (caret_x, caret_y) = f.pos(f.caret);
-        let keep = |at: f32, size: f32, room: f32, extent: f32, scroll: f32| {
-            let mut s = scroll;
-            if at + size - s > room {
-                s = at + size - room;
-            }
-            if at < s {
-                s = at;
-            }
-            s.min((extent - room).max(0.0)).max(0.0)
-        };
-        if input.multiline {
-            // Back to the caret when it (or the text) changed; else where a wheel left it.
-            let now = (f.caret, f.shown.len());
-            let sy = if input.kept.get() == Some(now) {
-                input.scroll.get().min((f.text_height() - height).max(0.0)).max(0.0)
-            } else {
-                input.kept.set(Some(now));
-                keep(caret_y, f.line_height, height, f.text_height(), input.scroll.get())
-            };
-            input.scroll.set(sy);
-            f.scroll = (0.0, sy);
-        } else {
-            let end_x = f.lines[0].stops.last().map_or(0.0, |s| s.1);
-            let room = (width - 1.0).max(0.0);
-            let sx = keep(caret_x, 0.0, room, end_x, input.scroll.get());
-            input.scroll.set(sx);
-            f.scroll = (sx, 0.0);
-        }
+        let mut f = Field::new(shown, shown_caret, Rect { x: cx, y: cy, w: width, h: height }, style.line_height, lines);
+        f.preedit = preedit;
+        f.overlay = overlay;
+        f.replaced = replaced;
+        f.sel = sel;
+        f.show_caret = show_caret;
+        f.masked = pairs;
+        input.kept.set(f.reveal(input.multiline, input.scroll.get(), input.kept.get()));
+        input.scroll.set(if input.multiline { f.scroll.1 } else { f.scroll.0 });
         Some(f)
+    }
+
+    pub(crate) fn input_layout(&self, id: NodeId, field: &Field) -> crate::platform::TextInputLayout {
+        let n = self.node(id);
+        let input = n.input().expect("a text input");
+        crate::platform::TextInputLayout {
+            resources: self.res.clone(),
+            style: input_style(n.visual.text_style(), input.multiline),
+            content: Rect { x: field.x, y: field.y, w: field.width, h: field.height },
+            multiline: input.multiline,
+            scroll: input.scroll.get(),
+            kept: input.kept.get(),
+            fonts: self.fonts_generation,
+        }
     }
 
     /// The value offset of a text field `field` shows at byte `b` (the composition is not part
@@ -406,12 +440,12 @@ impl Kernel {
         if let Some(p) = &field.masked {
             return p[p.partition_point(|x| x.1 <= b).saturating_sub(1)].0;
         }
-        if field.preedit.is_empty() || b <= field.preedit.start {
+        if (field.overlay.is_empty() && field.replaced.is_empty()) || b <= field.overlay.start {
             b
-        } else if b < field.preedit.end {
+        } else if b < field.overlay.end {
             field.replaced.start
         } else {
-            b.saturating_sub(field.preedit.len()) + field.replaced.len()
+            b.saturating_sub(field.overlay.len()) + field.replaced.len()
         }
     }
 
@@ -525,6 +559,25 @@ impl Kernel {
             out.push(quad(Rect { x, y: cy, w: 1.0, h: lh }, fade(v.text)));
         }
         out.push(Item::PopClip);
+    }
+}
+
+impl crate::platform::TextInputLayout {
+    /// Lays out the current native document using this frame's field configuration. Returns
+    /// none if shaping finds the shared text engine borrowed; no window, kernel or
+    /// application handlers are entered. An empty document still has an insertion-point line.
+    pub fn layout(&self, document: &crate::app::TextDocument) -> Option<crate::platform::TextGeometry> {
+        let shown = document.text();
+        let caret = document.composition.as_ref().map_or(document.caret, |c| c.selection.as_ref().map_or(c.marked.end, |s| s.end));
+        let lines = if shown.is_empty() {
+            vec![VisualLine { start: 0, end: 0, top: 0.0, height: self.style.line_height, stops: vec![(0, 0.0)] }]
+        } else {
+            let mut engine = self.resources.text.try_borrow_mut().ok()?;
+            engine.layout(shown, &self.style, &[], None, 0).visual_lines(self.multiline.then_some(self.content.w))
+        };
+        let mut field = Field::new(shown.to_owned(), caret, self.content, self.style.line_height, lines);
+        field.reveal(self.multiline, self.scroll, self.kept);
+        Some(crate::platform::TextGeometry { origin: (field.x - field.scroll.0, field.y - field.scroll.1), lines: field.lines })
     }
 }
 

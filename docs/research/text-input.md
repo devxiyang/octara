@@ -25,6 +25,10 @@ Sources: Octara (`crates/octara/src/kernel/edit.rs`, `app/edit.rs`, `kernel/text
 
 ## Rune (`rune/crates/rune/src/edit*`, `rune-kit/src/text_input.rs`, `research/27-long-note-editing.md`)
 
+These original observations describe the local `3686e94` snapshot (2026-11-10). The implemented
+native protocol was checked again on 2026-11-14 below; Rune's research and PLAN are design
+intent, not evidence that every platform protocol has shipped.
+
 - One `TextEdit` model for both; `text_input` is the single-line kit element, `text_area` has `.rows(n)`, `.auto_grow(min_rows, max_rows)` (height springs; scrolls inside after max, caret kept in view), `.height`, `.secure()`, `.revealed(bool)`, `.multiline()` on `text_input`. Naming to follow: `secure`, `revealed`, `auto_grow`.
 - Caret motion (`edit/input.rs:205-245`): Left/Right use `visual_step` over the Parley layout; Up/Down call `text::move_line(layout, display_index, down)`, no remembered goal x there (grep: no goal in `edit/`); at the first/last line they jump to text start/end. Home/End: text ends on macOS, visual line edge elsewhere (Ctrl: text ends). PageUp/Down are no-ops (`input.rs:157`).
 - Submit: in a multi-line field plain Return submits via `on_submit`; Shift+Return / Option+Return insert a newline (`research/27:135`); secure text areas use Cmd/Ctrl+Return to submit and Enter inserts a newline (`text_input.rs:390-393`).
@@ -42,7 +46,52 @@ Sources: Octara (`crates/octara/src/kernel/edit.rs`, `app/edit.rs`, `kernel/text
 
 - winit (verified `window.rs`, `event.rs`): `Ime::{Enabled, Preedit(String, Option<(usize,usize)>), Commit, Disabled}`; `set_ime_allowed`, `set_ime_cursor_area(pos, size)`, `set_ime_purpose(Normal|Password|Terminal)` which is Wayland/X11-only ("unsupported" on macOS/Windows/iOS/Android/Web). No surrounding text, no marked range query, no selection sync, no reconversion, no per-range rects, no `character_index_for_point`, no content type (email/number/OTP/autofill), no enter-key hint, no secure input.
 - What a framework needs (known): macOS `NSTextInputClient` (`attributedSubstringForProposedRange`, `selectedRange`, `markedRange`, `firstRectForCharacterRange`, `characterIndexForPoint`; UTF-16): dictation, Writing Tools, emoji picker, reconversion, press-and-hold accents. iOS `UITextInput` (positions/ranges, `selectionRects`, autocorrect, Scribble, floating cursor, `isSecureTextEntry`, `textContentType`). Android `InputConnection` (`getTextBeforeCursor`, `setComposingRegion`, `getSelectedText`, `requestCursorUpdates` for candidate anchoring; `InputType` flags incl. `TYPE_TEXT_VARIATION_PASSWORD`, autofill hints). Windows TSF (`ITextStoreACP`: `GetText`, `GetSelection`, `GetTextExt`, composition attributes) vs `WM_IME_*` which loses reconversion. Linux `zwp_text_input_v3` / IBus: `set_surrounding_text`, `set_cursor_rectangle`, `set_content_type` (purpose/hint incl. password, sensitive_data), `commit_string`, `preedit_string` with cursor; the compositor needs surrounding text to do reconversion.
-- GPUI and Rune implement the platform protocols directly (Rune's research `05-text-ime-a11y-layout.md:12`: NSTextInputClient, UITextInput, TSF, text-input-v3; `gpui_apple`/`gpui_ios`, `gpui_windows`, `gpui_linux`). Octara's `input.md:127-129` already defines the GPUI-shaped protocol in UTF-8 with UTF-16 conversion; the shell only wires preedit/commit.
+- GPUI implements the platform protocols directly (`gpui_apple`/`gpui_ios`, `gpui_windows`, `gpui_linux`). Rune's research `05-text-ime-a11y-layout.md:12` and PLAN describe that direction; the original statement here incorrectly treated the plan as implemented. See the dated Rune source correction below. Octara's `input.md:127-129` defines the GPUI-shaped protocol in UTF-8 with UTF-16 conversion; the shell in the original research only wired preedit/commit.
+
+## 2026-11-14 correction: Rune's implemented native text path
+
+Checked against official Rune `dev` at
+[`3faa09fddaa07be68ea424c806624c7cbe194231`](https://github.com/anomalyco/rune/commit/3faa09fddaa07be68ea424c806624c7cbe194231)
+(2026-11-14). This updates the native-input conclusions, without rechecking the unrelated
+layout, performance or API observations above.
+
+- **The text client is still winit's `WinitView`.** Rune vendors and patches winit 0.30 rather
+  than installing another text-input view. Its patch adds published surrounding text,
+  replacement-range and clause side channels. Each frame publishes a paragraph around the
+  selection, limited to 1 KiB on either side; secure fields and an active composition publish
+  no document context. [winit patch](https://github.com/anomalyco/rune/blob/3faa09fddaa07be68ea424c806624c7cbe194231/vendor/winit.patch),
+  [context publication](https://github.com/anomalyco/rune/blob/3faa09fddaa07be68ea424c806624c7cbe194231/crates/rune/src/platform/ime.rs#L15),
+  [paragraph snapshot](https://github.com/anomalyco/rune/blob/3faa09fddaa07be68ea424c806624c7cbe194231/crates/rune/src/edit.rs#L429).
+- **Native interpretation is synchronous inside `keyDown:`.** `interpretKeyEvents` runs
+  before ordinary keyboard events are queued. `insertText` emits an IME commit only with
+  marked text; plain characters continue through keyboard input. Application processing is
+  deferred separately: `Runtime::ime` appends `Action::Ime` to its queue. This is not retained
+  `NSEvent` replay after leaving `keyDown:`.
+  [native key ordering](https://github.com/anomalyco/rune/blob/3faa09fddaa07be68ea424c806624c7cbe194231/vendor/winit/src/platform_impl/macos/view.rs#L427),
+  [runtime queue](https://github.com/anomalyco/rune/blob/3faa09fddaa07be68ea424c806624c7cbe194231/crates/rune/src/runtime/input/keys.rs#L288).
+- **Reconversion is partial.** `selectedRange` reads published selection only before marking;
+  during marking it returns `NSNotFound`. `markedRange` starts at zero. Substring queries read
+  published committed context. `setMarkedText` can request a committed range through
+  `Ime::Select`, which the editor ignores once composing. `insertText` still ignores its
+  explicit replacement range. `characterIndexForPoint` returns zero, and `firstRect` uses the
+  cursor-area rectangle without honoring the requested or actual range. These gaps do not
+  establish support for arbitrary replacements in a document containing marked text.
+  [native queries and replacements](https://github.com/anomalyco/rune/blob/3faa09fddaa07be68ea424c806624c7cbe194231/vendor/winit/src/platform_impl/macos/view.rs#L245),
+  [mid-composition Select](https://github.com/anomalyco/rune/blob/3faa09fddaa07be68ea424c806624c7cbe194231/crates/rune/src/edit/ime.rs#L178).
+- **Shortcut and lifecycle state need explicit cleanup.** Standard menu shortcuts first end
+  the native composition, reset winit to its ground state and then route the command; otherwise
+  a following key can be swallowed. Rune distinguishes `Finish` (accept preedit when focus,
+  the caret or window leaves it) from `Cancel` (discard it after an edit, undo or secure-mode
+  change). Its native `unmarkText` still clears marking and emits empty preedit. Octara's
+  current focus-loss cancellation instead restores the committed value and original selection;
+  Rune's acceptance policy must not be described as the same cancellation behavior.
+  [shortcut cleanup](https://github.com/anomalyco/rune/blob/3faa09fddaa07be68ea424c806624c7cbe194231/crates/rune/src/native_menu/standard_macos.rs#L120),
+  [Finish versus Cancel](https://github.com/anomalyco/rune/blob/3faa09fddaa07be68ea424c806624c7cbe194231/crates/rune/src/edit/ime.rs#L103).
+
+The useful simplification is to keep native interpretation at the native event boundary and
+queue application edits. Rune's smaller context bridge does not replace a full displayed
+document, range geometry or stale-owner checks when those behaviors are required. These are
+source findings, not evidence from a real OS-input test of Rune.
 
 ## Elsewhere (known)
 

@@ -2,7 +2,7 @@
 //! undo, composition at the caret, pointer selection, and the platform text protocol.
 
 use octara::accesskit;
-use octara::app::{Phase, PointerEvent, TargetPlatform, byte_offset, utf16_offset};
+use octara::app::{Phase, PointerEvent, TargetPlatform, TextEdit, byte_offset, utf16_offset};
 use octara::prelude::*;
 
 fn app(initial: &'static str) -> Window {
@@ -30,6 +30,192 @@ fn selection(app: &Window) -> std::ops::Range<usize> {
 fn keys(app: &mut Window, chords: &[&str]) {
     for c in chords {
         app.press_key(c).unwrap();
+    }
+}
+
+fn native_input(app: &Window) -> octara::platform::TextInput {
+    app.platform_window().as_any().downcast_ref::<octara::platform::HeadlessWindow>().unwrap().text_input.clone().unwrap()
+}
+
+#[test]
+fn native_reconversion_edits_the_displayed_document_and_commits_once() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let calls = Rc::new(Cell::new(0));
+    let edits = calls.clone();
+    let mut app = Window::headless(move || {
+        let value = state("value", || "A😀LatinZ".to_owned());
+        let edits = edits.clone();
+        text_input()
+            .id("field")
+            .w(240)
+            .value(move || value.get())
+            .on_input(move |text| {
+                edits.set(edits.get() + 1);
+                value.set(text);
+            })
+            .into()
+    });
+    app.tap("field").unwrap();
+    app.set_selection(10, 5);
+    let input = native_input(&app);
+    let mut mirror = input.document.unwrap();
+    let mark = TextEdit::Mark { text: "nihao".into(), selection: Some(5..5), replacement: None };
+    assert!(app.apply_text_edit(input.id, &mirror, &mark));
+    mirror.apply(&mark);
+    assert_eq!(native_input(&app).document.as_ref(), Some(&mirror));
+    assert_eq!(value(&app), "A😀LatinZ");
+    assert_eq!(calls.get(), 0, "marked text does not call the app's on_input");
+
+    let partial = TextEdit::Mark { text: "你".into(), selection: Some(3..3), replacement: Some(6..8) };
+    assert!(app.apply_text_edit(input.id, &mirror, &partial));
+    mirror.apply(&partial);
+    assert_eq!(mirror.text(), "A😀n你aoZ");
+    assert_eq!(native_input(&app).document.as_ref(), Some(&mirror));
+    assert_eq!(value(&app), "A😀LatinZ");
+    let feedback = app.inspect().text_input.unwrap();
+    assert_eq!(feedback.display_text, "A😀n你aoZ");
+    assert_eq!(feedback.marked, Some([6, 9]));
+    assert_eq!(feedback.display_selection_utf16, Some([5, 5]));
+    let geometry = native_input(&app).geometry.unwrap();
+    let (_, suffix) = geometry.first_rect(11..11).unwrap();
+    assert_eq!(app.kernel().input_offset_at(input.id, suffix.x, suffix.y + suffix.h / 2.0, false), Some(10));
+    let commit = TextEdit::Insert { text: "界".into(), replacement: Some(1..5) };
+    assert!(app.apply_text_edit(input.id, &mirror, &commit));
+    assert_eq!(value(&app), "A界n你aoZ", "an explicit replacement is in displayed coordinates, retaining the rest of the draft");
+    assert_eq!(calls.get(), 1);
+    app.press_key("mod+z").unwrap();
+    assert_eq!(value(&app), "A😀LatinZ", "all preedit updates and the final replacement form one undo step");
+    assert_eq!(selection(&app), 5..10);
+    assert!(app.text_field().unwrap().reversed);
+}
+
+#[test]
+fn native_cancel_restores_selection_but_unmark_accepts_the_draft() {
+    let mut app = app("prefix Latin suffix");
+    app.set_selection(12, 7);
+    let input = native_input(&app);
+    let before = input.document.unwrap();
+    let mark = TextEdit::Mark { text: "中文".into(), selection: Some(0..6), replacement: Some(7..12) };
+    assert!(app.apply_text_edit(input.id, &before, &mark));
+    let composing = native_input(&app).document.unwrap();
+    assert!(app.apply_text_edit(input.id, &composing, &TextEdit::Cancel));
+    assert_eq!(native_input(&app).document.as_ref(), Some(&before));
+    assert!(app.text_field().unwrap().reversed);
+    assert!(app.apply_text_edit(input.id, &before, &mark));
+    assert!(app.apply_text_edit(input.id, &composing, &TextEdit::Unmark));
+    assert_eq!(value(&app), "prefix 中文 suffix");
+    assert_eq!(selection(&app), 7..13);
+    assert!(app.text_field().unwrap().composition.is_empty());
+}
+
+#[test]
+fn queued_native_edits_reject_a_changed_owner_or_asynchronously_changed_value() {
+    use std::time::Duration;
+    let mut app = Window::headless(|| {
+        let value = state("value", || "original".to_owned());
+        spawn(async move {
+            sleep(Duration::from_millis(10)).await;
+            value.set("async update".into());
+        });
+        col()
+            .child(text_input().id("field").w(240).value(move || value.get()).on_input(move |text| value.set(text)))
+            .child(text_input().id("other").w(240))
+            .into()
+    });
+    app.tap("field").unwrap();
+    let input = native_input(&app);
+    let before = input.document.unwrap();
+    let commit = TextEdit::Insert { text: "late".into(), replacement: None };
+    app.tap("other").unwrap();
+    assert!(!app.apply_text_edit(input.id, &before, &commit));
+    assert_eq!(value(&app), "original");
+    app.dispatch(Event::Focus("field".into())).unwrap();
+    let before = native_input(&app).document.unwrap();
+    let mark = TextEdit::Mark { text: "ni".into(), selection: Some(2..2), replacement: None };
+    assert!(app.apply_text_edit(input.id, &before, &mark));
+    let composing = native_input(&app).document.unwrap();
+    assert!(composing.marked().is_some());
+    app.app().advance(Duration::from_millis(10));
+    assert_eq!(native_input(&app).id, input.id, "the field still owns input after an asynchronous model update");
+    let updated = native_input(&app).document.unwrap();
+    assert_eq!(updated.text(), "async update", "the newer model value replaces the entire old displayed draft");
+    assert!(updated.marked().is_none(), "the retired draft cannot overwrite the newer value on its next commit");
+    assert!(app.text_field().unwrap().composition.is_empty());
+    assert!(!app.apply_text_edit(input.id, &before, &commit));
+    assert!(!app.apply_text_edit(input.id, &composing, &commit));
+    assert_eq!(value(&app), "async update");
+}
+
+#[test]
+fn native_geometry_reports_marked_offsets_and_the_actual_first_line_fragment() {
+    let mut app = Window::headless(|| text_input().id("field").w(80).multiline().value("A😀Z").into());
+    app.tap("field").unwrap();
+    app.set_selection(1, 5);
+    app.event(InputEvent::Preedit { text: "中文中文中文中文".into(), selection: Some((3, 3)) });
+    let input = native_input(&app);
+    let document = input.document.unwrap();
+    let geometry = input.geometry.unwrap();
+    assert!(geometry.lines.len() > 1);
+    let marked = document.marked().unwrap();
+    let (actual, rect) = geometry.first_rect(marked.clone()).unwrap();
+    assert!(actual.start <= marked.start && actual.end < marked.end, "only the first line fragment is returned");
+    assert!(rect.w > 0.0 && rect.h > 0.0);
+    let (line, stop) = geometry
+        .lines
+        .iter()
+        .find_map(|line| line.stops.iter().find(|(b, _)| *b > marked.start && *b < marked.end && *b < line.end).map(|stop| (line, stop)))
+        .unwrap();
+    assert_eq!(geometry.index_at(geometry.origin.0 + stop.1, geometry.origin.1 + line.top + line.height / 2.0), Some(stop.0));
+    let (actual, caret) = geometry.first_rect(stop.0..stop.0).unwrap();
+    assert_eq!(actual, stop.0..stop.0);
+    assert_eq!(caret.w, 0.0, "native insertion point geometry has zero width");
+}
+
+#[test]
+fn native_layout_predicts_fresh_preedit_geometry_before_the_core_receives_its_edit() {
+    for multiline in [false, true] {
+        let mut app = Window::headless(move || {
+            let value = state("value", || "A😀Z".to_owned());
+            let field = text_input().id("field").w(80).h(48).value(move || value.get()).on_input(move |text| value.set(text));
+            (if multiline { field.multiline() } else { field }).into()
+        });
+        app.tap("field").unwrap();
+        app.set_selection(6, 6);
+        let before = native_input(&app);
+        let expected = before.document.unwrap();
+        let text = if multiline { "中😀nihao 中😀nihao\n中😀nihao 中😀nihao" } else { "nihaonihaonihaonihaonihao" };
+        let edit = TextEdit::Mark { text: text.into(), selection: Some(text.len()..text.len()), replacement: None };
+        let mut mirror = expected.clone();
+        mirror.apply(&edit);
+        let predicted = before.layout.unwrap().layout(&mirror).unwrap();
+        let end = mirror.text().len();
+        let (actual, last_o) = predicted.first_rect(end - 1..end).unwrap();
+        assert_eq!(actual, end - 1..end);
+        assert!(last_o.w > 0.0 && last_o.h > 0.0, "the input method can locate its new last character before a core frame");
+        assert_eq!(value(&app), "A😀Z", "synchronous native layout does not apply the queued edit");
+        assert!(app.text_field().unwrap().composition.is_empty());
+        assert!(app.apply_text_edit(before.id, &expected, &edit));
+        let painted = native_input(&app);
+        assert_eq!(painted.geometry.as_ref(), Some(&predicted), "native layout and the field use the same shaping, wrapping and scroll");
+        let (x, y) = predicted.origin;
+        if multiline {
+            assert!(predicted.lines.len() > 2);
+            assert!(y < painted.caret.y, "the multiline draft scrolls to reveal its end");
+        } else {
+            assert!(x < 0.0, "the single-line draft scrolls horizontally to reveal its end");
+        }
+
+        // The text is unchanged, but moving the composition cursor must reveal its start.
+        let at_start = TextEdit::Mark { text: text.into(), selection: Some(0..0), replacement: None };
+        let expected = painted.document.unwrap();
+        let mut mirror = expected.clone();
+        mirror.apply(&at_start);
+        assert_eq!(mirror.text(), expected.text());
+        let predicted_start = painted.layout.unwrap().layout(&mirror).unwrap();
+        assert_ne!(predicted_start.origin, predicted.origin, "geometry cache keys must include selection, not only text");
+        assert!(app.apply_text_edit(before.id, &expected, &at_start));
+        assert_eq!(native_input(&app).geometry.as_ref(), Some(&predicted_start));
     }
 }
 
@@ -214,8 +400,9 @@ fn moving_focus_cancels_the_old_fields_composition_and_reports_the_new_owner() {
     app.event(InputEvent::Preedit { text: "pinyin".into(), selection: Some((6, 6)) });
     let field = app.kernel().find("field").unwrap();
     let narrow = app.kernel().find("narrow").unwrap();
-    let host_input =
-        |app: &Window| app.platform_window().as_any().downcast_ref::<octara::platform::HeadlessWindow>().unwrap().text_input.unwrap();
+    let host_input = |app: &Window| {
+        app.platform_window().as_any().downcast_ref::<octara::platform::HeadlessWindow>().unwrap().text_input.clone().unwrap()
+    };
     assert_eq!(host_input(&app).id, field);
     app.tap("narrow").unwrap();
     assert_eq!(host_input(&app).id, narrow, "input-method ownership changes between ordinary text fields too");

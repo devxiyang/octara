@@ -11,6 +11,7 @@ mod keys;
 mod pick;
 mod pointer;
 mod selection;
+mod text_input;
 mod time;
 mod tooltip;
 
@@ -20,6 +21,8 @@ pub use keys::{BUILTIN_COMMANDS, Binding, Chord, Key, KeyEvent, Keymap};
 pub use pointer::{Button, Drag, DragPhase, Modifiers, Phase, PointerEvent, PointerKind, Tuning};
 pub(crate) use selection::ListOrder;
 pub use selection::TextPoint;
+pub(crate) use text_input::Composition;
+pub use text_input::{TextDocument, TextEdit};
 
 use crate::diagnostics::{self as codes, Diagnostic};
 use crate::kernel::{Breakpoint, HandlerKind, Kernel, NodeId, State, Theme};
@@ -212,7 +215,7 @@ pub(crate) struct WindowState {
     /// The window on the system: its native views and text input (headless: a recording host).
     platform: RefCell<Box<dyn crate::platform::PlatformWindow>>,
     /// The text input state last sent to it.
-    text_input: Cell<Option<crate::platform::TextInput>>,
+    text_input: RefCell<Option<crate::platform::TextInput>>,
     /// The pointer's look last presented.
     cursor: Cell<crate::platform::CursorStyle>,
     /// What the platform was last told of each native view: its props version and placement.
@@ -404,7 +407,7 @@ impl WindowState {
             size: Cell::new(size),
             scale: Cell::new(1.0),
             platform: RefCell::new(platform),
-            text_input: Cell::new(None),
+            text_input: RefCell::new(None),
             cursor: Cell::new(crate::platform::CursorStyle::Arrow),
             native_sent: RefCell::default(),
             native_changes: RefCell::default(),
@@ -1108,6 +1111,10 @@ impl Window {
         let (w, h) = self.size();
         let k = self.w.kernel.borrow();
         let focus = self.w.interaction.borrow().focused.filter(|n| k.is_alive(*n)).and_then(|n| k.test_id(n).map(str::to_owned));
+        let text_input = self.text_field().and_then(|field| {
+            let id = self.w.interaction.borrow().focused?;
+            crate::inspect::TextInputState::from_field(field, k.text_document(id)?)
+        });
         crate::inspect::Snapshot {
             schema: crate::inspect::SCHEMA.into(),
             octara: env!("CARGO_PKG_VERSION").into(),
@@ -1116,7 +1123,7 @@ impl Window {
             breakpoint: crate::inspect::snake(&format!("{:?}", self.breakpoint())),
             time_ms: self.app().now().as_millis() as u64,
             focus,
-            text_input: self.text_field().and_then(crate::inspect::TextInputState::from_field),
+            text_input,
             pending: self.app().pending().len(),
             window: self.w.id.number(),
             selection: self.selected_text().map(|t| t.chars().take(2000).collect()),
@@ -1642,7 +1649,22 @@ impl Window {
         let text_input = self.focused_input().and_then(|(n, _)| {
             let k = self.w.kernel.borrow();
             let caret = k.caret(n)?;
-            Some(crate::platform::TextInput { id: n, caret, secure: k.is_secure(n), multiline: k.is_multiline(n) })
+            let secure = k.is_secure(n);
+            let document = (!secure).then(|| k.text_document(n)).flatten();
+            let (geometry, layout) = if secure {
+                (None, None)
+            } else {
+                let field = k.field(n)?;
+                let layout = k.input_layout(n, &field);
+                (
+                    Some(crate::platform::TextGeometry {
+                        origin: (field.x - field.scroll.0, field.y - field.scroll.1),
+                        lines: field.lines,
+                    }),
+                    Some(layout),
+                )
+            };
+            Some(crate::platform::TextInput { id: n, caret, secure, multiline: k.is_multiline(n), document, geometry, layout })
         });
         let generation = self.w.kernel.borrow().paint_generation();
         let (picking, picked) = self.picking_frame();
@@ -1654,14 +1676,14 @@ impl Window {
         if native.is_empty()
             && !redraw
             && picked.is_none()
-            && text_input == self.w.text_input.get()
+            && text_input == *self.w.text_input.borrow()
             && cursor == self.w.cursor.get()
             && asks.is_empty()
             && withdrawn.is_empty()
         {
             return;
         }
-        self.w.text_input.set(text_input);
+        *self.w.text_input.borrow_mut() = text_input.clone();
         self.w.cursor.set(cursor);
         self.w.presented.set(generation);
         self.w.frames.set(self.w.frames.get() + 1);

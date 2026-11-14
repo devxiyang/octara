@@ -496,9 +496,7 @@ struct TextContent {
 #[derive(Default)]
 struct InputContent {
     value: String,
-    preedit: String,
-    /// Byte range relative to preedit; none means the input method hides its cursor.
-    preedit_selection: Option<std::ops::Range<usize>>,
+    composition: Option<crate::app::Composition>,
     selection: (usize, usize),
     /// How far the text is scrolled: x for a single line, y for a multi-line field.
     scroll: Cell<f32>,
@@ -547,7 +545,9 @@ impl Drop for InputContent {
     fn drop(&mut self) {
         if self.secure {
             wipe(&mut self.value);
-            wipe(&mut self.preedit);
+            if let Some(c) = &mut self.composition {
+                wipe(&mut c.text);
+            }
         }
     }
 }
@@ -558,7 +558,7 @@ impl std::fmt::Debug for InputContent {
         if self.secure {
             d.field("value", &"[redacted]");
         } else {
-            d.field("value", &self.value).field("preedit", &self.preedit).field("selection", &self.selection);
+            d.field("value", &self.value).field("composition", &self.composition).field("selection", &self.selection);
         }
         d.field("multiline", &self.multiline).field("secure", &self.secure).finish_non_exhaustive()
     }
@@ -1458,29 +1458,38 @@ impl Kernel {
     }
 
     pub(crate) fn set_preedit_selection(&mut self, id: NodeId, text: &str, selection: Option<(usize, usize)>) -> bool {
-        let selection = selection.filter(|_| !text.is_empty()).map(|(a, b)| {
-            let (a, b) = (floor_boundary(text, a), floor_boundary(text, b));
-            a.min(b)..a.max(b)
-        });
-        if self.node(id).input().is_none_or(|i| i.preedit == text && i.preedit_selection == selection) {
-            return false;
-        }
-        // Composition only replaces the selection in the display, until it commits.
-        let (anchor, caret) = self.selection(id);
-        let i = self.node_mut(id).input_mut().expect("a text input");
-        i.clean.set(i.clean.get().min(anchor.min(caret)));
-        i.preedit.clear();
-        i.preedit.push_str(text);
-        i.preedit_selection = selection;
-        self.changed(id, Dirty::PAINT, "preedit", || text.to_owned());
-        true
+        let Some(mut document) = self.text_document(id) else { return false };
+        document.apply(&crate::app::TextEdit::Mark { text: text.to_owned(), selection: selection.map(|(a, b)| a..b), replacement: None });
+        self.set_composition(id, document.composition)
     }
     pub fn preedit(&self, id: NodeId) -> &str {
-        self.node(id).input().map_or("", |i| &i.preedit)
+        self.node(id).input().and_then(|i| i.composition.as_ref()).map_or("", |c| &c.text[c.marked.clone()])
     }
 
     pub(crate) fn preedit_selection(&self, id: NodeId) -> Option<std::ops::Range<usize>> {
-        self.node(id).input().and_then(|i| i.preedit_selection.clone())
+        let c = self.node(id).input()?.composition.as_ref()?;
+        c.selection.as_ref().map(|s| s.start.saturating_sub(c.marked.start)..s.end.saturating_sub(c.marked.start))
+    }
+
+    pub(crate) fn text_document(&self, id: NodeId) -> Option<crate::app::TextDocument> {
+        let i = self.node(id).input()?;
+        let (anchor, caret) = self.selection(id);
+        let mut document = crate::app::TextDocument::new(i.value.clone(), anchor, caret);
+        document.composition = i.composition.clone();
+        Some(document)
+    }
+
+    pub(crate) fn set_composition(&mut self, id: NodeId, composition: Option<crate::app::Composition>) -> bool {
+        let Some(i) = self.node_mut(id).input_mut() else { return false };
+        let composition = composition.filter(|_| !i.secure);
+        if i.composition == composition {
+            return false;
+        }
+        i.clean.set(0);
+        i.composition = composition;
+        let text = self.preedit(id).to_owned();
+        self.changed(id, Dirty::PAINT, "preedit", || text);
+        true
     }
 
     /// A text input's value; for other nodes, the value assistive technology announces.
@@ -1492,6 +1501,11 @@ impl Kernel {
         let n = self.node_mut(id);
         match n.input_mut() {
             Some(i) => {
+                // A draft contains the whole displayed document. A newer app value retires
+                // it, so a subsequent input-method commit cannot restore the old document.
+                if i.composition.take().is_some() {
+                    i.clean.set(0);
+                }
                 // What a text input shows is unchanged only up to the first byte that differs
                 // (and up to its composition, which follows the caret).
                 let same = i.value.bytes().zip(value.bytes()).take_while(|(a, b)| a == b).count();

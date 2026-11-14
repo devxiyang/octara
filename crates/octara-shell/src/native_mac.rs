@@ -876,17 +876,6 @@ pub(crate) fn pointer_in(window: &Window) -> Option<(f32, f32)> {
     Some((p.x as f32, y as f32))
 }
 
-/// Retire the input method's own composer after winit has cleared its client-side marked text.
-/// Disabling winit alone does not discard IMKit's pending Pinyin syllables.
-pub(crate) fn discard_marked_text(window: &Window) -> Option<()> {
-    let _mtm = MainThreadMarker::new()?;
-    let RawWindowHandle::AppKit(handle) = window.window_handle().ok()?.as_raw() else { return None };
-    // SAFETY: winit owns this content view and the window remains alive during the call.
-    let view: Retained<NSView> = unsafe { Retained::retain(handle.ns_view.as_ptr().cast()) }?;
-    view.inputContext()?.discardMarkedText();
-    Some(())
-}
-
 /// Current native input and visibility facts, without activating the app or input context.
 pub(crate) fn inspect_state(window: &Window) -> Option<serde_json::Map<String, Value>> {
     let mtm = MainThreadMarker::new()?;
