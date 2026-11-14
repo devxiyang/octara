@@ -15,6 +15,10 @@
 
 use serde::{Deserialize, Serialize};
 
+mod target;
+pub use target::{ParsedRequest, TargetGuard, handle_guarded, parse_guarded_request};
+pub(crate) use target::{TargetScope, new_namespace};
+
 /// The snapshot schema; bumped when a field changes meaning or goes away.
 pub const SCHEMA: &str = "octara.inspect/1";
 
@@ -41,6 +45,9 @@ pub struct Snapshot {
     pub pending: usize,
     /// This window's number (what a request's `window` names).
     pub window: u64,
+    /// Opaque window identity for guarding a later request. Changes after a tree reload.
+    #[serde(default)]
+    pub target: String,
     /// The document selection's text, when there is one (cut after 2 000 characters).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selection: Option<String>,
@@ -130,6 +137,8 @@ pub struct AskInfo {
 pub struct WindowInfo {
     /// What a request's `window` names.
     pub window: u64,
+    #[serde(default)]
+    pub target: String,
     pub title: String,
     /// Its size in logical pixels.
     pub size: [f32; 2],
@@ -138,6 +147,9 @@ pub struct WindowInfo {
 /// One element of the semantic tree. Absent fields are left out.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Node {
+    /// Opaque identity of this allocation in this app, window and tree incarnation.
+    #[serde(default)]
+    pub target: String,
     /// The test id (`.id(..)`), which every operation addresses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -235,6 +247,8 @@ pub enum Request {
     Inspect,
     /// Layout issues and diagnostics now.
     Issues,
+    /// Rebuilds every open window through the app's normal development reload path.
+    Reload,
     /// A primary click or tap on the element.
     Tap {
         id: String,
@@ -370,6 +384,9 @@ pub struct Reply {
     pub code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Whether any part of a guarded operation was dispatched, even if a later phase failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<Delivery>,
     /// What an `expect` found instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actual: Option<serde_json::Value>,
@@ -397,6 +414,13 @@ pub struct ComponentInfo {
     pub module: String,
     /// Where it was called (`file:line:column`).
     pub called_at: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Delivery {
+    Refused,
+    Delivered,
 }
 
 impl ComponentInfo {
@@ -451,7 +475,18 @@ pub struct Issue {
 
 impl Reply {
     pub fn ok() -> Reply {
-        Reply { ok: true, code: None, message: None, actual: None, snapshot: None, issues: None, capture: None, picked: None, text: None }
+        Reply {
+            ok: true,
+            code: None,
+            message: None,
+            delivery: None,
+            actual: None,
+            snapshot: None,
+            issues: None,
+            capture: None,
+            picked: None,
+            text: None,
+        }
     }
 
     pub fn fail(code: &'static Code, message: impl Into<String>) -> Reply {
@@ -519,6 +554,10 @@ pub fn handle(app: &mut Window, req: Request) -> Reply {
     match req {
         Request::Inspect => Reply { snapshot: Some(Box::new(app.inspect())), ..Reply::ok() },
         Request::Issues => Reply { issues: Some(issues(app)), ..Reply::ok() },
+        Request::Reload => {
+            app.app().hot_reload();
+            Reply::ok()
+        }
         Request::Tap { id } => on!(&id, app.tap(&id)),
         Request::DoubleTap { id } => on!(&id, app.double_tap(&id)),
         Request::LongPress { id } => on!(&id, app.long_press(&id)),
@@ -664,37 +703,26 @@ fn expect(app: &Window, e: &Expect) -> Reply {
 
 /// Parses a request and resolves its optional `"window"` field without executing it.
 ///
-/// Hosts use this to handle window-specific operations such as capture or real-time settling
-/// themselves, while sharing the inspector's request validation and window routing. The returned
-/// window is a live handle; asynchronous host work must check its lifetime again before use.
+/// Compatibility parser for hosts using the original unguarded [`Request`] API. Guarded
+/// requests require [`parse_guarded_request`] and [`handle_guarded`], so their identity check
+/// cannot be lost between input phases. The returned window is a live handle; asynchronous
+/// host work must check its lifetime again before use.
 pub fn parse_request(window: &Window, line: &str) -> Result<(Window, Request), Box<Reply>> {
-    let mut value: serde_json::Value = match serde_json::from_str(line) {
-        Ok(v) => v,
-        Err(e) => return Err(Box::new(Reply::fail(&codes::BAD_REQUEST, format!("{e}: {line}")))),
-    };
-    let named = value.as_object_mut().and_then(|o| o.remove("window"));
-    let target = match named {
-        None if !window.is_closed() => window.clone(),
-        None => return Err(Box::new(Reply::fail(&codes::BAD_REQUEST, "the default window is closed"))),
-        Some(n) => {
-            let found = n.as_u64().map(crate::app::WindowId::from_number).and_then(|id| window.app().window(id));
-            match found {
-                Some(w) => w,
-                None => return Err(Box::new(Reply::fail(&codes::BAD_REQUEST, format!("no open window {n}: {line}")))),
-            }
-        }
-    };
-    match serde_json::from_value::<Request>(value) {
-        Ok(req) => Ok((target, req)),
-        Err(e) => Err(Box::new(Reply::fail(&codes::BAD_REQUEST, format!("{e}: {line}")))),
+    let parsed = parse_guarded_request(window, line)?;
+    if parsed.guard.is_some() {
+        return Err(Box::new(Reply {
+            delivery: Some(Delivery::Refused),
+            ..Reply::fail(&codes::BAD_REQUEST, "this host must retain target guards with parse_guarded_request and handle_guarded")
+        }));
     }
+    Ok((parsed.window, parsed.request))
 }
 
 /// Runs one request line in `window`, or in the window its `"window"` field names (a number
 /// from the snapshot's `windows`).
 pub fn handle_line(window: &mut Window, line: &str) -> Reply {
-    match parse_request(window, line) {
-        Ok((mut target, req)) => handle(&mut target, req),
+    match parse_guarded_request(window, line) {
+        Ok(mut parsed) => handle_guarded(&mut parsed.window, parsed.request, parsed.guard.as_ref()),
         Err(reply) => *reply,
     }
 }

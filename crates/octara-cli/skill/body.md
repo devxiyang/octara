@@ -94,3 +94,18 @@ from the native window and waits for its actual size, GPU surface and framework 
 `live.resize` reports the requested and actual sizes, including a window-system constraint or
 timeout. Live settling also waits within a wall-clock budget. Virtual `advance` remains headless.
 If a connection fails after an action, inspect the app before retrying: it may already have run.
+
+Use `inspect --json` or JSON `inspect`/`pick` requests to retain the returned opaque `target`,
+then send it with the operation, for example
+`{"op":"tap","id":"save","target":"<node.target>"}`. Node operations require that
+node's target; `key` or `type` without an id require the focused node's target. Window operations
+use `snapshot.target` or the corresponding `windows` entry's target. A target checks object
+identity: changing a value or moving a control keeps it valid; replacing a node, rebuilding a
+tree or reopening its window retires it. `STALE_TARGET` means observe again. `delivery: "refused"`
+means no input was sent; `"delivered"` on a failure means an earlier phase ran and later input
+was stopped. Never retry that input automatically. Targets are not authorization credentials or
+state-version locks. Requests without a target retain the original test-id behavior.
+
+`{"op":"reload","target":"<snapshot.target>"}` rebuilds the app's view trees through the real
+hot-reload path, preserving named state and retiring their observed targets. Live inspection
+advertises `live.target_validation: "identity"` and the `reload` operation when supported.

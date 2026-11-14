@@ -38,6 +38,7 @@ mod selection;
 mod size_of;
 mod state_keys;
 mod system_fonts;
+mod targets;
 mod task;
 mod theme;
 mod theme_contrast;

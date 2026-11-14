@@ -173,12 +173,32 @@ impl Shell {
         };
         let Some(mut w) = window else {
             if let Some(reply) = job.reply.take() {
-                reply.send(octara::inspect::Reply::fail(&octara::diagnostics::CAPTURE_FAILED, "the target window closed while capturing"));
+                let (code, message) = if reply.target_current() {
+                    (&octara::diagnostics::CAPTURE_FAILED, "the target window closed while capturing")
+                } else {
+                    (&octara::diagnostics::STALE_TARGET, "the observed window closed while capturing; inspect again")
+                };
+                reply.send(octara::inspect::Reply::fail(code, message));
             } else {
                 self.capture = Some(job);
             }
             return;
         };
+        if job.reply.as_ref().is_some_and(|reply| !reply.target_current()) {
+            // Finish through a painter that cannot write a picture, so any outstanding
+            // native snapshots are cleared without saving pixels from the replacement tree.
+            if matches!(job.stage, Stage::Snapshots { .. }) {
+                let mut painter = CapturePainter { renderer: None, bounded: true };
+                let _ = w.capture_finish(&mut painter, &job.path, 1.0, Vec::new(), None);
+            }
+            if let Some(reply) = job.reply.take() {
+                reply.send(octara::inspect::Reply::fail(
+                    &octara::diagnostics::STALE_TARGET,
+                    "the observed window was rebuilt while capturing; inspect again",
+                ));
+            }
+            return;
+        }
         let now = Instant::now();
         if let Stage::Start = job.stage {
             if let Some(dy) = job.scroll {

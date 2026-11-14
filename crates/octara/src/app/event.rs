@@ -65,6 +65,10 @@ impl Window {
     /// it (a key nothing took types nothing until the backend sends its text; a native event
     /// for a view gone, an assistive request for a node gone, go nowhere).
     pub fn event(&mut self, event: InputEvent) -> bool {
+        self.event_guarded(event, None)
+    }
+
+    pub(crate) fn event_guarded(&mut self, event: InputEvent, guard: Option<&crate::inspect::TargetGuard>) -> bool {
         self.app.record(self.w.id, &event);
         if self.picks(&event) {
             return true;
@@ -93,7 +97,7 @@ impl Window {
                 self.on_wheel(x, y, dx, dy);
                 true
             }
-            InputEvent::Key(ev) => self.on_key(ev),
+            InputEvent::Key(ev) => self.on_key_guarded(ev, guard),
             InputEvent::Text(text) => self.on_text(&text),
             InputEvent::Composition(text) => {
                 self.on_composition(&text);

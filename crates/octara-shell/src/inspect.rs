@@ -3,7 +3,7 @@
 use super::{Shell, ShellEvent, ww};
 use octara::app::WindowId;
 use octara::diagnostics as codes;
-use octara::inspect::{Reply, Request};
+use octara::inspect::{Delivery, Reply, Request, TargetGuard};
 use octara::serde_json::{self, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,6 +33,7 @@ const OPERATIONS: &[&str] = &[
     "copy",
     "answer",
     "expect",
+    "reload",
 ];
 
 /// Keeps the endpoint alive and removes only the socket it created.
@@ -68,11 +69,21 @@ pub(crate) struct Responder {
     pub(crate) connected: Arc<AtomicBool>,
     route: &'static str,
     input: bool,
+    target: Option<(octara::app::Window, TargetGuard)>,
 }
 
 impl Responder {
     fn new(tx: Sender<String>, connected: Arc<AtomicBool>, route: &'static str, input: bool) -> Self {
-        Self { tx, connected, route, input }
+        Self { tx, connected, route, input, target: None }
+    }
+
+    fn with_target(mut self, window: &octara::app::Window, guard: Option<&TargetGuard>) -> Self {
+        self.target = guard.map(|guard| (window.clone(), guard.clone()));
+        self
+    }
+
+    pub(crate) fn target_current(&self) -> bool {
+        self.target.as_ref().is_none_or(|(window, guard)| guard.is_current(window))
     }
 
     pub(crate) fn send(self, reply: Reply) {
@@ -85,27 +96,38 @@ impl Responder {
     }
 
     fn send_gesture(self, reply: Reply, delivered: bool) {
+        let delivered = reply.delivery.as_ref().map_or(delivered, |delivery| *delivery == Delivery::Delivered);
         self.send_with(reply, json!({ "delivery": if delivered { "delivered" } else { "refused" } }));
     }
 
-    fn send_with(self, reply: Reply, extra: serde_json::Value) {
+    fn send_with(self, mut reply: Reply, extra: serde_json::Value) {
         if !self.connected.load(Ordering::Relaxed) {
             return;
         }
         let mut live = json!({ "clock": "realtime", "route": self.route, "pid": std::process::id(), "platform": std::env::consts::OS });
         if self.input {
-            let delivery = if reply.ok {
-                "delivered"
-            } else if matches!(reply.code.as_deref(), Some(c) if c == codes::BAD_REQUEST.id || c == codes::NO_SUCH_ELEMENT.id) {
-                "refused"
-            } else {
-                "unknown"
+            if reply.delivery.is_none() {
+                reply.delivery = match extra.get("delivery").and_then(serde_json::Value::as_str) {
+                    Some("delivered") => Some(Delivery::Delivered),
+                    Some("refused") => Some(Delivery::Refused),
+                    _ if reply.ok => Some(Delivery::Delivered),
+                    _ if matches!(reply.code.as_deref(), Some(c) if c == codes::BAD_REQUEST.id || c == codes::NO_SUCH_ELEMENT.id || c == codes::STALE_TARGET.id) => {
+                        Some(Delivery::Refused)
+                    }
+                    _ => None,
+                };
+            }
+            let delivery = match &reply.delivery {
+                Some(Delivery::Delivered) => "delivered",
+                Some(Delivery::Refused) => "refused",
+                None => "unknown",
             };
             live["delivery"] = delivery.into();
         }
         if reply.snapshot.is_some() {
             live["operations"] = json!(OPERATIONS);
             live["transport"] = "unix".into();
+            live["target_validation"] = "identity".into();
         }
         live.as_object_mut().expect("live metadata is an object").extend(extra.as_object().expect("extra metadata is an object").clone());
         let mut value = serde_json::to_value(reply).expect("an inspector reply serializes");
@@ -164,12 +186,24 @@ fn route(request: &Request) -> (&'static str, bool) {
         | Request::Answer { .. }
         | Request::Theme { .. }
         | Request::ReducedMotion { .. } => ("semantic", true),
+        Request::Reload => ("lifecycle", true),
         Request::Capture { .. } => ("capture", false),
         Request::Settle { .. } => ("wait", false),
         Request::Size { .. } => ("native-window", true),
         Request::Advance { .. } => ("unsupported", true),
         _ => ("query", false),
     }
+}
+
+/// Validation can refuse a request before it returns a typed operation. Preserve its input
+/// route so a stale target reports a refusal instead of looking like an unrelated query.
+fn route_line(line: &str) -> (&'static str, bool) {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(line) else { return ("query", false) };
+    if let Some(fields) = value.as_object_mut() {
+        fields.remove("window");
+        fields.remove("target");
+    }
+    serde_json::from_value::<Request>(value).map_or(("query", false), |request| route(&request))
 }
 
 impl Shell {
@@ -187,15 +221,17 @@ impl Shell {
             Responder::new(tx, connected, "query", false).send(Reply::fail(&codes::BAD_REQUEST, "the app has no open main window"));
             return;
         };
-        let (mut target, request) = match octara::inspect::parse_request(&window, &line) {
-            Ok(parsed) => parsed,
-            Err(reply) => {
-                Responder::new(tx, connected, "query", false).send(*reply);
-                return;
-            }
-        };
+        let octara::inspect::ParsedRequest { window: mut target, request, guard } =
+            match octara::inspect::parse_guarded_request(&window, &line) {
+                Ok(parsed) => parsed,
+                Err(reply) => {
+                    let (route, input) = route_line(&line);
+                    Responder::new(tx, connected, route, input).send(*reply);
+                    return;
+                }
+            };
         let (route, input) = route(&request);
-        let response = Responder::new(tx, connected, route, input);
+        let response = Responder::new(tx, connected, route, input).with_target(&target, guard.as_ref());
         match request {
             Request::Advance { .. } => response.send(Reply::fail(
                 &codes::BAD_REQUEST,
@@ -207,7 +243,7 @@ impl Shell {
                 } else {
                     super::gesture::Kind::LongPress
                 };
-                match super::gesture::Job::start(&mut target, id, kind, Instant::now()) {
+                match super::gesture::Job::start_guarded(&mut target, id, kind, Instant::now(), guard) {
                     Ok(job) => {
                         self.inspect_pending = Some(Pending::Gesture { job, reply: response });
                         self.show();
@@ -271,7 +307,7 @@ impl Shell {
                 self.inspect_poll();
             }
             request => {
-                let reply = octara::inspect::handle(&mut target, request);
+                let reply = octara::inspect::handle_guarded(&mut target, request, guard.as_ref());
                 self.show();
                 if reply.snapshot.is_some() {
                     let host = ww(&target, |window| window.inspect_state()).unwrap_or_else(|| json!({}));
@@ -310,6 +346,10 @@ impl Shell {
         self.tick();
         match pending {
             Pending::Settle(waiting) => {
+                if !waiting.reply.target_current() {
+                    waiting.reply.send(Reply::fail(&codes::STALE_TARGET, "the observed window changed while waiting; inspect again"));
+                    return;
+                }
                 let Some(window) = self.app.as_ref().and_then(|a| a.window(waiting.window)) else {
                     waiting.reply.send(Reply::fail(&codes::BAD_REQUEST, "the target window closed while waiting"));
                     return;
@@ -337,11 +377,66 @@ impl Shell {
                 }
                 self.show();
             }
-            Pending::Resize { job, reply } => match job.poll(self) {
-                Some(done) => reply.send_with(done.reply, json!({ "resize": done.resize, "delivery": "delivered" })),
-                None => self.inspect_pending = Some(Pending::Resize { job, reply }),
-            },
+            Pending::Resize { job, reply } => {
+                if !reply.target_current() {
+                    reply.send_with(
+                        Reply::fail(&codes::STALE_TARGET, "the observed window changed after the resize request; inspect again"),
+                        json!({ "delivery": "delivered" }),
+                    );
+                    return;
+                }
+                match job.poll(self) {
+                    Some(done) => reply.send_with(done.reply, json!({ "resize": done.resize, "delivery": "delivered" })),
+                    None => self.inspect_pending = Some(Pending::Resize { job, reply }),
+                }
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod target_feedback {
+    use super::*;
+
+    fn response(line: &str, reply: Reply, gesture: bool) -> serde_json::Value {
+        let (send, receive) = std::sync::mpsc::channel();
+        let (route, input) = route_line(line);
+        let responder = Responder::new(send, Arc::new(AtomicBool::new(true)), route, input);
+        if gesture {
+            responder.send_gesture(reply, false)
+        } else {
+            responder.send(reply)
+        }
+        serde_json::from_str(&receive.recv().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn stale_target_refusal_keeps_the_requested_input_route() {
+        let reply = response(
+            r#"{"op":"tap","window":17,"id":"save","target":"old-observation"}"#,
+            Reply::fail(&codes::STALE_TARGET, "the observed node was replaced"),
+            false,
+        );
+        assert_eq!(reply["code"], "STALE_TARGET");
+        assert_eq!(reply["live"]["route"], "framework");
+        assert_eq!(reply["live"]["delivery"], "refused");
+    }
+
+    #[test]
+    fn partial_input_is_not_reported_as_a_pre_dispatch_refusal() {
+        let mut failure = Reply::fail(&codes::STALE_TARGET, "focus was delivered, but its target was replaced");
+        failure.delivery = Some(Delivery::Delivered);
+        let reply = response(r#"{"op":"type","id":"name","text":"hello","target":"old-observation"}"#, failure, false);
+        assert_eq!(reply["live"]["delivery"], "delivered");
+        assert!(!reply["ok"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn first_gesture_phase_preserves_its_partial_delivery_fact() {
+        let mut failure = Reply::fail(&codes::STALE_TARGET, "the pointer move replaced the target before pointer down");
+        failure.delivery = Some(Delivery::Delivered);
+        let reply = response(r#"{"op":"double_tap","id":"save","target":"old-observation"}"#, failure, true);
+        assert_eq!(reply["live"]["delivery"], "delivered");
     }
 }
 

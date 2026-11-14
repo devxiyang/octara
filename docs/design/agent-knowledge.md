@@ -80,13 +80,21 @@ Based on Exact's `verify` and agent stdio, Rune's `--tree` / `--script`, and GPU
   app's `Cargo.lock`, and builds into the app's target directory.
 - **Judgment lives in the core**: snapshots, scripts and checks are in `octara::inspect`, so
   they match the `octara` the app uses; the CLI builds, launches and formats.
-- **Snapshot** (`octara.inspect/1`): viewport, theme, breakpoint, time, focus, pending work,
-  windows, and nested nodes: `id`, `role`, `name`, `value`, `checked`, `expanded`, `states`,
+- **Snapshot** (`octara.inspect/1`): an opaque window/tree `target`, viewport, theme, breakpoint, time, focus, pending work,
+  windows, and nested nodes: `id`, opaque allocation `target`, `role`, `name`, `value`, `checked`, `expanded`, `states`,
   `bounds` (presented, to 0.1), `actions`, `commands`, `native`, `icon`, `source`, `component`
   (where one starts), `children`. Absent fields are left out; within a schema version fields
   are only added.
 - **Script**: JSON lines, the same protocol as the interactive one: each line is an `op`, each
   gets `{"ok":true,..}` or `{"ok":false,"code":..,"message":..}`; it stops at the first failure.
+- **Observed targets**: an optional request `target` binds the operation to the observed
+  app/window/tree and node allocation. `STALE_TARGET` rejects a retired or mismatched target;
+  malformed guards are `BAD_REQUEST`. A value or geometry update keeps the same target valid.
+  The guard is retained between input phases, including focus followed by text: partial
+  delivery is reported, and a replacement never receives the remaining input. These references
+  are opaque lifetime checks, not permissions or a snapshot of all state. Legacy id-only
+  requests remain supported. `reload` uses the actual hot-reload path and retires the tree's
+  targets. See [the live target fixture](../../examples/TARGETS.md).
 - **`octara check`**: light and dark × phone (390 × 844) and desktop (1280 × 800); each cell
   checks layout issues, diagnostics, work left after settling, and accessibility (unnamed
   controls, small targets, contrast). The same finding across cells is merged; Warning and above

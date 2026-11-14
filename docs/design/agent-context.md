@@ -14,7 +14,7 @@ uses its normal edit, build, run and inspect loop to improve the app.
 | Implemented | Remaining boundary |
 | --- | --- |
 | Opt-in Unix socket, one client, ordered JSON-line requests executed on the main thread | Windows transport and stronger attached-build identity |
-| Live semantic values, bounds, actions, source and component call sites from the actual owners | Property origins, sampled opacity/color and stronger validation across tree replacement |
+| Live semantic values, bounds, actions, source and component call sites; opaque allocation targets checked before input and between phases | Property origins and sampled opacity/color |
 | Pending work, asks, diagnostics and explicit realtime settling | Reset/restart policy for broken internal invariants |
 | Framework pointer/key/text dispatch and semantic actions with route/delivery feedback | OS input injection and native focus/IME/gesture qualification |
 | Realtime framework double taps and long presses; native client-area size requests with actual-size feedback | Further native input and window-manager qualification |
@@ -79,10 +79,33 @@ Asynchronous gestures, resize, capture and settle recheck that their owning wind
 Multi-stage gestures retain the original node identity; finding a replacement with the same test
 ID does not authorize the remaining input stages.
 
-Stronger tree-incarnation and allocation-generation validation remains a design requirement when
-tools retain targets across tree replacement. A current test ID lookup can resolve a newly created
-control with the same name; it does not establish that this is the object an earlier read observed.
-Reloaded state and matching source paths do not establish object or build identity.
+Snapshots and picks return opaque `target` strings. A snapshot and each `windows` entry carry a
+window/tree target; a node carries its allocation target. A request can return that value in its
+optional top-level `target` field. The check binds the operation to the original app instance,
+generational window, tree incarnation and, for node operations, generational node. Values and
+geometry may change while the reference remains valid. Destroying the node, reloading its tree
+or closing and reopening its window retires the reference, even when a test ID or title is reused.
+
+Node operations require their own target, while `key` and `type` without an ID require the
+original focused node. Window operations use the window/tree target. `select` accepts a window
+target; it does not claim allocation checks for every endpoint in its document selection. A
+retired or mismatched reference returns `STALE_TARGET`; a malformed or wrongly scoped target is
+`BAD_REQUEST`. Null or invalid targets never silently become unchecked requests. Omitting
+`target` retains the original test-ID protocol, which deliberately resolves the current node.
+
+The operation retains its guard between input phases. Focusing can run application callbacks,
+so text is sent only if the original node still exists and owns focus afterward. Pointer phases
+and timed gestures likewise stop rather than continue into a replacement. `delivery: "refused"`
+reports a pre-input refusal; `"delivered"` on a failed result records earlier input and a stopped
+continuation. A successful final handler may remove its own node or change focus. The guard is
+not rechecked after that legitimate final effect. Tokens are lifetime checks, not authority or
+locks on application state; matching local source paths still do not prove build identity.
+
+The `reload` operation invokes the actual application hot-reload path, preserving named state
+while replacing view trees and retiring their targets. It is available in headless and live
+hosts; live replies advertise `target_validation: "identity"`. The
+[target validation fixture](../../examples/TARGETS.md) exercises replacement, reload and window
+reopening in a real host.
 
 Snapshots state the selected window and app time. Other live replies carry host context, but there
 is no general observation version shared by separate reads. Adding one needs a concrete consistency
@@ -157,9 +180,9 @@ The real-window smoke script is [`examples/live_inspect.py`](../../examples/live
 Its acceptance loop attaches to a spawned window, inspects a control's value and source, operates
 it, expects the result, captures GPU pixels and continues operating. It also exercises invalid
 requests, bounded realtime settling, window selection and reconnect behavior. Running the script
-against the built host is separate from describing the implementation here. Stronger stale targets across reload, disconnect
-during input and richer delivered-input/follow-up-failure checks remain validation work as those
-boundaries evolve.
+against the built host is separate from describing the implementation here. The separate target
+fixture records guarded operation results across same-ID replacement, reload and reopened
+windows, including refusal before delivery and recovery after a fresh observation.
 
 Keep bounded diagnostic logs and direct rereads. Detailed dependency tracing, a general resource
 router, an outcome registry and snapshot/watch can be added when a reproducible tool task needs

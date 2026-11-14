@@ -137,6 +137,8 @@ impl WindowId {
 /// the reactive runtime, the scheduler and its clock, settings and the platform, and the
 /// windows.
 pub(crate) struct AppState {
+    /// A process-random namespace and local app incarnation, for opaque inspector targets.
+    target_namespace: u128,
     pub(crate) rt: Rc<Runtime>,
     /// Tasks, timers and channels, and the clock: one for all the windows.
     pub(crate) sched: Rc<crate::task::Scheduler>,
@@ -383,9 +385,11 @@ impl WindowState {
         platform: Box<dyn crate::platform::PlatformWindow>,
     ) -> WindowState {
         let size = options.size;
+        let mut kernel = Kernel::new(app.res.clone());
+        kernel.bind_targets(app.target_namespace, id.number());
         WindowState {
             id,
-            kernel: RefCell::new(Kernel::new(app.res.clone())),
+            kernel: RefCell::new(kernel),
             handlers: RefCell::default(),
             commands: RefCell::default(),
             overlay_slots: Slots::default(),
@@ -442,6 +446,7 @@ impl App {
     /// window yet.
     pub fn new(platform: impl crate::platform::Platform + 'static) -> App {
         let state = AppState {
+            target_namespace: crate::inspect::new_namespace(),
             rt: Runtime::new(),
             sched: Rc::new(crate::task::Scheduler::default()),
             res: Rc::default(),
@@ -734,6 +739,17 @@ impl Window {
     /// Its id.
     pub fn id(&self) -> WindowId {
         self.w.id
+    }
+
+    /// This window's opaque Inspector identity, including its current tree incarnation.
+    pub fn target(&self) -> String {
+        self.w.kernel.borrow().window_target()
+    }
+
+    pub(crate) fn focused_node(&self) -> Option<NodeId> {
+        let node = self.w.interaction.borrow().focused?;
+        let k = self.w.kernel.borrow();
+        (k.is_alive(node) && !k.is_exiting(node)).then_some(node)
     }
 
     /// The app it belongs to.
@@ -1126,6 +1142,7 @@ impl Window {
             text_input,
             pending: self.app().pending().len(),
             window: self.w.id.number(),
+            target: k.window_target(),
             selection: self.selected_text().map(|t| t.chars().take(2000).collect()),
             asks: self.asks().into_iter().map(|(id, ask)| crate::inspect::AskInfo { id, ask }).collect(),
             windows: self
@@ -1134,6 +1151,7 @@ impl Window {
                 .iter()
                 .map(|w| crate::inspect::WindowInfo {
                     window: w.w.id.number(),
+                    target: w.target(),
                     title: w.w.options.title.clone(),
                     size: [w.w.size.get().0, w.w.size.get().1],
                 })
@@ -1228,6 +1246,7 @@ impl Window {
     /// (the nearest test id and the child indices below it) and scroll by test id.
     fn reload(&self) {
         self.enter(|| {
+            self.w.kernel.borrow_mut().reload_targets();
             {
                 let mut i = self.w.interaction.borrow_mut();
                 let k = self.w.kernel.borrow();

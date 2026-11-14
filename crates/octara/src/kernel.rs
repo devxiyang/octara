@@ -688,6 +688,7 @@ fn default_layout(kind: Kind) -> taffy::Style {
 }
 
 pub struct Kernel {
+    target_scope: crate::inspect::TargetScope,
     nodes: SlotMap<NodeId, Node>,
     root: NodeId,
     overlay_layer: NodeId,
@@ -813,6 +814,7 @@ impl Kernel {
     /// A kernel reading `res` (shared by an app's windows).
     pub fn new(res: Rc<Resources>) -> Self {
         let mut k = Kernel {
+            target_scope: crate::inspect::TargetScope::new(crate::inspect::new_namespace(), 0),
             nodes: SlotMap::with_key(),
             root: NodeId::default(),
             overlay_layer: NodeId::default(),
@@ -900,6 +902,22 @@ impl Kernel {
     /// The resources this kernel reads.
     pub fn resources(&self) -> &Rc<Resources> {
         &self.res
+    }
+
+    pub(crate) fn bind_targets(&mut self, namespace: u128, window: u64) {
+        self.target_scope = crate::inspect::TargetScope::new(namespace, window);
+    }
+
+    pub(crate) fn reload_targets(&mut self) {
+        self.target_scope.reload();
+    }
+
+    pub(crate) fn window_target(&self) -> String {
+        self.target_scope.token(None)
+    }
+
+    pub(crate) fn target_of(&self, node: NodeId) -> Option<String> {
+        self.is_alive(node).then(|| self.target_scope.token(Some(slotmap::Key::data(&node).as_ffi())))
     }
     /// Replaces the text engine (e.g. `MonoEngine` for benchmarks) and remeasures every text.
     /// Replaces the text engine (fonts registered with the old one are not carried over).

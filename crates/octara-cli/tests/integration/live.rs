@@ -125,6 +125,24 @@ fn scripts_preserve_live_capture_metadata_and_stop_at_the_first_refusal() {
 }
 
 #[test]
+fn guarded_targets_reach_the_host_unchanged_and_stale_inputs_are_not_retried() {
+    let refusal = json!({
+        "ok": false, "code": "STALE_TARGET", "message": "the observed target was replaced; inspect again",
+        "live": {"route": "framework", "delivery": "refused"}
+    });
+    let server = Server::new(vec![Some(refusal.clone()), Some(json!({"ok": true}))]);
+    let input = json!({"op": "tap", "window": 17, "id": "save", "target": "opaque-observed-target"});
+    let script = server.script(&format!("{input}\n{{\"op\":\"tap\",\"id\":\"save\"}}\n"));
+    let output = cli(&["run", "--connect", server.path(), "--script", script, "--json"], "");
+    assert_eq!(output.status.code(), Some(1), "{}", String::from_utf8_lossy(&output.stderr));
+    let replies: Vec<Value> = String::from_utf8(output.stdout).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0]["code"], refusal["code"]);
+    assert_eq!(replies[0]["live"], refusal["live"]);
+    assert_eq!(server.finish(), [input]);
+}
+
+#[test]
 fn interactive_requests_reply_before_eof_and_continue_after_a_refusal() {
     let server = Server::new(vec![Some(json!({"ok":false,"code":"NO_SUCH_ELEMENT"})), Some(json!({"ok":true,"live":{"route":"read"}}))]);
     let mut child = Command::new(env!("CARGO_BIN_EXE_octara"))

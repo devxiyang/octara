@@ -516,6 +516,7 @@ impl Kernel {
         }
         let (x, y, w, h) = self.shown_rect(id);
         crate::inspect::Node {
+            target: self.target_of(id).expect("an inspected node is alive"),
             id: n.test_id.clone(),
             role: snake(&format!("{role:?}")),
             name,

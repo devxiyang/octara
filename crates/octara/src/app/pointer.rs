@@ -440,6 +440,13 @@ impl Window {
             let focus = target.filter(|n| self.w.kernel.borrow().is_focusable(*n));
             let _ = self.set_focus(focus);
         }
+        // A focus/blur handler can synchronously rebuild the tree. The press still belongs
+        // to the original hit; never dereference it or adopt a replacement allocation.
+        let (hit, target) = {
+            let k = self.w.kernel.borrow();
+            let live = |node: Option<NodeId>| node.filter(|node| k.is_alive(*node) && !k.is_exiting(*node));
+            (live(hit), live(target))
+        };
         let enabled = target.is_some_and(|n| !self.w.kernel.borrow().state(n).contains(State::DISABLED));
         // A press on a selectable region's text, not on anything pressable, selects.
         // (A target around the region, such as the scroll container it is, does not stop it.)

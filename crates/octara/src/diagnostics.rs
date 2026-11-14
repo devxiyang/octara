@@ -219,6 +219,9 @@ codes! {
     BAD_REQUEST: Error, Inspect, "docs/design/agent-knowledge.md#inspector-protocol-and-checks",
         "An Inspector request or script line could not be read.",
         cause: "Each line is one JSON object with an `op` the protocol knows (`octara vocab octara::inspect::Request`), and that op's fields.";
+    STALE_TARGET: Error, Inspect, "docs/design/agent-knowledge.md#inspector-protocol-and-checks",
+        "An Inspector target no longer names the requested window, node or focus.",
+        cause: "Targets belong to one app instance, window and tree incarnation, and optionally one node allocation. A reload, close, replacement or focus change can retire them. Inspect again before choosing another target; a failed later phase does not undo input already delivered.";
     NO_SUCH_ELEMENT: Error, Inspect, "docs/design/agent-knowledge.md#inspector-protocol-and-checks",
         "No element has the test id a request named.",
         cause: "The element is not in the tree now: never given that `.id(..)`, not shown yet, or already removed.";

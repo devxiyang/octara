@@ -208,8 +208,9 @@ and prompts in the window, and tooltips are currently drawn on every desktop.
   the focused field and is cancelled when that owner
   changes. Framework input does not qualify OS focus, IME or native gesture behavior; the
   [OS-input fixture](../examples/IME.md) records real keyboard/Chinese IME checks separately.
-  Stronger build identity, stale-target validation across tree replacement
-  and richer sampled property information remain open.
+  Inspector operations can retain opaque window/tree or node targets across reads and reject
+  replaced allocations before further input. The actual hot-reload path retires tree targets.
+  Stronger build identity and richer sampled property information remain open.
 - **Update and sample boundaries**: frames are submitted per window and display lists are pulled
   later. Request ownership, cross-window invalidation, cleanup ordering and coherent native/drawn
   geometry remain concrete work in the [runtime architecture](design/runtime-contract.md).

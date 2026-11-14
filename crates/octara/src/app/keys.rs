@@ -439,12 +439,16 @@ impl Window {
     /// A key press, as a window delivers it. Returns whether something handled it; if not, the
     /// backend sends the key's text (`InputEvent::Text`).
     pub(super) fn on_key(&mut self, ev: KeyEvent) -> bool {
+        self.on_key_guarded(ev, None)
+    }
+
+    pub(super) fn on_key_guarded(&mut self, ev: KeyEvent, guard: Option<&crate::inspect::TargetGuard>) -> bool {
         let mut handled = false;
-        self.input_frame(|| handled = self.route_key(&ev));
+        self.input_frame(|| handled = self.route_key(&ev, guard));
         handled
     }
 
-    fn route_key(&self, ev: &KeyEvent) -> bool {
+    fn route_key(&self, ev: &KeyEvent, guard: Option<&crate::inspect::TargetGuard>) -> bool {
         if matches!(
             ev.key,
             Key::Tab | Key::Up | Key::Down | Key::Left | Key::Right | Key::Home | Key::End | Key::Enter | Key::Space | Key::Escape
@@ -464,6 +468,9 @@ impl Window {
                 }
             }
         }
+        if guard.is_some_and(|guard| !guard.is_current(self)) {
+            return false;
+        }
         let path = self.focus_path();
         // `on_key`, innermost first.
         for &n in &path {
@@ -479,6 +486,9 @@ impl Window {
                 self.app.rt.with_frame(Ctx::Handler, None, Some(None), || took = f(ev));
                 if took {
                     return true;
+                }
+                if guard.is_some_and(|guard| !guard.is_current(self)) {
+                    return false;
                 }
             }
         }
