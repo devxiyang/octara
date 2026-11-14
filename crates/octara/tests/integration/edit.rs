@@ -136,9 +136,98 @@ fn composition_shows_at_the_caret_and_replaces_the_selection() {
     assert_eq!(value(&app), "a你b");
     keys(&mut app, &["shift+right"]);
     app.event(InputEvent::Composition(("x").into()));
-    assert_eq!(value(&app), "a你", "composing over a selection replaces it");
+    assert_eq!(value(&app), "a你b", "preedit replaces the selection on screen without committing an edit");
     app.type_text("y");
     assert_eq!(value(&app), "a你y");
+}
+
+#[test]
+fn cancelling_preedit_preserves_the_selected_value_and_undo_history() {
+    let mut app = app("before selected after");
+    app.set_selection(7, 15);
+    app.event(InputEvent::Preedit { text: "候选".into(), selection: Some((0, 6)) });
+    let composing = app.text_field().unwrap();
+    assert_eq!(composing.text, "before selected after");
+    assert_eq!(composing.selection, 7..15);
+    assert_eq!(composing.composition_selection, Some(0..6));
+    app.event(InputEvent::Preedit { text: String::new(), selection: None });
+    let cancelled = app.text_field().unwrap();
+    assert_eq!(cancelled.text, "before selected after");
+    assert_eq!(cancelled.selection, 7..15);
+    assert!(cancelled.composition.is_empty());
+    app.press_key("cmd+z").unwrap();
+    assert_eq!(value(&app), "before selected after", "uncommitted composition created no undo step");
+
+    app.event(InputEvent::Preedit { text: "ni".into(), selection: Some((2, 2)) });
+    app.type_text("你");
+    assert_eq!(value(&app), "before 你 after");
+    app.press_key("cmd+z").unwrap();
+    assert_eq!(value(&app), "before selected after", "the committed replacement is one edit");
+    assert_eq!(selection(&app), 7..15);
+}
+
+#[test]
+fn the_preedit_cursor_and_selection_follow_input_method_feedback() {
+    let mut app = app("a");
+    app.press_key("end").unwrap();
+    let before = app.text_field().unwrap().caret.0;
+    app.event(InputEvent::Preedit { text: "nihao".into(), selection: Some((0, 0)) });
+    assert_eq!(app.text_field().unwrap().caret.0, before);
+    app.event(InputEvent::Preedit { text: "nihao".into(), selection: Some((2, 2)) });
+    let middle = app.text_field().unwrap();
+    assert_eq!(middle.composition_selection, Some(2..2));
+    assert!(middle.caret.0 > before);
+    app.event(InputEvent::Preedit { text: "nihao".into(), selection: Some((5, 5)) });
+    let end = app.text_field().unwrap();
+    assert!(end.caret.0 > middle.caret.0, "same preedit text with a different cursor updates its geometry");
+    assert!(end.caret_visible);
+    app.event(InputEvent::Preedit { text: "nihao".into(), selection: None });
+    let hidden = app.text_field().unwrap();
+    assert_eq!(hidden.composition_selection, None);
+    assert!(!hidden.caret_visible, "the input method asked to hide its cursor");
+    let id = app.kernel().find("field").unwrap();
+    assert!(!app.display_list().quads().any(|q| q.source == id && q.rect.w <= 1.1 && q.rect.h > 10.0), "no caret is painted");
+    app.event(InputEvent::Preedit { text: "nihao".into(), selection: Some((1, 4)) });
+    assert_eq!(app.text_field().unwrap().composition_selection, Some(1..4));
+    assert!(!app.text_field().unwrap().caret_visible, "a selected preedit segment is highlighted instead of a caret");
+    assert_eq!(value(&app), "a");
+}
+
+#[test]
+fn preedit_ranges_are_clamped_to_utf8_boundaries_and_ordered() {
+    let mut app = app("");
+    app.event(InputEvent::Preedit { text: "你🙂好".into(), selection: Some((usize::MAX, 4)) });
+    assert_eq!(app.text_field().unwrap().composition_selection, Some(3..10));
+    let state = app.inspect().text_input.unwrap();
+    assert_eq!(state.composition_selection, Some([3, 10]));
+    assert_eq!(state.composition_selection_utf16, Some([1, 4]));
+    app.event(InputEvent::Preedit { text: "你🙂好".into(), selection: Some((2, 8)) });
+    assert_eq!(app.text_field().unwrap().composition_selection, Some(0..7));
+    app.event(InputEvent::Composition("你🙂好".into()));
+    assert_eq!(app.text_field().unwrap().composition_selection, Some(10..10), "legacy composition keeps its cursor at the end");
+}
+
+#[test]
+fn moving_focus_cancels_the_old_fields_composition_and_reports_the_new_owner() {
+    let mut app = app("original");
+    app.set_selection(2, 6);
+    app.event(InputEvent::Preedit { text: "pinyin".into(), selection: Some((6, 6)) });
+    let field = app.kernel().find("field").unwrap();
+    let narrow = app.kernel().find("narrow").unwrap();
+    let host_input =
+        |app: &Window| app.platform_window().as_any().downcast_ref::<octara::platform::HeadlessWindow>().unwrap().text_input.unwrap();
+    assert_eq!(host_input(&app).id, field);
+    app.tap("narrow").unwrap();
+    assert_eq!(host_input(&app).id, narrow, "input-method ownership changes between ordinary text fields too");
+    assert!(app.kernel().preedit(field).is_empty());
+    assert_eq!(value(&app), "original");
+    assert_eq!(app.kernel().selection(field), (2, 6), "cancelling the old composition preserves its selected original text");
+    app.dispatch(Event::Focus("field".into())).unwrap();
+    let restored = app.text_field().unwrap();
+    assert_eq!(restored.text, "original");
+    assert_eq!(restored.selection, 2..6);
+    assert!(restored.composition.is_empty(), "returning focus cannot revive the old input method's text");
+    assert_eq!(host_input(&app).id, field);
 }
 
 #[test]

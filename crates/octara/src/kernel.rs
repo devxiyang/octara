@@ -497,6 +497,8 @@ struct TextContent {
 struct InputContent {
     value: String,
     preedit: String,
+    /// Byte range relative to preedit; none means the input method hides its cursor.
+    preedit_selection: Option<std::ops::Range<usize>>,
     selection: (usize, usize),
     /// How far the text is scrolled: x for a single line, y for a multi-line field.
     scroll: Cell<f32>,
@@ -1452,20 +1454,33 @@ impl Kernel {
 
     /// The input method's composition in a text input (empty when none).
     pub fn set_preedit(&mut self, id: NodeId, text: &str) -> bool {
-        if self.node(id).input().is_none_or(|i| i.preedit == text) {
+        self.set_preedit_selection(id, text, Some((text.len(), text.len())))
+    }
+
+    pub(crate) fn set_preedit_selection(&mut self, id: NodeId, text: &str, selection: Option<(usize, usize)>) -> bool {
+        let selection = selection.filter(|_| !text.is_empty()).map(|(a, b)| {
+            let (a, b) = (floor_boundary(text, a), floor_boundary(text, b));
+            a.min(b)..a.max(b)
+        });
+        if self.node(id).input().is_none_or(|i| i.preedit == text && i.preedit_selection == selection) {
             return false;
         }
-        // The composition sits at the caret: what is shown changes from there on.
-        let caret = self.selection(id).1;
+        // Composition only replaces the selection in the display, until it commits.
+        let (anchor, caret) = self.selection(id);
         let i = self.node_mut(id).input_mut().expect("a text input");
-        i.clean.set(i.clean.get().min(caret));
+        i.clean.set(i.clean.get().min(anchor.min(caret)));
         i.preedit.clear();
         i.preedit.push_str(text);
+        i.preedit_selection = selection;
         self.changed(id, Dirty::PAINT, "preedit", || text.to_owned());
         true
     }
     pub fn preedit(&self, id: NodeId) -> &str {
         self.node(id).input().map_or("", |i| &i.preedit)
+    }
+
+    pub(crate) fn preedit_selection(&self, id: NodeId) -> Option<std::ops::Range<usize>> {
+        self.node(id).input().and_then(|i| i.preedit_selection.clone())
     }
 
     /// A text input's value; for other nodes, the value assistive technology announces.

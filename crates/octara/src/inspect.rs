@@ -33,6 +33,10 @@ pub struct Snapshot {
     /// The focused element's test id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<String>,
+    /// The focused non-secure field's current editing state. Secure fields omit this entire
+    /// object; their value remains redacted in the semantic tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_input: Option<TextInputState>,
     /// Tasks, subscriptions and background jobs still pending.
     pub pending: usize,
     /// This window's number (what a request's `window` names).
@@ -47,6 +51,52 @@ pub struct Snapshot {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub asks: Vec<AskInfo>,
     pub root: Node,
+}
+
+/// Read-only input-method feedback sampled from the focused field's actual editor owner.
+/// `Snapshot::focus` names the field; all ranges are ordered `[start, end]` pairs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextInputState {
+    /// Committed value, without the input method's uncommitted composition.
+    pub text: String,
+    /// UTF-8 byte offsets into `text`.
+    pub selection: [usize; 2],
+    /// The same committed selection measured in UTF-16 code units.
+    pub selection_utf16: [usize; 2],
+    /// The committed selection's active caret is at its start.
+    pub reversed: bool,
+    /// Uncommitted text displayed in place of the committed selection.
+    pub composition: String,
+    /// UTF-8 byte offsets within `composition`; none means its cursor is hidden.
+    pub composition_selection: Option<[usize; 2]>,
+    /// The composition-relative selection measured in UTF-16 code units.
+    pub composition_selection_utf16: Option<[usize; 2]>,
+    /// Candidate-window anchor `[x, y, width, height]` in logical window pixels.
+    pub caret: [f32; 4],
+    /// Whether the framework currently paints the caret (blink, focus, selection and IME).
+    pub caret_visible: bool,
+}
+
+impl TextInputState {
+    pub(crate) fn from_field(field: crate::app::TextField) -> Option<Self> {
+        if field.secure {
+            return None;
+        }
+        let units = |text: &str, range: &std::ops::Range<usize>| {
+            [crate::app::utf16_offset(text, range.start), crate::app::utf16_offset(text, range.end)]
+        };
+        Some(Self {
+            selection: [field.selection.start, field.selection.end],
+            selection_utf16: units(&field.text, &field.selection),
+            reversed: field.reversed,
+            composition_selection: field.composition_selection.as_ref().map(|range| [range.start, range.end]),
+            composition_selection_utf16: field.composition_selection.as_ref().map(|range| units(&field.composition, range)),
+            text: field.text,
+            composition: field.composition,
+            caret: [field.caret.0, field.caret.1, field.caret.2, field.caret.3],
+            caret_visible: field.caret_visible,
+        })
+    }
 }
 
 /// A request waiting for its answer.

@@ -6,6 +6,7 @@
 use super::{Shared, ShellEvent};
 use octara::paint::DisplayList;
 use octara::platform::{CursorStyle, Frame, Platform, PlatformWindow, TextInput};
+use octara::serde_json::{Value, json};
 use octara_render::{GpuRenderer, wgpu};
 use std::any::Any;
 use std::rc::Rc;
@@ -96,7 +97,6 @@ impl Platform for WinitPlatform {
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         let a11y = accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, shared.proxy.clone());
         window.set_visible(true);
-        window.set_ime_allowed(true);
         // An app started from a terminal comes to the front.
         window.focus_window();
         let mut gpu = shared.gpu.borrow_mut();
@@ -154,6 +154,9 @@ impl Platform for WinitPlatform {
             #[cfg(target_os = "macos")]
             shown: Rc::default(),
             secure: false,
+            ime_allowed: false,
+            input_owner: None,
+            ime_owner: None,
             cursor_style: CursorStyle::Arrow,
             cursor: (0.0, 0.0),
             hovering: Vec::new(),
@@ -217,6 +220,11 @@ pub(crate) struct WinitWindow {
     shown: Rc<super::ask_mac::Shown>,
     /// A secure field has focus: the input method is off and (macOS) secure input on.
     secure: bool,
+    /// Whether the focused field currently accepts input-method composition.
+    ime_allowed: bool,
+    /// Current logical field, and the field that enabled the native composition session.
+    input_owner: Option<octara::kernel::NodeId>,
+    ime_owner: Option<octara::kernel::NodeId>,
     /// How the pointer looks.
     cursor_style: CursorStyle,
     /// The pointer, in logical pixels.
@@ -411,9 +419,78 @@ impl WinitWindow {
         }
     }
 
-    /// The input method's candidate window follows the caret; a secure field turns the input
-    /// method off and the platform's secure input on.
+    pub(crate) fn ime_enabled(&mut self) {
+        self.ime_owner = self.input_owner.filter(|_| self.ime_allowed);
+    }
+
+    pub(crate) fn accepts_ime(&self) -> bool {
+        self.ime_allowed && self.ime_owner.is_some() && self.ime_owner == self.input_owner
+    }
+
+    pub(crate) fn ime_disabled(&mut self) -> bool {
+        // A context retired on A can report Disabled after B already has focus. Its empty
+        // preedit belongs to A; core focus cleanup has already cleared that field.
+        let current = self.ime_owner.is_some() && self.ime_owner == self.input_owner;
+        self.ime_owner = None;
+        current
+    }
+
+    /// Current UI-thread input and presentation facts. A submitted frame does not establish
+    /// that the window server displayed it; visibility is reported separately.
+    pub(crate) fn inspect_state(&self) -> Value {
+        let state = json!({
+            "ime": {
+                "allowed": self.ime_allowed,
+                "secure": self.secure,
+                "native_focus": self.window.has_focus(),
+            },
+            "window": {
+                "frames": self.frames,
+                "pending": self.pending,
+                "presented_age_ms": self.presented.map(|at| at.elapsed().as_secs_f64() * 1000.0),
+            },
+        });
+        #[cfg(target_os = "macos")]
+        {
+            let mut state = state;
+            if let Some(native) = super::native_mac::inspect_state(&self.window) {
+                for (key, fields) in native {
+                    state[&key]
+                        .as_object_mut()
+                        .expect("host state is an object")
+                        .extend(fields.as_object().expect("native state is an object").clone());
+                }
+            }
+            state
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            state
+        }
+    }
+
+    fn set_ime_allowed(&mut self, allowed: bool) {
+        if allowed == self.ime_allowed {
+            return;
+        }
+        self.window.set_ime_allowed(allowed);
+        self.ime_allowed = allowed;
+        #[cfg(target_os = "macos")]
+        if !allowed {
+            // winit clears its marked storage; IMKit also owns pending Pinyin syllables.
+            let _ = super::native_mac::discard_marked_text(&self.window);
+        }
+    }
+
+    /// The input method's candidate window follows the caret. Only a focused, non-secure field
+    /// enables composition; secure fields also enable the platform's secure keyboard input.
     fn text_input(&mut self, input: Option<&TextInput>) {
+        let owner = input.map(|t| t.id);
+        if owner != self.input_owner {
+            self.input_owner = owner;
+            // The old session keeps its owner until queued Disabled has been handled.
+            self.set_ime_allowed(false);
+        }
         if let Some(t) = input {
             let c = t.caret;
             self.window.set_ime_cursor_area(LogicalPosition::new(c.x, c.y), LogicalSize::new(c.w.max(1.0), c.h));
@@ -421,9 +498,10 @@ impl WinitWindow {
         let secure = input.is_some_and(|t| t.secure);
         if secure != self.secure {
             self.secure = secure;
-            self.window.set_ime_allowed(!secure);
             secure_input::set(secure);
         }
+        let allowed = input.is_some_and(|t| !t.secure);
+        self.set_ime_allowed(allowed);
     }
 }
 

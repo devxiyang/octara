@@ -218,6 +218,9 @@ pub struct Frame {
 /// The focused text field, as the platform's text input sees it.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct TextInput {
+    /// The focused field's allocation in this window. A host retires its input-method context
+    /// when this changes, even if the next field accepts the same kind of input.
+    pub id: crate::kernel::NodeId,
     /// The caret's rect in logical window coordinates.
     pub caret: Rect,
     pub secure: bool,

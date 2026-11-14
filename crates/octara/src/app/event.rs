@@ -36,6 +36,9 @@ pub enum InputEvent {
     Text(String),
     /// What an input method is composing in the focused field (empty ends it).
     Composition(String),
+    /// Input-method preedit and its UTF-8 byte selection relative to `text`. A missing
+    /// selection hides its cursor; empty text cancels composition without changing the value.
+    Preedit { text: String, selection: Option<(usize, usize)> },
     /// The window's content size (logical pixels) and its scale (device pixels per logical one).
     Resize { width: f32, height: f32, scale: f32 },
     /// An assistive technology's request.
@@ -94,6 +97,10 @@ impl Window {
             InputEvent::Text(text) => self.on_text(&text),
             InputEvent::Composition(text) => {
                 self.on_composition(&text);
+                true
+            }
+            InputEvent::Preedit { text, selection } => {
+                self.on_preedit(&text, selection);
                 true
             }
             InputEvent::Resize { width, height, scale } => {

@@ -31,9 +31,12 @@ pub(crate) struct Field {
     pub shown: String,
     /// Where the composition is in `shown`.
     pub preedit: std::ops::Range<usize>,
+    /// Which committed value range the composition replaces in the displayed text.
+    pub replaced: std::ops::Range<usize>,
     /// The selection in `shown` (start ≤ end) and the caret.
     pub sel: (usize, usize),
     pub caret: usize,
+    pub show_caret: bool,
     /// The content box: left, top, width, height.
     pub x: f32,
     pub y: f32,
@@ -160,7 +163,7 @@ impl Kernel {
         if i.selection != sel {
             // A composition moves with the caret: the shown text changes from the earlier caret.
             if !i.preedit.is_empty() {
-                i.clean.set(i.clean.get().min(i.selection.1.min(caret)));
+                i.clean.set(i.clean.get().min(i.selection.0.min(i.selection.1).min(anchor.min(caret))));
             }
             i.selection = sel;
             self.mark(Dirty::PAINT);
@@ -180,6 +183,7 @@ impl Kernel {
             i.secure = on;
             i.clean.set(0);
             i.preedit.clear();
+            i.preedit_selection = None;
             self.changed(id, Dirty::PAINT | Dirty::TEXT | Dirty::SEMANTICS, "secure", || on.to_string());
         }
     }
@@ -312,19 +316,29 @@ impl Kernel {
             pairs.push((input.value.len(), shown.len()));
             (shown, pairs)
         });
-        let (shown, preedit, pairs) = match masked {
-            Some((shown, pairs)) => (shown, 0..0, Some(pairs)),
-            None => {
-                (format!("{}{}{}", &input.value[..caret], input.preedit, &input.value[caret..]), caret..caret + input.preedit.len(), None)
+        let composing = !input.preedit.is_empty();
+        let replaced = if composing { anchor.min(caret)..anchor.max(caret) } else { caret..caret };
+        let (shown, preedit, sel, shown_caret, show_caret, pairs) = match masked {
+            Some((shown, pairs)) => {
+                let to_shown = |b| pairs[pairs.partition_point(|x| x.0 <= b).saturating_sub(1)].1;
+                let sel = (to_shown(anchor.min(caret)), to_shown(anchor.max(caret)));
+                let caret = to_shown(caret);
+                (shown, caret..caret, sel, caret, true, Some(pairs))
             }
+            None if composing => {
+                let start = replaced.start;
+                let selection = input.preedit_selection.clone().unwrap_or(input.preedit.len()..input.preedit.len());
+                (
+                    format!("{}{}{}", &input.value[..start], input.preedit, &input.value[replaced.end..]),
+                    start..start + input.preedit.len(),
+                    (start + selection.start, start + selection.end),
+                    start + selection.end,
+                    input.preedit_selection.is_some(),
+                    None,
+                )
+            }
+            None => (input.value.clone(), caret..caret, (anchor.min(caret), anchor.max(caret)), caret, true, None),
         };
-        let to_shown = |b: usize| match &pairs {
-            Some(p) => p[p.partition_point(|x| x.0 <= b).saturating_sub(1)].1,
-            None if b <= caret => b,
-            None => b + input.preedit.len(),
-        };
-        let sel = (to_shown(anchor.min(caret)), to_shown(anchor.max(caret)));
-        let preedit = if pairs.is_some() { to_shown(caret)..to_shown(caret) } else { preedit };
         let (x, y, _, _) = self.shown_rect(id);
         let l = self.taffy.layout(n.taffy).expect("taffy");
         let (cx, cy) = (x + l.border.left + l.padding.left, y + l.border.top + l.padding.top);
@@ -340,8 +354,10 @@ impl Kernel {
         let mut f = Field {
             shown,
             preedit,
+            replaced,
             sel,
-            caret: if pairs.is_some() { to_shown(caret) } else { caret + input.preedit.len() },
+            caret: shown_caret,
+            show_caret,
             x: cx,
             y: cy,
             width,
@@ -390,7 +406,13 @@ impl Kernel {
         if let Some(p) = &field.masked {
             return p[p.partition_point(|x| x.1 <= b).saturating_sub(1)].0;
         }
-        if b <= field.preedit.start { b } else { b.saturating_sub(field.preedit.len()).max(field.preedit.start) }
+        if field.preedit.is_empty() || b <= field.preedit.start {
+            b
+        } else if b < field.preedit.end {
+            field.replaced.start
+        } else {
+            b.saturating_sub(field.preedit.len()) + field.replaced.len()
+        }
     }
 
     /// The value offset nearest window point `(x, y)` in a text input (where a click puts the
@@ -496,7 +518,7 @@ impl Kernel {
                 out.push(quad(Rect { y: r.y + lh - 2.0, h: 1.0, ..r }, fade(v.text)));
             }
         }
-        if focused && f.sel.0 == f.sel.1 && self.caret_shown(id) {
+        if focused && f.show_caret && f.sel.0 == f.sel.1 && self.caret_shown(id) {
             let (cx, cy) = f.pos(f.caret);
             // A single line's caret stays inside the box (its last position may be past it).
             let x = if self.is_multiline(id) { cx } else { (cx - f.scroll.0).min(f.width - 1.0).max(0.0) + f.scroll.0 };

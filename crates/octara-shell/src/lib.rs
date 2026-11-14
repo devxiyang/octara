@@ -688,9 +688,21 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 self.key(&mut w, &event);
                 ww(&w, |x| x.traced(at, if event.repeat { "key (repeat)" } else { "key" }));
             }
-            WindowEvent::Ime(Ime::Preedit(text, _)) => {
-                ww(&w, |x| x.traced(Instant::now(), "input method composition"));
-                w.event(InputEvent::Composition(text));
+            WindowEvent::Ime(Ime::Enabled) => {
+                ww(&w, |x| x.ime_enabled());
+            }
+            WindowEvent::Ime(Ime::Preedit(text, selection)) => {
+                self.tick();
+                if ww(&w, |x| x.accepts_ime()).unwrap_or(false) {
+                    ww(&w, |x| x.traced(Instant::now(), "input method composition"));
+                    w.event(InputEvent::Preedit { text, selection });
+                }
+            }
+            WindowEvent::Ime(Ime::Disabled) => {
+                self.tick();
+                if ww(&w, |x| x.ime_disabled()).unwrap_or(false) {
+                    w.event(InputEvent::Preedit { text: String::new(), selection: None });
+                }
             }
             WindowEvent::HoveredFile(path) => {
                 let (x, y, paths) = ww(&w, |win| {
@@ -709,8 +721,11 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 w.event(InputEvent::FileDrag(FileDrag::Leave));
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
-                ww(&w, |x| x.traced(Instant::now(), "input method commit"));
-                w.type_text(&text);
+                self.tick();
+                if ww(&w, |x| x.accepts_ime()).unwrap_or(false) {
+                    ww(&w, |x| x.traced(Instant::now(), "input method commit"));
+                    w.type_text(&text);
+                }
             }
             _ => return,
         }

@@ -42,6 +42,7 @@ fn nothing_reports_the_value() {
     let app = app(TargetPlatform::MacOs);
     let bullets = "•".repeat(9);
     let snap = app.inspect();
+    assert!(snap.text_input.is_none(), "editing feedback must omit the entire secure field");
     let pw = snap.find("pw").unwrap();
     assert_eq!((pw.role.as_str(), pw.value.as_deref()), ("password_input", Some(bullets.as_str())));
     let tree = app.accessibility_tree();
@@ -89,6 +90,7 @@ fn revealing_shows_the_text_to_the_screen_only_for_agents() {
     assert_eq!(app.inspect().find("pw").unwrap().value.as_deref(), Some("•".repeat(9).as_str()), "agents still see bullets");
     // Copy stays off while revealed.
     app.tap("pw").unwrap();
+    assert!(app.inspect().text_input.is_none(), "revealing on screen does not expose editing feedback");
     app.app().platform().write_text("before");
     app.press_key("mod+a").unwrap();
     app.press_key("mod+c").unwrap();

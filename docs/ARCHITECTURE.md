@@ -199,8 +199,12 @@ and prompts in the window, and tooltips are currently drawn on every desktop.
 - **Live inspection**: the opt-in transport currently requires Unix sockets (macOS/Linux).
   Live virtual `advance` remains rejected; the realtime host does not virtually advance the app
   clock. Native resize can be constrained or refused by the window system and reports actual
-  dimensions on failure. Framework input does not qualify OS focus, IME or
-  native gesture behavior. Stronger build identity, stale-target validation across tree replacement
+  dimensions on failure. A focused nonsecure editor exposes committed text, UTF-8/UTF-16
+  selection, preedit selection and caret geometry in the same snapshot; secure editors omit
+  this context. IME composition belongs to the focused field and is cancelled when that owner
+  changes. Framework input does not qualify OS focus, IME or native gesture behavior; the
+  [OS-input fixture](../examples/IME.md) records real keyboard/Chinese IME checks separately.
+  Stronger build identity, stale-target validation across tree replacement
   and richer sampled property information remain open.
 - **Update and sample boundaries**: frames are submitted per window and display lists are pulled
   later. Request ownership, cross-window invalidation, cleanup ordering and coherent native/drawn

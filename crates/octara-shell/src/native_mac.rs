@@ -875,3 +875,39 @@ pub(crate) fn pointer_in(window: &Window) -> Option<(f32, f32)> {
     let y = if view.isFlipped() { p.y } else { view.bounds().size.height - p.y };
     Some((p.x as f32, y as f32))
 }
+
+/// Retire the input method's own composer after winit has cleared its client-side marked text.
+/// Disabling winit alone does not discard IMKit's pending Pinyin syllables.
+pub(crate) fn discard_marked_text(window: &Window) -> Option<()> {
+    let _mtm = MainThreadMarker::new()?;
+    let RawWindowHandle::AppKit(handle) = window.window_handle().ok()?.as_raw() else { return None };
+    // SAFETY: winit owns this content view and the window remains alive during the call.
+    let view: Retained<NSView> = unsafe { Retained::retain(handle.ns_view.as_ptr().cast()) }?;
+    view.inputContext()?.discardMarkedText();
+    Some(())
+}
+
+/// Current native input and visibility facts, without activating the app or input context.
+pub(crate) fn inspect_state(window: &Window) -> Option<serde_json::Map<String, Value>> {
+    let mtm = MainThreadMarker::new()?;
+    let RawWindowHandle::AppKit(handle) = window.window_handle().ok()?.as_raw() else { return None };
+    // SAFETY: winit owns this content view and the window remains alive during the query.
+    let view: Retained<NSView> = unsafe { Retained::retain(handle.ns_view.as_ptr().cast()) }?;
+    let ns_window = view.window()?;
+    let responder: &objc2_app_kit::NSResponder = &view;
+    let focused = ns_window.isKeyWindow() && ns_window.firstResponder().is_some_and(|first| std::ptr::eq(&*first, responder));
+    let source = view.inputContext().and_then(|context| context.selectedKeyboardInputSource()).map(|source| source.to_string());
+    let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+    let Value::Object(state) = json!({
+        "ime": { "native_focus": focused, "context_source": source },
+        "window": {
+            "visible": ns_window.isVisible(),
+            "occluded": !ns_window.occlusionState().contains(objc2_app_kit::NSWindowOcclusionState::Visible),
+            "app_active": app.isActive(),
+            "app_hidden": app.isHidden(),
+        },
+    }) else {
+        unreachable!()
+    };
+    Some(state)
+}

@@ -49,6 +49,36 @@ fn requests_drive_the_app() {
 }
 
 #[test]
+fn a_snapshot_reads_committed_and_preedit_state_with_explicit_units() {
+    let mut app = Window::headless(|| {
+        let value = state("value", || "A🙂你B".to_owned());
+        col().size_full().child(text_input().id("field").w(240).value(move || value.get()).on_input(move |text| value.set(text))).into()
+    });
+    assert!(app.inspect().text_input.is_none());
+    app.tap("field").unwrap();
+    app.set_selection(8, 1);
+    app.event(InputEvent::Preedit { text: "ni好".into(), selection: Some((2, 5)) });
+    let snapshot = app.inspect();
+    assert_eq!(snapshot.focus.as_deref(), Some("field"));
+    let input = snapshot.text_input.as_ref().unwrap();
+    assert_eq!(input.text, "A🙂你B");
+    assert_eq!(input.selection, [1, 8]);
+    assert_eq!(input.selection_utf16, [1, 4]);
+    assert!(input.reversed);
+    assert_eq!(input.composition, "ni好");
+    assert_eq!(input.composition_selection, Some([2, 5]));
+    assert_eq!(input.composition_selection_utf16, Some([2, 3]));
+    assert!(!input.caret_visible);
+    assert!(input.caret[2] > 0.0 && input.caret[3] > 0.0);
+    assert_eq!(serde_json::from_str::<inspect::Snapshot>(&snapshot.to_json()).unwrap(), snapshot);
+    app.event(InputEvent::Preedit { text: String::new(), selection: None });
+    let input = app.inspect().text_input.unwrap();
+    assert_eq!(input.text, "A🙂你B");
+    assert_eq!(input.selection, [1, 8]);
+    assert!(input.composition.is_empty());
+}
+
+#[test]
 fn a_host_can_parse_and_intercept_a_request_before_it_runs() {
     let app = Window::headless(view);
     let (mut target, request) = inspect::parse_request(&app, r#"{"op":"tap","id":"inc"}"#).unwrap();

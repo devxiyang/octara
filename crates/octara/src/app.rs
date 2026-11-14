@@ -950,6 +950,9 @@ impl Window {
         if let Some(p) = i.focused.take()
             && k.is_alive(p)
         {
+            // Uncommitted text belongs to this field. Moving focus cancels its displayed
+            // composition while keeping the original committed value and selection.
+            k.set_preedit(p, "");
             k.set_state(p, State::FOCUSED, false);
             k.set_state(p, State::FOCUS_VISIBLE, false);
             blurred = (!k.is_exiting(p)).then_some(p);
@@ -1113,6 +1116,7 @@ impl Window {
             breakpoint: crate::inspect::snake(&format!("{:?}", self.breakpoint())),
             time_ms: self.app().now().as_millis() as u64,
             focus,
+            text_input: self.text_field().and_then(crate::inspect::TextInputState::from_field),
             pending: self.app().pending().len(),
             window: self.w.id.number(),
             selection: self.selected_text().map(|t| t.chars().take(2000).collect()),
@@ -1638,7 +1642,7 @@ impl Window {
         let text_input = self.focused_input().and_then(|(n, _)| {
             let k = self.w.kernel.borrow();
             let caret = k.caret(n)?;
-            Some(crate::platform::TextInput { caret, secure: k.is_secure(n), multiline: k.is_multiline(n) })
+            Some(crate::platform::TextInput { id: n, caret, secure: k.is_secure(n), multiline: k.is_multiline(n) })
         });
         let generation = self.w.kernel.borrow().paint_generation();
         let (picking, picked) = self.picking_frame();

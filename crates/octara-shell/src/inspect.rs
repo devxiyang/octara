@@ -273,7 +273,12 @@ impl Shell {
             request => {
                 let reply = octara::inspect::handle(&mut target, request);
                 self.show();
-                response.send(reply);
+                if reply.snapshot.is_some() {
+                    let host = ww(&target, |window| window.inspect_state()).unwrap_or_else(|| json!({}));
+                    response.send_with(reply, host);
+                } else {
+                    response.send(reply);
+                }
             }
         }
     }

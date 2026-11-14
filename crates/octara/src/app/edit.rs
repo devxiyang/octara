@@ -101,8 +101,13 @@ pub struct TextField {
     pub reversed: bool,
     /// What an input method is composing at the caret (not part of `text`).
     pub composition: String,
+    /// UTF-8 byte range within `composition`; none means the input method hides its cursor.
+    /// The range is clamped to character boundaries and ordered from start to end.
+    pub composition_selection: Option<Range<usize>>,
     /// The caret `(x, y, w, h)` in logical pixels, for the input method's candidate window.
     pub caret: (f32, f32, f32, f32),
+    /// Whether the framework currently paints the caret (including blink, selection and IME).
+    pub caret_visible: bool,
     /// A secure field (a password): shells turn the input method off and the platform's secure
     /// input on while it is focused.
     pub secure: bool,
@@ -452,12 +457,17 @@ impl Window {
         let (n, text, a, c) = self.field()?;
         let k = self.w.kernel.borrow();
         let r = k.caret(n)?;
+        let composition = k.preedit(n).to_owned();
+        let composition_selection = k.preedit_selection(n);
+        let collapsed = if composition.is_empty() { a == c } else { composition_selection.as_ref().is_some_and(Range::is_empty) };
         Some(TextField {
             secure: k.is_secure(n),
             selection: a.min(c)..a.max(c),
             reversed: c < a,
-            composition: k.preedit(n).to_owned(),
+            composition,
+            composition_selection,
             caret: (r.x, r.y, r.w, r.h),
+            caret_visible: collapsed && k.caret_shown(n),
             text,
         })
     }
@@ -485,21 +495,20 @@ impl Window {
     }
 
     /// What an input method is composing in the focused field (pinyin before it becomes 汉字):
-    /// shown underlined at the caret, not yet part of the value; it replaces the selection.
+    /// shown underlined in place of the selection, without changing the committed value.
     /// Empty ends it. `Text` commits.
     pub(super) fn on_composition(&mut self, text: &str) {
+        self.on_preedit(text, Some((text.len(), text.len())));
+    }
+
+    pub(super) fn on_preedit(&mut self, text: &str, selection: Option<(usize, usize)>) {
         self.input_frame(|| {
-            let Some((n, v, a, c)) = self.field() else { return };
+            let Some((n, ..)) = self.field() else { return };
             // No input method in a secure field.
             if self.w.kernel.borrow().is_secure(n) {
                 return;
             }
-            if !text.is_empty() && a != c {
-                // Composing over a selection replaces it.
-                let (s, e) = (a.min(c), a.max(c));
-                self.apply(n, format!("{}{}", &v[..s], &v[e..]), s, s, Kind::Other);
-            }
-            self.w.kernel.borrow_mut().set_preedit(n, text);
+            self.w.kernel.borrow_mut().set_preedit_selection(n, text, selection);
         });
     }
 
