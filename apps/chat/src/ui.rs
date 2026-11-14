@@ -1,4 +1,4 @@
-//! The chat's views, composed from the kit: a `split` with the conversations (`list`) beside the
+//! The chat's views, composed from the kit: conversations (`list`) beside the
 //! open one; its transcript a selectable scroll container following its tail over a virtual
 //! list of messages; parts as Markdown (paced), `collapsible` reasoning and tool calls, a
 //! `callout` for a failure; a composer (`text_field`, `removable_chip`s, `icon_button`s) with
@@ -10,7 +10,9 @@ use octara::prelude::*;
 use octara_icons as icons;
 use octara_kit::markdown::markdown;
 use octara_kit::*;
+use std::cell::Cell;
 use std::cmp::Reverse;
+use std::rc::Rc;
 use std::time::Duration;
 
 /// Whether a phone shows the conversations (instead of the open one).
@@ -34,32 +36,88 @@ pub fn root(options: impl Fn() -> Options + 'static) -> View {
     component("Chat", move || {
         let chat = Chat::new(options());
         provide(chat.clone());
-        commands(&chat);
         let width = state("sidebar", || 260.0f32);
-        let clamp = move |w: f32| width.set(w.clamp(180.0, 420.0));
         // A phone shows the conversations or the open one; wider windows show both.
         let compact = memo(|| breakpoint().get() == Breakpoint::Compact);
         let listing = state("listing", || false);
         provide(Listing(listing));
-        show_else(
-            move || compact.get(),
-            move || show_else(move || listing.get(), || sidebar().into(), || main_pane().into()),
-            move || split("panes", (move || width.get(), clamp), sidebar(), main_pane()).into(),
-        )
+        commands(&chat, listing);
+        row()
+            .id("panes")
+            .relative()
+            .size_full()
+            .child(show(move || !compact.get(), move || desktop_navigation(width)))
+            .child(el().h_full().flex_1().min_w(0.0).child(main_pane()))
+            .child(show(
+                move || compact.get() && listing.get(),
+                move || {
+                    el().id("chat-listing")
+                        .role(Role::Dialog)
+                        .label("Conversations")
+                        .absolute()
+                        .inset_0()
+                        .size_full()
+                        .bg(Token::Surface)
+                        .modal(false, move || listing.set(false))
+                        .child(sidebar())
+                        .into()
+                },
+            ))
+            .into()
     })
 }
 
+#[component]
+fn desktop_navigation(width: Signal<f32>) -> View {
+    let start = Rc::new(Cell::new(0.0));
+    let divider = el()
+        .id("panes-divider")
+        .role(Role::Splitter)
+        .label("Resize")
+        .value(move || format!("{}", width.get().round()))
+        .focusable()
+        .w(7.0)
+        .when_touch(|p| p.w(20.0))
+        .h_full()
+        .flex_shrink_0()
+        .justify_center()
+        .cursor(CursorStyle::ResizeLeftRight)
+        .child(el().w(1.0).h_full().bg(Token::Border).style_when(State::FOCUS_VISIBLE, |p| p.bg(Token::Focus)).a11y_hidden())
+        .on_drag(move |drag| match drag.phase {
+            DragPhase::Start => start.set(width.get()),
+            DragPhase::Move => width.set((start.get() + drag.dx).clamp(180.0, 420.0)),
+            _ => {}
+        })
+        .on_key(move |key| {
+            let step = if key.modifiers.contains(Modifiers::SHIFT) { 40.0 } else { 8.0 };
+            let by = match key.key {
+                Key::Left => -step,
+                Key::Right => step,
+                _ => return false,
+            };
+            width.set((width.get() + by).clamp(180.0, 420.0));
+            true
+        });
+    View::Fragment(vec![el().h_full().flex_shrink_0().style_with(move |s| s.w(width.get())).child(sidebar()).into(), divider.into()])
+}
+
 /// What the app's commands do, and its menu bar.
-fn commands(chat: &Chat) {
+fn commands(chat: &Chat, listing: Signal<bool>) {
     let c = chat.clone();
-    on_command("chat.new", move || c.new_chat());
+    on_command("chat.new", move || {
+        c.new_chat();
+        listing.set(false);
+    });
     let c = chat.clone();
     on_command("chat.stop", move || {
         if let Some(t) = c.current.get_untracked() {
             c.stop(t);
         }
     });
-    on_command("chat.focus_composer", || focus("composer"));
+    on_command("chat.focus_composer", move || {
+        listing.set(false);
+        focus("composer");
+    });
     bind_keys([("mod+n", "chat.new", None), ("mod+l", "chat.focus_composer", None), ("mod+.", "chat.stop", None)]).expect("chords");
     set_menus([
         Menu::new("File").item(MenuItem::action("New Chat", "chat.new").shortcut("mod+n")),
@@ -499,7 +557,8 @@ fn tool(id: u64, i: usize, p: ReadSignal<(usize, Part)>) -> View {
         .child(show(working, || spinner().size_3p5().into()))
         .child(text(state_label).text_xs());
     collapsible(&format!("tool-{id}-{i}"), open, header, move || {
-        let t: Option<Tool> = tool();
+        // Keep this part's buffer handle; its appended contents remain reactive in text(input).
+        let t: Option<Tool> = untrack(tool);
         let input = t.as_ref().map(|t| t.input.clone()).unwrap_or_else(|| TextBuffer::new(""));
         col()
             .gap_1()

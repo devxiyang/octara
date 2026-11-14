@@ -114,6 +114,120 @@ fn top_row(app: &Window) -> (String, f32) {
         .expect("a row covers the top of the window")
 }
 
+#[component]
+fn reading_feed(wrapping: bool) -> View {
+    let items = state_list(
+        "reading-items",
+        || (0..1_000).map(|id| Item { id, lines: if id % 2 == 0 { 3 } else { 1 } }).collect(),
+        |item: &Item| item.id,
+    );
+    col()
+        .child(
+            col()
+                .child(virtual_each(
+                    move || items.all(),
+                    |item| item.lines as f32 * 20.0,
+                    move |id, item| {
+                        text(move || {
+                            item.with(
+                                |item| {
+                                    if wrapping && item.id % 2 == 0 { "word ".repeat(100) } else { vec!["line"; item.lines].join("\n") }
+                                },
+                            )
+                        })
+                        .id(format!("item-{id}"))
+                        .into()
+                    },
+                ))
+                .id("feed")
+                .flex_1()
+                .overflow_y_scroll()
+                .follow_tail(),
+        )
+        .child(button_like("grow-reading-row", move || items.update(&100, |item| item.lines += 3)))
+        .child(button_like("grow-offscreen-tail", move || items.update(&999, |item| item.lines += 100)))
+        .child(button_like("jump", || {
+            scroll_to_end("feed");
+        }))
+        .size_full()
+        .into()
+}
+
+#[test]
+fn streaming_a_visible_row_preserves_its_reading_position() {
+    let mut app = Window::headless(|| reading_feed(false));
+    app.dispatch(Event::ScrollTo("feed".into(), 0.0, 4_007.0)).unwrap();
+    let before = top_row(&app);
+    assert_eq!(before.0, "item-100");
+    assert!(!following(&app, "feed"));
+
+    app.tap("grow-reading-row").unwrap();
+
+    assert_eq!(top_row(&app), before, "growing the row extends below what the person is reading");
+    assert!(!following(&app, "feed"));
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
+fn wrapping_resize_preserves_the_first_visible_row_and_its_screen_position() {
+    let mut app = Window::headless(|| reading_feed(true));
+    app.dispatch(Event::ScrollTo("feed".into(), 0.0, 4_007.0)).unwrap();
+    let before = top_row(&app);
+    // Read within a wrapping paragraph, followed by a short row whose height does not change.
+    if before.0.trim_start_matches("item-").parse::<u32>().unwrap() % 2 == 1 {
+        app.dispatch(Event::Scroll("feed".into(), 0.0, 20.0)).unwrap();
+    }
+    let before = top_row(&app);
+    let height_before = app.kernel().rect(app.kernel().find(&before.0).unwrap()).3;
+    app.resize(320.0, 600.0);
+
+    assert_eq!(top_row(&app), before, "reflow must anchor the paragraph being read, even when its height changes");
+    assert!(app.kernel().rect(app.kernel().find(&before.0).unwrap()).3 > height_before);
+    // Previously measured offscreen rows still carry other widths' estimates. Revisiting
+    // widths and enlarging the viewport must neither accumulate drift nor leave a blank end.
+    for (width, height) in [(640.0, 600.0), (280.0, 780.0), (800.0, 360.0), (320.0, 700.0)] {
+        app.resize(width, height);
+        assert_eq!(top_row(&app), before, "reading position after resize to {width}x{height}");
+        let k = app.kernel();
+        let feed = k.find("feed").unwrap();
+        let bottom = k.content_origin_y(feed) + k.client_size(feed).1;
+        assert!(
+            k.child_ids("feed").iter().filter(|id| id.starts_with("item-")).any(|id| {
+                let row = k.rect(k.find(id).unwrap());
+                row.1 <= bottom && row.1 + row.3 >= bottom
+            }),
+            "mounted rows fill the enlarged viewport"
+        );
+        assert!(!k.is_following_tail(feed));
+    }
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
+fn jump_measures_an_offscreen_streamed_tail_and_follows_later_growth() {
+    let mut app = Window::headless(|| reading_feed(false));
+    app.dispatch(Event::ScrollTo("feed".into(), 0.0, 4_007.0)).unwrap();
+    let before = top_row(&app);
+    assert!(!app.kernel().exists("item-999"));
+    app.kernel_mut().reset_counters();
+    app.tap("grow-offscreen-tail").unwrap();
+    assert_eq!(top_row(&app), before);
+    assert!(!following(&app, "feed"));
+    assert_eq!(app.kernel().counters().nodes_created, 0, "offscreen stream must not mount rows");
+
+    app.tap("jump").unwrap();
+    assert!(following(&app, "feed"));
+    assert_eq!(offset(&app, "feed"), end(&app, "feed"));
+    let k = app.kernel();
+    let last = k.rect(k.find("item-999").unwrap());
+    let feed = k.find("feed").unwrap();
+    assert_eq!(last.1 + last.3, k.content_origin_y(feed) + k.client_size(feed).1);
+    drop(k);
+    app.tap("grow-offscreen-tail").unwrap();
+    assert_eq!(offset(&app, "feed"), end(&app, "feed"));
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
 #[test]
 fn a_virtual_list_outside_a_scroll_container_is_reported() {
     let app = Window::headless(|| {

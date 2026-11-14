@@ -3,6 +3,13 @@
 Run the normal app with `cargo run -p octara-chat`. It uses the offline scripted model and saves
 conversations in its application data directory (`OCTARA_CHAT_DIR` overrides that location).
 
+## Long-session verification
+
+The `long_session` example opens the unchanged Chat UI with an isolated 1,000- or
+10,000-message history and a controllable streaming Model. The headless regression,
+real-window recording commands, Release CPU benchmark, source references and observed
+results are documented in [LONG_SESSION.md](LONG_SESSION.md).
+
 ## Request lifecycle verification
 
 The headless lifecycle tests and real-window fixture use a controllable model which retains its

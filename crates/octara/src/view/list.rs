@@ -7,7 +7,7 @@ use crate::reactive::graph::{Ctx, ReadSignal, ScopeId, Signal, rt};
 use crate::reactive::list::{Change, Cursor, Source};
 use crate::reactive::seq::Seq;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::hash::Hash;
 use std::panic::Location;
@@ -201,6 +201,7 @@ where
         let list_top: Rc<Cell<f32>> = Rc::default();
         let mirror: Rc<RefCell<Seq<K>>> = Rc::default();
         let rows: Rc<RefCell<HashMap<K, (ScopeId, NodeId)>>> = Rc::default();
+        let measured: Rc<RefCell<HashSet<K>>> = Rc::default();
         let current: Current<K, T> = Rc::default();
         // Keys by the name paths write them in (every row built, and every key listed).
         let names: Rc<RefCell<HashMap<String, K>>> = Rc::default();
@@ -246,7 +247,7 @@ where
 
         // After each layout: where the list starts in the container, and the rows' real heights.
         let hook = {
-            let (u, list_top, mirror, rows) = (u.clone(), list_top.clone(), mirror.clone(), rows.clone());
+            let (u, list_top, mirror, rows, measured) = (u.clone(), list_top.clone(), mirror.clone(), rows.clone(), measured.clone());
             u.clone().after_layout(Rc::new(move || {
                 let mut k = u.kernel.borrow_mut();
                 if !k.is_alive(container) || !k.is_alive(top) {
@@ -264,6 +265,7 @@ where
                 let y = (sy - start).max(0.0) as f64;
                 // Rows whose measured height differs from their weight.
                 let rows = rows.borrow();
+                let mut measured = measured.borrow_mut();
                 let updates: Vec<(K, f64)> = rows
                     .iter()
                     .filter(|(_, (_, node))| k.is_alive(*node))
@@ -273,17 +275,16 @@ where
                     })
                     .collect();
                 if !updates.is_empty() {
-                    // Scroll anchoring: keep in place a row the reader has already seen at its
-                    // real height (the first measured row still in view), else the top row.
+                    // Keep the first previously laid-out row in view, even if its own height
+                    // changed. A new estimated row must not displace a row already being read.
                     let mut anchor = m.index_at_weight(y).min(m.len().saturating_sub(1));
-                    let mut seen: Vec<usize> = rows
+                    let seen = rows
                         .keys()
-                        .filter(|key| !updates.iter().any(|(u, _)| u == *key))
+                        .filter(|key| measured.contains(*key))
                         .filter_map(|key| m.index_of(key))
-                        .filter(|&i| m.prefix_weight(i + 1) > y)
-                        .collect();
-                    seen.sort_unstable();
-                    if let Some(&i) = seen.first() {
+                        .filter(|&i| m.prefix_weight(i + 1) > y && m.prefix_weight(i) < y + k.client_size(container).1 as f64)
+                        .min();
+                    if let Some(i) = seen {
                         anchor = i;
                     }
                     let on_screen = m.prefix_weight(anchor) - y;
@@ -298,6 +299,7 @@ where
                     }
                     changed = true;
                 }
+                measured.extend(rows.iter().filter(|(_, (_, node))| k.is_alive(*node)).map(|(key, _)| key.clone()));
                 if changed {
                     revision.update(|r| *r += 1);
                 }
@@ -394,7 +396,8 @@ where
                     if built || !old.is_empty() {
                         crate::app::window().kernel.borrow_mut().set_instant(true);
                     }
-                    for (_, (scope, _)) in old {
+                    for (key, (scope, _)) in old {
+                        measured.borrow_mut().remove(&key);
                         rt.dispose_scope(scope);
                     }
                     {
