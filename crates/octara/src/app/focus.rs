@@ -39,7 +39,7 @@ impl Window {
     /// `hit`, unless an open modal makes it inert.
     pub(crate) fn live(&self, hit: Option<NodeId>) -> Option<NodeId> {
         match (hit, self.top_modal()) {
-            (Some(h), Some(m)) if !self.w.kernel.borrow().is_within(h, m) => None,
+            (Some(h), Some(m)) if !self.w.kernel.borrow().is_in_modal_scope(h, m) => None,
             _ => hit,
         }
     }
@@ -48,7 +48,7 @@ impl Window {
     /// it allows that.
     pub(crate) fn pressed_outside(&self, hit: Option<NodeId>) -> bool {
         let Some(m) = self.top_modal() else { return false };
-        if hit.is_some_and(|h| self.w.kernel.borrow().is_within(h, m)) {
+        if hit.is_some_and(|h| self.w.kernel.borrow().is_in_modal_scope(h, m)) {
             return false;
         }
         if self.w.kernel.borrow().modal_click_outside(m) {
@@ -104,7 +104,7 @@ impl Window {
             let focused = self.w.interaction.borrow().focused;
             self.w.interaction.borrow_mut().modals.push(OpenModal { node: m, restore: focused });
             // Focus already inside (a hot reload restored it) stays.
-            let inside = focused.is_some_and(|f| self.w.kernel.borrow().is_alive(f) && self.w.kernel.borrow().is_within(f, m));
+            let inside = focused.is_some_and(|f| self.w.kernel.borrow().is_alive(f) && self.w.kernel.borrow().is_in_modal_scope(f, m));
             if !inside {
                 let first = self.w.kernel.borrow().initial_focus(m);
                 let _ = self.set_focus(first);
@@ -115,8 +115,8 @@ impl Window {
         if reloaded && let Some(m) = self.top_modal() {
             let focused = self.w.interaction.borrow().focused;
             let k = self.w.kernel.borrow();
-            let inside =
-                focused.is_some_and(|n| k.is_shown(n) && k.is_focusable(n) && !k.state(n).contains(State::DISABLED) && k.is_within(n, m));
+            let inside = focused
+                .is_some_and(|n| k.is_shown(n) && k.is_focusable(n) && !k.state(n).contains(State::DISABLED) && k.is_in_modal_scope(n, m));
             drop(k);
             if !inside {
                 self.restore_modal_focus(None);
@@ -130,11 +130,33 @@ impl Window {
         let k = self.w.kernel.borrow();
         let target = restore
             .filter(|n| {
-                k.is_shown(*n) && k.is_focusable(*n) && !k.state(*n).contains(State::DISABLED) && modal.is_none_or(|m| k.is_within(*n, m))
+                k.is_shown(*n)
+                    && k.is_focusable(*n)
+                    && !k.state(*n).contains(State::DISABLED)
+                    && modal.is_none_or(|m| k.is_in_modal_scope(*n, m))
             })
             .or_else(|| modal.and_then(|m| k.initial_focus(m)));
         drop(k);
         let _ = self.set_focus(target);
+    }
+
+    /// A retained control can become hidden, disabled or inert without being unmounted.
+    /// Retire that focus before text or deferred commands can reach its old context.
+    pub(super) fn reconcile_focus(&self) -> bool {
+        let focused = self.w.interaction.borrow().focused;
+        let Some(focused) = focused else { return false };
+        let modal = self.top_modal();
+        let k = self.w.kernel.borrow();
+        let valid = k.is_shown(focused)
+            && k.is_focusable(focused)
+            && !k.state(focused).contains(State::DISABLED)
+            && modal.is_none_or(|modal| k.is_in_modal_scope(focused, modal));
+        drop(k);
+        if valid {
+            return false;
+        }
+        self.restore_modal_focus(None);
+        true
     }
 
     /// Tab (`forward`) or Shift+Tab: the next stop in the Tab order of the open modal (else the

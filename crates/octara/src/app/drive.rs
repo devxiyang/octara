@@ -82,7 +82,7 @@ impl Window {
         let k = self.w.kernel.borrow();
         let n = k.resolve_target(target)?;
         if let Some(m) = self.top_modal()
-            && !k.is_within(n, m)
+            && !k.is_in_modal_scope(n, m)
         {
             return Err(format!("{} is behind the open modal {}", k.describe(n), k.describe(m)));
         }

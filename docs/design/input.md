@@ -131,6 +131,21 @@ catches up after the animation ends or the pointer moves (Rune).
 - Built-in commands: `focus.next / focus.prev` (Tab / Shift+Tab), `focus.dismiss` (Escape), `press` (Enter, Space),
   arrow keys moving within a `focus_group`, and text editing commands (see below).
 
+### Deferred commands
+
+`invoke_after_update(command)` is for a menu that closes before running an editor command.
+It queues the command in the current window, then lets pending state, layout, modal focus
+restoration and explicit `focus` requests settle before dispatching through the existing
+command handlers. Commands run in order, settling each command's updates before the next.
+Closing the submitting popup leaves the command queued; closing its window discards it.
+The queue does not wait for animation or advance the app clock. `invoke(command)` and
+`Window::invoke(command)` remain synchronous and return their result to the caller.
+
+An unavailable deferred command reports `COMMAND_UNHANDLED`; disable unavailable menu items
+or provide their handler. The existing 16-round update limit also bounds deferred commands.
+If commands keep queuing each other, or a batch exceeds that limit, `COMMAND_QUEUE_LIMIT`
+reports and discards the remaining queue so the window stays responsive.
+
 ## Text editing
 
 - The app still writes only `text_input().value(..).on_input(|v| ..)`; Enter to submit is a separate `on_submit` (Rune), and `on_press` is synonymous for

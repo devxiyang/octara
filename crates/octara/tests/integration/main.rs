@@ -29,6 +29,7 @@ mod paced;
 mod pointer;
 mod pointing;
 mod position;
+mod range;
 mod replay;
 mod responsive;
 mod rich;

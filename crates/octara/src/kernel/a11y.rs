@@ -438,6 +438,23 @@ impl Kernel {
             // A password is bullets to assistive technology (AccessKit's contract), unless shown.
             node.set_value(if n.input().is_some_and(|i| i.masked()) { self.reported_value(id) } else { self.value(id).to_owned() });
         }
+        if let Some(range) = n.numeric_range {
+            node.set_min_numeric_value(range.min);
+            node.set_max_numeric_value(range.max);
+            if let Some(value) = range.value {
+                node.set_numeric_value(value);
+            }
+            if let Some(step) = range.step {
+                node.set_numeric_value_step(step);
+            }
+            if n.handlers[HandlerKind::NumericInput as usize].is_some() {
+                node.add_action(ak::Action::SetValue);
+                if range.step.is_some() && range.value.is_some() {
+                    node.add_action(ak::Action::Increment);
+                    node.add_action(ak::Action::Decrement);
+                }
+            }
+        }
         if let Some(c) = n.checked {
             node.set_toggled(if c { ak::Toggled::True } else { ak::Toggled::False });
         }
@@ -504,11 +521,17 @@ impl Kernel {
             (HandlerKind::LongPress, "long_press"),
             (HandlerKind::Drag, "drag"),
             (HandlerKind::Input, "input"),
+            (HandlerKind::NumericInput, "set_value"),
             (HandlerKind::Submit, "submit"),
         ] {
             if n.handlers[kind as usize].is_some() {
                 actions.push(a.to_string());
             }
+        }
+        if n.handlers[HandlerKind::NumericInput as usize].is_some()
+            && n.numeric_range.is_some_and(|range| range.step.is_some() && range.value.is_some())
+        {
+            actions.extend(["increment".into(), "decrement".into()]);
         }
         if n.kind() == Kind::TextInput && !actions.iter().any(|a| a == "input") {
             actions.push("input".into());
@@ -550,6 +573,10 @@ impl Kernel {
             name,
             description: self.description(id).map(str::to_owned),
             value: (n.kind() == Kind::TextInput || n.value.is_some()).then(|| self.reported_value(id)),
+            numeric_value: n.numeric_range.and_then(|range| range.value),
+            min_numeric_value: n.numeric_range.map(|range| range.min),
+            max_numeric_value: n.numeric_range.map(|range| range.max),
+            numeric_value_step: n.numeric_range.and_then(|range| range.step),
             checked: n.checked,
             required: n.required,
             invalid: n.invalid,

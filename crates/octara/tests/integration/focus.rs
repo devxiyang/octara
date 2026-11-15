@@ -79,6 +79,32 @@ fn focus_groups_move_on_arrows_and_stop_once_for_tab() {
 }
 
 #[test]
+fn tab_lists_enter_at_the_current_selection_after_outside_changes() {
+    let mut app = Window::headless(|| {
+        let selected = state("selected", || 1);
+        on_command("select-third", move || selected.set(3));
+        col()
+            .size_full()
+            .child(button("a"))
+            .child(row().role(Role::TabList).focus_group().children((1..=3).map(move |i| {
+                button(&format!("tab-{i}")).role(Role::Tab).selected(move || selected.get() == i).on_press(move || selected.set(i))
+            })))
+            .child(button("c"))
+            .into()
+    });
+    app.press_key("tab").unwrap();
+    app.press_key("tab").unwrap();
+    app.press_key("right").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("tab-2"));
+    app.press_key("tab").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("c"), "unselected focus still represents the group's stop while inside");
+    app.invoke("select-third").unwrap();
+    app.press_key("shift+tab").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("tab-3"), "selected tab wins over stale remembered focus on outside entry");
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
 fn radio_groups_enter_at_the_checked_radio_and_navigation_chooses_once() {
     let mut app = Window::headless(|| {
         let choice = state("choice", || 3);

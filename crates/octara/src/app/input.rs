@@ -6,6 +6,24 @@ use crate::kernel::{HandlerKind, Kind, NodeId, State};
 use crate::reactive::graph::Ctx;
 
 impl Window {
+    /// Numeric changes from accessibility share the same handler as semantic numeric input.
+    /// The component owns stepping/clamping; non-finite values never reach it.
+    fn set_numeric_value_of(&self, n: NodeId, value: f64) -> bool {
+        if !value.is_finite() || self.live(Some(n)) != Some(n) {
+            return false;
+        }
+        let handler = {
+            let kernel = self.w.kernel.borrow();
+            if !kernel.is_shown(n) || kernel.state(n).contains(State::DISABLED) || !kernel.preedit(n).is_empty() {
+                return false;
+            }
+            kernel.handler(n, HandlerKind::NumericInput).and_then(|id| self.w.handlers.borrow().get(&id.0).cloned())
+        };
+        let Some(Handler::NumericInput(handler)) = handler else { return false };
+        self.app.rt.with_frame(Ctx::Handler, None, Some(None), || handler(value));
+        true
+    }
+
     /// Runs `f` as one frame: a new cause id for what it changes, then settle.
     pub(super) fn input_frame(&self, f: impl FnOnce()) {
         self.enter(|| {
@@ -62,7 +80,8 @@ impl Window {
     pub(super) fn focused_input(&self) -> Option<(NodeId, String)> {
         let n = self.w.interaction.borrow().focused?;
         let k = self.w.kernel.borrow();
-        (k.is_alive(n) && k.kind(n) == Kind::TextInput).then(|| (n, k.value(n).to_owned()))
+        (k.is_shown(n) && !k.state(n).contains(State::DISABLED) && self.live(Some(n)) == Some(n) && k.kind(n) == Kind::TextInput)
+            .then(|| (n, k.value(n).to_owned()))
     }
 
     /// Text typed (or committed by an input method) into the focused text field. Ends any
@@ -122,10 +141,27 @@ impl Window {
                 self.set_modality(Modality::Keyboard);
                 done = self.set_focus(Some(n)).is_ok()
             }),
-            accesskit::Action::SetValue => {
-                if let Some(accesskit::ActionData::Value(v)) = data {
-                    let v = v.to_string();
-                    self.input_frame(|| done = self.set_value_of(n, v));
+            accesskit::Action::SetValue => match data {
+                Some(accesskit::ActionData::NumericValue(value)) => {
+                    self.input_frame(|| done = self.set_numeric_value_of(n, value));
+                }
+                Some(accesskit::ActionData::Value(value)) => {
+                    let numeric = self.w.kernel.borrow().handler(n, HandlerKind::NumericInput).is_some();
+                    if numeric {
+                        if let Ok(value) = value.trim().parse::<f64>() {
+                            self.input_frame(|| done = self.set_numeric_value_of(n, value));
+                        }
+                    } else {
+                        self.input_frame(|| done = self.set_value_of(n, value.to_string()));
+                    }
+                }
+                _ => {}
+            },
+            accesskit::Action::Increment | accesskit::Action::Decrement => {
+                let range = self.w.kernel.borrow().numeric_range(n);
+                if let Some(crate::kernel::NumericRange { value: Some(value), min, max, step: Some(step) }) = range {
+                    let next = if action == accesskit::Action::Increment { (value + step).min(max) } else { (value - step).max(min) };
+                    self.input_frame(|| done = self.set_numeric_value_of(n, next));
                 }
             }
             accesskit::Action::ShowContextMenu => self.input_frame(|| done = self.run(n, &[HandlerKind::SecondaryPress], None)),

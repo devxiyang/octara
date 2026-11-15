@@ -46,6 +46,18 @@ printed temporary directory.
 
 ## Specs
 
+### Dialogs, navigation, suggestions and numeric controls
+
+`cargo run -p octara-examples --bin window -- showcase interaction` combines a Dialog,
+Tabs/Segmented and editor-owned PopupList suggestions. Type `/` in the dialog; Up/Down and
+Enter choose suggestions without submitting. Tab panels retain their editor, selection and
+undo. Cmd/Ctrl+Shift+U renames and reorders suggestions while the editor remains mounted.
+
+`cargo run -p octara-examples --bin window -- showcase controls` combines NumberField drafts,
+a Slider, determined/unknown Progress and command menus with submenus. Inspector exposes
+numeric bounds and supports guarded `set_value` operations. See [PRIMITIVES.md](PRIMITIVES.md)
+for contracts, source references and the real-window runner.
+
 ### Fields and radio groups
 
 `cargo run -p octara-examples --bin window -- showcase forms` opens a small settings form.

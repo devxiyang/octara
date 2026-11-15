@@ -9,11 +9,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 const MAX_WAIT: Duration = Duration::from_secs(30);
+const DRAG_STEP: Duration = Duration::from_millis(16);
+static NEXT_POINTER: AtomicU64 = AtomicU64::new(u64::MAX);
 
 #[derive(Clone, Copy)]
 pub(crate) enum Kind {
     DoubleTap,
     LongPress,
+    Drag { dx: f32, dy: f32 },
 }
 
 enum Stage {
@@ -28,6 +31,13 @@ enum Stage {
     Hold {
         pointer: u64,
         until: Instant,
+    },
+    Drag {
+        pointer: u64,
+        delta: (f32, f32),
+        step: u8,
+        last_wall: Instant,
+        last_clock: Duration,
     },
 }
 
@@ -70,6 +80,17 @@ impl Job {
             return Err(Box::new(Reply::fail(&codes::NO_SUCH_ELEMENT, format!("no element with test id `{target}`"))));
         }
         let (node, point) = window.pointer_target(target).map_err(|why| Box::new(failed(why)))?;
+        if window.kernel().state(node).contains(octara::kernel::State::DISABLED) {
+            return Err(Box::new(Reply { delivery: Some(Delivery::Refused), ..failed("the gesture target is disabled") }));
+        }
+        if let Kind::Drag { dx, dy } = kind
+            && (!dx.is_finite() || !dy.is_finite() || !(point.0 + dx).is_finite() || !(point.1 + dy).is_finite())
+        {
+            return Err(Box::new(Reply {
+                delivery: Some(Delivery::Refused),
+                ..Reply::fail(&codes::BAD_REQUEST, "drag requires finite dx, dy and endpoint coordinates")
+            }));
+        }
         if guard.as_ref().is_some_and(|guard| guard.node() != Some(node)) {
             let mut reply = Reply::fail(&codes::STALE_TARGET, "the gesture target differs from the observed node");
             reply.delivery = Some(Delivery::Refused);
@@ -82,9 +103,11 @@ impl Job {
         let timing = match kind {
             Kind::DoubleTap => tuning.double_click,
             Kind::LongPress => tuning.long_press,
+            Kind::Drag { .. } => Duration::ZERO,
         };
         if timing > MAX_WAIT
-            || (matches!(kind, Kind::DoubleTap) && (timing.is_zero() || !tuning.mouse_slop.is_finite() || tuning.mouse_slop < 0.0))
+            || (matches!(kind, Kind::DoubleTap) && timing.is_zero())
+            || (matches!(kind, Kind::DoubleTap | Kind::Drag { .. }) && (!tuning.mouse_slop.is_finite() || tuning.mouse_slop < 0.0))
         {
             return Err(Box::new(Reply::fail(
                 &codes::BAD_REQUEST,
@@ -110,11 +133,24 @@ impl Job {
             Kind::LongPress => {
                 // Native touches have their own ids. Give each synthetic hold a distinct id;
                 // cancellation never sends a mouse cancel or releases another held pointer.
-                static NEXT: AtomicU64 = AtomicU64::new(u64::MAX);
-                let pointer = NEXT.fetch_sub(1, Ordering::Relaxed);
+                let pointer = NEXT_POINTER.fetch_sub(1, Ordering::Relaxed);
                 window.event(InputEvent::Pointer(PointerEvent::touch(pointer, Phase::Down, point.0, point.1)));
                 job.delivered = true;
                 job.stage = Stage::Hold { pointer, until: now + timing };
+            }
+            Kind::Drag { dx, dy } => {
+                let pointer = NEXT_POINTER.fetch_sub(1, Ordering::Relaxed);
+                job.stage = Stage::Drag { pointer, delta: (dx, dy), step: 1, last_wall: now, last_clock: window.app().now() };
+                window.event(InputEvent::Pointer(PointerEvent { id: pointer, ..PointerEvent::mouse(Phase::Move, point.0, point.1) }));
+                job.delivered = true;
+                if let Err(reply) = job.current_point(window) {
+                    job.cancel(window);
+                    return Err(reply);
+                }
+                if window.held_pointer().is_some() {
+                    return Err(Box::new(job.reply(failed("another pointer went down before the drag started"))));
+                }
+                window.event(InputEvent::Pointer(PointerEvent { id: pointer, ..PointerEvent::mouse(Phase::Down, point.0, point.1) }));
             }
         }
         Ok(job)
@@ -133,16 +169,25 @@ impl Job {
         reply
     }
 
-    /// Only releases a held touch belonging to this job. A mouse click is completed in one
-    /// UI turn and never remains held while this job waits.
+    /// Only releases the synthetic touch or mouse belonging to this job. A person's pointer
+    /// or another job's pointer is never cancelled.
     pub(crate) fn cancel(&self, window: &mut Window) {
-        if window.id() != self.window {
+        if window.id() != self.window || window.is_closed() {
             return;
         }
-        if let Stage::Hold { pointer, .. } = self.stage
-            && window.held_pointer() == Some((pointer, PointerKind::Touch))
+        let held = match self.stage {
+            Stage::Hold { pointer, .. } => Some((pointer, PointerKind::Touch)),
+            Stage::Drag { pointer, .. } => Some((pointer, PointerKind::Mouse)),
+            _ => None,
+        };
+        if let Some((pointer, kind)) = held
+            && window.held_pointer() == Some((pointer, kind))
         {
-            window.event(InputEvent::Pointer(PointerEvent::touch(pointer, Phase::Cancel, self.point.0, self.point.1)));
+            window.event(InputEvent::Pointer(PointerEvent {
+                id: pointer,
+                kind,
+                ..PointerEvent::mouse(Phase::Cancel, self.point.0, self.point.1)
+            }));
         }
     }
 
@@ -157,6 +202,9 @@ impl Job {
         if node != self.node {
             let code = if self.guard.is_some() { &codes::STALE_TARGET } else { &codes::STEP_FAILED };
             return Err(Box::new(self.reply(Reply::fail(code, "the gesture target was replaced while waiting"))));
+        }
+        if window.kernel().state(node).contains(octara::kernel::State::DISABLED) {
+            return Err(Box::new(self.reply(failed("the gesture target became disabled"))));
         }
         Ok(point)
     }
@@ -270,6 +318,33 @@ impl Job {
                 }
                 None
             }
+            Stage::Drag { pointer, delta, step, last_wall, last_clock } => {
+                if window.held_pointer() != Some((pointer, PointerKind::Mouse)) {
+                    return Some(self.reply(failed("the drag pointer was cancelled or replaced")));
+                }
+                if now.saturating_duration_since(last_wall) < DRAG_STEP || window.app().now().saturating_sub(last_clock) < DRAG_STEP {
+                    return None;
+                }
+                // Keep the observed starting point. A dragged control can move without
+                // changing its identity; following its centre would incorrectly add motion.
+                let fraction = f32::from(step) / 4.0;
+                let at = (self.point.0 + delta.0 * fraction, self.point.1 + delta.1 * fraction);
+                window.event(InputEvent::Pointer(PointerEvent { id: pointer, ..PointerEvent::mouse(Phase::Move, at.0, at.1) }));
+                if step == 4 {
+                    if let Err(reply) = self.current_point(window) {
+                        self.cancel(window);
+                        return Some(*reply);
+                    }
+                    if window.held_pointer() != Some((pointer, PointerKind::Mouse)) {
+                        return Some(self.reply(failed("the drag pointer was cancelled or replaced before release")));
+                    }
+                    window.event(InputEvent::Pointer(PointerEvent { id: pointer, ..PointerEvent::mouse(Phase::Up, at.0, at.1) }));
+                    Some(self.reply(Reply::ok()))
+                } else {
+                    self.stage = Stage::Drag { pointer, delta, step: step + 1, last_wall: now, last_clock: window.app().now() };
+                    None
+                }
+            }
         }
     }
 }
@@ -297,6 +372,134 @@ mod tests {
                 )
                 .into()
         })
+    }
+
+    fn drag_window(replace_on_start: bool) -> Window {
+        Window::headless(move || {
+            let moved = state("moved", Vec::<f32>::new);
+            let offset = state("offset", || 0.0f32);
+            let ended = state("ended", || 0);
+            let replaced = state("replaced", || false);
+            let replacement_moves = state("replacement_moves", || 0);
+            let disabled = state("disabled", || false);
+            let modal = state("modal", || false);
+            on_command("disable", move || disabled.set(true));
+            on_command("modal", move || modal.set(true));
+            let target = move |replacement| {
+                el().id("target")
+                    .absolute()
+                    .top(40.0)
+                    .w(200.0)
+                    .h(60.0)
+                    .style_with(move |style| style.left(offset.get()))
+                    .disabled(move || disabled.get())
+                    .on_drag(move |event| {
+                        if replacement {
+                            replacement_moves.update(|count| *count += 1);
+                        }
+                        match event.phase {
+                            DragPhase::Start if replace_on_start && !replacement => replaced.set(true),
+                            DragPhase::Start => offset.set(event.dx),
+                            DragPhase::Move => {
+                                moved.update(|moves| moves.push(event.dx));
+                                offset.set(event.dx);
+                            }
+                            DragPhase::End => ended.update(|count| *count += 1),
+                            DragPhase::Cancel => offset.set(0.0),
+                        }
+                    })
+                    .into()
+            };
+            col()
+                .size_full()
+                .child(text(move || format!("{:?};{};{}", moved.get(), ended.get(), replacement_moves.get())).id("log"))
+                .child(show_else(move || replaced.get(), move || target(true), move || target(false)))
+                .child(show(move || modal.get(), || el().role(Role::Dialog).modal(false, || {}).child(el().focusable().size_8()).into()))
+                .into()
+        })
+    }
+
+    #[test]
+    fn a_live_drag_waits_for_real_wall_and_app_time_and_keeps_its_starting_point() {
+        let mut window = drag_window(false);
+        let start = Instant::now();
+        let observed = guard(&window);
+        let mut job = Job::start_guarded(&mut window, "target", Kind::Drag { dx: 80.0, dy: 0.0 }, start, Some(observed)).unwrap();
+        let owned = window.held_pointer().unwrap();
+        assert_eq!(owned.1, PointerKind::Mouse);
+        assert_ne!(owned.0, 0, "synthetic mouse ownership differs from the native mouse");
+        assert_eq!(window.app().now(), Duration::ZERO);
+        assert!(job.poll(&mut window, start + DRAG_STEP).is_none(), "wall time alone sends no move");
+        assert_eq!(window.kernel().text_of("log").as_deref(), Some("[];0;0"));
+        for step in 1..=4 {
+            window.app().advance(DRAG_STEP);
+            let clock = window.app().now();
+            let reply = job.poll(&mut window, start + DRAG_STEP * step);
+            assert_eq!(window.app().now(), clock, "the live job never advances app time");
+            if step == 4 {
+                let reply = reply.expect("four realtime moves finish the drag");
+                assert!(reply.ok, "{reply:?}");
+                assert_eq!(reply.delivery, Some(Delivery::Delivered));
+            } else {
+                assert!(reply.is_none());
+            }
+        }
+        assert_eq!(
+            window.kernel().text_of("log").as_deref(),
+            Some("[40.0, 60.0, 80.0];1;0"),
+            "the first pointer move crosses slop and emits DragPhase::Start"
+        );
+        assert_eq!(window.held_pointer(), None);
+        assert_eq!(window.app().now(), Duration::from_millis(64));
+    }
+
+    #[test]
+    fn a_live_drag_stops_at_a_replacement_without_delivering_later_moves_or_release_to_it() {
+        let mut window = drag_window(true);
+        let start = Instant::now();
+        let observed = guard(&window);
+        let mut job = Job::start_guarded(&mut window, "target", Kind::Drag { dx: 80.0, dy: 0.0 }, start, Some(observed)).unwrap();
+        window.app().advance(DRAG_STEP);
+        assert!(job.poll(&mut window, start + DRAG_STEP).is_none());
+        window.app().advance(DRAG_STEP);
+        let reply = job.poll(&mut window, start + DRAG_STEP * 2).unwrap();
+        assert_eq!(reply.code.as_deref(), Some(codes::STALE_TARGET.id));
+        assert_eq!(reply.delivery, Some(Delivery::Delivered));
+        assert_eq!(window.kernel().text_of("log").as_deref(), Some("[];0;0"));
+        assert_eq!(window.held_pointer(), None, "only the original held pointer was cancelled");
+    }
+
+    #[test]
+    fn a_live_drag_refuses_nonfinite_or_held_input_and_stops_if_disabled_or_modal_inert() {
+        let mut window = drag_window(false);
+        let now = Instant::now();
+        for (dx, dy) in [(f32::NAN, 0.0), (0.0, f32::INFINITY)] {
+            let reply = Job::start(&mut window, "target", Kind::Drag { dx, dy }, now).err().unwrap();
+            assert_eq!(reply.code.as_deref(), Some(codes::BAD_REQUEST.id));
+            assert_eq!(reply.delivery, Some(Delivery::Refused));
+            assert_eq!(window.held_pointer(), None);
+        }
+        for command in ["disable", "modal"] {
+            let mut window = drag_window(false);
+            let mut job = Job::start(&mut window, "target", Kind::Drag { dx: 80.0, dy: 0.0 }, now).unwrap();
+            window.invoke(command).unwrap();
+            let reply = job.poll(&mut window, now + DRAG_STEP).unwrap();
+            assert!(!reply.ok);
+            assert_eq!(reply.delivery, Some(Delivery::Delivered));
+            assert_eq!(window.held_pointer(), None);
+            assert_eq!(window.kernel().text_of("log").as_deref(), Some("[];0;0"));
+        }
+        let (_, point) = window.pointer_target("target").unwrap();
+        window.event(InputEvent::Pointer(PointerEvent::touch(23, Phase::Down, point.0, point.1)));
+        assert!(Job::start(&mut window, "target", Kind::Drag { dx: 80.0, dy: 0.0 }, now).is_err());
+        assert_eq!(window.held_pointer(), Some((23, PointerKind::Touch)));
+        window.event(InputEvent::Pointer(PointerEvent::touch(23, Phase::Cancel, point.0, point.1)));
+        let job = Job::start(&mut window, "target", Kind::Drag { dx: 80.0, dy: 0.0 }, now).unwrap();
+        job.cancel(&mut window);
+        window.event(InputEvent::Pointer(PointerEvent::touch(24, Phase::Down, point.0, point.1)));
+        job.cancel(&mut window);
+        assert_eq!(window.held_pointer(), Some((24, PointerKind::Touch)), "old cancellation leaves a person's new touch alone");
+        window.event(InputEvent::Pointer(PointerEvent::touch(24, Phase::Cancel, point.0, point.1)));
     }
 
     fn guard(window: &Window) -> TargetGuard {

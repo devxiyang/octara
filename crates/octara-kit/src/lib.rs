@@ -12,15 +12,25 @@ use octara::prelude::*;
 use std::rc::Rc;
 
 mod combobox;
+mod dialog;
 mod forms;
 pub mod markdown;
+mod menus;
+mod navigation;
 mod popover;
+mod popup_list;
+mod range;
 mod status;
 mod structure;
 
 pub use combobox::{ComboboxOption, combobox};
+pub use dialog::{DialogOptions, dialog};
 pub use forms::{FieldInfo, RadioOption, field, radio_group};
+pub use menus::menu_button;
+pub use navigation::{TabOption, segmented, tabs};
 pub use popover::popover;
+pub use popup_list::{PopupItem, popup_list};
+pub use range::{normalize_number, number_field, parse_number, progress, slider};
 pub use status::{callout, chip, removable_chip, spinner};
 pub use structure::{collapsible, list, list_header, list_item, split};
 

@@ -163,6 +163,16 @@ pub struct Node {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    /// The finite current number of a range control; omitted for indeterminate progress or
+    /// a number field whose raw draft does not parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numeric_value: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_numeric_value: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_numeric_value: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numeric_value_step: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checked: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -182,7 +192,7 @@ pub struct Node {
     /// included.
     pub bounds: [f32; 4],
     /// What can be done to it: `press`, `toggle`, `double_press`, `secondary_press`,
-    /// `long_press`, `drag`, `input`, `submit`, `focus`, `scroll`.
+    /// `long_press`, `drag`, `input`, `set_value`, `increment`, `decrement`, `submit`, `focus`, `scroll`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<String>,
     /// Commands it handles (`on_command`).
@@ -270,6 +280,14 @@ pub enum Request {
     LongPress {
         id: String,
     },
+    /// Drags from the element's current centre by a finite delta in logical pixels. Four
+    /// pointer moves, 16 ms apart, retain the original allocation and fixed starting point.
+    /// Movement below the recognizer's drag threshold remains a click, like native input.
+    Drag {
+        id: String,
+        dx: f32,
+        dy: f32,
+    },
     /// A right click / context press.
     SecondaryTap {
         id: String,
@@ -292,6 +310,12 @@ pub enum Request {
         #[serde(default)]
         id: Option<String>,
         text: String,
+    },
+    /// Sets a numeric control through its numeric handler, applying the same component
+    /// clamping/stepping as its keys and pointer. This is a semantic operation.
+    SetValue {
+        id: String,
+        value: f64,
     },
     /// Runs a command (`"save"`, `"edit.undo"`) as its chord or a menu would.
     Invoke {
@@ -572,9 +596,22 @@ pub fn handle(app: &mut Window, req: Request) -> Reply {
         Request::Tap { id } => on!(&id, app.tap(&id)),
         Request::DoubleTap { id } => on!(&id, app.double_tap(&id)),
         Request::LongPress { id } => on!(&id, app.long_press(&id)),
+        Request::Drag { id, dx, dy } => target::drag(app, &id, dx, dy, None),
         Request::SecondaryTap { id } => on!(&id, app.secondary_tap(&id)),
         Request::Focus { id } => on!(&id, app.dispatch(crate::app::Event::Focus(id.clone()))),
         Request::Hover { id, on } => on!(&id, app.dispatch(crate::app::Event::Hover(id.clone(), on))),
+        Request::SetValue { id, value } => {
+            if !value.is_finite() {
+                return Reply::fail(&codes::BAD_REQUEST, "set_value requires a finite number");
+            }
+            if let Err(reply) = target(app, &id) {
+                return *reply;
+            }
+            match app.dispatch(crate::app::Event::NumericInput(id, value)) {
+                Ok(()) => Reply { delivery: Some(Delivery::Delivered), ..Reply::ok() },
+                Err(error) => Reply { delivery: Some(Delivery::Refused), ..Reply::fail(&codes::STEP_FAILED, error) },
+            }
+        }
         Request::Key { chord } => step(app.press_key(&chord)),
         Request::Type { id, text } => {
             if let Some(id) = id {

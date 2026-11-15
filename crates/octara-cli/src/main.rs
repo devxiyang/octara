@@ -419,6 +419,11 @@ fn snapshot_text(snap: &serde_json::Value) -> String {
                 let _ = write!(s, " {property}={value}");
             }
         }
+        for property in ["numeric_value", "min_numeric_value", "max_numeric_value", "numeric_value_step"] {
+            if let Some(value) = n[property].as_f64() {
+                let _ = write!(s, " {property}={value}");
+            }
+        }
         let list = |k: &str| n[k].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" ")).unwrap_or_default();
         let (states, actions) = (list("states"), list("actions"));
         if !states.is_empty() {

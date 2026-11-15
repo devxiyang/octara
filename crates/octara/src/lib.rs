@@ -48,8 +48,8 @@ pub mod prelude {
     pub use crate::image::{Image, ObjectFit};
     pub use crate::kernel::select::Copied;
     pub use crate::kernel::{
-        Align, BoxShadow, Breakpoint, Color, ContainerStep, Family, Fill, Paint, Placement, RadiusStep, Role, ShadowStep, Side, State,
-        TextStep, Theme, Token, linear_color_stop, linear_gradient, rgb,
+        Align, BoxShadow, Breakpoint, Color, ContainerStep, Family, Fill, NumericRange, Paint, Placement, RadiusStep, Role, ShadowStep,
+        Side, State, TextStep, Theme, Token, linear_color_stop, linear_gradient, rgb,
     };
     pub use crate::menu::{Menu, MenuItem, set_menus};
     pub use crate::motion::{Curve, Spring};

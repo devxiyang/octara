@@ -3,10 +3,12 @@
 mod acceptance;
 mod choices;
 mod consistency;
+mod controls;
 mod diagnostics;
 mod forms;
 mod ime;
 mod inbox;
+mod interaction;
 mod layout;
 mod list_render;
 mod pointer;

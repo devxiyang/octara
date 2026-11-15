@@ -224,10 +224,22 @@ pub struct NodeIcon {
     pub shapes: Vec<crate::icon::IconShape>,
 }
 
+/// The number and bounds of a slider, spin button or progress indicator. `None` means the
+/// current number is unknown (for example, indeterminate progress or an invalid number draft).
+/// Bounds and an optional positive step must be finite, with `min < max`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NumericRange {
+    pub value: Option<f64>,
+    pub min: f64,
+    pub max: f64,
+    pub step: Option<f64>,
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum HandlerKind {
     Press,
     Input,
+    NumericInput,
     Toggle,
     DoublePress,
     SecondaryPress,
@@ -252,7 +264,7 @@ pub enum HandlerKind {
 }
 
 impl HandlerKind {
-    pub const COUNT: usize = 15;
+    pub const COUNT: usize = 16;
     /// Handlers that make an element a pointer target.
     pub const POINTER: [HandlerKind; 6] = [
         HandlerKind::Press,
@@ -334,6 +346,7 @@ struct Node {
     /// The value assistive technology announces for a node that is not a text input (a
     /// combo box's choice, a slider's level); a text input's value is its content.
     value: Option<String>,
+    numeric_range: Option<NumericRange>,
     checked: Option<bool>,
     required: Option<bool>,
     invalid: Option<bool>,
@@ -350,6 +363,7 @@ struct Node {
     tab_index: i32,
     /// Arrow keys move focus among the focusable elements inside; Tab stops once.
     focus_group: bool,
+    preserve_focus_on_press: bool,
     /// A focus group's member focused last (where Tab comes back to).
     group_current: Option<NodeId>,
     /// Focused when the modal around it opens.
@@ -1173,6 +1187,7 @@ impl Kernel {
             parent: None,
             children: Vec::new(),
             value: None,
+            numeric_range: None,
             checked: None,
             required: None,
             invalid: None,
@@ -1185,6 +1200,7 @@ impl Kernel {
             focusable: false,
             tab_index: 0,
             focus_group: false,
+            preserve_focus_on_press: false,
             group_current: None,
             autofocus: false,
             modal: None,
@@ -1577,6 +1593,32 @@ impl Kernel {
         true
     }
 
+    /// Numeric semantics, kept separate from a text field's raw string value.
+    pub fn set_numeric_range(&mut self, id: NodeId, range: Option<NumericRange>) -> bool {
+        if let Some(range) = range {
+            assert!(
+                range.min.is_finite()
+                    && range.max.is_finite()
+                    && range.min < range.max
+                    && (range.max - range.min).is_finite()
+                    && range.step.is_none_or(|step| step.is_finite() && step > 0.0)
+                    && range.value.is_none_or(f64::is_finite),
+                "numeric range requires finite min < max, a finite span/value and a positive finite step"
+            );
+        }
+        if self.node(id).numeric_range == range {
+            self.counters.prop_noops += 1;
+            return false;
+        }
+        self.node_mut(id).numeric_range = range;
+        self.changed(id, Dirty::SEMANTICS, "numeric_range", || format!("{range:?}"));
+        true
+    }
+
+    pub fn numeric_range(&self, id: NodeId) -> Option<NumericRange> {
+        self.node(id).numeric_range
+    }
+
     pub fn set_checked(&mut self, id: NodeId, checked: Option<bool>) -> bool {
         if self.node(id).checked == checked {
             self.counters.prop_noops += 1;
@@ -1871,6 +1913,29 @@ impl Kernel {
     }
     pub fn is_focusable(&self, id: NodeId) -> bool {
         self.node(id).focusable
+    }
+    /// Pointer presses in this subtree leave the current keyboard focus unchanged.
+    pub fn set_preserve_focus_on_press(&mut self, id: NodeId, preserve: bool) {
+        self.node_mut(id).preserve_focus_on_press = preserve;
+    }
+    pub(crate) fn preserves_focus_on_press(&self, id: NodeId) -> bool {
+        self.node(id).preserve_focus_on_press
+    }
+    /// Modal interaction includes an anchored popup owned by a control inside that modal.
+    /// Physical containment stays separate for layout, selection and pointer release targets.
+    pub(crate) fn is_in_modal_scope(&self, mut node: NodeId, modal: NodeId) -> bool {
+        let mut visited = rustc_hash::FxHashSet::default();
+        while self.is_alive(node) && visited.insert(node) {
+            if node == modal {
+                return true;
+            }
+            let n = self.node(node);
+            match n.anchor.map(|(owner, _)| owner).or(n.parent) {
+                Some(parent) => node = parent,
+                None => break,
+            }
+        }
+        false
     }
 
     /// Handlers are not visual properties: no invalidation, counted separately.

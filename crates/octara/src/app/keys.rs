@@ -10,6 +10,7 @@
 
 use super::pointer::Modifiers;
 use super::{Handler, Modality, TargetPlatform, Window};
+use crate::diagnostics as codes;
 use crate::kernel::{Arrow, HandlerKind, NodeId, State};
 use crate::reactive::graph::Ctx;
 use std::fmt;
@@ -380,13 +381,16 @@ impl Window {
     /// the app's root element) up to the window.
     fn focus_path(&self) -> Vec<NodeId> {
         let k = self.w.kernel.borrow();
+        let modal = self.top_modal();
         let start = self
             .w
             .interaction
             .borrow()
             .focused
-            .filter(|n| k.is_alive(*n))
-            .or_else(|| self.top_modal())
+            .filter(|n| {
+                k.is_shown(*n) && !k.state(*n).contains(State::DISABLED) && modal.is_none_or(|modal| k.is_in_modal_scope(*n, modal))
+            })
+            .or(modal)
             .or_else(|| k.children(k.root()).first().copied());
         let mut path = Vec::new();
         let mut n = start;
@@ -455,11 +459,30 @@ impl Window {
         ) {
             self.set_modality(Modality::Keyboard);
         }
-        // An input method composing owns Enter and Escape; a shortcut commits it first (Exact).
+        // Composition owns confirmation, cancellation and unmodified candidate navigation.
+        // An editor-owned suggestion list must not consume the IME's arrows or Space/Tab.
+        // A shortcut commits the composition first (Exact).
         if let Some((n, _)) = self.focused_input() {
             let composing = !self.w.kernel.borrow().preedit(n).is_empty();
             if composing {
                 if matches!(ev.key, Key::Enter | Key::Escape) {
+                    return true;
+                }
+                if ev.modifiers.is_empty()
+                    && matches!(
+                        ev.key,
+                        Key::Up
+                            | Key::Down
+                            | Key::Left
+                            | Key::Right
+                            | Key::Home
+                            | Key::End
+                            | Key::PageUp
+                            | Key::PageDown
+                            | Key::Tab
+                            | Key::Space
+                    )
+                {
                     return true;
                 }
                 if ev.modifiers.intersects(Modifiers::CTRL | Modifiers::META) {
@@ -628,6 +651,22 @@ impl Window {
         if done { Ok(()) } else { Err(format!("nothing handles `{command}` here (see `Window::commands`)")) }
     }
 
+    pub(super) fn run_after_update_command(&self, command: &str, at: &'static std::panic::Location<'static>) -> bool {
+        if self.w.closed.get() || self.app.closing.borrow().contains(&self.w.id) {
+            self.w.interaction.borrow_mut().after_update.clear();
+            return false;
+        }
+        let path = self.focus_path();
+        if !self.run_command(command, &path) {
+            self.app.rt.diag(
+                &codes::COMMAND_UNHANDLED,
+                format!("nothing handles deferred command `{command}` on the restored focus path"),
+                at,
+            );
+        }
+        true
+    }
+
     /// Commands available now: those the focus path's elements handle, the built-ins, and the
     /// app's, each with the chords bound to it here.
     pub fn commands(&self) -> Vec<(String, Vec<String>)> {
@@ -668,13 +707,14 @@ impl Window {
     /// keymap binds runs; an unbound character key types itself.
     pub fn press_key(&mut self, chord: &str) -> Result<(), String> {
         let ev = Chord::parse(chord)?.event(self.app.platform.get());
-        if !self.event(super::event::InputEvent::Key(ev))
+        let handled = self.event(super::event::InputEvent::Key(ev));
+        if !handled
             && let Key::Char(c) = ev.key
             && !ev.modifiers.intersects(Modifiers::CTRL | Modifiers::META)
         {
             self.type_text(&c.to_string());
         }
-        if matches!(ev.key, Key::Space) && self.focused_input().is_some() {
+        if !handled && matches!(ev.key, Key::Space) && self.focused_input().is_some() {
             self.type_text(" ");
         }
         Ok(())

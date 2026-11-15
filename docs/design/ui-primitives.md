@@ -109,6 +109,14 @@ After each layout it is positioned relative to the anchor (as in Rune's `anchore
 | `text_field(model)` | `TextInput` + value | Input |
 | `field(id, label, control, info)` | Applies name, combined help/error description, required and invalid to the retained control; supporting error is a live region | The control's events; label press focuses it |
 | `radio_group(id, label, model, options)` | `RadioGroup` with stable `RadioButton` children + checked; one Tab stop | Press, Space/Enter, arrows/Home/End choose |
+| `dialog(id, title, open, options, content)` | Named `Dialog`, description and heading; bounded body | Existing modal stack, Escape/outside/close, focus restoration |
+| `tabs(id, label, model, options)` | Stable `TabList`/`Tab` + selected; application-owned panels | Manual activation: arrows focus, Enter/Space choose |
+| `segmented(id, label, model, options)` | Compact `RadioGroup`/`RadioButton` + checked | Radio keyboard behavior |
+| `popup_list(id, label, open, editor, items, choose)` | Editor's expanded/active-descendant; stable `ListBoxOption` rows | Editor retains focus, Up/Down/Enter, IME precedence |
+| `slider(id, model, min, max, step)` | `Slider` with numeric range | Pointer track/drag, arrows/Home/End/Page, numeric setter |
+| `number_field(raw, min, max, step)` | Text editor with `SpinButton`, invalid and numeric range | Raw edits, commit on Enter/blur, Up/Down, numeric setter |
+| `progress(value, max)` | Read-only `ProgressIndicator`; optional numeric value | None means unknown; no setter |
+| `menu_button(id, label, open, menu)` | Named trigger and `Menu`/`MenuItem`/checked items | Shared drawn menu surface, submenus, typeahead, deferred command |
 | `select(id, model, options)` | The trigger is `ComboBox` + value + expanded; `{id}-list` is `ListBox`, and the options `{id}-option-{i}` are `ListBoxOption` + selected | Press |
 | `combobox(id, label, model, options)` | A named `ComboBox` and searchable `ListBox`; the input's `active_descendant` identifies the highlighted option independently of the selected value | Press, input, Up/Down, Enter |
 | `popover(id, open, placement, trigger, content)` | An anchored modal surface; the trigger exposes `expanded`, and focus stays inside until it closes | Press, Escape, press outside |
@@ -190,20 +198,60 @@ motivates preserving raw text during editing. Its
 motivates explicit keyboard and modal composition tests, rather than inferring behavior from
 a role alone. Verification and limits are in [Forms](../../examples/FORMS.md).
 
+### Composed interaction and numeric controls
+
+Dialog is a thin composition of `overlay_window` and the existing modal stack. Its content is
+scoped to each opening; application state owns a draft that must survive closing. The window
+overlay has a viewport-sized wrapper, so it works inside clipped or scrolled parents. An
+anchored, nonmodal suggestion popup belongs to its anchor's modal interaction scope without
+changing physical containment used for layout and pointer hit testing.
+
+Tabs use manual activation: changing focus does not switch a panel. The application chooses
+whether to retain hidden panels with display bindings or dispose them with `show`. This keeps
+requests, drafts and scroll lifetime explicit. Segmented choices use radio semantics and
+select with arrows. Both retain option identities through live reordering and renaming.
+
+PopupList owns no text model or search service. The caller supplies the editor, filtered
+items and a choose callback. `preserve_focus_on_press` keeps editor selection when a suggestion
+is clicked. An active composition owns candidate-navigation keys; the guarded Inspector path
+also respects handled Space instead of synthesizing an extra committed space. Neither pointer
+suggestion choices nor numeric setters replace marked text during composition.
+
+`NumericRange` and one numeric setter share values/bounds/steps between Inspector and AccessKit.
+Slider, NumberField and Progress compose that contract. NumberField retains the raw draft until
+commit, including empty strings, signs and incomplete exponents. Applications can override its
+submit/blur handlers and use `normalize_number` explicitly. Unknown progress has no numeric value.
+This adds no form schema or numeric state manager.
+
+Drawn context menus and kit menus share one surface. A menu snapshots finite items per opening;
+action IDs are stable, while index-based submenu IDs are valid only for that snapshot. The
+window-owned `invoke_after_update` queue routes commands after pending updates, modal restoration
+and explicit focus requests. It is bounded and reports unhandled commands or cycles through
+registered diagnostics; it does not require a timer to guess when focus has returned.
+
+These boundaries follow Rune's
+[Dialog](https://github.com/anomalyco/rune/blob/80022c59736b9ef48c2b6954ba29bafbc78ae428/crates/rune-kit/src/dialog.rs),
+[PopupList](https://github.com/anomalyco/rune/blob/80022c59736b9ef48c2b6954ba29bafbc78ae428/crates/rune-kit/src/popup_list.rs)
+and [tab strip](https://github.com/anomalyco/rune/blob/80022c59736b9ef48c2b6954ba29bafbc78ae428/crates/rune-kit/src/shell/tab_strip.rs),
+with Octara's Signals and string IDs. Exact's
+[edit-sheet example](https://github.com/expo/exact/blob/32f79aa86ce5ea5a528f69ba52636df72320be79/docs/recipes/edit-sheet.md)
+illustrates draft ownership; its
+[number field](https://github.com/expo/exact/blob/814d5e8821c1a1aace2f027770fc4f95c9c3fe0b/docs/recipes/number-field.md)
+illustrates raw editing text. See [the component verification record](../../examples/PRIMITIVES.md)
+for tested behavior and the distinction between framework input and native OS input.
+
 Planned, by kind. Names say what a
 component is, not where it is used (no sidebar, composer or message components: an app composes
 those), take the name most frameworks share (Zed's `ui`, Rune's kit, SwiftUI / AppKit), avoid one
-platform's jargon and names Octara already uses for something else (`prompt` is the dialog), and a
+platform's jargon and names Octara already uses for something else (`prompt` is a platform alert), and a
 variant is a chained method, not a new name (`text_field(m).multiline().rows(1, 8)`).
 
 | Kind | Components |
 | --- | --- |
-| Actions | `segmented` |
-| Inputs | `slider`, number fields |
 | Collections | `tree`, `table` |
-| Disclosure and navigation | `tabs` |
-| Status | `progress_bar`, `badge`, `keybinding` |
-| Overlays | `toast`, richer dialogs/sheets, editor-owned suggestions (the core has `overlay`, modals, `popup_menu`, `prompt`, and a timed single-window tooltip; a native tooltip remains) |
+| Disclosure and navigation | Native navigation stacks and tab bars |
+| Status | `badge`, `keybinding` |
+| Overlays | `toast`, sheets, native tooltips |
 | Layout | `divider` |
 
 Adding one todo in the example app (`examples/src/apps.rs`) costs about 5 µs: each component adds a few style and model closures; the fixed styles of a new node are resolved once.

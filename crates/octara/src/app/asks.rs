@@ -175,7 +175,7 @@ pub(crate) fn layer() -> crate::view::View {
                             .left(at.0)
                             .top(at.1)
                             .size(0.0)
-                            .overlay(|| true, Placement::BELOW.gap(0.0), move || menu_view(id, menu.clone(), true))
+                            .overlay(|| true, Placement::BELOW.gap(0.0), move || menu_view(id, menu.clone()))
                             .into(),
                         _ => el().into(),
                     }
@@ -206,23 +206,68 @@ pub(crate) fn layer() -> crate::view::View {
     ])
 }
 
-/// A menu drawn in the window: its items, a press on one answers it, a press outside or Escape
-/// dismisses it (a submenu: only it). Arrow keys move between items.
-fn menu_view(id: AskId, menu: crate::ask::Menu, top: bool) -> crate::view::View {
+/// A finite menu surface using the window's modal stack. `id` prefixes its semantic IDs:
+/// `{id}-menu`, `{id}-action-{command}` and `{id}-submenu-{index}`. Submenu indices belong to
+/// this snapshot; action IDs must be unique throughout the snapshot. Reopening may build a new
+/// snapshot, but an open surface does not observe changes to `menu`.
+///
+/// A pick calls `pick` with the action ID. The caller closes its controlled surface there;
+/// outside presses and Escape call `dismiss`. Up/Down and Home/End move among enabled rows,
+/// Right opens a submenu, and Left or Escape closes only the innermost submenu. Typing finds
+/// enabled labels by prefix; repeated letters cycle matches, resetting after 700 ms.
+/// This supplies the same drawn rows and keyboard behavior as [`crate::ask::popup_menu`].
+#[track_caller]
+pub fn menu_surface(id: &str, menu: crate::menu::Menu, pick: impl Fn(String) + 'static, dismiss: impl Fn() + 'static) -> crate::view::El {
+    menu_surface_inner(id.to_owned(), menu, std::rc::Rc::new(pick), std::rc::Rc::new(dismiss), false, false)
+}
+
+/// A menu request uses the same surface while keeping its established `menu:{action}` IDs.
+fn menu_view(id: AskId, menu: crate::ask::Menu) -> crate::view::View {
+    menu_surface_inner(
+        format!("menu:{id}"),
+        menu,
+        std::rc::Rc::new(move |pick| crate::app::current().resolve_ask(id, Answer::Menu(Some(pick)))),
+        std::rc::Rc::new(move || crate::app::current().resolve_ask(id, Answer::Menu(None))),
+        false,
+        true,
+    )
+    .into()
+}
+
+fn menu_surface_inner(
+    prefix: String,
+    menu: crate::menu::Menu,
+    pick: std::rc::Rc<dyn Fn(String)>,
+    dismiss: std::rc::Rc<dyn Fn()>,
+    submenu: bool,
+    legacy: bool,
+) -> crate::view::El {
     use crate::ask::MenuItem;
     use crate::prelude::*;
+    use std::cell::RefCell;
+    use std::collections::HashSet;
+    use std::rc::Rc;
+    use std::time::Duration;
     let apple = crate::app::current().app().target_platform().is_apple();
+    let mut enabled_rows = Vec::new();
+    let mut names = HashSet::new();
     let items: Vec<View> = menu
         .items
         .into_iter()
-        .map(|item| match item {
+        .enumerate()
+        .map(|(index, item)| match item {
             MenuItem::Separator => el().h(1.0).my_1().bg(Token::Border).a11y_hidden().into(),
             MenuItem::Action { id: item, label, enabled, checked, shortcut } => {
-                let pick = item.clone();
+                let row_id = if legacy { format!("menu:{item}") } else { format!("{prefix}-action-{item}") };
+                if enabled {
+                    enabled_rows.push((row_id.clone(), label.to_lowercase()));
+                }
+                let (pick, selected, reveal) = (pick.clone(), item.clone(), row_id.clone());
                 let row = menu_row(&label, checked, shortcut.map(|s| chord_label(&s, apple)), enabled)
-                    .id(format!("menu:{item}"))
+                    .id(row_id)
                     .role(if checked.is_some() { Role::MenuItemCheckBox } else { Role::MenuItem })
-                    .on_press(move || crate::app::current().resolve_ask(id, Answer::Menu(Some(pick.clone()))));
+                    .on_focus(move || scroll_into_view(&reveal))
+                    .on_press(move || pick(selected.clone()));
                 match checked {
                     Some(c) => row.checked(c),
                     None => row,
@@ -230,29 +275,66 @@ fn menu_view(id: AskId, menu: crate::ask::Menu, top: bool) -> crate::view::View 
                 .into()
             }
             MenuItem::Submenu { menu, enabled } => {
-                let open = state("open", || false);
                 let label = menu.name.clone();
-                menu_row(&label, None, Some("›".to_owned()), enabled)
-                    .id(format!("menu:{label}"))
-                    .role(Role::MenuItem)
-                    .expanded(move || open.get())
-                    .on_press(move || open.set(true))
-                    .overlay(
-                        move || open.get(),
-                        Placement::RIGHT,
-                        move || {
-                            let sub = menu.clone();
-                            component_keyed("Submenu", sub.name.clone(), move || menu_view_closing(id, sub.clone(), open))
-                        },
-                    )
-                    .into()
+                let row_id = if legacy && !submenu && names.insert(label.clone()) {
+                    format!("menu:{label}")
+                } else {
+                    format!("{prefix}-submenu-{index}")
+                };
+                if enabled {
+                    enabled_rows.push((row_id.clone(), label.to_lowercase()));
+                }
+                let pick = pick.clone();
+                component_keyed("MenuSubmenu", row_id.clone(), move || {
+                    let open = state("open", || false);
+                    let (child_id, reveal) = (row_id.clone(), row_id.clone());
+                    menu_row(&label, None, Some("›".to_owned()), enabled)
+                        .id(row_id.clone())
+                        .role(Role::MenuItem)
+                        .expanded(move || open.get())
+                        .on_focus(move || scroll_into_view(&reveal))
+                        .on_press(move || open.set(true))
+                        .on_key(move |key| {
+                            if key.key == Key::Right && key.modifiers.is_empty() {
+                                open.set(true);
+                                true
+                            } else {
+                                false
+                            }
+                        })
+                        .overlay(
+                            move || open.get(),
+                            Placement::RIGHT,
+                            move || {
+                                menu_surface_inner(
+                                    child_id.clone(),
+                                    menu.clone(),
+                                    pick.clone(),
+                                    Rc::new(move || open.set(false)),
+                                    true,
+                                    legacy,
+                                )
+                                .into()
+                            },
+                        )
+                        .into()
+                })
             }
         })
         .collect();
-    let list = col()
+    let typed = RefCell::new((Duration::ZERO, String::new()));
+    let outside = dismiss.clone();
+    let empty = enabled_rows.is_empty();
+    col()
+        .id(format!("{prefix}-menu"))
         .role(Role::Menu)
         .label(menu.name)
         .min_w(180.0)
+        .style_with(|p| {
+            let (width, height) = viewport().get();
+            p.max_w((width - 16.0).max(0.0)).max_h((height - 16.0).max(0.0))
+        })
+        .overflow_y_scroll()
         .p_1()
         .rounded_md()
         .border()
@@ -260,24 +342,67 @@ fn menu_view(id: AskId, menu: crate::ask::Menu, top: bool) -> crate::view::View 
         .bg(Token::Surface)
         .shadow_lg()
         .text_sm()
+        .text_color(Token::Text)
         .focus_group()
-        .children(items);
-    if top { list.modal(true, move || crate::app::current().resolve_ask(id, Answer::Menu(None))).into() } else { list.into() }
-}
-
-/// A submenu: dismissing it closes it alone.
-fn menu_view_closing(id: AskId, menu: crate::ask::Menu, open: crate::reactive::graph::Signal<bool>) -> crate::view::View {
-    use crate::prelude::*;
-    match menu_view(id, menu, false) {
-        View::El(e) => e.modal(true, move || open.set(false)).into(),
-        v => v,
-    }
+        .when(empty, |menu| menu.focusable().tab_index(-1).autofocus().min_h(28.0).when_touch(|p| p.min_h(44.0)))
+        .modal(true, move || outside())
+        .on_key(move |key| {
+            if key.key == Key::Left && key.modifiers.is_empty() && submenu {
+                dismiss();
+                return true;
+            }
+            let Key::Char(character) = key.key else {
+                typed.borrow_mut().1.clear();
+                return false;
+            };
+            if !(key.modifiers - Modifiers::SHIFT).is_empty() || character.is_control() {
+                return false;
+            }
+            let now = crate::task::now();
+            let mut typed = typed.borrow_mut();
+            if now.saturating_sub(typed.0) > Duration::from_millis(700) {
+                typed.1.clear();
+            }
+            typed.0 = now;
+            let letter = character.to_lowercase().collect::<String>();
+            let repeated = typed.1 == letter;
+            if !repeated {
+                typed.1.push_str(&letter);
+            }
+            let window = crate::app::window();
+            let current = window.interaction.borrow().focused.and_then(|node| window.kernel.borrow().test_id(node).map(str::to_owned));
+            let at = enabled_rows.iter().position(|(id, _)| Some(id) == current.as_ref());
+            let find = |query: &str, include_current: bool| {
+                let len = enabled_rows.len();
+                let start = match at {
+                    Some(at) if include_current => at,
+                    Some(at) => at + 1,
+                    None => 0,
+                };
+                (0..len).map(|offset| &enabled_rows[(start + offset) % len]).find(|(_, label)| label.starts_with(query)).map(|(id, _)| id)
+            };
+            let mut target = find(&typed.1, !repeated && typed.1 != letter);
+            if target.is_none() {
+                typed.1 = letter;
+                target = find(&typed.1, false);
+            }
+            if let Some(id) = target {
+                focus(id);
+                scroll_into_view(id);
+            }
+            true
+        })
+        .children(items)
 }
 
 fn menu_row(label: &str, checked: Option<bool>, trail: Option<String>, enabled: bool) -> crate::view::El {
     use crate::prelude::*;
     row()
+        .label(label.to_owned())
         .focusable()
+        .min_h(28.0)
+        .when_touch(|p| p.min_h(44.0))
+        .min_w(0.0)
         .items_center()
         .gap_2()
         .px_2()
@@ -287,9 +412,9 @@ fn menu_row(label: &str, checked: Option<bool>, trail: Option<String>, enabled: 
         .focus_visible(|p| p.bg(Token::SurfaceHover))
         .disabled(!enabled)
         .style_when(State::DISABLED, |p| p.opacity(0.45))
-        .child(text(if checked == Some(true) { "✓" } else { "" }).w(14.0).select_none())
-        .child(text(label).flex_1().select_none())
-        .children(trail.map(|t| text(t).text_color(Token::TextMuted).select_none()))
+        .child(text(if checked == Some(true) { "✓" } else { "" }).w(14.0).select_none().a11y_hidden())
+        .child(text(label).flex_1().min_w(0.0).select_none().a11y_hidden())
+        .children(trail.map(|t| text(t).text_color(Token::TextMuted).select_none().a11y_hidden()))
 }
 
 /// A prompt drawn in the window: its message and detail over a scrim, its answers as buttons (the

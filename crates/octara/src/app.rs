@@ -15,6 +15,7 @@ mod text_input;
 mod time;
 mod tooltip;
 
+pub use asks::menu_surface;
 pub use edit::{TextField, byte_offset, utf16_offset};
 pub use event::{FileDrag, InputEvent, Recorded, Recording};
 pub use keys::{BUILTIN_COMMANDS, Binding, Chord, Key, KeyEvent, Keymap};
@@ -41,6 +42,8 @@ pub const DEFAULT_VIEWPORT: (f32, f32) = (800.0, 600.0);
 pub enum Event {
     Press(String),
     Input(String, String),
+    /// A finite number set by test id, through the control's `on_numeric_input` handler.
+    NumericInput(String, f64),
     Toggle(String),
     /// The pointer entered (`true`) or left (`false`) the element.
     Hover(String, bool),
@@ -331,6 +334,10 @@ impl AppState {
 }
 
 impl WindowState {
+    pub(crate) fn interaction_request_command(&self, command: &str, at: &'static std::panic::Location<'static>) {
+        self.interaction.borrow_mut().after_update.push_back((command.to_owned(), at));
+    }
+
     pub(crate) fn interaction_request_focus(&self, id: &str) {
         self.interaction.borrow_mut().focus_request = Some(id.to_owned());
     }
@@ -382,6 +389,8 @@ struct Interaction {
     tip: tooltip::Tip,
     /// The test id of an element the app asked to focus (`focus`), once the frame is built.
     focus_request: Option<String>,
+    /// Commands routed after updates, modal restoration and explicit focus requests settle.
+    after_update: std::collections::VecDeque<(String, &'static std::panic::Location<'static>)>,
 }
 
 impl WindowState {
@@ -724,6 +733,7 @@ impl AppState {
             }
         });
         w.w.closed.set(true);
+        w.w.interaction.borrow_mut().after_update.clear();
         w.w.root_slots.borrow_mut().clear();
         *w.w.platform.borrow_mut() = Box::new(crate::platform::HeadlessWindow::default());
         self.order.borrow_mut().retain(|x| *x != id);
@@ -813,26 +823,55 @@ impl Window {
     fn settle_window(&self, at: &'static std::panic::Location<'static>) {
         // Tasks woken (or spawned) by what just happened run to their next wait first; what they
         // change is laid out with the rest. They may wake or spawn more, so repeat (bounded).
+        let mut command_ran = false;
         for _ in 0..16 {
+            if self.w.closed.get() || self.app.closing.borrow().contains(&self.w.id) {
+                self.w.interaction.borrow_mut().after_update.clear();
+                return;
+            }
             self.app.sched.run_ready();
             self.settle_layout(at);
             // Modals that opened or closed move focus (which restyles).
             if self.sync_modals() {
                 self.settle_layout(at);
             }
-            if !self.app.sched.has_ready() {
+            if self.settle_requested_focus(at) || self.reconcile_focus() {
+                // Focus callbacks can change visibility, open a modal or close the window.
+                // Let those changes land before any queued command sees its focus path.
+                command_ran = false;
+                continue;
+            }
+            // Route one command, then let its updates and focus changes settle before the
+            // next. This uses the same round bound as tasks and never nests an input frame.
+            let command = self.w.interaction.borrow_mut().after_update.pop_front();
+            if let Some((command, source)) = command {
+                command_ran = self.run_after_update_command(&command, source);
+            } else {
+                command_ran = false;
+            }
+            if !command_ran && !self.app.sched.has_ready() && self.w.interaction.borrow().after_update.is_empty() {
                 break;
             }
         }
-        // Focus the app asked for lands on the element as built now.
-        let request = self.w.interaction.borrow_mut().focus_request.take();
-        if let Some(id) = request {
-            let n = self.w.kernel.borrow().find(&id);
-            if let Some(n) = n
-                && self.set_focus(Some(n)).is_ok()
-            {
+        // The last command may have changed state even when it queued no successor.
+        if command_ran {
+            self.settle_layout(at);
+            if self.sync_modals() {
                 self.settle_layout(at);
             }
+            self.settle_requested_focus(at);
+            self.reconcile_focus();
+        }
+        let pending = std::mem::take(&mut self.w.interaction.borrow_mut().after_update);
+        if let Some((command, source)) = pending.front() {
+            self.app.rt.diag(
+                &codes::COMMAND_QUEUE_LIMIT,
+                format!(
+                    "deferred commands did not settle in 16 rounds; discarded {} pending command(s), starting with `{command}`",
+                    pending.len()
+                ),
+                source,
+            );
         }
         // A caret that moved shows: the scroll containers around its field follow it.
         let reveal = self.w.interaction.borrow_mut().reveal.take();
@@ -866,14 +905,28 @@ impl Window {
             let i = self.w.interaction.borrow();
             (i.focused, i.hovered)
         };
-        let gone = |n: Option<NodeId>| n.is_some_and(|n| !self.w.kernel.borrow().is_alive(n) || self.w.kernel.borrow().is_exiting(n));
+        let gone = |n: Option<NodeId>| n.is_some_and(|n| !self.w.kernel.borrow().is_shown(n));
         if gone(focused) {
-            let _ = self.set_focus(None);
+            self.reconcile_focus();
         }
         // What leaves the tree lets go of hover at once (even while hover holds still).
         if gone(hovered) {
             self.set_hover(None);
         }
+    }
+
+    fn settle_requested_focus(&self, at: &'static std::panic::Location<'static>) -> bool {
+        let request = self.w.interaction.borrow_mut().focus_request.take();
+        if let Some(id) = request {
+            let node = self.w.kernel.borrow().find(&id);
+            if let Some(node) = node
+                && self.set_focus(Some(node)).is_ok()
+            {
+                self.settle_layout(at);
+            }
+            return true;
+        }
+        false
     }
 
     fn settle_layout(&self, at: &'static std::panic::Location<'static>) {
@@ -972,10 +1025,17 @@ impl Window {
     /// Moves keyboard focus to `n`, which must be focusable and enabled (`None` blurs). The
     /// ring shows if the last input was the keyboard.
     pub(crate) fn set_focus(&self, n: Option<NodeId>) -> Result<(), String> {
+        let modal = self.top_modal();
         let mut i = self.w.interaction.borrow_mut();
         let mut k = self.w.kernel.borrow_mut();
         if let Some(n) = n {
             let name = k.test_id(n).unwrap_or("element").to_owned();
+            if !k.is_shown(n) {
+                return Err(format!("`{name}` is hidden or leaving the tree"));
+            }
+            if modal.is_some_and(|modal| !k.is_in_modal_scope(n, modal)) {
+                return Err(format!("`{name}` is behind the open modal"));
+            }
             if !k.is_focusable(n) {
                 return Err(format!("`{name}` is not focusable"));
             }
@@ -1059,6 +1119,7 @@ impl Window {
         let (id, kind) = match ev {
             Event::Press(id) => (id, HandlerKind::Press),
             Event::Input(id, _) => (id, HandlerKind::Input),
+            Event::NumericInput(id, _) => (id, HandlerKind::NumericInput),
             Event::Toggle(id) => (id, HandlerKind::Toggle),
             Event::Hover(..) | Event::Focus(_) | Event::Blur | Event::Scroll(..) | Event::ScrollTo(..) => {
                 unreachable!("interaction events have no handler")
@@ -1069,6 +1130,12 @@ impl Window {
         let node = k.find(id).ok_or(format!("no node with test id `{id}`"))?;
         if k.state(node).contains(State::DISABLED) {
             return Err(format!("`{id}` is disabled"));
+        }
+        if kind == HandlerKind::NumericInput && (!k.is_shown(node) || self.live(Some(node)) != Some(node)) {
+            return Err(format!("`{id}` is hidden, leaving or outside the active modal"));
+        }
+        if kind == HandlerKind::NumericInput && !k.preedit(node).is_empty() {
+            return Err(format!("`{id}` has an active input-method composition"));
         }
         // A link's press is the `on_link` above it, given its target.
         if kind == HandlerKind::Press
@@ -1204,6 +1271,11 @@ impl Window {
         self.on_semantic(ev)
     }
     pub(crate) fn on_semantic(&mut self, ev: Event) -> Result<(), String> {
+        if let Event::NumericInput(_, value) = &ev
+            && !value.is_finite()
+        {
+            return Err("numeric input requires a finite value".into());
+        }
         self.enter(|| {
             let cause = self.app.next_cause.get() + 1;
             if matches!(ev, Event::Hover(..) | Event::Focus(_) | Event::Blur | Event::Scroll(..) | Event::ScrollTo(..)) {
@@ -1234,6 +1306,7 @@ impl Window {
             self.app.rt.with_frame(Ctx::Handler, None, Some(None), || match (h, ev) {
                 (Handler::Press(f), _) | (Handler::Toggle(f), _) => f(),
                 (Handler::Input(f), Event::Input(_, v)) => f(v),
+                (Handler::NumericInput(f), Event::NumericInput(_, v)) => f(v),
                 _ => unreachable!("handler kind matches event kind"),
             });
             self.settle_frame();

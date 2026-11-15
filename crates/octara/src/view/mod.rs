@@ -32,6 +32,7 @@ use std::rc::Rc;
 pub(crate) enum Handler {
     Press(Rc<dyn Fn()>),
     Input(Rc<dyn Fn(String)>),
+    NumericInput(Rc<dyn Fn(f64)>),
     Toggle(Rc<dyn Fn()>),
     Drag(Rc<dyn Fn(&crate::app::Drag)>),
     Key(Rc<dyn Fn(&crate::app::KeyEvent) -> bool>),
@@ -511,6 +512,13 @@ pub fn size_of(id: &str) -> ReadSignal<(f32, f32)> {
     s.read_only()
 }
 
+/// The current pointer press in an element's local coordinates. Available only inside its
+/// pointer `on_press` handler (mouse, touch or pen); keyboard and assistive activation return
+/// `None`. This does not move focus or retain the pointer after its handler returns.
+pub fn pointer_position_in(id: &str) -> Option<(f32, f32)> {
+    crate::app::window().pointer_position_in(id)
+}
+
 /// Switches the theme of every window. Token colors resolve in the kernels, so no closure
 /// reruns; only nodes whose resolved colors change are repainted. Callable from handlers.
 pub fn set_theme(theme: Theme) {
@@ -649,6 +657,35 @@ pub fn bind_keys<'a>(bindings: impl IntoIterator<Item = (&'a str, &'a str, Optio
 /// from handlers and tasks.
 pub fn focus(id: &str) {
     crate::app::window().interaction_request_focus(id);
+}
+
+/// Run a command in this window using its current focus path and registered handlers.
+/// Callable from handlers and tasks. For a popup that closes before invoking against restored
+/// focus, use [`invoke_after_update`].
+pub fn invoke(command: &str) -> Result<(), String> {
+    crate::app::current().invoke(command)
+}
+
+/// Queues a command in this window after the current updates, modal focus restoration and
+/// explicit [`focus`] requests settle. Commands run in order through the existing command
+/// dispatcher, with each command's updates settled before the next. Callable from handlers
+/// and tasks; closing the owning popup does not cancel it, while closing the window does.
+///
+/// An unhandled command reports `COMMAND_UNHANDLED`. At most 16 commands run in one update;
+/// further queued commands are discarded with `COMMAND_QUEUE_LIMIT`, including commands
+/// that keep queuing themselves. This does not wait for animation to finish or advance time.
+#[track_caller]
+pub fn invoke_after_update(command: &str) {
+    crate::app::window().interaction_request_command(command, Location::caller());
+}
+
+/// Whether the text input currently has marked text. This is a handler-time observation,
+/// not a reactive dependency. Suggestions can refuse a pointer choice while the system IME
+/// still owns the composition, just as the runtime protects its keyboard navigation.
+pub fn is_composing(id: &str) -> bool {
+    let window = crate::app::window();
+    let kernel = window.kernel.borrow();
+    kernel.find(id).is_some_and(|node| !kernel.preedit(node).is_empty())
 }
 
 /// Lands everything in motion on its target now (Rune's `tx.settle`).

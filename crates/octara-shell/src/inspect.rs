@@ -17,11 +17,13 @@ const OPERATIONS: &[&str] = &[
     "tap",
     "double_tap",
     "long_press",
+    "drag",
     "secondary_tap",
     "focus",
     "hover",
     "key",
     "type",
+    "set_value",
     "invoke",
     "settle",
     "size",
@@ -175,10 +177,12 @@ fn route(request: &Request) -> (&'static str, bool) {
         Request::Tap { .. }
         | Request::DoubleTap { .. }
         | Request::LongPress { .. }
+        | Request::Drag { .. }
         | Request::SecondaryTap { .. }
         | Request::Type { .. }
         | Request::Key { .. } => ("framework", true),
         Request::Focus { .. }
+        | Request::SetValue { .. }
         | Request::Hover { .. }
         | Request::Invoke { .. }
         | Request::Select { .. }
@@ -237,11 +241,11 @@ impl Shell {
                 &codes::BAD_REQUEST,
                 "this operation is not supported by the realtime live host; inspect live.operations for supported requests",
             )),
-            Request::DoubleTap { ref id } | Request::LongPress { ref id } => {
-                let kind = if matches!(&request, Request::DoubleTap { .. }) {
-                    super::gesture::Kind::DoubleTap
-                } else {
-                    super::gesture::Kind::LongPress
+            Request::DoubleTap { ref id } | Request::LongPress { ref id } | Request::Drag { ref id, .. } => {
+                let kind = match &request {
+                    Request::DoubleTap { .. } => super::gesture::Kind::DoubleTap,
+                    Request::Drag { dx, dy, .. } => super::gesture::Kind::Drag { dx: *dx, dy: *dy },
+                    _ => super::gesture::Kind::LongPress,
                 };
                 match super::gesture::Job::start_guarded(&mut target, id, kind, Instant::now(), guard) {
                     Ok(job) => {

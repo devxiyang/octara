@@ -2,6 +2,11 @@
 
 mod choices;
 mod components;
+mod dialog;
 mod forms;
 mod markdown;
+mod menus;
+mod navigation;
+mod popup_list;
+mod range;
 mod readme;

@@ -96,9 +96,11 @@ fn binding(request: &Request) -> Binding<'_> {
         Request::Tap { id }
         | Request::DoubleTap { id }
         | Request::LongPress { id }
+        | Request::Drag { id, .. }
         | Request::SecondaryTap { id }
         | Request::Focus { id }
         | Request::Hover { id, .. }
+        | Request::SetValue { id, .. }
         | Request::Type { id: Some(id), .. } => Binding::Node(id),
         Request::Expect(expect) if expect.id.is_some() => Binding::Node(expect.id.as_deref().expect("an id")),
         Request::Type { id: None, .. } | Request::Key { .. } => Binding::Focus,
@@ -225,7 +227,7 @@ pub fn handle_guarded(window: &mut Window, request: Request, guard: Option<&Targ
             }
             let text = match event.key {
                 Key::Char(c) if !handled && !event.modifiers.intersects(Modifiers::CTRL | Modifiers::META) => Some(c.to_string()),
-                Key::Space if window.text_field().is_some() => Some(" ".into()),
+                Key::Space if !handled && window.text_field().is_some() => Some(" ".into()),
                 _ => None,
             };
             if let Some(text) = text {
@@ -239,6 +241,7 @@ pub fn handle_guarded(window: &mut Window, request: Request, guard: Option<&Targ
         Request::Tap { id } => pointer(window, guard, &id, PointerKind::Mouse, Button::Primary, false, false),
         Request::DoubleTap { id } => pointer(window, guard, &id, PointerKind::Mouse, Button::Primary, true, false),
         Request::LongPress { id } => pointer(window, guard, &id, PointerKind::Touch, Button::Primary, false, true),
+        Request::Drag { id, dx, dy } => drag(window, &id, dx, dy, Some(guard)),
         Request::SecondaryTap { id } => pointer(window, guard, &id, PointerKind::Mouse, Button::Secondary, false, false),
         request => {
             let input = !matches!(
@@ -246,7 +249,7 @@ pub fn handle_guarded(window: &mut Window, request: Request, guard: Option<&Targ
                 Request::Inspect | Request::Issues | Request::Pick { .. } | Request::Expect(_) | Request::Capture { .. }
             );
             let mut reply = super::handle(window, request);
-            if input {
+            if input && reply.delivery.is_none() {
                 reply.delivery =
                     Some(if reply.code.as_deref() == Some(codes::BAD_REQUEST.id) { Delivery::Refused } else { Delivery::Delivered });
             }
@@ -315,4 +318,92 @@ fn pointer(window: &mut Window, guard: &TargetGuard, id: &str, kind: PointerKind
         window.event(InputEvent::Pointer(event(Phase::Up, at)));
     }
     Reply { delivery: Some(Delivery::Delivered), ..Reply::ok() }
+}
+
+/// The headless equivalent of the host's realtime drag job. Even without an explicit token,
+/// every phase keeps the original node and cancels only its unique synthetic mouse pointer.
+pub(super) fn drag(window: &mut Window, id: &str, dx: f32, dy: f32, guard: Option<&TargetGuard>) -> Reply {
+    static NEXT_POINTER: AtomicU64 = AtomicU64::new(1 << 62);
+    let refused = Delivery::Refused;
+    if !dx.is_finite() || !dy.is_finite() {
+        return failure(&codes::BAD_REQUEST, "drag requires finite dx and dy", refused);
+    }
+    if window.held_pointer().is_some() {
+        return failure(&codes::STEP_FAILED, "a pointer is already held", refused);
+    }
+    if !window.kernel().exists(id) {
+        return failure(&codes::NO_SUCH_ELEMENT, format!("no element has test id `{id}`"), refused);
+    }
+    let (node, start) = match window.pointer_target(id) {
+        Ok(target) => target,
+        Err(error) => return failure(&codes::STEP_FAILED, error, refused),
+    };
+    if !(start.0 + dx).is_finite() || !(start.1 + dy).is_finite() {
+        return failure(&codes::BAD_REQUEST, "drag endpoint must be finite", refused);
+    }
+    let current = |window: &Window, delivery| -> Result<(), Box<Reply>> {
+        if window.is_closed() {
+            return Err(Box::new(failure(&codes::STEP_FAILED, "the target window closed during the drag", delivery)));
+        }
+        if guard.is_some_and(|guard| !guard.is_current(window) || guard.node() != Some(node)) {
+            return Err(Box::new(stale(delivery)));
+        }
+        match window.pointer_target(id) {
+            Ok((found, _)) if found == node => {
+                if window.kernel().state(node).contains(crate::kernel::State::DISABLED) {
+                    Err(Box::new(failure(&codes::STEP_FAILED, "the drag target is disabled", delivery)))
+                } else {
+                    Ok(())
+                }
+            }
+            Ok(_) => Err(Box::new(failure(
+                if guard.is_some() { &codes::STALE_TARGET } else { &codes::STEP_FAILED },
+                "the drag target was replaced",
+                delivery,
+            ))),
+            Err(error) => Err(Box::new(failure(&codes::STEP_FAILED, error, delivery))),
+        }
+    };
+    if let Err(reply) = current(window, refused) {
+        return *reply;
+    }
+    let pointer = NEXT_POINTER.fetch_add(1, Ordering::Relaxed);
+    let event = |phase, (x, y)| PointerEvent { id: pointer, ..PointerEvent::mouse(phase, x, y) };
+    let cancel = |window: &mut Window| {
+        if !window.is_closed() && window.held_pointer() == Some((pointer, PointerKind::Mouse)) {
+            window.event(InputEvent::Pointer(event(Phase::Cancel, start)));
+        }
+    };
+    let delivered = Delivery::Delivered;
+    for phase in [Phase::Move, Phase::Down] {
+        if let Err(reply) = current(window, if phase == Phase::Move { refused } else { delivered }) {
+            cancel(window);
+            return *reply;
+        }
+        if window.held_pointer().is_some() {
+            return failure(&codes::STEP_FAILED, "another pointer interrupted the drag before its down", delivered);
+        }
+        window.event(InputEvent::Pointer(event(phase, start)));
+    }
+    for step in 1..=4 {
+        window.app().advance(Duration::from_millis(16));
+        if let Err(reply) = current(window, delivered) {
+            cancel(window);
+            return *reply;
+        }
+        if window.held_pointer() != Some((pointer, PointerKind::Mouse)) {
+            return failure(&codes::STEP_FAILED, "the drag pointer was cancelled or replaced", delivered);
+        }
+        let fraction = step as f32 / 4.0;
+        window.event(InputEvent::Pointer(event(Phase::Move, (start.0 + dx * fraction, start.1 + dy * fraction))));
+    }
+    if let Err(reply) = current(window, delivered) {
+        cancel(window);
+        return *reply;
+    }
+    if window.held_pointer() != Some((pointer, PointerKind::Mouse)) {
+        return failure(&codes::STEP_FAILED, "the drag pointer was cancelled or replaced before release", delivered);
+    }
+    window.event(InputEvent::Pointer(event(Phase::Up, (start.0 + dx, start.1 + dy))));
+    Reply { delivery: Some(delivered), ..Reply::ok() }
 }

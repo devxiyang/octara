@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::app::menu_surface;
+
 /// A menu: its name (a menu bar's title) and its items in order (GPUI's `Menu`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Menu {

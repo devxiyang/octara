@@ -103,7 +103,8 @@ assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
   its row being hovered.
 - Components with styling built in come from `octara_kit`: `button`, `primary_button`,
   `ghost_button`, `toggle_button`, `icon_button`, `checkbox`, `switch`, `text_field`, `select`,
-  `combobox`, `popover`, `field`, `radio_group`,
+  `combobox`, `popover`, `field`, `radio_group`, `dialog`, `tabs`, `segmented`, `popup_list`,
+  `slider`, `number_field`, `progress`, `menu_button`,
   `spinner`, `chip`, `removable_chip`, `callout`, `collapsible`, `list` / `list_item` /
   `list_header`, `split`.
 - `octara_kit::markdown::markdown(source)` renders Markdown as a selectable document (headings,
@@ -235,6 +236,26 @@ assert_eq!(app.kernel().text_of("saved").as_deref(), Some("saved 1"));
   tracked `Vec<RadioOption>` choices. Tab enters once, arrows choose among enabled options,
   and focus alone does not choose. Reordering keeps each option's identity; removing the
   chosen option leaves the model unchanged until the application or person chooses again.
+- `dialog(id, title, open, options, content)` is a controlled modal with a bounded, scrollable
+  body. Closing disposes its content; keep a persistent draft in application state. `tabs`
+  moves focus with arrows and selects with Enter/Space; the application owns its panels.
+  Use a display binding to retain a panel's editor/undo, or `show` to dispose it when hidden.
+  `segmented` is a compact radio group, so arrows both focus and select.
+- `popup_list(id, label, open, editor, items, choose)` attaches already filtered suggestions to
+  an existing editor. It retains editor focus, skips disabled items, and calls `choose` with a
+  stable ID. Its keyboard and pointer choices yield to an active IME. The application owns
+  filtering and insertion; this is separate from a searchable modal `combobox`.
+- `slider(id, model, min, max, step)` binds a number; `number_field(raw, min, max, step)` binds
+  raw text, preserving incomplete drafts until Enter or blur. `parse_number` and
+  `normalize_number` let ordinary Rust implement application validation and submission.
+  `progress(value, max)` reads `Option<f64>`: `None` means unknown, not zero. Numeric bounds
+  and values are shared by AccessKit and Inspector; agents can use `set_value` on editable
+  numeric controls with their observed target.
+- `menu_button(id, label, open, menu)` snapshots an ordinary `Menu` each opening. Its actions
+  run existing commands after closing and restoring focus; submenus support Right/Left,
+  navigation skips disabled items, and typing searches labels. Shortcut labels are display
+  hints; use `bind_keys` to register shortcuts. `invoke_after_update` runs a command after
+  pending view and focus updates; synchronous `Window::invoke` retains its existing behavior.
 - `octara vocab focus.next` (or any command) shows the built-in commands and their keys.
 
 ## Motion

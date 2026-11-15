@@ -147,7 +147,8 @@ impl Kernel {
     /// The Tab order inside `scope` (the open modal, else the window): focusable, enabled, shown
     /// nodes; positive `tab_index` first, then the rest in tree order; negative ones skipped.
     /// A focus group is one stop: its focused member, else its remembered or selected one,
-    /// else its first. A radio group's checked radio precedes its remembered member.
+    /// else its first. A radio group's checked radio and a tab list's selected tab precede
+    /// their remembered members when entering from outside.
     pub fn focus_order(&self, scope: Option<NodeId>, focused: Option<NodeId>) -> Vec<NodeId> {
         let mut all = Vec::new();
         self.walk_shown(scope.unwrap_or(self.root), &mut |id| {
@@ -168,11 +169,11 @@ impl Kernel {
                     let pick = focused
                         .filter(|f| members.contains(f))
                         .or_else(|| {
-                            (self.role(g) == Role::RadioGroup)
-                                .then(|| {
-                                    members.iter().copied().find(|m| self.role(*m) == Role::RadioButton && self.checked(*m) == Some(true))
-                                })
-                                .flatten()
+                            members.iter().copied().find(|m| match self.role(g) {
+                                Role::RadioGroup => self.role(*m) == Role::RadioButton && self.checked(*m) == Some(true),
+                                Role::TabList => self.role(*m) == Role::Tab && self.node(*m).state.contains(State::SELECTED),
+                                _ => false,
+                            })
                         })
                         .or_else(|| self.node(g).group_current.filter(|c| members.contains(c)))
                         .or_else(|| members.iter().copied().find(|m| self.node(*m).state.contains(State::SELECTED)))

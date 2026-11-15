@@ -5,6 +5,7 @@
 use octara::prelude::*;
 
 mod choices;
+mod controls;
 mod cut;
 mod drawing;
 mod editing;
@@ -12,6 +13,7 @@ mod fields;
 mod forms;
 mod hero;
 mod images;
+mod interaction;
 mod layers;
 mod map;
 mod markdown;
@@ -24,7 +26,7 @@ mod web;
 pub type Card = (&'static str, fn() -> El);
 
 /// The cards by name, in the tour's order.
-pub const CARDS: [Card; 15] = [
+pub const CARDS: [Card; 17] = [
     ("hero", hero::card),
     ("images", images::card),
     ("layers", layers::card),
@@ -37,6 +39,8 @@ pub const CARDS: [Card; 15] = [
     ("cut", cut::card),
     ("fields", fields::card),
     ("forms", forms::card),
+    ("interaction", interaction::card),
+    ("controls", controls::card),
     ("choices", choices::card),
     ("web", web::card),
     ("map", map::card),
@@ -104,7 +108,9 @@ pub fn showcase() -> View {
             .child(wrap().child(text::card()).child(markdown::card()))
             .child(wrap().child(fields::card()).child(web::card()).child(map::card()))
             .child(choices::card())
-            .child(forms::card()),
+            .child(forms::card())
+            .child(interaction::card())
+            .child(controls::card()),
     )
 }
 

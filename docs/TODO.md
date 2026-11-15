@@ -13,8 +13,9 @@ make the corresponding design document describe it.
    native-window resize in the current shell.
 4. Native chrome: Windows/Linux menu integration, AppKit tooltips, toolbars and title bars.
    macOS menus and alert sheets, and rfd file dialogs are implemented in the winit shell.
-5. Components: richer menus, dialogs and sheets, tabs, tables, sliders and progress.
-   Basic lists, modal popovers, searchable comboboxes, fields and radio groups are implemented.
+5. Components: tables, trees, sheets and richer platform navigation.
+   Lists, popovers, comboboxes, fields, radios, dialogs, tabs, segmented choices, editor-owned
+   suggestions, sliders, number fields, progress and drawn command menus are implemented.
 6. Images: JPEG, WebP, SVG, loading and caching.
 7. [Native Island](design/native-island.md): focus, accessibility joining, lazy creation.
 8. Windows: WebView2 in DirectComposition; `surface` textures; Linux: WPE as a texture.

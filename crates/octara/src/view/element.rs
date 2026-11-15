@@ -12,7 +12,8 @@ type Draw = Rc<dyn Fn(&mut crate::canvas::Canvas)>;
 type OnNative = Rc<dyn Fn(&crate::native::NativeEvent)>;
 type OnLink = Rc<dyn Fn(&str)>;
 use crate::kernel::{
-    Breakpoint, Color, Fill, HandlerId, HandlerKind, Kernel, Kind, NodeId, Paint, Placement, Role, State, StyleProp, Token, When,
+    Breakpoint, Color, Fill, HandlerId, HandlerKind, Kernel, Kind, NodeId, NumericRange, Paint, Placement, Role, State, StyleProp, Token,
+    When,
 };
 use crate::reactive::graph::{self, rt};
 use crate::reactive::text::{TextBuffer, TextChange};
@@ -75,6 +76,16 @@ impl IntoProp<f32> for f32 {
 }
 impl<F: Fn() -> f32 + 'static> IntoProp<f32> for F {
     fn into_prop(self) -> Prop<f32> {
+        Prop::Dyn(Box::new(self))
+    }
+}
+impl IntoProp<NumericRange> for NumericRange {
+    fn into_prop(self) -> Prop<NumericRange> {
+        Prop::Static(self)
+    }
+}
+impl<F: Fn() -> NumericRange + 'static> IntoProp<NumericRange> for F {
+    fn into_prop(self) -> Prop<NumericRange> {
         Prop::Dyn(Box::new(self))
     }
 }
@@ -198,7 +209,7 @@ enum StyleValue {
 
 struct Overlay {
     open: Box<dyn Fn() -> bool>,
-    placement: Placement,
+    placement: Option<Placement>,
     content: Rc<dyn Fn() -> View>,
     at: &'static Location<'static>,
     made: Option<crate::kernel::Component>,
@@ -217,6 +228,7 @@ pub struct El {
     test_id: Option<Prop<String>>,
     text: Option<TextContent>,
     value: Option<Prop<String>>,
+    numeric_range: Option<Prop<NumericRange>>,
     checked: Option<Prop<bool>>,
     required: Option<Prop<bool>>,
     invalid: Option<Prop<bool>>,
@@ -233,6 +245,7 @@ pub struct El {
     overrides: Vec<(When, Vec<StyleProp>)>,
     press: Option<Rc<dyn Fn()>>,
     input: Option<Rc<dyn Fn(String)>>,
+    numeric_input: Option<Rc<dyn Fn(f64)>>,
     toggle: Option<Rc<dyn Fn()>>,
     double_press: Option<Rc<dyn Fn()>>,
     secondary_press: Option<Rc<dyn Fn()>>,
@@ -243,6 +256,7 @@ pub struct El {
     blur: Option<Rc<dyn Fn()>>,
     tab_index: i32,
     focus_group: bool,
+    preserve_focus_on_press: bool,
     autofocus: bool,
     modal: Option<(bool, Rc<dyn Fn()>)>,
     key: Option<KeyHandler>,
@@ -292,6 +306,7 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         test_id: None,
         text: None,
         value: None,
+        numeric_range: None,
         checked: None,
         required: None,
         invalid: None,
@@ -308,6 +323,7 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         overrides: Vec::new(),
         press: None,
         input: None,
+        numeric_input: None,
         toggle: None,
         double_press: None,
         secondary_press: None,
@@ -318,6 +334,7 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         blur: None,
         tab_index: 0,
         focus_group: false,
+        preserve_focus_on_press: false,
         autofocus: false,
         modal: None,
         key: None,
@@ -761,6 +778,13 @@ impl El {
         self.press = Some(Rc::new(f));
         self
     }
+    /// Pointer presses in this subtree keep the current keyboard focus. Useful for an
+    /// editor's suggestions: choosing a row must not blur the editor or end its composition.
+    /// Keyboard and semantic focus operations are unchanged. This does not make a popup modal.
+    pub fn preserve_focus_on_press(mut self, preserve: bool) -> Self {
+        self.preserve_focus_on_press = preserve;
+        self
+    }
     /// A text field's submission: Enter while it has focus (and no input method is composing).
     /// Without one, Enter presses the field like any focused element.
     pub fn on_submit(mut self, f: impl Fn() + 'static) -> Self {
@@ -803,6 +827,18 @@ impl El {
         self.drag = Some(Rc::new(f));
         self
     }
+    /// A finite numeric value requested by assistive technology or an agent. The component's
+    /// handler applies its own clamping and stepping, as its pointer and key handlers do.
+    pub fn on_numeric_input(mut self, f: impl Fn(f64) + 'static) -> Self {
+        self.numeric_input = Some(Rc::new(f));
+        self
+    }
+    /// Numeric value, bounds and optional step for accessibility and Inspector. A missing
+    /// value means indeterminate progress or a draft which does not currently parse.
+    pub fn numeric_range(mut self, range: impl IntoProp<NumericRange>) -> Self {
+        self.numeric_range = Some(range.into_prop());
+        self
+    }
     pub fn on_input(mut self, f: impl Fn(String) + 'static) -> Self {
         self.input = Some(Rc::new(f));
         self
@@ -817,7 +853,22 @@ impl El {
     pub fn overlay(mut self, open: impl Fn() -> bool + 'static, placement: Placement, content: impl Fn() -> View + 'static) -> Self {
         self.overlays.push(Overlay {
             open: Box::new(open),
-            placement,
+            placement: Some(placement),
+            content: Rc::new(content),
+            at: Location::caller(),
+            made: super::building(),
+            by: None,
+        });
+        self
+    }
+    /// While `open` holds, mounts `content` in the window's overlay layer, without an anchor.
+    /// A full-window surface can use `absolute().inset_0()` for a dialog scrim. Its state lives
+    /// while open and is disposed with this element; focus and dismissal come from `modal`.
+    #[track_caller]
+    pub fn overlay_window(mut self, open: impl Fn() -> bool + 'static, content: impl Fn() -> View + 'static) -> Self {
+        self.overlays.push(Overlay {
+            open: Box::new(open),
+            placement: None,
             content: Rc::new(content),
             at: Location::caller(),
             made: super::building(),
@@ -830,7 +881,7 @@ impl El {
     pub(crate) fn overlay_by(mut self, by: NodeId, placement: Placement, content: impl Fn() -> View + 'static) -> Self {
         self.overlays.push(Overlay {
             open: Box::new(|| true),
-            placement,
+            placement: Some(placement),
             content: Rc::new(content),
             at: Location::caller(),
             made: super::building(),
@@ -1064,6 +1115,9 @@ pub(crate) fn build_el(e: El) -> NodeId {
     if let Some(p) = e.value {
         bind(at, node, p, |k, n, v: &String| k.set_value(n, v));
     }
+    if let Some(p) = e.numeric_range {
+        bind(at, node, p, |k, n, v: &NumericRange| k.set_numeric_range(n, Some(*v)));
+    }
     if let Some(p) = e.checked {
         bind(at, node, p, |k, n, v: &bool| k.set_checked(n, Some(*v)));
     }
@@ -1113,6 +1167,9 @@ pub(crate) fn build_el(e: El) -> NodeId {
         }
         if e.focus_group {
             k.set_focus_group(node, true);
+        }
+        if e.preserve_focus_on_press {
+            k.set_preserve_focus_on_press(node, true);
         }
         if e.autofocus {
             k.set_autofocus(node, true);
@@ -1177,6 +1234,7 @@ pub(crate) fn build_el(e: El) -> NodeId {
     for (kind, h) in [
         (HandlerKind::Press, e.press.map(Handler::Press)),
         (HandlerKind::Input, e.input.map(Handler::Input)),
+        (HandlerKind::NumericInput, e.numeric_input.map(Handler::NumericInput)),
         (HandlerKind::Toggle, e.toggle.map(Handler::Toggle)),
         (HandlerKind::DoublePress, e.double_press.map(Handler::Press)),
         (HandlerKind::SecondaryPress, e.secondary_press.map(Handler::Press)),
@@ -1265,7 +1323,10 @@ fn mount_overlay(anchor: NodeId, o: Overlay) {
     let view = super::as_part_of(o.made, || {
         show(o.open, move || {
             let mut b = boxed(content(), at);
-            b.anchor = Some((by.unwrap_or(anchor), placement));
+            b.anchor = placement.map(|placement| (by.unwrap_or(anchor), placement));
+            if placement.is_none() {
+                b = b.absolute().inset_0().size_full();
+            }
             b.into()
         })
     });

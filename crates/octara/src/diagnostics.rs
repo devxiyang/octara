@@ -165,6 +165,12 @@ codes! {
         "Two list items share a key; the later one was dropped.",
         cause: "Lists identify items by key: rows, state and moves follow it.";
     // ---- view ----
+    COMMAND_UNHANDLED: Error, View, "docs/design/input.md#deferred-commands",
+        "A deferred command has no handler on the restored focus path.",
+        cause: "The command ran after pending updates and focus restoration, but neither the focused control, its ancestors, built-ins nor app-level handlers handled it. Disable unavailable menu actions or register the command where it is used.";
+    COMMAND_QUEUE_LIMIT: Error, View, "docs/design/input.md#deferred-commands",
+        "Deferred commands did not settle in 16 rounds; the remaining queue was discarded.",
+        cause: "Commands keep queuing themselves or each other, or one update queued more work than the round limit. Each deferred command settles its updates before routing the next; break the cycle or reduce the batch.";
     AMBIGUOUS_COMPONENT: Warning, View, "docs/design/reactive-core.md#4-identity-and-state",
         "Several unkeyed components of one name share a parent; their state follows their order.",
         cause: "`component(name, ..)` names siblings by position, so inserting one before another hands it the other's state; `component_keyed(name, key, ..)` names them by key.";

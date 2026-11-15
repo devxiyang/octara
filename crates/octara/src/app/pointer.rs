@@ -7,7 +7,7 @@
 
 use super::behavior::{Behavior, behavior};
 use super::event::InputEvent;
-use super::{Handler, Modality, Window};
+use super::{Handler, Modality, Window, WindowState};
 use crate::kernel::{HandlerKind, Kernel, NodeId, State};
 use bitflags::bitflags;
 use std::time::Duration;
@@ -203,11 +203,23 @@ struct Momentum {
 #[derive(Default)]
 pub(crate) struct PointerState {
     pub held: Option<Held>,
+    /// Only while a pointer press handler runs; semantic and keyboard presses have no point.
+    press_at: Option<(f32, f32)>,
     last_press: Option<LastPress>,
     click_sequence: u64,
     momentum: Option<Momentum>,
     /// Where the mouse (or pen) is, for hover after layout changes.
     pub hover_at: Option<(f32, f32)>,
+}
+
+impl WindowState {
+    pub(crate) fn pointer_position_in(&self, id: &str) -> Option<(f32, f32)> {
+        let at = self.interaction.borrow().pointer.press_at?;
+        let kernel = self.kernel.borrow();
+        let node = kernel.find(id)?;
+        let (x, y, _, _) = kernel.rect(node);
+        Some((at.0 - x, at.1 - y))
+    }
 }
 
 fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -263,7 +275,13 @@ impl Window {
     /// The behavior of `n`'s element kind, if it has any.
     fn behavior_of(&self, n: Option<NodeId>) -> Option<(NodeId, &'static dyn Behavior)> {
         let n = n?;
-        let kind = self.w.kernel.borrow().kind(n);
+        let kernel = self.w.kernel.borrow();
+        // A drag handler can remove its allocation while this pointer is still captured.
+        // Cancellation and later native events must release it without reading a retired node.
+        if !kernel.is_alive(n) || kernel.is_exiting(n) {
+            return None;
+        }
+        let kind = kernel.kind(n);
         behavior(kind).map(|b| (n, b))
     }
     /// The target's own drag behavior for this pointer, if it has one.
@@ -435,7 +453,11 @@ impl Window {
             self.set_hover(None);
         }
         let button = if secondary { Button::Secondary } else { ev.button };
-        if button == Button::Primary && !outside {
+        let preserve_focus = {
+            let k = self.w.kernel.borrow();
+            k.up_from(hit, |n| k.preserves_focus_on_press(n)).is_some()
+        };
+        if button == Button::Primary && !outside && !preserve_focus {
             // A press focuses what it lands on if that takes focus; anything else drops focus.
             let focus = target.filter(|n| self.w.kernel.borrow().is_focusable(*n));
             let _ = self.set_focus(focus);
@@ -621,7 +643,9 @@ impl Window {
                 if h.button == Button::Secondary {
                     self.run(n, &[HandlerKind::SecondaryPress], None);
                 } else if h.button == Button::Primary {
+                    self.w.interaction.borrow_mut().pointer.press_at = Some(h.at);
                     self.run(n, &[HandlerKind::Press, HandlerKind::Toggle], None);
+                    self.w.interaction.borrow_mut().pointer.press_at = None;
                     if h.clicks == 2 {
                         self.run(n, &[HandlerKind::DoublePress], None);
                     }
@@ -683,7 +707,7 @@ impl Window {
         let Some(n) = h.target else { return };
         let handler = {
             let k = self.w.kernel.borrow();
-            if !k.is_alive(n) {
+            if !k.is_alive(n) || k.state(n).contains(State::DISABLED) {
                 return;
             }
             k.handler(n, HandlerKind::Drag).and_then(|id| self.w.handlers.borrow().get(&id.0).cloned())
