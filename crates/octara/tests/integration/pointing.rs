@@ -78,7 +78,7 @@ fn a_picking_window_outlines_then_picks_instead_of_pressing() {
     };
     assert_eq!(picked.len(), 1);
     assert_eq!(picked[0].node.id.as_deref(), Some("save"));
-    let clipboard = w.app().platform().read_text();
+    let clipboard = w.clipboard_text();
     assert_eq!(clipboard.as_deref(), Some(picked[0].text.as_str()), "its line is on the clipboard");
     assert_eq!(w.display_list().items().len(), plain);
     w.tap("save").unwrap();

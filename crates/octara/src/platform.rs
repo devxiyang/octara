@@ -116,7 +116,6 @@ pub trait PlatformWindow {
         None
     }
     fn as_any(&self) -> &dyn Any;
-    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 /// Where a platform's answer goes (from any thread).
@@ -381,8 +380,9 @@ pub struct HeadlessWindow {
     pub shows_native: bool,
     /// Pretend snapshots are taken, missing these (`None`: no snapshots).
     pub snapshots: Option<Vec<String>>,
-    /// Pretend every native view is busy with this.
-    pub busy: Option<String>,
+    /// Pretend every native view is busy with this. Keep a clone before opening the window
+    /// to simulate native work starting or completing without borrowing the host mutably.
+    pub busy: std::rc::Rc<std::cell::RefCell<Option<String>>>,
     /// Every element picked, in order.
     pub picked: Vec<crate::inspect::Picked>,
     /// How the pointer looks.
@@ -414,12 +414,9 @@ impl PlatformWindow for HeadlessWindow {
         self.snapshots.clone().ok_or_else(|| "headless: no platform view to take a snapshot of".into())
     }
     fn native_busy(&self, _: crate::native::NativeId) -> Option<String> {
-        self.busy.clone()
+        self.busy.borrow().clone()
     }
     fn as_any(&self) -> &dyn Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 }

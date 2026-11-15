@@ -161,7 +161,7 @@ not the only way to prevent a task from using a retired window.
 | Task::detach | Choose App ownership at creation; migrate intentional Chat background work |
 | StateList::all synonym | Keep source() as the projection name; preserve Source and incremental operators |
 | Public graph/sequence implementation paths | Supported reactive exports, no old-path aliases |
-| Public Window::kernel_mut (removed in round seven) and unrestricted platform mutable-borrow access (pending) | Narrow host operations and internal test access, installed before removing callers |
+| Public Window::kernel_mut (removed in round seven) and unrestricted platform mutable-borrow access (removed in round eight) | Narrow host operations and internal test access, installed before removing callers |
 | Duplicated activation checks, Inspector dispatch and content representations | One owner per policy, adapters at boundaries |
 | Obsolete diagnostic fixes, examples and migration shims | Migrate docs, CLI vocabulary expectations, generated skill and callers with each API slice |
 
@@ -454,9 +454,8 @@ Existing external callers now use the capability they actually need:
   covers hiding, display, detach/reattach, renaming, slot replacement and removal/reinsertion;
   integration tests retain the focus, selection and Inspector checks through public events.
 
-This slice does not remove `platform_window_mut` or `App::platform`: the desktop shell still
-uses mutable host access and needs its own ownership change. No general testing escape hatch
-was introduced.
+This slice left `platform_window_mut` and mutable `App::platform` access for round eight below.
+No general testing escape hatch was introduced.
 
 Validation: 652 workspace tests passed (three ignored), including the relocated Kernel test,
 semantic-scroll accessibility deltas, culling/reference equivalence and migrated examples.
@@ -471,6 +470,41 @@ and GPU capture. Evidence: `/tmp/octara-window-access-workspace.log`,
 `/tmp/octara-window-access-clippy.log`, `/tmp/octara-window-access-bench.log` and
 `/tmp/octara-window-access-live-20261115`. Live requests use framework input; this is not a new
 qualification of OS input or native IME.
+
+## Eighth-round platform mutation boundary
+
+`Window::platform_window_mut` and `PlatformWindow::as_any_mut` are removed without aliases.
+`App::platform` now returns `Ref<dyn Platform>`; it and `Window::platform_window` remain available
+for read-only observation. The runtime retains the mutable protocol internally. Application
+code uses `App::open_window`, scoped clipboard operations and normal input/frame delivery.
+
+The desktop backend's private `WindowHost(RefCell<WinitWindow>)` implements `PlatformWindow` and
+owns the native window state. The shell's existing private `ww` helper downcasts the read-only
+adapter to this private type, then borrows its state for the duration of a host operation. It
+never hands application code a general mutable backend reference. Core-to-host presentation
+uses the same adapter's protocol methods. This preserves existing borrowing/reentrancy rules;
+application callbacks must still run outside a borrowed host. There are no new public host
+handles, registries, Rc owners or close protocols. Closing drops the adapter and native state
+immediately, including the routing entry and secure-input cleanup.
+
+Headless request capabilities are configured before opening with `HeadlessPlatform::with_window`.
+Only the simulated native-busy value has a shared test control: `HeadlessWindow::busy` is an
+`Rc<RefCell<Option<String>>>`, retained by the fixture to start/finish native loading. It cannot
+replace the host or alter its presented frames, requests, text input or window lifetime.
+Clipboard tests use the existing scoped write API and narrow text query; menus/URL records are
+still read through the read-only platform adapter.
+
+Validation: 653 workspace tests passed (three ignored), including the new host-drop test that
+retains old Window handles across close, same-name reopen and App shutdown, verifying exactly-once
+release without closing a replacement window. Clipboard, native-busy capture, request withdrawal
+and native text tests passed; API inventory checks reject the removed mutable entry points.
+Workspace Clippy with warnings denied, formatting and diff checks passed. The rebuilt real-window
+target fixture passed all 73 requests, including close/reopen, retired targets and hot reload;
+all seven live Inspector scenarios passed, including gestures, native resize, window routing,
+WebKit and GPU captures. Evidence: `/tmp/octara-host-access-workspace.log`,
+`/tmp/octara-host-access-clippy.log`, `/tmp/octara-host-access-targets-20261115` and
+`/tmp/octara-host-access-live-20261115`. These live requests use framework/semantic input; OS
+keyboard input and native Chinese IME were not requalified.
 
 ## References
 

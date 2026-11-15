@@ -375,12 +375,13 @@ fn a_handler_restores_its_component_context_and_owns_spawned_tasks() {
 #[test]
 fn cancelling_a_task_withdraws_its_pending_request() {
     use octara::ask::Answer;
-    use octara::platform::HeadlessWindow;
+    use octara::platform::{HeadlessPlatform, HeadlessWindow};
     use std::cell::RefCell;
     for native in [false, true] {
         let running = Rc::new(RefCell::new(None::<octara::task::Task>));
         let task = running.clone();
-        let mut app = Window::headless(move || {
+        let platform = HeadlessPlatform::with_window(HeadlessWindow { shows_asks: native, ..Default::default() });
+        let mut app = Window::headless_on(platform, move || {
             let (start, cancel) = (task.clone(), task.clone());
             col()
                 .child(el().id("ask").size(10.0).on_press(move || {
@@ -391,7 +392,6 @@ fn cancelling_a_task_withdraws_its_pending_request() {
                 .child(el().id("cancel").size(10.0).on_press(move || cancel.borrow().as_ref().unwrap().cancel()))
                 .into()
         });
-        app.platform_window_mut().as_any_mut().downcast_mut::<HeadlessWindow>().unwrap().shows_asks = native;
         app.tap("ask").unwrap();
         let id = app.asks()[0].0;
         app.dispatch(Event::Press("cancel".into())).unwrap();
@@ -469,8 +469,9 @@ fn disposing_a_scope_retires_requests_even_when_the_future_is_retained() {
 
 #[test]
 fn dropping_a_request_before_presentation_does_not_show_it() {
-    use octara::platform::HeadlessWindow;
-    let mut app = Window::headless(|| {
+    use octara::platform::{HeadlessPlatform, HeadlessWindow};
+    let platform = HeadlessPlatform::with_window(HeadlessWindow { shows_asks: true, ..Default::default() });
+    let mut app = Window::headless_on(platform, || {
         el().id("ask")
             .size(10.0)
             .on_press(|| {
@@ -478,7 +479,6 @@ fn dropping_a_request_before_presentation_does_not_show_it() {
             })
             .into()
     });
-    app.platform_window_mut().as_any_mut().downcast_mut::<HeadlessWindow>().unwrap().shows_asks = true;
     app.tap("ask").unwrap();
     assert!(app.asks().is_empty());
     let p = app.platform_window();

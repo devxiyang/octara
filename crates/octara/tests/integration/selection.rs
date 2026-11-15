@@ -73,7 +73,7 @@ fn the_pointer_selects_words_blocks_and_ranges() {
     assert_eq!(w.selected_text().as_deref(), Some("alpha one\nbeta two\ngamma three"));
     // `mod+c` copies; `mod+a` selects the region.
     w.press_key("mod+c").unwrap();
-    assert_eq!(w.app().platform().read_text().as_deref(), Some("alpha one\nbeta two\ngamma three"));
+    assert_eq!(w.clipboard_text().as_deref(), Some("alpha one\nbeta two\ngamma three"));
     w.clear_selection();
     w.pointer_move(ax, ay);
     w.press_key("mod+a").unwrap();

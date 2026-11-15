@@ -213,8 +213,8 @@ struct Shell {
 
 /// `f` on the winit window behind app window `w`.
 fn ww<R>(w: &AppWindow, f: impl FnOnce(&mut WinitWindow) -> R) -> Option<R> {
-    let mut pw = w.platform_window_mut();
-    pw.as_any_mut().downcast_mut::<WinitWindow>().map(f)
+    let pw = w.platform_window();
+    pw.as_any().downcast_ref::<platform::WindowHost>().map(|host| f(&mut host.0.borrow_mut()))
 }
 
 fn modifiers(m: ModifiersState) -> Modifiers {

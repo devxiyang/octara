@@ -267,7 +267,7 @@ fn cut_copy_paste() {
     keys(&mut app, &["home", "cmd+v"]);
     assert_eq!(value(&app), "twoone ");
     assert_eq!(selection(&app), 3..3);
-    app.app().platform().write_text("a\nb");
+    app.app().run(|| write_to_clipboard("a\nb"));
     keys(&mut app, &["cmd+v"]);
     assert_eq!(value(&app), "twoa bone ", "one line: breaks become spaces");
 }

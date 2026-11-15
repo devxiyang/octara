@@ -59,7 +59,7 @@ fn nothing_reports_the_value() {
 #[test]
 fn editing_keeps_it_in() {
     let mut app = app(TargetPlatform::MacOs);
-    app.app().platform().write_text("clip");
+    app.app().run(|| write_to_clipboard("clip"));
     app.press_key("mod+a").unwrap();
     app.press_key("mod+c").unwrap();
     app.press_key("mod+x").unwrap();
@@ -91,7 +91,7 @@ fn revealing_shows_the_text_to_the_screen_only_for_agents() {
     // Copy stays off while revealed.
     app.tap("pw").unwrap();
     assert!(app.inspect().text_input.is_none(), "revealing on screen does not expose editing feedback");
-    app.app().platform().write_text("before");
+    app.app().run(|| write_to_clipboard("before"));
     app.press_key("mod+a").unwrap();
     app.press_key("mod+c").unwrap();
     assert_eq!(app.clipboard_text().as_deref(), Some("before"), "copy left the clipboard alone");

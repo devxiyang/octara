@@ -9,6 +9,7 @@ use octara::platform::{CursorStyle, Frame, Platform, PlatformWindow, TextInput};
 use octara::serde_json::{Value, json};
 use octara_render::{GpuRenderer, wgpu};
 use std::any::Any;
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -149,7 +150,7 @@ impl Platform for WinitPlatform {
             (native, host, link)
         };
         shared.windows.borrow_mut().insert(wid, id);
-        Ok(Box::new(WinitWindow {
+        Ok(Box::new(WindowHost(RefCell::new(WinitWindow {
             window,
             shared: shared.clone(),
             surface,
@@ -180,7 +181,7 @@ impl Platform for WinitPlatform {
             unshown: None,
             occluded: None,
             frames: 0,
-        }))
+        }))))
     }
     fn waker(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
         let proxy = self.shared.proxy.clone();
@@ -210,6 +211,32 @@ fn new_gpu(instance: wgpu::Instance, surface: &wgpu::Surface<'static>) -> Result
         .unwrap_or(caps.formats[0]);
     let renderer = GpuRenderer::with_device(device, queue, format);
     Ok(Gpu { instance, adapter, renderer, format })
+}
+
+/// The runtime owns this adapter and drops it on window close, even if an AppWindow handle
+/// survives. Only this backend can access its mutable native state; application code sees the
+/// PlatformWindow protocol. No extra strong handle can keep a closed OS window alive.
+pub(crate) struct WindowHost(pub(crate) RefCell<WinitWindow>);
+
+impl PlatformWindow for WindowHost {
+    fn present(&mut self, frame: Frame) {
+        self.0.get_mut().present(frame);
+    }
+    fn shows_ask(&self, ask: &octara::ask::Ask) -> bool {
+        self.0.borrow().shows_ask(ask)
+    }
+    fn shows_native(&self, kind: &str, slot: octara::native::Slot) -> bool {
+        self.0.borrow().shows_native(kind, slot)
+    }
+    fn snapshot_native(&mut self, id: octara::native::NativeId) -> Result<Vec<String>, String> {
+        self.0.get_mut().snapshot_native(id)
+    }
+    fn native_busy(&self, id: octara::native::NativeId) -> Option<String> {
+        self.0.borrow().native_busy(id)
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 /// One winit window and what shows it.
@@ -580,7 +607,7 @@ impl WinitWindow {
     }
 }
 
-impl PlatformWindow for WinitWindow {
+impl WinitWindow {
     fn present(&mut self, frame: Frame) {
         // Placements are applied with the next frame: one is needed.
         let placed = !frame.native.is_empty();
@@ -641,12 +668,6 @@ impl PlatformWindow for WinitWindow {
         }
         let _ = id;
         None
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
     }
 }
 

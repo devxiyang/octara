@@ -25,17 +25,13 @@ impl Painter for Counting {
 }
 
 /// A platform that shows native views, takes snapshots (handed back by the test) and can be busy.
-fn snapping() -> HeadlessPlatform {
+fn snapping(busy: Rc<RefCell<Option<String>>>) -> HeadlessPlatform {
     HeadlessPlatform::with_window(HeadlessWindow {
         shows_native: true,
+        busy,
         snapshots: Some(vec!["video shows black".into()]),
         ..HeadlessWindow::default()
     })
-}
-
-/// Pretends every native view of `app` is busy with `what`.
-fn set_busy(app: &Window, what: Option<&str>) {
-    app.platform_window_mut().as_any_mut().downcast_mut::<HeadlessWindow>().unwrap().busy = what.map(str::to_owned);
 }
 
 fn view() -> View {
@@ -68,12 +64,13 @@ fn a_headless_capture_reports_placeholders() {
 
 #[test]
 fn snapshots_draw_in_place_and_are_cleared() {
-    let mut app = Window::headless_on(snapping(), view);
+    let busy = Rc::new(RefCell::new(None));
+    let mut app = Window::headless_on(snapping(busy.clone()), view);
 
     // A busy view keeps the app unsettled.
-    set_busy(&app, Some("loading https://example.com"));
+    *busy.borrow_mut() = Some("loading https://example.com".into());
     assert_eq!(app.unsettled(), ["web view #web: loading https://example.com"]);
-    set_busy(&app, None);
+    *busy.borrow_mut() = None;
     assert!(app.unsettled().is_empty());
 
     let coming = app.capture_begin();

@@ -86,6 +86,10 @@ platform                         what the app needs from the system (traits); he
   coordinated. Use `App::set_text_engine` for shared text resources and semantic scroll events
   for scrolling. Counter resets, the benchmark layout switch and the reference-rendering culling
   switch are explicit instrumentation controls; they do not grant tree mutation access.
+- Platform inspection is read-only too: `App::platform()` and `Window::platform_window()` expose
+  their protocols without mutable borrows. The desktop shell mutates its private `WindowHost`
+  adapter's native state; closing the window drops that adapter. Apps use scoped clipboard and
+  window operations, and headless tests configure host capabilities before opening.
 - The reactive runtime carries one owner (a window): every binding, memo, watch and task runs as
   the window that made it, so free functions (`state`, `spawn`, `current_window`) need no
   context passed.

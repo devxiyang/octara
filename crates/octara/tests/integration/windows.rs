@@ -304,6 +304,68 @@ fn a_handler_opens_a_window_at_the_end_of_its_frame() {
 }
 
 #[test]
+fn closing_and_shutdown_release_hosts_even_when_window_handles_survive() {
+    use octara::platform::{Frame, Platform, PlatformWindow};
+    use std::any::Any;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct Host {
+        id: WindowId,
+        dropped: Rc<RefCell<Vec<WindowId>>>,
+    }
+    impl PlatformWindow for Host {
+        fn present(&mut self, _: Frame) {}
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+    impl Drop for Host {
+        fn drop(&mut self) {
+            self.dropped.borrow_mut().push(self.id);
+        }
+    }
+    struct System(Rc<RefCell<Vec<WindowId>>>);
+    impl Platform for System {
+        fn read_text(&mut self) -> Option<String> {
+            None
+        }
+        fn write_text(&mut self, _: &str) {}
+        fn open_window(&mut self, id: WindowId, _: &WindowOptions) -> Result<Box<dyn PlatformWindow>, String> {
+            Ok(Box::new(Host { id, dropped: self.0.clone() }))
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    let dropped = Rc::new(RefCell::new(Vec::new()));
+    let app = App::new(System(dropped.clone()));
+    let open = || app.open_window(WindowOptions::new("Same name"), || el().into()).unwrap();
+    let first = open();
+    let second = open();
+    assert!(dropped.borrow().is_empty());
+    app.close_window(first.id());
+    assert_eq!(*dropped.borrow(), [first.id()], "closing immediately releases only its host");
+    assert!(first.is_closed());
+    assert!(!second.is_closed());
+    let reopened = open();
+    assert_ne!(reopened.id(), first.id());
+    app.close_window(first.id());
+    assert_eq!(*dropped.borrow(), [first.id()], "an old handle cannot close the replacement host");
+
+    app.shutdown();
+    assert!(second.is_closed() && reopened.is_closed());
+    let mut expected = vec![first.id(), second.id(), reopened.id()];
+    expected.sort();
+    dropped.borrow_mut().sort();
+    assert_eq!(*dropped.borrow(), expected, "shutdown releases each live host once");
+    app.shutdown();
+    drop((first, second, reopened));
+    assert_eq!(*dropped.borrow(), expected, "dropping stale handles does not release a host twice");
+}
+
+#[test]
 fn closing_a_window_disposes_its_scope_and_frees_it() {
     let app = App::new(HeadlessPlatform::default());
     let ticks = app.run(|| state("ticks", || 0u32));

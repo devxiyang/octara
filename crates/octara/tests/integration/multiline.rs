@@ -130,7 +130,7 @@ fn selection_rectangles_pointer_paste() {
     assert_eq!(caret(&app), 14);
 
     // A paste keeps its line breaks.
-    app.app().platform().write_text("1\r\n2");
+    app.app().run(|| write_to_clipboard("1\r\n2"));
     place(&mut app, 0);
     app.press_key("mod+v").unwrap();
     assert!(value(&app).starts_with("1\n2"), "{:?}", value(&app));

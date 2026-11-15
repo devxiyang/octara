@@ -117,7 +117,7 @@ fn a_unicode_burst_keeps_the_selection() {
     }
     assert_eq!(shown(&window), complete, "paced steps eventually show every byte in order");
     window.press_key("mod+c").unwrap();
-    assert_eq!(app.platform().read_text().as_deref(), Some("已选😀"));
+    assert_eq!(window.clipboard_text().as_deref(), Some("已选😀"));
     assert!(!app.pending().iter().any(|pending| pending.kind == WorkKind::Motion && pending.label == "paced text"));
     assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
 }

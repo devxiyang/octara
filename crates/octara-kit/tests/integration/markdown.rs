@@ -53,7 +53,7 @@ fn blocks_are_elements_with_roles_and_keys() {
 fn copy_buttons_write_the_code() {
     let mut w = Window::headless(|| markdown("```\nlet a = 1;\nlet b = 2;\n```\n").id("md").into());
     w.tap("Copy").unwrap();
-    assert_eq!(w.app().platform().read_text().as_deref(), Some("let a = 1;\nlet b = 2;"));
+    assert_eq!(w.clipboard_text().as_deref(), Some("let a = 1;\nlet b = 2;"));
 }
 
 #[test]
@@ -150,7 +150,7 @@ fn a_fence_streams_as_code_and_prose_follows_its_close() {
 
 fn copy(w: &mut Window, chord: &str) -> String {
     w.press_key(chord).unwrap();
-    w.app().platform().read_text().unwrap_or_default()
+    w.clipboard_text().unwrap_or_default()
 }
 
 /// Presses at the start of `a`'s text and releases `to` px into `b`'s.

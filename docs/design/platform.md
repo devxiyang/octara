@@ -36,9 +36,16 @@ platform is presented a `Frame` after each operation.
   keeps the native changes it was presented, the text input, a count of frames, and can be told
   to show native views, take snapshots or be busy (`HeadlessPlatform::with_window`).
 - `App::new(platform)` takes a backend's platform, whose `open_window` makes each window's
-  platform window; `App::platform()` and `Window::platform_window()` reach them.
-- The shell's `WinitPlatform` (arboard, the event loop's proxy) and `WinitWindow` implement
-  them. The platform opens a winit window inside the loop callback the app runs in (the shell
+  platform window. `App::platform()` and `Window::platform_window()` offer read-only inspection;
+  no public mutable borrow or `PlatformWindow::as_any_mut` is available. Clipboard access uses
+  the existing scoped functions, and window creation goes through App so its identity and
+  lifetime stay coordinated. Configure headless capabilities with `with_window` before opening;
+  retain a clone of `HeadlessWindow::busy` to simulate native work starting/completing.
+- The shell's `WinitPlatform` (arboard, the event loop's proxy) and private `WindowHost` implement
+  them. `WindowHost` owns a `RefCell<WinitWindow>`: the shell alone can downcast and mutate its
+  concrete host, while the runtime drives the platform protocol. Closing replaces/drops the
+  adapter, immediately releasing its native state even when old application window handles
+  survive; there is no additional strong host handle or lifetime registry. The platform opens a winit window inside the loop callback the app runs in (the shell
   holds the active loop for each callback); every window has its own surface (one adapter and
   renderer for all), accessibility adapter, native view host, input method position and secure
   input, and frame clock. The app's `open_window` and `close_window` open and close real

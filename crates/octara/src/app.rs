@@ -1882,15 +1882,11 @@ impl Window {
         true
     }
 
-    /// The main window on the platform (downcast with `as_any`; headless, a
-    /// [`HeadlessWindow`](crate::platform::HeadlessWindow)).
+    /// Read the backend adapter (downcast with `as_any`; headless, a
+    /// [`HeadlessWindow`](crate::platform::HeadlessWindow)). Mutation belongs to the runtime
+    /// and backend; tests configure a headless host before opening its window.
     pub fn platform_window(&self) -> std::cell::Ref<'_, dyn crate::platform::PlatformWindow> {
         std::cell::Ref::map(self.w.platform.borrow(), |w| &**w)
-    }
-
-    /// The window on the platform, to change (a headless window's pretences in tests).
-    pub fn platform_window_mut(&self) -> std::cell::RefMut<'_, dyn crate::platform::PlatformWindow> {
-        std::cell::RefMut::map(self.w.platform.borrow_mut(), |w| &mut **w)
     }
 
     /// Tells the window's platform about the focused text field when it changed: where its
@@ -1974,9 +1970,11 @@ impl App {
         self.app.painter.borrow_mut().take()
     }
 
-    /// The system the app runs on (downcast with `as_any`; headless, a
-    /// [`HeadlessPlatform`](crate::platform::HeadlessPlatform), whose clipboard tests set).
-    pub fn platform(&self) -> std::cell::RefMut<'_, dyn crate::platform::Platform> {
-        std::cell::RefMut::map(self.app.system.borrow_mut(), |p| &mut **p)
+    /// Read the system adapter (downcast with `as_any`; headless, a
+    /// [`HeadlessPlatform`](crate::platform::HeadlessPlatform)). Clipboard operations use
+    /// [`crate::view::read_from_clipboard`] / [`crate::view::write_to_clipboard`] inside
+    /// [`Self::run`] or a handler; open windows through [`Self::open_window`].
+    pub fn platform(&self) -> std::cell::Ref<'_, dyn crate::platform::Platform> {
+        std::cell::Ref::map(self.app.system.borrow(), |p| &**p)
     }
 }
