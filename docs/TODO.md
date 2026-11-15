@@ -9,11 +9,12 @@ make the corresponding design document describe it.
 1. Core interaction and reusable components, exercised in Showcase and the Chat reference app:
    composed keyboard/IME behavior, focus, selection, overlays and real-window evidence.
 2. Extend Agent feedback from real windows: target/build identity, sampled properties and native input.
-3. The owned macOS backend (NSTextInputClient, live resize in the frame's transaction).
+3. The owned macOS backend beyond the implemented NSTextInputClient adapter and synchronized
+   native-window resize in the current shell.
 4. Native chrome: Windows/Linux menu integration, AppKit tooltips, toolbars and title bars.
    macOS menus and alert sheets, and rfd file dialogs are implemented in the winit shell.
-5. Components: richer menus, dialogs and sheets, tabs, tables, radios, sliders and progress.
-   Basic lists, modal popovers and searchable comboboxes are implemented.
+5. Components: richer menus, dialogs and sheets, tabs, tables, sliders and progress.
+   Basic lists, modal popovers, searchable comboboxes, fields and radio groups are implemented.
 6. Images: JPEG, WebP, SVG, loading and caching.
 7. [Native Island](design/native-island.md): focus, accessibility joining, lazy creation.
 8. Windows: WebView2 in DirectComposition; `surface` textures; Linux: WPE as a texture.

@@ -430,9 +430,8 @@ impl Kernel {
                 node.set_text_selection(sel);
             }
         }
-        // A tooltip saying what the label says is not said twice.
-        if let Some(d) = n.description.as_ref().or(n.tooltip.as_ref().filter(|t| n.label.as_ref() != Some(*t))) {
-            node.set_description(d.as_str());
+        if let Some(d) = self.description(id) {
+            node.set_description(d);
         }
         // A text input's content, or the value set for other controls (a combo box's choice).
         if n.kind() == Kind::TextInput || n.value.is_some() {
@@ -441,6 +440,12 @@ impl Kernel {
         }
         if let Some(c) = n.checked {
             node.set_toggled(if c { ak::Toggled::True } else { ak::Toggled::False });
+        }
+        if n.required == Some(true) {
+            node.set_required();
+        }
+        if n.invalid == Some(true) {
+            node.set_invalid(ak::Invalid::True);
         }
         if let Some(e) = n.expanded {
             node.set_expanded(e);
@@ -543,8 +548,11 @@ impl Kernel {
             id: n.test_id.clone(),
             role: snake(&format!("{role:?}")),
             name,
+            description: self.description(id).map(str::to_owned),
             value: (n.kind() == Kind::TextInput || n.value.is_some()).then(|| self.reported_value(id)),
             checked: n.checked,
+            required: n.required,
+            invalid: n.invalid,
             expanded: n.expanded,
             active_descendant: self.active_descendant(id).and_then(|target| self.node(target).test_id.clone()),
             states,

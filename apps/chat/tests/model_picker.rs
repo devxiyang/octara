@@ -88,6 +88,11 @@ fn chinese_search_selects_same_named_models_by_id_without_consuming_the_draft() 
     let second = Probe::streaming("聊天模型");
     let other = Probe::streaming("Writer");
     let mut window = open(vec![first.entry("first"), other.entry("writer"), second.entry("second")]);
+    assert_eq!(
+        window.inspect().find("model-picker").unwrap().description.as_deref(),
+        Some("聊天模型\nApplies to the next message or regenerated answer."),
+        "the Agent reads the same model context as assistive technology"
+    );
     window.invoke("chat.focus_composer").unwrap();
     window.type_text("Keep this draft 😀");
     window.press_key("shift+left").unwrap();

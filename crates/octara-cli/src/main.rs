@@ -405,11 +405,19 @@ fn snapshot_text(snap: &serde_json::Value) -> String {
         if let Some(name) = n["name"].as_str() {
             let _ = write!(s, " {name:?}");
         }
+        if let Some(description) = n["description"].as_str().filter(|s| !s.is_empty()) {
+            let _ = write!(s, " description={description:?}");
+        }
         if let Some(v) = n["value"].as_str() {
             let _ = write!(s, " value={v:?}");
         }
         if let Some(c) = n["checked"].as_bool() {
             let _ = write!(s, " checked={c}");
+        }
+        for property in ["required", "invalid"] {
+            if let Some(value) = n[property].as_bool() {
+                let _ = write!(s, " {property}={value}");
+            }
         }
         let list = |k: &str| n[k].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" ")).unwrap_or_default();
         let (states, actions) = (list("states"), list("actions"));

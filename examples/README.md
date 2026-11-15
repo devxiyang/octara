@@ -46,6 +46,16 @@ printed temporary directory.
 
 ## Specs
 
+### Fields and radio groups
+
+`cargo run -p octara-examples --bin window -- showcase forms` opens a small settings form.
+It uses `field` for `profile-name`, controlled `radio_group` choices in `reply-style`, and an
+ordinary Rust submit handler. Inspector reports the control's description, required/invalid
+state and the disabled Save action's reason. Cmd/Ctrl+Shift+H changes supporting text while
+the editor stays mounted; Cmd/Ctrl+Shift+R reorders and renames options by stable ID.
+
+The headless regressions and real-window runner are documented in [FORMS.md](FORMS.md).
+
 ### Popovers and searchable choices
 
 `cargo run -p octara-examples --bin window -- showcase choices` opens the component scene.

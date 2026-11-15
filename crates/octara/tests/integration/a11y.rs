@@ -4,6 +4,70 @@ use octara::accesskit::{Action, Role as AkRole, Toggled};
 use octara::kernel::a11y::a11y_id;
 use octara::prelude::*;
 
+#[test]
+fn form_semantics_update_without_replacing_the_editor_or_its_target() {
+    let mut app = Window::headless(|| {
+        let invalid = state("invalid", || true);
+        on_command("validate", move || invalid.set(false));
+        col()
+            .size_full()
+            .child(
+                text_input()
+                    .id("field")
+                    .w(240)
+                    .label("Name")
+                    .value("Ada")
+                    .required(move || invalid.get())
+                    .invalid(move || invalid.get())
+                    .description(move || if invalid.get() { "Enter your full name".to_owned() } else { "Your display name".to_owned() })
+                    .tooltip("Ignored because the field has a description"),
+            )
+            .child(el().id("hint").label("Name").tooltip(move || if invalid.get() { "Name".to_owned() } else { "Enter a name".to_owned() }))
+            .child(el().id("optional").required(false).invalid(false))
+            .into()
+    });
+    app.dispatch(Event::Focus("field".into())).unwrap();
+    app.set_selection(1, 3);
+    app.event(InputEvent::Preedit { text: "ni".into(), selection: Some((0, 2)) });
+    let before = app.inspect();
+    let field = app.kernel().find("field").unwrap();
+    let initial = app.accessibility_update();
+    let initial_field = &initial.nodes.iter().find(|(id, _)| *id == a11y_id(field)).unwrap().1;
+    assert!(initial_field.is_required());
+    assert_eq!(initial_field.invalid(), Some(octara::accesskit::Invalid::True));
+    assert_eq!(initial_field.description(), Some("Enter your full name"));
+    assert_eq!(before.find("field").unwrap().required, Some(true));
+    assert_eq!(before.find("field").unwrap().invalid, Some(true));
+    assert_eq!(before.find("hint").unwrap().description, None, "duplicate labels are not repeated");
+    assert_eq!(before.find("optional").unwrap().required, Some(false));
+    assert_eq!(before.find("optional").unwrap().invalid, Some(false));
+    assert_eq!(before.root.required, None, "absent semantics stay distinct from false");
+
+    app.invoke("validate").unwrap();
+    let after = app.inspect();
+    assert_eq!(app.kernel().find("field"), Some(field));
+    assert_eq!(after.find("field").unwrap().target, before.find("field").unwrap().target);
+    assert_eq!(after.text_input, before.text_input, "validation metadata preserves selection and composition");
+    assert_eq!(after.find("field").unwrap().required, Some(false));
+    assert_eq!(after.find("field").unwrap().invalid, Some(false));
+    assert_eq!(after.find("field").unwrap().description.as_deref(), Some("Your display name"));
+    assert_eq!(after.find("hint").unwrap().description.as_deref(), Some("Enter a name"));
+    assert!(after.to_json().contains("\"invalid\":false"));
+    let update = app.accessibility_update();
+    for id in ["field", "hint"] {
+        let node = a11y_id(app.kernel().find(id).unwrap());
+        let exported = &update.nodes.iter().find(|(id, _)| *id == node).expect("changed semantics are sent").1;
+        assert_eq!(exported.description(), after.find(id).unwrap().description.as_deref());
+        if id == "field" {
+            assert!(!exported.is_required());
+            assert_eq!(exported.invalid(), None, "false clears the previous invalid state");
+        }
+    }
+    assert!(app.accessibility_update().nodes.is_empty());
+    assert!(app.layout_issues().is_empty(), "{:?}", app.layout_issues());
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
 fn view() -> View {
     let on = state("on", || false);
     let count = state("count", || 0);

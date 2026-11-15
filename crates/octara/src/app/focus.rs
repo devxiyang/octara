@@ -161,11 +161,33 @@ impl Window {
     pub(crate) fn arrow(&self, arrow: Arrow) -> bool {
         self.set_modality(Modality::Keyboard);
         let Some(f) = self.w.interaction.borrow().focused else { return false };
-        let to = self.w.kernel.borrow().group_step(f, arrow);
-        match to {
-            Some(n) => self.set_focus(Some(n)).is_ok(),
-            None => false,
+        let (to, group) = {
+            let k = self.w.kernel.borrow();
+            let to = k.group_step(f, arrow);
+            (to, to.filter(|n| *n != f || k.checked(*n) != Some(true)).and_then(|n| k.radio_group(n)))
+        };
+        let Some(n) = to else { return false };
+        if self.set_focus(Some(n)).is_err() {
+            return false;
         }
+        if let Some(group) = group {
+            // Focus handlers may remove, disable or redirect away from this radio. Let those
+            // changes land before choosing it, then check the original allocation and group.
+            self.settle_frame();
+            let choose = {
+                let k = self.w.kernel.borrow();
+                self.w.interaction.borrow().focused == Some(n)
+                    && k.is_shown(n)
+                    && k.is_focusable(n)
+                    && !k.state(n).contains(State::DISABLED)
+                    && k.radio_group(n) == Some(group)
+                    && self.live(Some(n)) == Some(n)
+            };
+            if choose {
+                self.run(n, &[HandlerKind::Press], None);
+            }
+        }
+        true
     }
 
     /// Escape: dismisses the open modal, else drops focus.

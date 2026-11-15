@@ -95,7 +95,7 @@ assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
   its row being hovered.
 - Components with styling built in come from `octara_kit`: `button`, `primary_button`,
   `ghost_button`, `toggle_button`, `icon_button`, `checkbox`, `switch`, `text_field`, `select`,
-  `combobox`, `popover`,
+  `combobox`, `popover`, `field`, `radio_group`,
   `spinner`, `chip`, `removable_chip`, `callout`, `collapsible`, `list` / `list_item` /
   `list_header`, `split`.
 - `octara_kit::markdown::markdown(source)` renders Markdown as a selectable document (headings,
@@ -218,6 +218,15 @@ assert_eq!(app.kernel().text_of("saved").as_deref(), Some("saved 1"));
 
 - Text: `octara_kit::text_field(signal)` binds a `Signal<String>`; `.on_submit(..)` runs on Enter.
   Selection, undo, clipboard and input methods are the runtime's.
+- `field(id, label, control, info)` surrounds an ordinary control with its label and supporting
+  text. The tracked `info` closure returns `FieldInfo { description, error, required }`; these
+  become the control's description, invalid and required semantics in Inspector and AccessKit.
+  Validation stays in ordinary Rust, and changing it keeps the editor mounted. Validate again
+  in the submit handler; `required` and `invalid` describe the value rather than blocking edits.
+- `radio_group(id, label, model, options)` binds an `Option<String>` stable option ID, with
+  tracked `Vec<RadioOption>` choices. Tab enters once, arrows choose among enabled options,
+  and focus alone does not choose. Reordering keeps each option's identity; removing the
+  chosen option leaves the model unchanged until the application or person chooses again.
 - `octara vocab focus.next` (or any command) shows the built-in commands and their keys.
 
 ## Motion

@@ -3,6 +3,8 @@
 //! Every component returns an [`El`] (or a [`View`]), so callers keep chaining `id`, styles,
 //! `disabled` and handlers. Controlled components take a [`Model`]: a [`Signal`], or a
 //! `(getter, setter)` pair when the value lives elsewhere (for example in a list entry).
+//! Structural wrappers such as [`field`] return their container; configure the supplied
+//! control's handlers and disabled state before wrapping it.
 //! Colors come from theme [`Token`]s; semantics (role, checked, expanded, selected) are set for
 //! assistive technology and for tests.
 
@@ -10,12 +12,14 @@ use octara::prelude::*;
 use std::rc::Rc;
 
 mod combobox;
+mod forms;
 pub mod markdown;
 mod popover;
 mod status;
 mod structure;
 
 pub use combobox::{ComboboxOption, combobox};
+pub use forms::{FieldInfo, RadioOption, field, radio_group};
 pub use popover::popover;
 pub use status::{callout, chip, removable_chip, spinner};
 pub use structure::{collapsible, list, list_header, list_item, split};

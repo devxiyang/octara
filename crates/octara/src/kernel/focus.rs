@@ -146,7 +146,8 @@ impl Kernel {
 
     /// The Tab order inside `scope` (the open modal, else the window): focusable, enabled, shown
     /// nodes; positive `tab_index` first, then the rest in tree order; negative ones skipped.
-    /// A focus group is one stop: its focused member, else its selected one, else its first.
+    /// A focus group is one stop: its focused member, else its remembered or selected one,
+    /// else its first. A radio group's checked radio precedes its remembered member.
     pub fn focus_order(&self, scope: Option<NodeId>, focused: Option<NodeId>) -> Vec<NodeId> {
         let mut all = Vec::new();
         self.walk_shown(scope.unwrap_or(self.root), &mut |id| {
@@ -166,6 +167,13 @@ impl Kernel {
                     let members = self.group_members(g);
                     let pick = focused
                         .filter(|f| members.contains(f))
+                        .or_else(|| {
+                            (self.role(g) == Role::RadioGroup)
+                                .then(|| {
+                                    members.iter().copied().find(|m| self.role(*m) == Role::RadioButton && self.checked(*m) == Some(true))
+                                })
+                                .flatten()
+                        })
                         .or_else(|| self.node(g).group_current.filter(|c| members.contains(c)))
                         .or_else(|| members.iter().copied().find(|m| self.node(*m).state.contains(State::SELECTED)))
                         .unwrap_or(id);
@@ -211,6 +219,11 @@ impl Kernel {
             Arrow::Left | Arrow::Right => None,
         }?;
         Some(members[to])
+    }
+
+    /// The radio group whose navigation chooses this radio, if it belongs to one.
+    pub(crate) fn radio_group(&self, id: NodeId) -> Option<NodeId> {
+        (self.role(id) == Role::RadioButton).then(|| self.group_of(id)).flatten().filter(|g| self.role(*g) == Role::RadioGroup)
     }
 
     /// What a modal focuses when it opens: its `autofocus` element, else its first text field,

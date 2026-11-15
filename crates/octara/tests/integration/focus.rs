@@ -78,6 +78,145 @@ fn focus_groups_move_on_arrows_and_stop_once_for_tab() {
     assert_eq!(focused(&app).as_deref(), Some("c"));
 }
 
+#[test]
+fn radio_groups_enter_at_the_checked_radio_and_navigation_chooses_once() {
+    let mut app = Window::headless(|| {
+        let choice = state("choice", || 3);
+        let presses = state("presses", || 0);
+        on_command("choose-first", move || choice.set(1));
+        on_command("choose-third", move || choice.set(3));
+        col()
+            .size_full()
+            .child(button("before"))
+            .child(row().role(Role::RadioGroup).focus_group().children((1..=4).map(move |i| {
+                button(&format!("radio-{i}")).role(Role::RadioButton).disabled(i == 2).checked(move || choice.get() == i).on_press(
+                    move || {
+                        choice.set(i);
+                        presses.update(|n| *n += 1);
+                    },
+                )
+            })))
+            .child(button("after"))
+            .child(text(move || presses.get().to_string()).id("presses"))
+            .into()
+    });
+    app.press_key("tab").unwrap();
+    app.press_key("tab").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("radio-3"));
+    assert_eq!(app.kernel().text_of("presses").as_deref(), Some("0"), "Tab does not choose");
+    app.press_key("shift+tab").unwrap();
+    app.invoke("choose-first").unwrap();
+    app.press_key("tab").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("radio-1"), "checked beats the previously focused radio on entry");
+    app.invoke("choose-third").unwrap();
+    app.press_key("tab").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("after"), "the focused member remains the group's current stop");
+    app.press_key("shift+tab").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("radio-3"));
+    for (key, expected, count) in [("left", "radio-1", "1"), ("left", "radio-4", "2"), ("home", "radio-1", "3"), ("end", "radio-4", "4")] {
+        app.press_key(key).unwrap();
+        assert_eq!(app.inspect().focus.as_deref(), Some(expected));
+        assert_eq!(app.kernel().checked_of(expected), Some(true));
+        assert_eq!(app.kernel().text_of("presses").as_deref(), Some(count));
+    }
+    app.press_key("end").unwrap();
+    assert_eq!(app.kernel().text_of("presses").as_deref(), Some("4"), "staying on the same radio does not press it again");
+    app.dispatch(Event::Focus("radio-1".into())).unwrap();
+    assert_eq!(app.kernel().checked_of("radio-4"), Some(true), "ordinary focus does not choose");
+    assert_eq!(app.kernel().text_of("presses").as_deref(), Some("4"));
+    let tree = app.accessibility_tree();
+    for node in app.inspect().root.walk().into_iter().filter(|n| n.role == "radio_button") {
+        assert!(!node.states.iter().any(|s| s == "selected"));
+        let id = octara::kernel::a11y::a11y_id(app.kernel().find(node.id.as_deref().unwrap()).unwrap());
+        assert_eq!(tree.nodes.iter().find(|(n, _)| *n == id).unwrap().1.is_selected(), None);
+    }
+    assert!(app.layout_issues().is_empty(), "{:?}", app.layout_issues());
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
+fn radio_navigation_chooses_an_unchecked_current_radio() {
+    let mut app = Window::headless(|| {
+        let checked = state("checked", || false);
+        let presses = state("presses", || 0);
+        on_command("clear", move || checked.set(false));
+        col()
+            .size_full()
+            .child(
+                row()
+                    .role(Role::RadioGroup)
+                    .focus_group()
+                    .child(button("a").role(Role::RadioButton).checked(move || checked.get()).on_press(move || {
+                        checked.set(true);
+                        presses.update(|n| *n += 1);
+                    }))
+                    .child(button("b").role(Role::RadioButton).checked(false).disabled(true)),
+            )
+            .child(text(move || presses.get().to_string()).id("presses"))
+            .into()
+    });
+    app.press_key("tab").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("a"));
+    assert_eq!(app.kernel().checked_of("a"), Some(false), "Tab preserves an empty choice");
+    app.press_key("home").unwrap();
+    assert_eq!(app.kernel().checked_of("a"), Some(true), "Home chooses an unchecked first radio");
+    assert_eq!(app.kernel().text_of("presses").as_deref(), Some("1"));
+    app.press_key("right").unwrap();
+    assert_eq!(app.kernel().text_of("presses").as_deref(), Some("1"), "the checked singleton is not pressed again");
+    app.invoke("clear").unwrap();
+    app.press_key("right").unwrap();
+    assert_eq!(app.kernel().checked_of("a"), Some(true), "wrapping chooses the only enabled unchecked radio");
+    assert_eq!(app.kernel().text_of("presses").as_deref(), Some("2"));
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
+fn radio_navigation_rechecks_focus_handlers_before_pressing() {
+    for change in ["remove", "disable", "redirect", "modal"] {
+        let presses = Rc::new(Cell::new(0));
+        let recorded = presses.clone();
+        let mut app = Window::headless(move || {
+            let shown = state("shown", || true);
+            let disabled = state("disabled", || false);
+            let modal = state("modal", || false);
+            let recorded = recorded.clone();
+            col()
+                .size_full()
+                .child(row().role(Role::RadioGroup).focus_group().child(button("a").role(Role::RadioButton).checked(true)).child(show(
+                    move || shown.get(),
+                    move || {
+                        let recorded = recorded.clone();
+                        button("b")
+                            .role(Role::RadioButton)
+                            .checked(false)
+                            .disabled(move || disabled.get())
+                            .on_focus(move || match change {
+                                "remove" => shown.set(false),
+                                "disable" => disabled.set(true),
+                                "redirect" => focus("outside"),
+                                "modal" => modal.set(true),
+                                _ => unreachable!(),
+                            })
+                            .on_press(move || recorded.set(recorded.get() + 1))
+                            .into()
+                    },
+                )))
+                .child(button("outside"))
+                .child(show(move || modal.get(), || col().modal(false, || {}).child(button("modal-first")).into()))
+                .into()
+        });
+        app.press_key("tab").unwrap();
+        app.press_key("right").unwrap();
+        assert_eq!(presses.get(), 0, "{change}: focus handlers retire the pending choice");
+        if change == "redirect" {
+            assert_eq!(app.inspect().focus.as_deref(), Some("outside"));
+        } else if change == "modal" {
+            assert_eq!(app.inspect().focus.as_deref(), Some("modal-first"));
+        }
+        assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+    }
+}
+
 fn dialog_app(click_outside: bool) -> Window {
     Window::headless(move || {
         let open = state("open", || false);

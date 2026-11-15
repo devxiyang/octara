@@ -4,6 +4,7 @@ mod acceptance;
 mod choices;
 mod consistency;
 mod diagnostics;
+mod forms;
 mod ime;
 mod inbox;
 mod layout;

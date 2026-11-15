@@ -28,13 +28,13 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | Structure | `component_keyed` / `component`, `show` / `show_else`, `keyed` (a view built anew when its key changes), `each`, `virtual_each` | Implemented |
 | | `.child(..)` / `.children(iter)`, `El::overlay`, modals (Escape, press outside, focus kept inside) | Implemented |
 | Elements | `el`, `row`, `col`, `spacer`; `text(fixed value \| closure \| TextBuffer)` | Implemented |
-| | `text_input`: single line, `.multiline()`, `.rows(min, max)`, `.submit_on_enter()`, `.secure()` / `.revealed(..)`, selection, undo, clipboard, IME composition | Implemented headless and through the shell; direct platform text protocols to do ([text input](text-input.md)) |
+| | `text_input`: single line, `.multiline()`, `.rows(min, max)`, `.submit_on_enter()`, `.secure()` / `.revealed(..)`, selection, undo, clipboard, IME composition | Implemented headless and through the shell, including macOS `NSTextInputClient`; other direct platform protocols remain ([text input](text-input.md)) |
 | | Scroll containers (`overflow_*_scroll`, `scroll_to`, `follow_tail` / `following_tail` / `scroll_to_end`), images (`img`, `object_fit`) | Implemented |
 | | Vector paths (`Path`, fills, strokes); `icon` with the Lucide set (`octara-icons`), `Icon::svg` | Implemented ([vector graphics](vector-graphics.md)) |
 | | `canvas` (declarative recording: paths, rects, text, images, transforms, clips) | Implemented; labeled regions to do |
 | | Native Island: `native_view(kind)`, `web_view(url)`, slots, placements, the host protocol, headless host | Implemented headless and on macOS (web views and maps); Windows/Linux hosts to do ([Native Island](native-island.md)) |
 | Style | `Styled` (and `style_with` for bound styles): GPUI method names, 4 px scale, `px` / `relative` / `rems`; semantic `Token` and `Theme`; state, window size class, touch and group-hover overrides; `absolute` / `top` / `left`; shadows, gradients, opacity layers; motion | Implemented |
-| Semantics | `role`, `label`, `description`, `expanded`, `checked`, `value`, `a11y_hidden`, `focusable`; test id is the semantic id | Implemented |
+| Semantics | `role`, `label`, `description`, `required`, `invalid`, `expanded`, `checked`, `value`, `a11y_hidden`, `focusable`; test id is the semantic id | Implemented; descriptions and form validity are shared by Inspector and AccessKit |
 | Interaction | `on_press` / `on_input` / `on_toggle` / `on_submit` / `on_focus` / `on_blur`; `tooltip`; hover chain and groups; disabled elements reject events | Implemented |
 | | `on_key`, gestures (tap, double, long press, secondary, drag, swipe, momentum), focus order and groups, keymap and commands | Implemented ([input](input.md)) |
 | Agent | Structured diagnostics with registered codes, `App::set_check_consistency`, `Window::force_state` | Implemented |
@@ -107,6 +107,8 @@ After each layout it is positioned relative to the anchor (as in Rune's `anchore
 | `checkbox(model)` | `CheckBox` + checked | Toggle |
 | `switch(model)` | `Switch` + checked (the thumb moves with `CHECKED`) | Toggle |
 | `text_field(model)` | `TextInput` + value | Input |
+| `field(id, label, control, info)` | Applies name, combined help/error description, required and invalid to the retained control; supporting error is a live region | The control's events; label press focuses it |
+| `radio_group(id, label, model, options)` | `RadioGroup` with stable `RadioButton` children + checked; one Tab stop | Press, Space/Enter, arrows/Home/End choose |
 | `select(id, model, options)` | The trigger is `ComboBox` + value + expanded; `{id}-list` is `ListBox`, and the options `{id}-option-{i}` are `ListBoxOption` + selected | Press |
 | `combobox(id, label, model, options)` | A named `ComboBox` and searchable `ListBox`; the input's `active_descendant` identifies the highlighted option independently of the selected value | Press, input, Up/Down, Enter |
 | `popover(id, open, placement, trigger, content)` | An anchored modal surface; the trigger exposes `expanded`, and focus stays inside until it closes | Press, Escape, press outside |
@@ -160,6 +162,34 @@ component. Octara retains Signals and ordinary function-based components. Native
 is recorded separately from headless/framework input, following Exact's
 [testing distinction](https://github.com/expo/exact/blob/4c16fa59f74b1920af7dbc861a15a8105ed0ad13/docs/testing.md).
 
+### Fields and radio groups
+
+`FieldInfo` is plain data computed from application state: description, optional error and
+required. `field` retains its control and binds these semantics to that control, including the
+combined help/error description. A blank error is treated as absent. The same description
+resolver serves Inspector and AccessKit, preferring an explicit description over a tooltip;
+a tooltip that repeats the label is omitted. No validation engine or automatic submission is
+introduced: the application's handler decides whether and what to save. The Showcase form
+keeps raw editing text even when its saved value is trimmed.
+
+`radio_group` takes `Model<Option<String>>` and tracked `Vec<RadioOption>` data. Options have
+stable IDs, labels, descriptions and disabled flags. The retained rows follow those IDs
+through reordering and renaming. A removed selected ID is left in the model, with no checked
+row. Focus and selection remain separate: Tab or a semantic focus action only focuses;
+arrows, Home and End choose via the existing press handler. A radio group uses its checked
+enabled member as its entry point when focus is outside. Navigation skips disabled choices
+and rechecks ownership and modal eligibility after focus callbacks before pressing.
+
+This follows the thin composition in Rune's
+[Field](https://github.com/anomalyco/rune/blob/38e3535b797377c38a34654ec0e98694e7e46696/crates/rune-kit/src/field.rs)
+and [RadioGroup](https://github.com/anomalyco/rune/blob/38e3535b797377c38a34654ec0e98694e7e46696/crates/rune-kit/src/radio.rs),
+while retaining Octara's ordinary functions, Signals and stable option IDs. Exact's
+[number-field recipe](https://github.com/expo/exact/blob/814d5e8821c1a1aace2f027770fc4f95c9c3fe0b/docs/recipes/number-field.md)
+motivates preserving raw text during editing. Its
+[tablist regression](https://github.com/expo/exact/blob/814d5e8821c1a1aace2f027770fc4f95c9c3fe0b/issues/closed/20261110-tablist-arrows-do-not-rove-on-painted-hosts.md)
+motivates explicit keyboard and modal composition tests, rather than inferring behavior from
+a role alone. Verification and limits are in [Forms](../../examples/FORMS.md).
+
 Planned, by kind. Names say what a
 component is, not where it is used (no sidebar, composer or message components: an app composes
 those), take the name most frameworks share (Zed's `ui`, Rune's kit, SwiftUI / AppKit), avoid one
@@ -169,11 +199,11 @@ variant is a chained method, not a new name (`text_field(m).multiline().rows(1, 
 | Kind | Components |
 | --- | --- |
 | Actions | `segmented` |
-| Inputs | `radio`, `slider` |
+| Inputs | `slider`, number fields |
 | Collections | `tree`, `table` |
 | Disclosure and navigation | `tabs` |
 | Status | `progress_bar`, `badge`, `keybinding` |
-| Overlays | `toast`, richer dialogs/sheets (the core has `overlay`, modals, `popup_menu`, `prompt`, and `tooltip`: it needs hover timing, one per window, and a native form) |
+| Overlays | `toast`, richer dialogs/sheets, editor-owned suggestions (the core has `overlay`, modals, `popup_menu`, `prompt`, and a timed single-window tooltip; a native tooltip remains) |
 | Layout | `divider` |
 
 Adding one todo in the example app (`examples/src/apps.rs`) costs about 5 µs: each component adds a few style and model closures; the fixed styles of a new node are resolved once.

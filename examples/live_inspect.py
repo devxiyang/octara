@@ -102,7 +102,7 @@ def png_pixels(path):
 
 
 class LiveWindow:
-    def __init__(self, fixture, args, output, sockets):
+    def __init__(self, fixture, args, output, sockets, window_args=None):
         self.fixture = fixture
         self.args = args
         self.output = output
@@ -110,6 +110,7 @@ class LiveWindow:
         self.process = None
         self.log = None
         self.transcript = None
+        self.window_args = window_args
 
     def __enter__(self):
         self.log = (self.output / f"{self.fixture}-window.log").open("w", encoding="utf-8")
@@ -118,7 +119,7 @@ class LiveWindow:
         for name in ("OCTARA_CAPTURE", "OCTARA_CONFORMANCE", "OCTARA_EXIT_AFTER_FRAMES", "OCTARA_PICK"):
             env.pop(name, None)
         env["OCTARA_INSPECT"] = str(self.endpoint)
-        fixture_args = ["showcase", "search"] if self.fixture == "search" else [self.fixture]
+        fixture_args = self.window_args if self.window_args is not None else (["showcase", "search"] if self.fixture == "search" else [self.fixture])
         self.process = subprocess.Popen(
             [str(self.args.window), *fixture_args], cwd=self.args.repo, env=env,
             stdout=self.log, stderr=subprocess.STDOUT,

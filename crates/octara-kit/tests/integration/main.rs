@@ -2,5 +2,6 @@
 
 mod choices;
 mod components;
+mod forms;
 mod markdown;
 mod readme;

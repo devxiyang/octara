@@ -37,6 +37,16 @@ fn a_snapshot_is_the_semantic_tree() {
 }
 
 #[test]
+fn old_nodes_default_new_form_semantics_to_absent() {
+    let node: inspect::Node = serde_json::from_str(r#"{"role":"text_input","bounds":[0,0,240,32]}"#).unwrap();
+    assert_eq!((node.required, node.invalid, node.description.as_deref()), (None, None, None));
+    let json = serde_json::to_value(node).unwrap();
+    for field in ["required", "invalid", "description"] {
+        assert!(json.get(field).is_none(), "absent {field} is omitted");
+    }
+}
+
+#[test]
 fn requests_drive_the_app() {
     let mut app = Window::headless(view);
     assert!(inspect::handle(&mut app, Request::Tap { id: "inc".into() }).ok);

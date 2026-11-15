@@ -218,6 +218,8 @@ pub struct El {
     text: Option<TextContent>,
     value: Option<Prop<String>>,
     checked: Option<Prop<bool>>,
+    required: Option<Prop<bool>>,
+    invalid: Option<Prop<bool>>,
     label: Option<Prop<String>>,
     description: Option<Prop<String>>,
     tooltip: Option<Prop<String>>,
@@ -291,6 +293,8 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         text: None,
         value: None,
         checked: None,
+        required: None,
+        invalid: None,
         label: None,
         description: None,
         tooltip: None,
@@ -628,6 +632,16 @@ impl El {
         self.checked = Some(c.into_prop());
         self
     }
+    /// Whether user input or selection is required, for assistive technology and inspection.
+    pub fn required(mut self, required: impl IntoProp<bool>) -> Self {
+        self.required = Some(required.into_prop());
+        self
+    }
+    /// Whether the current value is invalid, for assistive technology and inspection.
+    pub fn invalid(mut self, invalid: impl IntoProp<bool>) -> Self {
+        self.invalid = Some(invalid.into_prop());
+        self
+    }
     pub fn value(mut self, v: impl IntoProp<String>) -> Self {
         self.value = Some(v.into_prop());
         self
@@ -694,8 +708,9 @@ impl El {
         self
     }
     /// Arrow keys move focus among the focusable elements inside, and Tab stops once (on the
-    /// focused or selected one). Menus, lists and trees move on Up and Down; other groups (tabs,
-    /// toolbars, radio groups) on Left and Right too. Home and End go to the ends.
+    /// focused or selected one; radio groups use their checked radio). Menus, lists and trees
+    /// move on Up and Down; other groups (tabs, toolbars, radio groups) on Left and Right too.
+    /// Home and End go to the ends. Moving to a radio with these keys presses it to choose it.
     pub fn focus_group(mut self) -> Self {
         self.focus_group = true;
         self
@@ -1051,6 +1066,12 @@ pub(crate) fn build_el(e: El) -> NodeId {
     }
     if let Some(p) = e.checked {
         bind(at, node, p, |k, n, v: &bool| k.set_checked(n, Some(*v)));
+    }
+    if let Some(p) = e.required {
+        bind(at, node, p, |k, n, v: &bool| k.set_required(n, Some(*v)));
+    }
+    if let Some(p) = e.invalid {
+        bind(at, node, p, |k, n, v: &bool| k.set_invalid(n, Some(*v)));
     }
     if let Some(p) = e.props {
         bind(at, node, p, |k, n, v: &serde_json::Value| k.set_native_props(n, v));

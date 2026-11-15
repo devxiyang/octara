@@ -335,6 +335,8 @@ struct Node {
     /// combo box's choice, a slider's level); a text input's value is its content.
     value: Option<String>,
     checked: Option<bool>,
+    required: Option<bool>,
+    invalid: Option<bool>,
     label: Option<String>,
     description: Option<String>,
     /// What shows when the mouse rests on it (`tooltip`); its description where it has none.
@@ -1096,8 +1098,19 @@ impl Kernel {
     pub fn checked(&self, id: NodeId) -> Option<bool> {
         self.node(id).checked
     }
+    pub fn required(&self, id: NodeId) -> Option<bool> {
+        self.node(id).required
+    }
+    pub fn invalid(&self, id: NodeId) -> Option<bool> {
+        self.node(id).invalid
+    }
     pub fn label(&self, id: NodeId) -> Option<&str> {
         self.node(id).label.as_deref()
+    }
+    /// The explicit description, else the tooltip unless it repeats the label.
+    pub fn description(&self, id: NodeId) -> Option<&str> {
+        let n = self.node(id);
+        n.description.as_deref().or_else(|| n.tooltip.as_deref().filter(|t| n.label.as_deref() != Some(*t)))
     }
     pub fn expanded(&self, id: NodeId) -> Option<bool> {
         self.node(id).expanded
@@ -1161,6 +1174,8 @@ impl Kernel {
             children: Vec::new(),
             value: None,
             checked: None,
+            required: None,
+            invalid: None,
             label: None,
             description: None,
             tooltip: None,
@@ -1577,6 +1592,26 @@ impl Kernel {
 
     pub fn set_label(&mut self, id: NodeId, label: Option<&str>) -> bool {
         self.set_string(id, label, |n| &mut n.label, "label")
+    }
+
+    pub fn set_required(&mut self, id: NodeId, required: Option<bool>) -> bool {
+        if self.node(id).required == required {
+            self.counters.prop_noops += 1;
+            return false;
+        }
+        self.node_mut(id).required = required;
+        self.changed(id, Dirty::SEMANTICS, "required", || format!("{required:?}"));
+        true
+    }
+
+    pub fn set_invalid(&mut self, id: NodeId, invalid: Option<bool>) -> bool {
+        if self.node(id).invalid == invalid {
+            self.counters.prop_noops += 1;
+            return false;
+        }
+        self.node_mut(id).invalid = invalid;
+        self.changed(id, Dirty::SEMANTICS, "invalid", || format!("{invalid:?}"));
+        true
     }
 
     pub fn set_description(&mut self, id: NodeId, description: Option<&str>) -> bool {
@@ -2573,8 +2608,17 @@ impl Kernel {
         if let Some(c) = n.checked {
             let _ = write!(out, " checked={c}");
         }
+        if let Some(required) = n.required {
+            let _ = write!(out, " required={required}");
+        }
+        if let Some(invalid) = n.invalid {
+            let _ = write!(out, " invalid={invalid}");
+        }
         if let Some(l) = &n.label {
             let _ = write!(out, " label={l:?}");
+        }
+        if let Some(description) = self.description(id) {
+            let _ = write!(out, " description={description:?}");
         }
         if let Some(e) = n.expanded {
             let _ = write!(out, " expanded={e}");
@@ -2672,6 +2716,29 @@ mod tests {
         assert!(k.set_style(col, StyleProp::Gap(Length::Px(4.0))));
         assert_eq!(k.counters().dirty_layout, 1);
         assert_eq!(k.visual_of("label").unwrap().text, Theme::light().get(Token::Accent));
+    }
+
+    #[test]
+    fn form_semantics_only_invalidate_semantics() {
+        let (mut k, _, t) = tree();
+        k.layout(400.0, 300.0);
+        k.reset_counters();
+        assert_eq!((k.required(t), k.invalid(t)), (None, None));
+        assert!(k.set_required(t, Some(true)));
+        assert!(k.set_invalid(t, Some(true)));
+        assert!(!k.set_required(t, Some(true)));
+        assert!(!k.set_invalid(t, Some(true)));
+        assert!(k.set_required(t, Some(false)));
+        assert!(k.set_invalid(t, Some(false)));
+        assert_eq!((k.required(t), k.invalid(t)), (Some(false), Some(false)));
+        let c = k.counters();
+        assert_eq!((c.prop_changes, c.prop_noops, c.dirty_semantics), (4, 2, 4));
+        assert_eq!((c.dirty_paint, c.dirty_text, c.dirty_layout), (0, 0, 0));
+        assert!(!k.layout(400.0, 300.0));
+        assert!(k.tree_dump().contains("required=false invalid=false"));
+        assert!(k.set_required(t, None));
+        assert!(k.set_invalid(t, None));
+        assert_eq!((k.required(t), k.invalid(t)), (None, None));
     }
 
     #[test]

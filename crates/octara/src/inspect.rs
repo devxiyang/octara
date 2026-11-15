@@ -158,10 +158,17 @@ pub struct Node {
     /// What assistive technology announces: the label, else a text's own text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The explicit description, else the tooltip unless it repeats the label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checked: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invalid: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expanded: Option<bool>,
     /// The active option's resolved test id, while actual keyboard focus stays on this node.
