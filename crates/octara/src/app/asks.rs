@@ -233,7 +233,7 @@ pub(crate) fn layer() -> crate::view::View {
             .size(0.0)
             .a11y_hidden()
             .child(each(
-                move || menus.source(),
+                move || menus.read_only(),
                 |id, ask| {
                     let id = *id;
                     match untrack(|| ask.get()).1 {
@@ -258,7 +258,7 @@ pub(crate) fn layer() -> crate::view::View {
                     .left(0.0)
                     .size_full()
                     .child(each(
-                        move || prompts.source(),
+                        move || prompts.read_only(),
                         |id, ask| {
                             let id = *id;
                             match untrack(|| ask.get()).1 {

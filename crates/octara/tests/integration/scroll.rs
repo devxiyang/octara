@@ -88,7 +88,7 @@ fn feed() -> View {
         .child(
             col()
                 .child(virtual_each(
-                    move || items.all(),
+                    move || items.read_only(),
                     |_| 24.0,
                     |id, it| text(move || vec!["line"; it.with(|i| i.lines)].join("\n")).id(format!("item-{id}")).into(),
                 ))
@@ -155,7 +155,7 @@ fn reading_feed(wrapping: bool) -> View {
         .child(
             col()
                 .child(virtual_each(
-                    move || items.all(),
+                    move || items.read_only(),
                     |item| item.lines as f32 * 20.0,
                     move |id, item| {
                         text(move || {
@@ -262,7 +262,7 @@ fn jump_measures_an_offscreen_streamed_tail_and_follows_later_growth() {
 fn a_virtual_list_outside_a_scroll_container_is_reported() {
     let app = Window::headless(|| {
         let items = state_list("items", || (0..10u32).collect(), |i: &u32| *i);
-        col().child(virtual_each(move || items.all(), |_| 20.0, |i, _| text(format!("{i}")).into())).into()
+        col().child(virtual_each(move || items.read_only(), |_| 20.0, |i, _| text(format!("{i}")).into())).into()
     });
     assert!(app.app().diagnostics().iter().any(|d| d.code == "VIRTUAL_LIST_NOT_SCROLLABLE"), "{:?}", app.app().diagnostics());
 }
@@ -276,7 +276,7 @@ fn log() -> View {
     col()
         .child(
             col()
-                .child(each(move || lines.all(), |i, _| text(format!("line {i}")).id(format!("l{i}")).into()))
+                .child(each(move || lines.read_only(), |i, _| text(format!("line {i}")).id(format!("l{i}")).into()))
                 .id("log")
                 .flex_1()
                 .overflow_y_scroll()
@@ -368,7 +368,7 @@ fn a_virtual_list_following_its_tail_lands_on_its_measured_end() {
             .child(
                 col()
                     .child(virtual_each(
-                        move || items.all(),
+                        move || items.read_only(),
                         |_| 24.0,
                         |id, it| text(move || vec!["line"; it.with(|i| i.lines)].join("\n")).id(format!("item-{id}")).into(),
                     ))

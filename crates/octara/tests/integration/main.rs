@@ -46,6 +46,7 @@ mod style_order;
 mod system_fonts;
 mod targets;
 mod task;
+mod text_buffer;
 mod theme;
 mod theme_contrast;
 mod windows;

@@ -209,7 +209,7 @@ pub fn combobox(
                     .max_h(240.0)
                     .overflow_y_scroll()
                     .child(each(
-                        move || matches.source(),
+                        move || matches.read_only(),
                         move |key, row| {
                             let (selected, pick) = (row_value.clone(), row_value.clone());
                             let (selected_key, active_key, pick_key) = (key.clone(), key.clone(), key.clone());

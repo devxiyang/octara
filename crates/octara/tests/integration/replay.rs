@@ -32,7 +32,7 @@ fn todos() -> View {
             });
         }))
         .child(text(move || format!("{} later", ticks.get())).id("ticks"))
-        .child(col().id("list").child(each(move || items.source(), |_, t| text(move || t.with(|t| t.1.clone())).into())))
+        .child(col().id("list").child(each(move || items.read_only(), |_, t| text(move || t.with(|t| t.1.clone())).into())))
         .into()
 }
 

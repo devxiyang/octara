@@ -4,7 +4,7 @@ use super::{Mount, Parent, Slot, Slots, View, build_el, col, count_offset};
 use crate::diagnostics as codes;
 use crate::kernel::NodeId;
 use crate::reactive::graph::{Ctx, ReadSignal, ScopeId, Signal, rt, untrack};
-use crate::reactive::list::{Change, Cursor, Source};
+use crate::reactive::list::{Change, Cursor, ReadList};
 use crate::reactive::seq::Seq;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -51,14 +51,14 @@ fn place(parent: NodeId, base_index: usize, nodes: impl Iterator<Item = NodeId>)
     }
 }
 
-/// The source a list region follows and its read position.
-type Current<K, T> = Rc<RefCell<Option<(Source<K, T>, Cursor)>>>;
+/// A region's current read-only list and position in its change log.
+type Current<K, T> = Rc<RefCell<Option<(ReadList<K, T>, Cursor)>>>;
 
-/// Renders `source()`. While it stays the same stage, its log is applied row by row: one row
+/// Renders `list()`. While it stays the same stage, its log is applied row by row: one row
 /// created per insert, one disposed per remove, one moved per move. Switching to another stage
 /// reconciles by key once. A row must be one element; it receives its item's own signal.
 #[track_caller]
-pub fn each<K, T>(source: impl Fn() -> Source<K, T> + 'static, row: impl Fn(&K, ReadSignal<T>) -> View + 'static) -> View
+pub fn each<K, T>(list: impl Fn() -> ReadList<K, T> + 'static, row: impl Fn(&K, ReadSignal<T>) -> View + 'static) -> View
 where
     K: Eq + Hash + Clone + Display + 'static,
     T: Clone + 'static,
@@ -77,12 +77,12 @@ where
         let rows: Rc<RefCell<HashMap<K, (ScopeId, NodeId)>>> = Rc::default();
         let current: Current<K, T> = Rc::default();
         crate::reactive::graph::binding(at, move || {
-            let src = source();
-            src.track();
+            let next = list();
+            next.track();
             rt(|rt| {
                 rt.with_frame(Ctx::Observe, None, Some(Some(owner)), || {
                     let u = crate::app::window();
-                    let same = current.borrow().as_ref().is_some_and(|(s, _)| *s == src);
+                    let same = current.borrow().as_ref().is_some_and(|(s, _)| *s == next);
                     if same {
                         let changes = {
                             let cur = current.borrow();
@@ -93,7 +93,7 @@ where
                             let base_index = count_offset(&parent, &count);
                             match ch {
                                 Change::Insert { key, index } => {
-                                    let (scope, node) = build_row(rt, owner, &base, at, &key, src.item(&key), &row);
+                                    let (scope, node) = build_row(rt, owner, &base, at, &key, next.item(&key), &row);
                                     u.kernel.borrow_mut().insert_child(parent.node, node, base_index + index);
                                     rows.borrow_mut().insert(key, (scope, node));
                                     count.set(count.get() + 1);
@@ -115,13 +115,13 @@ where
                         }
                         return;
                     }
-                    let cursor = src.subscribe();
+                    let cursor = next.subscribe();
                     let mut old = std::mem::take(&mut *rows.borrow_mut());
-                    let order: Vec<(K, (ScopeId, NodeId))> = src
+                    let order: Vec<(K, (ScopeId, NodeId))> = next
                         .snapshot()
                         .into_iter()
                         .map(|k| {
-                            let e = old.remove(&k).unwrap_or_else(|| build_row(rt, owner, &base, at, &k, src.item(&k), &row));
+                            let e = old.remove(&k).unwrap_or_else(|| build_row(rt, owner, &base, at, &k, next.item(&k), &row));
                             (k, e)
                         })
                         .collect();
@@ -132,7 +132,7 @@ where
                     place(parent.node, count_offset(&parent, &count), order.iter().map(|(_, (_, n))| *n));
                     count.set(order.len());
                     *rows.borrow_mut() = order.into_iter().collect();
-                    *current.borrow_mut() = Some((src, cursor));
+                    *current.borrow_mut() = Some((next, cursor));
                 })
             });
         });
@@ -155,7 +155,7 @@ const OVERSCAN: usize = 5;
 /// two spacers are `{parent id}-top` / `-bottom`.
 #[track_caller]
 pub fn virtual_each<K, T>(
-    source: impl Fn() -> Source<K, T> + 'static,
+    list: impl Fn() -> ReadList<K, T> + 'static,
     estimate: impl Fn(&T) -> f32 + 'static,
     row: impl Fn(&K, ReadSignal<T>) -> View + 'static,
 ) -> View
@@ -232,7 +232,7 @@ where
             };
             let build = Rc::new(move |name: &str| -> Option<(NodeId, Box<dyn FnOnce()>)> {
                 let k = names.borrow().get(name).cloned()?;
-                let item = current.borrow().as_ref().and_then(|(src, _)| src.item(&k))?;
+                let item = current.borrow().as_ref().and_then(|(next, _)| next.item(&k))?;
                 let (scope, node) = rt(|rt| build_row(rt, owner, &format!("{base}/offscreen"), at, &k, Some(item), &*row));
                 Some((node, Box::new(move || rt(|rt| rt.dispose_scope(scope)))))
             });
@@ -321,17 +321,17 @@ where
             });
         }
         crate::reactive::graph::binding(at, move || {
-            let src = source();
-            src.track();
+            let next = list();
+            next.track();
             let state = scroll.get();
             revision.get();
             let y = (state.offset.1 - list_top.get()).max(0.0) as f64;
             let height = state.client.1 as f64;
             rt(|rt| {
                 rt.with_frame(Ctx::Observe, None, Some(Some(owner)), || {
-                    let weight = |k: &K| src.item(k).map(|i| untrack(|| i.with(|t| estimate(t))) as f64).unwrap_or(0.0);
-                    // 1. Keep the weighted mirror in step with the source.
-                    let same = current.borrow().as_ref().is_some_and(|(s, _)| *s == src);
+                    let weight = |k: &K| next.item(k).map(|i| untrack(|| i.with(|t| estimate(t))) as f64).unwrap_or(0.0);
+                    // 1. Keep the weighted mirror in step with the list.
+                    let same = current.borrow().as_ref().is_some_and(|(s, _)| *s == next);
                     if same {
                         let changes = {
                             let cur = current.borrow();
@@ -356,14 +356,14 @@ where
                             }
                         }
                     } else {
-                        let cursor = src.subscribe();
+                        let cursor = next.subscribe();
                         let mut m = Seq::new();
-                        for k in src.snapshot() {
+                        for k in next.snapshot() {
                             let w = weight(&k);
                             m.insert_weighted(m.len(), k, w);
                         }
                         *mirror.borrow_mut() = m;
-                        *current.borrow_mut() = Some((src.clone(), cursor));
+                        *current.borrow_mut() = Some((next.clone(), cursor));
                     }
                     // 2. The window: rows intersecting [y, y + height), plus overscan.
                     let m = mirror.borrow();
@@ -386,7 +386,7 @@ where
                             let e = old.remove(&k).unwrap_or_else(|| {
                                 built = true;
                                 names.borrow_mut().entry(k.to_string()).or_insert_with(|| k.clone());
-                                build_row(rt, owner, &base, at, &k, src.item(&k), &*row)
+                                build_row(rt, owner, &base, at, &k, next.item(&k), &*row)
                             });
                             (k, e)
                         })

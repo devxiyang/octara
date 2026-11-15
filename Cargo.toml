@@ -4,6 +4,7 @@ members = ["apps/chat", "crates/octara", "crates/octara-cli", "crates/octara-fon
 
 [workspace.package]
 edition = "2024"
+rust-version = "1.100"
 license = "MIT OR Apache-2.0"
 publish = false
 version = "0.0.0"

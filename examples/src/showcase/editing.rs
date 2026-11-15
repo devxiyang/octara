@@ -27,7 +27,7 @@ pub fn card() -> El {
                 .child(primary_button("Add").id("add").on_press(add)),
         )
         .child(col().gap_1().child(each(
-            move || notes.source(),
+            move || notes.read_only(),
             move |id, n| {
                 let id = *id;
                 // The Remove button shows while the row is hovered.

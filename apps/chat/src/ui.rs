@@ -178,7 +178,7 @@ fn sidebar() -> El {
             }),
         ))
         .child(list().id("threads").label("Conversations").flex_1().min_h(0.0).px_2().pb_2().overflow_y_scroll().child(virtual_each(
-            move || flat.source(),
+            move || flat.read_only(),
             |item| if item.header().is_some() { 36.0 } else { 34.0 },
             move |key, item| match key.clone() {
                 FlatKey::Header(age) => list_header(age.to_string()).id(format!("age-{age:?}")).into(),
@@ -347,7 +347,7 @@ fn transcript(thread: ThreadId) -> View {
             .selectable()
             .copy_markdown(|_| None)
             .child(virtual_each(
-                move || messages.source(),
+                move || messages.read_only(),
                 |m: &Message| if m.author == Author::User { 60.0 } else { 160.0 },
                 |id, m| message(*id, m),
             ))
@@ -466,7 +466,7 @@ fn answer(id: u64, m: ReadSignal<Message>) -> El {
     col()
         .group("msg")
         .gap_2()
-        .child(each(move || parts.source(), move |i, p| part(id, *i, p)))
+        .child(each(move || parts.read_only(), move |i, p| part(id, *i, p)))
         .child(show(
             move || status() == Status::Streaming && parts.is_empty(),
             move || {
@@ -639,7 +639,7 @@ fn composer() -> El {
         .gap_2()
         .on_drop(move |paths| drop_in.attach(paths))
         .drag_over(|p| p.bg(Token::Surface))
-        .child(each(move || queued.source(), |qid, q| queued_row(*qid, q)))
+        .child(each(move || queued.read_only(), |qid, q| queued_row(*qid, q)))
         .child(show(move || !available.has_model(), {
             let no_models = chat.models().is_empty();
             move || {
@@ -667,7 +667,7 @@ fn composer() -> El {
                             .gap_1()
                             .flex_wrap()
                             .child(each(
-                                move || files.source(),
+                                move || files.read_only(),
                                 move |fid, f| {
                                     let (fid, c) = (*fid, use_context::<Chat>().expect("inside the chat"));
                                     let name = untrack(|| f.get()).1.name;

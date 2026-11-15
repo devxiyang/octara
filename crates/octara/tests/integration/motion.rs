@@ -211,7 +211,7 @@ mod layout {
     }
     impl EachExt for El {
         fn children_each(self, items: StateList<u32, u32>) -> Self {
-            self.child(each(move || items.source(), |id, _| el().id(format!("row-{id}")).h(20).w(60).on_press(|| {}).into()))
+            self.child(each(move || items.read_only(), |id, _| el().id(format!("row-{id}")).h(20).w(60).on_press(|| {}).into()))
         }
     }
 
@@ -336,7 +336,7 @@ mod presence {
                 ))
                 .child(el().id("after").w(80).h(10).bg(Token::Surface))
                 .child(col().children(vec![each(
-                    move || items.source(),
+                    move || items.read_only(),
                     |id, _| el().id(format!("row-{id}")).w(60).h(10).bg(Token::Surface).into(),
                 )]))
                 .into()
@@ -429,7 +429,7 @@ mod presence {
                 .size_full()
                 .motion(Spring::SNAP)
                 .child(col().id("list").h(200).overflow_y_scroll().child(virtual_each(
-                    move || items.source(),
+                    move || items.read_only(),
                     |_| 20.0,
                     |id, _| el().id(format!("v{id}")).h(20).into(),
                 )))
@@ -508,7 +508,7 @@ mod scrolling {
                         .overflow_y_scroll()
                         .follow_tail()
                         .motion(Spring::GLIDE)
-                        .child(each(move || rows.all(), |i, _| el().id(format!("r{i}")).h(20).flex_shrink_0().into())),
+                        .child(each(move || rows.read_only(), |i, _| el().id(format!("r{i}")).h(20).flex_shrink_0().into())),
                 )
                 .child(el().id("end").size_4().on_press(|| {
                     scroll_to_end("list");

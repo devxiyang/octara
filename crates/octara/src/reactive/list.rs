@@ -8,7 +8,7 @@
 //!
 //! Each stage keeps its order in a `Seq` (order-statistic treap), so every event costs
 //! O(log n) (O(log² n) where a rank among members is needed). The UI layer renders a stage by
-//! applying its log (`Source::subscribe` / `Source::take`); a `Move` moves a row.
+//! applying its log (`ReadList::subscribe` / `ReadList::take`); a `Move` moves a row.
 
 use crate::diagnostics as codes;
 use crate::reactive::graph::{Ctx, ReadSignal, Signal, rt, state, untrack};
@@ -179,55 +179,57 @@ pub(crate) fn writable(at: &'static Location<'static>) -> bool {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Source: a handle to any stage
+// ReadList: a handle to any stage
 // ---------------------------------------------------------------------------------------------
 
-/// A handle to a stage, for rendering and for building further views.
-pub struct Source<K: 'static, T: 'static>(Rc<dyn Stage<K, T>>);
+/// A read-only handle to a reactive list, for rendering and further derivation.
+/// Cloning shares the same live list; it neither copies items nor creates a snapshot.
+/// Items are exposed as [`ReadSignal`] handles, without list or item write methods.
+pub struct ReadList<K: 'static, T: 'static>(Rc<dyn Stage<K, T>>);
 
-impl<K, T> Clone for Source<K, T> {
+impl<K, T> Clone for ReadList<K, T> {
     fn clone(&self) -> Self {
-        Source(self.0.clone())
+        ReadList(self.0.clone())
     }
 }
 
-impl<K, T> From<&Source<K, T>> for Source<K, T> {
-    fn from(s: &Source<K, T>) -> Self {
+impl<K, T> From<&ReadList<K, T>> for ReadList<K, T> {
+    fn from(s: &ReadList<K, T>) -> Self {
         s.clone()
     }
 }
 
-impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<StateList<K, T>> for Source<K, T> {
+impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<StateList<K, T>> for ReadList<K, T> {
     fn from(l: StateList<K, T>) -> Self {
-        l.source()
+        l.read_only()
     }
 }
 
-impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<&StateList<K, T>> for Source<K, T> {
+impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<&StateList<K, T>> for ReadList<K, T> {
     fn from(l: &StateList<K, T>) -> Self {
-        l.source()
+        l.read_only()
     }
 }
 
-impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<Derived<K, T>> for Source<K, T> {
+impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<Derived<K, T>> for ReadList<K, T> {
     fn from(d: Derived<K, T>) -> Self {
-        d.source()
+        d.read_only()
     }
 }
 
-impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<&Derived<K, T>> for Source<K, T> {
+impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<&Derived<K, T>> for ReadList<K, T> {
     fn from(d: &Derived<K, T>) -> Self {
-        d.source()
+        d.read_only()
     }
 }
 
-impl<K, T> PartialEq for Source<K, T> {
+impl<K, T> PartialEq for ReadList<K, T> {
     fn eq(&self, other: &Self) -> bool {
         std::ptr::addr_eq(Rc::as_ptr(&self.0), Rc::as_ptr(&other.0))
     }
 }
 
-impl<K, T> Source<K, T>
+impl<K, T> ReadList<K, T>
 where
     K: Eq + Hash + Clone + 'static,
     T: Clone + 'static,
@@ -320,7 +322,7 @@ where
     #[track_caller]
     pub fn join<RK, R, U>(
         &self,
-        right: impl Into<Source<RK, R>>,
+        right: impl Into<ReadList<RK, R>>,
         key: impl Fn(&T) -> RK + 'static,
         f: impl Fn(&T, Option<&R>) -> U + 'static,
     ) -> Derived<K, U>
@@ -498,16 +500,13 @@ where
         untrack(|| self.holder.get())
     }
 
-    pub fn source(&self) -> Source<K, T> {
-        Source(self.inner())
-    }
-    /// Alias of [`StateList::source`].
-    pub fn all(&self) -> Source<K, T> {
-        self.source()
+    /// Shares this live list for reading, without copying its items.
+    pub fn read_only(&self) -> ReadList<K, T> {
+        ReadList(self.inner())
     }
     #[track_caller]
     pub fn len(&self) -> usize {
-        self.source().len()
+        self.read_only().len()
     }
     #[track_caller]
     pub fn is_empty(&self) -> bool {
@@ -515,7 +514,7 @@ where
     }
     #[track_caller]
     pub fn keys(&self) -> Vec<K> {
-        self.source().keys()
+        self.read_only().keys()
     }
     #[track_caller]
     pub fn last_key(&self) -> Option<K> {
@@ -530,17 +529,17 @@ where
         self.inner().index_of(k)
     }
     pub fn filter(&self, pred: impl Fn(&T) -> bool + 'static) -> Derived<K, T> {
-        self.source().filter(pred)
+        self.read_only().filter(pred)
     }
-    /// The items transformed by `f`, same keys and order ([`Source::map`]).
+    /// The items transformed by `f`, same keys and order ([`ReadList::map`]).
     pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> Derived<K, U> {
-        self.source().map(f)
+        self.read_only().map(f)
     }
-    /// Each item with the item of `right` it points at ([`Source::join`]).
+    /// Each item with the item of `right` it points at ([`ReadList::join`]).
     #[track_caller]
     pub fn join<RK, R, U>(
         &self,
-        right: impl Into<Source<RK, R>>,
+        right: impl Into<ReadList<RK, R>>,
         key: impl Fn(&T) -> RK + 'static,
         f: impl Fn(&T, Option<&R>) -> U + 'static,
     ) -> Derived<K, U>
@@ -549,13 +548,13 @@ where
         R: Clone + 'static,
         U: Clone + PartialEq + 'static,
     {
-        self.source().join(right, key, f)
+        self.read_only().join(right, key, f)
     }
     pub fn sort_by<S: Ord + Clone + 'static>(&self, key: impl Fn(&T) -> S + 'static) -> Derived<K, T> {
-        self.source().sort_by(key)
+        self.read_only().sort_by(key)
     }
     pub fn group_by<G: Ord + Hash + Clone + Display + 'static>(&self, key: impl Fn(&T) -> G + 'static) -> Groups<G, K, T> {
-        self.source().group_by(key)
+        self.read_only().group_by(key)
     }
 
     #[track_caller]
@@ -654,8 +653,9 @@ where
     K: Eq + Hash + Clone + 'static,
     T: Clone + 'static,
 {
-    pub fn source(&self) -> Source<K, T> {
-        Source(untrack(|| self.holder.get()))
+    /// Shares this live derived list for reading, without copying its items.
+    pub fn read_only(&self) -> ReadList<K, T> {
+        ReadList(untrack(|| self.holder.get()))
     }
     /// Number of items, O(1); tracks the view.
     #[track_caller]
@@ -669,20 +669,20 @@ where
     }
     #[track_caller]
     pub fn keys(&self) -> Vec<K> {
-        self.source().keys()
+        self.read_only().keys()
     }
     pub fn filter(&self, pred: impl Fn(&T) -> bool + 'static) -> Derived<K, T> {
-        self.source().filter(pred)
+        self.read_only().filter(pred)
     }
-    /// The items transformed by `f`, same keys and order ([`Source::map`]).
+    /// The items transformed by `f`, same keys and order ([`ReadList::map`]).
     pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> Derived<K, U> {
-        self.source().map(f)
+        self.read_only().map(f)
     }
-    /// Each item with the item of `right` it points at ([`Source::join`]).
+    /// Each item with the item of `right` it points at ([`ReadList::join`]).
     #[track_caller]
     pub fn join<RK, R, U>(
         &self,
-        right: impl Into<Source<RK, R>>,
+        right: impl Into<ReadList<RK, R>>,
         key: impl Fn(&T) -> RK + 'static,
         f: impl Fn(&T, Option<&R>) -> U + 'static,
     ) -> Derived<K, U>
@@ -691,13 +691,13 @@ where
         R: Clone + 'static,
         U: Clone + PartialEq + 'static,
     {
-        self.source().join(right, key, f)
+        self.read_only().join(right, key, f)
     }
     pub fn sort_by<S: Ord + Clone + 'static>(&self, key: impl Fn(&T) -> S + 'static) -> Derived<K, T> {
-        self.source().sort_by(key)
+        self.read_only().sort_by(key)
     }
     pub fn group_by<G: Ord + Hash + Clone + Display + 'static>(&self, key: impl Fn(&T) -> G + 'static) -> Groups<G, K, T> {
-        self.source().group_by(key)
+        self.read_only().group_by(key)
     }
 }
 
@@ -1317,9 +1317,9 @@ where
     K: Eq + Hash + Clone + 'static,
     T: Clone + 'static,
 {
-    /// The groups, ordered by key; each item is the group's `GroupInfo` (key and size).
-    pub fn source(&self) -> Source<G, GroupInfo<G>> {
-        Source(untrack(|| self.holder.get()))
+    /// A read-only list of groups, ordered by key; each item is the group's `GroupInfo` (key and size).
+    pub fn read_only(&self) -> ReadList<G, GroupInfo<G>> {
+        ReadList(untrack(|| self.holder.get()))
     }
     /// Number of groups; tracks the groups.
     #[track_caller]
@@ -1332,8 +1332,8 @@ where
         self.len() == 0
     }
     /// One group's members, in upstream order (`None` if the group does not exist).
-    pub fn members(&self, g: &G) -> Option<Source<K, T>> {
-        untrack(|| self.holder.get()).members.borrow().get(g).map(|e| Source(e.members.clone() as Rc<dyn Stage<K, T>>))
+    pub fn members(&self, g: &G) -> Option<ReadList<K, T>> {
+        untrack(|| self.holder.get()).members.borrow().get(g).map(|e| ReadList(e.members.clone() as Rc<dyn Stage<K, T>>))
     }
 }
 
@@ -1601,11 +1601,11 @@ mod tests {
                 // map after a sort (moves pass through it) and a filter after a map.
                 let m = s.map(|r| r.a as u32 * 10 + r.b as u32);
                 let mf = l.map(|r| r.b).filter(|b| *b >= 2);
-                let m_cursor = m.source().0.emitter().log.borrow_mut().subscribe();
+                let m_cursor = m.read_only().0.emitter().log.borrow_mut().subscribe();
                 let mut m_replay: Vec<u32> = Vec::new();
-                let flat_cursor = flat.source().0.emitter().log.borrow_mut().subscribe();
+                let flat_cursor = flat.read_only().0.emitter().log.borrow_mut().subscribe();
                 let mut flat_replay: Vec<FlatKey<u8, u32>> = Vec::new();
-                let logs = [l.source(), f.source(), s.source()];
+                let logs = [l.read_only(), f.read_only(), s.read_only()];
                 let cursors: Vec<_> = logs.iter().map(|src| src.0.emitter().log.borrow_mut().subscribe()).collect();
                 let mut replay: Vec<Vec<u32>> = vec![Vec::new(); 3];
                 let mut x: u64 = 99;
@@ -1644,14 +1644,14 @@ mod tests {
                     assert_eq!(m.keys(), want_s, "map keys at step {step}");
                     for (k, r) in sorted.iter().map(|r| (r.id, r)) {
                         assert_eq!(
-                            untrack(|| m.source().item(&k).unwrap().get()),
+                            untrack(|| m.read_only().item(&k).unwrap().get()),
                             r.a as u32 * 10 + r.b as u32,
                             "map value at step {step}"
                         );
                     }
                     let want_mf: Vec<u32> = all.iter().filter(|r| r.b >= 2).map(|r| r.id).collect();
                     assert_eq!(mf.keys(), want_mf, "filter after map at step {step}");
-                    for ch in m.source().0.emitter().log.borrow_mut().take(&m_cursor) {
+                    for ch in m.read_only().0.emitter().log.borrow_mut().take(&m_cursor) {
                         match ch {
                             Change::Insert { key, index } => m_replay.insert(index, key),
                             Change::Remove { key, index } => assert_eq!(m_replay.remove(index), key),
@@ -1666,11 +1666,11 @@ mod tests {
                     let mut want_g: Vec<u8> = all.iter().map(|r| r.a % 3).collect();
                     want_g.sort();
                     want_g.dedup();
-                    assert_eq!(g.source().keys(), want_g, "groups at step {step}");
+                    assert_eq!(g.read_only().keys(), want_g, "groups at step {step}");
                     for gk in &want_g {
                         let members: Vec<u32> = all.iter().filter(|r| r.a % 3 == *gk).map(|r| r.id).collect();
                         assert_eq!(g.members(gk).unwrap().keys(), members, "group {gk} at step {step}");
-                        assert_eq!(untrack(|| g.source().item(gk).unwrap().get()).len, members.len());
+                        assert_eq!(untrack(|| g.read_only().item(gk).unwrap().get()).len, members.len());
                     }
                     // flatten: every group's header, then its members ordered by (b, id).
                     let mut want_flat = Vec::new();
@@ -1681,7 +1681,7 @@ mod tests {
                         want_flat.extend(ms.iter().map(|r| FlatKey::Item(r.id)));
                     }
                     assert_eq!(flat.keys(), want_flat, "flatten at step {step}");
-                    for ch in flat.source().0.emitter().log.borrow_mut().take(&flat_cursor) {
+                    for ch in flat.read_only().0.emitter().log.borrow_mut().take(&flat_cursor) {
                         match ch {
                             Change::Insert { key, index } => flat_replay.insert(index, key),
                             Change::Remove { key, index } => assert_eq!(flat_replay.remove(index), key),
@@ -1743,10 +1743,10 @@ mod tests {
                 assert_eq!(seen.get(), s0, "its mapped value did not change: nothing passed on");
                 rt.with_frame(Ctx::Handler, None, None, || l.update(&7, |r| r.a = 3));
                 assert_eq!(seen.get(), s0 + 1, "a changed value is passed on");
-                assert_eq!(untrack(|| m.source().item(&7).unwrap().get()), 3);
+                assert_eq!(untrack(|| m.read_only().item(&7).unwrap().get()), 3);
                 assert_eq!(after.keys().len(), 100);
                 rt.with_frame(Ctx::Handler, None, None, || l.remove(&7));
-                assert!(m.source().item(&7).is_none());
+                assert!(m.read_only().item(&7).is_none());
 
                 // A view closure reading state: reported once, at the read.
                 let limit = state("limit", || 5u8);
@@ -1783,7 +1783,7 @@ mod tests {
                 let msgs = state_list("msgs", Vec::<Msg>::new, |m| m.id);
                 let j = msgs.join(users, |m| m.user, |m, u| (m.body, u.map(|u| u.name)));
                 let named = j.filter(|(_, n)| n.is_some()).sort_by(|(b, n)| (*n, *b));
-                let cursor = j.source().0.emitter().log.borrow_mut().subscribe();
+                let cursor = j.read_only().0.emitter().log.borrow_mut().subscribe();
                 let mut replay: Vec<u32> = Vec::new();
                 let mut x: u64 = 7;
                 let mut rnd = |m: u64| {
@@ -1825,7 +1825,7 @@ mod tests {
                     assert_eq!(j.keys(), msgs.keys(), "join keys at step {step}");
                     for m in &all {
                         assert_eq!(
-                            untrack(|| j.source().item(&m.id).unwrap().get()),
+                            untrack(|| j.read_only().item(&m.id).unwrap().get()),
                             (m.body, name_of(m.user)),
                             "join value at step {step}"
                         );
@@ -1834,9 +1834,9 @@ mod tests {
                     want.sort_by_key(|m| (name_of(m.user), m.body));
                     let want: Vec<(u8, Option<u8>)> = want.iter().map(|m| (m.body, name_of(m.user))).collect();
                     let got: Vec<(u8, Option<u8>)> =
-                        named.keys().iter().map(|k| untrack(|| named.source().item(k).unwrap().get())).collect();
+                        named.keys().iter().map(|k| untrack(|| named.read_only().item(k).unwrap().get())).collect();
                     assert_eq!(got, want, "filter + sort after the join at step {step}");
-                    for ch in j.source().0.emitter().log.borrow_mut().take(&cursor) {
+                    for ch in j.read_only().0.emitter().log.borrow_mut().take(&cursor) {
                         match ch {
                             Change::Insert { key, index } => replay.insert(index, key),
                             Change::Remove { key, index } => assert_eq!(replay.remove(index), key),
@@ -1879,9 +1879,9 @@ mod tests {
                 assert_eq!(seen.get(), s0, "a field the rows do not show: no update");
                 rt.with_frame(Ctx::Handler, None, None, || users.update(&2, |u| u.name = 7));
                 assert_eq!(seen.get(), s0 + 3, "the three rows of user 2");
-                assert_eq!(untrack(|| j.source().item(&0).unwrap().get()), Some(7));
+                assert_eq!(untrack(|| j.read_only().item(&0).unwrap().get()), Some(7));
                 rt.with_frame(Ctx::Handler, None, None, || users.remove(&2));
-                assert_eq!(untrack(|| j.source().item(&0).unwrap().get()), None, "kept, without its user");
+                assert_eq!(untrack(|| j.read_only().item(&0).unwrap().get()), None, "kept, without its user");
                 assert_eq!(j.keys().len(), n as usize);
                 assert!(rt.diagnostics().is_empty());
                 // User 1 is on every other message: renaming it fans out.

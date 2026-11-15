@@ -3,6 +3,7 @@ name = "octara-fonts"
 description = "Fonts for deterministic tests and screenshots beyond the bundled Latin faces: a CJK subset of Noto Sans SC."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 # The fonts themselves are under the SIL Open Font License 1.1 (fonts/OFL.txt).

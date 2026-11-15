@@ -154,7 +154,7 @@ pub(crate) fn view(tips: StateList<u64, Shown>) -> crate::view::View {
         .size(0.0)
         .a11y_hidden()
         .child(each(
-            move || tips.source(),
+            move || tips.read_only(),
             |_, tip| {
                 let (_, text_, anchor) = untrack(|| tip.get());
                 // Placed by the element itself: nothing here takes the pointer from it.

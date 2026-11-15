@@ -24,8 +24,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - name: Toolchain (rust-toolchain.toml) and components
-        run: rustup component add rustfmt clippy
+      - name: Latest stable Rust (1.100+)
+        run: rustup update stable --no-self-update
       - name: Linux libraries
         run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev
       - uses: Swatinem/rust-cache@v2
@@ -42,6 +42,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+      - name: Latest stable Rust (1.100+)
+        run: rustup update stable --no-self-update
       - name: Linux libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev

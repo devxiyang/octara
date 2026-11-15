@@ -191,7 +191,7 @@ pub fn popup_list(
                         .bg(Token::Surface)
                         .shadow_lg()
                         .child(each(
-                            move || ordered.source(),
+                            move || ordered.read_only(),
                             move |key, item| {
                                 let (selected, chosen, description_key, pick) = (key.clone(), key.clone(), key.clone(), pick.clone());
                                 col()

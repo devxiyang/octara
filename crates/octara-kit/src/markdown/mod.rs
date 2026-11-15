@@ -128,7 +128,7 @@ fn blocks(doc: Rc<RefCell<Doc>>, source: Source, streaming: bool) -> View {
             );
         }
     }
-    let mut parts = vec![each(move || blocks.source(), |_, b| render::block_view(b))];
+    let mut parts = vec![each(move || blocks.read_only(), |_, b| render::block_view(b))];
     if streaming {
         parts.push(el().w(0.0).h(0.0).live(Live::Polite).label(move || heard.get()).into());
     }

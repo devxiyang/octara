@@ -4,13 +4,15 @@
 //! the whole value (`get`, `with`) track the version as usual. The UI's `text(text_buffer)` applies
 //! the log to the kernel: an append costs O(appended), not O(length). `TextBuffer` is a cheap,
 //! reference-counted handle; it can live inside a list item and is reclaimed with it.
+//! Tracked reads and edits run in its creating App. Dropping the last handle needs no active App and
+//! does not keep that App alive.
 
-use crate::reactive::graph::{Signal, state, untrack};
+use crate::reactive::graph::{Runtime, Signal, state, untrack};
 use crate::reactive::list::{Cursor, Log, writable};
 use std::cell::RefCell;
 use std::ops::Range;
 use std::panic::Location;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 /// An edit. Offsets are byte offsets into the text before the edit.
 #[derive(Clone, Debug, PartialEq)]
@@ -23,11 +25,14 @@ struct Inner {
     value: RefCell<String>,
     log: RefCell<Log<TextChange>>,
     version: Signal<u64>,
+    runtime: Weak<Runtime>,
 }
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        self.version.dispose();
+        if let Some(runtime) = self.runtime.upgrade() {
+            self.version.dispose_in(&runtime);
+        }
     }
 }
 
@@ -56,7 +61,12 @@ pub fn text_buffer(key: &'static str, init: impl FnOnce() -> String) -> TextBuff
 impl TextBuffer {
     /// A text owned by its handles (for example inside a list item).
     pub fn new(init: impl Into<String>) -> TextBuffer {
-        TextBuffer(Rc::new(Inner { value: RefCell::new(init.into()), log: RefCell::new(Log::new()), version: Signal::detached(0) }))
+        TextBuffer(Rc::new(Inner {
+            value: RefCell::new(init.into()),
+            log: RefCell::new(Log::new()),
+            version: Signal::detached(0),
+            runtime: Rc::downgrade(&Runtime::current()),
+        }))
     }
 
     /// The whole text (O(length)); tracks it.
@@ -93,6 +103,8 @@ impl TextBuffer {
         if !writable(at) {
             return;
         }
+        // Validate runtime identity and liveness before changing either the text or its log.
+        let version = untrack(|| self.0.version.get());
         {
             let mut v = self.0.value.borrow_mut();
             match &c {
@@ -101,7 +113,7 @@ impl TextBuffer {
             }
         }
         self.0.log.borrow_mut().push(c);
-        self.0.version.set_internal(untrack(|| self.0.version.get()) + 1);
+        self.0.version.set_internal(version + 1);
     }
 
     #[track_caller]

@@ -194,7 +194,7 @@ fn todos() -> View {
             items.push(Todo { id, title: format!("Item {id}") });
         }))
         .child(col().id("list").flex_1().overflow_y_scroll().child(each(
-            move || items.source(),
+            move || items.read_only(),
             move |id, todo| {
                 let id = *id;
                 row()
@@ -216,10 +216,12 @@ assert!(!app.kernel().exists("todo-1"));
 ```
 
 - Key items by a stable id (`DUPLICATE_KEY` otherwise). A row is **one** element.
+- `items.read_only()` returns a `ReadList`: a shared, live handle without list write methods.
+  It does not copy items or create a snapshot; each item is exposed as a `ReadSignal`.
 - `each` applies changes row by row: an insert creates one row, a remove disposes one, and the
   state inside other rows stays.
 - Views of a list: `items.filter(|t| ..)`, `sort_by`, `group_by(..).flatten()`; render with
-  `each(move || view.source(), ..)`.
+  `each(move || view.read_only(), ..)`.
 - Long lists: `virtual_each`, directly inside a scroll container with a bounded height
   (`VIRTUAL_LIST_NOT_SCROLLABLE` otherwise).
 - A transcript or log: `.follow_tail()` on its scroll container keeps the end in view until the

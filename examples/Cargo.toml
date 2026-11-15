@@ -3,6 +3,7 @@ name = "octara-examples"
 description = "Example apps, their acceptance tests and benchmarks."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

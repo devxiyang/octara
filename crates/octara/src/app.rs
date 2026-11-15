@@ -563,13 +563,7 @@ impl App {
             self.app.shutdown.set(true);
             // Close the gate before callbacks run. Even if user cleanup unwinds, stop the
             // scheduler rather than allowing late wakes to resume partially retired work.
-            struct Stop<'a>(&'a crate::task::Scheduler);
-            impl Drop for Stop<'_> {
-                fn drop(&mut self) {
-                    self.0.shutdown();
-                }
-            }
-            let _stop = Stop(&self.app.sched);
+            let _stop = std::mem::DropGuard::new(&self.app.sched, |scheduler| scheduler.shutdown());
             let windows = self.app.order.borrow().clone();
             for id in windows {
                 self.app.close(id);

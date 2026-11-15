@@ -94,7 +94,7 @@ fn variants() -> Vec<Variant> {
             build: || {
                 Window::headless(|| {
                     let items = state_list("items", || vec![1u32, 2, 3], |_| 0u32);
-                    col().child(each(move || items.all(), |k, _| text(format!("{k}")).into())).id("list").into()
+                    col().child(each(move || items.read_only(), |k, _| text(format!("{k}")).into())).id("list").into()
                 })
             },
             check: |h| {
@@ -151,7 +151,7 @@ fn variants() -> Vec<Variant> {
                     let k2 = kept.clone();
                     col()
                         .child(col().child(each(
-                            move || items.all(),
+                            move || items.read_only(),
                             move |k, item| {
                                 k2.borrow_mut().push(item);
                                 text(format!("row {k}")).into()
@@ -236,7 +236,12 @@ fn variants() -> Vec<Variant> {
                 Window::headless(|| {
                     let items = state_list("items", || vec![(1u32, false)], |t| t.0);
                     col()
-                        .child(col().child(each(move || items.all(), |_, t| el().role(Role::CheckBox).id("box").checked(t.get().1).into())))
+                        .child(
+                            col().child(each(
+                                move || items.read_only(),
+                                |_, t| el().role(Role::CheckBox).id("box").checked(t.get().1).into(),
+                            )),
+                        )
                         .child(button("t").id("inc").on_press(move || items.update(&1, |t| t.1 = !t.1)))
                         .into()
                 })

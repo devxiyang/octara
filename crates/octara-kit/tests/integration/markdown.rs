@@ -284,7 +284,11 @@ fn instances_keep_their_own_blocks() {
 fn transcript() -> View {
     let messages = state_list("messages", || (0..200u32).collect(), |i: &u32| *i);
     col()
-        .child(virtual_each(move || messages.all(), |_| 40.0, |i, _| markdown(format!("**m{i}** says *hi*")).id(format!("m{i}")).into()))
+        .child(virtual_each(
+            move || messages.read_only(),
+            |_| 40.0,
+            |i, _| markdown(format!("**m{i}** says *hi*")).id(format!("m{i}")).into(),
+        ))
         .id("t")
         .selectable()
         .h(300.0)

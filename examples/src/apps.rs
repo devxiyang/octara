@@ -144,9 +144,9 @@ pub fn todo(n: usize) -> View {
     let draft = state("draft", String::new);
     let showing = state("showing", || Show::All);
     let visible = memo(move || match showing.get() {
-        Show::All => todos.source(),
-        Show::Active => active.source(),
-        Show::Done => done.source(),
+        Show::All => todos.read_only(),
+        Show::Active => active.read_only(),
+        Show::Done => done.read_only(),
     });
     let add = move || {
         let title = draft.get().trim().to_owned();
@@ -242,7 +242,7 @@ pub fn chat(n: usize) -> View {
         .child(
             col()
                 .child(each(
-                    move || messages.all(),
+                    move || messages.read_only(),
                     |id, m| {
                         let id = *id;
                         col()
@@ -363,7 +363,7 @@ pub fn chat_virtual(n: usize) -> View {
         .child(
             col()
                 .child(virtual_each(
-                    move || messages.all(),
+                    move || messages.read_only(),
                     |_| MSG_ROW_HEIGHT,
                     |id, m| {
                         let id = *id;
@@ -446,7 +446,7 @@ pub fn contacts(n: usize) -> View {
         .child(
             col()
                 .child(each(
-                    move || groups.source(),
+                    move || groups.read_only(),
                     move |team, info| {
                         let team = *team;
                         let members = groups.members(&team).expect("group exists while its row does");
@@ -534,7 +534,7 @@ pub fn contacts_virtual(n: usize) -> View {
         .child(
             col()
                 .child(virtual_each(
-                    move || flat.source(),
+                    move || flat.read_only(),
                     height,
                     move |key, item| match key.clone() {
                         FlatKey::Header(team) => {
@@ -621,7 +621,7 @@ pub fn chat_stream(n: usize) -> View {
         .child(
             col()
                 .child(virtual_each(
-                    move || messages.all(),
+                    move || messages.read_only(),
                     |_| MSG_ROW_HEIGHT,
                     |id, m| {
                         let id = *id;
@@ -713,7 +713,7 @@ pub fn inbox(n: usize) -> View {
     col()
         .size_full()
         .child(col().id("messages").flex_1().overflow_y_scroll().child(each(
-            move || rows.source(),
+            move || rows.read_only(),
             |id, msg| {
                 row()
                     .gap_2()

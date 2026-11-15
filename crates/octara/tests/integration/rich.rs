@@ -155,7 +155,7 @@ fn rows_scrolling_back_and_repeated_labels_shape_nothing_again() {
         col()
             .size_full()
             .child(col().id("list").flex_1().overflow_y_scroll().child(virtual_each(
-                move || items.source(),
+                move || items.read_only(),
                 |_| 24.0,
                 |k, r| row().h(24.0).child(text(move || r.with(|r| r.1.clone())).id(format!("r{k}"))).child(text("Edit")).into(),
             )))

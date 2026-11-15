@@ -31,6 +31,14 @@ fn items_are_found_by_canonical_path_and_alias() {
     assert!(api.get("octara::reactive::graph::state").is_none(), "old implementation paths are not aliases");
     assert!(api.get("octara::prelude::Memo").is_none());
     assert!(api.get("octara::reactive::Signal::new").is_none());
+    assert!(api.get("octara::reactive::list::StateList::all").is_none());
+    assert!(api.get("octara::reactive::list::Source").is_none());
+    assert!(api.get("octara::prelude::Source").is_none());
+    assert_eq!(api.get("octara::prelude::ReadList").unwrap().path, "octara::reactive::list::ReadList");
+    for ty in ["StateList", "Derived", "Groups"] {
+        assert!(api.get(&format!("octara::reactive::list::{ty}::source")).is_none());
+        assert!(api.get(&format!("octara::reactive::list::{ty}::read_only")).unwrap().sig.contains("ReadList<"));
+    }
     assert!(api.get("octara::task::Task::detach").is_none());
     assert!(api.get("octara::app::App::shutdown").is_some());
     assert!(api.get("octara::app::Window::kernel_mut").is_none());

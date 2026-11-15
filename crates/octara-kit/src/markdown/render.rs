@@ -65,7 +65,7 @@ pub(super) fn blocks_view(get: impl Fn() -> Vec<Block> + 'static) -> El {
             sync(blocks, "b", now, 0, same_kind);
         }
     });
-    col().gap_3().child(each(move || blocks.source(), |_, b| block_view(b)))
+    col().gap_3().child(each(move || blocks.read_only(), |_, b| block_view(b)))
 }
 
 /// One block's element: its kind is fixed (a block of another kind is a new entry); what it
@@ -208,7 +208,7 @@ fn code_view(b: ReadSignal<Keyed<Block>>) -> View {
         )
         .child(el().h(1.0).bg(Token::Border).a11y_hidden())
         .child(col().p_3().overflow_x_scroll().child(each(
-            move || lines.source(),
+            move || lines.read_only(),
             |_, l| {
                 // An empty line keeps its height.
                 text(move || l.with(|(_, s)| if s.is_empty() { " ".to_owned() } else { s.clone() })).font_mono().text_sm().into()
@@ -236,7 +236,7 @@ fn list_view(b: ReadSignal<Keyed<Block>>, start: Option<u64>) -> View {
         .role(Role::List)
         .gap_1()
         .child(each(
-            move || items.source(),
+            move || items.read_only(),
             move |k, it| {
                 let j: u64 = k[1..].parse().unwrap_or(0);
                 let marker = match start {
@@ -302,7 +302,7 @@ fn table_view(b: ReadSignal<Keyed<Block>>) -> View {
         .gap(1.0)
         .overflow_hidden()
         .child(each(
-            move || rows.source(),
+            move || rows.read_only(),
             |k, r| {
                 let head = k == "r0";
                 let cells_of = move || r.with(|(_, r)| r.clone());
@@ -315,7 +315,7 @@ fn table_view(b: ReadSignal<Keyed<Block>>) -> View {
                 let line = row().role(Role::Row);
                 let line = if head { line.bg(Token::Surface).font_semibold() } else { line.bg(Token::Background) };
                 line.child(each(
-                    move || cells.source(),
+                    move || cells.read_only(),
                     |_, c| {
                         let align = untrack(|| c.with(|(_, (_, a))| *a));
                         let cell = col().role(Role::Cell).flex_1().flex_basis(0.0).px_3().py_2();

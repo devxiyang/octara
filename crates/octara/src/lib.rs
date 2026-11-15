@@ -58,7 +58,7 @@ pub mod prelude {
     pub use crate::paint::Rect;
     pub use crate::path::{FillRule, LineCap, LineJoin, Path, Stroke, Transform, point};
     pub use crate::platform::{ClipboardItem, CursorStyle};
-    pub use crate::reactive::list::{Derived, FlatItem, FlatKey, GroupInfo, Groups, Source, StateList, state_list};
+    pub use crate::reactive::list::{Derived, FlatItem, FlatKey, GroupInfo, Groups, ReadList, StateList, state_list};
     pub use crate::reactive::on_cleanup;
     pub use crate::reactive::text::{TextBuffer, text_buffer};
     pub use crate::reactive::{ReadSignal, Signal, Watch, memo, provide, state, untrack, use_context, watch};

@@ -3,6 +3,7 @@ name = "octara"
 description = "Agent-first native UI in Rust: signals, incremental collections, retained tree, headless runtime."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

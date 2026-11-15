@@ -179,8 +179,7 @@ thread_local! {
 
 /// The current runtime. Panics outside [`Runtime::enter`].
 pub(crate) fn rt<R>(f: impl FnOnce(&Runtime) -> R) -> R {
-    let r = CURRENT.with(|c| c.borrow().clone()).expect("no reactive runtime: call inside Runtime::enter");
-    f(&r)
+    f(&Runtime::current())
 }
 
 const FLUSH_ROUNDS_LIMIT: u32 = 1000;
@@ -190,6 +189,10 @@ fn loc(at: &Location<'_>) -> String {
 }
 
 impl Runtime {
+    pub(crate) fn current() -> Rc<Self> {
+        CURRENT.with(|c| c.borrow().clone()).expect("no reactive runtime: call inside Runtime::enter")
+    }
+
     pub fn new() -> Rc<Self> {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let identity = NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1)).expect("runtime identity exhausted");
@@ -918,6 +921,11 @@ impl<T> std::fmt::Debug for Signal<T> {
 }
 
 impl<T> Signal<T> {
+    /// Releases a value-owned node in its creating runtime, without changing the current App.
+    pub(crate) fn dispose_in(self, runtime: &Runtime) {
+        runtime.dispose_node(self.idx);
+    }
+
     /// Disposes the node. May run from a value's `Drop`; does nothing once the runtime is gone.
     pub(crate) fn dispose(self) {
         if CURRENT.with(|c| c.borrow().is_some()) {

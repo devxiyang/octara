@@ -11,6 +11,7 @@ use super::behavior::Behavior;
 use super::pointer::{Modifiers, PointerEvent, PointerKind};
 use super::{Modality, TextDocument, TextEdit, Window};
 use crate::kernel::{HandlerKind, NodeId};
+use crate::view::Handler;
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -558,13 +559,24 @@ impl Window {
     /// A value set by assistive technology (or an agent) for `n`: through its `on_input`, with
     /// the caret at the end.
     pub(super) fn set_value_of(&self, n: NodeId, value: String) -> bool {
-        if self.w.kernel.borrow().check_activation(n, self.top_modal()).is_err() {
-            return false;
-        }
-        self.set_modality(Modality::Keyboard);
-        let len = value.len();
-        self.w.kernel.borrow_mut().set_selection(n, len, len);
-        self.run(n, &[HandlerKind::Input], Some(value))
+        let handler = {
+            let k = self.w.kernel.borrow();
+            if k.check_activation(n, self.top_modal()).is_err() {
+                return false;
+            }
+            k.handler(n, HandlerKind::Input).and_then(|h| self.w.handlers.borrow().get(&h.0).cloned())
+        };
+        let Some(handler) = handler else { return false };
+        handler
+            .run(&self.app.rt, |handler| {
+                let Handler::Input(input) = handler else { return false };
+                self.set_modality(Modality::Keyboard);
+                let len = value.len();
+                self.w.kernel.borrow_mut().set_selection(n, len, len);
+                input(value);
+                true
+            })
+            .unwrap_or(false)
     }
 }
 

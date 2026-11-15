@@ -107,7 +107,7 @@ fn hover_holds_while_layout_moves_under_a_still_pointer() {
                 items.insert(0, n);
             }))
             .child(col().child(each(
-                move || items.source(),
+                move || items.read_only(),
                 |id, _| el().id(format!("row-{id}")).w(100).h(20).hover(|p| p.bg(Token::SurfaceHover)).into(),
             )))
             .into()

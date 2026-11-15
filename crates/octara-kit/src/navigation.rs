@@ -102,7 +102,7 @@ pub fn tabs(id: &str, label: impl Into<String>, value: impl Model<Option<String>
             .flex_wrap()
             .gap_1()
             .child(each(
-                move || options.source(),
+                move || options.read_only(),
                 move |key, item| {
                     let (selected, pick) = (value.clone(), value.clone());
                     let (selected_key, pick_key) = (key.clone(), key.clone());
@@ -174,7 +174,7 @@ pub fn segmented(
             .child(text(label).id(format!("{id}-label")).text_sm().font_medium().text_color(Token::Text))
             .child(row().w_full().min_w(0.0).gap_1().p_1().rounded_md().bg(Token::Surface).border().border_color(Token::Border).child(
                 each(
-                    move || options.source(),
+                    move || options.read_only(),
                     move |key, item| {
                         let (checked, pick) = (value.clone(), value.clone());
                         let (checked_key, pick_key) = (key.clone(), key.clone());

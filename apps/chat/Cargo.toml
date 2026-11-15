@@ -3,6 +3,7 @@ name = "octara-chat"
 description = "The AI chat reference app: Octara components with offline or HTTP streaming models."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

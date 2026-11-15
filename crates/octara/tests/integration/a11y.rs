@@ -252,7 +252,11 @@ fn busy() -> View {
             || text("A menu item").id("menu-item").into(),
         ))
         .child(
-            col().id("list").h(100).overflow_y_scroll().child(each(move || items.source(), |i, _| text(format!("Item {i}")).h(30).into())),
+            col()
+                .id("list")
+                .h(100)
+                .overflow_y_scroll()
+                .child(each(move || items.read_only(), |i, _| text(format!("Item {i}")).h(30).into())),
         )
         .into()
 }
@@ -425,7 +429,7 @@ fn a_selection_through_unmounted_rows_ends_at_the_mounted_runs() {
         col()
             .size_full()
             .child(col().id("list").selectable().flex_1().overflow_y_scroll().child(virtual_each(
-                move || items.source(),
+                move || items.read_only(),
                 |_| 24.0,
                 |k, m| text(move || m.with(|m| m.1.clone())).id(format!("m{k}")).into(),
             )))

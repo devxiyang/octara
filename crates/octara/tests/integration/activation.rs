@@ -4,6 +4,43 @@ use octara::kernel::{NumericRange, a11y::a11y_id};
 use octara::platform::{HeadlessPlatform, WindowOptions};
 use octara::prelude::*;
 
+#[test]
+fn accessibility_value_without_an_input_handler_preserves_selection() {
+    let mut window = Window::headless(|| text_input().id("field").value("initial").into());
+    window.dispatch(Event::Focus("field".into())).unwrap();
+    window.set_selection(1, 3);
+    let node = window.kernel().find("field").unwrap();
+    let before = window.inspect().text_input;
+    assert!(!window.event(InputEvent::Accessibility {
+        target: a11y_id(node),
+        action: Action::SetValue,
+        data: Some(ActionData::Value("replacement".into())),
+    }));
+    assert_eq!(window.kernel().selection(node), (1, 3));
+    assert_eq!(window.inspect().text_input, before);
+}
+
+#[test]
+fn accessibility_value_runs_the_input_handler_and_updates_selection() {
+    let mut window = Window::headless(|| {
+        let value = state("value", || "initial".to_owned());
+        text_input().id("field").value(value).on_input(move |text| value.set(text)).into()
+    });
+    window.dispatch(Event::Focus("field".into())).unwrap();
+    window.set_selection(1, 3);
+    let node = window.kernel().find("field").unwrap();
+    for replacement in ["你好，世界😀", "你好", ""] {
+        assert!(window.event(InputEvent::Accessibility {
+            target: a11y_id(node),
+            action: Action::SetValue,
+            data: Some(ActionData::Value(replacement.into())),
+        }));
+        assert_eq!(window.kernel().value(node), replacement);
+        assert_eq!(window.kernel().selection(node), (replacement.len(), replacement.len()));
+    }
+    assert!(window.app().diagnostics().is_empty());
+}
+
 fn fixture() -> (App, Window, Signal<u8>, Signal<u32>) {
     let app = App::new(HeadlessPlatform::default());
     let (mode, hits) = app.run(|| (state("mode", || 0u8), state("hits", || 0u32)));

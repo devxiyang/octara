@@ -108,7 +108,7 @@ paths private. Module extraction follows semantic changes, not a standalone rewr
 | Shared dependencies | Existing provide / use_context; values can be handles or Rc services |
 | Async UI work | spawn, resource, channels and timers, under the captured scope |
 | App-lifetime work | Explicit App::run root entry, then spawn; no task promotion via detach |
-| Large changing lists/text | StateList/Source and TextBuffer; preserve incremental changes |
+| Large changing lists/text | StateList/ReadList and TextBuffer; preserve incremental changes |
 | Control inputs | Static values, tracked closures or matching Signal/ReadSignal property inputs |
 
 Existing Kit Model<T> remains a small Kit-local getter/setter trait for Signal or a callback pair.
@@ -159,7 +159,7 @@ not the only way to prevent a task from using a retired window.
 | Blanket Clone bounds and clone-before-update | Method-local bounds and in-place mutation |
 | Ctx::Untracked and phase helpers acting as permission escapes | Independent guards and narrow internal transitions |
 | Task::detach | Choose App ownership at creation; migrate intentional Chat background work |
-| StateList::all synonym | Keep source() as the projection name; preserve Source and incremental operators |
+| StateList::all synonym (removed in round ten) | Use read_only() and ReadList; preserve incremental operators |
 | Public graph/sequence implementation paths | Supported reactive exports, no old-path aliases |
 | Public Window::kernel_mut (removed in round seven) and unrestricted platform mutable-borrow access (removed in round eight) | Narrow host operations and internal test access, installed before removing callers |
 | Duplicated activation checks, Inspector dispatch and content representations | One owner per policy, adapters at boundaries |
@@ -543,6 +543,54 @@ controls keep identity and accept framework text, and reload/resize/GPU captures
 Evidence: `/tmp/octara-activation-before.log`, `/tmp/octara-activation-workspace.log`,
 `/tmp/octara-activation-clippy.log` and `/tmp/octara-activation-live-20261115`. OS keyboard input
 and native Chinese IME were not requalified.
+
+## Tenth-round Rust baseline and core review fixes
+
+The workspace follows the latest stable Rust through `rust-toolchain.toml` and explicit CI
+updates. All ten packages inherit the 1.100 minimum; this is a lower bound, not a pinned
+toolchain. Edition 2024 remains unchanged. Local validation uses stable 1.100.0.
+
+TextBuffer validates its version signal's runtime identity and liveness before changing text
+or the edit log. Foreign-App append, splice and replacement keep the existing WRONG_RUNTIME
+failure while leaving content, version and incremental rendering untouched. Its inner value
+keeps a weak reference to the creating runtime: the final Rust handle releases the version
+node there even outside App entry or inside another App. The reference neither keeps the App
+alive nor switches the ambient App during destruction. Public Signal handles remain Copy;
+this does not introduce a runtime registry or a second ownership system.
+
+Accessibility SetValue resolves the input handler and checks its mounted scope before moving
+selection or changing input modality. A field without a handler refuses the action without
+altering its selection; valid handlers still run in their captured scope and window.
+
+StateList exposes `read_only()` as its single projection spelling; `all()` and `source()` are
+removed and all in-repository callers migrated without compatibility aliases. The list handle is
+`ReadList` throughout the implementation and public API, replacing `Source`. Derived and Groups
+also expose `read_only()`; group members already return a ReadList. The handle shares the live
+list and returns ReadSignal items. It does not copy items, change ownership or add a snapshot;
+incremental logs, transformations, joins and rendering retain their existing behavior.
+
+App shutdown's local Stop type is replaced by `std::mem::DropGuard`, preserving scheduler cleanup on return and
+unwind. Guards with domain behavior, including PollingTask and ReadyBatch, remain explicit.
+
+Regression coverage includes all three foreign-App text edits, subsequent incremental render,
+last-clone release outside App entry, release inside a foreign App, dropping a handle after
+its App, and refused/accepted accessibility value changes. Four regression tests failed before
+the fixes and passed afterward; accepted Chinese text, emoji, shortening and clearing are
+checked separately.
+
+Validation: 662 workspace tests passed (three ignored); Clippy with warnings denied, formatting
+and diff checks passed. All eight existing live Inspector scenarios passed, including activation,
+focus retirement, hot reload, native resize and GPU capture. These are framework/semantic
+requests; OS keyboard input and native Chinese IME were not requalified. Evidence:
+`/tmp/octara-review-before-text.log`, `/tmp/octara-review-before-input.log`,
+`/tmp/octara-core-fixes-workspace.log`, `/tmp/octara-core-fixes-activation.log`,
+`/tmp/octara-core-fixes-clippy.log` and `/tmp/octara-core-fixes-live-20261115`.
+
+After the ReadList/read_only naming migration, all 662 workspace tests passed again (three
+ignored), including public API removal checks, incremental collections, Chat, generated-skill
+freshness and doctests. Clippy with warnings denied, formatting and diff checks also passed.
+Evidence: `/tmp/octara-read-list-workspace.log` and `/tmp/octara-read-list-clippy.log`.
+The naming-only migration did not rerun the real-window suite above.
 
 ## References
 

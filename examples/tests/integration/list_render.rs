@@ -17,14 +17,14 @@ fn app(probe: Rc<Cell<usize>>) -> Window {
             .child(show(
                 move || shown.get(),
                 move || {
-                    col().child(each(move || evens.source(), |k, _| text(format!("{k}")).id(format!("e{k}")).into())).id("evens").into()
+                    col().child(each(move || evens.read_only(), |k, _| text(format!("{k}")).id(format!("e{k}")).into())).id("evens").into()
                 },
             ))
             .child(button("add").id("add").on_press(move || {
                 let n = next.get();
                 next.set(n + 1);
                 items.push(n);
-                probe.set(items.all().log_len() + evens.source().log_len());
+                probe.set(items.read_only().log_len() + evens.read_only().log_len());
             }))
             .child(button("drop").id("drop").on_press(move || items.retain(|x| x % 4 != 0)))
             .child(button("hide").id("hide").on_press(move || shown.update(|s| *s = !*s)))

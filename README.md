@@ -115,6 +115,13 @@ These are architectural targets, not a current support matrix.
 - [UI primitives and component layering](docs/design/ui-primitives.md)
 - [Research](docs/research/): Rune, Exact, prior art, signals implementations, papers
 
+## Rust toolchain
+
+Octara follows the latest stable Rust, with Rust 1.100 as its minimum and Edition 2024.
+`rust-toolchain.toml` selects `stable`; run `rustup update stable` to refresh an installed
+local toolchain. CI updates stable before every build. The Rust version floor is declared
+once in the workspace and inherited by every package; it does not pin the development compiler.
+
 ## Repository
 
 | Path | Contents |
