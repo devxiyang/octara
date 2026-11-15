@@ -204,7 +204,7 @@ pub struct LongSession {
 
 impl LongSession {
     pub fn options(&self, store: Option<Store>) -> Options {
-        Options { models: vec![Rc::new(self.clone())], store, clock: Rc::new(|| NOW) }
+        Options { models: vec![octara_chat::ModelEntry::new("long-session", Rc::new(self.clone()))], store, clock: Rc::new(|| NOW) }
     }
 
     /// The unchanged product root, with fixture commands registered in its Chat scope.

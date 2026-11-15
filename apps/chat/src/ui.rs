@@ -203,7 +203,7 @@ fn thread_row(id: ThreadId, thread: impl Fn() -> Option<Thread> + Clone + 'stati
         },
         move || {
             let shown = shown.clone();
-            text(shown.clone()).truncate().flex_1().into()
+            text(shown.clone()).id(format!("thread-title-{id}")).truncate().flex_1().into()
         },
     ))
     .id(format!("thread-{id}"))
@@ -273,7 +273,7 @@ fn thread_menu(chat: &Chat, id: ThreadId, title: String) {
 
 fn main_pane() -> El {
     let chat = chat();
-    let (title, models) = (chat.clone(), chat.models());
+    let title = chat.clone();
     let listing = listing();
     col()
         .id("conversation")
@@ -281,6 +281,7 @@ fn main_pane() -> El {
         .bg(Token::Background)
         .child(
             row()
+                .id("conversation-header")
                 .items_center()
                 .gap_2()
                 .h(44.0)
@@ -299,13 +300,37 @@ fn main_pane() -> El {
                     .font_medium()
                     .text_sm()
                     .truncate()
+                    .min_w(0.0)
                     .flex_1(),
                 )
-                .child(select("model", chat.model, models.into_iter().enumerate())),
+                .child(model_picker(&chat)),
         )
         .child(el().h(1.0).w_full().bg(Token::Border).a11y_hidden())
         .child(el().relative().flex_1().min_h(0.0).child(keyed(move || chat.current.get().unwrap_or(0), |t| transcript(*t))))
         .child(composer())
+}
+
+/// Labels belong to people; the selection and retained option rows use the model's stable ID.
+#[component]
+fn model_picker(chat: &Chat) -> El {
+    let options: Vec<_> = chat.models().iter().map(|entry| ComboboxOption::new(&entry.id, entry.model.name())).collect();
+    let hint = chat.clone();
+    let picker = if options.is_empty() {
+        button("No models").id("model").role(Role::ComboBox).label("Model").value("No models").w_full().truncate().disabled(true).into()
+    } else {
+        combobox("model", "Model", chat.model, move || options.clone())
+    };
+    el().id("model-picker")
+        .min_w(0.0)
+        .max_w(relative(0.55))
+        .flex_shrink_0()
+        .style_with(|style| style.w(if compact() { 160.0 } else { 220.0 }))
+        .tooltip(move || {
+            let selected = hint.model.get();
+            let name = selected.as_deref().and_then(|id| hint.model_name(id)).unwrap_or("Model");
+            format!("{name}\nApplies to the next message or regenerated answer.")
+        })
+        .child(picker)
 }
 
 /// The open conversation's messages: one document to select across, following its end as the
@@ -463,11 +488,16 @@ fn answer(id: u64, m: ReadSignal<Message>) -> El {
                     Status::Failed(w) => w,
                     _ => String::new(),
                 };
-                let retry = retry.clone();
+                let (retry, available) = (retry.clone(), retry.clone());
                 callout(PromptLevel::Critical, "The answer failed", Some(&why))
                     .id(format!("failed-{id}"))
                     .select_none()
-                    .child(button("Retry").id(format!("retry-{id}")).on_press(move || retry.regenerate(id)))
+                    .child(
+                        button("Retry")
+                            .id(format!("retry-{id}"))
+                            .disabled(move || !available.has_model())
+                            .on_press(move || retry.regenerate(id)),
+                    )
                     .into()
             }
         }))
@@ -475,7 +505,7 @@ fn answer(id: u64, m: ReadSignal<Message>) -> El {
         .child(show(
             move || status() != Status::Streaming,
             move || {
-                let (regenerate, copy) = (regenerate.clone(), copy);
+                let (regenerate, available, copy) = (regenerate.clone(), regenerate.clone(), copy);
                 row()
                     .gap_0p5()
                     .select_none()
@@ -487,6 +517,7 @@ fn answer(id: u64, m: ReadSignal<Message>) -> El {
                     .child(
                         icon_button(icons::REFRESH_CW, "Regenerate")
                             .id(format!("regenerate-{id}"))
+                            .disabled(move || !available.has_model())
                             .on_press(move || regenerate.regenerate(id)),
                     )
                     .into()
@@ -598,6 +629,7 @@ fn composer() -> El {
         (chat.clone(), chat.clone(), chat.clone(), chat.clone(), chat.clone(), chat.clone(), chat.editing, chat.clone());
     let answering = move || current.get().is_some_and(|t| busy.is_answering(t));
     let files = chat.files;
+    let available = chat.clone();
     col()
         .id("composer-area")
         .w_full()
@@ -609,6 +641,18 @@ fn composer() -> El {
         .on_drop(move |paths| drop_in.attach(paths))
         .drag_over(|p| p.bg(Token::Surface))
         .child(each(move || queued.source(), |qid, q| queued_row(*qid, q)))
+        .child(show(move || !available.has_model(), {
+            let no_models = chat.models().is_empty();
+            move || {
+                text(if no_models { "No models available. Your draft is kept." } else { "Choose a model to send. Your draft is kept." })
+                    .id("model-status")
+                    .role(Role::Status)
+                    .live(Live::Polite)
+                    .text_xs()
+                    .text_color(Token::TextMuted)
+                    .into()
+            }
+        }))
         .child(
             col()
                 .gap_2()
@@ -687,12 +731,12 @@ fn composer() -> El {
                                     .into()
                             },
                             move || {
-                                let send = busy2.clone();
+                                let (send, available) = (busy2.clone(), busy2.clone());
                                 let draft = send.draft;
                                 primary_icon(
                                     icon_button(icons::ARROW_UP, "Send")
                                         .id("send")
-                                        .disabled(move || draft.get().trim().is_empty())
+                                        .disabled(move || !available.has_model() || draft.get().trim().is_empty())
                                         .on_press(move || send.send()),
                                 )
                                 .into()
@@ -709,7 +753,7 @@ fn primary_icon(b: El) -> El {
 
 fn queued_row(id: u64, q: ReadSignal<crate::chat::Queued>) -> View {
     let chat = chat();
-    let (now, edit, remove) = (chat.clone(), chat.clone(), chat.clone());
+    let (now, edit, remove, available, label, hint) = (chat.clone(), chat.clone(), chat.clone(), chat.clone(), chat.clone(), chat.clone());
     row()
         .id(format!("queued-{id}"))
         .items_center()
@@ -719,9 +763,32 @@ fn queued_row(id: u64, q: ReadSignal<crate::chat::Queued>) -> View {
         .rounded_md()
         .bg(Token::Surface)
         .text_sm()
-        .child(text("Queued").text_xs().text_color(Token::TextMuted))
-        .child(text(move || q.with(|q| q.text.clone())).truncate().flex_1())
-        .child(icon_button(icons::ARROW_UP, "Send now").id(format!("send-now-{id}")).on_press(move || now.send_now(id)))
+        .child(
+            col()
+                .flex_1()
+                .min_w(0.0)
+                .gap_0p5()
+                .child(
+                    text(move || q.with(|q| format!("Queued · {}", label.model_name(&q.model_id).unwrap_or("Model unavailable"))))
+                        .id(format!("queued-model-{id}"))
+                        .truncate()
+                        .text_xs()
+                        .text_color(Token::TextMuted),
+                )
+                .child(text(move || q.with(|q| q.text.clone())).truncate()),
+        )
+        .child(
+            icon_button(icons::ARROW_UP, "Send now")
+                .id(format!("send-now-{id}"))
+                .disabled(move || q.with(|q| available.model_name(&q.model_id).is_none()))
+                .tooltip(move || {
+                    q.with(|q| {
+                        hint.model_name(&q.model_id)
+                            .map_or_else(|| "Queued model is unavailable".to_owned(), |name| format!("Send now with {name}"))
+                    })
+                })
+                .on_press(move || now.send_now(id)),
+        )
         .child(icon_button(icons::PENCIL, "Edit").id(format!("edit-queued-{id}")).on_press(move || edit.edit_queued(id)))
         .child(icon_button(icons::X, "Remove").id(format!("unqueue-{id}")).on_press(move || remove.unqueue(id)))
         .into()

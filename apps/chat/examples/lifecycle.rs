@@ -87,7 +87,11 @@ fn controls(model: &Controlled) {
 fn lifecycle(model: Controlled, directory: PathBuf) -> View {
     root(move || {
         controls(&model);
-        Options { models: vec![Rc::new(InFlight(model.clone()))], store: Some(Store::new(&directory)), ..Options::default() }
+        Options {
+            models: vec![octara_chat::ModelEntry::new("controlled", Rc::new(InFlight(model.clone())))],
+            store: Some(Store::new(&directory)),
+            ..Options::default()
+        }
     })
 }
 

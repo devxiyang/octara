@@ -10,6 +10,51 @@ available in the picker. Incomplete configuration fails at startup instead of si
 falling back. See [NETWORK.md](NETWORK.md) for local HTTP verification, configuration,
 supported streaming events, cancellation and Agent observations.
 
+## Model selection
+
+The header uses the kit's searchable Combobox. Search supports ordinary text editing and IME;
+Up/Down highlight a result, Enter chooses it, and Escape closes the picker. The composer stays
+mounted, preserving its draft and selection. Long model names are truncated in the header and
+shown in full by its tooltip. `model-search`, `model-option-<stable ID>` and Inspector's
+`active_descendant` expose the current search and highlight.
+
+Applications configure models with an explicit ID:
+
+```rust
+use octara_chat::{ModelEntry, Options};
+use octara_chat::engine::Scripted;
+use std::rc::Rc;
+
+let options = Options {
+    models: vec![ModelEntry::new("offline", Rc::new(Scripted::default()))],
+    ..Options::default()
+};
+```
+
+`ModelEntry.id` identifies the configured entry, independently of its display name, list
+position or provider's HTTP `model` string. IDs must be nonempty and unique; duplicate display
+names are allowed. IDs appear in control identifiers, so use application keys without endpoints
+or credentials. The normal executable registers `network` and `scripted`.
+
+`Chat.model` holds `Option<String>`. Reordering or renaming configuration across a reload keeps
+the selected ID. Removing it makes the selection unavailable instead of selecting another entry
+at its previous index. With no available selection, Send/Retry/Regenerate are disabled, keyboard
+submission preserves the draft and attachments, and an existing request's Stop still works.
+
+| Action | Model used |
+| --- | --- |
+| Select a model while an answer streams | The active request continues with its captured model |
+| Send, edit and resend, Retry, or Regenerate | Capture the current selection before changing the conversation |
+| Generate the first answer and its title | Both use the same captured model, even if a callback changes selection |
+| Send while already answering | The queued message stores the model selected when Send was pressed |
+| Automatic queue release or Send now | Use that queued model; later picker changes do not retarget it |
+| Edit a queued message | Restore its draft and model choice; choose another model before resending if desired |
+| Stop | Cancel the active request's transport, regardless of the current picker selection |
+
+Each queued row shows its bound model. A queued entry whose model is no longer configured stays
+queued; Send now is disabled until it is edited with an available model or removed. There is no
+silent fallback. See [MODEL_SELECTION.md](MODEL_SELECTION.md) for HTTP and real-window evidence.
+
 ## Long-session verification
 
 The `long_session` example opens the unchanged Chat UI with an isolated 1,000- or

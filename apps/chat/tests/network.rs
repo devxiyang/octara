@@ -7,7 +7,7 @@ use octara::app::Window;
 use octara::prelude::*;
 use octara_chat::model::{Message, Status, ThreadId};
 use octara_chat::network::{NetworkConfig, NetworkModel};
-use octara_chat::{Chat, Options};
+use octara_chat::{Chat, ModelEntry, Options};
 use peer::{End, Fixture, Plan};
 use serde_json::json;
 use std::cell::RefCell;
@@ -32,12 +32,16 @@ impl Harness {
             NetworkModel::new(NetworkConfig { endpoint, model: "fixture-model".into(), api_key: Some("test-only-key".into()), timeout })
                 .unwrap(),
         );
+        Self::from_models(vec![ModelEntry::new("fixture", model)])
+    }
+
+    fn from_models(models: Vec<ModelEntry>) -> Self {
         let exposed = Rc::new(RefCell::new(None));
         let slot = exposed.clone();
         let action: Rc<RefCell<Option<Action>>> = Rc::default();
         let command = action.clone();
         let window = Window::headless(move || {
-            let chat = Chat::new(Options { models: vec![model.clone()], ..Options::default() });
+            let chat = Chat::new(Options { models: models.clone(), ..Options::default() });
             *slot.borrow_mut() = Some(chat.clone());
             let command = command.clone();
             on_command("test.chat", move || {
@@ -95,6 +99,137 @@ impl Harness {
 }
 
 const TIMEOUT: Duration = Duration::from_secs(3);
+
+fn model(server: &Fixture, id: &str, wire_model: &str) -> ModelEntry {
+    ModelEntry::new(
+        id,
+        Rc::new(
+            NetworkModel::new(NetworkConfig { endpoint: server.endpoint(), model: wire_model.into(), api_key: None, timeout: TIMEOUT })
+                .unwrap(),
+        ),
+    )
+}
+
+#[test]
+fn changing_models_keeps_the_active_stream_and_regenerates_with_the_new_selection() {
+    let server = Fixture::new(vec![Plan::hold(Some("A first")), Plan::success("B replacement"), Plan::success("A followup")]);
+    let mut h = Harness::from_models(vec![model(&server, "provider-a", "wire-model-a"), model(&server, "provider-b", "wire-model-b")]);
+    let thread = h.send("first question");
+    h.until(&server, "A's streamed prefix", || h.answer(thread).text() == "A first");
+
+    h.act(|chat| chat.model.set(Some("provider-b".into())));
+    assert_eq!(h.read(|chat| chat.model.get_untracked()).as_deref(), Some("provider-b"));
+    assert_eq!(h.answer(thread).status, Status::Streaming);
+    server.inspect(|s| {
+        assert_eq!(s.requests.len(), 1);
+        assert_eq!(s.requests[0]["model"], "wire-model-a", "application ids never replace the wire model name");
+        assert!(s.closed.is_empty(), "changing selection leaves A's connection open");
+    });
+    server.send_text(0, " + A continued");
+    h.until(&server, "A to continue after selecting B", || h.answer(thread).text() == "A first + A continued");
+
+    let answer = h.answer(thread).id;
+    h.act(move |chat| chat.stop(thread));
+    h.until(&server, "A's cancelled socket to close", || server.inspect(|s| s.closed.contains(&0)));
+    assert_eq!(h.answer(thread).status, Status::Stopped);
+    assert_eq!(h.answer(thread).text(), "A first + A continued");
+
+    h.act(move |chat| chat.regenerate(answer));
+    h.done(&server, thread);
+    assert_eq!(h.answer(thread).text(), "B replacement");
+    assert_eq!(h.answer(thread).status, Status::Done);
+    h.act(|chat| chat.model.set(Some("provider-a".into())));
+    h.send("follow up on A");
+    h.done(&server, thread);
+    assert_eq!(h.answer(thread).text(), "A followup");
+    server.inspect(|s| {
+        assert_eq!(s.requests.len(), 3, "network models generate titles locally");
+        assert_eq!(s.requests[1]["model"], "wire-model-b");
+        assert_eq!(s.requests[1]["messages"], json!([{"role":"user","content":"first question"}]));
+        assert_eq!(s.requests[2]["model"], "wire-model-a");
+        assert_eq!(
+            s.requests[2]["messages"],
+            json!([
+                {"role":"user","content":"first question"},
+                {"role":"assistant","content":"B replacement"},
+                {"role":"user","content":"follow up on A"},
+            ])
+        );
+    });
+}
+
+#[test]
+fn queued_requests_keep_the_model_selected_at_enqueue_and_send_the_completed_history() {
+    let server = Fixture::new(vec![
+        Plan::hold(Some("A first answer")),
+        Plan::hold(Some("B queued answer")),
+        Plan::success("A queued answer"),
+        Plan::success("B followup answer"),
+    ]);
+    let mut h = Harness::from_models(vec![model(&server, "provider-a", "wire-model-a"), model(&server, "provider-b", "wire-model-b")]);
+    let thread = h.send("first question");
+    h.until(&server, "A's first answer", || h.answer(thread).text() == "A first answer");
+    h.act(|chat| chat.model.set(Some("provider-b".into())));
+    h.send("queued for B");
+    h.act(|chat| chat.model.set(Some("provider-a".into())));
+    h.send("queued for A");
+    assert_eq!(
+        h.read(|chat| chat.queue.keys().into_iter().map(|id| chat.queue.item(&id).unwrap().get_untracked().model_id).collect::<Vec<_>>()),
+        ["provider-b", "provider-a"]
+    );
+    h.act(|chat| chat.model.set(Some("provider-b".into())));
+    server.finish(0);
+    h.until(&server, "B's queued answer", || server.inspect(|s| s.requests.len() == 2) && h.answer(thread).text() == "B queued answer");
+    assert_eq!(h.answer(thread).status, Status::Streaming);
+    server.finish(1);
+    h.until(&server, "both queued requests to finish", || {
+        h.read(|chat| chat.thread_messages(thread).len() == 6 && chat.queue.is_empty() && !chat.is_answering(thread))
+    });
+    assert_eq!(h.answer(thread).text(), "A queued answer");
+    assert_eq!(h.answer(thread).status, Status::Done);
+    assert_eq!(h.read(|chat| chat.model.get_untracked()).as_deref(), Some("provider-b"));
+    h.send("follow up on B");
+    h.done(&server, thread);
+    assert_eq!(h.answer(thread).text(), "B followup answer");
+    server.inspect(|s| {
+        assert_eq!(s.requests.len(), 4);
+        assert_eq!(
+            s.requests.iter().map(|r| r["model"].as_str().unwrap()).collect::<Vec<_>>(),
+            ["wire-model-a", "wire-model-b", "wire-model-a", "wire-model-b"]
+        );
+        assert_eq!(s.requests[0]["messages"], json!([{"role":"user","content":"first question"}]));
+        assert_eq!(
+            s.requests[1]["messages"],
+            json!([
+                {"role":"user","content":"first question"},
+                {"role":"assistant","content":"A first answer"},
+                {"role":"user","content":"queued for B"},
+            ])
+        );
+        assert_eq!(
+            s.requests[2]["messages"],
+            json!([
+                {"role":"user","content":"first question"},
+                {"role":"assistant","content":"A first answer"},
+                {"role":"user","content":"queued for B"},
+                {"role":"assistant","content":"B queued answer"},
+                {"role":"user","content":"queued for A"},
+            ])
+        );
+        assert_eq!(
+            s.requests[3]["messages"],
+            json!([
+                {"role":"user","content":"first question"},
+                {"role":"assistant","content":"A first answer"},
+                {"role":"user","content":"queued for B"},
+                {"role":"assistant","content":"B queued answer"},
+                {"role":"user","content":"queued for A"},
+                {"role":"assistant","content":"A queued answer"},
+                {"role":"user","content":"follow up on B"},
+            ])
+        );
+    });
+}
 
 #[test]
 fn fragmented_unicode_sse_reaches_chat_and_followups_send_the_real_history() {

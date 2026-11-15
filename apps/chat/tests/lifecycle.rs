@@ -33,7 +33,11 @@ impl Harness {
         let action: Rc<RefCell<Option<Action>>> = Rc::default();
         let invoke = action.clone();
         let window = Window::headless(move || {
-            let chat = Chat::new(Options { models: vec![Rc::new(engine.clone())], store: store.clone(), ..Options::default() });
+            let chat = Chat::new(Options {
+                models: vec![octara_chat::ModelEntry::new("controlled", Rc::new(engine.clone()))],
+                store: store.clone(),
+                ..Options::default()
+            });
             *slot.borrow_mut() = Some(chat.clone());
             let draft = chat.draft;
             let invoke = invoke.clone();
@@ -302,7 +306,10 @@ fn closing_the_owning_window_cancels_transport_interest_and_rejects_delivery() {
     let engine = model.clone();
     let mut window = Window::headless(move || {
         let engine = engine.clone();
-        octara_chat::root(move || Options { models: vec![Rc::new(engine.clone())], ..Options::default() })
+        octara_chat::root(move || Options {
+            models: vec![octara_chat::ModelEntry::new("controlled", Rc::new(engine.clone()))],
+            ..Options::default()
+        })
     });
     window.dispatch(octara::app::Event::Focus("composer".into())).unwrap();
     window.dispatch(octara::app::Event::Input("composer".into(), "close while answering".into())).unwrap();

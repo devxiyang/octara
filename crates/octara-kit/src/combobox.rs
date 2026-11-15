@@ -50,6 +50,8 @@ struct OptionRow {
 /// enabled option, or the first enabled option. Editing the query starts at the first enabled
 /// match. This is an ordinary retained list for finite menus (including hundreds of choices),
 /// rather than a virtual list or an asynchronous search source.
+/// The trigger fills its containing box and truncates long labels. Use an ordinary wrapper
+/// element to constrain its width or attach a tooltip; the full selected label remains its value.
 #[component]
 #[track_caller]
 pub fn combobox(
@@ -139,7 +141,7 @@ pub fn combobox(
                     .unwrap_or_else(|| label.clone())
             }
         };
-        let trigger = button(caption.clone()).label(label.clone()).value(caption);
+        let trigger = button(caption.clone()).label(label.clone()).value(caption).w_full().min_w(0.0).truncate();
         let popup_id = id.clone();
         let popup_label = label.clone();
         let popup_value = value.clone();
@@ -216,6 +218,8 @@ pub fn combobox(
                                 .role(Role::ListBoxOption)
                                 .tab_index(-1)
                                 .w_full()
+                                .min_w(0.0)
+                                .truncate()
                                 .rounded_sm()
                                 .border_color(Paint::Color(Color::TRANSPARENT))
                                 .disabled(move || row.with(|row| row.option.disabled))

@@ -7,9 +7,24 @@ use crate::engine::{Cancel, Model, Purpose, Request};
 use crate::model::{Attachment, Author, Event, Message, MessageId, Status, Thread, ThreadId};
 use crate::store::Store;
 use octara::prelude::*;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+
+/// One configured model. Its application-owned ID stays stable across label changes and
+/// reordering; it is independent of the provider's HTTP model name. IDs must be unique,
+/// nonempty and contain no credentials. Display names may be shared by multiple entries.
+#[derive(Clone)]
+pub struct ModelEntry {
+    pub id: String,
+    pub model: Rc<dyn Model>,
+}
+
+impl ModelEntry {
+    pub fn new(id: impl Into<String>, model: Rc<dyn Model>) -> Self {
+        Self { id: id.into(), model }
+    }
+}
 
 /// A message waiting to be sent while its conversation's answer streams.
 #[derive(Clone, PartialEq, Debug)]
@@ -18,12 +33,15 @@ pub struct Queued {
     pub thread: ThreadId,
     pub text: String,
     pub files: Vec<Attachment>,
+    /// The model selected when Send was pressed, including when this message waits in a queue.
+    pub model_id: String,
 }
 
 /// What the app starts with.
 pub struct Options {
-    /// The models to pick from (the first is picked).
-    pub models: Vec<Rc<dyn Model>>,
+    /// Models with unique stable IDs (the first is initially picked). An empty list is valid;
+    /// sending then preserves the draft until a model becomes available.
+    pub models: Vec<ModelEntry>,
     /// Where conversations are kept (`None`: nowhere).
     pub store: Option<Store>,
     /// The wall clock in seconds since the Unix epoch (conversations' dates).
@@ -33,15 +51,19 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         let seconds = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        Options { models: vec![Rc::new(crate::engine::Scripted::default())], store: None, clock: Rc::new(seconds) }
+        Options {
+            models: vec![ModelEntry::new("scripted", Rc::new(crate::engine::Scripted::default()))],
+            store: None,
+            clock: Rc::new(seconds),
+        }
     }
 }
 
 struct Shared {
-    models: Vec<Rc<dyn Model>>,
+    models: Vec<ModelEntry>,
     store: Option<Store>,
     clock: Rc<dyn Fn() -> u64>,
-    next_id: Cell<u64>,
+    next_id: Signal<u64>,
     answers: RefCell<HashMap<ThreadId, Running>>,
     titles: RefCell<HashMap<ThreadId, Running>>,
 }
@@ -116,8 +138,9 @@ pub struct Chat {
     pub editing: Signal<Option<MessageId>>,
     /// The conversation being renamed in the sidebar.
     pub renaming: Signal<Option<ThreadId>>,
-    /// The picked model's index.
-    pub model: Signal<usize>,
+    /// The model for the next send or regeneration. Changing it does not change an active
+    /// request or a message already queued. A missing ID is unavailable, never an index fallback.
+    pub model: Signal<Option<String>>,
     /// Conversations with an answer streaming.
     pub answering: Signal<Vec<ThreadId>>,
     shared: Rc<Shared>,
@@ -127,6 +150,12 @@ impl Chat {
     /// The chat's state, as named state of the current component (it survives hot reload),
     /// loaded from the store.
     pub fn new(options: Options) -> Chat {
+        let mut ids = std::collections::HashSet::new();
+        assert!(
+            options.models.iter().all(|entry| !entry.id.trim().is_empty() && ids.insert(&entry.id)),
+            "model IDs must be nonempty and unique"
+        );
+        let initial_model = options.models.first().map(|entry| entry.id.clone());
         let saved = options.store.as_ref().map(Store::load).unwrap_or_default();
         let mut max = 0;
         for (t, ms) in &saved {
@@ -147,13 +176,13 @@ impl Chat {
             draft: state("draft", String::new),
             editing: state("editing", || None),
             renaming: state("renaming", || None),
-            model: state("model", || 0),
+            model: state("model", || initial_model),
             answering: state("answering", Vec::new),
             shared: Rc::new(Shared {
                 models: options.models,
                 store: options.store,
                 clock: options.clock,
-                next_id: Cell::new(max + 1),
+                next_id: state("next_id", || max + 1),
                 answers: RefCell::default(),
                 titles: RefCell::default(),
             }),
@@ -167,21 +196,30 @@ impl Chat {
         chat
     }
 
-    pub fn models(&self) -> Vec<String> {
-        self.shared.models.iter().map(|m| m.name().to_owned()).collect()
+    pub fn models(&self) -> &[ModelEntry] {
+        &self.shared.models
+    }
+    pub fn model_name(&self, id: &str) -> Option<&str> {
+        self.shared.models.iter().find(|entry| entry.id == id).map(|entry| entry.model.name())
+    }
+    /// Whether the current selection resolves to a configured model (tracked by the UI).
+    pub fn has_model(&self) -> bool {
+        self.model.with(|id| id.as_deref().is_some_and(|id| self.model_name(id).is_some()))
     }
     /// The wall clock (seconds since the Unix epoch).
     pub fn now(&self) -> u64 {
         (self.shared.clock)()
     }
     fn id(&self) -> u64 {
-        let id = self.shared.next_id.get();
+        let id = self.shared.next_id.get_untracked();
         self.shared.next_id.set(id + 1);
         id
     }
-    fn model_now(&self) -> Rc<dyn Model> {
-        let i = self.model.get_untracked().min(self.shared.models.len() - 1);
-        self.shared.models[i].clone()
+    fn model_by_id(&self, id: &str) -> Option<ModelEntry> {
+        self.shared.models.iter().find(|entry| entry.id == id).cloned()
+    }
+    fn model_now(&self) -> Option<ModelEntry> {
+        self.model.get_untracked().and_then(|id| self.model_by_id(&id))
     }
 
     /// Whether `thread` has an answer streaming (tracked).
@@ -259,6 +297,7 @@ impl Chat {
         if text.is_empty() && files.is_empty() {
             return;
         }
+        let Some(model) = self.model_now() else { return };
         self.draft.set(String::new());
         self.files.retain(|_| false);
         let thread = match self.current.get_untracked() {
@@ -275,10 +314,10 @@ impl Chat {
             self.truncate(thread, edited);
         } else if self.is_answering_now(thread) {
             let id = self.id();
-            self.queue.push(Queued { id, thread, text, files });
+            self.queue.push(Queued { id, thread, text, files, model_id: model.id });
             return;
         }
-        self.start(thread, &text, files);
+        self.start(thread, &text, files, model.model);
     }
 
     /// Puts the person's message `id` back in the composer: sending replaces it and what followed.
@@ -297,11 +336,12 @@ impl Chat {
 
     /// Answers again: the answer `id` and what followed go, and its question is sent again.
     pub fn regenerate(&self, id: MessageId) {
+        let Some(model) = self.model_now() else { return };
         let Some(answer) = self.messages.item(&id).map(|m| m.get_untracked()) else { return };
         let all = self.thread_messages(answer.thread);
         let Some(question) = all.iter().rev().find(|m| m.id < id && m.author == Author::User).cloned() else { return };
         self.truncate(answer.thread, question.id);
-        self.start(answer.thread, &question.text(), question.files());
+        self.start(answer.thread, &question.text(), question.files(), model.model);
     }
 
     // ---- the queue ----
@@ -309,14 +349,16 @@ impl Chat {
     /// Sends a queued message now: the answer streaming stops.
     pub fn send_now(&self, id: u64) {
         let Some(q) = self.queue.item(&id).map(|q| q.get_untracked()) else { return };
+        let Some(model) = self.model_by_id(&q.model_id) else { return };
         self.queue.remove(&id);
         self.stop(q.thread);
-        self.start(q.thread, &q.text, q.files);
+        self.start(q.thread, &q.text, q.files, model.model);
     }
     /// Takes a queued message back into the composer.
     pub fn edit_queued(&self, id: u64) {
         let Some(q) = self.queue.item(&id).map(|q| q.get_untracked()) else { return };
         self.queue.remove(&id);
+        self.model.set(Some(q.model_id));
         self.draft.set(q.text);
         for f in q.files {
             let id = self.id();
@@ -341,7 +383,7 @@ impl Chat {
     }
 
     /// Sends `text` in `thread` and starts the answer.
-    fn start(&self, thread: ThreadId, text: &str, files: Vec<Attachment>) {
+    fn start(&self, thread: ThreadId, text: &str, files: Vec<Attachment>, model: Rc<dyn Model>) {
         let first = !self.thread_messages(thread).iter().any(|m| m.author == Author::User);
         let user = Message::user(self.id(), thread, text, files);
         self.messages.push(user);
@@ -354,15 +396,15 @@ impl Chat {
         let chat = self.clone();
         let receiver = rx.on(move |ev| chat.on_event(thread, answer, ev));
         self.shared.answers.borrow_mut().insert(thread, Running { id: answer, receiver, cancel: None });
-        let cancel = self.model_now().respond(Request { purpose: Purpose::Reply, history: history.clone() }, tx);
+        let cancel = model.respond(Request { purpose: Purpose::Reply, history: history.clone() }, tx);
         self.shared.install_cancel(PurposeOwner::Answer, thread, answer, cancel);
         if first && self.shared.current(PurposeOwner::Answer, thread, answer) {
-            self.name(thread, answer, history);
+            self.name(thread, answer, history, model);
         }
     }
 
     /// Asks the model for the conversation's title.
-    fn name(&self, thread: ThreadId, answer: MessageId, history: Vec<(Author, String)>) {
+    fn name(&self, thread: ThreadId, answer: MessageId, history: Vec<(Author, String)>, model: Rc<dyn Model>) {
         self.stop_title(thread);
         let (tx, rx) = channel::<Event>();
         let title = Rc::new(RefCell::new(String::new()));
@@ -391,7 +433,7 @@ impl Chat {
             }
         });
         self.shared.titles.borrow_mut().insert(thread, Running { id: answer, receiver, cancel: None });
-        let cancel = self.model_now().respond(Request { purpose: Purpose::Title, history }, tx);
+        let cancel = model.respond(Request { purpose: Purpose::Title, history }, tx);
         self.shared.install_cancel(PurposeOwner::Title, thread, answer, cancel);
     }
 
@@ -430,9 +472,11 @@ impl Chat {
             // The next queued message goes once an answer has come (not after a stop).
             let next =
                 self.queue.keys().into_iter().filter_map(|k| self.queue.item(&k)).map(|q| q.get_untracked()).find(|q| q.thread == thread);
-            if let Some(q) = next {
+            if let Some(q) = next
+                && let Some(model) = self.model_by_id(&q.model_id)
+            {
                 self.queue.remove(&q.id);
-                self.start(thread, &q.text, q.files);
+                self.start(thread, &q.text, q.files, model.model);
             }
         }
         if let Some(cancel) = retired.and_then(|request| request.cancel) {

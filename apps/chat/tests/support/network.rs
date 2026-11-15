@@ -1,7 +1,7 @@
 //! A real loopback HTTP peer. Every connection and wait has a finite lifetime.
 
 use serde_json::Value;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
@@ -53,6 +53,12 @@ struct State {
     plans: VecDeque<Plan>,
     stopping: bool,
     connections: Vec<TcpStream>,
+    stream_events: HashMap<usize, VecDeque<StreamEvent>>,
+}
+
+enum StreamEvent {
+    Text(String),
+    Done,
 }
 
 pub struct Fixture {
@@ -67,7 +73,13 @@ impl Fixture {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
         let shared = Arc::new((
-            Mutex::new(State { observed: Observed::default(), plans: plans.into(), stopping: false, connections: Vec::new() }),
+            Mutex::new(State {
+                observed: Observed::default(),
+                plans: plans.into(),
+                stopping: false,
+                connections: Vec::new(),
+                stream_events: HashMap::new(),
+            }),
             Condvar::new(),
         ));
         let peer = shared.clone();
@@ -107,6 +119,23 @@ impl Fixture {
 
     pub fn inspect<T>(&self, read: impl FnOnce(&Observed) -> T) -> T {
         read(&self.shared.0.lock().unwrap().observed)
+    }
+
+    /// Extend a held response after a UI action, using the response's original socket.
+    pub fn send_text(&self, ordinal: usize, text: &str) {
+        self.stream_event(ordinal, StreamEvent::Text(text.into()));
+    }
+
+    /// Complete a held response so Chat can start the next queued request.
+    pub fn finish(&self, ordinal: usize) {
+        self.stream_event(ordinal, StreamEvent::Done);
+    }
+
+    fn stream_event(&self, ordinal: usize, event: StreamEvent) {
+        let mut state = self.shared.0.lock().unwrap();
+        assert!(ordinal < state.observed.requests.len(), "the request must arrive before extending its response");
+        state.stream_events.entry(ordinal).or_default().push_back(event);
+        self.shared.1.notify_all();
     }
 
     /// Wake early for server progress; the caller also polls the real UI channel.
@@ -158,7 +187,7 @@ fn serve(mut stream: TcpStream, shared: &Arc<(Mutex<State>, Condvar)>) -> io::Re
 
 fn respond(stream: &mut TcpStream, shared: &Arc<(Mutex<State>, Condvar)>, ordinal: usize, plan: Plan) -> io::Result<()> {
     if matches!(plan.end, End::WaitBeforeHeaders) {
-        return wait_for_client(stream, shared, ordinal);
+        return wait_for_client(stream, shared, ordinal, false);
     }
     if plan.status != 200 {
         let body = b"private upstream details must not reach the conversation";
@@ -168,20 +197,24 @@ fn respond(stream: &mut TcpStream, shared: &Arc<(Mutex<State>, Condvar)>, ordina
     }
     stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")?;
     for bytes in plan.chunks {
-        write!(stream, "{:x}\r\n", bytes.len())?;
-        stream.write_all(&bytes)?;
-        stream.write_all(b"\r\n")?;
-        stream.flush()?;
+        write_chunk(stream, &bytes)?;
     }
     match plan.end {
         End::Complete => stream.write_all(b"0\r\n\r\n")?,
         End::Disconnect => {
             stream.shutdown(Shutdown::Both)?;
         }
-        End::WaitForClient => wait_for_client(stream, shared, ordinal)?,
+        End::WaitForClient => wait_for_client(stream, shared, ordinal, true)?,
         End::WaitBeforeHeaders => unreachable!("handled before writing response headers"),
     }
     Ok(())
+}
+
+fn write_chunk(stream: &mut TcpStream, bytes: &[u8]) -> io::Result<()> {
+    write!(stream, "{:x}\r\n", bytes.len())?;
+    stream.write_all(bytes)?;
+    stream.write_all(b"\r\n")?;
+    stream.flush()
 }
 
 fn closed(shared: &Arc<(Mutex<State>, Condvar)>, ordinal: usize) {
@@ -192,12 +225,25 @@ fn closed(shared: &Arc<(Mutex<State>, Condvar)>, ordinal: usize) {
     shared.1.notify_all();
 }
 
-fn wait_for_client(stream: &mut TcpStream, shared: &Arc<(Mutex<State>, Condvar)>, ordinal: usize) -> io::Result<()> {
+fn wait_for_client(stream: &mut TcpStream, shared: &Arc<(Mutex<State>, Condvar)>, ordinal: usize, streaming: bool) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(6);
     let mut byte = [0];
     loop {
         if shared.0.lock().unwrap().stopping {
             return Ok(());
+        }
+        if streaming {
+            let events = shared.0.lock().unwrap().stream_events.remove(&ordinal).unwrap_or_default();
+            for event in events {
+                match event {
+                    StreamEvent::Text(value) => write_chunk(stream, &text(&value))?,
+                    StreamEvent::Done => {
+                        write_chunk(stream, b"data: [DONE]\r\n\r\n")?;
+                        stream.write_all(b"0\r\n\r\n")?;
+                        return Ok(());
+                    }
+                }
+            }
         }
         match stream.read(&mut byte) {
             Ok(0) => break,

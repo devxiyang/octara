@@ -4,7 +4,7 @@
 Start with --output NEW_DIRECTORY: creates endpoint.txt and events.jsonl there.
 Alternatively --endpoint-file NEW_PATH writes endpoint/model/control JSON and
 --events-file NEW_PATH selects its log (otherwise stderr). Existing outputs are
-never overwritten. Use model `local-fixture` and no key.
+never overwritten. Use model `local-fixture`, `wire-a` or `wire-b` and no key.
 
 The first word of the latest user message selects a scenario (also [hold], /hold):
   normal   bounded, paced Markdown with Chinese and emoji (the default)
@@ -19,7 +19,8 @@ GET /status returns content-free request facts and recent events. POST /control
 with {"action":"release"|"disconnect","ordinal":N} controls an active request;
 {"action":"shutdown"} stops this server. These HTTP controls never operate the OS
 or inject app input. Ctrl+C also stops the server. No request text, auth headers,
-or API keys are logged. History roles, byte counts and SHA-256 fingerprints let a
+or API keys are logged. Only the three allowlisted fixture model names are accepted
+and recorded. History roles, byte counts and SHA-256 fingerprints let a
 caller compare known fixture history without writing its text to the event log.
 """
 
@@ -39,6 +40,7 @@ import time
 MAX_BODY = 1 << 20
 MAX_REQUESTS = 256
 MAX_OUTPUT = 96 * 1024
+MODELS = frozenset({"local-fixture", "wire-a", "wire-b"})
 
 
 class State:
@@ -61,7 +63,7 @@ class State:
             self.events.append(record)
             print(json.dumps(record, ensure_ascii=False), file=self.output, flush=True)
 
-    def begin(self, messages):
+    def begin(self, messages, model):
         latest = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
         fingerprint = hashlib.sha256(latest.encode()).hexdigest()
         first = latest.strip().split(maxsplit=1)
@@ -80,10 +82,10 @@ class State:
             self.attempts[fingerprint] = attempt
             effective = "normal" if mode == "drop" and attempt > 1 else mode
             self.requests[ordinal] = {
-                "mode": effective, "attempt": attempt, "history": history,
+                "model": model, "mode": effective, "attempt": attempt, "history": history,
                 "active": True, "control": None, "sent_chunks": 0, "sent_bytes": 0,
             }
-        self.event("request_started", ordinal, mode=effective, attempt=attempt, history=history)
+        self.event("request_started", ordinal, model=model, mode=effective, attempt=attempt, history=history)
         return ordinal, effective
 
     def snapshot(self):
@@ -147,13 +149,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.control(value)
         if self.path != "/v1/chat/completions":
             return self.json_reply(404, {"error": "unknown fixture path"})
+        model = value.get("model")
+        if not isinstance(model, str) or len(model) > 64 or model not in MODELS:
+            return self.json_reply(400, {"error": "use an allowlisted fixture model and no credentials"})
         messages = value.get("messages")
         if value.get("stream") is not True or not isinstance(messages, list) or not messages:
             return self.json_reply(400, {"error": "expected streaming chat messages"})
         if any(not isinstance(m, dict) or m.get("role") not in {"system", "user", "assistant"}
                or not isinstance(m.get("content"), str) for m in messages):
             return self.json_reply(400, {"error": "expected text message history"})
-        begun = self.server.state.begin(messages)
+        begun = self.server.state.begin(messages, model)
         if begun is None:
             return self.json_reply(503, {"error": "fixture request limit reached"})
         ordinal, mode = begun

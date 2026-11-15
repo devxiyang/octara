@@ -10,7 +10,7 @@ pub mod network;
 pub mod store;
 mod ui;
 
-pub use chat::{Chat, Options, Queued};
+pub use chat::{Chat, ModelEntry, Options, Queued};
 pub use ui::root;
 
 /// The app with the scripted model and nothing saved (what `octara check` and tests drive).
