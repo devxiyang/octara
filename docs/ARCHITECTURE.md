@@ -12,8 +12,8 @@ The selected next architecture is [Runtime and Signals consolidation](design/cor
 native Rust execution with no VM, a small Signals API, explicit ownership and App update boundaries.
 It includes a source-based refactor/removal inventory and ordered acceptance gates. Its
 [Signals contract](design/signals-redesign.md) and [runtime contract](design/runtime-contract.md)
-define the breaking replacement without compatibility aliases. Correctness, Signals API and
-App root lifetime slices are implemented; broader primitive migration remains pending.
+define the breaking replacement without compatibility aliases. Correctness, Signals API,
+App root lifetime and style declaration ordering slices are implemented; broader primitive migration remains pending.
 The sections below describe the current code.
 
 The [first-round scope](design/core-consolidation.md#scope-and-necessity) is limited to correct
@@ -113,7 +113,9 @@ platform                         what the app needs from the system (traits); he
   scroll), an image, an icon, a canvas recording or a native view. Its `Kind` follows from the content.
 - **Styles** resolve against the theme (semantic tokens, scales, breakpoints) and the node's
   states (hover, focus, pressed, disabled, touch, window size class); inherited text properties
-  flow down. Missing tokens are diagnostics.
+  flow down. View bindings retain their declaration positions and replace their own patches;
+  the Kernel receives the ordered base and applies its existing overrides. Static-only elements
+  need no slot cache. Missing tokens are diagnostics.
 - **Layout** is taffy (flexbox and grid); texts and inputs are measured by the text engine, which
   caches by `TextKey` (a node and a slot) per paragraph and width.
 - **Motion**: changed visual and layout properties can move (springs, curves) on the app clock;

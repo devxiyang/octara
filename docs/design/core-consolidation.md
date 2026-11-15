@@ -1,7 +1,7 @@
 # Runtime and Signals consolidation
 
-Status: selected target architecture, 2026-11-15; correctness, Signals API and App root lifetime
-slices implemented, broader consolidation pending. This is the complete target inventory, not a claim that every target has
+Status: selected target architecture, 2026-11-15; correctness, Signals API, App root lifetime and
+style declaration ordering slices implemented, broader consolidation pending. This is the complete target inventory, not a claim that every target has
 shipped. No compatibility layer, deprecated aliases or
 parallel old/new execution modes will be retained.
 
@@ -327,6 +327,36 @@ formatting, generated-skill freshness, doctests and diff checks passed. Rebuilt 
 (five scenarios), Chat lifecycle and forms fixtures passed. A real desktop host run with
 OCTARA_EXIT_AFTER_FRAMES=1 exited successfully through App::shutdown. Desktop input verification
 uses framework events; OS keyboard and Chinese IME were not requalified in this slice.
+
+## Fourth-round style declaration ordering
+
+Four regressions first failed against the previous implementation: an earlier dynamic opacity
+overrode a later static value, shorthand/longhand ordering differed from the authored order,
+removed patch properties survived, and leaving a screen override exposed the wrong base width.
+
+Elements with dynamic styles now keep one local cache of declaration values. Each binding
+replaces only its own slot, then submits the ordered base to the existing Kernel resolver.
+Other style closures are not rerun. `style_with` replaces its whole patch, so omitted properties
+reveal earlier declarations or defaults. Static-only elements keep the one-pass path and allocate
+no slot cache. The cache belongs to the existing mounted bindings and retires with their scope.
+There is no new public slot API, style engine, scheduling phase or reactive primitive.
+
+Kernel state, screen, touch and group overrides remain separate and retain their existing
+precedence. Theme and breakpoint changes still resolve without evaluating style closures.
+The cost of recomposing a changed element's cached declarations is local to that element;
+work-count assertions verify that unrelated bindings do not run. This is a correctness fix,
+not a general styling performance rewrite.
+
+The desktop `styles` fixture checks both binding orders, patch removal/restoration, stable node
+identity on updates, fresh targets on reload, native resizing across a breakpoint and GPU captures.
+As with the other Inspector fixtures, input uses framework events, not OS keyboard/IME automation.
+
+Validation on 2026-11-15: 648 workspace tests passed, 3 ignored; workspace Clippy with warnings
+denied, formatting, doctests, generated-skill freshness and diff checks passed. The rebuilt live
+Inspector passed all six scenarios (counter, gestures, search, Todo, windows and styles); live
+forms passed validation, retained editor/selection, radio keyboard behavior, native resize and
+GPU captures. Style evidence: `/tmp/octara-style-order-live-20261115`; form evidence:
+`/tmp/octara-style-order-forms-20261115`. OS keyboard and native IME were not requalified.
 
 ## References
 

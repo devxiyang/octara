@@ -454,6 +454,49 @@ def windows(args, output, sockets):
                      {"op": "expect", "id": "opened", "text": "2 notes opened"})
 
 
+def styles(args, output, sockets):
+    with LiveWindow("styles", args, output, sockets) as app:
+        def widths(expected):
+            snapshot = app.inspect()
+            actual = [find(snapshot, key)["bounds"][2] for key in ("static-last", "dynamic-last", "patch")]
+            require(all(abs(a - b) < 0.1 for a, b in zip(actual, expected)),
+                    f"styles: widths {actual}, expected {expected}")
+            app.requests({"op": "expect", "clean": True})
+            return snapshot
+
+        def tap(identifier):
+            target = find(app.inspect(), identifier)["target"]
+            reply = app.requests({"op": "tap", "id": identifier, "target": target})[0]
+            require(reply.get("live", {}).get("route") == "framework" and reply.get("delivery") == "delivered",
+                    "styles: input route/delivery differs")
+
+        resize(app, 390, 640)
+        first = widths([80, 96, 160])
+        identities = {key: find(first, key)["target"] for key in ("static-last", "dynamic-last", "patch")}
+        before = app.capture("styles-before.png")
+        tap("early")
+        widths([80, 96, 160])
+        tap("late")
+        widths([80, 144, 160])
+        tap("toggle-patch")
+        updated = widths([80, 144, 112])
+        require(all(find(updated, key)["target"] == target for key, target in identities.items()),
+                "styles: a style update replaced a retained node")
+        after = app.capture("styles-after.png")
+        require(before[:2] == after[:2] and before[2] != after[2], "styles: changed styles did not reach GPU pixels")
+        app.requests({"op": "reload", "target": updated["target"]})
+        reloaded = widths([80, 144, 112])
+        require(all(find(reloaded, key)["target"] != target for key, target in identities.items()),
+                "styles: reload did not retire observed identities")
+        resize(app, 800, 640)
+        widths([120, 144, 112])
+        resize(app, 390, 640)
+        widths([80, 144, 112])
+        tap("toggle-patch")
+        widths([80, 144, 160])
+        app.capture("styles-restored.png")
+
+
 def main():
     repo = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -478,7 +521,7 @@ def main():
     print(f"Live smoke artifacts: {output}", flush=True)
     with tempfile.TemporaryDirectory(prefix="octara-agent-", dir="/tmp") as temporary:
         sockets = Path(temporary)
-        for scenario in (counter, gestures, search, todo, windows):
+        for scenario in (counter, gestures, search, todo, windows, styles):
             scenario(args, output, sockets)
             print(f"PASS {scenario.__name__}", flush=True)
     print("Live Inspector: inspect, gestures, native resize, realtime settle, GPU capture, errors, window routing and reconnect passed.")

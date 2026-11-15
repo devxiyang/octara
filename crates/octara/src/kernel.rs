@@ -1960,6 +1960,13 @@ impl Kernel {
 
     // ---- style ----
 
+    /// Replaces an element's authored base, including properties withdrawn by a binding.
+    /// State/screen overrides stay separate. Reuse the normal resolver and its dirty checks.
+    pub(crate) fn replace_base_styles(&mut self, id: NodeId, props: impl IntoIterator<Item = StyleProp>) -> bool {
+        self.node_mut(id).base.clear();
+        self.set_styles(id, props, Vec::new())
+    }
+
     /// Sets a base style property (replacing the previous value of the same property).
     pub fn set_style(&mut self, id: NodeId, prop: StyleProp) -> bool {
         let n = self.node_mut(id);

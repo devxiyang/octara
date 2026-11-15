@@ -18,6 +18,7 @@ use crate::kernel::{
 use crate::reactive::graph::{self, rt};
 use crate::reactive::text::{TextBuffer, TextChange};
 use crate::reactive::{ReadSignal, Signal, untrack};
+use std::cell::RefCell;
 use std::panic::Location;
 use std::rc::Rc;
 
@@ -531,8 +532,10 @@ impl El {
     }
 
     /// Styles from a closure, re-run when what it reads changes: any style method, bound
-    /// (`.style_with(move |s| s.w(width.get()))`, a pane a person resizes). Set the same
-    /// properties every run; for styles that come and go with a state use `style_when`.
+    /// (`.style_with(move |s| s.w(width.get()))`, a pane a person resizes). Its declaration
+    /// position stays fixed: later base styles win. Each run replaces this patch; omitted
+    /// properties fall back to earlier declarations or defaults. State overrides apply after
+    /// base styles; use `style_when` for interaction states.
     pub fn style_with(mut self, f: impl Fn(Patch) -> Patch + 'static) -> Self {
         self.styles.push(StyleValue::Patch(Box::new(f)));
         self
@@ -1089,33 +1092,39 @@ pub(crate) fn build_el(e: El) -> NodeId {
         if e.anchor.is_some() {
             k.set_anchor(node, e.anchor);
         }
-        // Fixed styles and overrides resolve once; bound styles follow (and win over fixed ones).
+        // Static-only elements need no retained declaration slots. Dynamic elements below
+        // replace this base in declaration order; state/screen overrides remain in the kernel.
         let fixed = e.styles.iter().filter_map(|s| match s {
             StyleValue::Static(p) => Some(*p),
             StyleValue::Dyn(_) | StyleValue::Patch(_) => None,
         });
         k.set_styles(node, fixed, e.overrides);
     }
-    for s in e.styles {
-        match s {
-            StyleValue::Static(_) => {}
-            StyleValue::Dyn(f) => {
-                let u = u.clone();
-                graph::binding(at, move || {
-                    let p = f();
-                    u.kernel.borrow_mut().set_style(node, p);
-                })
-            }
-            StyleValue::Patch(f) => {
-                let u = u.clone();
-                graph::binding(at, move || {
-                    let ps = f(Patch(Vec::new())).0;
-                    let mut k = u.kernel.borrow_mut();
-                    for p in ps {
-                        k.set_style(node, p);
-                    }
-                })
-            }
+    if e.styles.iter().any(|s| !matches!(s, StyleValue::Static(_))) {
+        let slots: Vec<Vec<StyleProp>> = e
+            .styles
+            .iter()
+            .map(|s| match s {
+                StyleValue::Static(p) => vec![*p],
+                _ => Vec::new(),
+            })
+            .collect();
+        let slots = Rc::new(RefCell::new(slots));
+        for (index, s) in e.styles.into_iter().enumerate() {
+            let evaluate: Box<dyn Fn() -> Vec<StyleProp>> = match s {
+                StyleValue::Static(_) => continue,
+                StyleValue::Dyn(f) => Box::new(move || vec![f()]),
+                StyleValue::Patch(f) => Box::new(move || f(Patch::default()).0),
+            };
+            let (u, slots) = (u.clone(), slots.clone());
+            graph::binding(at, move || {
+                // Run user code before borrowing the cache. Only this binding's dependencies
+                // are read; composing the cached values never reruns neighbouring closures.
+                let props = evaluate();
+                let mut slots = slots.borrow_mut();
+                slots[index] = props;
+                u.kernel.borrow_mut().replace_base_styles(node, slots.iter().flatten().copied());
+            });
         }
     }
     if let Some(p) = e.test_id {

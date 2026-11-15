@@ -93,6 +93,10 @@ assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 - State styles take a `Patch`: `.hover(|p| ..)`, `.active(..)`, `.focus(..)`, `.disabled(..)`,
   `.selected(..)`, and `.group("row")` + `.group_hover("row", |p| ..)` for a child that reacts to
   its row being hovered.
+- Base styles follow declaration order: `.opacity(alpha).opacity(0.5)` stays at `0.5`, even
+  when the Signal `alpha` changes. `.style_with(move |p| ..)` replaces its patch at that same
+  position each run; omitted properties fall back to earlier declarations or defaults.
+  State and screen overrides apply after the base styles.
 - Components with styling built in come from `octara_kit`: `button`, `primary_button`,
   `ghost_button`, `toggle_button`, `icon_button`, `checkbox`, `switch`, `text_field`, `select`,
   `combobox`, `popover`, `field`, `radio_group`, `dialog`, `tabs`, `segmented`, `popup_list`,

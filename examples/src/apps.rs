@@ -20,6 +20,40 @@ pub fn counter() -> View {
         .into()
 }
 
+/// Declaration-order and patch replacement checks in a real retained window.
+#[component]
+pub fn styles() -> View {
+    let early = state("early", || 64);
+    let late = state("late", || 96);
+    let patch = state("patch", || true);
+    col()
+        .size_full()
+        .p_4()
+        .gap_2()
+        .child(text("Style declaration order"))
+        .child(text("Later static width; wider on medium screens"))
+        .child(el().id("static-last").h(24).bg(Token::Accent).style_with(move |p| p.w(early.get())).w(80).when_medium(|p| p.w(120)))
+        .child(text("Later dynamic width"))
+        .child(el().id("dynamic-last").h(24).bg(Token::Accent).style_with(move |p| p.w(early.get())).style_with(move |p| p.w(late.get())))
+        .child(text("Optional patch; removal restores the earlier width"))
+        .child(
+            el().id("patch")
+                .h(24)
+                .bg(Token::Accent)
+                .style_with(move |p| p.w(early.get()))
+                .style_with(move |p| if patch.get() { p.w(160).bg(Token::Danger) } else { p }),
+        )
+        .child(
+            button("Change earlier width")
+                .id("early")
+                .self_start()
+                .on_press(move || early.update(|v| *v = if *v == 64 { 112 } else { 64 })),
+        )
+        .child(button("Change later width").id("late").self_start().on_press(move || late.update(|v| *v = if *v == 96 { 144 } else { 96 })))
+        .child(button("Toggle patch").id("toggle-patch").self_start().on_press(move || patch.update(|v| *v = !*v)))
+        .into()
+}
+
 /// A small pointer playground used by the real-window Inspector smoke check.
 #[component]
 pub fn gestures() -> View {

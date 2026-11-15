@@ -41,7 +41,9 @@ GPU surface and layout agree; `live.resize` includes the requested and actual di
 
 After building the CLI and window binaries, run the desktop smoke check with
 `python3 examples/live_inspect.py`. It starts its own windows and checks input, timed gestures,
-native resize, captures, errors, window routing and reconnects. PNGs and transcripts stay in the
+native resize, captures, errors, window routing, reconnects and style declaration order (including
+patch removal and reload). The style fixture can also be opened with `window styles`.
+PNGs and transcripts stay in the
 printed temporary directory.
 
 ## Specs

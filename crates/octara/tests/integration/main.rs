@@ -40,6 +40,7 @@ mod secure;
 mod selection;
 mod size_of;
 mod state_keys;
+mod style_order;
 mod system_fonts;
 mod targets;
 mod task;

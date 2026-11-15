@@ -62,7 +62,10 @@ For layout semantics see [layout](layout.md).
 - Color is a `Paint`: a semantic `Token` (`Surface`, `Text`, `Accent`…, extensible with `Token::custom("brand")`) or an explicit `Color`.
 - **Scales and colors are resolved by the kernel according to the theme**: `p_4` is stored as "step 4"; a theme can change colors, the spacing unit, corner radius / font size / container steps, line height multiples, window size class boundaries,
   and font families. Switching themes (dark, compact density, brand) runs no closures. A custom token missing from the theme is painted magenta and reported in diagnostics.
-- For the same kind of property, the one written later wins; reusing a style is just a Rust function: `el().map(card)`.
+- Base styles follow declaration order, including fixed values, Signal properties and `style_with`.
+  Updating a binding changes its value, never its precedence. A `style_with` run replaces its
+  entire patch; properties it omits fall back to earlier declarations or defaults. Only bindings
+  whose dependencies changed rerun. Reusing a style is just a Rust function: `el().map(card)`.
 - State overrides: `hover`, `active`, `focus` / `focus_visible`, `style_when(State::SELECTED | CHECKED | EXPANDED | DISABLED, ..)`;
   window size class overrides: `when_medium` / `when_expanded` / `when_large` / `when_extra_large`. Size class is merged first, then state.
 - Fonts: Inter and IBM Plex Mono are bundled (headless tests use them for reproducible results), `App::register_font` registers more; real windows use the system UI font and fallback by default.
