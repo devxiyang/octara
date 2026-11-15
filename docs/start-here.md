@@ -81,6 +81,10 @@ assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 
 - Primitives: `el()` (a box, a row-direction flex container), `row()`, `col()`, `text(..)`,
   `text_input()`, `spacer()`. `.child(..)` takes an element, a `View` or a string.
+- Each element has one content kind. Input settings require `text_input()`; native settings
+  require `native_view(..)` or `web_view(..)`. For images, write
+  `el().img(&image).object_fit(ObjectFit::Contain)` in that order. Compose different content
+  with children; incompatible content-specific methods panic with `ELEMENT_CONTENT`.
 - Rich text is one `text` with styled runs:
   `text(rich().text("Run ").code("cargo test").text(" or read ").link("the guide", url))`, with
   `bold`, `italic`, `styled(s, |s| s.strike().color(Token::Danger))`. A link is an element of

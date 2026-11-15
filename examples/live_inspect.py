@@ -497,6 +497,64 @@ def styles(args, output, sockets):
         app.capture("styles-restored.png")
 
 
+def content(args, output, sockets):
+    for card in ("images", "drawing"):
+        with LiveWindow(card, args, output, sockets, ["showcase", card]) as app:
+            app.requests({"op": "expect", "clean": True})
+            before = app.capture(f"{card}-before.png")
+            if card == "drawing":
+                chart = find(app.inspect(), "chart")
+                require(chart["role"] == "image" and "Dec selected" in chart["name"], "canvas semantics differ")
+                app.requests({"op": "drag", "id": "chart", "target": chart["target"], "dx": -80, "dy": 0})
+                changed = find(app.inspect(), "chart")
+                require(changed["target"] == chart["target"] and changed["name"] != chart["name"],
+                        "canvas interaction lost its binding or replaced its node")
+                after = app.capture("drawing-after.png")
+                require(before[:2] == after[:2] and before[2] != after[2], "canvas update did not change GPU pixels")
+            app.requests({"op": "reload", "target": app.inspect()["target"]}, {"op": "expect", "clean": True})
+            app.capture(f"{card}-reloaded.png")
+
+    if sys.platform != "darwin":
+        print("SKIP native web content: this fixture requires the macOS WebKit host", flush=True)
+        return
+    with LiveWindow("web", args, output, sockets, ["showcase", "web"]) as app:
+        def loaded(title, after=0):
+            deadline = time.monotonic() + min(args.timeout, 10)
+            while True:
+                snapshot = app.inspect()
+                status = find(snapshot, "web_status")["name"]
+                count = int(status.rsplit("loaded ", 1)[1].split(" ", 1)[0])
+                if title in status and count > after:
+                    return snapshot, count
+                require(time.monotonic() < deadline, f"web: no native title/load callback for {title}: {status}")
+                threading.Event().wait(0.05)
+
+        def capture(name):
+            path = output / name
+            report = app.requests({"op": "capture", "target": app.inspect()["target"],
+                                   "path": str(path), "scale": 1, "settle_ms": 5000, "pixels": "painted"})[0]["capture"]
+            require(report["renderer"] == "gpu" and report["pixels"] == "painted", "web: wrong capture source")
+            require(any(n.get("id") == "web" and n["shown"] == "snapshot" for n in report["native"]),
+                    f"web: native pixels were not captured: {report['native']}")
+            return png_pixels(path)
+
+        first, count = loaded("First page")
+        web = find(first, "web")
+        require(web["native"]["kind"] == "web" and web["native"]["slot"] == "overlay", "web: native content differs")
+        before = capture("web-before.png")
+        app.requests({"op": "tap", "id": "other_page", "target": find(first, "other_page")["target"]})
+        second, count = loaded("Second page", count)
+        require(find(second, "web")["target"] == web["target"], "native props update replaced the view")
+        require("Second page" in find(second, "web")["native"]["props"]["html"], "native props binding did not update")
+        after = capture("web-after.png")
+        require(before[:2] == after[:2] and before[2] != after[2], "web: changed page did not change captured pixels")
+        app.requests({"op": "reload", "target": second["target"]})
+        rebuilt, _ = loaded("Second page", count)
+        require(find(rebuilt, "web")["target"] != web["target"], "web: reload retained a retired native target")
+        app.requests({"op": "expect", "clean": True})
+        capture("web-reloaded.png")
+
+
 def main():
     repo = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -521,7 +579,7 @@ def main():
     print(f"Live smoke artifacts: {output}", flush=True)
     with tempfile.TemporaryDirectory(prefix="octara-agent-", dir="/tmp") as temporary:
         sockets = Path(temporary)
-        for scenario in (counter, gestures, search, todo, windows, styles):
+        for scenario in (counter, gestures, search, todo, windows, styles, content):
             scenario(args, output, sockets)
             print(f"PASS {scenario.__name__}", flush=True)
     print("Live Inspector: inspect, gestures, native resize, realtime settle, GPU capture, errors, window routing and reconnect passed.")

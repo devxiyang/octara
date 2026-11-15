@@ -11,6 +11,7 @@ mod diagnostics_registry;
 mod display_list;
 mod drop;
 mod edit;
+mod element_content;
 mod focus;
 mod grid;
 mod hover;

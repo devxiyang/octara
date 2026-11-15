@@ -13,7 +13,8 @@ native Rust execution with no VM, a small Signals API, explicit ownership and Ap
 It includes a source-based refactor/removal inventory and ordered acceptance gates. Its
 [Signals contract](design/signals-redesign.md) and [runtime contract](design/runtime-contract.md)
 define the breaking replacement without compatibility aliases. Correctness, Signals API,
-App root lifetime and style declaration ordering slices are implemented; broader primitive migration remains pending.
+App root lifetime, style declaration ordering and exclusive element content slices are implemented;
+broader primitive migration remains pending.
 The sections below describe the current code.
 
 The [first-round scope](design/core-consolidation.md#scope-and-necessity) is limited to correct
@@ -108,6 +109,10 @@ platform                         what the app needs from the system (traits); he
 
 ## Kernel
 
+- **View builders** carry one content enum, with input, image, icon and native settings attached
+  to the matching payload. They derive the Kernel kind and mount only that content's bindings.
+  Incompatible content-specific calls fail at the builder caller; shared children and semantic
+  properties remain available on `El`.
 - **Nodes** live in a slotmap (`NodeId`); each has a role, semantics, handlers, styles and state
   overrides, and one **content**: none, text, a text input (value, composition, selection,
   scroll), an image, an icon, a canvas recording or a native view. Its `Kind` follows from the content.

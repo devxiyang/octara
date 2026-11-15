@@ -48,6 +48,25 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 - **Text is only `text(..)`.** The type of the value passed in decides how it updates: a string is a fixed value, a closure is a binding, and `TextBuffer` updates incrementally by edits.
   The value type is called `TextBuffer` to avoid the repetition of `text(Text::new(..))`.
 
+### Element content
+
+`El` has one content: a plain box, text, input, image, icon, canvas or native view. Its Kernel
+kind is derived from that content; there is no independent kind flag or competing payload.
+Input settings live with the input; native slot/props/event callback live with the native view;
+image fit and icon stroke width live with their respective content.
+
+Use `text_input().rows(..).secure()` for input configuration, `native_view(..).slot(..).props(..)`
+for native configuration, `icon(..).stroke_width(..)` for icons, and
+`el().img(&image).object_fit(..)` for images. A second `.img(..)` replaces an existing image and
+keeps its fit. It cannot overwrite text, input, icon, canvas or native content. Compose different
+content with parent/child elements. Children, styles, handlers and semantics remain shared;
+`.value(..)` still sets accessible string values on non-input nodes.
+
+An incompatible content-specific call panics with `ELEMENT_CONTENT` at the builder caller,
+before mounting or running its binding. Builders can be assembled without a current App, so
+this failure is reported directly in the panic, not retained in `App::diagnostics()`. There is
+no ignored configuration, deferred invalid-content variant or compatibility conversion.
+
 ## 4. Style
 
 Aimed at desktop and mobile, not web standards: **method names follow GPUI** (its vocabulary comes from Tailwind, which AI knows best), **semantics follow native**, mainly Rune.

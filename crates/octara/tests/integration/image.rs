@@ -48,7 +48,7 @@ fn fits_place_the_image() {
 fn the_display_list_draws_it_clipped_to_the_box() {
     let img = solid(20, 20, [0, 0, 255, 255]);
     let app = Window::headless(move || {
-        col().child(el().id("pic").w(100).h(50).p_2().border_2().rounded_lg().object_fit(ObjectFit::Cover).img(&img)).into()
+        col().child(el().id("pic").w(100).h(50).p_2().border_2().rounded_lg().img(&img).object_fit(ObjectFit::Cover)).into()
     });
     let n = app.kernel().find("pic").unwrap();
     let (x, y, w, h) = app.kernel().rect(n);

@@ -1,7 +1,7 @@
 # Runtime and Signals consolidation
 
 Status: selected target architecture, 2026-11-15; correctness, Signals API, App root lifetime and
-style declaration ordering slices implemented, broader consolidation pending. This is the complete target inventory, not a claim that every target has
+style declaration ordering plus exclusive element content slices implemented, broader consolidation pending. This is the complete target inventory, not a claim that every target has
 shipped. No compatibility layer, deprecated aliases or
 parallel old/new execution modes will be retained.
 
@@ -357,6 +357,43 @@ Inspector passed all six scenarios (counter, gestures, search, Todo, windows and
 forms passed validation, retained editor/selection, radio keyboard behavior, native resize and
 GPU captures. Style evidence: `/tmp/octara-style-order-live-20261115`; form evidence:
 `/tmp/octara-style-order-forms-20261115`. OS keyboard and native IME were not requalified.
+
+## Fifth-round exclusive element content
+
+`El` now owns one private Content enum (box, text, input, image, icon, canvas or native view),
+instead of an independent Kind plus optional competing payloads. Kind is derived at mount.
+Input settings, image fit, icon stroke width and native slot/props/event callback live only
+with their respective content. Mounting installs that content before its bindings; in particular,
+input flags are set before the initial value binding. No new execution engine or public builder
+type is introduced.
+
+Content-specific calls on the wrong kind fail immediately with the registered ELEMENT_CONTENT
+panic and caller location. Builders may exist outside an App, so these errors are not deferred
+into a second invalid-builder representation or retained in App::diagnostics. img accepts boxes
+and existing images; replacing an image preserves fit. object_fit now follows img; the existing
+pre-image fit consumer was migrated. Text/native/canvas/input content cannot be silently replaced
+by img, leaving competing bindings behind. There are no compatibility conversions.
+
+Children, styles, general handlers and semantic properties remain shared. In particular, value
+is still valid on non-input nodes for accessible string values. Existing input editing, IME,
+native host and rendering protocols remain unchanged. Regression tests cover mismatched calls
+before mounting and image replacement with retained fit, children and semantic values; existing
+text, canvas, icon, multiline, secure input and native lifecycle suites qualify valid paths.
+
+The live Inspector runner additionally exercises image and canvas captures/reload, a retained
+canvas's drag-driven drawing update, and macOS WebKit using local HTML. The native scenario waits
+for real title/load callbacks, verifies a props update retains identity, then verifies reload
+recreates the native view and its callbacks. Captures must include a native snapshot, rather than
+counting a placeholder as success. Other platforms explicitly skip this WebKit-specific scenario.
+
+Validation on 2026-11-15: 651 workspace tests passed, 3 ignored. Workspace Clippy with warnings
+denied, formatting, doctests, generated-skill freshness and diff checks passed; the new diagnostic
+is discoverable through `octara explain ELEMENT_CONTENT`. All seven rebuilt live Inspector
+scenarios passed, including native WebKit title/load events and snapshots before/after page
+changes and reload. Live forms passed validation, retained editing/selection, radio keyboard
+behavior, native resize and GPU capture. Evidence: `/tmp/octara-content-live-20261115` and
+`/tmp/octara-content-forms-20261115`. Input uses framework events; OS input and native IME were
+not requalified in this slice.
 
 ## References
 

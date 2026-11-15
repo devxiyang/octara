@@ -4,6 +4,7 @@
 use super::style::{Patch, Styled};
 use super::{Children, Handler, IntoElement, Parent, Slot, Slots, View, mount, show};
 use crate::app::{Drag, KeyEvent};
+use crate::diagnostics as codes;
 use crate::kernel::rich::Rich;
 
 type DragHandler = Rc<dyn Fn(&Drag)>;
@@ -248,14 +249,76 @@ struct Overlay {
 
 // ---- elements ----
 
+enum Content {
+    Box,
+    Text(TextContent),
+    Input(Input),
+    Image { image: crate::image::Image, fit: crate::image::ObjectFit },
+    Icon { icon: crate::icon::Icon, stroke_width: Option<f32> },
+    Canvas(Draw),
+    Native(Native),
+}
+
+#[derive(Default)]
+struct Input {
+    multiline: bool,
+    rows: Option<(u16, u16)>,
+    submit_on_enter: bool,
+    secure: bool,
+    revealed: Option<Prop<bool>>,
+}
+
+struct Native {
+    kind: &'static str,
+    slot: crate::native::Slot,
+    props: Option<Prop<serde_json::Value>>,
+    on_event: Option<OnNative>,
+}
+
+impl Content {
+    fn kind(&self) -> Kind {
+        match self {
+            Self::Text(_) => Kind::Text,
+            Self::Input(_) => Kind::TextInput,
+            _ => Kind::Box,
+        }
+    }
+
+    #[track_caller]
+    fn input_mut(&mut self, method: &str) -> &mut Input {
+        match self {
+            Self::Input(input) => input,
+            _ => wrong_content(method, "text_input()"),
+        }
+    }
+
+    #[track_caller]
+    fn native_mut(&mut self, method: &str) -> &mut Native {
+        match self {
+            Self::Native(native) => native,
+            _ => wrong_content(method, "native_view() or web_view()"),
+        }
+    }
+}
+
+// Builders can be assembled before entering an App. Reject misuse at the caller, without
+// requiring a runtime or creating a deferred invalid-content state to report at mount time.
+#[track_caller]
+fn wrong_content(method: &str, expected: &str) -> ! {
+    let code = &codes::ELEMENT_CONTENT;
+    panic!("{code}: .{method}() requires {expected}")
+}
+
+/// An element with one content kind and shared styles, semantics, handlers and children.
+/// Content-specific methods panic with `ELEMENT_CONTENT` on a mismatched kind; for example,
+/// use `text_input().rows(..)` and `el().img(..).object_fit(..)`.
 pub struct El {
-    kind: Kind,
+    content: Content,
     role: Option<Role>,
     at: &'static Location<'static>,
     /// The `#[component]` function building it.
     made: Option<crate::kernel::Component>,
     test_id: Option<Prop<String>>,
-    text: Option<TextContent>,
     value: Option<Prop<String>>,
     numeric_range: Option<Prop<NumericRange>>,
     checked: Option<Prop<bool>>,
@@ -291,19 +354,6 @@ pub struct El {
     key: Option<KeyHandler>,
     key_context: Option<String>,
     commands: Vec<(String, Rc<dyn Fn()>)>,
-    image: Option<crate::image::Image>,
-    object_fit: crate::image::ObjectFit,
-    icon: Option<crate::icon::Icon>,
-    stroke_width: Option<f32>,
-    canvas: Option<Draw>,
-    multiline: bool,
-    rows: Option<(u16, u16)>,
-    submit_on_enter: bool,
-    secure: bool,
-    revealed: Option<Prop<bool>>,
-    native: Option<(&'static str, crate::native::Slot)>,
-    props: Option<Prop<serde_json::Value>>,
-    on_native: Option<OnNative>,
     on_link: Option<OnLink>,
     on_drop: Option<super::OnDrop>,
     group: Option<&'static str>,
@@ -326,14 +376,13 @@ impl From<El> for View {
     }
 }
 
-fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
+fn new_el(content: Content, at: &'static Location<'static>) -> El {
     El {
-        kind,
+        content,
         role: None,
         at,
         made: super::building(),
         test_id: None,
-        text: None,
         value: None,
         numeric_range: None,
         checked: None,
@@ -369,19 +418,6 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         key: None,
         key_context: None,
         commands: Vec::new(),
-        image: None,
-        object_fit: crate::image::ObjectFit::Fill,
-        icon: None,
-        stroke_width: None,
-        canvas: None,
-        multiline: false,
-        rows: None,
-        submit_on_enter: false,
-        secure: false,
-        revealed: None,
-        native: None,
-        props: None,
-        on_native: None,
         on_link: None,
         on_drop: None,
         group: None,
@@ -400,7 +436,7 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
 }
 
 fn boxed(children: impl Children, at: &'static Location<'static>) -> El {
-    let mut e = new_el(Kind::Box, at);
+    let mut e = new_el(Content::Box, at);
     e.children = children.into_views();
     e
 }
@@ -409,7 +445,7 @@ fn boxed(children: impl Children, at: &'static Location<'static>) -> El {
 /// Add children with `.child(..)` / `.children(..)`.
 #[track_caller]
 pub fn el() -> El {
-    new_el(Kind::Box, Location::caller())
+    new_el(Content::Box, Location::caller())
 }
 
 /// A horizontal stack (Rune `row()`, SwiftUI `HStack`, Compose `Row`).
@@ -438,9 +474,7 @@ pub fn text(t: impl IntoText) -> El {
 }
 
 pub(crate) fn text_at(t: impl IntoText, at: &'static Location<'static>) -> El {
-    let mut e = new_el(Kind::Text, at);
-    e.text = Some(t.into_text());
-    e
+    new_el(Content::Text(t.into_text()), at)
 }
 
 /// An icon (`icon(icons::SEARCH)`, from `octara-icons`, or an [`Icon`](crate::icon::Icon) of
@@ -449,9 +483,7 @@ pub(crate) fn text_at(t: impl IntoText, at: &'static Location<'static>) -> El {
 /// unless it has a `label`, which makes it an image.
 #[track_caller]
 pub fn icon(icon: crate::icon::Icon) -> El {
-    let mut e = new_el(Kind::Box, Location::caller()).size_4();
-    e.icon = Some(icon);
-    e
+    new_el(Content::Icon { icon, stroke_width: None }, Location::caller()).size_4()
 }
 
 /// A canvas: `draw` records shapes, images, transforms and clips into a
@@ -461,9 +493,7 @@ pub fn icon(icon: crate::icon::Icon) -> El {
 /// `label`, or `a11y_hidden()` when it is decoration. See [`crate::canvas`].
 #[track_caller]
 pub fn canvas(draw: impl Fn(&mut crate::canvas::Canvas) + 'static) -> El {
-    let mut e = new_el(Kind::Box, Location::caller());
-    e.canvas = Some(Rc::new(draw));
-    e
+    new_el(Content::Canvas(Rc::new(draw)), Location::caller())
 }
 
 /// A native view of `kind` (a platform view the shell's host creates): a leaf box sized by its
@@ -472,9 +502,7 @@ pub fn canvas(draw: impl Fn(&mut crate::canvas::Canvas) + 'static) -> El {
 /// `.on_native(..)`. Headless, it draws as a placeholder box. See [`crate::native`].
 #[track_caller]
 pub fn native_view(kind: &'static str) -> El {
-    let mut e = new_el(Kind::Box, Location::caller());
-    e.native = Some((kind, crate::native::Slot::Overlay));
-    e
+    new_el(Content::Native(Native { kind, slot: crate::native::Slot::Overlay, props: None, on_event: None }), Location::caller())
 }
 
 /// A web view showing `url` (a native view of kind `web`, in the overlay): its props are
@@ -486,7 +514,7 @@ pub fn web_view(url: impl IntoProp<String>) -> El {
         Prop::Dyn(f) => Prop::Dyn(Box::new(move || serde_json::json!({ "url": f() }))),
     };
     let mut e = native_view("web");
-    e.props = Some(props);
+    e.content.native_mut("web_view").props = Some(props);
     e
 }
 
@@ -494,7 +522,7 @@ pub fn web_view(url: impl IntoProp<String>) -> El {
 /// primitive; `octara-kit`'s `TextField` builds on it.
 #[track_caller]
 pub fn text_input() -> El {
-    new_el(Kind::TextInput, Location::caller()).focusable()
+    new_el(Content::Input(Input::default()), Location::caller()).focusable()
 }
 
 impl Styled for El {
@@ -924,62 +952,78 @@ impl El {
     /// Shows `image` in the element, fitted by [`object_fit`](Self::object_fit) (stretched by
     /// default) and clipped to its corners. With only a width or a height, the other side follows
     /// the image's aspect ratio; with neither, the element takes the image's size. New pixels set
-    /// on the handle draw on the next frame without rerunning the view.
+    /// on the handle draw on the next frame without rerunning the view. Requires a plain box
+    /// or an existing image; use separate children to combine images with other content.
+    #[track_caller]
     pub fn img(mut self, image: &crate::image::Image) -> Self {
-        self.image = Some(image.clone());
+        match &mut self.content {
+            Content::Box => self.content = Content::Image { image: image.clone(), fit: crate::image::ObjectFit::Fill },
+            Content::Image { image: current, .. } => *current = image.clone(),
+            _ => wrong_content("img", "a plain box or an existing image"),
+        }
         self
     }
     /// Makes a text input multi-line: the text wraps at its width and the field grows with it,
     /// Enter (and Shift+Enter) breaks the line, Cmd+Enter (Ctrl+Enter) submits; Up, Down, Page
     /// Up, Page Down, Home and End move by visual lines; a paste keeps its line breaks.
+    #[track_caller]
     pub fn multiline(mut self) -> Self {
-        self.multiline = true;
+        self.content.input_mut("multiline").multiline = true;
         self
     }
     /// A multi-line text input's height: it follows its text from `min` to `max` lines and
     /// scrolls inside beyond (the caret kept in view). Makes the input multi-line.
+    #[track_caller]
     pub fn rows(mut self, min: u16, max: u16) -> Self {
-        self.multiline = true;
-        self.rows = Some((min, max));
+        let input = self.content.input_mut("rows");
+        input.multiline = true;
+        input.rows = Some((min, max));
         self
     }
     /// A multi-line text input as a chat composer: Enter submits, Shift+Enter (or Option+Enter)
     /// breaks the line. Makes the input multi-line.
+    #[track_caller]
     pub fn submit_on_enter(mut self) -> Self {
-        self.multiline = true;
-        self.submit_on_enter = true;
+        let input = self.content.input_mut("submit_on_enter");
+        input.multiline = true;
+        input.submit_on_enter = true;
         self
     }
     /// Makes a text input a secure field (a password): the value shows as bullets; copy, cut,
     /// undo and the input method are off; assistive technology, `inspect`, `check`, logs and
     /// `Debug` see bullets only. On touch platforms the last typed character shows for a moment.
+    #[track_caller]
     pub fn secure(mut self) -> Self {
-        self.secure = true;
+        self.content.input_mut("secure").secure = true;
         self
     }
     /// Shows a secure field's text (a "show password" toggle: `.revealed(move || show.get())`);
     /// its other protections stay.
+    #[track_caller]
     pub fn revealed(mut self, on: impl IntoProp<bool>) -> Self {
-        self.revealed = Some(on.into_prop());
+        let input = self.content.input_mut("revealed");
+        input.revealed = Some(on.into_prop());
         self
     }
     /// Which side of Octara's surface a native view is on: `Slot::Overlay` (above it, the
     /// default: web views, pickers) or `Slot::Underlay` (behind it, through a cutout, so content
     /// can draw over it: maps, video).
+    #[track_caller]
     pub fn slot(mut self, slot: crate::native::Slot) -> Self {
-        if let Some((_, s)) = &mut self.native {
-            *s = slot;
-        }
+        self.content.native_mut("slot").slot = slot;
         self
     }
     /// A native view's props: one JSON value, handed to its host whole when it changes.
+    #[track_caller]
     pub fn props(mut self, props: impl IntoProp<serde_json::Value>) -> Self {
-        self.props = Some(props.into_prop());
+        let native = self.content.native_mut("props");
+        native.props = Some(props.into_prop());
         self
     }
     /// Events from a native view (a page loaded, a map moved).
+    #[track_caller]
     pub fn on_native(mut self, f: impl Fn(&crate::native::NativeEvent) + 'static) -> Self {
-        self.on_native = Some(Rc::new(f));
+        self.content.native_mut("on_native").on_event = Some(Rc::new(f));
         self
     }
     /// A link in this element's rich text, or in its descendants', was pressed (a click, Enter
@@ -999,13 +1043,21 @@ impl El {
         self.style_when(State::DRAG_OVER, f)
     }
     /// An icon's stroke width on its grid (2 for the bundled icons; 1.5 is lighter).
+    #[track_caller]
     pub fn stroke_width(mut self, width: f32) -> Self {
-        self.stroke_width = Some(width);
+        match &mut self.content {
+            Content::Icon { stroke_width, .. } => *stroke_width = Some(width),
+            _ => wrong_content("stroke_width", "icon()"),
+        }
         self
     }
-    /// How the image fills the element (GPUI's `object_fit`).
+    /// How the image fills the element (GPUI's `object_fit`). Call after `.img(..)`.
+    #[track_caller]
     pub fn object_fit(mut self, fit: crate::image::ObjectFit) -> Self {
-        self.object_fit = fit;
+        match &mut self.content {
+            Content::Image { fit: current, .. } => *current = fit,
+            _ => wrong_content("object_fit", ".img(..) first"),
+        }
         self
     }
 
@@ -1046,7 +1098,7 @@ fn bind<T: 'static>(at: &'static Location<'static>, node: NodeId, prop: Prop<T>,
 pub(crate) fn build_el(e: El) -> NodeId {
     let u = crate::app::window();
     let at = e.at;
-    let node = u.kernel.borrow_mut().create(e.kind);
+    let node = u.kernel.borrow_mut().create(e.content.kind());
     u.kernel.borrow_mut().set_origin(node, at);
     u.kernel.borrow_mut().set_component(node, e.made);
     {
@@ -1065,26 +1117,37 @@ pub(crate) fn build_el(e: El) -> NodeId {
         if let Some(r) = e.role {
             k.set_role(node, r);
         }
-        // A native view first: its props bind to it below.
-        if let Some((kind, slot)) = e.native {
-            k.set_native(node, kind, slot);
-        }
-        // A canvas is an image.
-        if e.canvas.is_some() && e.role.is_none() {
-            k.set_role(node, Role::Image);
-        }
-        // An icon is an image when labeled, else decoration.
-        if let Some(i) = &e.icon {
-            match (&e.label, e.role) {
-                (Some(_), None) => {
+        // Establish exactly one content kind before its bindings and layout styles.
+        match &e.content {
+            Content::Box | Content::Text(_) => {}
+            Content::Input(input) => {
+                k.set_multiline(node, input.multiline);
+                if let Some((min, max)) = input.rows {
+                    k.set_rows(node, min, max);
+                }
+                k.set_submit_on_enter(node, input.submit_on_enter);
+                k.set_secure(node, input.secure);
+            }
+            Content::Image { image, fit } => k.set_image(node, Some((image.clone(), *fit))),
+            Content::Icon { icon, stroke_width } => {
+                // An icon is an image when labeled, else decoration.
+                match (&e.label, e.role) {
+                    (Some(_), None) => {
+                        k.set_role(node, Role::Image);
+                    }
+                    (None, None) => {
+                        k.set_hidden(node, true);
+                    }
+                    _ => {}
+                }
+                k.set_icon(node, Some((icon, *stroke_width)));
+            }
+            Content::Canvas(_) => {
+                if e.role.is_none() {
                     k.set_role(node, Role::Image);
                 }
-                (None, None) => {
-                    k.set_hidden(node, true);
-                }
-                _ => {}
             }
-            k.set_icon(node, Some((i, e.stroke_width)));
+            Content::Native(native) => k.set_native(node, native.kind, native.slot),
         }
         if e.hidden {
             k.set_hidden(node, true);
@@ -1130,9 +1193,9 @@ pub(crate) fn build_el(e: El) -> NodeId {
     if let Some(p) = e.test_id {
         bind(at, node, p, |k, n, v: &String| k.set_test_id(n, Some(v)));
     }
-    match e.text {
-        Some(TextContent::Prop(p)) => bind(at, node, p, |k, n, v: &Rich| k.set_rich(n, v.as_str(), v.runs())),
-        Some(TextContent::Buffer(t)) => {
+    match e.content {
+        Content::Text(TextContent::Prop(p)) => bind(at, node, p, |k, n, v: &Rich| k.set_rich(n, v.as_str(), v.runs())),
+        Content::Text(TextContent::Buffer(t)) => {
             let cursor = t.subscribe();
             u.kernel.borrow_mut().set_text(node, &untrack(|| t.get()));
             let u = u.clone();
@@ -1147,7 +1210,25 @@ pub(crate) fn build_el(e: El) -> NodeId {
                 }
             });
         }
-        None => {}
+        Content::Input(input) => {
+            if let Some(p) = input.revealed {
+                bind(at, node, p, |k, n, v: &bool| {
+                    k.set_revealed(n, *v);
+                    true
+                });
+            }
+        }
+        Content::Native(native) => {
+            if let Some(p) = native.props {
+                bind(at, node, p, |k, n, v: &serde_json::Value| k.set_native_props(n, v));
+            }
+            if let Some(f) = native.on_event {
+                let id = u.register(Handler::Native(f));
+                u.kernel.borrow_mut().set_handler(node, HandlerKind::Native, Some(HandlerId(id)));
+            }
+        }
+        Content::Canvas(draw) => mount_canvas(at, node, draw),
+        Content::Box | Content::Image { .. } | Content::Icon { .. } => {}
     }
     if let Some(p) = e.value {
         bind(at, node, p, |k, n, v: &String| k.set_value(n, v));
@@ -1163,15 +1244,6 @@ pub(crate) fn build_el(e: El) -> NodeId {
     }
     if let Some(p) = e.invalid {
         bind(at, node, p, |k, n, v: &bool| k.set_invalid(n, Some(*v)));
-    }
-    if let Some(p) = e.props {
-        bind(at, node, p, |k, n, v: &serde_json::Value| k.set_native_props(n, v));
-    }
-    if let Some(p) = e.revealed {
-        bind(at, node, p, |k, n, v: &bool| {
-            k.set_revealed(n, *v);
-            true
-        });
     }
     if let Some(p) = e.label {
         bind(at, node, p, |k, n, v: &String| k.set_label(n, Some(v)));
@@ -1217,22 +1289,6 @@ pub(crate) fn build_el(e: El) -> NodeId {
         if let Some(c) = &e.key_context {
             k.set_key_context(node, Some(c));
         }
-        if e.multiline {
-            k.set_multiline(node, true);
-        }
-        if let Some((min, max)) = e.rows {
-            k.set_rows(node, min, max);
-        }
-        if e.submit_on_enter {
-            k.set_submit_on_enter(node, true);
-        }
-        if e.secure {
-            k.set_secure(node, true);
-        }
-
-        if let Some(img) = e.image {
-            k.set_image(node, Some((img, e.object_fit)));
-        }
         if e.group.is_some() {
             k.set_group(node, e.group);
         }
@@ -1261,9 +1317,6 @@ pub(crate) fn build_el(e: El) -> NodeId {
             k.set_select_none(node, true);
         }
     }
-    if let Some(draw) = e.canvas {
-        mount_canvas(at, node, draw);
-    }
     for (command, f) in e.commands {
         let id = u.register(Handler::Press(f));
         u.kernel.borrow_mut().add_command(node, &command, HandlerId(id));
@@ -1280,7 +1333,6 @@ pub(crate) fn build_el(e: El) -> NodeId {
         (HandlerKind::Submit, e.submit.map(Handler::Press)),
         (HandlerKind::Dismiss, e.modal.map(|(_, f)| Handler::Press(f))),
         (HandlerKind::Key, e.key.map(Handler::Key)),
-        (HandlerKind::Native, e.on_native.map(Handler::Native)),
         (HandlerKind::Link, e.on_link.map(Handler::Link)),
         (HandlerKind::Drop, e.on_drop.map(Handler::Drop)),
         (HandlerKind::Focus, e.focus.map(Handler::Press)),

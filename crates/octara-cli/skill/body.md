@@ -43,6 +43,9 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
 - Lists: key items by a stable unique id; an `each` row is one element; `virtual_each` sits
   directly in a scroll container with a bounded height.
 - Give the app root `size_full()`; a scroll area is `flex_1().overflow_y_scroll()`.
+- Each element has one content kind. Use input settings on `text_input()`, native settings on
+  `native_view()` / `web_view()`, and image fit after `.img(..)`. Combine different content with
+  children; incompatible content-specific methods panic with `ELEMENT_CONTENT`.
 - Give interactive and checked elements a test id (`.id("save")`); tests and agents drive and
   read the app by it (`app.tap("save")`, `app.kernel().text_of("total")`).
 - Colors are semantic tokens (`Token::Surface`, `Token::Text`, `Token::Accent`); app colors are
