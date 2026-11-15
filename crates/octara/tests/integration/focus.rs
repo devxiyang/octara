@@ -2,6 +2,8 @@
 //! make the window inert, and give focus back when they close.
 
 use octara::prelude::*;
+use std::cell::Cell;
+use std::rc::Rc;
 
 fn focused(app: &Window) -> Option<String> {
     let k = app.kernel();
@@ -222,4 +224,144 @@ fn the_app_moves_focus_to_an_element_built_in_the_same_frame() {
     });
     app.tap("open").unwrap();
     assert_eq!(focused(&app).as_deref(), Some("name"));
+}
+
+#[test]
+fn a_modal_keeps_its_original_opener_across_hot_reload() {
+    let mut app = dialog_app(true);
+    app.tap("open").unwrap();
+    app.dispatch(Event::Focus("name".into())).unwrap();
+    for _ in 0..2 {
+        app.app().hot_reload();
+        assert_eq!(app.inspect().focus.as_deref(), Some("name"));
+    }
+    app.press_key("escape").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("open"));
+}
+
+#[derive(Default)]
+struct ReloadModalChanges {
+    hide_opener: Cell<bool>,
+    hide_inner_opener: Cell<bool>,
+    remove_outer: Cell<bool>,
+    remove_inner: Cell<bool>,
+    remove_inner_field: Cell<bool>,
+}
+
+#[component]
+fn reload_modal_view(changes: Rc<ReloadModalChanges>) -> View {
+    let outer_open = state("outer-open", || false);
+    let inner_open = state("inner-open", || false);
+    let (opener, outer) = (changes.clone(), changes.clone());
+    col()
+        .size_full()
+        .child(show(move || !opener.hide_opener.get(), move || button("open").on_press(move || outer_open.set(true)).into()))
+        .child(show(
+            move || outer_open.get() && !outer.remove_outer.get(),
+            move || {
+                let (opener, inner, field) = (changes.clone(), changes.clone(), changes.clone());
+                col()
+                    .id("outer-dialog")
+                    .absolute()
+                    .left(200.0)
+                    .top(100.0)
+                    .w(240.0)
+                    .modal(true, move || outer_open.set(false))
+                    .child(text_input().id("outer-name"))
+                    .child(show(
+                        move || !opener.hide_inner_opener.get(),
+                        move || button("open-inner").on_press(move || inner_open.set(true)).into(),
+                    ))
+                    // The overlay's stable anchor is separate from its opener, so a reload
+                    // can remove that opener while leaving the inner modal open.
+                    .child(el().size_8().overlay(
+                        move || inner_open.get() && !inner.remove_inner.get(),
+                        Placement::BELOW,
+                        move || {
+                            let field = field.clone();
+                            col()
+                                .id("inner-dialog")
+                                .w(180.0)
+                                .modal(true, move || inner_open.set(false))
+                                .child(show(move || !field.remove_inner_field.get(), || text_input().id("inner-name").into()))
+                                .child(button("inner-fallback"))
+                                .into()
+                        },
+                    ))
+                    .into()
+            },
+        ))
+        .into()
+}
+
+fn nested_reload_modal_app() -> (Window, Rc<ReloadModalChanges>) {
+    let changes = Rc::new(ReloadModalChanges::default());
+    let view_changes = changes.clone();
+    let mut app = Window::headless(move || reload_modal_view(view_changes.clone()));
+    app.tap("open").unwrap();
+    app.tap("open-inner").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("inner-name"));
+    (app, changes)
+}
+
+#[test]
+fn nested_overlay_modals_keep_both_openers_across_hot_reload() {
+    let (mut app, _) = nested_reload_modal_app();
+    for _ in 0..2 {
+        app.app().hot_reload();
+        assert_eq!(app.inspect().focus.as_deref(), Some("inner-name"));
+    }
+    app.press_key("escape").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("open-inner"));
+    app.press_key("escape").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("open"));
+}
+
+#[test]
+fn a_missing_original_opener_is_not_replaced_by_the_reloaded_field() {
+    let (mut app, changes) = nested_reload_modal_app();
+    changes.hide_opener.set(true);
+    app.app().hot_reload();
+    app.press_key("escape").unwrap();
+    app.press_key("escape").unwrap();
+    assert!(app.inspect().focus.is_none());
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
+fn a_missing_inner_opener_restores_focus_inside_the_outer_modal() {
+    let (mut app, changes) = nested_reload_modal_app();
+    changes.hide_inner_opener.set(true);
+    app.app().hot_reload();
+    app.press_key("escape").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("outer-name"));
+    app.press_key("escape").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("open"));
+}
+
+#[test]
+fn a_modal_removed_by_hot_reload_restores_its_opener() {
+    for outer in [false, true] {
+        let (app, changes) = nested_reload_modal_app();
+        changes.remove_outer.set(outer);
+        changes.remove_inner.set(!outer);
+        app.app().hot_reload();
+        let expected = if outer { "open" } else { "open-inner" };
+        assert_eq!(app.inspect().focus.as_deref(), Some(expected));
+        assert!(!app.kernel().exists("inner-dialog"));
+        assert_eq!(app.kernel().exists("outer-dialog"), !outer);
+        assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+    }
+}
+
+#[test]
+fn a_field_removed_by_hot_reload_keeps_focus_in_its_surviving_modal() {
+    let (mut app, changes) = nested_reload_modal_app();
+    changes.remove_inner_field.set(true);
+    app.app().hot_reload();
+    assert_eq!(app.inspect().focus.as_deref(), Some("inner-fallback"));
+    app.press_key("escape").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("open-inner"));
+    app.press_key("escape").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("open"));
 }

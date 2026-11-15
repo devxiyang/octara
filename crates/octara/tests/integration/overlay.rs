@@ -85,6 +85,114 @@ fn overlay_state_survives_hot_reload_and_leaves_no_residue() {
     assert!(k.children(k.overlay_layer()).is_empty());
 }
 
+fn nested_overlays() -> Window {
+    Window::headless(|| {
+        let outer = state("outer", || false);
+        let middle = state("middle", || false);
+        let inner = state("inner", || false);
+        on_command("nested.open-all", move || {
+            outer.set(true);
+            middle.set(true);
+            inner.set(true);
+        });
+        col()
+            .size_full()
+            .child(
+                text("Outer")
+                    .id("outer-trigger")
+                    .absolute()
+                    .left(relative(0.125))
+                    .top(relative(0.2))
+                    .w(80.0)
+                    .h(24.0)
+                    .on_press(move || outer.set(true))
+                    .overlay(
+                        move || outer.get(),
+                        Placement::BELOW,
+                        move || {
+                            col()
+                                .id("outer-panel")
+                                .w(240.0)
+                                .h(120.0)
+                                .p_4()
+                                .child(text("Middle").id("middle-trigger").w(80.0).h(24.0).on_press(move || middle.set(true)).overlay(
+                                    move || middle.get(),
+                                    Placement::BELOW,
+                                    move || {
+                                        col()
+                                            .id("middle-panel")
+                                            .w(140.0)
+                                            .h(80.0)
+                                            .p_2()
+                                            .child(
+                                                text("Inner")
+                                                    .id("inner-trigger")
+                                                    .w(80.0)
+                                                    .h(24.0)
+                                                    .on_press(move || inner.set(true))
+                                                    .overlay(
+                                                        move || inner.get(),
+                                                        Placement::BELOW,
+                                                        || el().id("inner-panel").w(100.0).h(32.0).into(),
+                                                    ),
+                                            )
+                                            .into()
+                                    },
+                                ))
+                                .into()
+                        },
+                    ),
+            )
+            .into()
+    })
+}
+
+const NESTED_PAIRS: [(&str, &str); 3] =
+    [("outer-trigger", "outer-panel"), ("middle-trigger", "middle-panel"), ("inner-trigger", "inner-panel")];
+
+fn assert_nested_anchors(app: &Window) {
+    for (trigger, panel) in NESTED_PAIRS {
+        let (x, y, _, height) = rect(app, trigger);
+        let (panel_x, panel_y, _, _) = rect(app, panel);
+        assert_eq!((panel_x, panel_y), (x, y + height + 4.0), "{panel} must follow its anchor");
+    }
+    assert!(app.layout_issues().is_empty(), "{:?}", app.layout_issues());
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
+fn nested_overlays_can_mount_all_at_once() {
+    let mut app = nested_overlays();
+    app.invoke("nested.open-all").unwrap();
+    assert_nested_anchors(&app);
+}
+
+#[test]
+fn nested_overlays_remain_next_to_their_anchors_when_rebuilt_open() {
+    let mut app = nested_overlays();
+    for (trigger, _) in NESTED_PAIRS {
+        app.dispatch(Event::Press(trigger.into())).unwrap();
+    }
+    let before: Vec<_> = NESTED_PAIRS.iter().map(|(_, panel)| rect(&app, panel)).collect();
+    app.app().hot_reload();
+    assert_nested_anchors(&app);
+    for ((_, panel), before) in NESTED_PAIRS.iter().zip(before) {
+        assert_eq!(rect(&app, panel), before, "rebuilding an open nested overlay preserves its placement");
+    }
+}
+
+#[test]
+fn nested_overlays_follow_their_anchors_after_a_viewport_resize() {
+    let mut app = nested_overlays();
+    for (trigger, _) in NESTED_PAIRS {
+        app.dispatch(Event::Press(trigger.into())).unwrap();
+    }
+    let before = rect(&app, "outer-trigger");
+    app.resize(1000.0, 720.0);
+    assert_ne!(rect(&app, "outer-trigger"), before, "the anchor actually moves with the viewport");
+    assert_nested_anchors(&app);
+}
+
 #[test]
 fn placement_math() {
     let vp = (200.0, 100.0);

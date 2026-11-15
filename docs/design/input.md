@@ -77,6 +77,9 @@ catches up after the animation ends or the pointer moves (Rune).
 - Tab / Shift+Tab are built in and cycle in tree order; `tab_index(n)`: positive values come first, negative values stay out of the Tab order (Rune).
 - `focus_group()`: arrow keys move among focusable descendants within the group, and Tab stops only at the current item in the group (Rune).
 - `autofocus()`: focus it when a modal opens; otherwise focus the first text field in the modal, otherwise the first Tab position (Rune).
+- `active_descendant(..)`: name the highlighted option while focus stays on the input. This is
+  separate from `selected`; AccessKit and Inspector resolve the relation only to a live, shown
+  target. `scroll_into_view(id)` queues a reveal after layout without moving focus.
 - `modal(click_outside, dismiss)`: while mounted, the background does not respond and Tab cycles only within the modal; Escape (and, when allowed, a click
   outside the modal) calls `dismiss`; after unmount, focus returns to the element from before it opened. With multiple modals only the topmost takes
   effect (Rune's modal stack).
@@ -114,6 +117,10 @@ catches up after the animation ends or the pointer moves (Rune).
   outside; `app.keymap()` lists everything. The platform's standard bindings and the app's are kept as one keymap, built again only when
   either changes, so resolving a key and finding a menu item's chord read it without parsing.
 - Commands are string ids (`"focus.next"`, `"edit.copy"`), and an agent can directly `app.invoke("edit.copy")`.
+- On macOS, native menu callbacks enqueue intent synchronously. At the next safe shell input
+  boundary, pending text edits land first, then queued menu commands, then the next key is
+  interpreted. A deferred proxy wake cannot let Select All arrive after the following IME mark;
+  application handlers still run outside Cocoa text callbacks.
 - Handling: `.on_command("save", f)` attaches to an element and is looked up along the focus path from inside out; `on_command("save", f)` (a free
   function) is app-level.
 - Dispatch order:
@@ -128,8 +135,9 @@ catches up after the animation ends or the pointer moves (Rune).
 
 - The app still writes only `text_input().value(..).on_input(|v| ..)`; Enter to submit is a separate `on_submit` (Rune), and `on_press` is synonymous for
   text fields and other elements (click, Enter / Space, accessibility activation). Keys: in the context `text_input`, Enter → `submit`; with no
-  `on_submit`, `submit` is not handled and Enter falls through to `press`. Selection, composition and undo records are kept by the runtime per node, and
-  carried over by test id on hot reload.
+  `on_submit`, `submit` is not handled and Enter falls through to `press`. Selection, composition and undo records are kept by the runtime per node.
+  Hot reload restores named application state and focus, but currently rebuilds the text editor;
+  its selection, composition and undo history are not carried over.
 - Each edit computes a new value and calls `on_input`; if the app does not adopt it (the value is unchanged), the selection is clamped to the new value's
   range. Values written by the app take effect immediately; deferring those writes during composition remains open.
 - Caret movement is by grapheme cluster, and word movement by Unicode word boundary (`unicode-segmentation`).
@@ -145,8 +153,8 @@ catches up after the animation ends or the pointer moves (Rune).
 - Clipboard: the [platform](platform.md)'s (`Platform::read_text` / `write_text`); headless it is in memory, and the shell's backend uses the system clipboard.
 - Input method (IME) composition is displayed at the caret with an underline, does not enter the value, and enters only after commit.
 - Platform protocol (the shape of GPUI's `InputHandler`): text, selection, composition range, replace by range, set composition, set selection, caret
-  rectangle; internally byte offsets are used, with a UTF-16 conversion provided for NSTextInputClient, UITextInput and TSF. The winit shell uses only the
-  composition and commit parts.
+  rectangle; internally byte offsets are used, with a UTF-16 conversion provided for NSTextInputClient, UITextInput and TSF. The macOS shell bridges
+  NSTextInputClient directly; the other desktop shells use winit composition and commit events.
 - Multi-line fields wrap, grow or scroll within row limits, and support visual-line movement and selection. Enter inserts a line break and Cmd/Ctrl+Enter submits; `.submit_on_enter()` reverses the default for a chat composer ([text input](text-input.md)).
 
 ## Scrolling

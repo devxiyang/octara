@@ -164,6 +164,10 @@ pub struct Node {
     pub checked: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expanded: Option<bool>,
+    /// The active option's resolved test id, while actual keyboard focus stays on this node.
+    /// Omitted when the target is missing, detached or hidden from accessibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_descendant: Option<String>,
     /// `hovered`, `focused`, `focus_visible`, `pressed`, `selected`, `disabled`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub states: Vec<String>,

@@ -43,6 +43,36 @@ fn a_scroll_container_bounds_its_content_and_scrolls() {
     assert!(err.contains("overflow_y_scroll"), "{err}");
 }
 
+#[test]
+fn scrolling_an_option_into_view_waits_for_mount_and_preserves_input_focus() {
+    let mut app = Window::headless(|| {
+        let open = state("open", || false);
+        col()
+            .size_full()
+            .child(text_input().id("search").on_key(move |key| {
+                if key.key != Key::Down {
+                    return false;
+                }
+                open.set(true);
+                scroll_into_view("r19");
+                true
+            }))
+            .child(col().id("options").h(80.0).overflow_y_scroll().child(show(move || open.get(), || col().children(rows(20)).into())))
+            .into()
+    });
+    app.tap("search").unwrap();
+    assert!(!app.kernel().exists("r19"));
+    app.press_key("down").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("search"));
+    let k = app.kernel();
+    let list = k.find("options").unwrap();
+    let option = k.find("r19").unwrap();
+    let (_, list_y, _, list_h) = k.shown_rect(list);
+    let (_, option_y, _, option_h) = k.shown_rect(option);
+    assert!(k.scroll_offset(list).1 > 0.0);
+    assert!(option_y >= list_y && option_y + option_h <= list_y + list_h + 0.5);
+}
+
 #[derive(Clone, PartialEq)]
 struct Item {
     id: u32,

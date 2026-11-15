@@ -9,10 +9,14 @@
 use octara::prelude::*;
 use std::rc::Rc;
 
+mod combobox;
 pub mod markdown;
+mod popover;
 mod status;
 mod structure;
 
+pub use combobox::{ComboboxOption, combobox};
+pub use popover::popover;
 pub use status::{callout, chip, removable_chip, spinner};
 pub use structure::{collapsible, list, list_header, list_item, split};
 

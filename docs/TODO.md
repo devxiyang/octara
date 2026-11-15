@@ -6,13 +6,14 @@ make the corresponding design document describe it.
 
 ## Priorities
 
-1. The AI chat reference app (`apps/chat`) as people use it: what a run in a real window shows.
+1. Core interaction and reusable components, exercised in Showcase and the Chat reference app:
+   composed keyboard/IME behavior, focus, selection, overlays and real-window evidence.
 2. Extend Agent feedback from real windows: target/build identity, sampled properties and native input.
 3. The owned macOS backend (NSTextInputClient, live resize in the frame's transaction).
 4. Native chrome: Windows/Linux menu integration, AppKit tooltips, toolbars and title bars.
    macOS menus and alert sheets, and rfd file dialogs are implemented in the winit shell.
-5. Components: richer menus and popovers, dialogs and sheets, tabs, tables, sliders and progress.
-   Basic list, list-item and list-header components are implemented.
+5. Components: richer menus, dialogs and sheets, tabs, tables, radios, sliders and progress.
+   Basic lists, modal popovers and searchable comboboxes are implemented.
 6. Images: JPEG, WebP, SVG, loading and caching.
 7. [Native Island](design/native-island.md): focus, accessibility joining, lazy creation.
 8. Windows: WebView2 in DirectComposition; `surface` textures; Linux: WPE as a texture.
@@ -136,6 +137,9 @@ From section 9 of [Reactive core](design/reactive-core.md):
 - [ ] Kernel children are a `Vec`; with a hundred thousand sibling nodes insertion and removal
       are O(n) (avoided by virtualization).
 - [ ] After hot reload, virtual list rows are measured again.
+- [ ] Hot reload preserves named text values and focus, but rebuilds the editor's selection,
+      composition and undo history; the caret returns to the start. Live option updates keep
+      the editor mounted and do not have this limitation ([Choices evidence](../examples/CHOICES.md)).
 - [ ] On hot reload, a change of state type can only reset: add a migration function (serde or
       user-provided).
 - [ ] Durability tiers (Salsa), for rarely changing state.

@@ -12,6 +12,24 @@ use objc2_foundation::{NSProcessInfo, NSString};
 use octara::menu::{Menu, MenuItem};
 use std::cell::RefCell;
 
+/// Menu actions arrive before the next native key, even when winit dispatches that key inline
+/// ahead of proxy events. Keep their intents available at the next safe shell input boundary.
+#[derive(Default)]
+pub(crate) struct PendingCommands(RefCell<Vec<(String, Option<String>)>>);
+
+impl PendingCommands {
+    pub(crate) fn push(&self, name: String, chord: Option<String>) {
+        self.0.borrow_mut().push((name, chord));
+    }
+
+    pub(crate) fn drain(&self, mut dispatch: impl FnMut(String, Option<String>)) {
+        let pending = std::mem::take(&mut *self.0.borrow_mut());
+        for (name, chord) in pending {
+            dispatch(name, chord);
+        }
+    }
+}
+
 /// One of the app's items: its command, its keys, whether it is enabled now.
 struct Entry {
     command: String,
@@ -194,4 +212,70 @@ fn window_menu(mtm: MainThreadMarker) -> Retained<NSMenu> {
     m.addItem(&NSMenuItem::separatorItem(mtm));
     m.addItem(&item_with(mtm, "Bring All to Front", Some(sel!(arrangeInFront:)), None));
     m
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PendingCommands;
+    use octara::app::{InputEvent, TextEdit};
+    use octara::platform::{HeadlessWindow, TextInput};
+    use octara::prelude::*;
+
+    #[component]
+    fn editor() -> View {
+        let value = state("value", || "杭州".to_owned());
+        text_input().id("field").value(move || value.get()).on_input(move |text| value.set(text)).into()
+    }
+
+    fn native_input(app: &Window) -> TextInput {
+        app.platform_window().as_any().downcast_ref::<HeadlessWindow>().unwrap().text_input.clone().unwrap()
+    }
+
+    fn native_edit(app: &mut Window, edit: TextEdit) {
+        let input = native_input(app);
+        assert!(app.apply_text_edit(input.id, input.document.as_ref().unwrap(), &edit));
+    }
+
+    #[test]
+    fn a_queued_menu_shortcut_precedes_the_next_native_composition() {
+        let mut app = Window::headless(editor);
+        app.dispatch(Event::Focus("field".into())).unwrap();
+        app.set_selection(6, 6);
+        let commands = PendingCommands::default();
+        commands.push("edit.select_all".into(), Some("cmd+a".into()));
+
+        // An inline winit key callback can beat the proxy wake for Cmd+A. The shell drains
+        // this queue before interpreting that key, so its first mark replaces the selection.
+        // In the old order, the first `s` appended to 杭州, and late Cmd+A committed that `s`
+        // before selecting the old prefix; later marked text then left a stray `s` at the end.
+        commands.drain(|name, chord| assert!(app.event(InputEvent::Command { name, chord })));
+        assert_eq!(native_input(&app).document.unwrap().selection(), Some(0..6));
+        native_edit(&mut app, TextEdit::Mark { text: "s".into(), selection: Some(1..1), replacement: None });
+        assert_eq!(native_input(&app).document.unwrap().text(), "s");
+        native_edit(&mut app, TextEdit::Mark { text: "shen zhen".into(), selection: Some(9..9), replacement: None });
+        native_edit(&mut app, TextEdit::Insert { text: "深圳".into(), replacement: None });
+        assert_eq!(app.kernel().value_of("field").as_deref(), Some("深圳"));
+        assert_eq!(native_input(&app).document.unwrap().selection(), Some(6..6));
+
+        // Its deferred wake must not apply Select All a second time after the composition.
+        commands.drain(|_, _| panic!("the earlier input boundary already consumed this menu command"));
+        assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+    }
+
+    #[test]
+    fn menu_commands_keep_order_without_borrowing_the_queue_during_handlers() {
+        let commands = PendingCommands::default();
+        commands.push("first".into(), None);
+        commands.push("second".into(), Some("cmd+2".into()));
+        let mut seen = Vec::new();
+        commands.drain(|name, chord| {
+            if name == "first" {
+                commands.push("later".into(), None);
+            }
+            seen.push((name, chord));
+        });
+        assert_eq!(seen, [("first".into(), None), ("second".into(), Some("cmd+2".into()))]);
+        commands.drain(|name, chord| seen.push((name, chord)));
+        assert_eq!(seen.last(), Some(&("later".into(), None)));
+    }
 }

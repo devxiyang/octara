@@ -326,6 +326,8 @@ struct Node {
     paint_ver: u64,
     /// The place last sent to assistive technology (`None`: not sent, or dropped since).
     a11y_sent: Cell<Option<[f32; 6]>>,
+    /// The resolved active option last sent; its allocation can change without its test id.
+    a11y_active_descendant_sent: Cell<Option<NodeId>>,
     role: Option<Role>,
     parent: Option<NodeId>,
     children: Vec<NodeId>,
@@ -338,6 +340,8 @@ struct Node {
     /// What shows when the mouse rests on it (`tooltip`); its description where it has none.
     tooltip: Option<String>,
     expanded: Option<bool>,
+    /// Logical test id of the active option; resolved only against the shown live tree.
+    active_descendant: Option<String>,
     hidden: bool,
     focusable: bool,
     /// Tab order: positive values come first (in order), 0 in tree order, negative not at all.
@@ -747,6 +751,8 @@ pub struct Kernel {
     in_motion: RefCell<rustc_hash::FxHashSet<NodeId>>,
     /// Nodes whose semantics or children changed since the last accessibility update.
     a11y_dirty: RefCell<rustc_hash::FxHashSet<NodeId>>,
+    /// Only nodes with an active-option relation need their target rechecked after mutations.
+    active_descendant_owners: rustc_hash::FxHashSet<NodeId>,
     /// A layout ran since the last accessibility update (places may have changed).
     a11y_geometry: Cell<bool>,
     /// Nodes whose layout changed since the last accessibility update (what may have moved is
@@ -850,6 +856,7 @@ impl Kernel {
             theme_gen: 0,
             in_motion: RefCell::new(rustc_hash::FxHashSet::default()),
             a11y_dirty: RefCell::default(),
+            active_descendant_owners: rustc_hash::FxHashSet::default(),
             a11y_geometry: Cell::new(true),
             a11y_relaid: RefCell::new(rustc_hash::FxHashSet::default()),
             a11y_moving: RefCell::new(Vec::new()),
@@ -1148,6 +1155,7 @@ impl Kernel {
             drawn: RefCell::new(None),
             paint_ver: 0,
             a11y_sent: Cell::new(None),
+            a11y_active_descendant_sent: Cell::new(None),
             role: None,
             parent: None,
             children: Vec::new(),
@@ -1157,6 +1165,7 @@ impl Kernel {
             description: None,
             tooltip: None,
             expanded: None,
+            active_descendant: None,
             hidden: false,
             focusable: false,
             tab_index: 0,
@@ -1330,6 +1339,7 @@ impl Kernel {
         self.missing_tokens.remove(&id);
         self.modal_nodes.remove(&id);
         self.native_nodes.remove(&id);
+        self.active_descendant_owners.remove(&id);
         if n.anchor.is_some() {
             self.anchored.retain(|a| *a != id);
         }
@@ -1630,6 +1640,20 @@ impl Kernel {
         n.state.set(State::EXPANDED, expanded == Some(true));
         self.resolve(id, "expanded");
         self.changed(id, Dirty::SEMANTICS, "expanded", || format!("{expanded:?}"));
+        true
+    }
+
+    /// Names the active option by test id without selecting it or moving keyboard focus.
+    /// The relation is exposed only while that target is attached and shown to accessibility.
+    pub fn set_active_descendant(&mut self, id: NodeId, target: Option<&str>) -> bool {
+        if !self.set_string(id, target, |n| &mut n.active_descendant, "active_descendant") {
+            return false;
+        }
+        if target.is_some() {
+            self.active_descendant_owners.insert(id);
+        } else {
+            self.active_descendant_owners.remove(&id);
+        }
         true
     }
 
@@ -2107,9 +2131,14 @@ impl Kernel {
         let screen = self.res.theme.borrow().breakpoint_of(width);
         self.set_screen(screen);
         self.compute_layout(width, height);
-        // Overlays are placed from the first pass; being absolute, moving them affects nothing
-        // else, so one more (mostly cached) pass settles them.
-        if self.place_overlays() {
+        // Each pass settles another level of anchors: after a rebuild, an overlay's trigger
+        // may still be at its enclosing overlay's unplaced origin. Recompute between levels
+        // before reading those triggers again. Overlay count bounds the possible nesting;
+        // independent overlays still need only one additional, mostly cached layout pass.
+        for _ in 0..self.anchored.len() {
+            if !self.place_overlays() {
+                break;
+            }
             self.compute_layout(width, height);
         }
         self.needs_layout = false;

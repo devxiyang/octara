@@ -334,6 +334,10 @@ impl WindowState {
     pub(crate) fn interaction_request_focus(&self, id: &str) {
         self.interaction.borrow_mut().focus_request = Some(id.to_owned());
     }
+
+    pub(crate) fn interaction_request_scroll_into_view(&self, id: &str) {
+        self.interaction.borrow_mut().reveal_request = Some(id.to_owned());
+    }
 }
 
 /// A clock someone reads: its signal, the timer moving it, and how many scopes read it.
@@ -362,6 +366,8 @@ struct Interaction {
     edits: rustc_hash::FxHashMap<NodeId, edit::EditState>,
     /// Test ids of the hovered and focused elements across a hot reload.
     reload: (Option<crate::kernel::Address>, Option<crate::kernel::Address>),
+    /// Modal identities and their original focus targets across a hot reload.
+    reload_modals: Vec<focus::SavedModal>,
     forced: Vec<(String, State, bool)>,
     /// Scroll offsets by test id, carried over a hot reload.
     scrolls: Vec<(String, (f32, f32))>,
@@ -370,6 +376,8 @@ struct Interaction {
     /// A text field whose caret moved: scroll containers around it bring the caret into view
     /// once the frame is laid out.
     reveal: Option<NodeId>,
+    /// An element requested by test id, resolved after this frame's content is mounted.
+    reveal_request: Option<String>,
     /// The window's tooltip.
     tip: tooltip::Tip,
     /// The test id of an element the app asked to focus (`focus`), once the frame is built.
@@ -836,6 +844,19 @@ impl Window {
                 self.settle_layout(at);
             }
         }
+        // Highlighting an option can reveal it without moving keyboard focus from its field.
+        let request = self.w.interaction.borrow_mut().reveal_request.take();
+        if let Some(id) = request {
+            let mut k = self.w.kernel.borrow_mut();
+            let moved = k.find(&id).filter(|n| k.is_shown(*n)).is_some_and(|n| {
+                let (x, y, w, h) = k.shown_rect(n);
+                k.reveal(n, crate::paint::Rect { x, y, w, h })
+            });
+            drop(k);
+            if moved {
+                self.settle_layout(at);
+            }
+        }
         self.sync_native();
         self.present();
         // An `instant` transaction covers the frame it was made in.
@@ -1247,6 +1268,7 @@ impl Window {
     fn reload(&self) {
         self.enter(|| {
             self.w.kernel.borrow_mut().reload_targets();
+            let modals = self.save_modals();
             {
                 let mut i = self.w.interaction.borrow_mut();
                 let k = self.w.kernel.borrow();
@@ -1254,6 +1276,7 @@ impl Window {
                 i.released = k.released_tails();
                 let address = |n: Option<NodeId>| n.filter(|n| k.is_alive(*n)).map(|n| k.address(n));
                 i.reload = (address(i.hovered), address(i.focused));
+                i.reload_modals = modals;
                 i.hover_chain.clear();
                 i.pointer = pointer::PointerState::default();
                 i.modals.clear();

@@ -70,9 +70,10 @@ impl Platform for WinitPlatform {
         #[cfg(target_os = "macos")]
         {
             if self.menubar.is_none() {
-                let proxy = self.shared.proxy.clone();
+                let shared = self.shared.clone();
                 self.menubar = super::menubar_mac::MenuBar::new(move |name, chord| {
-                    let _ = proxy.send_event(ShellEvent::Command { name, chord });
+                    shared.menu_commands.push(name, chord);
+                    let _ = shared.proxy.send_event(ShellEvent::Wake);
                 });
             }
             if let Some(bar) = &mut self.menubar {

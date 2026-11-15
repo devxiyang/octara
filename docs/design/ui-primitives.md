@@ -91,6 +91,8 @@ After each layout it is positioned relative to the anchor (as in Rune's `anchore
 - `fit` (as in Rune's `anchored_fit` and Floating UI's `size`): if it fits on neither side, take the side with more space, limit the size to the remaining space, and scroll the content inside the overlay;
 - Without `fit`, if it fits on neither side, the overlay is pushed back into the window and may cover the anchor, and diagnostics report `OVERLAY_CLAMPED`;
 - An overlay is a scope, state is kept while it is open; it is removed together when the scope containing the anchor is destroyed. `Kernel::placed_side` shows the actual direction.
+- Nested anchors settle within the same layout update, including simultaneous mount, hot reload
+  and window resize. Placement/layout passes are bounded by the number of anchored surfaces.
 
 ## 6. Component library (`crates/octara-kit`)
 
@@ -106,6 +108,8 @@ After each layout it is positioned relative to the anchor (as in Rune's `anchore
 | `switch(model)` | `Switch` + checked (the thumb moves with `CHECKED`) | Toggle |
 | `text_field(model)` | `TextInput` + value | Input |
 | `select(id, model, options)` | The trigger is `ComboBox` + value + expanded; `{id}-list` is `ListBox`, and the options `{id}-option-{i}` are `ListBoxOption` + selected | Press |
+| `combobox(id, label, model, options)` | A named `ComboBox` and searchable `ListBox`; the input's `active_descendant` identifies the highlighted option independently of the selected value | Press, input, Up/Down, Enter |
+| `popover(id, open, placement, trigger, content)` | An anchored modal surface; the trigger exposes `expanded`, and focus stays inside until it closes | Press, Escape, press outside |
 | `icon_button(icon, label)` | `Button` named `label`, which is also its tooltip | Press |
 | `spinner()` | `ProgressIndicator` named "Loading"; its arc steps round on the app's clock, every spinner in one phase | — |
 | `chip(label)` / `removable_chip(label, remove)` | A small label; the second has a button named "Remove {label}" | Press (remove) |
@@ -121,6 +125,41 @@ checkbox((move || t.with(|t| t.done), move |v| todos.update(&id, |t| t.done = v)
 select("model", model, [(Model::Fast, "Fast"), (Model::Best, "Best")])
 ```
 
+### Searchable choices and popovers
+
+`popover` takes an ordinary `El` trigger and controlled `Model<bool>`. It returns the trigger so
+callers can keep chaining styles and `disabled`. Its `{id}-popover` surface supplies padding,
+border and shadow; the content is ordinary application UI. This first popover is modal: it
+uses the existing core focus stack and outside-press dismissal. A popup opened inside a dialog
+becomes the top modal; closing it restores the previous focus and leaves the dialog open.
+Nonmodal hover cards and portal-wide event inheritance are outside this API's current contract.
+
+`combobox` takes a `Model<Option<String>>` containing the selected option ID and a tracked
+closure returning `Vec<ComboboxOption>`. Each option has a stable `id`, `label` and `disabled`.
+Changes reconcile by ID, preserving the search field and unaffected option nodes. Search is
+case-insensitive substring matching over labels. This is an ordinary retained list for finite
+menus; asynchronous search, fuzzy ranking and virtualized results are not part of this component.
+
+- Opening starts on the selected enabled option, or the first enabled option. Query edits start
+  on the first enabled match; Up/Down loop through enabled results while the input keeps focus.
+- Enter chooses the highlighted option. The core gives composition Enter/Escape to the IME
+  before component handlers. Modified editing keys remain with the text editor.
+- Highlight is `active_descendant`, selection is `selected`, and keyboard focus remains on
+  `{id}-search`. Inspector and AccessKit expose the resolved active option; missing or hidden
+  targets do not produce dangling references.
+- `scroll_into_view(id)` reveals the option after layout without moving focus. It uses existing
+  scroll containers, including the popup's constrained viewport.
+- Removing a selected option does not rewrite the application's value. The trigger falls back
+  to its label. Closing and reopening clears the query; hot reload retains named state and
+  restores the modal stack's opener addresses against the rebuilt tree.
+
+The layering follows Rune's [Dialog](https://github.com/anomalyco/rune/blob/f1f54ce8bf485ee3a95804deace315f53a8970f6/crates/rune-kit/src/dialog.rs)
+and [Combobox](https://github.com/anomalyco/rune/blob/f1f54ce8bf485ee3a95804deace315f53a8970f6/crates/rune-kit/src/combobox.rs):
+focus and dismissal belong to the runtime, while query, highlight and choice belong to the
+component. Octara retains Signals and ordinary function-based components. Native-input evidence
+is recorded separately from headless/framework input, following Exact's
+[testing distinction](https://github.com/expo/exact/blob/4c16fa59f74b1920af7dbc861a15a8105ed0ad13/docs/testing.md).
+
 Planned, by kind. Names say what a
 component is, not where it is used (no sidebar, composer or message components: an app composes
 those), take the name most frameworks share (Zed's `ui`, Rune's kit, SwiftUI / AppKit), avoid one
@@ -130,11 +169,11 @@ variant is a chained method, not a new name (`text_field(m).multiline().rows(1, 
 | Kind | Components |
 | --- | --- |
 | Actions | `segmented` |
-| Inputs | `radio`, `combobox`, `slider` |
+| Inputs | `radio`, `slider` |
 | Collections | `tree`, `table` |
 | Disclosure and navigation | `tabs` |
 | Status | `progress_bar`, `badge`, `keybinding` |
-| Overlays | `popover`, `toast` (the core has `overlay`, modals, `popup_menu`, `prompt`, and `tooltip`: it needs hover timing, one per window, and a native form) |
+| Overlays | `toast`, richer dialogs/sheets (the core has `overlay`, modals, `popup_menu`, `prompt`, and `tooltip`: it needs hover timing, one per window, and a native form) |
 | Layout | `divider` |
 
 Adding one todo in the example app (`examples/src/apps.rs`) costs about 5 µs: each component adds a few style and model closures; the fixed styles of a new node are resolved once.

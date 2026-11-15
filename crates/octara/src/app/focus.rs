@@ -3,7 +3,7 @@
 //! when they close.
 
 use super::{Modality, Window};
-use crate::kernel::{Arrow, HandlerKind, NodeId};
+use crate::kernel::{Address, Arrow, HandlerKind, NodeId, State};
 
 /// An open modal and the element focused before it opened.
 #[derive(Clone, Copy, Debug)]
@@ -12,7 +12,25 @@ pub(crate) struct OpenModal {
     restore: Option<NodeId>,
 }
 
+/// A reload replaces node handles, but preserves the modal's original focus history.
+pub(super) struct SavedModal {
+    node: Address,
+    restore: Option<Address>,
+}
+
 impl Window {
+    pub(super) fn save_modals(&self) -> Vec<SavedModal> {
+        let k = self.w.kernel.borrow();
+        self.w
+            .interaction
+            .borrow()
+            .modals
+            .iter()
+            .filter(|m| k.is_alive(m.node))
+            .map(|m| SavedModal { node: k.address(m.node), restore: m.restore.filter(|n| k.is_alive(*n)).map(|n| k.address(n)) })
+            .collect()
+    }
+
     /// The open modal input is confined to.
     pub(crate) fn top_modal(&self) -> Option<NodeId> {
         self.w.interaction.borrow().modals.last().map(|m| m.node)
@@ -43,8 +61,24 @@ impl Window {
     /// what had it before; a new one takes focus. Returns whether anything changed.
     pub(crate) fn sync_modals(&self) -> bool {
         let shown = self.w.kernel.borrow().modals();
-        let mut changed = false;
+        let saved = std::mem::take(&mut self.w.interaction.borrow_mut().reload_modals);
+        let reloaded = !saved.is_empty();
+        let mut changed = reloaded;
         let mut restore = None;
+        if reloaded {
+            let k = self.w.kernel.borrow();
+            let mut i = self.w.interaction.borrow_mut();
+            for m in saved {
+                let target = m.restore.and_then(|a| k.find_address(&a));
+                match k.find_address(&m.node).filter(|n| shown.contains(n)) {
+                    Some(node) => i.modals.push(OpenModal { node, restore: target }),
+                    // Removing a modal in the rebuilt view closes it just like an ordinary
+                    // unmount. The outermost one that disappeared supplies the focus target.
+                    None if restore.is_none() => restore = Some(target),
+                    None => {}
+                }
+            }
+        }
         {
             let mut i = self.w.interaction.borrow_mut();
             let mut closed = false;
@@ -60,10 +94,7 @@ impl Window {
             changed |= closed;
         }
         if let Some(r) = restore {
-            let k = self.w.kernel.borrow();
-            let r = r.filter(|n| k.is_alive(*n) && k.is_focusable(*n));
-            drop(k);
-            let _ = self.set_focus(r);
+            self.restore_modal_focus(r);
         }
         for m in shown {
             if self.w.interaction.borrow().modals.iter().any(|o| o.node == m) {
@@ -79,7 +110,31 @@ impl Window {
                 let _ = self.set_focus(first);
             }
         }
+        // The focused element itself may have disappeared in a reload while its modal
+        // survived. Keep focus contained without replacing the modal's original opener.
+        if reloaded && let Some(m) = self.top_modal() {
+            let focused = self.w.interaction.borrow().focused;
+            let k = self.w.kernel.borrow();
+            let inside =
+                focused.is_some_and(|n| k.is_shown(n) && k.is_focusable(n) && !k.state(n).contains(State::DISABLED) && k.is_within(n, m));
+            drop(k);
+            if !inside {
+                self.restore_modal_focus(None);
+            }
+        }
         changed
+    }
+
+    fn restore_modal_focus(&self, restore: Option<NodeId>) {
+        let modal = self.top_modal();
+        let k = self.w.kernel.borrow();
+        let target = restore
+            .filter(|n| {
+                k.is_shown(*n) && k.is_focusable(*n) && !k.state(*n).contains(State::DISABLED) && modal.is_none_or(|m| k.is_within(*n, m))
+            })
+            .or_else(|| modal.and_then(|m| k.initial_focus(m)));
+        drop(k);
+        let _ = self.set_focus(target);
     }
 
     /// Tab (`forward`) or Shift+Tab: the next stop in the Tab order of the open modal (else the

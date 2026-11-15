@@ -551,6 +551,13 @@ pub fn scroll_to(id: &str, x: f32, y: f32) -> bool {
     true
 }
 
+/// Reveals the element with test id `id` in its scroll containers after the next layout,
+/// keeping keyboard focus where it is. The element can be mounted in the same frame; a missing
+/// or hidden target then does nothing. The last request in a frame wins.
+pub fn scroll_into_view(id: &str) {
+    crate::app::window().interaction_request_scroll_into_view(id)
+}
+
 /// Scrolls the scroll container with test id `id` to the end of its content, gliding where its
 /// layout moves, and follows its tail from there if it is set to (`follow_tail`). Returns whether
 /// there is such a container.

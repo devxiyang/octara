@@ -178,7 +178,7 @@ impl Kernel {
             self.a11y_scale.set(scale);
             self.a11y_dirty.borrow_mut().clear();
             let mut nodes = Vec::new();
-            self.a11y_subtree(self.root, scale, &mut nodes, &mut |id, g| self.node(id).a11y_sent.set(Some(g)));
+            self.a11y_subtree(self.root, scale, &mut nodes, &mut |id, g| self.a11y_note_sent(id, g));
             #[cfg(debug_assertions)]
             {
                 *self.a11y_mirror.borrow_mut() = nodes.iter().cloned().collect();
@@ -186,6 +186,13 @@ impl Kernel {
             return ak::TreeUpdate { nodes, tree: Some(ak::TreeInfo::new(a11y_id(self.root))), tree_id: ak::TreeId::ROOT, focus };
         }
         let mut dirty: Vec<NodeId> = self.a11y_dirty.borrow_mut().drain().collect();
+        // A target can disappear, become hidden, or be rebuilt under the same logical id
+        // without changing its owner's binding. Recheck only the owners of these relations.
+        for &id in &self.active_descendant_owners {
+            if self.node(id).a11y_active_descendant_sent.get() != self.active_descendant(id) {
+                dirty.push(id);
+            }
+        }
         self.a11y_geometry.set(false);
         let relaid: Vec<NodeId> = self.a11y_relaid.borrow_mut().drain().collect();
         if self.a11y_viewport.replace(self.viewport) != self.viewport {
@@ -236,7 +243,7 @@ impl Kernel {
     /// Sends `id` and the subtrees of its children assistive technology has not seen.
     fn a11y_emit(&self, id: NodeId, scale: f64, out: &mut Vec<AkNode>, sent: &mut rustc_hash::FxHashSet<NodeId>) {
         let (node, g, children, runs) = self.a11y_build(id, scale);
-        self.node(id).a11y_sent.set(Some(g));
+        self.a11y_note_sent(id, g);
         sent.insert(id);
         out.push((a11y_id(id), node));
         // A text's runs place its region's selection: send that again too.
@@ -245,7 +252,7 @@ impl Kernel {
             && !sent.contains(&r)
         {
             let (node, g, ..) = self.a11y_build(r, scale);
-            self.node(r).a11y_sent.set(Some(g));
+            self.a11y_note_sent(r, g);
             sent.insert(r);
             out.push((a11y_id(r), node));
         }
@@ -255,6 +262,19 @@ impl Kernel {
                 self.a11y_emit(c, scale, out, sent);
             }
         }
+    }
+
+    fn a11y_note_sent(&self, id: NodeId, geometry: [f32; 6]) {
+        let n = self.node(id);
+        n.a11y_sent.set(Some(geometry));
+        n.a11y_active_descendant_sent.set(self.active_descendant(id));
+    }
+
+    /// The live, shown option named by this node's active-descendant test id. Resolving the
+    /// relation never changes actual keyboard focus or selection.
+    pub fn active_descendant(&self, id: NodeId) -> Option<NodeId> {
+        let target = self.find(self.node(id).active_descendant.as_deref()?)?;
+        self.a11y_reachable(target).then_some(target)
     }
 
     /// Nodes already sent whose place may have changed with the layout of `relaid`: each one's
@@ -425,6 +445,9 @@ impl Kernel {
         if let Some(e) = n.expanded {
             node.set_expanded(e);
         }
+        if let Some(target) = self.active_descendant(id) {
+            node.set_active_descendant(a11y_id(target));
+        }
         if n.state.contains(State::SELECTED) {
             node.set_selected(true);
         }
@@ -523,6 +546,7 @@ impl Kernel {
             value: (n.kind() == Kind::TextInput || n.value.is_some()).then(|| self.reported_value(id)),
             checked: n.checked,
             expanded: n.expanded,
+            active_descendant: self.active_descendant(id).and_then(|target| self.node(target).test_id.clone()),
             states,
             bounds: [tenth(x), tenth(y), tenth(w), tenth(h)],
             actions: self.node_actions(id),

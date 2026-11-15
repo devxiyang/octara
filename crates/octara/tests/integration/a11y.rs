@@ -72,6 +72,140 @@ fn a_value_is_announced_for_any_control() {
     assert_eq!(node.1.value(), Some("Dark"));
 }
 
+#[component]
+fn active_option_view() -> View {
+    let active = state("active", || Some("option-b".to_owned()));
+    col()
+        .size_full()
+        .child(
+            text_input()
+                .id("search")
+                .label("Choose an option")
+                .role(Role::ComboBox)
+                .active_descendant(move || active.get())
+                .on_command("highlight-c", move || active.set(Some("option-c".to_owned())))
+                .on_command("clear-highlight", move || active.set(None))
+                .on_command("highlight-missing", move || active.set(Some("missing".to_owned()))),
+        )
+        .child(
+            col()
+                .id("options")
+                .role(Role::ListBox)
+                .child(el().id("option-a").role(Role::ListBoxOption).label("A").h(32.0).selected(true))
+                .child(el().id("option-b").role(Role::ListBoxOption).label("B").h(32.0).selected(false))
+                .child(el().id("option-c").role(Role::ListBoxOption).label("C").h(32.0).selected(false)),
+        )
+        .into()
+}
+
+fn assert_active_option(app: &Window, update: &octara::accesskit::TreeUpdate, expected: Option<&str>) {
+    let search = a11y_id(app.kernel().find("search").unwrap());
+    let target = expected.map(|id| a11y_id(app.kernel().find(id).unwrap()));
+    let owner = &update.nodes.iter().find(|(id, _)| *id == search).expect("the relation owner is updated").1;
+    assert_eq!(owner.active_descendant(), target);
+    assert_eq!(update.focus, search, "active-option changes keep the input's actual focus");
+    let snapshot = app.inspect();
+    assert_eq!(snapshot.focus.as_deref(), Some("search"));
+    assert_eq!(snapshot.find("search").unwrap().active_descendant.as_deref(), expected);
+    assert!(app.kernel().state_of("search").unwrap().contains(State::FOCUSED));
+    let tree = nodes(&app.accessibility_tree());
+    assert_eq!(tree[&search].active_descendant(), target);
+    if let Some(target) = target {
+        assert!(tree.contains_key(&target), "an exported relation never dangles");
+    }
+    for id in ["option-b", "option-c"] {
+        if let Some(n) = app.kernel().find(id) {
+            assert!(!app.kernel().state(n).intersects(State::FOCUSED | State::SELECTED));
+        }
+    }
+    let selected = app.kernel().find("option-a").unwrap();
+    assert!(app.kernel().state(selected).contains(State::SELECTED));
+    if let Some(selected) = tree.get(&a11y_id(selected)) {
+        assert_eq!(selected.is_selected(), Some(true));
+    }
+}
+
+#[test]
+fn active_options_are_announced_without_changing_focus_or_selection() {
+    let mut app = Window::headless(active_option_view);
+    app.press_key("tab").unwrap();
+    assert_active_option(&app, &app.accessibility_update(), Some("option-b"));
+    assert!(app.accessibility_update().nodes.is_empty());
+
+    app.invoke("highlight-c").unwrap();
+    assert_active_option(&app, &app.accessibility_update(), Some("option-c"));
+    let old_target = app.kernel().find("option-c").unwrap();
+    app.app().hot_reload();
+    assert_ne!(app.kernel().find("option-c"), Some(old_target));
+    assert_active_option(&app, &app.accessibility_update(), Some("option-c"));
+
+    app.invoke("clear-highlight").unwrap();
+    assert_active_option(&app, &app.accessibility_update(), None);
+    assert!(!app.inspect().to_json().contains("\"active_descendant\""), "an absent relation is omitted from the protocol");
+    app.invoke("highlight-missing").unwrap();
+    assert_active_option(&app, &app.accessibility_update(), None);
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
+fn active_relations_follow_target_visibility_attachment_and_replacement() {
+    use octara::kernel::{Display, Kind, StyleProp};
+
+    let mut app = Window::headless(active_option_view);
+    app.press_key("tab").unwrap();
+    assert_active_option(&app, &app.accessibility_update(), Some("option-b"));
+    let list = app.kernel().find("options").unwrap();
+    let option = app.kernel().find("option-b").unwrap();
+
+    app.kernel_mut().set_hidden(option, true);
+    assert_active_option(&app, &app.accessibility_update(), None);
+    app.kernel_mut().set_hidden(option, false);
+    assert_active_option(&app, &app.accessibility_update(), Some("option-b"));
+    app.kernel_mut().set_hidden(list, true);
+    assert_active_option(&app, &app.accessibility_update(), None);
+    app.kernel_mut().set_hidden(list, false);
+    assert_active_option(&app, &app.accessibility_update(), Some("option-b"));
+    app.kernel_mut().set_style(list, StyleProp::Display(Display::None));
+    assert_active_option(&app, &app.accessibility_update(), None);
+    app.kernel_mut().set_style(list, StyleProp::Display(Display::Flex));
+    assert_active_option(&app, &app.accessibility_update(), Some("option-b"));
+
+    app.kernel_mut().remove_child(option);
+    assert_active_option(&app, &app.accessibility_update(), None);
+    app.kernel_mut().append_child(list, option);
+    assert_active_option(&app, &app.accessibility_update(), Some("option-b"));
+    app.kernel_mut().set_test_id(option, Some("renamed-option"));
+    assert_active_option(&app, &app.accessibility_update(), None);
+    app.kernel_mut().set_test_id(option, Some("option-b"));
+    assert_active_option(&app, &app.accessibility_update(), Some("option-b"));
+
+    // Replace it in one frame, so the owner must be resent even though the test id and
+    // the binding's value both stay the same.
+    let replacement = {
+        let mut k = app.kernel_mut();
+        k.destroy(option);
+        let replacement = k.create(Kind::Box);
+        k.set_test_id(replacement, Some("option-b"));
+        k.set_role(replacement, Role::ListBoxOption);
+        k.set_label(replacement, Some("Replacement B"));
+        k.append_child(list, replacement);
+        replacement
+    };
+    assert_ne!(replacement, option);
+    assert_active_option(&app, &app.accessibility_update(), Some("option-b"));
+    app.kernel_mut().destroy(replacement);
+    assert_active_option(&app, &app.accessibility_update(), None);
+    assert!(app.accessibility_update().nodes.is_empty());
+    {
+        let mut k = app.kernel_mut();
+        let inserted = k.create(Kind::Box);
+        k.set_test_id(inserted, Some("option-b"));
+        k.set_role(inserted, Role::ListBoxOption);
+        k.append_child(list, inserted);
+    }
+    assert_active_option(&app, &app.accessibility_update(), Some("option-b"));
+}
+
 /// A view where every kind of change happens: text, labels, states, structure, order, scroll,
 /// overlays, motion.
 fn busy() -> View {

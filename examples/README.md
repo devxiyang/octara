@@ -46,6 +46,26 @@ printed temporary directory.
 
 ## Specs
 
+### Popovers and searchable choices
+
+`cargo run -p octara-examples --bin window -- showcase choices` opens the component scene.
+It uses public kit components: a controlled popover, a searchable city picker, and a second
+picker inside a modal dialog. The selected value is shared between both pickers.
+
+- `city`: the main picker; `city-search`, `city-list`, `city-option-<stable ID>` and
+  `city-empty` describe its open contents. Inspector's `active_descendant` identifies the
+  keyboard-highlighted option while focus stays in the search field. Selection is separate.
+- `details`: a popover with the `choice-note` input and `close-details` action.
+- `open-choices-dialog`: opens `choices-dialog`, containing the `dialog-city` picker and
+  `close-choices-dialog` action. Closing an inner popup leaves its dialog open.
+- `update-cities` (Cmd/Ctrl+Shift+U) changes labels, removes Beijing and reverses the options;
+  pressing it again restores them. The command also works while a popup owns focus.
+- `toggle-city` (Cmd/Ctrl+Shift+X) removes or restores the main picker, including an open popup.
+
+The matching integration tests exercise query preservation, option changes, unmount, nested
+focus restoration across hot reload, and phone/desktop layouts in both appearances. Native
+verification steps and evidence are recorded in [CHOICES.md](CHOICES.md).
+
 Apps are driven by test id (`role#id` below). Components come from `octara-kit`; colors are theme tokens
 (`Theme::light()`), so checks compare `visual_of(..)` with `Theme::light().get(Token::..)`.
 

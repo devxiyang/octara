@@ -46,6 +46,11 @@ impl Kernel {
         self.node(id).layout.display != taffy::Display::None
     }
 
+    /// Still mounted and displayed, including every ancestor, and not leaving the tree.
+    pub(crate) fn is_shown(&self, id: NodeId) -> bool {
+        self.is_alive(id) && !self.is_exiting(id) && self.shown_path(id).is_some()
+    }
+
     /// Whether `node` is `ancestor` or inside it.
     pub fn is_within(&self, mut node: NodeId, ancestor: NodeId) -> bool {
         loop {

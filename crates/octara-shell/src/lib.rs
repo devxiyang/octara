@@ -120,6 +120,8 @@ pub fn run_with(options: Options, root: impl Fn() -> View + 'static) {
         active: Cell::new(std::ptr::null()),
         gpu: RefCell::new(None),
         windows: RefCell::new(HashMap::new()),
+        #[cfg(target_os = "macos")]
+        menu_commands: menubar_mac::PendingCommands::default(),
         trace: std::env::var_os("OCTARA_TRACE_INPUT").is_some_and(|v| v != "0"),
     });
     let mut shell = Shell {
@@ -152,6 +154,8 @@ pub(crate) struct Shared {
     active: Cell<*const ActiveEventLoop>,
     pub(crate) gpu: RefCell<Option<platform::Gpu>>,
     pub(crate) windows: RefCell<HashMap<WindowId, octara::app::WindowId>>,
+    #[cfg(target_os = "macos")]
+    pub(crate) menu_commands: menubar_mac::PendingCommands,
     /// `OCTARA_TRACE_INPUT=1`: optional CPU frame/input timings as JSON on stderr.
     pub(crate) trace: bool,
 }
@@ -269,6 +273,20 @@ fn physical_char(key: PhysicalKey) -> Option<char> {
 }
 
 impl Shell {
+    /// A menu key equivalent can post its command, then a later key reaches winit inline
+    /// before that proxy event. Apply the earlier menu intent before interpreting that key.
+    #[cfg(target_os = "macos")]
+    fn menu_commands(&mut self) {
+        let shared = self.shared.clone();
+        shared.menu_commands.drain(|name, chord| {
+            self.tick();
+            let w = self.active.and_then(|id| self.app.as_ref()?.window(id)).or_else(|| self.main_window());
+            if let Some(mut w) = w {
+                w.event(InputEvent::Command { name, chord });
+            }
+        });
+    }
+
     /// Native text callbacks only edit an owned mirror. Apply their ordered intents before
     /// the next framework input, then reconcile with what application handlers accepted.
     #[cfg(target_os = "macos")]
@@ -552,7 +570,10 @@ impl ApplicationHandler<ShellEvent> for Shell {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: ShellEvent) {
         let _in = InLoop::enter(&self.shared, event_loop);
         #[cfg(target_os = "macos")]
-        self.native_text();
+        {
+            self.native_text();
+            self.menu_commands();
+        }
         let e = match event {
             ShellEvent::Wake => {
                 self.tick();
@@ -687,7 +708,10 @@ impl ApplicationHandler<ShellEvent> for Shell {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let _in = InLoop::enter(&self.shared, event_loop);
         #[cfg(target_os = "macos")]
-        self.native_text();
+        {
+            self.native_text();
+            self.menu_commands();
+        }
         let Some(mut w) = self.window_of(id) else { return };
         ww(&w, |x| x.a11y.process_event(&x.window, &event));
         let scale = ww(&w, |x| x.scale()).unwrap_or(1.0);

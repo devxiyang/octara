@@ -48,6 +48,16 @@ impl<F: Fn() -> String + 'static> IntoProp<String> for F {
         Prop::Dyn(Box::new(self))
     }
 }
+impl IntoProp<Option<String>> for Option<String> {
+    fn into_prop(self) -> Prop<Option<String>> {
+        Prop::Static(self)
+    }
+}
+impl<F: Fn() -> Option<String> + 'static> IntoProp<Option<String>> for F {
+    fn into_prop(self) -> Prop<Option<String>> {
+        Prop::Dyn(Box::new(self))
+    }
+}
 impl IntoProp<bool> for bool {
     fn into_prop(self) -> Prop<bool> {
         Prop::Static(self)
@@ -212,6 +222,7 @@ pub struct El {
     description: Option<Prop<String>>,
     tooltip: Option<Prop<String>>,
     expanded: Option<Prop<bool>>,
+    active_descendant: Option<Prop<Option<String>>>,
     selected: Option<Prop<bool>>,
     disabled: Option<Prop<bool>>,
     hidden: bool,
@@ -284,6 +295,7 @@ fn new_el(kind: Kind, at: &'static Location<'static>) -> El {
         description: None,
         tooltip: None,
         expanded: None,
+        active_descendant: None,
         selected: None,
         disabled: None,
         hidden: false,
@@ -603,6 +615,13 @@ impl El {
     }
     pub fn expanded(mut self, e: impl IntoProp<bool>) -> Self {
         self.expanded = Some(e.into_prop());
+        self
+    }
+    /// The active option's test id, while keyboard focus stays on this element (a searchable
+    /// combo box's input, for example). This does not select the option or move focus. Missing,
+    /// detached and accessibility-hidden targets are omitted until they are shown again.
+    pub fn active_descendant(mut self, id: impl IntoProp<Option<String>>) -> Self {
+        self.active_descendant = Some(id.into_prop());
         self
     }
     pub fn checked(mut self, c: impl IntoProp<bool>) -> Self {
@@ -1053,6 +1072,9 @@ pub(crate) fn build_el(e: El) -> NodeId {
     }
     if let Some(p) = e.expanded {
         bind(at, node, p, |k, n, v: &bool| k.set_expanded(n, Some(*v)));
+    }
+    if let Some(p) = e.active_descendant {
+        bind(at, node, p, |k, n, v: &Option<String>| k.set_active_descendant(n, v.as_deref()));
     }
     if let Some(p) = e.selected {
         bind(at, node, p, |k, n, v: &bool| k.set_state(n, State::SELECTED, *v));

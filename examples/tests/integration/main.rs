@@ -1,6 +1,7 @@
 //! The crate's integration tests in one binary: one link and one launch for all of them.
 
 mod acceptance;
+mod choices;
 mod consistency;
 mod diagnostics;
 mod ime;
