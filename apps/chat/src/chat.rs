@@ -211,7 +211,7 @@ impl Chat {
         (self.shared.clock)()
     }
     fn id(&self) -> u64 {
-        let id = self.shared.next_id.get_untracked();
+        let id = untrack(|| self.shared.next_id.get());
         self.shared.next_id.set(id + 1);
         id
     }
@@ -219,7 +219,7 @@ impl Chat {
         self.shared.models.iter().find(|entry| entry.id == id).cloned()
     }
     fn model_now(&self) -> Option<ModelEntry> {
-        self.model.get_untracked().and_then(|id| self.model_by_id(&id))
+        untrack(|| self.model.get()).and_then(|id| self.model_by_id(&id))
     }
 
     /// Whether `thread` has an answer streaming (tracked).
@@ -232,7 +232,7 @@ impl Chat {
             .keys()
             .into_iter()
             .filter_map(|k| self.messages.item(&k))
-            .map(|m| m.get_untracked())
+            .map(|m| untrack(|| m.get()))
             .filter(|m| m.thread == thread)
             .collect()
     }
@@ -246,7 +246,7 @@ impl Chat {
         focus("composer");
     }
     pub fn open(&self, thread: ThreadId) {
-        if self.current.get_untracked() != Some(thread) {
+        if untrack(|| self.current.get()) != Some(thread) {
             self.current.set(Some(thread));
             self.editing.set(None);
         }
@@ -267,7 +267,7 @@ impl Chat {
         self.messages.retain(|m| m.thread != thread);
         self.queue.retain(|q| q.thread != thread);
         self.threads.remove(&thread);
-        if self.current.get_untracked() == Some(thread) {
+        if untrack(|| self.current.get()) == Some(thread) {
             self.current.set(None);
         }
         if let Some(s) = &self.shared.store {
@@ -291,16 +291,16 @@ impl Chat {
     /// Sends the draft and its files: into a new conversation if none is open; queued while the
     /// conversation's answer streams; replacing the edited message and what followed when editing.
     pub fn send(&self) {
-        let text = self.draft.get_untracked().trim().to_owned();
+        let text = untrack(|| self.draft.get()).trim().to_owned();
         let files: Vec<Attachment> =
-            self.files.keys().into_iter().filter_map(|k| self.files.item(&k)).map(|f| f.get_untracked().1).collect();
+            self.files.keys().into_iter().filter_map(|k| self.files.item(&k)).map(|f| untrack(|| f.get()).1).collect();
         if text.is_empty() && files.is_empty() {
             return;
         }
         let Some(model) = self.model_now() else { return };
         self.draft.set(String::new());
         self.files.retain(|_| false);
-        let thread = match self.current.get_untracked() {
+        let thread = match untrack(|| self.current.get()) {
             Some(t) => t,
             None => {
                 let id = self.id();
@@ -309,7 +309,7 @@ impl Chat {
                 id
             }
         };
-        if let Some(edited) = self.editing.get_untracked() {
+        if let Some(edited) = untrack(|| self.editing.get()) {
             self.editing.set(None);
             self.truncate(thread, edited);
         } else if self.is_answering_now(thread) {
@@ -322,13 +322,13 @@ impl Chat {
 
     /// Puts the person's message `id` back in the composer: sending replaces it and what followed.
     pub fn edit(&self, id: MessageId) {
-        let Some(m) = self.messages.item(&id).map(|m| m.get_untracked()) else { return };
+        let Some(m) = self.messages.item(&id).map(|m| untrack(|| m.get())) else { return };
         self.draft.set(m.text());
         self.editing.set(Some(id));
         focus("composer");
     }
     pub fn cancel_edit(&self) {
-        if self.editing.get_untracked().is_some() {
+        if untrack(|| self.editing.get()).is_some() {
             self.editing.set(None);
             self.draft.set(String::new());
         }
@@ -337,7 +337,7 @@ impl Chat {
     /// Answers again: the answer `id` and what followed go, and its question is sent again.
     pub fn regenerate(&self, id: MessageId) {
         let Some(model) = self.model_now() else { return };
-        let Some(answer) = self.messages.item(&id).map(|m| m.get_untracked()) else { return };
+        let Some(answer) = self.messages.item(&id).map(|m| untrack(|| m.get())) else { return };
         let all = self.thread_messages(answer.thread);
         let Some(question) = all.iter().rev().find(|m| m.id < id && m.author == Author::User).cloned() else { return };
         self.truncate(answer.thread, question.id);
@@ -348,7 +348,7 @@ impl Chat {
 
     /// Sends a queued message now: the answer streaming stops.
     pub fn send_now(&self, id: u64) {
-        let Some(q) = self.queue.item(&id).map(|q| q.get_untracked()) else { return };
+        let Some(q) = self.queue.item(&id).map(|q| untrack(|| q.get())) else { return };
         let Some(model) = self.model_by_id(&q.model_id) else { return };
         self.queue.remove(&id);
         self.stop(q.thread);
@@ -356,7 +356,7 @@ impl Chat {
     }
     /// Takes a queued message back into the composer.
     pub fn edit_queued(&self, id: u64) {
-        let Some(q) = self.queue.item(&id).map(|q| q.get_untracked()) else { return };
+        let Some(q) = self.queue.item(&id).map(|q| untrack(|| q.get())) else { return };
         self.queue.remove(&id);
         self.model.set(Some(q.model_id));
         self.draft.set(q.text);
@@ -373,7 +373,7 @@ impl Chat {
     // ---- turns ----
 
     fn is_answering_now(&self, thread: ThreadId) -> bool {
-        self.answering.with_untracked(|a| a.contains(&thread))
+        untrack(|| self.answering.with(|a| a.contains(&thread)))
     }
 
     /// The messages of `thread` from `from` on go (an answer streaming among them stops).
@@ -456,7 +456,7 @@ impl Chat {
             return;
         }
         let Some(item) = self.messages.item(&answer) else { return };
-        if !item.with_untracked(|m| m.thread == thread && m.status == Status::Streaming) {
+        if !untrack(|| item.with(|m| m.thread == thread && m.status == Status::Streaming)) {
             return;
         }
         let end = matches!(ev, Event::Done | Event::Failed(_));
@@ -467,7 +467,7 @@ impl Chat {
         } else {
             None
         };
-        if !item.with_untracked(|m| m.stream(&ev)) {
+        if !untrack(|| item.with(|m| m.stream(&ev))) {
             let now = octara::task::now();
             self.messages.update(&answer, |m| m.apply(ev, now));
         }
@@ -475,7 +475,7 @@ impl Chat {
             self.ended(thread);
             // The next queued message goes once an answer has come (not after a stop).
             let next =
-                self.queue.keys().into_iter().filter_map(|k| self.queue.item(&k)).map(|q| q.get_untracked()).find(|q| q.thread == thread);
+                self.queue.keys().into_iter().filter_map(|k| self.queue.item(&k)).map(|q| untrack(|| q.get())).find(|q| q.thread == thread);
             if let Some(q) = next
                 && let Some(model) = self.model_by_id(&q.model_id)
             {
@@ -518,6 +518,6 @@ impl Chat {
     fn save(&self, thread: ThreadId) {
         let (Some(store), Some(t)) = (&self.shared.store, self.threads.item(&thread)) else { return };
         let messages = self.thread_messages(thread).iter().map(Message::save).collect();
-        store.save(t.get_untracked(), messages);
+        store.save(untrack(|| t.get()), messages);
     }
 }

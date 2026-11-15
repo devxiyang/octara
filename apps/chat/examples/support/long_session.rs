@@ -350,7 +350,7 @@ impl LongSession {
     /// Read in the app runtime. The weak reference never makes the Model own Chat.
     pub fn readback(&self) -> Option<Readback> {
         let chat = self.chat.borrow().upgrade()?;
-        let message = self.answer.get().and_then(|id| chat.messages.item(&id)).map(|item| item.get_untracked());
+        let message = self.answer.get().and_then(|id| chat.messages.item(&id)).map(|item| untrack(|| item.get()));
         let consumed_text_bytes = message.as_ref().map_or(0, |message| {
             message
                 .parts
@@ -365,7 +365,7 @@ impl LongSession {
             answer: self.answer.get(),
             status: message.map(|message| message.status),
             consumed_text_bytes,
-            draft: chat.draft.get_untracked(),
+            draft: untrack(|| chat.draft.get()),
             answering: chat.is_answering(THREAD),
             sent_chunks: self.sent(),
             sent_bytes: self.sent_bytes(),
@@ -472,7 +472,7 @@ impl LongSession {
                 "long-session: {}",
                 serde_json::json!({"messages": chat.messages.keys().len(),
                 "chunks": model.sent(), "bytes": model.sent_bytes(), "reply_requests": model.requests(),
-                "current": chat.current.get_untracked(), "readback": model.readback(), "workers": model.workers(),
+                "current": untrack(|| chat.current.get()), "readback": model.readback(), "workers": model.workers(),
                 "producer_rate_hz":model.rate_hz.get(), "producer_clock":if model.rate_hz.get()==0 {"legacy_ui_clock"} else {"wall_clock_thread"}})
             );
         });

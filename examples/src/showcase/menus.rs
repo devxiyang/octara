@@ -27,7 +27,7 @@ pub fn card() -> El {
                             .item(MenuItem::action("Copy", "copy").shortcut("mod+c"))
                             .item(MenuItem::action("Paste", "paste").shortcut("mod+v").disabled())
                             .item(MenuItem::separator())
-                            .item(MenuItem::action("Wrap lines", "wrap").checked(wrap.get_untracked()))
+                            .item(MenuItem::action("Wrap lines", "wrap").checked(untrack(|| wrap.get())))
                             .item(MenuItem::submenu(
                                 Menu::new("Share").item(MenuItem::action("Copy link", "link")).item(MenuItem::action("Email", "email")),
                             ));

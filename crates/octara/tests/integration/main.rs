@@ -30,6 +30,7 @@ mod pointer;
 mod pointing;
 mod position;
 mod range;
+mod reactive_props;
 mod replay;
 mod responsive;
 mod rich;

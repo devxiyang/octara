@@ -130,7 +130,7 @@ codes! {
         cause: "with holds a shared borrow and update holds an exclusive borrow until its synchronous callback returns. Finish that callback before accessing the same value incompatibly; rejected mutation callbacks do not run.";
     STRICT_READ_UNTRACKED: Warning, Reactive, "docs/design/reactive-core.md#2-layers",
         "A value was read while building a view, outside any binding; that UI will not update.",
-        cause: "A component body runs once: `count.get()` there reads the value once and bakes it in. Only closures passed to bindings re-run; `get_untracked()` says a one-shot read is meant.";
+        cause: "A component body runs once: `count.get()` there reads the value once and bakes it in. Only bindings re-run; pass a Signal or closure to a property, or use `untrack(|| count.get())` for an intentional snapshot.";
     WRITE_IN_BUILD: Error, Reactive, "docs/design/reactive-core.md#2-layers",
         "A signal or collection was written while building a view; the write was rejected.",
         cause: "Building a view only reads state; a write there would rebuild what is being built. State starts from `state(key, || initial)` and is written by handlers and `watch` callbacks.";

@@ -7,15 +7,15 @@ use octara_cli::api::{self, Kind};
 fn items_are_found_by_canonical_path_and_alias() {
     let api = api::load();
     let state = api.get("octara::prelude::state").expect("the prelude alias resolves");
-    assert_eq!(state.path, "octara::reactive::graph::state");
+    assert_eq!(state.path, "octara::reactive::state");
     assert_eq!(state.kind, Kind::Fn);
     assert!(state.sig.starts_with("pub fn state<T: 'static>(key: &'static str"), "{}", state.sig);
     let p = api.get("octara::view::Styled::p_4").expect("methods a macro writes are items");
     assert_eq!((p.kind, p.sig.as_str()), (Kind::Method, "fn p_4(self) -> Self"));
     assert!(p.docs.contains("spacing steps"), "their docs too: {}", p.docs);
-    let set = api.get("octara::reactive::graph::Signal::set").unwrap();
+    let set = api.get("octara::reactive::Signal::set").unwrap();
     assert_eq!(set.within, "impl<T: 'static> Signal<T>", "writes do not require Clone");
-    let get = api.get("octara::reactive::graph::Signal::get").unwrap();
+    let get = api.get("octara::reactive::Signal::get").unwrap();
     assert!(get.sig.contains("T: Clone"), "owned reads retain their method-local bound: {}", get.sig);
     let spring = api.get("octara::motion::Spring").unwrap();
     assert!(spring.traits.iter().any(|t| t == "Into<Curve>"), "{:?}", spring.traits);
@@ -27,6 +27,15 @@ fn items_are_found_by_canonical_path_and_alias() {
     assert!(api.get("octara::diagnostics::OVERFLOW").is_some(), "codes! writes the registry's statics");
     assert!(api.get("octara::view::enter_component").is_none(), "#[doc(hidden)] is not API");
     assert!(api.get("octara::kernel::Node").is_none(), "private items are not API");
+    assert!(api.items().all(|item| !item.path.contains("::reactive::graph") && !item.path.contains("::reactive::seq")));
+    assert!(api.get("octara::reactive::graph::state").is_none(), "old implementation paths are not aliases");
+    assert!(api.get("octara::prelude::Memo").is_none());
+    assert!(api.get("octara::reactive::Signal::get_untracked").is_none());
+    assert!(api.get("octara::reactive::ReadSignal::with_untracked").is_none());
+    assert!(api.get("octara::reactive::Watch::stop").is_some());
+    let watch = api.get("octara::reactive::watch").unwrap();
+    assert!(!watch.sig.contains("Clone"), "watch sources may be non-Clone: {}", watch.sig);
+    assert!(api.get("octara::reactive::memo").unwrap().sig.contains("ReadSignal<T>"));
 }
 
 #[test]

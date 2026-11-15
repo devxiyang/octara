@@ -2,8 +2,9 @@
 
 Status: selected breaking API contract, 2026-11-15. The first correctness slice implements
 non-Clone values, in-place mutation, phase/tracking separation, runtime identity and captured
-observer scopes. Public API consolidation below (two handle types, stop handles and removals)
-remains a later target; see the current [reactive baseline](reactive-core.md).
+observer scopes. The second slice implements the two handle types, watch stop handles,
+direct property inputs, public module boundaries and unified untrack sampling. App root ownership,
+Signal::new and Task::detach removal remain future work; see the [reactive baseline](reactive-core.md).
 This replaces the preceding field/Model-heavy proposal and the blanket public-untrack removal
 proposal. There is no compatibility requirement: migrate replaced APIs and their callers together.
 Keeping a useful name or mechanism is a design choice, not a compatibility layer.
@@ -45,7 +46,7 @@ scope/runtime layer. Generation and runtime checks remain internal correctness m
 
 ## User API
 
-Proposed ordinary use (not yet implemented in this form):
+Ordinary use:
 
 ```rust,ignore
 let count = state("count", || 0);
@@ -267,9 +268,9 @@ Prove non-Clone value access, pre-mutation permission checks, context restoratio
 diamond dependencies, equality cutoff, owner disposal and reliable propagation. Start with
 reproductions of the existing failure paths; reuse the current push/pull algorithm where it works.
 
-Two-handle API unification, early watch stopping and direct property conversions are later API
-simplifications. They may accompany a necessary change when they reduce total work, but cannot
-become prerequisites for unrelated fixes. When an API changes, migrate its consumers together
+Two-handle API unification, early watch stopping and direct property conversions form the second
+implemented slice. They were not prerequisites for the earlier correctness fixes.
+When an API changes, migrate its consumers together
 without aliases. Preserve incremental list/text behavior throughout.
 
 Use Counter, a non-Clone struct, keyed rows, async search and Chat as relevant acceptance cases.

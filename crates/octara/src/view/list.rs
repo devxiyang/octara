@@ -3,7 +3,7 @@
 use super::{Mount, Parent, Slot, Slots, View, build_el, col, count_offset};
 use crate::diagnostics as codes;
 use crate::kernel::NodeId;
-use crate::reactive::graph::{Ctx, ReadSignal, ScopeId, Signal, rt};
+use crate::reactive::graph::{Ctx, ReadSignal, ScopeId, Signal, rt, untrack};
 use crate::reactive::list::{Change, Cursor, Source};
 use crate::reactive::seq::Seq;
 use std::cell::{Cell, RefCell};
@@ -329,7 +329,7 @@ where
             let height = state.client.1 as f64;
             rt(|rt| {
                 rt.with_frame(Ctx::Observe, None, Some(Some(owner)), || {
-                    let weight = |k: &K| src.item(k).map(|i| i.with_untracked(|t| estimate(t)) as f64).unwrap_or(0.0);
+                    let weight = |k: &K| src.item(k).map(|i| untrack(|| i.with(|t| estimate(t))) as f64).unwrap_or(0.0);
                     // 1. Keep the weighted mirror in step with the source.
                     let same = current.borrow().as_ref().is_some_and(|(s, _)| *s == src);
                     if same {

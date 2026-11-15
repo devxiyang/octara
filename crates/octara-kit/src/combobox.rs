@@ -97,7 +97,7 @@ pub fn combobox(
                         // Let the list report its ordinary DUPLICATE_KEY diagnostic.
                         rows.push(row);
                     } else if let Some(old) = rows.item(&option.id) {
-                        if old.get_untracked() != row {
+                        if untrack(|| old.get()) != row {
                             rows.update(&option.id, |old| *old = row);
                         }
                     } else {

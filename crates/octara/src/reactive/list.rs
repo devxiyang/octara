@@ -11,7 +11,7 @@
 //! applying its log (`Source::subscribe` / `Source::take`); a `Move` moves a row.
 
 use crate::diagnostics as codes;
-use crate::reactive::graph::{Ctx, ReadSignal, Signal, rt, state};
+use crate::reactive::graph::{Ctx, ReadSignal, Signal, rt, state, untrack};
 use crate::reactive::seq::Seq;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -118,7 +118,7 @@ impl<K: Clone + 'static, T: 'static> Emitter<K, T> {
         Emitter { log: RefCell::new(Log::new()), version: Signal::detached(0), observers: RefCell::new(Vec::new()) }
     }
     fn bump(&self) {
-        self.version.set_internal(self.version.get_untracked() + 1);
+        self.version.set_internal(untrack(|| self.version.get()) + 1);
     }
     fn live(&self) -> Vec<Rc<dyn Observer<K, T>>> {
         let mut obs = self.observers.borrow_mut();
@@ -292,7 +292,7 @@ where
     pub fn filter(&self, pred: impl Fn(&T) -> bool + 'static) -> Derived<K, T> {
         let pred = view_fn(pred);
         let up = self.0.clone();
-        let members = Seq::from_keys(up.snapshot().into_iter().filter(|k| up.item(k).is_some_and(|i| i.with_untracked(|t| pred(t)))));
+        let members = Seq::from_keys(up.snapshot().into_iter().filter(|k| up.item(k).is_some_and(|i| untrack(|| i.with(|t| pred(t))))));
         self.attach(Rc::new(FilterInner { up, pred: Box::new(pred), seq: RefCell::new(members), emitter: Emitter::new() }))
     }
 
@@ -303,7 +303,7 @@ where
         let f = view_fn(f);
         let up = self.0.clone();
         let out =
-            up.snapshot().into_iter().filter_map(|k| up.item(&k).map(|it| (k, Signal::detached(it.with_untracked(|t| f(t)))))).collect();
+            up.snapshot().into_iter().filter_map(|k| up.item(&k).map(|it| (k, Signal::detached(untrack(|| it.with(|t| f(t))))))).collect();
         let m = Rc::new(MapInner { up: up.clone(), f: Box::new(f), out: RefCell::new(out), emitter: Emitter::new() });
         let obs: Rc<dyn Observer<K, T>> = m.clone();
         up.emitter().observers.borrow_mut().push(Rc::downgrade(&obs));
@@ -345,7 +345,7 @@ where
         });
         for k in left.snapshot() {
             if let Some(it) = left.item(&k) {
-                it.with_untracked(|t| j.attach_row(&k, t));
+                untrack(|| it.with(|t| j.attach_row(&k, t)));
             }
         }
         let obs: Rc<dyn Observer<K, T>> = j.clone();
@@ -366,7 +366,7 @@ where
             .snapshot()
             .into_iter()
             .enumerate()
-            .filter_map(|(i, k)| up.item(&k).map(|it| (k, (it.with_untracked(|t| key(t)), i as u64))))
+            .filter_map(|(i, k)| up.item(&k).map(|it| (k, (untrack(|| it.with(|t| key(t))), i as u64))))
             .collect();
         entries.sort_by(|a, b| a.1.cmp(&b.1));
         let next = entries.len() as u64;
@@ -400,7 +400,7 @@ where
         });
         for (i, k) in up.snapshot().into_iter().enumerate() {
             if let Some(item) = up.item(&k) {
-                item.with_untracked(|t| g.inserted(i, &k, t));
+                untrack(|| item.with(|t| g.inserted(i, &k, t)));
             }
         }
         // Building emitted into empty logs with no readers; nothing to keep.
@@ -495,7 +495,7 @@ where
     T: Clone + 'static,
 {
     fn inner(&self) -> Rc<ListInner<K, T>> {
-        self.holder.get_untracked()
+        untrack(|| self.holder.get())
     }
 
     pub fn source(&self) -> Source<K, T> {
@@ -593,9 +593,9 @@ where
         }
         let inner = self.inner();
         let Some(s) = inner.items.borrow().get(k).copied() else { return };
-        let old = s.get_untracked();
+        let old = untrack(|| s.get());
         s.update(f);
-        let new = s.get_untracked();
+        let new = untrack(|| s.get());
         inner.emitter.update(k, &old, &new);
     }
 
@@ -610,7 +610,7 @@ where
         let inner = self.inner();
         let Some(s) = inner.items.borrow_mut().remove(k) else { return };
         let index = inner.seq.borrow_mut().remove(k).expect("key in seq");
-        let old = s.get_untracked();
+        let old = untrack(|| s.get());
         inner.emitter.remove(index, k, &old);
         s.dispose();
     }
@@ -624,7 +624,7 @@ where
         let doomed: Vec<K> = {
             let inner = self.inner();
             let items = inner.items.borrow();
-            inner.seq.borrow().to_vec().into_iter().filter(|k| !items[k].with_untracked(|t| pred(t))).collect()
+            inner.seq.borrow().to_vec().into_iter().filter(|k| !untrack(|| items[k].with(|t| pred(t)))).collect()
         };
         for k in doomed {
             self.remove_key(&k);
@@ -655,13 +655,13 @@ where
     T: Clone + 'static,
 {
     pub fn source(&self) -> Source<K, T> {
-        Source(self.holder.get_untracked())
+        Source(untrack(|| self.holder.get()))
     }
     /// Number of items, O(1); tracks the view.
     #[track_caller]
     pub fn len(&self) -> usize {
         self.version.get();
-        self.holder.get_untracked().len()
+        untrack(|| self.holder.get()).len()
     }
     #[track_caller]
     pub fn is_empty(&self) -> bool {
@@ -877,7 +877,7 @@ impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static, U: Clone + PartialEq + 
     fn removed(&self, index: usize, k: &K, _: &T) {
         let s = self.out.borrow_mut().remove(k);
         if let Some(s) = s {
-            let u = s.get_untracked();
+            let u = untrack(|| s.get());
             self.emitter.remove(index, k, &u);
             s.dispose();
         }
@@ -886,7 +886,7 @@ impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static, U: Clone + PartialEq + 
         let u = (self.f)(new);
         let s = self.out.borrow().get(k).copied();
         if let Some(s) = s {
-            let old = s.get_untracked();
+            let old = untrack(|| s.get());
             if old != u {
                 s.set_internal(u.clone());
                 self.emitter.update(k, &old, &u);
@@ -896,7 +896,7 @@ impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static, U: Clone + PartialEq + 
     fn moved(&self, k: &K, from: usize, to: usize, _: &T) {
         let s = self.out.borrow().get(k).copied();
         if let Some(s) = s {
-            self.emitter.moved(from, to, k, &s.get_untracked());
+            self.emitter.moved(from, to, k, &untrack(|| s.get()));
         }
     }
 }
@@ -967,7 +967,7 @@ where
 {
     fn compute(&self, t: &T, rk: &RK) -> U {
         match self.right.item(rk) {
-            Some(r) => r.with_untracked(|r| (self.f)(t, Some(r))),
+            Some(r) => untrack(|| r.with(|r| (self.f)(t, Some(r)))),
             None => (self.f)(t, None),
         }
     }
@@ -994,7 +994,7 @@ where
     fn set(&self, k: &K, u: U) -> bool {
         let s = self.out.borrow().get(k).map(|(_, s)| *s);
         let Some(s) = s else { return false };
-        let old = s.get_untracked();
+        let old = untrack(|| s.get());
         if old == u {
             return false;
         }
@@ -1008,7 +1008,7 @@ where
         let mut updated = 0;
         for k in &rows {
             let Some(item) = self.left.item(k) else { continue };
-            let u = item.with_untracked(|t| self.compute(t, rk));
+            let u = untrack(|| item.with(|t| self.compute(t, rk)));
             updated += usize::from(self.set(k, u));
         }
         if updated > JOIN_FANOUT_ROWS {
@@ -1041,7 +1041,7 @@ where
         let row = self.out.borrow_mut().remove(k);
         if let Some((rk, s)) = row {
             self.unlink(&rk, k);
-            let u = s.get_untracked();
+            let u = untrack(|| s.get());
             self.emitter.remove(index, k, &u);
             s.dispose();
         }
@@ -1064,7 +1064,7 @@ where
     fn moved(&self, k: &K, from: usize, to: usize, _: &T) {
         let s = self.out.borrow().get(k).map(|(_, s)| *s);
         if let Some(s) = s {
-            self.emitter.moved(from, to, k, &s.get_untracked());
+            self.emitter.moved(from, to, k, &untrack(|| s.get()));
         }
     }
 }
@@ -1216,12 +1216,12 @@ where
         self.members.borrow_mut().insert(g.clone(), GroupEntry { members: members.clone(), info });
         let r = self.groups.borrow().count_while(|x| x < g);
         self.groups.borrow_mut().insert(r, g.clone());
-        self.emitter.insert(r, g, &info.get_untracked());
+        self.emitter.insert(r, g, &untrack(|| info.get()));
         (members, info)
     }
 
     fn resize(&self, g: &G, info: Signal<GroupInfo<G>>, delta: isize) {
-        let old = info.get_untracked();
+        let old = untrack(|| info.get());
         let new = GroupInfo { key: old.key.clone(), len: (old.len as isize + delta) as usize };
         info.set_internal(new.clone());
         if new.len == 0 {
@@ -1319,13 +1319,13 @@ where
 {
     /// The groups, ordered by key; each item is the group's `GroupInfo` (key and size).
     pub fn source(&self) -> Source<G, GroupInfo<G>> {
-        Source(self.holder.get_untracked())
+        Source(untrack(|| self.holder.get()))
     }
     /// Number of groups; tracks the groups.
     #[track_caller]
     pub fn len(&self) -> usize {
         self.version.get();
-        self.holder.get_untracked().groups.borrow().len()
+        untrack(|| self.holder.get()).groups.borrow().len()
     }
     #[track_caller]
     pub fn is_empty(&self) -> bool {
@@ -1333,7 +1333,7 @@ where
     }
     /// One group's members, in upstream order (`None` if the group does not exist).
     pub fn members(&self, g: &G) -> Option<Source<K, T>> {
-        self.holder.get_untracked().members.borrow().get(g).map(|e| Source(e.members.clone() as Rc<dyn Stage<K, T>>))
+        untrack(|| self.holder.get()).members.borrow().get(g).map(|e| Source(e.members.clone() as Rc<dyn Stage<K, T>>))
     }
 }
 
@@ -1430,7 +1430,7 @@ where
             let from = f.seq.borrow_mut().remove(&key).expect("member in flat");
             let at = f.header_index(&self.group) + 1 + to;
             f.seq.borrow_mut().insert(at, key.clone());
-            let item = f.items.borrow()[&key].get_untracked();
+            let item = untrack(|| f.items.borrow()[&key].get());
             f.emitter.moved(from, at, &key, &item);
         }
     }
@@ -1454,7 +1454,7 @@ where
         let i = self.seq.borrow_mut().remove(key);
         let s = self.items.borrow_mut().remove(key);
         if let (Some(i), Some(s)) = (i, s) {
-            let item = s.get_untracked();
+            let item = untrack(|| s.get());
             self.emitter.remove(i, key, &item);
             s.dispose();
         }
@@ -1537,7 +1537,7 @@ where
     /// for `virtual_each`. Positions are O(log n): a member sits at its header's index + 1 + its
     /// rank in the group.
     pub fn flatten(&self) -> Derived<FlatKey<G, K>, FlatItem<G, T>> {
-        let groups = self.holder.get_untracked();
+        let groups = untrack(|| self.holder.get());
         let flat = Rc::new(FlatInner {
             groups: groups.clone(),
             order: RefCell::new(Seq::new()),
@@ -1556,11 +1556,11 @@ where
             let n = flat.order.borrow().len();
             flat.order.borrow_mut().insert(n, g.clone());
             let at = flat.seq.borrow().len();
-            flat.put(at, FlatKey::Header(g.clone()), FlatItem::Header(info.get_untracked()));
+            flat.put(at, FlatKey::Header(g.clone()), FlatItem::Header(untrack(|| info.get())));
             for k in members.snapshot() {
                 if let Some(it) = members.item(&k) {
                     let at = flat.seq.borrow().len();
-                    flat.put(at, FlatKey::Item(k), FlatItem::Item(it.get_untracked()));
+                    flat.put(at, FlatKey::Item(k), FlatItem::Item(untrack(|| it.get())));
                 }
             }
             flat.watch_members(&g);
@@ -1574,7 +1574,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::reactive::graph::{Ctx, Runtime};
+    use crate::reactive::graph::{Ctx, Runtime, untrack};
     use crate::reactive::list::{Change, FlatKey, state_list};
 
     #[derive(Clone, PartialEq, Debug)]
@@ -1635,7 +1635,7 @@ mod tests {
                         }
                     });
                     rt.flush();
-                    let all: Vec<Row> = l.keys().iter().map(|k| l.item(k).unwrap().get_untracked()).collect();
+                    let all: Vec<Row> = l.keys().iter().map(|k| untrack(|| l.item(k).unwrap().get())).collect();
                     let want_f: Vec<u32> = all.iter().filter(|r| r.a % 2 == 0).map(|r| r.id).collect();
                     let mut sorted: Vec<&Row> = all.iter().filter(|r| r.a % 2 == 0).collect();
                     sorted.sort_by_key(|r| (r.b, r.id));
@@ -1643,7 +1643,11 @@ mod tests {
                     assert_eq!(f.keys(), want_f, "filter at step {step}");
                     assert_eq!(m.keys(), want_s, "map keys at step {step}");
                     for (k, r) in sorted.iter().map(|r| (r.id, r)) {
-                        assert_eq!(m.source().item(&k).unwrap().get_untracked(), r.a as u32 * 10 + r.b as u32, "map value at step {step}");
+                        assert_eq!(
+                            untrack(|| m.source().item(&k).unwrap().get()),
+                            r.a as u32 * 10 + r.b as u32,
+                            "map value at step {step}"
+                        );
                     }
                     let want_mf: Vec<u32> = all.iter().filter(|r| r.b >= 2).map(|r| r.id).collect();
                     assert_eq!(mf.keys(), want_mf, "filter after map at step {step}");
@@ -1666,7 +1670,7 @@ mod tests {
                     for gk in &want_g {
                         let members: Vec<u32> = all.iter().filter(|r| r.a % 3 == *gk).map(|r| r.id).collect();
                         assert_eq!(g.members(gk).unwrap().keys(), members, "group {gk} at step {step}");
-                        assert_eq!(g.source().item(gk).unwrap().get_untracked().len, members.len());
+                        assert_eq!(untrack(|| g.source().item(gk).unwrap().get()).len, members.len());
                     }
                     // flatten: every group's header, then its members ordered by (b, id).
                     let mut want_flat = Vec::new();
@@ -1739,7 +1743,7 @@ mod tests {
                 assert_eq!(seen.get(), s0, "its mapped value did not change: nothing passed on");
                 rt.with_frame(Ctx::Handler, None, None, || l.update(&7, |r| r.a = 3));
                 assert_eq!(seen.get(), s0 + 1, "a changed value is passed on");
-                assert_eq!(m.source().item(&7).unwrap().get_untracked(), 3);
+                assert_eq!(untrack(|| m.source().item(&7).unwrap().get()), 3);
                 assert_eq!(after.keys().len(), 100);
                 rt.with_frame(Ctx::Handler, None, None, || l.remove(&7));
                 assert!(m.source().item(&7).is_none());
@@ -1816,16 +1820,21 @@ mod tests {
                         }
                     });
                     rt.flush();
-                    let name_of = |id: u32| users.item(&id).map(|u| u.get_untracked().name);
-                    let all: Vec<Msg> = msgs.keys().iter().map(|k| msgs.item(k).unwrap().get_untracked()).collect();
+                    let name_of = |id: u32| users.item(&id).map(|u| untrack(|| u.get()).name);
+                    let all: Vec<Msg> = msgs.keys().iter().map(|k| untrack(|| msgs.item(k).unwrap().get())).collect();
                     assert_eq!(j.keys(), msgs.keys(), "join keys at step {step}");
                     for m in &all {
-                        assert_eq!(j.source().item(&m.id).unwrap().get_untracked(), (m.body, name_of(m.user)), "join value at step {step}");
+                        assert_eq!(
+                            untrack(|| j.source().item(&m.id).unwrap().get()),
+                            (m.body, name_of(m.user)),
+                            "join value at step {step}"
+                        );
                     }
                     let mut want: Vec<&Msg> = all.iter().filter(|m| name_of(m.user).is_some()).collect();
                     want.sort_by_key(|m| (name_of(m.user), m.body));
                     let want: Vec<(u8, Option<u8>)> = want.iter().map(|m| (m.body, name_of(m.user))).collect();
-                    let got: Vec<(u8, Option<u8>)> = named.keys().iter().map(|k| named.source().item(k).unwrap().get_untracked()).collect();
+                    let got: Vec<(u8, Option<u8>)> =
+                        named.keys().iter().map(|k| untrack(|| named.source().item(k).unwrap().get())).collect();
                     assert_eq!(got, want, "filter + sort after the join at step {step}");
                     for ch in j.source().0.emitter().log.borrow_mut().take(&cursor) {
                         match ch {
@@ -1870,9 +1879,9 @@ mod tests {
                 assert_eq!(seen.get(), s0, "a field the rows do not show: no update");
                 rt.with_frame(Ctx::Handler, None, None, || users.update(&2, |u| u.name = 7));
                 assert_eq!(seen.get(), s0 + 3, "the three rows of user 2");
-                assert_eq!(j.source().item(&0).unwrap().get_untracked(), Some(7));
+                assert_eq!(untrack(|| j.source().item(&0).unwrap().get()), Some(7));
                 rt.with_frame(Ctx::Handler, None, None, || users.remove(&2));
-                assert_eq!(j.source().item(&0).unwrap().get_untracked(), None, "kept, without its user");
+                assert_eq!(untrack(|| j.source().item(&0).unwrap().get()), None, "kept, without its user");
                 assert_eq!(j.keys().len(), n as usize);
                 assert!(rt.diagnostics().is_empty());
                 // User 1 is on every other message: renaming it fans out.

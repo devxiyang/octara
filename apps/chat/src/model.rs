@@ -3,7 +3,7 @@
 //! `TextBuffer`s, so a delta appends to its part without touching the message; anything else
 //! (a new part, a status) changes the message.
 
-use octara::prelude::TextBuffer;
+use octara::prelude::{TextBuffer, untrack};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -116,7 +116,7 @@ impl Message {
     /// The text of its text parts, joined by blank lines (what is sent back to the model, copied).
     pub fn text(&self) -> String {
         let texts: Vec<String> =
-            self.parts.iter().filter_map(|p| if let Part::Text(t) = p { Some(t.get_untracked()) } else { None }).collect();
+            self.parts.iter().filter_map(|p| if let Part::Text(t) = p { Some(untrack(|| t.get())) } else { None }).collect();
         texts.join("\n\n")
     }
     /// Its files.
@@ -233,15 +233,15 @@ impl Message {
             .parts
             .iter()
             .map(|p| match p {
-                Part::Text(t) => SavedPart::Text(t.get_untracked()),
+                Part::Text(t) => SavedPart::Text(untrack(|| t.get())),
                 Part::Reasoning { text, started, ended } => SavedPart::Reasoning {
-                    text: text.get_untracked(),
+                    text: untrack(|| text.get()),
                     seconds: ended.map_or(0.0, |e| (e.saturating_sub(*started)).as_secs_f64()),
                 },
                 Part::Tool(t) => SavedPart::Tool {
                     id: t.id.clone(),
                     name: t.name.clone(),
-                    input: t.input.get_untracked(),
+                    input: untrack(|| t.input.get()),
                     state: t.state.clone(),
                     output: t.output.clone(),
                 },
@@ -307,13 +307,13 @@ mod tests {
             assert_eq!(m.status, Status::Done);
             let Part::Reasoning { text, started, ended } = &m.parts[0] else { panic!() };
             assert_eq!(
-                (text.get_untracked().as_str(), *started, *ended),
+                (untrack(|| text.get()).as_str(), *started, *ended),
                 ("Thinking.", s(0), Some(s(500))),
                 "a tool call ends the thinking"
             );
             let Part::Tool(t) = &m.parts[1] else { panic!() };
             assert_eq!(
-                (t.input.get_untracked().as_str(), &t.state, t.output.as_deref()),
+                (untrack(|| t.input.get()).as_str(), &t.state, t.output.as_deref()),
                 ("{\"city\":\"Oslo\"}", &ToolState::Done, Some("4 °C"))
             );
             assert_eq!(m.text(), "It is 4 °C.");

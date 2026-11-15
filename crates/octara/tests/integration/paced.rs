@@ -62,7 +62,7 @@ fn edits_other_than_appends_and_reduce_motion_show_at_once() {
     app.set_reduced_motion(true);
     app.run(|| source.append(&" y".repeat(300)));
     app.settle();
-    assert_eq!(shown(&w), source.get_untracked());
+    assert_eq!(shown(&w), app.run(|| untrack(|| source.get())));
 }
 
 #[test]
@@ -73,10 +73,10 @@ fn settling_motion_lands_it_and_characters_stay_whole() {
     app.settle();
     for _ in 0..3 {
         app.advance(FRAME);
-        assert!(source.get_untracked().starts_with(&shown(&w)));
+        assert!(app.run(|| untrack(|| source.get())).starts_with(&shown(&w)));
     }
     app.settle_motion();
-    assert_eq!(shown(&w), source.get_untracked());
+    assert_eq!(shown(&w), app.run(|| untrack(|| source.get())));
 }
 
 fn selectable_setup(initial: &'static str) -> (App, Window, TextBuffer) {
@@ -128,9 +128,9 @@ fn enabling_reduce_motion_lands_an_existing_backlog_on_the_next_tick() {
     let burst = "中🙂\n".repeat(40);
     app.run(|| source.append(&burst));
     app.settle();
-    assert!(shown(&window).len() < source.get_untracked().len());
+    assert!(shown(&window).len() < app.run(|| untrack(|| source.get())).len());
     app.set_reduced_motion(true);
     app.advance(FRAME);
-    assert_eq!(shown(&window), source.get_untracked(), "enabling Reduce Motion also lands an existing backlog");
+    assert_eq!(shown(&window), app.run(|| untrack(|| source.get())), "enabling Reduce Motion also lands an existing backlog");
     assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
 }

@@ -138,10 +138,6 @@ impl<K: Eq + Hash + Clone> Seq<K> {
         self.size(self.root) as usize
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.root == NIL
-    }
-
     pub fn contains(&self, k: &K) -> bool {
         self.index.contains_key(k)
     }

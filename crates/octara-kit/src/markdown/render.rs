@@ -29,7 +29,7 @@ pub(super) fn sync<T: Clone + PartialEq + 'static>(
     for (i, t) in items.iter().enumerate().skip(from.min(had)) {
         let key = format!("{prefix}{i}");
         if i < had {
-            let Some(old) = list.item(&key).map(|s| s.get_untracked().1) else { continue };
+            let Some(old) = list.item(&key).map(|s| untrack(|| s.get()).1) else { continue };
             if old == *t {
                 continue;
             }
@@ -71,7 +71,7 @@ pub(super) fn blocks_view(get: impl Fn() -> Vec<Block> + 'static) -> El {
 /// One block's element: its kind is fixed (a block of another kind is a new entry); what it
 /// shows follows its signal.
 pub(super) fn block_view(b: ReadSignal<Keyed<Block>>) -> View {
-    let kind = b.with_untracked(|(_, b)| b.kind.clone());
+    let kind = untrack(|| b.with(|(_, b)| b.kind.clone()));
     match kind {
         Kind::Paragraph(_) => text(move || b.with(|(_, b)| inline_of(b))).role(Role::Paragraph).into(),
         Kind::Heading(level, _) => {
@@ -170,7 +170,7 @@ fn code_view(b: ReadSignal<Keyed<Block>>) -> View {
         for line in now[cut..].split('\n') {
             let key = format!("l{end}");
             match lines.item(&key) {
-                Some(old) if old.with_untracked(|(_, text)| text == line) => {}
+                Some(old) if untrack(|| old.with(|(_, text)| text == line)) => {}
                 Some(_) => lines.update(&key, |(_, text)| {
                     text.clear();
                     text.push_str(line);
@@ -243,7 +243,7 @@ fn list_view(b: ReadSignal<Keyed<Block>>, start: Option<u64>) -> View {
                     Some(n) => format!("{}.", n + j),
                     None => "•".to_owned(),
                 };
-                let task = it.with_untracked(|(_, i)| i.task);
+                let task = untrack(|| it.with(|(_, i)| i.task));
                 row()
                     .role(Role::ListItem)
                     .gap_2()
@@ -317,7 +317,7 @@ fn table_view(b: ReadSignal<Keyed<Block>>) -> View {
                 line.child(each(
                     move || cells.source(),
                     |_, c| {
-                        let align = c.with_untracked(|(_, (_, a))| *a);
+                        let align = untrack(|| c.with(|(_, (_, a))| *a));
                         let cell = col().role(Role::Cell).flex_1().flex_basis(0.0).px_3().py_2();
                         let cell = match align {
                             Align::Center => cell.items_center(),

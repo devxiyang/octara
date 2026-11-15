@@ -236,7 +236,7 @@ pub(crate) fn layer() -> crate::view::View {
                 move || menus.source(),
                 |id, ask| {
                     let id = *id;
-                    match ask.get_untracked().1 {
+                    match untrack(|| ask.get()).1 {
                         Ask::Menu { menu, at } => el()
                             .absolute()
                             .left(at.0)
@@ -261,7 +261,7 @@ pub(crate) fn layer() -> crate::view::View {
                         move || prompts.source(),
                         |id, ask| {
                             let id = *id;
-                            match ask.get_untracked().1 {
+                            match untrack(|| ask.get()).1 {
                                 Ask::Prompt { level, message, detail, answers } => prompt_view(id, level, message, detail, answers),
                                 _ => el().into(),
                             }

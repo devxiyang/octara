@@ -69,7 +69,7 @@ impl Harness {
             chat.draft.set(text);
             chat.send();
         });
-        self.read(|chat| chat.current.get_untracked().unwrap())
+        self.read(|chat| untrack(|| chat.current.get()).unwrap())
     }
 
     fn reply(&self, ordinal: usize) -> usize {
@@ -234,7 +234,7 @@ fn deleting_a_thread_retires_queued_answers_and_does_not_recreate_its_file() {
     assert!(!h.answering(thread));
     assert!(h.saved(thread).is_empty());
     assert!(h.read(|chat| chat.threads.item(&thread).is_none()));
-    assert_eq!(h.read(|chat| chat.current.get_untracked()), None);
+    assert_eq!(h.read(|chat| untrack(|| chat.current.get())), None);
     assert!(h.window.app().settle().is_empty());
     assert!(store.load().is_empty(), "a retired result cannot save or resurrect the deleted thread");
 }
@@ -342,7 +342,7 @@ fn a_manual_rename_retires_title_events_queued_before_it() {
         chat.rename(thread, "Chosen by the person");
     });
     h.emit(title, [Event::Text("late suffix".into()), Event::Done, Event::Failed("late".into())]);
-    assert_eq!(h.read(|chat| chat.threads.item(&thread).unwrap().get_untracked().title), "Chosen by the person");
+    assert_eq!(h.read(|chat| untrack(|| chat.threads.item(&thread).unwrap().get()).title), "Chosen by the person");
     assert!(h.model.cancelled(title));
 }
 
@@ -361,10 +361,10 @@ fn title_completion_is_terminal_and_cannot_repeat_after_a_later_rename() {
             Event::Failed("duplicate failure".into()),
         ],
     );
-    assert_eq!(h.read(|chat| chat.threads.item(&thread).unwrap().get_untracked().title), "Accepted title");
+    assert_eq!(h.read(|chat| untrack(|| chat.threads.item(&thread).unwrap().get()).title), "Accepted title");
     h.run(move |chat| chat.rename(thread, "Later manual title"));
     h.emit(title, [Event::Done, Event::Text("late".into()), Event::Done]);
-    assert_eq!(h.read(|chat| chat.threads.item(&thread).unwrap().get_untracked().title), "Later manual title");
+    assert_eq!(h.read(|chat| untrack(|| chat.threads.item(&thread).unwrap().get()).title), "Later manual title");
     assert!(h.model.cancelled(title));
 }
 

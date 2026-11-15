@@ -20,7 +20,7 @@ pub use style::{Length, Patch, Styled, px, relative, rems, sp};
 
 use crate::diagnostics as codes;
 use crate::kernel::{Breakpoint, NodeId, Theme};
-use crate::reactive::graph::{self, Ctx, ReadSignal, ScopeId, Signal, rt};
+use crate::reactive::graph::{self, Ctx, ReadSignal, ScopeId, Signal, rt, untrack};
 use std::cell::{Cell, RefCell};
 use std::fmt::Display;
 use std::panic::Location;
@@ -109,14 +109,14 @@ impl crate::app::WindowState {
                 let r = k.rect(n);
                 (r.2, r.3)
             });
-            if sig.get_untracked() != size {
+            if untrack(|| sig.get()) != size {
                 sig.set(size);
                 changed = true;
             }
         }
         for (id, sig) in self.tails.borrow().iter() {
             let on = k.find(id).is_some_and(|n| k.is_following_tail(n));
-            if sig.get_untracked() != on {
+            if untrack(|| sig.get()) != on {
                 sig.set(on);
                 changed = true;
             }
@@ -128,7 +128,7 @@ impl crate::app::WindowState {
                 continue;
             }
             let s = ScrollState { offset: k.scroll_offset(node), client: k.client_size(node) };
-            if sig.get_untracked() != s {
+            if untrack(|| sig.get()) != s {
                 sig.set(s);
                 changed = true;
             }

@@ -165,7 +165,7 @@ pub fn radio_group(
                         // Keep the ordinary list diagnostic for duplicate stable IDs.
                         rows.push(row);
                     } else if let Some(old) = rows.item(&option.id) {
-                        if old.get_untracked() != row {
+                        if untrack(|| old.get()) != row {
                             rows.update(&option.id, |old| *old = row);
                         }
                     } else {

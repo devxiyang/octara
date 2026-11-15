@@ -53,7 +53,7 @@ fn child(model: Targets, main: WindowId) -> View {
     // A reload runs cleanup too; the initial watch publishes this same live window again.
     watch(|| (), move |_, _| model.child.set(Some(id)));
     on_cleanup(move || {
-        if windows().contains(&main) && model.child.get_untracked() == Some(id) {
+        if windows().contains(&main) && untrack(|| model.child.get()) == Some(id) {
             model.child.set(None);
         }
     });

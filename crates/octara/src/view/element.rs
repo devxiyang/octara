@@ -17,6 +17,7 @@ use crate::kernel::{
 };
 use crate::reactive::graph::{self, rt};
 use crate::reactive::text::{TextBuffer, TextChange};
+use crate::reactive::{ReadSignal, Signal, untrack};
 use std::panic::Location;
 use std::rc::Rc;
 
@@ -29,7 +30,7 @@ pub enum Prop<T> {
     Dyn(Box<dyn Fn() -> T>),
 }
 
-/// What a property accepts: a value, or a closure (a binding re-run when what it reads changes).
+/// What a property accepts: a value, signal, or closure (a binding re-run when its reads change).
 pub trait IntoProp<T> {
     fn into_prop(self) -> Prop<T>;
 }
@@ -172,6 +173,33 @@ impl IntoProp<Rich> for Prop<String> {
         }
     }
 }
+
+// Signals use the same bindings as closures. Converted text/paint values follow the existing
+// closure conversions; TextBuffer keeps its separate incremental path below.
+macro_rules! signal_prop {
+    ($handle:ident, $target:ty) => {
+        impl<T: Clone + Into<$target> + 'static> IntoProp<$target> for $handle<T> {
+            fn into_prop(self) -> Prop<$target> {
+                Prop::Dyn(Box::new(move || self.get().into()))
+            }
+        }
+    };
+}
+macro_rules! signal_props {
+    ($handle:ident) => {
+        signal_prop!($handle, String);
+        signal_prop!($handle, Option<String>);
+        signal_prop!($handle, bool);
+        signal_prop!($handle, f32);
+        signal_prop!($handle, NumericRange);
+        signal_prop!($handle, serde_json::Value);
+        signal_prop!($handle, Rich);
+        signal_prop!($handle, Paint);
+        signal_prop!($handle, Fill);
+    };
+}
+signal_props!(Signal);
+signal_props!(ReadSignal);
 
 /// What `text` accepts: a string or [`Rich`] text, fixed or from a closure (re-computed whole),
 /// or a [`TextBuffer`] (its edits reach the kernel as edits: an append costs O(appended)).
@@ -1097,7 +1125,7 @@ pub(crate) fn build_el(e: El) -> NodeId {
         Some(TextContent::Prop(p)) => bind(at, node, p, |k, n, v: &Rich| k.set_rich(n, v.as_str(), v.runs())),
         Some(TextContent::Buffer(t)) => {
             let cursor = t.subscribe();
-            u.kernel.borrow_mut().set_text(node, &t.get_untracked());
+            u.kernel.borrow_mut().set_text(node, &untrack(|| t.get()));
             let u = u.clone();
             graph::binding(at, move || {
                 t.track();
@@ -1278,7 +1306,7 @@ fn mount_canvas(at: &'static Location<'static>, node: NodeId, draw: Draw) {
             }
             let s = k.content_size(node);
             drop(k);
-            if size.get_untracked() == s {
+            if untrack(|| size.get()) == s {
                 return false;
             }
             size.set(s);

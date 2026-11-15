@@ -5,7 +5,7 @@
 //! Reduce Motion, show at once. It is motion: `settle_motion` lands it, and pending work lists it
 //! while it is behind.
 
-use crate::reactive::graph::{rt, watch};
+use crate::reactive::graph::{rt, untrack, watch};
 use crate::reactive::text::{TextBuffer, TextChange};
 use crate::task::{WorkKind, channel, sleep, spawn_with};
 use std::panic::Location;
@@ -61,7 +61,7 @@ impl Paced {
 #[track_caller]
 pub fn paced(source: &TextBuffer) -> TextBuffer {
     let at = Location::caller();
-    let shown = TextBuffer::new(source.get_untracked());
+    let shown = TextBuffer::new(untrack(|| source.get()));
     let u = crate::app::window();
     let p = Rc::new(Paced { source: source.clone(), shown: shown.clone(), at });
     let id = {
@@ -87,7 +87,7 @@ pub fn paced(source: &TextBuffer) -> TextBuffer {
                 let edited = p.source.take(&cursor).iter().any(|c| !matches!(c, TextChange::Append(_)));
                 if edited || p.shown.len_untracked() > p.source.len_untracked() {
                     // Not an append: what it shows is replaced at once.
-                    p.shown.set(&p.source.get_untracked());
+                    p.shown.set(&untrack(|| p.source.get()));
                 } else if u.kernel.borrow().reduced_motion() {
                     p.land();
                 } else {

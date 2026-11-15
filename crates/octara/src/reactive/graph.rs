@@ -377,6 +377,7 @@ impl Runtime {
             let mut nodes = self.nodes.borrow_mut();
             let n = &mut nodes[idx.i as usize];
             n.alive = false;
+            n.queued = false;
             (std::mem::take(&mut n.sources), std::mem::take(&mut n.observers), n.value.take(), n.compute.take())
         };
         {
@@ -430,7 +431,7 @@ impl Runtime {
                 &codes::STRICT_READ_UNTRACKED,
                 format!(
                     "value defined at {at_def} read while building, outside any binding; that UI will not update. \
-                     Pass a closure (`move || ..`), or use `get_untracked()` for a one-shot read"
+                     Pass a closure (`move || ..`), or use `untrack(|| value.get())` for a one-shot read"
                 ),
                 at,
             );
@@ -949,19 +950,6 @@ impl<T: 'static> Signal<T> {
         rt(|rt| rt.with_value(self.idx, at, true, f))
     }
     #[track_caller]
-    pub fn get_untracked(&self) -> T
-    where
-        T: Clone,
-    {
-        let at = Location::caller();
-        rt(|rt| rt.with_value(self.idx, at, false, Clone::clone))
-    }
-    #[track_caller]
-    pub fn with_untracked<R>(&self, f: impl FnOnce(&T) -> R) -> R {
-        let at = Location::caller();
-        rt(|rt| rt.with_value(self.idx, at, false, f))
-    }
-    #[track_caller]
     pub fn set(&self, value: T) {
         let at = Location::caller();
         rt(|rt| rt.write(self.idx, value, at, false));
@@ -991,6 +979,16 @@ impl<T> Clone for ReadSignal<T> {
     }
 }
 impl<T> Copy for ReadSignal<T> {}
+impl<T> PartialEq for ReadSignal<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+impl<T> std::fmt::Debug for ReadSignal<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ReadSignal({:?})", self.0.idx)
+    }
+}
 
 impl<T: 'static> ReadSignal<T> {
     #[track_caller]
@@ -1004,73 +1002,28 @@ impl<T: 'static> ReadSignal<T> {
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         self.0.with(f)
     }
-    #[track_caller]
-    pub fn get_untracked(&self) -> T
-    where
-        T: Clone,
-    {
-        self.0.get_untracked()
-    }
-    #[track_caller]
-    pub fn with_untracked<R>(&self, f: impl FnOnce(&T) -> R) -> R {
-        self.0.with_untracked(f)
-    }
 }
 
-/// A derived value: lazy, recomputed when its inputs change, propagated only when it changes.
-pub struct Memo<T> {
-    idx: Idx,
-    _t: PhantomData<fn() -> T>,
-    _ns: NotSend,
-}
-
-impl<T> Clone for Memo<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<T> Copy for Memo<T> {}
-
-impl<T: 'static> Memo<T> {
-    #[track_caller]
-    pub fn get(&self) -> T
-    where
-        T: Clone,
-    {
-        self.with(Clone::clone)
-    }
-    #[track_caller]
-    pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
-        let at = Location::caller();
-        rt(|rt| rt.with_value(self.idx, at, true, f))
-    }
-    #[track_caller]
-    pub fn get_untracked(&self) -> T
-    where
-        T: Clone,
-    {
-        let at = Location::caller();
-        rt(|rt| rt.with_value(self.idx, at, false, Clone::clone))
-    }
-}
-
+/// A derived read-only value: lazy, recomputed when its inputs change, propagated only when
+/// it changes.
 #[track_caller]
-pub fn memo<T: PartialEq + 'static>(f: impl Fn() -> T + 'static) -> Memo<T> {
+pub fn memo<T: PartialEq + 'static>(f: impl Fn() -> T + 'static) -> ReadSignal<T> {
     let at = Location::caller();
     let compute: Compute = Box::new(move |old| {
         let new = f();
         let equal = old.is_some_and(|old| old.borrow().downcast_ref::<T>().is_some_and(|old| *old == new));
         if equal { None } else { Some(value_cell(new)) }
     });
-    Memo { idx: rt(|rt| rt.create_node(Kind::Memo, None, Some(compute), false, None, at)), _t: PhantomData, _ns: PhantomData }
+    ReadSignal(Signal::from_idx(rt(|rt| rt.create_node(Kind::Memo, None, Some(compute), false, None, at))))
 }
 
-fn observer(kind: Kind, at: &'static Location<'static>, compute: Compute) {
+fn observer(kind: Kind, at: &'static Location<'static>, compute: Compute) -> Idx {
     rt(|rt| {
         let idx = rt.create_node(kind, None, Some(compute), false, None, at);
         rt.nodes.borrow_mut()[idx.i as usize].state = State::Clean;
         rt.run_node(idx);
-    });
+        idx
+    })
 }
 
 /// A property binding or structural region (view layer): runs now and on every change.
@@ -1085,29 +1038,58 @@ pub(crate) fn binding(at: &'static Location<'static>, mut f: impl FnMut() + 'sta
     );
 }
 
+/// Stops a scope-owned watch early. Ignoring or dropping this handle keeps the watch active.
+/// The handle does not keep its scope alive and must be used inside its App's runtime.
+#[derive(Clone, Copy, Debug)]
+pub struct Watch {
+    idx: Option<Idx>,
+    _ns: NotSend,
+}
+
+impl Watch {
+    /// Detaches dependencies and cancels queued invocations. Repeated stops do nothing;
+    /// stopping inside the callback lets that invocation finish and releases its captures
+    /// afterwards.
+    #[track_caller]
+    pub fn stop(&self) {
+        let Some(idx) = self.idx else { return };
+        let at = Location::caller();
+        rt(|rt| {
+            if idx.runtime != rt.identity {
+                rt.diag(&codes::WRONG_RUNTIME, "watch belongs to another App; stop rejected".into(), at);
+                return;
+            }
+            if rt.ctx() != Ctx::Build && !rt.write_allowed(at) {
+                return;
+            }
+            rt.dispose_node(idx);
+        });
+    }
+}
+
 /// Runs `callback(new, old)` when the value of `source` changes, and once now with `old = None`.
 /// Only `source` is tracked. The callback runs like a handler: untracked, and allowed to write,
 /// including signals `source` reads; a write that leaves the value unchanged ends there.
 #[track_caller]
-pub fn watch<S: Clone + PartialEq + 'static>(source: impl Fn() -> S + 'static, callback: impl Fn(&S, Option<&S>) + 'static) {
+pub fn watch<S: PartialEq + 'static>(source: impl Fn() -> S + 'static, callback: impl Fn(&S, Option<&S>) + 'static) -> Watch {
     let at = Location::caller();
     if !rt(|rt| rt.effect_allowed(at)) {
-        return;
+        return Watch { idx: None, _ns: PhantomData };
     }
-    let last: RefCell<Option<S>> = RefCell::new(None);
-    observer(
+    let mut last = None;
+    let idx = observer(
         Kind::Watch,
         at,
         Box::new(move |_| {
             let v = source();
-            let prev = last.borrow().clone();
-            if prev.as_ref() != Some(&v) {
-                *last.borrow_mut() = Some(v.clone());
-                rt(|r| r.with_frame(Ctx::Handler, None, None, || callback(&v, prev.as_ref())));
+            if last.as_ref() != Some(&v) {
+                rt(|r| r.with_frame(Ctx::Handler, None, None, || callback(&v, last.as_ref())));
+                last = Some(v);
             }
             None
         }),
     );
+    Watch { idx: Some(idx), _ns: PhantomData }
 }
 
 /// Named component state: keyed by `key` within the current component; survives hot reload.
@@ -1183,7 +1165,7 @@ mod tests {
             for _ in 0..5 {
                 handler(rt, || count.update(|n| *n += 1));
             }
-            assert_eq!(count.get_untracked(), 3);
+            assert_eq!(untrack(|| count.get()), 3);
             let before = calls.get();
             handler(rt, || other.set(1));
             assert_eq!(calls.get(), before, "callback reads are untracked");
@@ -1205,7 +1187,7 @@ mod tests {
             m.get();
             let codes = rt.diagnostic_counts();
             assert_eq!(codes, vec![("WRITE_IN_BUILD", 3), ("WRITE_IN_DERIVE", 1)]);
-            assert_eq!(s.get_untracked(), 0);
+            assert_eq!(untrack(|| s.get()), 0);
         });
     }
 
@@ -1504,6 +1486,227 @@ mod tests {
             provide(Rc::new(Probe));
             provide(Rc::new(Probe));
             rt.dispose_scope(rt.current_scope().unwrap());
+        });
+    }
+
+    #[test]
+    fn read_handles_share_identity_without_value_trait_bounds() {
+        struct Payload;
+        #[derive(PartialEq)]
+        struct Derived(usize);
+        with_scope(|rt| {
+            let source = Signal::new(Payload);
+            let read = source.read_only();
+            assert_eq!(read, source.read_only());
+            assert_ne!(read, Signal::new(Payload).read_only());
+            assert!(format!("{read:?}").starts_with("ReadSignal("));
+            let runs = Rc::new(Cell::new(0));
+            let out = runs.clone();
+            let derived: ReadSignal<Derived> = memo(move || {
+                source.with(|_| ());
+                out.set(out.get() + 1);
+                Derived(42)
+            });
+            assert_eq!(runs.get(), 0, "the unified read handle keeps memo evaluation lazy");
+            assert_eq!(derived.with(|value| value.0), 42);
+            assert_eq!(runs.get(), 1);
+            handler(rt, || source.set(Payload));
+            assert_eq!(derived.with(|value| value.0), 42);
+            assert_eq!(runs.get(), 2);
+        });
+    }
+
+    #[test]
+    fn non_clone_watch_borrows_previous_results_and_cuts_off_equal_values() {
+        #[derive(PartialEq)]
+        struct Snapshot(i32);
+        with_scope(|rt| {
+            let source = Signal::new(0);
+            let seen = Rc::new(RefCell::new(Vec::new()));
+            let out = seen.clone();
+            let _ = watch(move || Snapshot(source.get() / 2), move |new, old| out.borrow_mut().push((new.0, old.map(|old| old.0))));
+            handler(rt, || source.set(1));
+            handler(rt, || source.set(2));
+            handler(rt, || source.set(3));
+            handler(rt, || source.set(4));
+            assert_eq!(*seen.borrow(), [(0, None), (1, Some(0)), (2, Some(1))]);
+            assert!(rt.diagnostics().is_empty());
+        });
+    }
+
+    #[test]
+    fn watch_stop_cancels_queued_work_and_cannot_stop_a_reused_slot() {
+        with_scope(|rt| {
+            let source = Signal::new(0);
+            let calls = Rc::new(Cell::new(0));
+            let out = calls.clone();
+            let stopped = watch(move || source.get(), move |_, _| out.set(out.get() + 1));
+            source.set(1);
+            assert!(rt.has_pending());
+            stopped.stop();
+            stopped.stop();
+            assert!(!rt.has_pending(), "stopping cancels pending invocations");
+            rt.flush();
+            assert_eq!(calls.get(), 1);
+            let replacement_calls = Rc::new(Cell::new(0));
+            let out = replacement_calls.clone();
+            let _ = watch(move || source.get(), move |_, _| out.set(out.get() + 1));
+            stopped.stop();
+            handler(rt, || source.set(2));
+            assert_eq!(calls.get(), 1);
+            assert_eq!(replacement_calls.get(), 2);
+        });
+    }
+
+    #[test]
+    fn watch_can_stop_itself_without_dropping_its_running_callback() {
+        struct Capture(Rc<Cell<bool>>);
+        impl Drop for Capture {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        with_scope(|rt| {
+            let source = Signal::new(0);
+            let handle = Rc::new(Cell::new(None::<Watch>));
+            let dropped = Rc::new(Cell::new(false));
+            let calls = Rc::new(Cell::new(0));
+            let (stop, out) = (handle.clone(), calls.clone());
+            let capture = Capture(dropped.clone());
+            let watch = watch(
+                move || source.get(),
+                move |new, old| {
+                    assert!(!capture.0.get(), "the callback's capture remains alive while it runs");
+                    out.set(out.get() + 1);
+                    if *new == 1 {
+                        assert_eq!(old, Some(&0));
+                        source.set(2); // Queue another round before stopping in this callback.
+                        stop.get().unwrap().stop();
+                        assert!(!capture.0.get());
+                    }
+                },
+            );
+            handle.set(Some(watch));
+            handler(rt, || source.set(1));
+            assert_eq!(calls.get(), 2);
+            assert!(dropped.get(), "stopped callback captures are released after it returns");
+            assert!(!rt.has_pending());
+            handler(rt, || source.set(3));
+            assert_eq!(calls.get(), 2);
+        });
+    }
+
+    #[test]
+    fn watch_scope_disposal_releases_non_clone_results_and_queued_callbacks() {
+        struct Snapshot(Rc<Cell<usize>>);
+        impl PartialEq for Snapshot {
+            fn eq(&self, _: &Self) -> bool {
+                true
+            }
+        }
+        impl Drop for Snapshot {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        with_scope(|rt| {
+            let source = Signal::new(0);
+            let child = rt.create_scope(rt.current_scope(), "watch owner");
+            let dropped = Rc::new(Cell::new(0));
+            let calls = Rc::new(Cell::new(0));
+            let (snapshot, out) = (dropped.clone(), calls.clone());
+            let stop = rt.with_scope(Some(child), || {
+                watch(
+                    move || {
+                        source.get();
+                        Snapshot(snapshot.clone())
+                    },
+                    move |_, _| out.set(out.get() + 1),
+                )
+            });
+            source.set(1);
+            rt.dispose_scope(child);
+            assert_eq!(dropped.get(), 1, "the retained source result leaves with its scope");
+            assert!(!rt.has_pending());
+            stop.stop();
+            handler(rt, || source.set(2));
+            assert_eq!(calls.get(), 1);
+        });
+    }
+
+    #[test]
+    fn foreign_runtime_watch_stop_does_not_stop_either_runtime() {
+        let a = Runtime::new();
+        let b = Runtime::new();
+        let a_scope = a.create_scope(None, "a");
+        let b_scope = b.create_scope(None, "b");
+        let a_calls = Rc::new(Cell::new(0));
+        let b_calls = Rc::new(Cell::new(0));
+        let out = a_calls.clone();
+        let (a_source, a_watch) = a.enter(|| {
+            a.with_scope(Some(a_scope), || {
+                let source = Signal::new(0);
+                let watch = watch(move || source.get(), move |_, _| out.set(out.get() + 1));
+                (source, watch)
+            })
+        });
+        let out = b_calls.clone();
+        b.enter(|| {
+            b.with_scope(Some(b_scope), || {
+                let source = Signal::new(0);
+                let _ = watch(move || source.get(), move |_, _| out.set(out.get() + 1));
+                a_watch.stop();
+                handler(&b, || source.set(1));
+                assert_eq!(b_calls.get(), 2);
+                assert!(b.diagnostics().iter().any(|d| d.code == "WRONG_RUNTIME"));
+            })
+        });
+        a.enter(|| {
+            handler(&a, || a_source.set(1));
+            assert_eq!(a_calls.get(), 2, "a foreign stop leaves the original watch active");
+            a_watch.stop();
+            handler(&a, || a_source.set(2));
+            assert_eq!(a_calls.get(), 2);
+        });
+    }
+
+    #[test]
+    fn untrack_cannot_stop_a_watch_from_a_pure_computation() {
+        with_scope(|rt| {
+            let source = Signal::new(0);
+            let calls = Rc::new(Cell::new(0));
+            let out = calls.clone();
+            let watch = watch(move || source.get(), move |_, _| out.set(out.get() + 1));
+            let derived = memo(move || untrack(|| watch.stop()));
+            derived.get();
+            handler(rt, || source.set(1));
+            assert_eq!(calls.get(), 2);
+            assert!(rt.diagnostics().iter().any(|d| d.code == "WRITE_IN_DERIVE"));
+        });
+    }
+
+    #[test]
+    fn watch_stop_is_allowed_during_build_and_cleanup() {
+        with_scope(|rt| {
+            let source = Signal::new(0);
+            let calls = Rc::new(Cell::new(0));
+            let out = calls.clone();
+            rt.with_frame(Ctx::Build, None, None, || {
+                let watch = watch(move || source.get(), move |_, _| out.set(out.get() + 1));
+                watch.stop();
+            });
+            handler(rt, || source.set(1));
+            assert_eq!(calls.get(), 1);
+            let out = calls.clone();
+            let watch = watch(move || source.get(), move |_, _| out.set(out.get() + 1));
+            let child = rt.create_scope(rt.current_scope(), "stop from cleanup");
+            rt.with_scope(Some(child), || rt.on_cleanup(Box::new(move || watch.stop())));
+            source.set(2);
+            rt.dispose_scope(child);
+            rt.flush();
+            assert_eq!(calls.get(), 2, "a retiring child can stop another live watch");
+            assert!(!rt.has_pending());
+            assert!(rt.diagnostics().is_empty(), "{:?}", rt.diagnostics());
         });
     }
 }

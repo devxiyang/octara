@@ -106,14 +106,16 @@ fn blocks(doc: Rc<RefCell<Doc>>, source: Source, streaming: bool) -> View {
     };
     match source {
         Source::Text(_) => {}
-        Source::Dyn(f) => watch(
-            move || f(),
-            move |s, before| {
-                if before.is_some() {
-                    follow(s);
-                }
-            },
-        ),
+        Source::Dyn(f) => {
+            watch(
+                move || f(),
+                move |s, before| {
+                    if before.is_some() {
+                        follow(s);
+                    }
+                },
+            );
+        }
         Source::Buffer(t) => {
             let live = t.clone();
             watch(

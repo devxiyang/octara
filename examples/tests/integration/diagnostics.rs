@@ -115,7 +115,7 @@ fn variants() -> Vec<Variant> {
                                     c.set(3)
                                 }
                             },
-                        )
+                        );
                     })
                 })
             },
@@ -160,7 +160,7 @@ fn variants() -> Vec<Variant> {
                         .child(button("drop").id("drop").on_press(move || items.remove(&1)))
                         .child(button("+").id("inc").on_press(move || {
                             let first = kept.borrow()[0];
-                            let _ = first.get_untracked();
+                            let _ = untrack(|| first.get());
                         }))
                         .into()
                 })
@@ -176,7 +176,7 @@ fn variants() -> Vec<Variant> {
             build: || {
                 Window::headless(|| {
                     let count = state("count", || 0i64);
-                    let n = count.get_untracked();
+                    let n = untrack(|| count.get());
                     col()
                         .child(text(move || format!("Count: {}", count.get())).id("count"))
                         .child(button("+1").id("inc").on_press(move || count.set(n + 1)))
@@ -308,7 +308,7 @@ fn expected(id: &str) -> Expect {
         "I4-watch" => e(&[], None, true),
         "I4b" => e(&["FLUSH_RUNAWAY"], None, false),
         "I5" => e(&[], Some("READ_DISPOSED"), false),
-        "I6" => e(&[], None, false), // known silent: an explicit `get_untracked` capture
+        "I6" => e(&[], None, false), // known silent: an explicit `untrack` capture
         "I7" => e(&["AMBIGUOUS_COMPONENT"], None, false),
         "I7-keyed" => e(&[], None, true),
         "I8-watch" => e(&[], None, true),

@@ -21,7 +21,7 @@ fn run(args: &[&str]) -> (bool, String) {
 fn lookups_take_paths_suffixes_and_prelude_names() {
     let cat = catalog();
     let found = cat.lookup("state");
-    assert_eq!(found.matches[0].path, "octara::reactive::graph::state", "the prelude's `state` comes first");
+    assert_eq!(found.matches[0].path, "octara::reactive::state", "the prelude's `state` comes first");
     assert!(found.matches[0].prelude);
     assert_eq!(cat.lookup("Styled::p_4").matches[0].path, "octara::view::Styled::p_4");
     assert_eq!(cat.lookup("octara::prelude::Spring").matches[0].path, "octara::motion::Spring");

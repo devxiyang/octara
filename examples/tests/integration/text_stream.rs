@@ -43,7 +43,7 @@ fn random_edits_match_a_reference_and_logs_stay_bounded() {
             .child(text(move || t2.get()).id("full"))
             .child(button("x").id("edit").on_press(move || {
                 // A deterministic pseudo-random edit derived from the current length.
-                let n = t.get_untracked().len();
+                let n = untrack(|| t.get()).len();
                 match n % 3 {
                     0 => t.append("ab"),
                     1 => t.splice(n / 3..n / 2, "xyz"),

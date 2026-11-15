@@ -1,10 +1,12 @@
 //! The reactive core: a fine-grained signal graph with named state, incremental collections and
 //! text buffers. Design: `docs/design/reactive-core.md`.
 
-pub mod graph;
+pub(crate) mod graph;
 pub mod list;
-pub mod seq;
+pub(crate) mod seq;
 pub mod text;
+
+pub use graph::{ReadSignal, Signal, Watch, memo, provide, state, untrack, use_context, watch};
 
 /// Runs `cleanup` once when the current scope is disposed, including a hot reload.
 /// Register during component construction to release work started later by its handlers.

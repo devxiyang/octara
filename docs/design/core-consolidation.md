@@ -1,7 +1,7 @@
 # Runtime and Signals consolidation
 
-Status: selected target architecture, 2026-11-15; first correctness slice implemented, broader
-consolidation pending. This is the complete target inventory, not a claim that every target has
+Status: selected target architecture, 2026-11-15; first correctness and second Signals API slices
+implemented, broader consolidation pending. This is the complete target inventory, not a claim that every target has
 shipped. No compatibility layer, deprecated aliases or
 parallel old/new execution modes will be retained.
 
@@ -264,6 +264,35 @@ navigation, native window resize and GPU captures after the drawing-cache fix.
 These desktop scripts use framework/semantic input in real windows. They do not qualify OS
 keyboard input, Chinese IME or system candidate windows. Broader API removals in the inventory
 above remain a subsequent slice; this round does not add compatibility aliases.
+
+## Second-round Signals API consolidation
+
+The supported graph API is exported from `octara::reactive` and the prelude. `Signal<T>` and
+`ReadSignal<T>` are the two value handles; `memo` returns ReadSignal. The public Memo wrapper,
+get_untracked/with_untracked methods (including TextBuffer's duplicate snapshot method), and
+public graph/seq implementation paths are removed without aliases. One explicit untrack wraps
+ordinary reads; migrated consumers keep their previous sampling boundaries.
+
+`watch` now returns a scope-owned, non-generic Watch stop handle. Source results require
+PartialEq but not Clone; callbacks borrow new/old results. Ignoring the handle keeps watching,
+while stop retires the graph node and queued invocations. Stop during the callback takes effect
+after that Rust invocation finishes; scope disposal and repeated stops are safe. No extra
+subscription engine or queue is added.
+
+Signal and ReadSignal can feed ordinary text, semantic and style properties through the same
+bindings as closures. Formatting/combining values still uses closures. TextBuffer retains its
+incremental edit channel. The CLI vocabulary follows the supported exports and omits removed
+methods and implementation modules; the generated skill and compiled guide use the new API.
+
+Validation on 2026-11-15: workspace tests passed (634 passed, 3 ignored), including the new
+non-Clone watch/stop regressions, direct-property binding test, public API inventory checks and
+compiled struct example. Workspace Clippy with warnings denied, formatting and diff checks passed.
+The rebuilt real-window fixtures passed `live_inspect.py` (all five scenarios), `live_forms.py`,
+and Chat's `live_lifecycle.py`; these use framework input, not OS input or native IME qualification.
+
+Remaining independent work includes explicit App root scope/named state, removal of Signal::new
+and Task::detach, collection aliases, and primitive representation/ordering. No compatibility
+layer or parallel reactive implementation is introduced in this slice.
 
 ## References
 

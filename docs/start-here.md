@@ -135,17 +135,42 @@ let app = Window::headless(|| {
     text(format!("{}", n.get())).into() // read once: this text never updates
 });
 assert!(app.app().diagnostics().iter().any(|d| d.code == "STRICT_READ_UNTRACKED"));
-// Fix: text(move || format!("{}", n.get())), or n.get_untracked() if one read is meant.
+// Fix: text(move || format!("{}", n.get())), or untrack(|| n.get()) for an intentional snapshot.
 ```
 
 - `Signal`: `get`, `set`, `update(|v| ..)`, `with(|v| ..)` (borrow without cloning).
+- `read_only()` and `memo(..)` return `ReadSignal`, with the same `get` / `with` reads.
+  Pass matching handles directly to properties: `text(name)`, `.checked(checked.read_only())`,
+  `.label(title)`. A closure is still useful for formatting and combining values.
 - Ordinary structs and collections need not implement `Clone`: `with` borrows and `update` mutates
   in place. Only `get` requires `Clone`. Finish a borrow before writing the same value; a rejected
   `update` never calls its mutation closure.
 - `untrack(|| ..)` samples without subscribing the surrounding computation. It does not permit
   writes or effect registration inside a memo or other pure expression.
-- `watch(source, callback)`: run an effect when a value changes (only `source` is tracked).
+- `watch(source, callback) -> Watch`: run an effect when a value changes (only `source` is tracked).
+  Source results need `PartialEq`, not `Clone`; callbacks borrow the new and previous result.
+  `handle.stop()` stops early. Ignoring the handle keeps the watch until its scope is disposed.
 - `provide(value)` / `use_context::<T>()`: pass a value (often a `Signal`) down the tree.
+
+An ordinary struct can own complex data without implementing `Clone`:
+
+```rust
+use octara::prelude::*;
+
+struct Draft { title: String, tags: Vec<String> }
+let mut app = Window::headless(|| {
+    let draft = state("draft", || Draft { title: "Notes".into(), tags: Vec::new() });
+    let title: ReadSignal<String> = memo(move || draft.with(|d| format!("{} ({})", d.title, d.tags.len())));
+    col().size_full()
+        .child(text(title).id("title"))
+        .child(el().id("tag").role(Role::Button).label("Tag").size_8()
+            .on_press(move || draft.update(|d| d.tags.push("Rust".into()))))
+        .into()
+});
+app.tap("tag").unwrap();
+assert_eq!(app.kernel().text_of("title").as_deref(), Some("Notes (1)"));
+assert!(app.app().diagnostics().is_empty());
+```
 
 ## Lists
 

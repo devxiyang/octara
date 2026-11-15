@@ -577,7 +577,7 @@ pub fn chat_stream(n: usize) -> View {
     listen("user", send);
     listen("token", move |s| {
         if let Some(m) = messages.last_key().and_then(|k| messages.item(&k)) {
-            m.with_untracked(|m| m.body.append(&s));
+            untrack(|| m.with(|m| m.body.append(&s)));
         }
     });
     listen("done", move |_: String| streaming.set(false));
@@ -591,7 +591,7 @@ pub fn chat_stream(n: usize) -> View {
                     |_| MSG_ROW_HEIGHT,
                     |id, m| {
                         let id = *id;
-                        let StreamMsg { role, body, .. } = m.get_untracked();
+                        let StreamMsg { role, body, .. } = untrack(|| m.get());
                         col()
                             .child(text(role).id(format!("msg-role-{id}")))
                             .child(text(body).id(format!("msg-body-{id}")))

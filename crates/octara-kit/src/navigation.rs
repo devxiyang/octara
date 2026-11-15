@@ -47,7 +47,7 @@ fn retained_options(options: impl Fn() -> Vec<RadioOption> + 'static) -> Derived
                 if !seen.insert(option.id.clone()) {
                     rows.push(row); // The retained list reports the ordinary duplicate-key diagnostic.
                 } else if let Some(old) = rows.item(&option.id) {
-                    if old.get_untracked() != row {
+                    if untrack(|| old.get()) != row {
                         rows.update(&option.id, |old| *old = row);
                     }
                 } else {

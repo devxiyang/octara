@@ -67,7 +67,7 @@ impl Harness {
             chat.draft.set(question);
             chat.send();
         });
-        self.read(|chat| chat.current.get_untracked().unwrap())
+        self.read(|chat| untrack(|| chat.current.get()).unwrap())
     }
 
     fn read<T>(&self, read: impl FnOnce(&Chat) -> T) -> T {
@@ -76,6 +76,10 @@ impl Harness {
 
     fn answer(&self, thread: ThreadId) -> Message {
         self.read(|chat| chat.thread_messages(thread).last().unwrap().clone())
+    }
+
+    fn answer_text(&self, thread: ThreadId) -> String {
+        self.read(|chat| chat.thread_messages(thread).last().unwrap().text())
     }
 
     fn until(&self, server: &Fixture, label: &str, mut ready: impl FnMut() -> bool) {
@@ -115,10 +119,10 @@ fn changing_models_keeps_the_active_stream_and_regenerates_with_the_new_selectio
     let server = Fixture::new(vec![Plan::hold(Some("A first")), Plan::success("B replacement"), Plan::success("A followup")]);
     let mut h = Harness::from_models(vec![model(&server, "provider-a", "wire-model-a"), model(&server, "provider-b", "wire-model-b")]);
     let thread = h.send("first question");
-    h.until(&server, "A's streamed prefix", || h.answer(thread).text() == "A first");
+    h.until(&server, "A's streamed prefix", || h.answer_text(thread) == "A first");
 
     h.act(|chat| chat.model.set(Some("provider-b".into())));
-    assert_eq!(h.read(|chat| chat.model.get_untracked()).as_deref(), Some("provider-b"));
+    assert_eq!(h.read(|chat| untrack(|| chat.model.get())).as_deref(), Some("provider-b"));
     assert_eq!(h.answer(thread).status, Status::Streaming);
     server.inspect(|s| {
         assert_eq!(s.requests.len(), 1);
@@ -126,22 +130,22 @@ fn changing_models_keeps_the_active_stream_and_regenerates_with_the_new_selectio
         assert!(s.closed.is_empty(), "changing selection leaves A's connection open");
     });
     server.send_text(0, " + A continued");
-    h.until(&server, "A to continue after selecting B", || h.answer(thread).text() == "A first + A continued");
+    h.until(&server, "A to continue after selecting B", || h.answer_text(thread) == "A first + A continued");
 
     let answer = h.answer(thread).id;
     h.act(move |chat| chat.stop(thread));
     h.until(&server, "A's cancelled socket to close", || server.inspect(|s| s.closed.contains(&0)));
     assert_eq!(h.answer(thread).status, Status::Stopped);
-    assert_eq!(h.answer(thread).text(), "A first + A continued");
+    assert_eq!(h.answer_text(thread), "A first + A continued");
 
     h.act(move |chat| chat.regenerate(answer));
     h.done(&server, thread);
-    assert_eq!(h.answer(thread).text(), "B replacement");
+    assert_eq!(h.answer_text(thread), "B replacement");
     assert_eq!(h.answer(thread).status, Status::Done);
     h.act(|chat| chat.model.set(Some("provider-a".into())));
     h.send("follow up on A");
     h.done(&server, thread);
-    assert_eq!(h.answer(thread).text(), "A followup");
+    assert_eq!(h.answer_text(thread), "A followup");
     server.inspect(|s| {
         assert_eq!(s.requests.len(), 3, "network models generate titles locally");
         assert_eq!(s.requests[1]["model"], "wire-model-b");
@@ -168,29 +172,29 @@ fn queued_requests_keep_the_model_selected_at_enqueue_and_send_the_completed_his
     ]);
     let mut h = Harness::from_models(vec![model(&server, "provider-a", "wire-model-a"), model(&server, "provider-b", "wire-model-b")]);
     let thread = h.send("first question");
-    h.until(&server, "A's first answer", || h.answer(thread).text() == "A first answer");
+    h.until(&server, "A's first answer", || h.answer_text(thread) == "A first answer");
     h.act(|chat| chat.model.set(Some("provider-b".into())));
     h.send("queued for B");
     h.act(|chat| chat.model.set(Some("provider-a".into())));
     h.send("queued for A");
     assert_eq!(
-        h.read(|chat| chat.queue.keys().into_iter().map(|id| chat.queue.item(&id).unwrap().get_untracked().model_id).collect::<Vec<_>>()),
+        h.read(|chat| chat.queue.keys().into_iter().map(|id| untrack(|| chat.queue.item(&id).unwrap().get()).model_id).collect::<Vec<_>>()),
         ["provider-b", "provider-a"]
     );
     h.act(|chat| chat.model.set(Some("provider-b".into())));
     server.finish(0);
-    h.until(&server, "B's queued answer", || server.inspect(|s| s.requests.len() == 2) && h.answer(thread).text() == "B queued answer");
+    h.until(&server, "B's queued answer", || server.inspect(|s| s.requests.len() == 2) && h.answer_text(thread) == "B queued answer");
     assert_eq!(h.answer(thread).status, Status::Streaming);
     server.finish(1);
     h.until(&server, "both queued requests to finish", || {
         h.read(|chat| chat.thread_messages(thread).len() == 6 && chat.queue.is_empty() && !chat.is_answering(thread))
     });
-    assert_eq!(h.answer(thread).text(), "A queued answer");
+    assert_eq!(h.answer_text(thread), "A queued answer");
     assert_eq!(h.answer(thread).status, Status::Done);
-    assert_eq!(h.read(|chat| chat.model.get_untracked()).as_deref(), Some("provider-b"));
+    assert_eq!(h.read(|chat| untrack(|| chat.model.get())).as_deref(), Some("provider-b"));
     h.send("follow up on B");
     h.done(&server, thread);
-    assert_eq!(h.answer(thread).text(), "B followup answer");
+    assert_eq!(h.answer_text(thread), "B followup answer");
     server.inspect(|s| {
         assert_eq!(s.requests.len(), 4);
         assert_eq!(
@@ -246,7 +250,7 @@ fn fragmented_unicode_sse_reaches_chat_and_followups_send_the_real_history() {
     let thread = h.send("first question 中文");
     h.done(&server, thread);
     assert_eq!(h.answer(thread).status, Status::Done);
-    assert_eq!(h.answer(thread).text(), "你好，world 😀");
+    assert_eq!(h.answer_text(thread), "你好，world 😀");
     h.send("follow up");
     h.done(&server, thread);
     server.inspect(|s| {
@@ -275,7 +279,7 @@ fn http_errors_are_terminal_and_do_not_expose_the_response_body() {
         assert!(error.contains(&status.to_string()), "{error}");
         assert!(!error.contains("private upstream"), "response bodies stay outside the conversation");
         assert!(!error.contains("test-only-key"));
-        assert!(h.answer(thread).text().is_empty());
+        assert!(h.answer_text(thread).is_empty());
     }
 }
 
@@ -296,7 +300,7 @@ fn a_refused_loopback_connection_ends_the_chat_answer_without_exposing_the_endpo
     assert!(!error.contains(&endpoint));
     assert!(!error.contains("fixture-secret"));
     assert!(!error.contains("test-only-key"));
-    assert!(h.answer(thread).text().is_empty());
+    assert!(h.answer_text(thread).is_empty());
     assert!(!h.read(|chat| chat.is_answering(thread)));
     assert_eq!(h.window.app().now(), clock, "network failures use real time");
     assert_eq!(observer.inspect(|s| s.requests.len()), 0);
@@ -312,11 +316,11 @@ fn a_dropped_stream_keeps_its_prefix_and_regeneration_replaces_it() {
     let thread = h.send("regenerate this");
     h.done(&server, thread);
     assert!(matches!(h.answer(thread).status, Status::Failed(_)));
-    assert_eq!(h.answer(thread).text(), "received 中文");
+    assert_eq!(h.answer_text(thread), "received 中文");
     let answer = h.answer(thread).id;
     h.act(move |chat| chat.regenerate(answer));
     h.done(&server, thread);
-    assert_eq!(h.answer(thread).text(), "complete replacement");
+    assert_eq!(h.answer_text(thread), "complete replacement");
     assert_eq!(h.answer(thread).status, Status::Done);
     server.inspect(|s| {
         assert_eq!(s.requests.len(), 2);
@@ -333,7 +337,7 @@ fn an_unterminated_sse_event_cannot_become_a_successful_answer() {
     let thread = h.send("incomplete event");
     h.done(&server, thread);
     assert!(matches!(h.answer(thread).status, Status::Failed(_)));
-    assert_eq!(h.answer(thread).text(), "kept");
+    assert_eq!(h.answer_text(thread), "kept");
 }
 
 #[test]
@@ -346,7 +350,7 @@ fn stop_before_the_first_token_and_during_a_stream_closes_the_http_peer() {
         let thread = h.send("old request");
         h.until(&server, "the first HTTP request", || server.inspect(|s| s.requests.len() == 1));
         if let Some(prefix) = prefix {
-            h.until(&server, "the streamed prefix", || h.answer(thread).text() == prefix);
+            h.until(&server, "the streamed prefix", || h.answer_text(thread) == prefix);
         }
         h.act(move |chat| chat.stop(thread));
         assert_eq!(h.answer(thread).status, Status::Stopped);
@@ -354,7 +358,7 @@ fn stop_before_the_first_token_and_during_a_stream_closes_the_http_peer() {
         h.done(&server, thread);
         h.until(&server, "the cancelled socket to close", || server.inspect(|s| s.closed.contains(&0)));
         assert_eq!(h.answer(thread).status, Status::Done);
-        assert_eq!(h.answer(thread).text(), "fresh answer", "retired data cannot contaminate the new answer");
+        assert_eq!(h.answer_text(thread), "fresh answer", "retired data cannot contaminate the new answer");
         assert_eq!(h.read(|chat| chat.thread_messages(thread)[1].text()), prefix.unwrap_or_default());
     }
 }
@@ -381,7 +385,7 @@ fn an_idle_http_stream_times_out_without_advancing_the_app_clock() {
     let thread = h.send("stall after first token");
     h.done(&server, thread);
     assert!(matches!(h.answer(thread).status, Status::Failed(_)));
-    assert_eq!(h.answer(thread).text(), "kept before idle");
+    assert_eq!(h.answer_text(thread), "kept before idle");
     assert_eq!(h.window.app().now(), clock, "wall-clock network timeout is not a virtual-time advance");
     h.until(&server, "the idle request to close", || server.inspect(|s| s.closed.contains(&0)));
 }

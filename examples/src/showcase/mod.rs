@@ -90,11 +90,11 @@ pub fn showcase() -> View {
     let dark = state("dark", || false);
     // The menu bar (macOS): its items run commands the page handles, with the keys bound to them.
     set_menus([
-        Menu::new("View").item(MenuItem::action("Dark appearance", "view.toggle_dark").checked(dark.get_untracked())),
+        Menu::new("View").item(MenuItem::action("Dark appearance", "view.toggle_dark").checked(untrack(|| dark.get()))),
         Menu::edit(),
     ]);
     on_command("view.toggle_dark", move || {
-        let on = !dark.get_untracked();
+        let on = !untrack(|| dark.get());
         dark.set(on);
         set_theme(if on { Theme::dark() } else { Theme::light() });
         set_menus([Menu::new("View").item(MenuItem::action("Dark appearance", "view.toggle_dark").checked(on)), Menu::edit()]);

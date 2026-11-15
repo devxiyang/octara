@@ -12,8 +12,8 @@ The selected next architecture is [Runtime and Signals consolidation](design/cor
 native Rust execution with no VM, a small Signals API, explicit ownership and App update boundaries.
 It includes a source-based refactor/removal inventory and ordered acceptance gates. Its
 [Signals contract](design/signals-redesign.md) and [runtime contract](design/runtime-contract.md)
-define the breaking replacement without compatibility aliases. The first correctness slice is
-implemented; the broader API/primitive migration remains pending. The sections below describe
+define the breaking replacement without compatibility aliases. The first correctness slice and
+second Signals API slice are implemented; broader lifetime/primitive migration remains pending. The sections below describe
 the current code.
 
 The [first-round scope](design/core-consolidation.md#scope-and-necessity) is limited to correct

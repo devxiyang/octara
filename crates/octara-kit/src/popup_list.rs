@@ -80,7 +80,7 @@ pub fn popup_list(
                     if !seen.insert(item.id.clone()) {
                         rows.push(row); // The ordinary stable-list duplicate-key diagnostic.
                     } else if let Some(old) = rows.item(&item.id) {
-                        if old.get_untracked() != row {
+                        if untrack(|| old.get()) != row {
                             rows.update(&item.id, |old| *old = row);
                         }
                     } else {

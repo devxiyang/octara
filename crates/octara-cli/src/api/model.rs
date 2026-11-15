@@ -31,7 +31,7 @@ pub struct CrateApi {
 pub struct Item {
     pub path: String,
     pub kind: Kind,
-    /// The declaration as Rust source (`pub fn state<T: Clone + 'static>(..) -> Signal<T>`).
+    /// The declaration as Rust source (`pub fn state<T: 'static>(..) -> Signal<T>`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sig: String,
     /// The generic `impl` block a method is declared in, when it adds parameters or bounds.

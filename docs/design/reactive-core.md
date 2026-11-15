@@ -6,14 +6,17 @@ Research material is in [`docs/research/`](../research/).
 The selected replacement is [Signals redesign](signals-redesign.md), with
 [runtime semantics](runtime-contract.md) and a [refactor/removal inventory](core-consolidation.md).
 Those documents supersede this page's target API and ownership choices, without claiming the
-replacement is implemented. In particular, public Memo, Signal::new, untracked read methods and
+entire replacement is implemented. Signal::new, App root ownership, task detachment and
 stronger named-state reload handling remain separate follow-ups. Update the baseline
 sections as each implementation gate lands; historical benchmark results below are not new validation.
 
 The first correctness refactor now implements non-Clone state/borrowed access, in-place update,
 runtime-qualified handles, independent untracking, guarded execution context and captured observer
-scopes. Public Memo, Signal::new and the untracked read methods remain unchanged pending their
-separate API simplification; they are not compatibility aliases for a second implementation.
+scopes. The next API slice now exposes Signal and ReadSignal from `octara::reactive` and the
+prelude, with memo returning ReadSignal and watch returning a non-generic Watch stop handle.
+Graph/sequence implementation modules are private. Duplicate untracked read methods and the
+public Memo wrapper have been removed; explicit samples use untrack with ordinary get/with.
+Signal/ReadSignal properties use the existing binding path; TextBuffer keeps incremental edits.
 
 ## 1. Conclusion
 
@@ -111,7 +114,7 @@ Diagnostics carry a fixed code and source location, are deduplicated and counted
 | I4 | Clamp a value into a range (using `watch`) | Behaves correctly |
 | I4b | Two `watch`es write to each other | `FLUSH_RUNAWAY` |
 | I5 | Use the entry of a deleted row | `READ_DISPOSED` |
-| I6 | A handler captures a stale value of `get_untracked()` | **Silent** (explicitly opting out of tracking, undetectable in principle) |
+| I6 | A handler captures a stale value sampled with `untrack` | **Silent** (explicitly opting out of tracking, undetectable in principle) |
 | I7 | A hot patch inserts a new component before a same-named component | `AMBIGUOUS_COMPONENT`; behaves correctly under `component_keyed` |
 | I8 | A helper function that reads other state is called in a `watch` callback | Behaves correctly (callbacks do not track) |
 | I9 | A list row reads once and uses it as a fixed value | `STRICT_READ_UNTRACKED` |

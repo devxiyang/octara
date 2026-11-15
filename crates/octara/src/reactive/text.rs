@@ -5,7 +5,7 @@
 //! the log to the kernel: an append costs O(appended), not O(length). `TextBuffer` is a cheap,
 //! reference-counted handle; it can live inside a list item and is reclaimed with it.
 
-use crate::reactive::graph::{Signal, state};
+use crate::reactive::graph::{Signal, state, untrack};
 use crate::reactive::list::{Cursor, Log, writable};
 use std::cell::RefCell;
 use std::ops::Range;
@@ -50,7 +50,7 @@ impl std::fmt::Debug for TextBuffer {
 /// Named text state for the current component (like `state`).
 #[track_caller]
 pub fn text_buffer(key: &'static str, init: impl FnOnce() -> String) -> TextBuffer {
-    state(key, || TextBuffer::new(init())).get_untracked()
+    untrack(|| state(key, || TextBuffer::new(init())).get())
 }
 
 impl TextBuffer {
@@ -78,10 +78,6 @@ impl TextBuffer {
         self.0.version.get()
     }
 
-    pub fn get_untracked(&self) -> String {
-        self.0.value.borrow().clone()
-    }
-
     #[track_caller]
     pub fn len(&self) -> usize {
         self.0.version.get();
@@ -105,7 +101,7 @@ impl TextBuffer {
             }
         }
         self.0.log.borrow_mut().push(c);
-        self.0.version.set_internal(self.0.version.get_untracked() + 1);
+        self.0.version.set_internal(untrack(|| self.0.version.get()) + 1);
     }
 
     #[track_caller]

@@ -27,8 +27,8 @@ pub use text_input::{TextDocument, TextEdit};
 
 use crate::diagnostics::{self as codes, Diagnostic};
 use crate::kernel::{Breakpoint, HandlerKind, Kernel, NodeId, State, Theme};
-use crate::reactive::graph::Signal;
 use crate::reactive::graph::{Ctx, Owner, Runtime, ScopeId};
+use crate::reactive::graph::{Signal, untrack};
 use crate::view::{Handler, Parent, ScopedHandler, Slots, View, mount};
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::rc::Rc;
@@ -670,7 +670,7 @@ impl AppState {
             let Some(w) = self.handle(id) else { continue };
             w.w.kernel.borrow_mut().theme_changed();
             let bp = self.res.theme.borrow().breakpoint_of(w.w.size.get().0);
-            if w.w.breakpoint.get_untracked() != bp {
+            if untrack(|| w.w.breakpoint.get()) != bp {
                 w.enter(|| w.w.breakpoint.set(bp));
             }
         }
@@ -1238,7 +1238,7 @@ impl Window {
             self.app.rt.with_frame(Ctx::Handler, None, Some(None), || {
                 self.w.viewport.set((width, height));
                 let bp = self.w.kernel.borrow().theme().breakpoint_of(width);
-                if self.w.breakpoint.get_untracked() != bp {
+                if untrack(|| self.w.breakpoint.get()) != bp {
                     self.w.breakpoint.set(bp);
                 }
             });

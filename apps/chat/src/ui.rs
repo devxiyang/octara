@@ -110,7 +110,7 @@ fn commands(chat: &Chat, listing: Signal<bool>) {
     });
     let c = chat.clone();
     on_command("chat.stop", move || {
-        if let Some(t) = c.current.get_untracked() {
+        if let Some(t) = untrack(|| c.current.get()) {
             c.stop(t);
         }
     });
@@ -225,8 +225,8 @@ fn rename_field(chat: &Chat, id: ThreadId, title: &str) -> View {
         .id(format!("rename-{id}"))
         .label("Conversation name")
         .w_full()
-        .on_submit(move || submit.rename(id, &draft.get_untracked()))
-        .on_blur(move || blur.rename(id, &draft.get_untracked()))
+        .on_submit(move || submit.rename(id, &untrack(|| draft.get())))
+        .on_blur(move || blur.rename(id, &untrack(|| draft.get())))
         .on_key(move |k| {
             if k.key == Key::Escape {
                 cancel.set(None);
@@ -395,7 +395,7 @@ fn transcript(thread: ThreadId) -> View {
 
 /// One message: the person's on the right; an answer's parts, its state and actions.
 fn message(id: u64, m: ReadSignal<Message>) -> View {
-    let author = m.with_untracked(|m| m.author);
+    let author = untrack(|| m.with(|m| m.author));
     let body = match author {
         Author::User => user_message(id, m),
         Author::Assistant => answer(id, m),
@@ -407,7 +407,7 @@ fn user_message(id: u64, m: ReadSignal<Message>) -> El {
     let chat = chat();
     let (edit, copy) = (chat.clone(), m);
     let editing = chat.editing;
-    let parts = m.with_untracked(|m| m.parts.clone());
+    let parts = untrack(|| m.with(|m| m.parts.clone()));
     let files: Vec<View> =
         parts.iter().filter_map(|p| if let Part::File(f) = p { Some(chip(f.name.clone()).into()) } else { None }).collect();
     let body = parts.into_iter().find_map(|p| if let Part::Text(t) = p { Some(t) } else { None });
@@ -434,7 +434,7 @@ fn user_message(id: u64, m: ReadSignal<Message>) -> El {
                 .child(
                     icon_button(icons::COPY, "Copy")
                         .id(format!("copy-{id}"))
-                        .on_press(move || write_to_clipboard(copy.with_untracked(|m| m.text()))),
+                        .on_press(move || write_to_clipboard(untrack(|| copy.with(|m| m.text())))),
                 )
                 .child(icon_button(icons::PENCIL, "Edit").id(format!("edit-{id}")).on_press(move || edit.edit(id))),
         )
@@ -448,13 +448,13 @@ fn answer(id: u64, m: ReadSignal<Message>) -> El {
     let chat = chat();
     // The parts as a list of their own, by index: a new part adds a row, a tool moving on
     // updates its row, and the rest (Markdown streaming in) stays as it is.
-    let parts = state_list("parts", || m.with_untracked(|m| m.parts.iter().cloned().enumerate().collect()), |p: &(usize, Part)| p.0);
+    let parts = state_list("parts", || untrack(|| m.with(|m| m.parts.iter().cloned().enumerate().collect())), |p: &(usize, Part)| p.0);
     watch(
         move || m.with(|m| m.parts.clone()),
         move |now, _| {
             for (i, p) in now.iter().enumerate() {
                 match parts.item(&i) {
-                    Some(old) if old.with_untracked(|o| o.1 == *p) => {}
+                    Some(old) if untrack(|| old.with(|o| o.1 == *p)) => {}
                     Some(_) => parts.update(&i, |o| o.1 = p.clone()),
                     None => parts.push((i, p.clone())),
                 }
@@ -483,7 +483,7 @@ fn answer(id: u64, m: ReadSignal<Message>) -> El {
         .child(show(move || matches!(status(), Status::Failed(_)), {
             let retry = chat.clone();
             move || {
-                let why = match m.get_untracked().status {
+                let why = match untrack(|| m.get()).status {
                     Status::Failed(w) => w,
                     _ => String::new(),
                 };
@@ -511,7 +511,7 @@ fn answer(id: u64, m: ReadSignal<Message>) -> El {
                     .child(
                         icon_button(icons::COPY, "Copy")
                             .id(format!("copy-{id}"))
-                            .on_press(move || write_to_clipboard(copy.with_untracked(|m| m.text()))),
+                            .on_press(move || write_to_clipboard(untrack(|| copy.with(|m| m.text())))),
                     )
                     .child(
                         icon_button(icons::REFRESH_CW, "Regenerate")
@@ -526,7 +526,7 @@ fn answer(id: u64, m: ReadSignal<Message>) -> El {
 
 /// One part of an answer.
 fn part(id: u64, i: usize, p: ReadSignal<(usize, Part)>) -> View {
-    match p.get_untracked().1 {
+    match untrack(|| p.get()).1 {
         Part::Text(t) => markdown(paced(&t)).id(format!("text-{id}-{i}")).into(),
         Part::Reasoning { text: t, .. } => reasoning(id, i, t, p),
         Part::Tool(_) => tool(id, i, p),
@@ -623,7 +623,7 @@ fn tool(id: u64, i: usize, p: ReadSignal<(usize, Part)>) -> View {
 fn composer() -> El {
     let chat = chat();
     let current = chat.current;
-    let queued = chat.queue.filter(move |q| Some(q.thread) == current.get_untracked());
+    let queued = chat.queue.filter(move |q| Some(q.thread) == untrack(|| current.get()));
     let (send, stop, attach, drop_in, busy, busy2, editing, cancel_edit) =
         (chat.clone(), chat.clone(), chat.clone(), chat.clone(), chat.clone(), chat.clone(), chat.editing, chat.clone());
     let answering = move || current.get().is_some_and(|t| busy.is_answering(t));
@@ -670,7 +670,7 @@ fn composer() -> El {
                                 move || files.source(),
                                 move |fid, f| {
                                     let (fid, c) = (*fid, use_context::<Chat>().expect("inside the chat"));
-                                    let name = f.get_untracked().1.name;
+                                    let name = untrack(|| f.get()).1.name;
                                     removable_chip(&name, move || c.detach(fid)).id(format!("file-{fid}")).into()
                                 },
                             ))
@@ -688,7 +688,7 @@ fn composer() -> El {
                         .bg(Paint::Color(Color::TRANSPARENT))
                         .on_submit(move || send.send())
                         .on_key(move |k| {
-                            if k.key == Key::Escape && editing.get_untracked().is_some() {
+                            if k.key == Key::Escape && untrack(|| editing.get()).is_some() {
                                 cancel_edit.cancel_edit();
                                 return true;
                             }
@@ -722,7 +722,7 @@ fn composer() -> El {
                                 icon_button(icons::SQUARE, "Stop")
                                     .id("stop")
                                     .on_press(move || {
-                                        if let Some(t) = stop.current.get_untracked() {
+                                        if let Some(t) = untrack(|| stop.current.get()) {
                                             stop.stop(t);
                                         }
                                     })

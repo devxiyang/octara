@@ -42,6 +42,10 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
 - Write state only in handlers (`on_press`, ..), `watch` callbacks and tasks
   (`WRITE_IN_BUILD`, `WRITE_IN_DERIVE`). A value computed from others is a `memo`, not a second
   state kept in sync.
+- `memo` returns `ReadSignal`; `Signal::read_only` exposes the same read capability. Pass handles
+  directly to matching properties (`text(name)`, `.checked(checked)`) or use closures to format.
+  Sample explicitly with `untrack(|| value.get())`; untrack does not grant write permission.
+  `watch` returns a stop handle; ignoring it keeps the watch owned by its scope.
 - Lists: key items by a stable unique id; an `each` row is one element; `virtual_each` sits
   directly in a scroll container with a bounded height.
 - Give the app root `size_full()`; a scroll area is `flex_1().overflow_y_scroll()`.
