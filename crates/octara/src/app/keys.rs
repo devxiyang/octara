@@ -445,13 +445,13 @@ impl Window {
         self.on_key_guarded(ev, None)
     }
 
-    pub(super) fn on_key_guarded(&mut self, ev: KeyEvent, guard: Option<&crate::inspect::TargetGuard>) -> bool {
+    pub(super) fn on_key_guarded(&mut self, ev: KeyEvent, guard: Option<&super::TargetGuard>) -> bool {
         let mut handled = false;
         self.input_frame(|| handled = self.route_key(&ev, guard));
         handled
     }
 
-    fn route_key(&self, ev: &KeyEvent, guard: Option<&crate::inspect::TargetGuard>) -> bool {
+    fn route_key(&self, ev: &KeyEvent, guard: Option<&super::TargetGuard>) -> bool {
         if matches!(
             ev.key,
             Key::Tab | Key::Up | Key::Down | Key::Left | Key::Right | Key::Home | Key::End | Key::Enter | Key::Space | Key::Escape

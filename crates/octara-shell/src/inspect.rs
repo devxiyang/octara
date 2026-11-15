@@ -1,9 +1,10 @@
 //! The opt-in live Inspector: one local connection, ordered requests, UI-thread execution.
 
 use super::{Shell, ShellEvent, ww};
+use octara::app::TargetGuard;
 use octara::app::WindowId;
 use octara::diagnostics as codes;
-use octara::inspect::{Delivery, Reply, Request, TargetGuard};
+use octara::inspect::{Delivery, Reply, Request};
 use octara::serde_json::{self, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -68,7 +68,7 @@ impl Window {
         self.event_guarded(event, None)
     }
 
-    pub(crate) fn event_guarded(&mut self, event: InputEvent, guard: Option<&crate::inspect::TargetGuard>) -> bool {
+    pub(crate) fn event_guarded(&mut self, event: InputEvent, guard: Option<&super::TargetGuard>) -> bool {
         if self.app.shutdown.get() || self.w.closed.get() {
             return false;
         }

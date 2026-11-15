@@ -1,9 +1,10 @@
 //! A gesture in a real window. The host advances its wall clock and polls this job between
 //! native events; this module never moves app time or blocks the event loop.
 
+use octara::app::TargetGuard;
 use octara::app::{InputEvent, Phase, PointerEvent, PointerKind, Window, WindowId};
 use octara::diagnostics as codes;
-use octara::inspect::{Delivery, Reply, Request, TargetGuard};
+use octara::inspect::{Delivery, Reply, Request};
 use octara::kernel::NodeId;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};

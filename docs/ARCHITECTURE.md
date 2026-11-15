@@ -13,7 +13,7 @@ native Rust execution with no VM, a small Signals API, explicit ownership and Ap
 It includes a source-based refactor/removal inventory and ordered acceptance gates. Its
 [Signals contract](design/signals-redesign.md) and [runtime contract](design/runtime-contract.md)
 define the breaking replacement without compatibility aliases. Correctness, Signals API,
-App root lifetime, style declaration ordering and exclusive element content slices are implemented;
+App root lifetime, style declaration ordering, exclusive element content and Inspector boundary slices are implemented;
 broader primitive migration remains pending.
 The sections below describe the current code.
 
@@ -149,6 +149,10 @@ owned by scopes on the app clock ([async](design/async.md)).
 - `octara::inspect`: the semantic tree with test ids, bounds, actions, source locations and
   component boundaries; requests (tap, type, key, advance, settle, size, theme, expect, …) over
   JSON lines; `check` across themes and sizes.
+- Kernel owns tree identity and read-only node facts, with no Inspector dependency. `inspect::tree`
+  and `inspect::pick` project those facts into the protocol. `app::TargetGuard` checks typed
+  tree/node identity and focus between operation phases; only Inspector encodes opaque tokens.
+  Window's `inspect`, `pick` and `target` are convenience calls into that adapter.
 - What people point at: `pick` names the element at a point; a picking window (`mod+shift+c` in
   debug shells) outlines what the pointer is over and copies the clicked element's line, with
   the component that made it.

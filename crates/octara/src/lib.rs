@@ -26,6 +26,7 @@ pub mod capture;
 pub mod conformance;
 pub mod diagnostics;
 pub mod icon;
+mod identity;
 pub mod image;
 pub mod inspect;
 pub mod kernel;

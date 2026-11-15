@@ -222,6 +222,15 @@ def counter(args, output, sockets):
         first = app.inspect()
         require(find(first, "count")["name"] == "Count: 0", "counter: unexpected initial state")
         require("examples/src/apps.rs:" in find(first, "inc").get("source", ""), "counter: missing real node source")
+        inc = find(first, "inc")
+        x, y, width, height = inc["bounds"]
+        picked = app.requests({"op": "pick", "x": x + min(4, width / 4), "y": y + height / 2,
+                               "target": first["target"]})[0]
+        node = picked["picked"]["node"]
+        require(node.get("id") == "inc" and node["target"] == inc["target"] and node.get("source") == inc["source"],
+                "counter: picking and the semantic snapshot disagree on the live element")
+        require(picked.get("live", {}).get("route") == "query" and not picked.get("delivery"),
+                "counter: read-only picking reported input delivery")
         before = app.capture("counter-before.png")
         app.requests({"op": "tap", "id": "inc"}, {"op": "expect", "id": "count", "text": "Count: 1"})
         after = app.capture("counter-after.png")

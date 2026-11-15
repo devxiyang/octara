@@ -1,9 +1,10 @@
 # Runtime and Signals consolidation
 
-Status: selected target architecture, 2026-11-15; correctness, Signals API, App root lifetime and
-style declaration ordering plus exclusive element content slices implemented, broader consolidation pending. This is the complete target inventory, not a claim that every target has
-shipped. No compatibility layer, deprecated aliases or
-parallel old/new execution modes will be retained.
+Status: selected target architecture, 2026-11-15. Six slices are implemented: correctness,
+Signals API, App root lifetime, style declaration ordering, exclusive element content and the
+Inspector boundary. Broader consolidation remains pending. This is the complete target inventory,
+not a claim that every target has shipped. No compatibility layer, deprecated aliases or parallel
+old/new execution modes will be retained.
 
 This document owns scope, source inventory and delivery gates. [Runtime contract](runtime-contract.md)
 defines execution/lifetime semantics; [Signals redesign](signals-redesign.md) defines the replacement
@@ -394,6 +395,41 @@ changes and reload. Live forms passed validation, retained editing/selection, ra
 behavior, native resize and GPU capture. Evidence: `/tmp/octara-content-live-20261115` and
 `/tmp/octara-content-forms-20261115`. Input uses framework events; OS input and native IME were
 not requalified in this slice.
+
+## Sixth-round Kernel and Inspector boundary
+
+Kernel no longer imports Inspector. Tree lifetime lives in a private neutral TreeIdentity;
+App supplies its namespace/window identity and reload advances the tree generation. NodeId
+continues to carry its existing slot generation. No new public identity handles, registry,
+generation scheme or protocol version are introduced.
+
+Inspector owns token formatting and semantic tree/pick projections. The removed Kernel::inspect_tree
+and Kernel::pick entry points are replaced by inspect::tree and inspect::pick; existing Window
+conveniences call those adapters. Projection reads the same live Kernel facts, including secure
+value redaction, absent versus empty values, accessibility visibility, component boundaries and
+command ordering. Only two narrow internal read accessors were needed; no mutable node access
+or intermediate retained tree was added.
+
+TargetGuard now belongs to app, and the Inspector and shell use that supported path without an
+alias at the former inspect path. Input/key routing no longer depends on Inspector. Guards
+compare typed identities rather than allocating formatted strings per check; node liveness,
+exit state, focus and final-handler rules remain unchanged. The wire encoding stays in Inspector
+and is covered by an exact encoding test; existing operation tests cover stale/refused/delivered
+behavior, same-ID replacement, focus callbacks, reload and different App namespaces.
+
+This slice does not remove raw Kernel/platform mutation access or combine activation and lifecycle
+dispatch. Those remain separate follow-ups requiring their own migration and behavioral evidence.
+
+Validation on 2026-11-15: 652 workspace tests passed, 3 ignored; workspace Clippy with warnings
+denied, formatting, doctests, generated-skill freshness and diff checks passed. Source inspection
+confirms Kernel (including its submodules), neutral identity and App's guard/key/event paths no
+longer reference Inspector. API inventory checks verify the new exports and absence of the old
+paths. The rebuilt real-window target fixture passed all 73 requests: seven hits, one replacement,
+one value/geometry update and two child openings. All seven live Inspector scenarios also passed,
+including a new check that picking and snapshots identify the same live node/source, plus native
+WebKit callbacks/snapshots and GPU captures. Evidence: `/tmp/octara-boundary-targets-20261115` and
+`/tmp/octara-boundary-live-20261115`. The fixtures use framework input; OS input and native IME were
+not requalified.
 
 ## References
 

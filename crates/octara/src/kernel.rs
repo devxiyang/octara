@@ -15,7 +15,6 @@ mod edit;
 mod focus;
 mod issues;
 mod paint;
-mod pick;
 pub mod rich;
 pub mod select;
 pub mod style;
@@ -708,7 +707,7 @@ fn default_layout(kind: Kind) -> taffy::Style {
 }
 
 pub struct Kernel {
-    target_scope: crate::inspect::TargetScope,
+    identity: crate::identity::TreeIdentity,
     nodes: SlotMap<NodeId, Node>,
     root: NodeId,
     overlay_layer: NodeId,
@@ -839,7 +838,7 @@ impl Kernel {
     /// A kernel reading `res` (shared by an app's windows).
     pub fn new(res: Rc<Resources>) -> Self {
         let mut k = Kernel {
-            target_scope: crate::inspect::TargetScope::new(crate::inspect::new_namespace(), 0),
+            identity: crate::identity::TreeIdentity::new(crate::identity::new_namespace(), 0),
             nodes: SlotMap::with_key(),
             root: NodeId::default(),
             overlay_layer: NodeId::default(),
@@ -934,20 +933,16 @@ impl Kernel {
         &self.res
     }
 
-    pub(crate) fn bind_targets(&mut self, namespace: u128, window: u64) {
-        self.target_scope = crate::inspect::TargetScope::new(namespace, window);
+    pub(crate) fn bind_identity(&mut self, namespace: u128, window: u64) {
+        self.identity = crate::identity::TreeIdentity::new(namespace, window);
     }
 
-    pub(crate) fn reload_targets(&mut self) {
-        self.target_scope.reload();
+    pub(crate) fn advance_identity(&mut self) {
+        self.identity.advance();
     }
 
-    pub(crate) fn window_target(&self) -> String {
-        self.target_scope.token(None)
-    }
-
-    pub(crate) fn target_of(&self, node: NodeId) -> Option<String> {
-        self.is_alive(node).then(|| self.target_scope.token(Some(slotmap::Key::data(&node).as_ffi())))
+    pub(crate) fn identity(&self) -> crate::identity::TreeIdentity {
+        self.identity
     }
     /// Replaces the text engine (e.g. `MonoEngine` for benchmarks) and remeasures every text.
     /// Replaces the text engine (fonts registered with the old one are not carried over).
@@ -1119,6 +1114,14 @@ impl Kernel {
     }
     pub fn checked(&self, id: NodeId) -> Option<bool> {
         self.node(id).checked
+    }
+    pub(crate) fn has_value(&self, id: NodeId) -> bool {
+        let n = self.node(id);
+        n.input().is_some() || n.value.is_some()
+    }
+
+    pub(crate) fn command_names(&self, id: NodeId) -> impl Iterator<Item = &str> {
+        self.node(id).commands.iter().map(|(name, _)| name.as_str())
     }
     pub fn required(&self, id: NodeId) -> Option<bool> {
         self.node(id).required

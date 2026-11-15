@@ -6,6 +6,7 @@ mod drive;
 mod edit;
 mod event;
 mod focus;
+mod guard;
 mod input;
 mod keys;
 mod pick;
@@ -18,6 +19,7 @@ mod tooltip;
 pub use asks::menu_surface;
 pub use edit::{TextField, byte_offset, utf16_offset};
 pub use event::{FileDrag, InputEvent, Recorded, Recording};
+pub use guard::TargetGuard;
 pub use keys::{BUILTIN_COMMANDS, Binding, Chord, Key, KeyEvent, Keymap};
 pub use pointer::{Button, Drag, DragPhase, Modifiers, Phase, PointerEvent, PointerKind, Tuning};
 pub(crate) use selection::ListOrder;
@@ -140,8 +142,8 @@ impl WindowId {
 /// the reactive runtime, the scheduler and its clock, settings and the platform, and the
 /// windows.
 pub(crate) struct AppState {
-    /// A process-random namespace and local app incarnation, for opaque inspector targets.
-    target_namespace: u128,
+    /// A process-random namespace and local App incarnation, shared by its window identities.
+    namespace: u128,
     pub(crate) rt: Rc<Runtime>,
     root_scope: ScopeId,
     /// A one-way gate: teardown may still run internally, but public work cannot restart.
@@ -416,7 +418,7 @@ impl WindowState {
     ) -> WindowState {
         let size = options.size;
         let mut kernel = Kernel::new(app.res.clone());
-        kernel.bind_targets(app.target_namespace, id.number());
+        kernel.bind_identity(app.namespace, id.number());
         WindowState {
             id,
             kernel: RefCell::new(kernel),
@@ -486,7 +488,7 @@ impl App {
         let rt = Runtime::new();
         let root_scope = rt.create_app_scope();
         let state = AppState {
-            target_namespace: crate::inspect::new_namespace(),
+            namespace: crate::identity::new_namespace(),
             rt,
             root_scope,
             shutdown: Cell::new(false),
@@ -879,7 +881,7 @@ impl Window {
 
     /// This window's opaque Inspector identity, including its current tree incarnation.
     pub fn target(&self) -> String {
-        self.w.kernel.borrow().window_target()
+        crate::inspect::window_target(&self.w.kernel.borrow())
     }
 
     pub(crate) fn focused_node(&self) -> Option<NodeId> {
@@ -1353,7 +1355,7 @@ impl Window {
             text_input,
             pending: self.app().pending().len(),
             window: self.w.id.number(),
-            target: k.window_target(),
+            target: crate::inspect::window_target(&k),
             selection: self.selected_text().map(|t| t.chars().take(2000).collect()),
             asks: self.asks().into_iter().map(|(id, ask)| crate::inspect::AskInfo { id, ask }).collect(),
             windows: self
@@ -1367,7 +1369,7 @@ impl Window {
                     size: [w.w.size.get().0, w.w.size.get().1],
                 })
                 .collect(),
-            root: k.inspect_tree(),
+            root: crate::inspect::tree(&k),
         }
     }
     /// What the current frame draws, in order (see [`crate::paint`]).
@@ -1466,7 +1468,7 @@ impl Window {
     /// (the nearest test id and the child indices below it) and scroll by test id.
     fn reload(&self) {
         self.enter(|| {
-            self.w.kernel.borrow_mut().reload_targets();
+            self.w.kernel.borrow_mut().advance_identity();
             let modals = self.save_modals();
             {
                 let mut i = self.w.interaction.borrow_mut();
@@ -1737,7 +1739,7 @@ impl Window {
     /// The topmost element at `(x, y)` (logical pixels), with its number, test id, source and
     /// the elements around it (the inspector's `pick`).
     pub fn pick(&self, x: f32, y: f32) -> Option<crate::inspect::Picked> {
-        self.w.kernel.borrow().pick(x, y)
+        crate::inspect::pick(&self.w.kernel.borrow(), x, y)
     }
 
     /// Starts a capture: asks the platform window for a snapshot of every native view shown.

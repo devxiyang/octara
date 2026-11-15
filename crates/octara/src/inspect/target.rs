@@ -1,44 +1,29 @@
-//! Opaque allocation identities and operation-local guards. No token table or property
-//! revision is needed: the existing app, window, tree and node lifetimes are the identity.
+//! Opaque wire targets and request validation. App owns operation-local guards; Kernel owns
+//! tree lifetime. This adapter encodes their identity without a token table or property revision.
 
 use super::{Delivery, Reply, Request, Window, codes};
-use crate::app::{Button, Chord, Event, InputEvent, Key, Modifiers, Phase, PointerEvent, PointerKind};
-use crate::kernel::NodeId;
-use std::collections::hash_map::RandomState;
-use std::hash::BuildHasher;
-use std::sync::LazyLock;
+use crate::app::{Button, Chord, Event, InputEvent, Key, Modifiers, Phase, PointerEvent, PointerKind, TargetGuard};
+use crate::identity::TreeIdentity;
+use crate::kernel::{Kernel, NodeId};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-pub(crate) fn new_namespace() -> u128 {
-    static NONCE: LazyLock<u64> = LazyLock::new(|| RandomState::new().hash_one(std::process::id()));
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    (u128::from(*NONCE) << 64) | u128::from(NEXT.fetch_add(1, Ordering::Relaxed))
+fn token(identity: TreeIdentity, node: Option<NodeId>) -> String {
+    let mut token = format!("ot1:{:032x}:{:016x}:{:016x}", identity.namespace, identity.window, identity.generation);
+    if let Some(node) = node {
+        use slotmap::Key;
+        use std::fmt::Write;
+        write!(token, ":{:016x}", node.data().as_ffi()).expect("writing to a string");
+    }
+    token
 }
 
-pub(crate) struct TargetScope {
-    namespace: u128,
-    window: u64,
-    tree: u64,
+pub(crate) fn window_target(kernel: &Kernel) -> String {
+    token(kernel.identity(), None)
 }
 
-impl TargetScope {
-    pub(crate) fn new(namespace: u128, window: u64) -> Self {
-        Self { namespace, window, tree: 0 }
-    }
-
-    pub(crate) fn reload(&mut self) {
-        self.tree = self.tree.checked_add(1).expect("tree incarnation exhausted");
-    }
-
-    pub(crate) fn token(&self, node: Option<u64>) -> String {
-        let mut token = format!("ot1:{:032x}:{:016x}:{:016x}", self.namespace, self.window, self.tree);
-        if let Some(node) = node {
-            use std::fmt::Write;
-            write!(token, ":{node:016x}").expect("writing to a string");
-        }
-        token
-    }
+pub(super) fn node_target(kernel: &Kernel, node: NodeId) -> Option<String> {
+    kernel.is_alive(node).then(|| token(kernel.identity(), Some(node)))
 }
 
 /// A validated request with its routed window and optional operation-local target guard.
@@ -47,42 +32,6 @@ pub struct ParsedRequest {
     pub window: Window,
     pub request: Request,
     pub guard: Option<TargetGuard>,
-}
-
-/// The allocation chosen at parsing, retained throughout one operation. This is a lifetime
-/// check, not an authorization credential or a lock on the app's state.
-#[derive(Clone, Debug)]
-pub struct TargetGuard {
-    window: String,
-    node: Option<NodeId>,
-    focus: bool,
-}
-
-impl TargetGuard {
-    pub fn node(&self) -> Option<NodeId> {
-        self.node
-    }
-
-    /// The same app/window/tree and node still exist. A no-id `key` or `type` also requires
-    /// the originally focused node. Do not recheck after an operation's final handler: a
-    /// successful Tab or delete button is allowed to change focus or remove itself.
-    pub fn is_current(&self, window: &Window) -> bool {
-        if window.is_closed() || window.target() != self.window {
-            return false;
-        }
-        if let Some(node) = self.node {
-            let k = window.kernel();
-            if !k.is_alive(node) || k.is_exiting(node) {
-                return false;
-            }
-        }
-        !self.focus || self.node == window.focused_node()
-    }
-
-    /// The guarded node still owns focus, for a pending text phase after focusing it.
-    pub fn is_focused(&self, window: &Window) -> bool {
-        self.node.is_some() && self.is_current(window) && self.node == window.focused_node()
-    }
 }
 
 enum Binding<'a> {
@@ -176,11 +125,11 @@ pub fn parse_guarded_request(window: &Window, line: &str) -> Result<ParsedReques
             ));
         }
         let node = node_for(&routed, &binding);
-        let expected = if node_token { node.and_then(|node| routed.kernel().target_of(node)) } else { Some(routed.target()) };
+        let expected = if node_token { node.and_then(|node| node_target(&routed.kernel(), node)) } else { Some(routed.target()) };
         if expected.as_deref() != Some(token.as_str()) {
             return Err(Box::new(stale(Delivery::Refused)));
         }
-        Some(TargetGuard { window: routed.target(), node, focus: matches!(binding, Binding::Focus) })
+        Some(TargetGuard::new(&routed, node, matches!(binding, Binding::Focus)))
     } else {
         None
     };
@@ -406,4 +355,18 @@ pub(super) fn drag(window: &mut Window, id: &str, dx: f32, dy: f32, guard: Optio
     }
     window.event(InputEvent::Pointer(event(Phase::Up, (start.0 + dx, start.1 + dy))));
     Reply { delivery: Some(delivered), ..Reply::ok() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wire_targets_keep_their_canonical_encoding() {
+        let mut identity = TreeIdentity::new(0x1234, 7);
+        assert_eq!(token(identity, None), "ot1:00000000000000000000000000001234:0000000000000007:0000000000000000");
+        identity.advance();
+        let node = NodeId::from(slotmap::KeyData::from_ffi(0x0000000100000007));
+        assert_eq!(token(identity, Some(node)), "ot1:00000000000000000000000000001234:0000000000000007:0000000000000001:0000000100000007");
+    }
 }

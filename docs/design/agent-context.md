@@ -73,6 +73,14 @@ public identifier types is required for this first connection.
 
 ## Targets and observation identity
 
+Internally, Kernel owns a private tree identity (App namespace, window and reload generation),
+while NodeId retains its existing slot generation. App owns TargetGuard and checks these values
+directly between operation phases. Inspector alone encodes the opaque wire tokens and projects
+Kernel facts into Node/Picked replies through `inspect::tree` and `inspect::pick`. Kernel does
+not import Inspector types or serialization. The adapter reads current facts without retaining
+a second tree; Window's existing inspection/picking conveniences call it. This separation keeps
+the existing wire format and lifetime semantics, without an identity registry or new public IDs.
+
 Snapshots list the app's windows; a request's optional `window` number selects one, and node
 actions resolve the existing test ID in that window. Missing windows or controls return an error.
 Asynchronous gestures, resize, capture and settle recheck that their owning window still exists.

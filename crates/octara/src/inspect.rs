@@ -16,8 +16,10 @@
 use serde::{Deserialize, Serialize};
 
 mod target;
-pub use target::{ParsedRequest, TargetGuard, handle_guarded, parse_guarded_request};
-pub(crate) use target::{TargetScope, new_namespace};
+pub(crate) use target::window_target;
+pub use target::{ParsedRequest, handle_guarded, parse_guarded_request};
+mod tree;
+pub use tree::{pick, tree};
 
 /// The snapshot schema; bumped when a field changes meaning or goes away.
 pub const SCHEMA: &str = "octara.inspect/1";
