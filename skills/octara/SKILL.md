@@ -34,11 +34,13 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
 - Mark every function that builds part of the view `#[component]`: elements then record which
   component made them and where it was called, for the inspector and picking.
 - State in components is named: `state("key", || init)`, `state_list("key", init, key_fn)`,
-  `text_buffer(..)`. Never `Signal::new` in a component (`UNKEYED_STATE`).
+  `text_buffer(..)`. Use `App::current().run(|| state("key", || init))` for shared App state;
+  same-key/type App lookups reuse the value until shutdown.
 - Register `on_cleanup(..)` during construction to retire external requests and cancel retained
   external work with the component. Input handlers restore their mounted scope; tasks they spawn
-  are cancelled with it. `Task::detach` explicitly makes App work with no current window; do not
-  detach tasks that call window APIs such as prompts or focus.
+  are cancelled with it. Create App work inside `App::current().run(|| spawn(..))`; it has no
+  current window. Keep prompt/focus tasks mounted. Hosts call `app.shutdown()` on exit; closing
+  the last window alone does not dispose the App root, and dropping handles is not shutdown.
 - Write state only in handlers (`on_press`, ..), `watch` callbacks and tasks
   (`WRITE_IN_BUILD`, `WRITE_IN_DERIVE`). A value computed from others is a `memo`, not a second
   state kept in sync.

@@ -76,7 +76,7 @@ fn disposing_the_scope_cancels_its_tasks() {
             .into()
     });
     assert_eq!(app.app().pending().len(), 1);
-    assert!(app.app().pending()[0].scope.starts_with("window"), "{:?}", app.app().pending());
+    assert!(app.app().pending()[0].scope.starts_with("app/window"), "{:?}", app.app().pending());
     app.tap("close").unwrap();
     assert!(dropped.get(), "the task (and what it holds) is dropped with its scope");
     assert!(app.app().pending().is_empty());
@@ -84,7 +84,7 @@ fn disposing_the_scope_cancels_its_tasks() {
 }
 
 #[test]
-fn a_detached_task_outlives_its_scope() {
+fn an_app_task_outlives_its_initiating_ui_scope() {
     let mut app = Window::headless(log_view(|log| {
         let open = state("open", || true);
         col()
@@ -92,18 +92,19 @@ fn a_detached_task_outlives_its_scope() {
             .child(show(
                 move || open.get(),
                 move || {
-                    spawn(async move {
-                        sleep(ms(10)).await;
-                        push(log, "still here");
-                    })
-                    .detach();
+                    App::current().run(|| {
+                        spawn(async move {
+                            sleep(ms(10)).await;
+                            push(log, "still here");
+                        });
+                    });
                     el().into()
                 },
             ))
             .into()
     }));
     app.tap("close").unwrap();
-    assert_eq!(app.app().pending()[0].scope, "detached");
+    assert_eq!(app.app().pending()[0].scope, "app");
     app.app().advance(ms(10));
     assert_eq!(log(&app), "still here");
 }
@@ -303,12 +304,15 @@ fn a_clock_steps_while_someone_reads_it() {
             .into()
     });
     assert_eq!(w.kernel().text_of("t").unwrap(), "0 0");
+    assert_eq!(w.app().pending().len(), 1, "both readers share one timer");
+    assert_eq!(w.app().pending()[0].scope, "app");
     w.app().advance(Duration::from_millis(250));
     assert_eq!(w.kernel().text_of("t").unwrap(), "200 200", "in steps of its period");
     assert!(w.app().next_deadline().is_some());
     assert!(w.app().run_until_idle(Duration::from_secs(1)).is_ok(), "it does not keep the app busy");
     w.tap("hide").unwrap();
     assert_eq!(w.app().next_deadline(), None, "no reader left: the timer stopped");
+    assert!(w.app().diagnostics().is_empty(), "{:?}", w.app().diagnostics());
 }
 
 #[test]
@@ -360,7 +364,7 @@ fn a_handler_restores_its_component_context_and_owns_spawned_tasks() {
     });
     app.tap("start").unwrap();
     assert_eq!(observed.get(), Some(42), "callbacks see the scope captured when mounted");
-    assert_ne!(app.app().pending()[0].scope, "detached");
+    assert!(app.app().pending()[0].scope.starts_with("app/window"));
     app.tap("hide").unwrap();
     assert!(dropped.get(), "a task started by the handler belongs to its mounted scope");
     assert!(app.app().pending().is_empty());

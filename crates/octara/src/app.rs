@@ -143,6 +143,9 @@ pub(crate) struct AppState {
     /// A process-random namespace and local app incarnation, for opaque inspector targets.
     target_namespace: u128,
     pub(crate) rt: Rc<Runtime>,
+    root_scope: ScopeId,
+    /// A one-way gate: teardown may still run internally, but public work cannot restart.
+    shutdown: Cell<bool>,
     /// Tasks, timers and channels, and the clock: one for all the windows.
     pub(crate) sched: Rc<crate::task::Scheduler>,
     /// The theme, the text system and input conventions every window's kernel reads.
@@ -480,9 +483,13 @@ impl App {
     /// An app on `platform` (a backend's; `HeadlessPlatform` for tests and agents), with no
     /// window yet.
     pub fn new(platform: impl crate::platform::Platform + 'static) -> App {
+        let rt = Runtime::new();
+        let root_scope = rt.create_app_scope();
         let state = AppState {
             target_namespace: crate::inspect::new_namespace(),
-            rt: Runtime::new(),
+            rt,
+            root_scope,
+            shutdown: Cell::new(false),
             sched: Rc::new(crate::task::Scheduler::default()),
             res: Rc::default(),
             windows: RefCell::default(),
@@ -531,8 +538,48 @@ impl App {
     /// Closes window `id` now: its scope (state, watches, tasks) is disposed, its platform
     /// window let go, and the other windows settle.
     pub fn close_window(&self, id: WindowId) {
+        if self.app.shutdown.get() {
+            return;
+        }
         self.app.closing.borrow_mut().push(id);
         self.app.frame(std::panic::Location::caller());
+    }
+
+    /// Ends this App, even when other handles remain. Closes windows, runs scope cleanup and
+    /// cancels tasks. Repeated calls do nothing. Closing the last window alone does not end it.
+    /// Hosts must call this before exiting; dropping Rc handles is not a shutdown protocol.
+    #[track_caller]
+    pub fn shutdown(&self) {
+        let at = std::panic::Location::caller();
+        self.enter(|| {
+            if self.app.shutdown.get() {
+                return;
+            }
+            if !self.app.rt.write_allowed(at) || !self.app.rt.effect_allowed(at) {
+                return;
+            }
+            self.app.shutdown.set(true);
+            // Close the gate before callbacks run. Even if user cleanup unwinds, stop the
+            // scheduler rather than allowing late wakes to resume partially retired work.
+            struct Stop<'a>(&'a crate::task::Scheduler);
+            impl Drop for Stop<'_> {
+                fn drop(&mut self) {
+                    self.0.shutdown();
+                }
+            }
+            let _stop = Stop(&self.app.sched);
+            let windows = self.app.order.borrow().clone();
+            for id in windows {
+                self.app.close(id);
+            }
+            self.app.opening.borrow_mut().clear();
+            self.app.closing.borrow_mut().clear();
+            self.app.rt.dispose_scope(self.app.root_scope);
+        });
+    }
+
+    pub fn is_shutdown(&self) -> bool {
+        self.app.shutdown.get()
     }
 
     /// Runs `f` as the app (not as one of its windows).
@@ -549,11 +596,19 @@ impl App {
         self.app.check.set(on);
     }
 
-    /// Runs `f` in the app's runtime, outside any window: makes or reads state the windows
-    /// share (a signal made here belongs to the app), then lets every window settle.
+    /// Runs `f` in the App root scope, without a current window, then settles its windows.
+    /// Named state persists across calls; tasks and cleanup belong to this root until shutdown.
+    /// Preserves the caller's execution phase: a pure computation gains no write permission.
+    /// Panics after shutdown, without calling `f`.
+    #[track_caller]
     pub fn run<R>(&self, f: impl FnOnce() -> R) -> R {
+        let at = std::panic::Location::caller();
         self.enter(|| {
-            let r = self.app.rt.with_owner(None, || self.app.rt.with_scope(None, f));
+            if self.app.shutdown.get() {
+                self.app.rt.diag(&codes::WRITE_DISPOSED, "cannot enter a shut down App".into(), at);
+                panic!("[{}] App has shut down", codes::WRITE_DISPOSED);
+            }
+            let r = self.app.rt.with_owner(None, || self.app.rt.with_scope(Some(self.app.root_scope), f));
             // A nested call belongs to its enclosing operation; in particular, a memo or
             // binding must finish computing before that operation flushes and lays out.
             if self.app.depth.get() == 1 {
@@ -617,6 +672,9 @@ impl AppState {
 
     /// Makes window `id` with its platform window; `root` is mounted by the caller.
     fn insert_window(&self, options: crate::platform::WindowOptions, root: Rc<dyn Fn() -> View>) -> Result<WindowId, String> {
+        if self.shutdown.get() {
+            return Err("App has shut down".into());
+        }
         let id = self.windows.borrow_mut().try_insert_with_key(|id| {
             let platform = self.system.borrow_mut().open_window(id, &options)?;
             Ok::<_, String>(Rc::new(WindowState::new(self, id, options, root, platform)))
@@ -628,7 +686,7 @@ impl AppState {
     /// After an operation: with consistency checks on, every window's tree must equal its
     /// from-scratch rebuild.
     fn check_consistency(self: &Rc<Self>) {
-        if !self.check.get() || self.checking.get() {
+        if self.shutdown.get() || !self.check.get() || self.checking.get() {
             return;
         }
         // A budget cutoff leaves unfinished work visible to the caller. There is no settled
@@ -695,7 +753,9 @@ impl AppState {
 
     /// Closes window `id` at the end of the frame.
     pub(crate) fn request_close(&self, id: WindowId) {
-        self.closing.borrow_mut().push(id);
+        if !self.shutdown.get() {
+            self.closing.borrow_mut().push(id);
+        }
     }
 
     pub(crate) fn open_windows(&self) -> Vec<WindowId> {
@@ -716,6 +776,9 @@ impl AppState {
     /// [`frame`](Self::frame), retaining the generation of a window that just settled. A later
     /// window's measurements or callbacks can invalidate an earlier window, including this one.
     fn frame_except(self: &Rc<Self>, settled: Option<(WindowId, u64)>, at: &'static std::panic::Location<'static>) {
+        if self.shutdown.get() {
+            return;
+        }
         enter_app(self, || {
             let mut generations = rustc_hash::FxHashMap::default();
             generations.extend(settled);
@@ -848,7 +911,7 @@ impl Window {
     fn mount_root(&self) {
         // Named by the window: state is kept by its scope's path (across a hot reload), so two
         // windows' roots never share a key.
-        let s = self.app.rt.create_scope(None, &format!("window{}", self.w.id.number()));
+        let s = self.app.rt.create_scope(Some(self.app.root_scope), &format!("window{}", self.w.id.number()));
         self.w.root_scope.set(Some(s));
         let parent = Parent { node: self.w.kernel.borrow().root(), root: self.w.root_slots.clone() };
         let root = self.w.root.clone();
@@ -880,7 +943,7 @@ impl Window {
         // change is laid out with the rest. They may wake or spawn more, so repeat (bounded).
         let mut command_ran = false;
         for _ in 0..16 {
-            if self.w.closed.get() || self.app.closing.borrow().contains(&self.w.id) {
+            if self.app.shutdown.get() || self.w.closed.get() || self.app.closing.borrow().contains(&self.w.id) {
                 self.w.interaction.borrow_mut().after_update.clear();
                 return self.w.kernel.borrow().mutation_generation();
             }
@@ -1331,6 +1394,9 @@ impl Window {
         self.on_semantic(ev)
     }
     pub(crate) fn on_semantic(&mut self, ev: Event) -> Result<(), String> {
+        if self.app.shutdown.get() || self.w.closed.get() {
+            return Err("window is closed".into());
+        }
         if let Event::NumericInput(_, value) = &ev
             && !value.is_finite()
         {

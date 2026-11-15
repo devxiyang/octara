@@ -698,9 +698,9 @@ fn listen(name: &str, f: impl Fn(String) + 'static) {
 }
 
 /// Several windows: the first opens notes, each in a window of its own that closes itself; the
-/// app ends with its last window.
+/// desktop host ends the app with its last window. The opened count belongs to the App root.
 pub fn windows() -> View {
-    let opened = state("opened", || 0u32);
+    let opened = App::current().run(|| state("notes-opened", || 0u32));
     let picked = state("picked", String::new);
     col()
         .size_full()

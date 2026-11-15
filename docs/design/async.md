@@ -6,8 +6,8 @@ later API choices. The target document is not a claim that all planned APIs are 
 
 First-round implementation update: handlers now restore their mounted scope/window, tasks and
 asks retire with their owner, and cancelled request futures withdraw native/drawn requests.
-Task::detach remains available and now clears both scope and window ownership. Removing it and
-adding an explicit App root scope remain later API work, not prerequisites for these fixes.
+App::run now supplies the persistent App root scope. Task::detach is removed: choose ownership
+before starting work. App::shutdown closes windows and root work explicitly; hosts call it on exit.
 
 `App::current().run(..)` creates work outside the initiating mounted scope, without a current
 window. Chat uses this entry for model requests: regenerating an answer removes the old message
@@ -21,11 +21,15 @@ channels, optionally named; a subscription is a scope-owned handle.
 ## Tasks
 
 - `spawn(async { .. }) -> Task`: runs on the UI thread and belongs to the current scope; cancelled when the scope is destroyed (the future and
-  everything it holds are dropped). `Task::cancel` cancels immediately, `Task::detach` lets it outlive the scope. Dropping the `Task` handle does
+  everything it holds are dropped). `Task::cancel` cancels immediately. Dropping the `Task` handle does
   nothing (the scope owns it).
-- Detaching chooses App work without a current window. It does not keep captured UI state alive;
+- `App::current().run(|| spawn(..))` chooses App work without a current window. It does not keep captured UI state alive;
   window APIs such as prompt/focus require a still-scoped task. App timers continue to run when
   the last window closes.
+- `App::shutdown()` retires windows, root cleanup, tasks, named channels, timers and host wakes.
+  Late wakes cannot enqueue more work. Blocking jobs already executing may finish; pending reports
+  them truthfully, but their cancelled task cannot publish the result. Shutdown does not wait for
+  those workers. It is explicit and idempotent, not inferred from Rc handle counts.
 - A task runs like a handler: it may write signals, within its own scope (newly created signals and cleanups belong to it). After spawn, it runs to
   its first `await` before the end of the current frame.
 - At the end of each frame (`settle`), woken tasks are polled until none is ready (with a limit); what they change is laid out together with the rest.

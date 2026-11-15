@@ -45,6 +45,9 @@ impl App {
     /// Moves the clock to `t` (shells call this before each event and frame with the time since
     /// launch). Whatever comes due on the way runs at its own time. Time never goes back.
     pub fn advance_to(&self, t: Duration) {
+        if self.is_shutdown() {
+            return;
+        }
         let sched = self.app.sched.clone();
         let t = crate::task::whole_ns(ms(t)).max(sched.now_ms());
         for _ in 0..100_000 {
@@ -86,6 +89,9 @@ impl App {
     /// Always after now (by a nanosecond at least): a deadline reached means "as soon as
     /// possible", so moving the clock to it always moves it on.
     pub fn next_deadline(&self) -> Option<Duration> {
+        if self.is_shutdown() {
+            return None;
+        }
         let windows = self.each();
         let own = windows.iter().filter_map(|w| w.deadline());
         let soonest = crate::task::whole_ns(self.app.sched.now_ms() + 1e-6);
@@ -119,6 +125,9 @@ impl App {
     /// Runs what other threads woke (background results, channel messages). Shells call this
     /// when the app's waker fires.
     pub fn poll(&self) {
+        if self.is_shutdown() {
+            return;
+        }
         match self.each().first() {
             Some(w) => w.input_frame(|| {}),
             None => self.enter(|| {
@@ -131,6 +140,9 @@ impl App {
     /// jobs, and runs every woken task, until none is left. Returns what is still pending
     /// (tasks waiting on timers or channels, subscriptions).
     pub fn settle(&self) -> Vec<PendingWork> {
+        if self.is_shutdown() {
+            return self.pending();
+        }
         let sched = self.app.sched.clone();
         for _ in 0..1000 {
             sched.wait_background(BACKGROUND_WAIT);

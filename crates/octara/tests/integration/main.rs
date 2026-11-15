@@ -1,6 +1,7 @@
 //! The crate's integration tests in one binary: one link and one launch for all of them.
 
 mod a11y;
+mod app_lifetime;
 mod canvas;
 mod capture;
 mod conformance;

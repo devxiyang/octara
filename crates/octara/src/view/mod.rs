@@ -630,9 +630,8 @@ pub fn clock(period: std::time::Duration) -> ReadSignal<std::time::Duration> {
         let mut clocks = u.clocks.borrow_mut();
         let e = clocks.entry(step).or_insert_with(|| {
             let s = Signal::detached(at(crate::task::now()));
-            let task = crate::task::interval(period, move || s.set(at(crate::task::now())));
             // The readers own it together, not the first one's scope.
-            task.clone().detach();
+            let task = crate::app::App::current().run(|| crate::task::interval(period, move || s.set(at(crate::task::now()))));
             crate::app::Clock { signal: s, task, readers: 0 }
         });
         e.readers += 1;

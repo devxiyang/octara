@@ -139,9 +139,13 @@ pub fn run_with(options: Options, root: impl Fn() -> View + 'static) {
         inspector: None,
         inspect_pending: None,
     };
-    event_loop.run_app(&mut shell).expect("event loop");
+    let result = event_loop.run_app(&mut shell);
+    if let Some(app) = shell.app.take() {
+        app.shutdown();
+    }
     // `process::exit` below bypasses Drop, so shut down and clean the endpoint first.
     drop(shell.inspector.take());
+    result.expect("event loop");
     if shell.failed {
         std::process::exit(1);
     }

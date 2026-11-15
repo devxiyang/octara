@@ -1,7 +1,7 @@
 # Runtime and Signals consolidation
 
-Status: selected target architecture, 2026-11-15; first correctness and second Signals API slices
-implemented, broader consolidation pending. This is the complete target inventory, not a claim that every target has
+Status: selected target architecture, 2026-11-15; correctness, Signals API and App root lifetime
+slices implemented, broader consolidation pending. This is the complete target inventory, not a claim that every target has
 shipped. No compatibility layer, deprecated aliases or
 parallel old/new execution modes will be retained.
 
@@ -290,9 +290,43 @@ compiled struct example. Workspace Clippy with warnings denied, formatting and d
 The rebuilt real-window fixtures passed `live_inspect.py` (all five scenarios), `live_forms.py`,
 and Chat's `live_lifecycle.py`; these use framework input, not OS input or native IME qualification.
 
-Remaining independent work includes explicit App root scope/named state, removal of Signal::new
-and Task::detach, collection aliases, and primitive representation/ordering. No compatibility
-layer or parallel reactive implementation is introduced in this slice.
+The following lifetime slice completes App root ownership and the constructor/task removals.
+Collection aliases and primitive representation/ordering remain independent work. No compatibility
+layer or parallel reactive implementation is introduced.
+
+## Third-round App root lifetime
+
+App owns a persistent root scope; window scopes are its children. App::run preserves execution
+phase and enters that root without a current window. Repeated root state key/type lookups reuse
+one allocation, initializer and ownership record. A conflicting type is rejected before its
+initializer runs and keeps the original value. Component duplicate declaration diagnostics remain.
+
+Public Signal::new and Task::detach are removed, together with the obsolete UNKEYED_STATE runtime
+diagnostic. Tasks choose scope when created: ordinary spawn inherits the mounted scope, and
+App::current().run(|| spawn(..)) creates root work. Shared clocks choose App ownership at creation
+and still cancel when their last reader leaves. Every task now has a concrete ScopeId.
+
+App::shutdown is explicit and idempotent. It gates new entries before closing windows, then
+retires root cleanup/state/watch work and shuts down the existing scheduler. Queued and late wakes
+cannot run retired tasks; a currently polled future is cancelled when its poll returns. Workers
+already executing are not killed or awaited; their pending status remains truthful. Desktop host
+exit calls shutdown before handling event-loop errors or process::exit. Closing the last window
+alone does not end the core App; the desktop host deliberately chooses to exit at that point.
+
+Rc counts are not an ownership boundary: Window::headless retains the runtime after its temporary
+App handle disappears, and callbacks/tasks may capture App handles. No automatic last-handle
+shutdown or new public owner-token system is introduced. Hosts must explicitly end the App.
+
+Regressions cover persistent lookups, rejected type changes, context inheritance across reload and
+window reopening, child-before-root cleanup, idempotent shutdown, callback shutdown, pure-phase
+rejection, cancelled channels/timers, slot reuse and late wakes. The real-window notes scenario
+now keeps its counter in App state and checks it across window close, hot reload and reopening.
+
+Validation on 2026-11-15: 644 workspace tests passed, 3 ignored; Clippy with warnings denied,
+formatting, generated-skill freshness, doctests and diff checks passed. Rebuilt live Inspector
+(five scenarios), Chat lifecycle and forms fixtures passed. A real desktop host run with
+OCTARA_EXIT_AFTER_FRAMES=1 exited successfully through App::shutdown. Desktop input verification
+uses framework events; OS keyboard and Chinese IME were not requalified in this slice.
 
 ## References
 

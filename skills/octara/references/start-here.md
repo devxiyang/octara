@@ -342,13 +342,44 @@ assert_eq!(app.kernel().text_of("status").as_deref(), Some("ready"));
 - Register `on_cleanup(..)` during component construction to retire external requests and cancel
   external work when that scope is disposed. Input handlers restore their mounted scope, so tasks
   they start are automatically cancelled with that scope. Dropping a task handle does not cancel it.
-  `Task::detach` explicitly makes App-lifetime work without a current window; keep tasks that use
-  prompts, focus or other window APIs scoped. Cancelling an awaiting task also withdraws its prompt.
+  Create App-lifetime tasks inside `App::current().run(|| spawn(..))`, without a current window;
+  keep prompt/focus tasks mounted. Cancelling an awaiting task also withdraws its prompt.
 - The system: `open_window(options, view)` / `close_window(id)`; `open_url(url)`;
   `write_to_clipboard(text or image)` / `read_from_clipboard()`; `prompt_for_paths(options)` and
   `prompt_for_new_path(dir, name)`, awaited in a task (`None`: cancelled); files dropped from the
   system reach `.on_drop(|paths| ..)`, styled meanwhile by `.drag_over(|p| ..)`; the pointer's
   look is `.cursor(CursorStyle::..)` (`cursor_pointer()`), else the platform's.
+
+## App lifetime
+
+`App::run` enters a persistent root scope. The same key and type return the same state across
+calls; the initializer runs once. A conflicting type is rejected without replacing the value.
+Window/component keys remain declarations per build, with duplicate-key diagnostics.
+
+```rust
+use octara::prelude::*;
+use octara::platform::HeadlessPlatform;
+use std::time::Duration;
+
+let app = App::new(HeadlessPlatform::default());
+let count = app.run(|| state("count", || 0));
+let task = app.run(|| spawn(async move {
+    sleep(Duration::from_millis(10)).await;
+    count.set(1);
+}));
+app.poll();
+app.advance(Duration::from_millis(10));
+assert_eq!(app.run(|| state("count", || 99).get()), 1);
+assert!(task.is_finished());
+app.shutdown();
+assert!(app.is_shutdown());
+```
+
+App state and tasks survive window closure and reload. `app.shutdown()` closes windows, runs
+cleanup and cancels tasks; it is idempotent. It rejects new App entries and windows. The desktop
+shell calls it when its event loop ends (including its last-window-exit policy); other hosts must
+call it too. Dropping Rc handles alone is not a lifecycle protocol. Shutdown cannot preempt an
+executing Rust callback or kill a blocking worker; their result interest and late wakes are retired.
 
 ## Testing and checking
 

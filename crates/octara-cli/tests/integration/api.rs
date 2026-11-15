@@ -30,6 +30,9 @@ fn items_are_found_by_canonical_path_and_alias() {
     assert!(api.items().all(|item| !item.path.contains("::reactive::graph") && !item.path.contains("::reactive::seq")));
     assert!(api.get("octara::reactive::graph::state").is_none(), "old implementation paths are not aliases");
     assert!(api.get("octara::prelude::Memo").is_none());
+    assert!(api.get("octara::reactive::Signal::new").is_none());
+    assert!(api.get("octara::task::Task::detach").is_none());
+    assert!(api.get("octara::app::App::shutdown").is_some());
     assert!(api.get("octara::reactive::Signal::get_untracked").is_none());
     assert!(api.get("octara::reactive::ReadSignal::with_untracked").is_none());
     assert!(api.get("octara::reactive::Watch::stop").is_some());

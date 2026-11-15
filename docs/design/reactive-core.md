@@ -6,8 +6,8 @@ Research material is in [`docs/research/`](../research/).
 The selected replacement is [Signals redesign](signals-redesign.md), with
 [runtime semantics](runtime-contract.md) and a [refactor/removal inventory](core-consolidation.md).
 Those documents supersede this page's target API and ownership choices, without claiming the
-entire replacement is implemented. Signal::new, App root ownership, task detachment and
-stronger named-state reload handling remain separate follow-ups. Update the baseline
+entire replacement is implemented. Broader primitive restructuring and stronger named-state
+reload handling remain separate follow-ups. Update the baseline
 sections as each implementation gate lands; historical benchmark results below are not new validation.
 
 The first correctness refactor now implements non-Clone state/borrowed access, in-place update,
@@ -17,6 +17,8 @@ prelude, with memo returning ReadSignal and watch returning a non-generic Watch 
 Graph/sequence implementation modules are private. Duplicate untracked read methods and the
 public Memo wrapper have been removed; explicit samples use untrack with ordinary get/with.
 Signal/ReadSignal properties use the existing binding path; TextBuffer keeps incremental edits.
+The App root now owns persistent named state and root work. Signal::new and Task::detach are
+removed. App::shutdown provides explicit retirement while remaining handles stay inert for new work.
 
 ## 1. Conclusion
 
@@ -72,7 +74,7 @@ collector, scope and window on return/unwind. A memo read inside untrack still t
 
 Based on Nominal Adapton: first-class names determine identity, and name ambiguity is detected.
 
-- Each stateful scope has a name path, for example `window1/Disclosure[account]/open` (a window's root scope is named by the window, so
+- Each stateful scope has a name path, for example `app/window1/Disclosure[account]/open` (a window's root scope is named by the window, so
   two windows' roots never share a key); state, hot reload and the Inspector all locate by name path;
 - The identity of `component_keyed(name, key, ..)` is independent of sibling order; `component(name, ..)` is named by its ordinal among same-named siblings, and `AMBIGUOUS_COMPONENT` is reported when a second one appears;
 - A state's lifetime is the lifetime of its scope: when a `show` branch is hidden or a list row is deleted, the state inside is destroyed with it;
@@ -118,7 +120,7 @@ Diagnostics carry a fixed code and source location, are deduplicated and counted
 | I7 | A hot patch inserts a new component before a same-named component | `AMBIGUOUS_COMPONENT`; behaves correctly under `component_keyed` |
 | I8 | A helper function that reads other state is called in a `watch` callback | Behaves correctly (callbacks do not track) |
 | I9 | A list row reads once and uses it as a fixed value | `STRICT_READ_UNTRACKED` |
-| I10 | `Signal::new` in a component | `UNKEYED_STATE` |
+| I10 | Unnamed public Signal construction | Rejected at compile time; no public constructor |
 | M1 | Write state inside a Memo | `WRITE_IN_DERIVE`, the write is rejected |
 
 There is also a **check of agreement with from-scratch computation** (`App::set_check_consistency`): after every operation, each window's tree is rebuilt from scratch from the current state and compared with the incremental result byte for byte.

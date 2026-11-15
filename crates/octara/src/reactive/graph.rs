@@ -107,6 +107,8 @@ struct ScopeData {
     path: String,
     names: HashMap<String, u32>,
     state_keys: HashSet<&'static str>,
+    /// App state is looked up repeatedly; mounted components declare keys once per build.
+    persistent_names: bool,
     contexts: Vec<(TypeId, Rc<dyn Any>)>,
     owner: Option<Owner>,
 }
@@ -727,6 +729,7 @@ impl Runtime {
             path,
             names: HashMap::new(),
             state_keys: HashSet::new(),
+            persistent_names: false,
             contexts: Vec::new(),
             owner: self.owner.get(),
         };
@@ -745,6 +748,12 @@ impl Runtime {
             self.scopes.borrow_mut()[p.i as usize].children.push(id);
         }
         id
+    }
+
+    pub(crate) fn create_app_scope(&self) -> ScopeId {
+        let scope = self.create_scope(None, "app");
+        self.scopes.borrow_mut()[scope.i as usize].persistent_names = true;
+        scope
     }
 
     pub fn on_cleanup(&self, f: Box<dyn FnOnce()>) {
@@ -835,8 +844,13 @@ impl Runtime {
         let Some(scope) = self.scope.get() else {
             panic!("state(\"{key}\") outside a component at {}", loc(at));
         };
+        if !self.scope_alive(scope) {
+            self.diag(&codes::WRITE_DISPOSED, "cannot initialize state in a retired scope".into(), at);
+            panic!("[{}] state owner was disposed", codes::WRITE_DISPOSED);
+        }
         let path = self.scope_path(scope);
-        let duplicate = !self.scopes.borrow_mut()[scope.i as usize].state_keys.insert(key);
+        let persistent = self.scopes.borrow()[scope.i as usize].persistent_names;
+        let duplicate = !persistent && !self.scopes.borrow_mut()[scope.i as usize].state_keys.insert(key);
         if duplicate {
             self.diag(
                 &codes::DUPLICATE_STATE_KEY,
@@ -847,9 +861,15 @@ impl Runtime {
         let existing = self.store.borrow().get(&(path.clone(), key)).copied();
         if let Some((idx, old_ty)) = existing {
             if self.alive(idx) && old_ty == ty {
-                self.scopes.borrow_mut()[scope.i as usize].nodes.push(idx);
-                self.nodes.borrow_mut()[idx.i as usize].scope = Some(scope);
+                if self.nodes.borrow()[idx.i as usize].scope != Some(scope) {
+                    self.scopes.borrow_mut()[scope.i as usize].nodes.push(idx);
+                    self.nodes.borrow_mut()[idx.i as usize].scope = Some(scope);
+                }
                 return idx;
+            }
+            if persistent && self.alive(idx) {
+                self.diag(&codes::STATE_TYPE_CHANGED, format!("App state \"{key}\" already has a different type; lookup rejected"), at);
+                panic!("[{}] App state type mismatch", codes::STATE_TYPE_CHANGED);
             }
             // The same key for another type in this build: the first keeps it, this call gets
             // a state of its own (not kept across reloads); the diagnostic above says why.
@@ -909,18 +929,6 @@ impl<T> Signal<T> {
 impl<T: 'static> Signal<T> {
     fn from_idx(idx: Idx) -> Self {
         Signal { idx, _t: PhantomData, _ns: PhantomData }
-    }
-
-    /// A free-standing signal owned by the current scope. Inside a component prefer [`state`].
-    #[track_caller]
-    pub fn new(value: T) -> Self {
-        let at = Location::caller();
-        rt(|rt| {
-            if rt.ctx() == Ctx::Build {
-                rt.diag(&codes::UNKEYED_STATE, "Signal::new inside a component: lost on hot reload; use `state(key, init)`".into(), at);
-            }
-            Self::from_idx(rt.create_node(Kind::Source, Some(value_cell(value)), None, false, None, at))
-        })
     }
 
     /// A framework-internal signal owned by the current scope (no diagnostics).
@@ -1092,7 +1100,9 @@ pub fn watch<S: PartialEq + 'static>(source: impl Fn() -> S + 'static, callback:
     Watch { idx: Some(idx), _ns: PhantomData }
 }
 
-/// Named component state: keyed by `key` within the current component; survives hot reload.
+/// Named state in the current scope. Components declare keys once per build and retain values
+/// across hot reload. In App::run, same-key/type lookups reuse one value until App shutdown;
+/// conflicting types are rejected without replacing it. The initializer only runs for new state.
 #[track_caller]
 pub fn state<T: 'static>(key: &'static str, init: impl FnOnce() -> T) -> Signal<T> {
     let at = Location::caller();
@@ -1119,6 +1129,23 @@ pub fn untrack<R>(f: impl FnOnce() -> R) -> R {
 mod tests {
     use super::*;
 
+    #[test]
+    fn repeated_app_state_lookup_keeps_one_ownership_record() {
+        let rt = Runtime::new();
+        let root = rt.create_app_scope();
+        rt.enter(|| {
+            rt.with_scope(Some(root), || {
+                let value = state("value", || 1u32);
+                for _ in 0..100 {
+                    assert_eq!(state("value", || panic!("lookup reinitialized state")), value);
+                }
+            })
+        });
+        assert_eq!(rt.scopes.borrow()[root.i as usize].nodes.len(), 1);
+        assert!(rt.diagnostics().is_empty());
+        rt.enter(|| rt.dispose_scope(root));
+    }
+
     fn with_scope<R>(f: impl FnOnce(&Rc<Runtime>) -> R) -> R {
         let rt = Runtime::new();
         let s = rt.create_scope(None, "t");
@@ -1133,7 +1160,7 @@ mod tests {
     #[test]
     fn diamond_glitch_free_and_cutoff() {
         with_scope(|rt| {
-            let s = Signal::new(1);
+            let s = Signal::scoped(1);
             let a = memo(move || s.get() * 2);
             let parity = memo(move || s.get() % 2);
             let seen = Rc::new(RefCell::new(Vec::new()));
@@ -1148,8 +1175,8 @@ mod tests {
     #[test]
     fn watch_clamp_settles_and_callback_is_untracked() {
         with_scope(|rt| {
-            let count = Signal::new(0);
-            let other = Signal::new(0);
+            let count = Signal::scoped(0);
+            let other = Signal::scoped(0);
             let calls = Rc::new(Cell::new(0));
             let c = calls.clone();
             watch(
@@ -1176,7 +1203,7 @@ mod tests {
     #[test]
     fn layer_rules_and_dedupe() {
         with_scope(|rt| {
-            let s = Signal::new(0);
+            let s = Signal::scoped(0);
             for _ in 0..3 {
                 rt.with_frame(Ctx::Build, None, None, || s.set(1));
             }
@@ -1194,9 +1221,9 @@ mod tests {
     #[test]
     fn switching_dependencies_drops_the_old_ones() {
         with_scope(|rt| {
-            let flag = Signal::new(true);
-            let a = Signal::new(1);
-            let b = Signal::new(10);
+            let flag = Signal::scoped(true);
+            let a = Signal::scoped(1);
+            let b = Signal::scoped(10);
             let runs = Rc::new(Cell::new(0));
             let r = runs.clone();
             binding(Location::caller(), move || {
@@ -1217,7 +1244,7 @@ mod tests {
         rt.enter(|| {
             let root = rt.create_scope(None, "root");
             let child = rt.create_scope(Some(root), "child");
-            let s = rt.with_frame(Ctx::Idle, None, Some(Some(root)), || Signal::new(0));
+            let s = rt.with_frame(Ctx::Idle, None, Some(Some(root)), || Signal::scoped(0));
             let runs = Rc::new(Cell::new(0));
             let r = runs.clone();
             rt.with_frame(Ctx::Idle, None, Some(Some(child)), || {
@@ -1235,7 +1262,7 @@ mod tests {
     #[test]
     fn runaway_watch_is_cut() {
         with_scope(|rt| {
-            let n = Signal::new(0);
+            let n = Signal::scoped(0);
             watch(move || n.get(), move |v, _| n.set(v + 1));
             rt.flush();
             assert_eq!(rt.diagnostics()[0].code, "FLUSH_RUNAWAY");
@@ -1245,7 +1272,7 @@ mod tests {
     #[test]
     fn rejected_update_does_not_invoke_user_code() {
         with_scope(|rt| {
-            let value = Signal::new(0);
+            let value = Signal::scoped(0);
             let called = Cell::new(false);
             rt.with_frame(Ctx::Build, None, None, || {
                 value.update(|n| {
@@ -1261,7 +1288,7 @@ mod tests {
     #[test]
     fn untrack_cannot_grant_write_permission() {
         with_scope(|rt| {
-            let value = Signal::new(0);
+            let value = Signal::scoped(0);
             let derived = memo(move || {
                 untrack(|| {
                     value.set(8);
@@ -1277,7 +1304,7 @@ mod tests {
     #[test]
     fn watch_registration_cannot_escape_a_pure_computation() {
         with_scope(|rt| {
-            let value = Signal::new(0);
+            let value = Signal::scoped(0);
             let derived = memo(move || {
                 watch(|| 1, move |_, _| value.set(9));
                 1
@@ -1292,9 +1319,9 @@ mod tests {
     fn foreign_runtime_handle_cannot_mutate_matching_slot() {
         let a = Runtime::new();
         let b = Runtime::new();
-        let value = a.enter(|| Signal::new(1));
+        let value = a.enter(|| Signal::scoped(1));
         b.enter(|| {
-            let other = Signal::new(2);
+            let other = Signal::scoped(2);
             assert_ne!(value, other);
             value.set(99);
             assert_eq!(other.get(), 2);
@@ -1340,8 +1367,8 @@ mod tests {
     #[test]
     fn borrowed_value_rejects_conflicts_without_borrowing_the_graph() {
         with_scope(|rt| {
-            let value = Signal::new(vec![1]);
-            let other = Signal::new(0);
+            let value = Signal::scoped(vec![1]);
+            let other = Signal::scoped(0);
             let called = Cell::new(false);
             value.with(|before| {
                 other.update(|n| *n += 1);
@@ -1360,7 +1387,7 @@ mod tests {
     #[test]
     fn mutation_unwind_releases_borrow_and_invalidates_changed_value() {
         with_scope(|rt| {
-            let value = Signal::new(1);
+            let value = Signal::scoped(1);
             let doubled = memo(move || value.get() * 2);
             assert_eq!(doubled.get(), 2);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1378,8 +1405,8 @@ mod tests {
     #[test]
     fn untracked_memo_read_still_tracks_its_own_inputs() {
         with_scope(|rt| {
-            let source = Signal::new(1);
-            let trigger = Signal::new(0);
+            let source = Signal::scoped(1);
+            let trigger = Signal::scoped(0);
             let inner = memo(move || source.get() * 2);
             let outer = memo(move || {
                 trigger.get();
@@ -1396,7 +1423,7 @@ mod tests {
     #[test]
     fn initializers_sample_without_subscribing_or_writing_existing_state() {
         with_scope(|rt| {
-            let source = Signal::new(1);
+            let source = Signal::scoped(1);
             let initialized = rt.with_frame(Ctx::Build, None, None, || {
                 state("initial", || {
                     untrack(|| source.set(7));
@@ -1415,7 +1442,7 @@ mod tests {
         with_scope(|rt| {
             let parent = rt.current_scope().unwrap();
             let child = rt.create_scope(Some(parent), "child");
-            let value = Signal::new(0);
+            let value = Signal::scoped(0);
             let seen = Rc::new(RefCell::new(Vec::new()));
             let cleanups = Rc::new(RefCell::new(Vec::new()));
             rt.with_frame(Ctx::Build, None, Some(Some(child)), || {
@@ -1437,7 +1464,7 @@ mod tests {
     #[test]
     fn observer_unwind_keeps_the_rest_of_the_ready_batch() {
         with_scope(|rt| {
-            let trigger = Signal::new(false);
+            let trigger = Signal::scoped(false);
             let observed = Rc::new(Cell::new(false));
             binding(Location::caller(), move || {
                 assert!(!trigger.get(), "failing binding");
@@ -1495,10 +1522,10 @@ mod tests {
         #[derive(PartialEq)]
         struct Derived(usize);
         with_scope(|rt| {
-            let source = Signal::new(Payload);
+            let source = Signal::scoped(Payload);
             let read = source.read_only();
             assert_eq!(read, source.read_only());
-            assert_ne!(read, Signal::new(Payload).read_only());
+            assert_ne!(read, Signal::scoped(Payload).read_only());
             assert!(format!("{read:?}").starts_with("ReadSignal("));
             let runs = Rc::new(Cell::new(0));
             let out = runs.clone();
@@ -1521,7 +1548,7 @@ mod tests {
         #[derive(PartialEq)]
         struct Snapshot(i32);
         with_scope(|rt| {
-            let source = Signal::new(0);
+            let source = Signal::scoped(0);
             let seen = Rc::new(RefCell::new(Vec::new()));
             let out = seen.clone();
             let _ = watch(move || Snapshot(source.get() / 2), move |new, old| out.borrow_mut().push((new.0, old.map(|old| old.0))));
@@ -1537,7 +1564,7 @@ mod tests {
     #[test]
     fn watch_stop_cancels_queued_work_and_cannot_stop_a_reused_slot() {
         with_scope(|rt| {
-            let source = Signal::new(0);
+            let source = Signal::scoped(0);
             let calls = Rc::new(Cell::new(0));
             let out = calls.clone();
             let stopped = watch(move || source.get(), move |_, _| out.set(out.get() + 1));
@@ -1567,7 +1594,7 @@ mod tests {
             }
         }
         with_scope(|rt| {
-            let source = Signal::new(0);
+            let source = Signal::scoped(0);
             let handle = Rc::new(Cell::new(None::<Watch>));
             let dropped = Rc::new(Cell::new(false));
             let calls = Rc::new(Cell::new(0));
@@ -1610,7 +1637,7 @@ mod tests {
             }
         }
         with_scope(|rt| {
-            let source = Signal::new(0);
+            let source = Signal::scoped(0);
             let child = rt.create_scope(rt.current_scope(), "watch owner");
             let dropped = Rc::new(Cell::new(0));
             let calls = Rc::new(Cell::new(0));
@@ -1645,7 +1672,7 @@ mod tests {
         let out = a_calls.clone();
         let (a_source, a_watch) = a.enter(|| {
             a.with_scope(Some(a_scope), || {
-                let source = Signal::new(0);
+                let source = Signal::scoped(0);
                 let watch = watch(move || source.get(), move |_, _| out.set(out.get() + 1));
                 (source, watch)
             })
@@ -1653,7 +1680,7 @@ mod tests {
         let out = b_calls.clone();
         b.enter(|| {
             b.with_scope(Some(b_scope), || {
-                let source = Signal::new(0);
+                let source = Signal::scoped(0);
                 let _ = watch(move || source.get(), move |_, _| out.set(out.get() + 1));
                 a_watch.stop();
                 handler(&b, || source.set(1));
@@ -1673,7 +1700,7 @@ mod tests {
     #[test]
     fn untrack_cannot_stop_a_watch_from_a_pure_computation() {
         with_scope(|rt| {
-            let source = Signal::new(0);
+            let source = Signal::scoped(0);
             let calls = Rc::new(Cell::new(0));
             let out = calls.clone();
             let watch = watch(move || source.get(), move |_, _| out.set(out.get() + 1));
@@ -1688,7 +1715,7 @@ mod tests {
     #[test]
     fn watch_stop_is_allowed_during_build_and_cleanup() {
         with_scope(|rt| {
-            let source = Signal::new(0);
+            let source = Signal::scoped(0);
             let calls = Rc::new(Cell::new(0));
             let out = calls.clone();
             rt.with_frame(Ctx::Build, None, None, || {

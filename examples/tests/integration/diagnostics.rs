@@ -250,27 +250,6 @@ fn variants() -> Vec<Variant> {
             },
         },
         Variant {
-            id: "I10",
-            intent: "component state without a key",
-            build: || {
-                Window::headless(|| {
-                    let count = Signal::new(0i64);
-                    col()
-                        .child(text(move || format!("Count: {}", count.get())).id("count"))
-                        .child(button("+1").id("inc").on_press(move || count.update(|n| *n += 1)))
-                        .into()
-                })
-            },
-            check: |h| {
-                expect_count(h, 2, "Count: 2")?;
-                h.app().hot_reload();
-                match h.kernel().text_of("count") {
-                    Some(t) if t == "Count: 2" => Ok(()),
-                    other => Err(format!("after reload count shows {other:?}")),
-                }
-            },
-        },
-        Variant {
             id: "M1",
             intent: "memo writes state",
             build: || {
@@ -313,7 +292,6 @@ fn expected(id: &str) -> Expect {
         "I7-keyed" => e(&[], None, true),
         "I8-watch" => e(&[], None, true),
         "I9" => e(&["STRICT_READ_UNTRACKED"], None, false),
-        "I10" => e(&["UNKEYED_STATE"], None, false),
         "M1" => e(&["WRITE_IN_DERIVE"], None, true),
         other => panic!("no expectation for {other}"),
     }

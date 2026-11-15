@@ -1,7 +1,7 @@
 # Runtime architecture
 
-Status: selected target contract, revised 2026-11-15; first correctness slice implemented,
-broader API/primitive consolidation pending. Current details are in [reactive core](reactive-core.md)
+Status: selected target contract, revised 2026-11-15; correctness, Signals API and App root lifetime
+slices implemented, broader primitive consolidation pending. Current details are in [reactive core](reactive-core.md)
 and [async](async.md); the complete target below is not a claim that every mechanism has shipped.
 Rust builders, Signals, scoped tasks, the retained Kernel and GPU rendering are the implemented
 foundation. Live attachment is implemented;
@@ -162,6 +162,15 @@ Task::detach: choose the lifetime before spawning. App work must access windows 
 check their liveness. Moving a future to the root does not extend the lifetime of UI handles it
 captures. Normal spawn/resource/interval/channel subscriptions remain scoped; ignoring their
 handles does not cancel them. Task cancellation remains explicit or owner-driven.
+
+App lifetime ends through explicit, idempotent `App::shutdown`, not Rc handle counts. The desktop
+host calls it when its event loop returns, before propagating an error or exiting. Shutdown closes
+the entry gate first, closes windows without flushing new work, disposes the App root and stops
+the scheduler's ready queue, timers, named channels and host wakes. New App::run closures are not
+called after shutdown; opening a window is rejected. Existing window handles are closed.
+An active Rust invocation finishes its current stack; already-running blocking work can finish
+but has no retained task interest. Pending work may still report those workers. No arbitrary user
+cleanup-panic recovery or automatic last-handle shutdown is promised.
 
 Disposal has a defined order:
 

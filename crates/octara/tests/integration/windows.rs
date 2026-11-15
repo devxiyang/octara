@@ -10,7 +10,7 @@ use std::time::Duration;
 fn later_window_measurements_relayout_an_earlier_window() {
     for entry in ["app", "semantic", "pointer"] {
         let app = App::new(HeadlessPlatform::default());
-        let (width, measured) = app.run(|| (Signal::new(100.0f32), Signal::new(100.0f32)));
+        let (width, measured) = app.run(|| (state("width", || 100.0f32), state("measured", || 100.0f32)));
         let mut a = app
             .open_window(WindowOptions::new("A"), move || {
                 col()
@@ -51,7 +51,7 @@ fn later_window_measurements_present_native_props_in_an_earlier_window() {
     use octara::platform::HeadlessWindow;
 
     let app = App::new(HeadlessPlatform::default());
-    let (width, measured) = app.run(|| (Signal::new(100.0f32), Signal::new(100.0f32)));
+    let (width, measured) = app.run(|| (state("width", || 100.0f32), state("measured", || 100.0f32)));
     let a = app
         .open_window(WindowOptions::new("A"), move || {
             col()
@@ -84,7 +84,8 @@ fn later_window_measurements_present_native_props_in_an_earlier_window() {
 #[test]
 fn cross_window_layout_feedback_is_bounded_and_can_recover() {
     let app = App::new(HeadlessPlatform::default());
-    let (a_width, b_width, enabled) = app.run(|| (Signal::new(100.0f32), Signal::new(100.0f32), Signal::new(false)));
+    let (a_width, b_width, enabled) =
+        app.run(|| (state("a_width", || 100.0f32), state("b_width", || 100.0f32), state("enabled", || false)));
     let view = move |width: Signal<f32>, peer: Signal<f32>| {
         move || {
             watch(
@@ -139,7 +140,7 @@ fn app_run_inside_a_handler_keeps_shared_state_after_the_window_closes() {
             col()
                 .size_full()
                 .child(el().id("share").role(Role::Button).label("Share").size_8().on_press(move || {
-                    captured.set(Some(nested.run(|| Signal::new(7))));
+                    captured.set(Some(nested.run(|| state("captured", || 7))));
                 }))
                 .into()
         })
@@ -155,7 +156,7 @@ fn app_run_inside_a_handler_keeps_shared_state_after_the_window_closes() {
 #[test]
 fn app_run_preserves_pure_computation_write_restrictions() {
     let app = App::new(HeadlessPlatform::default());
-    let count = app.run(|| Signal::new(0));
+    let count = app.run(|| state("count", || 0));
     let nested = app.clone();
     let window = app
         .open_window(WindowOptions::new("A"), move || {
@@ -176,7 +177,7 @@ fn app_run_preserves_pure_computation_write_restrictions() {
 #[test]
 fn nested_app_run_reads_keep_the_callers_reactive_dependencies() {
     let app = App::new(HeadlessPlatform::default());
-    let count = app.run(|| Signal::new(1));
+    let count = app.run(|| state("count", || 1));
     let nested = app.clone();
     let window = app
         .open_window(WindowOptions::new("A"), move || {
@@ -197,7 +198,7 @@ fn nested_app_run_reads_keep_the_callers_reactive_dependencies() {
 #[test]
 fn reactive_feedback_stays_unsettled_until_later_input_stops_it() {
     let app = App::new(HeadlessPlatform::default());
-    let (count, enabled) = app.run(|| (Signal::new(0u32), Signal::new(false)));
+    let (count, enabled) = app.run(|| (state("count", || 0u32), state("enabled", || false)));
     let window = app
         .open_window(WindowOptions::new("A"), move || {
             watch(
@@ -244,7 +245,7 @@ fn counter(count: Signal<u32>) -> impl Fn() -> View + 'static {
 #[test]
 fn windows_share_state_and_keep_their_own_trees() {
     let app = App::new(HeadlessPlatform::default());
-    let count = app.run(|| Signal::new(0u32));
+    let count = app.run(|| state("ticks", || 0u32));
     let mut a = app.open_window(WindowOptions::new("A"), counter(count)).unwrap();
     let b = app.open_window(WindowOptions::new("B").size(400.0, 300.0), counter(count)).unwrap();
     assert_eq!(app.windows(), [a.id(), b.id()]);
@@ -259,7 +260,7 @@ fn windows_share_state_and_keep_their_own_trees() {
 #[test]
 fn code_runs_as_the_window_it_belongs_to() {
     let app = App::new(HeadlessPlatform::default());
-    let seen = app.run(|| Signal::new(Vec::<WindowId>::new()));
+    let seen = app.run(|| state("seen", Vec::<WindowId>::new));
     let view = move || {
         let here = current_window();
         spawn(async move {
@@ -305,7 +306,7 @@ fn a_handler_opens_a_window_at_the_end_of_its_frame() {
 #[test]
 fn closing_a_window_disposes_its_scope_and_frees_it() {
     let app = App::new(HeadlessPlatform::default());
-    let ticks = app.run(|| Signal::new(0u32));
+    let ticks = app.run(|| state("ticks", || 0u32));
     let _main = app.open_window(WindowOptions::new("Main"), || el().into()).unwrap();
     let baseline = app.work().reactive_nodes;
     let view = move || {

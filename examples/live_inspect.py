@@ -445,6 +445,13 @@ def windows(args, output, sockets):
                 reply = app.wire_request(stream, request)
                 require(reply.get("ok") is False and reply.get("code") == "BAD_REQUEST", "windows: closed target remained valid")
         app.requests({"op": "expect", "id": "opened", "text": "1 notes opened"})
+        app.requests({"op": "reload"}, {"op": "expect", "id": "opened", "text": "1 notes opened"},
+                     {"op": "tap", "id": "new"})
+        reopened = [w for w in app.inspect()["windows"] if w["title"] == "Note 2"]
+        require(len(reopened) == 1 and reopened[0]["window"] != note,
+                "windows: App state or window identity did not survive close/reload/reopen")
+        app.requests({"op": "tap", "window": reopened[0]["window"], "id": "close"},
+                     {"op": "expect", "id": "opened", "text": "2 notes opened"})
 
 
 def main():

@@ -21,7 +21,7 @@ fn note(opened: Signal<Vec<String>>) -> impl Fn() -> View + 'static {
 
 fn app() -> (Window, Signal<Vec<String>>) {
     let app = App::new(octara::platform::HeadlessPlatform::default());
-    let opened = app.run(|| Signal::new(Vec::new()));
+    let opened = app.run(|| state("opened", Vec::new));
     let w = app.open_window(octara::platform::WindowOptions::new("Rich"), note(opened)).unwrap();
     (w, opened)
 }
@@ -74,7 +74,7 @@ fn a_link_is_an_element() {
 #[test]
 fn a_link_that_wraps_is_pressed_on_either_line() {
     let app = App::new(octara::platform::HeadlessPlatform::default());
-    let opened = app.run(|| Signal::new(0u32));
+    let opened = app.run(|| state("opened", || 0u32));
     let mut w = app
         .open_window(octara::platform::WindowOptions::new("Wrap"), move || {
             col()
@@ -96,8 +96,8 @@ fn a_link_that_wraps_is_pressed_on_either_line() {
 #[test]
 fn restyling_reshapes_only_what_changes_shape() {
     let app = App::new(octara::platform::HeadlessPlatform::default());
-    let bold = app.run(|| Signal::new(false));
-    let red = app.run(|| Signal::new(false));
+    let bold = app.run(|| state("bold", || false));
+    let red = app.run(|| state("red", || false));
     let w = app
         .open_window(octara::platform::WindowOptions::new("Style"), move || {
             col()

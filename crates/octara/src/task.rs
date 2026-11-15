@@ -2,8 +2,8 @@
 //! background work, and resources (keyed async loads with their state as signals).
 //!
 //! - A task (`spawn`) belongs to the scope it was spawned in and is dropped (cancelled) when the
-//!   scope is disposed; `detach` lets one outlive its scope. Tasks run on the UI thread, like
-//!   handlers: they may write signals.
+//!   scope is disposed. Choose the app root with `App::current().run` before spawning work
+//!   that must outlive its initiating UI scope. Tasks run on the UI thread and may write signals.
 //! - Every result from another thread comes back one way: it wakes a task, which the runtime
 //!   polls at a frame boundary. Woken tasks run in spawn order, so the order threads finish in
 //!   does not change what happens.
@@ -58,7 +58,7 @@ pub struct PendingWork {
     pub kind: WorkKind,
     /// What it is: `task`, `resource`, `interval`, `channel "token"`, ….
     pub label: String,
-    /// The scope that owns it (`app/chat/…`), or `detached`.
+    /// The scope that owns it (`app`, `app/window…/chat/…`).
     pub scope: String,
     /// Where it was started (`file:line`).
     pub at: String,
@@ -69,7 +69,7 @@ pub struct PendingWork {
 struct Entry {
     id: TaskId,
     future: Option<BoxFuture>,
-    scope: Option<ScopeId>,
+    scope: ScopeId,
     kind: WorkKind,
     label: String,
     at: &'static Location<'static>,
@@ -81,6 +81,7 @@ struct Entry {
 /// What other threads can touch: the ready queue, the count of background jobs in flight, and
 /// the shell's wake-up.
 pub(crate) struct Shared {
+    closed: AtomicBool,
     ready: Mutex<Vec<TaskId>>,
     inflight: Mutex<usize>,
     idle: Condvar,
@@ -89,8 +90,11 @@ pub(crate) struct Shared {
 
 impl Shared {
     fn notify(&self) {
+        if self.closed.load(Ordering::Acquire) {
+            return;
+        }
         let wake = self.wake.lock().expect("wake").clone();
-        if let Some(w) = wake {
+        if let Some(w) = wake.filter(|_| !self.closed.load(Ordering::Acquire)) {
             w();
         }
     }
@@ -107,7 +111,12 @@ impl Wake for TaskWaker {
     }
     fn wake_by_ref(self: &Arc<Self>) {
         if let Some(s) = self.shared.upgrade() {
-            s.ready.lock().expect("ready").push(self.id);
+            let mut ready = s.ready.lock().expect("ready");
+            if s.closed.load(Ordering::Acquire) {
+                return;
+            }
+            ready.push(self.id);
+            drop(ready);
             s.notify();
         }
     }
@@ -138,7 +147,10 @@ struct ReadyBatch<'a> {
 
 impl Drop for ReadyBatch<'_> {
     fn drop(&mut self) {
-        self.shared.ready.lock().expect("ready").extend(self.remaining.by_ref());
+        let mut ready = self.shared.ready.lock().expect("ready");
+        if !self.shared.closed.load(Ordering::Acquire) {
+            ready.extend(self.remaining.by_ref());
+        }
     }
 }
 
@@ -172,7 +184,13 @@ impl Default for Scheduler {
             slots: RefCell::default(),
             generations: RefCell::default(),
             free: RefCell::default(),
-            shared: Arc::new(Shared { ready: Mutex::default(), inflight: Mutex::new(0), idle: Condvar::new(), wake: Mutex::new(None) }),
+            shared: Arc::new(Shared {
+                closed: AtomicBool::new(false),
+                ready: Mutex::default(),
+                inflight: Mutex::new(0),
+                idle: Condvar::new(),
+                wake: Mutex::new(None),
+            }),
             timers: RefCell::default(),
             timer_seq: Cell::new(0),
             current: Cell::new(None),
@@ -193,10 +211,38 @@ impl Scheduler {
         self.now.set(whole_ns(ms));
     }
     pub(crate) fn set_waker(&self, wake: Arc<dyn Fn() + Send + Sync>) {
-        *self.shared.wake.lock().expect("wake") = Some(wake);
+        let mut slot = self.shared.wake.lock().expect("wake");
+        if !self.shared.closed.load(Ordering::Acquire) {
+            *slot = Some(wake);
+        }
     }
 
-    fn insert(&self, future: BoxFuture, scope: Option<ScopeId>, kind: WorkKind, label: String, at: &'static Location<'static>) -> TaskId {
+    fn accepts_work(&self, at: &'static Location<'static>) -> bool {
+        if self.shared.closed.load(Ordering::Acquire) {
+            rt(|rt| rt.diag(&crate::diagnostics::WRITE_DISPOSED, "cannot register work after app shutdown".into(), at));
+            return false;
+        }
+        true
+    }
+
+    /// Stops scheduling app work; a future currently being polled is dropped when it returns.
+    pub(crate) fn shutdown(&self) {
+        if self.shared.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let wake = self.shared.wake.lock().expect("wake").take();
+        drop(wake);
+        let ids: Vec<_> = self.slots.borrow().iter().flatten().map(|entry| entry.id).collect();
+        for id in ids {
+            self.cancel(id);
+        }
+        self.timers.borrow_mut().clear();
+        self.shared.ready.lock().expect("ready").clear();
+        let names = std::mem::take(&mut *self.names.borrow_mut());
+        drop(names);
+    }
+
+    fn insert(&self, future: BoxFuture, scope: ScopeId, kind: WorkKind, label: String, at: &'static Location<'static>) -> TaskId {
         let slot = self.free.borrow_mut().pop().unwrap_or_else(|| {
             self.slots.borrow_mut().push(None);
             self.generations.borrow_mut().push(0);
@@ -234,15 +280,6 @@ impl Scheduler {
         }
     }
 
-    fn detach(&self, id: TaskId) {
-        if let Some(Some(e)) = self.slots.borrow_mut().get_mut(id.slot())
-            && e.id == id
-        {
-            e.scope = None;
-            e.owner = None;
-        }
-    }
-
     pub(crate) fn has_ready(&self) -> bool {
         !self.shared.ready.lock().expect("ready").is_empty()
     }
@@ -259,6 +296,9 @@ impl Scheduler {
             batch.dedup();
             let mut batch = ReadyBatch { shared: &self.shared, remaining: batch.into_iter() };
             for id in batch.remaining.by_ref() {
+                if self.shared.closed.load(Ordering::Acquire) {
+                    return ran;
+                }
                 ran |= self.poll(id);
             }
         }
@@ -280,7 +320,7 @@ impl Scheduler {
         let mut polling = PollingTask { scheduler: self, id, future: Some(future), previous: self.current.replace(Some(id)) };
         let done = rt(|r| {
             r.with_owner(owner, || {
-                r.with_frame(Ctx::Handler, None, Some(scope), || {
+                r.with_frame(Ctx::Handler, None, Some(Some(scope)), || {
                     polling.future.as_mut().expect("polling future").as_mut().poll(&mut cx).is_ready()
                 })
             })
@@ -298,6 +338,9 @@ impl Scheduler {
     }
 
     fn add_timer(&self, due: f64, id: TaskId) {
+        if self.shared.closed.load(Ordering::Acquire) {
+            return;
+        }
         let seq = self.timer_seq.get() + 1;
         self.timer_seq.set(seq);
         self.timers.borrow_mut().push((due, seq, id));
@@ -349,7 +392,7 @@ impl Scheduler {
                 PendingWork {
                     kind: e.kind,
                     label: e.label.clone(),
-                    scope: e.scope.map_or_else(|| "detached".to_owned(), |s| rt(|r| r.scope_path(s))),
+                    scope: rt(|r| r.scope_path(e.scope)),
                     at: format!("{}:{}", crate::diagnostics::source_file(e.at), e.at.line()),
                     due: due.map(|ms| Duration::from_secs_f64(ms / 1000.0)),
                 }
@@ -392,13 +435,6 @@ impl Task {
             self.sched.cancel(id);
         }
     }
-    /// Lets the task outlive its scope as app work, without a current window; it runs until
-    /// it finishes (or the app goes away).
-    pub fn detach(self) {
-        if let Some(id) = self.id {
-            self.sched.detach(id);
-        }
-    }
     pub fn is_finished(&self) -> bool {
         self.id.is_none_or(|id| !self.sched.alive(id))
     }
@@ -411,25 +447,22 @@ pub(crate) fn spawn_with(
     at: &'static Location<'static>,
 ) -> Task {
     let s = sched();
-    if !rt(|rt| rt.effect_allowed(at)) {
+    if !rt(|rt| rt.effect_allowed(at)) || !s.accepts_work(at) {
         return Task { id: None, sched: s };
     }
-    let scope = rt(|r| r.current_scope());
+    let Some(scope) = rt(|r| r.current_scope()) else {
+        rt(|rt| rt.diag(&crate::diagnostics::WRITE_DISPOSED, "cannot spawn a task without an app or component scope".into(), at));
+        return Task { id: None, sched: s };
+    };
     let id = s.insert(Box::pin(future), scope, kind, label, at);
-    if scope.is_some() {
-        let weak = Rc::downgrade(&s);
-        rt(|r| {
-            r.on_cleanup(Box::new(move || {
-                if let Some(s) = weak.upgrade() {
-                    // A detached task no longer belongs to the scope.
-                    let owned = s.slots.borrow().get(id.slot()).and_then(|e| e.as_ref()).is_some_and(|e| e.id == id && e.scope.is_some());
-                    if owned {
-                        s.cancel(id);
-                    }
-                }
-            }))
-        });
-    }
+    let weak = Rc::downgrade(&s);
+    rt(|r| {
+        r.on_cleanup(Box::new(move || {
+            if let Some(s) = weak.upgrade() {
+                s.cancel(id);
+            }
+        }))
+    });
     Task { id: Some(id), sched: s }
 }
 
@@ -556,9 +589,14 @@ fn pool() -> &'static Mutex<std::sync::mpsc::Sender<Job>> {
 
 /// Runs blocking `work` (a file read, a decode, an HTTP call) on a background thread; await the
 /// result in a task. `App::settle` waits for it, so tests see it land.
+#[track_caller]
 pub fn background<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Background<T> {
+    let scheduler = sched();
+    if !scheduler.accepts_work(Location::caller()) {
+        panic!("[{}] background work requested after app shutdown", crate::diagnostics::WRITE_DISPOSED);
+    }
     let slot = Arc::new(Oneshot { value: Mutex::new(None), waker: Mutex::new(None) });
-    let shared = sched().shared.clone();
+    let shared = scheduler.shared.clone();
     *shared.inflight.lock().expect("inflight") += 1;
     let done = slot.clone();
     let job: Job = Box::new(move || {
@@ -736,6 +774,9 @@ impl<T: Send + std::str::FromStr + 'static> Receiver<T> {
     /// parsed with `FromStr`) while the current scope lives.
     pub fn named(mut self, name: &str) -> Self {
         let s = sched();
+        if !s.accepts_work(Location::caller()) {
+            return self;
+        }
         // The name is a sender: the channel stays open while it is registered.
         self.chan.senders.fetch_add(1, Ordering::Relaxed);
         let sender = Sender { chan: self.chan.clone() };
@@ -856,32 +897,143 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::platform::{HeadlessPlatform, WindowOptions};
+    use crate::reactive::state;
     use crate::view::{Styled, el};
 
     #[test]
-    fn a_detached_task_has_no_window_owner_after_its_window_closes() {
+    fn shutdown_retires_the_current_poll_and_ignores_late_wakes() {
+        struct Dropped(Rc<Cell<bool>>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+
+        let runtime = crate::reactive::graph::Runtime::new();
+        runtime.enter(|| {
+            let scope = runtime.create_scope(None, "app");
+            let scheduler = Rc::new(Scheduler::default());
+            let wakes = Arc::new(AtomicUsize::new(0));
+            let notified = wakes.clone();
+            scheduler.set_waker(Arc::new(move || {
+                notified.fetch_add(1, Ordering::Relaxed);
+            }));
+            let late_waker = Rc::new(RefCell::new(None::<Waker>));
+            let current_dropped = Rc::new(Cell::new(false));
+            let sibling_ran = Rc::new(Cell::new(false));
+            let (closing, saved, dropped) = (scheduler.clone(), late_waker.clone(), current_dropped.clone());
+            let guard = Dropped(current_dropped.clone());
+            let current = scheduler.insert(
+                Box::pin(async move {
+                    let _guard = guard;
+                    std::future::poll_fn(move |cx| {
+                        *saved.borrow_mut() = Some(cx.waker().clone());
+                        closing.shutdown();
+                        assert!(!dropped.get(), "a future is retained until its active poll returns");
+                        cx.waker().wake_by_ref();
+                        Poll::<()>::Pending
+                    })
+                    .await;
+                }),
+                scope,
+                WorkKind::Task,
+                "current".into(),
+                Location::caller(),
+            );
+            let sibling = sibling_ran.clone();
+            scheduler.insert(Box::pin(async move { sibling.set(true) }), scope, WorkKind::Task, "sibling".into(), Location::caller());
+            scheduler.add_timer(100.0, current);
+            scheduler.names.borrow_mut().insert("queued".into(), Rc::new(|_| Ok(())));
+
+            scheduler.run_ready();
+
+            assert!(current_dropped.get());
+            assert!(!sibling_ran.get());
+            assert_eq!(scheduler.current.get(), None);
+            assert!(scheduler.slots.borrow().iter().all(Option::is_none));
+            assert!(scheduler.timers.borrow().is_empty());
+            assert!(scheduler.names.borrow().is_empty());
+            late_waker.borrow().as_ref().unwrap().wake_by_ref();
+            scheduler.shutdown();
+            assert!(!scheduler.run_ready());
+            assert!(!scheduler.has_ready());
+            assert_eq!(wakes.load(Ordering::Relaxed), 0);
+        });
+    }
+
+    #[test]
+    fn shutdown_rejects_new_background_work_without_dispatching_it() {
         let app = App::new(HeadlessPlatform::default());
-        let shared = app.run(|| Signal::new(0));
+        let ran = Arc::new(AtomicBool::new(false));
+        let called = ran.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            app.run(|| {
+                sched().shutdown();
+                drop(background(move || {
+                    called.store(true, Ordering::Release);
+                }));
+            });
+        }));
+        assert!(result.is_err());
+        assert!(!ran.load(Ordering::Acquire));
+        assert!(app.pending().is_empty(), "rejected work must not be reported as an in-flight job");
+        assert!(app.diagnostics().iter().any(|diagnostic| diagnostic.code == "WRITE_DISPOSED"));
+    }
+
+    #[test]
+    fn an_app_task_has_no_window_owner_and_outlives_the_last_window() {
+        let app = App::new(HeadlessPlatform::default());
+        let shared = app.run(|| state("shared", || 0));
         let owner = Rc::new(Cell::new(Some(crate::reactive::graph::Owner(0))));
         let seen = owner.clone();
         let window = app
             .open_window(WindowOptions::new("temporary"), move || {
                 let seen = seen.clone();
-                spawn(async move {
-                    sleep(Duration::from_millis(10)).await;
-                    seen.set(crate::reactive::graph::current_owner());
-                    shared.set(1);
-                })
-                .detach();
+                App::current().run(|| {
+                    spawn(async move {
+                        sleep(Duration::from_millis(10)).await;
+                        seen.set(crate::reactive::graph::current_owner());
+                        shared.set(1);
+                    });
+                });
                 el().size_full().into()
             })
             .unwrap();
         assert_eq!(app.pending()[0].due, Some(Duration::from_millis(10)), "the task reached its first wait");
+        assert_eq!(app.pending()[0].scope, "app");
         app.close_window(window.id());
-        assert_eq!(app.pending().len(), 1, "closing the window preserves the detached task");
+        assert_eq!(app.pending().len(), 1, "closing the last window preserves the app task");
         app.advance(Duration::from_millis(10));
-        assert_eq!(owner.get(), None, "detachment clears the retired window identity");
+        assert_eq!(owner.get(), None, "app tasks run without a current window");
         assert_eq!(app.run(|| shared.get()), 1);
+        assert!(app.pending().is_empty());
+        assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    }
+
+    #[test]
+    fn a_completed_ui_tasks_cleanup_does_not_cancel_a_reused_app_task() {
+        let app = App::new(HeadlessPlatform::default());
+        let window = app
+            .open_window(WindowOptions::new("temporary"), || {
+                spawn(async {});
+                el().size_full().into()
+            })
+            .unwrap();
+        assert!(app.pending().is_empty());
+        let finished = Rc::new(Cell::new(false));
+        let done = finished.clone();
+        app.run(|| {
+            spawn(async move {
+                sleep(Duration::from_millis(10)).await;
+                done.set(true);
+            });
+        });
+
+        app.close_window(window.id());
+
+        assert_eq!(app.pending()[0].scope, "app");
+        app.advance(Duration::from_millis(10));
+        assert!(finished.get());
         assert!(app.pending().is_empty());
         assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
     }

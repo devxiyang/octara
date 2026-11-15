@@ -33,13 +33,16 @@ impl Window {
 
     /// Runs `f` as one frame: a new cause id for what it changes, then settle.
     pub(super) fn input_frame(&self, f: impl FnOnce()) {
+        if self.app.shutdown.get() || self.w.closed.get() {
+            return;
+        }
         self.enter(|| {
             let cause = self.app.next_cause.get() + 1;
             self.app.next_cause.set(cause);
             self.w.kernel.borrow_mut().set_cause(Some(cause));
             f();
             self.settle_frame();
-            if self.refresh_hover() {
+            if !self.app.shutdown.get() && !self.w.closed.get() && self.refresh_hover() {
                 self.settle_frame();
             }
             self.w.kernel.borrow_mut().set_cause(None);

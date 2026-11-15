@@ -69,6 +69,9 @@ impl Window {
     }
 
     pub(crate) fn event_guarded(&mut self, event: InputEvent, guard: Option<&crate::inspect::TargetGuard>) -> bool {
+        if self.app.shutdown.get() || self.w.closed.get() {
+            return false;
+        }
         self.app.record(self.w.id, &event);
         if self.picks(&event) {
             return true;

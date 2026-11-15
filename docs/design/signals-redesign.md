@@ -3,8 +3,9 @@
 Status: selected breaking API contract, 2026-11-15. The first correctness slice implements
 non-Clone values, in-place mutation, phase/tracking separation, runtime identity and captured
 observer scopes. The second slice implements the two handle types, watch stop handles,
-direct property inputs, public module boundaries and unified untrack sampling. App root ownership,
-Signal::new and Task::detach removal remain future work; see the [reactive baseline](reactive-core.md).
+direct property inputs, public module boundaries and unified untrack sampling. The third slice
+implements App root ownership and shutdown, removing Signal::new and Task::detach;
+see the [reactive baseline](reactive-core.md).
 This replaces the preceding field/Model-heavy proposal and the blanket public-untrack removal
 proposal. There is no compatibility requirement: migrate replaced APIs and their callers together.
 Keeping a useful name or mechanism is a design choice, not a compatibility layer.
@@ -121,9 +122,11 @@ lazy initialization, and reuse of compatible named state on hot reload. App init
 has a scope for shared state. Keep raw allocation private; applications use state for owned state.
 The key is not required by the dependency algorithm itself.
 
-Initialization is lazy and runs only for a new/reset value. Duplicate keys in one live scope are
-diagnosed and rejected, not silently shared. A key/type match preserves an eligible value only in
-an explicit hot reload; normal removal and re-addition creates fresh state. Value transfer does
+Initialization is lazy and runs only for a new/reset value. Component duplicate keys are diagnosed;
+the current baseline retains one value for same-type duplicates. App root names are persistent
+lookups: repeated same-key/type calls reuse state, while type conflicts reject without replacing it.
+Component key/type matches preserve eligible values across an explicit hot reload; normal removal
+and re-addition creates fresh state. Stronger target value transfer does
 not preserve old mounted-scope handles. Ordinary unscoped construction is rejected; App::run
 supplies an App root scope for application-wide state. Signal::new is removed from the public API;
 private scope-owned and value-owned allocation remain for framework internals.

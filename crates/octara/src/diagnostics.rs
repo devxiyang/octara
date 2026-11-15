@@ -156,11 +156,8 @@ codes! {
         "The same `state` key was used twice in one component; both calls share one signal.",
         cause: "State is identified by its key within the component's name path.";
     STATE_TYPE_CHANGED: Warning, Reactive, "docs/design/reactive-core.md#4-identity-and-state",
-        "A named state changed type across a hot reload and was reset.",
-        cause: "Hot reload finds state by name; the new code stores a different type under the same key. Expected after changing a state's type.";
-    UNKEYED_STATE: Warning, Reactive, "docs/design/reactive-core.md#4-identity-and-state",
-        "`Signal::new` was called inside a component; its value is lost on hot reload.",
-        cause: "Only named state (`state(key, init)`) is found again after a reload.";
+        "A named state key was requested with a different type.",
+        cause: "A named key has a different type. Window hot reload resets that state; an App root lookup rejects the type change and preserves the existing state.";
     VIEW_READS_STATE: Warning, Reactive, "docs/design/map-join.md#view-closures",
         "A signal was read inside a view's closure (filter, sort_by, group_by, map, join).",
         cause: "A view runs its closure when an item changes, not when other values change: what it read goes stale silently. What a view needs belongs in the item or comes through `join`.";
