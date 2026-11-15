@@ -4,6 +4,8 @@
 use super::Window;
 use crate::ask::{Answer, Ask, AskId};
 use crate::platform::Reply;
+use crate::reactive::graph::{Ctx, ScopeId, rt};
+use std::rc::{Rc, Weak};
 
 /// The lists of the requests a window draws: menus, prompts.
 pub(crate) type Drawn = (DrawnList, DrawnList);
@@ -17,13 +19,60 @@ pub(crate) struct Pending {
     pub(super) native: bool,
     /// What gets the answer (the awaiting task's).
     pub(super) reply: Option<Reply<Answer>>,
+    /// The scope that opened the request, retired with it even if its future is retained.
+    scope: Option<ScopeId>,
+}
+
+/// A request belongs to its awaiting future as well as its construction scope. Weak handles
+/// let cancelling a task retire the request without keeping its app or window alive.
+struct Request {
+    app: Weak<super::AppState>,
+    window: Weak<super::WindowState>,
+    id: AskId,
+}
+
+impl Request {
+    fn withdraw(&self) {
+        let (Some(app), Some(w)) = (self.app.upgrade(), self.window.upgrade()) else { return };
+        let window = Window { app, w };
+        window.enter(|| {
+            window.app.rt.with_frame(Ctx::Handler, None, Some(None), || {
+                let ask = window.w.asks.borrow().iter().find(|pending| pending.id == self.id).map(|pending| pending.ask.clone());
+                if let Some(ask) = ask {
+                    window.resolve_ask(self.id, Answer::dismissed(&ask));
+                }
+            });
+        });
+    }
+}
+
+impl Drop for Request {
+    fn drop(&mut self) {
+        self.withdraw();
+    }
 }
 
 impl Window {
     /// Opens `ask`: the platform shows it if it can (presented with the next frame); the answer
     /// comes as input. The future gives it.
+    #[track_caller]
     pub(crate) fn ask(&self, ask: Ask) -> impl Future<Output = Answer> + use<> {
         let (reply, answer) = crate::task::later::<Answer>();
+        let at = std::panic::Location::caller();
+        let request = if rt(|rt| rt.effect_allowed(at)) {
+            Some(self.open_ask(ask, reply))
+        } else {
+            reply(Answer::dismissed(&ask));
+            None
+        };
+        async move {
+            let answer = answer.await;
+            drop(request);
+            answer
+        }
+    }
+
+    fn open_ask(&self, ask: Ask, reply: Reply<Answer>) -> Rc<Request> {
         let id = self.w.ask_next.get();
         self.w.ask_next.set(id + 1);
         let native = self.w.platform.borrow().shows_ask(&ask);
@@ -37,8 +86,18 @@ impl Window {
                 _ => {}
             }
         }
-        self.w.asks.borrow_mut().push(Pending { id, ask, native, reply: Some(reply) });
-        answer
+        let scope = rt(|rt| rt.current_scope());
+        self.w.asks.borrow_mut().push(Pending { id, ask, native, reply: Some(reply), scope });
+        let request = Rc::new(Request { app: Rc::downgrade(&self.app), window: Rc::downgrade(&self.w), id });
+        let weak = Rc::downgrade(&request);
+        rt(|rt| {
+            rt.on_cleanup(Box::new(move || {
+                if let Some(request) = weak.upgrade() {
+                    request.withdraw();
+                }
+            }))
+        });
+        request
     }
 
     /// The requests waiting for an answer, oldest first.
@@ -133,13 +192,21 @@ impl Window {
             let Some(i) = asks.iter().position(|p| p.id == id) else { return };
             asks.remove(i)
         };
-        if let Some((menus, prompts)) = *self.w.drawn.borrow() {
+        if self.w.root_scope.get().is_some_and(|scope| self.app.rt.scope_alive(scope))
+            && let Some((menus, prompts)) = *self.w.drawn.borrow()
+        {
             menus.remove(&id);
             prompts.remove(&id);
         }
-        let answer = if answer.fits(&pending.ask) { answer } else { Answer::dismissed(&pending.ask) };
+        let live = pending.scope.is_none_or(|scope| self.app.rt.scope_alive(scope));
+        let answer = if live && answer.fits(&pending.ask) { answer } else { Answer::dismissed(&pending.ask) };
         if pending.native {
-            self.w.asks_withdrawn.borrow_mut().push(id);
+            let mut new = self.w.asks_new.borrow_mut();
+            let unpresented = new.iter().any(|(pending, _)| *pending == id);
+            new.retain(|(pending, _)| *pending != id);
+            if !unpresented {
+                self.w.asks_withdrawn.borrow_mut().push(id);
+            }
         }
         if let Some(reply) = pending.reply {
             reply(answer);

@@ -225,6 +225,41 @@ mod layout {
     }
 
     #[test]
+    fn resizing_rewraps_kept_text_before_its_shown_size_starts_moving() {
+        let mut app = Window::headless(|| {
+            col()
+                .size_full()
+                .layout_motion(Spring::REFLOW)
+                .child(text("This help message wraps onto more than one line after the window becomes narrow.").id("help"))
+                .into()
+        });
+        let help = app.kernel().find("help").unwrap();
+        let baselines = |list: &octara::paint::DisplayList| {
+            let mut ys = Vec::new();
+            for run in list.glyph_runs().filter(|run| run.source == help) {
+                ys.extend(run.glyphs.iter().map(|glyph| glyph.y.to_bits()));
+            }
+            ys.sort_unstable();
+            ys.dedup();
+            ys.len()
+        };
+        assert_eq!(baselines(&app.display_list()), 1, "prime the one-line drawing at the wide size");
+        let before = app.kernel().shown_rect(help);
+
+        app.resize(390.0, 640.0);
+
+        let k = app.kernel();
+        assert_eq!(k.shown_rect(help), before, "the first animation frame still shows the old size");
+        assert_eq!(k.rect(help).2, 390.0, "text already uses the new target layout");
+        drop(k);
+        assert!(baselines(&app.display_list()) > 1, "the cached drawing must use the new line breaks on the first frame");
+        assert!(app.app().run_until_idle(ms(3000)).is_ok());
+        assert!(baselines(&app.display_list()) > 1);
+        assert!(app.layout_issues().is_empty(), "{:?}", app.layout_issues());
+        assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+    }
+
+    #[test]
     fn rows_slide_when_one_is_inserted_above() {
         let mut app = Window::headless(rows);
         let before = shown_y(&app, "row-1");

@@ -175,15 +175,7 @@ fn view_fn<A: ?Sized + 'static, R: 'static>(f: impl Fn(&A) -> R + 'static) -> im
 
 /// Writes to collections and text follow the layer rules of signals.
 pub(crate) fn writable(at: &'static Location<'static>) -> bool {
-    rt(|rt| {
-        let code = match rt.ctx() {
-            Ctx::Build => &codes::WRITE_IN_BUILD,
-            Ctx::Derive | Ctx::Observe | Ctx::View => &codes::WRITE_IN_DERIVE,
-            _ => return true,
-        };
-        rt.diag(code, "collection write outside a handler or `watch` callback; rejected".into(), at);
-        false
-    })
+    rt(|rt| rt.write_allowed(at))
 }
 
 // ---------------------------------------------------------------------------------------------

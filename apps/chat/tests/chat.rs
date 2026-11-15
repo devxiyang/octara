@@ -108,6 +108,9 @@ fn stopping_keeps_what_came_and_regenerating_answers_again() {
     let ids = messages(&w);
     assert_eq!(ids.len(), 2, "the question once, a new answer: {ids:?}");
     assert!(!texts(&w, "transcript").contains("Stopped"));
+    assert!(texts(&w, "transcript").contains("About \"tell me something long\""), "the replacement must finish after its old row unmounts");
+    assert!(w.kernel().find("send").is_some(), "regeneration must leave the streaming state");
+    assert!(w.app().diagnostics().is_empty(), "{:?}", w.app().diagnostics());
 }
 
 #[test]
@@ -120,6 +123,9 @@ fn a_failure_offers_a_retry() {
     w.tap(&format!("retry-{answer}")).unwrap();
     assert!(w.app().run_until_idle(LONG).is_ok());
     assert_eq!(messages(&w).len(), 2);
+    let answer = messages(&w)[1].trim_start_matches("msg-").to_owned();
+    assert!(w.kernel().find(&format!("failed-{answer}")).is_some(), "retry must receive the replacement model's failure");
+    assert!(w.kernel().find("send").is_some());
 }
 
 #[test]

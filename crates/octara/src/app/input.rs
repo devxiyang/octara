@@ -3,7 +3,6 @@
 
 use super::{Handler, Modality, Window};
 use crate::kernel::{HandlerKind, Kind, NodeId, State};
-use crate::reactive::graph::Ctx;
 
 impl Window {
     /// Numeric changes from accessibility share the same handler as semantic numeric input.
@@ -19,9 +18,17 @@ impl Window {
             }
             kernel.handler(n, HandlerKind::NumericInput).and_then(|id| self.w.handlers.borrow().get(&id.0).cloned())
         };
-        let Some(Handler::NumericInput(handler)) = handler else { return false };
-        self.app.rt.with_frame(Ctx::Handler, None, Some(None), || handler(value));
-        true
+        let Some(handler) = handler else { return false };
+        handler
+            .run(&self.app.rt, |handler| {
+                if let Handler::NumericInput(handler) = handler {
+                    handler(value);
+                    true
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false)
     }
 
     /// Runs `f` as one frame: a new cause id for what it changes, then settle.
@@ -57,9 +64,17 @@ impl Window {
                     Some((target, self.w.handlers.borrow().get(&h.0).cloned()?))
                 })
             };
-            if let Some((target, Handler::Link(f))) = link {
-                self.app.rt.with_frame(Ctx::Handler, None, Some(None), || f(&target));
-                return true;
+            if let Some((target, handler)) = link {
+                return handler
+                    .run(&self.app.rt, |handler| {
+                        if let Handler::Link(f) = handler {
+                            f(&target);
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
             }
             // No `on_link` takes it: the system opens it.
             let target = self.w.kernel.borrow().link_target(n);
@@ -69,12 +84,12 @@ impl Window {
             }
         }
         let Some(h) = handler else { return false };
-        self.app.rt.with_frame(Ctx::Handler, None, Some(None), || match (h, input) {
+        h.run(&self.app.rt, |h| match (h, input) {
             (Handler::Press(f) | Handler::Toggle(f), _) => f(),
             (Handler::Input(f), Some(v)) => f(v),
             _ => {}
-        });
-        true
+        })
+        .is_some()
     }
 
     pub(super) fn focused_input(&self) -> Option<(NodeId, String)> {

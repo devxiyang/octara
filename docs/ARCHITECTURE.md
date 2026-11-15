@@ -8,6 +8,18 @@ boundaries. [Agent context and live inspection](design/agent-context.md) defines
 interface. These documents identify planned changes separately from the implementation below;
 the [Exact comparison](research/exact-runtime-simplicity.md) explains the reduced scope.
 
+The selected next architecture is [Runtime and Signals consolidation](design/core-consolidation.md):
+native Rust execution with no VM, a small Signals API, explicit ownership and App update boundaries.
+It includes a source-based refactor/removal inventory and ordered acceptance gates. Its
+[Signals contract](design/signals-redesign.md) and [runtime contract](design/runtime-contract.md)
+define the breaking replacement without compatibility aliases. The first correctness slice is
+implemented; the broader API/primitive migration remains pending. The sections below describe
+the current code.
+
+The [first-round scope](design/core-consolidation.md#scope-and-necessity) is limited to correct
+value access, dependencies, lifetime and propagation. The remaining API/primitive inventory is
+follow-up work, not a prerequisite for establishing those contracts.
+
 ## Product
 
 **Agent-first. Rust-native. Cross-platform.** Apps are written in Rust with fine-grained
@@ -212,11 +224,14 @@ and prompts in the window, and tooltips are currently drawn on every desktop.
   replaced allocations before further input. The actual hot-reload path retires tree targets.
   Stronger build identity and richer sampled property information remain open.
 - **Update and sample boundaries**: frames are submitted per window and display lists are pulled
-  later. Request ownership, cross-window invalidation, cleanup ordering and coherent native/drawn
-  geometry remain concrete work in the [runtime architecture](design/runtime-contract.md).
+  later. The first runtime refactor restores mounted callback owners, retires cancelled asks and
+  revisits windows invalidated by later windows. Bounded unfinished reactive/window work remains
+  inspectable. Stronger publication/native geometry contracts remain in the
+  [runtime architecture](design/runtime-contract.md).
 
 ## Out of scope
 
-A custom language or contract DSL, a JavaScript runtime, a web target, a custom GPU backend or
+A custom VM, bytecode or Plan interpreter, a custom language or contract DSL, a JavaScript runtime,
+a web target, a custom GPU backend or
 layout algorithm, dynamic plugins over an unstable ABI, and multi-threaded rendering designed in
 advance.

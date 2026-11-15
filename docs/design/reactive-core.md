@@ -1,7 +1,19 @@
 # Reactive Core
 
-Status: a settled design, implemented in `crates/octara/src/reactive/` and `crates/octara/src/view/`.
+Status: implementation baseline in `crates/octara/src/reactive/` and `crates/octara/src/view/`.
 Research material is in [`docs/research/`](../research/).
+
+The selected replacement is [Signals redesign](signals-redesign.md), with
+[runtime semantics](runtime-contract.md) and a [refactor/removal inventory](core-consolidation.md).
+Those documents supersede this page's target API and ownership choices, without claiming the
+replacement is implemented. In particular, public Memo, Signal::new, untracked read methods and
+stronger named-state reload handling remain separate follow-ups. Update the baseline
+sections as each implementation gate lands; historical benchmark results below are not new validation.
+
+The first correctness refactor now implements non-Clone state/borrowed access, in-place update,
+runtime-qualified handles, independent untracking, guarded execution context and captured observer
+scopes. Public Memo, Signal::new and the untracked read methods remain unchanged pending their
+separate API simplification; they are not compatibility aliases for a second implementation.
 
 ## 1. Conclusion
 
@@ -32,12 +44,26 @@ there is no `useEffect`, and effects use `watch`.
 
 ## 3. Graph and scheduling
 
+Signal stores a value-local borrow cell. Only get requires Clone; with borrows the value and
+update mutates it in place after checking permissions and borrows. Conflicting access reports
+SIGNAL_BORROW: invalid writes do nothing and invalid reads fail. Borrow callbacks cannot return
+references into the value. Mutation invalidates even during unwind; this is not rollback or a
+guarantee that arbitrary user state is safe to resume after a panic.
+
+Untrack suppresses the surrounding collector, not the execution phase. Initializers sample values
+without subscribing; they cannot write existing state. Watches, task starts, prompts and command
+registration reject pure contexts before executing their effects. Internal guards restore phase,
+collector, scope and window on return/unwind. A memo read inside untrack still tracks its own inputs.
+
 - Push marking (direct observers Dirty, further downstream Check) + pull evaluation; a Memo is computed on demand and cuts off when the value is unchanged (Reactively; Salsa's early cutoff);
 - At flush, bindings come before `watch`, and within a kind in creation order;
 - A node is marked Clean **before running**: if it is re-marked while running (a `watch` callback writes to its own source), it runs another round;
 - Dependency edges are deduplicated with an epoch mark, O(1);
 - In the single-threaded runtime, handles are `Copy` and `!Send`, with generations; background results are sent back through the scheduler;
 - Value destructors run after the runtime's internal borrow is released, so a value can destroy the nodes it owns during its destruction (a list reclaims its entries).
+- Flush limits retain unprocessed work and report it as pending; a later input can break the loop.
+  A failed observer retires itself while the remaining batch stays queued. No automatic busy retry
+  or rollback is implied.
 
 ## 4. Identity and state
 
@@ -47,6 +73,11 @@ Based on Nominal Adapton: first-class names determine identity, and name ambigui
   two windows' roots never share a key); state, hot reload and the Inspector all locate by name path;
 - The identity of `component_keyed(name, key, ..)` is independent of sibling order; `component(name, ..)` is named by its ordinal among same-named siblings, and `AMBIGUOUS_COMPONENT` is reported when a second one appears;
 - A state's lifetime is the lifetime of its scope: when a `show` branch is hidden or a list row is deleted, the state inside is destroyed with it;
+- Handles identify their runtime as well as slot/generation. WRONG_RUNTIME rejects cross-App
+  access rather than accidentally reading or changing another App's matching slot.
+- Computations and handlers restore their registration scope/window. Cleanup retires the scope
+  before invoking callbacks and drops values outside internal table borrows; it cannot start new
+  work in the retired scope.
 - Hot reload: destroy and rebuild all scopes; named state stays in the store and is found again by name, and is reset and reported when its type changes (migration functions to be added later).
 
 ## 5. Incremental collections

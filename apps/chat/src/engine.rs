@@ -31,7 +31,7 @@ pub trait Model {
     /// Its name, as the model picker shows it.
     fn name(&self) -> &str;
     /// Starts answering `request`, sending events to `send` until `Done` or `Failed`. Called on
-    /// the UI thread, in a window's code; the answer may come from anywhere.
+    /// the UI thread, at App scope with no current window; the answer may come from anywhere.
     fn respond(&self, request: Request, send: Sender<Event>) -> Cancel;
 }
 

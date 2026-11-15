@@ -384,23 +384,27 @@ impl Chat {
 
     /// Sends `text` in `thread` and starts the answer.
     fn start(&self, thread: ThreadId, text: &str, files: Vec<Attachment>, model: Rc<dyn Model>) {
-        let first = !self.thread_messages(thread).iter().any(|m| m.author == Author::User);
-        let user = Message::user(self.id(), thread, text, files);
-        self.messages.push(user);
-        let history: Vec<(Author, String)> = self.thread_messages(thread).iter().map(|m| (m.author, m.text())).collect();
-        let answer = self.id();
-        self.messages.push(Message::answer(answer, thread));
-        self.answering.update(|a| a.push(thread));
-        self.touch(thread);
-        let (tx, rx) = channel::<Event>();
-        let chat = self.clone();
-        let receiver = rx.on(move |ev| chat.on_event(thread, answer, ev));
-        self.shared.answers.borrow_mut().insert(thread, Running { id: answer, receiver, cancel: None });
-        let cancel = model.respond(Request { purpose: Purpose::Reply, history: history.clone() }, tx);
-        self.shared.install_cancel(PurposeOwner::Answer, thread, answer, cancel);
-        if first && self.shared.current(PurposeOwner::Answer, thread, answer) {
-            self.name(thread, answer, history, model);
-        }
+        // Regenerate/retry removes the initiating message row. Requests belong to Chat,
+        // not that row: Shared retires them on stop, replacement and Chat's cleanup.
+        App::current().run(|| {
+            let first = !self.thread_messages(thread).iter().any(|m| m.author == Author::User);
+            let user = Message::user(self.id(), thread, text, files);
+            self.messages.push(user);
+            let history: Vec<(Author, String)> = self.thread_messages(thread).iter().map(|m| (m.author, m.text())).collect();
+            let answer = self.id();
+            self.messages.push(Message::answer(answer, thread));
+            self.answering.update(|a| a.push(thread));
+            self.touch(thread);
+            let (tx, rx) = channel::<Event>();
+            let chat = self.clone();
+            let receiver = rx.on(move |ev| chat.on_event(thread, answer, ev));
+            self.shared.answers.borrow_mut().insert(thread, Running { id: answer, receiver, cancel: None });
+            let cancel = model.respond(Request { purpose: Purpose::Reply, history: history.clone() }, tx);
+            self.shared.install_cancel(PurposeOwner::Answer, thread, answer, cancel);
+            if first && self.shared.current(PurposeOwner::Answer, thread, answer) {
+                self.name(thread, answer, history, model);
+            }
+        });
     }
 
     /// Asks the model for the conversation's title.

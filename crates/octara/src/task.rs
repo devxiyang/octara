@@ -130,6 +130,41 @@ pub(crate) struct Scheduler {
     names: RefCell<FxHashMap<String, Injector>>,
 }
 
+/// An unwind must retain the ready tasks that have not been polled yet.
+struct ReadyBatch<'a> {
+    shared: &'a Shared,
+    remaining: std::vec::IntoIter<TaskId>,
+}
+
+impl Drop for ReadyBatch<'_> {
+    fn drop(&mut self) {
+        self.shared.ready.lock().expect("ready").extend(self.remaining.by_ref());
+    }
+}
+
+/// A future leaves its slot while it runs. Restore the polling context and retire that slot
+/// even if user code unwinds; no borrow of the task table is held while the future drops.
+struct PollingTask<'a> {
+    scheduler: &'a Scheduler,
+    id: TaskId,
+    future: Option<BoxFuture>,
+    previous: Option<TaskId>,
+}
+
+impl Drop for PollingTask<'_> {
+    fn drop(&mut self) {
+        self.scheduler.current.set(self.previous);
+        if self.future.is_some() {
+            let mut slots = self.scheduler.slots.borrow_mut();
+            if slots.get(self.id.slot()).and_then(|e| e.as_ref()).is_some_and(|e| e.id == self.id) {
+                slots[self.id.slot()] = None;
+                drop(slots);
+                self.scheduler.free.borrow_mut().push(self.id.slot());
+            }
+        }
+    }
+}
+
 impl Default for Scheduler {
     fn default() -> Self {
         Scheduler {
@@ -204,6 +239,7 @@ impl Scheduler {
             && e.id == id
         {
             e.scope = None;
+            e.owner = None;
         }
     }
 
@@ -221,7 +257,8 @@ impl Scheduler {
             }
             batch.sort();
             batch.dedup();
-            for id in batch {
+            let mut batch = ReadyBatch { shared: &self.shared, remaining: batch.into_iter() };
+            for id in batch.remaining.by_ref() {
                 ran |= self.poll(id);
             }
         }
@@ -229,7 +266,7 @@ impl Scheduler {
     }
 
     fn poll(&self, id: TaskId) -> bool {
-        let (mut future, scope, owner) = {
+        let (future, scope, owner) = {
             let mut slots = self.slots.borrow_mut();
             let Some(Some(e)) = slots.get_mut(id.slot()) else { return false };
             if e.id != id || e.cancelled {
@@ -240,21 +277,23 @@ impl Scheduler {
         };
         let waker = Waker::from(Arc::new(TaskWaker { id, shared: Arc::downgrade(&self.shared) }));
         let mut cx = Context::from_waker(&waker);
-        let prev = self.current.replace(Some(id));
-        let done =
-            rt(|r| r.with_owner(owner, || r.with_frame(Ctx::Handler, None, Some(scope), || future.as_mut().poll(&mut cx).is_ready())));
-        self.current.set(prev);
+        let mut polling = PollingTask { scheduler: self, id, future: Some(future), previous: self.current.replace(Some(id)) };
+        let done = rt(|r| {
+            r.with_owner(owner, || {
+                r.with_frame(Ctx::Handler, None, Some(scope), || {
+                    polling.future.as_mut().expect("polling future").as_mut().poll(&mut cx).is_ready()
+                })
+            })
+        });
         let mut slots = self.slots.borrow_mut();
         let cancelled = slots.get(id.slot()).and_then(|e| e.as_ref()).is_none_or(|e| e.id != id || e.cancelled);
-        if done || cancelled {
-            if slots.get(id.slot()).and_then(|e| e.as_ref()).is_some_and(|e| e.id == id) {
-                slots[id.slot()] = None;
-                drop(slots);
-                self.free.borrow_mut().push(id.slot());
-            }
-        } else if let Some(Some(e)) = slots.get_mut(id.slot()) {
-            e.future = Some(future);
+        if !done
+            && !cancelled
+            && let Some(Some(e)) = slots.get_mut(id.slot())
+        {
+            e.future = polling.future.take();
         }
+        drop(slots);
         true
     }
 
@@ -342,21 +381,26 @@ impl Scheduler {
 /// the task is cancelled when that scope is disposed (or by [`Task::cancel`]).
 #[derive(Clone)]
 pub struct Task {
-    id: TaskId,
+    id: Option<TaskId>,
     sched: Rc<Scheduler>,
 }
 
 impl Task {
     /// Stops the task: its future is dropped (and with it what it holds) at once.
     pub fn cancel(&self) {
-        self.sched.cancel(self.id);
+        if let Some(id) = self.id {
+            self.sched.cancel(id);
+        }
     }
-    /// Lets the task outlive its scope; it runs until it finishes (or the app goes away).
+    /// Lets the task outlive its scope as app work, without a current window; it runs until
+    /// it finishes (or the app goes away).
     pub fn detach(self) {
-        self.sched.detach(self.id);
+        if let Some(id) = self.id {
+            self.sched.detach(id);
+        }
     }
     pub fn is_finished(&self) -> bool {
-        !self.sched.alive(self.id)
+        self.id.is_none_or(|id| !self.sched.alive(id))
     }
 }
 
@@ -367,6 +411,9 @@ pub(crate) fn spawn_with(
     at: &'static Location<'static>,
 ) -> Task {
     let s = sched();
+    if !rt(|rt| rt.effect_allowed(at)) {
+        return Task { id: None, sched: s };
+    }
     let scope = rt(|r| r.current_scope());
     let id = s.insert(Box::pin(future), scope, kind, label, at);
     if scope.is_some() {
@@ -383,7 +430,7 @@ pub(crate) fn spawn_with(
             }))
         });
     }
-    Task { id, sched: s }
+    Task { id: Some(id), sched: s }
 }
 
 /// Runs `future` on the UI thread, owned by the current scope: cancelled when the scope is
@@ -802,4 +849,40 @@ where
         },
     );
     Resource { state, refetches }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use crate::platform::{HeadlessPlatform, WindowOptions};
+    use crate::view::{Styled, el};
+
+    #[test]
+    fn a_detached_task_has_no_window_owner_after_its_window_closes() {
+        let app = App::new(HeadlessPlatform::default());
+        let shared = app.run(|| Signal::new(0));
+        let owner = Rc::new(Cell::new(Some(crate::reactive::graph::Owner(0))));
+        let seen = owner.clone();
+        let window = app
+            .open_window(WindowOptions::new("temporary"), move || {
+                let seen = seen.clone();
+                spawn(async move {
+                    sleep(Duration::from_millis(10)).await;
+                    seen.set(crate::reactive::graph::current_owner());
+                    shared.set(1);
+                })
+                .detach();
+                el().size_full().into()
+            })
+            .unwrap();
+        assert_eq!(app.pending()[0].due, Some(Duration::from_millis(10)), "the task reached its first wait");
+        app.close_window(window.id());
+        assert_eq!(app.pending().len(), 1, "closing the window preserves the detached task");
+        app.advance(Duration::from_millis(10));
+        assert_eq!(owner.get(), None, "detachment clears the retired window identity");
+        assert_eq!(app.run(|| shared.get()), 1);
+        assert!(app.pending().is_empty());
+        assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    }
 }

@@ -11,7 +11,11 @@ pub mod text;
 /// Panics outside a scope. Cleanup runs before the scope's signals are disposed.
 #[track_caller]
 pub fn on_cleanup(cleanup: impl FnOnce() + 'static) {
+    let at = std::panic::Location::caller();
     graph::rt(|runtime| {
+        if !runtime.effect_allowed(at) {
+            return;
+        }
         assert!(runtime.current_scope().is_some(), "on_cleanup requires a component scope");
         runtime.on_cleanup(Box::new(cleanup));
     });

@@ -265,8 +265,7 @@ fn thread_menu(chat: &Chat, id: ThreadId, title: String) {
             }
             _ => {}
         }
-    })
-    .detach();
+    });
 }
 
 // ---- the open conversation ----
@@ -713,8 +712,7 @@ fn composer() -> El {
                                 {
                                     attach.attach(&paths);
                                 }
-                            })
-                            .detach();
+                            });
                         }))
                         .child(spacer())
                         .child(show_else(

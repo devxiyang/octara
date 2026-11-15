@@ -1,9 +1,21 @@
 # Runtime architecture
 
-Status: selected architecture direction, 2026-11-14. Rust builders, Signals, scoped tasks, the
-retained Kernel and GPU rendering are the implemented foundation. Live attachment is implemented;
+Status: selected target contract, revised 2026-11-15; first correctness slice implemented,
+broader API/primitive consolidation pending. Current details are in [reactive core](reactive-core.md)
+and [async](async.md); the complete target below is not a claim that every mechanism has shipped.
+Rust builders, Signals, scoped tasks, the retained Kernel and GPU rendering are the implemented
+foundation. Live attachment is implemented;
 the remaining correctness work below is tracked separately. [Architecture](../ARCHITECTURE.md)
 records what currently works.
+
+[Consolidation](core-consolidation.md) owns the source-based refactor/removal inventory and delivery
+gates; [Signals](signals-redesign.md) owns the replacement API. These are breaking changes with no
+compatibility mode. No VM or separate public execution engine is part of this architecture.
+
+These are target semantics and preferred mechanisms, not an indivisible first implementation.
+The [scope decision](core-consolidation.md#scope-and-necessity) limits the first round to value
+access, dependency correctness, lifetime and reliable propagation. More elaborate reload transfer,
+API removal and primitive restructuring must not become prerequisites for those fixes.
 
 Keep the application in Rust and update UI through fine-grained bindings. Give Agents direct
 access to the running app through a small tool interface. The [Exact comparison](../research/exact-runtime-simplicity.md)
@@ -25,6 +37,14 @@ Keep these boundaries within the existing crates. Inspector reads authoritative 
 not keep a second application model. Background computation returns through tasks or channels.
 Only the UI thread changes reactive and UI state.
 
+The execution engine is the cooperation of App, the existing task scheduler, the reactive graph
+and retained windows. Business callbacks remain compiled Rust. Keep these internal modules rather
+than introducing a public Engine/Transaction/Plan object. Framework budgets cannot preempt arbitrary
+Rust callbacks; arbitrary Rust state and external side effects cannot be rolled back.
+Pure-phase guards constrain framework-visible writes and registrations. They cannot intercept
+arbitrary file I/O or mutation hidden inside a Rust closure; keeping derived code free of those
+effects remains an application contract, not a sandbox guarantee.
+
 ```text
 input / task completion
          |
@@ -42,9 +62,19 @@ input / task completion
 
 ## An update
 
+An outer App entry defines the automatic propagation boundary. App::run deliberately enters the
+App root scope with no implicit window; window dispatch enters the captured callback owner. Nested
+ordinary entry coalesces into the outer boundary and cannot force recursive flushing. Calling an
+entry helper from a build body, initializer or pure computation must not grant write permission.
+OS/transport callbacks that
+arrive while dispatch is active enqueue work, except for the narrow synchronous native protocol
+path described below. An explicit wait/settle is not allowed to re-enter a running callback.
+
 1. The App accepts input or ready work at a safe UI-thread boundary.
-2. Handlers and tasks change Signals. The reactive runtime updates affected bindings; structures
-   mount or dispose their scopes. Kernel borrows are released before user code runs.
+2. Handlers and ready task polls change Signals. Writes are immediately readable; dirty memo reads
+   recompute on demand. Automatic propagation happens after the current callback/poll boundary.
+   The reactive runtime updates affected bindings; structures mount or dispose scopes. Kernel,
+   graph-table, scheduler and platform borrows are released before user code runs.
 3. Process affected windows, required layout and controlled measurement feedback under a budget.
    A later window invalidating an earlier one must preserve that dirty work and schedule it again.
    Unchanged windows and subtrees reuse existing data.
@@ -60,6 +90,18 @@ ordering defects. No universal application Revision is required before live insp
 Budgets constrain framework-controlled polling, propagation and layout rounds; the UI thread
 cannot preempt an arbitrary synchronous Rust callback.
 
+Reactive work retains push invalidation, pull memo evaluation and equality cutoff. Each batch
+processes bindings before watches, with stable registration order within a kind. Watch writes
+schedule further work rather than recursively flushing; an observer invalidated during its run
+must remain scheduled. A diamond dependency must not publish a memo from a mixture of old/new
+dependencies. This is not atomic execution of all watches or all external side effects.
+
+App maintains a dirty-window work set. Remove work only when its required stage has completed;
+if processing B invalidates previously processed A, A is queued again. Scope open/close, focus
+repair and layout feedback may create more work. Track them under explicit finite budgets rather
+than repeating all windows indefinitely. Coalesce redundant work, not ordered user actions or
+stream data whose consumer requires every item.
+
 Drawing may coalesce updates and reuse display data. If native placement and deferred drawing
 would otherwise use different geometry or animation times, reconcile them at the window's output
 boundary. Submission and the presentation evidence supplied by the host remain separate stages.
@@ -67,6 +109,12 @@ boundary. Submission and the presentation evidence supplied by the host remain s
 App time advance is explicit. A read may prepare or drain bounded ready work at its documented
 boundary, but does not secretly move app time or wait indefinitely. Preserve existing inspect
 semantics; introducing an independent sampling clock is not a prerequisite for live attachment.
+
+There are four distinct observations: input was delivered; framework propagation/layout is ready;
+output was submitted; the host supplied presentation evidence. Internal per-window generations
+may validate that drawing, accessibility and native placement use compatible geometry, but no
+universal application revision is exposed. Host presentation evidence must not be inferred from
+a Signal flush, frame counter or successful GPU submission alone.
 
 ## Waiting and failure
 
@@ -77,18 +125,75 @@ settle operations retain their documented clock behavior; a host declares any ad
 
 Bound reactive/layout feedback and diagnose loops. Yield or retry only where the remaining work
 can safely continue. Do not submit inconsistent partial output as a completed frame. If an
-internal invariant is broken and safe continuation cannot be established, reset the affected
-window/runtime and invalidate its handles. Avoid a general incomplete-tree recovery protocol.
+internal invariant is broken and safe continuation cannot be established, stop the affected
+window/runtime, invalidate its targets, and require explicit rebuild/restart before resuming it.
+Rebuilding UI is not rollback of application data. Avoid a general incomplete-tree recovery protocol.
 
 Ordinary pending work, recoverable operation errors and broken invariants are different outcomes.
 Rust callbacks may already have produced effects; errors and lost replies do not authorize replay.
 The framework does not promise rollback of arbitrary Rust state or external operations.
 
+| Outcome | Required behavior |
+| --- | --- |
+| Rejected before dispatch | Report stale target, invalid action or permission error; do not invoke the handler |
+| Delivered, work pending | Preserve queued work, schedule a wake/deadline, report the pending reason; do not replay input |
+| Finite scheduling budget exhausted | Preserve resumable work and yield; do not label a partially prepared window complete |
+| Reactive cycle or repeated runaway feedback | Diagnose the responsible computation and stop affected propagation until explicit recovery; do not busy-loop retries |
+| User callback panics | Restore guards/borrows during unwind; retire failing work and mark the affected runtime unusable for ordinary continuation; propagate or report at an existing host panic boundary |
+| Transport disconnected after delivery may have occurred | Outcome unknown; never automatically repeat a potentially effectful action |
+
+No catch_unwind around every callback is required. Context/compute/flush/poll bookkeeping must
+remain safe during unwinding, but restoring guards does not certify that user data is consistent.
+For panic=abort there is no recovery promise. In-place mutation can have partially changed a value;
+invalidate its dependents and block ordinary publication from the failed runtime, without claiming
+that the old value was restored. App-wide shared graph corruption affects all of that App's windows.
+
 ## Lifetimes and external work
+
+The ownership tree is App root -> window root -> mounted component/branch/row scopes. Ordinary
+Rust values retain ordinary ownership; value-owned collection entries use private allocation and
+disposal rather than a public second scope system. A callback captures runtime, scope and optional
+window at registration/mount; the trigger's current window is not its owner. Restore the complete
+owner on binding/watch execution, handler dispatch, task polling and cleanup. An explicit absent
+window clears the current window; it must not mean "inherit whichever window happened to flush".
+
+App::run establishes the root owner for shared state and intentional App-lifetime tasks. Remove
+Task::detach: choose the lifetime before spawning. App work must access windows explicitly and
+check their liveness. Moving a future to the root does not extend the lifetime of UI handles it
+captures. Normal spawn/resource/interval/channel subscriptions remain scoped; ignoring their
+handles does not cancel them. Task cancellation remains explicit or owner-driven.
+
+Disposal has a defined order:
+
+1. Mark the subtree retiring so no new input, observer callback, task poll or reply can enter it.
+2. Revoke subscriptions/request interest, cancel tasks, and withdraw owned host interactions where
+   supported. Already-running blocking work may finish without permission to publish results.
+3. Dispose children before parents; execute each scope's cleanup in reverse registration order,
+   once, with its original context available for teardown. Cleanup may release external resources
+   and update still-live ancestor state, but may not start new work in the retiring scope.
+4. Release nodes, values and context after cleanup and active value borrows end. Run user Drop code
+   outside graph/scheduler/platform table borrows. Generation invalidation prevents later access;
+   a temporarily held storage cell does not make the logical handle live again.
+
+Retiring scope values may be sampled by their own cleanup before release; ordinary callbacks and
+writes into retiring state are rejected. A cleanup panic follows the failure policy above: no
+claim that arbitrary remaining user cleanup completed successfully.
 
 Keep scopes and generation-checked handles. A node reference must still identify its owning
 window/tree after destruction, reload or restart; connection/incarnation checks can supply the
 outer lifetime. Names and test IDs help discovery. They never make a retired occurrence valid.
+
+Explicit hot reload is a separate operation from ordinary removal. Retire old computations,
+handlers, requests and tree targets; transfer eligible named values by scope path/key and type;
+build fresh scopes, handles and subscriptions; release unclaimed values. Move non-Clone payloads
+where possible. Changed types reset with a diagnostic; ambiguous keys never silently merge state.
+Old UI Signal handles do not become valid for the replacement instance just because the name
+matches. App-root state outside the reloaded subtree stays owned by the App.
+
+Value retention is not a promise to rewrite handles hidden inside arbitrary Rust structs. Values
+capturing retired UI handles need reinitialization; framework-owned StateList/TextBuffer restoration
+must explicitly preserve their data/identity rules and reconnect valid internal ownership. No
+general automatic object-graph migration or migration DSL is introduced.
 
 A platform ask or registered external request belongs to a scope/task or an explicit app lifetime,
 and depends on its host window where applicable. Retire it with its owner, withdraw the host
@@ -129,6 +234,20 @@ reconcile with application state at the safe boundary. Derive broader
 abstractions from working adapters. Keep the winit shell while improving native text and exploring
 a mobile host; mobile input and capture support must be established on the actual simulator/device.
 
+During composition the native editor owns the draft/marked range and selection. An identical
+controlled value must not reset composition. Conflicting application writeback follows the
+adapter's explicit defer/reconcile policy; after composition, report the actual committed input
+before considering any still-current deferred write. Do not let an obsolete pending value overwrite
+a newer application decision. Target incarnation and local edit/measurement validity are checked
+where feedback returns, not encoded as extra Signal methods. Candidate windows remain OS-owned;
+their contents/placement require host evidence rather than framework text assertions.
+
+Focus repair, cancellation, blur and dismissal are lifecycle work, not ordinary activation. They
+must execute when a node becomes disabled or leaves the active modal region. Custom handlers may
+prevent documented default actions, but cannot suppress mandatory teardown or corrupt primitive
+state. Define callback/default ordering per event family in primitives; do not impose one universal
+"last callback wins" rule on input, focus, editing and cleanup.
+
 ## Rust usage and optimization
 
 Business data and services use ordinary structs, enums, traits and methods. UI-observed changes
@@ -157,14 +276,12 @@ from-scratch/reference checks where applicable.
 
 ## Implementation slices
 
-1. **Live loop:** connect the existing Inspector to a real desktop window through a safe host
-   queue. Read a control and its source, act, observe pending work and capture the result.
-   Capability and delivery reporting accompany the first supported operations.
-2. **Local correctness:** request ownership and late-result handling, stale-target and measurement
-   checks, cross-window dirty propagation, cleanup ordering and coherent per-window output.
-   Scope each fix to a concrete failing scenario.
-3. **Native pilot:** direct text-input integration, then a mobile example covering composition,
-   keyboard geometry, cancelled navigation and late work after leaving a page.
+The live desktop loop is an existing baseline, not a new prerequisite. Follow first-round
+obligations A-D in the [delivery plan](core-consolidation.md#delivery-gates): value access,
+dependencies, lifetime and propagation. Each change must reproduce a concrete case and preserve
+the current real-window loop. Documentation and affected-path validation accompany each slice;
+API simplification and primitive restructuring are independent later work.
+Mobile remains later platform work, not an acceptance gate for this desktop runtime refactor.
 
 Deferred extensions are general snapshot/watch, a universal resource namespace, complete causal
 history and a global UI revision. Introduce a specific extension only when a reproducible tool

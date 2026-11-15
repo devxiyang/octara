@@ -1,5 +1,20 @@
 # Async: Tasks, Timers, Channels and Resources
 
+Status: current implementation baseline. The selected [runtime contract](runtime-contract.md)
+and [consolidation plan](core-consolidation.md) distinguish the first correctness refactor from
+later API choices. The target document is not a claim that all planned APIs are implemented.
+
+First-round implementation update: handlers now restore their mounted scope/window, tasks and
+asks retire with their owner, and cancelled request futures withdraw native/drawn requests.
+Task::detach remains available and now clears both scope and window ownership. Removing it and
+adding an explicit App root scope remain later API work, not prerequisites for these fixes.
+
+`App::current().run(..)` creates work outside the initiating mounted scope, without a current
+window. Chat uses this entry for model requests: regenerating an answer removes the old message
+row, but must not cancel the replacement stream. Chat's request map cancels on stop/replacement,
+and its root cleanup cancels all remaining requests on close/reload. UI tasks that open prompts
+or change focus stay mounted and are not detached.
+
 Based on [async research](../research/async.md). Confirmed: a self-written single-threaded executor (the core does not depend on Tokio); typed
 channels, optionally named; a subscription is a scope-owned handle.
 
@@ -8,6 +23,9 @@ channels, optionally named; a subscription is a scope-owned handle.
 - `spawn(async { .. }) -> Task`: runs on the UI thread and belongs to the current scope; cancelled when the scope is destroyed (the future and
   everything it holds are dropped). `Task::cancel` cancels immediately, `Task::detach` lets it outlive the scope. Dropping the `Task` handle does
   nothing (the scope owns it).
+- Detaching chooses App work without a current window. It does not keep captured UI state alive;
+  window APIs such as prompt/focus require a still-scoped task. App timers continue to run when
+  the last window closes.
 - A task runs like a handler: it may write signals, within its own scope (newly created signals and cleanups belong to it). After spawn, it runs to
   its first `await` before the end of the current frame.
 - At the end of each frame (`settle`), woken tasks are polled until none is ready (with a limit); what they change is laid out together with the rest.
@@ -22,10 +40,12 @@ channels, optionally named; a subscription is a scope-owned handle.
 - Stale results naturally do not land: a cancelled task is dropped together with its receiver, and a channel whose scope has been destroyed rejects
   messages (`send` returns the original value).
 
-Task cancellation does not currently withdraw every pending platform ask: asks do not yet record
-scope/task ownership. The [runtime architecture](runtime-contract.md#lifetimes-and-external-work)
-adds request ownership, withdrawal where supported, and late-reply checks. Dropping interest in a
-result does not imply aborting its transport or undoing external effects.
+Platform asks belong to their construction scope and awaiting future. Cancelling the task,
+dropping the future or disposing the scope withdraws the request; a retained live waiter receives
+dismissal, and a late answer cannot recreate it. Unpresented native asks are removed from the
+presentation queue; already-presented asks request host withdrawal. See the
+[runtime contract](runtime-contract.md#lifetimes-and-external-work). Dropping result interest does
+not imply aborting arbitrary transport work or undoing external effects.
 
 ## Time
 

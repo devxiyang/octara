@@ -12,7 +12,6 @@ use super::pointer::Modifiers;
 use super::{Handler, Modality, TargetPlatform, Window};
 use crate::diagnostics as codes;
 use crate::kernel::{Arrow, HandlerKind, NodeId, State};
-use crate::reactive::graph::Ctx;
 use std::fmt;
 
 /// A key, as the keyboard layout produces it.
@@ -504,9 +503,13 @@ impl Window {
                 }
                 k.handler(n, HandlerKind::Key).and_then(|h| self.w.handlers.borrow().get(&h.0).cloned())
             };
-            if let Some(Handler::Key(f)) = handler {
-                let mut took = false;
-                self.app.rt.with_frame(Ctx::Handler, None, Some(None), || took = f(ev));
+            if let Some(handler) = handler {
+                let took = handler
+                    .run(&self.app.rt, |handler| match handler {
+                        Handler::Key(f) => f(ev),
+                        _ => false,
+                    })
+                    .unwrap_or(false);
                 if took {
                     return true;
                 }
@@ -535,9 +538,19 @@ impl Window {
                 }
                 k.command_handler(n, command).and_then(|h| self.w.handlers.borrow().get(&h.0).cloned())
             };
-            if let Some(Handler::Press(f)) = handler {
-                self.app.rt.with_frame(Ctx::Handler, None, Some(None), || f());
-                return true;
+            if let Some(handler) = handler {
+                let took = handler
+                    .run(&self.app.rt, |handler| match handler {
+                        Handler::Press(f) => {
+                            f();
+                            true
+                        }
+                        _ => false,
+                    })
+                    .unwrap_or(false);
+                if took {
+                    return true;
+                }
             }
         }
         if self.builtin(command) {
@@ -547,9 +560,16 @@ impl Window {
             let cmds = self.w.commands.borrow();
             cmds.iter().rev().find(|(c, _)| c == command).and_then(|(_, h)| self.w.handlers.borrow().get(h).cloned())
         };
-        if let Some(Handler::Press(f)) = app_handler {
-            self.app.rt.with_frame(Ctx::Handler, None, Some(None), || f());
-            return true;
+        if let Some(handler) = app_handler {
+            return handler
+                .run(&self.app.rt, |handler| match handler {
+                    Handler::Press(f) => {
+                        f();
+                        true
+                    }
+                    _ => false,
+                })
+                .unwrap_or(false);
         }
         false
     }

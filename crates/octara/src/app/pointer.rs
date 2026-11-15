@@ -712,14 +712,18 @@ impl Window {
             }
             k.handler(n, HandlerKind::Drag).and_then(|id| self.w.handlers.borrow().get(&id.0).cloned())
         };
-        let Some(Handler::Drag(f)) = handler else { return };
+        let Some(handler) = handler else { return };
         // A drag is direct manipulation: what it moves follows the pointer at once.
         if matches!(phase, DragPhase::Start | DragPhase::Move) {
             self.w.kernel.borrow_mut().set_instant(true);
         }
         let (x, y, _, _) = self.w.kernel.borrow().rect(n);
         let d = Drag { phase, x: h.at.0 - x, y: h.at.1 - y, dx: h.at.0 - h.start.0, dy: h.at.1 - h.start.1 };
-        self.app.rt.with_frame(crate::reactive::graph::Ctx::Handler, None, Some(None), || f(&d));
+        handler.run(&self.app.rt, |handler| {
+            if let Handler::Drag(f) = handler {
+                f(&d);
+            }
+        });
     }
 
     fn scroll_by(&self, n: NodeId, dx: f32, dy: f32) {

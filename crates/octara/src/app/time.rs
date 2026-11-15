@@ -54,6 +54,12 @@ impl App {
             let Some(due) = next.filter(|d| *d <= t) else { break };
             self.set_clock(due.max(sched.now_ms()));
             self.enter(|| sched.fire_due());
+            if windows.is_empty() {
+                // App work survives its last window. Run it at this timer's own time, then
+                // settle any app watches or window requests before advancing to the next due.
+                self.poll();
+                self.app.frame(std::panic::Location::caller());
+            }
             for w in &windows {
                 w.input_frame(|| w.pointer_time());
             }
@@ -157,7 +163,7 @@ impl App {
     /// What is pending: tasks, subscriptions and background jobs, with their scope, where they
     /// started, and when the timer each waits on is due; and motion in every window.
     pub fn pending(&self) -> Vec<PendingWork> {
-        let mut out = self.enter(|| self.app.sched.pending());
+        let mut out = self.app.rt.enter(|| self.app.sched.pending());
         for w in self.each() {
             out.extend(w.motion_work());
         }

@@ -139,6 +139,11 @@ assert!(app.app().diagnostics().iter().any(|d| d.code == "STRICT_READ_UNTRACKED"
 ```
 
 - `Signal`: `get`, `set`, `update(|v| ..)`, `with(|v| ..)` (borrow without cloning).
+- Ordinary structs and collections need not implement `Clone`: `with` borrows and `update` mutates
+  in place. Only `get` requires `Clone`. Finish a borrow before writing the same value; a rejected
+  `update` never calls its mutation closure.
+- `untrack(|| ..)` samples without subscribing the surrounding computation. It does not permit
+  writes or effect registration inside a memo or other pure expression.
 - `watch(source, callback)`: run an effect when a value changes (only `source` is tracked).
 - `provide(value)` / `use_context::<T>()`: pass a value (often a `Signal`) down the tree.
 
@@ -318,8 +323,10 @@ assert_eq!(app.kernel().text_of("status").as_deref(), Some("ready"));
 - `channel()`: a `Sender` for other threads (a socket, an LLM's tokens) and a `Receiver` on the UI
   thread. `interval(period, f)` ticks while its scope lives.
 - Register `on_cleanup(..)` during component construction to retire external requests and cancel
-  retained task handles when that scope is disposed. Tasks created later by input handlers can
-  run outside that construction scope; retain their handles when the component must own them.
+  external work when that scope is disposed. Input handlers restore their mounted scope, so tasks
+  they start are automatically cancelled with that scope. Dropping a task handle does not cancel it.
+  `Task::detach` explicitly makes App-lifetime work without a current window; keep tasks that use
+  prompts, focus or other window APIs scoped. Cancelling an awaiting task also withdraws its prompt.
 - The system: `open_window(options, view)` / `close_window(id)`; `open_url(url)`;
   `write_to_clipboard(text or image)` / `read_from_clipboard()`; `prompt_for_paths(options)` and
   `prompt_for_new_path(dir, name)`, awaited in a task (`None`: cancelled); files dropped from the

@@ -122,6 +122,12 @@ macro_rules! codes {
 
 codes! {
     // ---- reactive ----
+    WRONG_RUNTIME: Error, Reactive, "docs/design/reactive-core.md#4-identity-and-state",
+        "A reactive handle was used in a different App; access was rejected.",
+        cause: "Handles belong to one reactive runtime. A matching slot and generation in another App is a different value. Send ordinary data between Apps instead of sharing reactive handles.";
+    SIGNAL_BORROW: Error, Reactive, "docs/design/reactive-core.md#2-layers",
+        "A signal access conflicted with an active value borrow; access was rejected.",
+        cause: "with holds a shared borrow and update holds an exclusive borrow until its synchronous callback returns. Finish that callback before accessing the same value incompatibly; rejected mutation callbacks do not run.";
     STRICT_READ_UNTRACKED: Warning, Reactive, "docs/design/reactive-core.md#2-layers",
         "A value was read while building a view, outside any binding; that UI will not update.",
         cause: "A component body runs once: `count.get()` there reads the value once and bakes it in. Only closures passed to bindings re-run; `get_untracked()` says a one-shot read is meant.";
@@ -184,8 +190,8 @@ codes! {
         "`virtual_each` is not directly inside a scroll container.",
         cause: "A virtual list mounts the rows in its scroll container's viewport: its parent must be `overflow_y_scroll()` with a bounded height.";
     LAYOUT_LOOP: Warning, Layout, "docs/design/layout.md#3-viewport-and-window-size-classes",
-        "Layout did not settle in 4 rounds.",
-        cause: "Something reads a size (`size_of`, a breakpoint) and changes what that size measures, so each layout changes it again.";
+        "Layout did not settle within its round limit.",
+        cause: "Something reads a size (`size_of`, a breakpoint) and changes what that size measures, so each layout changes it again. Shared state can also make windows repeatedly change each other's measured sizes.";
     // ---- layout issues (Window::layout_issues) ----
     OVERFLOW: Warning, Layout, "docs/design/layout.md#4-layout-diagnostics",
         "Children extend past their container's content box.",

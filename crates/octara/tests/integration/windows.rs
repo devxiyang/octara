@@ -6,6 +6,231 @@ use octara::platform::{HeadlessPlatform, WindowOptions};
 use octara::prelude::*;
 use std::time::Duration;
 
+#[test]
+fn later_window_measurements_relayout_an_earlier_window() {
+    for entry in ["app", "semantic", "pointer"] {
+        let app = App::new(HeadlessPlatform::default());
+        let (width, measured) = app.run(|| (Signal::new(100.0f32), Signal::new(100.0f32)));
+        let mut a = app
+            .open_window(WindowOptions::new("A"), move || {
+                col()
+                    .size_full()
+                    .child(el().id("measured").h_8().style_with(move |p| p.w(measured.get())))
+                    .child(el().id("resize").role(Role::Button).label("Resize").size_8().on_press(move || width.set(220.0)))
+                    .into()
+            })
+            .unwrap();
+        let b = app
+            .open_window(WindowOptions::new("B"), move || {
+                watch(|| size_of("source").get().0, move |width, _| measured.set(*width));
+                col().size_full().child(el().id("source").h_8().style_with(move |p| p.w(width.get()))).into()
+            })
+            .unwrap();
+        // The rebuild checker intentionally resets in-progress pointer gestures, including
+        // PRESSED between a tap's down and up. Compare rebuilds for the other two entries.
+        app.set_check_consistency(entry != "pointer");
+
+        match entry {
+            "app" => app.run(|| width.set(220.0)),
+            "semantic" => a.dispatch(Event::Press("resize".into())).unwrap(),
+            "pointer" => a.tap("resize").unwrap(),
+            _ => unreachable!(),
+        }
+
+        let k = a.kernel();
+        assert_eq!(k.rect(k.find("measured").unwrap()).2, 220.0, "A must lay out B's measurement in the same operation");
+        assert!(a.layout_issues().is_empty(), "{:?}", a.layout_issues());
+        assert!(b.layout_issues().is_empty(), "{:?}", b.layout_issues());
+        assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    }
+}
+
+#[test]
+fn later_window_measurements_present_native_props_in_an_earlier_window() {
+    use octara::native::NativeChange;
+    use octara::platform::HeadlessWindow;
+
+    let app = App::new(HeadlessPlatform::default());
+    let (width, measured) = app.run(|| (Signal::new(100.0f32), Signal::new(100.0f32)));
+    let a = app
+        .open_window(WindowOptions::new("A"), move || {
+            col()
+                .size_full()
+                .child(
+                    native_view("measurement")
+                        .id("native")
+                        .label("Measurement")
+                        .props(move || serde_json::json!({ "width": measured.get() })),
+                )
+                .into()
+        })
+        .unwrap();
+    let _b = app
+        .open_window(WindowOptions::new("B"), move || {
+            watch(|| size_of("source").get().0, move |width, _| measured.set(*width));
+            col().size_full().child(el().id("source").h_8().style_with(move |p| p.w(width.get()))).into()
+        })
+        .unwrap();
+
+    app.run(|| width.set(220.0));
+
+    let host = a.platform_window();
+    let native = &host.as_any().downcast_ref::<HeadlessWindow>().unwrap().native;
+    assert!(matches!(native.last(), Some(NativeChange::Update { props, .. }) if props["width"] == 220.0), "{native:?}");
+    assert!(a.layout_issues().is_empty(), "{:?}", a.layout_issues());
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+}
+
+#[test]
+fn cross_window_layout_feedback_is_bounded_and_can_recover() {
+    let app = App::new(HeadlessPlatform::default());
+    let (a_width, b_width, enabled) = app.run(|| (Signal::new(100.0f32), Signal::new(100.0f32), Signal::new(false)));
+    let view = move |width: Signal<f32>, peer: Signal<f32>| {
+        move || {
+            watch(
+                move || (enabled.get(), size_of("source").get().0),
+                move |(enabled, width), _| {
+                    if *enabled {
+                        peer.set(width + 1.0);
+                    }
+                },
+            );
+            col().size_full().child(el().id("source").h_8().style_with(move |p| p.w(width.get()))).into()
+        }
+    };
+    let a = app.open_window(WindowOptions::new("A"), view(a_width, b_width)).unwrap();
+    let b = app.open_window(WindowOptions::new("B"), view(b_width, a_width)).unwrap();
+    app.reset_work();
+
+    app.run(|| enabled.set(true));
+
+    assert!(app.diagnostics().iter().any(|d| d.code == "LAYOUT_LOOP"), "{:?}", app.diagnostics());
+    assert!(app.work().closures_run < 200, "cross-window feedback must stop in a bounded number of rounds: {:?}", app.work());
+    assert!(
+        [&a, &b].into_iter().any(|window| window.unsettled().iter().any(|reason| reason == "window updates are still pending")),
+        "the cutoff must report the window that still needs layout"
+    );
+    app.run(|| enabled.set(false));
+    for (w, width) in [(&a, a_width), (&b, b_width)] {
+        assert!(w.unsettled().is_empty(), "{:?}", w.unsettled());
+        let expected = app.run(|| width.get());
+        let k = w.kernel();
+        assert_eq!(k.rect(k.find("source").unwrap()).2, expected, "pending layout is retained after the cutoff");
+        assert!(w.layout_issues().is_empty(), "{:?}", w.layout_issues());
+    }
+    app.reset_work();
+    app.settle();
+    assert_eq!(app.work().closures_run, 0, "a stopped feedback loop leaves no busy retry");
+}
+
+#[test]
+fn app_run_inside_a_handler_keeps_shared_state_after_the_window_closes() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let app = App::new(HeadlessPlatform::default());
+    let shared = Rc::new(Cell::new(None));
+    let captured = shared.clone();
+    let nested = app.clone();
+    let mut window = app
+        .open_window(WindowOptions::new("A"), move || {
+            let captured = captured.clone();
+            let nested = nested.clone();
+            col()
+                .size_full()
+                .child(el().id("share").role(Role::Button).label("Share").size_8().on_press(move || {
+                    captured.set(Some(nested.run(|| Signal::new(7))));
+                }))
+                .into()
+        })
+        .unwrap();
+
+    window.tap("share").unwrap();
+    app.close_window(window.id());
+
+    assert_eq!(app.run(|| shared.get().unwrap().get()), 7, "App::run state belongs to the app even when called from a window's handler");
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+}
+
+#[test]
+fn app_run_preserves_pure_computation_write_restrictions() {
+    let app = App::new(HeadlessPlatform::default());
+    let count = app.run(|| Signal::new(0));
+    let nested = app.clone();
+    let window = app
+        .open_window(WindowOptions::new("A"), move || {
+            let nested = nested.clone();
+            let value = memo(move || {
+                nested.run(|| count.set(1));
+                1
+            });
+            col().size_full().child(text(move || value.get().to_string())).into()
+        })
+        .unwrap();
+
+    assert_eq!(app.run(|| count.get()), 0);
+    assert!(app.diagnostics().iter().any(|d| d.code == "WRITE_IN_DERIVE"), "{:?}", app.diagnostics());
+    app.close_window(window.id());
+}
+
+#[test]
+fn nested_app_run_reads_keep_the_callers_reactive_dependencies() {
+    let app = App::new(HeadlessPlatform::default());
+    let count = app.run(|| Signal::new(1));
+    let nested = app.clone();
+    let window = app
+        .open_window(WindowOptions::new("A"), move || {
+            let nested = nested.clone();
+            let doubled = memo(move || nested.run(|| count.get() * 2));
+            col().size_full().child(text(move || doubled.get().to_string()).id("doubled")).into()
+        })
+        .unwrap();
+
+    app.run(|| count.set(3));
+
+    assert_eq!(window.kernel().text_of("doubled").as_deref(), Some("6"));
+    assert!(window.layout_issues().is_empty(), "{:?}", window.layout_issues());
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    app.close_window(window.id());
+}
+
+#[test]
+fn reactive_feedback_stays_unsettled_until_later_input_stops_it() {
+    let app = App::new(HeadlessPlatform::default());
+    let (count, enabled) = app.run(|| (Signal::new(0u32), Signal::new(false)));
+    let window = app
+        .open_window(WindowOptions::new("A"), move || {
+            watch(
+                move || (enabled.get(), count.get()),
+                move |(enabled, count_value), _| {
+                    if *enabled {
+                        count.set(count_value + 1);
+                    }
+                },
+            );
+            col().size_full().child(text(move || count.get().to_string()).id("count")).into()
+        })
+        .unwrap();
+    app.set_check_consistency(true);
+
+    app.run(|| enabled.set(true));
+
+    assert!(app.diagnostics().iter().any(|d| d.code == "FLUSH_RUNAWAY"), "{:?}", app.diagnostics());
+    assert!(window.unsettled().iter().any(|reason| reason == "reactive updates are still pending"), "{:?}", window.unsettled());
+    app.reset_work();
+    let diagnostics = app.diagnostic_counts();
+    for _ in 0..3 {
+        assert!(window.unsettled().iter().any(|reason| reason == "reactive updates are still pending"));
+    }
+    assert_eq!(app.work().closures_run, 0, "pending queries must not retry suspended work or run the rebuild checker");
+    assert_eq!(app.diagnostic_counts(), diagnostics);
+    app.run(|| enabled.set(false));
+    assert!(window.unsettled().is_empty(), "{:?}", window.unsettled());
+    let expected = app.run(|| count.get()).to_string();
+    assert_eq!(window.kernel().text_of("count"), Some(expected));
+    assert!(window.layout_issues().is_empty(), "{:?}", window.layout_issues());
+}
+
 /// A shared count, a label showing it, and a button opening another window.
 fn counter(count: Signal<u32>) -> impl Fn() -> View + 'static {
     move || {

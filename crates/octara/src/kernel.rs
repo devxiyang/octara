@@ -752,6 +752,9 @@ pub struct Kernel {
     /// Bumped by every change that can alter the display list (paint, layout and text changes,
     /// layouts, theme): an unchanged count with nothing moving means the last frame still holds.
     paint_gen: u64,
+    /// Every invalidation, including semantic changes such as native props. The app uses this
+    /// to revisit a window another window changed after it settled.
+    mutation_gen: u64,
     /// The last display list built while nothing moved, with the count and viewport it was
     /// built at.
     last_frame: RefCell<Option<LastFrame>>,
@@ -864,6 +867,7 @@ impl Kernel {
             modal_nodes: rustc_hash::FxHashSet::default(),
             native_nodes: rustc_hash::FxHashSet::default(),
             paint_gen: 0,
+            mutation_gen: 0,
             last_frame: RefCell::new(None),
             frames_built: Cell::new(0),
             drawings_built: Cell::new(0),
@@ -921,6 +925,9 @@ impl Kernel {
     /// the last frame still holds.
     pub fn paint_generation(&self) -> u64 {
         self.paint_gen
+    }
+    pub(crate) fn mutation_generation(&self) -> u64 {
+        self.mutation_gen
     }
     /// The resources this kernel reads.
     pub fn resources(&self) -> &Rc<Resources> {
@@ -992,6 +999,7 @@ impl Kernel {
     }
 
     fn mark(&mut self, d: Dirty) {
+        self.mutation_gen += 1;
         if d.intersects(Dirty::PAINT | Dirty::LAYOUT | Dirty::TEXT) {
             self.paint_gen += 1;
         }
@@ -1765,6 +1773,7 @@ impl Kernel {
         }
         self.resolve(id, "anchor");
         self.needs_layout = true;
+        self.mutation_gen += 1;
     }
     /// The side the overlay holding `id` was placed on by the last layout (after flipping).
     pub fn placed_side(&self, id: NodeId) -> Option<Side> {
@@ -2051,6 +2060,7 @@ impl Kernel {
     /// The shared theme changed: every node resolves against it again.
     pub fn theme_changed(&mut self) {
         self.paint_gen += 1;
+        self.mutation_gen += 1;
         self.theme_gen += 1;
         self.missing_tokens.clear();
         // Breakpoint widths may have changed too.
@@ -2084,6 +2094,7 @@ impl Kernel {
     /// system's fonts changed).
     pub fn fonts_changed(&mut self) {
         self.fonts_generation += 1;
+        self.mutation_gen += 1;
         let ids: Vec<NodeId> =
             self.nodes.iter().filter(|(_, n)| matches!(n.kind(), Kind::Text | Kind::TextInput)).map(|(id, _)| id).collect();
         for id in ids {
@@ -2245,6 +2256,7 @@ impl Kernel {
         self.ink_dirty.set(true);
         self.a11y_geometry.set(true);
         self.paint_gen += 1;
+        self.mutation_gen += 1;
         self.layouts += 1;
         self.clamp_scrolls();
         self.track_frames();
@@ -2547,6 +2559,7 @@ impl Kernel {
         }
         if on {
             self.needs_layout = true;
+            self.mutation_gen += 1;
         }
     }
     /// Whether `id` follows its tail now: it is set to (`follow_tail`), and nobody has scrolled

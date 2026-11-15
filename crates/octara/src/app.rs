@@ -29,7 +29,7 @@ use crate::diagnostics::{self as codes, Diagnostic};
 use crate::kernel::{Breakpoint, HandlerKind, Kernel, NodeId, State, Theme};
 use crate::reactive::graph::Signal;
 use crate::reactive::graph::{Ctx, Owner, Runtime, ScopeId};
-use crate::view::{Handler, Parent, Slots, View, mount};
+use crate::view::{Handler, Parent, ScopedHandler, Slots, View, mount};
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::rc::Rc;
 
@@ -186,7 +186,7 @@ pub(crate) struct AppState {
 pub(crate) struct WindowState {
     pub(crate) id: WindowId,
     pub(crate) kernel: RefCell<Kernel>,
-    pub(crate) handlers: RefCell<rustc_hash::FxHashMap<u64, Handler>>,
+    pub(crate) handlers: RefCell<rustc_hash::FxHashMap<u64, ScopedHandler>>,
     /// The window's command handlers (`on_command`), in registration order.
     pub(crate) commands: RefCell<Vec<(String, u64)>>,
     /// Regions of the kernel's overlay layer, one per `overlay` of a mounted element.
@@ -229,6 +229,8 @@ pub(crate) struct WindowState {
     native_changes: RefCell<Vec<crate::native::NativeChange>>,
     /// The paint generation last presented.
     presented: Cell<u64>,
+    /// The kernel generation last laid out and presented, before final focus and hover cleanup.
+    settled_generation: Cell<u64>,
     /// Frames presented to the platform window.
     frames: Cell<u64>,
     /// A capture in progress: the snapshots asked for.
@@ -277,6 +279,9 @@ pub(crate) fn current() -> Window {
 }
 
 fn enter_app<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
+    if app.depth.get() == 0 && !app.checking.get() {
+        app.rt.resume_propagation();
+    }
     struct Restore(Option<Rc<AppState>>);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -284,12 +289,17 @@ fn enter_app<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
             APP.with(|a| *a.borrow_mut() = prev);
         }
     }
+    struct Depth<'a>(&'a Cell<u32>);
+    impl Drop for Depth<'_> {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() - 1);
+        }
+    }
     let r = {
         let _restore = Restore(APP.with(|a| a.replace(Some(app.clone()))));
         app.depth.set(app.depth.get() + 1);
-        let r = app.rt.enter(f);
-        app.depth.set(app.depth.get() - 1);
-        r
+        let _depth = Depth(&app.depth);
+        app.rt.enter(f)
     };
     if app.depth.get() == 0 {
         app.check_consistency();
@@ -433,6 +443,7 @@ impl WindowState {
             native_sent: RefCell::default(),
             native_changes: RefCell::default(),
             presented: Cell::new(u64::MAX),
+            settled_generation: Cell::new(u64::MAX),
             frames: Cell::new(0),
             capturing: RefCell::default(),
             picking: RefCell::default(),
@@ -459,6 +470,13 @@ fn n_offset(k: &Kernel, n: crate::kernel::NodeId, relative: bool) -> (f32, f32) 
 const RUNTIME_STATES: State = State::HOVER.union(State::FOCUSED).union(State::FOCUS_VISIBLE).union(State::PRESSED).union(State::DRAG_OVER);
 
 impl App {
+    /// The app whose code is running. Panics outside an app entry.
+    /// Use `App::current().run(..)` for work that must outlive the initiating UI scope;
+    /// it has no current window, and its domain owner must cancel it when no longer needed.
+    pub fn current() -> Self {
+        Self { app: app_state() }
+    }
+
     /// An app on `platform` (a backend's; `HeadlessPlatform` for tests and agents), with no
     /// window yet.
     pub fn new(platform: impl crate::platform::Platform + 'static) -> App {
@@ -534,9 +552,15 @@ impl App {
     /// Runs `f` in the app's runtime, outside any window: makes or reads state the windows
     /// share (a signal made here belongs to the app), then lets every window settle.
     pub fn run<R>(&self, f: impl FnOnce() -> R) -> R {
-        let r = self.enter(f);
-        self.app.frame(std::panic::Location::caller());
-        r
+        self.enter(|| {
+            let r = self.app.rt.with_owner(None, || self.app.rt.with_scope(None, f));
+            // A nested call belongs to its enclosing operation; in particular, a memo or
+            // binding must finish computing before that operation flushes and lays out.
+            if self.app.depth.get() == 1 {
+                self.app.frame(std::panic::Location::caller());
+            }
+            r
+        })
     }
 }
 
@@ -604,9 +628,21 @@ impl AppState {
     /// After an operation: with consistency checks on, every window's tree must equal its
     /// from-scratch rebuild.
     fn check_consistency(self: &Rc<Self>) {
-        if !self.check.get() || self.checking.replace(true) {
+        if !self.check.get() || self.checking.get() {
             return;
         }
+        // A budget cutoff leaves unfinished work visible to the caller. There is no settled
+        // incremental baseline to compare until a later operation completes that work.
+        let unfinished = self.rt.has_pending()
+            || self
+                .windows
+                .borrow()
+                .values()
+                .any(|w| !w.closed.get() && w.settled_generation.get() != w.kernel.borrow().mutation_generation());
+        if unfinished {
+            return;
+        }
+        self.checking.set(true);
         for id in self.order.borrow().clone() {
             let Some(w) = self.handle(id) else { continue };
             let incremental = w.w.kernel.borrow().tree_dump();
@@ -677,34 +713,53 @@ impl AppState {
         self.frame_except(None, at);
     }
 
-    /// [`frame`](Self::frame) for every window but `settled` (which just settled).
-    fn frame_except(self: &Rc<Self>, settled: Option<WindowId>, at: &'static std::panic::Location<'static>) {
-        let mut skip = settled;
-        loop {
-            for id in self.order.borrow().clone() {
-                if skip == Some(id) {
-                    continue;
+    /// [`frame`](Self::frame), retaining the generation of a window that just settled. A later
+    /// window's measurements or callbacks can invalidate an earlier window, including this one.
+    fn frame_except(self: &Rc<Self>, settled: Option<(WindowId, u64)>, at: &'static std::panic::Location<'static>) {
+        enter_app(self, || {
+            let mut generations = rustc_hash::FxHashMap::default();
+            generations.extend(settled);
+            for _ in 0..16 {
+                for id in self.order.borrow().clone() {
+                    if let Some(w) = self.handle(id) {
+                        if generations.get(&id) == Some(&w.w.kernel.borrow().mutation_generation()) {
+                            continue;
+                        }
+                        let generation = w.enter(|| w.settle_window(at));
+                        generations.insert(id, generation);
+                    }
                 }
-                if let Some(w) = self.handle(id) {
-                    w.enter(|| w.settle_window(at));
+                // The last window's focus or hover cleanup can queue reactive work too.
+                self.rt.flush();
+                let opening = std::mem::take(&mut *self.opening.borrow_mut());
+                let closing = std::mem::take(&mut *self.closing.borrow_mut());
+                if opening.is_empty() && closing.is_empty() {
+                    let invalidated = self.order.borrow().iter().any(|id| {
+                        self.handle(*id).is_some_and(|w| generations.get(id) != Some(&w.w.kernel.borrow().mutation_generation()))
+                    });
+                    if !invalidated {
+                        self.present_menus();
+                        return;
+                    }
+                }
+                for id in opening {
+                    if let Some(w) = self.handle(id) {
+                        w.enter(|| w.mount_root());
+                    }
+                }
+                for id in closing {
+                    self.close(id);
                 }
             }
-            let opening = std::mem::take(&mut *self.opening.borrow_mut());
-            let closing = std::mem::take(&mut *self.closing.borrow_mut());
-            if opening.is_empty() && closing.is_empty() {
-                self.present_menus();
-                return;
-            }
-            skip = None;
-            for id in opening {
-                if let Some(w) = self.handle(id) {
-                    w.enter(|| w.mount_root());
-                }
-            }
-            for id in closing {
-                self.close(id);
-            }
-        }
+            // Keep every window's invalidation intact; another operation can settle it once the
+            // feedback stops. Do not schedule an immediate retry of the same runaway frame.
+            self.rt.diag(
+                &codes::LAYOUT_LOOP,
+                "window updates did not settle in 16 rounds: windows keep changing each other's layout or presentation".into(),
+                at,
+            );
+            self.present_menus();
+        });
     }
 
     /// Closes window `id`: its scope is disposed, it leaves the app, its platform window is let
@@ -815,19 +870,19 @@ impl Window {
     #[track_caller]
     fn settle_frame(&self) {
         let at = std::panic::Location::caller();
-        self.settle_window(at);
-        self.app.frame_except(Some(self.w.id), at);
+        let generation = self.settle_window(at);
+        self.app.frame_except(Some((self.w.id, generation)), at);
     }
 
     /// One window's part of a frame: tasks, layout, native views, text input, focus and hover.
-    fn settle_window(&self, at: &'static std::panic::Location<'static>) {
+    fn settle_window(&self, at: &'static std::panic::Location<'static>) -> u64 {
         // Tasks woken (or spawned) by what just happened run to their next wait first; what they
         // change is laid out with the rest. They may wake or spawn more, so repeat (bounded).
         let mut command_ran = false;
         for _ in 0..16 {
             if self.w.closed.get() || self.app.closing.borrow().contains(&self.w.id) {
                 self.w.interaction.borrow_mut().after_update.clear();
-                return;
+                return self.w.kernel.borrow().mutation_generation();
             }
             self.app.sched.run_ready();
             self.settle_layout(at);
@@ -898,6 +953,8 @@ impl Window {
         }
         self.sync_native();
         self.present();
+        let generation = self.w.kernel.borrow().mutation_generation();
+        self.w.settled_generation.set(generation);
         // An `instant` transaction covers the frame it was made in.
         self.w.kernel.borrow_mut().set_instant(false);
         // What is on its way out can no longer be focused or hovered.
@@ -913,6 +970,7 @@ impl Window {
         if gone(hovered) {
             self.set_hover(None);
         }
+        generation
     }
 
     fn settle_requested_focus(&self, at: &'static std::panic::Location<'static>) -> bool {
@@ -1115,7 +1173,7 @@ impl Window {
         Ok(())
     }
 
-    fn handler_for(&self, ev: &Event) -> Result<Handler, String> {
+    fn handler_for(&self, ev: &Event) -> Result<ScopedHandler, String> {
         let (id, kind) = match ev {
             Event::Press(id) => (id, HandlerKind::Press),
             Event::Input(id, _) => (id, HandlerKind::Input),
@@ -1145,11 +1203,13 @@ impl Window {
             // No `on_link` takes it: the system opens it.
             let Some(at) = k.handler_above(k.parent(node), HandlerKind::Link) else {
                 let app = self.app.clone();
-                return Ok(Handler::Press(std::rc::Rc::new(move || app.open_url(&target))));
+                return Ok(ScopedHandler::capture(Handler::Press(std::rc::Rc::new(move || app.open_url(&target)))));
             };
             let hid = k.handler(at, HandlerKind::Link).expect("found by kind");
-            let Some(Handler::Link(f)) = self.w.handlers.borrow().get(&hid.0).cloned() else { return Err("on_link was disposed".into()) };
-            return Ok(Handler::Press(std::rc::Rc::new(move || f(&target))));
+            let Some(mut handler) = self.w.handlers.borrow().get(&hid.0).cloned() else { return Err("on_link was disposed".into()) };
+            let Handler::Link(f) = handler.handler else { return Err("on_link was disposed".into()) };
+            handler.handler = Handler::Press(std::rc::Rc::new(move || f(&target)));
+            return Ok(handler);
         }
         let hid = k.handler(node, kind).ok_or(format!("`{id}` has no {kind:?} handler"))?;
         self.w.handlers.borrow().get(&hid.0).cloned().ok_or(format!("handler of `{id}` was disposed"))
@@ -1303,7 +1363,7 @@ impl Window {
             let h = self.handler_for(&ev)?;
             self.app.next_cause.set(cause);
             self.w.kernel.borrow_mut().set_cause(Some(cause));
-            self.app.rt.with_frame(Ctx::Handler, None, Some(None), || match (h, ev) {
+            h.run(&self.app.rt, |h| match (h, ev) {
                 (Handler::Press(f), _) | (Handler::Toggle(f), _) => f(),
                 (Handler::Input(f), Event::Input(_, v)) => f(v),
                 (Handler::NumericInput(f), Event::NumericInput(_, v)) => f(v),
@@ -1535,8 +1595,12 @@ impl Window {
                     k.set_state(n, State::DRAG_OVER, true);
                 }
             }
-            if let (Some(crate::view::Handler::Drop(f)), Some((_, paths))) = (handler, &dropped) {
-                self.app.rt.with_frame(Ctx::Handler, None, Some(None), || f(paths));
+            if let (Some(handler), Some((_, paths))) = (handler, &dropped) {
+                handler.run(&self.app.rt, |handler| {
+                    if let Handler::Drop(f) = handler {
+                        f(paths);
+                    }
+                });
             }
         });
         true
@@ -1548,8 +1612,14 @@ impl Window {
             let k = self.w.kernel.borrow();
             k.handler(n, HandlerKind::Native).and_then(|h| self.w.handlers.borrow().get(&h.0).cloned())
         };
-        let Some(crate::view::Handler::Native(f)) = handler else { return false };
-        self.input_frame(|| self.app.rt.with_frame(Ctx::Handler, None, Some(None), || f(&event)));
+        let Some(handler) = handler else { return false };
+        self.input_frame(|| {
+            handler.run(&self.app.rt, |handler| {
+                if let Handler::Native(f) = handler {
+                    f(&event);
+                }
+            });
+        });
         true
     }
 
@@ -1562,8 +1632,8 @@ impl Window {
     }
 
     /// What keeps the app from being settled now: tasks, timers and motion (not subscriptions,
-    /// which run for good) and native views that are busy (a page loading). A capture waits for
-    /// this to be empty.
+    /// which run for good), pending reactive updates, and native views that are busy (a page
+    /// loading). A capture waits for this to be empty.
     pub fn unsettled(&self) -> Vec<String> {
         let mut out: Vec<String> = self
             .app()
@@ -1572,6 +1642,12 @@ impl Window {
             .filter(|p| p.kind != crate::task::WorkKind::Subscription)
             .map(|p| if p.at.is_empty() { p.label } else { format!("{} ({})", p.label, p.at) })
             .collect();
+        if self.app.rt.has_pending() {
+            out.push("reactive updates are still pending".into());
+        }
+        if !self.w.closed.get() && self.w.settled_generation.get() != self.w.kernel.borrow().mutation_generation() {
+            out.push("window updates are still pending".into());
+        }
         let placements = self.w.kernel.borrow().native_placements();
         let window = self.w.platform.borrow();
         for (n, p) in placements.into_iter().filter(|(_, p)| p.visible) {

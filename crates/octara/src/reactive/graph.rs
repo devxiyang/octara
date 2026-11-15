@@ -20,10 +20,12 @@ use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::panic::Location;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A node handle (opaque).
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub(crate) struct Idx {
+    runtime: u64,
     i: u32,
     g: u32,
 }
@@ -43,7 +45,26 @@ enum Kind {
     Watch,
 }
 
-type Value = Rc<dyn Any>;
+type Value = Rc<RefCell<Box<dyn Any>>>;
+
+fn value_cell<T: 'static>(value: T) -> Value {
+    Rc::new(RefCell::new(Box::new(value)))
+}
+
+/// Restore execution bookkeeping on return and unwind alike.
+struct Restore<'a, T: Copy>(&'a Cell<T>, T);
+
+impl<'a, T: Copy> Restore<'a, T> {
+    fn set(cell: &'a Cell<T>, value: T) -> Self {
+        Self(cell, cell.replace(value))
+    }
+}
+
+impl<T: Copy> Drop for Restore<'_, T> {
+    fn drop(&mut self) {
+        self.0.set(self.1);
+    }
+}
 /// Memos return `Some(new)` when their value changed; observers return `None`.
 type Compute = Box<dyn FnMut(Option<&Value>) -> Option<Value>>;
 
@@ -66,10 +87,12 @@ struct Node {
     defined_at: &'static Location<'static>,
     /// The owner it was made under, restored when it runs.
     owner: Option<Owner>,
+    scope: Option<ScopeId>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub(crate) struct ScopeId {
+    runtime: u64,
     i: u32,
     g: u32,
 }
@@ -85,6 +108,7 @@ struct ScopeData {
     names: HashMap<String, u32>,
     state_keys: HashSet<&'static str>,
     contexts: Vec<(TypeId, Rc<dyn Any>)>,
+    owner: Option<Owner>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -98,8 +122,10 @@ pub(crate) enum Ctx {
     Observe,
     /// A handler or watch callback.
     Handler,
-    /// Inside `untrack`.
-    Untracked,
+    /// A named value initializer: sampled reads, no mutation of existing state.
+    Init,
+    /// Teardown may sample retiring state but cannot register new work.
+    Cleanup,
     /// Inside a view's closure (`filter`, `sort_by`, `group_by`, `map`, `join`): a pure function
     /// of the item, run per item event; reads are not tracked and are reported.
     View,
@@ -110,6 +136,8 @@ type NamedStore = HashMap<(String, &'static str), (Idx, TypeId)>;
 
 #[derive(Default)]
 pub(crate) struct Runtime {
+    identity: u64,
+    sampling: Cell<bool>,
     nodes: RefCell<Vec<Node>>,
     free_nodes: RefCell<Vec<u32>>,
     scopes: RefCell<Vec<ScopeData>>,
@@ -125,6 +153,7 @@ pub(crate) struct Runtime {
     epoch: Cell<u64>,
     epochs: Cell<u64>,
     flushing: Cell<bool>,
+    propagation_suspended: Cell<bool>,
     reloading: Cell<bool>,
     closures_run: Cell<u64>,
     /// Who the running code belongs to (the view layer's window): set by the app's entry points,
@@ -160,7 +189,9 @@ fn loc(at: &Location<'_>) -> String {
 
 impl Runtime {
     pub fn new() -> Rc<Self> {
-        Rc::new(Runtime::default())
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let identity = NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1)).expect("runtime identity exhausted");
+        Rc::new(Runtime { identity, ..Runtime::default() })
     }
 
     pub fn enter<R>(self: &Rc<Self>, f: impl FnOnce() -> R) -> R {
@@ -219,36 +250,60 @@ impl Runtime {
         self.owner.get()
     }
 
-    /// Runs `f` as `owner` (none: as the current one).
+    /// Restore the registration window; None deliberately clears the ambient window.
     pub(crate) fn with_owner<R>(&self, owner: Option<Owner>, f: impl FnOnce() -> R) -> R {
-        let Some(o) = owner else { return f() };
-        struct Restore<'a>(&'a Cell<Option<Owner>>, Option<Owner>);
-        impl Drop for Restore<'_> {
-            fn drop(&mut self) {
-                self.0.set(self.1);
-            }
-        }
-        let _restore = Restore(&self.owner, self.owner.replace(Some(o)));
+        let _owner = Restore::set(&self.owner, owner);
         f()
     }
 
     pub fn with_frame<R>(&self, ctx: Ctx, observer: Option<Idx>, scope: Option<Option<ScopeId>>, f: impl FnOnce() -> R) -> R {
-        let prev_ctx = self.ctx.replace(Some(ctx));
-        let prev_obs = self.observer.replace(observer);
-        let prev_scope = scope.map(|s| self.scope.replace(s));
-        let r = f();
-        self.ctx.set(prev_ctx);
-        self.observer.set(prev_obs);
-        if let Some(s) = prev_scope {
-            self.scope.set(s);
+        let _ctx = Restore::set(&self.ctx, Some(ctx));
+        let _observer = Restore::set(&self.observer, observer);
+        let _scope = scope.map(|scope| Restore::set(&self.scope, scope));
+        let _sampling = Restore::set(&self.sampling, ctx == Ctx::Init);
+        f()
+    }
+
+    fn sample<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _observer = Restore::set(&self.observer, None);
+        let _sampling = Restore::set(&self.sampling, true);
+        f()
+    }
+
+    pub(crate) fn with_scope<R>(&self, scope: Option<ScopeId>, f: impl FnOnce() -> R) -> R {
+        let _scope = Restore::set(&self.scope, scope);
+        f()
+    }
+
+    pub(crate) fn effect_allowed(&self, at: &'static Location<'static>) -> bool {
+        if self.scope.get().is_some_and(|scope| !self.scope_alive(scope)) {
+            self.diag(&codes::WRITE_DISPOSED, "cannot register work in a retired scope".into(), at);
+            return false;
         }
-        r
+        let code = match self.ctx() {
+            Ctx::Derive | Ctx::Observe | Ctx::View => &codes::WRITE_IN_DERIVE,
+            Ctx::Init => &codes::WRITE_IN_BUILD,
+            Ctx::Cleanup => &codes::WRITE_DISPOSED,
+            _ => return true,
+        };
+        self.diag(code, "effect registration inside a pure computation or initializer; rejected".into(), at);
+        false
+    }
+
+    pub(crate) fn write_allowed(&self, at: &'static Location<'static>) -> bool {
+        let code = match self.ctx() {
+            Ctx::Build | Ctx::Init => &codes::WRITE_IN_BUILD,
+            Ctx::Derive | Ctx::Observe | Ctx::View => &codes::WRITE_IN_DERIVE,
+            _ => return true,
+        };
+        self.diag(code, "reactive mutation outside a handler or watch callback; rejected".into(), at);
+        false
     }
 
     // ---- nodes ----
 
     fn alive(&self, idx: Idx) -> bool {
-        self.nodes.borrow().get(idx.i as usize).is_some_and(|n| n.alive && n.g == idx.g)
+        idx.runtime == self.identity && self.nodes.borrow().get(idx.i as usize).is_some_and(|n| n.alive && n.g == idx.g)
     }
     fn kind(&self, idx: Idx) -> Kind {
         self.nodes.borrow()[idx.i as usize].kind
@@ -270,6 +325,11 @@ impl Runtime {
         let seq = self.seq.get();
         self.seq.set(seq + 1);
         let run_as = self.owner.get();
+        let scope = owner.unwrap_or(self.scope.get());
+        if scope.is_some_and(|scope| !self.scope_alive(scope)) {
+            self.diag(&codes::WRITE_DISPOSED, "cannot allocate state in a retired scope".into(), at);
+            panic!("[{}] state owner was disposed", codes::WRITE_DISPOSED);
+        }
         let make = |g| Node {
             g,
             alive: true,
@@ -286,16 +346,17 @@ impl Runtime {
             tracked: None,
             defined_at: at,
             owner: run_as,
+            scope,
         };
         let idx = {
             let mut nodes = self.nodes.borrow_mut();
             if let Some(i) = self.free_nodes.borrow_mut().pop() {
                 let g = nodes[i as usize].g + 1;
                 nodes[i as usize] = make(g);
-                Idx { i, g }
+                Idx { runtime: self.identity, i, g }
             } else {
                 nodes.push(make(0));
-                Idx { i: nodes.len() as u32 - 1, g: 0 }
+                Idx { runtime: self.identity, i: nodes.len() as u32 - 1, g: 0 }
             }
         };
         match owner.unwrap_or(self.scope.get()) {
@@ -338,6 +399,9 @@ impl Runtime {
     }
 
     fn track(&self, src: Idx, at: &Location<'_>) {
+        if self.sampling.get() {
+            return;
+        }
         if let Some(obs) = self.observer.get() {
             if obs == src {
                 return;
@@ -374,6 +438,10 @@ impl Runtime {
     }
 
     pub(crate) fn read(&self, idx: Idx, at: &'static Location<'static>, tracked: bool) -> Value {
+        if idx.runtime != self.identity {
+            self.diag(&codes::WRONG_RUNTIME, "signal belongs to another App".into(), at);
+            panic!("[{}] signal belongs to another App", codes::WRONG_RUNTIME);
+        }
         if !self.alive(idx) {
             self.diag(&codes::READ_DISPOSED, "read of a value whose owner was disposed".into(), at);
             panic!("[{}] at {}: read of a disposed value", codes::READ_DISPOSED, loc(at));
@@ -381,10 +449,7 @@ impl Runtime {
         if self.kind(idx) == Kind::Memo {
             if self.nodes.borrow()[idx.i as usize].computing {
                 self.diag(&codes::CYCLE, format!("memo defined at {} reads itself", self.defined_at(idx)), at);
-                if let Some(v) = self.nodes.borrow()[idx.i as usize].value.clone() {
-                    return v;
-                }
-                panic!("[{}] at {}: memo read itself before it had a value", codes::CYCLE, loc(at));
+                panic!("[{}] at {}: memo read itself while computing", codes::CYCLE, loc(at));
             }
             self.update_if_necessary(idx);
         }
@@ -394,54 +459,75 @@ impl Runtime {
         self.nodes.borrow()[idx.i as usize].value.clone().expect("value")
     }
 
-    /// `internal` writes come from the framework (list views) and skip the layer checks.
-    pub(crate) fn write(&self, idx: Idx, value: Value, at: &'static Location<'static>, internal: bool) {
+    fn writable_node(&self, idx: Idx, at: &'static Location<'static>, internal: bool) -> Option<Value> {
+        if idx.runtime != self.identity {
+            self.diag(&codes::WRONG_RUNTIME, "signal belongs to another App; write rejected".into(), at);
+            return None;
+        }
         if !self.alive(idx) {
-            self.diag(&codes::WRITE_DISPOSED, "write to a value whose owner was disposed; dropped".into(), at);
-            return;
+            self.diag(&codes::WRITE_DISPOSED, "write to a disposed value; rejected".into(), at);
+            return None;
         }
-        if !internal {
-            let reject = match self.ctx() {
-                Ctx::Build => Some((&codes::WRITE_IN_BUILD, "while building a view")),
-                Ctx::Derive | Ctx::Observe => Some((&codes::WRITE_IN_DERIVE, "inside a memo, binding or watch source")),
-                _ => None,
-            };
-            if let Some((code, where_)) = reject {
-                let def = self.defined_at(idx);
-                self.diag(
-                    code,
-                    format!("write to signal defined at {def} {where_}; rejected. Write from a handler or a `watch` callback"),
-                    at,
-                );
-                return;
+        if self.nodes.borrow()[idx.i as usize].scope.is_some_and(|scope| !self.scope_alive(scope)) {
+            self.diag(&codes::WRITE_DISPOSED, "write to retiring state; rejected".into(), at);
+            return None;
+        }
+        if !internal && !self.write_allowed(at) {
+            return None;
+        }
+        self.nodes.borrow()[idx.i as usize].value.clone()
+    }
+
+    fn invalidate(&self, idx: Idx) {
+        if self.alive(idx) {
+            let observers = self.nodes.borrow()[idx.i as usize].observers.clone();
+            for observer in observers {
+                self.mark(observer, State::Dirty);
             }
-        }
-        let (observers, old) = {
-            let mut nodes = self.nodes.borrow_mut();
-            let n = &mut nodes[idx.i as usize];
-            (n.observers.clone(), n.value.replace(value))
-        };
-        drop(old);
-        for o in observers {
-            self.mark(o, State::Dirty);
         }
     }
 
-    pub(crate) fn update_value(
-        &self,
-        idx: Idx,
-        f: &mut dyn FnMut(&mut dyn Any),
-        clone: fn(&dyn Any) -> Value,
-        at: &'static Location<'static>,
-    ) {
-        if !self.alive(idx) {
-            return self.write(idx, Rc::new(()), at, false);
+    /// The storage cell stays stable so replacing a value cannot evade an active borrow.
+    fn write<T: 'static>(&self, idx: Idx, value: T, at: &'static Location<'static>, internal: bool) {
+        let Some(cell) = self.writable_node(idx, at, internal) else { return };
+        let old = {
+            let Ok(mut current) = cell.try_borrow_mut() else {
+                self.diag(&codes::SIGNAL_BORROW, "signal is already borrowed; write rejected".into(), at);
+                return;
+            };
+            std::mem::replace(&mut *current, Box::new(value))
+        };
+        self.invalidate(idx);
+        drop(old);
+    }
+
+    fn update_value<T: 'static>(&self, idx: Idx, f: impl FnOnce(&mut T), at: &'static Location<'static>) {
+        let Some(cell) = self.writable_node(idx, at, false) else { return };
+        struct Notify<'a>(&'a Runtime, Idx, bool);
+        impl Drop for Notify<'_> {
+            fn drop(&mut self) {
+                if self.2 {
+                    self.0.invalidate(self.1);
+                }
+            }
         }
-        let current = self.nodes.borrow()[idx.i as usize].value.clone().expect("value");
-        let mut owned = clone(&*current);
-        drop(current);
-        f(Rc::get_mut(&mut owned).expect("fresh value"));
-        self.write(idx, owned, at, false);
+        // Drop the value borrow before invalidating, including if user code unwinds.
+        let mut notify = Notify(self, idx, false);
+        let Ok(mut current) = cell.try_borrow_mut() else {
+            self.diag(&codes::SIGNAL_BORROW, "signal is already borrowed; update rejected".into(), at);
+            return;
+        };
+        notify.2 = true;
+        f(current.downcast_mut::<T>().expect("reactive value type"));
+    }
+
+    fn with_value<T: 'static, R>(&self, idx: Idx, at: &'static Location<'static>, tracked: bool, f: impl FnOnce(&T) -> R) -> R {
+        let cell = self.read(idx, at, tracked);
+        let current = cell.try_borrow().unwrap_or_else(|_| {
+            self.diag(&codes::SIGNAL_BORROW, "signal is mutably borrowed; read rejected".into(), at);
+            panic!("[{}] signal is mutably borrowed", codes::SIGNAL_BORROW);
+        });
+        f(current.downcast_ref::<T>().expect("reactive value type"))
     }
 
     fn mark(&self, idx: Idx, state: State) {
@@ -488,11 +574,11 @@ impl Runtime {
     }
 
     fn run_node(&self, idx: Idx) {
-        let (kind, mut compute, old, sources, owner) = {
+        let (kind, mut compute, old, sources, owner, scope) = {
             let mut nodes = self.nodes.borrow_mut();
             let n = &mut nodes[idx.i as usize];
             n.computing = true;
-            (n.kind, n.compute.take().expect("compute"), n.value.clone(), std::mem::take(&mut n.sources), n.owner)
+            (n.kind, n.compute.take().expect("compute"), n.value.clone(), std::mem::take(&mut n.sources), n.owner, n.scope)
         };
         {
             let mut nodes = self.nodes.borrow_mut();
@@ -502,14 +588,26 @@ impl Runtime {
                 }
             }
         }
+        struct Run<'a>(&'a Runtime, Idx, bool);
+        impl Drop for Run<'_> {
+            fn drop(&mut self) {
+                if !self.2 {
+                    self.0.dispose_node(self.1);
+                }
+            }
+        }
+        let mut run = Run(self, idx, false);
+        if scope.is_some_and(|scope| !self.scope_alive(scope)) {
+            return;
+        }
         self.closures_run.set(self.closures_run.get() + 1);
         let ctx = if kind == Kind::Memo { Ctx::Derive } else { Ctx::Observe };
         let epoch = self.epochs.get() + 1;
         self.epochs.set(epoch);
-        let prev_epoch = self.epoch.replace(epoch);
-        let changed = self.with_owner(owner, || self.with_frame(ctx, Some(idx), None, || compute(old.as_ref())));
-        self.epoch.set(prev_epoch);
-        let observers = {
+        let _epoch = Restore::set(&self.epoch, epoch);
+        let changed = self.with_owner(owner, || self.with_frame(ctx, Some(idx), Some(scope), || compute(old.as_ref())));
+        run.2 = true;
+        let (observers, replaced) = {
             let mut nodes = self.nodes.borrow_mut();
             let n = &mut nodes[idx.i as usize];
             if !(n.alive && n.g == idx.g) {
@@ -521,12 +619,13 @@ impl Runtime {
             n.compute = Some(compute);
             match changed {
                 Some(v) => {
-                    n.value = Some(v);
-                    n.observers.clone()
+                    let replaced = n.value.replace(v);
+                    (n.observers.clone(), replaced)
                 }
-                None => Vec::new(),
+                None => (Vec::new(), None),
             }
         };
+        drop(replaced);
         let mut nodes = self.nodes.borrow_mut();
         for o in observers {
             if let Some(n) = nodes.get_mut(o.i as usize).filter(|n| n.alive && n.g == o.g) {
@@ -536,9 +635,10 @@ impl Runtime {
     }
 
     pub fn flush(&self) {
-        if self.flushing.replace(true) {
+        if self.flushing.get() || self.propagation_suspended.get() {
             return;
         }
+        let _flushing = Restore::set(&self.flushing, true);
         let mut rounds = 0;
         loop {
             let mut batch = std::mem::take(&mut *self.queue.borrow_mut());
@@ -553,10 +653,9 @@ impl Runtime {
                     format!("updates did not settle after {FLUSH_ROUNDS_LIMIT} rounds; still scheduled: {}", loc(at)),
                     at,
                 );
-                let mut nodes = self.nodes.borrow_mut();
-                for i in batch {
-                    nodes[i.i as usize].queued = false;
-                }
+                // Preserve the scheduled work so a later input can break the feedback loop.
+                self.queue.borrow_mut().extend(batch);
+                self.propagation_suspended.set(true);
                 break;
             }
             {
@@ -566,20 +665,36 @@ impl Runtime {
                     (n.kind != Kind::Binding, n.seq)
                 });
             }
-            for i in batch {
+            struct Batch<'a>(&'a Runtime, std::vec::IntoIter<Idx>);
+            impl Drop for Batch<'_> {
+                fn drop(&mut self) {
+                    // A callback panic must not strand unrelated observers marked queued.
+                    self.0.queue.borrow_mut().extend(self.1.by_ref());
+                }
+            }
+            let mut batch = Batch(self, batch.into_iter());
+            for i in batch.1.by_ref() {
                 if self.alive(i) {
                     self.nodes.borrow_mut()[i.i as usize].queued = false;
                     self.update_if_necessary(i);
                 }
             }
         }
-        self.flushing.set(false);
+    }
+
+    pub(crate) fn has_pending(&self) -> bool {
+        self.queue.borrow().iter().any(|idx| self.alive(*idx))
+    }
+
+    /// Retry limited propagation at a new outer operation, never inside the same layout loop.
+    pub(crate) fn resume_propagation(&self) {
+        self.propagation_suspended.set(false);
     }
 
     // ---- scopes ----
 
-    fn scope_alive(&self, s: ScopeId) -> bool {
-        self.scopes.borrow().get(s.i as usize).is_some_and(|d| d.alive && d.g == s.g)
+    pub(crate) fn scope_alive(&self, s: ScopeId) -> bool {
+        s.runtime == self.identity && self.scopes.borrow().get(s.i as usize).is_some_and(|d| d.alive && d.g == s.g)
     }
     pub fn current_scope(&self) -> Option<ScopeId> {
         self.scope.get()
@@ -612,16 +727,17 @@ impl Runtime {
             names: HashMap::new(),
             state_keys: HashSet::new(),
             contexts: Vec::new(),
+            owner: self.owner.get(),
         };
         let id = {
             let mut scopes = self.scopes.borrow_mut();
             if let Some(i) = self.free_scopes.borrow_mut().pop() {
                 let g = scopes[i as usize].g + 1;
                 scopes[i as usize] = make(g);
-                ScopeId { i, g }
+                ScopeId { runtime: self.identity, i, g }
             } else {
                 scopes.push(make(0));
-                ScopeId { i: scopes.len() as u32 - 1, g: 0 }
+                ScopeId { runtime: self.identity, i: scopes.len() as u32 - 1, g: 0 }
             }
         };
         if let Some(p) = parent {
@@ -642,47 +758,65 @@ impl Runtime {
         if !self.scope_alive(s) {
             return;
         }
-        let children = std::mem::take(&mut self.scopes.borrow_mut()[s.i as usize].children);
-        for c in children.into_iter().rev() {
-            self.dispose_scope(c);
-        }
-        let (nodes, cleanups, parent, path) = {
+        let (children, nodes, cleanups, parent, path, owner) = {
             let mut scopes = self.scopes.borrow_mut();
             let d = &mut scopes[s.i as usize];
-            d.alive = false;
-            (std::mem::take(&mut d.nodes), std::mem::take(&mut d.cleanups), d.parent, d.path.clone())
+            d.alive = false; // Retire the whole owner before invoking child or user teardown.
+            (
+                std::mem::take(&mut d.children),
+                std::mem::take(&mut d.nodes),
+                std::mem::take(&mut d.cleanups),
+                d.parent,
+                d.path.clone(),
+                d.owner,
+            )
         };
-        for f in cleanups.into_iter().rev() {
-            f();
-        }
-        let reloading = self.reloading.get();
-        for n in nodes {
-            let named = self.alive(n) && self.nodes.borrow()[n.i as usize].named;
-            if !(named && reloading) {
-                self.dispose_node(n);
-            }
-        }
-        if !reloading {
-            self.store.borrow_mut().retain(|(p, _), _| p != &path);
-        }
-        if let Some(p) = parent.filter(|p| self.scope_alive(*p)) {
-            self.scopes.borrow_mut()[p.i as usize].children.retain(|c| *c != s);
-        }
-        self.free_scopes.borrow_mut().push(s.i);
+        self.with_owner(owner, || {
+            self.with_frame(Ctx::Cleanup, None, Some(Some(s)), || {
+                for child in children.into_iter().rev() {
+                    self.dispose_scope(child);
+                }
+                for cleanup in cleanups.into_iter().rev() {
+                    cleanup();
+                }
+                let reloading = self.reloading.get();
+                for n in nodes {
+                    let named = self.alive(n) && self.nodes.borrow()[n.i as usize].named;
+                    if !(named && reloading) {
+                        self.dispose_node(n);
+                    }
+                }
+                if !reloading {
+                    self.store.borrow_mut().retain(|(p, _), _| p != &path);
+                }
+                if let Some(p) = parent.filter(|p| self.scope_alive(*p)) {
+                    self.scopes.borrow_mut()[p.i as usize].children.retain(|c| *c != s);
+                }
+                let contexts = std::mem::take(&mut self.scopes.borrow_mut()[s.i as usize].contexts);
+                drop(contexts);
+                self.free_scopes.borrow_mut().push(s.i);
+            })
+        });
     }
 
     fn provide(&self, ty: TypeId, value: Rc<dyn Any>) {
         let s = self.scope.get().expect("provide outside a component");
-        let mut scopes = self.scopes.borrow_mut();
-        let ctx = &mut scopes[s.i as usize].contexts;
-        ctx.retain(|(t, _)| *t != ty);
-        ctx.push((ty, value));
+        let replaced = {
+            let mut scopes = self.scopes.borrow_mut();
+            let ctx = &mut scopes[s.i as usize].contexts;
+            let replaced = ctx.iter().position(|(t, _)| *t == ty).map(|i| ctx.remove(i));
+            ctx.push((ty, value));
+            replaced
+        };
+        drop(replaced);
     }
 
     fn lookup(&self, ty: TypeId) -> Option<Rc<dyn Any>> {
         let scopes = self.scopes.borrow();
         let mut cur = self.scope.get();
-        while let Some(s) = cur.filter(|s| scopes.get(s.i as usize).is_some_and(|d| d.alive && d.g == s.g)) {
+        while let Some(s) = cur.filter(|s| {
+            s.runtime == self.identity && scopes.get(s.i as usize).is_some_and(|d| d.g == s.g && (d.alive || self.ctx() == Ctx::Cleanup))
+        }) {
             let d = &scopes[s.i as usize];
             if let Some((_, v)) = d.contexts.iter().find(|(t, _)| *t == ty) {
                 return Some(v.clone());
@@ -713,6 +847,7 @@ impl Runtime {
         if let Some((idx, old_ty)) = existing {
             if self.alive(idx) && old_ty == ty {
                 self.scopes.borrow_mut()[scope.i as usize].nodes.push(idx);
+                self.nodes.borrow_mut()[idx.i as usize].scope = Some(scope);
                 return idx;
             }
             // The same key for another type in this build: the first keeps it, this call gets
@@ -736,14 +871,6 @@ impl Runtime {
 // ---------------------------------------------------------------------------------------------
 
 type NotSend = PhantomData<*const ()>;
-
-fn downcast<T: 'static>(v: Value) -> Rc<T> {
-    v.downcast::<T>().unwrap_or_else(|_| panic!("reactive value has an unexpected type"))
-}
-
-fn clone_value<T: Clone + 'static>(v: &dyn Any) -> Value {
-    Rc::new(v.downcast_ref::<T>().expect("type").clone())
-}
 
 /// A writable reactive value. `Copy`, `!Send`.
 pub struct Signal<T> {
@@ -778,7 +905,7 @@ impl<T> Signal<T> {
     }
 }
 
-impl<T: Clone + 'static> Signal<T> {
+impl<T: 'static> Signal<T> {
     fn from_idx(idx: Idx) -> Self {
         Signal { idx, _t: PhantomData, _ns: PhantomData }
     }
@@ -791,7 +918,7 @@ impl<T: Clone + 'static> Signal<T> {
             if rt.ctx() == Ctx::Build {
                 rt.diag(&codes::UNKEYED_STATE, "Signal::new inside a component: lost on hot reload; use `state(key, init)`".into(), at);
             }
-            Self::from_idx(rt.create_node(Kind::Source, Some(Rc::new(value)), None, false, None, at))
+            Self::from_idx(rt.create_node(Kind::Source, Some(value_cell(value)), None, false, None, at))
         })
     }
 
@@ -799,54 +926,57 @@ impl<T: Clone + 'static> Signal<T> {
     #[track_caller]
     pub(crate) fn scoped(value: T) -> Self {
         let at = Location::caller();
-        rt(|rt| Self::from_idx(rt.create_node(Kind::Source, Some(Rc::new(value)), None, false, None, at)))
+        rt(|rt| Self::from_idx(rt.create_node(Kind::Source, Some(value_cell(value)), None, false, None, at)))
     }
 
     /// A signal owned by a value rather than a scope; the owner must call [`Signal::dispose`].
     #[track_caller]
     pub(crate) fn detached(value: T) -> Self {
         let at = Location::caller();
-        rt(|rt| Self::from_idx(rt.create_node(Kind::Source, Some(Rc::new(value)), None, false, Some(None), at)))
+        rt(|rt| Self::from_idx(rt.create_node(Kind::Source, Some(value_cell(value)), None, false, Some(None), at)))
     }
 
     #[track_caller]
-    pub fn get(&self) -> T {
-        let at = Location::caller();
-        (*downcast::<T>(rt(|rt| rt.read(self.idx, at, true)))).clone()
+    pub fn get(&self) -> T
+    where
+        T: Clone,
+    {
+        self.with(Clone::clone)
     }
     #[track_caller]
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         let at = Location::caller();
-        f(&downcast::<T>(rt(|rt| rt.read(self.idx, at, true))))
+        rt(|rt| rt.with_value(self.idx, at, true, f))
     }
     #[track_caller]
-    pub fn get_untracked(&self) -> T {
+    pub fn get_untracked(&self) -> T
+    where
+        T: Clone,
+    {
         let at = Location::caller();
-        (*downcast::<T>(rt(|rt| rt.read(self.idx, at, false)))).clone()
+        rt(|rt| rt.with_value(self.idx, at, false, Clone::clone))
     }
     #[track_caller]
     pub fn with_untracked<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         let at = Location::caller();
-        f(&downcast::<T>(rt(|rt| rt.read(self.idx, at, false))))
+        rt(|rt| rt.with_value(self.idx, at, false, f))
     }
     #[track_caller]
     pub fn set(&self, value: T) {
         let at = Location::caller();
-        rt(|rt| rt.write(self.idx, Rc::new(value), at, false));
+        rt(|rt| rt.write(self.idx, value, at, false));
     }
     #[track_caller]
     pub(crate) fn set_internal(&self, value: T) {
         let at = Location::caller();
-        rt(|rt| rt.write(self.idx, Rc::new(value), at, true));
+        rt(|rt| rt.write(self.idx, value, at, true));
     }
     #[track_caller]
     pub fn update(&self, f: impl FnOnce(&mut T)) {
         let at = Location::caller();
-        let mut f = Some(f);
-        rt(|rt| {
-            rt.update_value(self.idx, &mut |v: &mut dyn Any| (f.take().unwrap())(v.downcast_mut::<T>().unwrap()), clone_value::<T>, at)
-        });
+        rt(|rt| rt.update_value(self.idx, f, at));
     }
+
     pub fn read_only(&self) -> ReadSignal<T> {
         ReadSignal(*self)
     }
@@ -862,9 +992,12 @@ impl<T> Clone for ReadSignal<T> {
 }
 impl<T> Copy for ReadSignal<T> {}
 
-impl<T: Clone + 'static> ReadSignal<T> {
+impl<T: 'static> ReadSignal<T> {
     #[track_caller]
-    pub fn get(&self) -> T {
+    pub fn get(&self) -> T
+    where
+        T: Clone,
+    {
         self.0.get()
     }
     #[track_caller]
@@ -872,7 +1005,10 @@ impl<T: Clone + 'static> ReadSignal<T> {
         self.0.with(f)
     }
     #[track_caller]
-    pub fn get_untracked(&self) -> T {
+    pub fn get_untracked(&self) -> T
+    where
+        T: Clone,
+    {
         self.0.get_untracked()
     }
     #[track_caller]
@@ -895,33 +1031,36 @@ impl<T> Clone for Memo<T> {
 }
 impl<T> Copy for Memo<T> {}
 
-impl<T: Clone + 'static> Memo<T> {
+impl<T: 'static> Memo<T> {
     #[track_caller]
-    pub fn get(&self) -> T {
-        let at = Location::caller();
-        (*downcast::<T>(rt(|rt| rt.read(self.idx, at, true)))).clone()
+    pub fn get(&self) -> T
+    where
+        T: Clone,
+    {
+        self.with(Clone::clone)
     }
     #[track_caller]
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         let at = Location::caller();
-        f(&downcast::<T>(rt(|rt| rt.read(self.idx, at, true))))
+        rt(|rt| rt.with_value(self.idx, at, true, f))
     }
     #[track_caller]
-    pub fn get_untracked(&self) -> T {
+    pub fn get_untracked(&self) -> T
+    where
+        T: Clone,
+    {
         let at = Location::caller();
-        (*downcast::<T>(rt(|rt| rt.read(self.idx, at, false)))).clone()
+        rt(|rt| rt.with_value(self.idx, at, false, Clone::clone))
     }
 }
 
 #[track_caller]
-pub fn memo<T: Clone + PartialEq + 'static>(f: impl Fn() -> T + 'static) -> Memo<T> {
+pub fn memo<T: PartialEq + 'static>(f: impl Fn() -> T + 'static) -> Memo<T> {
     let at = Location::caller();
     let compute: Compute = Box::new(move |old| {
         let new = f();
-        match old.and_then(|o| o.downcast_ref::<T>()) {
-            Some(o) if *o == new => None,
-            _ => Some(Rc::new(new) as Value),
-        }
+        let equal = old.is_some_and(|old| old.borrow().downcast_ref::<T>().is_some_and(|old| *old == new));
+        if equal { None } else { Some(value_cell(new)) }
     });
     Memo { idx: rt(|rt| rt.create_node(Kind::Memo, None, Some(compute), false, None, at)), _t: PhantomData, _ns: PhantomData }
 }
@@ -952,6 +1091,9 @@ pub(crate) fn binding(at: &'static Location<'static>, mut f: impl FnMut() + 'sta
 #[track_caller]
 pub fn watch<S: Clone + PartialEq + 'static>(source: impl Fn() -> S + 'static, callback: impl Fn(&S, Option<&S>) + 'static) {
     let at = Location::caller();
+    if !rt(|rt| rt.effect_allowed(at)) {
+        return;
+    }
     let last: RefCell<Option<S>> = RefCell::new(None);
     observer(
         Kind::Watch,
@@ -970,9 +1112,9 @@ pub fn watch<S: Clone + PartialEq + 'static>(source: impl Fn() -> S + 'static, c
 
 /// Named component state: keyed by `key` within the current component; survives hot reload.
 #[track_caller]
-pub fn state<T: Clone + 'static>(key: &'static str, init: impl FnOnce() -> T) -> Signal<T> {
+pub fn state<T: 'static>(key: &'static str, init: impl FnOnce() -> T) -> Signal<T> {
     let at = Location::caller();
-    Signal::from_idx(rt(|rt| rt.named_state(key, TypeId::of::<T>(), || Rc::new(init()) as Value, at)))
+    Signal::from_idx(rt(|rt| rt.named_state(key, TypeId::of::<T>(), || rt.with_frame(Ctx::Init, None, None, || value_cell(init())), at)))
 }
 
 /// Makes `value` available to every descendant of the current component (the nearest wins).
@@ -988,7 +1130,7 @@ pub fn use_context<T: Clone + 'static>() -> Option<T> {
 
 /// Runs `f` untracked: reads inside are intentional one-shot reads.
 pub fn untrack<R>(f: impl FnOnce() -> R) -> R {
-    rt(|rt| rt.with_frame(Ctx::Untracked, None, None, f))
+    rt(|rt| rt.sample(f))
 }
 
 #[cfg(test)]
@@ -1115,6 +1257,253 @@ mod tests {
             watch(move || n.get(), move |v, _| n.set(v + 1));
             rt.flush();
             assert_eq!(rt.diagnostics()[0].code, "FLUSH_RUNAWAY");
+        });
+    }
+
+    #[test]
+    fn rejected_update_does_not_invoke_user_code() {
+        with_scope(|rt| {
+            let value = Signal::new(0);
+            let called = Cell::new(false);
+            rt.with_frame(Ctx::Build, None, None, || {
+                value.update(|n| {
+                    called.set(true);
+                    *n = 7;
+                });
+            });
+            assert!(!called.get());
+            assert_eq!(value.get(), 0);
+        });
+    }
+
+    #[test]
+    fn untrack_cannot_grant_write_permission() {
+        with_scope(|rt| {
+            let value = Signal::new(0);
+            let derived = memo(move || {
+                untrack(|| {
+                    value.set(8);
+                    1
+                })
+            });
+            assert_eq!(derived.get(), 1);
+            assert_eq!(value.get(), 0);
+            assert!(rt.diagnostics().iter().any(|d| d.code == "WRITE_IN_DERIVE"));
+        });
+    }
+
+    #[test]
+    fn watch_registration_cannot_escape_a_pure_computation() {
+        with_scope(|rt| {
+            let value = Signal::new(0);
+            let derived = memo(move || {
+                watch(|| 1, move |_, _| value.set(9));
+                1
+            });
+            derived.get();
+            assert_eq!(value.get(), 0);
+            assert!(rt.diagnostics().iter().any(|d| d.code == "WRITE_IN_DERIVE"));
+        });
+    }
+
+    #[test]
+    fn foreign_runtime_handle_cannot_mutate_matching_slot() {
+        let a = Runtime::new();
+        let b = Runtime::new();
+        let value = a.enter(|| Signal::new(1));
+        b.enter(|| {
+            let other = Signal::new(2);
+            assert_ne!(value, other);
+            value.set(99);
+            assert_eq!(other.get(), 2);
+        });
+        assert_eq!(a.enter(|| value.get()), 1);
+    }
+
+    #[test]
+    fn execution_context_restores_after_unwind() {
+        with_scope(|rt| {
+            let scope = rt.current_scope();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                rt.with_frame(Ctx::Derive, None, Some(None), || panic!("test unwind"));
+            }));
+            assert!(result.is_err());
+            assert_eq!(rt.ctx(), Ctx::Idle);
+            assert_eq!(rt.current_scope(), scope);
+        });
+    }
+
+    #[test]
+    fn non_clone_state_updates_in_place_and_memo_can_borrow_non_clone_results() {
+        #[derive(PartialEq)]
+        struct Form {
+            names: Vec<String>,
+        }
+        with_scope(|rt| {
+            let form = state("form", || Form { names: vec!["Ada".into()] });
+            let names = memo(move || form.with(|f| Form { names: f.names.clone() }));
+            let seen = Rc::new(RefCell::new(Vec::new()));
+            let out = seen.clone();
+            binding(Location::caller(), move || out.borrow_mut().push(names.with(|f| f.names.len())));
+            let address = form.with(|f| f as *const Form);
+            handler(rt, || form.update(|f| f.names.push("Lin".into())));
+            assert_eq!(form.read_only().with(|f| f as *const Form), address);
+            assert_eq!(*seen.borrow(), [1, 2]);
+            form.set(Form { names: Vec::new() });
+            rt.flush();
+            assert_eq!(*seen.borrow(), [1, 2, 0]);
+        });
+    }
+
+    #[test]
+    fn borrowed_value_rejects_conflicts_without_borrowing_the_graph() {
+        with_scope(|rt| {
+            let value = Signal::new(vec![1]);
+            let other = Signal::new(0);
+            let called = Cell::new(false);
+            value.with(|before| {
+                other.update(|n| *n += 1);
+                value.set(vec![9]);
+                value.update(|_| called.set(true));
+                assert_eq!(before, &[1]);
+                assert_eq!(value.with(Vec::len), 1);
+            });
+            assert!(!called.get());
+            assert_eq!(other.get(), 1);
+            assert_eq!(value.get(), [1]);
+            assert!(rt.diagnostics().iter().any(|d| d.code == "SIGNAL_BORROW"));
+        });
+    }
+
+    #[test]
+    fn mutation_unwind_releases_borrow_and_invalidates_changed_value() {
+        with_scope(|rt| {
+            let value = Signal::new(1);
+            let doubled = memo(move || value.get() * 2);
+            assert_eq!(doubled.get(), 2);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                value.update(|v| {
+                    *v = 5;
+                    panic!("partially mutated");
+                })
+            }));
+            assert!(result.is_err());
+            assert_eq!(doubled.get(), 10, "never leave the old memo clean after mutation");
+            assert_eq!(rt.ctx(), Ctx::Idle);
+        });
+    }
+
+    #[test]
+    fn untracked_memo_read_still_tracks_its_own_inputs() {
+        with_scope(|rt| {
+            let source = Signal::new(1);
+            let trigger = Signal::new(0);
+            let inner = memo(move || source.get() * 2);
+            let outer = memo(move || {
+                trigger.get();
+                untrack(|| inner.get())
+            });
+            assert_eq!(outer.get(), 2);
+            handler(rt, || source.set(3));
+            assert_eq!(outer.get(), 2, "untracked source did not subscribe outer");
+            handler(rt, || trigger.set(1));
+            assert_eq!(outer.get(), 6, "inner still follows source");
+        });
+    }
+
+    #[test]
+    fn initializers_sample_without_subscribing_or_writing_existing_state() {
+        with_scope(|rt| {
+            let source = Signal::new(1);
+            let initialized = rt.with_frame(Ctx::Build, None, None, || {
+                state("initial", || {
+                    untrack(|| source.set(7));
+                    source.get()
+                })
+            });
+            assert_eq!(source.get(), 1);
+            assert_eq!(initialized.get(), 1);
+            assert!(!rt.diagnostics().iter().any(|d| d.code == "STRICT_READ_UNTRACKED"));
+            assert!(rt.diagnostics().iter().any(|d| d.code == "WRITE_IN_BUILD"));
+        });
+    }
+
+    #[test]
+    fn watch_and_cleanup_restore_registration_scope() {
+        with_scope(|rt| {
+            let parent = rt.current_scope().unwrap();
+            let child = rt.create_scope(Some(parent), "child");
+            let value = Signal::new(0);
+            let seen = Rc::new(RefCell::new(Vec::new()));
+            let cleanups = Rc::new(RefCell::new(Vec::new()));
+            rt.with_frame(Ctx::Build, None, Some(Some(child)), || {
+                provide("child");
+                let out = seen.clone();
+                watch(move || value.get(), move |_, _| out.borrow_mut().push(use_context::<&str>()));
+                let out = cleanups.clone();
+                rt.on_cleanup(Box::new(move || out.borrow_mut().push(use_context::<&str>())));
+            });
+            handler(rt, || value.set(1));
+            assert_eq!(*seen.borrow(), [Some("child"), Some("child")]);
+            rt.dispose_scope(child);
+            handler(rt, || value.set(2));
+            assert_eq!(seen.borrow().len(), 2);
+            assert_eq!(*cleanups.borrow(), [Some("child")]);
+        });
+    }
+
+    #[test]
+    fn observer_unwind_keeps_the_rest_of_the_ready_batch() {
+        with_scope(|rt| {
+            let trigger = Signal::new(false);
+            let observed = Rc::new(Cell::new(false));
+            binding(Location::caller(), move || {
+                assert!(!trigger.get(), "failing binding");
+            });
+            let out = observed.clone();
+            binding(Location::caller(), move || out.set(trigger.get()));
+            trigger.set(true);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.flush()));
+            assert!(result.is_err());
+            assert!(!rt.flushing.get());
+            assert!(rt.has_pending());
+            rt.flush();
+            assert!(observed.get());
+            assert!(!rt.has_pending());
+        });
+    }
+
+    #[test]
+    fn cleanup_cannot_register_work_after_its_owner_retires() {
+        with_scope(|rt| {
+            let child = rt.create_scope(rt.current_scope(), "child");
+            let called = Rc::new(Cell::new(false));
+            let out = called.clone();
+            rt.with_scope(Some(child), || {
+                rt.on_cleanup(Box::new(move || {
+                    watch(|| 1, move |_, _| out.set(true));
+                }))
+            });
+            rt.dispose_scope(child);
+            assert!(!called.get());
+            assert!(rt.diagnostics().iter().any(|d| d.code == "WRITE_DISPOSED"));
+        });
+    }
+
+    #[test]
+    fn replacing_context_drops_user_values_outside_the_scope_table_borrow() {
+        struct Probe;
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                rt(|rt| {
+                    let _ = rt.scope_path(rt.current_scope().unwrap());
+                });
+            }
+        }
+        with_scope(|rt| {
+            provide(Rc::new(Probe));
+            provide(Rc::new(Probe));
+            rt.dispose_scope(rt.current_scope().unwrap());
         });
     }
 }

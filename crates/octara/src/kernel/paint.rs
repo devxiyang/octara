@@ -13,6 +13,11 @@ use std::rc::Rc;
 pub(crate) struct DrawKey {
     ver: u64,
     size: (u32, u32),
+    /// Text wrapping and content placement use target layout geometry, which can change
+    /// before the animated size shown above starts moving.
+    layout_size: taffy::Size<f32>,
+    padding: taffy::Rect<f32>,
+    border: taffy::Rect<f32>,
     /// What it shows now (opacity aside: that is the frame's to apply).
     visual: super::Visual,
     shadows: Vec<BoxShadow>,
@@ -325,11 +330,15 @@ impl Kernel {
     /// same, else built (and kept, with `keep`).
     fn own_drawing(&self, id: NodeId, rect: Rect, keep: bool) -> Rc<[Item]> {
         let n = self.node(id);
+        let layout = self.taffy.layout(n.taffy).expect("taffy");
         let mut visual = self.presented(id);
         visual.opacity = 1.0;
         let key = DrawKey {
             ver: n.paint_ver,
             size: (rect.w.to_bits(), rect.h.to_bits()),
+            layout_size: layout.size,
+            padding: layout.padding,
+            border: layout.border,
             visual,
             shadows: if n.visual.shadow == super::style::Shadows::None && n.anim.is_none() {
                 Vec::new()

@@ -327,3 +327,204 @@ fn timers_at_fractional_milliseconds_come_due() {
     assert!(w.app().run_until_idle(Duration::from_secs(5)).is_ok(), "{:?}", w.app().pending());
     assert_eq!(w.kernel().text_of("n").unwrap(), "50", "advancing to each deadline fires its timer");
 }
+
+#[test]
+fn a_handler_restores_its_component_context_and_owns_spawned_tasks() {
+    let observed = Rc::new(Cell::new(None));
+    let dropped = Rc::new(Cell::new(false));
+    let (seen, guard) = (observed.clone(), dropped.clone());
+    let mut app = Window::headless(move || {
+        let open = state("open", || true);
+        let (seen, guard) = (seen.clone(), guard.clone());
+        col()
+            .child(el().id("hide").size(10.0).on_press(move || open.set(false)))
+            .child(show(
+                move || open.get(),
+                move || {
+                    provide(42u32);
+                    let (seen, guard) = (seen.clone(), guard.clone());
+                    el().id("start")
+                        .size(10.0)
+                        .on_press(move || {
+                            seen.set(use_context::<u32>());
+                            let guard = Dropped(guard.clone());
+                            spawn(async move {
+                                let _guard = guard;
+                                sleep(ms(1000)).await;
+                            });
+                        })
+                        .into()
+                },
+            ))
+            .into()
+    });
+    app.tap("start").unwrap();
+    assert_eq!(observed.get(), Some(42), "callbacks see the scope captured when mounted");
+    assert_ne!(app.app().pending()[0].scope, "detached");
+    app.tap("hide").unwrap();
+    assert!(dropped.get(), "a task started by the handler belongs to its mounted scope");
+    assert!(app.app().pending().is_empty());
+    assert_eq!(app.app().next_deadline(), None);
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
+fn cancelling_a_task_withdraws_its_pending_request() {
+    use octara::ask::Answer;
+    use octara::platform::HeadlessWindow;
+    use std::cell::RefCell;
+    for native in [false, true] {
+        let running = Rc::new(RefCell::new(None::<octara::task::Task>));
+        let task = running.clone();
+        let mut app = Window::headless(move || {
+            let (start, cancel) = (task.clone(), task.clone());
+            col()
+                .child(el().id("ask").size(10.0).on_press(move || {
+                    *start.borrow_mut() = Some(spawn(async {
+                        prompt(PromptLevel::Info, "Continue?", None, &["Yes"]).await;
+                    }));
+                }))
+                .child(el().id("cancel").size(10.0).on_press(move || cancel.borrow().as_ref().unwrap().cancel()))
+                .into()
+        });
+        app.platform_window_mut().as_any_mut().downcast_mut::<HeadlessWindow>().unwrap().shows_asks = native;
+        app.tap("ask").unwrap();
+        let id = app.asks()[0].0;
+        app.dispatch(Event::Press("cancel".into())).unwrap();
+        assert!(app.asks().is_empty(), "dropping the awaiting future withdraws its request (native={native})");
+        assert!(app.answer(id, Answer::Prompt(Some(0))).is_err(), "late answers are stale");
+        assert!(!app.kernel().exists("prompt:0"));
+        assert!(app.app().pending().is_empty());
+        if native {
+            let p = app.platform_window();
+            let p = p.as_any().downcast_ref::<HeadlessWindow>().unwrap();
+            assert_eq!(p.withdrawn, [id]);
+        }
+        assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+    }
+}
+
+#[test]
+fn a_panicking_task_is_retired_and_other_ready_tasks_still_run() {
+    let ran = Rc::new(Cell::new(false));
+    let seen = ran.clone();
+    let mut app = Window::headless(move || {
+        let seen = seen.clone();
+        el().id("start")
+            .size(10.0)
+            .on_press(move || {
+                spawn(async { panic!("task poll failed") });
+                let seen = seen.clone();
+                spawn(async move { seen.set(true) });
+            })
+            .into()
+    });
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.tap("start")));
+    assert!(result.is_err());
+    assert_eq!(app.app().pending().len(), 1, "only the unpolled sibling remains pending");
+    app.app().poll();
+    assert!(ran.get(), "the ready batch must retain siblings across an unwind");
+    assert!(app.app().pending().is_empty());
+}
+
+#[test]
+fn disposing_a_scope_retires_requests_even_when_the_future_is_retained() {
+    use octara::ask::Answer;
+    use std::cell::RefCell;
+    use std::future::Future;
+    use std::pin::Pin;
+    type RequestFuture = Pin<Box<dyn Future<Output = Option<Vec<std::path::PathBuf>>>>>;
+    let requests = Rc::new(RefCell::new(Vec::<RequestFuture>::new()));
+    let retained = requests.clone();
+    let mut app = Window::headless(move || {
+        let open = state("open", || true);
+        let retained = retained.clone();
+        col()
+            .child(el().id("toggle").size(10.0).on_press(move || open.update(|open| *open = !*open)))
+            .child(show(
+                move || open.get(),
+                move || {
+                    retained.borrow_mut().push(Box::pin(prompt_for_paths(Default::default())));
+                    text("scope").into()
+                },
+            ))
+            .into()
+    });
+    let old = app.asks()[0].0;
+    app.tap("toggle").unwrap();
+    assert!(app.asks().is_empty(), "the future cannot retain a disposed request owner");
+    app.tap("toggle").unwrap();
+    let new = app.asks()[0].0;
+    assert_ne!(old, new);
+    assert!(app.answer(old, Answer::Paths(None)).is_err());
+    app.answer(new, Answer::Paths(None)).unwrap();
+    requests.borrow_mut().clear();
+    assert!(app.asks().is_empty());
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
+fn dropping_a_request_before_presentation_does_not_show_it() {
+    use octara::platform::HeadlessWindow;
+    let mut app = Window::headless(|| {
+        el().id("ask")
+            .size(10.0)
+            .on_press(|| {
+                drop(prompt_for_paths(Default::default()));
+            })
+            .into()
+    });
+    app.platform_window_mut().as_any_mut().downcast_mut::<HeadlessWindow>().unwrap().shows_asks = true;
+    app.tap("ask").unwrap();
+    assert!(app.asks().is_empty());
+    let p = app.platform_window();
+    let p = p.as_any().downcast_ref::<HeadlessWindow>().unwrap();
+    assert!(p.asks.is_empty(), "a cancelled unpresented request never reaches the platform");
+    assert!(p.withdrawn.is_empty(), "only presented requests need a withdrawal");
+}
+
+#[test]
+fn pure_computations_cannot_start_tasks_or_requests_through_untrack() {
+    let ran = Rc::new(Cell::new(false));
+    let finished = Rc::new(Cell::new(false));
+    let (seen, rejected) = (ran.clone(), finished.clone());
+    let mut app = Window::headless(move || {
+        let (seen, rejected) = (seen.clone(), rejected.clone());
+        let value = memo(move || {
+            let seen = seen.clone();
+            let command_seen = seen.clone();
+            let task = untrack(|| spawn(async move { seen.set(true) }));
+            rejected.set(task.is_finished());
+            untrack(|| drop(prompt_for_paths(Default::default())));
+            untrack(|| on_command("forbidden", move || command_seen.set(true)));
+            1
+        });
+        text(move || value.get().to_string()).into()
+    });
+    assert!(!ran.get());
+    assert!(finished.get());
+    assert!(app.asks().is_empty());
+    assert!(app.app().pending().is_empty());
+    assert!(app.invoke("forbidden").is_err());
+    assert!(!ran.get());
+    assert!(app.app().diagnostics().iter().any(|d| d.code == "WRITE_IN_DERIVE"));
+}
+
+#[test]
+fn closing_a_window_cancels_its_waiting_requests() {
+    use octara::platform::{HeadlessPlatform, WindowOptions};
+    let app = App::new(HeadlessPlatform::default());
+    let window = app
+        .open_window(WindowOptions::new("request owner"), || {
+            spawn(async {
+                prompt(PromptLevel::Info, "Continue?", None, &["Yes"]).await;
+            });
+            el().size_full().into()
+        })
+        .unwrap();
+    assert_eq!(window.asks().len(), 1);
+    app.close_window(window.id());
+    assert!(window.asks().is_empty());
+    assert!(app.pending().is_empty());
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+}

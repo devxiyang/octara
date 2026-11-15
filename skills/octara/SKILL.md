@@ -36,7 +36,9 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
 - State in components is named: `state("key", || init)`, `state_list("key", init, key_fn)`,
   `text_buffer(..)`. Never `Signal::new` in a component (`UNKEYED_STATE`).
 - Register `on_cleanup(..)` during construction to retire external requests and cancel retained
-  tasks with the component. Input handlers may start tasks outside that construction scope.
+  external work with the component. Input handlers restore their mounted scope; tasks they spawn
+  are cancelled with it. `Task::detach` explicitly makes App work with no current window; do not
+  detach tasks that call window APIs such as prompts or focus.
 - Write state only in handlers (`on_press`, ..), `watch` callbacks and tasks
   (`WRITE_IN_BUILD`, `WRITE_IN_DERIVE`). A value computed from others is a `memo`, not a second
   state kept in sync.

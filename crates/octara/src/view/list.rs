@@ -80,7 +80,7 @@ where
             let src = source();
             src.track();
             rt(|rt| {
-                rt.with_frame(Ctx::Untracked, None, Some(Some(owner)), || {
+                rt.with_frame(Ctx::Observe, None, Some(Some(owner)), || {
                     let u = crate::app::window();
                     let same = current.borrow().as_ref().is_some_and(|(s, _)| *s == src);
                     if same {
@@ -328,7 +328,7 @@ where
             let y = (state.offset.1 - list_top.get()).max(0.0) as f64;
             let height = state.client.1 as f64;
             rt(|rt| {
-                rt.with_frame(Ctx::Untracked, None, Some(Some(owner)), || {
+                rt.with_frame(Ctx::Observe, None, Some(Some(owner)), || {
                     let weight = |k: &K| src.item(k).map(|i| i.with_untracked(|t| estimate(t)) as f64).unwrap_or(0.0);
                     // 1. Keep the weighted mirror in step with the source.
                     let same = current.borrow().as_ref().is_some_and(|(s, _)| *s == src);

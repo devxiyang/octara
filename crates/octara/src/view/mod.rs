@@ -41,6 +41,27 @@ pub(crate) enum Handler {
     Drop(OnDrop),
 }
 
+/// Input runs under the scope and window that mounted its callback.
+#[derive(Clone)]
+pub(crate) struct ScopedHandler {
+    pub(crate) handler: Handler,
+    pub(crate) scope: Option<ScopeId>,
+    pub(crate) owner: Option<graph::Owner>,
+}
+
+impl ScopedHandler {
+    pub(crate) fn capture(handler: Handler) -> Self {
+        rt(|rt| Self { handler, scope: rt.current_scope(), owner: rt.owner() })
+    }
+
+    pub(crate) fn run<R>(self, rt: &graph::Runtime, f: impl FnOnce(Handler) -> R) -> Option<R> {
+        if self.scope.is_some_and(|scope| !rt.scope_alive(scope)) {
+            return None;
+        }
+        Some(rt.with_owner(self.owner, || rt.with_frame(Ctx::Handler, None, Some(self.scope), || f(self.handler))))
+    }
+}
+
 /// What an element does with files dropped on it.
 pub(crate) type OnDrop = Rc<dyn Fn(&[std::path::PathBuf])>;
 
@@ -123,7 +144,7 @@ impl crate::app::WindowState {
     pub(crate) fn register(self: &Rc<Self>, h: Handler) -> u64 {
         let id = self.next.get() + 1;
         self.next.set(id);
-        self.handlers.borrow_mut().insert(id, h);
+        self.handlers.borrow_mut().insert(id, ScopedHandler::capture(h));
         let me = self.clone();
         rt(|rt| {
             rt.on_cleanup(Box::new(move || {
@@ -701,7 +722,12 @@ pub fn settle_motion() {
 
 /// Handles `command` for the whole app (when no focused element handles it): the keymap's
 /// chords, `App::invoke` and menus run it. Lives as long as the current scope.
+#[track_caller]
 pub fn on_command(command: &str, f: impl Fn() + 'static) {
+    let at = Location::caller();
+    if !rt(|rt| rt.effect_allowed(at)) {
+        return;
+    }
     let u = crate::app::window();
     let id = u.register(Handler::Press(Rc::new(f)));
     u.commands.borrow_mut().push((command.to_owned(), id));

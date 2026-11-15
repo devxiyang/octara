@@ -9,12 +9,14 @@ fn items_are_found_by_canonical_path_and_alias() {
     let state = api.get("octara::prelude::state").expect("the prelude alias resolves");
     assert_eq!(state.path, "octara::reactive::graph::state");
     assert_eq!(state.kind, Kind::Fn);
-    assert!(state.sig.starts_with("pub fn state<T: Clone + 'static>(key: &'static str"), "{}", state.sig);
+    assert!(state.sig.starts_with("pub fn state<T: 'static>(key: &'static str"), "{}", state.sig);
     let p = api.get("octara::view::Styled::p_4").expect("methods a macro writes are items");
     assert_eq!((p.kind, p.sig.as_str()), (Kind::Method, "fn p_4(self) -> Self"));
     assert!(p.docs.contains("spacing steps"), "their docs too: {}", p.docs);
     let set = api.get("octara::reactive::graph::Signal::set").unwrap();
-    assert_eq!(set.within, "impl<T: Clone + 'static> Signal<T>", "methods keep their impl block's bounds");
+    assert_eq!(set.within, "impl<T: 'static> Signal<T>", "writes do not require Clone");
+    let get = api.get("octara::reactive::graph::Signal::get").unwrap();
+    assert!(get.sig.contains("T: Clone"), "owned reads retain their method-local bound: {}", get.sig);
     let spring = api.get("octara::motion::Spring").unwrap();
     assert!(spring.traits.iter().any(|t| t == "Into<Curve>"), "{:?}", spring.traits);
     let el = api.get("octara::view::El").unwrap();
