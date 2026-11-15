@@ -161,7 +161,7 @@ not the only way to prevent a task from using a retired window.
 | Task::detach | Choose App ownership at creation; migrate intentional Chat background work |
 | StateList::all synonym | Keep source() as the projection name; preserve Source and incremental operators |
 | Public graph/sequence implementation paths | Supported reactive exports, no old-path aliases |
-| Public Window::kernel_mut and unrestricted platform mutable-borrow access | Narrow host operations and internal test access, installed before removing callers |
+| Public Window::kernel_mut (removed in round seven) and unrestricted platform mutable-borrow access (pending) | Narrow host operations and internal test access, installed before removing callers |
 | Duplicated activation checks, Inspector dispatch and content representations | One owner per policy, adapters at boundaries |
 | Obsolete diagnostic fixes, examples and migration shims | Migrate docs, CLI vocabulary expectations, generated skill and callers with each API slice |
 
@@ -430,6 +430,47 @@ including a new check that picking and snapshots identify the same live node/sou
 WebKit callbacks/snapshots and GPU captures. Evidence: `/tmp/octara-boundary-targets-20261115` and
 `/tmp/octara-boundary-live-20261115`. The fixtures use framework input; OS input and native IME were
 not requalified.
+
+## Seventh-round Window mutation boundary
+
+`Window::kernel_mut` is removed without an alias or a replacement closure that lends out the
+whole mutable tree. `Window::kernel` remains available for read-only inspection. Standalone
+`Kernel` remains the low-level retained-tree API; a mounted window's tree is changed internally
+by its bindings and runtime, where node lifetime and interaction cleanup can be coordinated.
+
+Existing external callers now use the capability they actually need:
+
+- Text-engine configuration goes through `App::set_text_engine`, which invalidates and settles
+  every window sharing that text resource. The unused public `Kernel::resources` getter is
+  removed and `Resources::set_text_engine` becomes internal: a read-only tree borrow must not
+  provide another route to mutate shared text resources without invalidating their windows.
+- Scrolling uses `Event::ScrollTo`, including the accessibility delta and culling checks, so it
+  goes through the normal frame path.
+- `Window::reset_counters`, `set_layout_enabled` and `set_culling` preserve measurement/reference
+  controls without exposing unrelated mutation. Layout is a benchmark switch: geometry is stale
+  while disabled and resumes on the next frame after enabling. Culling changes take effect on
+  the next paint/hit-test traversal. Reactive work still has its separate App-wide reset.
+- The raw accessibility relation test now lives beside Kernel's AccessKit projection. It still
+  covers hiding, display, detach/reattach, renaming, slot replacement and removal/reinsertion;
+  integration tests retain the focus, selection and Inspector checks through public events.
+
+This slice does not remove `platform_window_mut` or `App::platform`: the desktop shell still
+uses mutable host access and needs its own ownership change. No general testing escape hatch
+was introduced.
+
+Validation: 652 workspace tests passed (three ignored), including the relocated Kernel test,
+semantic-scroll accessibility deltas, culling/reference equivalence and migrated examples.
+The final shared-resource restriction also passed the extended two-window text-engine check and
+all three CLI API tests; the API inventory asserts the removed entry points are absent. Workspace
+Clippy with warnings denied, formatting and diff checks passed. The debug join benchmark still
+measured 50/500 changed rows for a person rename at 1,000/10,000 messages and zero changed rows for
+an unrelated field; timings are diagnostic, not release-performance evidence. All seven rebuilt
+live Inspector scenarios passed, including native resize, window routing, reload, native WebKit
+and GPU capture. Evidence: `/tmp/octara-window-access-workspace.log`,
+`/tmp/octara-window-access-fonts.log`, `/tmp/octara-window-access-api.log`,
+`/tmp/octara-window-access-clippy.log`, `/tmp/octara-window-access-bench.log` and
+`/tmp/octara-window-access-live-20261115`. Live requests use framework input; this is not a new
+qualification of OS input or native IME.
 
 ## References
 

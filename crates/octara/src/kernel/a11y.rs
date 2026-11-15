@@ -498,3 +498,88 @@ impl Kernel {
         (node, g, children, runs)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kernel::{Display, StyleProp};
+
+    #[test]
+    fn active_relations_follow_target_visibility_attachment_and_replacement() {
+        let mut k = Kernel::default();
+        let owner = k.create(Kind::TextInput);
+        k.set_role(owner, Role::ComboBox);
+        k.set_state(owner, State::FOCUSED, true);
+        k.set_active_descendant(owner, Some("option-b"));
+        k.append_child(k.root(), owner);
+        let list = k.create(Kind::Box);
+        k.set_role(list, Role::ListBox);
+        k.append_child(k.root(), list);
+        let selected = k.create(Kind::Box);
+        k.set_role(selected, Role::ListBoxOption);
+        k.set_state(selected, State::SELECTED, true);
+        k.append_child(list, selected);
+        let option = k.create(Kind::Box);
+        k.set_role(option, Role::ListBoxOption);
+        k.set_test_id(option, Some("option-b"));
+        k.append_child(list, option);
+        k.layout(400.0, 300.0);
+
+        let check = |k: &Kernel, expected: Option<NodeId>| {
+            let update = k.accessibility_update(Some(owner), 1.0);
+            let node = &update.nodes.iter().find(|(id, _)| *id == a11y_id(owner)).expect("the relation owner is updated").1;
+            assert_eq!(node.active_descendant(), expected.map(a11y_id));
+            assert_eq!(update.focus, a11y_id(owner));
+            assert_eq!(k.active_descendant(owner), expected);
+            let tree = k.accessibility_tree(Some(owner), 1.0);
+            let node = &tree.nodes.iter().find(|(id, _)| *id == a11y_id(owner)).unwrap().1;
+            assert_eq!(node.active_descendant(), expected.map(a11y_id));
+            if let Some(target) = expected {
+                assert!(tree.nodes.iter().any(|(id, _)| *id == a11y_id(target)), "an exported relation never dangles");
+                assert!(!k.state(target).intersects(State::FOCUSED | State::SELECTED));
+            }
+            assert!(k.state(owner).contains(State::FOCUSED));
+            assert!(k.state(selected).contains(State::SELECTED));
+        };
+        check(&k, Some(option));
+        k.set_hidden(option, true);
+        check(&k, None);
+        k.set_hidden(option, false);
+        check(&k, Some(option));
+        k.set_hidden(list, true);
+        check(&k, None);
+        k.set_hidden(list, false);
+        check(&k, Some(option));
+        k.set_style(list, StyleProp::Display(Display::None));
+        check(&k, None);
+        k.set_style(list, StyleProp::Display(Display::Flex));
+        check(&k, Some(option));
+        k.remove_child(option);
+        check(&k, None);
+        k.append_child(list, option);
+        check(&k, Some(option));
+        k.set_test_id(option, Some("renamed-option"));
+        check(&k, None);
+        k.set_test_id(option, Some("option-b"));
+        check(&k, Some(option));
+
+        // Replace within one frame: the owner's binding stays the same, but its exported
+        // relation must name the new node, never the retired slot's generation.
+        k.destroy(option);
+        let replacement = k.create(Kind::Box);
+        k.set_test_id(replacement, Some("option-b"));
+        k.set_role(replacement, Role::ListBoxOption);
+        k.set_label(replacement, Some("Replacement B"));
+        k.append_child(list, replacement);
+        assert_ne!(replacement, option);
+        check(&k, Some(replacement));
+        k.destroy(replacement);
+        check(&k, None);
+        assert!(k.accessibility_update(Some(owner), 1.0).nodes.is_empty());
+        let inserted = k.create(Kind::Box);
+        k.set_test_id(inserted, Some("option-b"));
+        k.set_role(inserted, Role::ListBoxOption);
+        k.append_child(list, inserted);
+        check(&k, Some(inserted));
+    }
+}

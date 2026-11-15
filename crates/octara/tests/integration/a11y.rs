@@ -211,65 +211,6 @@ fn active_options_are_announced_without_changing_focus_or_selection() {
     assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 }
 
-#[test]
-fn active_relations_follow_target_visibility_attachment_and_replacement() {
-    use octara::kernel::{Display, Kind, StyleProp};
-
-    let mut app = Window::headless(active_option_view);
-    app.press_key("tab").unwrap();
-    assert_active_option(&app, &app.accessibility_update(), Some("option-b"));
-    let list = app.kernel().find("options").unwrap();
-    let option = app.kernel().find("option-b").unwrap();
-
-    app.kernel_mut().set_hidden(option, true);
-    assert_active_option(&app, &app.accessibility_update(), None);
-    app.kernel_mut().set_hidden(option, false);
-    assert_active_option(&app, &app.accessibility_update(), Some("option-b"));
-    app.kernel_mut().set_hidden(list, true);
-    assert_active_option(&app, &app.accessibility_update(), None);
-    app.kernel_mut().set_hidden(list, false);
-    assert_active_option(&app, &app.accessibility_update(), Some("option-b"));
-    app.kernel_mut().set_style(list, StyleProp::Display(Display::None));
-    assert_active_option(&app, &app.accessibility_update(), None);
-    app.kernel_mut().set_style(list, StyleProp::Display(Display::Flex));
-    assert_active_option(&app, &app.accessibility_update(), Some("option-b"));
-
-    app.kernel_mut().remove_child(option);
-    assert_active_option(&app, &app.accessibility_update(), None);
-    app.kernel_mut().append_child(list, option);
-    assert_active_option(&app, &app.accessibility_update(), Some("option-b"));
-    app.kernel_mut().set_test_id(option, Some("renamed-option"));
-    assert_active_option(&app, &app.accessibility_update(), None);
-    app.kernel_mut().set_test_id(option, Some("option-b"));
-    assert_active_option(&app, &app.accessibility_update(), Some("option-b"));
-
-    // Replace it in one frame, so the owner must be resent even though the test id and
-    // the binding's value both stay the same.
-    let replacement = {
-        let mut k = app.kernel_mut();
-        k.destroy(option);
-        let replacement = k.create(Kind::Box);
-        k.set_test_id(replacement, Some("option-b"));
-        k.set_role(replacement, Role::ListBoxOption);
-        k.set_label(replacement, Some("Replacement B"));
-        k.append_child(list, replacement);
-        replacement
-    };
-    assert_ne!(replacement, option);
-    assert_active_option(&app, &app.accessibility_update(), Some("option-b"));
-    app.kernel_mut().destroy(replacement);
-    assert_active_option(&app, &app.accessibility_update(), None);
-    assert!(app.accessibility_update().nodes.is_empty());
-    {
-        let mut k = app.kernel_mut();
-        let inserted = k.create(Kind::Box);
-        k.set_test_id(inserted, Some("option-b"));
-        k.set_role(inserted, Role::ListBoxOption);
-        k.append_child(list, inserted);
-    }
-    assert_active_option(&app, &app.accessibility_update(), Some("option-b"));
-}
-
 /// A view where every kind of change happens: text, labels, states, structure, order, scroll,
 /// overlays, motion.
 fn busy() -> View {
@@ -341,9 +282,8 @@ fn updates_send_only_what_changed() {
     sizes(&mut app, "show again", &|a| a.tap("toggle").unwrap());
     sizes(&mut app, "insert", &|a| a.tap("add").unwrap());
     sizes(&mut app, "remove", &|a| a.tap("drop").unwrap());
-    let list = app.kernel().find("list").unwrap();
     let scrolled = sizes(&mut app, "scroll", &|a| {
-        assert!(a.kernel_mut().scroll_to(list, 0.0, 60.0));
+        a.dispatch(Event::ScrollTo("list".into(), 0.0, 60.0)).unwrap();
     });
     assert_eq!(scrolled, 1, "a scroll moves only the container's space");
     sizes(&mut app, "overlay", &|a| a.tap("menu-button").unwrap());

@@ -823,7 +823,7 @@ impl Default for Resources {
 impl Resources {
     /// The text system's engine (e.g. `MonoEngine` for benchmarks); kernels sharing it then
     /// measure again (`fonts_changed`).
-    pub fn set_text_engine(&self, engine: Box<dyn TextEngine>) {
+    pub(crate) fn set_text_engine(&self, engine: Box<dyn TextEngine>) {
         *self.text.borrow_mut() = engine;
     }
 }
@@ -928,10 +928,6 @@ impl Kernel {
     pub(crate) fn mutation_generation(&self) -> u64 {
         self.mutation_gen
     }
-    /// The resources this kernel reads.
-    pub fn resources(&self) -> &Rc<Resources> {
-        &self.res
-    }
 
     pub(crate) fn bind_identity(&mut self, namespace: u128, window: u64) {
         self.identity = crate::identity::TreeIdentity::new(namespace, window);
@@ -944,8 +940,9 @@ impl Kernel {
     pub(crate) fn identity(&self) -> crate::identity::TreeIdentity {
         self.identity
     }
-    /// Replaces the text engine (e.g. `MonoEngine` for benchmarks) and remeasures every text.
-    /// Replaces the text engine (fonts registered with the old one are not carried over).
+    /// Replaces the text engine (e.g. `MonoEngine` for benchmarks) and remeasures this kernel.
+    /// Fonts registered with the old engine are not carried over. If other standalone kernels
+    /// share its resources, notify them with [`Self::fonts_changed`] as well.
     pub fn set_text_engine(&mut self, engine: Box<dyn TextEngine>) {
         self.res.set_text_engine(engine);
         self.fonts_changed();

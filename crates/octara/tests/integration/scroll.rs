@@ -239,7 +239,7 @@ fn jump_measures_an_offscreen_streamed_tail_and_follows_later_growth() {
     app.dispatch(Event::ScrollTo("feed".into(), 0.0, 4_007.0)).unwrap();
     let before = top_row(&app);
     assert!(!app.kernel().exists("item-999"));
-    app.kernel_mut().reset_counters();
+    app.reset_counters();
     app.tap("grow-offscreen-tail").unwrap();
     assert_eq!(top_row(&app), before);
     assert!(!following(&app, "feed"));

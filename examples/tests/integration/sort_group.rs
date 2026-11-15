@@ -34,7 +34,7 @@ fn sorted_groups_follow_renames_moves_and_adds() {
     // Open a row, then rename it to the front of its group: the row moves, it is not rebuilt.
     let id = h.kernel().child_ids("members-red")[5].trim_start_matches("contact-").to_owned();
     press(&mut h, &format!("open-{id}")).unwrap();
-    h.kernel_mut().reset_counters();
+    h.reset_counters();
     external(&mut h, "rename", &format!("{id}:a-first")).unwrap();
     assert_eq!(h.kernel().child_ids("members-red")[0], format!("contact-{id}"));
     assert!(h.kernel().exists(&format!("detail-{id}")), "row-local state survives a move");
@@ -107,7 +107,7 @@ mod virtualized {
         // A visible contact changes team: it leaves the window, counts update, nothing else moves.
         let id = w[pos + 1].trim_start_matches("contact-").to_owned();
         press(&mut h, &format!("open-{id}")).unwrap();
-        h.kernel_mut().reset_counters();
+        h.reset_counters();
         external(&mut h, "team", &format!("{id}:red")).unwrap();
         assert_eq!(h.kernel().text_of("team-green").as_deref(), Some("green (29999)"));
         assert!(!h.kernel().exists(&format!("contact-{id}")), "moved out of the window");

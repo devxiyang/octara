@@ -37,10 +37,10 @@ fn steps<F: Factory>() {
         let mut row = (0.0, 0.0, 0.0, 0.0);
         for _ in 0..3 {
             let mut h = step.app.build::<F>();
-            h.kernel_mut().set_layout_enabled(false);
+            h.set_layout_enabled(false);
             (step.prepare)(&mut h).unwrap();
             h.app().reset_work();
-            h.kernel_mut().reset_counters();
+            h.reset_counters();
             let a0 = ALLOCS.load(Ordering::Relaxed);
             let t0 = Instant::now();
             for i in 0..step.repeat {
@@ -70,7 +70,7 @@ fn scaling() {
         let mut best = (f64::MAX, 0.0);
         for _ in 0..3 {
             let mut h = F::todo_with(n);
-            h.kernel_mut().set_layout_enabled(false);
+            h.set_layout_enabled(false);
             let a0 = ALLOCS.load(Ordering::Relaxed);
             let t0 = Instant::now();
             for i in 0..20 {
@@ -148,7 +148,7 @@ fn operators() {
             let mut best = (f64::MAX, 0.0);
             for _ in 0..3 {
                 let mut h = Window::headless(move || apps::contacts(n));
-                h.kernel_mut().set_layout_enabled(false);
+                h.set_layout_enabled(false);
                 let a0 = ALLOCS.load(Ordering::Relaxed);
                 let t0 = Instant::now();
                 for i in 0..20 {
@@ -219,7 +219,7 @@ fn streaming_text() {
             for _ in 0..body / 500 {
                 octara_examples::scenarios::external(&mut h, "token", &chunk).unwrap();
             }
-            h.kernel_mut().reset_counters();
+            h.reset_counters();
             let t0 = Instant::now();
             for _ in 0..100 {
                 octara_examples::scenarios::external(&mut h, "token", "tok ").unwrap();
@@ -313,8 +313,8 @@ fn joins() {
             let mut best = (f64::MAX, 0u64);
             for _ in 0..3 {
                 let mut h = Window::headless(move || apps::inbox(n));
-                h.kernel_mut().set_layout_enabled(false);
-                h.kernel_mut().reset_counters();
+                h.set_layout_enabled(false);
+                h.reset_counters();
                 let t0 = Instant::now();
                 for i in 0..20 {
                     let p = if event == "rename" { format!("{payload}:n{i}") } else { payload.to_string() };

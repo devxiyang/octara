@@ -9,13 +9,13 @@ use octara_examples::scenarios::external;
 fn a_rename_reaches_its_rows_only() {
     let mut h = Window::headless(|| inbox(200));
     // Person 4 sent messages 3, 23, 43, … (10 of 200).
-    h.kernel_mut().reset_counters();
+    h.reset_counters();
     external(&mut h, "rename", "4:Ada").unwrap();
     assert_eq!(h.kernel().text_of("from-3").as_deref(), Some("Ada"));
     assert_eq!(h.kernel().text_of("from-4").as_deref(), Some("Person 5"));
     assert_eq!(h.kernel().counters().prop_changes, 10, "the ten rows of person 4");
 
-    h.kernel_mut().reset_counters();
+    h.reset_counters();
     external(&mut h, "online", "4").unwrap();
     assert_eq!(h.kernel().counters().prop_changes, 0, "rows do not show who is online");
 

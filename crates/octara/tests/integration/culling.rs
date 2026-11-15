@@ -48,18 +48,17 @@ fn describe(dl: &octara::paint::DisplayList) -> Vec<String> {
 fn skipping_off_screen_subtrees_changes_nothing() {
     let mut app = Window::headless(tricky);
     app.resize(600.0, 500.0);
-    let list = app.kernel().find("list").unwrap();
-    app.kernel_mut().scroll_to(list, 0.0, 4000.0);
+    app.dispatch(Event::ScrollTo("list".into(), 0.0, 4000.0)).unwrap();
     for culling in [true, false] {
-        app.kernel_mut().set_culling(culling);
+        app.set_culling(culling);
         let _ = app.display_list();
     }
     let culled = {
-        app.kernel_mut().set_culling(true);
+        app.set_culling(true);
         app.display_list()
     };
     let full = {
-        app.kernel_mut().set_culling(false);
+        app.set_culling(false);
         app.display_list()
     };
     assert_eq!(describe(&culled), describe(&full));
@@ -71,14 +70,14 @@ fn skipping_off_screen_subtrees_changes_nothing() {
     for y in (0..500).step_by(7) {
         for x in (0..600).step_by(11) {
             let (x, y) = (x as f32, y as f32);
-            app.kernel_mut().set_culling(true);
+            app.set_culling(true);
             let a = app.kernel().hit_test(x, y);
-            app.kernel_mut().set_culling(false);
+            app.set_culling(false);
             let b = app.kernel().hit_test(x, y);
             assert_eq!(a, b, "at ({x}, {y})");
         }
     }
-    app.kernel_mut().set_culling(true);
+    app.set_culling(true);
     let back = app.kernel().find("back").unwrap();
     let (bx, by, ..) = app.kernel().rect(back);
     assert_eq!(app.kernel().hit_test(bx + 4.0, by + 4.0), Some(back), "a child placed back into view is hit");

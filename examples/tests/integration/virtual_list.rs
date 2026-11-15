@@ -45,7 +45,7 @@ fn only_the_window_exists_and_scrolling_moves_it() {
 fn changes_outside_the_window_touch_nothing_visible() {
     let mut h = Window::headless(|| chat_virtual(10_000));
     external(&mut h, "user", "hi").unwrap(); // appends far below the window
-    h.kernel_mut().reset_counters();
+    h.reset_counters();
     for _ in 0..10 {
         external(&mut h, "token", "x").unwrap();
     }

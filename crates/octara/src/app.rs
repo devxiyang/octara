@@ -32,7 +32,7 @@ use crate::kernel::{Breakpoint, HandlerKind, Kernel, NodeId, State, Theme};
 use crate::reactive::graph::{Ctx, Owner, Runtime, ScopeId};
 use crate::reactive::graph::{Signal, untrack};
 use crate::view::{Handler, Parent, ScopedHandler, Slots, View, mount};
-use std::cell::{Cell, Ref, RefCell, RefMut};
+use std::cell::{Cell, Ref, RefCell};
 use std::rc::Rc;
 
 /// The window size an app starts with; change it with [`Window::resize`].
@@ -1384,11 +1384,24 @@ impl Window {
             None => list,
         }
     }
+    /// Read the retained tree and its measurements. Update UI through state and events.
     pub fn kernel(&self) -> Ref<'_, Kernel> {
         self.w.kernel.borrow()
     }
-    pub fn kernel_mut(&mut self) -> RefMut<'_, Kernel> {
-        self.w.kernel.borrow_mut()
+    /// Resets this window's kernel work counters without changing the tree. Reactive work is
+    /// counted across the App; reset it separately with [`App::reset_work`].
+    pub fn reset_counters(&self) {
+        self.w.kernel.borrow_mut().reset_counters();
+    }
+    /// Benchmark control: disable layout to measure state/tree updates separately. Geometry
+    /// remains stale while disabled; re-enabling takes effect on the next frame.
+    pub fn set_layout_enabled(&self, on: bool) {
+        self.w.kernel.borrow_mut().set_layout_enabled(on);
+    }
+    /// Reference-rendering control: disable subtree culling to check painting and hit testing
+    /// against a full traversal. Takes effect on the next display-list read or hit test.
+    pub fn set_culling(&self, on: bool) {
+        self.w.kernel.borrow_mut().set_culling(on);
     }
     /// Runs the event's handler, applies every update and lays out, like one frame.
     pub fn dispatch(&mut self, ev: Event) -> Result<(), String> {

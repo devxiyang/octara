@@ -33,6 +33,12 @@ fn items_are_found_by_canonical_path_and_alias() {
     assert!(api.get("octara::reactive::Signal::new").is_none());
     assert!(api.get("octara::task::Task::detach").is_none());
     assert!(api.get("octara::app::App::shutdown").is_some());
+    assert!(api.get("octara::app::Window::kernel_mut").is_none());
+    assert!(api.get("octara::kernel::Kernel::resources").is_none());
+    assert!(api.get("octara::kernel::Resources::set_text_engine").is_none());
+    for method in ["kernel", "reset_counters", "set_layout_enabled", "set_culling"] {
+        assert!(api.get(&format!("octara::app::Window::{method}")).is_some());
+    }
     assert!(api.get("octara::app::TargetGuard").is_some());
     assert!(api.get("octara::inspect::TargetGuard").is_none());
     assert!(api.get("octara::kernel::Kernel::inspect_tree").is_none());

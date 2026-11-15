@@ -81,6 +81,11 @@ platform                         what the app needs from the system (traits); he
   resources every window's kernel reads (theme, text system), the platform, and the windows. A
   `Window` is a handle on one window's state: its kernel, interaction, size and scale, root
   scope and platform window. Closing a window disposes its scope and frees it.
+- `Window::kernel()` reads the retained tree; windows expose no mutable Kernel borrow. Views
+  update nodes through bindings and events so scope cleanup, focus, IME and frame delivery stay
+  coordinated. Use `App::set_text_engine` for shared text resources and semantic scroll events
+  for scrolling. Counter resets, the benchmark layout switch and the reference-rendering culling
+  switch are explicit instrumentation controls; they do not grant tree mutation access.
 - The reactive runtime carries one owner (a window): every binding, memo, watch and task runs as
   the window that made it, so free functions (`state`, `spawn`, `current_window`) need no
   context passed.

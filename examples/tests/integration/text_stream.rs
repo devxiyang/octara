@@ -17,7 +17,7 @@ fn a_token_costs_its_own_length() {
     for _ in 0..2_000 {
         external(&mut h, "token", "0123456789").unwrap(); // body grows to 20 KB
     }
-    h.kernel_mut().reset_counters();
+    h.reset_counters();
     external(&mut h, "token", "abc").unwrap();
     let c = h.kernel().counters();
     assert_eq!(c.text_bytes, 3, "only the token is written");

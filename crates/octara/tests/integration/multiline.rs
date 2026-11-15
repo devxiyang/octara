@@ -29,7 +29,7 @@ fn app(initial: &'static str, width: f32) -> Window {
             .child(text(move || format!("sent {}", sent.get())).id("sent"))
             .into()
     });
-    app.kernel_mut().set_text_engine(Box::new(MonoEngine));
+    app.app().set_text_engine(Box::new(MonoEngine));
     app.app().set_target_platform(TargetPlatform::MacOs);
     app.tap("area").unwrap();
     app
@@ -152,7 +152,7 @@ fn rows_app(chat: bool) -> Window {
         let field = if chat { field.submit_on_enter() } else { field.rows(2, 4) };
         col().size_full().items_start().child(field).child(text(move || format!("sent {}", sent.get())).id("sent")).into()
     });
-    app.kernel_mut().set_text_engine(Box::new(MonoEngine));
+    app.app().set_text_engine(Box::new(MonoEngine));
     app.app().set_target_platform(TargetPlatform::MacOs);
     app.tap("area").unwrap();
     app
@@ -206,7 +206,7 @@ fn a_growing_field_keeps_its_caret_in_view_in_a_scroll_container() {
             )
             .into()
     });
-    app.kernel_mut().set_text_engine(Box::new(MonoEngine));
+    app.app().set_text_engine(Box::new(MonoEngine));
     app.tap("area").unwrap();
     for _ in 0..5 {
         app.press_key("enter").unwrap();
