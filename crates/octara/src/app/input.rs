@@ -2,18 +2,18 @@
 //! tests and agents can call too ("click at 120, 40").
 
 use super::{Handler, Modality, Window};
-use crate::kernel::{HandlerKind, Kind, NodeId, State};
+use crate::kernel::{HandlerKind, Kind, NodeId};
 
 impl Window {
     /// Numeric changes from accessibility share the same handler as semantic numeric input.
     /// The component owns stepping/clamping; non-finite values never reach it.
     fn set_numeric_value_of(&self, n: NodeId, value: f64) -> bool {
-        if !value.is_finite() || self.live(Some(n)) != Some(n) {
+        if !value.is_finite() {
             return false;
         }
         let handler = {
             let kernel = self.w.kernel.borrow();
-            if !kernel.is_shown(n) || kernel.state(n).contains(State::DISABLED) || !kernel.preedit(n).is_empty() {
+            if kernel.check_activation(n, self.top_modal()).is_err() || !kernel.preedit(n).is_empty() {
                 return false;
             }
             kernel.handler(n, HandlerKind::NumericInput).and_then(|id| self.w.handlers.borrow().get(&id.0).cloned())
@@ -50,11 +50,28 @@ impl Window {
     }
 
     pub(super) fn run(&self, n: NodeId, kinds: &[HandlerKind], input: Option<String>) -> bool {
-        let handler = {
+        if self.w.kernel.borrow().check_activation(n, self.top_modal()).is_err() {
+            return false;
+        }
+        self.run_handler(n, kinds, input)
+    }
+
+    /// These notifications finish an existing interaction; disabling, hiding or opening a
+    /// modal must not suppress them. Disposed/leaving nodes still belong to scope cleanup.
+    pub(super) fn notify_lifecycle(&self, n: NodeId, kind: HandlerKind) -> bool {
+        debug_assert!(matches!(kind, HandlerKind::Blur | HandlerKind::Dismiss));
+        {
             let k = self.w.kernel.borrow();
-            if k.state(n).contains(State::DISABLED) {
+            if !k.is_alive(n) || k.is_exiting(n) {
                 return false;
             }
+        }
+        self.run_handler(n, &[kind], None)
+    }
+
+    fn run_handler(&self, n: NodeId, kinds: &[HandlerKind], input: Option<String>) -> bool {
+        let handler = {
+            let k = self.w.kernel.borrow();
             kinds.iter().find_map(|kind| k.handler(n, *kind)).and_then(|h| self.w.handlers.borrow().get(&h.0).cloned())
         };
         // A link pressed: the nearest `on_link` above it gets its target.
@@ -98,8 +115,7 @@ impl Window {
     pub(super) fn focused_input(&self) -> Option<(NodeId, String)> {
         let n = self.w.interaction.borrow().focused?;
         let k = self.w.kernel.borrow();
-        (k.is_shown(n) && !k.state(n).contains(State::DISABLED) && self.live(Some(n)) == Some(n) && k.kind(n) == Kind::TextInput)
-            .then(|| (n, k.value(n).to_owned()))
+        (k.check_activation(n, self.top_modal()).is_ok() && k.kind(n) == Kind::TextInput).then(|| (n, k.value(n).to_owned()))
     }
 
     /// Text typed (or committed by an input method) into the focused text field. Ends any

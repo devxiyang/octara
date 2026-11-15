@@ -463,6 +463,53 @@ def windows(args, output, sockets):
                      {"op": "expect", "id": "opened", "text": "2 notes opened"})
 
 
+def activation(args, output, sockets):
+    with LiveWindow("activation", args, output, sockets) as app:
+        resize(app, 800, 640)
+        first = app.inspect()
+        field_target = find(first, "field")["target"]
+        before = app.capture("activation-before.png")
+
+        def expect(identifier, name):
+            snapshot = app.inspect()
+            require(find(snapshot, identifier)["name"] == name, f"activation: {identifier} expected {name}")
+            return snapshot
+
+        for probe in ("probe.semantic", "probe.accessibility"):
+            app.requests({"op": "invoke", "command": probe})
+            expect("accepted", "Accepted: true")
+        expect("hits", "Hits: 2")
+        for blurs, mode in enumerate(("disable", "hide", "modal"), 1):
+            app.requests({"op": "focus", "id": "field", "target": field_target},
+                         {"op": "invoke", "command": mode})
+            retired = expect("blurs", f"Blurs: {blurs}")
+            require(retired.get("focus") is None, "activation: ineligible field kept focus")
+            for probe in ("probe.semantic", "probe.accessibility"):
+                app.requests({"op": "invoke", "command": probe})
+                expect("accepted", "Accepted: false")
+            expect("hits", "Hits: 2")
+            if mode == "modal":
+                app.requests({"op": "key", "chord": "escape"})
+                expect("dismissals", "Dismissals: 1")
+            else:
+                app.requests({"op": "invoke", "command": "enable"})
+            restored = app.inspect()
+            require(find(restored, "field")["target"] == field_target, "activation: retained field was replaced")
+            require(find(restored, "field")["value"] == "中文 input", "activation: retiring focus changed committed text")
+        app.requests({"op": "tap", "id": "activate"},
+                     {"op": "type", "id": "field", "text": "测试"})
+        restored = expect("hits", "Hits: 3")
+        require("测试" in find(restored, "field")["value"], "activation: re-enabled field rejects framework text")
+        app.requests({"op": "expect", "clean": True})
+        after = app.capture("activation-after.png")
+        require(before[:2] == after[:2] and before[2] != after[2], "activation: updates did not reach GPU pixels")
+        app.requests({"op": "reload", "target": restored["target"]})
+        require(find(app.inspect(), "field")["target"] != field_target, "activation: reload retained an old allocation")
+        resize(app, 390, 640)
+        app.requests({"op": "expect", "clean": True})
+        app.capture("activation-reloaded.png")
+
+
 def styles(args, output, sockets):
     with LiveWindow("styles", args, output, sockets) as app:
         def widths(expected):
@@ -588,7 +635,7 @@ def main():
     print(f"Live smoke artifacts: {output}", flush=True)
     with tempfile.TemporaryDirectory(prefix="octara-agent-", dir="/tmp") as temporary:
         sockets = Path(temporary)
-        for scenario in (counter, gestures, search, todo, windows, styles, content):
+        for scenario in (counter, gestures, search, todo, windows, styles, activation, content):
             scenario(args, output, sockets)
             print(f"PASS {scenario.__name__}", flush=True)
     print("Live Inspector: inspect, gestures, native resize, realtime settle, GPU capture, errors, window routing and reconnect passed.")

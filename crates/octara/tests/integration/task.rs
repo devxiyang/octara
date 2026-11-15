@@ -383,18 +383,19 @@ fn cancelling_a_task_withdraws_its_pending_request() {
         let platform = HeadlessPlatform::with_window(HeadlessWindow { shows_asks: native, ..Default::default() });
         let mut app = Window::headless_on(platform, move || {
             let (start, cancel) = (task.clone(), task.clone());
+            on_command("cancel-task", move || cancel.borrow().as_ref().unwrap().cancel());
             col()
                 .child(el().id("ask").size(10.0).on_press(move || {
                     *start.borrow_mut() = Some(spawn(async {
                         prompt(PromptLevel::Info, "Continue?", None, &["Yes"]).await;
                     }));
                 }))
-                .child(el().id("cancel").size(10.0).on_press(move || cancel.borrow().as_ref().unwrap().cancel()))
                 .into()
         });
         app.tap("ask").unwrap();
         let id = app.asks()[0].0;
-        app.dispatch(Event::Press("cancel".into())).unwrap();
+        // Cancellation is an App command; the prompt correctly blocks its background UI.
+        app.invoke("cancel-task").unwrap();
         assert!(app.asks().is_empty(), "dropping the awaiting future withdraws its request (native={native})");
         assert!(app.answer(id, Answer::Prompt(Some(0))).is_err(), "late answers are stale");
         assert!(!app.kernel().exists("prompt:0"));

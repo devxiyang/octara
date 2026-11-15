@@ -3,7 +3,7 @@
 //! when they close.
 
 use super::{Modality, Window};
-use crate::kernel::{Address, Arrow, HandlerKind, NodeId, State};
+use crate::kernel::{Address, Arrow, HandlerKind, NodeId};
 
 /// An open modal and the element focused before it opened.
 #[derive(Clone, Copy, Debug)]
@@ -52,7 +52,7 @@ impl Window {
             return false;
         }
         if self.w.kernel.borrow().modal_click_outside(m) {
-            self.run(m, &[HandlerKind::Dismiss], None);
+            self.notify_lifecycle(m, HandlerKind::Dismiss);
         }
         true
     }
@@ -115,8 +115,7 @@ impl Window {
         if reloaded && let Some(m) = self.top_modal() {
             let focused = self.w.interaction.borrow().focused;
             let k = self.w.kernel.borrow();
-            let inside = focused
-                .is_some_and(|n| k.is_shown(n) && k.is_focusable(n) && !k.state(n).contains(State::DISABLED) && k.is_in_modal_scope(n, m));
+            let inside = focused.is_some_and(|n| k.check_activation(n, Some(m)).is_ok() && k.is_focusable(n));
             drop(k);
             if !inside {
                 self.restore_modal_focus(None);
@@ -129,12 +128,7 @@ impl Window {
         let modal = self.top_modal();
         let k = self.w.kernel.borrow();
         let target = restore
-            .filter(|n| {
-                k.is_shown(*n)
-                    && k.is_focusable(*n)
-                    && !k.state(*n).contains(State::DISABLED)
-                    && modal.is_none_or(|m| k.is_in_modal_scope(*n, m))
-            })
+            .filter(|n| k.check_activation(*n, modal).is_ok() && k.is_focusable(*n))
             .or_else(|| modal.and_then(|m| k.initial_focus(m)));
         drop(k);
         let _ = self.set_focus(target);
@@ -147,10 +141,7 @@ impl Window {
         let Some(focused) = focused else { return false };
         let modal = self.top_modal();
         let k = self.w.kernel.borrow();
-        let valid = k.is_shown(focused)
-            && k.is_focusable(focused)
-            && !k.state(focused).contains(State::DISABLED)
-            && modal.is_none_or(|modal| k.is_in_modal_scope(focused, modal));
+        let valid = k.check_activation(focused, modal).is_ok() && k.is_focusable(focused);
         drop(k);
         if valid {
             return false;
@@ -199,11 +190,9 @@ impl Window {
             let choose = {
                 let k = self.w.kernel.borrow();
                 self.w.interaction.borrow().focused == Some(n)
-                    && k.is_shown(n)
+                    && k.check_activation(n, self.top_modal()).is_ok()
                     && k.is_focusable(n)
-                    && !k.state(n).contains(State::DISABLED)
                     && k.radio_group(n) == Some(group)
-                    && self.live(Some(n)) == Some(n)
             };
             if choose {
                 self.run(n, &[HandlerKind::Press], None);
@@ -216,7 +205,7 @@ impl Window {
     pub(crate) fn escape(&self) {
         match self.top_modal() {
             Some(m) => {
-                self.run(m, &[HandlerKind::Dismiss], None);
+                self.notify_lifecycle(m, HandlerKind::Dismiss);
             }
             None => {
                 let _ = self.set_focus(None);

@@ -35,7 +35,7 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | | Native Island: `native_view(kind)`, `web_view(url)`, slots, placements, the host protocol, headless host | Implemented headless and on macOS (web views and maps); Windows/Linux hosts to do ([Native Island](native-island.md)) |
 | Style | `Styled` (and `style_with` for bound styles): GPUI method names, 4 px scale, `px` / `relative` / `rems`; semantic `Token` and `Theme`; state, window size class, touch and group-hover overrides; `absolute` / `top` / `left`; shadows, gradients, opacity layers; motion | Implemented |
 | Semantics | `role`, `label`, `description`, `required`, `invalid`, `expanded`, `checked`, `value`, `a11y_hidden`, `focusable`; test id is the semantic id | Implemented; descriptions and form validity are shared by Inspector and AccessKit |
-| Interaction | `on_press` / `on_input` / `on_toggle` / `on_submit` / `on_focus` / `on_blur`; `tooltip`; hover chain and groups; disabled elements reject events | Implemented |
+| Interaction | `on_press` / `on_input` / `on_toggle` / `on_submit` / `on_focus` / `on_blur`; `tooltip`; hover chain and groups; disabled elements reject activation; retained focus retirement still reports blur | Implemented |
 | | `on_key`, gestures (tap, double, long press, secondary, drag, swipe, momentum), focus order and groups, keymap and commands | Implemented ([input](input.md)) |
 | Agent | Structured diagnostics with registered codes, `App::set_check_consistency`, `Window::force_state` | Implemented |
 | | Inspector protocol, `octara check` / `inspect` / `run` | Implemented ([agent knowledge](agent-knowledge.md)) |
@@ -277,3 +277,13 @@ variant is a chained method, not a new name (`text_field(m).multiline().rows(1, 
 | Layout | `divider` |
 
 Adding one todo in the example app (`examples/src/apps.rs`) costs about 5 µs: each component adds a few style and model closures; the fixed styles of a new node are resolved once.
+
+## Activation and lifecycle
+
+Direct semantic, pointer/key activation and accessibility click/value actions share the same retained-target
+checks: shown, enabled and inside the current modal. Focus also requires focusability; pointer
+input still requires a reachable hit. Disabling/hiding a focused control or opening a modal
+retires its composition and focus while still delivering `on_blur` once. Modal dismissal remains
+available when its container is disabled. Disposed/leaving controls use scope cleanup instead of
+revived notifications. Application commands can intentionally cancel work behind a modal; a
+semantic press cannot bypass the modal boundary to activate its background UI.

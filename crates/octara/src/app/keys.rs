@@ -386,9 +386,7 @@ impl Window {
             .interaction
             .borrow()
             .focused
-            .filter(|n| {
-                k.is_shown(*n) && !k.state(*n).contains(State::DISABLED) && modal.is_none_or(|modal| k.is_in_modal_scope(*n, modal))
-            })
+            .filter(|n| k.check_activation(*n, modal).is_ok())
             .or(modal)
             .or_else(|| k.children(k.root()).first().copied());
         let mut path = Vec::new();

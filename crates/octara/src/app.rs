@@ -1153,17 +1153,9 @@ impl Window {
         let mut k = self.w.kernel.borrow_mut();
         if let Some(n) = n {
             let name = k.test_id(n).unwrap_or("element").to_owned();
-            if !k.is_shown(n) {
-                return Err(format!("`{name}` is hidden or leaving the tree"));
-            }
-            if modal.is_some_and(|modal| !k.is_in_modal_scope(n, modal)) {
-                return Err(format!("`{name}` is behind the open modal"));
-            }
+            k.check_activation(n, modal).map_err(|why| format!("`{name}` {why}"))?;
             if !k.is_focusable(n) {
                 return Err(format!("`{name}` is not focusable"));
-            }
-            if k.state(n).contains(State::DISABLED) {
-                return Err(format!("`{name}` is disabled"));
             }
         }
         if i.focused == n {
@@ -1189,7 +1181,7 @@ impl Window {
         drop((i, k));
         // What lost focus hears it first, then what got it.
         if let Some(p) = blurred {
-            self.run(p, &[HandlerKind::Blur], None);
+            self.notify_lifecycle(p, HandlerKind::Blur);
         }
         if let Some(n) = n
             && self.w.interaction.borrow().focused == Some(n)
@@ -1251,12 +1243,7 @@ impl Window {
         };
         let k = self.w.kernel.borrow();
         let node = k.find(id).ok_or(format!("no node with test id `{id}`"))?;
-        if k.state(node).contains(State::DISABLED) {
-            return Err(format!("`{id}` is disabled"));
-        }
-        if kind == HandlerKind::NumericInput && (!k.is_shown(node) || self.live(Some(node)) != Some(node)) {
-            return Err(format!("`{id}` is hidden, leaving or outside the active modal"));
-        }
+        k.check_activation(node, self.top_modal()).map_err(|why| format!("`{id}` {why}"))?;
         if kind == HandlerKind::NumericInput && !k.preedit(node).is_empty() {
             return Err(format!("`{id}` has an active input-method composition"));
         }

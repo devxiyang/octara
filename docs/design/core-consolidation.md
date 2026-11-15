@@ -506,6 +506,44 @@ WebKit and GPU captures. Evidence: `/tmp/octara-host-access-workspace.log`,
 `/tmp/octara-host-access-live-20261115`. These live requests use framework/semantic input; OS
 keyboard input and native Chinese IME were not requalified.
 
+## Ninth-round activation and lifecycle notifications
+
+Direct activation now shares `Kernel::check_activation` (private): the node must still be
+shown/not leaving, enabled, and inside the current modal scope. Semantic press/toggle/input,
+pointer/key activation handlers, accessibility click/context-menu/value actions, focused text
+input and focus reconciliation use this check. Pointer reachability, focusability, numeric
+validity and composition constraints remain separate checks for their own operations. The
+helper neither invents inherited disabled state nor changes App command bubbling or scrolling.
+
+Blur and modal Dismiss use an explicit internal lifecycle-notification path. Retained controls
+that become disabled, hidden or modal-inert still report losing focus; a disabled modal can be
+dismissed by Escape or its permitted outside click. Leaving/disposed nodes still belong to scope
+cleanup and do not receive revived handlers. Both paths invoke existing scoped handlers after
+releasing tree borrows. Accessibility value changes check activation before changing selection,
+so an ineligible target cannot move its caret as a side effect of refused input.
+
+Four regressions reproduced before the change: semantic Press reached a hidden node; a refused
+accessibility value change moved selection; disabling a focused field suppressed Blur; disabling
+a modal suppressed Dismiss. Their tests now also cover modal-inert and disabled targets, retained
+identity after re-enabling, composition retirement and outside-click dismissal. The old task
+cancellation fixture used a semantic press on a background button behind a prompt; it now uses
+an App-level cancellation command and retains withdrawal/late-answer assertions.
+
+`window activation` adds a real-window fixture with semantic and AccessKit-action probes,
+retained field state, blur/dismiss counters, reload and resize. These are framework/semantic
+probes driven by the Inspector, not OS accessibility or keyboard injection. Broader handler
+composition, drag cancellation and dispatch deduplication remain separate follow-ups.
+
+Validation: the four new regressions failed against the prior implementation and passed after
+this change. 657 workspace tests passed (three ignored); Clippy with warnings denied, formatting
+and diff checks passed. All eight live Inspector scenarios passed, including the new activation
+fixture: both semantic and AccessKit-action probes refuse disabled/hidden/modal-inert controls,
+focus retirement increments Blur once per transition, disabled-modal Escape dismisses, restored
+controls keep identity and accept framework text, and reload/resize/GPU captures stay coherent.
+Evidence: `/tmp/octara-activation-before.log`, `/tmp/octara-activation-workspace.log`,
+`/tmp/octara-activation-clippy.log` and `/tmp/octara-activation-live-20261115`. OS keyboard input
+and native Chinese IME were not requalified.
+
 ## References
 
 - [Signals contract](signals-redesign.md), [runtime contract](runtime-contract.md),

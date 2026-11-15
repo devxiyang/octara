@@ -51,6 +51,21 @@ impl Kernel {
         self.is_alive(id) && !self.is_exiting(id) && self.shown_path(id).is_some()
     }
 
+    /// Eligibility for direct activation, shared by input adapters. This deliberately does
+    /// not test pointer geometry or focusability, and does not apply to lifecycle notifications.
+    pub(crate) fn check_activation(&self, id: NodeId, modal: Option<NodeId>) -> Result<(), &'static str> {
+        if !self.is_shown(id) {
+            return Err("is hidden or leaving the tree");
+        }
+        if self.state(id).contains(State::DISABLED) {
+            return Err("is disabled");
+        }
+        if modal.is_some_and(|modal| !self.is_in_modal_scope(id, modal)) {
+            return Err("is behind the open modal");
+        }
+        Ok(())
+    }
+
     /// Whether `node` is `ancestor` or inside it.
     pub fn is_within(&self, mut node: NodeId, ancestor: NodeId) -> bool {
         loop {

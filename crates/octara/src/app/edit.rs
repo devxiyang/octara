@@ -558,6 +558,9 @@ impl Window {
     /// A value set by assistive technology (or an agent) for `n`: through its `on_input`, with
     /// the caret at the end.
     pub(super) fn set_value_of(&self, n: NodeId, value: String) -> bool {
+        if self.w.kernel.borrow().check_activation(n, self.top_modal()).is_err() {
+            return false;
+        }
         self.set_modality(Modality::Keyboard);
         let len = value.len();
         self.w.kernel.borrow_mut().set_selection(n, len, len);
