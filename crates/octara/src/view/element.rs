@@ -12,6 +12,59 @@ type KeyHandler = Rc<dyn Fn(&KeyEvent) -> bool>;
 type Draw = Rc<dyn Fn(&mut crate::canvas::Canvas)>;
 type OnNative = Rc<dyn Fn(&crate::native::NativeEvent)>;
 type OnLink = Rc<dyn Fn(&str)>;
+
+/// Component behavior runs before the replaceable application callback. Allocated only when used.
+#[derive(Default)]
+struct Before {
+    input: Vec<Rc<dyn Fn(String)>>,
+    key: Vec<KeyHandler>,
+    blur: Vec<Rc<dyn Fn()>>,
+}
+
+impl Before {
+    fn compose(mut self, e: &mut El) {
+        let scope = rt(|rt| rt.current_scope());
+        let alive = move || rt(|rt| scope.is_none_or(|scope| rt.scope_alive(scope)));
+        if !self.input.is_empty() {
+            self.input.extend(e.input.take());
+            let last = self.input.pop().expect("nonempty input handlers");
+            e.input = Some(Rc::new(move |value| {
+                for handler in &self.input {
+                    if !alive() {
+                        return;
+                    }
+                    handler(value.clone());
+                }
+                if alive() {
+                    last(value);
+                }
+            }));
+        }
+        if !self.key.is_empty() {
+            self.key.extend(e.key.take());
+            e.key = Some(Rc::new(move |event| {
+                for handler in &self.key {
+                    if !alive() || handler(event) {
+                        return true;
+                    }
+                }
+                // Retirement also stops bubbling and the default action.
+                !alive()
+            }));
+        }
+        if !self.blur.is_empty() {
+            self.blur.extend(e.blur.take());
+            e.blur = Some(Rc::new(move || {
+                for handler in &self.blur {
+                    if !alive() {
+                        return;
+                    }
+                    handler();
+                }
+            }));
+        }
+    }
+}
 use crate::kernel::{
     Breakpoint, Color, Fill, HandlerId, HandlerKind, Kernel, Kind, NodeId, NumericRange, Paint, Placement, Role, State, StyleProp, Token,
     When,
@@ -337,6 +390,7 @@ pub struct El {
     overrides: Vec<(When, Vec<StyleProp>)>,
     press: Option<Rc<dyn Fn()>>,
     input: Option<Rc<dyn Fn(String)>>,
+    before: Option<Box<Before>>,
     numeric_input: Option<Rc<dyn Fn(f64)>>,
     toggle: Option<Rc<dyn Fn()>>,
     double_press: Option<Rc<dyn Fn()>>,
@@ -401,6 +455,7 @@ fn new_el(content: Content, at: &'static Location<'static>) -> El {
         overrides: Vec::new(),
         press: None,
         input: None,
+        before: None,
         numeric_input: None,
         toggle: None,
         double_press: None,
@@ -792,9 +847,17 @@ impl El {
         self
     }
     /// Keys while focus is on this element or inside it, before the keymap: return `true` to
-    /// consume the key. Innermost handlers run first.
+    /// consume the key. Innermost handlers run first. Replaces the previous application
+    /// callback; [`Self::before_key`] handlers remain and run first.
     pub fn on_key(mut self, f: impl Fn(&KeyEvent) -> bool + 'static) -> Self {
         self.key = Some(Rc::new(f));
+        self
+    }
+    /// Adds component key behavior before `on_key`, in registration order. `true` consumes
+    /// the key, skipping later handlers, ancestors and the default action. IME routing runs
+    /// before these handlers. Retiring the mounted scope also stops the event.
+    pub fn before_key(mut self, f: impl Fn(&KeyEvent) -> bool + 'static) -> Self {
+        self.before.get_or_insert_default().key.push(Rc::new(f));
         self
     }
     /// Handles `command` (`"save"`, `"edit.copy"`) while focus is on this element or inside it:
@@ -857,9 +920,16 @@ impl El {
     }
     /// It lost keyboard focus (GPUI's `on_blur`): focus moved elsewhere or was cleared, not the
     /// window going inactive (it keeps its focus) nor the element leaving the tree. A field
-    /// edited in place commits here.
+    /// edited in place commits here. Replaces the previous application callback, after any
+    /// [`Self::before_blur`] handlers.
     pub fn on_blur(mut self, f: impl Fn() + 'static) -> Self {
         self.blur = Some(Rc::new(f));
+        self
+    }
+    /// Adds component blur behavior before `on_blur`, in registration order. Later callbacks
+    /// are skipped if a callback retires this element's mounted scope.
+    pub fn before_blur(mut self, f: impl Fn() + 'static) -> Self {
+        self.before.get_or_insert_default().blur.push(Rc::new(f));
         self
     }
     /// The second press of a double click or double tap (after its `on_press`).
@@ -898,8 +968,18 @@ impl El {
         self.numeric_range = Some(range.into_prop());
         self
     }
+    /// Receives proposed input, after any [`Self::before_input`] handlers. Replaces the
+    /// previous application callback. A bare text input uses this callback to write its value;
+    /// a bound component may write the model in `before_input` before notifying this callback.
     pub fn on_input(mut self, f: impl Fn(String) + 'static) -> Self {
         self.input = Some(Rc::new(f));
+        self
+    }
+    /// Adds component input behavior before `on_input`, in registration order. Every callback
+    /// receives the same proposed text; later callbacks can read model changes made earlier.
+    /// Retiring the mounted scope skips the remaining callbacks.
+    pub fn before_input(mut self, f: impl Fn(String) + 'static) -> Self {
+        self.before.get_or_insert_default().input.push(Rc::new(f));
         self
     }
     pub fn on_toggle(mut self, f: impl Fn() + 'static) -> Self {
@@ -1095,7 +1175,10 @@ fn bind<T: 'static>(at: &'static Location<'static>, node: NodeId, prop: Prop<T>,
 
 /// Builds a detached node for `e` with its bindings, handlers and children. The node is
 /// destroyed when the current scope is disposed.
-pub(crate) fn build_el(e: El) -> NodeId {
+pub(crate) fn build_el(mut e: El) -> NodeId {
+    if let Some(before) = e.before.take() {
+        before.compose(&mut e);
+    }
     let u = crate::app::window();
     let at = e.at;
     let node = u.kernel.borrow_mut().create(e.content.kind());

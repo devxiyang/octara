@@ -510,6 +510,35 @@ def activation(args, output, sockets):
         app.capture("activation-reloaded.png")
 
 
+def handlers(args, output, sockets):
+    with LiveWindow("handlers", args, output, sockets) as app:
+        resize(app, 800, 640)
+        before = app.capture("handlers-before.png")
+        app.requests({"op": "type", "id": "editor", "text": "你好"})
+
+        def expect(identifier, name):
+            snapshot = app.inspect()
+            require(find(snapshot, identifier)["name"] == name, f"handlers: {identifier} expected {name}")
+            return snapshot
+
+        expect("model", "Model: 你好")
+        expect("seen", "Seen: 你好")
+        app.requests({"op": "key", "chord": "left"})
+        expect("keys", "Keys: 1")
+        app.requests({"op": "key", "chord": "down"}, {"op": "key", "chord": "down"})
+        expect("keys", "Keys: 1")
+        require(find(app.inspect(), "editor")["active_descendant"] == "editor-option-two", "handlers: popup navigation failed")
+        app.capture("handlers-suggestions.png")
+        app.requests({"op": "key", "chord": "enter"})
+        expect("chosen", "Chosen: two")
+        expect("keys", "Keys: 1")
+        app.requests({"op": "key", "chord": "down"}, {"op": "focus", "id": "other"})
+        expect("blur", "Blur: open=false")
+        app.requests({"op": "expect", "clean": True})
+        after = app.capture("handlers-after.png")
+        require(before[:2] == after[:2] and before[2] != after[2], "handlers: changes did not reach GPU pixels")
+
+
 def styles(args, output, sockets):
     with LiveWindow("styles", args, output, sockets) as app:
         def widths(expected):
@@ -635,7 +664,7 @@ def main():
     print(f"Live smoke artifacts: {output}", flush=True)
     with tempfile.TemporaryDirectory(prefix="octara-agent-", dir="/tmp") as temporary:
         sockets = Path(temporary)
-        for scenario in (counter, gestures, search, todo, windows, styles, activation, content):
+        for scenario in (counter, gestures, search, todo, windows, styles, activation, handlers, content):
             scenario(args, output, sockets)
             print(f"PASS {scenario.__name__}", flush=True)
     print("Live Inspector: inspect, gestures, native resize, realtime settle, GPU capture, errors, window routing and reconnect passed.")

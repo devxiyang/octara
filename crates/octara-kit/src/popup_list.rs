@@ -40,7 +40,9 @@ struct Row {
 /// The caller controls `open` and supplies already filtered items. Up/Down wrap among enabled
 /// suggestions; Down also opens a closed list. Enter chooses, Escape closes, and Tab closes
 /// before continuing normal focus navigation. Modified keys and Home/End belong to the editor.
-/// The component owns the editor's key and blur handlers, expanded and active-descendant props.
+/// The component handles suggestion keys before the editor's `on_key`; unconsumed keys reach
+/// that callback. It closes before the editor's `on_blur`. Expanded and active-descendant props
+/// belong to the component. Existing input, key and blur application callbacks are preserved.
 ///
 /// The list is nonmodal. A press on a suggestion preserves the editor's focus and selection;
 /// a press elsewhere can focus that control and closes the list on blur. Choosing calls
@@ -121,8 +123,8 @@ pub fn popup_list(
             .id(id)
             .expanded(move || expanded.get())
             .active_descendant(move || related.get().then(|| active.get()).flatten().map(|key| format!("{related_id}-option-{key}")))
-            .on_blur(move || blur.set(false))
-            .on_key(move |event| {
+            .before_blur(move || blur.set(false))
+            .before_key(move |event| {
                 if event.key == Key::Tab && (event.modifiers.is_empty() || event.modifiers == Modifiers::SHIFT) {
                     keys.set(false);
                     return false;

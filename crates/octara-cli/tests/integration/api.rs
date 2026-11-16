@@ -31,6 +31,9 @@ fn items_are_found_by_canonical_path_and_alias() {
     assert!(api.get("octara::reactive::graph::state").is_none(), "old implementation paths are not aliases");
     assert!(api.get("octara::prelude::Memo").is_none());
     assert!(api.get("octara::reactive::Signal::new").is_none());
+    for method in ["before_input", "before_key", "before_blur"] {
+        assert!(api.get(&format!("octara::view::El::{method}")).is_some());
+    }
     assert!(api.get("octara::reactive::list::StateList::all").is_none());
     assert!(api.get("octara::reactive::list::Source").is_none());
     assert!(api.get("octara::prelude::Source").is_none());

@@ -224,7 +224,8 @@ pub fn switch(on: impl Model<bool>) -> El {
 
 // ---- text field ----
 
-/// A single-line text field bound to `value`.
+/// A single-line text field bound to `value`. The model is updated before the replaceable
+/// `on_input` application callback; adding that callback preserves the binding.
 #[component]
 #[track_caller]
 pub fn text_field(value: impl Model<String>) -> El {
@@ -239,7 +240,7 @@ pub fn text_field(value: impl Model<String>) -> El {
         .bg(Token::Background)
         .text_color(Token::Text)
         .value(move || r.get())
-        .on_input(move |v| m.set(v))
+        .before_input(move |v| m.set(v))
 }
 
 // ---- select ----

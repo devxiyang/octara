@@ -4,6 +4,7 @@ mod choices;
 mod components;
 mod dialog;
 mod forms;
+mod handler_composition;
 mod markdown;
 mod menus;
 mod navigation;

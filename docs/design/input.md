@@ -14,6 +14,25 @@ Platform shell (winit / UIKit / Android)
 
 Tests and agents call the same raw input (or convert from a test id to the element center), without bypassing the recognizers.
 
+## Component and application callbacks
+
+`on_input`, `on_key` and `on_blur` each replace the previous application callback. Component
+authors can add `before_input`, `before_key` and `before_blur` hooks instead: those run in
+registration order before the application callback, regardless of where `on_*` was set in the
+builder chain. Each input callback receives the same proposed string; earlier model writes are
+visible to later callbacks. All hooks run in the element's mounted scope/window with no kernel
+borrow held, and disposal of that scope stops the remaining callbacks.
+
+For keys, `true` consumes the event, skipping remaining hooks, the application callback,
+ancestors and the default action. `false` continues. Scope retirement also stops key fallback;
+IME confirmation, cancellation and candidate-navigation precedence remain before these hooks.
+Blur hooks finish the existing interaction even when a retained field becomes hidden, disabled
+or modal-inert; actual scope disposal still belongs to cleanup.
+
+Kit's `text_field` writes its bound model before `on_input`; adding that callback preserves the
+binding. `popup_list` handles suggestion keys before the editor's `on_key` and closes before
+its `on_blur`, preserving both. See the [Rune/Exact source comparison](../research/handler-composition.md).
+
 ## Raw input and time
 
 - `PointerEvent { id, kind: Mouse | Touch | Pen, phase: Down | Move | Up | Cancel, x, y, button, modifiers }`.

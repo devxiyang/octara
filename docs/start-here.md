@@ -269,6 +269,11 @@ assert_eq!(app.kernel().text_of("saved").as_deref(), Some("saved 1"));
 
 - Text: `octara_kit::text_field(signal)` binds a `Signal<String>`; `.on_submit(..)` runs on Enter.
   Selection, undo, clipboard and input methods are the runtime's.
+  Adding `.on_input(..)` preserves the binding and observes the model after its setter runs.
+- `on_input`, `on_key` and `on_blur` replace the previous application callback. Component
+  authors use `before_input`, `before_key` and `before_blur` to add behavior in registration
+  order before that callback. A key handler returning `true` stops later handlers and the
+  default action; IME routing runs first. Scope disposal stops the remaining callbacks.
 - `field(id, label, control, info)` surrounds an ordinary control with its label and supporting
   text. The tracked `info` closure returns `FieldInfo { description, error, required }`; these
   become the control's description, invalid and required semantics in Inspector and AccessKit.
@@ -287,6 +292,7 @@ assert_eq!(app.kernel().text_of("saved").as_deref(), Some("saved 1"));
   an existing editor. It retains editor focus, skips disabled items, and calls `choose` with a
   stable ID. Its keyboard and pointer choices yield to an active IME. The application owns
   filtering and insertion; this is separate from a searchable modal `combobox`.
+  Editor `on_key` receives unconsumed keys; editor `on_blur` runs after the popup closes.
 - `slider(id, model, min, max, step)` binds a number; `number_field(raw, min, max, step)` binds
   raw text, preserving incomplete drafts until Enter or blur. `parse_number` and
   `normalize_number` let ordinary Rust implement application validation and submission.

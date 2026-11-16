@@ -644,6 +644,35 @@ formatting and diff checks passed. Evidence: `/tmp/octara-list-runtime-before.lo
 `/tmp/octara-list-runtime-clippy.log`. The runtime boundary was verified headlessly; no OS-input
 or real-window qualification was rerun for this change.
 
+## Thirteenth-round component callback composition
+
+Component behavior now has explicit `before_input`, `before_key` and `before_blur` hooks. They
+run in registration order, followed by the single replaceable `on_*` application callback.
+The existing mounted handler owns the whole chain; between callbacks, its captured scope is
+checked for retirement. Key consumption or retirement stops both propagation and the default
+action. IME routing still precedes component hooks. This adds no new dispatch phase or event bus.
+
+TextField writes its model through before_input, so an application on_input no longer breaks
+the binding. PopupList closes on before_blur and handles its navigation in before_key, preserving
+the editor's application callbacks. Unconsumed keys continue through the user handler, ancestors
+and normal editing. Other controls retain their documented replacement contracts.
+
+The [source comparison](../research/handler-composition.md) records the pinned Rune/Exact lessons
+and their limits. Two regressions reproduced the lost binding and overwritten editor callbacks.
+Core regressions cover registration order versus replacement, key consumption and fallthrough,
+IME precedence, closing a window during input/key/blur, and reloading from an application key
+callback without applying its default action to the replacement field. Accessibility SetValue
+uses the same composed input handler. The `window handlers` fixture and live Inspector scenario
+exercise bound input, suggestion navigation, user callbacks, blur ordering and GPU captures.
+
+Validation: the workspace passed 675 tests with 3 existing ignored tests, and workspace Clippy
+passed with warnings denied. After updating the teaching material and regenerating the skill,
+the CLI integration suite passed all 23 tests and all 9 start-here doctests passed. All 9 live
+Inspector scenarios passed, including `handlers`. These exercise semantic input in real GPU
+windows; they do not requalify native OS keyboard input or the system Chinese IME candidate UI.
+Logs are in `/tmp/octara-handlers-{workspace,clippy,cli,live}.log`; live captures are in
+`/tmp/octara-handlers-live-20261116`.
+
 ## References
 
 - [Signals contract](signals-redesign.md), [runtime contract](runtime-contract.md),

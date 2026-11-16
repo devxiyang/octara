@@ -2,5 +2,6 @@
 
 pub mod activation;
 pub mod apps;
+pub mod handlers;
 pub mod scenarios;
 pub mod showcase;

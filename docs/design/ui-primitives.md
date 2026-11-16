@@ -36,6 +36,7 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | Style | `Styled` (and `style_with` for bound styles): GPUI method names, 4 px scale, `px` / `relative` / `rems`; semantic `Token` and `Theme`; state, window size class, touch and group-hover overrides; `absolute` / `top` / `left`; shadows, gradients, opacity layers; motion | Implemented |
 | Semantics | `role`, `label`, `description`, `required`, `invalid`, `expanded`, `checked`, `value`, `a11y_hidden`, `focusable`; test id is the semantic id | Implemented; descriptions and form validity are shared by Inspector and AccessKit |
 | Interaction | `on_press` / `on_input` / `on_toggle` / `on_submit` / `on_focus` / `on_blur`; `tooltip`; hover chain and groups; disabled elements reject activation; retained focus retirement still reports blur | Implemented |
+| | `before_input` / `before_key` / `before_blur`: ordered component behavior before replaceable application callbacks, with mounted-scope retirement checks | Implemented ([composition](input.md#component-and-application-callbacks)) |
 | | `on_key`, gestures (tap, double, long press, secondary, drag, swipe, momentum), focus order and groups, keymap and commands | Implemented ([input](input.md)) |
 | Agent | Structured diagnostics with registered codes, `App::set_check_consistency`, `Window::force_state` | Implemented |
 | | Inspector protocol, `octara check` / `inspect` / `run` | Implemented ([agent knowledge](agent-knowledge.md)) |

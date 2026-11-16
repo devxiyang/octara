@@ -1,5 +1,5 @@
 //! Opens an example app in a window:
-//! `cargo run -p octara-examples --bin window -- [showcase [card]|counter|styles|activation|gestures|todo|chat|settings|contacts|chat_virtual|windows]`
+//! `cargo run -p octara-examples --bin window -- [showcase [card]|counter|styles|activation|handlers|gestures|todo|chat|settings|contacts|chat_virtual|windows]`
 //! (`showcase web` shows the web view card alone; the cards are `showcase::CARDS`).
 
 use octara::view::View;
@@ -12,6 +12,7 @@ fn main() {
         "counter" => Box::new(apps::counter),
         "styles" => Box::new(apps::styles),
         "activation" => Box::new(octara_examples::activation::view),
+        "handlers" => Box::new(octara_examples::handlers::view),
         "gestures" => Box::new(apps::gestures),
         "chat" => Box::new(|| apps::chat(50)),
         "settings" => Box::new(apps::settings),
