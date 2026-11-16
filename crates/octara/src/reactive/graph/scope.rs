@@ -108,46 +108,45 @@ impl Runtime {
                 d.state = ScopeState::Retiring;
             }
         });
-        self.with_owner(owner, || {
-            self.with_frame(Ctx::Cleanup, None, Some(Some(s)), || {
-                loop {
-                    let child = self.scopes.borrow()[s.i as usize].children.last().copied();
-                    let Some(child) = child else { break };
-                    self.dispose_scope(child);
-                    // Keep the child reachable if its disposal unwinds.
-                    self.scopes.borrow_mut()[s.i as usize].children.retain(|id| *id != child);
+        let execution = ExecutionOwner { scope: Some(s), window: owner };
+        self.with_execution(execution, Ctx::Cleanup, None, || {
+            loop {
+                let child = self.scopes.borrow()[s.i as usize].children.last().copied();
+                let Some(child) = child else { break };
+                self.dispose_scope(child);
+                // Keep the child reachable if its disposal unwinds.
+                self.scopes.borrow_mut()[s.i as usize].children.retain(|id| *id != child);
+            }
+            loop {
+                let cleanup = self.scopes.borrow_mut()[s.i as usize].cleanups.pop_last();
+                let Some((_, cleanup)) = cleanup else { break };
+                // A started callback is consumed even when it panics. Others remain owned.
+                cleanup();
+            }
+            loop {
+                let node = self.scopes.borrow_mut()[s.i as usize].nodes.pop();
+                let Some(n) = node else { break };
+                let named = self.alive(n) && self.nodes.borrow()[n.i as usize].named;
+                if !(named && self.reloading.get()) {
+                    self.dispose_node(n);
                 }
-                loop {
-                    let cleanup = self.scopes.borrow_mut()[s.i as usize].cleanups.pop_last();
-                    let Some((_, cleanup)) = cleanup else { break };
-                    // A started callback is consumed even when it panics. Others remain owned.
-                    cleanup();
+            }
+            if !self.reloading.get() {
+                self.store.borrow_mut().retain(|(p, _), _| p != &path);
+            }
+            loop {
+                let context = self.scopes.borrow_mut()[s.i as usize].contexts.pop();
+                let Some(context) = context else { break };
+                drop(context);
+            }
+            if let Some(p) = parent {
+                let mut scopes = self.scopes.borrow_mut();
+                if let Some(d) = scopes.get_mut(p.i as usize).filter(|d| d.g == p.g) {
+                    d.children.retain(|c| *c != s);
                 }
-                loop {
-                    let node = self.scopes.borrow_mut()[s.i as usize].nodes.pop();
-                    let Some(n) = node else { break };
-                    let named = self.alive(n) && self.nodes.borrow()[n.i as usize].named;
-                    if !(named && self.reloading.get()) {
-                        self.dispose_node(n);
-                    }
-                }
-                if !self.reloading.get() {
-                    self.store.borrow_mut().retain(|(p, _), _| p != &path);
-                }
-                loop {
-                    let context = self.scopes.borrow_mut()[s.i as usize].contexts.pop();
-                    let Some(context) = context else { break };
-                    drop(context);
-                }
-                if let Some(p) = parent {
-                    let mut scopes = self.scopes.borrow_mut();
-                    if let Some(d) = scopes.get_mut(p.i as usize).filter(|d| d.g == p.g) {
-                        d.children.retain(|c| *c != s);
-                    }
-                }
-                self.scopes.borrow_mut()[s.i as usize].state = ScopeState::Disposed;
-                self.free_scopes.borrow_mut().push(s.i);
-            })
+            }
+            self.scopes.borrow_mut()[s.i as usize].state = ScopeState::Disposed;
+            self.free_scopes.borrow_mut().push(s.i);
         });
     }
 
@@ -181,8 +180,7 @@ impl Runtime {
     }
 
     pub(super) fn provide(&self, ty: TypeId, value: Rc<dyn Any>, at: &'static Location<'static>) {
-        self.assert_healthy();
-        if !self.effect_allowed(at) {
+        if !self.allows(Operation::Register, at) {
             return;
         }
         let Some(s) = self.scope.get() else {

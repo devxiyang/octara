@@ -1211,3 +1211,254 @@ fn racing_wakes_cannot_reopen_cancelled_or_closed_tasks() {
         }
     });
 }
+
+#[test]
+fn task_cancellation_checks_the_caller_even_across_apps_and_untrack() {
+    let target = App::new(HeadlessPlatform::default());
+    let task = target.run(|| spawn(std::future::pending()));
+    let caller = App::new(HeadlessPlatform::default());
+    let cancel = task.clone();
+    let root = caller.clone();
+    caller.run(|| {
+        let computed = memo(move || {
+            root.run(|| untrack(|| cancel.cancel()));
+            1
+        });
+        assert_eq!(computed.get(), 1);
+    });
+    assert!(!task.is_finished());
+    assert!(caller.diagnostics().iter().any(|d| d.code == "WRITE_IN_DERIVE"));
+    assert!(target.diagnostics().is_empty());
+    task.cancel(); // No ambient App is required.
+    assert!(task.is_finished());
+    caller.shutdown();
+    target.shutdown();
+}
+
+#[test]
+fn cancellation_in_initializer_is_refused_but_build_and_cleanup_can_release() {
+    let app = App::new(HeadlessPlatform::default());
+    app.run(|| {
+        let task = spawn(std::future::pending());
+        state("cannot-cancel", || {
+            task.cancel();
+            0
+        });
+        assert!(!task.is_finished());
+        rt(|r| r.with_frame(Ctx::Build, None, None, || task.cancel()));
+        assert!(task.is_finished());
+        let other = spawn(std::future::pending());
+        rt(|r| r.with_frame(Ctx::Cleanup, None, None, || other.cancel()));
+        assert!(other.is_finished());
+    });
+    assert_eq!(app.diagnostics().len(), 1);
+    assert_eq!(app.diagnostics()[0].code.id, "WRITE_IN_BUILD");
+    app.shutdown();
+}
+
+#[test]
+fn failed_runtime_rejects_all_registration_but_not_owned_release() {
+    let app = App::new(HeadlessPlatform::default());
+    let released = Rc::new(Cell::new(false));
+    let out = released.clone();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        app.run(|| {
+            let task = spawn(std::future::pending());
+            rt(|r| r.fail("test failure", Location::caller()));
+            for register in [
+                (|| {
+                    crate::reactive::on_cleanup(|| {});
+                }) as fn(),
+                || {
+                    watch(|| 0, |_, _| {});
+                },
+                || {
+                    spawn(std::future::pending());
+                },
+            ] {
+                assert!(std::panic::catch_unwind(register).is_err());
+            }
+            task.cancel();
+            out.set(task.is_finished());
+        })
+    }));
+    assert!(result.is_err());
+    assert!(released.get());
+    app.shutdown();
+    assert!(app.pending().is_empty());
+}
+
+#[test]
+fn internal_owned_release_does_not_depend_on_the_callers_phase() {
+    let app = App::new(HeadlessPlatform::default());
+    app.run(|| {
+        let task = spawn(std::future::pending());
+        rt(|r| r.with_frame(Ctx::Derive, None, None, || task.cancel_owned()));
+        assert!(task.is_finished());
+    });
+    assert!(app.diagnostics().is_empty());
+    app.shutdown();
+}
+
+#[test]
+fn entering_another_app_does_not_upgrade_a_pure_callers_permissions() {
+    let first = App::new(HeadlessPlatform::default());
+    let second = App::new(HeadlessPlatform::default());
+    let (signal, task) = second.run(|| (Signal::scoped(1), spawn(std::future::pending())));
+    let target = second.clone();
+    let cancel = task.clone();
+    first.run(|| {
+        let read = memo(move || {
+            target.run(|| {
+                signal.set(9);
+                cancel.cancel();
+                signal.get()
+            })
+        });
+        assert_eq!(read.get(), 1);
+    });
+    assert!(!task.is_finished());
+    assert_eq!(second.diagnostics().len(), 2);
+    assert!(second.diagnostics().iter().all(|d| d.code == "WRITE_IN_DERIVE"));
+    second.run(|| signal.set(2));
+    assert_eq!(second.run(|| signal.get()), 2);
+    task.cancel();
+    assert!(task.is_finished());
+    first.shutdown();
+    second.shutdown();
+}
+
+#[test]
+fn subscription_stops_dispatching_after_callback_cancellation() {
+    let mut observations = Vec::new();
+    for mode in 0..3 {
+        let app = App::new(HeadlessPlatform::default());
+        let calls = Rc::new(Cell::new(0));
+        let running = Rc::new(RefCell::new(None::<Task>));
+        let (out, handle) = (calls.clone(), running.clone());
+        let close = app.clone();
+        let sender = app.run(|| {
+            let child = rt(|r| r.create_scope(r.current_scope(), "subscription"));
+            let (sender, receiver) = channel::<u32>();
+            let task = rt(|r| {
+                r.with_scope(Some(child), || {
+                    receiver.on(move |_| {
+                        out.set(out.get() + 1);
+                        if mode == 1 {
+                            rt(|r| r.dispose_scope(child));
+                        } else if mode == 2 {
+                            close.shutdown();
+                        } else {
+                            handle.borrow().as_ref().unwrap().cancel();
+                        }
+                    })
+                })
+            });
+            *running.borrow_mut() = Some(task);
+            sender
+        });
+        for value in 0..3 {
+            sender.send(value).unwrap();
+        }
+        app.poll();
+        observations.push(calls.get());
+        app.shutdown();
+    }
+    assert_eq!(observations, [1, 1, 1]);
+}
+
+#[test]
+fn interval_stops_catchup_after_callback_cancellation() {
+    let app = App::new(HeadlessPlatform::default());
+    let calls = Rc::new(Cell::new(0));
+    let running = Rc::new(RefCell::new(None::<Task>));
+    let (out, handle) = (calls.clone(), running.clone());
+    let task = app.run(|| {
+        interval(Duration::from_millis(1), move || {
+            out.set(out.get() + 1);
+            handle.borrow().as_ref().unwrap().cancel();
+        })
+    });
+    *running.borrow_mut() = Some(task);
+    app.poll();
+    app.run(|| {
+        sched().set_now_ms(5.0);
+        sched().fire_due();
+    });
+    app.poll();
+    let observed = calls.get();
+    app.shutdown();
+    assert_eq!(observed, 1);
+}
+
+#[test]
+fn subscription_failure_prevents_the_next_callback_and_retires_the_receiver() {
+    let app = App::new(HeadlessPlatform::default());
+    let calls = Rc::new(Cell::new(0));
+    let out = calls.clone();
+    let sender = app.run(|| {
+        let (sender, receiver) = channel::<u32>();
+        receiver.on(move |_| {
+            out.set(out.get() + 1);
+            // Models a caught incremental-operation failure: control returns, health does not.
+            rt(|runtime| runtime.fail("subscription failed", Location::caller()));
+        });
+        sender
+    });
+    for value in 0..3 {
+        sender.send(value).unwrap();
+    }
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.poll())).is_err());
+    assert_eq!(calls.get(), 1);
+    assert!(sender.send(4).is_err());
+    assert!(app.is_failed());
+    app.shutdown();
+    assert!(app.pending().is_empty());
+}
+
+#[test]
+fn after_layout_does_not_run_a_hook_removed_by_an_earlier_hook() {
+    let app = App::new(HeadlessPlatform::default());
+    let window = app.open_window(Default::default(), || el().size_full().into()).unwrap();
+    let called = Rc::new(Cell::new(false));
+    let later = Rc::new(Cell::new(0));
+    let window_state = window.enter(crate::app::window);
+    let first = app.run(|| {
+        let (state, next) = (window_state.clone(), later.clone());
+        let first = window_state.after_layout(Rc::new(move || {
+            state.remove_after_layout(next.get());
+            false
+        }));
+        let out = called.clone();
+        later.set(window_state.after_layout(Rc::new(move || {
+            out.set(true);
+            false
+        })));
+        first
+    });
+    assert!(!called.get());
+    app.run(|| window_state.remove_after_layout(first));
+    app.shutdown();
+}
+
+#[test]
+fn async_memo_rechecks_publication_after_key_comparison_closes_the_app() {
+    #[derive(Clone)]
+    struct Key;
+    impl PartialEq for Key {
+        fn eq(&self, _: &Self) -> bool {
+            if sched().current.get().is_some() {
+                App::current().shutdown();
+            }
+            true
+        }
+    }
+    let app = App::new(HeadlessPlatform::default());
+    app.run(|| {
+        async_memo(|| Key, |_| async { Ok::<_, ()>(7) });
+    });
+    app.poll();
+    assert!(app.is_shutdown());
+    assert!(!app.is_failed());
+    assert!(app.pending().is_empty());
+}

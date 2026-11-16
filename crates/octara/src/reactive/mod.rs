@@ -16,7 +16,7 @@ pub use graph::{ReadSignal, Signal, Watch, memo, provide, state, untrack, use_co
 pub fn on_cleanup(cleanup: impl FnOnce() + 'static) {
     let at = std::panic::Location::caller();
     graph::rt(|runtime| {
-        if !runtime.effect_allowed(at) {
+        if !runtime.allows(crate::reactive::graph::Operation::Register, at) {
             return;
         }
         assert!(runtime.current_scope().is_some(), "on_cleanup requires a component scope");

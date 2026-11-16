@@ -210,7 +210,7 @@ impl Watch {
                 rt.diag(&codes::WRONG_RUNTIME, "watch belongs to another App; stop rejected".into(), at);
                 return;
             }
-            if rt.ctx() != Ctx::Build && !rt.write_allowed(at) {
+            if !rt.allows(Operation::Release, at) {
                 return;
             }
             rt.dispose_node(idx);
@@ -225,7 +225,7 @@ impl Watch {
 #[track_caller]
 pub fn watch<S: PartialEq + 'static>(source: impl Fn() -> S + 'static, callback: impl Fn(&S, Option<&S>) + 'static) -> Watch {
     let at = Location::caller();
-    if !rt(|rt| rt.effect_allowed(at)) {
+    if !rt(|rt| rt.allows(Operation::Register, at)) {
         return Watch { idx: None, _ns: PhantomData };
     }
     let mut last = None;

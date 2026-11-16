@@ -49,6 +49,23 @@ there is no `useEffect`, and effects use `watch`.
 
 ## 3. Graph and scheduling
 
+Execution policy and owner restoration live in the private `graph/execution.rs` module.
+One operation policy distinguishes Write, Register, Release and Shutdown; the old independent
+write/effect permission matches are removed. Write/Register require a healthy runtime;
+registration also rejects a retired current scope. Target-specific identity checks and each
+API's required-scope checks remain at their owning boundary.
+
+Release permits explicit Task cancellation and Watch stopping during Build, Handler, ordinary
+entry and Cleanup, including resource retirement after failure. Pure phases and Init cannot
+request explicit release. Internal owner teardown uses its own resource-release path; it must
+remain possible during unwind. Task handles still support cancellation outside App::run.
+
+`ExecutionOwner` records scope and optional window. `with_owned` restores ownership without
+changing phase/tracking; `with_execution` additionally restores an invocation's declared phase
+and collector. These are restoration guards, not eligibility grants. Handlers, graph evaluation,
+task polling and cleanup share this entry mechanism. Cross-runtime entry inherits the caller's
+phase, so entering another App cannot upgrade a pure computation's permissions.
+
 Signal stores a value-local borrow cell. Only get requires Clone; with borrows the value and
 update mutates it in place after checking permissions and borrows. Conflicting access reports
 SIGNAL_BORROW: invalid writes do nothing and invalid reads fail. Borrow callbacks cannot return

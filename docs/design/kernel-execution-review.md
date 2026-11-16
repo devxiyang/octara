@@ -1,9 +1,10 @@
 # Kernel execution architecture review
 
 Date: 2026-11-16. Reviewed baseline: `28ef75e` (846 tests passed, 3 ignored).
-Status: proposed convergence plan, **not an implemented replacement runtime**.
-This review changes documentation only. It does not authorize incremental fixes
-outside the bounded implementation plan below.
+Status: bounded convergence plan; slices A and B are now implemented in the working
+tree, with records below. Slice C and final product acceptance remain pending.
+The original review was documentation-only; its implementation follows the bounded
+plan below rather than authorizing unrelated incremental fixes.
 
 ## Decision and scope
 
@@ -273,3 +274,78 @@ The current architecture is viable. Its repeated defects point to distributed
 execution-policy enforcement, not a need to replace Signals or introduce a VM.
 Converge the entry and dispatch rules, preserve the lifecycle distinctions already
 earned, and stop once the bounded conformance and product evidence is complete.
+
+## Slice A implementation record
+
+Implemented after review commit `3afb9d1`; slice B is recorded below. The private
+`reactive/graph/execution.rs` now owns Ctx, the Write/Register/Release/Shutdown
+permission match and owner restoration. Old `write_allowed` / `effect_allowed`
+methods and their callers have been removed, not retained as forwarding aliases.
+
+| Entry family | Policy / owner treatment |
+| --- | --- |
+| Signal and collection writes | Write; existing value/collection target validity remains local |
+| watch, task spawn, cleanup, context, channel naming, prompts and command registration | Register; existing API-specific required-scope and scheduler-closed checks remain local |
+| Task::cancel / Watch::stop | Release; caller phase checked without granting permissions by switching owners |
+| App::shutdown | Shutdown; failure does not block resource teardown, pure/Build/Cleanup calls are refused |
+| App::run | Root scope, no window; preserves caller phase/collector, including phase inheritance across different runtimes |
+| ScopedHandler | Captured ExecutionOwner, live-scope check, shared owner/Handler restoration |
+| Graph compute | Shared owner/Derive-or-Observe restoration; existing source collector and publication/retirement boundaries retained |
+| Task poll | Shared scope/window/Handler restoration; scheduler keeps its typed task identity and required scope |
+| Scope cleanup | Shared owner/Cleanup restoration, deliberately allowed for retiring scopes |
+| Window entry / internal phase transitions | Keep narrow low-level guards where no captured callback owner is being dispatched |
+
+Task::cancel now documents immediate revocation versus physical Future drop at an
+active poll's exit. A private owner-release path is used by framework clock cleanup
+and window closure; scheduler cancellation and RAII cleanup registration remain
+independent of the public business-operation permission gate.
+
+Six added regressions exercise same/cross-App pure cancellation, cancellation from
+Init versus Build/Cleanup, failed-runtime registration versus release, internal
+owner release, owner/phase/collector restoration after unwind, and cross-runtime
+entry refusing state writes/cancellation. Existing context phase, callback owner,
+watch stopping, active-poll shutdown and stale identity tests remain in the suite.
+
+This slice does not fix the subscription dispatch finding or claim full kernel
+convergence. Per-callback admission and publication review belong to slice B;
+the final representative native Chat smoke belongs to the overall exit gates.
+
+Slice A validation: `cargo test --workspace` passed (852 passed, 3 ignored),
+including Chat lifecycle, model selection and local HTTP tests. Workspace Clippy
+with all targets and warnings denied, formatting and diff checks passed. Logs:
+`/tmp/octara-entry-full.log`, `/tmp/octara-entry-clippy.log`. No native window
+verification was performed for this slice; that is not evidence of full-round
+completion.
+
+## Slice B implementation record
+
+Runtime invocation admission now combines shared health with captured scope
+liveness. Scoped handlers, graph invocation and composed event chains use it.
+Scheduler admission adds full TaskId eligibility and the closed-scheduler gate;
+both task poll and framework-owned subscription callbacks use that same check.
+Channel FIFO, the 64-message cooperative yield, and interval catch-up policy are
+unchanged. Cancellation does not interrupt the active callback but prevents the
+next callback even when its input is already ready in the same poll.
+
+After-layout registrations capture their execution owner and restore it through
+the shared entry. Detached hook batches recheck registration identity before each
+call, so an earlier hook can remove a later one without that callback running.
+Window closure ends the hook batch. No scope-table borrow is held across a hook.
+
+AsyncMemo checks task/owner eligibility before comparing its request and again
+afterwards: user-defined key comparison can revoke execution. Graph publication
+retains health/node identity checks; output retains existing preparation validity
+and successful-host-handoff accounting. These domain checks are intentionally not
+replaced by one global generation. No new public primitive or timer policy was added.
+
+Five new regressions cover channel self-cancellation/scope disposal/App shutdown,
+overdue interval cancellation, failed-App refusal before the next subscription
+callback, removal of a later after-layout hook, and AsyncMemo key comparison closing
+the App before publication. Existing FIFO, fairness, stale result, owner, frame and
+host-panic tests remain required. Final native Chat smoke and the full convergence
+sign-off remain in slice C; deterministic test success alone does not complete it.
+
+Slice B validation: workspace tests passed (857 passed, 3 ignored), including Chat
+and local HTTP regressions. Workspace Clippy/all-targets with warnings denied,
+formatting and diff checks passed. Logs: `/tmp/octara-dispatch-full.log` and
+`/tmp/octara-dispatch-clippy.log`. No native window validation was run in this slice.

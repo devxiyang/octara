@@ -106,6 +106,9 @@ pub fn interval(period: Duration, f: impl Fn() + 'static) -> Task {
         let mut due = start + period;
         loop {
             sleep_until(due).await;
+            if !sched().current_is_live() {
+                return;
+            }
             f();
             due += period;
         }

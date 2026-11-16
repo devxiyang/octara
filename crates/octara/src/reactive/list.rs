@@ -272,10 +272,7 @@ fn view_fn<A: ?Sized + 'static, R: 'static>(f: impl Fn(&A) -> R + 'static) -> im
 
 /// Writes to collections and text follow the layer rules of signals.
 pub(crate) fn writable(at: &'static Location<'static>) -> bool {
-    rt(|rt| {
-        rt.assert_healthy();
-        rt.write_allowed(at)
-    })
+    rt(|rt| rt.allows(crate::reactive::graph::Operation::Write, at))
 }
 
 // ---------------------------------------------------------------------------------------------

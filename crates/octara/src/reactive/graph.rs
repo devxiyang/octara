@@ -13,10 +13,13 @@
 //! Invariants: no runtime borrow is held while user code runs or while a value is dropped (values
 //! may own other nodes, e.g. a list owns its item signals); handles carry generations.
 
+mod execution;
 mod scope;
 mod signal;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use execution::{Ctx, ExecutionOwner, Operation};
 
 pub use signal::{ReadSignal, Signal, Watch, memo, provide, state, untrack, use_context, watch};
 pub(crate) use signal::{binding, memo_with, structural_binding};
@@ -147,26 +150,6 @@ struct ScopeData {
     persistent_names: bool,
     contexts: Vec<(TypeId, Rc<dyn Any>)>,
     owner: Option<Owner>,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub(crate) enum Ctx {
-    Idle,
-    /// A component body or branch being built; runs once.
-    Build,
-    /// Inside a memo.
-    Derive,
-    /// Inside a binding, region or watch source.
-    Observe,
-    /// A handler or watch callback.
-    Handler,
-    /// A named value initializer: sampled reads, no mutation of existing state.
-    Init,
-    /// Teardown may sample retiring state but cannot register new work.
-    Cleanup,
-    /// Inside a view's closure (`filter`, `sort_by`, `group_by`, `map`, `join`): a pure function
-    /// of the item, run per item event; reads are not tracked and are reported.
-    View,
 }
 
 /// Named state by (scope path, key), with the value's type.
@@ -312,14 +295,17 @@ impl Runtime {
     }
 
     pub fn enter<R>(self: &Rc<Self>, f: impl FnOnce() -> R) -> R {
-        struct Restore(Option<Rc<Runtime>>);
-        impl Drop for Restore {
+        struct CurrentRuntime(Option<Rc<Runtime>>);
+        impl Drop for CurrentRuntime {
             fn drop(&mut self) {
                 let prev = self.0.take();
                 CURRENT.with(|c| *c.borrow_mut() = prev);
             }
         }
-        let _restore = Restore(CURRENT.with(|c| c.replace(Some(self.clone()))));
+        let restore = CurrentRuntime(CURRENT.with(|c| c.replace(Some(self.clone()))));
+        // A different App changes ownership, not the caller's execution permissions.
+        let _phase =
+            restore.0.as_ref().filter(|previous| !Rc::ptr_eq(previous, self)).map(|previous| Restore::set(&self.ctx, Some(previous.ctx())));
         f()
     }
 
@@ -358,65 +344,6 @@ impl Runtime {
     pub fn live_nodes(&self) -> u64 {
         self.nodes.borrow().iter().filter(|n| n.alive).count() as u64
     }
-    pub fn ctx(&self) -> Ctx {
-        self.ctx.get().unwrap_or(Ctx::Idle)
-    }
-
-    /// The owner now.
-    pub(crate) fn owner(&self) -> Option<Owner> {
-        self.owner.get()
-    }
-
-    /// Restore the registration window; None deliberately clears the ambient window.
-    pub(crate) fn with_owner<R>(&self, owner: Option<Owner>, f: impl FnOnce() -> R) -> R {
-        let _owner = Restore::set(&self.owner, owner);
-        f()
-    }
-
-    pub fn with_frame<R>(&self, ctx: Ctx, observer: Option<Idx>, scope: Option<Option<ScopeId>>, f: impl FnOnce() -> R) -> R {
-        let _ctx = Restore::set(&self.ctx, Some(ctx));
-        let _observer = Restore::set(&self.observer, observer);
-        let _scope = scope.map(|scope| Restore::set(&self.scope, scope));
-        let _sampling = Restore::set(&self.sampling, ctx == Ctx::Init);
-        f()
-    }
-
-    fn sample<R>(&self, f: impl FnOnce() -> R) -> R {
-        let _observer = Restore::set(&self.observer, None);
-        let _sampling = Restore::set(&self.sampling, true);
-        f()
-    }
-
-    pub(crate) fn with_scope<R>(&self, scope: Option<ScopeId>, f: impl FnOnce() -> R) -> R {
-        let _scope = Restore::set(&self.scope, scope);
-        f()
-    }
-
-    pub(crate) fn effect_allowed(&self, at: &'static Location<'static>) -> bool {
-        if self.scope.get().is_some_and(|scope| !self.scope_alive(scope)) {
-            self.diag(&codes::WRITE_DISPOSED, "cannot register context or work in a retired scope".into(), at);
-            return false;
-        }
-        let code = match self.ctx() {
-            Ctx::Derive | Ctx::Observe | Ctx::View => &codes::WRITE_IN_DERIVE,
-            Ctx::Init => &codes::WRITE_IN_BUILD,
-            Ctx::Cleanup => &codes::WRITE_DISPOSED,
-            _ => return true,
-        };
-        self.diag(code, "context or effect registration is not allowed in this execution phase; rejected".into(), at);
-        false
-    }
-
-    pub(crate) fn write_allowed(&self, at: &'static Location<'static>) -> bool {
-        let code = match self.ctx() {
-            Ctx::Build | Ctx::Init => &codes::WRITE_IN_BUILD,
-            Ctx::Derive | Ctx::Observe | Ctx::View => &codes::WRITE_IN_DERIVE,
-            _ => return true,
-        };
-        self.diag(code, "reactive mutation outside a handler or watch callback; rejected".into(), at);
-        false
-    }
-
     // ---- nodes ----
 
     fn alive(&self, idx: Idx) -> bool {
@@ -603,7 +530,7 @@ impl Runtime {
             self.diag(&codes::WRITE_DISPOSED, "write to retiring state; rejected".into(), at);
             return None;
         }
-        if !internal && !self.write_allowed(at) {
+        if !internal && !self.allows(Operation::Write, at) {
             return None;
         }
         self.nodes.borrow()[idx.i as usize].value.clone()
@@ -714,62 +641,61 @@ impl Runtime {
         let ctx = if kind == Kind::Memo { Ctx::Derive } else { Ctx::Observe };
         // Publication and retirement must not inherit a caller's dependency collector.
         // Keep the node's execution permissions even when user Drop code runs on unwind.
-        self.with_owner(owner, || {
-            self.with_frame(ctx, None, Some(scope), || {
-                self.sample(move || {
-                    {
-                        let mut nodes = self.nodes.borrow_mut();
-                        for s in sources {
-                            if let Some(n) = nodes.get_mut(s.i as usize).filter(|n| n.alive && n.g == s.g) {
-                                n.observers.retain(|o| *o != idx);
-                            }
+        let owner = ExecutionOwner { scope, window: owner };
+        self.with_execution(owner, ctx, None, || {
+            self.sample(move || {
+                {
+                    let mut nodes = self.nodes.borrow_mut();
+                    for s in sources {
+                        if let Some(n) = nodes.get_mut(s.i as usize).filter(|n| n.alive && n.g == s.g) {
+                            n.observers.retain(|o| *o != idx);
                         }
                     }
-                    struct Run<'a>(&'a Runtime, Idx, bool);
-                    impl Drop for Run<'_> {
-                        fn drop(&mut self) {
-                            if !self.2 {
-                                self.0.dispose_node(self.1);
-                            }
+                }
+                struct Run<'a>(&'a Runtime, Idx, bool);
+                impl Drop for Run<'_> {
+                    fn drop(&mut self) {
+                        if !self.2 {
+                            self.0.dispose_node(self.1);
                         }
                     }
-                    let mut run = Run(self, idx, false);
-                    if scope.is_some_and(|scope| !self.scope_alive(scope)) {
+                }
+                let mut run = Run(self, idx, false);
+                if !self.admits(owner) {
+                    return;
+                }
+                self.closures_run.set(self.closures_run.get() + 1);
+                let epoch = self.epochs.get() + 1;
+                self.epochs.set(epoch);
+                let _epoch = Restore::set(&self.epoch, epoch);
+                let changed = self.with_frame(ctx, Some(idx), None, || compute(old.as_ref()));
+                self.assert_healthy();
+                run.2 = true;
+                let (observers, replaced) = {
+                    let mut nodes = self.nodes.borrow_mut();
+                    let n = &mut nodes[idx.i as usize];
+                    if !(n.alive && n.g == idx.g) {
+                        drop(nodes);
+                        drop(compute);
                         return;
                     }
-                    self.closures_run.set(self.closures_run.get() + 1);
-                    let epoch = self.epochs.get() + 1;
-                    self.epochs.set(epoch);
-                    let _epoch = Restore::set(&self.epoch, epoch);
-                    let changed = self.with_frame(ctx, Some(idx), None, || compute(old.as_ref()));
-                    self.assert_healthy();
-                    run.2 = true;
-                    let (observers, replaced) = {
-                        let mut nodes = self.nodes.borrow_mut();
-                        let n = &mut nodes[idx.i as usize];
-                        if !(n.alive && n.g == idx.g) {
-                            drop(nodes);
-                            drop(compute);
-                            return;
+                    n.computing = false;
+                    n.compute = Some(compute);
+                    match changed {
+                        Some(v) => {
+                            let replaced = n.value.replace(v);
+                            (n.observers.clone(), replaced)
                         }
-                        n.computing = false;
-                        n.compute = Some(compute);
-                        match changed {
-                            Some(v) => {
-                                let replaced = n.value.replace(v);
-                                (n.observers.clone(), replaced)
-                            }
-                            None => (Vec::new(), None),
-                        }
-                    };
-                    drop(replaced);
-                    let mut nodes = self.nodes.borrow_mut();
-                    for o in observers {
-                        if let Some(n) = nodes.get_mut(o.i as usize).filter(|n| n.alive && n.g == o.g) {
-                            n.state = State::Dirty;
-                        }
+                        None => (Vec::new(), None),
                     }
-                })
+                };
+                drop(replaced);
+                let mut nodes = self.nodes.borrow_mut();
+                for o in observers {
+                    if let Some(n) = nodes.get_mut(o.i as usize).filter(|n| n.alive && n.g == o.g) {
+                        n.state = State::Dirty;
+                    }
+                }
             })
         });
     }

@@ -126,8 +126,10 @@ where
                 // User polling can change the key/refresh input or retire this task.
                 // Cancellation cannot interrupt an active poll, so validate at publication.
                 let scheduler = sched();
-                if !scheduler.current.get().is_some_and(|id| scheduler.alive(id))
+                if !scheduler.current_is_live()
                     || untrack(|| request.with(|current| current != &requested))
+                    // Comparing a user key can itself revoke the active task.
+                    || !scheduler.current_is_live()
                 {
                     return;
                 }

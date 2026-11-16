@@ -21,7 +21,11 @@ channels, optionally named; a subscription is a scope-owned handle.
 ## Tasks
 
 - `spawn(async { .. }) -> Task`: runs on the UI thread and belongs to the current scope; cancelled when the scope is destroyed (the future and
-  everything it holds are dropped). `Task::cancel` cancels immediately. Dropping the `Task` handle does
+  everything it holds are dropped). `Task::cancel` revokes future execution immediately; if a poll
+  is already running, its Future is dropped when that poll returns or unwinds. Explicit cancellation
+  is refused from pure computations and initializers, including through untrack or another App.
+  Build, handlers, cleanup and calls outside App::run can cancel; failed/closed owners still permit
+  release. Internal owner teardown does not depend on the public cancellation gate. Dropping the `Task` handle does
   nothing (the scope owns it).
 - `App::current().run(|| spawn(..))` chooses App work without a current window. It does not keep captured UI state alive;
   window APIs such as prompt/focus require a still-scoped task. App timers continue to run when
@@ -35,6 +39,12 @@ channels, optionally named; a subscription is a scope-owned handle.
 - At the end of each frame (`settle`), woken tasks are polled until none is ready (with a limit); what they change is laid out together with the rest.
 
 ## The single loop
+
+Framework subscriptions recheck App health, scope liveness and full task identity before
+each callback, including ready messages or overdue ticks within one poll. Cancellation
+allows the active callback to return but prevents the next one. This does not preempt
+arbitrary Rust futures. AsyncMemo rechecks eligibility after comparing request keys as
+well as after awaiting the result; comparison itself can revoke the current task.
 
 - Other threads cannot touch signals. They can only wake tasks: the result of `background(..)`, `Sender::send`. A wake puts the task id into the ready
   queue and calls the app's wake function (the shell sends `Wake` through the event loop proxy, then `App::poll`).

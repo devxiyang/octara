@@ -47,20 +47,19 @@ pub(crate) enum Handler {
 #[derive(Clone)]
 pub(crate) struct ScopedHandler {
     pub(crate) handler: Handler,
-    pub(crate) scope: Option<ScopeId>,
-    pub(crate) owner: Option<graph::Owner>,
+    execution: graph::ExecutionOwner,
 }
 
 impl ScopedHandler {
     pub(crate) fn capture(handler: Handler) -> Self {
-        rt(|rt| Self { handler, scope: rt.current_scope(), owner: rt.owner() })
+        rt(|rt| Self { handler, execution: rt.capture_owner() })
     }
 
     pub(crate) fn run<R>(self, rt: &graph::Runtime, f: impl FnOnce(Handler) -> R) -> Option<R> {
-        if self.scope.is_some_and(|scope| !rt.scope_alive(scope)) {
+        if !rt.admits(self.execution) {
             return None;
         }
-        Some(rt.with_owner(self.owner, || rt.with_frame(Ctx::Handler, None, Some(self.scope), || f(self.handler))))
+        Some(rt.with_execution(self.execution, Ctx::Handler, None, || f(self.handler)))
     }
 }
 
@@ -92,7 +91,9 @@ impl crate::app::WindowState {
     pub(crate) fn after_layout(&self, f: Rc<dyn Fn() -> bool>) -> u64 {
         let id = self.next.get() + 1;
         self.next.set(id);
-        self.after_layout.borrow_mut().push((id, f));
+        let owner = rt(|rt| rt.capture_owner());
+        let hook = Rc::new(move || rt(|rt| rt.admits(owner) && rt.with_execution(owner, Ctx::Handler, None, || f())));
+        self.after_layout.borrow_mut().push((id, hook));
         id
     }
     pub(crate) fn remove_after_layout(&self, id: u64) {
@@ -100,10 +101,16 @@ impl crate::app::WindowState {
     }
     /// Runs the after-layout hooks and refreshes scroll signals; true if anything changed.
     pub(crate) fn sync_after_layout(&self) -> bool {
-        let hooks: Vec<_> = self.after_layout.borrow().iter().map(|(_, f)| f.clone()).collect();
+        let hooks = self.after_layout.borrow().clone();
         let mut changed = false;
-        for f in hooks {
-            changed |= f();
+        for (id, f) in hooks {
+            if crate::app::App::current().window(self.id).is_none_or(|window| window.is_closed()) {
+                return changed;
+            }
+            // An earlier hook can unregister a later hook in this detached batch.
+            if self.after_layout.borrow().iter().any(|(live, _)| *live == id) {
+                changed |= f();
+            }
         }
         let k = self.kernel.borrow();
         for (id, sig) in self.sizes.borrow().iter() {
@@ -651,7 +658,7 @@ pub fn clock(period: std::time::Duration) -> ReadSignal<std::time::Duration> {
                 e.readers -= 1;
                 if e.readers == 0 {
                     let e = clocks.remove(&step).expect("the clock");
-                    e.task.cancel();
+                    e.task.cancel_owned();
                     e.signal.dispose();
                 }
             }
@@ -730,7 +737,7 @@ pub fn settle_motion() {
 #[track_caller]
 pub fn on_command(command: &str, f: impl Fn() + 'static) {
     let at = Location::caller();
-    if !rt(|rt| rt.effect_allowed(at)) {
+    if !rt(|rt| rt.allows(crate::reactive::graph::Operation::Register, at)) {
         return;
     }
     let u = crate::app::window();

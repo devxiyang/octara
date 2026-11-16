@@ -121,7 +121,7 @@ struct Chain<F: ?Sized> {
 
 impl<F: ?Sized> Chain<F> {
     fn alive(&self) -> bool {
-        rt(|rt| self.scope.is_none_or(|scope| rt.scope_alive(scope)))
+        rt(|rt| rt.admits(crate::reactive::graph::ExecutionOwner { scope: self.scope, window: rt.owner() }))
     }
 
     // A single retirement/consumption rule for every callback signature. No runtime borrow

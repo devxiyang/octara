@@ -128,6 +128,7 @@ impl<T: Send + 'static> Receiver<T> {
     }
 
     /// Calls `f` with each value as it arrives, while the current scope lives.
+    /// Cancellation or owner retirement prevents the next callback, including queued values.
     /// After 64 values it yields a poll to other ready tasks. This is task cooperation;
     /// the scheduler may continue polling in the same frame, without yielding to the OS.
     #[track_caller]
@@ -139,6 +140,9 @@ impl<T: Send + 'static> Receiver<T> {
         let fut = async move {
             let mut batch = 0;
             while let Some(v) = self.recv().await {
+                if !sched().current_is_live() {
+                    return;
+                }
                 f(v);
                 batch += 1;
                 if batch == 64 {
@@ -173,7 +177,7 @@ impl<T: Send + std::str::FromStr + 'static> Receiver<T> {
             return self;
         }
         // Naming is App-scoped, but its interest token remains Send with the receiver.
-        if !rt(|r| r.effect_allowed(Location::caller())) {
+        if !rt(|r| r.allows(crate::reactive::graph::Operation::Register, Location::caller())) {
             return self;
         }
         self.name.take();

@@ -434,6 +434,26 @@ impl Scheduler {
         self.slots.borrow().get(id.slot()).and_then(|e| e.as_ref()).is_some_and(|e| e.id == id && !matches!(e.state, TaskState::Cancelled))
     }
 
+    /// Recheck task identity, owner and App health at each actual execution boundary.
+    fn admits(&self, id: TaskId) -> bool {
+        let owner = {
+            let slots = self.slots.borrow();
+            slots
+                .get(id.slot())
+                .and_then(Option::as_ref)
+                .filter(|entry| entry.id == id && !matches!(entry.state, TaskState::Cancelled))
+                .map(|entry| crate::reactive::graph::ExecutionOwner { scope: Some(entry.scope), window: entry.owner })
+        };
+        rt(|runtime| {
+            runtime.assert_healthy();
+            !self.shared.closed.load(Ordering::Acquire) && owner.is_some_and(|owner| runtime.admits(owner))
+        })
+    }
+
+    fn current_is_live(&self) -> bool {
+        self.current.get().is_some_and(|id| self.admits(id))
+    }
+
     /// Drops the task's future (and what it holds); a task being polled is dropped after.
     fn cancel(&self, id: TaskId) {
         let mut slots = self.slots.borrow_mut();
@@ -529,6 +549,10 @@ impl Scheduler {
     }
 
     fn poll(&self, id: TaskId) -> bool {
+        if !self.admits(id) {
+            self.cancel(id);
+            return false;
+        }
         let (future, scope, owner) = {
             let mut slots = self.slots.borrow_mut();
             let Some(Some(e)) = slots.get_mut(id.slot()) else { return false };
@@ -543,10 +567,9 @@ impl Scheduler {
         let mut cx = Context::from_waker(&waker);
         let mut polling = PollingTask { scheduler: self, id, future: Some(future), previous: self.current.replace(Some(id)) };
         let done = rt(|r| {
-            r.with_owner(owner, || {
-                r.with_frame(Ctx::Handler, None, Some(Some(scope)), || {
-                    polling.future.as_mut().expect("polling future").as_mut().poll(&mut cx).is_ready()
-                })
+            let owner = crate::reactive::graph::ExecutionOwner { scope: Some(scope), window: owner };
+            r.with_execution(owner, Ctx::Handler, None, || {
+                polling.future.as_mut().expect("polling future").as_mut().poll(&mut cx).is_ready()
             })
         });
         let mut slots = self.slots.borrow_mut();
@@ -664,12 +687,24 @@ pub struct Task {
 }
 
 impl Task {
-    /// Stops the task: its future is dropped (and with it what it holds) at once.
+    /// Revokes the task immediately. A suspended future is dropped now; an active poll
+    /// retains its future until it returns or unwinds. Pure computations cannot cancel tasks.
+    /// This handle can be used outside App::run, including after its owner has closed.
+    #[track_caller]
     pub fn cancel(&self) {
+        if !crate::reactive::graph::Runtime::release_allowed(Location::caller()) {
+            return;
+        }
+        self.cancel_owned();
+    }
+
+    /// Owner teardown is resource release, not a new caller-authorized operation.
+    pub(crate) fn cancel_owned(&self) {
         if let Some(id) = self.id {
             self.sched.cancel(id);
         }
     }
+
     pub fn is_finished(&self) -> bool {
         self.id.is_none_or(|id| !self.sched.alive(id))
     }
@@ -682,7 +717,7 @@ pub(crate) fn spawn_with(
     at: &'static Location<'static>,
 ) -> Task {
     let s = sched();
-    if !rt(|rt| rt.effect_allowed(at)) || !s.accepts_work(at) {
+    if !rt(|rt| rt.allows(crate::reactive::graph::Operation::Register, at)) || !s.accepts_work(at) {
         return Task { id: None, sched: s };
     }
     let Some(scope) = rt(|r| r.current_scope()) else {

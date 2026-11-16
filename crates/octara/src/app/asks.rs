@@ -59,7 +59,7 @@ impl Window {
     pub(crate) fn ask(&self, ask: Ask) -> impl Future<Output = Answer> + use<> {
         let (reply, answer) = crate::task::later::<Answer>();
         let at = std::panic::Location::caller();
-        let request = if rt(|rt| rt.effect_allowed(at)) {
+        let request = if rt(|rt| rt.allows(crate::reactive::graph::Operation::Register, at)) {
             Some(self.open_ask(ask, reply))
         } else {
             reply(Answer::dismissed(&ask));

@@ -674,7 +674,7 @@ impl App {
             if self.app.teardown.get() != Teardown::Pending {
                 return;
             }
-            if !self.app.rt.write_allowed(at) || !self.app.rt.effect_allowed(at) {
+            if !self.app.rt.allows(crate::reactive::graph::Operation::Shutdown, at) {
                 return;
             }
             self.app.shutdown.set(true);
@@ -737,7 +737,8 @@ impl App {
                 self.app.rt.diag(&codes::WRITE_DISPOSED, "cannot enter a shut down App".into(), at);
                 panic!("[{}] App has shut down", codes::WRITE_DISPOSED);
             }
-            let r = self.app.rt.with_owner(None, || self.app.rt.with_scope(Some(self.app.root_scope), f));
+            let owner = crate::reactive::graph::ExecutionOwner { scope: Some(self.app.root_scope), window: None };
+            let r = self.app.rt.with_owned(owner, f);
             // A nested call belongs to its enclosing operation; in particular, a memo or
             // binding must finish computing before that operation flushes and lays out.
             if self.app.depth.get() == 1 {
@@ -918,7 +919,7 @@ impl AppState {
                 s.dispose();
             }
             for (_, c) in w.w.clocks.borrow_mut().drain() {
-                c.task.cancel();
+                c.task.cancel_owned();
                 c.signal.dispose();
             }
         });

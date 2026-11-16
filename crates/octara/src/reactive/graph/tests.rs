@@ -1138,3 +1138,42 @@ fn context_replacement_commits_before_reentrant_destructor_and_does_not_invalida
         assert!(runtime.diagnostics().is_empty());
     });
 }
+
+#[test]
+fn ownership_entry_preserves_phase_and_restores_scope_window_and_tracking_on_unwind() {
+    with_scope(|runtime| {
+        let child = runtime.create_scope(runtime.current_scope(), "captured");
+        let source = Signal::scoped(1);
+        let rt = runtime.clone();
+        let value = memo(move || {
+            let caller = rt.capture_owner();
+            let collector = rt.observer.get();
+            let captured = ExecutionOwner { scope: Some(child), window: None };
+            rt.with_owned(captured, || {
+                assert_eq!(rt.ctx(), Ctx::Derive);
+                assert_eq!(rt.observer.get(), collector);
+                assert_eq!(rt.owner(), None);
+                source.set(9); // Ownership switch must not grant mutation permission.
+            });
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                rt.with_execution(captured, Ctx::Cleanup, None, || {
+                    assert_eq!(rt.capture_owner(), captured);
+                    assert!(rt.observer.get().is_none());
+                    panic!("restore owner");
+                });
+            }));
+            assert!(result.is_err());
+            assert_eq!(rt.capture_owner(), caller);
+            assert_eq!(rt.ctx(), Ctx::Derive);
+            assert_eq!(rt.observer.get(), collector);
+            source.get()
+        });
+        runtime.with_owner(Some(Owner(77)), || {
+            assert_eq!(value.get(), 1);
+            assert_eq!(runtime.owner(), Some(Owner(77)));
+        });
+        source.set(2);
+        assert_eq!(value.get(), 2);
+        assert_eq!(runtime.owner(), None);
+    });
+}
