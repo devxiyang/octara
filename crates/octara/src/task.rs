@@ -134,11 +134,20 @@ pub(crate) struct Shared {
     closed: AtomicBool,
     ready: Mutex<Vec<TaskId>>,
     inflight: Mutex<usize>,
+    failures: Mutex<VecDeque<Box<dyn std::any::Any + Send>>>,
     idle: Condvar,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Shared {
+    /// External completion has no UI stack to unwind through. Preserve its failure for
+    /// the next App boundary; never retry a potentially failing host notification.
+    fn complete(&self, f: impl FnOnce()) {
+        if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            self.failures.lock().expect("background failures").push_back(panic);
+        }
+    }
+
     fn notify(&self) {
         if self.closed.load(Ordering::Acquire) {
             return;
@@ -249,6 +258,7 @@ impl Default for Scheduler {
                 closed: AtomicBool::new(false),
                 ready: Mutex::default(),
                 inflight: Mutex::new(0),
+                failures: Mutex::default(),
                 idle: Condvar::new(),
                 wake: Mutex::new(None),
             }),
@@ -304,6 +314,8 @@ impl Scheduler {
         let timers = std::mem::take(&mut *self.timers.borrow_mut());
         drop(timers);
         self.shared.ready.lock().expect("ready").clear();
+        let failures = std::mem::take(&mut *self.shared.failures.lock().expect("background failures"));
+        drop(failures);
         let names = std::mem::take(&mut *self.names.borrow_mut());
         drop(names);
     }
@@ -355,6 +367,13 @@ impl Scheduler {
         !self.deferred.borrow().is_empty() || !self.shared.ready.lock().expect("ready").is_empty()
     }
 
+    pub(crate) fn resume_background_failure(&self) {
+        let failure = self.shared.failures.lock().expect("background failures").pop_front();
+        if let Some(failure) = failure {
+            std::panic::resume_unwind(failure);
+        }
+    }
+
     pub(crate) fn begin_turn(&self) {
         self.polls_left.set(TASK_POLLS_PER_TURN);
     }
@@ -371,6 +390,7 @@ impl Scheduler {
 
     /// Polls ready batches in spawn order until empty or the turn allowance ends. Returns whether any ran.
     pub(crate) fn run_ready(&self) -> bool {
+        self.resume_background_failure();
         // User polling and future destructors can reenter the App. Only the outer drain may
         // consume wakes: an active future is temporarily absent from its slot.
         if self.running.replace(true) {
@@ -477,7 +497,9 @@ impl Scheduler {
     }
 
     pub(crate) fn idle(&self) -> bool {
-        !self.has_ready() && *self.shared.inflight.lock().expect("inflight") == 0
+        !self.has_ready()
+            && *self.shared.inflight.lock().expect("inflight") == 0
+            && self.shared.failures.lock().expect("background failures").is_empty()
     }
 
     pub(crate) fn pending(&self) -> Vec<PendingWork> {
@@ -498,6 +520,15 @@ impl Scheduler {
                 }
             })
             .collect();
+        if !self.shared.failures.lock().expect("background failures").is_empty() {
+            out.push(PendingWork {
+                kind: WorkKind::Update,
+                label: "background completion panicked".into(),
+                scope: "background".into(),
+                at: String::new(),
+                due: None,
+            });
+        }
         let inflight = *self.shared.inflight.lock().expect("inflight");
         if inflight > 0 {
             out.push(PendingWork {

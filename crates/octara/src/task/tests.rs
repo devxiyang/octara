@@ -842,3 +842,106 @@ fn replacing_host_notification_releases_captures_outside_the_lock() {
     assert!(dropped.load(Ordering::Acquire));
     scheduler.shutdown();
 }
+
+fn wait_for_completion_failure(scheduler: &Scheduler) {
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    while scheduler.shared.failures.lock().unwrap().is_empty() {
+        assert!(std::time::Instant::now() < until, "completion failure did not arrive");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn completion_wake_panics_fail_the_owner_without_exhausting_workers() {
+    struct PanicWake(u32);
+    impl Wake for PanicWake {
+        fn wake(self: Arc<Self>) {
+            std::panic::panic_any(self.0);
+        }
+    }
+    for attempt in 0u32..6 {
+        let app = App::new(HeadlessPlatform::default());
+        let (release, wait) = std::sync::mpsc::channel();
+        let (mut future, scheduler) = app.run(|| {
+            (
+                Box::pin(background(move || {
+                    wait.recv().unwrap();
+                    42
+                })),
+                sched(),
+            )
+        });
+        let waker = Waker::from(Arc::new(PanicWake(attempt)));
+        assert!(future.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+        release.send(()).unwrap();
+        wait_for_completion_failure(&scheduler);
+        assert!(scheduler.wait_background(Duration::ZERO));
+        assert!(!scheduler.idle());
+        assert!(app.pending().iter().any(|work| work.kind == WorkKind::Update));
+        let entered = Cell::new(false);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.run(|| entered.set(true)))).unwrap_err();
+        assert_eq!(panic.downcast_ref::<u32>(), Some(&attempt));
+        assert!(!entered.get());
+        assert!(app.is_failed());
+        drop(future);
+        app.shutdown();
+    }
+}
+
+#[test]
+fn cancelled_result_destructor_failure_retires_work_and_reaches_the_owner() {
+    struct BadDrop;
+    impl Drop for BadDrop {
+        fn drop(&mut self) {
+            panic!("unclaimed result destructor");
+        }
+    }
+    let app = App::new(HeadlessPlatform::default());
+    let (release, wait) = std::sync::mpsc::channel();
+    let (future, scheduler) = app.run(|| {
+        (
+            background(move || {
+                wait.recv().unwrap();
+                BadDrop
+            }),
+            sched(),
+        )
+    });
+    drop(future);
+    release.send(()).unwrap();
+    wait_for_completion_failure(&scheduler);
+    assert!(scheduler.wait_background(Duration::ZERO));
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.poll())).is_err());
+    assert!(app.is_failed());
+    app.shutdown();
+}
+
+#[test]
+fn native_reply_notification_failure_uses_the_same_app_boundary() {
+    struct PanicWake;
+    impl Wake for PanicWake {
+        fn wake(self: Arc<Self>) {
+            panic!("native notification");
+        }
+    }
+    let app = App::new(HeadlessPlatform::default());
+    let (reply, future) = app.run(later::<u32>);
+    let mut future = Box::pin(future);
+    assert!(future.as_mut().poll(&mut Context::from_waker(&Waker::from(Arc::new(PanicWake)))).is_pending());
+    reply(42); // External callback returns; the owning App receives the failure.
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.poll())).is_err());
+    assert!(app.is_failed());
+    drop(future);
+    app.shutdown();
+}
+
+#[test]
+fn shutdown_can_retire_an_unobserved_completion_failure() {
+    let app = App::new(HeadlessPlatform::default());
+    let scheduler = app.run(sched);
+    scheduler.shared.complete(|| panic!("completion before shutdown"));
+    app.shutdown();
+    assert!(app.is_shutdown());
+    assert!(app.pending().is_empty());
+    assert!(scheduler.shared.failures.lock().unwrap().is_empty());
+}

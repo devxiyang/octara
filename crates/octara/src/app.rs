@@ -298,7 +298,12 @@ pub(crate) fn current() -> Window {
 
 fn enter_app<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
     app.assert_usable();
-    enter_app_context(app, f)
+    enter_app_context(app, || {
+        if !app.shutdown.get() {
+            app.sched.resume_background_failure();
+        }
+        f()
+    })
 }
 
 fn enter_app_context<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {

@@ -32,12 +32,32 @@ impl<T, E> AsyncState<T, E> {
     pub fn is_pending(&self) -> bool {
         matches!(self, Self::Pending { .. })
     }
-    fn take_value(&mut self) -> Option<T> {
-        match std::mem::replace(self, Self::Pending { previous: None }) {
-            Self::Ready(value) => Some(value),
-            Self::Pending { previous } | Self::Failed { previous, .. } => previous,
-        }
-    }
+}
+
+/// Commit the new state while borrowed, then retire user values after invalidation.
+/// `None` begins a new attempt; `Some` publishes its outcome.
+fn transition<T: 'static, E: 'static>(state: Signal<AsyncState<T, E>>, outcome: Option<Result<T, E>>) {
+    let mut retired = (None, None);
+    state.update(|s| {
+        let old = std::mem::replace(s, AsyncState::Pending { previous: None });
+        let previous = match old {
+            AsyncState::Ready(value) => Some(value),
+            AsyncState::Pending { previous } => previous,
+            AsyncState::Failed { error, previous } => {
+                retired.1 = Some(error);
+                previous
+            }
+        };
+        *s = match outcome {
+            None => AsyncState::Pending { previous },
+            Some(Ok(value)) => {
+                retired.0 = previous;
+                AsyncState::Ready(value)
+            }
+            Some(Err(error)) => AsyncState::Failed { error, previous },
+        };
+    });
+    drop(retired);
 }
 
 /// A scope-owned asynchronous derivation (see [`async_memo`]). Reads never block or suspend UI.
@@ -98,7 +118,7 @@ where
             if let Some(t) = previous {
                 t.cancel();
             }
-            state.update(|s| *s = AsyncState::Pending { previous: s.take_value() });
+            transition(state, None);
             let requested = requested.clone();
             let load = fetch(requested.0.clone());
             let fut = async move {
@@ -111,13 +131,7 @@ where
                 {
                     return;
                 }
-                state.update(|s| {
-                    let previous = s.take_value();
-                    *s = match r {
-                        Ok(value) => AsyncState::Ready(value),
-                        Err(error) => AsyncState::Failed { error, previous },
-                    };
-                });
+                transition(state, Some(r));
             };
             // The load belongs to the async derivation's scope, not to whatever runs the watch.
             let task = rt(|r| r.with_frame(Ctx::Handler, None, Some(scope), || spawn_with(fut, WorkKind::Task, "async_memo".into(), at)));
@@ -125,4 +139,93 @@ where
         },
     );
     AsyncMemo { state, refreshes }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn replacement_releases_value_outside_state_borrow() {
+        struct Value(Rc<dyn Fn()>);
+        impl Drop for Value {
+            fn drop(&mut self) {
+                (self.0)();
+            }
+        }
+        let app = crate::app::App::new(crate::platform::HeadlessPlatform::default());
+        let handle = Rc::new(Cell::new(None::<AsyncMemo<Value, ()>>));
+        let conflicted = Rc::new(Cell::new(false));
+        let (h, c) = (handle.clone(), conflicted.clone());
+        let memo = app.run(|| {
+            async_memo(
+                || (),
+                move |_| {
+                    let (h, c) = (h.clone(), c.clone());
+                    async move {
+                        Ok::<_, ()>(Value(Rc::new(move || {
+                            if let Some(memo) = h.get() {
+                                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| memo.with(|_| ())));
+                                c.set(c.get() || result.is_err());
+                            }
+                        })))
+                    }
+                },
+            )
+        });
+        handle.set(Some(memo));
+        app.poll();
+        app.run(|| memo.refresh());
+        app.poll();
+        handle.set(None);
+        app.shutdown();
+        assert!(!conflicted.get(), "internal async publication dropped the previous value during its state borrow");
+    }
+    #[test]
+    fn refresh_retires_errors_and_success_retires_previous_values_after_commit() {
+        struct Probe(Rc<dyn Fn()>);
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                (self.0)();
+            }
+        }
+        let app = crate::app::App::new(crate::platform::HeadlessPlatform::default());
+        let handle = Rc::new(Cell::new(None::<AsyncMemo<Probe, Probe>>));
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let attempt = Rc::new(Cell::new(0));
+        let (h, observed) = (handle.clone(), seen.clone());
+        let memo = app.run(|| {
+            async_memo(
+                || (),
+                move |_| {
+                    let n = attempt.replace(attempt.get() + 1);
+                    let (h, observed) = (h.clone(), observed.clone());
+                    async move {
+                        let probe = Probe(Rc::new(move || {
+                            if let Some(memo) = h.get() {
+                                memo.with(|state| {
+                                    observed.borrow_mut().push(match state {
+                                        AsyncState::Pending { previous: Some(_) } => "pending with previous",
+                                        AsyncState::Ready(_) => "ready",
+                                        _ => "unexpected",
+                                    })
+                                });
+                            }
+                        }));
+                        if n == 1 { Err(probe) } else { Ok(probe) }
+                    }
+                },
+            )
+        });
+        handle.set(Some(memo));
+        app.poll();
+        app.run(|| memo.refresh());
+        app.poll();
+        app.run(|| memo.with(|s| assert!(matches!(s, AsyncState::Failed { previous: Some(_), .. }))));
+        assert!(seen.borrow().is_empty(), "a failure retains the successful value");
+        app.run(|| memo.refresh());
+        app.poll();
+        assert_eq!(&*seen.borrow(), &["pending with previous", "ready"]);
+        handle.set(None);
+        app.shutdown();
+    }
 }

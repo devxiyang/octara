@@ -20,19 +20,30 @@ impl<T> Oneshot<T> {
     }
 
     /// Commit under the lock; notify or destroy user objects only after unlocking.
-    fn deliver(receiver: &Weak<Self>, value: T) -> Option<T> {
-        let Some(slot) = receiver.upgrade() else { return Some(value) };
+    fn commit(receiver: &Weak<Self>, value: T) -> Result<Option<Waker>, T> {
+        let Some(slot) = receiver.upgrade() else { return Err(value) };
         let previous = {
             let mut state = slot.state.lock().expect("oneshot");
             if !matches!(*state, Delivery::Waiting(_)) {
-                return Some(value);
+                return Err(value);
             }
             std::mem::replace(&mut *state, Delivery::Ready(value))
         };
-        if let Delivery::Waiting(Some(waker)) = previous {
-            waker.wake();
+        let Delivery::Waiting(waker) = previous else { unreachable!() };
+        Ok(waker)
+    }
+
+    #[cfg(test)]
+    fn deliver(receiver: &Weak<Self>, value: T) -> Option<T> {
+        match Self::commit(receiver, value) {
+            Ok(waker) => {
+                if let Some(waker) = waker {
+                    waker.wake();
+                }
+                None
+            }
+            Err(value) => Some(value),
         }
-        None
     }
 
     fn close(&self) {
@@ -114,6 +125,10 @@ fn pool() -> &'static Mutex<std::sync::mpsc::Sender<Job>> {
 /// A work panic is transported to the awaiting task and resumes there; it does not kill a
 /// pool worker or become a business error. Dropping the future discards its eventual outcome
 /// but cannot stop already-running blocking work.
+/// A panic in completion notification or unclaimed-result destruction is resumed at the
+/// next App execution boundary, even if the receiver was cancelled. It does not kill a
+/// shared worker. A failing host wake is not retried; the host must enter the App again
+/// to observe that failure (it is also visible as pending work).
 #[track_caller]
 pub fn background<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Background<T> {
     let scheduler = sched();
@@ -125,17 +140,29 @@ pub fn background<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) 
     *shared.inflight.lock().expect("inflight") += 1;
     let done = Arc::downgrade(&slot);
     let job: Job = Box::new(move || {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
-        let unclaimed = Oneshot::deliver(&done, result);
-        let mut n = shared.inflight.lock().expect("inflight");
-        *n -= 1;
-        if *n == 0 {
-            shared.idle.notify_all();
-        }
-        drop(n);
-        shared.notify();
-        // User values can have destructors; completion accounting must already be retired.
-        drop(unclaimed);
+        // Accounting is owned even if committing the result unwinds. Retire it before
+        // notifying or dropping an unclaimed result; both can execute user code.
+        shared.complete(|| {
+            let completion = std::mem::DropGuard::new(&shared, |shared| {
+                let mut n = shared.inflight.lock().expect("inflight");
+                *n -= 1;
+                if *n == 0 {
+                    shared.idle.notify_all();
+                }
+            });
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+            let delivery = Oneshot::commit(&done, result);
+            drop(completion);
+            match delivery {
+                Ok(waker) => {
+                    if let Some(waker) = waker {
+                        waker.wake();
+                    }
+                }
+                Err(unclaimed) => drop(unclaimed),
+            }
+            shared.notify();
+        });
     });
     pool().lock().expect("pool").send(job).expect("background pool");
     Background { slot }
@@ -148,12 +175,16 @@ pub(crate) fn later<T: Send + 'static>() -> (crate::platform::Reply<T>, impl Fut
     let shared = Arc::downgrade(&sched().shared);
     let done = Arc::downgrade(&slot);
     let reply: crate::platform::Reply<T> = Box::new(move |v| {
-        let unclaimed = Oneshot::deliver(&done, Ok(v));
-        if unclaimed.is_none()
-            && let Some(shared) = shared.upgrade()
-        {
-            shared.notify();
-        }
+        let Some(shared) = shared.upgrade() else { return };
+        shared.complete(|| match Oneshot::commit(&done, Ok(v)) {
+            Ok(waker) => {
+                if let Some(waker) = waker {
+                    waker.wake();
+                }
+                shared.notify();
+            }
+            Err(unclaimed) => drop(unclaimed),
+        });
     });
     (reply, Background { slot })
 }

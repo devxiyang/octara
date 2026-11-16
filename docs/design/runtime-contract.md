@@ -579,3 +579,32 @@ concurrent completion/registration, reentrant result and callback destruction, a
 host publication. Existing tests cover active-poll shutdown, stale AsyncMemo publication,
 unwinding cleanup resumption and unfinished layout refusal. Native OS acceptance is separate
 from these deterministic core/host-adapter tests.
+
+### Completion commitment, accounting and effects
+
+One-shot `commit` only transfers a result into its delivery slot and extracts the
+notification; it does not call the Waker. Background work owns an unwind-safe
+completion guard. It retires the physical in-flight count after commitment and before
+running the notification or destroying a rejected result. Native replies use the same
+commit/effect boundary without pretending to own a background worker count.
+
+An ordinary work panic remains a result payload resumed by its awaiting task. A panic
+in external completion (Waker, host wake, or unclaimed result destruction) is different:
+there may be no receiver left. Background and native reply completion catch that panic,
+retain its original payload in the owning scheduler, and expose pending Update work.
+The next normal App entry, before its user closure, or task-drain boundary resumes it
+through the existing App failure guard. Shared pool workers survive these completion
+failures. Shutdown bypasses normal execution admission and can retire an unobserved
+failure; inspecting pending work does not consume it.
+
+A failed notification is not retried, since the notification itself may be the failing
+host adapter. The host needs another explicit App entry to observe the panic. There is
+no automatic restart, rollback of an already committed result, or claim that a successful
+result makes the surrounding App healthy. In-flight zero means physical work has retired,
+not that all external notification side effects have finished.
+
+AsyncMemo refresh, failure and success share one internal transition. It moves previous
+values and errors into either the new state or a local retirement tuple. Signal mutation
+and invalidation complete before that tuple drops, so destructors can read the committed
+state. Public Signal::with/update keep their explicit reference-borrowing contracts;
+no new public transition or result primitive is introduced.
