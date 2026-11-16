@@ -67,6 +67,19 @@ Derive/Observe permissions: reading is allowed, but untracking does not permit w
 watch callback enters Handler. Node publication and retirement also suppress the caller's collector
 so nested evaluation cannot attach destructor reads to the outer observer.
 
+Context is scope-owned registration, not another reactive store. `provide` may register or
+replace the current scope's value during construction, App::run, handlers and tasks. A replacement
+is visible to subsequent `use_context` calls; it does not update previously obtained copies or
+invalidate memos. Nearest-scope lookup still wins, and replacing a child provider never replaces
+its parent's entry. Provide a Signal/ReadSignal and update that Signal for reactive changes.
+
+Provider registration uses the existing effect admission policy: pure computations (including
+untrack), initializers and cleanup cannot register or replace context. A missing, foreign or
+retired scope is rejected before touching the context table; a failed App rejects registration
+through its existing failure gate. Cleanup can still look up existing context to release resources.
+Replaced or rejected values are dropped outside the scope-table borrow; a reentrant replacement
+destructor observes the newly installed entry. If it panics, the replacement is not rolled back.
+
 - Push marking (direct observers Dirty, further downstream Check) + pull evaluation; a Memo is computed on demand and cuts off when the value is unchanged (Reactively; Salsa's early cutoff);
 - At flush, structural bindings come before property bindings, then `watch`, with creation order within each kind. Newly queued earlier-priority work preempts the remaining batch, so an effect that removes a region retires its descendants before their queued callbacks;
 - A node is marked Clean **before running**: if it is re-marked while running (a `watch` callback writes to its own source), it runs another round;

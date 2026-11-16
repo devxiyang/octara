@@ -3,7 +3,7 @@
 
 use octara::prelude::*;
 use octara::task::{WorkKind, now};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -737,4 +737,43 @@ fn async_memo_borrows_non_clone_results_and_clears_errors_when_refreshed() {
     assert_eq!(calls.get(), 3);
     assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
     app.shutdown();
+}
+
+#[test]
+fn handlers_and_tasks_replace_only_their_registered_scope_context() {
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let out = seen.clone();
+    let mut window = Window::headless(move || {
+        provide(1u32);
+        let root = out.clone();
+        let out = out.clone();
+        col()
+            .child(el().id("root-context").size(10.0).on_press(move || root.borrow_mut().push(use_context::<u32>().unwrap())))
+            .child(show(
+                || true,
+                move || {
+                    provide(2u32);
+                    let captured = use_context::<u32>().unwrap();
+                    let out = out.clone();
+                    el().id("replace-context")
+                        .size(10.0)
+                        .on_press(move || {
+                            provide(3u32);
+                            out.borrow_mut().extend([captured, use_context::<u32>().unwrap()]);
+                            let out = out.clone();
+                            spawn(async move {
+                                provide(4u32);
+                                out.borrow_mut().push(use_context::<u32>().unwrap());
+                            });
+                        })
+                        .into()
+                },
+            ))
+            .into()
+    });
+    window.tap("replace-context").unwrap();
+    window.app().poll();
+    window.tap("root-context").unwrap();
+    assert_eq!(*seen.borrow(), [2, 3, 4, 1]);
+    assert!(window.app().diagnostics().is_empty(), "{:?}", window.app().diagnostics());
 }

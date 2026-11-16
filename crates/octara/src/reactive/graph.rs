@@ -394,7 +394,7 @@ impl Runtime {
 
     pub(crate) fn effect_allowed(&self, at: &'static Location<'static>) -> bool {
         if self.scope.get().is_some_and(|scope| !self.scope_alive(scope)) {
-            self.diag(&codes::WRITE_DISPOSED, "cannot register work in a retired scope".into(), at);
+            self.diag(&codes::WRITE_DISPOSED, "cannot register context or work in a retired scope".into(), at);
             return false;
         }
         let code = match self.ctx() {
@@ -403,7 +403,7 @@ impl Runtime {
             Ctx::Cleanup => &codes::WRITE_DISPOSED,
             _ => return true,
         };
-        self.diag(code, "effect registration inside a pure computation or initializer; rejected".into(), at);
+        self.diag(code, "context or effect registration is not allowed in this execution phase; rejected".into(), at);
         false
     }
 

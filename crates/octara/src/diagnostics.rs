@@ -141,17 +141,17 @@ codes! {
         "A value was read while building a view, outside any binding; that UI will not update.",
         cause: "A component body runs once: `count.get()` there reads the value once and bakes it in. Only bindings re-run; pass a Signal or closure to a property, or use `untrack(|| count.get())` for an intentional snapshot.";
     WRITE_IN_BUILD: Error, Reactive, "docs/design/reactive-core.md#2-layers",
-        "A signal or collection was written while building a view; the write was rejected.",
-        cause: "Building a view only reads state; a write there would rebuild what is being built. State starts from `state(key, || initial)` and is written by handlers and `watch` callbacks.";
+        "A state write during construction or a registration inside an initializer was rejected.",
+        cause: "Building a view only reads existing state; handlers and watch callbacks may write it. Construction may register context, but state initializers cannot change context or register effects. State starts from `state(key, || initial)`.";
     WRITE_IN_DERIVE: Error, Reactive, "docs/design/reactive-core.md#2-layers",
-        "A signal or collection was written inside a memo, binding or `watch` source; the write was rejected.",
-        cause: "Derivations and observers only read; a write there would make the value depend on evaluation order. A value computed from others is a `memo`; writes belong to handlers and `watch` callbacks.";
+        "A mutation or registration inside a pure computation was rejected.",
+        cause: "Derivations and observers only read; state writes, context replacement and effect registration would make results depend on evaluation order. A value computed from others is a memo; provide a Signal for changing context contents. Untrack does not grant mutation permission.";
     READ_DISPOSED: Error, Reactive, "docs/design/reactive-core.md#4-identity-and-state",
         "A value whose owner was disposed was read (this panics).",
         cause: "State lives as long as its scope: a hidden `show` branch or a deleted list row disposes it. A closure kept the handle past that; a row's item can be looked up by key when needed (`items.item(&key)`).";
     WRITE_DISPOSED: Error, Reactive, "docs/design/reactive-core.md#4-identity-and-state",
-        "A value whose owner was disposed was written; the write was dropped.",
-        cause: "A handler, task or timer kept a handle to state of a scope that is gone (a closed dialog, a deleted row). Tasks spawned in a component are cancelled with its scope.";
+        "A write or registration without a live owner, or registration during cleanup, was rejected.",
+        cause: "A handler, task or timer may have kept a handle after its scope retired. Context requires a live App or component scope; cleanup may read existing context but cannot register replacements or new work. Tasks spawned in a component are cancelled with its scope.";
     CYCLE: Error, Reactive, "docs/design/reactive-core.md#3-graph-and-scheduling",
         "A memo read itself while computing.",
         cause: "The memo's closure reads, directly or through other memos, its own value.";

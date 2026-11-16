@@ -256,9 +256,15 @@ pub fn state<T: 'static>(key: &'static str, init: impl FnOnce() -> T) -> Signal<
 }
 
 /// Makes `value` available to every descendant of the current component (the nearest wins).
-/// Provide a `Signal` to share a value that changes.
+/// Construction, handlers and tasks may register or replace a value in their current scope.
+/// Replacement affects subsequent lookups; it does not invalidate memos or update values
+/// already obtained by consumers. Provide a `Signal` to share reactive changes.
+/// Pure computations, initializers and cleanup cannot register context. A failed App rejects
+/// registration by panicking; missing or retired scopes are reported and left unchanged.
+#[track_caller]
 pub fn provide<T: Clone + 'static>(value: T) {
-    rt(|rt| rt.provide(TypeId::of::<T>(), Rc::new(value)));
+    let at = Location::caller();
+    rt(|rt| rt.provide(TypeId::of::<T>(), Rc::new(value), at));
 }
 
 /// The nearest value of type `T` provided by an enclosing component.

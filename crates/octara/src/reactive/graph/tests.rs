@@ -83,7 +83,7 @@ fn interrupted_scope_teardown_preserves_order_and_never_replays_started_work() {
                 out.borrow_mut().push("failure");
                 panic!("child cleanup failed");
             }));
-            rt.provide(TypeId::of::<ContextDrop>(), Rc::new(ContextDrop(calls.clone())));
+            rt.provide(TypeId::of::<ContextDrop>(), Rc::new(ContextDrop(calls.clone())), Location::caller());
         });
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.dispose_scope(parent))).is_err());
         assert_eq!(*calls.borrow(), ["failure"]);
@@ -1015,4 +1015,126 @@ fn interrupted_comparison_and_callback_retire_results_untracked() {
             enabled.set(false);
         });
     }
+}
+
+#[test]
+fn context_registration_respects_phase_even_when_untracked() {
+    with_scope(|runtime| {
+        provide(1u32);
+        for ctx in [Ctx::Derive, Ctx::Observe, Ctx::View, Ctx::Init, Ctx::Cleanup] {
+            runtime.with_frame(ctx, None, None, || untrack(|| provide(2u32)));
+            assert_eq!(use_context::<u32>(), Some(1));
+        }
+        for ctx in [Ctx::Build, Ctx::Handler, Ctx::Idle] {
+            runtime.with_frame(ctx, None, None, || provide(3u32));
+            assert_eq!(use_context::<u32>(), Some(3));
+        }
+        let codes: Vec<_> = runtime.diagnostics().iter().map(|d| d.code.id).collect();
+        assert!(codes.contains(&"WRITE_IN_DERIVE"));
+        assert!(codes.contains(&"WRITE_IN_BUILD"));
+        assert!(codes.contains(&"WRITE_DISPOSED"));
+    });
+}
+
+#[test]
+fn context_mutation_is_rejected_in_memo_watch_source_and_initializer() {
+    with_scope(|runtime| {
+        provide(1u32);
+        let value = memo(|| {
+            provide(2u32);
+            use_context::<u32>().unwrap()
+        });
+        assert_eq!(value.get(), 1);
+        let handle = watch(
+            || {
+                provide(3u32);
+                0
+            },
+            |_, _| {},
+        );
+        let initialized = state("context-init", || {
+            provide(4u32);
+            0
+        });
+        assert_eq!(initialized.get(), 0);
+        assert_eq!(use_context::<u32>(), Some(1));
+        assert_eq!(runtime.diagnostics().len(), 3);
+        handle.stop();
+    });
+}
+
+#[test]
+fn context_registration_rejects_missing_retired_and_foreign_scopes() {
+    with_scope(|runtime| {
+        let parent = runtime.current_scope();
+        let old = runtime.create_scope(parent, "old");
+        runtime.with_scope(Some(old), || provide(1u32));
+        runtime.dispose_scope(old);
+        let new = runtime.create_scope(parent, "new");
+        assert_eq!(old.i, new.i);
+        runtime.with_scope(Some(new), || provide(2u32));
+        let foreign = Runtime::new().create_scope(None, "foreign");
+        for scope in [None, Some(old), Some(foreign)] {
+            runtime.with_scope(scope, || provide(3u32));
+        }
+        runtime.with_scope(Some(new), || assert_eq!(use_context::<u32>(), Some(2)));
+        assert!(runtime.diagnostics().iter().all(|d| d.code == "WRITE_DISPOSED"));
+    });
+}
+
+#[test]
+fn context_cleanup_cannot_replace_or_resurrect_registration() {
+    with_scope(|runtime| {
+        let child = runtime.create_scope(runtime.current_scope(), "child");
+        runtime.with_scope(Some(child), || {
+            provide(1u32);
+            runtime.on_cleanup(Box::new(|| {
+                provide(2u32);
+                assert_eq!(use_context::<u32>(), Some(1));
+            }));
+        });
+        runtime.dispose_scope(child);
+        assert!(runtime.scopes.borrow()[child.i as usize].contexts.is_empty());
+        assert!(runtime.diagnostics().iter().any(|d| d.code == "WRITE_DISPOSED"));
+    });
+}
+
+#[test]
+fn failed_runtime_rejects_context_before_replacement_but_allows_teardown() {
+    with_scope(|runtime| {
+        let scope = runtime.current_scope().unwrap();
+        provide(1u32);
+        runtime.fail("audit failure", Location::caller());
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| provide(2u32))).is_err());
+        runtime.with_frame(Ctx::Cleanup, None, None, || assert_eq!(use_context::<u32>(), Some(1)));
+        runtime.dispose_scope(scope);
+        assert!(runtime.scopes.borrow()[scope.i as usize].contexts.is_empty());
+    });
+}
+
+#[test]
+fn context_replacement_commits_before_reentrant_destructor_and_does_not_invalidate() {
+    struct OnDrop(Option<Box<dyn FnOnce()>>);
+    impl Drop for OnDrop {
+        fn drop(&mut self) {
+            if let Some(f) = self.0.take() {
+                f();
+            }
+        }
+    }
+    with_scope(|runtime| {
+        provide(1u32);
+        let snapshot = memo(|| use_context::<u32>().unwrap());
+        assert_eq!(snapshot.get(), 1);
+        handler(runtime, || provide(2u32));
+        assert_eq!(use_context::<u32>(), Some(2));
+        assert_eq!(snapshot.get(), 1);
+        provide(Rc::new(OnDrop(Some(Box::new(|| {
+            assert!(use_context::<Rc<OnDrop>>().unwrap().0.is_none());
+            provide(3u32);
+        })))));
+        handler(runtime, || provide(Rc::new(OnDrop(None))));
+        assert_eq!(use_context::<u32>(), Some(3));
+        assert!(runtime.diagnostics().is_empty());
+    });
 }

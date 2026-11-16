@@ -180,8 +180,15 @@ impl Runtime {
         self.queue.borrow_mut().clear();
     }
 
-    pub(super) fn provide(&self, ty: TypeId, value: Rc<dyn Any>) {
-        let s = self.scope.get().expect("provide outside a component");
+    pub(super) fn provide(&self, ty: TypeId, value: Rc<dyn Any>, at: &'static Location<'static>) {
+        self.assert_healthy();
+        if !self.effect_allowed(at) {
+            return;
+        }
+        let Some(s) = self.scope.get() else {
+            self.diag(&codes::WRITE_DISPOSED, "cannot provide context without an app or component scope".into(), at);
+            return;
+        };
         let replaced = {
             let mut scopes = self.scopes.borrow_mut();
             let ctx = &mut scopes[s.i as usize].contexts;
