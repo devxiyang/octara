@@ -200,6 +200,9 @@ pub(crate) fn writable(at: &'static Location<'static>) -> bool {
 /// A read-only handle to a reactive list, for rendering and further derivation.
 /// Cloning shares the same live list; it neither copies items nor creates a snapshot.
 /// Items are exposed as [`ReadSignal`] handles, without list or item write methods.
+/// Derive lists inside the creating App; `join` requires both lists to belong to that App.
+/// A foreign or disposed list is rejected before nodes or subscriptions are created and before
+/// any predicate, key or projection callback runs, including when a list is empty.
 pub struct ReadList<K: 'static, T: 'static>(Rc<dyn Stage<K, T>>);
 
 impl<K, T> Clone for ReadList<K, T> {
@@ -249,6 +252,15 @@ where
     K: Eq + Hash + Clone + 'static,
     T: Clone + 'static,
 {
+    /// Validate the existing version node without subscribing the surrounding computation.
+    #[track_caller]
+    fn validate(&self) {
+        let at = Location::caller();
+        rt(|rt| {
+            rt.read(self.0.emitter().version.idx, at, false);
+        });
+    }
+
     /// Subscribes the running observer to this stage's structure.
     pub(crate) fn track(&self) {
         self.0.emitter().version.get();
@@ -306,7 +318,9 @@ where
     }
 
     /// The items matching `pred`, in upstream order; maintained incrementally.
+    #[track_caller]
     pub fn filter(&self, pred: impl Fn(&T) -> bool + 'static) -> Derived<K, T> {
+        self.validate();
         let pred = view_fn(pred);
         let up = self.0.clone();
         let members = Seq::from_keys(up.snapshot().into_iter().filter(|k| up.item(k).is_some_and(|i| untrack(|| i.with(|t| pred(t))))));
@@ -316,7 +330,9 @@ where
     /// The items transformed by `f`, under the same keys and in the same order; maintained
     /// incrementally: an item's change calls `f` once, and reaches what follows only if the
     /// result differs. `f` is a pure function of the item (a read signal is reported).
+    #[track_caller]
     pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> Derived<K, U> {
+        self.validate();
         let f = view_fn(f);
         let up = self.0.clone();
         let out =
@@ -347,8 +363,11 @@ where
         U: Clone + PartialEq + 'static,
     {
         let at = Location::caller();
+        self.validate();
+        let right = right.into();
+        right.validate();
         let (key, f) = (view_fn(key), view_fn2(f));
-        let (left, right) = (self.0.clone(), right.into().0);
+        let (left, right) = (self.0.clone(), right.0);
         let j = Rc::new(JoinInner {
             left: left.clone(),
             right: right.clone(),
@@ -376,7 +395,9 @@ where
 
     /// The items ordered by `key` (ties keep the order in which they entered the view);
     /// maintained incrementally: a key change moves one item.
+    #[track_caller]
     pub fn sort_by<S: Ord + Clone + 'static>(&self, key: impl Fn(&T) -> S + 'static) -> Derived<K, T> {
+        self.validate();
         let key = view_fn(key);
         let up = self.0.clone();
         let mut entries: Vec<(K, (S, u64))> = up
@@ -401,10 +422,12 @@ where
 
     /// Groups the items by `key`. Groups are ordered by key; each group's members keep upstream
     /// order. Group counts and membership are maintained incrementally.
+    #[track_caller]
     pub fn group_by<G>(&self, key: impl Fn(&T) -> G + 'static) -> Groups<G, K, T>
     where
         G: Ord + Hash + Clone + Display + 'static,
     {
+        self.validate();
         let key = view_fn(key);
         let up = self.0.clone();
         let g = Rc::new(GroupsInner {
@@ -543,10 +566,12 @@ where
     pub fn index_of(&self, k: &K) -> Option<usize> {
         self.inner().index_of(k)
     }
+    #[track_caller]
     pub fn filter(&self, pred: impl Fn(&T) -> bool + 'static) -> Derived<K, T> {
         self.read_only().filter(pred)
     }
     /// The items transformed by `f`, same keys and order ([`ReadList::map`]).
+    #[track_caller]
     pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> Derived<K, U> {
         self.read_only().map(f)
     }
@@ -565,9 +590,11 @@ where
     {
         self.read_only().join(right, key, f)
     }
+    #[track_caller]
     pub fn sort_by<S: Ord + Clone + 'static>(&self, key: impl Fn(&T) -> S + 'static) -> Derived<K, T> {
         self.read_only().sort_by(key)
     }
+    #[track_caller]
     pub fn group_by<G: Ord + Hash + Clone + Display + 'static>(&self, key: impl Fn(&T) -> G + 'static) -> Groups<G, K, T> {
         self.read_only().group_by(key)
     }
@@ -686,10 +713,12 @@ where
     pub fn keys(&self) -> Vec<K> {
         self.read_only().keys()
     }
+    #[track_caller]
     pub fn filter(&self, pred: impl Fn(&T) -> bool + 'static) -> Derived<K, T> {
         self.read_only().filter(pred)
     }
     /// The items transformed by `f`, same keys and order ([`ReadList::map`]).
+    #[track_caller]
     pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> Derived<K, U> {
         self.read_only().map(f)
     }
@@ -708,9 +737,11 @@ where
     {
         self.read_only().join(right, key, f)
     }
+    #[track_caller]
     pub fn sort_by<S: Ord + Clone + 'static>(&self, key: impl Fn(&T) -> S + 'static) -> Derived<K, T> {
         self.read_only().sort_by(key)
     }
+    #[track_caller]
     pub fn group_by<G: Ord + Hash + Clone + Display + 'static>(&self, key: impl Fn(&T) -> G + 'static) -> Groups<G, K, T> {
         self.read_only().group_by(key)
     }

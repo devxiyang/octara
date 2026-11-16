@@ -72,6 +72,13 @@ collector, scope and window on return/unwind. A memo read inside untrack still t
 
 ## 4. Identity and state
 
+ReadList composition (`filter`, `map`, `sort_by`, `group_by`, `join`) checks the creating runtime
+before allocating nodes, subscribing to a list or calling its predicate/key/projection. Empty
+lists follow the same rule. Both sides of a join must belong to the current App; a foreign handle
+reports `WRONG_RUNTIME` at the composition call. Validation samples the existing version node
+without adding a dependency to a surrounding memo or binding. Dropping a handle outside App
+entry remains valid; it does not authorize using the handle inside another App.
+
 Based on Nominal Adapton: first-class names determine identity, and name ambiguity is detected.
 
 - Each stateful scope has a name path, for example `app/window1/Disclosure[account]/open` (a window's root scope is named by the window, so

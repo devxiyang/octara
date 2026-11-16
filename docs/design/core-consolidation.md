@@ -617,6 +617,33 @@ passed. Evidence: `/tmp/octara-list-lifetime-before.log`, `/tmp/octara-list-life
 `/tmp/octara-list-lifetime-workspace.log` and `/tmp/octara-list-lifetime-clippy.log`.
 This lifetime change was verified headlessly; the real-window suite was not rerun.
 
+## Twelfth-round list composition boundaries
+
+ReadList construction now validates runtime identity and liveness through its existing version
+node before creating an incremental stage. Filter, map, sort and group validate their input;
+join validates both sides before allocating output signals, registering observers or running
+key/projection callbacks. This closes the empty-list path that previously skipped all item
+reads, and the unmatched-right join path that could invoke callbacks against a foreign list.
+Foreign handles use the existing WRONG_RUNTIME diagnostic, with the composition call location.
+
+Validation is an untracked read, so it does not add structural dependencies to surrounding
+memos or bindings. No new registry, handle identity or runtime layer is introduced. Releasing
+a ReadList outside App entry remains valid, but constructing a derived list in another App is
+rejected even after the creating App has shut down and been dropped.
+
+Three regressions failed before the fix and passed afterward. They cover empty/nonempty foreign
+inputs for every operator, join's two operands including absent matches, retained handles after
+runtime exit, unchanged reactive node counts, zero user callback calls and subsequent mutations
+without foreign observers. A positive regression composes filter and join from empty lists in a
+memo: later inserts update the same stage and its values without rebuilding the composing memo.
+
+Validation: 669 workspace tests passed (three ignored), including incremental collection
+comparisons, Chat, generated-skill freshness and doctests. Clippy with warnings denied,
+formatting and diff checks passed. Evidence: `/tmp/octara-list-runtime-before.log`,
+`/tmp/octara-list-runtime-after.log`, `/tmp/octara-list-runtime-workspace.log` and
+`/tmp/octara-list-runtime-clippy.log`. The runtime boundary was verified headlessly; no OS-input
+or real-window qualification was rerun for this change.
+
 ## References
 
 - [Signals contract](signals-redesign.md), [runtime contract](runtime-contract.md),

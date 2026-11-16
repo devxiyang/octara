@@ -226,6 +226,8 @@ assert!(!app.kernel().exists("todo-1"));
 - Key items by a stable id (`DUPLICATE_KEY` otherwise). A row is **one** element.
 - `items.read_only()` returns a `ReadList`: a shared, live handle without list write methods.
   It does not copy items or create a snapshot; each item is exposed as a `ReadSignal`.
+- Derive lists in their creating App; both sides of `join` must belong to that App.
+  Cross-App composition is rejected before callbacks run, even for empty lists (`WRONG_RUNTIME`).
 - `each` applies changes row by row: an insert creates one row, a remove disposes one, and the
   state inside other rows stays.
 - Views of a list: `items.filter(|t| ..)`, `sort_by`, `group_by(..).flatten()`; render with
