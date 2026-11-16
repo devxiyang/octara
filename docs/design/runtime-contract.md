@@ -116,6 +116,9 @@ may validate that drawing, accessibility and native placement use compatible geo
 universal application revision is exposed. Host presentation evidence must not be inferred from
 a Signal flush, frame counter or successful GPU submission alone.
 
+The implemented [window completion path](window-completion.md) propagates unfinished layout
+through preparation and reports it via the existing pending-work APIs, without a retry timer.
+
 ## Waiting and failure
 
 An action can finish delivering while a network request or animation remains pending. Preserve

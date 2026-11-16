@@ -173,11 +173,30 @@ impl App {
     }
 
     /// What is pending: tasks, subscriptions and background jobs, with their scope, where they
-    /// started, and when the timer each waits on is due; and motion in every window.
+    /// started, and when the timer each waits on is due; motion in every window; and unfinished
+    /// reactive/window preparation. Unfinished updates do not create timers or retry deadlines.
     pub fn pending(&self) -> Vec<PendingWork> {
         let mut out = self.app.rt.enter(|| self.app.sched.pending());
+        if self.app.rt.has_pending() {
+            out.push(PendingWork {
+                kind: WorkKind::Update,
+                label: "reactive updates are still pending".into(),
+                scope: "app".into(),
+                at: String::new(),
+                due: None,
+            });
+        }
         for w in self.each() {
             out.extend(w.motion_work());
+            if !w.w.closed.get() && w.w.settled_generation.get() != Some(w.w.kernel.borrow().mutation_generation()) {
+                out.push(PendingWork {
+                    kind: WorkKind::Update,
+                    label: "window updates are still pending".into(),
+                    scope: format!("window {} ({})", w.w.id.number(), w.w.options.title),
+                    at: String::new(),
+                    due: None,
+                });
+            }
         }
         out
     }

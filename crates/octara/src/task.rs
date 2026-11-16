@@ -50,6 +50,9 @@ pub enum WorkKind {
     Subscription,
     /// A node's properties moving to their targets (`due`: when they come to rest).
     Motion,
+    /// Reactive or window preparation work left unfinished by a bounded update attempt.
+    /// No timer is implied; another explicit update boundary can attempt it again.
+    Update,
 }
 
 /// One piece of pending work.

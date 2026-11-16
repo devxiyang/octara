@@ -111,7 +111,9 @@ platform                         what the app needs from the system (traits); he
    make the next frame lay out again.
 3. `settle_frame`: run ready tasks, flush the reactive graph, lay out with taffy (cached per
    node), run after-layout hooks (virtual lists measure rows, scroll state, canvas sizes) and
-   repeat while they change something (four rounds at most, then `LAYOUT_LOOP`).
+   repeat while they change something (four rounds at most, then `LAYOUT_LOOP`). An unfinished
+   attempt preserves pending work and withholds native/platform frame publication; later update
+   boundaries can recover. [Window completion](design/window-completion.md) defines the outcome.
 4. The display list is built from the tree in paint order (shadows, quads, images, icons,
    canvases, glyphs, paths, clips, opacity layers), with moving properties sampled at the app's
    time, skipping subtrees that cannot show; unchanged and at rest, the last one is reused.

@@ -47,7 +47,9 @@ so that style-only responsiveness need not rerun closures.
 4. **Container size** (to do): styles by container width, the same mechanism as window size classes; evaluated by container width after layout, and if a hit flips, layout again,
    with a limit, reporting `LAYOUT_LOOP` when exceeded.
 5. **Element size as a source** (implemented): `size_of(id)` notifies only when the size changes, and with `memo(|| size_of("panel").get().0 < 320.0)` reruns only when the condition flips
-   (as in Rune's `layout_with`); it stabilizes within the same frame, and on oscillation it cuts off and reports `LAYOUT_LOOP`.
+   (as in Rune's `layout_with`); feedback gets four rounds per attempt. A cutoff reports
+   `LAYOUT_LOOP` and remains unfinished until a later attempt completes; it does not prove a cycle.
+   See [window completion](window-completion.md) for pending status and publication rules.
 
 ## 4. Layout diagnostics
 

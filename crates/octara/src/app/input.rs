@@ -42,7 +42,7 @@ impl Window {
             self.w.kernel.borrow_mut().set_cause(Some(cause));
             f();
             self.settle_frame();
-            if !self.app.shutdown.get() && !self.w.closed.get() && self.refresh_hover() {
+            if !self.app.shutdown.get() && !self.w.closed.get() && self.w.settled_generation.get().is_some() && self.refresh_hover() {
                 self.settle_frame();
             }
             self.w.kernel.borrow_mut().set_cause(None);

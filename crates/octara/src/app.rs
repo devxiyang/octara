@@ -237,7 +237,7 @@ pub(crate) struct WindowState {
     /// The paint generation last presented.
     presented: Cell<u64>,
     /// The kernel generation last laid out and presented, before final focus and hover cleanup.
-    settled_generation: Cell<u64>,
+    settled_generation: Cell<Option<u64>>,
     /// Frames presented to the platform window.
     frames: Cell<u64>,
     /// A capture in progress: the snapshots asked for.
@@ -327,6 +327,20 @@ pub struct App {
 pub struct Window {
     app: Rc<AppState>,
     w: Rc<WindowState>,
+}
+
+/// One bounded update attempt. An incomplete window stays pending, but is not retried
+/// inside this same App frame merely because another window changed.
+#[derive(Clone, Copy)]
+enum WindowUpdate {
+    Ready(u64),
+    Incomplete,
+}
+
+impl WindowUpdate {
+    fn invalidated(self, generation: u64) -> bool {
+        matches!(self, Self::Ready(previous) if previous != generation)
+    }
 }
 
 impl AppState {
@@ -495,7 +509,7 @@ impl WindowState {
             native_sent: RefCell::default(),
             native_changes: RefCell::default(),
             presented: Cell::new(u64::MAX),
-            settled_generation: Cell::new(u64::MAX),
+            settled_generation: Cell::new(None),
             frames: Cell::new(0),
             capturing: RefCell::default(),
             picking: RefCell::default(),
@@ -739,7 +753,7 @@ impl AppState {
                 .windows
                 .borrow()
                 .values()
-                .any(|w| !w.closed.get() && w.settled_generation.get() != w.kernel.borrow().mutation_generation());
+                .any(|w| !w.closed.get() && w.settled_generation.get() != Some(w.kernel.borrow().mutation_generation()));
         if unfinished {
             return;
         }
@@ -816,9 +830,9 @@ impl AppState {
         self.frame_except(None, at);
     }
 
-    /// [`frame`](Self::frame), retaining the generation of a window that just settled. A later
-    /// window's measurements or callbacks can invalidate an earlier window, including this one.
-    fn frame_except(self: &Rc<Self>, settled: Option<(WindowId, u64)>, at: &'static std::panic::Location<'static>) {
+    /// Retain this frame's completed and incomplete attempts. Later windows can invalidate a
+    /// completed window; an incomplete one waits for the next explicit update boundary.
+    fn frame_except(self: &Rc<Self>, settled: Option<(WindowId, WindowUpdate)>, at: &'static std::panic::Location<'static>) {
         if self.shutdown.get() {
             return;
         }
@@ -828,7 +842,10 @@ impl AppState {
             for _ in 0..16 {
                 for id in self.order.borrow().clone() {
                     if let Some(w) = self.handle(id) {
-                        if generations.get(&id) == Some(&w.w.kernel.borrow().mutation_generation()) {
+                        if generations
+                            .get(&id)
+                            .is_some_and(|outcome: &WindowUpdate| !outcome.invalidated(w.w.kernel.borrow().mutation_generation()))
+                        {
                             continue;
                         }
                         let generation = w.enter(|| w.settle_window(at));
@@ -841,7 +858,9 @@ impl AppState {
                 let closing = std::mem::take(&mut *self.closing.borrow_mut());
                 if opening.is_empty() && closing.is_empty() {
                     let invalidated = self.order.borrow().iter().any(|id| {
-                        self.handle(*id).is_some_and(|w| generations.get(id) != Some(&w.w.kernel.borrow().mutation_generation()))
+                        self.handle(*id).is_some_and(|w| {
+                            generations.get(id).is_none_or(|outcome| outcome.invalidated(w.w.kernel.borrow().mutation_generation()))
+                        })
                     });
                     if !invalidated {
                         self.present_menus();
@@ -982,22 +1001,32 @@ impl Window {
     }
 
     /// One window's part of a frame: tasks, layout, native views, text input, focus and hover.
-    fn settle_window(&self, at: &'static std::panic::Location<'static>) -> u64 {
+    fn settle_window(&self, at: &'static std::panic::Location<'static>) -> WindowUpdate {
+        match self.prepare_window(at) {
+            Ok(generation) => WindowUpdate::Ready(generation),
+            Err(()) => {
+                self.w.settled_generation.set(None);
+                WindowUpdate::Incomplete
+            }
+        }
+    }
+
+    fn prepare_window(&self, at: &'static std::panic::Location<'static>) -> Result<u64, ()> {
         // Tasks woken (or spawned) by what just happened run to their next wait first; what they
         // change is laid out with the rest. They may wake or spawn more, so repeat (bounded).
         let mut command_ran = false;
         for _ in 0..16 {
             if self.app.shutdown.get() || self.w.closed.get() || self.app.closing.borrow().contains(&self.w.id) {
                 self.w.interaction.borrow_mut().after_update.clear();
-                return self.w.kernel.borrow().mutation_generation();
+                return Ok(self.w.kernel.borrow().mutation_generation());
             }
             self.app.sched.run_ready();
-            self.settle_layout(at);
+            self.settle_layout(at)?;
             // Modals that opened or closed move focus (which restyles).
             if self.sync_modals() {
-                self.settle_layout(at);
+                self.settle_layout(at)?;
             }
-            if self.settle_requested_focus(at) || self.reconcile_focus() {
+            if self.settle_requested_focus(at)? || self.reconcile_focus() {
                 // Focus callbacks can change visibility, open a modal or close the window.
                 // Let those changes land before any queued command sees its focus path.
                 command_ran = false;
@@ -1017,11 +1046,11 @@ impl Window {
         }
         // The last command may have changed state even when it queued no successor.
         if command_ran {
-            self.settle_layout(at);
+            self.settle_layout(at)?;
             if self.sync_modals() {
-                self.settle_layout(at);
+                self.settle_layout(at)?;
             }
-            self.settle_requested_focus(at);
+            self.settle_requested_focus(at)?;
             self.reconcile_focus();
         }
         let pending = std::mem::take(&mut self.w.interaction.borrow_mut().after_update);
@@ -1042,7 +1071,7 @@ impl Window {
             if let Some(r) = caret
                 && self.w.kernel.borrow_mut().reveal(n, r)
             {
-                self.settle_layout(at);
+                self.settle_layout(at)?;
             }
         }
         // Highlighting an option can reveal it without moving keyboard focus from its field.
@@ -1055,13 +1084,13 @@ impl Window {
             });
             drop(k);
             if moved {
-                self.settle_layout(at);
+                self.settle_layout(at)?;
             }
         }
         self.sync_native();
         self.present();
         let generation = self.w.kernel.borrow().mutation_generation();
-        self.w.settled_generation.set(generation);
+        self.w.settled_generation.set(Some(generation));
         // An `instant` transaction covers the frame it was made in.
         self.w.kernel.borrow_mut().set_instant(false);
         // What is on its way out can no longer be focused or hovered.
@@ -1077,39 +1106,41 @@ impl Window {
         if gone(hovered) {
             self.set_hover(None);
         }
-        generation
+        Ok(generation)
     }
 
-    fn settle_requested_focus(&self, at: &'static std::panic::Location<'static>) -> bool {
+    fn settle_requested_focus(&self, at: &'static std::panic::Location<'static>) -> Result<bool, ()> {
         let request = self.w.interaction.borrow_mut().focus_request.take();
         if let Some(id) = request {
             let node = self.w.kernel.borrow().find(&id);
             if let Some(node) = node
                 && self.set_focus(Some(node)).is_ok()
             {
-                self.settle_layout(at);
+                self.settle_layout(at)?;
             }
-            return true;
+            return Ok(true);
         }
-        false
+        Ok(false)
     }
 
-    fn settle_layout(&self, at: &'static std::panic::Location<'static>) {
+    fn settle_layout(&self, at: &'static std::panic::Location<'static>) -> Result<(), ()> {
         for _ in 0..4 {
             self.app.rt.flush();
+            if self.app.rt.has_pending() {
+                return Err(());
+            }
             self.w.kernel.borrow_mut().layout(self.size().0, self.size().1);
             let changed = self.app.rt.with_frame(Ctx::Handler, None, Some(None), || self.w.sync_after_layout());
             if !changed {
-                return;
+                return Ok(());
             }
         }
-        self.app.rt.flush();
-        self.w.kernel.borrow_mut().layout(self.size().0, self.size().1);
         self.app.rt.diag(
             &codes::LAYOUT_LOOP,
-            "layout did not settle in 4 rounds: something keeps changing what it measures (a size read feeding the size it reads)".into(),
+            "layout is still pending after 4 rounds; size reads or virtual measurements need more work (a repeating feedback loop may be the cause)".into(),
             at,
         );
+        Err(())
     }
 
     fn restore_interaction(&self) {
@@ -1755,12 +1786,6 @@ impl Window {
             .filter(|p| p.kind != crate::task::WorkKind::Subscription)
             .map(|p| if p.at.is_empty() { p.label } else { format!("{} ({})", p.label, p.at) })
             .collect();
-        if self.app.rt.has_pending() {
-            out.push("reactive updates are still pending".into());
-        }
-        if !self.w.closed.get() && self.w.settled_generation.get() != self.w.kernel.borrow().mutation_generation() {
-            out.push("window updates are still pending".into());
-        }
         let placements = self.w.kernel.borrow().native_placements();
         let window = self.w.platform.borrow();
         for (n, p) in placements.into_iter().filter(|(_, p)| p.visible) {
