@@ -337,3 +337,29 @@ User `on_cleanup` callbacks retain their scope-lifetime semantics.
 The [reference comparison](../research/panic-boundaries.md) distinguishes this conservative
 fallback from expected Result/AsyncState failures and from adapter-specific local recovery.
 No panic-to-business-error conversion or automatic replay is introduced.
+
+### Native host and Inspector
+
+The native shell contains an unwind only when that entry newly failed the App. A panic in
+the host/GPU or a later diagnostic/cleanup operation is not treated as application recovery.
+After failure it stops frame demand, timers and input delivery, retains the windows for
+diagnosis, and accepts an OS close request as shutdown of the failed App. It exits with failure
+status and removes its Inspector endpoint. Initialization before a mounted App and aborting
+panics are outside this containment contract.
+
+Inspector snapshots expose `failed`. A failed snapshot describes the retained tree, not a
+successfully settled or presented frame. Selection extraction can construct unmounted virtual
+rows, so that field is omitted after failure. Only `inspect` and `issues` remain available;
+input, reload, settling, resize and capture return APP_FAILED without delivery.
+
+A callback panic returns APP_FAILED without claiming delivery. Live feedback reports
+`delivery: "unknown"`; clients must not retry. Pending native operations retain facts already
+established by their phases: refused before admission, delivered after confirmed input, unknown
+when unwinding prevents confirmation. Each waiting response is completed once on failure;
+dropping capture jobs also stops their wake sources. No callback is replayed.
+
+Validate with `examples/live_failure.py` and the explicit `window failure` fixture. The script
+requires a visible window with presented frames before injecting handler, task and binding
+panics. It checks unchanged presentation counts, readable diagnostics and refused later work.
+On macOS, compile `examples/live_window.swift` and pass it as `--native-helper` to also check
+OS activation and native close through the specified process's accessibility window.

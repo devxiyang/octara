@@ -27,6 +27,9 @@ pub const SCHEMA: &str = "octara.inspect/1";
 /// The app as tools see it at one moment.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// The retained tree is diagnostic evidence only when the App has failed.
+    #[serde(default)]
+    pub failed: bool,
     pub schema: String,
     /// The `octara` version the app was built with.
     pub octara: String,
@@ -571,6 +574,35 @@ pub fn issues(app: &Window) -> Vec<Issue> {
 
 /// Runs one request against `app`.
 pub fn handle(app: &mut Window, req: Request) -> Reply {
+    request_boundary(app, req, handle_inner)
+}
+
+/// A failed App permits diagnostic reads, never input, rebuilding or capture.
+pub fn failure_refusal(app: &Window, req: &Request) -> Option<Reply> {
+    (app.app().is_failed() && !matches!(req, Request::Inspect | Request::Issues)).then(|| Reply {
+        delivery: Some(Delivery::Refused),
+        ..Reply::fail(&codes::APP_FAILED, "App failed; only inspect and issues remain available; shut it down")
+    })
+}
+
+pub(crate) fn request_boundary(app: &mut Window, req: Request, f: impl FnOnce(&mut Window, Request) -> Reply) -> Reply {
+    if let Some(reply) = failure_refusal(app, &req) {
+        return reply;
+    }
+    let was_failed = app.app().is_failed();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(app, req))) {
+        Ok(reply) => reply,
+        Err(payload) if !was_failed && app.app().is_failed() => {
+            // No retry: a handler may already have changed state or performed an external effect.
+            // Retain no delivery claim when unwinding bypassed the operation's own feedback.
+            drop(payload);
+            Reply::fail(&codes::APP_FAILED, "App panicked while executing the request; outcome unknown; do not retry")
+        }
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+fn handle_inner(app: &mut Window, req: Request) -> Reply {
     use std::time::Duration;
     let exists = |app: &Window, id: &str| app.kernel().find(id).is_some();
     let target = |app: &Window, id: &str| -> Result<(), Box<Reply>> {

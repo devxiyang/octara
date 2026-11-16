@@ -139,7 +139,11 @@ pub fn parse_guarded_request(window: &Window, line: &str) -> Result<ParsedReques
 /// Executes one operation while retaining its original target through focus, pointer phases
 /// and key-to-text fallback. A failed later phase reports that earlier input was delivered.
 pub fn handle_guarded(window: &mut Window, request: Request, guard: Option<&TargetGuard>) -> Reply {
-    let Some(guard) = guard else { return super::handle(window, request) };
+    super::request_boundary(window, request, |window, request| handle_guarded_inner(window, request, guard))
+}
+
+fn handle_guarded_inner(window: &mut Window, request: Request, guard: Option<&TargetGuard>) -> Reply {
+    let Some(guard) = guard else { return super::handle_inner(window, request) };
     let binding = binding(&request);
     if !guard.is_current(window) || node_for(window, &binding) != guard.node || matches!(binding, Binding::Focus) != guard.focus {
         return stale(Delivery::Refused);
@@ -197,8 +201,8 @@ pub fn handle_guarded(window: &mut Window, request: Request, guard: Option<&Targ
                 request,
                 Request::Inspect | Request::Issues | Request::Pick { .. } | Request::Expect(_) | Request::Capture { .. }
             );
-            let mut reply = super::handle(window, request);
-            if input && reply.delivery.is_none() {
+            let mut reply = super::handle_inner(window, request);
+            if input && reply.delivery.is_none() && reply.code.as_deref() != Some(codes::APP_FAILED.id) {
                 reply.delivery =
                     Some(if reply.code.as_deref() == Some(codes::BAD_REQUEST.id) { Delivery::Refused } else { Delivery::Delivered });
             }

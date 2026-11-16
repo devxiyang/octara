@@ -1457,6 +1457,7 @@ impl Window {
             crate::inspect::TextInputState::from_field(field, k.text_document(id)?)
         });
         crate::inspect::Snapshot {
+            failed: self.app.failed.get(),
             schema: crate::inspect::SCHEMA.into(),
             octara: env!("CARGO_PKG_VERSION").into(),
             viewport: [w, h],
@@ -1468,7 +1469,8 @@ impl Window {
             pending: self.app().pending().len(),
             window: self.w.id.number(),
             target: crate::inspect::window_target(&k),
-            selection: self.selected_text().map(|t| t.chars().take(2000).collect()),
+            // Selection extraction may build unmounted virtual rows; never execute it after failure.
+            selection: (!self.app.failed.get()).then(|| self.selected_text()).flatten().map(|t| t.chars().take(2000).collect()),
             asks: self.asks().into_iter().map(|(id, ask)| crate::inspect::AskInfo { id, ask }).collect(),
             windows: self
                 .app()

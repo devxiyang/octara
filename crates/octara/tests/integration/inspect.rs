@@ -251,3 +251,34 @@ fn targets_are_judged_by_the_platforms_minimum() {
     // 16 px targets side by side are too close with a pointer too (WCAG 2.5.8's spacing).
     assert_eq!(cells("a").map(|c| c.len()), Some(4));
 }
+
+#[test]
+fn panic_feedback_preserves_unknown_delivery_and_allows_only_diagnostics() {
+    for guarded in [false, true] {
+        let mut window = Window::headless(|| el().id("fail").size(40).on_press(|| panic!("inspector callback failed")).into());
+        let request = if guarded {
+            let target = window.inspect().find("fail").unwrap().target.clone();
+            octara::serde_json::json!({"op": "tap", "id": "fail", "target": target}).to_string()
+        } else {
+            r#"{"op":"tap","id":"fail"}"#.into()
+        };
+        let reply = inspect::handle_line(&mut window, &request);
+        assert_eq!(reply.code.as_deref(), Some("APP_FAILED"));
+        assert_eq!(reply.delivery, None, "unwinding cannot prove delivery");
+        let snapshot = inspect::handle(&mut window, Request::Inspect).snapshot.unwrap();
+        assert!(snapshot.failed);
+        let issues = inspect::handle(&mut window, Request::Issues).issues.unwrap();
+        assert!(issues.iter().any(|issue| issue.code == "APP_FAILED"));
+        for request in [
+            r#"{"op":"tap","id":"fail"}"#,
+            r#"{"op":"reload"}"#,
+            r#"{"op":"settle"}"#,
+            r#"{"op":"capture","path":"/tmp/octara-must-not-capture-failure.png"}"#,
+        ] {
+            let reply = inspect::handle_line(&mut window, request);
+            assert_eq!(reply.code.as_deref(), Some("APP_FAILED"), "{reply:?}");
+            assert_eq!(reply.delivery, Some(inspect::Delivery::Refused));
+        }
+        window.app().shutdown();
+    }
+}

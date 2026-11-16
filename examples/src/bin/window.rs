@@ -9,6 +9,7 @@ fn main() {
     let name = std::env::args().nth(1).unwrap_or_else(|| "showcase".into());
     let card = std::env::args().nth(2);
     let view: Box<dyn Fn() -> View> = match name.as_str() {
+        "failure" => Box::new(octara_examples::failure::view),
         "counter" => Box::new(apps::counter),
         "styles" => Box::new(apps::styles),
         "activation" => Box::new(octara_examples::activation::view),

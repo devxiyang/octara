@@ -342,6 +342,9 @@ impl Shell {
 
     /// Brings the app's clock to now (before each event and frame).
     fn tick(&self) {
+        if self.app_failed() {
+            return;
+        }
         if let Some(app) = &self.app {
             if let Some(pending) = &self.inspect_pending {
                 pending.cancel_disconnected(app);
@@ -400,6 +403,9 @@ impl Shell {
     /// a quiet spell, else on its clock's next tick), and tells assistive technology if it
     /// listens.
     fn show(&mut self) {
+        if self.app_failed() {
+            return;
+        }
         let Some(app) = self.app.clone() else { return };
         for id in app.windows() {
             let Some(mut w) = app.window(id) else { continue };
@@ -420,6 +426,9 @@ impl Shell {
 
     /// Draws window `w` now.
     fn draw(&mut self, w: &AppWindow) {
+        if self.app_failed() {
+            return;
+        }
         let started = self.shared.trace.then(Instant::now);
         let list = w.display_list();
         let trace = started.map(|at| trace::Frame::new(at, w.app().now().as_millis() as u64));
@@ -520,8 +529,11 @@ impl Shell {
     }
 }
 
-impl ApplicationHandler<ShellEvent> for Shell {
-    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+impl Shell {
+    fn on_new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        if self.app_failed() {
+            return;
+        }
         // A deadline the app asked for (a long press coming due, momentum's next frame).
         if let StartCause::ResumeTimeReached { .. } = cause {
             let _in = InLoop::enter(&self.shared, event_loop);
@@ -530,7 +542,16 @@ impl ApplicationHandler<ShellEvent> for Shell {
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn on_about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.app_failed() {
+            self.failed = true;
+            if self.app.as_ref().is_some_and(|app| app.is_shutdown()) {
+                event_loop.exit();
+            } else {
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
+            return;
+        }
         let last_closed = self.app.as_ref().is_some_and(|a| a.windows().is_empty());
         if self.done || last_closed {
             event_loop.exit();
@@ -571,7 +592,13 @@ impl ApplicationHandler<ShellEvent> for Shell {
         });
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: ShellEvent) {
+    fn on_user_event(&mut self, event_loop: &ActiveEventLoop, event: ShellEvent) {
+        if self.app_failed() {
+            if let ShellEvent::Inspect { line, reply, connected } = event {
+                self.inspect_request(line, reply, connected);
+            }
+            return;
+        }
         let _in = InLoop::enter(&self.shared, event_loop);
         #[cfg(target_os = "macos")]
         {
@@ -667,7 +694,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
         }
     }
 
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+    fn on_resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.app.is_some() {
             return;
         }
@@ -709,8 +736,16 @@ impl ApplicationHandler<ShellEvent> for Shell {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+    fn on_window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let _in = InLoop::enter(&self.shared, event_loop);
+        if self.app_failed() {
+            if matches!(event, WindowEvent::CloseRequested) {
+                self.app.as_ref().expect("failed App").shutdown();
+                self.done = true;
+                event_loop.exit();
+            }
+            return;
+        }
         #[cfg(target_os = "macos")]
         {
             self.native_text();
@@ -875,5 +910,55 @@ impl ApplicationHandler<ShellEvent> for Shell {
             _ => return,
         }
         self.show();
+    }
+}
+
+impl Shell {
+    fn app_failed(&self) -> bool {
+        self.app.as_ref().is_some_and(App::is_failed)
+    }
+
+    /// Contain only a runtime-certified failed App. Host/GPU bugs still unwind.
+    fn host_entry(&mut self, f: impl FnOnce(&mut Self)) {
+        let was_failed = self.app_failed();
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self))) {
+            Ok(()) => {}
+            Err(payload) if !was_failed && self.app_failed() => drop(payload),
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+        if self.app_failed() {
+            self.failed = true;
+            if let Some(app) = &self.app {
+                for id in app.windows() {
+                    if let Some(window) = app.window(id) {
+                        ww(&window, |host| {
+                            host.pending = false;
+                            host.on_tick();
+                        });
+                    }
+                }
+            }
+            // Dropping these jobs stops their wake sources and replies with failure.
+            self.inspect_pending.take();
+            self.capture.take();
+        }
+    }
+}
+
+impl ApplicationHandler<ShellEvent> for Shell {
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        self.host_entry(|shell| shell.on_new_events(event_loop, cause));
+    }
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.host_entry(|shell| shell.on_about_to_wait(event_loop));
+    }
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: ShellEvent) {
+        self.host_entry(|shell| shell.on_user_event(event_loop, event));
+    }
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        self.host_entry(|shell| shell.on_resumed(event_loop));
+    }
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        self.host_entry(|shell| shell.on_window_event(event_loop, id, event));
     }
 }

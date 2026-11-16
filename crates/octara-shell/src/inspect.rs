@@ -73,16 +73,33 @@ pub(crate) struct Responder {
     route: &'static str,
     input: bool,
     target: Option<(octara::app::Window, TargetGuard)>,
+    app: Option<octara::app::App>,
+    sent: std::cell::Cell<bool>,
+    delivery: std::cell::Cell<Option<Delivery>>,
 }
 
 impl Responder {
     fn new(tx: Sender<String>, connected: Arc<AtomicBool>, route: &'static str, input: bool) -> Self {
-        Self { tx, connected, route, input, target: None }
+        Self {
+            tx,
+            connected,
+            route,
+            input,
+            target: None,
+            app: None,
+            sent: std::cell::Cell::new(false),
+            delivery: std::cell::Cell::new(Some(Delivery::Refused)),
+        }
     }
 
     fn with_target(mut self, window: &octara::app::Window, guard: Option<&TargetGuard>) -> Self {
+        self.app = Some(window.app());
         self.target = guard.map(|guard| (window.clone(), guard.clone()));
         self
+    }
+
+    fn begin(&self) {
+        self.delivery.set(None);
     }
 
     pub(crate) fn target_current(&self) -> bool {
@@ -104,6 +121,7 @@ impl Responder {
     }
 
     fn send_with(self, mut reply: Reply, extra: serde_json::Value) {
+        self.sent.set(true);
         if !self.connected.load(Ordering::Relaxed) {
             return;
         }
@@ -127,8 +145,8 @@ impl Responder {
             };
             live["delivery"] = delivery.into();
         }
-        if reply.snapshot.is_some() {
-            live["operations"] = json!(OPERATIONS);
+        if let Some(snapshot) = &reply.snapshot {
+            live["operations"] = if snapshot.failed { json!(["inspect", "issues"]) } else { json!(OPERATIONS) };
             live["transport"] = "unix".into();
             live["target_validation"] = "identity".into();
         }
@@ -155,6 +173,9 @@ pub(crate) enum Pending {
 impl Pending {
     /// Cancel our held pointer before ticking timers once transport has observed disconnect.
     pub(crate) fn cancel_disconnected(&self, app: &octara::app::App) {
+        if app.is_failed() {
+            return;
+        }
         if let Self::Gesture { job, reply } = self
             && !reply.connected.load(Ordering::Relaxed)
             && let Some(mut window) = app.window(job.window())
@@ -216,11 +237,6 @@ impl Shell {
         if !connected.load(Ordering::Relaxed) {
             return;
         }
-        self.tick();
-        if let Some(app) = &self.app {
-            app.poll();
-        }
-        self.show();
         let window = self.main_window().or_else(|| self.app.as_ref().and_then(|app| app.windows().first().and_then(|id| app.window(*id))));
         let Some(window) = window else {
             Responder::new(tx, connected, "query", false).send(Reply::fail(&codes::BAD_REQUEST, "the app has no open main window"));
@@ -237,6 +253,18 @@ impl Shell {
             };
         let (route, input) = route(&request);
         let response = Responder::new(tx, connected, route, input).with_target(&target, guard.as_ref());
+        if let Some(reply) = octara::inspect::failure_refusal(&target, &request) {
+            response.send(reply);
+            return;
+        }
+        if !self.app_failed() {
+            self.tick();
+            if let Some(app) = &self.app {
+                app.poll();
+            }
+            self.show();
+        }
+        response.begin();
         match request {
             Request::Advance { .. } => response.send(Reply::fail(
                 &codes::BAD_REQUEST,
@@ -250,6 +278,7 @@ impl Shell {
                 };
                 match super::gesture::Job::start_guarded(&mut target, id, kind, Instant::now(), guard) {
                     Ok(job) => {
+                        response.delivery.set(Some(if job.delivered() { Delivery::Delivered } else { Delivery::Refused }));
                         self.inspect_pending = Some(Pending::Gesture { job, reply: response });
                         self.show();
                         self.inspect_poll();
@@ -259,6 +288,7 @@ impl Shell {
             }
             Request::Size { width, height } => match super::resize::Job::start(self, &mut target, width, height) {
                 Ok(job) => {
+                    response.delivery.set(Some(Delivery::Delivered));
                     self.inspect_pending = Some(Pending::Resize { job, reply: response });
                     self.show();
                     self.inspect_poll();
@@ -376,9 +406,15 @@ impl Shell {
                     reply.send_gesture(Reply::fail(&codes::STEP_FAILED, "the target window closed during the gesture"), job.delivered());
                     return;
                 };
+                if !job.delivered() {
+                    reply.begin();
+                }
                 match job.poll(&mut window, Instant::now()) {
                     Some(result) => reply.send_gesture(result, job.delivered()),
-                    None => self.inspect_pending = Some(Pending::Gesture { job, reply }),
+                    None => {
+                        reply.delivery.set(Some(if job.delivered() { Delivery::Delivered } else { Delivery::Refused }));
+                        self.inspect_pending = Some(Pending::Gesture { job, reply });
+                    }
                 }
                 self.show();
             }
@@ -413,6 +449,37 @@ mod target_feedback {
             responder.send(reply)
         }
         serde_json::from_str(&receive.recv().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn an_interrupted_response_reports_failure_once_without_claiming_delivery() {
+        let app = octara::app::App::new(octara::platform::HeadlessPlatform::default());
+        let window = app.open_window(octara::platform::WindowOptions::default(), || octara::view::el().into()).unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        let responder = Responder::new(send, Arc::new(AtomicBool::new(true)), "framework", true).with_target(&window, None);
+        responder.begin();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.run(|| panic!("request failed"))));
+        drop(responder);
+        let reply: serde_json::Value = serde_json::from_str(&receive.recv().unwrap()).unwrap();
+        assert_eq!(reply["code"], "APP_FAILED");
+        assert_eq!(reply["live"]["delivery"], "unknown");
+        assert!(receive.try_recv().is_err());
+
+        for (delivery, label) in [(Delivery::Refused, "refused"), (Delivery::Delivered, "delivered")] {
+            let (send, receive) = std::sync::mpsc::channel();
+            let responder = Responder::new(send, Arc::new(AtomicBool::new(true)), "framework", true).with_target(&window, None);
+            responder.delivery.set(Some(delivery));
+            drop(responder);
+            let reply: serde_json::Value = serde_json::from_str(&receive.recv().unwrap()).unwrap();
+            assert_eq!(reply["delivery"], label);
+            assert_eq!(reply["live"]["delivery"], label);
+        }
+
+        let (send, receive) = std::sync::mpsc::channel();
+        Responder::new(send, Arc::new(AtomicBool::new(true)), "query", false).with_target(&window, None).send(Reply::ok());
+        assert!(serde_json::from_str::<serde_json::Value>(&receive.recv().unwrap()).unwrap()["ok"].as_bool().unwrap());
+        assert!(receive.try_recv().is_err(), "normal send must not emit a second failure on drop");
+        app.shutdown();
     }
 
     #[test]
@@ -745,6 +812,25 @@ mod wire {
             assert_eq!(take_line(&mut buffer).unwrap().unwrap().len(), REQUEST_LIMIT + 1);
             release.send(()).unwrap();
             sending.join().unwrap();
+        }
+    }
+}
+
+impl Drop for Responder {
+    fn drop(&mut self) {
+        if !self.sent.get() && self.app.as_ref().is_some_and(octara::app::App::is_failed) && self.connected.load(Ordering::Relaxed) {
+            let mut reply = Reply::fail(&codes::APP_FAILED, "App failed while the request was pending; do not retry");
+            reply.delivery = self.delivery.get();
+            let mut value = serde_json::to_value(reply).expect("failure reply serializes");
+            value["live"] = json!({
+                "clock": "realtime", "route": self.route, "pid": std::process::id(),
+                "platform": std::env::consts::OS, "delivery": match self.delivery.get() {
+                    Some(Delivery::Refused) => "refused",
+                    Some(Delivery::Delivered) => "delivered",
+                    None => "unknown",
+                }
+            });
+            let _ = self.tx.send(value.to_string());
         }
     }
 }
