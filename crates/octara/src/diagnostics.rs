@@ -165,8 +165,11 @@ codes! {
         "One change on the right side of a join updated more than 10 000 rows.",
         cause: "Many rows point at the same right item and their output takes a part of it that changed (one tag on everything, a user on every message).";
     DUPLICATE_KEY: Error, Reactive, "docs/design/reactive-core.md#5-incremental-collections",
-        "Two list items share a key; the later one was dropped.",
-        cause: "Lists identify items by key: rows, state and moves follow it.";
+        "Two list items share a key; the insertion or computed snapshot was rejected.",
+        cause: "Lists identify items by key: rows, state and moves follow it. A duplicate incremental insertion leaves valid data unchanged. A duplicate computed snapshot retires its rows until a valid snapshot arrives.";
+    LIST_ITEM_UNAVAILABLE: Error, View, "docs/design/collection-regions.md#collection-freshness-has-one-contract",
+        "A retained row read a key absent from its current source (this panics).",
+        cause: "Row inputs resolve the current collection even before view propagation. After removing the key or producing duplicate keys, the previous row value is not a valid fallback. Do not read a row after removing it; resolve optional data from the model instead.";
     // ---- view ----
     ELEMENT_CONTENT: Error, View, "docs/design/ui-primitives.md#element-content",
         "An element-specific method was called on incompatible content (this panics).",

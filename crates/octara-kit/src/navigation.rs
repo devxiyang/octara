@@ -2,7 +2,6 @@
 
 use crate::{Model, RadioOption};
 use octara::prelude::*;
-use std::collections::HashSet;
 use std::rc::Rc;
 
 /// One tab. IDs must be unique and stay stable when tabs move or their labels change.
@@ -23,40 +22,6 @@ impl TabOption {
         self.disabled = disabled;
         self
     }
-}
-
-#[derive(Clone, PartialEq)]
-struct OptionRow {
-    option: RadioOption,
-    order: usize,
-}
-
-/// Reconcile finite option data while keeping each key's element and item signal alive.
-fn retained_options(options: impl Fn() -> Vec<RadioOption> + 'static) -> Derived<String, OptionRow> {
-    let options = memo(options);
-    let rows = state_list("options", Vec::<OptionRow>::new, |row| row.option.id.clone());
-    let ordered = rows.sort_by(|row| row.order);
-    watch(
-        move || options.get(),
-        move |options, _| {
-            let keys: HashSet<_> = options.iter().map(|option| option.id.as_str()).collect();
-            rows.retain(|row| keys.contains(row.option.id.as_str()));
-            let mut seen = HashSet::new();
-            for (order, option) in options.iter().enumerate() {
-                let row = OptionRow { option: option.clone(), order };
-                if !seen.insert(option.id.clone()) {
-                    rows.push(row); // The retained list reports the ordinary duplicate-key diagnostic.
-                } else if let Some(old) = rows.item(&option.id) {
-                    if untrack(|| old.get()) != row {
-                        rows.update(&option.id, |old| *old = row);
-                    }
-                } else {
-                    rows.push(row);
-                }
-            }
-        },
-    );
-    ordered
 }
 
 /// A tab bar with manual activation, bound to a stable option ID in `value`.
@@ -89,9 +54,6 @@ pub fn tabs(id: &str, label: impl Into<String>, value: impl Model<Option<String>
     let label = label.into();
     let value: Rc<dyn Model<Option<String>>> = Rc::new(value);
     component_keyed("Tabs", id.clone(), move || {
-        let options = retained_options(move || {
-            options().into_iter().map(|option| RadioOption::new(option.id, option.label).disabled(option.disabled)).collect()
-        });
         row()
             .id(id.clone())
             .role(Role::TabList)
@@ -102,15 +64,15 @@ pub fn tabs(id: &str, label: impl Into<String>, value: impl Model<Option<String>
             .flex_wrap()
             .gap_1()
             .child(each(
-                move || options.read_only(),
+                move || options().into_iter().map(|option| (option.id.clone(), option)).collect::<Vec<_>>(),
                 move |key, item| {
                     let (selected, pick) = (value.clone(), value.clone());
                     let (selected_key, pick_key) = (key.clone(), key.clone());
-                    text(move || item.with(|row| row.option.label.clone()))
+                    text(move || item.with(|row| row.label.clone()))
                         .id(format!("{id}-tab-{key}"))
                         .role(Role::Tab)
                         .selected(move || selected.get().as_ref() == Some(&selected_key))
-                        .disabled(move || item.with(|row| row.option.disabled))
+                        .disabled(move || item.with(|row| row.disabled))
                         .focusable()
                         .min_w(0.0)
                         .min_h(32.0)
@@ -162,7 +124,6 @@ pub fn segmented(
     let label = label.into();
     let value: Rc<dyn Model<Option<String>>> = Rc::new(value);
     component_keyed("Segmented", id.clone(), move || {
-        let options = retained_options(options);
         col()
             .id(id.clone())
             .role(Role::RadioGroup)
@@ -174,17 +135,17 @@ pub fn segmented(
             .child(text(label).id(format!("{id}-label")).text_sm().font_medium().text_color(Token::Text))
             .child(row().w_full().min_w(0.0).gap_1().p_1().rounded_md().bg(Token::Surface).border().border_color(Token::Border).child(
                 each(
-                    move || options.read_only(),
+                    move || options().into_iter().map(|option| (option.id.clone(), option)).collect::<Vec<_>>(),
                     move |key, item| {
                         let (checked, pick) = (value.clone(), value.clone());
                         let (checked_key, pick_key) = (key.clone(), key.clone());
                         row()
                             .id(format!("{id}-option-{key}"))
                             .role(Role::RadioButton)
-                            .label(move || item.with(|row| row.option.label.clone()))
-                            .description(move || item.with(|row| row.option.description.clone()))
+                            .label(move || item.with(|row| row.label.clone()))
+                            .description(move || item.with(|row| row.description.clone()))
                             .checked(move || checked.get().as_ref() == Some(&checked_key))
-                            .disabled(move || item.with(|row| row.option.disabled))
+                            .disabled(move || item.with(|row| row.disabled))
                             .focusable()
                             .flex_1()
                             .min_w(0.0)
@@ -207,7 +168,7 @@ pub fn segmented(
                             .style_when(State::CHECKED, |p| p.bg(Token::Background).text_color(Token::Text).shadow_sm())
                             .focus_visible(|p| p.border_color(Token::Focus))
                             .style_when(State::DISABLED, |p| p.opacity(0.5))
-                            .child(text(move || item.with(|row| row.option.label.clone())).min_w(0.0).select_none().a11y_hidden())
+                            .child(text(move || item.with(|row| row.label.clone())).min_w(0.0).select_none().a11y_hidden())
                             .on_press(move || pick.set(Some(pick_key.clone())))
                             .into()
                     },

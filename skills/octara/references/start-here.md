@@ -174,6 +174,34 @@ assert!(app.app().diagnostics().is_empty());
 
 ## Lists
 
+For ordinary application data, return a keyed `Vec<(K, T)>` directly. No list state or
+synchronizing watch is needed:
+
+```rust
+use octara::prelude::*;
+
+let mut window = Window::headless(|| {
+    let items = state("items", || vec![(1u32, "First".to_owned())]);
+    col().size_full()
+        .child(el().id("rename").size_8().child("Rename")
+            .on_press(move || items.update(|items| items[0].1 = "Renamed".into())))
+        .child(each(move || items.get(), |key, item| text(item).id(format!("item-{key}")).into()))
+        .into()
+});
+window.tap("rename").unwrap();
+assert_eq!(window.kernel().text_of("item-1").as_deref(), Some("Renamed"));
+assert!(window.app().diagnostics().is_empty());
+```
+
+Use business IDs for keys, not positions when rows can move. The row's `ReadSignal` follows
+its current key and source, including a read immediately after a write in the same handler.
+Changing a value or switching sources with the same logical key retains the row's local state
+and target. Removal retires them. A duplicate snapshot retires the region's rows until a valid
+snapshot arrives; a later recovery mounts fresh targets. Reading an absent key fails instead
+of returning its previous value (`LIST_ITEM_UNAVAILABLE`).
+
+For large, independently edited collections, use `StateList` and its incremental operators:
+
 ```rust
 use octara::prelude::*;
 
@@ -220,10 +248,10 @@ assert!(!app.kernel().exists("todo-1"));
   It does not copy items or create a snapshot; each item is exposed as a `ReadSignal`.
 - Derive lists in their creating App; both sides of `join` must belong to that App.
   Cross-App composition is rejected before callbacks run, even for empty lists (`WRONG_RUNTIME`).
-- `each` applies changes row by row: an insert creates one row, a remove disposes one, and the
+- For an incremental source, `each` applies changes row by row: an insert creates one row, a remove disposes one, and the
   state inside other rows stays.
 - Views of a list: `items.filter(|t| ..)`, `sort_by`, `group_by(..).flatten()`; render with
-  `each(move || view.read_only(), ..)`.
+  `each(move || view.clone(), ..)`.
 - Long lists: `virtual_each`, directly inside a scroll container with a bounded height
   (`VIRTUAL_LIST_NOT_SCROLLABLE` otherwise).
 - A transcript or log: `.follow_tail()` on its scroll container keeps the end in view until the

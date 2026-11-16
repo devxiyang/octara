@@ -127,7 +127,7 @@ fn list_changes_update_the_stage_without_rebuilding_the_composing_memo() {
         let right = state_list("right", Vec::<u32>::new, |n| *n);
         let selected = memo(move || {
             counted.set(counted.get() + 1);
-            left.filter(|n| n % 2 == 1).join(right, |n| *n, |n, r| if r.is_some() { n * 10 } else { *n }).read_only()
+            left.filter(|n| n % 2 == 1).join(right, |n| *n, |n, r| if r.is_some() { n * 10 } else { *n })
         });
         (left, right, selected)
     });
@@ -144,5 +144,135 @@ fn list_changes_update_the_stage_without_rebuilding_the_composing_memo() {
     assert_eq!(app.run(|| after.keys()), vec![1]);
     assert_eq!(app.run(|| after.item(&1).unwrap().get()), 10);
     assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    app.shutdown();
+}
+
+#[test]
+fn appending_an_incremental_row_does_not_reread_existing_row_values() {
+    let app = App::new(HeadlessPlatform::default());
+    let items = app.run(|| state_list("items", || (0..1_000u32).collect(), |n| *n));
+    let reads = Rc::new(Cell::new(0));
+    let counted = reads.clone();
+    let _window = app
+        .open_window(WindowOptions::default(), move || {
+            let counted = counted.clone();
+            col()
+                .size_full()
+                .child(each(
+                    move || items.read_only(),
+                    move |_, item| {
+                        let counted = counted.clone();
+                        text(move || {
+                            counted.set(counted.get() + 1);
+                            item.get().to_string()
+                        })
+                        .into()
+                    },
+                ))
+                .into()
+        })
+        .unwrap();
+    assert_eq!(reads.get(), 1_000);
+    app.run(|| items.push(1_000));
+    assert_eq!(reads.get(), 1_001, "an append must only read its new row");
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    app.shutdown();
+}
+
+#[test]
+fn a_finite_effect_fanout_does_not_exhaust_the_feedback_round_limit() {
+    let app = App::new(HeadlessPlatform::default());
+    let trigger = app.run(|| state("trigger", || false));
+    let effects = Rc::new(Cell::new(0));
+    let counted = effects.clone();
+    let _window = app
+        .open_window(WindowOptions::default(), move || {
+            col()
+                .size_full()
+                .children((0..1_100).map(|index| {
+                    let counted = counted.clone();
+                    component_keyed("Row", index, move || {
+                        let value = state("value", || 0u32);
+                        watch(
+                            move || trigger.get(),
+                            move |trigger, _| {
+                                if *trigger {
+                                    counted.set(counted.get() + 1);
+                                    value.set(1);
+                                }
+                            },
+                        );
+                        text(move || value.get().to_string()).into()
+                    })
+                }))
+                .into()
+        })
+        .unwrap();
+    app.run(|| trigger.set(true));
+    assert!(app.diagnostics().is_empty(), "finite one-way effects must settle: {:?}", app.diagnostics());
+    assert_eq!(effects.get(), 1_100);
+    app.shutdown();
+}
+
+#[test]
+fn derived_item_reads_respect_filter_and_group_membership() {
+    let app = App::new(HeadlessPlatform::default());
+    let source = app.run(|| state_list("items", || vec![(1u32, true), (2, false)], |item| item.0));
+    let (selected, members) = app.run(|| {
+        let selected = source.filter(|item| item.1);
+        let groups = source.group_by(|item| item.1);
+        (selected, groups.members(&true).unwrap())
+    });
+    app.run(|| {
+        assert!(selected.item(&2).is_none());
+        assert!(members.item(&2).is_none());
+        source.update(&1, |item| item.1 = false);
+        assert!(selected.item(&1).is_none());
+        assert!(members.item(&1).is_none());
+    });
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    app.shutdown();
+}
+
+#[test]
+fn feedback_that_recreates_keyed_scopes_and_watches_remains_bounded_and_pending() {
+    let app = App::new(HeadlessPlatform::default());
+    let (running, key) = app.run(|| (state("running", || false), state("key", || 0u32)));
+    let builds = Rc::new(Cell::new(0));
+    let counted = builds.clone();
+    let window = app
+        .open_window(WindowOptions::default(), move || {
+            let counted = counted.clone();
+            col()
+                .size_full()
+                .child(keyed(
+                    move || key.get(),
+                    move |_| {
+                        counted.set(counted.get() + 1);
+                        watch(
+                            move || running.get(),
+                            move |running, _| {
+                                if *running {
+                                    key.update(|key| *key += 1);
+                                }
+                            },
+                        );
+                        text("row").id("row").into()
+                    },
+                ))
+                .into()
+        })
+        .unwrap();
+    app.run(|| running.set(true));
+    assert!(app.diagnostics().iter().any(|d| d.code == "FLUSH_RUNAWAY"), "{:?}", app.diagnostics());
+    let cutoff = builds.get();
+    assert!(cutoff > 1 && cutoff < 5_000, "feedback must stop within a bounded amount of work: {cutoff}");
+    for _ in 0..3 {
+        assert!(window.unsettled().iter().any(|reason| reason == "reactive updates are still pending"));
+        assert_eq!(builds.get(), cutoff, "querying pending work must not resume the feedback");
+    }
+    app.run(|| running.set(false));
+    assert!(window.unsettled().is_empty(), "{:?}", window.unsettled());
+    assert!(window.kernel().exists("row"));
     app.shutdown();
 }

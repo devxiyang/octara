@@ -3,6 +3,11 @@
 Run the normal app with `cargo run -p octara-chat`. It uses the offline scripted model and saves
 conversations in its application data directory (`OCTARA_CHAT_DIR` overrides that location).
 
+Messages now persist stable part IDs and their next-ID allocator in `<thread>.v2.json`.
+The previous positional-part `<thread>.json` files are neither loaded nor overwritten/deleted
+by this format. There is no compatibility loader; use the new format for current sessions.
+
+
 To use an HTTP model, configure `OCTARA_CHAT_ENDPOINT` with a complete Chat Completions
 endpoint and `OCTARA_CHAT_MODEL` with its model name. `OCTARA_CHAT_API_KEY` optionally
 supplies the bearer token. The configured model is selected first; Scripted remains

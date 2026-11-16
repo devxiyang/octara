@@ -177,6 +177,7 @@ pub fn popup_list(
                 Placement::BELOW.fit(true),
                 move || {
                     let (row_id, pick) = (panel_id.clone(), pick.clone());
+                    let ordered = ordered.clone();
                     col()
                         .id(format!("{panel_id}-list"))
                         .role(Role::ListBox)
@@ -194,7 +195,7 @@ pub fn popup_list(
                         .bg(Token::Surface)
                         .shadow_lg()
                         .child(each(
-                            move || ordered.read_only(),
+                            move || ordered.clone(),
                             move |key, item| {
                                 let (selected, chosen, description_key, pick) = (key.clone(), key.clone(), key.clone(), pick.clone());
                                 col()

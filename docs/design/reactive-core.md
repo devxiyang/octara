@@ -61,7 +61,7 @@ registration reject pure contexts before executing their effects. Internal guard
 collector, scope and window on return/unwind. A memo read inside untrack still tracks its own inputs.
 
 - Push marking (direct observers Dirty, further downstream Check) + pull evaluation; a Memo is computed on demand and cuts off when the value is unchanged (Reactively; Salsa's early cutoff);
-- At flush, bindings come before `watch`, and within a kind in creation order;
+- At flush, structural bindings come before property bindings, then `watch`, with creation order within each kind. Newly queued earlier-priority work preempts the remaining batch, so an effect that removes a region retires its descendants before their queued callbacks;
 - A node is marked Clean **before running**: if it is re-marked while running (a `watch` callback writes to its own source), it runs another round;
 - Dependency edges are deduplicated with an epoch mark, O(1);
 - In the single-threaded runtime, handles are `Copy` and `!Send`, with generations; background results are sent back through the scheduler;

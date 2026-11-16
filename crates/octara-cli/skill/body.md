@@ -43,7 +43,7 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
 - Lists: key items by a stable unique id; an `each` row is one element; `virtual_each` sits
   directly in a scroll container with a bounded height.
   Use `read_only()` to share a list as `ReadList` (live, not a copied snapshot); its items are
-  `ReadSignal`s. `StateList`, `Derived` and `Groups` use the same spelling.
+  `ReadSignal`s. `StateList` and `Groups` use the same spelling; list operators already return `ReadList`.
 - Give the app root `size_full()`; a scroll area is `flex_1().overflow_y_scroll()`.
 - Component authors register built-in callbacks with `.behavior(|b| b.on_input(..).on_key(..))`.
   Layers run in registration order before the replaceable application `on_*` callback; setting

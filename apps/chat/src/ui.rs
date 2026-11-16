@@ -5,8 +5,9 @@
 //! the queue above it.
 
 use crate::chat::{Chat, Options};
-use crate::model::{Author, Message, Part, Status, Thread, ThreadId, Tool, ToolState};
+use crate::model::{Author, Message, Part, PartId, Status, Thread, ThreadId, ToolState};
 use octara::prelude::*;
+use octara::reactive::list::FlatKey;
 use octara_icons as icons;
 use octara_kit::markdown::markdown;
 use octara_kit::*;
@@ -178,7 +179,7 @@ fn sidebar() -> El {
             }),
         ))
         .child(list().id("threads").label("Conversations").flex_1().min_h(0.0).px_2().pb_2().overflow_y_scroll().child(virtual_each(
-            move || flat.read_only(),
+            move || flat.clone(),
             |item| if item.header().is_some() { 36.0 } else { 34.0 },
             move |key, item| match key.clone() {
                 FlatKey::Header(age) => list_header(age.to_string()).id(format!("age-{age:?}")).into(),
@@ -337,7 +338,7 @@ fn model_picker(chat: &Chat) -> El {
 fn transcript(thread: ThreadId) -> View {
     let chat = chat();
     let messages = chat.messages.filter(move |m| m.thread == thread);
-    let empty = messages;
+    let empty = messages.clone();
     View::Fragment(vec![
         col()
             .id("transcript")
@@ -347,7 +348,7 @@ fn transcript(thread: ThreadId) -> View {
             .selectable()
             .copy_markdown(|_| None)
             .child(virtual_each(
-                move || messages.read_only(),
+                move || messages.clone(),
                 |m: &Message| if m.author == Author::User { 60.0 } else { 160.0 },
                 |id, m| message(*id, m),
             ))
@@ -409,8 +410,8 @@ fn user_message(id: u64, m: ReadSignal<Message>) -> El {
     let editing = chat.editing;
     let parts = untrack(|| m.with(|m| m.parts.clone()));
     let files: Vec<View> =
-        parts.iter().filter_map(|p| if let Part::File(f) = p { Some(chip(f.name.clone()).into()) } else { None }).collect();
-    let body = parts.into_iter().find_map(|p| if let Part::Text(t) = p { Some(t) } else { None });
+        parts.iter().filter_map(|(_, p)| if let Part::File(f) = p { Some(chip(f.name.clone()).into()) } else { None }).collect();
+    let body = parts.into_iter().find_map(|(_, p)| if let Part::Text(t) = p { Some(t) } else { None });
     col()
         .group("msg")
         .items_end()
@@ -446,29 +447,14 @@ fn user_message(id: u64, m: ReadSignal<Message>) -> El {
 
 fn answer(id: u64, m: ReadSignal<Message>) -> El {
     let chat = chat();
-    // The parts as a list of their own, by index: a new part adds a row, a tool moving on
-    // updates its row, and the rest (Markdown streaming in) stays as it is.
-    let parts = state_list("parts", || untrack(|| m.with(|m| m.parts.iter().cloned().enumerate().collect())), |p: &(usize, Part)| p.0);
-    watch(
-        move || m.with(|m| m.parts.clone()),
-        move |now, _| {
-            for (i, p) in now.iter().enumerate() {
-                match parts.item(&i) {
-                    Some(old) if untrack(|| old.with(|o| o.1 == *p)) => {}
-                    Some(_) => parts.update(&i, |o| o.1 = p.clone()),
-                    None => parts.push((i, p.clone())),
-                }
-            }
-        },
-    );
     let status = move || m.with(|m| m.status.clone());
     let (regenerate, copy) = (chat.clone(), m);
     col()
         .group("msg")
         .gap_2()
-        .child(each(move || parts.read_only(), move |i, p| part(id, *i, p)))
+        .child(each(move || m.with(|m| m.parts.clone()), move |part_id, p| part(id, *part_id, p).into()))
         .child(show(
-            move || status() == Status::Streaming && parts.is_empty(),
+            move || status() == Status::Streaming && m.with(|m| m.parts.is_empty()),
             move || {
                 row()
                     .id(format!("waiting-{id}"))
@@ -524,19 +510,83 @@ fn answer(id: u64, m: ReadSignal<Message>) -> El {
         ))
 }
 
-/// One part of an answer.
-fn part(id: u64, i: usize, p: ReadSignal<(usize, Part)>) -> View {
-    match untrack(|| p.get()).1 {
-        Part::Text(t) => markdown(paced(&t)).id(format!("text-{id}-{i}")).into(),
-        Part::Reasoning { text: t, .. } => reasoning(id, i, t, p),
-        Part::Tool(_) => tool(id, i, p),
-        Part::File(f) => chip(f.name).into(),
+#[derive(Clone, Copy, PartialEq)]
+enum PartKind {
+    Text,
+    Reasoning,
+    Tool,
+    File,
+}
+
+impl PartKind {
+    fn of(part: &Part) -> Self {
+        match part {
+            Part::Text(_) => Self::Text,
+            Part::Reasoning { .. } => Self::Reasoning,
+            Part::Tool(_) => Self::Tool,
+            Part::File(_) => Self::File,
+        }
     }
 }
 
+impl std::fmt::Display for PartKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Text => "text",
+            Self::Reasoning => "reasoning",
+            Self::Tool => "tool",
+            Self::File => "file",
+        })
+    }
+}
+
+/// Equality is the buffer's identity; its diagnostic label never includes its changing text.
+#[derive(PartialEq)]
+struct TextResource(TextBuffer);
+
+impl std::fmt::Display for TextResource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("buffer")
+    }
+}
+
+fn text_resource(p: ReadSignal<Part>) -> TextResource {
+    p.with(|p| {
+        TextResource(match p {
+            Part::Text(t) | Part::Reasoning { text: t, .. } => t.clone(),
+            Part::Tool(t) => t.input.clone(),
+            Part::File(_) => unreachable!("file parts have no text subtree"),
+        })
+    })
+}
+
+/// The row keeps its identity through replacement; its variant and captured buffers have
+/// separate child lifetimes. Status changes only update the bindings inside the current kind.
+#[component]
+fn part(id: u64, part_id: PartId, p: ReadSignal<Part>) -> El {
+    col().id(format!("part-{id}-{part_id}")).w_full().min_w(0.0).child(keyed(
+        move || p.with(PartKind::of),
+        move |kind| match kind {
+            PartKind::Text => {
+                keyed(move || text_resource(p), move |resource| markdown(paced(&resource.0)).id(format!("text-{id}-{part_id}")).into())
+            }
+            PartKind::Reasoning => reasoning(id, part_id, p),
+            PartKind::Tool => tool(id, part_id, p),
+            PartKind::File => chip(move || {
+                p.with(|p| match p {
+                    Part::File(f) => f.name.clone(),
+                    _ => String::new(),
+                })
+            })
+            .into(),
+        },
+    ))
+}
+
 /// What the model thought: open while it thinks, closed once it has (the person may open it).
-fn reasoning(id: u64, i: usize, t: TextBuffer, p: ReadSignal<(usize, Part)>) -> View {
-    let ended = move || match p.with(|p| p.1.clone()) {
+#[component]
+fn reasoning(id: u64, part_id: PartId, p: ReadSignal<Part>) -> View {
+    let ended = move || match p.get() {
         Part::Reasoning { started, ended, .. } => ended.map(|e| e.saturating_sub(started)),
         _ => None,
     };
@@ -555,8 +605,15 @@ fn reasoning(id: u64, i: usize, t: TextBuffer, p: ReadSignal<(usize, Part)>) -> 
             Some(d) => format!("Thought for {}", seconds(d)),
         },
     ));
-    collapsible(&format!("reasoning-{id}-{i}"), open, header, move || text(paced(&t)).text_sm().text_color(Token::TextMuted).pl_5().into())
-        .into()
+    collapsible(&format!("reasoning-{id}-{part_id}"), open, header, move || {
+        keyed(
+            move || text_resource(p),
+            move |resource| {
+                text(paced(&resource.0)).id(format!("reasoning-text-{id}-{part_id}")).text_sm().text_color(Token::TextMuted).pl_5().into()
+            },
+        )
+    })
+    .into()
 }
 
 fn seconds(d: Duration) -> String {
@@ -565,8 +622,9 @@ fn seconds(d: Duration) -> String {
 }
 
 /// A tool call: its name and state; open, its input and output.
-fn tool(id: u64, i: usize, p: ReadSignal<(usize, Part)>) -> View {
-    let tool = move || match p.with(|p| p.1.clone()) {
+#[component]
+fn tool(id: u64, part_id: PartId, p: ReadSignal<Part>) -> View {
+    let tool = move || match p.get() {
         Part::Tool(t) => Some(t),
         _ => None,
     };
@@ -587,16 +645,24 @@ fn tool(id: u64, i: usize, p: ReadSignal<(usize, Part)>) -> View {
         .child(text(name).font_medium())
         .child(show(working, || spinner().size_3p5().into()))
         .child(text(state_label).text_xs());
-    collapsible(&format!("tool-{id}-{i}"), open, header, move || {
-        // Keep this part's buffer handle; its appended contents remain reactive in text(input).
-        let t: Option<Tool> = untrack(tool);
-        let input = t.as_ref().map(|t| t.input.clone()).unwrap_or_else(|| TextBuffer::new(""));
+    collapsible(&format!("tool-{id}-{part_id}"), open, header, move || {
         col()
             .gap_1()
             .pl_5()
             .text_xs()
             .child(text("Input").text_color(Token::TextMuted))
-            .child(text(input).font_mono().p_2().rounded_md().bg(Token::Surface))
+            .child(keyed(
+                move || text_resource(p),
+                move |resource| {
+                    text(resource.0.clone())
+                        .id(format!("tool-input-{id}-{part_id}"))
+                        .font_mono()
+                        .p_2()
+                        .rounded_md()
+                        .bg(Token::Surface)
+                        .into()
+                },
+            ))
             .child(show(
                 move || tool().and_then(|t| t.output).is_some(),
                 move || {
@@ -639,7 +705,7 @@ fn composer() -> El {
         .gap_2()
         .on_drop(move |paths| drop_in.attach(paths))
         .drag_over(|p| p.bg(Token::Surface))
-        .child(each(move || queued.read_only(), |qid, q| queued_row(*qid, q)))
+        .child(each(move || queued.clone(), |qid, q| queued_row(*qid, q)))
         .child(show(move || !available.has_model(), {
             let no_models = chat.models().is_empty();
             move || {
@@ -790,4 +856,216 @@ fn queued_row(id: u64, q: ReadSignal<crate::chat::Queued>) -> View {
         .child(icon_button(icons::PENCIL, "Edit").id(format!("edit-queued-{id}")).on_press(move || edit.edit_queued(id)))
         .child(icon_button(icons::X, "Remove").id(format!("unqueue-{id}")).on_press(move || remove.unqueue(id)))
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Attachment, Event, Tool};
+    use std::cell::RefCell;
+
+    type Action = Box<dyn FnOnce(Signal<Message>)>;
+
+    struct Parts {
+        window: Window,
+        action: Rc<RefCell<Option<Action>>>,
+        reads: Rc<Cell<usize>>,
+    }
+
+    impl Parts {
+        fn new(init: impl FnOnce() -> Message + 'static) -> Self {
+            let action: Rc<RefCell<Option<Action>>> = Rc::default();
+            let invoke = action.clone();
+            let reads = Rc::new(Cell::new(0));
+            let counted = reads.clone();
+            let init = RefCell::new(Some(init));
+            let window = Window::headless(move || {
+                provide(Chat::new(Options { models: Vec::new(), ..Options::default() }));
+                let message = state("message", || init.borrow_mut().take().unwrap()());
+                let counted = counted.clone();
+                // Every structural source reads this memo. Buffer edits must leave it clean.
+                let current = memo(move || {
+                    counted.set(counted.get() + 1);
+                    message.get()
+                });
+                let invoke = invoke.clone();
+                on_command("test.parts", move || {
+                    if let Some(action) = invoke.borrow_mut().take() {
+                        action(message);
+                    }
+                });
+                col().size_full().child(answer(1, current).id("answer")).into()
+            });
+            Self { window, action, reads }
+        }
+
+        fn run(&mut self, action: impl FnOnce(Signal<Message>) + 'static) {
+            *self.action.borrow_mut() = Some(Box::new(action));
+            self.window.invoke("test.parts").unwrap();
+            self.window.app().advance(Duration::from_secs(1));
+        }
+
+        fn target(&self, id: &str) -> String {
+            self.window.inspect().find(id).unwrap().target.clone()
+        }
+
+        fn texts(&self, id: &str) -> String {
+            let kernel = self.window.kernel();
+            let mut stack = vec![kernel.find(id).unwrap()];
+            let mut texts = Vec::new();
+            while let Some(node) = stack.pop() {
+                if !kernel.text(node).is_empty() {
+                    texts.push(kernel.text(node).to_owned());
+                }
+                stack.extend(kernel.children(node).iter().rev());
+            }
+            texts.join(" ")
+        }
+
+        fn clean(&self) {
+            assert!(self.window.layout_issues().is_empty(), "{:?}", self.window.layout_issues());
+            assert!(self.window.app().diagnostics().is_empty(), "{:?}", self.window.app().diagnostics());
+        }
+    }
+
+    #[test]
+    fn parts_reorder_delete_and_replace_kind_by_business_key() {
+        let mut parts = Parts::new(|| {
+            let mut message = Message::answer(1, 1);
+            for text in ["first", "second", "third"] {
+                message.push_part(Part::Text(TextBuffer::new(text)));
+            }
+            message
+        });
+        let retained = parts.target("part-1-1");
+        let removed = parts.target("part-1-0");
+        parts.run(|message| {
+            message.update(|message| {
+                message.parts.reverse();
+                message.parts.retain(|(id, _)| *id != 0);
+            })
+        });
+        assert_eq!(&parts.window.kernel().child_ids("answer")[..2], ["part-1-2", "part-1-1"]);
+        assert_eq!(parts.target("part-1-1"), retained);
+        assert!(!parts.window.kernel().exists("part-1-0"));
+
+        let text = parts.target("text-1-1");
+        parts.run(|message| message.update(|message| message.parts[1].1 = Part::Text(TextBuffer::new("replacement text"))));
+        assert_eq!(parts.target("part-1-1"), retained);
+        assert_ne!(parts.target("text-1-1"), text);
+        assert_eq!(parts.texts("text-1-1"), "replacement text");
+
+        parts.run(|message| {
+            message.update(|message| {
+                message.parts[1].1 = Part::File(Attachment { name: "replacement.txt".into(), path: "replacement.txt".into() });
+            })
+        });
+        assert_eq!(parts.target("part-1-1"), retained, "a new kind replaces only the row's content");
+        assert!(!parts.window.kernel().exists("text-1-1"));
+        assert_eq!(parts.texts("part-1-1"), "replacement.txt");
+        parts.run(|message| {
+            message.update(|message| {
+                message.parts.push((0, Part::Text(TextBuffer::new("returned"))));
+            })
+        });
+        assert_ne!(parts.target("part-1-0"), removed, "published deletion retires the old row's target");
+        parts.clean();
+    }
+
+    #[test]
+    fn reasoning_buffer_replacement_preserves_the_open_disclosure() {
+        let mut parts = Parts::new(|| {
+            let mut message = Message::answer(1, 1);
+            message.push_part(Part::Reasoning {
+                text: TextBuffer::new("old thought"),
+                started: Duration::ZERO,
+                ended: Some(Duration::from_secs(1)),
+            });
+            message
+        });
+        parts.window.tap("reasoning-1-0-trigger").unwrap();
+        let trigger = parts.target("reasoning-1-0-trigger");
+        let old_text = parts.target("reasoning-text-1-0");
+        parts.run(|message| {
+            message.update(|message| {
+                let Part::Reasoning { text, .. } = &mut message.parts[0].1 else { panic!() };
+                *text = TextBuffer::new("new thought");
+            })
+        });
+        assert_eq!(parts.window.kernel().expanded_of("reasoning-1-0-trigger"), Some(true));
+        assert_eq!(parts.target("reasoning-1-0-trigger"), trigger);
+        assert_ne!(parts.target("reasoning-text-1-0"), old_text);
+        assert_eq!(parts.texts("reasoning-text-1-0"), "new thought");
+        parts.run(|message| message.update(|message| message.status = Status::Stopped));
+        assert_eq!(parts.target("reasoning-1-0-trigger"), trigger);
+        assert_eq!(parts.window.kernel().expanded_of("reasoning-1-0-trigger"), Some(true));
+        let row = parts.target("part-1-0");
+        parts.run(|message| message.update(|message| message.parts[0].1 = Part::Text(TextBuffer::new("visible answer"))));
+        assert_eq!(parts.target("part-1-0"), row);
+        assert!(!parts.window.kernel().exists("reasoning-1-0-trigger"));
+        assert_eq!(parts.texts("text-1-0"), "visible answer");
+        parts.clean();
+    }
+
+    #[test]
+    fn tool_status_binds_in_place_and_only_a_new_input_replaces_its_text() {
+        let mut parts = Parts::new(|| {
+            let mut message = Message::answer(1, 1);
+            message.push_part(Part::Tool(Tool {
+                id: "lookup".into(),
+                name: "lookup".into(),
+                input: TextBuffer::new("old input"),
+                state: ToolState::Streaming,
+                output: None,
+            }));
+            message
+        });
+        parts.window.tap("tool-1-0-trigger").unwrap();
+        let trigger = parts.target("tool-1-0-trigger");
+        let input = parts.target("tool-input-1-0");
+        parts.run(|message| {
+            message.update(|message| {
+                let Part::Tool(tool) = &mut message.parts[0].1 else { panic!() };
+                tool.name = "renamed lookup".into();
+                tool.state = ToolState::Done;
+                tool.output = Some("found".into());
+            })
+        });
+        assert_eq!(parts.target("tool-1-0-trigger"), trigger);
+        assert_eq!(parts.target("tool-input-1-0"), input);
+        assert!(parts.texts("tool-1-0").contains("renamed lookup Done"));
+        assert!(parts.texts("tool-1-0").contains("found"));
+        parts.run(|message| {
+            message.update(|message| {
+                let Part::Tool(tool) = &mut message.parts[0].1 else { panic!() };
+                let old = std::mem::replace(&mut tool.input, TextBuffer::new("new input"));
+                old.append(" stale delta");
+            })
+        });
+        assert_eq!(parts.target("tool-1-0-trigger"), trigger);
+        assert_eq!(parts.window.kernel().expanded_of("tool-1-0-trigger"), Some(true));
+        assert_ne!(parts.target("tool-input-1-0"), input);
+        assert_eq!(parts.texts("tool-input-1-0"), "new input");
+        parts.clean();
+    }
+
+    #[test]
+    fn streamed_tokens_leave_message_structure_and_targets_untouched() {
+        let mut parts = Parts::new(|| {
+            let mut message = Message::answer(1, 1);
+            message.push_part(Part::Text(TextBuffer::new("first")));
+            message
+        });
+        let row = parts.target("part-1-0");
+        let text = parts.target("text-1-0");
+        let reads = parts.reads.get();
+        for _ in 0..3 {
+            parts.run(|message| assert!(message.with(|message| message.stream(&Event::Text(" token".into())))));
+        }
+        assert_eq!(parts.reads.get(), reads, "streaming never invalidates the message/parts source");
+        assert_eq!(parts.target("part-1-0"), row);
+        assert_eq!(parts.target("text-1-0"), text);
+        assert_eq!(parts.texts("text-1-0"), "first token token token");
+        parts.clean();
+    }
 }

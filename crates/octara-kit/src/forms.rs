@@ -185,7 +185,7 @@ pub fn radio_group(
             .gap_1()
             .child(text(label).id(format!("{id}-label")).text_sm().font_medium().text_color(Token::Text))
             .child(each(
-                move || ordered.read_only(),
+                move || ordered.clone(),
                 move |key, item| {
                     let (checked, shown, dot, pick) = (value.clone(), value.clone(), value.clone(), value.clone());
                     let (checked_key, shown_key, dot_key, pick_key) = (key.clone(), key.clone(), key.clone(), key.clone());

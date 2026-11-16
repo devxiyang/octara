@@ -6,6 +6,10 @@ upstream `4e10172a13a6756687fec70ed61f16dbd648fc8a` confirmed the main mechanism
 Mobile examples and tests retain their original pinned links. This is source-based analysis,
 not a report of executing Exact's tests or qualifying its platforms.
 
+The [2026-11-16 collection/region review](collection-regions.md) pins the newer `main` head
+`5491ab29`, covering row input replacement, branch ownership, bounded virtual residency and
+resource-retirement failures. The broader runtime comparison below keeps its stated baselines.
+
 **Octara's initial observation and convergence proposal was too large for the first working loop.**
 Exact demonstrates a smaller external model: query the current app, operate it through a declared
 path, wait explicitly when necessary, and return useful values and errors. Necessary correctness

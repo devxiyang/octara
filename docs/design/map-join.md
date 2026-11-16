@@ -8,7 +8,7 @@ their own state incrementally, and are stages themselves, so they compose
 
 ## `map`
 
-- `items.map(|t: &T| -> U) -> Derived<K, U>` (on `StateList`, `Derived` and `ReadList`, as `filter`),
+- `items.map(|t: &T| -> U) -> ReadList<K, U>` (on `StateList` and `ReadList`, as `filter`),
   `U: Clone + PartialEq`. Same keys, same order.
 - Each key has its own output signal; an upstream insert or update calls the closure once for
   that key, and an update reaches downstream only when the new output differs (`PartialEq`).
@@ -23,7 +23,7 @@ their own state incrementally, and are stages themselves, so they compose
 ## `join`
 
 - A lookup join: `left.join(&right, |l: &L| -> RK, |l: &L, r: Option<&R>| -> U)
-  -> Derived<LK, U>`. `right` is any keyed stage (`StateList`, `Derived`, `ReadList`) whose key type
+  -> ReadList<LK, U>`. `right` is any keyed stage (`StateList`, `ReadList`) whose key type
   is `RK`, so each left item matches at most one right item.
 - Output keys and order are the left side's. A left item whose right key is missing is kept,
   with `None` (a left outer join); when the right item appears or goes, the row updates, it is
@@ -45,7 +45,7 @@ their own state incrementally, and are stages themselves, so they compose
   a view reruns per item event, not when a signal read inside it changes. Reading a signal in
   one is a mistake that silently goes stale, so it is reported: `VIEW_READS_STATE` (warning,
   at the closure's call site). The fix: put the value in the item, `join` the data, or choose
-  between views in a memo (`memo(move || if active.get() { open.read_only() } else { all })`).
+  between views in a memo (`memo(move || if active.get() { open.clone() } else { all.clone() })`).
 
 ## Diagnostics
 

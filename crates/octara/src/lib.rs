@@ -58,12 +58,18 @@ pub mod prelude {
     pub use crate::paint::Rect;
     pub use crate::path::{FillRule, LineCap, LineJoin, Path, Stroke, Transform, point};
     pub use crate::platform::{ClipboardItem, CursorStyle};
-    pub use crate::reactive::list::{Derived, FlatItem, FlatKey, GroupInfo, Groups, ReadList, StateList, state_list};
+    pub use crate::reactive::list::{ReadList, StateList, state_list};
     pub use crate::reactive::on_cleanup;
     pub use crate::reactive::text::{TextBuffer, text_buffer};
     pub use crate::reactive::{ReadSignal, Signal, Watch, memo, provide, state, untrack, use_context, watch};
     pub use crate::task::{Load, Receiver, Resource, Sender, Task, background, channel, interval, resource, sleep, spawn};
-    pub use crate::view::*;
+    pub use crate::view::{
+        Behavior, El, IntoElement, IntoProp, IntoRows, IntoText, Length, Patch, Rich, Span, Styled, View, bind_keys, breakpoint, canvas,
+        clock, col, component, component_keyed, each, el, focus, following_tail, icon, instant, invoke, invoke_after_update, is_composing,
+        keyed, native_view, on_command, open_url, paced, pointer_position_in, px, read_from_clipboard, relative, rems, rich, row,
+        scroll_into_view, scroll_to, scroll_to_end, set_theme, settle_motion, show, show_else, size_of, sp, spacer, text, text_input,
+        viewport, virtual_each, web_view, write_to_clipboard,
+    };
     pub use crate::window::{WindowId, WindowKind, WindowOptions, close_window, current_window, open_window, windows};
     pub use accesskit::Live;
     pub use serde_json::json;

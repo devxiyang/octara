@@ -114,7 +114,9 @@ pub fn history(count: usize) -> (Thread, Vec<SavedMessage>) {
                     ],
                 )
             };
-            SavedMessage { id, author, parts, status: Status::Done }
+            let next_part = parts.len() as u64;
+            let parts = parts.into_iter().enumerate().map(|(i, part)| (i as u64, part)).collect();
+            SavedMessage { id, author, parts, status: Status::Done, next_part }
         })
         .collect();
     (Thread { id: THREAD, title: format!("Long session {count}"), updated: NOW }, messages)
@@ -130,7 +132,7 @@ pub fn seed(directory: &Path, count: usize) -> Result<Store, Box<dyn std::error:
         return Err(format!("long-session store must be empty: {}", directory.display()).into());
     }
     let (thread, messages) = history(count);
-    let file = std::fs::OpenOptions::new().write(true).create_new(true).open(directory.join("1.json"))?;
+    let file = std::fs::OpenOptions::new().write(true).create_new(true).open(directory.join("1.v2.json"))?;
     let mut writer = BufWriter::new(file);
     serde_json::to_writer(&mut writer, &Saved { thread, messages })?;
     writer.flush()?;
@@ -355,7 +357,7 @@ impl LongSession {
             message
                 .parts
                 .iter()
-                .map(|part| match part {
+                .map(|(_, part)| match part {
                     octara_chat::model::Part::Text(text) => text.len(),
                     _ => 0,
                 })

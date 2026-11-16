@@ -10,6 +10,8 @@ use std::time::Duration;
 
 pub type ThreadId = u64;
 pub type MessageId = u64;
+/// A durable identity within a message, independent of its current position and kind.
+pub type PartId = u64;
 
 /// Who wrote a message.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -83,8 +85,9 @@ pub struct Message {
     pub id: MessageId,
     pub thread: ThreadId,
     pub author: Author,
-    pub parts: Vec<Part>,
+    pub parts: Vec<(PartId, Part)>,
     pub status: Status,
+    next_part: PartId,
 }
 
 /// What a model sends while it answers.
@@ -104,24 +107,35 @@ pub enum Event {
 
 impl Message {
     pub fn user(id: MessageId, thread: ThreadId, text: &str, files: Vec<Attachment>) -> Message {
-        let mut parts: Vec<Part> = files.into_iter().map(Part::File).collect();
-        parts.push(Part::Text(TextBuffer::new(text)));
-        Message { id, thread, author: Author::User, parts, status: Status::Done }
+        let mut message = Message { id, thread, author: Author::User, parts: Vec::new(), status: Status::Done, next_part: 0 };
+        for file in files {
+            message.push_part(Part::File(file));
+        }
+        message.push_part(Part::Text(TextBuffer::new(text)));
+        message
     }
     /// An answer about to stream.
     pub fn answer(id: MessageId, thread: ThreadId) -> Message {
-        Message { id, thread, author: Author::Assistant, parts: Vec::new(), status: Status::Streaming }
+        Message { id, thread, author: Author::Assistant, parts: Vec::new(), status: Status::Streaming, next_part: 0 }
+    }
+
+    /// Adds a new logical part. Reordering, replacing or removing parts never reuses its key.
+    pub fn push_part(&mut self, part: Part) -> PartId {
+        let id = self.next_part;
+        self.next_part = id.checked_add(1).expect("message part IDs exhausted");
+        self.parts.push((id, part));
+        id
     }
 
     /// The text of its text parts, joined by blank lines (what is sent back to the model, copied).
     pub fn text(&self) -> String {
         let texts: Vec<String> =
-            self.parts.iter().filter_map(|p| if let Part::Text(t) = p { Some(untrack(|| t.get())) } else { None }).collect();
+            self.parts.iter().filter_map(|(_, p)| if let Part::Text(t) = p { Some(untrack(|| t.get())) } else { None }).collect();
         texts.join("\n\n")
     }
     /// Its files.
     pub fn files(&self) -> Vec<Attachment> {
-        self.parts.iter().filter_map(|p| if let Part::File(f) = p { Some(f.clone()) } else { None }).collect()
+        self.parts.iter().filter_map(|(_, p)| if let Part::File(f) = p { Some(f.clone()) } else { None }).collect()
     }
 
     /// Applies `event` if it only adds to the part it belongs to (text to the last text or
@@ -131,7 +145,7 @@ impl Message {
         if self.status != Status::Streaming {
             return false;
         }
-        match (event, self.parts.last()) {
+        match (event, self.parts.last().map(|(_, p)| p)) {
             (Event::Text(s), Some(Part::Text(t))) => t.append(s),
             (Event::Reasoning(s), Some(Part::Reasoning { text, ended: None, .. })) => text.append(s),
             (Event::ToolInput { id, delta }, _) => match self.tool(id) {
@@ -155,13 +169,15 @@ impl Message {
         match event {
             Event::Text(s) => {
                 self.end_reasoning(now);
-                self.parts.push(Part::Text(TextBuffer::new(s)));
+                self.push_part(Part::Text(TextBuffer::new(s)));
             }
-            Event::Reasoning(s) => self.parts.push(Part::Reasoning { text: TextBuffer::new(s), started: now, ended: None }),
+            Event::Reasoning(s) => {
+                self.push_part(Part::Reasoning { text: TextBuffer::new(s), started: now, ended: None });
+            }
             Event::ReasoningEnd => self.end_reasoning(now),
             Event::ToolStart { id, name } => {
                 self.end_reasoning(now);
-                self.parts.push(Part::Tool(Tool { id, name, input: TextBuffer::new(""), state: ToolState::Streaming, output: None }));
+                self.push_part(Part::Tool(Tool { id, name, input: TextBuffer::new(""), state: ToolState::Streaming, output: None }));
             }
             Event::ToolInput { .. } => {}
             Event::ToolRun { id } => self.set_tool(&id, |t| t.state = ToolState::Running),
@@ -178,7 +194,7 @@ impl Message {
     /// Ends it as `status` (stopped by the person, failed, done): what is still open closes.
     pub fn finish(&mut self, status: Status, now: Duration) {
         self.end_reasoning(now);
-        for p in &mut self.parts {
+        for (_, p) in &mut self.parts {
             if let Part::Tool(t) = p
                 && matches!(t.state, ToolState::Streaming | ToolState::Running)
             {
@@ -189,18 +205,18 @@ impl Message {
     }
 
     fn tool(&self, id: &str) -> Option<&Tool> {
-        self.parts.iter().find_map(|p| match p {
+        self.parts.iter().find_map(|(_, p)| match p {
             Part::Tool(t) if t.id == id => Some(t),
             _ => None,
         })
     }
     fn set_tool(&mut self, id: &str, f: impl FnOnce(&mut Tool)) {
-        if let Some(Part::Tool(t)) = self.parts.iter_mut().find(|p| matches!(p, Part::Tool(t) if t.id == id)) {
+        if let Some((_, Part::Tool(t))) = self.parts.iter_mut().find(|(_, p)| matches!(p, Part::Tool(t) if t.id == id)) {
             f(t);
         }
     }
     fn end_reasoning(&mut self, now: Duration) {
-        for p in &mut self.parts {
+        for (_, p) in &mut self.parts {
             if let Part::Reasoning { ended: e @ None, .. } = p {
                 *e = Some(now);
             }
@@ -223,8 +239,10 @@ pub enum SavedPart {
 pub struct SavedMessage {
     pub id: MessageId,
     pub author: Author,
-    pub parts: Vec<SavedPart>,
+    pub parts: Vec<(PartId, SavedPart)>,
     pub status: Status,
+    /// The next unused key, including parts removed before saving.
+    pub next_part: PartId,
 }
 
 impl Message {
@@ -232,43 +250,55 @@ impl Message {
         let parts = self
             .parts
             .iter()
-            .map(|p| match p {
-                Part::Text(t) => SavedPart::Text(untrack(|| t.get())),
-                Part::Reasoning { text, started, ended } => SavedPart::Reasoning {
-                    text: untrack(|| text.get()),
-                    seconds: ended.map_or(0.0, |e| (e.saturating_sub(*started)).as_secs_f64()),
-                },
-                Part::Tool(t) => SavedPart::Tool {
-                    id: t.id.clone(),
-                    name: t.name.clone(),
-                    input: untrack(|| t.input.get()),
-                    state: t.state.clone(),
-                    output: t.output.clone(),
-                },
-                Part::File(f) => SavedPart::File(f.clone()),
+            .map(|(id, p)| {
+                (
+                    *id,
+                    match p {
+                        Part::Text(t) => SavedPart::Text(untrack(|| t.get())),
+                        Part::Reasoning { text, started, ended } => SavedPart::Reasoning {
+                            text: untrack(|| text.get()),
+                            seconds: ended.map_or(0.0, |e| (e.saturating_sub(*started)).as_secs_f64()),
+                        },
+                        Part::Tool(t) => SavedPart::Tool {
+                            id: t.id.clone(),
+                            name: t.name.clone(),
+                            input: untrack(|| t.input.get()),
+                            state: t.state.clone(),
+                            output: t.output.clone(),
+                        },
+                        Part::File(f) => SavedPart::File(f.clone()),
+                    },
+                )
             })
             .collect();
         // A message still streaming when saved was cut off.
         let status = if self.status == Status::Streaming { Status::Stopped } else { self.status.clone() };
-        SavedMessage { id: self.id, author: self.author, parts, status }
+        SavedMessage { id: self.id, author: self.author, parts, status, next_part: self.next_part }
     }
 
     pub fn load(saved: SavedMessage, thread: ThreadId) -> Message {
         let parts = saved
             .parts
             .into_iter()
-            .map(|p| match p {
-                SavedPart::Text(t) => Part::Text(TextBuffer::new(t)),
-                SavedPart::Reasoning { text, seconds } => {
-                    Part::Reasoning { text: TextBuffer::new(text), started: Duration::ZERO, ended: Some(Duration::from_secs_f64(seconds)) }
-                }
-                SavedPart::Tool { id, name, input, state, output } => {
-                    Part::Tool(Tool { id, name, input: TextBuffer::new(input), state, output })
-                }
-                SavedPart::File(f) => Part::File(f),
+            .map(|(id, p)| {
+                (
+                    id,
+                    match p {
+                        SavedPart::Text(t) => Part::Text(TextBuffer::new(t)),
+                        SavedPart::Reasoning { text, seconds } => Part::Reasoning {
+                            text: TextBuffer::new(text),
+                            started: Duration::ZERO,
+                            ended: Some(Duration::from_secs_f64(seconds)),
+                        },
+                        SavedPart::Tool { id, name, input, state, output } => {
+                            Part::Tool(Tool { id, name, input: TextBuffer::new(input), state, output })
+                        }
+                        SavedPart::File(f) => Part::File(f),
+                    },
+                )
             })
             .collect();
-        Message { id: saved.id, thread, author: saved.author, parts, status: saved.status }
+        Message { id: saved.id, thread, author: saved.author, parts, status: saved.status, next_part: saved.next_part }
     }
 }
 
@@ -305,13 +335,13 @@ mod tests {
                 m.apply(e, s(t));
             }
             assert_eq!(m.status, Status::Done);
-            let Part::Reasoning { text, started, ended } = &m.parts[0] else { panic!() };
+            let Part::Reasoning { text, started, ended } = &m.parts[0].1 else { panic!() };
             assert_eq!(
                 (untrack(|| text.get()).as_str(), *started, *ended),
                 ("Thinking.", s(0), Some(s(500))),
                 "a tool call ends the thinking"
             );
-            let Part::Tool(t) = &m.parts[1] else { panic!() };
+            let Part::Tool(t) = &m.parts[1].1 else { panic!() };
             assert_eq!(
                 (untrack(|| t.input.get()).as_str(), &t.state, t.output.as_deref()),
                 ("{\"city\":\"Oslo\"}", &ToolState::Done, Some("4 °C"))
@@ -340,14 +370,34 @@ mod tests {
             m.apply(Event::Reasoning("Hm".into()), s(0));
             m.apply(Event::ToolStart { id: "x".into(), name: "search".into() }, s(1000));
             m.finish(Status::Stopped, s(2000));
-            let Part::Tool(t) = &m.parts[1] else { panic!() };
+            let Part::Tool(t) = &m.parts[1].1 else { panic!() };
             assert_eq!(t.state, ToolState::Failed("Stopped".into()));
             m.apply(Event::Text("late".into()), s(3000));
             assert_eq!(m.text(), "", "nothing lands after it ended");
             let back = Message::load(serde_json::from_str(&serde_json::to_string(&m.save()).unwrap()).unwrap(), 9);
             assert_eq!(back.save(), m.save());
-            let Part::Reasoning { ended, .. } = &back.parts[0] else { panic!() };
+            let Part::Reasoning { ended, .. } = &back.parts[0].1 else { panic!() };
             assert_eq!(*ended, Some(s(1000)), "thought for a second");
+        });
+    }
+
+    #[test]
+    fn part_keys_survive_reordering_and_saving_without_reusing_deleted_keys() {
+        run(|| {
+            let mut message = Message::answer(1, 1);
+            let a = message.push_part(Part::Text(TextBuffer::new("first")));
+            let b = message.push_part(Part::Text(TextBuffer::new("second")));
+            let removed = message.push_part(Part::Text(TextBuffer::new("removed")));
+            message.parts.reverse();
+            message.parts.retain(|(id, _)| *id != removed);
+            let saved = message.save();
+            let json = serde_json::to_string(&saved).unwrap();
+            let mut restored = Message::load(serde_json::from_str(&json).unwrap(), 1);
+            assert_eq!(restored.parts.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [b, a]);
+            assert_eq!(restored.text(), "second\n\nfirst");
+            assert_eq!(restored.save(), saved);
+            let fresh = restored.push_part(Part::Text(TextBuffer::new("new")));
+            assert!(fresh > removed, "a removed part's key stays retired after restoring the message");
         });
     }
 }

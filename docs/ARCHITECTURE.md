@@ -17,6 +17,11 @@ App root lifetime, style declaration ordering, exclusive element content and Ins
 broader primitive migration remains pending.
 The sections below describe the current code.
 
+The proposed next collection boundary is [Collection data, row identity and content lifetime](design/collection-regions.md).
+It replaces application-maintained Vec/list mirrors and separates retained row identity from
+current row input and replaceable content. It is not implemented; [latest Rune/Exact source
+research](research/collection-regions.md) records the evidence and tradeoffs.
+
 The [first-round scope](design/core-consolidation.md#scope-and-necessity) is limited to correct
 value access, dependencies, lifetime and propagation. The remaining API/primitive inventory is
 follow-up work, not a prerequisite for establishing those contracts.

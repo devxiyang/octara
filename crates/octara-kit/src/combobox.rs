@@ -201,6 +201,8 @@ pub fn combobox(
                     });
                 let list_id = popup_id.clone();
                 let row_value = popup_value.clone();
+                let rendered_matches = matches.clone();
+                let empty_matches = matches.clone();
                 let list = col()
                     .id(format!("{popup_id}-list"))
                     .role(Role::ListBox)
@@ -209,7 +211,7 @@ pub fn combobox(
                     .max_h(240.0)
                     .overflow_y_scroll()
                     .child(each(
-                        move || matches.read_only(),
+                        move || rendered_matches.clone(),
                         move |key, row| {
                             let (selected, pick) = (row_value.clone(), row_value.clone());
                             let (selected_key, active_key, pick_key) = (key.clone(), key.clone(), key.clone());
@@ -242,7 +244,7 @@ pub fn combobox(
                     .child(search)
                     .child(list)
                     .child(show(
-                        move || matches.is_empty(),
+                        move || empty_matches.is_empty(),
                         move || {
                             text("No results").id(format!("{empty_id}-empty")).px_3().py_2().text_sm().text_color(Token::TextMuted).into()
                         },

@@ -78,15 +78,16 @@ impl Store {
     }
 
     fn file(&self, id: ThreadId) -> PathBuf {
-        self.dir.join(format!("{id}.json"))
+        self.dir.join(format!("{id}.v2.json"))
     }
 
-    /// Every conversation saved, newest first (unreadable files are skipped).
+    /// Current-format conversations, newest first (unreadable files are skipped).
+    /// Positional-part v1 files remain untouched; saves/deletes only address v2 paths.
     pub fn load(&self) -> Vec<(Thread, Vec<SavedMessage>)> {
         let Ok(entries) = std::fs::read_dir(&self.dir) else { return Vec::new() };
         let mut out: Vec<(Thread, Vec<SavedMessage>)> = entries
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            .filter(|e| e.file_name().to_str().is_some_and(|name| name.ends_with(".v2.json")))
             .filter_map(|e| std::fs::read_to_string(e.path()).ok())
             .filter_map(|s| serde_json::from_str::<Saved>(&s).ok())
             .map(|s| (s.thread, s.messages))
@@ -148,12 +149,12 @@ mod tests {
         fn save(&self, writer: &Writer, revision: u64, title: &str) {
             let json =
                 serde_json::to_string(&Saved { thread: Thread { id: 1, title: title.into(), updated: 0 }, messages: Vec::new() }).unwrap();
-            writer.apply(1, revision, || write(&self.0, &self.0.join("1.json"), &json, revision));
+            writer.apply(1, revision, || write(&self.0, &self.0.join("1.v2.json"), &json, revision));
         }
 
         fn delete(&self, writer: &Writer, revision: u64) {
             writer.apply(1, revision, || {
-                let _ = std::fs::remove_file(self.0.join("1.json"));
+                let _ = std::fs::remove_file(self.0.join("1.v2.json"));
             });
         }
 
@@ -166,6 +167,24 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn current_format_saves_and_deletes_leave_previous_format_files_untouched() {
+        let dir = Directory::new();
+        let legacy = dir.0.join("1.json");
+        let original = r#"{"thread":{"id":1,"title":"previous","updated":0},"messages":[]}"#;
+        std::fs::write(&legacy, original).unwrap();
+        assert!(Store::new(&dir.0).load().is_empty());
+        let writer = Writer::default();
+        let save = writer.issue(1);
+        dir.save(&writer, save, "current");
+        assert_eq!(dir.title().as_deref(), Some("current"));
+        assert_eq!(std::fs::read_to_string(&legacy).unwrap(), original);
+        let delete = writer.issue(1);
+        dir.delete(&writer, delete);
+        assert_eq!(dir.title(), None);
+        assert_eq!(std::fs::read_to_string(legacy).unwrap(), original);
     }
 
     #[test]

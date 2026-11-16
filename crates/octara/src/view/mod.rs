@@ -14,7 +14,7 @@ pub use crate::kernel::rich::{Rich, Span, rich};
 pub use behavior::Behavior;
 pub(crate) use element::build_el;
 pub use element::{El, IntoProp, IntoText, Prop, TextContent, canvas, col, el, icon, native_view, row, spacer, text, text_input, web_view};
-pub use list::{each, virtual_each};
+pub use list::{IntoRows, each, virtual_each};
 pub use octara_macros::component;
 pub(crate) use pace::Paced;
 pub use pace::paced;
@@ -472,7 +472,7 @@ fn switch_at<K: PartialEq + 'static>(
         let last: Rc<RefCell<Option<K>>> = Rc::default();
         let branch: Rc<Cell<Option<ScopeId>>> = Rc::default();
         let (name, view) = (Rc::new(name), Rc::new(view));
-        graph::binding(at, move || {
+        graph::structural_binding(at, move || {
             let k = key();
             if last.borrow().as_ref() == Some(&k) {
                 return;

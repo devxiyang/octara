@@ -7,7 +7,7 @@
 //! - effects: handlers and `watch` callbacks, untracked, may write.
 //!
 //! Algorithm: push marking (Dirty on direct observers, Check further down), pull evaluation, memo
-//! early cutoff, bindings before watches, creation order. A node is marked Clean *before* it runs,
+//! early cutoff, structural bindings before properties before watches, creation order. A node is marked Clean *before* it runs,
 //! so a re-mark during its own run (a watch writing its source) schedules another run.
 //!
 //! Invariants: no runtime borrow is held while user code runs or while a value is dropped (values
@@ -41,6 +41,7 @@ enum State {
 enum Kind {
     Source,
     Memo,
+    Structure,
     Binding,
     Watch,
 }
@@ -366,7 +367,7 @@ impl Runtime {
         };
         match owner.unwrap_or(self.scope.get()) {
             Some(s) if self.scope_alive(s) => self.scopes.borrow_mut()[s.i as usize].nodes.push(idx),
-            None if owner.is_none() && matches!(kind, Kind::Binding | Kind::Watch) => {
+            None if owner.is_none() && matches!(kind, Kind::Structure | Kind::Binding | Kind::Watch) => {
                 self.diag(&codes::NO_OWNER, "an observer was created outside any scope and will never be disposed".into(), at)
             }
             _ => {}
@@ -392,11 +393,16 @@ impl Runtime {
                     n.observers.retain(|o| *o != idx);
                 }
             }
-            for o in observers {
+            for o in &observers {
                 if let Some(n) = nodes.get_mut(o.i as usize).filter(|n| n.alive && n.g == o.g) {
                     n.sources.retain(|s| *s != idx);
                 }
             }
+        }
+        // A cached derivation must not outlive a removed dependency's value. In particular,
+        // row inputs must re-resolve a removed key even before structural propagation.
+        for observer in observers {
+            self.mark(observer, State::Dirty);
         }
         self.free_nodes.borrow_mut().push(idx.i);
         // Dropped with no borrow held: a value may dispose nodes it owns.
@@ -544,7 +550,7 @@ impl Runtime {
                 return;
             }
             n.state = state;
-            if matches!(n.kind, Kind::Binding | Kind::Watch) && !n.queued {
+            if matches!(n.kind, Kind::Structure | Kind::Binding | Kind::Watch) && !n.queued {
                 n.queued = true;
                 self.queue.borrow_mut().push(idx);
             }
@@ -645,6 +651,30 @@ impl Runtime {
             return;
         }
         let _flushing = Restore::set(&self.flushing, true);
+        let priority = |idx: Idx| {
+            let nodes = self.nodes.borrow();
+            let n = &nodes[idx.i as usize];
+            (
+                match n.kind {
+                    Kind::Structure => 0,
+                    Kind::Binding => 1,
+                    _ => 2,
+                },
+                n.seq,
+            )
+        };
+        let suspend = |idx: Idx| {
+            let at = self.nodes.borrow()[idx.i as usize].defined_at;
+            self.diag(
+                &codes::FLUSH_RUNAWAY,
+                format!("updates exceeded {FLUSH_ROUNDS_LIMIT} feedback rounds; still scheduled: {}", loc(at)),
+                at,
+            );
+            self.propagation_suspended.set(true);
+        };
+        // New watches wait for the next feedback round. Structural/property work can preempt
+        // the remaining watches without spending that budget. This also bounds a loop that
+        // creates a fresh scope/watch on every turn, rather than counting only node identity.
         let mut rounds = 0;
         loop {
             let mut batch = std::mem::take(&mut *self.queue.borrow_mut());
@@ -653,36 +683,44 @@ impl Runtime {
             }
             rounds += 1;
             if rounds > FLUSH_ROUNDS_LIMIT {
-                let at = self.nodes.borrow()[batch[0].i as usize].defined_at;
-                self.diag(
-                    &codes::FLUSH_RUNAWAY,
-                    format!("updates did not settle after {FLUSH_ROUNDS_LIMIT} rounds; still scheduled: {}", loc(at)),
-                    at,
-                );
-                // Preserve the scheduled work so a later input can break the feedback loop.
+                suspend(batch[0]);
                 self.queue.borrow_mut().extend(batch);
-                self.propagation_suspended.set(true);
                 break;
             }
-            {
-                let nodes = self.nodes.borrow();
-                batch.sort_by_key(|i| {
-                    let n = &nodes[i.i as usize];
-                    (n.kind != Kind::Binding, n.seq)
-                });
-            }
+            batch.sort_by_key(|idx| priority(*idx));
             struct Batch<'a>(&'a Runtime, std::vec::IntoIter<Idx>);
             impl Drop for Batch<'_> {
                 fn drop(&mut self) {
-                    // A callback panic must not strand unrelated observers marked queued.
+                    // Panics and budget exits must not strand observers marked queued.
                     self.0.queue.borrow_mut().extend(self.1.by_ref());
                 }
             }
             let mut batch = Batch(self, batch.into_iter());
-            for i in batch.1.by_ref() {
+            let mut waves = 0;
+            while let Some(i) = batch.1.next() {
+                let queued = std::mem::take(&mut *self.queue.borrow_mut());
+                let (mut earlier, later): (Vec<_>, Vec<_>) =
+                    queued.into_iter().partition(|idx| self.alive(*idx) && self.kind(*idx) != Kind::Watch && priority(*idx) < priority(i));
+                self.queue.borrow_mut().extend(later);
+                if !earlier.is_empty() {
+                    earlier.push(i);
+                    earlier.extend(batch.1.by_ref());
+                    earlier.sort_by_key(|idx| priority(*idx));
+                    batch.1 = earlier.into_iter();
+                    waves += 1;
+                    if waves > FLUSH_ROUNDS_LIMIT {
+                        suspend(i);
+                        return;
+                    }
+                    continue;
+                }
                 if self.alive(i) {
+                    let effect = self.kind(i) == Kind::Watch;
                     self.nodes.borrow_mut()[i.i as usize].queued = false;
                     self.update_if_necessary(i);
+                    if effect {
+                        waves = 0;
+                    }
                 }
             }
         }
@@ -1024,10 +1062,17 @@ impl<T: 'static> ReadSignal<T> {
 /// it changes.
 #[track_caller]
 pub fn memo<T: PartialEq + 'static>(f: impl Fn() -> T + 'static) -> ReadSignal<T> {
+    memo_with(f, PartialEq::eq)
+}
+
+/// Internal derived inputs need not implement value equality (for example a row containing
+/// an opaque resource). They still use the same lazy graph and scope ownership as memos.
+#[track_caller]
+pub(crate) fn memo_with<T: 'static>(f: impl Fn() -> T + 'static, equal: impl Fn(&T, &T) -> bool + 'static) -> ReadSignal<T> {
     let at = Location::caller();
     let compute: Compute = Box::new(move |old| {
         let new = f();
-        let equal = old.is_some_and(|old| old.borrow().downcast_ref::<T>().is_some_and(|old| *old == new));
+        let equal = old.is_some_and(|old| old.borrow().downcast_ref::<T>().is_some_and(|old| equal(old, &new)));
         if equal { None } else { Some(value_cell(new)) }
     });
     ReadSignal(Signal::from_idx(rt(|rt| rt.create_node(Kind::Memo, None, Some(compute), false, None, at))))
@@ -1042,7 +1087,19 @@ fn observer(kind: Kind, at: &'static Location<'static>, compute: Compute) -> Idx
     })
 }
 
-/// A property binding or structural region (view layer): runs now and on every change.
+/// A structural region runs before property bindings and effects of retained descendants.
+pub(crate) fn structural_binding(at: &'static Location<'static>, mut f: impl FnMut() + 'static) {
+    observer(
+        Kind::Structure,
+        at,
+        Box::new(move |_| {
+            f();
+            None
+        }),
+    );
+}
+
+/// A property binding (view layer): runs now and on every change.
 pub(crate) fn binding(at: &'static Location<'static>, mut f: impl FnMut() + 'static) {
     observer(
         Kind::Binding,

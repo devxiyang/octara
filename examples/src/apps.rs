@@ -2,6 +2,7 @@
 
 use octara::app::Window;
 use octara::prelude::*;
+use octara::reactive::list::{FlatItem, FlatKey};
 use octara_kit::{button, checkbox, ghost_button, primary_button, switch, text_field, toggle_button};
 
 #[component]
@@ -143,10 +144,12 @@ pub fn todo(n: usize) -> View {
     let next_id = state("next_id", || n as u32 + 1);
     let draft = state("draft", String::new);
     let showing = state("showing", || Show::All);
+    let shown_active = active.clone();
+    let shown_done = done.clone();
     let visible = memo(move || match showing.get() {
         Show::All => todos.read_only(),
-        Show::Active => active.read_only(),
-        Show::Done => done.read_only(),
+        Show::Active => shown_active.clone(),
+        Show::Done => shown_done.clone(),
     });
     let add = move || {
         let title = draft.get().trim().to_owned();
@@ -534,7 +537,7 @@ pub fn contacts_virtual(n: usize) -> View {
         .child(
             col()
                 .child(virtual_each(
-                    move || flat.read_only(),
+                    move || flat.clone(),
                     height,
                     move |key, item| match key.clone() {
                         FlatKey::Header(team) => {
@@ -713,7 +716,7 @@ pub fn inbox(n: usize) -> View {
     col()
         .size_full()
         .child(col().id("messages").flex_1().overflow_y_scroll().child(each(
-            move || rows.read_only(),
+            move || rows.clone(),
             |id, msg| {
                 row()
                     .gap_2()

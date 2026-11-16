@@ -4,6 +4,10 @@ Status: research notes. Based on the `README.md`, `PLAN.md`, `crates/rune` sourc
 [anomalyco/rune](https://github.com/anomalyco/rune) at `3686e94` (2026-11-10), and its `research/` directory. Rune is
 pre-release, so the content below may change upstream.
 
+A newer targeted review on 2026-11-16 pins `dev` to `631e8a67`: see
+[collections and regions](collection-regions.md) for `Tracked`/`region`, dependency-boundary
+corrections and virtual-list lifecycle fixes. The broad survey below retains its older baseline.
+
 ## Positioning
 
 Rune is a Rust-native UI framework from Anomaly (the OpenCode team): its own renderer, text, layout, animation and

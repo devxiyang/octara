@@ -42,10 +42,18 @@ fn items_are_found_by_canonical_path_and_alias() {
     assert!(api.get("octara::reactive::list::Source").is_none());
     assert!(api.get("octara::prelude::Source").is_none());
     assert_eq!(api.get("octara::prelude::ReadList").unwrap().path, "octara::reactive::list::ReadList");
-    for ty in ["StateList", "Derived", "Groups"] {
+    for ty in ["StateList", "Groups"] {
         assert!(api.get(&format!("octara::reactive::list::{ty}::source")).is_none());
         assert!(api.get(&format!("octara::reactive::list::{ty}::read_only")).unwrap().sig.contains("ReadList<"));
     }
+    assert!(api.get("octara::reactive::list::Derived").is_none());
+    assert!(api.get("octara::prelude::Derived").is_none());
+    for method in ["filter", "map", "join", "sort_by"] {
+        for ty in ["StateList", "ReadList"] {
+            assert!(api.get(&format!("octara::reactive::list::{ty}::{method}")).unwrap().sig.contains("ReadList<"));
+        }
+    }
+    assert!(api.get("octara::reactive::list::Groups::flatten").unwrap().sig.contains("ReadList<"));
     assert!(api.get("octara::task::Task::detach").is_none());
     assert!(api.get("octara::app::App::shutdown").is_some());
     assert!(api.get("octara::app::Window::kernel_mut").is_none());

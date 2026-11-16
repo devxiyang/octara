@@ -3,6 +3,10 @@
 Status: a settled direction. Follows Rune's layering ([research](../research/rune.md)) and Exact's component interface ([research](../research/exact.md)).
 Parts marked "implemented" are in `crates/octara`; the rest are next steps.
 
+The [2026-11-16 reduction audit](primitive-reduction.md) distinguishes actual removal candidates,
+specialized APIs, and internal exports. It is a proposal; the implemented inventory below has
+not yet changed.
+
 ## 1. Layers
 
 | Layer | Package | Responsibility |

@@ -6,6 +6,11 @@ Inspector boundary. Broader consolidation remains pending. This is the complete 
 not a claim that every target has shipped. No compatibility layer, deprecated aliases or parallel
 old/new execution modes will be retained.
 
+The next proposed collection work is specified in [Collection regions](collection-regions.md),
+with a replacement/removal inventory and delivery gates. Its graph-integrated collection
+computation and shared row coordinator are not yet implemented. The watch-backed Vec adapter
+experiment was withdrawn; it is not part of the target architecture.
+
 This document owns scope, source inventory and delivery gates. [Runtime contract](runtime-contract.md)
 defines execution/lifetime semantics; [Signals redesign](signals-redesign.md) defines the replacement
 reactive API. Those target contracts supersede conflicting API/lifetime descriptions in

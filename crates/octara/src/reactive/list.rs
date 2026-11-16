@@ -11,7 +11,7 @@
 //! applying its log (`ReadList::subscribe` / `ReadList::take`); a `Move` moves a row.
 
 use crate::diagnostics as codes;
-use crate::reactive::graph::{Ctx, ReadSignal, Runtime, Signal, rt, state, untrack};
+use crate::reactive::graph::{Ctx, ReadSignal, Runtime, ScopeId, Signal, rt, state, untrack};
 use crate::reactive::seq::Seq;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -106,12 +106,68 @@ pub(crate) trait Observer<K, T> {
     fn moved(&self, key: &K, from: usize, to: usize, item: &T);
 }
 
+/// Execution belongs to the creating scope, including every upstream producer's scope.
+/// Retained read handles own cache storage, not the right to keep evaluating it.
+struct Producer {
+    scopes: Vec<(ScopeId, Signal<()>)>,
+}
+
+impl Producer {
+    fn alive(&self, runtime: &Runtime) -> bool {
+        self.scopes.iter().all(|(scope, _)| runtime.scope_alive(*scope))
+    }
+
+    #[track_caller]
+    fn track(&self) {
+        for (_, lifetime) in &self.scopes {
+            lifetime.get();
+        }
+    }
+}
+
+/// The scope retains this registration; upstream stages retain it weakly.
+struct ScopedObserver<K, T> {
+    observer: Rc<dyn Observer<K, T>>,
+    producer: Rc<Producer>,
+    runtime: Weak<Runtime>,
+}
+
+impl<K, T> ScopedObserver<K, T> {
+    fn live(&self) -> Option<&dyn Observer<K, T>> {
+        self.runtime.upgrade().filter(|runtime| self.producer.alive(runtime)).map(|_| self.observer.as_ref())
+    }
+}
+
+impl<K, T> Observer<K, T> for ScopedObserver<K, T> {
+    fn inserted(&self, index: usize, key: &K, item: &T) {
+        if let Some(observer) = self.live() {
+            observer.inserted(index, key, item);
+        }
+    }
+    fn removed(&self, index: usize, key: &K, item: &T) {
+        if let Some(observer) = self.live() {
+            observer.removed(index, key, item);
+        }
+    }
+    fn updated(&self, key: &K, old: &T, new: &T) {
+        if let Some(observer) = self.live() {
+            observer.updated(key, old, new);
+        }
+    }
+    fn moved(&self, key: &K, from: usize, to: usize, item: &T) {
+        if let Some(observer) = self.live() {
+            observer.moved(key, from, to, item);
+        }
+    }
+}
+
 /// The output side of a stage: its log, its version signal and its observers.
 pub(crate) struct Emitter<K, T> {
     log: RefCell<Log<Change<K>>>,
     version: Signal<u64>,
     observers: RefCell<Vec<Weak<dyn Observer<K, T>>>>,
     runtime: Weak<Runtime>,
+    producer: Option<Rc<Producer>>,
 }
 
 impl<K, T> Emitter<K, T> {
@@ -120,6 +176,10 @@ impl<K, T> Emitter<K, T> {
         if let Some(runtime) = self.runtime.upgrade() {
             signal.dispose_in(&runtime);
         }
+    }
+
+    fn producer_alive(&self) -> bool {
+        self.runtime.upgrade().is_some_and(|runtime| self.producer.as_ref().is_none_or(|producer| producer.alive(&runtime)))
     }
 }
 
@@ -130,7 +190,40 @@ impl<K: Clone + 'static, T: 'static> Emitter<K, T> {
             version: Signal::detached(0),
             observers: RefCell::new(Vec::new()),
             runtime: Rc::downgrade(&Runtime::current()),
+            producer: None,
         }
+    }
+    fn derived(parents: impl IntoIterator<Item = Option<Rc<Producer>>>) -> Self {
+        let mut emitter = Self::new();
+        let scope = Runtime::current().current_scope().expect("list derivation requires an App or component scope");
+        let mut scopes = Vec::new();
+        for parent in parents.into_iter().flatten() {
+            for (scope, lifetime) in &parent.scopes {
+                if !scopes.iter().any(|(owned, _)| owned == scope) {
+                    scopes.push((*scope, *lifetime));
+                }
+            }
+        }
+        if !scopes.iter().any(|(owned, _)| *owned == scope) {
+            scopes.push((scope, Signal::scoped(())));
+        }
+        emitter.producer = Some(Rc::new(Producer { scopes }));
+        emitter
+    }
+    fn observe(&self, observer: Rc<dyn Observer<K, T>>, producer: &Rc<Producer>) {
+        let registration: Rc<dyn Observer<K, T>> =
+            Rc::new(ScopedObserver { observer, producer: producer.clone(), runtime: self.runtime.clone() });
+        self.observers.borrow_mut().push(Rc::downgrade(&registration));
+        rt(|runtime| runtime.on_cleanup(Box::new(move || drop(registration))));
+    }
+    fn validate(&self, at: &'static Location<'static>) {
+        rt(|runtime| {
+            runtime.read(self.version.idx, at, false);
+            if self.producer.as_ref().is_some_and(|producer| !producer.alive(runtime)) {
+                runtime.diag(&codes::READ_DISPOSED, "derived list's creating scope or an upstream producer was disposed".into(), at);
+                panic!("[{}] read of a retired derived list", codes::READ_DISPOSED);
+            }
+        });
     }
     fn bump(&self) {
         self.version.set_internal(untrack(|| self.version.get()) + 1);
@@ -203,6 +296,8 @@ pub(crate) fn writable(at: &'static Location<'static>) -> bool {
 /// Derive lists inside the creating App; `join` requires both lists to belong to that App.
 /// A foreign or disposed list is rejected before nodes or subscriptions are created and before
 /// any predicate, key or projection callback runs, including when a list is empty.
+/// Derived lists stop evaluating when their creating scope or an upstream producer retires.
+/// Cloning keeps their storage alive until final release, without extending execution lifetime.
 pub struct ReadList<K: 'static, T: 'static>(Rc<dyn Stage<K, T>>);
 
 impl<K, T> Clone for ReadList<K, T> {
@@ -229,18 +324,6 @@ impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<&StateList<K, T>> 
     }
 }
 
-impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<Derived<K, T>> for ReadList<K, T> {
-    fn from(d: Derived<K, T>) -> Self {
-        d.read_only()
-    }
-}
-
-impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static> From<&Derived<K, T>> for ReadList<K, T> {
-    fn from(d: &Derived<K, T>) -> Self {
-        d.read_only()
-    }
-}
-
 impl<K, T> PartialEq for ReadList<K, T> {
     fn eq(&self, other: &Self) -> bool {
         std::ptr::addr_eq(Rc::as_ptr(&self.0), Rc::as_ptr(&other.0))
@@ -255,29 +338,37 @@ where
     /// Validate the existing version node without subscribing the surrounding computation.
     #[track_caller]
     fn validate(&self) {
-        let at = Location::caller();
-        rt(|rt| {
-            rt.read(self.0.emitter().version.idx, at, false);
-        });
+        self.0.emitter().validate(Location::caller());
     }
 
     /// Subscribes the running observer to this stage's structure.
+    #[track_caller]
     pub(crate) fn track(&self) {
+        self.validate();
+        if let Some(producer) = &self.0.emitter().producer {
+            producer.track();
+        }
         self.0.emitter().version.get();
     }
 
     /// Keys in order, untracked.
+    #[track_caller]
     pub(crate) fn snapshot(&self) -> Vec<K> {
+        self.validate();
         self.0.snapshot()
     }
 
     /// A reader of this stage's change log, positioned at its end.
+    #[track_caller]
     pub(crate) fn subscribe(&self) -> Cursor {
+        self.validate();
         self.0.emitter().log.borrow_mut().subscribe()
     }
 
     /// The changes since `cursor`, advancing it.
+    #[track_caller]
     pub(crate) fn take(&self, cursor: &Cursor) -> Vec<Change<K>> {
+        self.validate();
         self.0.emitter().log.borrow_mut().take(cursor)
     }
 
@@ -300,48 +391,57 @@ where
         self.0.snapshot()
     }
 
+    #[track_caller]
     pub fn item(&self, k: &K) -> Option<ReadSignal<T>> {
+        self.validate();
+        if let Some(producer) = &self.0.emitter().producer {
+            producer.track();
+        }
+        self.0.index_of(k)?;
         self.0.item(k)
     }
 
     /// Entries held in this stage's log (to check it stays bounded).
+    #[track_caller]
     pub fn log_len(&self) -> usize {
+        self.validate();
         self.0.emitter().log.borrow().len()
     }
 
-    fn attach<V: Stage<K, T> + Observer<K, T> + 'static>(&self, v: Rc<V>) -> Derived<K, T> {
-        let obs: Rc<dyn Observer<K, T>> = v.clone();
-        self.0.emitter().observers.borrow_mut().push(Rc::downgrade(&obs));
-        let version = v.emitter().version;
-        // Scope-owned: the view lives as long as the scope that created it.
-        Derived { holder: Signal::scoped(v as Rc<dyn Stage<K, T>>), version }
+    fn attach<V: Stage<K, T> + Observer<K, T> + 'static>(&self, v: Rc<V>) -> ReadList<K, T> {
+        self.0.emitter().observe(v.clone(), v.emitter().producer.as_ref().expect("derived producer"));
+        ReadList(v)
     }
 
     /// The items matching `pred`, in upstream order; maintained incrementally.
     #[track_caller]
-    pub fn filter(&self, pred: impl Fn(&T) -> bool + 'static) -> Derived<K, T> {
+    pub fn filter(&self, pred: impl Fn(&T) -> bool + 'static) -> ReadList<K, T> {
         self.validate();
         let pred = view_fn(pred);
         let up = self.0.clone();
         let members = Seq::from_keys(up.snapshot().into_iter().filter(|k| up.item(k).is_some_and(|i| untrack(|| i.with(|t| pred(t))))));
-        self.attach(Rc::new(FilterInner { up, pred: Box::new(pred), seq: RefCell::new(members), emitter: Emitter::new() }))
+        self.attach(Rc::new(FilterInner {
+            up,
+            pred: Box::new(pred),
+            seq: RefCell::new(members),
+            emitter: Emitter::derived([self.0.emitter().producer.clone()]),
+        }))
     }
 
     /// The items transformed by `f`, under the same keys and in the same order; maintained
     /// incrementally: an item's change calls `f` once, and reaches what follows only if the
     /// result differs. `f` is a pure function of the item (a read signal is reported).
     #[track_caller]
-    pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> Derived<K, U> {
+    pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> ReadList<K, U> {
         self.validate();
         let f = view_fn(f);
         let up = self.0.clone();
         let out =
             up.snapshot().into_iter().filter_map(|k| up.item(&k).map(|it| (k, Signal::detached(untrack(|| it.with(|t| f(t))))))).collect();
-        let m = Rc::new(MapInner { up: up.clone(), f: Box::new(f), out: RefCell::new(out), emitter: Emitter::new() });
-        let obs: Rc<dyn Observer<K, T>> = m.clone();
-        up.emitter().observers.borrow_mut().push(Rc::downgrade(&obs));
-        let version = m.emitter.version;
-        Derived { holder: Signal::scoped(m as Rc<dyn Stage<K, U>>), version }
+        let emitter = Emitter::derived([up.emitter().producer.clone()]);
+        let m = Rc::new(MapInner { up: up.clone(), f: Box::new(f), out: RefCell::new(out), emitter });
+        up.emitter().observe(m.clone(), m.emitter.producer.as_ref().expect("derived producer"));
+        ReadList(m)
     }
 
     /// Each item with the one item of `right` it points at (a lookup join): `key` gives the
@@ -356,7 +456,7 @@ where
         right: impl Into<ReadList<RK, R>>,
         key: impl Fn(&T) -> RK + 'static,
         f: impl Fn(&T, Option<&R>) -> U + 'static,
-    ) -> Derived<K, U>
+    ) -> ReadList<K, U>
     where
         RK: Eq + Hash + Clone + 'static,
         R: Clone + 'static,
@@ -375,28 +475,24 @@ where
             f: Box::new(f),
             out: RefCell::new(HashMap::new()),
             by_right: RefCell::new(HashMap::new()),
-            adapter: RefCell::new(None),
             at,
-            emitter: Emitter::new(),
+            emitter: Emitter::derived([left.emitter().producer.clone(), right.emitter().producer.clone()]),
         });
         for k in left.snapshot() {
             if let Some(it) = left.item(&k) {
                 untrack(|| it.with(|t| j.attach_row(&k, t)));
             }
         }
-        let obs: Rc<dyn Observer<K, T>> = j.clone();
-        left.emitter().observers.borrow_mut().push(Rc::downgrade(&obs));
-        let adapter: Rc<dyn Observer<RK, R>> = Rc::new(JoinRight { join: Rc::downgrade(&j) });
-        right.emitter().observers.borrow_mut().push(Rc::downgrade(&adapter));
-        *j.adapter.borrow_mut() = Some(adapter);
-        let version = j.emitter.version;
-        Derived { holder: Signal::scoped(j as Rc<dyn Stage<K, U>>), version }
+        let producer = j.emitter.producer.as_ref().expect("derived producer");
+        left.emitter().observe(j.clone(), producer);
+        right.emitter().observe(Rc::new(JoinRight { join: Rc::downgrade(&j) }), producer);
+        ReadList(j)
     }
 
     /// The items ordered by `key` (ties keep the order in which they entered the view);
     /// maintained incrementally: a key change moves one item.
     #[track_caller]
-    pub fn sort_by<S: Ord + Clone + 'static>(&self, key: impl Fn(&T) -> S + 'static) -> Derived<K, T> {
+    pub fn sort_by<S: Ord + Clone + 'static>(&self, key: impl Fn(&T) -> S + 'static) -> ReadList<K, T> {
         self.validate();
         let key = view_fn(key);
         let up = self.0.clone();
@@ -416,7 +512,7 @@ where
             seq: RefCell::new(seq),
             ord: RefCell::new(ord),
             next: Cell::new(next),
-            emitter: Emitter::new(),
+            emitter: Emitter::derived([self.0.emitter().producer.clone()]),
         }))
     }
 
@@ -436,7 +532,7 @@ where
             groups: RefCell::new(Seq::new()),
             members: RefCell::new(HashMap::new()),
             member_of: RefCell::new(HashMap::new()),
-            emitter: Emitter::new(),
+            emitter: Emitter::derived([up.emitter().producer.clone()]),
         });
         for (i, k) in up.snapshot().into_iter().enumerate() {
             if let Some(item) = up.item(&k) {
@@ -444,10 +540,8 @@ where
             }
         }
         // Building emitted into empty logs with no readers; nothing to keep.
-        let obs: Rc<dyn Observer<K, T>> = g.clone();
-        up.emitter().observers.borrow_mut().push(Rc::downgrade(&obs));
-        let version = g.emitter.version;
-        Groups { holder: Signal::scoped(g), version }
+        up.emitter().observe(g.clone(), g.emitter.producer.as_ref().expect("derived producer"));
+        Groups { holder: Signal::scoped(g) }
     }
 }
 
@@ -567,12 +661,12 @@ where
         self.inner().index_of(k)
     }
     #[track_caller]
-    pub fn filter(&self, pred: impl Fn(&T) -> bool + 'static) -> Derived<K, T> {
+    pub fn filter(&self, pred: impl Fn(&T) -> bool + 'static) -> ReadList<K, T> {
         self.read_only().filter(pred)
     }
     /// The items transformed by `f`, same keys and order ([`ReadList::map`]).
     #[track_caller]
-    pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> Derived<K, U> {
+    pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> ReadList<K, U> {
         self.read_only().map(f)
     }
     /// Each item with the item of `right` it points at ([`ReadList::join`]).
@@ -582,7 +676,7 @@ where
         right: impl Into<ReadList<RK, R>>,
         key: impl Fn(&T) -> RK + 'static,
         f: impl Fn(&T, Option<&R>) -> U + 'static,
-    ) -> Derived<K, U>
+    ) -> ReadList<K, U>
     where
         RK: Eq + Hash + Clone + 'static,
         R: Clone + 'static,
@@ -591,7 +685,7 @@ where
         self.read_only().join(right, key, f)
     }
     #[track_caller]
-    pub fn sort_by<S: Ord + Clone + 'static>(&self, key: impl Fn(&T) -> S + 'static) -> Derived<K, T> {
+    pub fn sort_by<S: Ord + Clone + 'static>(&self, key: impl Fn(&T) -> S + 'static) -> ReadList<K, T> {
         self.read_only().sort_by(key)
     }
     #[track_caller]
@@ -670,80 +764,6 @@ where
         for k in doomed {
             self.remove_key(&k);
         }
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Derived views
-// ---------------------------------------------------------------------------------------------
-
-/// A handle to a derived view (`filter`, `sort_by`). `Copy`; owned by the scope that made it.
-pub struct Derived<K: 'static, T: 'static> {
-    holder: Signal<Rc<dyn Stage<K, T>>>,
-    version: Signal<u64>,
-}
-
-impl<K, T> Clone for Derived<K, T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<K, T> Copy for Derived<K, T> {}
-
-impl<K, T> Derived<K, T>
-where
-    K: Eq + Hash + Clone + 'static,
-    T: Clone + 'static,
-{
-    /// Shares this live derived list for reading, without copying its items.
-    pub fn read_only(&self) -> ReadList<K, T> {
-        ReadList(untrack(|| self.holder.get()))
-    }
-    /// Number of items, O(1); tracks the view.
-    #[track_caller]
-    pub fn len(&self) -> usize {
-        self.version.get();
-        untrack(|| self.holder.get()).len()
-    }
-    #[track_caller]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-    #[track_caller]
-    pub fn keys(&self) -> Vec<K> {
-        self.read_only().keys()
-    }
-    #[track_caller]
-    pub fn filter(&self, pred: impl Fn(&T) -> bool + 'static) -> Derived<K, T> {
-        self.read_only().filter(pred)
-    }
-    /// The items transformed by `f`, same keys and order ([`ReadList::map`]).
-    #[track_caller]
-    pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> Derived<K, U> {
-        self.read_only().map(f)
-    }
-    /// Each item with the item of `right` it points at ([`ReadList::join`]).
-    #[track_caller]
-    pub fn join<RK, R, U>(
-        &self,
-        right: impl Into<ReadList<RK, R>>,
-        key: impl Fn(&T) -> RK + 'static,
-        f: impl Fn(&T, Option<&R>) -> U + 'static,
-    ) -> Derived<K, U>
-    where
-        RK: Eq + Hash + Clone + 'static,
-        R: Clone + 'static,
-        U: Clone + PartialEq + 'static,
-    {
-        self.read_only().join(right, key, f)
-    }
-    #[track_caller]
-    pub fn sort_by<S: Ord + Clone + 'static>(&self, key: impl Fn(&T) -> S + 'static) -> Derived<K, T> {
-        self.read_only().sort_by(key)
-    }
-    #[track_caller]
-    pub fn group_by<G: Ord + Hash + Clone + Display + 'static>(&self, key: impl Fn(&T) -> G + 'static) -> Groups<G, K, T> {
-        self.read_only().group_by(key)
     }
 }
 
@@ -984,8 +1004,6 @@ struct JoinInner<K, T, RK, R, U> {
     f: JoinFn<T, R, U>,
     out: RefCell<HashMap<K, (RK, Signal<U>)>>,
     by_right: RefCell<HashMap<RK, Vec<K>>>,
-    /// Observes the right stage (kept alive here; the right stage holds it weakly).
-    adapter: RefCell<Option<Rc<dyn Observer<RK, R>>>>,
     at: &'static Location<'static>,
     emitter: Emitter<K, U>,
 }
@@ -1257,7 +1275,9 @@ where
         if let Some(e) = self.members.borrow().get(g) {
             return (e.members.clone(), e.info);
         }
-        let members = Rc::new(Members { up: self.up.clone(), seq: RefCell::new(Seq::new()), emitter: Emitter::new() });
+        let mut emitter = Emitter::new();
+        emitter.producer = self.emitter.producer.clone();
+        let members = Rc::new(Members { up: self.up.clone(), seq: RefCell::new(Seq::new()), emitter });
         let info = Signal::detached(GroupInfo { key: g.clone(), len: 0 });
         self.members.borrow_mut().insert(g.clone(), GroupEntry { members: members.clone(), info });
         let r = self.groups.borrow().count_while(|x| x < g);
@@ -1347,7 +1367,6 @@ where
 /// Groups of a collection: a stage of `GroupInfo` items keyed by group, plus each group's members.
 pub struct Groups<G: 'static, K: 'static, T: 'static> {
     holder: Signal<Rc<GroupsInner<G, K, T>>>,
-    version: Signal<u64>,
 }
 
 impl<G, K, T> Clone for Groups<G, K, T> {
@@ -1364,22 +1383,27 @@ where
     T: Clone + 'static,
 {
     /// A read-only list of groups, ordered by key; each item is the group's `GroupInfo` (key and size).
+    #[track_caller]
     pub fn read_only(&self) -> ReadList<G, GroupInfo<G>> {
-        ReadList(untrack(|| self.holder.get()))
+        let groups = untrack(|| self.holder.get());
+        groups.emitter.validate(Location::caller());
+        ReadList(groups)
     }
     /// Number of groups; tracks the groups.
     #[track_caller]
     pub fn len(&self) -> usize {
-        self.version.get();
-        untrack(|| self.holder.get()).groups.borrow().len()
+        self.read_only().len()
     }
     #[track_caller]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
     /// One group's members, in upstream order (`None` if the group does not exist).
+    #[track_caller]
     pub fn members(&self, g: &G) -> Option<ReadList<K, T>> {
-        untrack(|| self.holder.get()).members.borrow().get(g).map(|e| ReadList(e.members.clone() as Rc<dyn Stage<K, T>>))
+        let groups = untrack(|| self.holder.get());
+        groups.emitter.validate(Location::caller());
+        groups.members.borrow().get(g).map(|e| ReadList(e.members.clone() as Rc<dyn Stage<K, T>>))
     }
 }
 
@@ -1455,23 +1479,23 @@ where
     T: Clone + 'static,
 {
     fn inserted(&self, r: usize, k: &K, t: &T) {
-        if let Some(f) = self.flat.upgrade() {
+        if let Some(f) = self.flat.upgrade().filter(|flat| flat.emitter.producer_alive()) {
             let at = f.header_index(&self.group) + 1 + r;
             f.put(at, FlatKey::Item(k.clone()), FlatItem::Item(t.clone()));
         }
     }
     fn removed(&self, _: usize, k: &K, _: &T) {
-        if let Some(f) = self.flat.upgrade() {
+        if let Some(f) = self.flat.upgrade().filter(|flat| flat.emitter.producer_alive()) {
             f.take(&FlatKey::Item(k.clone()));
         }
     }
     fn updated(&self, k: &K, old: &T, new: &T) {
-        if let Some(f) = self.flat.upgrade() {
+        if let Some(f) = self.flat.upgrade().filter(|flat| flat.emitter.producer_alive()) {
             f.replace(&FlatKey::Item(k.clone()), FlatItem::Item(old.clone()), FlatItem::Item(new.clone()));
         }
     }
     fn moved(&self, k: &K, _: usize, to: usize, _: &T) {
-        if let Some(f) = self.flat.upgrade() {
+        if let Some(f) = self.flat.upgrade().filter(|flat| flat.emitter.producer_alive()) {
             let key = FlatKey::Item(k.clone());
             let from = f.seq.borrow_mut().remove(&key).expect("member in flat");
             let at = f.header_index(&self.group) + 1 + to;
@@ -1582,8 +1606,10 @@ where
     /// Each group's header followed by its members, as one stage (DBSP's flat_map): suitable
     /// for `virtual_each`. Positions are O(log n): a member sits at its header's index + 1 + its
     /// rank in the group.
-    pub fn flatten(&self) -> Derived<FlatKey<G, K>, FlatItem<G, T>> {
+    #[track_caller]
+    pub fn flatten(&self) -> ReadList<FlatKey<G, K>, FlatItem<G, T>> {
         let groups = untrack(|| self.holder.get());
+        groups.emitter.validate(Location::caller());
         let flat = Rc::new(FlatInner {
             groups: groups.clone(),
             order: RefCell::new(Seq::new()),
@@ -1591,7 +1617,7 @@ where
             items: RefCell::new(HashMap::new()),
             adapters: RefCell::new(HashMap::new()),
             me: RefCell::new(Weak::new()),
-            emitter: Emitter::new(),
+            emitter: Emitter::derived([groups.emitter.producer.clone()]),
         });
         *flat.me.borrow_mut() = Rc::downgrade(&flat);
         for g in groups.groups.borrow().to_vec() {
@@ -1611,10 +1637,8 @@ where
             }
             flat.watch_members(&g);
         }
-        let obs: Rc<dyn Observer<G, GroupInfo<G>>> = flat.clone();
-        groups.emitter.observers.borrow_mut().push(Rc::downgrade(&obs));
-        let version = flat.emitter.version;
-        Derived { holder: Signal::scoped(flat as Rc<dyn Stage<FlatKey<G, K>, FlatItem<G, T>>>), version }
+        groups.emitter.observe(flat.clone(), flat.emitter.producer.as_ref().expect("derived producer"));
+        ReadList(flat)
     }
 }
 
@@ -1647,11 +1671,11 @@ mod tests {
                 // map after a sort (moves pass through it) and a filter after a map.
                 let m = s.map(|r| r.a as u32 * 10 + r.b as u32);
                 let mf = l.map(|r| r.b).filter(|b| *b >= 2);
-                let m_cursor = m.read_only().0.emitter().log.borrow_mut().subscribe();
+                let m_cursor = m.0.emitter().log.borrow_mut().subscribe();
                 let mut m_replay: Vec<u32> = Vec::new();
-                let flat_cursor = flat.read_only().0.emitter().log.borrow_mut().subscribe();
+                let flat_cursor = flat.0.emitter().log.borrow_mut().subscribe();
                 let mut flat_replay: Vec<FlatKey<u8, u32>> = Vec::new();
-                let logs = [l.read_only(), f.read_only(), s.read_only()];
+                let logs = [l.read_only(), f.clone(), s.clone()];
                 let cursors: Vec<_> = logs.iter().map(|src| src.0.emitter().log.borrow_mut().subscribe()).collect();
                 let mut replay: Vec<Vec<u32>> = vec![Vec::new(); 3];
                 let mut x: u64 = 99;
@@ -1689,15 +1713,11 @@ mod tests {
                     assert_eq!(f.keys(), want_f, "filter at step {step}");
                     assert_eq!(m.keys(), want_s, "map keys at step {step}");
                     for (k, r) in sorted.iter().map(|r| (r.id, r)) {
-                        assert_eq!(
-                            untrack(|| m.read_only().item(&k).unwrap().get()),
-                            r.a as u32 * 10 + r.b as u32,
-                            "map value at step {step}"
-                        );
+                        assert_eq!(untrack(|| m.item(&k).unwrap().get()), r.a as u32 * 10 + r.b as u32, "map value at step {step}");
                     }
                     let want_mf: Vec<u32> = all.iter().filter(|r| r.b >= 2).map(|r| r.id).collect();
                     assert_eq!(mf.keys(), want_mf, "filter after map at step {step}");
-                    for ch in m.read_only().0.emitter().log.borrow_mut().take(&m_cursor) {
+                    for ch in m.0.emitter().log.borrow_mut().take(&m_cursor) {
                         match ch {
                             Change::Insert { key, index } => m_replay.insert(index, key),
                             Change::Remove { key, index } => assert_eq!(m_replay.remove(index), key),
@@ -1727,7 +1747,7 @@ mod tests {
                         want_flat.extend(ms.iter().map(|r| FlatKey::Item(r.id)));
                     }
                     assert_eq!(flat.keys(), want_flat, "flatten at step {step}");
-                    for ch in flat.read_only().0.emitter().log.borrow_mut().take(&flat_cursor) {
+                    for ch in flat.0.emitter().log.borrow_mut().take(&flat_cursor) {
                         match ch {
                             Change::Insert { key, index } => flat_replay.insert(index, key),
                             Change::Remove { key, index } => assert_eq!(flat_replay.remove(index), key),
@@ -1789,10 +1809,10 @@ mod tests {
                 assert_eq!(seen.get(), s0, "its mapped value did not change: nothing passed on");
                 rt.with_frame(Ctx::Handler, None, None, || l.update(&7, |r| r.a = 3));
                 assert_eq!(seen.get(), s0 + 1, "a changed value is passed on");
-                assert_eq!(untrack(|| m.read_only().item(&7).unwrap().get()), 3);
+                assert_eq!(untrack(|| m.item(&7).unwrap().get()), 3);
                 assert_eq!(after.keys().len(), 100);
                 rt.with_frame(Ctx::Handler, None, None, || l.remove(&7));
-                assert!(m.read_only().item(&7).is_none());
+                assert!(m.item(&7).is_none());
 
                 // A view closure reading state: reported once, at the read.
                 let limit = state("limit", || 5u8);
@@ -1829,7 +1849,7 @@ mod tests {
                 let msgs = state_list("msgs", Vec::<Msg>::new, |m| m.id);
                 let j = msgs.join(users, |m| m.user, |m, u| (m.body, u.map(|u| u.name)));
                 let named = j.filter(|(_, n)| n.is_some()).sort_by(|(b, n)| (*n, *b));
-                let cursor = j.read_only().0.emitter().log.borrow_mut().subscribe();
+                let cursor = j.0.emitter().log.borrow_mut().subscribe();
                 let mut replay: Vec<u32> = Vec::new();
                 let mut x: u64 = 7;
                 let mut rnd = |m: u64| {
@@ -1870,19 +1890,14 @@ mod tests {
                     let all: Vec<Msg> = msgs.keys().iter().map(|k| untrack(|| msgs.item(k).unwrap().get())).collect();
                     assert_eq!(j.keys(), msgs.keys(), "join keys at step {step}");
                     for m in &all {
-                        assert_eq!(
-                            untrack(|| j.read_only().item(&m.id).unwrap().get()),
-                            (m.body, name_of(m.user)),
-                            "join value at step {step}"
-                        );
+                        assert_eq!(untrack(|| j.item(&m.id).unwrap().get()), (m.body, name_of(m.user)), "join value at step {step}");
                     }
                     let mut want: Vec<&Msg> = all.iter().filter(|m| name_of(m.user).is_some()).collect();
                     want.sort_by_key(|m| (name_of(m.user), m.body));
                     let want: Vec<(u8, Option<u8>)> = want.iter().map(|m| (m.body, name_of(m.user))).collect();
-                    let got: Vec<(u8, Option<u8>)> =
-                        named.keys().iter().map(|k| untrack(|| named.read_only().item(k).unwrap().get())).collect();
+                    let got: Vec<(u8, Option<u8>)> = named.keys().iter().map(|k| untrack(|| named.item(k).unwrap().get())).collect();
                     assert_eq!(got, want, "filter + sort after the join at step {step}");
-                    for ch in j.read_only().0.emitter().log.borrow_mut().take(&cursor) {
+                    for ch in j.0.emitter().log.borrow_mut().take(&cursor) {
                         match ch {
                             Change::Insert { key, index } => replay.insert(index, key),
                             Change::Remove { key, index } => assert_eq!(replay.remove(index), key),
@@ -1925,9 +1940,9 @@ mod tests {
                 assert_eq!(seen.get(), s0, "a field the rows do not show: no update");
                 rt.with_frame(Ctx::Handler, None, None, || users.update(&2, |u| u.name = 7));
                 assert_eq!(seen.get(), s0 + 3, "the three rows of user 2");
-                assert_eq!(untrack(|| j.read_only().item(&0).unwrap().get()), Some(7));
+                assert_eq!(untrack(|| j.item(&0).unwrap().get()), Some(7));
                 rt.with_frame(Ctx::Handler, None, None, || users.remove(&2));
-                assert_eq!(untrack(|| j.read_only().item(&0).unwrap().get()), None, "kept, without its user");
+                assert_eq!(untrack(|| j.item(&0).unwrap().get()), None, "kept, without its user");
                 assert_eq!(j.keys().len(), n as usize);
                 assert!(rt.diagnostics().is_empty());
                 // User 1 is on every other message: renaming it fans out.
