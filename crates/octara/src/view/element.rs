@@ -354,6 +354,7 @@ pub struct El {
     select_none: bool,
     overlays: Vec<Overlay>,
     anchor: Option<(NodeId, Placement)>,
+    overlay_owner: Option<NodeId>,
     pub(crate) children: Vec<View>,
 }
 
@@ -406,6 +407,7 @@ fn new_el(content: Content, at: &'static Location<'static>) -> El {
         select_none: false,
         overlays: Vec::new(),
         anchor: None,
+        overlay_owner: None,
         children: Vec::new(),
     }
 }
@@ -1100,6 +1102,7 @@ pub(crate) fn build_el(mut e: El) -> NodeId {
         let u = u.clone();
         rt(|rt| {
             rt.on_cleanup(Box::new(move || {
+                u.retire_interactions(node);
                 let mut k = u.kernel.borrow_mut();
                 if k.is_alive(node) {
                     k.destroy(node);
@@ -1149,6 +1152,9 @@ pub(crate) fn build_el(mut e: El) -> NodeId {
         }
         if e.anchor.is_some() {
             k.set_anchor(node, e.anchor);
+        }
+        if let Some(owner) = e.overlay_owner {
+            k.set_overlay_owner(node, owner);
         }
         // Static-only elements need no retained declaration slots. Dynamic elements below
         // replace this base in declaration order; state/screen overrides remain in the kernel.
@@ -1409,6 +1415,7 @@ fn mount_overlay(anchor: NodeId, o: Overlay) {
     let view = super::as_part_of(o.made, || {
         show(o.open, move || {
             let mut b = boxed(content(), at);
+            b.overlay_owner = Some(anchor);
             b.anchor = placement.map(|placement| (by.unwrap_or(anchor), placement));
             if placement.is_none() {
                 b = b.absolute().inset_0().size_full();

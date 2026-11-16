@@ -219,6 +219,8 @@ pub(crate) struct WindowState {
     root_scope: Cell<Option<ScopeId>>,
     root_slots: Slots,
     interaction: RefCell<Interaction>,
+    /// Invalidates virtual residency when the actual focus or pointer owner changes.
+    pub(crate) interaction_revision: Signal<u64>,
     size: Cell<(f32, f32)>,
     /// Device pixels per logical pixel.
     scale: Cell<f32>,
@@ -349,6 +351,50 @@ impl AppState {
 }
 
 impl WindowState {
+    pub(crate) fn interaction_changed(&self) {
+        if self.closed.get() {
+            return;
+        }
+        self.interaction_revision.set_internal(untrack(|| self.interaction_revision.get()).wrapping_add(1));
+    }
+
+    /// Current interaction allocations, including callbacks finishing a captured pointer.
+    /// The interaction state remains their only owner; lists retain no separate pin registry.
+    pub(crate) fn interaction_nodes(&self) -> Vec<NodeId> {
+        let interaction = self.interaction.borrow();
+        let mut nodes: Vec<_> = interaction.focused.into_iter().collect();
+        interaction.pointer.resident_nodes(&mut nodes);
+        nodes
+    }
+
+    /// Scope teardown cancels ownership without invoking callbacks of the retired scope.
+    pub(crate) fn retire_interactions(&self, node: NodeId) {
+        let mut kernel = self.kernel.borrow_mut();
+        let within = |target| kernel.is_in_interaction_scope(target, node);
+        let mut interaction = self.interaction.borrow_mut();
+        let focused = interaction.focused.filter(|&target| within(target));
+        if focused.is_some() {
+            interaction.focused = None;
+        }
+        if interaction.reveal.is_some_and(within) {
+            interaction.reveal = None;
+        }
+        interaction.edits.retain(|&target, _| !within(target));
+        let held = interaction.pointer.retire(&within);
+        let changed = focused.is_some() || held.is_some();
+        if let Some(target) = focused.filter(|&target| kernel.is_alive(target)) {
+            kernel.set_preedit(target, "");
+            kernel.set_state(target, State::FOCUSED | State::FOCUS_VISIBLE, false);
+        }
+        if let Some(held) = held {
+            held.unpress(&mut kernel);
+        }
+        drop((interaction, kernel));
+        if changed {
+            self.interaction_changed();
+        }
+    }
+
     pub(crate) fn interaction_request_command(&self, command: &str, at: &'static std::panic::Location<'static>) {
         self.interaction.borrow_mut().after_update.push_back((command.to_owned(), at));
     }
@@ -440,6 +486,7 @@ impl WindowState {
             root_scope: Cell::new(None),
             root_slots: Slots::default(),
             interaction: RefCell::default(),
+            interaction_revision: app.rt.enter(|| Signal::detached(0)),
             size: Cell::new(size),
             scale: Cell::new(1.0),
             platform: RefCell::new(platform),
@@ -832,6 +879,7 @@ impl AppState {
         w.enter(|| {
             w.w.viewport.dispose();
             w.w.breakpoint.dispose();
+            w.w.interaction_revision.dispose();
             for (_, s) in w.w.scrolls.borrow_mut().drain() {
                 s.dispose();
             }
@@ -847,7 +895,7 @@ impl AppState {
             }
         });
         w.w.closed.set(true);
-        w.w.interaction.borrow_mut().after_update.clear();
+        *w.w.interaction.borrow_mut() = Interaction::default();
         w.w.root_slots.borrow_mut().clear();
         *w.w.platform.borrow_mut() = Box::new(crate::platform::HeadlessWindow::default());
         self.order.borrow_mut().retain(|x| *x != id);
@@ -1098,6 +1146,8 @@ impl Window {
                 k.release_tail(n);
             }
         }
+        drop((i, k));
+        self.w.interaction_changed();
     }
 
     /// The mouse is over `n` (the topmost node there): it and its ancestors are hovered, up to
@@ -1173,6 +1223,7 @@ impl Window {
         }
         i.focused = n;
         drop((i, k));
+        self.w.interaction_changed();
         // What lost focus hears it first, then what got it.
         if let Some(p) = blurred {
             self.notify_lifecycle(p, HandlerKind::Blur);

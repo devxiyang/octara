@@ -10,6 +10,7 @@ use super::event::InputEvent;
 use super::{Handler, Modality, Window, WindowState};
 use crate::kernel::{HandlerKind, Kernel, NodeId, State};
 use bitflags::bitflags;
+use std::rc::Rc;
 use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -155,6 +156,8 @@ enum Mode {
 /// The pointer that is down, and what it is doing.
 #[derive(Clone, Debug)]
 pub(crate) struct Held {
+    /// Clones used during callbacks can only update this same captured press afterward.
+    capture: Rc<()>,
     pointer: u64,
     kind: PointerKind,
     button: Button,
@@ -177,6 +180,24 @@ pub(crate) struct Held {
     selecting: Option<NodeId>,
     /// A long/context handler ran for this held touch (not merely a spent press).
     long_pressed: bool,
+}
+
+impl Held {
+    fn resident_nodes(&self, nodes: &mut Vec<NodeId>) {
+        match self.mode {
+            Mode::Pending | Mode::Dragging => nodes.extend(self.hit.into_iter().chain(self.target).chain(self.selecting)),
+            // An inner scroll container may itself belong to an outer virtual row. Its old
+            // hit row is free to leave while this container keeps the touch scroll.
+            Mode::Panning(container) => nodes.push(container),
+            Mode::Spent => {}
+        }
+    }
+
+    pub(super) fn unpress(&self, kernel: &mut Kernel) {
+        if let Some(target) = self.target.filter(|&target| kernel.is_alive(target)) {
+            kernel.set_state(target, State::PRESSED, false);
+        }
+    }
 }
 
 /// The last press, for counting double presses.
@@ -203,6 +224,9 @@ struct Momentum {
 #[derive(Default)]
 pub(crate) struct PointerState {
     pub held: Option<Held>,
+    /// Captures being delivered their final callback. Nested input can settle layout during
+    /// that callback; ownership ends only when delivery returns.
+    finishing: Vec<Rc<Held>>,
     /// Only while a pointer press handler runs; semantic and keyboard presses have no point.
     press_at: Option<(f32, f32)>,
     last_press: Option<LastPress>,
@@ -210,6 +234,23 @@ pub(crate) struct PointerState {
     momentum: Option<Momentum>,
     /// Where the mouse (or pen) is, for hover after layout changes.
     pub hover_at: Option<(f32, f32)>,
+}
+
+impl PointerState {
+    pub(super) fn resident_nodes(&self, nodes: &mut Vec<NodeId>) {
+        for held in self.held.iter().chain(self.finishing.iter().map(Rc::as_ref)) {
+            held.resident_nodes(nodes);
+        }
+    }
+
+    pub(super) fn retire(&mut self, within: &impl Fn(NodeId) -> bool) -> Option<Held> {
+        if self.momentum.is_some_and(|momentum| within(momentum.node)) {
+            self.momentum = None;
+        }
+        let mut nodes = Vec::new();
+        self.held.as_ref()?.resident_nodes(&mut nodes);
+        nodes.into_iter().any(within).then(|| self.held.take()).flatten()
+    }
 }
 
 impl WindowState {
@@ -295,12 +336,48 @@ impl Window {
 
     /// One raw pointer event, as a window delivers it.
     pub(super) fn on_pointer(&mut self, ev: PointerEvent) {
-        self.input_frame(|| match ev.phase {
-            Phase::Down => self.down(ev),
-            Phase::Move => self.moved(ev),
-            Phase::Up => self.up(ev),
-            Phase::Cancel => self.cancel(ev.id),
+        self.input_frame(|| {
+            let before = self.w.interaction_nodes();
+            match ev.phase {
+                Phase::Down => self.down(ev),
+                Phase::Move => self.moved(ev),
+                Phase::Up => self.up(ev),
+                Phase::Cancel => self.cancel(ev.id),
+            }
+            if before != self.w.interaction_nodes() {
+                self.w.interaction_changed();
+            }
         });
+    }
+
+    pub(super) fn cancel_pointer(&self) {
+        let pointer = self.w.interaction.borrow().pointer.held.as_ref().map(|held| held.pointer);
+        if let Some(pointer) = pointer {
+            self.cancel(pointer);
+        }
+        self.w.interaction.borrow_mut().pointer.momentum = None;
+    }
+
+    fn finishing_pointer<R>(&self, held: Held, callback: impl FnOnce(&Held) -> R) -> R {
+        struct Delivery<'a>(&'a WindowState, Rc<Held>);
+        impl Drop for Delivery<'_> {
+            fn drop(&mut self) {
+                self.0.interaction.borrow_mut().pointer.finishing.retain(|held| !Rc::ptr_eq(held, &self.1));
+                if !self.0.closed.get() {
+                    self.0.interaction_changed();
+                }
+            }
+        }
+        let delivery = Delivery(&self.w, Rc::new(held));
+        self.w.interaction.borrow_mut().pointer.finishing.push(delivery.1.clone());
+        callback(&delivery.1)
+    }
+
+    fn update_held(&self, held: Held) {
+        let mut interaction = self.w.interaction.borrow_mut();
+        if interaction.pointer.held.as_ref().is_some_and(|current| Rc::ptr_eq(&current.capture, &held.capture)) {
+            interaction.pointer.held = Some(held);
+        }
     }
 
     /// The mouse moved to `(x, y)` with no button down (or with one down: the press follows).
@@ -506,6 +583,7 @@ impl Window {
         }
         let now = self.now_ms();
         self.w.interaction.borrow_mut().pointer.held = Some(Held {
+            capture: Rc::new(()),
             pointer: ev.id,
             kind: ev.kind,
             button,
@@ -539,7 +617,9 @@ impl Window {
         }
         let Some(mut h) = self.w.interaction.borrow().pointer.held.clone().filter(|h| h.pointer == ev.id) else { return };
         // Selecting: the focus follows the pointer.
-        if let Some(region) = h.selecting {
+        if let Some(region) = h.selecting
+            && matches!(h.mode, Mode::Pending | Mode::Dragging)
+        {
             if let Some(p) = self.point_at(region, ev.x, ev.y)
                 && let Some(sel) = self.w.selection.borrow_mut().as_mut().filter(|s| s.region == region)
             {
@@ -551,7 +631,7 @@ impl Window {
                 self.w.interaction.borrow_mut().pointer.last_press = None;
             }
             h.mode = Mode::Dragging;
-            self.w.interaction.borrow_mut().pointer.held = Some(h);
+            self.update_held(h);
             return;
         }
         let prev = h.at;
@@ -574,7 +654,7 @@ impl Window {
                     Some((n, b)) => b.drag(self, n, h.at),
                     None => self.send_drag(&h, DragPhase::Start),
                 }
-                self.w.interaction.borrow_mut().pointer.held = Some(h);
+                self.update_held(h);
                 return;
             } else if h.kind == PointerKind::Touch {
                 let (dx, dy) = (h.start.0 - h.at.0, h.start.1 - h.at.1);
@@ -591,7 +671,7 @@ impl Window {
                     }
                     // The pan starts from the press, so the slop is not lost.
                     self.scroll_by(c, dx, dy);
-                    self.w.interaction.borrow_mut().pointer.held = Some(h);
+                    self.update_held(h);
                     return;
                 }
             }
@@ -619,7 +699,7 @@ impl Window {
             Mode::Panning(c) => self.scroll_by(c, prev.0 - h.at.0, prev.1 - h.at.1),
             Mode::Spent => {}
         }
-        self.w.interaction.borrow_mut().pointer.held = Some(h);
+        self.update_held(h);
     }
 
     fn up(&self, ev: PointerEvent) {
@@ -633,7 +713,7 @@ impl Window {
         let Some(mut h) = held else { return };
         h.at = (ev.x, ev.y);
         self.unpress(&h);
-        match h.mode {
+        self.finishing_pointer(h, |h| match h.mode {
             Mode::Pending => {
                 let inside = {
                     let k = self.w.kernel.borrow();
@@ -651,13 +731,13 @@ impl Window {
                     }
                 }
             }
-            Mode::Dragging => match self.own_drag(&h) {
+            Mode::Dragging => match self.own_drag(h) {
                 Some((n, b)) => b.drag(self, n, h.at),
-                None => self.send_drag(&h, DragPhase::End),
+                None => self.send_drag(h, DragPhase::End),
             },
-            Mode::Panning(c) => self.start_momentum(c, &h),
+            Mode::Panning(c) => self.start_momentum(c, h),
             Mode::Spent => {}
-        }
+        });
     }
 
     fn cancel(&self, pointer: u64) {
@@ -670,18 +750,15 @@ impl Window {
         };
         let Some(h) = held else { return };
         self.unpress(&h);
-        if h.mode == Mode::Dragging && self.own_drag(&h).is_none() {
-            self.send_drag(&h, DragPhase::Cancel);
-        }
+        self.finishing_pointer(h, |h| {
+            if h.mode == Mode::Dragging && self.own_drag(h).is_none() {
+                self.send_drag(h, DragPhase::Cancel);
+            }
+        });
     }
 
     fn unpress(&self, h: &Held) {
-        if let Some(n) = h.target {
-            let mut k = self.w.kernel.borrow_mut();
-            if k.is_alive(n) {
-                k.set_state(n, State::PRESSED, false);
-            }
-        }
+        h.unpress(&mut self.w.kernel.borrow_mut());
     }
 
     /// Which press of a run a press on `n` at `pos` is (1, then 2 for a double press, …): within
@@ -746,6 +823,7 @@ impl Window {
             let h = h.clone();
             drop(i);
             self.unpress(&h);
+            self.w.interaction_changed();
         }
     }
 
@@ -777,13 +855,14 @@ impl Window {
         }
         if let Some((n, kind)) = found {
             self.unpress(&h);
-            if self.run(n, &[kind], None)
-                && let Some(held) = self.w.interaction.borrow_mut().pointer.held.as_mut()
-                && held.pointer == h.pointer
-                && held.kind == h.kind
-            {
-                held.long_pressed = true;
-            }
+            self.finishing_pointer(h, |h| {
+                if self.run(n, &[kind], None)
+                    && let Some(held) = self.w.interaction.borrow_mut().pointer.held.as_mut()
+                    && Rc::ptr_eq(&held.capture, &h.capture)
+                {
+                    held.long_pressed = true;
+                }
+            });
         }
     }
 

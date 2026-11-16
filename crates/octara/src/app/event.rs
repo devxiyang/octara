@@ -84,7 +84,12 @@ impl Window {
                 if on {
                     self.app.active.set(Some(self.w.id));
                 }
-                self.input_frame(|| self.w.kernel.borrow_mut().set_window_active(on));
+                self.input_frame(|| {
+                    self.w.kernel.borrow_mut().set_window_active(on);
+                    if !on {
+                        self.cancel_pointer();
+                    }
+                });
                 true
             }
             InputEvent::Command { name, chord } => self.on_menu_command(&name, chord.as_deref()),

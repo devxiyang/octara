@@ -405,6 +405,8 @@ struct Node {
     live: Option<accesskit::Live>,
     /// An overlay's anchor node and placement; the node is positioned absolutely in the overlay layer.
     anchor: Option<(NodeId, Placement)>,
+    /// The control that owns an overlay, independent of its positioning anchor.
+    overlay_owner: Option<NodeId>,
     /// Where the last layout put an anchored node.
     placed: Option<Placed>,
     /// Scroll offset of a scroll container.
@@ -1229,6 +1231,7 @@ impl Kernel {
             level: None,
             live: None,
             anchor: None,
+            overlay_owner: None,
             placed: None,
             scroll: (0.0, 0.0),
             follow: None,
@@ -1930,21 +1933,38 @@ impl Kernel {
     pub(crate) fn preserves_focus_on_press(&self, id: NodeId) -> bool {
         self.node(id).preserve_focus_on_press
     }
-    /// Modal interaction includes an anchored popup owned by a control inside that modal.
+    pub(crate) fn set_overlay_owner(&mut self, node: NodeId, owner: NodeId) {
+        self.node_mut(node).overlay_owner = Some(owner);
+    }
+
+    /// Logical ownership includes overlays, whose physical parent is the window's layer.
     /// Physical containment stays separate for layout, selection and pointer release targets.
-    pub(crate) fn is_in_modal_scope(&self, mut node: NodeId, modal: NodeId) -> bool {
+    pub(crate) fn is_in_interaction_scope(&self, mut node: NodeId, owner: NodeId) -> bool {
         let mut visited = rustc_hash::FxHashSet::default();
         while self.is_alive(node) && visited.insert(node) {
-            if node == modal {
+            if node == owner {
                 return true;
             }
             let n = self.node(node);
-            match n.anchor.map(|(owner, _)| owner).or(n.parent) {
+            match n.overlay_owner.or_else(|| n.anchor.map(|(owner, _)| owner)).or(n.parent) {
                 Some(parent) => node = parent,
                 None => break,
             }
         }
         false
+    }
+
+    /// Modal interaction includes overlays owned by controls inside that modal.
+    pub(crate) fn is_in_modal_scope(&self, node: NodeId, modal: NodeId) -> bool {
+        self.is_in_interaction_scope(node, modal)
+    }
+
+    /// The scroll column's authored vertical gap in logical pixels.
+    pub(crate) fn row_gap(&self, node: NodeId) -> f32 {
+        match self.node(node).layout.gap.height.expand() {
+            taffy::style::ExpandedLengthPercentage::Length(gap) => gap,
+            taffy::style::ExpandedLengthPercentage::Percent(gap) => gap * self.content_size(node).1,
+        }
     }
 
     /// Handlers are not visual properties: no invalidation, counted separately.

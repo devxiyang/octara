@@ -14,6 +14,11 @@ Platform shell (winit / UIKit / Android)
 
 Tests and agents call the same raw input (or convert from a test id to the element center), without bypassing the recognizers.
 
+Focus and capture also determine [virtual row residency](virtual-interaction.md). A final pointer
+callback retains its allocation through nested dispatch; data or scope removal still wins.
+Retirement clears interaction references without invoking callbacks of the retired scope.
+Window deactivation cancels capture while preserving ordinary editor focus.
+
 ## Component and application callbacks
 
 `El::behavior(|b| b.on_input(..).on_submit(..))` adds a typed component event layer.

@@ -1,11 +1,12 @@
 # Collection data, row identity and content lifetime
 
-Status: base consolidation committed as `af6fa20`; bounded-log recovery follows in the working tree, 2026-11-16.
+Status: base consolidation committed as `af6fa20`, bounded-log recovery as `d751cd7`; interaction residency follows in the working tree, 2026-11-16.
 The shared keyed-row mechanism, direct keyed Vec input, fresh row reads, structural-first
 propagation, scope-owned collection producers, Chat migration and explicit prelude exports
 are implemented. The follow-up [bounded change-log protocol](change-log.md) also implements
-snapshot recovery for collection and text history gaps. Virtual interaction pins and any
-replacement of the incremental operator evaluator remain outside these slices. No compatibility layer or second execution engine is introduced.
+snapshot recovery for collection and text history gaps. The [interaction residency follow-up](virtual-interaction.md)
+retains active virtual rows using window-owned focus and capture. Replacement of the incremental
+operator evaluator remains outside these slices. No compatibility layer or second execution engine is introduced.
 
 [Source research](../research/collection-regions.md) pins the latest inspected Rune and Exact
 revisions and distinguishes their mechanisms from the choices below. The existing

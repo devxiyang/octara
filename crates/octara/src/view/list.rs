@@ -319,7 +319,9 @@ const OVERSCAN: usize = 5;
 /// has been laid out; the first visible row stays put while rows above it are measured
 /// (scroll anchoring). Rows are kept in a weighted order-statistic tree, so offset → row and
 /// row → offset are O(log n) and an update costs O(visible · log n) whatever the length. The
-/// two spacers are `{parent id}-top` / `-bottom`.
+/// edge spacers are `{parent id}-top` / `-bottom`. Focus and pointer capture temporarily keep
+/// their rows resident; hidden gap spacers preserve their positions without mounting the
+/// intervening rows.
 #[track_caller]
 pub fn virtual_each<K, T, S: IntoRows<K, T> + 'static>(
     list: impl Fn() -> S + 'static,
@@ -351,20 +353,25 @@ where
             });
         }
         let prefix = u.kernel.borrow().test_id(container).map(str::to_owned);
-        let spacer = |side: &str| {
-            let mut k = u.kernel.borrow_mut();
-            let n = k.create(crate::kernel::Kind::Box);
-            k.set_hidden(n, true);
-            // Spacers stand for rows: they must not shrink in the scroll container's column.
-            k.set_style(n, crate::kernel::StyleProp::Shrink(0.0));
-            if let Some(p) = &prefix {
-                k.set_test_id(n, Some(&format!("{p}-{side}")));
+        let spacer = {
+            let (u, prefix) = (u.clone(), prefix.clone());
+            move |side: &str| {
+                let mut k = u.kernel.borrow_mut();
+                let n = k.create(crate::kernel::Kind::Box);
+                k.set_hidden(n, true);
+                // Spacers stand for rows: they must not shrink in the scroll container's column.
+                k.set_style(n, crate::kernel::StyleProp::Shrink(0.0));
+                if let Some(p) = &prefix {
+                    k.set_test_id(n, Some(&format!("{p}-{side}")));
+                }
+                n
             }
-            n
         };
         let (top, bottom) = (spacer("top"), spacer("bottom"));
+        let gaps: Rc<RefCell<Vec<NodeId>>> = Rc::default();
         let scroll = u.scroll_state(container);
         let revision = Signal::scoped(0u64);
+        let row_gap = Rc::new(Cell::new(u.kernel.borrow().row_gap(container) as f64));
         let list_top: Rc<Cell<f32>> = Rc::default();
         let mirror: Rc<RefCell<Seq<K>>> = Rc::default();
         let input = memo(move || list().into_input(at));
@@ -413,7 +420,8 @@ where
 
         // After each layout: where the list starts in the container, and the rows' real heights.
         let hook = {
-            let (u, list_top, mirror, rows, measured) = (u.clone(), list_top.clone(), mirror.clone(), rows.clone(), measured.clone());
+            let (u, list_top, mirror, rows, measured, row_gap) =
+                (u.clone(), list_top.clone(), mirror.clone(), rows.clone(), measured.clone(), row_gap.clone());
             u.clone().after_layout(Rc::new(move || {
                 let mut k = u.kernel.borrow_mut();
                 if !k.is_alive(container) || !k.is_alive(top) {
@@ -429,18 +437,28 @@ where
                 }
                 let mut m = mirror.borrow_mut();
                 let y = (sy - start).max(0.0) as f64;
+                let gap = k.row_gap(container) as f64;
+                let gap_delta = gap - row_gap.replace(gap);
+                changed |= gap_delta.abs() > 0.01;
                 // Rows whose measured height differs from their weight.
                 let rows = rows.borrow();
                 let rows = &rows.entries;
                 let mut measured = measured.borrow_mut();
-                let updates: Vec<(K, f64)> = rows
-                    .iter()
-                    .filter(|(_, (_, node))| k.is_alive(*node))
-                    .filter_map(|(key, (_, node))| {
-                        let h = k.rect(*node).3 as f64;
-                        m.weight_of(key).filter(|w| (w - h).abs() > 0.5).map(|_| (key.clone(), h))
-                    })
-                    .collect();
+                let mut updates: Vec<(K, f64)> = if gap_delta.abs() > 0.01 {
+                    m.to_vec()
+                        .into_iter()
+                        .map(|key| {
+                            let weight = m.weight_of(&key).unwrap() + gap_delta;
+                            (key, weight)
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                updates.extend(rows.iter().filter(|(_, (_, node))| k.is_alive(*node)).filter_map(|(key, (_, node))| {
+                    let weight = k.rect(*node).3 as f64 + gap;
+                    m.weight_of(key).filter(|w| (w - weight).abs() > 0.5).map(|_| (key.clone(), weight))
+                }));
                 if !updates.is_empty() {
                     // Keep the first previously laid-out row in view, even if its own height
                     // changed. A new estimated row must not displace a row already being read.
@@ -474,12 +492,12 @@ where
             }))
         };
         {
-            let u = u.clone();
+            let (u, gaps) = (u.clone(), gaps.clone());
             rt(|rt| {
                 rt.on_cleanup(Box::new(move || {
                     u.remove_after_layout(hook);
                     let mut k = u.kernel.borrow_mut();
-                    for n in [top, bottom] {
+                    for n in [top, bottom].into_iter().chain(gaps.borrow_mut().drain(..)) {
                         if k.is_alive(n) {
                             k.destroy(n);
                         }
@@ -492,11 +510,12 @@ where
             next.track();
             let state = scroll.get();
             revision.get();
+            u.interaction_revision.get();
             let y = (state.offset.1 - list_top.get()).max(0.0) as f64;
             let height = state.client.1 as f64;
             rt(|rt| {
                 rt.with_frame(Ctx::Observe, None, Some(Some(owner)), || {
-                    let weight = |k: &K| untrack(|| next.read(k)).map(|item| estimate(&item) as f64).unwrap_or(0.0);
+                    let weight = |k: &K| untrack(|| next.read(k)).map(|item| estimate(&item) as f64 + row_gap.get()).unwrap_or(0.0);
                     // 1. Keep the weighted mirror in step with the list.
                     let same = current.borrow().as_ref().is_some_and(|(s, _)| *s == next);
                     let changes = if same {
@@ -534,6 +553,13 @@ where
                             let w = weight(&k);
                             m.insert_weighted(m.len(), k, w);
                         }
+                        // Final membership wins over any interaction. Snapshot inputs and
+                        // bounded-log recovery must retire absent rows before selecting pins.
+                        let removed: Vec<_> = rows.borrow().entries.keys().filter(|key| !m.contains(key)).cloned().collect();
+                        for key in removed {
+                            rows.borrow_mut().remove(&key, false);
+                        }
+                        measured.borrow_mut().retain(|key| m.contains(key));
                         names.borrow_mut().retain(|_, key| m.index_of(key).is_some());
                         *mirror.borrow_mut() = m;
                         *current.borrow_mut() = Some((next.clone(), cursor));
@@ -545,8 +571,29 @@ where
                     let last = m.index_at_weight(y + height).min(len.saturating_sub(1));
                     let start = first.saturating_sub(OVERSCAN);
                     let end = if len == 0 { 0 } else { (last + 1 + OVERSCAN).min(len) };
-                    let want: Vec<K> = (start..end).filter_map(|i| m.nth(i).cloned()).collect();
-                    let (top_h, bottom_h) = (m.prefix_weight(start), m.total_weight() - m.prefix_weight(end));
+                    let mut indices: Vec<_> = (start..end).collect();
+                    let interactions = u.interaction_nodes();
+                    if !interactions.is_empty() {
+                        let kernel = u.kernel.borrow();
+                        indices.extend(rows.borrow().entries.iter().filter_map(|(key, (_, node))| {
+                            interactions
+                                .iter()
+                                .any(|&target| kernel.is_in_interaction_scope(target, *node))
+                                .then(|| m.index_of(key))
+                                .flatten()
+                        }));
+                    }
+                    indices.sort_unstable();
+                    indices.dedup();
+                    let want: Vec<K> = indices.iter().filter_map(|&i| m.nth(i).cloned()).collect();
+                    let first = indices.first().copied().unwrap_or(0);
+                    let last = indices.last().map_or(0, |&i| i + 1);
+                    let (top_h, bottom_h) = (m.prefix_weight(first), m.total_weight() - m.prefix_weight(last));
+                    let gap_heights: Vec<_> = indices
+                        .windows(2)
+                        .filter(|pair| pair[1] > pair[0] + 1)
+                        .map(|pair| m.prefix_weight(pair[1]) - m.prefix_weight(pair[0] + 1))
+                        .collect();
                     drop(m);
                     // 3. Reconcile the window's rows by key: rows coming into and leaving the
                     // window neither enter nor exit (they are not added or removed).
@@ -560,16 +607,47 @@ where
                         crate::app::window().kernel.borrow_mut().set_instant(true);
                     }
                     {
-                        let u = crate::app::window();
                         let mut kn = u.kernel.borrow_mut();
                         let height = |h: f64| crate::kernel::StyleProp::Height(crate::kernel::Length::Px(h as f32));
                         kn.set_style(top, height(top_h));
                         kn.set_style(bottom, height(bottom_h));
+                        // Weights include one logical row gap. A hidden spacer replaces that
+                        // missing extent; cancel only the extra physical flex gap it introduces.
+                        let margin = crate::kernel::Length::Px(-row_gap.get() as f32);
+                        kn.set_style(
+                            top,
+                            crate::kernel::StyleProp::MarginBottom(if want.is_empty() { crate::kernel::Length::Px(0.0) } else { margin }),
+                        );
+                        kn.set_style(bottom, crate::kernel::StyleProp::MarginTop(margin));
                     }
-                    let nodes =
-                        std::iter::once(top).chain(want.iter().map(|key| rows.borrow().entries[key].1)).chain(std::iter::once(bottom));
-                    place(parent.node, count_offset(&parent, &count), nodes);
-                    count.set(want.len() + 2);
+                    {
+                        let mut gaps = gaps.borrow_mut();
+                        while gaps.len() < gap_heights.len() {
+                            let name = format!("gap-{}", gaps.len());
+                            gaps.push(spacer(&name));
+                        }
+                        let mut kernel = u.kernel.borrow_mut();
+                        for node in gaps.drain(gap_heights.len()..) {
+                            kernel.destroy(node);
+                        }
+                        for (&node, &height) in gaps.iter().zip(&gap_heights) {
+                            kernel.set_style(node, crate::kernel::StyleProp::Height(crate::kernel::Length::Px(height as f32)));
+                            kernel
+                                .set_style(node, crate::kernel::StyleProp::MarginBottom(crate::kernel::Length::Px(-row_gap.get() as f32)));
+                        }
+                    }
+                    let mut nodes = vec![top];
+                    let mut gap = 0;
+                    for (position, key) in want.iter().enumerate() {
+                        if position > 0 && indices[position] > indices[position - 1] + 1 {
+                            nodes.push(gaps.borrow()[gap]);
+                            gap += 1;
+                        }
+                        nodes.push(rows.borrow().entries[key].1);
+                    }
+                    nodes.push(bottom);
+                    count.set(nodes.len());
+                    place(parent.node, count_offset(&parent, &count), nodes.into_iter());
                     crate::app::window().kernel.borrow_mut().set_quiet(false);
                 })
             });

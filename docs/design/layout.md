@@ -67,6 +67,9 @@ Overflow is summarized as one entry per container and edge (as in Flutter's "Ren
 - Scroll containers (`overflow_y_scroll()`, `overflow_x_auto()`, `overflow_hidden()`, `overflow_clip()`, names as in GPUI) can shrink below their content and clip; diagnostics do not count the scroll axis as overflow.
 - Virtual lists go inside scroll containers and follow their offset and height; rows start from an estimate, are backfilled by key with measured heights, and the anchor is the first row that has
   been measured and is still in the viewport (like the browser's overflow-anchor and Rune).
+  Focused or captured rows remain mounted outside overscan, with sparse spacers preserving row
+  coordinates and logical gaps. They become eligible for eviction as soon as interaction ends;
+  actual data removal still disposes them. See [interaction residency](virtual-interaction.md).
 - `follow_tail()` (GPUI's `FollowMode::Tail`): a scroll container keeps the end of its content in
   view as the content grows (a transcript, a log, a terminal). The state is the container's, in
   the kernel: following or released. Wherever someone puts the offset (the person's wheel, drag or
