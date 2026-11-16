@@ -401,3 +401,27 @@ Tests hold a worker behind a channel, drop its waiting future, and verify that t
 released before allowing the worker to finish. A second test retains a native reply across
 future cancellation and App shutdown, verifies that scheduler state is released, then delivers
 and drops the late result exactly once.
+
+### Timers and channels
+
+Sleep owns one registration on the App clock that created it. Repeated polls reuse that
+registration; dropping a wait removes it immediately without disturbing another wait in the
+same task. Polling it in a different App is a programming error. interval and clock require
+a positive period; INVALID_INTERVAL rejects zero before allocating a task, clock or cleanup.
+
+Channel enqueue, sender count, receiver closure and waker registration share one mutex.
+Closing the receiver removes its queued values and waker; destructors and wake callbacks run
+outside that mutex. A send racing closure either queues before closure (and is then released)
+or returns its value. Keeping a sender does not retain the abandoned queue.
+
+A receiver has one outstanding wait, enforced by recv(&mut self). The Recv future owns its
+waker registration: dropping just the wait releases the waker without closing the receiver or
+consuming queued values. This also makes cancellation after a sender wakes the task safe: the
+next wait still receives the message. No waiter registry, per-wait identity or runtime
+multiple-consumer error is needed. Receiver::on retains its existing consuming API.
+
+A named receiver owns a thread-safe interest token; the UI registry owns its scope cleanup
+registration. Replacing a name releases the old registration immediately. Dropping or renaming
+the receiver retires its interest and wakes the host; dead names are removed at the next App
+boundary or named send. Channels remain Send when their values are Send. No UI-owned cleanup
+token crosses threads, and an obsolete receiver cannot unregister a replacement.

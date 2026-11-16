@@ -76,7 +76,7 @@ not imply aborting arbitrary transport work or undoing external effects.
 ## Channels
 
 - `channel::<T>() -> (Sender<T>, Receiver<T>)`: `Sender` is `Send + Clone` and can be taken to any thread; `Receiver` is on the UI thread, with
-  `rx.recv().await` or `rx.on(|v| ..)` (a subscription: owned by the scope, stops when the scope is destroyed, after which the sender gets its value back).
+  `rx.recv().await` on a mutable receiver (one pending wait at a time), or `rx.on(|v| ..)` (a subscription: owned by the scope, stops when the scope is destroyed, after which the sender gets its value back).
 - `rx.named("token")` (`T: FromStr`): tests and agents feed text by name (`App::send(name, payload)`, `Event::Send`); the name itself counts as a
   sender, and the channel stays open while it is registered.
 

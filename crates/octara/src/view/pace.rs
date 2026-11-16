@@ -75,7 +75,7 @@ pub fn paced(source: &TextBuffer) -> TextBuffer {
         let u = u.clone();
         rt(|rt| rt.on_cleanup(Box::new(move || u.paced.borrow_mut().retain(|(i, _)| *i != id))));
     }
-    let (tx, rx) = channel::<()>();
+    let (tx, mut rx) = channel::<()>();
     let cursor = source.subscribe();
     {
         let (p, u, source) = (p.clone(), u.clone(), source.clone());

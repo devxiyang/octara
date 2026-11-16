@@ -327,6 +327,7 @@ fn enter_app_context<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
         app.rt.enter(f)
     };
     if app.depth.get() == 0 && !app.failed.get() {
+        app.sched.retire_names();
         app.check_consistency();
     }
     r

@@ -11,6 +11,7 @@
 //!   `now` follow it, so tests decide when timers fire.
 //! - Pending work is listed (`App::pending`), with the scope and source location of each.
 
+use crate::diagnostics as codes;
 use crate::reactive::graph::{Ctx, ScopeId, Signal, memo, rt, untrack, watch};
 use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
@@ -19,7 +20,7 @@ use std::future::Future;
 use std::panic::Location;
 use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
@@ -27,6 +28,24 @@ use std::time::Duration;
 type BoxFuture = Pin<Box<dyn Future<Output = ()>>>;
 /// Sends text, parsed, into a named channel.
 type Injector = Rc<dyn Fn(&str) -> Result<(), String>>;
+
+struct NamedInterest {
+    scheduler: Weak<Shared>,
+}
+
+impl Drop for NamedInterest {
+    fn drop(&mut self) {
+        if let Some(shared) = self.scheduler.upgrade() {
+            shared.notify();
+        }
+    }
+}
+
+struct NamedChannel {
+    inject: Injector,
+    receiver: Weak<NamedInterest>,
+    _cleanup: Option<crate::reactive::graph::CleanupRegistration>,
+}
 
 /// A task's id: slot and generation (a reused slot gets a new id).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -140,7 +159,7 @@ pub(crate) struct Scheduler {
     /// The task being polled (timers started in it wake it).
     current: Cell<Option<TaskId>>,
     /// Channels that take text by name (tests and agents send to them).
-    names: RefCell<FxHashMap<String, Injector>>,
+    names: RefCell<FxHashMap<String, NamedChannel>>,
 }
 
 /// An unwind must retain the ready tasks that have not been polled yet.
@@ -224,7 +243,7 @@ impl Scheduler {
 
     fn accepts_work(&self, at: &'static Location<'static>) -> bool {
         if self.shared.closed.load(Ordering::Acquire) {
-            rt(|rt| rt.diag(&crate::diagnostics::WRITE_DISPOSED, "cannot register work after app shutdown".into(), at));
+            rt(|rt| rt.diag(&codes::WRITE_DISPOSED, "cannot register work after app shutdown".into(), at));
             return false;
         }
         true
@@ -293,6 +312,7 @@ impl Scheduler {
 
     /// Polls woken tasks until none is ready: each batch in spawn order. Returns whether any ran.
     pub(crate) fn run_ready(&self) -> bool {
+        self.retire_names();
         let mut ran = false;
         for _ in 0..10_000 {
             let mut batch = std::mem::take(&mut *self.shared.ready.lock().expect("ready"));
@@ -344,13 +364,11 @@ impl Scheduler {
         true
     }
 
-    fn add_timer(&self, due: f64, id: TaskId) {
-        if self.shared.closed.load(Ordering::Acquire) {
-            return;
-        }
-        let seq = self.timer_seq.get() + 1;
+    fn add_timer(&self, due: f64, id: TaskId) -> u64 {
+        let seq = self.timer_seq.get().checked_add(1).expect("timer identity exhausted");
         self.timer_seq.set(seq);
         self.timers.borrow_mut().push((due, seq, id));
+        seq
     }
 
     /// The earliest timer of a live task.
@@ -400,7 +418,7 @@ impl Scheduler {
                     kind: e.kind,
                     label: e.label.clone(),
                     scope: rt(|r| r.scope_path(e.scope)),
-                    at: format!("{}:{}", crate::diagnostics::source_file(e.at), e.at.line()),
+                    at: format!("{}:{}", codes::source_file(e.at), e.at.line()),
                     due: due.map(|ms| Duration::from_secs_f64(ms / 1000.0)),
                 }
             })
@@ -418,9 +436,15 @@ impl Scheduler {
         out
     }
 
+    pub(crate) fn retire_names(&self) {
+        let retired: Vec<_> = self.names.borrow_mut().extract_if(|_, entry| entry.receiver.strong_count() == 0).collect();
+        drop(retired);
+    }
+
     /// Sends `payload` to the channel named `name`.
     pub(crate) fn send_named(&self, name: &str, payload: &str) -> Result<(), String> {
-        let f = self.names.borrow().get(name).cloned().ok_or_else(|| format!("no channel named `{name}`"))?;
+        self.retire_names();
+        let f = self.names.borrow().get(name).map(|entry| entry.inject.clone()).ok_or_else(|| format!("no channel named `{name}`"))?;
         f(payload)
     }
 }
@@ -458,7 +482,7 @@ pub(crate) fn spawn_with(
         return Task { id: None, sched: s };
     }
     let Some(scope) = rt(|r| r.current_scope()) else {
-        rt(|rt| rt.diag(&crate::diagnostics::WRITE_DISPOSED, "cannot spawn a task without an app or component scope".into(), at));
+        rt(|rt| rt.diag(&codes::WRITE_DISPOSED, "cannot spawn a task without an app or component scope".into(), at));
         return Task { id: None, sched: s };
     };
     let id = s.insert(Box::pin(future), scope, kind, label, at);
@@ -488,34 +512,78 @@ pub fn now() -> Duration {
     Duration::from_secs_f64(sched().now_ms() / 1000.0)
 }
 
-/// Completes when the app's clock reaches `due`.
+/// Completes on the creating App's clock. A pending wait must be polled by one of that
+/// App's tasks; dropping it retires its timer.
 pub struct Sleep {
     due: f64,
+    scheduler: std::rc::Weak<Scheduler>,
+    registration: Option<u64>,
+}
+
+impl Sleep {
+    fn unregister(&mut self) {
+        if let Some(registration) = self.registration.take()
+            && let Some(scheduler) = self.scheduler.upgrade()
+        {
+            scheduler.timers.borrow_mut().retain(|timer| timer.1 != registration);
+        }
+    }
+}
+
+impl Drop for Sleep {
+    fn drop(&mut self) {
+        self.unregister();
+    }
 }
 
 impl Future for Sleep {
     type Output = ();
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
         let s = sched();
+        if !std::rc::Weak::ptr_eq(&self.scheduler, &Rc::downgrade(&s)) {
+            rt(|r| r.diag(&codes::WRONG_RUNTIME, "Sleep belongs to another App".into(), Location::caller()));
+            panic!("[{}] Sleep belongs to another App", codes::WRONG_RUNTIME);
+        }
         if s.now_ms() >= self.due {
+            self.unregister();
             return Poll::Ready(());
         }
-        match s.current.get() {
-            Some(id) => s.add_timer(self.due, id),
-            None => drop(cx.waker().clone()), // Only tasks of this app can wait on its clock.
+        let id = s.current.get().expect("Sleep must be polled by an App task");
+        if s.shared.closed.load(Ordering::Acquire) || !s.alive(id) {
+            self.unregister();
+            return Poll::Pending;
         }
+        if let Some(registration) = self.registration {
+            // A wait may move between tasks in the same App; retain its single timer.
+            let mut timers = s.timers.borrow_mut();
+            if let Some(timer) = timers.iter_mut().find(|timer| timer.1 == registration) {
+                timer.2 = id;
+                return Poll::Pending;
+            }
+        }
+        self.registration = Some(s.add_timer(self.due, id));
         Poll::Pending
     }
 }
 
-/// Waits `d` on the app's clock.
+/// Waits `d` on the creating App's clock. Cancelling the wait removes its timer.
 pub fn sleep(d: Duration) -> Sleep {
-    Sleep { due: whole_ns(sched().now_ms() + d.as_secs_f64() * 1000.0) }
+    let s = sched();
+    Sleep { due: whole_ns(s.now_ms() + d.as_secs_f64() * 1000.0), scheduler: Rc::downgrade(&s), registration: None }
 }
 
-/// Waits until the app's clock reads `t`.
+/// Waits until the creating App's clock reads `t`.
 pub fn sleep_until(t: Duration) -> Sleep {
-    Sleep { due: whole_ns(t.as_secs_f64() * 1000.0) }
+    Sleep { due: whole_ns(t.as_secs_f64() * 1000.0), scheduler: Rc::downgrade(&sched()), registration: None }
+}
+
+#[track_caller]
+pub(crate) fn require_period(period: Duration) {
+    if period.is_zero() {
+        let at = Location::caller();
+        rt(|r| r.diag(&codes::INVALID_INTERVAL, "period must be greater than zero".into(), at));
+        panic!("[{}] period must be greater than zero", codes::INVALID_INTERVAL);
+    }
 }
 
 /// A time in milliseconds rounded to the clock's resolution, the nanosecond (`Duration`'s): the
@@ -527,15 +595,19 @@ pub(crate) fn whole_ns(ms: f64) -> f64 {
 
 /// Calls `f` every `period` on the app's clock while the current scope lives (ticks are counted
 /// from now, so they do not drift).
+///
+/// # Panics
+/// A zero period is rejected with INVALID_INTERVAL before registering work.
 #[track_caller]
 pub fn interval(period: Duration, f: impl Fn() + 'static) -> Task {
+    require_period(period);
     let start = now();
     let fut = async move {
-        let mut k = 1u32;
+        let mut due = start + period;
         loop {
-            sleep_until(start + period * k).await;
+            sleep_until(due).await;
             f();
-            k += 1;
+            due += period;
         }
     };
     spawn_with(fut, WorkKind::Subscription, format!("interval {period:?}"), Location::caller())
@@ -621,7 +693,7 @@ fn pool() -> &'static Mutex<std::sync::mpsc::Sender<Job>> {
 pub fn background<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Background<T> {
     let scheduler = sched();
     if !scheduler.accepts_work(Location::caller()) {
-        panic!("[{}] background work requested after app shutdown", crate::diagnostics::WRITE_DISPOSED);
+        panic!("[{}] background work requested after app shutdown", codes::WRITE_DISPOSED);
     }
     let slot = Arc::new(Oneshot { value: Mutex::new(None), waker: Mutex::new(None) });
     let shared = scheduler.shared.clone();
@@ -663,11 +735,15 @@ pub(crate) fn later<T: Send + 'static>() -> (crate::platform::Reply<T>, impl Fut
 
 // ---- channels ----
 
+struct ChannelState<T> {
+    queue: VecDeque<T>,
+    waker: Option<Waker>,
+    receiver_alive: bool,
+    senders: usize,
+}
+
 struct Chan<T> {
-    queue: Mutex<VecDeque<T>>,
-    waker: Mutex<Option<Waker>>,
-    receiver_alive: AtomicBool,
-    senders: AtomicUsize,
+    state: Mutex<ChannelState<T>>,
 }
 
 /// Sends values into the app from any thread (an LLM's tokens, a socket's messages).
@@ -677,17 +753,20 @@ pub struct Sender<T> {
 
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
-        self.chan.senders.fetch_add(1, Ordering::Relaxed);
+        self.chan.state.lock().expect("chan").senders += 1;
         Sender { chan: self.chan.clone() }
     }
 }
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        if self.chan.senders.fetch_sub(1, Ordering::AcqRel) == 1
-            && let Some(w) = self.chan.waker.lock().expect("chan").take()
-        {
-            w.wake();
+        let waker = {
+            let mut state = self.chan.state.lock().expect("chan");
+            state.senders -= 1;
+            if state.senders == 0 { state.waker.take() } else { None }
+        };
+        if let Some(waker) = waker {
+            waker.wake();
         }
     }
 }
@@ -695,71 +774,89 @@ impl<T> Drop for Sender<T> {
 impl<T> Sender<T> {
     /// Queues `value` for the receiver; `Err(value)` once the receiver (its scope) is gone.
     pub fn send(&self, value: T) -> Result<(), T> {
-        if !self.chan.receiver_alive.load(Ordering::Acquire) {
-            return Err(value);
-        }
-        self.chan.queue.lock().expect("chan").push_back(value);
-        if let Some(w) = self.chan.waker.lock().expect("chan").take() {
-            w.wake();
+        let waker = {
+            let mut state = self.chan.state.lock().expect("chan");
+            if !state.receiver_alive {
+                return Err(value);
+            }
+            state.queue.push_back(value);
+            state.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
         }
         Ok(())
     }
 }
 
 /// Receives a channel's values on the UI thread: await them in a task (`recv`), or handle each
-/// (`on`). Dropped with its scope; senders then get their values back.
+/// (`on`). Dropping it closes the channel and releases queued values and its waker immediately.
 pub struct Receiver<T> {
     chan: Arc<Chan<T>>,
-    name: Option<String>,
+    name: Option<(String, Arc<NamedInterest>)>,
 }
 
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
-        self.chan.receiver_alive.store(false, Ordering::Release);
+        let retired = {
+            let mut state = self.chan.state.lock().expect("chan");
+            state.receiver_alive = false;
+            (std::mem::take(&mut state.queue), state.waker.take())
+        };
+        // User destructors and wakers must never run under the channel lock.
+        drop(retired);
     }
 }
 
 /// A channel into the UI thread.
 pub fn channel<T: Send + 'static>() -> (Sender<T>, Receiver<T>) {
-    let chan = Arc::new(Chan {
-        queue: Mutex::default(),
-        waker: Mutex::new(None),
-        receiver_alive: AtomicBool::new(true),
-        senders: AtomicUsize::new(1),
-    });
+    let chan = Arc::new(Chan { state: Mutex::new(ChannelState { queue: VecDeque::new(), waker: None, receiver_alive: true, senders: 1 }) });
     (Sender { chan: chan.clone() }, Receiver { chan, name: None })
 }
 
-/// The next value of a channel.
+/// An exclusive wait for the channel's next value. Dropping it cancels the wait,
+/// releases its waker, and leaves queued values available to the next wait.
 pub struct Recv<'a, T> {
-    rx: &'a Receiver<T>,
+    rx: &'a mut Receiver<T>,
+}
+
+impl<T> Drop for Recv<'_, T> {
+    fn drop(&mut self) {
+        let waker = self.rx.chan.state.lock().expect("chan").waker.take();
+        drop(waker);
+    }
 }
 
 impl<T> Future for Recv<'_, T> {
     type Output = Option<T>;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<T>> {
-        let chan = &self.rx.chan;
-        if let Some(v) = chan.queue.lock().expect("chan").pop_front() {
-            return Poll::Ready(Some(v));
+        let waker = cx.waker().clone();
+        let mut state = self.rx.chan.state.lock().expect("chan");
+        if let Some(value) = state.queue.pop_front() {
+            return Poll::Ready(Some(value));
         }
-        if chan.senders.load(Ordering::Acquire) == 0 {
+        if state.senders == 0 {
             return Poll::Ready(None);
         }
-        *chan.waker.lock().expect("chan") = Some(cx.waker().clone());
-        // A value or the last sender's drop may have come in between.
-        if let Some(v) = chan.queue.lock().expect("chan").pop_front() {
-            return Poll::Ready(Some(v));
-        }
-        if chan.senders.load(Ordering::Acquire) == 0 {
-            return Poll::Ready(None);
-        }
+        let old = state.waker.replace(waker);
+        drop(state);
+        drop(old);
         Poll::Pending
     }
 }
 
 impl<T: Send + 'static> Receiver<T> {
     /// The next value, or `None` when every sender is gone and nothing is left.
-    pub fn recv(&self) -> Recv<'_, T> {
+    /// Cancelling this wait releases its waker without consuming a queued value.
+    /// The exclusive borrow prevents competing waits from overwriting each other's waker.
+    ///
+    /// ```compile_fail
+    /// let (_, mut receiver) = octara::task::channel::<u32>();
+    /// let first = receiver.recv();
+    /// let second = receiver.recv(); // Only one receive may wait at a time.
+    /// drop((first, second));
+    /// ```
+    pub fn recv(&mut self) -> Recv<'_, T> {
         Recv { rx: self }
     }
 
@@ -767,9 +864,9 @@ impl<T: Send + 'static> Receiver<T> {
     /// After 64 values it yields a poll to other ready tasks. This is task cooperation;
     /// the scheduler may continue polling in the same frame, without yielding to the OS.
     #[track_caller]
-    pub fn on(self, f: impl Fn(T) + 'static) -> Task {
+    pub fn on(mut self, f: impl Fn(T) + 'static) -> Task {
         let label = match &self.name {
-            Some(n) => format!("channel {n:?}"),
+            Some((n, _)) => format!("channel {n:?}"),
             None => "channel".to_owned(),
         };
         let fut = async move {
@@ -799,33 +896,50 @@ impl<T: Send + 'static> Receiver<T> {
 
 impl<T: Send + std::str::FromStr + 'static> Receiver<T> {
     /// Names the channel so tests and agents can send it text (`App::send(name, payload)`,
-    /// parsed with `FromStr`) while the current scope lives.
+    /// parsed with `FromStr`) while this receiver and its registration scope live.
+    /// Replacing or renaming releases the old scope registration. Receiver closure retires
+    /// the name at the next App boundary, including when it closes on another thread.
+    #[track_caller]
     pub fn named(mut self, name: &str) -> Self {
         let s = sched();
         if !s.accepts_work(Location::caller()) {
             return self;
         }
-        // The name is a sender: the channel stays open while it is registered.
-        self.chan.senders.fetch_add(1, Ordering::Relaxed);
+        // Naming is App-scoped, but its interest token remains Send with the receiver.
+        if !rt(|r| r.effect_allowed(Location::caller())) {
+            return self;
+        }
+        self.name.take();
+        s.retire_names();
+        let interest = Arc::new(NamedInterest { scheduler: Arc::downgrade(&s.shared) });
+        let receiver = Arc::downgrade(&interest);
+        self.chan.state.lock().expect("chan").senders += 1;
         let sender = Sender { chan: self.chan.clone() };
         let key = name.to_owned();
         let inject: Injector = Rc::new(move |payload: &str| {
             let v = payload.parse::<T>().map_err(|_| format!("`{payload}` does not parse as the channel's type"))?;
             sender.send(v).map_err(|_| "the channel's receiver is gone".to_owned())
         });
-        s.names.borrow_mut().insert(key.clone(), inject.clone());
         let weak = Rc::downgrade(&s);
-        rt(|r| {
-            r.on_cleanup(Box::new(move || {
+        let expected = receiver.clone();
+        let cleanup = rt(|r| {
+            r.register_cleanup(Box::new(move || {
                 if let Some(s) = weak.upgrade() {
-                    let mut names = s.names.borrow_mut();
-                    if names.get(&key).is_some_and(|f| Rc::ptr_eq(f, &inject)) {
-                        names.remove(&key);
-                    }
+                    let retired = {
+                        let mut names = s.names.borrow_mut();
+                        if names.get(&key).is_some_and(|entry| Weak::ptr_eq(&entry.receiver, &expected)) {
+                            names.remove(&key)
+                        } else {
+                            None
+                        }
+                    };
+                    drop(retired);
                 }
             }))
         });
-        self.name = Some(name.to_owned());
+        let retired = s.names.borrow_mut().insert(name.to_owned(), NamedChannel { inject, receiver, _cleanup: cleanup });
+        drop(retired);
+        self.name = Some((name.to_owned(), interest));
         self
     }
 }
@@ -964,6 +1078,249 @@ mod tests {
     use crate::platform::{HeadlessPlatform, WindowOptions};
     use crate::reactive::state;
     use crate::view::{Styled, el};
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn a_sleep_has_one_timer_and_cancellation_removes_it_immediately() {
+        let app = App::new(HeadlessPlatform::default());
+        let (task, scheduler) = app.run(|| {
+            let mut wait = Box::pin(sleep(Duration::from_secs(3600)));
+            let mut polls = 0;
+            let task = spawn(std::future::poll_fn(move |cx| {
+                assert!(wait.as_mut().poll(cx).is_pending());
+                polls += 1;
+                if polls < 32 {
+                    cx.waker().wake_by_ref();
+                }
+                Poll::<()>::Pending
+            }));
+            (task, sched())
+        });
+        app.poll();
+        assert_eq!(scheduler.timers.borrow().len(), 1);
+        task.cancel();
+        assert!(scheduler.timers.borrow().is_empty());
+        assert!(app.next_deadline().is_none());
+        app.shutdown();
+    }
+
+    #[test]
+    fn dropping_one_wait_preserves_other_waits_of_the_same_task() {
+        let app = App::new(HeadlessPlatform::default());
+        let completed = Rc::new(Cell::new(false));
+        let out = completed.clone();
+        let scheduler = app.run(|| {
+            spawn(async move {
+                let mut early = Box::pin(sleep(Duration::from_millis(10)));
+                let mut later = Box::pin(sleep(Duration::from_millis(20)));
+                std::future::poll_fn(|cx| {
+                    assert!(early.as_mut().poll(cx).is_pending());
+                    assert!(later.as_mut().poll(cx).is_pending());
+                    Poll::Ready(())
+                })
+                .await;
+                drop(early);
+                later.await;
+                out.set(true);
+            });
+            sched()
+        });
+        app.poll();
+        assert_eq!(scheduler.timers.borrow().len(), 1);
+        assert_eq!(app.next_deadline(), Some(Duration::from_millis(20)));
+        app.advance(Duration::from_millis(10));
+        assert!(!completed.get());
+        app.advance(Duration::from_millis(10));
+        assert!(completed.get());
+        assert!(scheduler.timers.borrow().is_empty());
+        app.shutdown();
+    }
+
+    #[test]
+    fn zero_periods_are_rejected_before_registration() {
+        let app = App::new(HeadlessPlatform::default());
+        app.run(|| {
+            let scheduler = sched();
+            for operation in [0, 1] {
+                let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if operation == 0 {
+                        interval(Duration::ZERO, || panic!("must not execute"));
+                    } else {
+                        crate::view::clock(Duration::ZERO);
+                    }
+                }));
+                assert!(failure.is_err());
+            }
+            assert!(scheduler.pending().is_empty());
+            rt(|r| assert_eq!(r.cleanup_count(r.current_scope().unwrap()), 0));
+        });
+        assert!(!app.is_failed(), "validation was caught before crossing the App boundary");
+        assert!(app.diagnostics().iter().any(|d| d.code == "INVALID_INTERVAL"));
+        app.shutdown();
+    }
+
+    #[test]
+    fn a_sleep_rejects_a_different_apps_clock() {
+        let first = App::new(HeadlessPlatform::default());
+        let second = App::new(HeadlessPlatform::default());
+        let wait = first.run(|| sleep(Duration::from_millis(10)));
+        second.advance(Duration::from_secs(1));
+        second.run(|| {
+            spawn(wait);
+        });
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| second.poll())).is_err());
+        assert!(second.is_failed());
+        assert!(!first.is_failed());
+        first.shutdown();
+        second.shutdown();
+    }
+
+    #[test]
+    fn channel_close_releases_payloads_and_waker_while_senders_remain() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let (tx, mut rx) = channel::<DroppedResult>();
+        let wake = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(wake.clone());
+        let mut receive = rx.recv();
+        assert!(Pin::new(&mut receive).poll(&mut Context::from_waker(&waker)).is_pending());
+        drop(waker);
+        assert_eq!(Arc::strong_count(&wake), 2);
+        drop(receive);
+        drop(rx);
+        assert_eq!(Arc::strong_count(&wake), 1);
+        assert_eq!(wake.0.load(Ordering::Relaxed), 0);
+        drop(tx.send(DroppedResult(dropped.clone())).err().unwrap());
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+
+        let (tx, rx) = channel::<DroppedResult>();
+        for _ in 0..32 {
+            assert!(tx.send(DroppedResult(dropped.clone())).is_ok());
+        }
+        drop(rx);
+        assert_eq!(dropped.load(Ordering::Relaxed), 33);
+        assert!(tx.chan.state.lock().unwrap().queue.is_empty());
+    }
+
+    #[test]
+    fn cancelling_a_receive_releases_its_waker_and_preserves_fifo_for_the_next_wait() {
+        let (tx, mut rx) = channel::<u32>();
+        let old = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(old.clone());
+        let mut receive = rx.recv();
+        assert!(Pin::new(&mut receive).poll(&mut Context::from_waker(&waker)).is_pending());
+        drop(waker);
+        assert_eq!(Arc::strong_count(&old), 2);
+        drop(receive);
+        assert_eq!(Arc::strong_count(&old), 1);
+        tx.send(7).unwrap();
+        tx.send(8).unwrap();
+        assert_eq!(old.0.load(Ordering::Relaxed), 0);
+        assert_eq!(Pin::new(&mut rx.recv()).poll(&mut Context::from_waker(Waker::noop())), Poll::Ready(Some(7)));
+        assert_eq!(Pin::new(&mut rx.recv()).poll(&mut Context::from_waker(Waker::noop())), Poll::Ready(Some(8)));
+
+        let next = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(next.clone());
+        let mut receive = rx.recv();
+        assert!(Pin::new(&mut receive).poll(&mut Context::from_waker(&waker)).is_pending());
+        drop(tx);
+        assert_eq!(next.0.load(Ordering::Relaxed), 1, "last sender wakes the current waiter");
+        assert_eq!(Pin::new(&mut receive).poll(&mut Context::from_waker(&waker)), Poll::Ready(None));
+    }
+
+    #[test]
+    fn cancelling_after_delivery_keeps_the_unconsumed_message() {
+        let (tx, mut rx) = channel::<u32>();
+        let wake = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(wake.clone());
+        let mut receive = rx.recv();
+        assert!(Pin::new(&mut receive).poll(&mut Context::from_waker(&waker)).is_pending());
+        tx.send(42).unwrap();
+        assert_eq!(wake.0.load(Ordering::Relaxed), 1);
+        drop(receive);
+        assert_eq!(Pin::new(&mut rx.recv()).poll(&mut Context::from_waker(Waker::noop())), Poll::Ready(Some(42)));
+    }
+
+    #[test]
+    fn send_racing_close_leaves_no_queued_values() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        for _ in 0..32 {
+            let (tx, rx) = channel::<DroppedResult>();
+            let gate = Arc::new(std::sync::Barrier::new(2));
+            std::thread::scope(|scope| {
+                let gate2 = gate.clone();
+                let dropped = dropped.clone();
+                let tx = &tx;
+                scope.spawn(move || {
+                    gate2.wait();
+                    for _ in 0..32 {
+                        drop(tx.send(DroppedResult(dropped.clone())));
+                    }
+                });
+                gate.wait();
+                drop(rx);
+            });
+            assert!(tx.chan.state.lock().unwrap().queue.is_empty());
+        }
+        assert_eq!(dropped.load(Ordering::Relaxed), 32 * 32);
+    }
+
+    #[test]
+    fn named_channel_replacement_and_cross_thread_close_release_registrations() {
+        let app = App::new(HeadlessPlatform::default());
+        app.run(|| {
+            let mut receivers = Vec::new();
+            for _ in 0..32 {
+                receivers.push(channel::<u32>().1.named("same"));
+                assert_eq!(sched().names.borrow().len(), 1);
+                rt(|r| assert_eq!(r.cleanup_count(r.current_scope().unwrap()), 1));
+            }
+            // Retiring an old receiver must not unregister its replacement.
+            let last = receivers.pop().unwrap();
+            drop(receivers);
+            sched().retire_names();
+            assert!(sched().send_named("same", "7").is_ok());
+            assert_eq!(last.chan.state.lock().unwrap().queue.pop_front(), Some(7));
+            std::thread::spawn(move || drop(last)).join().unwrap();
+        });
+        app.run(|| {
+            assert!(sched().names.borrow().is_empty());
+            rt(|r| assert_eq!(r.cleanup_count(r.current_scope().unwrap()), 0));
+        });
+        app.shutdown();
+    }
+
+    #[test]
+    fn renaming_and_scope_exit_release_the_named_sender_even_if_the_receiver_survives() {
+        let app = App::new(HeadlessPlatform::default());
+        app.run(|| {
+            let scope = rt(|r| r.create_scope(r.current_scope(), "named"));
+            let mut receiver = rt(|r| r.with_scope(Some(scope), || channel::<u32>().1.named("old").named("new")));
+            assert!(sched().send_named("old", "1").is_err());
+            rt(|r| assert_eq!(r.cleanup_count(scope), 1));
+            rt(|r| r.dispose_scope(scope));
+            assert!(sched().names.borrow().is_empty());
+            assert_eq!(Pin::new(&mut receiver.recv()).poll(&mut Context::from_waker(Waker::noop())), Poll::Ready(None));
+        });
+        app.shutdown();
+    }
+
+    #[test]
+    fn closing_a_channel_drops_user_values_outside_its_lock() {
+        struct Reentrant(Sender<Reentrant>, Arc<AtomicUsize>);
+        impl Drop for Reentrant {
+            fn drop(&mut self) {
+                let state = self.0.chan.state.try_lock().expect("user destructor must be free to reenter the channel");
+                assert!(!state.receiver_alive);
+                self.1.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let (tx, rx) = channel::<Reentrant>();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        assert!(tx.send(Reentrant(tx.clone(), dropped.clone())).is_ok());
+        drop(rx);
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+        assert!(tx.chan.state.lock().unwrap().queue.is_empty());
+    }
 
     struct WakeCounter(AtomicUsize);
 
@@ -1167,7 +1524,11 @@ mod tests {
             let sibling = sibling_ran.clone();
             scheduler.insert(Box::pin(async move { sibling.set(true) }), scope, WorkKind::Task, "sibling".into(), Location::caller());
             scheduler.add_timer(100.0, current);
-            scheduler.names.borrow_mut().insert("queued".into(), Rc::new(|_| Ok(())));
+            let interest = Arc::new(NamedInterest { scheduler: Arc::downgrade(&scheduler.shared) });
+            scheduler
+                .names
+                .borrow_mut()
+                .insert("queued".into(), NamedChannel { inject: Rc::new(|_| Ok(())), receiver: Arc::downgrade(&interest), _cleanup: None });
 
             scheduler.run_ready();
 

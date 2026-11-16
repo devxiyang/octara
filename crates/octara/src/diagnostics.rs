@@ -121,6 +121,9 @@ macro_rules! codes {
 }
 
 codes! {
+    INVALID_INTERVAL: Error, Reactive, "docs/design/runtime-contract.md#timers-and-channels",
+        "A periodic task or clock requires a positive period.",
+        cause: "A zero period cannot yield to the event loop. Pass a nonzero Duration to interval or clock; validation happens before registration.";
     APP_FAILED: Error, Reactive, "docs/design/runtime-contract.md#failure-boundary",
         "An App operation panicked; ordinary execution cannot continue.",
         cause: "User state may be partially changed. Read diagnostics, shut down this App and create a new one; restoring internal guards does not restore application state.";

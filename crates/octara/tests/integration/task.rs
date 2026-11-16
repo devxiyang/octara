@@ -627,7 +627,7 @@ fn async_memo_replacement_retires_each_attempt_even_when_the_key_returns() {
         let found = async_memo(
             move || key.get(),
             move |_| {
-                let (tx, rx) = channel::<u32>();
+                let (tx, mut rx) = channel::<u32>();
                 senders.borrow_mut().push(tx);
                 let guard = Attempt(dropped.clone());
                 async move {

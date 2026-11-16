@@ -623,10 +623,14 @@ pub fn following_tail(id: &str) -> ReadSignal<bool> {
 /// binding reading it reruns every `period` (a spinner's step, "5 minutes ago", a caret). Readers
 /// in a window with one period share one timer, which stops when the last of their scopes goes;
 /// it does not keep the app busy (`run_until_idle`).
+///
+/// # Panics
+/// A zero period is rejected with INVALID_INTERVAL before allocating a clock.
 #[track_caller]
 pub fn clock(period: std::time::Duration) -> ReadSignal<std::time::Duration> {
+    crate::task::require_period(period);
     let u = crate::app::window();
-    let step = period.as_nanos().max(1);
+    let step = period.as_nanos();
     let at = move |t: std::time::Duration| std::time::Duration::from_nanos((t.as_nanos() / step * step) as u64);
     let signal = {
         let mut clocks = u.clocks.borrow_mut();
