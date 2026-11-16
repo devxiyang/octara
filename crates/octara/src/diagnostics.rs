@@ -127,6 +127,9 @@ codes! {
     APP_FAILED: Error, Reactive, "docs/design/runtime-contract.md#failure-boundary",
         "An App operation panicked; ordinary execution cannot continue.",
         cause: "User state may be partially changed. Read diagnostics, shut down this App and create a new one; restoring internal guards does not restore application state.";
+    LATE_COMPLETION_PANIC: Error, Reactive, "docs/design/runtime-contract.md#retired-completion-failures",
+        "External completion panicked after its App retired.",
+        cause: "Blocking work or a native reply outlived shutdown. Its notification or destructor panicked; the panic hook reports details and the retired App records the count without reopening execution or pending work.";
     // ---- reactive ----
     WRONG_RUNTIME: Error, Reactive, "docs/design/reactive-core.md#4-identity-and-state",
         "A reactive handle was used in a different App; access was rejected.",

@@ -608,3 +608,23 @@ values and errors into either the new state or a local retirement tuple. Signal 
 and invalidation complete before that tuple drops, so destructors can read the committed
 state. Public Signal::with/update keep their explicit reference-borrowing contracts;
 no new public transition or result primitive is introduced.
+
+### Retired completion failures
+
+The completion-failure inbox is Open or Retired. Failure insertion and closing use the
+same mutex: a failure accepted before closing is released by shutdown; one arriving after
+closing increments a saturating diagnostic count and its payload is released outside the
+lock. It cannot reopen execution or add pending Update work. `LATE_COMPLETION_PANIC` is
+visible through App diagnostics and diagnostic counts, including after repeated shutdown.
+The original panic hook reports the details; the framework keeps no unbounded history of
+late payloads. This remains an unwind-based policy, not recovery from abort or double panic.
+
+Task wake admission retains one pending bit per live full TaskId (including generation).
+A task stays pending while its entry is in a detached or deferred batch. Beginning its
+poll clears the bit before user code executes; a concurrent wake can then request the
+next poll. Cancellation and completion remove admission before releasing user resources.
+Duplicate and retired wakes neither allocate queue entries nor call the host. Queued
+work still runs in spawn order, and a deferred batch still precedes newly queued work.
+This coalesces readiness notifications, not channel messages or distinct task identities.
+A callback already admitted concurrently with shutdown can still finish; shutdown neither
+joins arbitrary callbacks nor invokes them while holding scheduler locks.

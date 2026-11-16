@@ -945,3 +945,269 @@ fn shutdown_can_retire_an_unobserved_completion_failure() {
     assert!(app.pending().is_empty());
     assert!(scheduler.shared.failures.lock().unwrap().is_empty());
 }
+
+#[test]
+fn late_completion_failures_are_diagnostics_not_pending_work() {
+    struct BadDrop;
+    impl Drop for BadDrop {
+        fn drop(&mut self) {
+            panic!("late result destructor");
+        }
+    }
+    // More failures than workers: retirement must not sacrifice shared worker capacity.
+    for _ in 0..6 {
+        let app = App::new(HeadlessPlatform::default());
+        let (release, wait) = std::sync::mpsc::channel();
+        let (future, scheduler) = app.run(|| {
+            (
+                background(move || {
+                    wait.recv().unwrap();
+                    BadDrop
+                }),
+                sched(),
+            )
+        });
+        drop(future);
+        app.shutdown();
+        release.send(()).unwrap();
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while scheduler.late_completion_failures() == 0 {
+            assert!(std::time::Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(scheduler.wait_background(Duration::ZERO));
+        assert!(app.pending().is_empty());
+        app.shutdown();
+        assert!(app.pending().is_empty());
+        assert_eq!(app.diagnostic_counts(), [(codes::LATE_COMPLETION_PANIC.id, 1)]);
+        assert!(app.diagnostics().iter().any(|d| d.code == &codes::LATE_COMPLETION_PANIC));
+    }
+}
+
+#[test]
+fn completion_failure_and_shutdown_share_one_admission_boundary() {
+    struct Payload(Weak<Shared>, Arc<AtomicUsize>);
+    impl Drop for Payload {
+        fn drop(&mut self) {
+            let shared = self.0.upgrade().unwrap();
+            assert!(shared.failures.try_lock().is_ok(), "panic payload destroyed under inbox lock");
+            self.1.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    for _ in 0..32 {
+        let scheduler = Scheduler::default();
+        let shared = scheduler.shared.clone();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let payload = Payload(Arc::downgrade(&shared), dropped.clone());
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let start = barrier.clone();
+        let worker = std::thread::spawn(move || {
+            start.wait();
+            shared.complete(|| std::panic::panic_any(payload));
+        });
+        barrier.wait();
+        scheduler.shutdown();
+        worker.join().unwrap();
+        assert!(scheduler.shared.failures.lock().unwrap().is_empty());
+        assert!(scheduler.idle());
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+        assert!(scheduler.late_completion_failures() <= 1);
+    }
+}
+
+#[test]
+fn concurrent_duplicate_wakes_are_one_entry_and_stale_wakers_cannot_reenter() {
+    let runtime = crate::reactive::graph::Runtime::new();
+    runtime.enter(|| {
+        let scope = runtime.create_scope(None, "wake test");
+        let scheduler = Scheduler::default();
+        let polls = Rc::new(Cell::new(0));
+        let saved = Rc::new(RefCell::new(None::<Waker>));
+        let make = || {
+            let (polls, saved) = (polls.clone(), saved.clone());
+            Box::pin(std::future::poll_fn(move |cx| {
+                polls.set(polls.get() + 1);
+                *saved.borrow_mut() = Some(cx.waker().clone());
+                Poll::<()>::Pending
+            })) as BoxFuture
+        };
+        let id = scheduler.insert(make(), scope, WorkKind::Task, "wake".into(), Location::caller());
+        scheduler.run_ready();
+        let old = saved.borrow().clone().unwrap();
+        let notified = Arc::new(AtomicUsize::new(0));
+        let count = notified.clone();
+        scheduler.set_waker(Arc::new(move || {
+            count.fetch_add(1, Ordering::Relaxed);
+        }));
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let waker = old.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..2_500 {
+                        waker.wake_by_ref();
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(scheduler.shared.ready.lock().unwrap().queue.len(), 1);
+        assert_eq!(notified.load(Ordering::Relaxed), 1);
+        scheduler.run_ready();
+        assert_eq!(polls.get(), 2);
+        scheduler.cancel(id);
+        let replacement = scheduler.insert(make(), scope, WorkKind::Task, "replacement".into(), Location::caller());
+        assert_eq!(replacement.slot(), id.slot());
+        assert_ne!(replacement, id);
+        scheduler.run_ready();
+        old.wake_by_ref();
+        assert!(!scheduler.has_ready());
+        assert_eq!(notified.load(Ordering::Relaxed), 1);
+        let current = saved.borrow().clone().unwrap();
+        current.wake_by_ref();
+        assert!(scheduler.has_ready());
+        scheduler.shutdown();
+        let before = notified.load(Ordering::Relaxed);
+        current.wake_by_ref();
+        old.wake_by_ref();
+        assert!(!scheduler.has_ready());
+        assert_eq!(notified.load(Ordering::Relaxed), before);
+    });
+}
+
+#[test]
+fn wake_during_poll_is_not_lost() {
+    let runtime = crate::reactive::graph::Runtime::new();
+    runtime.enter(|| {
+        let scope = runtime.create_scope(None, "race");
+        let scheduler = Scheduler::default();
+        let (send, receive) = std::sync::mpsc::channel::<Waker>();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let wait = barrier.clone();
+        let worker = std::thread::spawn(move || {
+            let waker = receive.recv().unwrap();
+            waker.wake_by_ref();
+            wait.wait();
+        });
+        let polls = Rc::new(Cell::new(0));
+        let calls = polls.clone();
+        let id = scheduler.insert(
+            Box::pin(std::future::poll_fn(move |cx| {
+                calls.set(calls.get() + 1);
+                if calls.get() == 1 {
+                    send.send(cx.waker().clone()).unwrap();
+                    barrier.wait();
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            })),
+            scope,
+            WorkKind::Task,
+            "race".into(),
+            Location::caller(),
+        );
+        scheduler.run_ready();
+        worker.join().unwrap();
+        assert_eq!(polls.get(), 2);
+        assert!(!scheduler.alive(id));
+        assert!(scheduler.shared.ready.lock().unwrap().pending.is_empty());
+        scheduler.shutdown();
+    });
+}
+
+#[test]
+fn deferred_tasks_keep_wake_ownership_until_their_poll_begins() {
+    let runtime = crate::reactive::graph::Runtime::new();
+    runtime.enter(|| {
+        let scope = runtime.create_scope(None, "deferred");
+        let scheduler = Scheduler::default();
+        let saved = Rc::new(RefCell::new(Vec::<Waker>::new()));
+        let polls = Rc::new(Cell::new(0));
+        for _ in 0..2 {
+            let (saved, polls) = (saved.clone(), polls.clone());
+            scheduler.insert(
+                Box::pin(std::future::poll_fn(move |cx| {
+                    saved.borrow_mut().push(cx.waker().clone());
+                    polls.set(polls.get() + 1);
+                    Poll::<()>::Pending
+                })),
+                scope,
+                WorkKind::Task,
+                "deferred".into(),
+                Location::caller(),
+            );
+        }
+        scheduler.run_ready();
+        let wakes = saved.borrow().clone();
+        wakes[0].wake_by_ref();
+        wakes[1].wake_by_ref();
+        scheduler.polls_left.set(1);
+        scheduler.run_ready();
+        assert_eq!(scheduler.deferred.borrow().len(), 1);
+        for _ in 0..100 {
+            wakes[1].wake_by_ref();
+        }
+        assert!(scheduler.shared.ready.lock().unwrap().queue.is_empty());
+        scheduler.begin_turn();
+        scheduler.run_ready();
+        assert_eq!(polls.get(), 4);
+        scheduler.shutdown();
+    });
+}
+
+#[test]
+fn racing_wakes_cannot_reopen_cancelled_or_closed_tasks() {
+    let runtime = crate::reactive::graph::Runtime::new();
+    runtime.enter(|| {
+        let scope = runtime.create_scope(None, "retirement race");
+        for close in [false, true] {
+            for _ in 0..16 {
+                let scheduler = Scheduler::default();
+                let saved = Rc::new(RefCell::new(None::<Waker>));
+                let capture = saved.clone();
+                let id = scheduler.insert(
+                    Box::pin(std::future::poll_fn(move |cx| {
+                        *capture.borrow_mut() = Some(cx.waker().clone());
+                        Poll::<()>::Pending
+                    })),
+                    scope,
+                    WorkKind::Task,
+                    "race".into(),
+                    Location::caller(),
+                );
+                scheduler.run_ready();
+                let waker = saved.borrow().clone().unwrap();
+                let count = Arc::new(AtomicUsize::new(0));
+                let notified = count.clone();
+                scheduler.set_waker(Arc::new(move || {
+                    notified.fetch_add(1, Ordering::Relaxed);
+                }));
+                let barrier = Arc::new(std::sync::Barrier::new(2));
+                let start = barrier.clone();
+                let old = waker.clone();
+                let worker = std::thread::spawn(move || {
+                    start.wait();
+                    for _ in 0..1_000 {
+                        old.wake_by_ref();
+                    }
+                });
+                barrier.wait();
+                if close {
+                    scheduler.shutdown();
+                } else {
+                    scheduler.cancel(id);
+                }
+                worker.join().unwrap();
+                assert!(!scheduler.has_ready());
+                assert!(!scheduler.alive(id));
+                let before = count.load(Ordering::Relaxed);
+                waker.wake_by_ref();
+                assert_eq!(count.load(Ordering::Relaxed), before);
+                assert!(scheduler.shared.ready.lock().unwrap().pending.is_empty());
+                scheduler.shutdown();
+            }
+        }
+    });
+}

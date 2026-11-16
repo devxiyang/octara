@@ -29,7 +29,7 @@ pub(crate) use time::{require_period, whole_ns};
 
 use crate::diagnostics as codes;
 use crate::reactive::graph::{Ctx, ScopeId, Signal, memo, rt, untrack, watch};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::future::Future;
@@ -128,13 +128,97 @@ struct Entry {
     owner: Option<crate::reactive::graph::Owner>,
 }
 
+type PanicPayload = Box<dyn std::any::Any + Send>;
+
+/// Closing and accepting a failure share the same lock. Retired failures are
+/// diagnostics, never runnable work; the panic hook has already reported details.
+enum FailureInbox {
+    Open(VecDeque<PanicPayload>),
+    Retired { late: u32 },
+}
+
+impl Default for FailureInbox {
+    fn default() -> Self {
+        Self::Open(VecDeque::new())
+    }
+}
+
+impl FailureInbox {
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Open(queue) => queue.is_empty(),
+            Self::Retired { .. } => true,
+        }
+    }
+    fn pop_front(&mut self) -> Option<PanicPayload> {
+        match self {
+            Self::Open(queue) => queue.pop_front(),
+            Self::Retired { .. } => None,
+        }
+    }
+    fn record(&mut self, panic: PanicPayload) -> Option<PanicPayload> {
+        match self {
+            Self::Open(queue) => {
+                queue.push_back(panic);
+                None
+            }
+            Self::Retired { late } => {
+                *late = late.saturating_add(1);
+                Some(panic)
+            }
+        }
+    }
+    fn close(&mut self) -> VecDeque<PanicPayload> {
+        if matches!(self, Self::Retired { .. }) {
+            return VecDeque::new();
+        }
+        let Self::Open(queue) = std::mem::replace(self, Self::Retired { late: 0 }) else { unreachable!() };
+        queue
+    }
+}
+
+/// A task keeps its pending bit while in a detached/deferred batch. Only beginning
+/// its poll clears that bit, so concurrent wakes cannot duplicate an unconsumed poll.
+#[derive(Default)]
+struct ReadyQueue {
+    queue: FxHashSet<TaskId>,
+    pending: FxHashMap<TaskId, bool>,
+}
+
+impl ReadyQueue {
+    fn register(&mut self, id: TaskId) {
+        self.pending.insert(id, true);
+        self.queue.insert(id);
+    }
+    fn wake(&mut self, id: TaskId) -> bool {
+        let Some(pending) = self.pending.get_mut(&id) else { return false };
+        if *pending {
+            return false;
+        }
+        *pending = true;
+        self.queue.insert(id);
+        true
+    }
+    fn retire(&mut self, id: TaskId) {
+        self.pending.remove(&id);
+        self.queue.remove(&id);
+    }
+    fn clear(&mut self) {
+        self.queue.clear();
+        self.pending.clear();
+    }
+    fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+}
+
 /// What other threads can touch: the ready queue, the count of background jobs in flight, and
 /// the shell's wake-up.
 pub(crate) struct Shared {
     closed: AtomicBool,
-    ready: Mutex<Vec<TaskId>>,
+    ready: Mutex<ReadyQueue>,
     inflight: Mutex<usize>,
-    failures: Mutex<VecDeque<Box<dyn std::any::Any + Send>>>,
+    failures: Mutex<FailureInbox>,
     idle: Condvar,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
@@ -144,7 +228,8 @@ impl Shared {
     /// the next App boundary; never retry a potentially failing host notification.
     fn complete(&self, f: impl FnOnce()) {
         if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
-            self.failures.lock().expect("background failures").push_back(panic);
+            let rejected = self.failures.lock().expect("background failures").record(panic);
+            drop(rejected);
         }
     }
 
@@ -174,9 +259,11 @@ impl Wake for TaskWaker {
             if s.closed.load(Ordering::Acquire) {
                 return;
             }
-            ready.push(self.id);
+            let admitted = ready.wake(self.id);
             drop(ready);
-            s.notify();
+            if admitted {
+                s.notify();
+            }
         }
     }
 }
@@ -234,6 +321,7 @@ impl Drop for PollingTask<'_> {
             let mut slots = self.scheduler.slots.borrow_mut();
             if slots.get(self.id.slot()).and_then(|e| e.as_ref()).is_some_and(|e| e.id == self.id) {
                 let retired = slots[self.id.slot()].take();
+                self.scheduler.shared.ready.lock().expect("ready").retire(self.id);
                 drop(slots);
                 drop(retired);
                 self.scheduler.free.borrow_mut().push(self.id.slot());
@@ -304,7 +392,9 @@ impl Scheduler {
         }
         let _stopping = std::mem::DropGuard::new(&self.stopping, |stopping| stopping.set(false));
         self.shared.closed.store(true, Ordering::Release);
+        let failures = self.shared.failures.lock().expect("background failures").close();
         let wake = self.shared.wake.lock().expect("wake").take();
+        drop(failures);
         drop(wake);
         let ids: Vec<_> = self.slots.borrow().iter().flatten().map(|entry| entry.id).collect();
         for id in ids {
@@ -314,8 +404,6 @@ impl Scheduler {
         let timers = std::mem::take(&mut *self.timers.borrow_mut());
         drop(timers);
         self.shared.ready.lock().expect("ready").clear();
-        let failures = std::mem::take(&mut *self.shared.failures.lock().expect("background failures"));
-        drop(failures);
         let names = std::mem::take(&mut *self.names.borrow_mut());
         drop(names);
     }
@@ -338,7 +426,7 @@ impl Scheduler {
         let owner = rt(|r| r.owner());
         self.slots.borrow_mut()[slot] =
             Some(Entry { cleanup: None, id, spawn_order, state: TaskState::Suspended(future), scope, kind, label, at, owner });
-        self.shared.ready.lock().expect("ready").push(id);
+        self.shared.ready.lock().expect("ready").register(id);
         id
     }
 
@@ -353,6 +441,7 @@ impl Scheduler {
         if e.id != id {
             return;
         }
+        self.shared.ready.lock().expect("ready").retire(id);
         let previous = std::mem::replace(&mut e.state, TaskState::Cancelled);
         if let TaskState::Suspended(f) = previous {
             let retired = slots[id.slot()].take();
@@ -365,6 +454,13 @@ impl Scheduler {
 
     pub(crate) fn has_ready(&self) -> bool {
         !self.deferred.borrow().is_empty() || !self.shared.ready.lock().expect("ready").is_empty()
+    }
+
+    pub(crate) fn late_completion_failures(&self) -> u32 {
+        match &*self.shared.failures.lock().expect("background failures") {
+            FailureInbox::Open(_) => 0,
+            FailureInbox::Retired { late } => *late,
+        }
     }
 
     pub(crate) fn resume_background_failure(&self) {
@@ -404,7 +500,7 @@ impl Scheduler {
             // waking itself could repeatedly displace the later tasks at the budget boundary.
             let mut batch = std::mem::take(&mut *self.deferred.borrow_mut());
             if batch.is_empty() {
-                batch = std::mem::take(&mut *self.shared.ready.lock().expect("ready"));
+                batch = self.shared.ready.lock().expect("ready").queue.drain().collect();
                 if batch.is_empty() {
                     break;
                 }
@@ -416,7 +512,6 @@ impl Scheduler {
                         .is_some_and(|entry| entry.id == *id && !matches!(entry.state, TaskState::Cancelled))
                 });
                 batch.sort_unstable_by_key(|id| slots[id.slot()].as_ref().expect("live ready task").spawn_order);
-                batch.dedup();
             }
             let mut batch = ReadyBatch { scheduler: self, remaining: batch.into_iter() };
             while self.polls_left.get() > 0 {
@@ -438,6 +533,7 @@ impl Scheduler {
             if e.id != id || !matches!(e.state, TaskState::Suspended(_)) {
                 return false;
             }
+            *self.shared.ready.lock().expect("ready").pending.get_mut(&id).expect("live task wake admission") = false;
             let TaskState::Suspended(f) = std::mem::replace(&mut e.state, TaskState::Polling) else { unreachable!() };
             (f, e.scope, e.owner)
         };

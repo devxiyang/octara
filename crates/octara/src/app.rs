@@ -1482,11 +1482,25 @@ impl App {
         }
     }
     pub fn diagnostics(&self) -> Vec<Diagnostic> {
-        self.app.rt.diagnostics()
+        let mut diagnostics = self.app.rt.diagnostics();
+        let late = self.app.sched.late_completion_failures();
+        if late > 0 {
+            diagnostics.push(Diagnostic {
+                code: &codes::LATE_COMPLETION_PANIC,
+                message: format!("{late} external completion panic(s) after shutdown; see the panic hook output for details"),
+                location: None,
+            });
+        }
+        diagnostics
     }
     /// Each stored diagnostic's code with how many times it occurred (repeats are not stored).
     pub fn diagnostic_counts(&self) -> Vec<(&'static str, u32)> {
-        self.app.rt.diagnostic_counts()
+        let mut counts = self.app.rt.diagnostic_counts();
+        let late = self.app.sched.late_completion_failures();
+        if late > 0 {
+            counts.push((codes::LATE_COMPLETION_PANIC.id, late));
+        }
+        counts
     }
     pub fn work(&self) -> Work {
         Work { closures_run: self.app.rt.closures_run(), reactive_nodes: self.app.rt.live_nodes() }
