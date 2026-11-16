@@ -1,5 +1,10 @@
 # Runtime architecture
 
+The 2026-11-16 [kernel execution review](kernel-execution-review.md) defines the
+next bounded convergence round: shared execution/permission obligations, lifecycle
+boundaries, removal inventory and explicit completion gates. It is a proposal,
+not a claim that its permission-entry consolidation has already shipped.
+
 Status: selected target contract, revised 2026-11-15; correctness, Signals API and App root lifetime
 slices implemented, broader primitive consolidation pending. Current details are in [reactive core](reactive-core.md)
 and [async](async.md); the complete target below is not a claim that every mechanism has shipped.

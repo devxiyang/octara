@@ -1,5 +1,9 @@
 # Runtime and Signals consolidation
 
+For the current bounded kernel round, follow the 2026-11-16
+[execution architecture review](kernel-execution-review.md). Its three slices and
+exit criteria take priority over expanding this broader historical inventory.
+
 Status: selected target architecture, 2026-11-15. Six slices are implemented: correctness,
 Signals API, App root lifetime, style declaration ordering, exclusive element content and the
 Inspector boundary. Broader consolidation remains pending. This is the complete target inventory,
