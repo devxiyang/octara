@@ -442,3 +442,12 @@ This guarantees ordering within a ready batch, not deterministic arrival of exte
 No new public handle, priority API or scheduler is introduced. Regressions cover slot reuse,
 reverse wake arrival, repeated wakes, cancellation ordering and an obsolete waker targeting
 a slot now occupied by another task.
+
+### Task draining is not reentrant
+
+Only the outer `Scheduler::run_ready` call consumes the ready queue. A task or a future's
+destructor may reenter the App, but a nested drain leaves wakes queued for the outer call.
+This matters because an actively polled future temporarily leaves its slot: consuming its
+wake then would silently lose the next poll. Newly spawned work also waits until the current
+poll and its retirement finish. A scoped guard releases the drain on both return and unwind;
+App failure and shutdown retain their existing behavior.

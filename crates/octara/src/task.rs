@@ -154,6 +154,7 @@ pub(crate) struct Scheduler {
     generations: RefCell<Vec<u32>>,
     free: RefCell<Vec<usize>>,
     next_spawn_order: Cell<u64>,
+    running: Cell<bool>,
     shared: Arc<Shared>,
     /// Timers: (due, sequence, task) — the task is woken when the clock reaches `due`.
     timers: RefCell<Vec<(f64, u64, TaskId)>>,
@@ -211,6 +212,7 @@ impl Default for Scheduler {
             generations: RefCell::default(),
             free: RefCell::default(),
             next_spawn_order: Cell::new(0),
+            running: Cell::new(false),
             shared: Arc::new(Shared {
                 closed: AtomicBool::new(false),
                 ready: Mutex::default(),
@@ -317,6 +319,12 @@ impl Scheduler {
 
     /// Polls woken tasks until none is ready: each batch in spawn order. Returns whether any ran.
     pub(crate) fn run_ready(&self) -> bool {
+        // User polling and future destructors can reenter the App. Only the outer drain may
+        // consume wakes: an active future is temporarily absent from its slot.
+        if self.running.replace(true) {
+            return false;
+        }
+        let _running = std::mem::DropGuard::new(&self.running, |running| running.set(false));
         self.retire_names();
         let mut ran = false;
         for _ in 0..10_000 {
@@ -1088,6 +1096,30 @@ mod tests {
     use crate::reactive::state;
     use crate::view::{Styled, el};
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn nested_app_poll_preserves_the_active_tasks_wake() {
+        let app = App::new(HeadlessPlatform::default());
+        let nested = app.clone();
+        let polls = Rc::new(Cell::new(0));
+        let count = polls.clone();
+        app.run(|| {
+            spawn(std::future::poll_fn(move |cx| {
+                count.set(count.get() + 1);
+                if count.get() == 1 {
+                    cx.waker().wake_by_ref();
+                    nested.poll();
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            }));
+        });
+        app.poll();
+        assert_eq!(polls.get(), 2, "nested polling must leave the wake for the outer scheduler");
+        assert!(app.pending().is_empty());
+        app.shutdown();
+    }
 
     #[test]
     fn reused_slots_do_not_reorder_ready_tasks() {
