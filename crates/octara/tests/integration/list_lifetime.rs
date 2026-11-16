@@ -68,13 +68,13 @@ fn retained_lists_release_all_nodes_inside_a_foreign_app() {
 }
 
 #[test]
-fn a_retained_list_does_not_keep_its_runtime_alive() {
+fn shutdown_releases_items_even_with_retained_list_and_app_handles() {
     let app = App::new(HeadlessPlatform::default());
     let payload = Rc::new(());
     let alive = Rc::downgrade(&payload);
     let list = app.run(|| state_list("items", || vec![(1u32, payload)], |item| item.0).read_only());
     app.shutdown();
-    assert!(alive.upgrade().is_some(), "the retained list still owns its item node");
+    assert!(alive.upgrade().is_none(), "final App teardown releases graph values even when a list retains their handles");
     drop(app);
     assert!(alive.upgrade().is_none(), "retaining a list must not retain its runtime or graph values");
     drop(list); // Safe even after the creating runtime has gone away.

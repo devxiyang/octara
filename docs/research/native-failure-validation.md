@@ -20,7 +20,7 @@ The helper acts only on the supplied test PID. The desktop must be unlocked and 
 must have accessibility access. The Python harness uses framework input through the live CLI,
 not native keyboard/pointer injection; only activation and closing use the OS adapter.
 
-## Evidence so far
+## Earlier locked-desktop evidence
 
 - Core Inspector regression covers guarded and unguarded callback panic, unknown delivery,
   diagnostic reads and refusal of later input/reload/settle/capture.
@@ -33,7 +33,7 @@ not native keyboard/pointer injection; only activation and closing use the OS ad
   check confirmed the desktop was locked. This is evidence for the live protocol and offscreen
   GPU path only, **not** a pass for visible presentation or native close.
 - The harness now requires nonzero presented frames and a non-occluded window before fault
-  injection. Visible presentation and OS-close acceptance remain pending desktop unlock.
+  injection. At that point visible presentation and OS-close acceptance were pending desktop unlock.
 
 ## Deterministic continuation without an interactive desktop
 
@@ -53,3 +53,30 @@ The pending-gesture tests use the real gesture job and scheduler with a headless
 Pending gesture construction now records delivery from the job in one place, shared by initial
 admission and subsequent polls. These tests establish runtime and protocol behavior; they do
 not replace the deferred visible-presentation/native-close checks.
+
+## Unlocked desktop acceptance, 2026-11-16
+
+The user unlocked the desktop and the harness was rerun, first before teardown changes and
+then against binaries rebuilt with resumable teardown. The final evidence is in
+`/tmp/octara-native-failure-resumable-20261116/results.json`, with per-case CLI transcripts,
+window logs and `*-before.png` GPU captures in the same directory.
+
+| Injected failure | Presented frames before/after failure | Occluded | Native close |
+| --- | --- | --- | --- |
+| Handler | 2 / 2 | false | passed |
+| Task | 2 / 2 | false | passed |
+| Binding | 2 / 2 | false | passed |
+
+All three passed: an ordinary missing-element refusal did not stop the App; the normal action
+updated the UI; panic returned APP_FAILED with unknown delivery; only inspect/issues remained
+advertised; later input, reload, settle, resize and capture were refused. Presented frame counts
+stopped and presentation demand cleared. The PID-scoped accessibility helper pressed each native
+close button, each failed process exited with status 1, and its Inspector socket was removed.
+The handler's before-failure capture was also visually inspected.
+
+These are actual visible-window presentation and OS-close checks, not only offscreen rendering.
+Fault injection still uses framework input over the Inspector protocol, not native keyboard or
+pointer injection. They cover handler/task/binding failure; resumable cleanup/context/future
+Drop panic behavior is covered separately by deterministic core tests, not claimed as an
+additional native UI scenario. The earlier locked-desktop limitation is now closed for these
+three cases.

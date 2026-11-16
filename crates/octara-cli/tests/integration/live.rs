@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -18,8 +19,10 @@ struct Server {
 impl Server {
     fn new(replies: Vec<Option<Value>>) -> Self {
         // Keep the Unix socket name short enough for macOS's sockaddr_un.
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let path = PathBuf::from(format!("/tmp/octara-cli-{}-{nonce}.sock", std::process::id()));
+        let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = PathBuf::from(format!("/tmp/octara-cli-{}-{nonce}-{sequence}.sock", std::process::id()));
         let listener = UnixListener::bind(&path).unwrap();
         listener.set_nonblocking(true).unwrap();
         let task = thread::spawn(move || {

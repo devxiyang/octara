@@ -80,6 +80,46 @@ inspect                          snapshots, scripts, `check` (the agent's protoc
 platform                         what the app needs from the system (traits); headless impl
 ```
 
+### Source layout
+
+Public paths are stable while implementation files follow responsibility:
+
+```text
+crates/octara/src/
+├── reactive/
+│   ├── mod.rs                 public reactive exports and on_cleanup
+│   ├── graph.rs               graph storage, tracking and propagation
+│   ├── graph/
+│   │   ├── signal.rs          Signal/ReadSignal, memo, watch and public helpers
+│   │   ├── scope.rs           scope ownership, named state, context and teardown
+│   │   └── tests.rs           graph and lifetime regressions
+│   ├── list.rs                incremental collections
+│   ├── text.rs                text buffers
+│   ├── seq.rs                 internal ordered/weighted index
+│   └── log.rs                 bounded change history
+├── task.rs                    scheduler, task identity/ownership and public exports
+├── task/
+│   ├── time.rs                app-clock waits and intervals
+│   ├── background.rs          worker pool and one-shot/native replies
+│   ├── channel.rs             channel ownership, waits and named receivers
+│   ├── channel/tests.rs       channel-private invariant tests
+│   ├── async_memo.rs          async derivations and result admission
+│   ├── tests.rs               scheduler and cross-primitive lifetime regressions
+│   └── test_support.rs        shared test-only drop/wake probes
+├── app.rs                     App/Window state, entry boundaries and lifecycle
+└── app/
+    ├── frame.rs               mounting and bounded frame/layout preparation
+    ├── presentation.rs        native view synchronization, capture and presentation
+    └── …                      existing input, focus, IME, time and interaction modules
+```
+
+The new implementation submodules are private. Public primitives are re-exported through the
+existing `reactive` and `task` paths; moved methods remain inherent App/Window methods. Helpers
+shared across child files use at most their enclosing module's visibility where possible;
+channel internals remain private, with their tests colocated beneath that module. No extra
+crate, runtime abstraction or compatibility API is introduced. CLI `vocab` resolves the public
+paths to their current implementation files.
+
 ## App and windows
 
 - `App` is a handle on the app's state: the reactive runtime, the scheduler and its clock, the

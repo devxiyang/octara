@@ -43,12 +43,17 @@ impl App {
     }
 
     /// Moves the clock to `t` (shells call this before each event and frame with the time since
-    /// launch). Whatever comes due on the way runs at its own time. Time never goes back.
+    /// launch). Due work runs at its own time while the turn allowance permits; remaining
+    /// ready tasks continue on a later turn at the advanced clock. Time never goes back.
     pub fn advance_to(&self, t: Duration) {
         self.app.assert_usable();
         if self.is_shutdown() {
             return;
         }
+        self.enter(|| self.advance_clock_to(t));
+    }
+
+    fn advance_clock_to(&self, t: Duration) {
         let sched = self.app.sched.clone();
         let t = crate::task::whole_ns(ms(t)).max(sched.now_ms());
         for _ in 0..100_000 {
@@ -124,7 +129,8 @@ impl App {
     }
 
     /// Runs what other threads woke (background results, channel messages). Shells call this
-    /// when the app's waker fires.
+    /// when the app's waker fires. A bounded turn may leave ready work pending and request
+    /// another wake; use `pending()` to inspect unfinished work.
     pub fn poll(&self) {
         if self.is_shutdown() {
             return;
@@ -185,6 +191,24 @@ impl App {
             out.push(PendingWork {
                 kind: WorkKind::Update,
                 label: "App failed after a panic; shutdown required".into(),
+                scope: "app".into(),
+                at: String::new(),
+                due: None,
+            });
+        }
+        if self.is_shutdown() && self.app.teardown.get() != super::Teardown::Complete {
+            out.push(PendingWork {
+                kind: WorkKind::Update,
+                label: "App execution stopped; resource teardown is incomplete".into(),
+                scope: "app".into(),
+                at: String::new(),
+                due: None,
+            });
+        }
+        if self.app.sched.yielded() {
+            out.push(PendingWork {
+                kind: WorkKind::Update,
+                label: "ready tasks yielded at the App turn limit".into(),
                 scope: "app".into(),
                 at: String::new(),
                 due: None,

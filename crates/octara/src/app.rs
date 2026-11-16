@@ -6,11 +6,13 @@ mod drive;
 mod edit;
 mod event;
 mod focus;
+mod frame;
 mod guard;
 mod input;
 mod keys;
 mod pick;
 mod pointer;
+mod presentation;
 mod selection;
 mod text_input;
 mod time;
@@ -138,6 +140,13 @@ impl WindowId {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Teardown {
+    Pending,
+    Running,
+    Complete,
+}
+
 /// What the whole app shares ([design](https://github.com/octoii-works/octara/blob/main/docs/design/core.md)):
 /// the reactive runtime, the scheduler and its clock, settings and the platform, and the
 /// windows.
@@ -148,6 +157,7 @@ pub(crate) struct AppState {
     root_scope: ScopeId,
     /// A one-way gate: teardown may still run internally, but public work cannot restart.
     shutdown: Cell<bool>,
+    teardown: Cell<Teardown>,
     failed: Cell<bool>,
     /// Tasks, timers and channels, and the clock: one for all the windows.
     pub(crate) sched: Rc<crate::task::Scheduler>,
@@ -305,6 +315,7 @@ fn enter_app_context<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
         }
     });
     if app.depth.get() == 0 && !app.checking.get() {
+        app.sched.begin_turn();
         app.rt.resume_propagation();
     }
     struct Restore(Option<Rc<AppState>>);
@@ -329,6 +340,7 @@ fn enter_app_context<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
     if app.depth.get() == 0 && !app.failed.get() {
         app.sched.retire_names();
         app.check_consistency();
+        app.sched.finish_turn();
     }
     r
 }
@@ -587,6 +599,7 @@ impl App {
             rt,
             root_scope,
             shutdown: Cell::new(false),
+            teardown: Cell::new(Teardown::Pending),
             failed: Cell::new(false),
             sched: Rc::new(crate::task::Scheduler::default()),
             res: Rc::default(),
@@ -644,29 +657,41 @@ impl App {
     }
 
     /// Ends this App, even when other handles remain. Closes windows, runs scope cleanup and
-    /// cancels tasks. Repeated calls do nothing. Closing the last window alone does not end it.
+    /// cancels tasks. Completed shutdown is idempotent; interrupted teardown can be resumed.
+    /// Closing the last window alone does not end the App.
     /// Hosts must call this before exiting; dropping Rc handles is not a shutdown protocol.
+    /// A user cleanup panic propagates and can interrupt resource release. The entry gate
+    /// remains closed. A later shutdown resumes unstarted teardown work without replaying
+    /// a cleanup callback that already began.
     #[track_caller]
     pub fn shutdown(&self) {
         let at = std::panic::Location::caller();
         enter_app_context(&self.app, || {
-            if self.app.shutdown.get() {
+            if self.app.teardown.get() != Teardown::Pending {
                 return;
             }
             if !self.app.rt.write_allowed(at) || !self.app.rt.effect_allowed(at) {
                 return;
             }
             self.app.shutdown.set(true);
-            // Close the gate before callbacks run. Even if user cleanup unwinds, stop the
-            // scheduler rather than allowing late wakes to resume partially retired work.
-            let _stop = std::mem::DropGuard::new(&self.app.sched, |scheduler| scheduler.shutdown());
+            self.app.teardown.set(Teardown::Running);
+            let _progress = std::mem::DropGuard::new(&self.app.teardown, |progress| {
+                if progress.get() == Teardown::Running {
+                    progress.set(Teardown::Pending);
+                }
+            });
+            self.app.rt.set_reloading(false);
+            // Revoke task execution before user cleanup. If a future destructor panics,
+            // the closed scheduler retains its remaining slots for the next shutdown.
+            self.app.sched.shutdown();
             let windows = self.app.order.borrow().clone();
             for id in windows {
                 self.app.close(id);
             }
             self.app.opening.borrow_mut().clear();
             self.app.closing.borrow_mut().clear();
-            self.app.rt.dispose_scope(self.app.root_scope);
+            self.app.rt.shutdown();
+            self.app.teardown.set(Teardown::Complete);
         });
     }
 
@@ -676,6 +701,8 @@ impl App {
         self.app.failed.get()
     }
 
+    /// Whether execution is permanently stopped. If cleanup was interrupted, `pending()`
+    /// reports unfinished teardown and another `shutdown()` resumes it.
     pub fn is_shutdown(&self) -> bool {
         self.app.shutdown.get()
     }
@@ -863,76 +890,14 @@ impl AppState {
         Some(Window { app: self.clone(), w })
     }
 
-    /// A frame for the whole app: every window settles (shared state may have changed what any
-    /// of them shows), then windows asked for open and windows asked to close go.
-    fn frame(self: &Rc<Self>, at: &'static std::panic::Location<'static>) {
-        self.frame_except(None, at);
-    }
-
-    /// Retain this frame's completed and incomplete attempts. Later windows can invalidate a
-    /// completed window; an incomplete one waits for the next explicit update boundary.
-    fn frame_except(self: &Rc<Self>, settled: Option<(WindowId, WindowUpdate)>, at: &'static std::panic::Location<'static>) {
-        self.assert_usable();
-        if self.shutdown.get() {
-            return;
-        }
-        enter_app(self, || {
-            let mut generations = rustc_hash::FxHashMap::default();
-            generations.extend(settled);
-            for _ in 0..16 {
-                for id in self.order.borrow().clone() {
-                    if let Some(w) = self.handle(id) {
-                        if generations
-                            .get(&id)
-                            .is_some_and(|outcome: &WindowUpdate| !outcome.invalidated(w.w.kernel.borrow().mutation_generation()))
-                        {
-                            continue;
-                        }
-                        let generation = w.enter(|| w.settle_window(at));
-                        generations.insert(id, generation);
-                    }
-                }
-                // The last window's focus or hover cleanup can queue reactive work too.
-                self.rt.flush();
-                let opening = std::mem::take(&mut *self.opening.borrow_mut());
-                let closing = std::mem::take(&mut *self.closing.borrow_mut());
-                if opening.is_empty() && closing.is_empty() {
-                    let invalidated = self.order.borrow().iter().any(|id| {
-                        self.handle(*id).is_some_and(|w| {
-                            generations.get(id).is_none_or(|outcome| outcome.invalidated(w.w.kernel.borrow().mutation_generation()))
-                        })
-                    });
-                    if !invalidated {
-                        self.present_menus();
-                        return;
-                    }
-                }
-                for id in opening {
-                    if let Some(w) = self.handle(id) {
-                        w.enter(|| w.mount_root());
-                    }
-                }
-                for id in closing {
-                    self.close(id);
-                }
-            }
-            // Keep every window's invalidation intact; another operation can settle it once the
-            // feedback stops. Do not schedule an immediate retry of the same runaway frame.
-            self.rt.diag(
-                &codes::LAYOUT_LOOP,
-                "window updates did not settle in 16 rounds: windows keep changing each other's layout or presentation".into(),
-                at,
-            );
-            self.present_menus();
-        });
-    }
-
-    /// Closes window `id`: its scope is disposed, it leaves the app, its platform window is let
-    /// go when the last handle on it goes.
+    /// Revokes window input, disposes its resources, then removes it from the App. Keep its
+    /// root scope and registry entry until each stage succeeds so shutdown can resume it.
     fn close(self: &Rc<Self>, id: WindowId) {
         let Some(w) = self.handle(id) else { return };
-        if let Some(s) = w.w.root_scope.take() {
+        w.w.closed.set(true);
+        if let Some(s) = w.w.root_scope.get() {
             w.enter(|| self.rt.dispose_scope(s));
+            w.w.root_scope.set(None);
         }
         // The signals the window itself holds (no scope owns them).
         w.enter(|| {
@@ -953,10 +918,10 @@ impl AppState {
                 c.signal.dispose();
             }
         });
-        w.w.closed.set(true);
         *w.w.interaction.borrow_mut() = Interaction::default();
         w.w.root_slots.borrow_mut().clear();
-        *w.w.platform.borrow_mut() = Box::new(crate::platform::HeadlessWindow::default());
+        let platform = std::mem::replace(&mut *w.w.platform.borrow_mut(), Box::new(crate::platform::HeadlessWindow::default()));
+        drop(platform);
         self.order.borrow_mut().retain(|x| *x != id);
         self.windows.borrow_mut().remove(id);
     }
@@ -1017,179 +982,6 @@ impl Window {
     /// Runs `f` as this window's code.
     pub(crate) fn enter<R>(&self, f: impl FnOnce() -> R) -> R {
         enter_app(&self.app, || self.app.rt.with_owner(Some(self.w.id.owner()), f))
-    }
-
-    fn mount_root(&self) {
-        // Named by the window: state is kept by its scope's path (across a hot reload), so two
-        // windows' roots never share a key.
-        let s = self.app.rt.create_scope(Some(self.app.root_scope), &format!("window{}", self.w.id.number()));
-        self.w.root_scope.set(Some(s));
-        let parent = Parent { node: self.w.kernel.borrow().root(), root: self.w.root_slots.clone() };
-        let root = self.w.root.clone();
-        self.app.rt.with_frame(Ctx::Build, None, Some(Some(s)), || {
-            mount(root(), &parent, &self.w.root_slots);
-            // What the window draws of its requests, above the app's view.
-            mount(asks::layer(), &parent, &self.w.root_slots);
-        });
-        self.app.rt.flush();
-        self.restore_interaction();
-        self.settle_frame();
-    }
-
-    /// Applies pending updates and lays out until nothing changes: after a layout, virtual
-    /// lists measure their rows and scroll containers report their state, which may change the
-    /// view again. Gives up after a few rounds and reports `LAYOUT_LOOP`.
-    /// This window's frame, then the app's: the other windows settle (shared state may have
-    /// changed them) and windows asked for open or close.
-    #[track_caller]
-    fn settle_frame(&self) {
-        let at = std::panic::Location::caller();
-        let generation = self.settle_window(at);
-        self.app.frame_except(Some((self.w.id, generation)), at);
-    }
-
-    /// One window's part of a frame: tasks, layout, native views, text input, focus and hover.
-    fn settle_window(&self, at: &'static std::panic::Location<'static>) -> WindowUpdate {
-        match self.prepare_window(at) {
-            Ok(generation) => WindowUpdate::Ready(generation),
-            Err(()) => {
-                self.w.settled_generation.set(None);
-                WindowUpdate::Incomplete
-            }
-        }
-    }
-
-    fn prepare_window(&self, at: &'static std::panic::Location<'static>) -> Result<u64, ()> {
-        // Tasks woken (or spawned) by what just happened run to their next wait first; what they
-        // change is laid out with the rest. They may wake or spawn more, so repeat (bounded).
-        let mut command_ran = false;
-        for _ in 0..16 {
-            if self.app.shutdown.get() || self.w.closed.get() || self.app.closing.borrow().contains(&self.w.id) {
-                self.w.interaction.borrow_mut().after_update.clear();
-                return Ok(self.w.kernel.borrow().mutation_generation());
-            }
-            self.app.sched.run_ready();
-            self.settle_layout(at)?;
-            // Modals that opened or closed move focus (which restyles).
-            if self.sync_modals() {
-                self.settle_layout(at)?;
-            }
-            if self.settle_requested_focus(at)? || self.reconcile_focus() {
-                // Focus callbacks can change visibility, open a modal or close the window.
-                // Let those changes land before any queued command sees its focus path.
-                command_ran = false;
-                continue;
-            }
-            // Route one command, then let its updates and focus changes settle before the
-            // next. This uses the same round bound as tasks and never nests an input frame.
-            let command = self.w.interaction.borrow_mut().after_update.pop_front();
-            if let Some((command, source)) = command {
-                command_ran = self.run_after_update_command(&command, source);
-            } else {
-                command_ran = false;
-            }
-            if !command_ran && !self.app.sched.has_ready() && self.w.interaction.borrow().after_update.is_empty() {
-                break;
-            }
-        }
-        // The last command may have changed state even when it queued no successor.
-        if command_ran {
-            self.settle_layout(at)?;
-            if self.sync_modals() {
-                self.settle_layout(at)?;
-            }
-            self.settle_requested_focus(at)?;
-            self.reconcile_focus();
-        }
-        let pending = std::mem::take(&mut self.w.interaction.borrow_mut().after_update);
-        if let Some((command, source)) = pending.front() {
-            self.app.rt.diag(
-                &codes::COMMAND_QUEUE_LIMIT,
-                format!(
-                    "deferred commands did not settle in 16 rounds; discarded {} pending command(s), starting with `{command}`",
-                    pending.len()
-                ),
-                source,
-            );
-        }
-        // A caret that moved shows: the scroll containers around its field follow it.
-        let reveal = self.w.interaction.borrow_mut().reveal.take();
-        if let Some(n) = reveal {
-            let caret = self.w.kernel.borrow().caret(n);
-            if let Some(r) = caret
-                && self.w.kernel.borrow_mut().reveal(n, r)
-            {
-                self.settle_layout(at)?;
-            }
-        }
-        // Highlighting an option can reveal it without moving keyboard focus from its field.
-        let request = self.w.interaction.borrow_mut().reveal_request.take();
-        if let Some(id) = request {
-            let mut k = self.w.kernel.borrow_mut();
-            let moved = k.find(&id).filter(|n| k.is_shown(*n)).is_some_and(|n| {
-                let (x, y, w, h) = k.shown_rect(n);
-                k.reveal(n, crate::paint::Rect { x, y, w, h })
-            });
-            drop(k);
-            if moved {
-                self.settle_layout(at)?;
-            }
-        }
-        self.app.assert_usable();
-        self.sync_native();
-        self.present();
-        let generation = self.w.kernel.borrow().mutation_generation();
-        self.w.settled_generation.set(Some(generation));
-        // An `instant` transaction covers the frame it was made in.
-        self.w.kernel.borrow_mut().set_instant(false);
-        // What is on its way out can no longer be focused or hovered.
-        let (focused, hovered) = {
-            let i = self.w.interaction.borrow();
-            (i.focused, i.hovered)
-        };
-        let gone = |n: Option<NodeId>| n.is_some_and(|n| !self.w.kernel.borrow().is_shown(n));
-        if gone(focused) {
-            self.reconcile_focus();
-        }
-        // What leaves the tree lets go of hover at once (even while hover holds still).
-        if gone(hovered) {
-            self.set_hover(None);
-        }
-        Ok(generation)
-    }
-
-    fn settle_requested_focus(&self, at: &'static std::panic::Location<'static>) -> Result<bool, ()> {
-        let request = self.w.interaction.borrow_mut().focus_request.take();
-        if let Some(id) = request {
-            let node = self.w.kernel.borrow().find(&id);
-            if let Some(node) = node
-                && self.set_focus(Some(node)).is_ok()
-            {
-                self.settle_layout(at)?;
-            }
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
-    fn settle_layout(&self, at: &'static std::panic::Location<'static>) -> Result<(), ()> {
-        for _ in 0..4 {
-            self.app.rt.flush();
-            if self.app.rt.has_pending() {
-                return Err(());
-            }
-            self.w.kernel.borrow_mut().layout(self.size().0, self.size().1);
-            let changed = self.app.rt.with_frame(Ctx::Handler, None, Some(None), || self.w.sync_after_layout());
-            if !changed {
-                return Ok(());
-            }
-        }
-        self.app.rt.diag(
-            &codes::LAYOUT_LOOP,
-            "layout is still pending after 4 rounds; size reads or virtual measurements need more work (a repeating feedback loop may be the cause)".into(),
-            at,
-        );
-        Err(())
     }
 
     fn restore_interaction(&self) {
@@ -1611,10 +1403,11 @@ impl Window {
                 i.modals.clear();
                 i.edits.clear();
             }
-            if let Some(s) = self.w.root_scope.take() {
+            if let Some(s) = self.w.root_scope.get() {
                 self.app.rt.set_reloading(true);
+                let _reload = std::mem::DropGuard::new(&self.app.rt, |rt| rt.set_reloading(false));
                 self.app.rt.dispose_scope(s);
-                self.app.rt.set_reloading(false);
+                self.w.root_scope.set(None);
             }
             self.w.root_slots.borrow_mut().clear();
             // A rebuild is not content arriving: nothing enters.
@@ -1695,401 +1488,5 @@ impl App {
     }
     pub fn reset_work(&self) {
         self.app.rt.reset_closures_run();
-    }
-}
-
-// ---- native views ----
-
-impl Window {
-    /// Tells the native host what changed this frame: views created (with their props), props
-    /// changed, placements changed, views gone.
-    fn sync_native(&self) {
-        let k = self.w.kernel.borrow();
-        let mut sent = self.w.native_sent.borrow_mut();
-        if k.native_nodes().is_empty() && sent.is_empty() {
-            return;
-        }
-        let window = self.w.platform.borrow();
-        let mut changes = self.w.native_changes.borrow_mut();
-        let placements = k.native_placements();
-        let mut moved = Vec::new();
-        let mut live = Vec::new();
-        for (n, p) in &placements {
-            let Some(v) = k.native(*n) else { continue };
-            match sent.get_mut(n) {
-                None => {
-                    live.push((*n, window.shows_native(&v.kind, v.slot)));
-                    changes.push(crate::native::NativeChange::Create {
-                        id: p.id,
-                        kind: v.kind.clone(),
-                        slot: v.slot,
-                        props: v.props.clone(),
-                    });
-                    sent.insert(*n, (v.version, None));
-                }
-                Some((version, _)) if *version != v.version => {
-                    changes.push(crate::native::NativeChange::Update { id: p.id, props: v.props.clone() });
-                    *version = v.version;
-                }
-                Some(_) => {}
-            }
-            let entry = sent.get_mut(n).expect("sent");
-            if entry.1.as_ref() != Some(p) {
-                entry.1 = Some(p.clone());
-                moved.push(p.clone());
-            }
-        }
-        if !moved.is_empty() {
-            changes.push(crate::native::NativeChange::Place { placements: moved });
-        }
-        let mounted: Vec<NodeId> = placements.iter().map(|(n, _)| *n).collect();
-        sent.retain(|n, _| {
-            let keep = mounted.contains(n);
-            if !keep {
-                changes.push(crate::native::NativeChange::Destroy { id: crate::native::NativeId(crate::kernel::a11y::a11y_id(*n).0) });
-            }
-            keep
-        });
-        drop((k, window, sent, changes));
-        // Painted next as the platform shows them: no placeholder, a cutout for the underlay.
-        for (n, shown) in live {
-            self.w.kernel.borrow_mut().set_native_live(n, shown);
-        }
-    }
-
-    /// The node of a native view's id, if it still exists.
-    fn native_node(&self, id: crate::native::NativeId) -> Option<NodeId> {
-        let k = self.w.kernel.borrow();
-        k.node_of_a11y(accesskit::NodeId(id.0)).filter(|n| k.native(*n).is_some())
-    }
-
-    /// An event from native view `id` (`InputEvent::Native`): runs its `on_native`.
-    /// Files dragged from the system: the element under them that takes them (`on_drop`, the
-    /// nearest at or above the point) is `DRAG_OVER`; dropped, it gets their paths.
-    pub(crate) fn on_file_drag(&mut self, ev: crate::app::FileDrag) -> bool {
-        let target = |x: f32, y: f32| {
-            let k = self.w.kernel.borrow();
-            k.hit_test(x, y).and_then(|n| k.handler_above(Some(n), HandlerKind::Drop))
-        };
-        let (over, dropped) = match ev {
-            crate::app::FileDrag::Over { x, y, .. } => (target(x, y), None),
-            crate::app::FileDrag::Drop { x, y, paths } => (None, target(x, y).map(|t| (t, paths))),
-            crate::app::FileDrag::Leave => (None, None),
-        };
-        let handler = dropped.as_ref().and_then(|(t, _)| {
-            let k = self.w.kernel.borrow();
-            k.handler(*t, HandlerKind::Drop).and_then(|h| self.w.handlers.borrow().get(&h.0).cloned())
-        });
-        self.input_frame(|| {
-            let was = std::mem::replace(&mut self.w.interaction.borrow_mut().drop_target, over);
-            if was != over {
-                let mut k = self.w.kernel.borrow_mut();
-                if let Some(n) = was.filter(|n| k.is_alive(*n)) {
-                    k.set_state(n, State::DRAG_OVER, false);
-                }
-                if let Some(n) = over {
-                    k.set_state(n, State::DRAG_OVER, true);
-                }
-            }
-            if let (Some(handler), Some((_, paths))) = (handler, &dropped) {
-                handler.run(&self.app.rt, |handler| {
-                    if let Handler::Drop(f) = handler {
-                        f(paths);
-                    }
-                });
-            }
-        });
-        true
-    }
-
-    pub(crate) fn on_native_event(&mut self, id: crate::native::NativeId, event: crate::native::NativeEvent) -> bool {
-        let Some(n) = self.native_node(id) else { return false };
-        let handler = {
-            let k = self.w.kernel.borrow();
-            k.handler(n, HandlerKind::Native).and_then(|h| self.w.handlers.borrow().get(&h.0).cloned())
-        };
-        let Some(handler) = handler else { return false };
-        self.input_frame(|| {
-            handler.run(&self.app.rt, |handler| {
-                if let Handler::Native(f) = handler {
-                    f(&event);
-                }
-            });
-        });
-        true
-    }
-
-    /// The natural size native view `id` reports (`InputEvent::NativeSize`): used where no size
-    /// is authored.
-    pub(crate) fn on_native_size(&mut self, id: crate::native::NativeId, width: f32, height: f32) -> bool {
-        let Some(n) = self.native_node(id) else { return false };
-        self.input_frame(|| self.w.kernel.borrow_mut().set_native_size(n, (width, height)));
-        true
-    }
-
-    /// What keeps the app from being settled now: tasks, timers and motion (not subscriptions,
-    /// which run for good), pending reactive updates, and native views that are busy (a page
-    /// loading). A capture waits for this to be empty.
-    pub fn unsettled(&self) -> Vec<String> {
-        let mut out: Vec<String> = self
-            .app()
-            .pending()
-            .into_iter()
-            .filter(|p| p.kind != crate::task::WorkKind::Subscription)
-            .map(|p| if p.at.is_empty() { p.label } else { format!("{} ({})", p.label, p.at) })
-            .collect();
-        let placements = self.w.kernel.borrow().native_placements();
-        let window = self.w.platform.borrow();
-        for (n, p) in placements.into_iter().filter(|(_, p)| p.visible) {
-            if let Some(what) = window.native_busy(p.id) {
-                out.push(format!("{}: {what}", self.native_name(n)));
-            }
-        }
-        out
-    }
-
-    /// A native view as reports name it: its test id, else its kind.
-    fn native_name(&self, n: NodeId) -> String {
-        let k = self.w.kernel.borrow();
-        let kind = k.native(n).map(|v| v.kind.clone()).unwrap_or_default();
-        match k.test_id(n) {
-            Some(id) => format!("{kind} view #{id}"),
-            None => format!("{kind} view"),
-        }
-    }
-
-    /// The topmost element at `(x, y)` (logical pixels), with its number, test id, source and
-    /// the elements around it (the inspector's `pick`).
-    pub fn pick(&self, x: f32, y: f32) -> Option<crate::inspect::Picked> {
-        crate::inspect::pick(&self.w.kernel.borrow(), x, y)
-    }
-
-    /// Starts a capture: asks the platform window for a snapshot of every native view shown.
-    /// Returns the views whose snapshot is coming (as [`InputEvent::NativeSnapshot`]s).
-    pub fn capture_begin(&mut self) -> Vec<crate::native::NativeId> {
-        let placements = self.w.kernel.borrow().native_placements();
-        let mut window = self.w.platform.borrow_mut();
-        let asked: Vec<_> = placements.into_iter().filter(|(_, p)| p.visible).map(|(_, p)| (p.id, window.snapshot_native(p.id))).collect();
-        let coming = asked.iter().filter(|(_, r)| r.is_ok()).map(|(id, _)| *id).collect();
-        *self.w.capturing.borrow_mut() = Some(crate::capture::Capturing { asked });
-        coming
-    }
-
-    /// The snapshots asked for that have not come yet.
-    pub fn capture_awaiting(&self) -> Vec<crate::native::NativeId> {
-        let capturing = self.w.capturing.borrow();
-        let Some(c) = capturing.as_ref() else { return Vec::new() };
-        let k = self.w.kernel.borrow();
-        c.asked
-            .iter()
-            .filter(|(id, r)| r.is_ok() && self.native_node(*id).is_some_and(|n| k.native(n).is_some_and(|v| v.snapshot.is_none())))
-            .map(|(id, _)| *id)
-            .collect()
-    }
-
-    /// Ends a capture: paints the frame (snapshots in their views' places) with `painter`,
-    /// writes it to `path` as a PNG, clears the snapshots, and reports. `pending` is what was
-    /// still running when the wait ended ([`unsettled`](Self::unsettled)); `fallback` why a
-    /// `display` capture was asked and this painted one given.
-    pub fn capture_finish(
-        &mut self,
-        painter: &mut dyn crate::capture::Painter,
-        path: &str,
-        scale: f32,
-        pending: Vec<String>,
-        fallback: Option<String>,
-    ) -> Result<crate::capture::Capture, String> {
-        if self.app.failed.get() {
-            return Err(format!("[{}] cannot capture a failed App", codes::APP_FAILED));
-        }
-        use crate::capture::{NativeShot, Shown};
-        let asked = self.w.capturing.borrow_mut().take().map(|c| c.asked).unwrap_or_default();
-        let mut native = Vec::new();
-        for (id, result) in &asked {
-            let Some(n) = self.native_node(*id) else { continue };
-            let k = self.w.kernel.borrow();
-            let Some(v) = k.native(n) else { continue };
-            let (x, y, w, h) = k.rect(n);
-            let (shown, reason, misses) = match result {
-                Ok(misses) if v.snapshot.is_some() => (Shown::Snapshot, None, misses.clone()),
-                Ok(misses) => (Shown::Failed, Some("its snapshot did not come in time".to_owned()), misses.clone()),
-                Err(why) => (Shown::Placeholder, Some(why.clone()), Vec::new()),
-            };
-            native.push(NativeShot {
-                id: k.test_id(n).map(str::to_owned),
-                kind: v.kind.clone(),
-                rect: [x, y, w, h],
-                shown,
-                reason,
-                misses,
-            });
-        }
-        let painted = painter.paint(&self.display_list(), scale).and_then(|p| p.save_png(path).map(|()| p));
-        for (id, _) in &asked {
-            self.on_native_snapshot(*id, None);
-        }
-        let picture = painted?;
-        Ok(crate::capture::Capture {
-            path: path.to_owned(),
-            width: picture.width,
-            height: picture.height,
-            scale,
-            pixels: crate::capture::Pixels::Painted,
-            fallback,
-            renderer: painter.renderer().to_owned(),
-            settled: pending.is_empty(),
-            pending,
-            native,
-        })
-    }
-
-    /// A `display` capture: the window server's `picture` of the window, written to `path` as a
-    /// PNG, with the native views reported live.
-    pub fn capture_display(
-        &mut self,
-        picture: &crate::capture::Picture,
-        path: &str,
-        scale: f32,
-        pending: Vec<String>,
-    ) -> Result<crate::capture::Capture, String> {
-        if self.app.failed.get() {
-            return Err(format!("[{}] cannot capture a failed App", codes::APP_FAILED));
-        }
-        use crate::capture::{NativeShot, Shown};
-        picture.save_png(path)?;
-        let placements = self.w.kernel.borrow().native_placements();
-        let k = self.w.kernel.borrow();
-        let native = placements
-            .into_iter()
-            .filter(|(_, p)| p.visible)
-            .filter_map(|(n, p)| {
-                let v = k.native(n)?;
-                let r = p.rect;
-                Some(NativeShot {
-                    id: k.test_id(n).map(str::to_owned),
-                    kind: v.kind.clone(),
-                    rect: [r.x, r.y, r.w, r.h],
-                    shown: Shown::Live,
-                    reason: None,
-                    misses: Vec::new(),
-                })
-            })
-            .collect();
-        Ok(crate::capture::Capture {
-            path: path.to_owned(),
-            width: picture.width,
-            height: picture.height,
-            scale,
-            pixels: crate::capture::Pixels::Display,
-            fallback: None,
-            renderer: "display".to_owned(),
-            settled: pending.is_empty(),
-            pending,
-            native,
-        })
-    }
-
-    /// An image of what native view `id` shows (`InputEvent::NativeSnapshot`): drawn in its place
-    /// instead of the placeholder, until `None` clears it.
-    pub(crate) fn on_native_snapshot(&mut self, id: crate::native::NativeId, image: Option<crate::image::Image>) -> bool {
-        let Some(n) = self.native_node(id) else { return false };
-        self.input_frame(|| self.w.kernel.borrow_mut().set_native_snapshot(n, image));
-        true
-    }
-
-    /// Read the backend adapter (downcast with `as_any`; headless, a
-    /// [`HeadlessWindow`](crate::platform::HeadlessWindow)). Mutation belongs to the runtime
-    /// and backend; tests configure a headless host before opening its window.
-    pub fn platform_window(&self) -> std::cell::Ref<'_, dyn crate::platform::PlatformWindow> {
-        std::cell::Ref::map(self.w.platform.borrow(), |w| &**w)
-    }
-
-    /// Tells the window's platform about the focused text field when it changed: where its
-    /// caret is, whether it is secure or multi-line.
-    /// How many frames the window presented to its platform window (each operation that changed
-    /// something presents one).
-    pub fn frames_presented(&self) -> u64 {
-        self.w.frames.get()
-    }
-
-    /// Whether the window is the active one (key on macOS; GPUI's `is_window_active`): its
-    /// focused field shows a caret. Headless windows are active.
-    pub fn is_active(&self) -> bool {
-        self.w.kernel.borrow().window_active()
-    }
-
-    /// How the pointer looks now: over the element it is on (an arrow off the window).
-    pub fn cursor(&self) -> crate::platform::CursorStyle {
-        let hovered = self.w.interaction.borrow().hovered;
-        let k = self.w.kernel.borrow();
-        hovered.filter(|n| k.is_alive(*n)).map_or(crate::platform::CursorStyle::Arrow, |n| k.cursor_over(n))
-    }
-
-    /// Presents what changed to the window's platform: native view changes, the text input,
-    /// whether to draw again (after every settle; nothing when nothing changed).
-    fn present(&self) {
-        self.mark_selection();
-        let text_input = self.focused_input().and_then(|(n, _)| {
-            let k = self.w.kernel.borrow();
-            let caret = k.caret(n)?;
-            let secure = k.is_secure(n);
-            let document = (!secure).then(|| k.text_document(n)).flatten();
-            let (geometry, layout) = if secure {
-                (None, None)
-            } else {
-                let field = k.field(n)?;
-                let layout = k.input_layout(n, &field);
-                (
-                    Some(crate::platform::TextGeometry {
-                        origin: (field.x - field.scroll.0, field.y - field.scroll.1),
-                        lines: field.lines,
-                    }),
-                    Some(layout),
-                )
-            };
-            Some(crate::platform::TextInput { id: n, caret, secure, multiline: k.is_multiline(n), document, geometry, layout })
-        });
-        let generation = self.w.kernel.borrow().paint_generation();
-        let (picking, picked) = self.picking_frame();
-        let redraw = picking || generation != self.w.presented.get() || self.w.kernel.borrow_mut().in_motion();
-        let native = std::mem::take(&mut *self.w.native_changes.borrow_mut());
-        let cursor = self.cursor();
-        let asks = std::mem::take(&mut *self.w.asks_new.borrow_mut());
-        let withdrawn = std::mem::take(&mut *self.w.asks_withdrawn.borrow_mut());
-        if native.is_empty()
-            && !redraw
-            && picked.is_none()
-            && text_input == *self.w.text_input.borrow()
-            && cursor == self.w.cursor.get()
-            && asks.is_empty()
-            && withdrawn.is_empty()
-        {
-            return;
-        }
-        *self.w.text_input.borrow_mut() = text_input.clone();
-        self.w.cursor.set(cursor);
-        self.w.presented.set(generation);
-        self.w.frames.set(self.w.frames.get() + 1);
-        self.w.platform.borrow_mut().present(crate::platform::Frame { native, text_input, redraw, cursor, picked, asks, withdrawn });
-    }
-}
-
-impl App {
-    /// Installs what paints `capture` requests headless (`octara-render`'s reference renderer).
-    pub fn set_painter(&self, painter: Box<dyn crate::capture::Painter>) {
-        *self.app.painter.borrow_mut() = Some(painter);
-    }
-
-    /// Takes the installed painter out while it paints (see [`set_painter`](Self::set_painter)).
-    pub(crate) fn take_painter(&self) -> Option<Box<dyn crate::capture::Painter>> {
-        self.app.painter.borrow_mut().take()
-    }
-
-    /// Read the system adapter (downcast with `as_any`; headless, a
-    /// [`HeadlessPlatform`](crate::platform::HeadlessPlatform)). Clipboard operations use
-    /// [`crate::view::read_from_clipboard`] / [`crate::view::write_to_clipboard`] inside
-    /// [`Self::run`] or a handler; open windows through [`Self::open_window`].
-    pub fn platform(&self) -> std::cell::Ref<'_, dyn crate::platform::Platform> {
-        std::cell::Ref::map(self.app.system.borrow(), |p| &**p)
     }
 }

@@ -173,7 +173,9 @@ the scheduler's ready queue, timers, named channels and host wakes. New App::run
 called after shutdown; opening a window is rejected. Existing window handles are closed.
 An active Rust invocation finishes its current stack; already-running blocking work can finish
 but has no retained task interest. Pending work may still report those workers. No arbitrary user
-cleanup-panic recovery or automatic last-handle shutdown is promised.
+recovery of user side effects or automatic last-handle shutdown is promised. A cleanup panic
+interrupts that teardown pass; another explicit shutdown resumes the remaining work without
+replaying any cleanup callback that already started.
 
 Disposal has a defined order:
 
@@ -451,3 +453,75 @@ This matters because an actively polled future temporarily leaves its slot: cons
 wake then would silently lose the next poll. Newly spawned work also waits until the current
 poll and its retirement finish. A scoped guard releases the drain on both return and unwind;
 App failure and shutdown retain their existing behavior.
+
+### Cooperative task allowance per App turn
+
+Each outer App entry starts one allowance of 1,024 task poll attempts. Nested entries,
+window preparation rounds and other windows share it. This is an internal bound, not a
+public priority API or a wall-clock deadline: one arbitrary Rust poll, its destructor,
+ready-queue sorting and layout cannot be preempted. The value is a conservative starting
+policy, not a measured optimal frame budget.
+
+When an allowance ends in the middle of a batch, its remaining identities stay in their
+original order and run before newly queued wakes on the next turn. New batches still sort
+by creation order and deduplicate wakes. Retired identities are rejected at polling, and
+shutdown clears both the suspended batch and incoming wakes. The same batch owner retains
+remaining work on unwind; App failure still prevents ordinary continuation.
+
+An exhausted turn with ready work requests another host wake at the outer boundary.
+Pending work includes an Update explaining that ready tasks yielded. Windows may present
+currently prepared state but remain incomplete while scheduling has yielded, so capture
+cannot mistake a partial update for a settled result. This also applies to ready subscriptions,
+which would otherwise be excluded from the ordinary task-completion check.
+
+`settle()` remains an explicit bounded multi-turn helper; it can spend more than one turn's
+allowance. This change does not impose a wall-time budget on that helper, deduplicate the
+cross-thread wake queue at insertion, or discard/coalesce channel messages.
+
+Regressions cover a finite batch larger than the allowance and its host continuation,
+self-waking tasks ahead of finite work, repeated wakes with nested polling, shutdown with a
+suspended batch, and two windows sharing the allowance and recovering after cancellation.
+
+### Execution revocation and resumable resource teardown
+
+A watch invocation is not a new ownership scope. Tasks it starts belong to its registration
+scope. Rerunning or stopping the watch does not replace/cancel those tasks; retiring that scope
+does. AsyncMemo explicitly replaces its previous Task and validates results. No implicit
+invocation scope or new public ownership primitive is added.
+
+Execution permission and release progress are separate facts. App keeps its one-way shutdown
+gate and an internal Pending/Running/Complete teardown state. A panic resets Running to Pending,
+never reopens execution, and propagates unchanged. A subsequent explicit shutdown resumes;
+nested shutdown during an active pass does nothing. `is_shutdown()` means execution has stopped,
+not that every resource has been released. `pending()` reports an Update while shutdown teardown
+is incomplete. There is no automatic retry loop or blanket panic-to-error conversion.
+
+Scopes have Live, Disposing, Retiring and Disposed states. Only Live admits new work. Disposing
+prevents recursive disposal; unwind changes it to Retiring. Children remain attached until their
+release succeeds. Cleanup registrations are removed one at a time before invocation, in reverse
+registration order: an interrupted callback is consumed, unstarted callbacks remain owned.
+Nodes and contexts similarly leave their ownership records before disposal, outside table
+borrows. The scope returns to the free list only after all stages complete. Teardown continues
+children before parents and never reuses an incompletely released scope slot.
+
+App shutdown closes the scheduler before user scope cleanup. Scheduler execution closure is
+independent from cancellation progress: if one future destructor panics, remaining slots survive
+for a later shutdown. No destructor or cleanup is invoked again merely because a pass failed.
+Already-running blocking work and an active poll still follow their existing lifetime rules.
+A panic while another Rust destructor is already unwinding may abort; this design cannot promise
+recovery from double panic, process abort, or rollback of external side effects.
+
+Windows revoke input first and retain their registry entry/root scope until disposal succeeds.
+The platform window is replaced before its old value is dropped outside the platform-table
+borrow. Interrupted hot reload restores reload mode on unwind and keeps the retiring root
+reachable. Final Runtime shutdown disposes remaining scope-owned allocations and the runtime's
+remaining nodes, including named state preserved by an interrupted reload, before clearing
+named-state and observer-queue indices. App and Window handles may remain alive after release.
+Unlike ordinary component disposal, final App shutdown also invalidates value-owned collection
+item nodes retained by external ReadList handles. Such handles cannot prolong runtime graph
+values past completed shutdown and remain safe to drop after the runtime goes away.
+
+Tests cover watch task ownership; root and branch cleanup panic; successive cleanup/context
+panics with reverse ordering and no replay; task-destructor panic; window cleanup and hot reload
+failure with retained handles; complete-state idempotence and stale scope identities. These
+establish resumable framework teardown, not successful completion of a callback that panicked.

@@ -70,6 +70,32 @@ collector, scope and window on return/unwind. A memo read inside untrack still t
   A failed observer retires itself while the remaining batch stays queued. No automatic busy retry
   or rollback is implied.
 
+### Composed reads and effects
+
+An equal memo result cuts off downstream value delivery, not dependency replacement. Switching
+between two branches that currently produce the same result must still detach the old branch
+and subscribe to the new one. Reading the memo before flush freshens its value and dependencies
+without running a queued watch callback. Flushing later delivers a changed value once, or cuts
+off an unchanged value. This holds in both branch directions and with or without an early read.
+
+Watches are sequential side effects, not snapshot transactions. If watch A copies `input * 10`
+into a second signal and watch B reads both signals, A-before-B can deliver only `(1, 10)`;
+B-before-A can deliver `(1, 0)` followed by `(1, 10)`. A memo of `input * 2` read alongside
+`input` is already fresh in either callback. The temporary second-signal value is an effect
+that has not executed yet, not a stale memo. Use memo for derived values rather than mirroring
+them with watch. No all-computations-before-all-effects guarantee is provided.
+
+When an earlier watch removes a branch, its newly queued structural work preempts later
+queued descendant watches. This remains true if a descendant memo was already read and
+freshened before flush; disposal releases the descendant callback's captures and prevents
+later delivery. Already executed callbacks are not undone.
+
+Unit regressions in `reactive/graph/tests.rs` cover four branch/read combinations, both watch
+creation orders, and watch-triggered structural disposal with a freshened descendant memo.
+They assert values, computation/callback counts, released captures, empty pending work and
+absence of diagnostics. This coverage preserves the current scheduler and public primitives;
+it is not proof of every possible user feedback graph.
+
 ## 4. Identity and state
 
 ReadList composition (`filter`, `map`, `sort_by`, `group_by`, `join`) checks the creating runtime
