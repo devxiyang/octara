@@ -15,6 +15,7 @@ use crate::kernel::{
     When,
 };
 use crate::reactive::graph::{self, rt};
+use crate::reactive::log::Changes;
 use crate::reactive::text::{TextBuffer, TextChange};
 use crate::reactive::{ReadSignal, Signal, untrack};
 use std::cell::RefCell;
@@ -1195,12 +1196,29 @@ pub(crate) fn build_el(mut e: El) -> NodeId {
             let u = u.clone();
             graph::binding(at, move || {
                 t.track();
-                for c in t.take(&cursor) {
-                    let mut k = u.kernel.borrow_mut();
-                    match c {
-                        TextChange::Append(s) => k.append_text(node, &s),
-                        TextChange::Splice { start, end, insert } => k.splice_text(node, start, end, &insert),
-                    };
+                match t.take(&cursor) {
+                    Changes::Delta(changes) => {
+                        let mut k = u.kernel.borrow_mut();
+                        for c in changes {
+                            match c {
+                                TextChange::Append(s) => k.append_text(node, &s),
+                                TextChange::Splice { start, end, insert } => k.splice_text(node, start, end, &insert),
+                            };
+                        }
+                    }
+                    Changes::Reset => {
+                        let snapshot = untrack(|| t.get());
+                        let mut k = u.kernel.borrow_mut();
+                        let current = k.text(node);
+                        if snapshot.starts_with(current) {
+                            // Keep selection and append-only layout progress when the current
+                            // text is still an authoritative prefix after falling behind.
+                            let from = current.len();
+                            k.append_text(node, &snapshot[from..]);
+                        } else {
+                            k.set_text(node, &snapshot);
+                        }
+                    }
                 }
             });
         }

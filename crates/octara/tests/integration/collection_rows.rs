@@ -295,3 +295,77 @@ fn streamed_buffer_edits_do_not_recompute_the_snapshot_or_rebuild_rows() {
     assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
     app.shutdown();
 }
+
+#[test]
+fn overflowing_incremental_history_reconciles_final_membership_and_preserves_survivors() {
+    for virtualized in [false, true] {
+        let app = App::new(HeadlessPlatform::default());
+        let items = app.run(|| state_list("items", || vec![(1u32, "old"), (2, "kept")], |item| item.0));
+        let source = app.run(|| items.filter(|_| true));
+        let builds = Rc::new(Cell::new(0));
+        let built = builds.clone();
+        let window = app
+            .open_window(WindowOptions::default(), move || {
+                let source = source.clone();
+                let built = built.clone();
+                let row = move |key: &u32, item: ReadSignal<(u32, &'static str)>| {
+                    built.set(built.get() + 1);
+                    text(move || item.with(|item| item.1)).id(format!("row-{key}")).h(32).flex_shrink_0().into()
+                };
+                col()
+                    .id("rows")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .child(if virtualized {
+                        virtual_each(move || source.clone(), |_| 32.0, row)
+                    } else {
+                        each(move || source.clone(), row)
+                    })
+                    .into()
+            })
+            .unwrap();
+        let before = target(&window, "row-1");
+        let kept = target(&window, "row-2");
+        app.run(|| {
+            // The removed-and-reinserted key is older than the retained history tail.
+            items.remove(&1);
+            items.push((1, "replacement"));
+            for _ in 0..5000 {
+                items.push((99, "transient"));
+                items.remove(&99);
+            }
+            items.push((3, "last"));
+        });
+        assert_eq!(target(&window, "row-1"), before, "unobserved absence is not a published removal");
+        assert_eq!(target(&window, "row-2"), kept);
+        assert_eq!(window.kernel().text_of("row-1").as_deref(), Some("replacement"));
+        assert_eq!(window.kernel().text_of("row-2").as_deref(), Some("kept"));
+        assert_eq!(window.kernel().text_of("row-3").as_deref(), Some("last"));
+        assert!(!window.kernel().exists("row-99"));
+        {
+            let kernel = window.kernel();
+            let rows = kernel.find("rows").unwrap();
+            let order: Vec<_> =
+                kernel.children(rows).iter().filter_map(|node| kernel.test_id(*node)).filter(|id| id.starts_with("row-")).collect();
+            assert_eq!(order, ["row-2", "row-1", "row-3"]);
+        }
+        assert_eq!(builds.get(), 3, "only the added final row is constructed");
+        let recovered = target(&window, "row-1");
+        app.run(|| items.update(&1, |item| item.1 = "incremental again"));
+        assert_eq!(target(&window, "row-1"), recovered);
+        assert_eq!(window.kernel().text_of("row-1").as_deref(), Some("incremental again"));
+        assert_eq!(builds.get(), 3);
+        app.run(|| {
+            items.remove(&2);
+            for _ in 0..5000 {
+                items.push((99, "transient"));
+                items.remove(&99);
+            }
+        });
+        assert!(!window.kernel().exists("row-2"), "absence in the recovered snapshot retires the row");
+        app.run(|| items.push((2, "back")));
+        assert_ne!(target(&window, "row-2"), kept, "published absence requires a fresh target");
+        assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+        app.shutdown();
+    }
+}

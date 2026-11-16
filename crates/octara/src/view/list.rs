@@ -4,7 +4,8 @@ use super::{Mount, Parent, Slot, Slots, View, build_el, col, count_offset};
 use crate::diagnostics as codes;
 use crate::kernel::NodeId;
 use crate::reactive::graph::{Ctx, ReadSignal, ScopeId, Signal, memo, memo_with, rt, untrack};
-use crate::reactive::list::{Change, Cursor, ReadList};
+use crate::reactive::list::{Change, ReadList};
+use crate::reactive::log::{Changes, Cursor};
 use crate::reactive::seq::Seq;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -91,10 +92,10 @@ mod source {
                 Self::Snapshot(_) => None,
             }
         }
-        pub(super) fn take(&self, cursor: &Option<Cursor>) -> Vec<Change<K>> {
+        pub(super) fn take(&self, cursor: &Option<Cursor>) -> Changes<Change<K>> {
             match (self, cursor) {
                 (Self::Incremental(list), Some(cursor)) => list.take(cursor),
-                _ => Vec::new(),
+                _ => Changes::Delta(Vec::new()),
             }
         }
         pub(super) fn snapshot(&self) -> Vec<K> {
@@ -249,47 +250,49 @@ where
                             let (s, c) = cur.as_ref().unwrap();
                             s.take(c)
                         };
-                        // A key inserted and removed before propagation has no current value
-                        // to build. Reconcile the final snapshot, still honoring retirements.
-                        let removed: HashSet<_> = changes
-                            .iter()
-                            .filter_map(|change| match change {
-                                Change::Remove { key, .. } => Some(key),
-                                _ => None,
-                            })
-                            .collect();
-                        if changes.iter().any(|change| matches!(change, Change::Insert { key, .. } if removed.contains(key))) {
-                            for change in &changes {
-                                if let Change::Remove { key, .. } = change {
-                                    rows.borrow_mut().remove(key, true);
+                        if let Changes::Delta(changes) = changes {
+                            // A key inserted and removed before propagation has no current value
+                            // to build. Reconcile the final snapshot, still honoring retirements.
+                            let removed: HashSet<_> = changes
+                                .iter()
+                                .filter_map(|change| match change {
+                                    Change::Remove { key, .. } => Some(key),
+                                    _ => None,
+                                })
+                                .collect();
+                            if changes.iter().any(|change| matches!(change, Change::Insert { key, .. } if removed.contains(key))) {
+                                for change in &changes {
+                                    if let Change::Remove { key, .. } = change {
+                                        rows.borrow_mut().remove(key, true);
+                                    }
                                 }
+                                let keys = next.snapshot();
+                                rows.borrow_mut().reconcile(&keys, true);
+                                place(parent.node, count_offset(&parent, &count), keys.iter().map(|key| rows.borrow().entries[key].1));
+                                count.set(keys.len());
+                                return;
                             }
-                            let keys = next.snapshot();
-                            rows.borrow_mut().reconcile(&keys, true);
-                            place(parent.node, count_offset(&parent, &count), keys.iter().map(|key| rows.borrow().entries[key].1));
-                            count.set(keys.len());
-                            return;
-                        }
-                        for ch in changes {
-                            let base_index = count_offset(&parent, &count);
-                            match ch {
-                                Change::Insert { key, index } => {
-                                    let (_, node) = rows.borrow_mut().ensure(&key);
-                                    u.kernel.borrow_mut().insert_child(parent.node, node, base_index + index);
-                                    count.set(count.get() + 1);
-                                }
-                                Change::Remove { key, .. } => {
-                                    rows.borrow_mut().remove(&key, true);
-                                    count.set(count.get() - 1);
-                                }
-                                Change::Move { key, to, .. } => {
-                                    if let Some((_, node)) = rows.borrow().entries.get(&key) {
-                                        u.kernel.borrow_mut().move_child(*node, base_index + to);
+                            for ch in changes {
+                                let base_index = count_offset(&parent, &count);
+                                match ch {
+                                    Change::Insert { key, index } => {
+                                        let (_, node) = rows.borrow_mut().ensure(&key);
+                                        u.kernel.borrow_mut().insert_child(parent.node, node, base_index + index);
+                                        count.set(count.get() + 1);
+                                    }
+                                    Change::Remove { key, .. } => {
+                                        rows.borrow_mut().remove(&key, true);
+                                        count.set(count.get() - 1);
+                                    }
+                                    Change::Move { key, to, .. } => {
+                                        if let Some((_, node)) = rows.borrow().entries.get(&key) {
+                                            u.kernel.borrow_mut().move_child(*node, base_index + to);
+                                        }
                                     }
                                 }
                             }
+                            return;
                         }
-                        return;
                     }
                     let cursor = next.subscribe();
                     let keys = next.snapshot();
@@ -496,12 +499,14 @@ where
                     let weight = |k: &K| untrack(|| next.read(k)).map(|item| estimate(&item) as f64).unwrap_or(0.0);
                     // 1. Keep the weighted mirror in step with the list.
                     let same = current.borrow().as_ref().is_some_and(|(s, _)| *s == next);
-                    if same {
-                        let changes = {
-                            let cur = current.borrow();
-                            let (s, c) = cur.as_ref().unwrap();
-                            s.take(c)
-                        };
+                    let changes = if same {
+                        let cur = current.borrow();
+                        let (source, cursor) = cur.as_ref().unwrap();
+                        Some(source.take(cursor))
+                    } else {
+                        None
+                    };
+                    if let Some(Changes::Delta(changes)) = changes {
                         let mut m = mirror.borrow_mut();
                         for ch in changes {
                             match ch {

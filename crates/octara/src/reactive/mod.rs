@@ -3,6 +3,7 @@
 
 pub(crate) mod graph;
 pub mod list;
+pub(crate) mod log;
 pub(crate) mod seq;
 pub mod text;
 

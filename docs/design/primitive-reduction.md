@@ -1,6 +1,6 @@
 # Primitive reduction audit
 
-Status: implementation in the working tree, 2026-11-16; not yet committed. The four deletions
+Status: base implementation committed as `af6fa20`, 2026-11-16. The four deletions
 in the first table and explicit prelude exports are implemented through the
 [shared collection boundary](collection-regions.md). Specialized grouping types remain in
 `reactive::list`; macro/representation support types remain accessible through their explicit

@@ -1,11 +1,11 @@
 # Collection data, row identity and content lifetime
 
-Status: first implementation landed in the working tree, 2026-11-16 (not yet committed).
+Status: base consolidation committed as `af6fa20`; bounded-log recovery follows in the working tree, 2026-11-16.
 The shared keyed-row mechanism, direct keyed Vec input, fresh row reads, structural-first
 propagation, scope-owned collection producers, Chat migration and explicit prelude exports
-are implemented. The broader investigation below remains a design record: bounded-log resync,
-virtual interaction pins and any replacement of the incremental operator evaluator are not
-part of this slice. No compatibility layer or second execution engine is introduced.
+are implemented. The follow-up [bounded change-log protocol](change-log.md) also implements
+snapshot recovery for collection and text history gaps. Virtual interaction pins and any
+replacement of the incremental operator evaluator remain outside these slices. No compatibility layer or second execution engine is introduced.
 
 [Source research](../research/collection-regions.md) pins the latest inspected Rune and Exact
 revisions and distinguishes their mechanisms from the choices below. The existing
@@ -268,11 +268,12 @@ region incarnation and ends on completion, disposal or replacement. Progress mea
 rows in the target window; it cannot count unrelated rows between the old and new windows.
 Do not copy Rune's numeric budgets without measurement of Octara's workload.
 
-Collection edit history must have a real memory bound. The current log trims to the slowest live
-reader, which alone is not a fixed bound when a reader stalls. Cap retained history and let a
-lagging consumer reconcile against the authoritative snapshot. The cap is a storage policy;
-overflow must never silently skip updates. Apply the same audit to shared text-log machinery
-before changing it, since text consumers require their own full-resync contract.
+Collection edit history uses the shared [bounded change-log protocol](change-log.md). The cap
+is independent of stalled readers. A history gap explicitly requests a current snapshot;
+collection readers reconcile current keys while text readers restore authoritative content.
+Overflow cannot silently skip an unknown prefix and replay only the remaining tail. Normal
+readers retain incremental behavior. The protocol is private and introduces no public
+incarnation, tombstone or snapshot-adapter objects.
 
 ## Lifetime and update boundary
 

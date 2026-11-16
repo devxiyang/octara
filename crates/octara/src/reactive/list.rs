@@ -12,9 +12,10 @@
 
 use crate::diagnostics as codes;
 use crate::reactive::graph::{Ctx, ReadSignal, Runtime, ScopeId, Signal, rt, state, untrack};
+use crate::reactive::log::{Changes, Cursor, Log};
 use crate::reactive::seq::Seq;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::hash::Hash;
 use std::panic::Location;
@@ -42,59 +43,8 @@ pub(crate) enum Change<K> {
     },
 }
 
-/// A reader's position in a change log.
-pub(crate) type Cursor = Rc<Cell<u64>>;
-
 /// The item signals of a flattened grouping, by flat key.
 type FlatSignals<G, K, T> = HashMap<FlatKey<G, K>, Signal<FlatItem<G, T>>>;
-
-/// A change log trimmed to its slowest live reader. Shared by collections (`Change<K>`) and
-/// text (`TextChange`).
-pub(crate) struct Log<E> {
-    first: u64,
-    entries: VecDeque<E>,
-    cursors: Vec<Weak<Cell<u64>>>,
-}
-
-impl<E: Clone> Log<E> {
-    pub(crate) fn new() -> Self {
-        Log { first: 0, entries: VecDeque::new(), cursors: Vec::new() }
-    }
-    fn end(&self) -> u64 {
-        self.first + self.entries.len() as u64
-    }
-    pub(crate) fn subscribe(&mut self) -> Cursor {
-        let c = Rc::new(Cell::new(self.end()));
-        self.cursors.push(Rc::downgrade(&c));
-        c
-    }
-    pub(crate) fn push(&mut self, c: E) {
-        self.entries.push_back(c);
-        self.trim();
-    }
-    pub(crate) fn take(&mut self, cursor: &Cursor) -> Vec<E> {
-        let from = (cursor.get().max(self.first) - self.first) as usize;
-        let out = self.entries.iter().skip(from).cloned().collect();
-        cursor.set(self.end());
-        self.trim();
-        out
-    }
-    fn trim(&mut self) {
-        self.cursors.retain(|c| c.strong_count() > 0);
-        let end = self.end();
-        let min = self.cursors.iter().filter_map(|c| c.upgrade()).map(|c| c.get()).min().unwrap_or(end);
-        while self.first < min && !self.entries.is_empty() {
-            self.entries.pop_front();
-            self.first += 1;
-        }
-        if self.entries.is_empty() {
-            self.first = end;
-        }
-    }
-    pub(crate) fn len(&self) -> usize {
-        self.entries.len()
-    }
-}
 
 /// Value-level events from an upstream stage. Indices are positions in that stage.
 pub(crate) trait Observer<K, T> {
@@ -367,7 +317,7 @@ where
 
     /// The changes since `cursor`, advancing it.
     #[track_caller]
-    pub(crate) fn take(&self, cursor: &Cursor) -> Vec<Change<K>> {
+    pub(crate) fn take(&self, cursor: &Cursor) -> Changes<Change<K>> {
         self.validate();
         self.0.emitter().log.borrow_mut().take(cursor)
     }
@@ -1646,6 +1596,7 @@ where
 mod tests {
     use crate::reactive::graph::{Ctx, Runtime, untrack};
     use crate::reactive::list::{Change, FlatKey, state_list};
+    use crate::reactive::log::Changes;
 
     #[derive(Clone, PartialEq, Debug)]
     struct Row {
@@ -1717,7 +1668,10 @@ mod tests {
                     }
                     let want_mf: Vec<u32> = all.iter().filter(|r| r.b >= 2).map(|r| r.id).collect();
                     assert_eq!(mf.keys(), want_mf, "filter after map at step {step}");
-                    for ch in m.0.emitter().log.borrow_mut().take(&m_cursor) {
+                    let Changes::Delta(changes) = m.0.emitter().log.borrow_mut().take(&m_cursor) else {
+                        panic!("per-edit reader must not lag")
+                    };
+                    for ch in changes {
                         match ch {
                             Change::Insert { key, index } => m_replay.insert(index, key),
                             Change::Remove { key, index } => assert_eq!(m_replay.remove(index), key),
@@ -1747,7 +1701,10 @@ mod tests {
                         want_flat.extend(ms.iter().map(|r| FlatKey::Item(r.id)));
                     }
                     assert_eq!(flat.keys(), want_flat, "flatten at step {step}");
-                    for ch in flat.0.emitter().log.borrow_mut().take(&flat_cursor) {
+                    let Changes::Delta(changes) = flat.0.emitter().log.borrow_mut().take(&flat_cursor) else {
+                        panic!("per-edit reader must not lag")
+                    };
+                    for ch in changes {
                         match ch {
                             Change::Insert { key, index } => flat_replay.insert(index, key),
                             Change::Remove { key, index } => assert_eq!(flat_replay.remove(index), key),
@@ -1759,7 +1716,10 @@ mod tests {
                     }
                     assert_eq!(flat_replay, want_flat, "flatten log replay at step {step}");
                     for (i, src) in logs.iter().enumerate() {
-                        for ch in src.0.emitter().log.borrow_mut().take(&cursors[i]) {
+                        let Changes::Delta(changes) = src.0.emitter().log.borrow_mut().take(&cursors[i]) else {
+                            panic!("per-edit reader must not lag")
+                        };
+                        for ch in changes {
                             match ch {
                                 Change::Insert { key, index } => replay[i].insert(index, key),
                                 Change::Remove { key, index } => assert_eq!(replay[i].remove(index), key),
@@ -1897,7 +1857,10 @@ mod tests {
                     let want: Vec<(u8, Option<u8>)> = want.iter().map(|m| (m.body, name_of(m.user))).collect();
                     let got: Vec<(u8, Option<u8>)> = named.keys().iter().map(|k| untrack(|| named.item(k).unwrap().get())).collect();
                     assert_eq!(got, want, "filter + sort after the join at step {step}");
-                    for ch in j.0.emitter().log.borrow_mut().take(&cursor) {
+                    let Changes::Delta(changes) = j.0.emitter().log.borrow_mut().take(&cursor) else {
+                        panic!("per-edit reader must not lag")
+                    };
+                    for ch in changes {
                         match ch {
                             Change::Insert { key, index } => replay.insert(index, key),
                             Change::Remove { key, index } => assert_eq!(replay.remove(index), key),

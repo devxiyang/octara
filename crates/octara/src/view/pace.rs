@@ -6,6 +6,7 @@
 //! while it is behind.
 
 use crate::reactive::graph::{rt, untrack, watch};
+use crate::reactive::log::Changes;
 use crate::reactive::text::{TextBuffer, TextChange};
 use crate::task::{WorkKind, channel, sleep, spawn_with};
 use std::panic::Location;
@@ -84,10 +85,20 @@ pub fn paced(source: &TextBuffer) -> TextBuffer {
                 if before.is_none() {
                     return;
                 }
-                let edited = p.source.take(&cursor).iter().any(|c| !matches!(c, TextChange::Append(_)));
+                let edited = match p.source.take(&cursor) {
+                    Changes::Delta(changes) => changes.iter().any(|c| !matches!(c, TextChange::Append(_))),
+                    Changes::Reset => true,
+                };
                 if edited || p.shown.len_untracked() > p.source.len_untracked() {
-                    // Not an append: what it shows is replaced at once.
-                    p.shown.set(&untrack(|| p.source.get()));
+                    // An edit or lost history lands the whole authoritative snapshot. An
+                    // unchanged prefix can still be appended, preserving its selection.
+                    let snapshot = untrack(|| p.source.get());
+                    let from = untrack(|| p.shown.with(|shown| snapshot.starts_with(shown).then_some(shown.len())));
+                    if let Some(from) = from {
+                        p.shown.append(&snapshot[from..]);
+                    } else {
+                        p.shown.set(&snapshot);
+                    }
                 } else if u.kernel.borrow().reduced_motion() {
                     p.land();
                 } else {

@@ -1,6 +1,6 @@
 # Collection primitive consolidation: implementation and validation
 
-2026-11-16. Working-tree implementation; no commit created by this task.
+2026-11-16. Collection consolidation committed as `af6fa20`; evidence below was collected before that commit.
 
 ## Implemented boundary
 
@@ -70,8 +70,8 @@ Stable part IDs and the allocator are stored in `<thread>.v2.json`. Old position
 `<thread>.json` files have no compatibility loader and are left untouched by both saves and
 deletes. Validation used a temporary directory, not the user's normal Chat store.
 
-The broader collection design still records future work such as bounded log resynchronization
-and virtual interaction residency pins. This implementation does not replace the incremental
+The follow-up [bounded change-log protocol](change-log.md) implements log resynchronization.
+The broader collection design still records future work such as virtual interaction residency pins. This implementation does not replace the incremental
 operator evaluator or add a VM, public Region object, or general store language. Macro support
 and representation types remain publicly reachable at explicit module paths where Rust API
 boundaries require them; removing them from the prelude is not making those types private.

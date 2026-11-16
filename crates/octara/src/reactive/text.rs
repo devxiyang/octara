@@ -8,7 +8,8 @@
 //! does not keep that App alive.
 
 use crate::reactive::graph::{Runtime, Signal, state, untrack};
-use crate::reactive::list::{Cursor, Log, writable};
+use crate::reactive::list::writable;
+use crate::reactive::log::{Changes, Cursor, Log};
 use std::cell::RefCell;
 use std::ops::Range;
 use std::panic::Location;
@@ -112,7 +113,11 @@ impl TextBuffer {
                 TextChange::Splice { start, end, insert } => v.replace_range(*start..*end, insert),
             }
         }
-        self.0.log.borrow_mut().push(c);
+        let owned_bytes = match &c {
+            TextChange::Append(s) => s.capacity(),
+            TextChange::Splice { insert, .. } => insert.capacity(),
+        };
+        self.0.log.borrow_mut().push_sized(c, owned_bytes);
         self.0.version.set_internal(version + 1);
     }
 
@@ -158,7 +163,7 @@ impl TextBuffer {
     pub(crate) fn track(&self) {
         self.0.version.get();
     }
-    pub(crate) fn take(&self, c: &Cursor) -> Vec<TextChange> {
+    pub(crate) fn take(&self, c: &Cursor) -> Changes<TextChange> {
         self.0.log.borrow_mut().take(c)
     }
     /// Entries held in the edit log (to check it stays bounded).

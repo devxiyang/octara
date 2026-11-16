@@ -134,3 +134,73 @@ fn enabling_reduce_motion_lands_an_existing_backlog_on_the_next_tick() {
     assert_eq!(shown(&window), app.run(|| untrack(|| source.get())), "enabling Reduce Motion also lands an existing backlog");
     assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
 }
+
+#[test]
+fn a_unicode_splice_followed_by_appends_replaces_an_existing_paced_backlog() {
+    let (app, window, source) = setup();
+    app.run(|| source.append(&"中🙂 ".repeat(100)));
+    assert!(shown(&window).len() < app.run(|| source.get()).len());
+    app.run(|| {
+        source.splice(0.."Hi.".len(), "答😀");
+        source.append(" 续🙂");
+    });
+    let expected = app.run(|| source.get());
+    assert_eq!(shown(&window), expected, "a splice and later appends in one batch land together");
+    app.advance(FRAME);
+    assert_eq!(shown(&window), expected, "a sleeping pacing task must not replay its old tail");
+    assert!(!app.pending().iter().any(|pending| pending.kind == WorkKind::Motion && pending.label == "paced text"));
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+}
+
+#[test]
+fn a_paced_reader_lands_after_log_overflow_then_resumes_pacing() {
+    let (app, window, source) = setup();
+    app.run(|| source.append(&"中🙂 ".repeat(100)));
+    assert!(shown(&window).len() < app.run(|| source.get()).len());
+    app.run(|| {
+        source.splice(0.."Hi.".len(), "新😀");
+        for _ in 0..5_000 {
+            source.append("中🙂");
+        }
+        assert!(source.log_len() <= 4_096, "the paced reader cannot pin its source log");
+    });
+    let expected = app.run(|| source.get());
+    assert_eq!(shown(&window), expected, "a lost edit history lands its authoritative snapshot at once");
+    app.advance(FRAME);
+    assert_eq!(shown(&window), expected);
+
+    let burst = "继续🙂 ".repeat(80);
+    app.run(|| source.append(&burst));
+    let current = shown(&window);
+    let complete = format!("{expected}{burst}");
+    assert!(current.len() > expected.len() && current.len() < complete.len(), "later appends are paced again");
+    assert!(complete.starts_with(&current), "the recovered reader stays on Unicode boundaries");
+    app.run_until_idle(Duration::from_secs(1)).unwrap();
+    assert_eq!(shown(&window), complete);
+    assert_eq!(source.log_len(), 0);
+    assert!(!app.pending().iter().any(|pending| pending.kind == WorkKind::Motion && pending.label == "paced text"));
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+}
+
+#[test]
+fn a_paced_append_reset_preserves_unicode_selection() {
+    const PREFIX: &str = "已选😀 ";
+    let (app, mut window, source) = selectable_setup(PREFIX);
+    window.select(("shown", 0), ("shown", "已选😀".len())).unwrap();
+    let node = window.kernel().find("shown").unwrap();
+    app.run(|| {
+        for _ in 0..5_000 {
+            source.append("中🙂");
+        }
+        assert!(source.log_len() <= 4_096);
+    });
+    assert_eq!(shown(&window), format!("{PREFIX}{}", "中🙂".repeat(5_000)), "a reset lands even an append-only backlog");
+    assert_eq!(window.kernel().find("shown"), Some(node));
+    assert_eq!(window.selected_text().as_deref(), Some("已选😀"));
+    assert!(!app.pending().iter().any(|pending| pending.kind == WorkKind::Motion && pending.label == "paced text"));
+    app.run(|| source.append("继续🙂"));
+    assert_eq!(window.selected_text().as_deref(), Some("已选😀"));
+    window.press_key("mod+c").unwrap();
+    assert_eq!(window.clipboard_text().as_deref(), Some("已选😀"));
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+}

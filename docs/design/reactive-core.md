@@ -103,13 +103,13 @@ Based on: DBSP (incremental versions of operators compose), ILC (changes are fir
   and insert position for filtering and grouping is O(log² n);
 - `each` applies the change log: an insert creates a row, a remove destroys a row, a move only moves the node, and state inside the row is kept; when the data source is switched, it compares by key once;
 - `virtual_each` mounts only the rows in the viewport and a buffer, row heights serve as tree weights, and converting between scroll offset and row index is O(log n); a grouped list is `flatten`ed first;
-- The log is trimmed to the slowest active reader, staying bounded; entry Signals are owned by the list and reclaimed when removed or when the list is destroyed.
+- Shared [change history](change-log.md) is capped independently of the slowest reader. A reader that misses history reconciles the authoritative snapshot; it never replays a partial tail. Surviving keys keep their rows, and absent keys retire. Entry Signals are owned by the list and reclaimed when removed or when the list is destroyed.
 
 ## 6. Text
 
 Based on ILC's change structure. `TextBuffer` holds a string, a version number and a bounded edit log (`Append` / `Splice`). `text(live)` writes the full text the first time,
 then passes edits as they are to the kernel (`append_text` / `splice_text`), so the cost of an append is O(amount appended). `TextBuffer` can be placed in list entries,
-and editing it triggers no collection events.
+and editing it triggers no collection events. A history gap reads the full authoritative text; an unchanged prefix is appended to preserve selection, otherwise the text is replaced. Later edits resume incremental replay.
 
 ## 7. Diagnostics
 
