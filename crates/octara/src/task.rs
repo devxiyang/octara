@@ -548,6 +548,20 @@ struct Oneshot<T> {
     waker: Mutex<Option<Waker>>,
 }
 
+impl<T> Oneshot<T> {
+    /// The receiver alone owns result interest. A producer cannot prolong a cancelled wait.
+    /// Return an unclaimed value so the producer can retire bookkeeping before dropping it.
+    fn deliver(receiver: &Weak<Self>, value: T) -> Option<T> {
+        let Some(slot) = receiver.upgrade() else { return Some(value) };
+        *slot.value.lock().expect("oneshot") = Some(value);
+        let waker = slot.waker.lock().expect("oneshot").take();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+        None
+    }
+}
+
 /// The result of [`background`] work.
 pub struct Background<T> {
     slot: Arc<Oneshot<std::thread::Result<T>>>,
@@ -612,14 +626,10 @@ pub fn background<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) 
     let slot = Arc::new(Oneshot { value: Mutex::new(None), waker: Mutex::new(None) });
     let shared = scheduler.shared.clone();
     *shared.inflight.lock().expect("inflight") += 1;
-    let done = slot.clone();
+    let done = Arc::downgrade(&slot);
     let job: Job = Box::new(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
-        *done.value.lock().expect("oneshot") = Some(result);
-        let waker = done.waker.lock().expect("oneshot").take();
-        if let Some(waker) = waker {
-            waker.wake();
-        }
+        let unclaimed = Oneshot::deliver(&done, result);
         let mut n = shared.inflight.lock().expect("inflight");
         *n -= 1;
         if *n == 0 {
@@ -627,6 +637,8 @@ pub fn background<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) 
         }
         drop(n);
         shared.notify();
+        // User values can have destructors; completion accounting must already be retired.
+        drop(unclaimed);
     });
     pool().lock().expect("pool").send(job).expect("background pool");
     Background { slot }
@@ -636,14 +648,15 @@ pub fn background<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) 
 /// future that awaits it in a task.
 pub(crate) fn later<T: Send + 'static>() -> (crate::platform::Reply<T>, impl Future<Output = T>) {
     let slot = Arc::new(Oneshot { value: Mutex::new(None), waker: Mutex::new(None) });
-    let shared = sched().shared.clone();
-    let done = slot.clone();
+    let shared = Arc::downgrade(&sched().shared);
+    let done = Arc::downgrade(&slot);
     let reply: crate::platform::Reply<T> = Box::new(move |v| {
-        *done.value.lock().expect("oneshot") = Some(Ok(v));
-        if let Some(w) = done.waker.lock().expect("oneshot").take() {
-            w.wake();
+        let unclaimed = Oneshot::deliver(&done, Ok(v));
+        if unclaimed.is_none()
+            && let Some(shared) = shared.upgrade()
+        {
+            shared.notify();
         }
-        shared.notify();
     });
     (reply, Background { slot })
 }
@@ -951,6 +964,80 @@ mod tests {
     use crate::platform::{HeadlessPlatform, WindowOptions};
     use crate::reactive::state;
     use crate::view::{Styled, el};
+
+    struct WakeCounter(AtomicUsize);
+
+    impl Wake for WakeCounter {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct DroppedResult(Arc<AtomicUsize>);
+
+    impl Drop for DroppedResult {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn dropping_a_background_wait_releases_its_waker_before_the_worker_finishes() {
+        let app = App::new(HeadlessPlatform::default());
+        let wake = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(wake.clone());
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let output = dropped.clone();
+        let (release, wait) = std::sync::mpsc::channel();
+        let (finished, discarded) = std::sync::mpsc::channel::<()>();
+        let (mut future, scheduler) = app.run(|| {
+            (
+                Box::pin(background(move || {
+                    wait.recv().unwrap();
+                    (DroppedResult(output), finished)
+                })),
+                sched(),
+            )
+        });
+        assert!(future.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+        drop(waker);
+        assert_eq!(Arc::strong_count(&wake), 2, "a pending receiver retains its task waker");
+        drop(future);
+        assert_eq!(Arc::strong_count(&wake), 1, "the blocked producer must not retain cancelled interest");
+        release.send(()).unwrap();
+        assert!(scheduler.wait_background(Duration::from_secs(5)));
+        assert!(
+            matches!(discarded.recv_timeout(Duration::from_secs(5)), Err(std::sync::mpsc::RecvTimeoutError::Disconnected)),
+            "the unclaimed result must be dropped after completion accounting"
+        );
+        assert_eq!(wake.0.load(Ordering::Relaxed), 0, "late completion does not wake a retired receiver");
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+        assert!(app.pending().is_empty());
+        assert!(!app.is_failed());
+        app.shutdown();
+    }
+
+    #[test]
+    fn a_retained_platform_reply_does_not_retain_a_cancelled_receiver() {
+        let app = App::new(HeadlessPlatform::default());
+        let shared = app.run(|| Arc::downgrade(&sched().shared));
+        let (reply, future) = app.run(later::<DroppedResult>);
+        let mut future = Box::pin(future);
+        let wake = Arc::new(WakeCounter(AtomicUsize::new(0)));
+        let waker = Waker::from(wake.clone());
+        assert!(future.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+        drop(waker);
+        assert_eq!(Arc::strong_count(&wake), 2);
+        drop(future);
+        assert_eq!(Arc::strong_count(&wake), 1, "an unanswered platform callback does not pin the task waker");
+        app.shutdown();
+        drop(app);
+        assert!(shared.upgrade().is_none(), "a retained platform callback must not prolong the retired scheduler");
+        let dropped = Arc::new(AtomicUsize::new(0));
+        reply(DroppedResult(dropped.clone()));
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+        assert_eq!(wake.0.load(Ordering::Relaxed), 0);
+    }
 
     #[test]
     fn background_panics_reach_the_owner_without_exhausting_the_shared_pool() {

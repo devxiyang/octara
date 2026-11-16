@@ -378,3 +378,26 @@ it finishes, its bookkeeping retires even if nobody awaits it. A cancelled task 
 to observe a late value or panic. No rollback of external side effects or automatic retry is
 provided. This borrows Rune's worker containment and owner-thread propagation separately,
 without adding a public task-error wrapper or changing Background<T>'s Output = T.
+
+### Result interest and cancellation
+
+The awaiting future is the only long-lived strong owner of its one-shot result slot.
+Background workers and native reply callbacks retain weak result references. Dropping the
+future therefore releases its stored waker without waiting for blocking work or a platform
+reply. A late producer discards its unclaimed result rather than reviving a task. Native
+reply callbacks also hold the scheduler weakly, so a platform retaining an obsolete callback
+cannot prolong a retired App's scheduling state.
+
+Both producers use one delivery path. It releases the result/waker locks before waking and
+returns unclaimed values to the producer. Background completion retires in-flight accounting
+before dropping such user-owned values. Already-running blocking work still finishes normally;
+its counter is separate from whether anyone wants its result.
+
+A completion racing cancellation may briefly upgrade the weak slot and enqueue a stale wake.
+Existing task identities reject that wake after retirement. No additional cancellation flag,
+public handle, generation protocol or rollback mechanism is introduced.
+
+Tests hold a worker behind a channel, drop its waiting future, and verify that the waker is
+released before allowing the worker to finish. A second test retains a native reply across
+future cancellation and App shutdown, verifies that scheduler state is released, then delivers
+and drops the late result exactly once.
