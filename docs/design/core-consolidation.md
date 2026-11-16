@@ -705,6 +705,28 @@ native OS keyboard injection or a new system IME qualification. Logs are in
 `/tmp/octara-bound-{workspace,core,clippy,core-clippy,live}.log`; captures and transcripts are in
 `/tmp/octara-bound-live-20261116`.
 
+## Fifteenth-round popup trigger composition
+
+Popover now puts its opening behavior in the existing component layer, preserving an application
+press callback supplied on the trigger or added afterwards. MenuButton does the same for press
+and Up/Down opening. Other keys reach the application; consumed opening keys do not. No new
+core API, handler variant or dispatch policy is added. Internal children that callers cannot
+replace are not mechanically migrated just because they register callbacks.
+
+Three regressions reproduced the dropped Popover callback, MenuButton opening replaced by an
+application callback, and a notification running before its open model updated. Tests now cover
+both trigger construction orders, pointer and keyboard opening, dismissal/focus restoration,
+editor selection retained across menu commands, and a notification closing its window. The
+`bindings` live scenario adds popup/menu GPU captures and checks their opening, focus and command
+sequence. Notification follows the model setter; mounting remains at the normal update boundary.
+
+Validation: 686 workspace tests passed with 3 existing ignored tests; workspace Clippy,
+formatting, skill freshness and teaching doctests passed. All 10 real-window Inspector scenarios
+passed, including the extended `bindings` popup/menu sequence. These use framework input and
+semantic operations, not native OS input injection. Logs are in
+`/tmp/octara-popup-{workspace,clippy,live}.log`, with captures/transcripts in
+`/tmp/octara-popup-live-20261116`.
+
 ## References
 
 - [Signals contract](signals-redesign.md), [runtime contract](runtime-contract.md),

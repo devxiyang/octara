@@ -39,7 +39,11 @@ Kit's TextField, Checkbox and Switch update their bound model before their appli
 or toggle callback. Slider preserves pointer, drag, numeric and keyboard behavior; NumberField
 preserves input, numeric, commit and stepping behavior. PopupList handles suggestion keys before
 the editor's `on_key` and closes before its `on_blur`. Only unconsumed keys reach application
-key callbacks. These are per-event callbacks, not a universal value-change subscription:
+key callbacks. Popover and MenuButton also keep opening in a component layer. Popover preserves
+application callbacks passed on its trigger or added later; MenuButton owns Up/Down opening and
+lets other keys fall through. Press notification follows the open-model setter, before the
+subsequent update mounts the popup. Focus restoration and deferred menu commands keep their
+existing order. These are per-event callbacks, not a universal value-change subscription:
 keyboard stepping does not synthesize a numeric-input notification.
 
 Input and numeric callbacks receive the same proposed value throughout the chain. A custom

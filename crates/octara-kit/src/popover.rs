@@ -6,8 +6,9 @@ use std::rc::Rc;
 
 /// A themed popup anchored to `trigger`, controlled by `open`.
 ///
-/// `id` names the trigger; the popup is `{id}-popover`. The trigger owns its press handler and
-/// `expanded` state. Chain styles on the returned trigger and put ordinary styled elements in
+/// `id` names the trigger; the popup is `{id}-popover`. Component behavior updates `open`
+/// before the trigger's application `on_press`, preserving callbacks supplied on the trigger
+/// or added afterwards. The component owns `expanded`. Chain styles and put ordinary elements in
 /// `content` to customize its contents. The surface supplies padding, border and shadow.
 ///
 /// This is a modal popup: while open, focus stays inside and the rest of the window is inert.
@@ -25,7 +26,7 @@ pub fn popover(id: &str, open: impl Model<bool>, placement: Placement, trigger: 
         .role(Role::Button)
         .focusable()
         .expanded(move || expanded.get())
-        .on_press(move || press.set(!press.get()))
+        .behavior(|b| b.on_press(move || press.set(!press.get())))
         .overlay(
             move || shown.get(),
             placement,

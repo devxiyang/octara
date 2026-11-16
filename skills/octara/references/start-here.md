@@ -280,6 +280,9 @@ assert_eq!(app.kernel().text_of("saved").as_deref(), Some("saved 1"));
   tracked `Vec<RadioOption>` choices. Tab enters once, arrows choose among enabled options,
   and focus alone does not choose. Reordering keeps each option's identity; removing the
   chosen option leaves the model unchanged until the application or person chooses again.
+- `popover(id, open, placement, trigger, content)` preserves the trigger's application
+  `on_press` and updates its open model first. A later `on_press` replaces only that application
+  callback. Popup content mounts during the subsequent update, not before the notification.
 - `dialog(id, title, open, options, content)` is a controlled modal with a bounded, scrollable
   body. Closing disposes its content; keep a persistent draft in application state. `tabs`
   moves focus with arrows and selects with Enter/Space; the application owns its panels.
@@ -303,6 +306,8 @@ assert_eq!(app.kernel().text_of("saved").as_deref(), Some("saved 1"));
   navigation skips disabled items, and typing searches labels. Shortcut labels are display
   hints; use `bind_keys` to register shortcuts. `invoke_after_update` runs a command after
   pending view and focus updates; synchronous `Window::invoke` retains its existing behavior.
+  Adding `on_press` preserves opening; `on_key` receives only keys the menu trigger did not
+  consume. Press callbacks observe the open model before the popup is mounted.
 - `octara vocab focus.next` (or any command) shows the built-in commands and their keys.
 
 A custom bound component can use the same event-layer mechanism:

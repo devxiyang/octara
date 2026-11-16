@@ -43,13 +43,16 @@ pub fn view() -> View {
 /// Bound controls with application callbacks on every supported editing route.
 #[component]
 pub fn bindings() -> View {
-    use octara_kit::{checkbox, number_field, slider, switch};
+    use octara_kit::{button, checkbox, menu_button, number_field, popover, slider, switch};
     let checked = state("checked", || false);
     let enabled = state("enabled", || false);
     let level = state("level", || 2.0);
     let raw = state("raw", || "2.00".to_owned());
     let seen = state("seen", String::new);
     let keys = state("keys", || 0u32);
+    let popup = state("popup", || false);
+    let menu = state("menu", || false);
+    on_command("bindings.choose", move || seen.set(format!("command:menu={}", menu.get())));
     col()
         .size_full()
         .p_6()
@@ -89,5 +92,24 @@ pub fn bindings() -> View {
         .child(text(move || format!("Raw: {}", raw.get())).id("raw"))
         .child(text(move || seen.get()).id("observed"))
         .child(text_input().id("outside").label("Other field").h(44).value("Move focus here"))
+        .child(
+            row()
+                .gap_4()
+                .child(popover(
+                    "details",
+                    popup,
+                    Placement::BELOW,
+                    button("Details").on_press(move || seen.set(format!("popup:{}", popup.get()))),
+                    || text_input().id("details-input").label("Details").value("Popup draft").w(200).autofocus().into(),
+                ))
+                .child(
+                    menu_button("actions", "Actions", menu, || Menu::new("Actions").item(MenuItem::action("Choose", "bindings.choose")))
+                        .on_press(move || seen.set(format!("menu:{}", menu.get())))
+                        .on_key(move |_| {
+                            seen.set("menu:key".into());
+                            false
+                        }),
+                ),
+        )
         .into()
 }

@@ -246,6 +246,10 @@ commit, including empty strings, signs and incomplete exponents. Its component b
 before application submit/blur callbacks; invalid drafts remain unchanged and still notify. Unknown progress has no numeric value.
 This adds no form schema or numeric state manager.
 
+Popover and MenuButton register their trigger behavior through `El::behavior`; application
+press/key callbacks preserve opening and navigation. Popup mounting follows the open-model
+notification at the normal update boundary.
+
 Drawn context menus and kit menus share one surface. A menu snapshots finite items per opening;
 action IDs are stable, while index-based submenu IDs are valid only for that snapshot. The
 window-owned `invoke_after_update` queue routes commands after pending updates, modal restoration

@@ -278,3 +278,103 @@ fn a_model_setter_closing_the_window_skips_application_notification() {
         assert!(window.app().diagnostics().is_empty(), "{kind}: {:?}", window.app().diagnostics());
     }
 }
+
+#[test]
+fn popover_preserves_trigger_callbacks_and_later_replacement_keeps_open_behavior() {
+    for replace in [false, true] {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let saved = seen.clone();
+        let mut window = Window::headless(move || {
+            let open = state("open", || false);
+            let (original, replacement) = (saved.clone(), saved.clone());
+            let trigger = octara_kit::button("Details").on_press(move || original.borrow_mut().push(format!("original:{}", open.get())));
+            let popup = octara_kit::popover("details", open, Placement::BELOW, trigger, || {
+                text_input().id("inside").value("draft").autofocus().into()
+            });
+            let popup =
+                if replace { popup.on_press(move || replacement.borrow_mut().push(format!("replacement:{}", open.get()))) } else { popup };
+            col().size_full().p_4().child(popup).into()
+        });
+        window.tap("details").unwrap();
+        assert!(window.kernel().exists("details-popover"));
+        assert_eq!(window.inspect().focus.as_deref(), Some("inside"));
+        assert_eq!(&*seen.borrow(), &[if replace { "replacement:true" } else { "original:true" }]);
+        window.press_key("escape").unwrap();
+        assert!(!window.kernel().exists("details-popover"));
+        assert_eq!(window.inspect().focus.as_deref(), Some("details"));
+        window.press_key("enter").unwrap();
+        assert_eq!(seen.borrow().len(), 2);
+        assert!(window.kernel().exists("details-popover"));
+        assert!(window.app().diagnostics().is_empty());
+    }
+}
+
+#[test]
+fn menu_button_keeps_opening_navigation_and_deferred_commands_with_application_callbacks() {
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let saved = seen.clone();
+    let mut window = Window::headless(move || {
+        let open = state("open", || false);
+        let (press, keys, command) = (saved.clone(), saved.clone(), saved.clone());
+        on_command("test.choose", move || command.borrow_mut().push(format!("command:open={}", open.get())));
+        col()
+            .size_full()
+            .p_4()
+            .gap_4()
+            .child(
+                octara_kit::menu_button("menu", "Actions", open, || Menu::new("Actions").item(MenuItem::action("Choose", "test.choose")))
+                    .on_press(move || press.borrow_mut().push(format!("press:{}", open.get())))
+                    .on_key(move |event| {
+                        keys.borrow_mut().push(format!("key:{:?}", event.key));
+                        false
+                    }),
+            )
+            .child(text_input().id("editor").value("draft"))
+            .into()
+    });
+    window.dispatch(Event::Focus("editor".into())).unwrap();
+    window.set_selection(1, 4);
+    window.tap("menu").unwrap();
+    assert_eq!(&*seen.borrow(), &["press:true"]);
+    assert!(window.kernel().exists("menu-menu"));
+    window.tap("menu-action-test.choose").unwrap();
+    assert_eq!(&*seen.borrow(), &["press:true", "command:open=false"]);
+    assert_eq!(window.inspect().focus.as_deref(), Some("editor"));
+    assert_eq!(window.text_field().unwrap().selection, 1..4);
+    window.dispatch(Event::Focus("menu".into())).unwrap();
+    seen.borrow_mut().clear();
+    window.press_key("a").unwrap();
+    assert_eq!(&*seen.borrow(), &["key:Char('a')"]);
+    seen.borrow_mut().clear();
+    for key in ["up", "down"] {
+        window.press_key(key).unwrap();
+        assert_eq!(window.inspect().focus.as_deref(), Some("menu-action-test.choose"));
+        assert!(seen.borrow().is_empty(), "menu opening keys are consumed");
+        window.press_key("escape").unwrap();
+        assert_eq!(window.inspect().focus.as_deref(), Some("menu"));
+    }
+    assert!(window.app().diagnostics().is_empty());
+}
+
+#[test]
+fn popup_trigger_notification_can_close_the_window_after_its_model_updates() {
+    for menu in [false, true] {
+        let mut window = Window::headless(move || {
+            let open = state("open", || false);
+            let trigger = if menu {
+                octara_kit::menu_button("trigger", "Actions", open, || Menu::new("Actions"))
+            } else {
+                octara_kit::popover("trigger", open, Placement::BELOW, octara_kit::button("Details"), || text("Details").into())
+            };
+            trigger
+                .on_press(move || {
+                    assert!(open.get(), "the component updates before notifying");
+                    App::current().close_window(current_window());
+                })
+                .into()
+        });
+        window.tap("trigger").unwrap();
+        assert!(window.is_closed());
+        assert!(window.app().diagnostics().is_empty());
+    }
+}

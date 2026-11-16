@@ -23,6 +23,8 @@ use std::rc::Rc;
 /// Pointer presses preserve the previous control's focus until the menu opens. A pick closes
 /// the entire menu and runs its command after that focus is restored, so editor commands keep
 /// their original selection and context. Keyboard opening restores focus to the trigger.
+/// Component behavior opens before application `on_press`; application `on_key` receives only
+/// unconsumed keys. Adding these callbacks preserves opening and navigation.
 #[component]
 #[track_caller]
 pub fn menu_button(id: &str, label: impl Into<String>, open: impl Model<bool>, menu: impl Fn() -> Menu + 'static) -> El {
@@ -37,27 +39,29 @@ pub fn menu_button(id: &str, label: impl Into<String>, open: impl Model<bool>, m
         .id(id.clone())
         .preserve_focus_on_press(true)
         .expanded(move || expanded.get())
-        .on_press(move || {
-            press_pending.borrow_mut().take();
-            press.set(!press.get());
-        })
-        .on_key(move |key| {
-            if !key.modifiers.is_empty() || !matches!(key.key, Key::Up | Key::Down) {
-                return false;
-            }
-            let snapshot = key_menu();
-            let mut enabled = snapshot.items.iter().enumerate().filter_map(|(index, item)| match item {
-                MenuItem::Action { id, enabled: true, .. } => Some(format!("{key_id}-action-{id}")),
-                MenuItem::Submenu { enabled: true, .. } => Some(format!("{key_id}-submenu-{index}")),
-                _ => None,
-            });
-            let first = if key.key == Key::Up { enabled.next_back() } else { enabled.next() };
-            *key_pending.borrow_mut() = Some(snapshot);
-            keys.set(true);
-            if let Some(first) = first {
-                focus(&first);
-            }
-            true
+        .behavior(|b| {
+            b.on_press(move || {
+                press_pending.borrow_mut().take();
+                press.set(!press.get());
+            })
+            .on_key(move |key| {
+                if !key.modifiers.is_empty() || !matches!(key.key, Key::Up | Key::Down) {
+                    return false;
+                }
+                let snapshot = key_menu();
+                let mut enabled = snapshot.items.iter().enumerate().filter_map(|(index, item)| match item {
+                    MenuItem::Action { id, enabled: true, .. } => Some(format!("{key_id}-action-{id}")),
+                    MenuItem::Submenu { enabled: true, .. } => Some(format!("{key_id}-submenu-{index}")),
+                    _ => None,
+                });
+                let first = if key.key == Key::Up { enabled.next_back() } else { enabled.next() };
+                *key_pending.borrow_mut() = Some(snapshot);
+                keys.set(true);
+                if let Some(first) = first {
+                    focus(&first);
+                }
+                true
+            })
         })
         .overlay(
             move || shown.get(),
