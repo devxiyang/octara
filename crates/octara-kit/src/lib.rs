@@ -177,7 +177,8 @@ fn target(role: Role, visual: El) -> El {
         .when_touch(|p| p.min_w(TOUCH_TARGET).min_h(TOUCH_TARGET))
 }
 
-/// A checkbox bound to `checked`; `Event::Toggle` flips it.
+/// A checkbox bound to `checked`; `Event::Toggle` flips it. An application `on_toggle`
+/// runs after the model setter and preserves the binding.
 #[component]
 #[track_caller]
 pub fn checkbox(checked: impl Model<bool>) -> El {
@@ -196,10 +197,11 @@ pub fn checkbox(checked: impl Model<bool>) -> El {
         .checked(move || shown())
         .style_when(State::CHECKED, |p| p.bg(Token::Accent).border_color(Token::Accent))
         .a11y_hidden();
-    target(Role::CheckBox, square).checked(move || get()).on_toggle(flip)
+    target(Role::CheckBox, square).checked(move || get()).behavior(|b| b.on_toggle(flip))
 }
 
-/// An on/off switch bound to `on`; `Event::Toggle` flips it.
+/// An on/off switch bound to `on`; `Event::Toggle` flips it. An application `on_toggle`
+/// runs after the model setter and preserves the binding.
 #[component]
 #[track_caller]
 pub fn switch(on: impl Model<bool>) -> El {
@@ -219,7 +221,7 @@ pub fn switch(on: impl Model<bool>) -> El {
         .checked(move || shown())
         .style_when(State::CHECKED, |p| p.bg(Token::Accent).justify_end())
         .a11y_hidden();
-    target(Role::Switch, track).checked(move || get()).on_toggle(flip)
+    target(Role::Switch, track).checked(move || get()).behavior(|b| b.on_toggle(flip))
 }
 
 // ---- text field ----
@@ -240,7 +242,7 @@ pub fn text_field(value: impl Model<String>) -> El {
         .bg(Token::Background)
         .text_color(Token::Text)
         .value(move || r.get())
-        .before_input(move |v| m.set(v))
+        .behavior(|b| b.on_input(move |v| m.set(v)))
 }
 
 // ---- select ----

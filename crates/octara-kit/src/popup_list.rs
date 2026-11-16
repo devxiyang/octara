@@ -123,53 +123,54 @@ pub fn popup_list(
             .id(id)
             .expanded(move || expanded.get())
             .active_descendant(move || related.get().then(|| active.get()).flatten().map(|key| format!("{related_id}-option-{key}")))
-            .before_blur(move || blur.set(false))
-            .before_key(move |event| {
-                if event.key == Key::Tab && (event.modifiers.is_empty() || event.modifiers == Modifiers::SHIFT) {
-                    keys.set(false);
-                    return false;
-                }
-                if !event.modifiers.is_empty() {
-                    return false;
-                }
-                if !keys.get() {
-                    if event.key == Key::Down {
-                        keys.set(true);
-                        return true;
-                    }
-                    return false;
-                }
-                match event.key {
-                    Key::Up | Key::Down => {
-                        let choices = enabled.get();
-                        if !choices.is_empty() {
-                            let at = active.get().and_then(|id| choices.iter().position(|item| item == &id));
-                            let at = match (event.key, at) {
-                                (Key::Up, Some(at)) => (at + choices.len() - 1) % choices.len(),
-                                (Key::Down, Some(at)) => (at + 1) % choices.len(),
-                                (Key::Up, None) => choices.len() - 1,
-                                _ => 0,
-                            };
-                            active.set(Some(choices[at].clone()));
-                        }
-                        true
-                    }
-                    Key::Enter => {
-                        if let Some(id) = active.get() {
-                            key_pick(id);
-                        }
-                        true
-                    }
-                    Key::Escape => {
+            .behavior(|b| {
+                b.on_blur(move || blur.set(false)).on_key(move |event| {
+                    if event.key == Key::Tab && (event.modifiers.is_empty() || event.modifiers == Modifiers::SHIFT) {
                         keys.set(false);
-                        true
+                        return false;
                     }
-                    Key::Tab => {
-                        keys.set(false);
-                        false
+                    if !event.modifiers.is_empty() {
+                        return false;
                     }
-                    _ => false,
-                }
+                    if !keys.get() {
+                        if event.key == Key::Down {
+                            keys.set(true);
+                            return true;
+                        }
+                        return false;
+                    }
+                    match event.key {
+                        Key::Up | Key::Down => {
+                            let choices = enabled.get();
+                            if !choices.is_empty() {
+                                let at = active.get().and_then(|id| choices.iter().position(|item| item == &id));
+                                let at = match (event.key, at) {
+                                    (Key::Up, Some(at)) => (at + choices.len() - 1) % choices.len(),
+                                    (Key::Down, Some(at)) => (at + 1) % choices.len(),
+                                    (Key::Up, None) => choices.len() - 1,
+                                    _ => 0,
+                                };
+                                active.set(Some(choices[at].clone()));
+                            }
+                            true
+                        }
+                        Key::Enter => {
+                            if let Some(id) = active.get() {
+                                key_pick(id);
+                            }
+                            true
+                        }
+                        Key::Escape => {
+                            keys.set(false);
+                            true
+                        }
+                        Key::Tab => {
+                            keys.set(false);
+                            false
+                        }
+                        _ => false,
+                    }
+                })
             })
             .overlay(
                 move || shown.get(),

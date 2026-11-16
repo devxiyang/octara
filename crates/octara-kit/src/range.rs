@@ -88,7 +88,9 @@ const THUMB: f32 = 16.0;
 /// PageUp/PageDown by ten steps, Home/End to the bounds. Pressing the track moves its thumb;
 /// dragging follows the pointer and cancellation restores the starting value. Pointer and
 /// semantic requests clamp and snap like the keyboard. External model values are normalized
-/// for display only. Add a specific accessible `label` and chain `disabled` as usual.
+/// for display only. Application press, drag and numeric callbacks run after the model setter;
+/// `on_key` receives only unconsumed keys. Add a specific accessible `label` and chain `disabled`
+/// as usual. Numeric callbacks receive the requested value; read the model for its accepted value.
 #[component]
 #[track_caller]
 pub fn slider(id: &str, value: impl Model<f64>, min: f64, max: f64, step: f64) -> El {
@@ -123,43 +125,45 @@ pub fn slider(id: &str, value: impl Model<f64>, min: f64, max: f64, step: f64) -
     .rounded_md()
     .focus_visible(|style| style.border_color(Token::Focus))
     .style_when(State::DISABLED, |style| style.opacity(0.5))
-    .on_numeric_input(move |value| numeric.set(range.normalize(value)))
-    .on_press(move || {
-        if let Some((x, _)) = pointer_position_in(&press_id) {
-            instant(|| press.set(range.at(x - 1.0, size.get().0 - 2.0)));
-        }
-    })
-    .on_drag(move |event| {
-        let width = size.get().0 - 2.0;
-        match event.phase {
-            DragPhase::Start => {
-                start.set(drag.get());
-                let fraction = ((range.normalize(start.get()) - min) / (max - min)) as f32;
-                let center = THUMB / 2.0 + fraction * (width - THUMB).max(0.0);
-                let down = event.x - event.dx - 1.0;
-                grab.set(if (down - center).abs() <= THUMB / 2.0 + 3.0 { down - center } else { 0.0 });
-                drag.set(range.at(event.x - 1.0 - grab.get(), width));
-            }
-            DragPhase::Move | DragPhase::End => drag.set(range.at(event.x - 1.0 - grab.get(), width)),
-            DragPhase::Cancel => drag.set(start.get()),
-        }
-    })
-    .on_key(move |event| {
-        if event.modifiers.intersects(Modifiers::CTRL | Modifiers::META | Modifiers::ALT) {
-            return false;
-        }
-        let value = range.normalize(keys.get());
-        let next = match event.key {
-            Key::Left | Key::Down => value - step,
-            Key::Right | Key::Up => value + step,
-            Key::PageDown => value - step * 10.0,
-            Key::PageUp => value + step * 10.0,
-            Key::Home => min,
-            Key::End => max,
-            _ => return false,
-        };
-        keys.set(range.normalize(next));
-        true
+    .behavior(|b| {
+        b.on_numeric_input(move |value| numeric.set(range.normalize(value)))
+            .on_press(move || {
+                if let Some((x, _)) = pointer_position_in(&press_id) {
+                    instant(|| press.set(range.at(x - 1.0, size.get().0 - 2.0)));
+                }
+            })
+            .on_drag(move |event| {
+                let width = size.get().0 - 2.0;
+                match event.phase {
+                    DragPhase::Start => {
+                        start.set(drag.get());
+                        let fraction = ((range.normalize(start.get()) - min) / (max - min)) as f32;
+                        let center = THUMB / 2.0 + fraction * (width - THUMB).max(0.0);
+                        let down = event.x - event.dx - 1.0;
+                        grab.set(if (down - center).abs() <= THUMB / 2.0 + 3.0 { down - center } else { 0.0 });
+                        drag.set(range.at(event.x - 1.0 - grab.get(), width));
+                    }
+                    DragPhase::Move | DragPhase::End => drag.set(range.at(event.x - 1.0 - grab.get(), width)),
+                    DragPhase::Cancel => drag.set(start.get()),
+                }
+            })
+            .on_key(move |event| {
+                if event.modifiers.intersects(Modifiers::CTRL | Modifiers::META | Modifiers::ALT) {
+                    return false;
+                }
+                let value = range.normalize(keys.get());
+                let next = match event.key {
+                    Key::Left | Key::Down => value - step,
+                    Key::Right | Key::Up => value + step,
+                    Key::PageDown => value - step * 10.0,
+                    Key::PageUp => value + step * 10.0,
+                    Key::Home => min,
+                    Key::End => max,
+                    _ => return false,
+                };
+                keys.set(range.normalize(next));
+                true
+            })
     })
 }
 
@@ -168,8 +172,9 @@ pub fn slider(id: &str, value: impl Model<f64>, min: f64, max: f64, step: f64) -
 /// and blur normalize a complete finite number, while an invalid draft stays unchanged.
 /// Up/Down step a complete number. The system IME owns these keys while composing.
 ///
-/// This owns `on_submit` and `on_blur`. Chaining either replaces that default commit handler;
-/// call [`normalize_number`] from the replacement if normalization is wanted before saving.
+/// Application input, numeric, submit and blur callbacks run after the component updates or
+/// commits its model. They preserve the binding and normalization; `on_key` receives unconsumed
+/// keys. Invalid drafts still notify submit/blur, so validate before saving.
 /// Add a label or wrap this `El` with [`crate::field`] for required state and explanatory errors.
 #[component]
 #[track_caller]
@@ -183,30 +188,32 @@ pub fn number_field(value: impl Model<String>, min: f64, max: f64, step: f64) ->
         .role(Role::SpinButton)
         .numeric_range(move || range.semantics(number.get()))
         .invalid(move || number.get().is_none_or(|value| value < min || value > max))
-        .on_numeric_input(move |value| numeric.set(range.text(range.normalize(value))))
-        .on_submit(move || {
-            if let Some(number) = parse_number(&submit.get()) {
-                submit.set(range.text(range.normalize(number)));
-            }
-        })
-        .on_blur(move || {
-            if let Some(number) = parse_number(&blur.get()) {
-                blur.set(range.text(range.normalize(number)));
-            }
-        })
-        .on_key(move |event| {
-            if !event.modifiers.is_empty() {
-                return false;
-            }
-            let by = match event.key {
-                Key::Up => step,
-                Key::Down => -step,
-                _ => return false,
-            };
-            if let Some(number) = parse_number(&keys.get()) {
-                keys.set(range.text(range.normalize(number + by)));
-            }
-            true
+        .behavior(|b| {
+            b.on_numeric_input(move |value| numeric.set(range.text(range.normalize(value))))
+                .on_submit(move || {
+                    if let Some(number) = parse_number(&submit.get()) {
+                        submit.set(range.text(range.normalize(number)));
+                    }
+                })
+                .on_blur(move || {
+                    if let Some(number) = parse_number(&blur.get()) {
+                        blur.set(range.text(range.normalize(number)));
+                    }
+                })
+                .on_key(move |event| {
+                    if !event.modifiers.is_empty() {
+                        return false;
+                    }
+                    let by = match event.key {
+                        Key::Up => step,
+                        Key::Down => -step,
+                        _ => return false,
+                    };
+                    if let Some(number) = parse_number(&keys.get()) {
+                        keys.set(range.text(range.normalize(number + by)));
+                    }
+                    true
+                })
         })
 }
 

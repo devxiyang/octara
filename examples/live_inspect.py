@@ -539,6 +539,61 @@ def handlers(args, output, sockets):
         require(before[:2] == after[:2] and before[2] != after[2], "handlers: changes did not reach GPU pixels")
 
 
+def bindings(args, output, sockets):
+    with LiveWindow("bindings", args, output, sockets) as app:
+        resize(app, 800, 640)
+        before = app.capture("bindings-before.png")
+
+        def expect(identifier, name):
+            require(find(app.inspect(), identifier)["name"] == name, f"bindings: {identifier} expected {name}")
+
+        app.requests({"op": "tap", "id": "check"})
+        expect("observed", "check:true")
+        app.requests({"op": "key", "chord": "space"})
+        expect("observed", "check:false")
+        app.requests({"op": "tap", "id": "switch"})
+        expect("observed", "switch:true")
+        app.requests({"op": "set_value", "id": "level", "value": 6.3})
+        expect("observed", "numeric:6.3:6.5")
+        app.requests({"op": "focus", "id": "level"}, {"op": "key", "chord": "right"})
+        expect("level-state", "Level: 7 / Keys: 0")
+        app.requests({"op": "key", "chord": "a"})
+        expect("level-state", "Level: 7 / Keys: 1")
+        app.requests({"op": "tap", "id": "level"})
+        level = find(app.inspect(), "level")["numeric_value"]
+        expect("observed", f"press:{level:g}")
+        app.requests({"op": "drag", "id": "level", "dx": 60, "dy": 0})
+        level = find(app.inspect(), "level")["numeric_value"]
+        require(level > 5, "bindings: drag did not update the slider")
+        expect("observed", f"drag:End:{level:g}")
+
+        def draft(value):
+            app.requests({"op": "focus", "id": "number"}, {"op": "key", "chord": "mod+a"},
+                         {"op": "type", "text": value})
+            expect("raw", f"Raw: {value}")
+            expect("observed", f"input:{value}")
+
+        draft(" 6.30 ")
+        app.requests({"op": "key", "chord": "enter"})
+        expect("raw", "Raw: 6.5")
+        expect("observed", "submit:6.5")
+        draft("99")
+        app.requests({"op": "focus", "id": "outside"})
+        expect("observed", "blur:10")
+        draft("1e")
+        app.requests({"op": "key", "chord": "enter"})
+        expect("observed", "submit:1e")
+        app.requests({"op": "set_value", "id": "number", "value": 3.2})
+        expect("observed", "number:3.2:3")
+        resize(app, 390, 640)
+        app.requests({"op": "expect", "clean": True})
+        app.capture("bindings-narrow.png")
+        resize(app, 800, 640)
+        app.requests({"op": "expect", "clean": True})
+        after = app.capture("bindings-after.png")
+        require(before[:2] == after[:2] and before[2] != after[2], "bindings: changes did not reach GPU pixels")
+
+
 def styles(args, output, sockets):
     with LiveWindow("styles", args, output, sockets) as app:
         def widths(expected):
@@ -664,7 +719,7 @@ def main():
     print(f"Live smoke artifacts: {output}", flush=True)
     with tempfile.TemporaryDirectory(prefix="octara-agent-", dir="/tmp") as temporary:
         sockets = Path(temporary)
-        for scenario in (counter, gestures, search, todo, windows, styles, activation, handlers, content):
+        for scenario in (counter, gestures, search, todo, windows, styles, activation, handlers, bindings, content):
             scenario(args, output, sockets)
             print(f"PASS {scenario.__name__}", flush=True)
     print("Live Inspector: inspect, gestures, native resize, realtime settle, GPU capture, errors, window routing and reconnect passed.")

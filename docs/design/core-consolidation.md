@@ -646,6 +646,8 @@ or real-window qualification was rerun for this change.
 
 ## Thirteenth-round component callback composition
 
+The initial hook API below was superseded by the unified event layers in round fourteen.
+
 Component behavior now has explicit `before_input`, `before_key` and `before_blur` hooks. They
 run in registration order, followed by the single replaceable `on_*` application callback.
 The existing mounted handler owns the whole chain; between callbacks, its captured scope is
@@ -672,6 +674,36 @@ Inspector scenarios passed, including `handlers`. These exercise semantic input 
 windows; they do not requalify native OS keyboard input or the system Chinese IME candidate UI.
 Logs are in `/tmp/octara-handlers-{workspace,clippy,cli,live}.log`; live captures are in
 `/tmp/octara-handlers-live-20261116`.
+
+## Fourteenth-round unified component event layers
+
+`El::behavior` replaces the three preliminary before_* methods without aliases. Component
+layers and application callbacks share a typed `Behavior` collection. Repeated setters replace
+one slot within a layer; distinct component layers run in registration order, followed by the
+application callback. Fourteen independent optional callback fields and the special Before
+storage are removed from El. Mounting composes callbacks into the existing Handler variants;
+one Chain loop implements scope retirement and key consumption across callback signatures.
+
+TextField and PopupList migrate to this mechanism. Checkbox/Switch bindings, Slider pointer,
+drag, numeric and stepping behavior, and NumberField editing/commit behavior now survive
+application callbacks. Model setters still own rejection/transformation; the callback receives
+the proposed value and can read the accepted model. Invalid number drafts still notify on
+submit/blur and require application validation. Dedicated commands, modal dismissal and native
+protocol owners remain unchanged.
+
+Three regressions reproduced overwritten toggle, numeric and commit behavior before the fix.
+Coverage includes layer-local replacement, typed event routes, drag cancellation, IME priority,
+custom Model rejection/transformation, and setters or component callbacks that close a window.
+The `window bindings` fixture adds pointer/key/numeric/commit and responsive GPU validation.
+
+Validation: the workspace passed 682 tests with 3 existing ignored tests, including 10 teaching
+doctests. A subsequently added borrowed link/file payload regression passed with all 6 core
+composition tests. Workspace Clippy and the follow-up core Clippy passed with warnings denied;
+formatting and diff checks passed. All 10 live Inspector scenarios passed, including `bindings`
+at desktop and 390-pixel widths. These use framework/semantic input in real GPU windows, not
+native OS keyboard injection or a new system IME qualification. Logs are in
+`/tmp/octara-bound-{workspace,core,clippy,core-clippy,live}.log`; captures and transcripts are in
+`/tmp/octara-bound-live-20261116`.
 
 ## References
 

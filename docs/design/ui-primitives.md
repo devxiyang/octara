@@ -36,7 +36,7 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | Style | `Styled` (and `style_with` for bound styles): GPUI method names, 4 px scale, `px` / `relative` / `rems`; semantic `Token` and `Theme`; state, window size class, touch and group-hover overrides; `absolute` / `top` / `left`; shadows, gradients, opacity layers; motion | Implemented |
 | Semantics | `role`, `label`, `description`, `required`, `invalid`, `expanded`, `checked`, `value`, `a11y_hidden`, `focusable`; test id is the semantic id | Implemented; descriptions and form validity are shared by Inspector and AccessKit |
 | Interaction | `on_press` / `on_input` / `on_toggle` / `on_submit` / `on_focus` / `on_blur`; `tooltip`; hover chain and groups; disabled elements reject activation; retained focus retirement still reports blur | Implemented |
-| | `before_input` / `before_key` / `before_blur`: ordered component behavior before replaceable application callbacks, with mounted-scope retirement checks | Implemented ([composition](input.md#component-and-application-callbacks)) |
+| | `El::behavior` / `Behavior`: typed component event layers before replaceable application callbacks, with shared scope-retirement checks | Implemented ([composition](input.md#component-and-application-callbacks)) |
 | | `on_key`, gestures (tap, double, long press, secondary, drag, swipe, momentum), focus order and groups, keymap and commands | Implemented ([input](input.md)) |
 | Agent | Structured diagnostics with registered codes, `App::set_check_consistency`, `Window::force_state` | Implemented |
 | | Inspector protocol, `octara check` / `inspect` / `run` | Implemented ([agent knowledge](agent-knowledge.md)) |
@@ -242,8 +242,8 @@ suggestion choices nor numeric setters replace marked text during composition.
 
 `NumericRange` and one numeric setter share values/bounds/steps between Inspector and AccessKit.
 Slider, NumberField and Progress compose that contract. NumberField retains the raw draft until
-commit, including empty strings, signs and incomplete exponents. Applications can override its
-submit/blur handlers and use `normalize_number` explicitly. Unknown progress has no numeric value.
+commit, including empty strings, signs and incomplete exponents. Its component behavior commits
+before application submit/blur callbacks; invalid drafts remain unchanged and still notify. Unknown progress has no numeric value.
 This adds no form schema or numeric state manager.
 
 Drawn context menus and kit menus share one surface. A menu snapshots finite items per opening;

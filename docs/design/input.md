@@ -16,22 +16,37 @@ Tests and agents call the same raw input (or convert from a test id to the eleme
 
 ## Component and application callbacks
 
-`on_input`, `on_key` and `on_blur` each replace the previous application callback. Component
-authors can add `before_input`, `before_key` and `before_blur` hooks instead: those run in
-registration order before the application callback, regardless of where `on_*` was set in the
-builder chain. Each input callback receives the same proposed string; earlier model writes are
-visible to later callbacks. All hooks run in the element's mounted scope/window with no kernel
-borrow held, and disposal of that scope stops the remaining callbacks.
+`El::behavior(|b| b.on_input(..).on_submit(..))` adds a typed component event layer.
+All ordinary element callbacks use the same `Behavior` storage: component layers accumulate,
+while the element's `on_*` methods replace only its application callback. Each layer also has
+one replaceable callback per event. Layers run in registration order, then the application
+callback, regardless of where `on_*` was set in the builder chain.
 
-For keys, `true` consumes the event, skipping remaining hooks, the application callback,
+Mounting groups callbacks by event and composes them into the existing Handler variants.
+One shared chain checks mounted-scope liveness between callbacks; no new event type, dispatch
+phase or execution runtime is introduced. String input copies only for preceding callbacks;
+the final callback consumes the original string. Other arguments keep their existing types.
+Commands, modal dismissal and native protocols retain their dedicated registration APIs.
+The preliminary `before_input` / `before_key` / `before_blur` methods have been removed.
+
+For keys, `true` consumes the event, skipping later layers, the application callback,
 ancestors and the default action. `false` continues. Scope retirement also stops key fallback;
-IME confirmation, cancellation and candidate-navigation precedence remain before these hooks.
-Blur hooks finish the existing interaction even when a retained field becomes hidden, disabled
-or modal-inert; actual scope disposal still belongs to cleanup.
+IME confirmation, cancellation and candidate navigation run before these layers. Blur finishes
+an existing interaction even when a retained field becomes hidden, disabled or modal-inert;
+actual scope disposal still belongs to cleanup.
 
-Kit's `text_field` writes its bound model before `on_input`; adding that callback preserves the
-binding. `popup_list` handles suggestion keys before the editor's `on_key` and closes before
-its `on_blur`, preserving both. See the [Rune/Exact source comparison](../research/handler-composition.md).
+Kit's TextField, Checkbox and Switch update their bound model before their application input
+or toggle callback. Slider preserves pointer, drag, numeric and keyboard behavior; NumberField
+preserves input, numeric, commit and stepping behavior. PopupList handles suggestion keys before
+the editor's `on_key` and closes before its `on_blur`. Only unconsumed keys reach application
+key callbacks. These are per-event callbacks, not a universal value-change subscription:
+keyboard stepping does not synthesize a numeric-input notification.
+
+Input and numeric callbacks receive the same proposed value throughout the chain. A custom
+Model setter can transform or reject it; read the model to observe the accepted value. The
+callback is a notification of the request, not proof of a changed or valid value. NumberField
+notifies submit/blur even when its draft cannot be parsed; applications must validate before
+saving. See the [Rune/Exact source comparison](../research/handler-composition.md).
 
 ## Raw input and time
 

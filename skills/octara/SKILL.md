@@ -53,10 +53,12 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
   Use `read_only()` to share a list as `ReadList` (live, not a copied snapshot); its items are
   `ReadSignal`s. `StateList`, `Derived` and `Groups` use the same spelling.
 - Give the app root `size_full()`; a scroll area is `flex_1().overflow_y_scroll()`.
-- `on_input`, `on_key` and `on_blur` replace the application callback; `before_input`,
-  `before_key` and `before_blur` compose component behavior in registration order before it.
-  A consumed key or disposed scope stops the chain. Kit `text_field` updates its model before
-  notifying `on_input`; `popup_list` preserves editor callbacks and handles its keys first.
+- Component authors register built-in callbacks with `.behavior(|b| b.on_input(..).on_key(..))`.
+  Layers run in registration order before the replaceable application `on_*` callback; setting
+  an event twice replaces it only within its own layer. A consumed key or disposed scope stops
+  the chain. Kit bindings and number commits survive added application callbacks. Read the model
+  for the accepted value; input/numeric arguments remain proposed values, and setters can reject
+  or transform them. Submit/blur can notify invalid drafts: validate before saving.
 - Each element has one content kind. Use input settings on `text_input()`, native settings on
   `native_view()` / `web_view()`, and image fit after `.img(..)`. Combine different content with
   children; incompatible content-specific methods panic with `ELEMENT_CONTENT`.

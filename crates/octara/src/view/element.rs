@@ -2,69 +2,14 @@
 //! element becomes a kernel node.
 
 use super::style::{Patch, Styled};
-use super::{Children, Handler, IntoElement, Parent, Slot, Slots, View, mount, show};
+use super::{Behavior, Children, Handler, IntoElement, Parent, Slot, Slots, View, mount, show};
 use crate::app::{Drag, KeyEvent};
 use crate::diagnostics as codes;
 use crate::kernel::rich::Rich;
 
-type DragHandler = Rc<dyn Fn(&Drag)>;
-type KeyHandler = Rc<dyn Fn(&KeyEvent) -> bool>;
 type Draw = Rc<dyn Fn(&mut crate::canvas::Canvas)>;
 type OnNative = Rc<dyn Fn(&crate::native::NativeEvent)>;
-type OnLink = Rc<dyn Fn(&str)>;
 
-/// Component behavior runs before the replaceable application callback. Allocated only when used.
-#[derive(Default)]
-struct Before {
-    input: Vec<Rc<dyn Fn(String)>>,
-    key: Vec<KeyHandler>,
-    blur: Vec<Rc<dyn Fn()>>,
-}
-
-impl Before {
-    fn compose(mut self, e: &mut El) {
-        let scope = rt(|rt| rt.current_scope());
-        let alive = move || rt(|rt| scope.is_none_or(|scope| rt.scope_alive(scope)));
-        if !self.input.is_empty() {
-            self.input.extend(e.input.take());
-            let last = self.input.pop().expect("nonempty input handlers");
-            e.input = Some(Rc::new(move |value| {
-                for handler in &self.input {
-                    if !alive() {
-                        return;
-                    }
-                    handler(value.clone());
-                }
-                if alive() {
-                    last(value);
-                }
-            }));
-        }
-        if !self.key.is_empty() {
-            self.key.extend(e.key.take());
-            e.key = Some(Rc::new(move |event| {
-                for handler in &self.key {
-                    if !alive() || handler(event) {
-                        return true;
-                    }
-                }
-                // Retirement also stops bubbling and the default action.
-                !alive()
-            }));
-        }
-        if !self.blur.is_empty() {
-            self.blur.extend(e.blur.take());
-            e.blur = Some(Rc::new(move || {
-                for handler in &self.blur {
-                    if !alive() {
-                        return;
-                    }
-                    handler();
-                }
-            }));
-        }
-    }
-}
 use crate::kernel::{
     Breakpoint, Color, Fill, HandlerId, HandlerKind, Kernel, Kind, NodeId, NumericRange, Paint, Placement, Role, State, StyleProp, Token,
     When,
@@ -388,28 +333,15 @@ pub struct El {
     focusable: bool,
     styles: Vec<StyleValue>,
     overrides: Vec<(When, Vec<StyleProp>)>,
-    press: Option<Rc<dyn Fn()>>,
-    input: Option<Rc<dyn Fn(String)>>,
-    before: Option<Box<Before>>,
-    numeric_input: Option<Rc<dyn Fn(f64)>>,
-    toggle: Option<Rc<dyn Fn()>>,
-    double_press: Option<Rc<dyn Fn()>>,
-    secondary_press: Option<Rc<dyn Fn()>>,
-    long_press: Option<Rc<dyn Fn()>>,
-    drag: Option<DragHandler>,
-    submit: Option<Rc<dyn Fn()>>,
-    focus: Option<Rc<dyn Fn()>>,
-    blur: Option<Rc<dyn Fn()>>,
+    handlers: Behavior,
+    behaviors: Vec<Behavior>,
     tab_index: i32,
     focus_group: bool,
     preserve_focus_on_press: bool,
     autofocus: bool,
     modal: Option<(bool, Rc<dyn Fn()>)>,
-    key: Option<KeyHandler>,
     key_context: Option<String>,
     commands: Vec<(String, Rc<dyn Fn()>)>,
-    on_link: Option<OnLink>,
-    on_drop: Option<super::OnDrop>,
     group: Option<&'static str>,
     hover_alone: bool,
     region: bool,
@@ -453,28 +385,15 @@ fn new_el(content: Content, at: &'static Location<'static>) -> El {
         focusable: false,
         styles: Vec::new(),
         overrides: Vec::new(),
-        press: None,
-        input: None,
-        before: None,
-        numeric_input: None,
-        toggle: None,
-        double_press: None,
-        secondary_press: None,
-        long_press: None,
-        drag: None,
-        submit: None,
-        focus: None,
-        blur: None,
+        handlers: Behavior::default(),
+        behaviors: Vec::new(),
         tab_index: 0,
         focus_group: false,
         preserve_focus_on_press: false,
         autofocus: false,
         modal: None,
-        key: None,
         key_context: None,
         commands: Vec::new(),
-        on_link: None,
-        on_drop: None,
         group: None,
         hover_alone: false,
         region: false,
@@ -588,6 +507,16 @@ impl Styled for El {
 }
 
 impl El {
+    /// Adds a component's event behavior before the application's `on_*` callbacks.
+    /// Each call adds a layer in registration order; within a layer, setting the same event
+    /// twice replaces it. Application callbacks remain replaceable independently of layers.
+    /// A consumed key or retired mounted scope stops subsequent callbacks. IME routing runs
+    /// first. Commands, modal dismissal and native protocols keep their dedicated owners.
+    pub fn behavior(mut self, configure: impl FnOnce(Behavior) -> Behavior) -> Self {
+        self.behaviors.push(configure(Behavior::default()));
+        self
+    }
+
     fn dyn_style<T: 'static>(mut self, prop: Prop<T>, make: fn(T) -> StyleProp) -> Self {
         self.styles.push(match prop {
             Prop::Static(p) => StyleValue::Static(make(p)),
@@ -848,18 +777,12 @@ impl El {
     }
     /// Keys while focus is on this element or inside it, before the keymap: return `true` to
     /// consume the key. Innermost handlers run first. Replaces the previous application
-    /// callback; [`Self::before_key`] handlers remain and run first.
+    /// callback; [`Self::behavior`] handlers remain and run first.
     pub fn on_key(mut self, f: impl Fn(&KeyEvent) -> bool + 'static) -> Self {
-        self.key = Some(Rc::new(f));
+        self.handlers = self.handlers.on_key(f);
         self
     }
-    /// Adds component key behavior before `on_key`, in registration order. `true` consumes
-    /// the key, skipping later handlers, ancestors and the default action. IME routing runs
-    /// before these handlers. Retiring the mounted scope also stops the event.
-    pub fn before_key(mut self, f: impl Fn(&KeyEvent) -> bool + 'static) -> Self {
-        self.before.get_or_insert_default().key.push(Rc::new(f));
-        self
-    }
+
     /// Handles `command` (`"save"`, `"edit.copy"`) while focus is on this element or inside it:
     /// its chords in the keymap, `App::invoke` and menus run it.
     pub fn on_command(mut self, command: &str, f: impl Fn() + 'static) -> Self {
@@ -897,7 +820,7 @@ impl El {
     /// A press: a click or tap that ends on the element, Enter or Space while it is focused, or
     /// assistive technology's activate.
     pub fn on_press(mut self, f: impl Fn() + 'static) -> Self {
-        self.press = Some(Rc::new(f));
+        self.handlers = self.handlers.on_press(f);
         self
     }
     /// Pointer presses in this subtree keep the current keyboard focus. Useful for an
@@ -908,58 +831,55 @@ impl El {
         self
     }
     /// A text field's submission: Enter while it has focus (and no input method is composing).
-    /// Without one, Enter presses the field like any focused element.
+    /// Without one, Enter presses the field like any focused element. Replaces only the
+    /// application callback; component behavior still runs first.
     pub fn on_submit(mut self, f: impl Fn() + 'static) -> Self {
-        self.submit = Some(Rc::new(f));
+        self.handlers = self.handlers.on_submit(f);
         self
     }
     /// It got keyboard focus (GPUI's `on_focus`).
     pub fn on_focus(mut self, f: impl Fn() + 'static) -> Self {
-        self.focus = Some(Rc::new(f));
+        self.handlers = self.handlers.on_focus(f);
         self
     }
     /// It lost keyboard focus (GPUI's `on_blur`): focus moved elsewhere or was cleared, not the
     /// window going inactive (it keeps its focus) nor the element leaving the tree. A field
     /// edited in place commits here. Replaces the previous application callback, after any
-    /// [`Self::before_blur`] handlers.
+    /// [`Self::behavior`] handlers.
     pub fn on_blur(mut self, f: impl Fn() + 'static) -> Self {
-        self.blur = Some(Rc::new(f));
+        self.handlers = self.handlers.on_blur(f);
         self
     }
-    /// Adds component blur behavior before `on_blur`, in registration order. Later callbacks
-    /// are skipped if a callback retires this element's mounted scope.
-    pub fn before_blur(mut self, f: impl Fn() + 'static) -> Self {
-        self.before.get_or_insert_default().blur.push(Rc::new(f));
-        self
-    }
+
     /// The second press of a double click or double tap (after its `on_press`).
     pub fn on_double_press(mut self, f: impl Fn() + 'static) -> Self {
-        self.double_press = Some(Rc::new(f));
+        self.handlers = self.handlers.on_double_press(f);
         self
     }
     /// A context menu request: a right click (Control-click on macOS), a long press on touch
     /// (without `on_long_press`), or assistive technology's "show menu". The nearest element
     /// with one, from the pointer up, gets it.
     pub fn on_secondary_press(mut self, f: impl Fn() + 'static) -> Self {
-        self.secondary_press = Some(Rc::new(f));
+        self.handlers = self.handlers.on_secondary_press(f);
         self
     }
     /// A touch held still for the long-press duration (500 ms by default); the release then
     /// presses nothing.
     pub fn on_long_press(mut self, f: impl Fn() + 'static) -> Self {
-        self.long_press = Some(Rc::new(f));
+        self.handlers = self.handlers.on_long_press(f);
         self
     }
     /// A drag starting on the element: `Start` once the pointer moves past the slop (4 pt with a
     /// mouse, 8 pt with touch), then `Move`, then `End` (or `Cancel`). A drag is not a press.
     pub fn on_drag(mut self, f: impl Fn(&Drag) + 'static) -> Self {
-        self.drag = Some(Rc::new(f));
+        self.handlers = self.handlers.on_drag(f);
         self
     }
     /// A finite numeric value requested by assistive technology or an agent. The component's
-    /// handler applies its own clamping and stepping, as its pointer and key handlers do.
+    /// behavior applies its own clamping and stepping before this callback. The argument remains
+    /// the proposed value; read the model to observe its accepted value.
     pub fn on_numeric_input(mut self, f: impl Fn(f64) + 'static) -> Self {
-        self.numeric_input = Some(Rc::new(f));
+        self.handlers = self.handlers.on_numeric_input(f);
         self
     }
     /// Numeric value, bounds and optional step for accessibility and Inspector. A missing
@@ -968,22 +888,16 @@ impl El {
         self.numeric_range = Some(range.into_prop());
         self
     }
-    /// Receives proposed input, after any [`Self::before_input`] handlers. Replaces the
+    /// Receives proposed input, after any [`Self::behavior`] handlers. Replaces the
     /// previous application callback. A bare text input uses this callback to write its value;
-    /// a bound component may write the model in `before_input` before notifying this callback.
+    /// a bound component writes its model in `behavior` before notifying this callback.
     pub fn on_input(mut self, f: impl Fn(String) + 'static) -> Self {
-        self.input = Some(Rc::new(f));
+        self.handlers = self.handlers.on_input(f);
         self
     }
-    /// Adds component input behavior before `on_input`, in registration order. Every callback
-    /// receives the same proposed text; later callbacks can read model changes made earlier.
-    /// Retiring the mounted scope skips the remaining callbacks.
-    pub fn before_input(mut self, f: impl Fn(String) + 'static) -> Self {
-        self.before.get_or_insert_default().input.push(Rc::new(f));
-        self
-    }
+
     pub fn on_toggle(mut self, f: impl Fn() + 'static) -> Self {
-        self.toggle = Some(Rc::new(f));
+        self.handlers = self.handlers.on_toggle(f);
         self
     }
     /// While `open` holds, shows `content` above everything else, placed next to this element
@@ -1109,13 +1023,13 @@ impl El {
     /// A link in this element's rich text, or in its descendants', was pressed (a click, Enter
     /// on it, assistive technology): `f` gets its target.
     pub fn on_link(mut self, f: impl Fn(&str) + 'static) -> Self {
-        self.on_link = Some(Rc::new(f));
+        self.handlers = self.handlers.on_link(f);
         self
     }
     /// Files dragged from the system (Finder, Explorer) were dropped on it or its descendants:
     /// `f` gets their paths (GPUI's `on_drop::<ExternalPaths>`).
     pub fn on_drop(mut self, f: impl Fn(&[std::path::PathBuf]) + 'static) -> Self {
-        self.on_drop = Some(Rc::new(f));
+        self.handlers = self.handlers.on_drop(f);
         self
     }
     /// Style while files dragged from the system are over it and it takes them (`on_drop`).
@@ -1176,9 +1090,6 @@ fn bind<T: 'static>(at: &'static Location<'static>, node: NodeId, prop: Prop<T>,
 /// Builds a detached node for `e` with its bindings, handlers and children. The node is
 /// destroyed when the current scope is disposed.
 pub(crate) fn build_el(mut e: El) -> NodeId {
-    if let Some(before) = e.before.take() {
-        before.compose(&mut e);
-    }
     let u = crate::app::window();
     let at = e.at;
     let node = u.kernel.borrow_mut().create(e.content.kind());
@@ -1404,27 +1315,12 @@ pub(crate) fn build_el(mut e: El) -> NodeId {
         let id = u.register(Handler::Press(f));
         u.kernel.borrow_mut().add_command(node, &command, HandlerId(id));
     }
-    for (kind, h) in [
-        (HandlerKind::Press, e.press.map(Handler::Press)),
-        (HandlerKind::Input, e.input.map(Handler::Input)),
-        (HandlerKind::NumericInput, e.numeric_input.map(Handler::NumericInput)),
-        (HandlerKind::Toggle, e.toggle.map(Handler::Toggle)),
-        (HandlerKind::DoublePress, e.double_press.map(Handler::Press)),
-        (HandlerKind::SecondaryPress, e.secondary_press.map(Handler::Press)),
-        (HandlerKind::LongPress, e.long_press.map(Handler::Press)),
-        (HandlerKind::Drag, e.drag.map(Handler::Drag)),
-        (HandlerKind::Submit, e.submit.map(Handler::Press)),
-        (HandlerKind::Dismiss, e.modal.map(|(_, f)| Handler::Press(f))),
-        (HandlerKind::Key, e.key.map(Handler::Key)),
-        (HandlerKind::Link, e.on_link.map(Handler::Link)),
-        (HandlerKind::Drop, e.on_drop.map(Handler::Drop)),
-        (HandlerKind::Focus, e.focus.map(Handler::Press)),
-        (HandlerKind::Blur, e.blur.map(Handler::Press)),
-    ] {
-        if let Some(h) = h {
-            let id = u.register(h);
-            u.kernel.borrow_mut().set_handler(node, kind, Some(HandlerId(id)));
-        }
+    if let Some((_, dismiss)) = e.modal {
+        e.handlers.set(HandlerKind::Dismiss, Handler::Press(dismiss));
+    }
+    for (kind, handler) in e.handlers.compose(e.behaviors) {
+        let id = u.register(handler);
+        u.kernel.borrow_mut().set_handler(node, kind, Some(HandlerId(id)));
     }
     let p = Parent { node, root: Slots::default() };
     for c in e.children {

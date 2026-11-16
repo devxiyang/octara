@@ -16,19 +16,34 @@ Stopping a key's propagation need not stop typing. That distinction is a useful 
 it does not require adopting Exact's complete event model. Octara retains its existing boolean
 key consumption: `true` stops later callbacks, ancestors and the default action together.
 
-Octara applies these lessons through three explicit component hooks: `before_input`, `before_key`
-and `before_blur`. Hooks append in registration order, before the single replaceable `on_*`
-application callback. This keeps a bound field's model write distinct from application input
-notification, and allows a suggestion list to own navigation and dismissal while preserving
-the editor's application callbacks. Input callbacks receive the same proposed text; unlike
-Rune's change notification, Octara does not promise that the model changed or suppress equal
-input requests. A custom Model setter remains responsible for normalization or rejection.
+Rune's [Checkbox](https://github.com/anomalyco/rune/blob/3686e94/crates/rune-kit/src/checkbox.rs)
+accepts a checked value and an explicit application toggle action; it does not own Octara-style
+Model bindings. Thus its callback setters are not evidence that replacing a binding callback is
+safe. Exact's [number-field recipe](https://github.com/expo/exact/blob/08c889a9/docs/recipes/number-field.md)
+separates raw input from Enter/blur normalization and keeps invalid text available to correct.
 
-Hooks compile into the existing mounted handler at element construction. Storage is allocated
-only for elements using the hooks. All callbacks share the handler's mounted scope/window, and
-scope liveness is checked between them. A consumed key or scope retirement stops the chain;
-retirement also prevents key fallback on a replaced tree. IME routing precedes the chain.
+Octara applies these lessons with one typed component layer: `El::behavior(|b| b.on_input(..))`.
+The preliminary three `before_*` hooks have been removed. Component layers and application
+callbacks share `Behavior` storage. Each layer has one replaceable slot per event; layers run
+in registration order, followed by the application's independently replaceable callback.
+This covers ordinary element events uniformly, rather than adding a new before-method and
+composition implementation for every event kind.
 
-The initial change is deliberately limited to text_field and popup_list. Other controls'
-documented replacement contracts remain as they are; future changes require their own use cases
-and regression tests. No new event bus, capture phase, propagation flags or runtime is added.
+At mount, callbacks are grouped by event and compiled into existing Handler variants. Their
+common chain owns ordering, mounted-scope retirement checks and key consumption. Signature
+adapters preserve owned text, borrowed drag/key data and numeric values. No new dispatch phase,
+event bus or runtime is added. Commands, modal dismissal and native protocol events retain
+separate owners; this is not a mechanism for intercepting platform protocol callbacks.
+
+TextField, Checkbox, Switch, Slider and NumberField place their binding/editing behavior in
+component layers; PopupList preserves editor callbacks while owning suggestion navigation and
+blur dismissal. Numeric and text arguments are proposed values; a Model setter can transform
+or reject them. Application callbacks can inspect the resulting model, but invocation does not
+promise a changed or valid value. Keyboard stepping does not manufacture a numeric-input event.
+NumberField normalizes only complete finite drafts on Enter or blur and then notifies even if
+the draft was invalid. Application validation remains ordinary Rust.
+
+All callbacks share the handler's mounted scope/window. Scope liveness is checked between
+callbacks; consumed keys and scope retirement stop the chain. Retirement also prevents key
+fallback on a replacement tree. IME routing remains first. This is a deliberate Octara API
+choice informed by the references, not an assertion that Rune or Exact exposes this API.

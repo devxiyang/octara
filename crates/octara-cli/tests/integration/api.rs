@@ -32,7 +32,11 @@ fn items_are_found_by_canonical_path_and_alias() {
     assert!(api.get("octara::prelude::Memo").is_none());
     assert!(api.get("octara::reactive::Signal::new").is_none());
     for method in ["before_input", "before_key", "before_blur"] {
-        assert!(api.get(&format!("octara::view::El::{method}")).is_some());
+        assert!(api.get(&format!("octara::view::El::{method}")).is_none());
+    }
+    assert!(api.get("octara::view::El::behavior").is_some());
+    for method in ["on_input", "on_key", "on_blur", "on_submit", "on_toggle", "on_numeric_input", "on_press", "on_drag"] {
+        assert!(api.get(&format!("octara::view::Behavior::{method}")).is_some());
     }
     assert!(api.get("octara::reactive::list::StateList::all").is_none());
     assert!(api.get("octara::reactive::list::Source").is_none());

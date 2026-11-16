@@ -270,10 +270,15 @@ assert_eq!(app.kernel().text_of("saved").as_deref(), Some("saved 1"));
 - Text: `octara_kit::text_field(signal)` binds a `Signal<String>`; `.on_submit(..)` runs on Enter.
   Selection, undo, clipboard and input methods are the runtime's.
   Adding `.on_input(..)` preserves the binding and observes the model after its setter runs.
-- `on_input`, `on_key` and `on_blur` replace the previous application callback. Component
-  authors use `before_input`, `before_key` and `before_blur` to add behavior in registration
-  order before that callback. A key handler returning `true` stops later handlers and the
-  default action; IME routing runs first. Scope disposal stops the remaining callbacks.
+- Component authors use `.behavior(|b| b.on_input(..).on_submit(..))` to register built-in
+  behavior. Layers run in registration order before application `on_*` callbacks. Setting
+  the same event twice replaces it within that layer; setting an application callback never
+  replaces a component layer. A consumed key or disposed scope stops the chain; IME runs first.
+- Bound `checkbox` and `switch` update their models before `on_toggle`. Slider press, drag and
+  numeric callbacks also run after its model setter; `on_key` receives unconsumed keys.
+  Input/numeric callback arguments are the proposed values. Read the model for the accepted
+  value: a custom setter may transform or reject a request. These callbacks are per-event,
+  not a subscription to every model change.
 - `field(id, label, control, info)` surrounds an ordinary control with its label and supporting
   text. The tracked `info` closure returns `FieldInfo { description, error, required }`; these
   become the control's description, invalid and required semantics in Inspector and AccessKit.
@@ -294,7 +299,9 @@ assert_eq!(app.kernel().text_of("saved").as_deref(), Some("saved 1"));
   filtering and insertion; this is separate from a searchable modal `combobox`.
   Editor `on_key` receives unconsumed keys; editor `on_blur` runs after the popup closes.
 - `slider(id, model, min, max, step)` binds a number; `number_field(raw, min, max, step)` binds
-  raw text, preserving incomplete drafts until Enter or blur. `parse_number` and
+  raw text, preserving incomplete drafts until Enter or blur. Application `on_submit` and
+  `on_blur` run after normalization, preserving the binding. Invalid drafts remain unchanged
+  and still notify; validate before saving. `parse_number` and
   `normalize_number` let ordinary Rust implement application validation and submission.
   `progress(value, max)` reads `Option<f64>`: `None` means unknown, not zero. Numeric bounds
   and values are shared by AccessKit and Inspector; agents can use `set_value` on editable
@@ -305,6 +312,22 @@ assert_eq!(app.kernel().text_of("saved").as_deref(), Some("saved 1"));
   hints; use `bind_keys` to register shortcuts. `invoke_after_update` runs a command after
   pending view and focus updates; synchronous `Window::invoke` retains its existing behavior.
 - `octara vocab focus.next` (or any command) shows the built-in commands and their keys.
+
+A custom bound component can use the same event-layer mechanism:
+
+```rust
+use octara::prelude::*;
+
+let mut window = Window::headless(|| {
+    let value = state("value", String::new);
+    text_input().id("name").value(value)
+        .behavior(|b| b.on_input(move |text| value.set(text)))
+        .on_input(move |proposed| assert_eq!(value.get(), proposed))
+        .into()
+});
+window.dispatch(Event::Input("name".into(), "Ada".into())).unwrap();
+assert_eq!(window.kernel().value_of("name").as_deref(), Some("Ada"));
+```
 
 ## Motion
 

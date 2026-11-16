@@ -3,6 +3,7 @@
 //! A `View` is a one-shot description consumed when mounted. Components run once; each dynamic
 //! property is one binding that writes one kernel property. Lists: [`each`], [`virtual_each`].
 
+mod behavior;
 mod element;
 mod list;
 mod pace;
@@ -10,6 +11,7 @@ mod style;
 
 pub use crate::kernel::Component;
 pub use crate::kernel::rich::{Rich, Span, rich};
+pub use behavior::Behavior;
 pub(crate) use element::build_el;
 pub use element::{El, IntoProp, IntoText, Prop, TextContent, canvas, col, el, icon, native_view, row, spacer, text, text_input, web_view};
 pub use list::{each, virtual_each};
