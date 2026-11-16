@@ -705,7 +705,7 @@ fn shutdown_retires_the_current_poll_and_ignores_late_wakes() {
         );
         let sibling = sibling_ran.clone();
         scheduler.insert(Box::pin(async move { sibling.set(true) }), scope, WorkKind::Task, "sibling".into(), Location::caller());
-        scheduler.add_timer(100.0, current);
+        scheduler.add_timer(100.0, current, Waker::noop().clone());
         let interest = Arc::new(NamedInterest { scheduler: Arc::downgrade(&scheduler.shared) });
         scheduler
             .names
@@ -805,4 +805,40 @@ fn a_completed_ui_tasks_cleanup_does_not_cancel_a_reused_app_task() {
     assert!(finished.get());
     assert!(app.pending().is_empty());
     assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+}
+
+#[test]
+fn exhausted_task_generation_does_not_alias_an_old_handle() {
+    let app = App::new(HeadlessPlatform::default());
+    let (old, scheduler) = app.run(|| {
+        let task = spawn(std::future::pending());
+        task.cancel();
+        (task, sched())
+    });
+    scheduler.generations.borrow_mut()[old.id.unwrap().slot()] = u32::MAX;
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.run(|| spawn(std::future::pending())))).is_err());
+    assert!(old.is_finished());
+    assert!(app.is_failed());
+    app.shutdown();
+}
+
+#[test]
+fn replacing_host_notification_releases_captures_outside_the_lock() {
+    struct Capture(Weak<Shared>, Arc<AtomicBool>);
+    impl Drop for Capture {
+        fn drop(&mut self) {
+            let shared = self.0.upgrade().unwrap();
+            assert!(shared.wake.try_lock().is_ok(), "host callback capture dropped under wake lock");
+            self.1.store(true, Ordering::Release);
+        }
+    }
+    let scheduler = Scheduler::default();
+    let dropped = Arc::new(AtomicBool::new(false));
+    let capture = Capture(Arc::downgrade(&scheduler.shared), dropped.clone());
+    scheduler.set_waker(Arc::new(move || {
+        let _ = &capture;
+    }));
+    scheduler.set_waker(Arc::new(|| {}));
+    assert!(dropped.load(Ordering::Acquire));
+    scheduler.shutdown();
 }

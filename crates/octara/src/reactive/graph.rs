@@ -435,12 +435,13 @@ impl Runtime {
         let idx = {
             let mut nodes = self.nodes.borrow_mut();
             if let Some(i) = self.free_nodes.borrow_mut().pop() {
-                let g = nodes[i as usize].g + 1;
+                let g = nodes[i as usize].g.checked_add(1).expect("node generation exhausted");
                 nodes[i as usize] = make(g);
                 Idx { runtime: self.identity, i, g }
             } else {
+                let i = u32::try_from(nodes.len()).expect("node slots exhausted");
                 nodes.push(make(0));
-                Idx { runtime: self.identity, i: nodes.len() as u32 - 1, g: 0 }
+                Idx { runtime: self.identity, i, g: 0 }
             }
         };
         match owner.unwrap_or(self.scope.get()) {

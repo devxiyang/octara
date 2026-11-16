@@ -239,3 +239,41 @@ fn refused_input_keeps_the_app_running_and_closed_windows_refuse_delivery() {
     assert_eq!(called.get(), 1);
     assert!(!app.is_failed());
 }
+
+#[test]
+fn failed_host_submission_does_not_publish_a_completed_frame() {
+    use octara::platform::{Frame, Platform, PlatformWindow};
+    use std::any::Any;
+    struct Host(Rc<Cell<bool>>);
+    impl PlatformWindow for Host {
+        fn present(&mut self, _: Frame) {
+            assert!(!self.0.get(), "host submission failed");
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+    struct System(Rc<Cell<bool>>);
+    impl Platform for System {
+        fn read_text(&mut self) -> Option<String> {
+            None
+        }
+        fn write_text(&mut self, _: &str) {}
+        fn open_window(&mut self, _: WindowId, _: &WindowOptions) -> Result<Box<dyn PlatformWindow>, String> {
+            Ok(Box::new(Host(self.0.clone())))
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+    let fail = Rc::new(Cell::new(false));
+    let app = App::new(System(fail.clone()));
+    let count = app.run(|| state("count", || 0));
+    let window = app.open_window(WindowOptions::new("Publication"), move || text(move || count.get().to_string()).into()).unwrap();
+    let frames = window.frames_presented();
+    fail.set(true);
+    assert!(catch_unwind(AssertUnwindSafe(|| app.run(|| count.set(1)))).is_err());
+    assert_eq!(window.frames_presented(), frames, "a failed host handoff is not a completed presentation");
+    assert!(app.is_failed());
+    app.shutdown();
+}

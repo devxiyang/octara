@@ -370,18 +370,22 @@ impl Window {
         {
             return;
         }
-        *self.w.text_input.borrow_mut() = text_input.clone();
+        let published_input = text_input.clone();
+        self.w.platform.borrow_mut().present(crate::platform::Frame { native, text_input, redraw, cursor, picked, asks, withdrawn });
+        // Only a successful host handoff advances the publication record. A host panic
+        // fails the App; it must not make a partially submitted frame look completed.
+        *self.w.text_input.borrow_mut() = published_input;
         self.w.cursor.set(cursor);
         self.w.presented.set(generation);
         self.w.frames.set(self.w.frames.get() + 1);
-        self.w.platform.borrow_mut().present(crate::platform::Frame { native, text_input, redraw, cursor, picked, asks, withdrawn });
     }
 }
 
 impl App {
     /// Installs what paints `capture` requests headless (`octara-render`'s reference renderer).
     pub fn set_painter(&self, painter: Box<dyn crate::capture::Painter>) {
-        *self.app.painter.borrow_mut() = Some(painter);
+        let retired = self.app.painter.borrow_mut().replace(painter);
+        drop(retired);
     }
 
     /// Takes the installed painter out while it paints (see [`set_painter`](Self::set_painter)).

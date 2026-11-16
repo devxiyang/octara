@@ -525,3 +525,57 @@ Tests cover watch task ownership; root and branch cleanup panic; successive clea
 panics with reverse ordering and no replay; task-destructor panic; window cleanup and hot reload
 failure with retained handles; complete-state idempotence and stale scope identities. These
 establish resumable framework teardown, not successful completion of a callback that panicked.
+
+### Future notification and finite identities
+
+Sleep timers retain both their owning TaskId and the most recently supplied Waker. Task identity
+controls cancellation/liveness; the Waker controls notification, including child futures inside
+wake-driven combinators. Re-polling replaces the Waker without adding a timer. Expiry extracts
+timers before invoking their wakers; replacement, cancellation, stale-timer pruning and shutdown
+release wakers outside timer-table borrows. Background/native one-shot waits likewise clone the
+new Waker before locking and drop the replaced Waker after unlocking, preserving the second
+result check that closes the result/registration race.
+
+Task, reactive node and scope generations now use checked increment. Slot allocation checks
+u32 index capacity before appending; App namespace sequence allocation uses checked atomic
+update. Exhaustion is a programming/runtime limit that panics rather than wrapping in release
+builds and accepting a stale identity. No UUID or public identity type is added. Private tests
+seed generation counters at their limit; they do not allocate billions of objects.
+
+### Lifecycle transitions and internal borrowing
+
+Execution permission, result interest, resource release and presentation are separate
+boundaries. They are not represented by one universal lifecycle enum:
+
+- A task slot is `Suspended(future)`, `Polling` or `Cancelled`. Polling transfers the
+  Future to a guard outside the table. Cancellation of an active poll revokes permission
+  immediately; the guard releases the Future when the poll returns or unwinds. An absent
+  slot is retired. Existing checked identity generations still guard slot reuse.
+- A one-shot delivery is `Waiting(waker)`, `Ready(value)` or `Closed`, under one mutex.
+  Registration and delivery cannot miss each other. Closing explicitly revokes interest,
+  even if a producer temporarily holds a strong reference. An already extracted wake may
+  race with cancellation: it is a notification hint, never permission to publish.
+- Blocking work can outlive its cancelled receiver. Physical completion accounting stays
+  separate from result interest; cancellation does not promise reversal of external effects.
+- Scope disposal and App teardown retain their resumable progress. A started cleanup is
+  consumed before invocation and is not replayed after panic.
+- A frame's publication record advances only after the host presentation call returns.
+  This records successful handoff, not an OS display acknowledgement. A host panic cannot
+  roll back external effects, but fails the App and does not report a completed handoff.
+
+For bookkeeping containers, follow **validate, transition/extract, release borrow, then
+invoke/drop**. Waker cloning can run user code; so can final Arc/Rc release, generic values,
+Future destruction and closure capture destruction. Their disposal belongs outside locks
+and table borrows. Host notification replacement and capture painter replacement obey the
+same rule as task cancellation and scope context replacement.
+
+This rule does not remove the intentional value borrow in `Signal::with` or `Signal::update`:
+those APIs explicitly lend `&T` or `&mut T` to user code and diagnose conflicting same-value
+access. Likewise a platform method has exclusive access to its platform object. Neither
+is permission to hold unrelated registry/table borrows across arbitrary callbacks.
+
+Validation covers cancellation while a producer retains the slot, latest-waker replacement,
+concurrent completion/registration, reentrant result and callback destruction, and failed
+host publication. Existing tests cover active-poll shutdown, stale AsyncMemo publication,
+unwinding cleanup resumption and unfinished layout refusal. Native OS acceptance is separate
+from these deterministic core/host-adapter tests.

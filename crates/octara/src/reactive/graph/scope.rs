@@ -46,12 +46,13 @@ impl Runtime {
         let id = {
             let mut scopes = self.scopes.borrow_mut();
             if let Some(i) = self.free_scopes.borrow_mut().pop() {
-                let g = scopes[i as usize].g + 1;
+                let g = scopes[i as usize].g.checked_add(1).expect("scope generation exhausted");
                 scopes[i as usize] = make(g);
                 ScopeId { runtime: self.identity, i, g }
             } else {
+                let i = u32::try_from(scopes.len()).expect("scope slots exhausted");
                 scopes.push(make(0));
-                ScopeId { runtime: self.identity, i: scopes.len() as u32 - 1, g: 0 }
+                ScopeId { runtime: self.identity, i, g: 0 }
             }
         };
         if let Some(p) = parent {

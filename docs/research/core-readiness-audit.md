@@ -167,3 +167,85 @@ assertion was updated to require release at completed App shutdown. A separate p
 fixture collision was fixed by adding a process-local sequence to its timestamped socket path;
 this does not change runtime identities. The native three-case acceptance above passed on the
 rebuilt runtime. Changes remain uncommitted at this checkpoint.
+
+
+## Post-commit review at `316a5dd`: Future contracts before more primitives
+
+The committed checkpoint passed 808 workspace tests (3 ignored), Clippy and API-path checks.
+Two additional temporary unit probes were run during this review and **failed as expected**;
+they reveal missing coverage, not a passing validation of these behaviors. The probes were
+removed from runtime source after execution; this review changes documentation only.
+
+1. **Sleep bypasses its caller's Waker.** `task/time.rs::Sleep::poll` ignores `cx`, records
+   the current outer TaskId, and `task.rs::fire_due` enqueues that outer task directly. A
+   minimal child-future wrapper polls a child only after its own supplied Waker sets a ready
+   flag and wakes its parent. With Sleep inside that wrapper, advancing the App clock to the
+   deadline wakes the parent but never marks the child ready; the task remains pending.
+   This reproduces the mechanism of incompatibility with wake-driven future multiplexing,
+   without adding a combinator library dependency or claiming every combinator fails.
+   The [Rust Future contract](https://doc.rust-lang.org/std/future/trait.Future.html#the-poll-method)
+   requires wake notification through the latest polling Context's Waker.
+   Evidence: `/tmp/octara-sleep-composition-probe.rs` and
+   `/tmp/octara-sleep-composition-review.log`.
+
+   Next change: keep App ownership and timer identity, but distinguish cancellation ownership
+   from notification. Store/update the latest supplied Waker, invoke it outside timer-table
+   borrows, and release replaced/retired wakers outside borrows. Cover ordinary await, child
+   wakers, waker replacement, cancellation and task retirement. No new public executor needed.
+
+2. **Background replaces a Waker while holding its registration mutex.** In
+   `task/background.rs::Background::poll`, assignment into the locked Option drops the old
+   Waker before releasing the lock; cloning the new Waker also happens in that expression.
+   A custom Wake implementation with a destructor using try_lock confirmed the registration
+   mutex was held during replacement. The probe does not deliberately deadlock a test thread.
+   Native `later` replies reuse Background and therefore share this path. Channel polling
+   already clones before locking and drops the replaced Waker after unlocking.
+   Evidence: `/tmp/octara-waker-lock-probe.rs` and `/tmp/octara-waker-lock-review.log`.
+
+   Next change: apply the same lock/callback separation to one-shot waits, preserving the
+   result-registration race check and original panic transport. Do not introduce a second
+   reply protocol or error wrapper.
+
+3. **Identity exhaustion remains an arithmetic audit.** Task generations (`task.rs`), node
+   generations (`reactive/graph.rs`) and scope generations (`graph/scope.rs`) increment u32
+   without checked exhaustion; index conversions also assume u32 capacity. Namespace sequence
+   allocation uses wrapping fetch_add. The unchecked paths are source-confirmed; this review
+   did not run billions of allocations or claim an ordinary-workload alias reproduction.
+   Define checked exhaustion or slot retirement, then seed near-limit state in private tests.
+   Do not substitute UUIDv7 for process-local slot lookup and ordering.
+
+Insertion-time wake coalescing and bounded channel/backpressure APIs remain lower-priority,
+measurement-driven choices. Existing poll allowance bounds poll attempts, not queue allocation
+or arbitrary callback duration. No new Signal, watch invocation scope, VM or public scheduler
+is justified by these findings. The next bounded slice is the shared Future/waker contract.
+
+## Future/Waker and identity follow-up
+
+The two temporary reproductions are now permanent passing tests in task/time.rs and
+ task/background.rs. Sleep delivers the latest polling Waker while keeping TaskId for liveness;
+its timer lifecycle drops wakers outside internal borrows. Background replacement releases the
+old Waker outside its registration lock; native replies share that corrected path. Generation
+and index exhaustion is checked for tasks, reactive nodes and scopes, and namespace allocation
+rejects sequence wrap. Near-limit private tests verify rejection without resurrecting old handles.
+
+## Lifecycle and borrowing consolidation (2026-11-16)
+
+Following the Rune/Exact comparison in `future-lifetime-references.md`, task entries
+now use Suspended/Polling/Cancelled instead of independent future/cancelled fields.
+Background/native replies use one Waiting/Ready/Closed delivery state and one mutex,
+with explicit receiver closure independent of producer-held strong references.
+This removes the two-lock registration race protocol without changing public primitives.
+
+The borrowing audit found two additional replacement boundaries: the host wake closure
+and capture painter. Both now move the old object out before releasing its captures.
+The publication audit found presentation counters/cache updated before the host returned;
+they now update after successful handoff. Scope teardown already consumes cleanup callbacks
+before invocation and retains resumable progress; this design is preserved rather than
+wrapped in another lifecycle framework. Signal value borrowing remains an explicit API
+boundary, not a registry lock that can be removed.
+
+New regression coverage exercises latest delivery notification, concurrent completion and
+registration, cancellation despite a producer-held slot, ready-value destructor reentry,
+host callback capture destruction, and failed-host presentation accounting. Existing tests
+remain the acceptance coverage for active-poll cancellation, teardown panic/resumption and
+stale async derivation rejection. These checks do not claim new native OS validation.

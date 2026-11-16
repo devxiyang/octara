@@ -836,3 +836,19 @@ fn watch_stop_is_allowed_during_build_and_cleanup() {
         assert!(rt.diagnostics().is_empty(), "{:?}", rt.diagnostics());
     });
 }
+
+#[test]
+fn exhausted_node_and_scope_generations_never_wrap() {
+    with_scope(|rt| {
+        let signal = Signal::scoped(1);
+        signal.dispose();
+        rt.nodes.borrow_mut()[signal.idx.i as usize].g = u32::MAX;
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Signal::scoped(2))).is_err());
+        assert!(!rt.alive(signal.idx));
+        let scope = rt.create_scope(None, "old");
+        rt.dispose_scope(scope);
+        rt.scopes.borrow_mut()[scope.i as usize].g = u32::MAX;
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.create_scope(None, "new"))).is_err());
+        assert!(!rt.scope_alive(scope));
+    });
+}

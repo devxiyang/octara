@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub(crate) fn new_namespace() -> u128 {
     static NONCE: LazyLock<u64> = LazyLock::new(|| RandomState::new().hash_one(std::process::id()));
     static NEXT: AtomicU64 = AtomicU64::new(1);
-    (u128::from(*NONCE) << 64) | u128::from(NEXT.fetch_add(1, Ordering::Relaxed))
+    (u128::from(*NONCE) << 64)
+        | u128::from(NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1)).expect("namespace identity exhausted"))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

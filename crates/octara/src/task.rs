@@ -107,16 +107,23 @@ pub struct PendingWork {
     pub due: Option<Duration>,
 }
 
+/// Ownership moves out of the table during polling. Cancellation revokes execution
+/// immediately, but the polling guard still owns the future until that poll returns.
+enum TaskState {
+    Suspended(BoxFuture),
+    Polling,
+    Cancelled,
+}
+
 struct Entry {
     cleanup: Option<crate::reactive::graph::CleanupRegistration>,
     id: TaskId,
     spawn_order: u64,
-    future: Option<BoxFuture>,
+    state: TaskState,
     scope: ScopeId,
     kind: WorkKind,
     label: String,
     at: &'static Location<'static>,
-    cancelled: bool,
     /// The owner (window) it was spawned under, restored when it runs.
     owner: Option<crate::reactive::graph::Owner>,
 }
@@ -178,10 +185,11 @@ pub(crate) struct Scheduler {
     polls_left: Cell<usize>,
     deferred: RefCell<Vec<TaskId>>,
     shared: Arc<Shared>,
-    /// Timers: (due, sequence, task) — the task is woken when the clock reaches `due`.
-    timers: RefCell<Vec<(f64, u64, TaskId)>>,
+    /// Timers: (due, sequence, owner, notification). Ownership validates liveness;
+    /// the polling Future's latest waker receives the deadline notification.
+    timers: RefCell<Vec<(f64, u64, TaskId, Waker)>>,
     timer_seq: Cell<u64>,
-    /// The task being polled (timers started in it wake it).
+    /// The task being polled (owns timers registered during its poll).
     current: Cell<Option<TaskId>>,
     /// Channels that take text by name (tests and agents send to them).
     names: RefCell<FxHashMap<String, NamedChannel>>,
@@ -264,10 +272,11 @@ impl Scheduler {
         self.now.set(whole_ns(ms));
     }
     pub(crate) fn set_waker(&self, wake: Arc<dyn Fn() + Send + Sync>) {
-        let mut slot = self.shared.wake.lock().expect("wake");
-        if !self.shared.closed.load(Ordering::Acquire) {
-            *slot = Some(wake);
-        }
+        let retired = {
+            let mut slot = self.shared.wake.lock().expect("wake");
+            if self.shared.closed.load(Ordering::Acquire) { Some(wake) } else { slot.replace(wake) }
+        };
+        drop(retired);
     }
 
     fn accepts_work(&self, at: &'static Location<'static>) -> bool {
@@ -292,7 +301,8 @@ impl Scheduler {
             self.cancel(id);
         }
         self.deferred.borrow_mut().clear();
-        self.timers.borrow_mut().clear();
+        let timers = std::mem::take(&mut *self.timers.borrow_mut());
+        drop(timers);
         self.shared.ready.lock().expect("ready").clear();
         let names = std::mem::take(&mut *self.names.borrow_mut());
         drop(names);
@@ -302,25 +312,26 @@ impl Scheduler {
         let spawn_order = self.next_spawn_order.get();
         self.next_spawn_order.set(spawn_order.checked_add(1).expect("task spawn order exhausted"));
         let slot = self.free.borrow_mut().pop().unwrap_or_else(|| {
+            u32::try_from(self.slots.borrow().len()).expect("task slots exhausted");
             self.slots.borrow_mut().push(None);
             self.generations.borrow_mut().push(0);
             self.slots.borrow().len() - 1
         });
         let generation = {
             let mut g = self.generations.borrow_mut();
-            g[slot] += 1;
+            g[slot] = g[slot].checked_add(1).expect("task generation exhausted");
             g[slot]
         };
         let id = TaskId::new(slot, generation);
         let owner = rt(|r| r.owner());
         self.slots.borrow_mut()[slot] =
-            Some(Entry { cleanup: None, id, spawn_order, future: Some(future), scope, kind, label, at, cancelled: false, owner });
+            Some(Entry { cleanup: None, id, spawn_order, state: TaskState::Suspended(future), scope, kind, label, at, owner });
         self.shared.ready.lock().expect("ready").push(id);
         id
     }
 
     fn alive(&self, id: TaskId) -> bool {
-        self.slots.borrow().get(id.slot()).and_then(|e| e.as_ref()).is_some_and(|e| e.id == id && !e.cancelled)
+        self.slots.borrow().get(id.slot()).and_then(|e| e.as_ref()).is_some_and(|e| e.id == id && !matches!(e.state, TaskState::Cancelled))
     }
 
     /// Drops the task's future (and what it holds); a task being polled is dropped after.
@@ -330,8 +341,8 @@ impl Scheduler {
         if e.id != id {
             return;
         }
-        e.cancelled = true;
-        if let Some(f) = e.future.take() {
+        let previous = std::mem::replace(&mut e.state, TaskState::Cancelled);
+        if let TaskState::Suspended(f) = previous {
             let retired = slots[id.slot()].take();
             drop(slots);
             drop(retired);
@@ -378,7 +389,12 @@ impl Scheduler {
                     break;
                 }
                 let slots = self.slots.borrow();
-                batch.retain(|id| slots.get(id.slot()).and_then(Option::as_ref).is_some_and(|entry| entry.id == *id && !entry.cancelled));
+                batch.retain(|id| {
+                    slots
+                        .get(id.slot())
+                        .and_then(Option::as_ref)
+                        .is_some_and(|entry| entry.id == *id && !matches!(entry.state, TaskState::Cancelled))
+                });
                 batch.sort_unstable_by_key(|id| slots[id.slot()].as_ref().expect("live ready task").spawn_order);
                 batch.dedup();
             }
@@ -399,10 +415,10 @@ impl Scheduler {
         let (future, scope, owner) = {
             let mut slots = self.slots.borrow_mut();
             let Some(Some(e)) = slots.get_mut(id.slot()) else { return false };
-            if e.id != id || e.cancelled {
+            if e.id != id || !matches!(e.state, TaskState::Suspended(_)) {
                 return false;
             }
-            let Some(f) = e.future.take() else { return false };
+            let TaskState::Suspended(f) = std::mem::replace(&mut e.state, TaskState::Polling) else { unreachable!() };
             (f, e.scope, e.owner)
         };
         let waker = Waker::from(Arc::new(TaskWaker { id, shared: Arc::downgrade(&self.shared) }));
@@ -416,45 +432,41 @@ impl Scheduler {
             })
         });
         let mut slots = self.slots.borrow_mut();
-        let cancelled = slots.get(id.slot()).and_then(|e| e.as_ref()).is_none_or(|e| e.id != id || e.cancelled);
+        let cancelled = slots.get(id.slot()).and_then(|e| e.as_ref()).is_none_or(|e| e.id != id || matches!(e.state, TaskState::Cancelled));
         if !done
             && !cancelled
             && let Some(Some(e)) = slots.get_mut(id.slot())
         {
-            e.future = polling.future.take();
+            e.state = TaskState::Suspended(polling.future.take().expect("polling future"));
         }
         drop(slots);
         true
     }
 
-    fn add_timer(&self, due: f64, id: TaskId) -> u64 {
+    fn add_timer(&self, due: f64, id: TaskId, waker: Waker) -> u64 {
         let seq = self.timer_seq.get().checked_add(1).expect("timer identity exhausted");
         self.timer_seq.set(seq);
-        self.timers.borrow_mut().push((due, seq, id));
+        self.timers.borrow_mut().push((due, seq, id, waker));
         seq
     }
 
     /// The earliest timer of a live task.
     pub(crate) fn next_timer(&self) -> Option<f64> {
-        self.timers.borrow_mut().retain(|t| self.alive(t.2));
+        let retired: Vec<_> = self.timers.borrow_mut().extract_if(.., |t| !self.alive(t.2)).collect();
+        drop(retired);
         self.timers.borrow().iter().map(|t| t.0).min_by(f64::total_cmp)
     }
 
     /// Wakes the tasks whose timers are due at the clock's time.
     pub(crate) fn fire_due(&self) {
         let now = self.now.get();
-        let mut due: Vec<(f64, u64, TaskId)> = Vec::new();
-        self.timers.borrow_mut().retain(|t| {
-            if t.0 <= now {
-                due.push(*t);
-                false
-            } else {
-                true
-            }
-        });
+        let mut due: Vec<_> = self.timers.borrow_mut().extract_if(.., |t| t.0 <= now).collect();
         due.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-        let mut ready = self.shared.ready.lock().expect("ready");
-        ready.extend(due.into_iter().map(|t| t.2));
+        for (_, _, id, waker) in due {
+            if self.alive(id) {
+                waker.wake();
+            }
+        }
     }
 
     /// Waits (real time, at most `limit`) until no background job is in flight.
@@ -474,7 +486,7 @@ impl Scheduler {
         let mut out: Vec<PendingWork> = slots
             .iter()
             .flatten()
-            .filter(|e| !e.cancelled)
+            .filter(|e| !matches!(e.state, TaskState::Cancelled))
             .map(|e| {
                 let due = timers.iter().filter(|t| t.2 == e.id).map(|t| t.0).min_by(f64::total_cmp);
                 PendingWork {
