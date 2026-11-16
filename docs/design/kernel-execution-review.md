@@ -1,8 +1,8 @@
 # Kernel execution architecture review
 
 Date: 2026-11-16. Reviewed baseline: `28ef75e` (846 tests passed, 3 ignored).
-Status: bounded convergence plan; slices A and B are now implemented in the working
-tree, with records below. Slice C and final product acceptance remain pending.
+Status: this bounded convergence round is complete. Slices A/B shipped in `c4f5e52`;
+slice C source reconciliation and real-window acceptance are recorded below.
 The original review was documentation-only; its implementation follows the bounded
 plan below rather than authorizing unrelated incremental fixes.
 
@@ -349,3 +349,64 @@ Slice B validation: workspace tests passed (857 passed, 3 ignored), including Ch
 and local HTTP regressions. Workspace Clippy/all-targets with warnings denied,
 formatting and diff checks passed. Logs: `/tmp/octara-dispatch-full.log` and
 `/tmp/octara-dispatch-clippy.log`. No native window validation was run in this slice.
+
+## Slice C acceptance and stop decision
+
+Accepted against `c4f5e52` on 2026-11-16. This stage changed no runtime code.
+The slice B workspace result remains applicable: 857 passed, 3 ignored; workspace
+Clippy/all-targets with warnings denied passed. No code changed between that result
+and the live fixture build. Format/diff checks passed again.
+
+| Gate | Evidence |
+| --- | --- |
+| Entry coverage and deletion | Slice A entry table; no `effect_allowed` or `write_allowed` remains under `crates/octara/src`. Remaining `with_owner` is the intentional Window entry, shared guard and a test |
+| Phase permissions | Graph context phase tests; task cross-App entry, cancellation/initializer and failed-registration tests |
+| Owner restoration | Integration `windows::code_runs_as_the_window_it_belongs_to`; task App-owner-without-window test; graph owner/phase/collector unwind test |
+| Dependencies | Graph diamond, equal-branch switch, memo/watch equality and retirement regressions |
+| Cancellation/publication | Subscription/interval cancellation, scope disposal and shutdown cases; AsyncMemo post-key-comparison shutdown; existing request replacement tests |
+| Borrow/re-entry | Channel destruction outside its lock; context replacement destructor; host notification replacement and completion tests |
+| Failure and release | Integration collection failure tests; cleanup/teardown resumption, late completion and shutdown races |
+| Bounded progress/output | Deferred batch and wake ownership tests; windows feedback/budget tests; failed host submission does not publish a completed frame |
+| Product tests | Workspace Chat lifecycle, long-session, model selection and local HTTP tests passed |
+| Real-window smoke | Existing `apps/chat/live_lifecycle.py` passed on committed code; evidence below |
+
+### Real-window evidence
+
+Built using the active cache:
+
+```sh
+cargo build -p octara-chat --example lifecycle -p octara-cli --bin octara
+python3 apps/chat/live_lifecycle.py --output /tmp/octara-convergence-c4f5e52-live
+```
+
+The fixture opens the actual Chat desktop UI with isolated temporary persistence
+and a controlled transport retaining late senders. The script verified streaming,
+stop, replacement, queued questions, regeneration, conversation deletion and
+restart/restoration. Cancel-time and later obsolete events were attempted and
+did not contaminate the retained conversation or persisted data.
+
+Result: PASS, exit 0. Transcript audit: 118 CLI calls, zero nonzero CLI exits,
+28 inspected snapshots, zero snapshots reporting App failure. Four captures
+(`chat-streaming.png`, `chat-stopped.png`, `chat-new-answer.png`, `chat-restored.png`)
+reported `renderer=gpu`, `pixels=painted`, `settled=true`, at 1000 x 720. Streaming
+and restored captures were also visually inspected.
+
+Artifacts: `/tmp/octara-convergence-c4f5e52-live/` (CLI transcripts, window logs,
+isolated store, PNGs and `acceptance-summary.json`). Run log:
+`/tmp/octara-convergence-live.log`; build log:
+`/tmp/octara-convergence-build.log`. These are local temporary artifacts, not
+versioned binary evidence; the source script and this result summary are durable.
+
+Input route: live Inspector framework events delivered to real desktop windows.
+Captures are window GPU output, not OS screen captures or proof of physical display
+presentation. This run does not claim native keyboard/mouse injection, Chinese IME,
+or external-model network behavior. Native input was not changed by this round;
+local HTTP behavior is covered separately by workspace tests.
+
+### End of this round
+
+All agreed gates now have evidence; no exception or desktop-access deferral is
+needed for this representative smoke. Stop this convergence round and return to
+Chat and component usage. This does not certify that all possible kernel bugs are
+absent. A supported-path contract violation can justify a later focused fix; it
+does not justify reopening an unbounded architecture prerequisite list.
