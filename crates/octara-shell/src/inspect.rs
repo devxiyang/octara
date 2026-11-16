@@ -171,6 +171,11 @@ pub(crate) enum Pending {
 }
 
 impl Pending {
+    fn gesture(job: super::gesture::Job, reply: Responder) -> Self {
+        reply.delivery.set(Some(if job.delivered() { Delivery::Delivered } else { Delivery::Refused }));
+        Self::Gesture { job, reply }
+    }
+
     /// Cancel our held pointer before ticking timers once transport has observed disconnect.
     pub(crate) fn cancel_disconnected(&self, app: &octara::app::App) {
         if app.is_failed() {
@@ -278,8 +283,7 @@ impl Shell {
                 };
                 match super::gesture::Job::start_guarded(&mut target, id, kind, Instant::now(), guard) {
                     Ok(job) => {
-                        response.delivery.set(Some(if job.delivered() { Delivery::Delivered } else { Delivery::Refused }));
-                        self.inspect_pending = Some(Pending::Gesture { job, reply: response });
+                        self.inspect_pending = Some(Pending::gesture(job, response));
                         self.show();
                         self.inspect_poll();
                     }
@@ -412,8 +416,7 @@ impl Shell {
                 match job.poll(&mut window, Instant::now()) {
                     Some(result) => reply.send_gesture(result, job.delivered()),
                     None => {
-                        reply.delivery.set(Some(if job.delivered() { Delivery::Delivered } else { Delivery::Refused }));
-                        self.inspect_pending = Some(Pending::Gesture { job, reply });
+                        self.inspect_pending = Some(Pending::gesture(job, reply));
                     }
                 }
                 self.show();
@@ -476,9 +479,97 @@ mod target_feedback {
         }
 
         let (send, receive) = std::sync::mpsc::channel();
-        Responder::new(send, Arc::new(AtomicBool::new(true)), "query", false).with_target(&window, None).send(Reply::ok());
-        assert!(serde_json::from_str::<serde_json::Value>(&receive.recv().unwrap()).unwrap()["ok"].as_bool().unwrap());
+        Responder::new(send, Arc::new(AtomicBool::new(true)), "query", false)
+            .with_target(&window, None)
+            .send(Reply { snapshot: Some(Box::new(window.inspect())), ..Reply::ok() });
+        let reply: serde_json::Value = serde_json::from_str(&receive.recv().unwrap()).unwrap();
+        assert!(reply["ok"].as_bool().unwrap());
+        assert_eq!(reply["live"]["operations"], json!(["inspect", "issues"]));
         assert!(receive.try_recv().is_err(), "normal send must not emit a second failure on drop");
+        app.shutdown();
+    }
+
+    #[test]
+    fn a_task_failure_retires_waiting_gestures_without_releasing_input_or_losing_delivery() {
+        use octara::prelude::*;
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        use super::super::gesture::{Job, Kind};
+        for (kind, connected, expected_delivery) in
+            [(Kind::LongPress, true, "delivered"), (Kind::LongPress, false, "delivered"), (Kind::DoubleTap, true, "refused")]
+        {
+            let callbacks = Rc::new(Cell::new(0));
+            let capture = callbacks.clone();
+            let mut window = Window::headless(move || {
+                let capture = capture.clone();
+                spawn(async {
+                    sleep(Duration::from_millis(10)).await;
+                    panic!("task failed while a gesture waited");
+                });
+                el().id("target").w(120).h(48).on_double_press(|| {}).on_long_press(move || capture.set(capture.get() + 1)).into()
+            });
+            let app = window.app();
+            let (send, receive) = std::sync::mpsc::channel();
+            let connection = Arc::new(AtomicBool::new(true));
+            let response = Responder::new(send, connection.clone(), "framework", true).with_target(&window, None);
+            response.begin();
+            if matches!(kind, Kind::DoubleTap) {
+                window.tap("target").unwrap();
+                assert!(!window.pointer_click_cooldown().is_zero());
+            }
+            let job = Job::start(&mut window, "target", kind, Instant::now()).unwrap();
+            let pending = Pending::gesture(job, response);
+            let held = window.held_pointer();
+            assert_eq!(held.is_some(), matches!(kind, Kind::LongPress));
+            let frames = window.frames_presented();
+            let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.advance(Duration::from_millis(10))));
+            assert!(failure.is_err());
+            assert!(app.is_failed());
+            connection.store(connected, Ordering::Relaxed);
+            // The host must not dispatch cancellation into a failed App, even on disconnect.
+            pending.cancel_disconnected(&app);
+            drop(pending);
+            assert_eq!(window.held_pointer(), held);
+            assert_eq!(window.frames_presented(), frames);
+            assert_eq!(callbacks.get(), 0);
+            if connected {
+                let reply: serde_json::Value = serde_json::from_str(&receive.recv().unwrap()).unwrap();
+                assert_eq!(reply["code"], "APP_FAILED");
+                assert_eq!(reply["delivery"], expected_delivery);
+                assert_eq!(reply["live"]["delivery"], expected_delivery);
+            }
+            assert!(matches!(receive.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
+            app.shutdown();
+            assert!(window.is_closed());
+            assert_eq!(window.held_pointer(), None);
+            assert!(app.pending().is_empty());
+            assert_eq!(callbacks.get(), 0, "teardown must not finish a held gesture");
+        }
+    }
+
+    #[test]
+    fn failure_before_request_admission_is_refused_and_does_not_run_input() {
+        use octara::prelude::*;
+        let app = App::new(octara::platform::HeadlessPlatform::default());
+        let window = app.open_window(WindowOptions::default(), || el().into()).unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        let response = Responder::new(send, Arc::new(AtomicBool::new(true)), "framework", true).with_target(&window, None);
+        // Same order as live request preparation: tick/poll may fail before begin().
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            app.run(|| {
+                spawn(async {
+                    panic!("ready work failed before input");
+                });
+            });
+            app.poll();
+        }));
+        assert!(failure.is_err());
+        drop(response);
+        let reply: serde_json::Value = serde_json::from_str(&receive.recv().unwrap()).unwrap();
+        assert_eq!(reply["code"], "APP_FAILED");
+        assert_eq!(reply["delivery"], "refused");
+        assert_eq!(reply["live"]["delivery"], "refused");
         app.shutdown();
     }
 

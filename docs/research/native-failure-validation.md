@@ -34,3 +34,22 @@ not native keyboard/pointer injection; only activation and closing use the OS ad
   GPU path only, **not** a pass for visible presentation or native close.
 - The harness now requires nonzero presented frames and a non-occluded window before fault
   injection. Visible presentation and OS-close acceptance remain pending desktop unlock.
+
+## Deterministic continuation without an interactive desktop
+
+The pending-gesture tests use the real gesture job and scheduler with a headless platform:
+
+- A timer-triggered task panic interrupts an already-held long press. Its reply remains
+  delivered, no recognition/release callback runs, no additional frame is presented, and
+  explicit shutdown removes the held interaction and remaining work.
+- The same failure after transport disconnect dispatches no cancellation into the failed App
+  and emits no reply to the disconnected client.
+- A double tap waiting for the prior click interval has delivered no new input. A task panic
+  during that wait preserves refused delivery.
+- Ready work failing during request preparation returns refused before input admission.
+- Diagnostic snapshots advertise only inspect/issues after failure, and sending a normal
+  diagnostic response does not generate a second response when its responder is dropped.
+
+Pending gesture construction now records delivery from the job in one place, shared by initial
+admission and subsequent polls. These tests establish runtime and protocol behavior; they do
+not replace the deferred visible-presentation/native-close checks.
