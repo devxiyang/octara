@@ -2,6 +2,9 @@
 
 Based on the [research](../research/map-join.md). Status: confirmed; implemented.
 
+[Synchronous collection propagation](collection-propagation.md) defines dependency-ordered
+delivery, consistent join inputs and the per-mutation immediate-read boundary.
+
 Both are stages like `filter`, `sort_by` and `group_by`: they observe an upstream stage, keep
 their own state incrementally, and are stages themselves, so they compose
 (`todos.join(&tags, ..).filter(..).sort_by(..)`).

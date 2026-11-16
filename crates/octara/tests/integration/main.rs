@@ -25,6 +25,7 @@ mod inspect;
 mod interaction;
 mod keys;
 mod layout_issues;
+mod list_consistency;
 mod list_lifetime;
 mod list_runtime;
 mod menus;

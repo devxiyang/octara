@@ -16,7 +16,7 @@
 use crate::diagnostics::{self as codes, Code, Diagnostic};
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::panic::Location;
 use std::rc::Rc;
@@ -137,9 +137,20 @@ pub(crate) enum Ctx {
 /// Named state by (scope path, key), with the value's type.
 type NamedStore = HashMap<(String, &'static str), (Idx, TypeId)>;
 
+type CollectionDelivery = Box<dyn FnOnce()>;
+
+/// Synchronous delta delivery, ordered by consumer dependency depth. This is drained before
+/// the originating collection write returns; it never runs UI bindings or effects.
+#[derive(Default)]
+struct CollectionQueue {
+    active: Cell<bool>,
+    work: RefCell<BTreeMap<usize, VecDeque<CollectionDelivery>>>,
+}
+
 #[derive(Default)]
 pub(crate) struct Runtime {
     identity: u64,
+    collections: CollectionQueue,
     sampling: Cell<bool>,
     nodes: RefCell<Vec<Node>>,
     free_nodes: RefCell<Vec<u32>>,
@@ -198,6 +209,38 @@ impl Runtime {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let identity = NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1)).expect("runtime identity exhausted");
         Rc::new(Runtime { identity, ..Runtime::default() })
+    }
+
+    pub(crate) fn deliver_collections(&self, deliveries: impl IntoIterator<Item = (usize, CollectionDelivery)>) {
+        {
+            let mut work = self.collections.work.borrow_mut();
+            for (depth, delivery) in deliveries {
+                work.entry(depth).or_default().push_back(delivery);
+            }
+        }
+        if self.collections.active.replace(true) {
+            return;
+        }
+        // An unwinding user projection must not strand callbacks or leave delivery active.
+        let _reset = std::mem::DropGuard::new(&self.collections, |queue| {
+            let abandoned = std::mem::take(&mut *queue.work.borrow_mut());
+            queue.active.set(false);
+            drop(abandoned);
+        });
+        loop {
+            let next = {
+                let mut work = self.collections.work.borrow_mut();
+                work.first_entry().and_then(|mut entry| {
+                    let next = entry.get_mut().pop_front();
+                    if entry.get().is_empty() {
+                        entry.remove();
+                    }
+                    next
+                })
+            };
+            let Some(delivery) = next else { break };
+            delivery();
+        }
     }
 
     pub fn enter<R>(self: &Rc<Self>, f: impl FnOnce() -> R) -> R {
@@ -1193,6 +1236,27 @@ pub fn untrack<R>(f: impl FnOnce() -> R) -> R {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collection_delivery_unwind_releases_pending_work() {
+        let rt = Runtime::new();
+        let retained = Rc::new(());
+        let captured = retained.clone();
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.deliver_collections([
+                (1, Box::new(|| -> () { panic!("projection failed") }) as CollectionDelivery),
+                (2, Box::new(move || drop(captured)) as CollectionDelivery),
+            ]);
+        }));
+        assert!(failed.is_err());
+        assert_eq!(Rc::strong_count(&retained), 1);
+        assert!(rt.collections.work.borrow().is_empty());
+        assert!(!rt.collections.active.get());
+        let delivered = Rc::new(Cell::new(false));
+        let observed = delivered.clone();
+        rt.deliver_collections([(1, Box::new(move || observed.set(true)) as CollectionDelivery)]);
+        assert!(delivered.get());
+    }
 
     #[test]
     fn repeated_app_state_lookup_keeps_one_ownership_record() {

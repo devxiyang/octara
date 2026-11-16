@@ -59,6 +59,7 @@ pub(crate) trait Observer<K, T> {
 /// Execution belongs to the creating scope, including every upstream producer's scope.
 /// Retained read handles own cache storage, not the right to keep evaluating it.
 struct Producer {
+    depth: usize,
     scopes: Vec<(ScopeId, Signal<()>)>,
 }
 
@@ -118,11 +119,16 @@ impl<K, T> Observer<K, T> for ScopedObserver<K, T> {
     }
 }
 
+struct Listener<K, T> {
+    depth: usize,
+    observer: Weak<dyn Observer<K, T>>,
+}
+
 /// The output side of a stage: its log, its version signal and its observers.
 pub(crate) struct Emitter<K, T> {
     log: RefCell<Log<Change<K>>>,
     version: Signal<u64>,
-    observers: RefCell<Vec<Weak<dyn Observer<K, T>>>>,
+    observers: RefCell<Vec<Listener<K, T>>>,
     runtime: Weak<Runtime>,
     producer: Option<Rc<Producer>>,
 }
@@ -140,7 +146,7 @@ impl<K, T> Emitter<K, T> {
     }
 }
 
-impl<K: Clone + 'static, T: 'static> Emitter<K, T> {
+impl<K: Clone + 'static, T: Clone + 'static> Emitter<K, T> {
     fn new() -> Self {
         Emitter {
             log: RefCell::new(Log::new()),
@@ -154,7 +160,9 @@ impl<K: Clone + 'static, T: 'static> Emitter<K, T> {
         let mut emitter = Self::new();
         let scope = Runtime::current().current_scope().expect("list derivation requires an App or component scope");
         let mut scopes = Vec::new();
+        let mut depth = 1;
         for parent in parents.into_iter().flatten() {
+            depth = depth.max(parent.depth + 1);
             for (scope, lifetime) in &parent.scopes {
                 if !scopes.iter().any(|(owned, _)| owned == scope) {
                     scopes.push((*scope, *lifetime));
@@ -164,13 +172,13 @@ impl<K: Clone + 'static, T: 'static> Emitter<K, T> {
         if !scopes.iter().any(|(owned, _)| *owned == scope) {
             scopes.push((scope, Signal::scoped(())));
         }
-        emitter.producer = Some(Rc::new(Producer { scopes }));
+        emitter.producer = Some(Rc::new(Producer { depth, scopes }));
         emitter
     }
     fn observe(&self, observer: Rc<dyn Observer<K, T>>, producer: &Rc<Producer>) {
         let registration: Rc<dyn Observer<K, T>> =
             Rc::new(ScopedObserver { observer, producer: Some(producer.clone()), owner: None, runtime: self.runtime.clone() });
-        self.observers.borrow_mut().push(Rc::downgrade(&registration));
+        self.observers.borrow_mut().push(Listener { depth: producer.depth, observer: Rc::downgrade(&registration) });
         rt(|runtime| runtime.on_cleanup(Box::new(move || drop(registration))));
     }
     fn validate(&self, at: &'static Location<'static>) {
@@ -185,28 +193,51 @@ impl<K: Clone + 'static, T: 'static> Emitter<K, T> {
     fn bump(&self) {
         self.version.set_internal(untrack(|| self.version.get()) + 1);
     }
-    fn live(&self) -> Vec<Rc<dyn Observer<K, T>>> {
-        let mut obs = self.observers.borrow_mut();
-        obs.retain(|o| o.strong_count() > 0);
-        obs.iter().filter_map(|o| o.upgrade()).collect()
+    fn notify<F: Fn(&dyn Observer<K, T>) + 'static>(&self, event: impl FnOnce() -> F) {
+        let listeners: Vec<_> = {
+            let mut listeners = self.observers.borrow_mut();
+            listeners.retain(|listener| listener.observer.strong_count() > 0);
+            listeners.iter().filter_map(|listener| listener.observer.upgrade().map(|observer| (listener.depth, observer))).collect()
+        };
+        if listeners.is_empty() {
+            return;
+        }
+        let Some(runtime) = self.runtime.upgrade() else { return };
+        let event = Rc::new(event());
+        runtime.deliver_collections(listeners.into_iter().map(|(depth, observer)| {
+            let event = event.clone();
+            (depth, Box::new(move || event(observer.as_ref())) as Box<dyn FnOnce()>)
+        }));
     }
     fn insert(&self, index: usize, k: &K, t: &T) {
         self.log.borrow_mut().push(Change::Insert { key: k.clone(), index });
         self.bump();
-        self.live().iter().for_each(|o| o.inserted(index, k, t));
+        self.notify(|| {
+            let (key, item) = (k.clone(), t.clone());
+            move |observer| observer.inserted(index, &key, &item)
+        });
     }
     fn remove(&self, index: usize, k: &K, t: &T) {
         self.log.borrow_mut().push(Change::Remove { key: k.clone(), index });
         self.bump();
-        self.live().iter().for_each(|o| o.removed(index, k, t));
+        self.notify(|| {
+            let (key, item) = (k.clone(), t.clone());
+            move |observer| observer.removed(index, &key, &item)
+        });
     }
     fn update(&self, k: &K, old: &T, new: &T) {
-        self.live().iter().for_each(|o| o.updated(k, old, new));
+        self.notify(|| {
+            let (key, old, new) = (k.clone(), old.clone(), new.clone());
+            move |observer| observer.updated(&key, &old, &new)
+        });
     }
     fn moved(&self, from: usize, to: usize, k: &K, t: &T) {
         self.log.borrow_mut().push(Change::Move { key: k.clone(), from, to });
         self.bump();
-        self.live().iter().for_each(|o| o.moved(k, from, to, t));
+        self.notify(|| {
+            let (key, item) = (k.clone(), t.clone());
+            move |observer| observer.moved(&key, from, to, &item)
+        });
     }
 }
 
@@ -370,8 +401,11 @@ where
             runtime: emitter.runtime.clone(),
         });
         let mut observers = emitter.observers.borrow_mut();
-        observers.retain(|observer| observer.strong_count() > 0);
-        observers.push(Rc::downgrade(&registration));
+        observers.retain(|listener| listener.observer.strong_count() > 0);
+        observers.push(Listener {
+            depth: emitter.producer.as_ref().map_or(1, |producer| producer.depth + 1),
+            observer: Rc::downgrade(&registration),
+        });
         registration
     }
 
@@ -1046,8 +1080,12 @@ where
         let mut updated = 0;
         for k in &rows {
             let Some(item) = self.left.item(k) else { continue };
-            let u = untrack(|| item.with(|t| self.compute(t, rk)));
-            updated += usize::from(self.set(k, u));
+            let u = untrack(|| item.with(|t| ((self.key)(t) == *rk).then(|| self.compute(t, rk))));
+            // A sibling input may already have changed the lookup key. Its left-side event
+            // will repair the reverse index; this old right-key notification no longer applies.
+            if let Some(u) = u {
+                updated += usize::from(self.set(k, u));
+            }
         }
         if updated > JOIN_FANOUT_ROWS {
             rt(|rt| {
@@ -1071,8 +1109,11 @@ where
     R: Clone + 'static,
     U: Clone + PartialEq + 'static,
 {
-    fn inserted(&self, index: usize, k: &K, t: &T) {
-        let u = self.attach_row(k, t);
+    fn inserted(&self, index: usize, k: &K, _: &T) {
+        let Some(item) = self.left.item(k) else { return };
+        // One parent can emit several deltas before delivery. Join current inputs,
+        // not a historical payload paired with the other parent's current cache.
+        let u = untrack(|| item.with(|t| self.attach_row(k, t)));
         self.emitter.insert(index, k, &u);
     }
     fn removed(&self, index: usize, k: &K, _: &T) {
@@ -1084,8 +1125,15 @@ where
             self.emitter.dispose(s);
         }
     }
-    fn updated(&self, k: &K, _: &T, new: &T) {
-        let rk = (self.key)(new);
+    fn updated(&self, k: &K, _: &T, _: &T) {
+        let Some(item) = self.left.item(k) else { return };
+        let (rk, u) = untrack(|| {
+            item.with(|new| {
+                let rk = (self.key)(new);
+                let u = self.compute(new, &rk);
+                (rk, u)
+            })
+        });
         let old_rk = self.out.borrow().get(k).map(|(rk, _)| rk.clone());
         if let Some(old_rk) = old_rk
             && old_rk != rk
@@ -1096,7 +1144,6 @@ where
                 row.0 = rk.clone();
             }
         }
-        let u = self.compute(new, &rk);
         self.set(k, u);
     }
     fn moved(&self, k: &K, from: usize, to: usize, _: &T) {
@@ -1513,7 +1560,11 @@ where
     fn watch_members(&self, g: &G) {
         let members = self.groups.members.borrow()[g].members.clone();
         let adapter: Rc<dyn Observer<K, T>> = Rc::new(MemberAdapter { flat: self.me.borrow().clone(), group: g.clone() });
-        members.emitter.observers.borrow_mut().push(Rc::downgrade(&adapter));
+        members
+            .emitter
+            .observers
+            .borrow_mut()
+            .push(Listener { depth: self.emitter.producer.as_ref().expect("flattened producer").depth, observer: Rc::downgrade(&adapter) });
         self.adapters.borrow_mut().insert(g.clone(), adapter);
     }
 }
@@ -1532,7 +1583,14 @@ where
             None => self.seq.borrow().len(),
         };
         self.put(at, FlatKey::Header(g.clone()), FlatItem::Header(info.clone()));
-        // Members arrive after the group is created: watch them from now on.
+        // Delivery is dependency ordered: the creating group has already populated its
+        // members. Bootstrap the current prefix, then subscribe to subsequent changes.
+        let members = self.groups.members.borrow()[g].members.clone();
+        for (index, key) in members.snapshot().into_iter().enumerate() {
+            if let Some(item) = members.item(&key) {
+                self.put(at + 1 + index, FlatKey::Item(key), FlatItem::Item(untrack(|| item.get())));
+            }
+        }
         self.watch_members(g);
     }
     fn removed(&self, _: usize, g: &G, _: &GroupInfo<G>) {
