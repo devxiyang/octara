@@ -4,7 +4,7 @@ use super::{Mount, Parent, Slot, Slots, View, build_el, col, count_offset};
 use crate::diagnostics as codes;
 use crate::kernel::NodeId;
 use crate::reactive::graph::{Ctx, ReadSignal, ScopeId, Signal, memo, memo_with, rt, untrack};
-use crate::reactive::list::{Change, ReadList};
+use crate::reactive::list::{Change, Observer, ReadList};
 use crate::reactive::log::{Changes, Cursor};
 use crate::reactive::seq::Seq;
 use std::cell::{Cell, RefCell};
@@ -309,6 +309,66 @@ where
 // ---- virtualization ----
 
 /// Rows kept beyond each edge of the visible area.
+/// A reading position belongs to a business key, not a mutable numeric index.
+#[derive(Clone)]
+struct RowAnchor<K> {
+    key: K,
+    offset: f64,
+}
+
+impl<K: Eq + Hash + Clone> RowAnchor<K> {
+    fn at(rows: &Seq<K>, y: f64) -> Option<Self> {
+        if y <= 0.0 {
+            return None;
+        }
+        let index = rows.index_at_weight(y).min(rows.len().saturating_sub(1));
+        Some(Self { key: rows.nth(index)?.clone(), offset: y - rows.prefix_weight(index) })
+    }
+
+    fn position(&self, rows: &Seq<K>) -> Option<f64> {
+        let index = rows.index_of(&self.key)?;
+        Some((rows.prefix_weight(index) + self.offset).max(0.0))
+    }
+
+    fn removing(&mut self, key: &K, rows: &Seq<K>) {
+        if &self.key == key
+            && let Some(index) = rows.index_of(key)
+            && let Some(next) = rows.nth(index + 1).or_else(|| index.checked_sub(1).and_then(|i| rows.nth(i)))
+        {
+            self.key = next.clone();
+        }
+    }
+
+    fn surviving(&mut self, old: &Seq<K>, next: &Seq<K>) {
+        if !next.contains(&self.key)
+            && let Some(index) = old.index_of(&self.key)
+            && let Some(key) = (index + 1..old.len()).chain((0..index).rev()).filter_map(|i| old.nth(i)).find(|key| next.contains(key))
+        {
+            self.key = key.clone();
+        }
+    }
+}
+
+/// Value invalidation reuses collection observers without waking structural readers or
+/// retaining a reactive computation for every offscreen row. Removed keys leave this set.
+struct ItemChanges<K> {
+    keys: Rc<RefCell<HashSet<K>>>,
+    revision: Signal<u64>,
+}
+
+impl<K: Eq + Hash + Clone, T> Observer<K, T> for ItemChanges<K> {
+    fn inserted(&self, _: usize, _: &K, _: &T) {}
+    fn removed(&self, _: usize, key: &K, _: &T) {
+        self.keys.borrow_mut().remove(key);
+    }
+    fn moved(&self, _: &K, _: usize, _: usize, _: &T) {}
+    fn updated(&self, key: &K, _: &T, _: &T) {
+        if self.keys.borrow_mut().insert(key.clone()) {
+            self.revision.set_internal(untrack(|| self.revision.get()).wrapping_add(1));
+        }
+    }
+}
+
 const OVERSCAN: usize = 5;
 
 /// Like [`each`], for long lists: only rows near the visible area exist. Put it directly in a
@@ -318,7 +378,9 @@ const OVERSCAN: usize = 5;
 /// Row heights start from `estimate` and are replaced by each row's measured height once it
 /// has been laid out; the first visible row stays put while rows above it are measured
 /// (scroll anchoring). Rows are kept in a weighted order-statistic tree, so offset → row and
-/// row → offset are O(log n) and an update costs O(visible · log n) whatever the length. The
+/// row → offset are O(log n). Ordinary incremental edits and scrolling update only affected
+/// and resident rows. A new snapshot or changed layout constraints can reset O(n) cached
+/// weights, without mounting the offscreen rows. The
 /// edge spacers are `{parent id}-top` / `-bottom`. Focus and pointer capture temporarily keep
 /// their rows resident; hidden gap spacers preserve their positions without mounting the
 /// intervening rows.
@@ -377,6 +439,18 @@ where
         let input = memo(move || list().into_input(at));
         let rows = Rc::new(RefCell::new(Rows { entries: HashMap::new(), input, owner, base, at, row: Box::new(row) }));
         let measured: Rc<RefCell<HashSet<K>>> = Rc::default();
+        let estimates: Rc<RefCell<HashMap<K, f64>>> = Rc::default();
+        let pending_anchor: Rc<RefCell<Option<RowAnchor<K>>>> = Rc::default();
+        let anchor_request = Rc::new(Cell::new(0));
+        let dirty_items: Rc<RefCell<HashSet<K>>> = Rc::default();
+        let item_observer = Rc::new(RefCell::new(None));
+        let observer_cleanup = item_observer.clone();
+        rt(|rt| {
+            rt.on_cleanup(Box::new(move || {
+                observer_cleanup.borrow_mut().take();
+            }))
+        });
+
         let current: Current<K, T> = Rc::default();
         // Keys by the name paths write them in (every row built, and every key listed).
         let names: Rc<RefCell<HashMap<String, K>>> = Rc::default();
@@ -420,8 +494,11 @@ where
 
         // After each layout: where the list starts in the container, and the rows' real heights.
         let hook = {
-            let (u, list_top, mirror, rows, measured, row_gap) =
-                (u.clone(), list_top.clone(), mirror.clone(), rows.clone(), measured.clone(), row_gap.clone());
+            let (u, list_top, mirror, rows, measured, row_gap, estimates) =
+                (u.clone(), list_top.clone(), mirror.clone(), rows.clone(), measured.clone(), row_gap.clone(), estimates.clone());
+            let pending_anchor = pending_anchor.clone();
+            let anchor_request = anchor_request.clone();
+            let constraints = RefCell::new(None);
             u.clone().after_layout(Rc::new(move || {
                 let mut k = u.kernel.borrow_mut();
                 if !k.is_alive(container) || !k.is_alive(top) {
@@ -430,58 +507,70 @@ where
                 let (sx, sy) = k.scroll_offset(container);
                 let cy = k.content_origin_y(container);
                 let start = k.rect(top).1 - cy + sy;
+                let old_start = list_top.get();
                 let mut changed = false;
-                if (start - list_top.get()).abs() > 0.5 {
+                if (start - old_start).abs() > 0.5 {
                     list_top.set(start);
                     changed = true;
                 }
                 let mut m = mirror.borrow_mut();
-                let y = (sy - start).max(0.0) as f64;
+                let y = (sy - old_start).max(0.0) as f64;
                 let gap = k.row_gap(container) as f64;
                 let gap_delta = gap - row_gap.replace(gap);
                 changed |= gap_delta.abs() > 0.01;
-                // Rows whose measured height differs from their weight.
+                let signature = k.virtual_constraints(container);
+                let invalid = constraints.borrow().as_ref().is_some_and(|previous| previous != &signature);
+                *constraints.borrow_mut() = Some(signature);
+                let pending = pending_anchor.borrow_mut().take().filter(|_| anchor_request.get() == k.scroll_request(container));
+                let mut anchor = pending.clone().or_else(|| RowAnchor::at(&m, y));
                 let rows = rows.borrow();
                 let rows = &rows.entries;
                 let mut measured = measured.borrow_mut();
-                let mut updates: Vec<(K, f64)> = if gap_delta.abs() > 0.01 {
-                    m.to_vec()
-                        .into_iter()
-                        .map(|key| {
-                            let weight = m.weight_of(&key).unwrap() + gap_delta;
-                            (key, weight)
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                updates.extend(rows.iter().filter(|(_, (_, node))| k.is_alive(*node)).filter_map(|(key, (_, node))| {
-                    let weight = k.rect(*node).3 as f64 + gap;
-                    m.weight_of(key).filter(|w| (w - weight).abs() > 0.5).map(|_| (key.clone(), weight))
-                }));
-                if !updates.is_empty() {
-                    // Keep the first previously laid-out row in view, even if its own height
-                    // changed. A new estimated row must not displace a row already being read.
-                    let mut anchor = m.index_at_weight(y).min(m.len().saturating_sub(1));
-                    let seen = rows
+                // Prefer an already displayed row when estimates are still converging.
+                if pending.is_none()
+                    && y > 0.0
+                    && let Some(index) = rows
                         .keys()
                         .filter(|key| measured.contains(*key))
                         .filter_map(|key| m.index_of(key))
                         .filter(|&i| m.prefix_weight(i + 1) > y && m.prefix_weight(i) < y + k.client_size(container).1 as f64)
-                        .min();
-                    if let Some(i) = seen {
-                        anchor = i;
+                        .min()
+                {
+                    anchor = Some(RowAnchor { key: m.nth(index).unwrap().clone(), offset: y - m.prefix_weight(index) });
+                }
+                if invalid || gap_delta.abs() > 0.01 {
+                    for key in m.to_vec() {
+                        let weight = if invalid { estimates.borrow()[&key] + gap } else { m.weight_of(&key).unwrap() + gap_delta };
+                        m.set_weight(&key, weight);
                     }
-                    let on_screen = m.prefix_weight(anchor) - y;
-                    for (key, h) in &updates {
-                        m.set_weight(key, *h);
+                    if invalid {
+                        measured.clear();
                     }
-                    let to = m.prefix_weight(anchor) - on_screen;
-                    // Following its tail, the container keeps its end in place instead (after the
-                    // next layout).
-                    if (to - y).abs() > 0.5 && !k.is_following_tail(container) {
-                        k.scroll_to_unclamped(container, sx, (to as f32 + start).max(0.0));
+                    changed = true;
+                }
+                for (key, (_, node)) in rows {
+                    if k.is_alive(*node) {
+                        let weight = k.rect(*node).3 as f64 + gap;
+                        if m.weight_of(key).is_some_and(|old| (old - weight).abs() > 0.5) {
+                            m.set_weight(key, weight);
+                            changed = true;
+                        }
                     }
+                }
+                // Only a measured row can clamp a saved intra-row position. An estimate may
+                // be much shorter than the paragraph the reader is halfway through.
+                if let Some(anchor) = &mut anchor
+                    && let Some((_, node)) = rows.get(&anchor.key)
+                    && k.is_alive(*node)
+                {
+                    anchor.offset = anchor.offset.min((k.rect(*node).3 as f64 + gap - 1.0).max(0.0));
+                }
+                if (changed || pending.is_some())
+                    && !k.is_following_tail(container)
+                    && let Some(to) = anchor.as_ref().and_then(|anchor| anchor.position(&m))
+                    && (to + start as f64 - sy as f64).abs() > 0.5
+                {
+                    k.scroll_to_unclamped(container, sx, (to as f32 + start).max(0.0));
                     changed = true;
                 }
                 measured.extend(rows.iter().filter(|(_, (_, node))| k.is_alive(*node)).map(|(key, _)| key.clone()));
@@ -511,11 +600,19 @@ where
             let state = scroll.get();
             revision.get();
             u.interaction_revision.get();
-            let y = (state.offset.1 - list_top.get()).max(0.0) as f64;
+            let mut y = (u.kernel.borrow().scroll_offset(container).1 - list_top.get()).max(0.0) as f64;
             let height = state.client.1 as f64;
             rt(|rt| {
                 rt.with_frame(Ctx::Observe, None, Some(Some(owner)), || {
-                    let weight = |k: &K| untrack(|| next.read(k)).map(|item| estimate(&item) as f64 + row_gap.get()).unwrap_or(0.0);
+                    if anchor_request.get() != u.kernel.borrow().scroll_request(container) {
+                        pending_anchor.borrow_mut().take();
+                    }
+                    let mut anchor = pending_anchor.borrow().clone().or_else(|| RowAnchor::at(&mirror.borrow(), y));
+                    let weight = |key: &K| {
+                        let height = untrack(|| next.read(key)).map(|item| estimate(&item).max(1.0) as f64).unwrap_or(1.0);
+                        estimates.borrow_mut().insert(key.clone(), height);
+                        height + row_gap.get()
+                    };
                     // 1. Keep the weighted mirror in step with the list.
                     let same = current.borrow().as_ref().is_some_and(|(s, _)| *s == next);
                     let changes = if same {
@@ -525,7 +622,9 @@ where
                     } else {
                         None
                     };
+                    let mut geometry_changed;
                     if let Some(Changes::Delta(changes)) = changes {
+                        geometry_changed = !changes.is_empty();
                         let mut m = mirror.borrow_mut();
                         for ch in changes {
                             match ch {
@@ -534,7 +633,11 @@ where
                                     m.insert_weighted(index, key, w);
                                 }
                                 Change::Remove { key, .. } => {
+                                    if let Some(anchor) = &mut anchor {
+                                        anchor.removing(&key, &m);
+                                    }
                                     m.remove(&key);
+                                    estimates.borrow_mut().remove(&key);
                                     rows.borrow_mut().remove(&key, false);
                                     measured.borrow_mut().remove(&key);
                                     names.borrow_mut().remove(&key.to_string());
@@ -547,7 +650,15 @@ where
                             }
                         }
                     } else {
+                        geometry_changed = true;
+                        item_observer.borrow_mut().take();
+                        dirty_items.borrow_mut().clear();
+                        if let Input::Incremental(list) = &next {
+                            *item_observer.borrow_mut() =
+                                Some(list.observe_items(Rc::new(ItemChanges { keys: dirty_items.clone(), revision })));
+                        }
                         let cursor = next.subscribe();
+                        estimates.borrow_mut().clear();
                         let mut m = Seq::new();
                         for k in next.snapshot() {
                             let w = weight(&k);
@@ -561,8 +672,34 @@ where
                         }
                         measured.borrow_mut().retain(|key| m.contains(key));
                         names.borrow_mut().retain(|_, key| m.index_of(key).is_some());
+                        if let Some(anchor) = &mut anchor {
+                            anchor.surviving(&mirror.borrow(), &m);
+                        }
                         *mirror.borrow_mut() = m;
                         *current.borrow_mut() = Some((next.clone(), cursor));
+                    }
+                    {
+                        let mut m = mirror.borrow_mut();
+                        for key in dirty_items.borrow_mut().drain() {
+                            if m.contains(&key) {
+                                geometry_changed = true;
+                                m.set_weight(&key, weight(&key));
+                                measured.borrow_mut().remove(&key);
+                            }
+                        }
+                        if !u.kernel.borrow().is_following_tail(container)
+                            && let Some(to) = anchor.as_ref().and_then(|anchor| anchor.position(&m))
+                            && (to - y).abs() > 0.5
+                        {
+                            let mut kernel = u.kernel.borrow_mut();
+                            let x = kernel.scroll_offset(container).0;
+                            kernel.scroll_to_unclamped(container, x, (to as f32 + list_top.get()).max(0.0));
+                            y = to;
+                        }
+                    }
+                    if geometry_changed && !u.kernel.borrow().is_following_tail(container) {
+                        *pending_anchor.borrow_mut() = anchor;
+                        anchor_request.set(u.kernel.borrow().scroll_request(container));
                     }
                     // 2. The window: rows intersecting [y, y + height), plus overscan.
                     let m = mirror.borrow();
@@ -572,6 +709,11 @@ where
                     let start = first.saturating_sub(OVERSCAN);
                     let end = if len == 0 { 0 } else { (last + 1 + OVERSCAN).min(len) };
                     let mut indices: Vec<_> = (start..end).collect();
+                    if let Some(anchor) = pending_anchor.borrow().as_ref()
+                        && let Some(index) = m.index_of(&anchor.key)
+                    {
+                        indices.push(index);
+                    }
                     let interactions = u.interaction_nodes();
                     if !interactions.is_empty() {
                         let kernel = u.kernel.borrow();

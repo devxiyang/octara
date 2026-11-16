@@ -14,6 +14,7 @@ mod list_render;
 mod pointer;
 mod sort_group;
 mod text_stream;
+mod virtual_geometry;
 mod virtual_interaction;
 mod virtual_list;
 mod windows;

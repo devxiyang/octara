@@ -411,6 +411,7 @@ struct Node {
     placed: Option<Placed>,
     /// Scroll offset of a scroll container.
     scroll: (f32, f32),
+    scroll_request: u64,
     /// A scroll container keeping the end of its content in view (`follow_tail`): whether it
     /// follows now (`None`: it does not follow at all).
     follow: Option<bool>,
@@ -1234,6 +1235,7 @@ impl Kernel {
             overlay_owner: None,
             placed: None,
             scroll: (0.0, 0.0),
+            scroll_request: 0,
             follow: None,
             inherited: root_inh,
             inherited_from: root_inh,
@@ -2423,6 +2425,20 @@ impl Kernel {
         let o = self.node(id).layout.overflow;
         (o.x == taffy::Overflow::Scroll, o.y == taffy::Overflow::Scroll)
     }
+    /// Constraints shared by resident and currently unmounted virtual rows. The content box
+    /// excludes padding; viewport changes can also select different responsive row styles.
+    pub(crate) fn virtual_constraints(&self, id: NodeId) -> ((f32, f32), (f32, f32), TextStyle, u64, u64) {
+        let layout = self.taffy.layout(self.node(id).taffy).expect("taffy");
+        let (width, height) = self.client_size(id);
+        (
+            ((width - layout.padding.left - layout.padding.right).max(0.0), (height - layout.padding.top - layout.padding.bottom).max(0.0)),
+            self.viewport,
+            self.node(id).visual.text_style(),
+            self.fonts_generation,
+            self.theme_gen,
+        )
+    }
+
     /// The visible size inside the border (CSS `clientWidth` / `clientHeight`).
     pub fn client_size(&self, id: NodeId) -> (f32, f32) {
         let l = self.taffy.layout(self.node(id).taffy).expect("taffy");
@@ -2536,6 +2552,13 @@ impl Kernel {
     pub fn scroll_to_unclamped(&mut self, id: NodeId, x: f32, y: f32) {
         if self.node(id).scroll != (x, y) {
             self.node_mut(id).scroll = (x, y);
+            // A caller can restore an anchor before the next content extent is published.
+            // Even if its spacer styles end up unchanged, that future layout must clamp it.
+            let (width, height) = self.scroll_size(id);
+            let (client_width, client_height) = self.client_size(id);
+            if x < 0.0 || y < 0.0 || x > (width - client_width).max(0.0) || y > (height - client_height).max(0.0) {
+                self.needs_layout = true;
+            }
             self.a11y_touch(id);
             self.changed(id, Dirty::PAINT, "scroll", || format!("{:?}", (x, y)));
         }
@@ -2566,7 +2589,7 @@ impl Kernel {
             if self.node(id).follow != Some(true) {
                 self.move_scroll(id, x, y);
             } else if self.glides.contains_key(&id) {
-                self.glide_scroll(id, x, f32::MAX);
+                self.retarget_scroll(id, x, f32::MAX);
             } else {
                 self.move_scroll(id, x, f32::MAX);
             }
@@ -2607,7 +2630,12 @@ impl Kernel {
     }
     /// Someone put `id`'s offset where it is: a container with a tail follows it again at the
     /// end, and lets go of it anywhere else.
+    pub(crate) fn scroll_request(&self, id: NodeId) -> u64 {
+        self.node(id).scroll_request
+    }
+
     fn note_scrolled(&mut self, id: NodeId) {
+        self.node_mut(id).scroll_request = self.node(id).scroll_request.wrapping_add(1);
         if self.node(id).follow.is_some() {
             let end = self.at_end(id);
             self.node_mut(id).follow = Some(end);

@@ -399,6 +399,18 @@ impl LongSession {
     }
 
     fn controls(&self, chat: Rc<Chat>) {
+        let window_id = current_window();
+        on_command("long.read", move || {
+            if let Some(window) = App::current().window(window_id) {
+                let offset = {
+                    let kernel = window.kernel();
+                    kernel.find("transcript").map(|node| (kernel.scroll_offset(node).1 - 1200.0).max(0.0))
+                };
+                if let Some(offset) = offset {
+                    scroll_to("transcript", 0.0, offset);
+                }
+            }
+        });
         for payload in [Payload::Mixed, Payload::Paragraph, Payload::Code] {
             let model = self.clone();
             on_command(&format!("long.scene.{}", payload.name()), move || {

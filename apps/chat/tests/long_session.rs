@@ -73,6 +73,24 @@ fn assert_visible(window: &Window, id: &str) {
     assert!(y < top + viewport && y + height > top, "reading anchor {id} left the visible transcript: {y}..{}", y + height);
 }
 
+fn reading_offset(window: &Window, id: &str) -> f32 {
+    let kernel = window.kernel();
+    let transcript = kernel.find("transcript").unwrap();
+    kernel.rect(kernel.find(id).expect("the reading anchor remains mounted")).1 - kernel.content_origin_y(transcript)
+}
+
+fn assert_reading_offset(window: &Window, id: &str, before: f32) {
+    assert_eq!(anchor(window).0, id, "reflow must retain the same first visible business key");
+    let height = {
+        let kernel = window.kernel();
+        kernel.rect(kernel.find(id).unwrap()).3
+    };
+    // A row shortened by wrapping can no longer hold an offset past its new end.
+    let expected = before.max(-(height - 1.0).max(0.0));
+    let after = reading_offset(window, id);
+    assert!((after - expected).abs() < 0.5, "reflow moved the reading offset for {id}: {before} -> {after}, expected {expected}");
+}
+
 fn clean(window: &Window) {
     // The bounded picker intentionally ellipsizes this fixture's long model name; its full
     // value and hover tooltip remain available. Every other layout issue is still a failure.
@@ -158,21 +176,26 @@ fn reading_survives_streaming_details_reflow_and_a_growing_composer() {
     window.dispatch(Event::Input("composer".into(), "Retained draft".into())).unwrap();
     let composer_target = target(&window, "composer");
     for (width, height) in [(760.0, 640.0), (1000.0, 720.0), (480.0, 720.0), (1000.0, 720.0)] {
+        let offset = reading_offset(&window, &reading);
         window.resize(width, height);
+        window.app().settle_motion();
         assert!(!following(&window), "resize must not resume tail following");
         assert_visible(&window, &reading);
+        assert_reading_offset(&window, &reading, offset);
         assert!(window.kernel().exists(&content), "the expanded historical tool remains open across breakpoints");
         assert_eq!(value(&window, "composer"), "Retained draft");
         assert_eq!(target(&window, "composer"), composer_target, "breakpoints retain the actual input node");
         clean(&window);
     }
 
+    let offset = reading_offset(&window, &reading);
     let before = window.kernel().shown_rect(window.kernel().find("composer").unwrap()).3;
     window.dispatch(Event::Input("composer".into(), "line one\nline two\nline three\nline four".into())).unwrap();
     let after = window.kernel().shown_rect(window.kernel().find("composer").unwrap()).3;
     assert!(after > before, "the product composer grows through its multiline binding");
     assert!(!following(&window));
     assert_visible(&window, &reading);
+    assert_reading_offset(&window, &reading, offset);
     window.tap("jump").unwrap();
     assert!(following(&window));
     window.invoke("long.chunk").unwrap();

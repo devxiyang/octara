@@ -264,6 +264,11 @@ impl Kernel {
     /// layout moves (`layout_motion`), it glides there; a new request while gliding keeps the
     /// speed (Rune). Elsewhere it jumps.
     pub fn glide_scroll(&mut self, id: NodeId, x: f32, y: f32) {
+        self.node_mut(id).scroll_request = self.node(id).scroll_request.wrapping_add(1);
+        self.retarget_scroll(id, x, y);
+    }
+
+    pub(super) fn retarget_scroll(&mut self, id: NodeId, x: f32, y: f32) {
         let (cw, ch) = self.client_size(id);
         let (sw, sh) = self.scroll_size(id);
         let to = (x.clamp(0.0, (sw - cw).max(0.0)) as f64, y.clamp(0.0, (sh - ch).max(0.0)) as f64);

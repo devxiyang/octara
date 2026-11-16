@@ -78,13 +78,20 @@ impl Producer {
 /// The scope retains this registration; upstream stages retain it weakly.
 struct ScopedObserver<K, T> {
     observer: Rc<dyn Observer<K, T>>,
-    producer: Rc<Producer>,
+    producer: Option<Rc<Producer>>,
+    owner: Option<ScopeId>,
     runtime: Weak<Runtime>,
 }
 
 impl<K, T> ScopedObserver<K, T> {
     fn live(&self) -> Option<&dyn Observer<K, T>> {
-        self.runtime.upgrade().filter(|runtime| self.producer.alive(runtime)).map(|_| self.observer.as_ref())
+        self.runtime
+            .upgrade()
+            .filter(|runtime| {
+                self.owner.is_none_or(|scope| runtime.scope_alive(scope))
+                    && self.producer.as_ref().is_none_or(|producer| producer.alive(runtime))
+            })
+            .map(|_| self.observer.as_ref())
     }
 }
 
@@ -162,7 +169,7 @@ impl<K: Clone + 'static, T: 'static> Emitter<K, T> {
     }
     fn observe(&self, observer: Rc<dyn Observer<K, T>>, producer: &Rc<Producer>) {
         let registration: Rc<dyn Observer<K, T>> =
-            Rc::new(ScopedObserver { observer, producer: producer.clone(), runtime: self.runtime.clone() });
+            Rc::new(ScopedObserver { observer, producer: Some(producer.clone()), owner: None, runtime: self.runtime.clone() });
         self.observers.borrow_mut().push(Rc::downgrade(&registration));
         rt(|runtime| runtime.on_cleanup(Box::new(move || drop(registration))));
     }
@@ -349,6 +356,23 @@ where
         }
         self.0.index_of(k)?;
         self.0.item(k)
+    }
+
+    /// Private consumers of item changes keep the registration themselves. Switching source
+    /// drops it immediately; the upstream holds only a weak reference, like derived stages.
+    pub(crate) fn observe_items(&self, observer: Rc<dyn Observer<K, T>>) -> Rc<dyn Observer<K, T>> {
+        self.validate();
+        let emitter = self.0.emitter();
+        let registration: Rc<dyn Observer<K, T>> = Rc::new(ScopedObserver {
+            observer,
+            producer: emitter.producer.clone(),
+            owner: rt(|runtime| runtime.current_scope()),
+            runtime: emitter.runtime.clone(),
+        });
+        let mut observers = emitter.observers.borrow_mut();
+        observers.retain(|observer| observer.strong_count() > 0);
+        observers.push(Rc::downgrade(&registration));
+        registration
     }
 
     /// Entries held in this stage's log (to check it stays bounded).
