@@ -858,3 +858,161 @@ fn exhausted_node_and_scope_generations_never_wrap() {
         assert!(!rt.scope_alive(scope));
     });
 }
+
+// Equality and retirement execute user code, but are not reactive sources.
+struct TrackingResult {
+    value: i32,
+    noise: Signal<i32>,
+    enabled: Rc<Cell<bool>>,
+    ctx: Ctx,
+}
+
+impl TrackingResult {
+    fn sample(&self) {
+        if self.enabled.get() {
+            rt(|rt| {
+                assert_eq!(rt.ctx(), self.ctx);
+                assert!(rt.observer.get().is_none());
+            });
+            self.noise.get();
+            self.noise.set(99); // Untracking must not grant write permission.
+        }
+    }
+}
+
+impl PartialEq for TrackingResult {
+    fn eq(&self, other: &Self) -> bool {
+        self.sample();
+        self.value == other.value
+    }
+}
+
+impl Drop for TrackingResult {
+    fn drop(&mut self) {
+        self.sample();
+    }
+}
+
+#[test]
+fn watch_tracking_excludes_equality_and_both_result_retirements() {
+    with_scope(|rt| {
+        let source = Signal::scoped(0);
+        let noise = Signal::scoped(0);
+        let enabled = Rc::new(Cell::new(true));
+        let active = enabled.clone();
+        let runs = Rc::new(Cell::new(0));
+        let calls = runs.clone();
+        let delivered = Rc::new(RefCell::new(Vec::new()));
+        let out = delivered.clone();
+        let handle = watch(
+            move || {
+                calls.set(calls.get() + 1);
+                TrackingResult { value: source.get() / 2, noise, enabled: active.clone(), ctx: Ctx::Observe }
+            },
+            move |new, old| out.borrow_mut().push((new.value, old.map(|v| v.value))),
+        );
+        handler(rt, || source.set(1)); // Equal candidate retirement.
+        handler(rt, || source.set(2)); // Previous result retirement.
+        assert_eq!(noise.get(), 0);
+        handler(rt, || noise.set(1));
+        assert_eq!(runs.get(), 3);
+        assert_eq!(*delivered.borrow(), [(0, None), (1, Some(0))]);
+        assert!(rt.diagnostics().iter().all(|d| d.code == "WRITE_IN_DERIVE"));
+        enabled.set(false);
+        handle.stop();
+    });
+}
+
+#[test]
+fn memo_tracking_excludes_equality_and_retirement_from_nested_observers() {
+    with_scope(|rt| {
+        let source = Signal::scoped(0);
+        let noise = Signal::scoped(0);
+        let enabled = Rc::new(Cell::new(true));
+        let active = enabled.clone();
+        let runs = Rc::new(Cell::new(0));
+        let calls = runs.clone();
+        let value = memo_with(
+            move || {
+                calls.set(calls.get() + 1);
+                TrackingResult { value: source.get() / 2, noise, enabled: active.clone(), ctx: Ctx::Derive }
+            },
+            PartialEq::eq,
+        );
+        let outer_runs = Rc::new(Cell::new(0));
+        let outer_calls = outer_runs.clone();
+        let outer = memo(move || {
+            outer_calls.set(outer_calls.get() + 1);
+            value.with(|v| v.value)
+        });
+        assert_eq!(outer.get(), 0);
+        source.set(1);
+        assert_eq!(outer.get(), 0);
+        source.set(2);
+        assert_eq!(outer.get(), 1);
+        assert_eq!(noise.get(), 0);
+        noise.set(1);
+        assert_eq!(outer.get(), 1);
+        assert_eq!(runs.get(), 3);
+        assert_eq!(outer_runs.get(), 2);
+        assert!(rt.diagnostics().iter().all(|d| d.code == "WRITE_IN_DERIVE"));
+        enabled.set(false);
+    });
+}
+
+#[test]
+fn comparison_unwind_restores_outer_tracking_and_permissions() {
+    with_scope(|rt| {
+        let source = Signal::scoped(0);
+        let after = Signal::scoped(0);
+        let bad = memo_with(move || source.get(), |_, _| panic!("comparison"));
+        assert_eq!(bad.get(), 0);
+        source.set(1);
+        let outer = memo(move || {
+            assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| bad.get())).is_err());
+            super::rt(|rt| {
+                assert_eq!(rt.ctx(), Ctx::Derive);
+                assert!(rt.observer.get().is_some());
+            });
+            after.get()
+        });
+        assert_eq!(outer.get(), 0);
+        // The interrupted memo has retired; check the surviving outer dependency directly.
+        assert_eq!(rt.nodes.borrow()[after.idx.i as usize].observers.len(), 1);
+        assert_eq!(rt.ctx(), Ctx::Idle);
+    });
+}
+
+#[test]
+fn interrupted_comparison_and_callback_retire_results_untracked() {
+    for watching in [false, true] {
+        with_scope(|runtime| {
+            let source = Signal::scoped(0);
+            let noise = Signal::scoped(0);
+            let enabled = Rc::new(Cell::new(true));
+            let active = enabled.clone();
+            let make = move || TrackingResult {
+                value: source.get(),
+                noise,
+                enabled: active.clone(),
+                ctx: if watching { Ctx::Observe } else { Ctx::Derive },
+            };
+            let result = if watching {
+                watch(make, |new, _| assert_eq!(new.value, 0, "callback failed"));
+                source.set(1);
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runtime.flush()))
+            } else {
+                let value = memo_with(make, |_, _| panic!("comparison failed"));
+                value.with(|_| ());
+                source.set(1);
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| value.with(|_| ())))
+            };
+            assert!(result.is_err());
+            assert_eq!(noise.get(), 0);
+            assert_eq!(runtime.ctx(), Ctx::Idle);
+            assert!(runtime.observer.get().is_none());
+            assert!(runtime.diagnostics().iter().all(|d| d.code == "WRITE_IN_DERIVE"));
+            enabled.set(false);
+        });
+    }
+}

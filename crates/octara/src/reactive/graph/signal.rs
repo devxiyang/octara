@@ -133,7 +133,7 @@ impl<T: 'static> ReadSignal<T> {
 }
 
 /// A derived read-only value: lazy, recomputed when its inputs change, propagated only when
-/// it changes.
+/// it changes. Only `f` collects dependencies; result comparison and retirement do not.
 #[track_caller]
 pub fn memo<T: PartialEq + 'static>(f: impl Fn() -> T + 'static) -> ReadSignal<T> {
     memo_with(f, PartialEq::eq)
@@ -146,8 +146,10 @@ pub(crate) fn memo_with<T: 'static>(f: impl Fn() -> T + 'static, equal: impl Fn(
     let at = Location::caller();
     let compute: Compute = Box::new(move |old| {
         let new = f();
-        let equal = old.is_some_and(|old| old.borrow().downcast_ref::<T>().is_some_and(|old| equal(old, &new)));
-        if equal { None } else { Some(value_cell(new)) }
+        untrack(|| {
+            let equal = old.is_some_and(|old| old.borrow().downcast_ref::<T>().is_some_and(|old| equal(old, &new)));
+            if equal { None } else { Some(value_cell(new)) }
+        })
     });
     ReadSignal(Signal::from_idx(rt(|rt| rt.create_node(Kind::Memo, None, Some(compute), false, None, at))))
 }
@@ -219,6 +221,7 @@ impl Watch {
 /// Runs `callback(new, old)` when the value of `source` changes, and once now with `old = None`.
 /// Only `source` is tracked. The callback runs like a handler: untracked, and allowed to write,
 /// including signals `source` reads; a write that leaves the value unchanged ends there.
+/// Result comparison and retirement are untracked and retain the source's read-only permissions.
 #[track_caller]
 pub fn watch<S: PartialEq + 'static>(source: impl Fn() -> S + 'static, callback: impl Fn(&S, Option<&S>) + 'static) -> Watch {
     let at = Location::caller();
@@ -231,11 +234,13 @@ pub fn watch<S: PartialEq + 'static>(source: impl Fn() -> S + 'static, callback:
         at,
         Box::new(move |_| {
             let v = source();
-            if last.as_ref() != Some(&v) {
-                rt(|r| r.with_frame(Ctx::Handler, None, None, || callback(&v, last.as_ref())));
-                last = Some(v);
-            }
-            None
+            untrack(|| {
+                if last.as_ref() != Some(&v) {
+                    rt(|r| r.with_frame(Ctx::Handler, None, None, || callback(&v, last.as_ref())));
+                    last = Some(v);
+                }
+                None
+            })
         }),
     );
     Watch { idx: Some(idx), _ns: PhantomData }

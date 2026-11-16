@@ -60,6 +60,13 @@ without subscribing; they cannot write existing state. Watches, task starts, pro
 registration reject pure contexts before executing their effects. Internal guards restore phase,
 collector, scope and window on return/unwind. A memo read inside untrack still tracks its own inputs.
 
+Memo and watch dependencies come only from their source computations. Result equality and
+retirement (both unused equal candidates and replaced values) run without a collector, including
+when evaluation unwinds or a memo is read inside another observer. These stages retain the node's
+Derive/Observe permissions: reading is allowed, but untracking does not permit writes. Only a
+watch callback enters Handler. Node publication and retirement also suppress the caller's collector
+so nested evaluation cannot attach destructor reads to the outer observer.
+
 - Push marking (direct observers Dirty, further downstream Check) + pull evaluation; a Memo is computed on demand and cuts off when the value is unchanged (Reactively; Salsa's early cutoff);
 - At flush, structural bindings come before property bindings, then `watch`, with creation order within each kind. Newly queued earlier-priority work preempts the remaining batch, so an effect that removes a region retires its descendants before their queued callbacks;
 - A node is marked Clean **before running**: if it is re-marked while running (a `watch` callback writes to its own source), it runs another round;

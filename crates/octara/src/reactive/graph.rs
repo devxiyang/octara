@@ -711,59 +711,67 @@ impl Runtime {
             n.computing = true;
             (n.kind, n.compute.take().expect("compute"), n.value.clone(), std::mem::take(&mut n.sources), n.owner, n.scope)
         };
-        {
-            let mut nodes = self.nodes.borrow_mut();
-            for s in sources {
-                if let Some(n) = nodes.get_mut(s.i as usize).filter(|n| n.alive && n.g == s.g) {
-                    n.observers.retain(|o| *o != idx);
-                }
-            }
-        }
-        struct Run<'a>(&'a Runtime, Idx, bool);
-        impl Drop for Run<'_> {
-            fn drop(&mut self) {
-                if !self.2 {
-                    self.0.dispose_node(self.1);
-                }
-            }
-        }
-        let mut run = Run(self, idx, false);
-        if scope.is_some_and(|scope| !self.scope_alive(scope)) {
-            return;
-        }
-        self.closures_run.set(self.closures_run.get() + 1);
         let ctx = if kind == Kind::Memo { Ctx::Derive } else { Ctx::Observe };
-        let epoch = self.epochs.get() + 1;
-        self.epochs.set(epoch);
-        let _epoch = Restore::set(&self.epoch, epoch);
-        let changed = self.with_owner(owner, || self.with_frame(ctx, Some(idx), Some(scope), || compute(old.as_ref())));
-        self.assert_healthy();
-        run.2 = true;
-        let (observers, replaced) = {
-            let mut nodes = self.nodes.borrow_mut();
-            let n = &mut nodes[idx.i as usize];
-            if !(n.alive && n.g == idx.g) {
-                drop(nodes);
-                drop(compute);
-                return;
-            }
-            n.computing = false;
-            n.compute = Some(compute);
-            match changed {
-                Some(v) => {
-                    let replaced = n.value.replace(v);
-                    (n.observers.clone(), replaced)
-                }
-                None => (Vec::new(), None),
-            }
-        };
-        drop(replaced);
-        let mut nodes = self.nodes.borrow_mut();
-        for o in observers {
-            if let Some(n) = nodes.get_mut(o.i as usize).filter(|n| n.alive && n.g == o.g) {
-                n.state = State::Dirty;
-            }
-        }
+        // Publication and retirement must not inherit a caller's dependency collector.
+        // Keep the node's execution permissions even when user Drop code runs on unwind.
+        self.with_owner(owner, || {
+            self.with_frame(ctx, None, Some(scope), || {
+                self.sample(move || {
+                    {
+                        let mut nodes = self.nodes.borrow_mut();
+                        for s in sources {
+                            if let Some(n) = nodes.get_mut(s.i as usize).filter(|n| n.alive && n.g == s.g) {
+                                n.observers.retain(|o| *o != idx);
+                            }
+                        }
+                    }
+                    struct Run<'a>(&'a Runtime, Idx, bool);
+                    impl Drop for Run<'_> {
+                        fn drop(&mut self) {
+                            if !self.2 {
+                                self.0.dispose_node(self.1);
+                            }
+                        }
+                    }
+                    let mut run = Run(self, idx, false);
+                    if scope.is_some_and(|scope| !self.scope_alive(scope)) {
+                        return;
+                    }
+                    self.closures_run.set(self.closures_run.get() + 1);
+                    let epoch = self.epochs.get() + 1;
+                    self.epochs.set(epoch);
+                    let _epoch = Restore::set(&self.epoch, epoch);
+                    let changed = self.with_frame(ctx, Some(idx), None, || compute(old.as_ref()));
+                    self.assert_healthy();
+                    run.2 = true;
+                    let (observers, replaced) = {
+                        let mut nodes = self.nodes.borrow_mut();
+                        let n = &mut nodes[idx.i as usize];
+                        if !(n.alive && n.g == idx.g) {
+                            drop(nodes);
+                            drop(compute);
+                            return;
+                        }
+                        n.computing = false;
+                        n.compute = Some(compute);
+                        match changed {
+                            Some(v) => {
+                                let replaced = n.value.replace(v);
+                                (n.observers.clone(), replaced)
+                            }
+                            None => (Vec::new(), None),
+                        }
+                    };
+                    drop(replaced);
+                    let mut nodes = self.nodes.borrow_mut();
+                    for o in observers {
+                        if let Some(n) = nodes.get_mut(o.i as usize).filter(|n| n.alive && n.g == o.g) {
+                            n.state = State::Dirty;
+                        }
+                    }
+                })
+            })
+        });
     }
 
     pub fn flush(&self) {
