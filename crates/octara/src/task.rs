@@ -1,5 +1,5 @@
 //! Async work owned by scopes: tasks, timers on the app's clock, channels from other threads,
-//! background work, and resources (keyed async loads with their state as signals).
+//! background work, and async derivations with their state as signals.
 //!
 //! - A task (`spawn`) belongs to the scope it was spawned in and is dropped (cancelled) when the
 //!   scope is disposed. Choose the app root with `App::current().run` before spawning work
@@ -550,19 +550,22 @@ struct Oneshot<T> {
 
 /// The result of [`background`] work.
 pub struct Background<T> {
-    slot: Arc<Oneshot<T>>,
+    slot: Arc<Oneshot<std::thread::Result<T>>>,
 }
 
 impl<T> Future for Background<T> {
     type Output = T;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
-        if let Some(v) = self.slot.value.lock().expect("oneshot").take() {
-            return Poll::Ready(v);
+        let mut result = self.slot.value.lock().expect("oneshot").take();
+        if result.is_none() {
+            *self.slot.waker.lock().expect("oneshot") = Some(cx.waker().clone());
+            // It may have landed between the check and storing the waker.
+            result = self.slot.value.lock().expect("oneshot").take();
         }
-        *self.slot.waker.lock().expect("oneshot") = Some(cx.waker().clone());
-        // It may have landed between the check and storing the waker.
-        match self.slot.value.lock().expect("oneshot").take() {
-            Some(v) => Poll::Ready(v),
+        // Resume only after releasing the slot lock, on the awaiting task's thread.
+        match result {
+            Some(Ok(value)) => Poll::Ready(value),
+            Some(Err(panic)) => std::panic::resume_unwind(panic),
             None => Poll::Pending,
         }
     }
@@ -597,6 +600,9 @@ fn pool() -> &'static Mutex<std::sync::mpsc::Sender<Job>> {
 
 /// Runs blocking `work` (a file read, a decode, an HTTP call) on a background thread; await the
 /// result in a task. `App::settle` waits for it, so tests see it land.
+/// A work panic is transported to the awaiting task and resumes there; it does not kill a
+/// pool worker or become a business error. Dropping the future discards its eventual outcome
+/// but cannot stop already-running blocking work.
 #[track_caller]
 pub fn background<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Background<T> {
     let scheduler = sched();
@@ -608,10 +614,11 @@ pub fn background<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) 
     *shared.inflight.lock().expect("inflight") += 1;
     let done = slot.clone();
     let job: Job = Box::new(move || {
-        let v = work();
-        *done.value.lock().expect("oneshot") = Some(v);
-        if let Some(w) = done.waker.lock().expect("oneshot").take() {
-            w.wake();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+        *done.value.lock().expect("oneshot") = Some(result);
+        let waker = done.waker.lock().expect("oneshot").take();
+        if let Some(waker) = waker {
+            waker.wake();
         }
         let mut n = shared.inflight.lock().expect("inflight");
         *n -= 1;
@@ -632,7 +639,7 @@ pub(crate) fn later<T: Send + 'static>() -> (crate::platform::Reply<T>, impl Fut
     let shared = sched().shared.clone();
     let done = slot.clone();
     let reply: crate::platform::Reply<T> = Box::new(move |v| {
-        *done.value.lock().expect("oneshot") = Some(v);
+        *done.value.lock().expect("oneshot") = Some(Ok(v));
         if let Some(w) = done.waker.lock().expect("oneshot").take() {
             w.wake();
         }
@@ -944,6 +951,73 @@ mod tests {
     use crate::platform::{HeadlessPlatform, WindowOptions};
     use crate::reactive::state;
     use crate::view::{Styled, el};
+
+    #[test]
+    fn background_panics_reach_the_owner_without_exhausting_the_shared_pool() {
+        for attempt in 0..6 {
+            let app = App::new(HeadlessPlatform::default());
+            let (job, scheduler) = app.run(|| (background(move || std::panic::panic_any(attempt)), sched()));
+            assert!(scheduler.wait_background(Duration::from_secs(5)), "a panic must retire inflight work");
+            let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                app.run(|| {
+                    spawn(job);
+                });
+                app.poll();
+            }))
+            .expect_err("the awaiting task must observe the worker panic");
+            assert_eq!(failure.downcast_ref::<i32>(), Some(&attempt), "preserve the original payload");
+            assert!(app.is_failed());
+            assert!(app.pending().iter().all(|work| work.kind == WorkKind::Update), "only App failure remains pending");
+            app.shutdown();
+            assert!(app.pending().is_empty());
+        }
+
+        let app = App::new(HeadlessPlatform::default());
+        let result = Rc::new(Cell::new(None));
+        let out = result.clone();
+        let scheduler = app.run(|| {
+            spawn(async move {
+                out.set(Some(background(|| Err::<u32, _>("expected failure")).await));
+            });
+            sched()
+        });
+        app.poll();
+        assert!(scheduler.wait_background(Duration::from_secs(5)));
+        app.poll();
+        assert_eq!(result.get(), Some(Err("expected failure")));
+        assert!(!app.is_failed(), "business errors remain ordinary values");
+        app.shutdown();
+    }
+
+    #[test]
+    fn cancelled_background_panics_retire_without_resuming_the_cancelled_task() {
+        let app = App::new(HeadlessPlatform::default());
+        let continued = Rc::new(Cell::new(false));
+        let out = continued.clone();
+        let (release, wait) = std::sync::mpsc::channel();
+        let scheduler = app.run(|| {
+            let task = spawn(async move {
+                background(move || {
+                    wait.recv().unwrap();
+                    panic!("cancelled work failed");
+                })
+                .await;
+                out.set(true);
+            });
+            // Run until the worker has been submitted and the task is waiting on its result.
+            let scheduler = sched();
+            scheduler.run_ready();
+            task.cancel();
+            scheduler
+        });
+        release.send(()).unwrap();
+        assert!(scheduler.wait_background(Duration::from_secs(5)));
+        app.poll();
+        assert!(!continued.get());
+        assert!(!app.is_failed());
+        assert!(app.pending().is_empty());
+        app.shutdown();
+    }
 
     #[test]
     fn finished_and_cancelled_tasks_release_scope_registrations() {

@@ -75,3 +75,20 @@ The App-wide fallback is justified by shared App state, not by treating one widg
 fatal by definition. Local recovery can replace it in a proven isolated subsystem later.
 [Rust's catch_unwind documentation](https://doc.rust-lang.org/std/panic/fn.catch_unwind.html)
 recommends Result for regular failures and notes that aborting panics cannot be caught.
+
+## Blocking worker follow-through
+
+Review found that Octara's background closure ran directly in the shared pool: a panic killed
+that worker before result delivery and before decrementing the in-flight counter. An awaiting
+task could remain pending forever, and repeated failures depleted the pool.
+
+The selected correction combines two narrow mechanisms from the Rune sources above: catch the
+work closure so the pool survives, and transport the original panic to the awaiting thread.
+It does not copy Latest's application-specific error representation. Background<T> still yields
+T; callers return Result<T, E> for expected failures. Cancelled interest discards late outcomes,
+while completion bookkeeping always retires a work-closure panic.
+
+Deterministic tests run six sequential worker panics (more than the four pool threads), check
+the original payload and failed owning App, then successfully run work returning a business
+error in a fresh App. A separately gated worker panics only after its awaiting task is
+cancelled; the task stays retired and its App remains usable. These tests need no desktop.

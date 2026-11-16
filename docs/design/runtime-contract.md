@@ -363,3 +363,18 @@ requires a visible window with presented frames before injecting handler, task a
 panics. It checks unchanged presentation counts, readable diagnostics and refused later work.
 On macOS, compile `examples/live_window.swift` and pass it as `--native-helper` to also check
 OS activation and native close through the specified process's accessibility window.
+
+### Blocking worker failures
+
+A background closure's panic must not kill a shared worker or leave its in-flight counter
+permanently positive. The worker catches that closure's unwind and delivers either its value
+or original panic payload through the existing one-shot result. Completion retires in-flight
+work and wakes the waiting task. Polling the failed result releases the result lock before
+resuming the panic on the awaiting thread; an ordinary App task then follows APP_FAILED as
+usual. A returned Result::Err remains a value, not a panic or App failure.
+
+Cancellation only withdraws interest. Already-running blocking work is not interrupted; when
+it finishes, its bookkeeping retires even if nobody awaits it. A cancelled task is not revived
+to observe a late value or panic. No rollback of external side effects or automatic retry is
+provided. This borrows Rune's worker containment and owner-thread propagation separately,
+without adding a public task-error wrapper or changing Background<T>'s Output = T.
