@@ -185,6 +185,7 @@ struct CollectionQueue {
 #[derive(Default)]
 pub(crate) struct Runtime {
     identity: u64,
+    failed: Rc<Cell<bool>>,
     collections: CollectionQueue,
     sampling: Cell<bool>,
     nodes: RefCell<Vec<Node>>,
@@ -246,7 +247,38 @@ impl Runtime {
         Rc::new(Runtime { identity, ..Runtime::default() })
     }
 
+    pub(crate) fn failure_flag(&self) -> Rc<Cell<bool>> {
+        self.failed.clone()
+    }
+
+    pub(crate) fn fail(&self, message: &str, at: &'static Location<'static>) {
+        if !self.failed.replace(true) {
+            self.diag(&codes::APP_FAILED, message.into(), at);
+        }
+    }
+
+    #[track_caller]
+    pub(crate) fn assert_healthy(&self) {
+        assert!(!self.failed.get(), "[{}] reactive state is invalid; shut down this App", codes::APP_FAILED);
+    }
+
+    /// A collection change includes synchronous propagation. Catching its unwind outside
+    /// the operation cannot make a partially updated incremental graph valid again.
+    #[track_caller]
+    pub(crate) fn collection_change(&self) -> impl Drop + '_ {
+        self.assert_healthy();
+        let at = Location::caller();
+        std::mem::DropGuard::new(self, move |runtime| {
+            if std::thread::panicking() {
+                runtime.fail("collection mutation or propagation was interrupted; shut down this App", at);
+            } else {
+                runtime.assert_healthy();
+            }
+        })
+    }
+
     pub(crate) fn deliver_collections(&self, deliveries: impl IntoIterator<Item = (usize, CollectionDelivery)>) {
+        let _change = self.collection_change();
         {
             let mut work = self.collections.work.borrow_mut();
             for (depth, delivery) in deliveries {
@@ -274,6 +306,7 @@ impl Runtime {
                 })
             };
             let Some(delivery) = next else { break };
+            self.assert_healthy();
             delivery();
         }
     }
@@ -406,6 +439,7 @@ impl Runtime {
         owner: Option<Option<ScopeId>>,
         at: &'static Location<'static>,
     ) -> Idx {
+        self.assert_healthy();
         let seq = self.seq.get();
         self.seq.set(seq + 1);
         let run_as = self.owner.get();
@@ -529,6 +563,11 @@ impl Runtime {
     }
 
     pub(crate) fn read(&self, idx: Idx, at: &'static Location<'static>, tracked: bool) -> Value {
+        // Cleanup may inspect existing source values to release resources, but must not
+        // resume a failed derivation. Collection reads have their own stricter gate.
+        if self.failed.get() && (self.ctx() != Ctx::Cleanup || !self.alive(idx) || self.kind(idx) != Kind::Source) {
+            self.assert_healthy();
+        }
         if idx.runtime != self.identity {
             self.diag(&codes::WRONG_RUNTIME, "signal belongs to another App".into(), at);
             panic!("[{}] signal belongs to another App", codes::WRONG_RUNTIME);
@@ -551,6 +590,7 @@ impl Runtime {
     }
 
     fn writable_node(&self, idx: Idx, at: &'static Location<'static>, internal: bool) -> Option<Value> {
+        self.assert_healthy();
         if idx.runtime != self.identity {
             self.diag(&codes::WRONG_RUNTIME, "signal belongs to another App; write rejected".into(), at);
             return None;
@@ -697,6 +737,7 @@ impl Runtime {
         self.epochs.set(epoch);
         let _epoch = Restore::set(&self.epoch, epoch);
         let changed = self.with_owner(owner, || self.with_frame(ctx, Some(idx), Some(scope), || compute(old.as_ref())));
+        self.assert_healthy();
         run.2 = true;
         let (observers, replaced) = {
             let mut nodes = self.nodes.borrow_mut();
@@ -726,6 +767,7 @@ impl Runtime {
     }
 
     pub fn flush(&self) {
+        self.assert_healthy();
         if self.flushing.get() || self.propagation_suspended.get() {
             return;
         }

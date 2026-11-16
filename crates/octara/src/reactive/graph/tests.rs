@@ -47,8 +47,14 @@ fn collection_delivery_unwind_releases_pending_work() {
     assert!(!rt.collections.active.get());
     let delivered = Rc::new(Cell::new(false));
     let observed = delivered.clone();
-    rt.deliver_collections([(1, Box::new(move || observed.set(true)) as CollectionDelivery)]);
-    assert!(delivered.get());
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.deliver_collections([(1, Box::new(move || observed.set(true)) as CollectionDelivery)]);
+        }))
+        .is_err()
+    );
+    assert!(!delivered.get());
+    rt.shutdown();
 }
 
 #[test]

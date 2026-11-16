@@ -486,6 +486,7 @@ impl Scheduler {
 
     /// Polls ready batches in spawn order until empty or the turn allowance ends. Returns whether any ran.
     pub(crate) fn run_ready(&self) -> bool {
+        rt(|runtime| runtime.assert_healthy());
         self.resume_background_failure();
         // User polling and future destructors can reenter the App. Only the outer drain may
         // consume wakes: an active future is temporarily absent from its slot.
@@ -521,6 +522,7 @@ impl Scheduler {
                 let Some(id) = batch.remaining.next() else { break };
                 self.polls_left.set(self.polls_left.get() - 1);
                 ran |= self.poll(id);
+                rt(|runtime| runtime.assert_healthy());
             }
         }
         ran

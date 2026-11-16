@@ -5,6 +5,7 @@ mod activation;
 mod app_lifetime;
 mod canvas;
 mod capture;
+mod collection_failure;
 mod collection_rows;
 mod conformance;
 mod culling;

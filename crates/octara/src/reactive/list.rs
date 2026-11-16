@@ -183,6 +183,7 @@ impl<K: Clone + 'static, T: Clone + 'static> Emitter<K, T> {
     }
     fn validate(&self, at: &'static Location<'static>) {
         rt(|runtime| {
+            runtime.assert_healthy();
             runtime.read(self.version.idx, at, false);
             if self.producer.as_ref().is_some_and(|producer| !producer.alive(runtime)) {
                 runtime.diag(&codes::READ_DISPOSED, "derived list's creating scope or an upstream producer was disposed".into(), at);
@@ -271,7 +272,10 @@ fn view_fn<A: ?Sized + 'static, R: 'static>(f: impl Fn(&A) -> R + 'static) -> im
 
 /// Writes to collections and text follow the layer rules of signals.
 pub(crate) fn writable(at: &'static Location<'static>) -> bool {
-    rt(|rt| rt.write_allowed(at))
+    rt(|rt| {
+        rt.assert_healthy();
+        rt.write_allowed(at)
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -637,6 +641,7 @@ where
     T: Clone + 'static,
 {
     fn inner(&self) -> Rc<ListInner<K, T>> {
+        rt(|runtime| runtime.assert_healthy());
         untrack(|| self.holder.get())
     }
 
@@ -723,6 +728,8 @@ where
             return;
         }
         let index = index.min(inner.len());
+        let runtime = Runtime::current();
+        let _change = runtime.collection_change();
         inner.items.borrow_mut().insert(k.clone(), Signal::detached(t.clone()));
         inner.seq.borrow_mut().insert(index, k.clone());
         inner.emitter.insert(index, &k, &t);
@@ -737,6 +744,8 @@ where
         let inner = self.inner();
         let Some(s) = inner.items.borrow().get(k).copied() else { return };
         let old = untrack(|| s.get());
+        let runtime = Runtime::current();
+        let _change = runtime.collection_change();
         s.update(f);
         let new = untrack(|| s.get());
         inner.emitter.update(k, &old, &new);
@@ -751,6 +760,8 @@ where
 
     fn remove_key(&self, k: &K) {
         let inner = self.inner();
+        let runtime = Runtime::current();
+        let _change = runtime.collection_change();
         let Some(s) = inner.items.borrow_mut().remove(k) else { return };
         let index = inner.seq.borrow_mut().remove(k).expect("key in seq");
         let old = untrack(|| s.get());

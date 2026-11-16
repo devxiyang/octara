@@ -628,3 +628,26 @@ work still runs in spawn order, and a deferred batch still precedes newly queued
 This coalesces readiness notifications, not channel messages or distinct task identities.
 A callback already admitted concurrently with shutdown can still finish; shutdown neither
 joins arbitrary callbacks nor invokes them while holding scheduler locks.
+
+### Interrupted collection operations
+
+The App and reactive runtime share one failure flag. A collection mutation/propagation
+unwind sets it at the operation boundary, even if application code catches that panic.
+Synchronous reactive reads/writes, subsequent delivery, computation publication, task
+poll boundaries and window preparation reject invalid state. Readable handles or retained
+stage storage are not evidence that an interrupted incremental derivation is valid.
+The existing APP_FAILED diagnostic reports the first failure; there is no second public
+failure protocol or new collection primitive.
+
+StateList insert/update/remove guard the potentially mutating section and its synchronous
+propagation. Missing keys, duplicate-key refusal and failures in pre-mutation selection
+are distinct from interrupted changes. Delivery still destroys abandoned callbacks and
+clears its active flag; clearing those bookkeeping fields does not restore graph validity.
+No rollback, projection retry or observer replay is performed.
+
+Shutdown bypasses normal App admission and continues resumable resource teardown. During
+cleanup, existing source Signals may be inspected for release decisions; memo evaluation
+and collection reads remain refused, as do writes. Cleanup code should retain the handles
+it needs for release rather than depend on recomputing a failed derivation. Ordinary
+Signal::update still invalidates on unwind; this collection boundary does not promise
+recovery of arbitrary application state after a caught panic.

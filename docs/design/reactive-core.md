@@ -181,3 +181,13 @@ Data is from Apple M4, `--release`, Headless; counts are exact, times are the mi
 - After hot reload, virtual list rows are measured again;
 - A very long paragraph without line breaks is laid out whole ([layout](layout.md));
 - Tasks, subscriptions and cancellable resources are in [async](async.md).
+
+### Interrupted incremental propagation
+
+Collection writes and synchronous delta delivery share an internal failure boundary with
+App execution. An unwind after a potentially mutating step makes the runtime unusable for
+normal reads, writes and publication, even if application code catches it. Clearing the
+pending delivery queue is resource cleanup, not recovery of already updated stages.
+Normal pre-mutation refusals remain nonterminal. See
+[runtime failure contract](runtime-contract.md#interrupted-collection-operations) for the
+cleanup exception for existing source values and the no-rollback policy.

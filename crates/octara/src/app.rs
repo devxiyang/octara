@@ -158,7 +158,7 @@ pub(crate) struct AppState {
     /// A one-way gate: teardown may still run internally, but public work cannot restart.
     shutdown: Cell<bool>,
     teardown: Cell<Teardown>,
-    failed: Cell<bool>,
+    failed: Rc<Cell<bool>>,
     /// Tasks, timers and channels, and the clock: one for all the windows.
     pub(crate) sched: Rc<crate::task::Scheduler>,
     /// The theme, the text system and input conventions every window's kernel reads.
@@ -308,12 +308,10 @@ fn enter_app<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
 
 fn enter_app_context<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
     let _failure = std::mem::DropGuard::new(app, |app| {
-        if std::thread::panicking() && !app.failed.replace(true) {
-            app.rt.diag(
-                &codes::APP_FAILED,
-                "panic escaped an App operation; shut down this App and create a new one".into(),
-                std::panic::Location::caller(),
-            );
+        if std::thread::panicking() {
+            app.rt.fail("panic escaped an App operation; shut down this App and create a new one", std::panic::Location::caller());
+        }
+        if app.failed.get() {
             for window in app.windows.borrow().values() {
                 window.settled_generation.set(None);
             }
@@ -599,13 +597,14 @@ impl App {
     pub fn new(platform: impl crate::platform::Platform + 'static) -> App {
         let rt = Runtime::new();
         let root_scope = rt.create_app_scope();
+        let failed = rt.failure_flag();
         let state = AppState {
             namespace: crate::identity::new_namespace(),
             rt,
             root_scope,
             shutdown: Cell::new(false),
             teardown: Cell::new(Teardown::Pending),
-            failed: Cell::new(false),
+            failed,
             sched: Rc::new(crate::task::Scheduler::default()),
             res: Rc::default(),
             windows: RefCell::default(),
