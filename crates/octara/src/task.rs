@@ -70,6 +70,7 @@ pub struct PendingWork {
 }
 
 struct Entry {
+    cleanup: Option<crate::reactive::graph::CleanupRegistration>,
     id: TaskId,
     future: Option<BoxFuture>,
     scope: ScopeId,
@@ -172,8 +173,9 @@ impl Drop for PollingTask<'_> {
         if self.future.is_some() {
             let mut slots = self.scheduler.slots.borrow_mut();
             if slots.get(self.id.slot()).and_then(|e| e.as_ref()).is_some_and(|e| e.id == self.id) {
-                slots[self.id.slot()] = None;
+                let retired = slots[self.id.slot()].take();
                 drop(slots);
+                drop(retired);
                 self.scheduler.free.borrow_mut().push(self.id.slot());
             }
         }
@@ -258,7 +260,8 @@ impl Scheduler {
         };
         let id = TaskId::new(slot, generation);
         let owner = rt(|r| r.owner());
-        self.slots.borrow_mut()[slot] = Some(Entry { id, future: Some(future), scope, kind, label, at, cancelled: false, owner });
+        self.slots.borrow_mut()[slot] =
+            Some(Entry { cleanup: None, id, future: Some(future), scope, kind, label, at, cancelled: false, owner });
         self.shared.ready.lock().expect("ready").push(id);
         id
     }
@@ -276,8 +279,9 @@ impl Scheduler {
         }
         e.cancelled = true;
         if let Some(f) = e.future.take() {
-            slots[id.slot()] = None;
+            let retired = slots[id.slot()].take();
             drop(slots);
+            drop(retired);
             self.free.borrow_mut().push(id.slot());
             drop(f);
         }
@@ -459,13 +463,14 @@ pub(crate) fn spawn_with(
     };
     let id = s.insert(Box::pin(future), scope, kind, label, at);
     let weak = Rc::downgrade(&s);
-    rt(|r| {
-        r.on_cleanup(Box::new(move || {
+    let cleanup = rt(|r| {
+        r.register_cleanup(Box::new(move || {
             if let Some(s) = weak.upgrade() {
                 s.cancel(id);
             }
         }))
     });
+    s.slots.borrow_mut()[id.slot()].as_mut().expect("new task").cleanup = cleanup;
     Task { id: Some(id), sched: s }
 }
 
@@ -941,6 +946,24 @@ mod tests {
     use crate::view::{Styled, el};
 
     #[test]
+    fn finished_and_cancelled_tasks_release_scope_registrations() {
+        let app = App::new(HeadlessPlatform::default());
+        for _ in 0..256 {
+            app.run(|| {
+                let task = spawn(std::future::pending());
+                rt(|r| assert_eq!(r.cleanup_count(r.current_scope().unwrap()), 1));
+                task.cancel();
+                rt(|r| assert_eq!(r.cleanup_count(r.current_scope().unwrap()), 0));
+                spawn(async {});
+            });
+            app.poll();
+            app.run(|| rt(|r| assert_eq!(r.cleanup_count(r.current_scope().unwrap()), 0)));
+        }
+        assert!(app.pending().is_empty());
+        app.shutdown();
+    }
+
+    #[test]
     fn shutdown_retires_the_current_poll_and_ignores_late_wakes() {
         struct Dropped(Rc<Cell<bool>>);
         impl Drop for Dropped {
@@ -1016,7 +1039,9 @@ mod tests {
         }));
         assert!(result.is_err());
         assert!(!ran.load(Ordering::Acquire));
-        assert!(app.pending().is_empty(), "rejected work must not be reported as an in-flight job");
+        assert!(app.pending().iter().all(|work| work.kind == WorkKind::Update), "only App failure is pending, not a background job");
+        assert!(app.is_failed());
+        app.shutdown();
         assert!(app.diagnostics().iter().any(|diagnostic| diagnostic.code == "WRITE_DISPOSED"));
     }
 

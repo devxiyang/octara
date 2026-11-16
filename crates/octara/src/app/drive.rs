@@ -79,6 +79,7 @@ impl Window {
     /// The node key identifies this allocation; hosts waiting between inputs must resolve again
     /// and compare it before dispatching the next phase.
     pub fn pointer_target(&self, target: &str) -> Result<(NodeId, (f32, f32)), String> {
+        self.check_running()?;
         let k = self.w.kernel.borrow();
         let n = k.resolve_target(target)?;
         if let Some(m) = self.top_modal()

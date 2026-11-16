@@ -299,3 +299,41 @@ Deferred extensions are general snapshot/watch, a universal resource namespace, 
 history and a global UI revision. Introduce a specific extension only when a reproducible tool
 task establishes its need. Agent improvement uses the ordinary development loop; a separate
 framework-managed learning service is outside this architecture.
+
+
+## Failure boundary
+
+Failures have three distinct contracts:
+
+- Expected failures use the operation's existing Result, AsyncState::Failed or diagnostic
+  refusal. Invalid input, absent targets and failed requests do not fail the App.
+- Programming errors (foreign-runtime reads, state type conflicts, dependency cycles) remain
+  panics. Signal reads do not gain a parallel family of fallible APIs.
+- A panic escaping an execution boundary loses the App's permission to execute or publish.
+  Restoring Rust guards does not prove that shared application state was restored.
+
+Fallible external operations share an admission check before allocation or input delivery.
+A failed App returns APP_FAILED through their existing error channel; a closed window refuses
+input. Infallible execution APIs reject reuse by panic. The original callback panic still
+propagates: there is no blanket catch-and-convert layer. run_until_idle returns the failure's
+pending work instead of trying to poll it. Inspection and explicit teardown remain available.
+This is admission, not a transaction: an admitted callback can mutate state before panicking.
+
+
+A panic escaping an App or window operation marks that App failed (`APP_FAILED`).
+`App::is_failed()` and diagnostics remain readable; ordinary entries, task polling and input
+are rejected. Pending reports include the failure, and all window completion marks are cleared.
+Shut down the App explicitly and create another one. Teardown remains available, but arbitrary
+user cleanup can itself panic; neither rollback nor completion of all cleanup is promised.
+A panic caught entirely inside user code before crossing an entry boundary cannot be detected
+by this policy. Such recovery is the caller's responsibility. Low-level graph unwind tests
+verify bookkeeping only, not permission to resume a failed App.
+
+Internal task cleanup registrations are now released on completion or cancellation. Scope
+retirement still runs surviving callbacks in reverse registration order. Registration identity
+includes the scope incarnation, so late destruction cannot remove work in a reused scope.
+User `on_cleanup` callbacks retain their scope-lifetime semantics.
+
+The [reference comparison](../research/panic-boundaries.md) distinguishes this conservative
+fallback from expected Result/AsyncState failures and from adapter-specific local recovery.
+No panic-to-business-error conversion or automatic replay is introduced.

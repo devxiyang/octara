@@ -9,8 +9,9 @@ fn foreign_text_edits_leave_content_version_and_render_log_unchanged() {
     let buffer = app.run(|| TextBuffer::new("original"));
     let rendered = buffer.clone();
     let window = app.open_window(WindowOptions::default(), move || text(&rendered).id("text").into()).unwrap();
-    let foreign = App::new(HeadlessPlatform::default());
     for edit in 0..3 {
+        // Each edit must reach the ownership check, not a previous App failure gate.
+        let foreign = App::new(HeadlessPlatform::default());
         assert!(
             catch_unwind(AssertUnwindSafe(|| foreign.run(|| match edit {
                 0 => buffer.append(" foreign"),
@@ -22,12 +23,13 @@ fn foreign_text_edits_leave_content_version_and_render_log_unchanged() {
         assert_eq!(app.run(|| buffer.get()), "original");
         assert_eq!(app.run(|| buffer.version()), 0);
         assert_eq!(buffer.log_len(), 0, "rejected edits must not reach incremental readers");
+        assert!(foreign.is_failed());
+        foreign.shutdown();
     }
     app.run(|| buffer.append(" accepted"));
     assert_eq!(app.run(|| buffer.version()), 1);
     assert_eq!(window.kernel().text_of("text").as_deref(), Some("original accepted"));
     app.shutdown();
-    foreign.shutdown();
 }
 
 #[test]

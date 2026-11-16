@@ -410,7 +410,7 @@ fn cancelling_a_task_withdraws_its_pending_request() {
 }
 
 #[test]
-fn a_panicking_task_is_retired_and_other_ready_tasks_still_run() {
+fn a_panicking_task_fails_the_app_without_running_ready_siblings() {
     let ran = Rc::new(Cell::new(false));
     let seen = ran.clone();
     let mut app = Window::headless(move || {
@@ -426,9 +426,13 @@ fn a_panicking_task_is_retired_and_other_ready_tasks_still_run() {
     });
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.tap("start")));
     assert!(result.is_err());
-    assert_eq!(app.app().pending().len(), 1, "only the unpolled sibling remains pending");
-    app.app().poll();
-    assert!(ran.get(), "the ready batch must retain siblings across an unwind");
+    assert!(app.app().is_failed());
+    assert_eq!(app.app().pending().iter().filter(|work| work.kind == WorkKind::Task).count(), 1);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.app().poll())).is_err());
+    assert!(!ran.get(), "pending siblings cannot execute after the App fails");
+    assert!(app.app().diagnostics().iter().any(|d| d.code == "APP_FAILED"));
+    assert!(!app.unsettled().is_empty());
+    app.app().shutdown();
     assert!(app.app().pending().is_empty());
 }
 

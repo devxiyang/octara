@@ -121,6 +121,9 @@ macro_rules! codes {
 }
 
 codes! {
+    APP_FAILED: Error, Reactive, "docs/design/runtime-contract.md#failure-boundary",
+        "An App operation panicked; ordinary execution cannot continue.",
+        cause: "User state may be partially changed. Read diagnostics, shut down this App and create a new one; restoring internal guards does not restore application state.";
     // ---- reactive ----
     WRONG_RUNTIME: Error, Reactive, "docs/design/reactive-core.md#4-identity-and-state",
         "A reactive handle was used in a different App; access was rejected.",

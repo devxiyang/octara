@@ -661,6 +661,7 @@ impl Window {
 
     /// Runs a command as its key would, for the focused element (agents and menus call this).
     pub fn invoke(&mut self, command: &str) -> Result<(), String> {
+        self.check_running()?;
         let mut done = false;
         self.input_frame(|| {
             let path = self.focus_path();
@@ -724,6 +725,7 @@ impl Window {
     /// Presses the keys of `chord` (`"mod+s"`, `"tab"`, `"a"`), as a keyboard would: what the
     /// keymap binds runs; an unbound character key types itself.
     pub fn press_key(&mut self, chord: &str) -> Result<(), String> {
+        self.check_running()?;
         let ev = Chord::parse(chord)?.event(self.app.platform.get());
         let handled = self.event(super::event::InputEvent::Key(ev));
         if !handled

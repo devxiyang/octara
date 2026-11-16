@@ -172,6 +172,7 @@ impl App {
     /// reaches its window. Built the same way (the same view, windows opened in the same order),
     /// the app ends where the recorded one did.
     pub fn replay(&self, recording: &Recording) -> Result<(), String> {
+        self.app.check_running()?;
         for r in &recording.events {
             let at = Duration::from_secs_f64(r.at / 1000.0);
             if at > self.now() {

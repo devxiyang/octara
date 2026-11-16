@@ -46,7 +46,8 @@ fn combine(operator: &str, left: &ReadList<u32, u32>, right: &ReadList<u32, u32>
 fn rejected(app: &App, operator: &str, left: &ReadList<u32, u32>, right: &ReadList<u32, u32>) {
     let before = app.work().reactive_nodes;
     let calls = Rc::new(Cell::new(0));
-    let result = catch_unwind(AssertUnwindSafe(|| app.run(|| combine(operator, left, right, calls.clone()))));
+    // Handle this known pre-allocation validation failure inside the operation.
+    let result = app.run(|| catch_unwind(AssertUnwindSafe(|| combine(operator, left, right, calls.clone()))));
     assert!(result.is_err(), "{operator}: a foreign list must be rejected even when empty");
     assert_eq!(calls.get(), 0, "{operator}: reject before invoking key/predicate/projection callbacks");
     assert_eq!(app.work().reactive_nodes, before, "{operator}: reject before allocating nodes");

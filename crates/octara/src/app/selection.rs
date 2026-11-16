@@ -388,6 +388,7 @@ impl Window {
 
     /// Selects from `from` to `to` (test ids of texts and byte offsets), as a drag would.
     pub fn select(&mut self, from: (&str, usize), to: (&str, usize)) -> Result<(), String> {
+        self.check_running()?;
         let mut result = Ok(());
         self.input_frame(|| {
             let k = self.w.kernel.borrow();
@@ -416,6 +417,7 @@ impl Window {
 
     /// Selects everything in the selectable region with test id `region`.
     pub fn select_all(&mut self, region: &str) -> Result<(), String> {
+        self.check_running()?;
         let n = self.w.kernel.borrow().find(region).ok_or(format!("no element has test id `{region}`"))?;
         let mut done = false;
         self.input_frame(|| done = self.select_region(n));

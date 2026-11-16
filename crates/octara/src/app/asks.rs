@@ -107,6 +107,7 @@ impl Window {
 
     /// Answers request `id` as a person would (tests, agents): the same input a platform sends.
     pub fn answer(&mut self, id: AskId, answer: Answer) -> Result<(), String> {
+        self.check_running()?;
         let ask = self.w.asks.borrow().iter().find(|p| p.id == id).map(|p| p.ask.clone()).ok_or(format!("no request {id} waits"))?;
         if !answer.fits(&ask) {
             return Err(format!("{answer:?} does not answer {ask:?}"));

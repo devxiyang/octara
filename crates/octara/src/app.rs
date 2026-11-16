@@ -148,6 +148,7 @@ pub(crate) struct AppState {
     root_scope: ScopeId,
     /// A one-way gate: teardown may still run internally, but public work cannot restart.
     shutdown: Cell<bool>,
+    failed: Cell<bool>,
     /// Tasks, timers and channels, and the clock: one for all the windows.
     pub(crate) sched: Rc<crate::task::Scheduler>,
     /// The theme, the text system and input conventions every window's kernel reads.
@@ -286,6 +287,23 @@ pub(crate) fn current() -> Window {
 }
 
 fn enter_app<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
+    app.assert_usable();
+    enter_app_context(app, f)
+}
+
+fn enter_app_context<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
+    let _failure = std::mem::DropGuard::new(app, |app| {
+        if std::thread::panicking() && !app.failed.replace(true) {
+            app.rt.diag(
+                &codes::APP_FAILED,
+                "panic escaped an App operation; shut down this App and create a new one".into(),
+                std::panic::Location::caller(),
+            );
+            for window in app.windows.borrow().values() {
+                window.settled_generation.set(None);
+            }
+        }
+    });
     if app.depth.get() == 0 && !app.checking.get() {
         app.rt.resume_propagation();
     }
@@ -308,7 +326,7 @@ fn enter_app<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
         let _depth = Depth(&app.depth);
         app.rt.enter(f)
     };
-    if app.depth.get() == 0 {
+    if app.depth.get() == 0 && !app.failed.get() {
         app.check_consistency();
     }
     r
@@ -344,6 +362,21 @@ impl WindowUpdate {
 }
 
 impl AppState {
+    /// Admission for fallible external operations, before allocating or delivering work.
+    pub(crate) fn check_running(&self) -> Result<(), String> {
+        if self.failed.get() {
+            return Err(format!("[{}] App failed after a panic; shut it down", codes::APP_FAILED));
+        }
+        if self.shutdown.get() {
+            return Err("App has shut down".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn assert_usable(&self) {
+        assert!(!self.failed.get() || self.shutdown.get(), "[{}] App failed after a panic; shut it down", codes::APP_FAILED);
+    }
+
     /// The keymap in use: the platform's standard bindings, then the app's (cached).
     pub(crate) fn full_keymap(&self) -> Rc<keys::Keymap> {
         let platform = self.platform.get();
@@ -553,6 +586,7 @@ impl App {
             rt,
             root_scope,
             shutdown: Cell::new(false),
+            failed: Cell::new(false),
             sched: Rc::new(crate::task::Scheduler::default()),
             res: Rc::default(),
             windows: RefCell::default(),
@@ -614,7 +648,7 @@ impl App {
     #[track_caller]
     pub fn shutdown(&self) {
         let at = std::panic::Location::caller();
-        self.enter(|| {
+        enter_app_context(&self.app, || {
             if self.app.shutdown.get() {
                 return;
             }
@@ -633,6 +667,12 @@ impl App {
             self.app.closing.borrow_mut().clear();
             self.app.rt.dispose_scope(self.app.root_scope);
         });
+    }
+
+    /// A panic escaped an App operation. Ordinary execution is rejected; shutdown and
+    /// diagnostic reads remain available. User state is not rolled back.
+    pub fn is_failed(&self) -> bool {
+        self.app.failed.get()
     }
 
     pub fn is_shutdown(&self) -> bool {
@@ -729,9 +769,7 @@ impl AppState {
 
     /// Makes window `id` with its platform window; `root` is mounted by the caller.
     fn insert_window(&self, options: crate::platform::WindowOptions, root: Rc<dyn Fn() -> View>) -> Result<WindowId, String> {
-        if self.shutdown.get() {
-            return Err("App has shut down".into());
-        }
+        self.check_running()?;
         let id = self.windows.borrow_mut().try_insert_with_key(|id| {
             let platform = self.system.borrow_mut().open_window(id, &options)?;
             Ok::<_, String>(Rc::new(WindowState::new(self, id, options, root, platform)))
@@ -833,6 +871,7 @@ impl AppState {
     /// Retain this frame's completed and incomplete attempts. Later windows can invalidate a
     /// completed window; an incomplete one waits for the next explicit update boundary.
     fn frame_except(self: &Rc<Self>, settled: Option<(WindowId, WindowUpdate)>, at: &'static std::panic::Location<'static>) {
+        self.assert_usable();
         if self.shutdown.get() {
             return;
         }
@@ -923,6 +962,14 @@ impl AppState {
 }
 
 impl Window {
+    pub(crate) fn check_running(&self) -> Result<(), String> {
+        self.app.check_running()?;
+        if self.w.closed.get() {
+            return Err("window is closed".into());
+        }
+        Ok(())
+    }
+
     /// `root` in an 800 × 600 window of a new headless app: what tests and agents drive. The
     /// app is [`app`](Self::app)'s (its clock, theme, fonts, other windows).
     pub fn headless(root: impl Fn() -> View + 'static) -> Window {
@@ -1087,6 +1134,7 @@ impl Window {
                 self.settle_layout(at)?;
             }
         }
+        self.app.assert_usable();
         self.sync_native();
         self.present();
         let generation = self.w.kernel.borrow().mutation_generation();
@@ -1380,6 +1428,7 @@ impl Window {
     /// Runs `check` at each window size in turn (e.g. phone and desktop), then restores the size.
     /// Stops at the first error, naming the size.
     pub fn at_sizes(&mut self, sizes: &[(f32, f32)], mut check: impl FnMut(&mut Window) -> Result<(), String>) -> Result<(), String> {
+        self.check_running()?;
         let before = self.size();
         let mut result = Ok(());
         for &(w, h) in sizes {
@@ -1468,13 +1517,12 @@ impl Window {
     }
     /// Runs the event's handler, applies every update and lays out, like one frame.
     pub fn dispatch(&mut self, ev: Event) -> Result<(), String> {
+        self.check_running()?;
         self.app.record(self.w.id, &InputEvent::Semantic(ev.clone()));
         self.on_semantic(ev)
     }
     pub(crate) fn on_semantic(&mut self, ev: Event) -> Result<(), String> {
-        if self.app.shutdown.get() || self.w.closed.get() {
-            return Err("window is closed".into());
-        }
+        self.check_running()?;
         if let Event::NumericInput(_, value) = &ev
             && !value.is_finite()
         {
@@ -1522,6 +1570,7 @@ impl Window {
     /// Holds an interaction state (`HOVER`, `FOCUSED`, `FOCUS_VISIBLE`, `PRESSED`) on or off, e.g. to check
     /// pressed styles; kept across hot reload. `SELECTED` and `DISABLED` come from props.
     pub fn force_state(&mut self, test_id: &str, state: State, on: bool) -> Result<(), String> {
+        self.check_running()?;
         if !RUNTIME_STATES.contains(state) {
             return Err(format!("{state:?} is set by element props, not forced"));
         }
@@ -1847,6 +1896,9 @@ impl Window {
         pending: Vec<String>,
         fallback: Option<String>,
     ) -> Result<crate::capture::Capture, String> {
+        if self.app.failed.get() {
+            return Err(format!("[{}] cannot capture a failed App", codes::APP_FAILED));
+        }
         use crate::capture::{NativeShot, Shown};
         let asked = self.w.capturing.borrow_mut().take().map(|c| c.asked).unwrap_or_default();
         let mut native = Vec::new();
@@ -1897,6 +1949,9 @@ impl Window {
         scale: f32,
         pending: Vec<String>,
     ) -> Result<crate::capture::Capture, String> {
+        if self.app.failed.get() {
+            return Err(format!("[{}] cannot capture a failed App", codes::APP_FAILED));
+        }
         use crate::capture::{NativeShot, Shown};
         picture.save_png(path)?;
         let placements = self.w.kernel.borrow().native_placements();

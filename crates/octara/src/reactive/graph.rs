@@ -98,13 +98,32 @@ pub(crate) struct ScopeId {
     g: u32,
 }
 
+/// Internal work releases its owner registration when it finishes early.
+pub(crate) struct CleanupRegistration {
+    runtime: std::rc::Weak<Runtime>,
+    scope: ScopeId,
+    id: u64,
+}
+
+impl Drop for CleanupRegistration {
+    fn drop(&mut self) {
+        let Some(runtime) = self.runtime.upgrade() else { return };
+        let cleanup = {
+            let mut scopes = runtime.scopes.borrow_mut();
+            scopes.get_mut(self.scope.i as usize).filter(|s| s.g == self.scope.g).and_then(|s| s.cleanups.remove(&self.id))
+        };
+        drop(cleanup);
+    }
+}
+
 struct ScopeData {
     g: u32,
     alive: bool,
     parent: Option<ScopeId>,
     children: Vec<ScopeId>,
     nodes: Vec<Idx>,
-    cleanups: Vec<Box<dyn FnOnce()>>,
+    cleanups: BTreeMap<u64, Box<dyn FnOnce()>>,
+    next_cleanup: u64,
     path: String,
     names: HashMap<String, u32>,
     state_keys: HashSet<&'static str>,
@@ -809,7 +828,8 @@ impl Runtime {
             parent,
             children: Vec::new(),
             nodes: Vec::new(),
-            cleanups: Vec::new(),
+            cleanups: BTreeMap::new(),
+            next_cleanup: 0,
             path,
             names: HashMap::new(),
             state_keys: HashSet::new(),
@@ -841,9 +861,26 @@ impl Runtime {
     }
 
     pub fn on_cleanup(&self, f: Box<dyn FnOnce()>) {
-        if let Some(s) = self.scope.get().filter(|s| self.scope_alive(*s)) {
-            self.scopes.borrow_mut()[s.i as usize].cleanups.push(f);
-        }
+        self.insert_cleanup(f);
+    }
+
+    fn insert_cleanup(&self, f: Box<dyn FnOnce()>) -> Option<(ScopeId, u64)> {
+        let scope = self.scope.get().filter(|s| self.scope_alive(*s))?;
+        let mut scopes = self.scopes.borrow_mut();
+        let data = &mut scopes[scope.i as usize];
+        let id = data.next_cleanup;
+        data.next_cleanup = id.checked_add(1).expect("cleanup identity exhausted");
+        data.cleanups.insert(id, f);
+        Some((scope, id))
+    }
+
+    pub(crate) fn register_cleanup(&self, f: Box<dyn FnOnce()>) -> Option<CleanupRegistration> {
+        self.insert_cleanup(f).map(|(scope, id)| CleanupRegistration { runtime: Rc::downgrade(&Self::current()), scope, id })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cleanup_count(&self, scope: ScopeId) -> usize {
+        self.scopes.borrow()[scope.i as usize].cleanups.len()
     }
 
     /// Disposes a scope with its children, cleanups and nodes. During a hot reload named state
@@ -870,7 +907,7 @@ impl Runtime {
                 for child in children.into_iter().rev() {
                     self.dispose_scope(child);
                 }
-                for cleanup in cleanups.into_iter().rev() {
+                for cleanup in cleanups.into_values().rev() {
                     cleanup();
                 }
                 let reloading = self.reloading.get();
@@ -1236,6 +1273,36 @@ pub fn untrack<R>(f: impl FnOnce() -> R) -> R {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn released_cleanup_preserves_order_and_cannot_remove_a_reused_scopes_work() {
+        let rt = Runtime::new();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        rt.enter(|| {
+            let scope = rt.create_scope(None, "old");
+            let stale = rt.with_scope(Some(scope), || {
+                let out = calls.clone();
+                rt.on_cleanup(Box::new(move || out.borrow_mut().push(1)));
+                let removed = rt.register_cleanup(Box::new(|| panic!("released registration ran")));
+                drop(removed);
+                let out = calls.clone();
+                rt.register_cleanup(Box::new(move || out.borrow_mut().push(2)))
+            });
+            rt.dispose_scope(scope);
+            assert_eq!(*calls.borrow(), [2, 1]);
+            let reused = rt.create_scope(None, "new");
+            assert_eq!(reused.i, scope.i);
+            let live = rt.with_scope(Some(reused), || {
+                let out = calls.clone();
+                rt.register_cleanup(Box::new(move || out.borrow_mut().push(3)))
+            });
+            drop(stale);
+            assert_eq!(rt.cleanup_count(reused), 1);
+            rt.dispose_scope(reused);
+            drop(live);
+            assert_eq!(*calls.borrow(), [2, 1, 3]);
+        });
+    }
 
     #[test]
     fn collection_delivery_unwind_releases_pending_work() {

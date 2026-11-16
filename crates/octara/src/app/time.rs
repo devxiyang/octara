@@ -45,6 +45,7 @@ impl App {
     /// Moves the clock to `t` (shells call this before each event and frame with the time since
     /// launch). Whatever comes due on the way runs at its own time. Time never goes back.
     pub fn advance_to(&self, t: Duration) {
+        self.app.assert_usable();
         if self.is_shutdown() {
             return;
         }
@@ -158,6 +159,9 @@ impl App {
     /// task is left: subscriptions (intervals, channel listeners) do not count. `Err` lists what
     /// is still running at the limit.
     pub fn run_until_idle(&self, limit: Duration) -> Result<(), Vec<PendingWork>> {
+        if self.is_failed() && !self.is_shutdown() {
+            return Err(self.pending());
+        }
         let end = self.now() + limit;
         loop {
             let pending = self.settle();
@@ -177,6 +181,15 @@ impl App {
     /// reactive/window preparation. Unfinished updates do not create timers or retry deadlines.
     pub fn pending(&self) -> Vec<PendingWork> {
         let mut out = self.app.rt.enter(|| self.app.sched.pending());
+        if self.is_failed() && !self.is_shutdown() {
+            out.push(PendingWork {
+                kind: WorkKind::Update,
+                label: "App failed after a panic; shutdown required".into(),
+                scope: "app".into(),
+                at: String::new(),
+                due: None,
+            });
+        }
         if self.app.rt.has_pending() {
             out.push(PendingWork {
                 kind: WorkKind::Update,
@@ -204,6 +217,7 @@ impl App {
     /// Sends `payload` to the channel named `name` (see `Receiver::named`), as the outside world
     /// would; it lands at once.
     pub fn send(&self, name: &str, payload: &str) -> Result<(), String> {
+        self.app.check_running()?;
         self.app.sched.send_named(name, payload)?;
         self.poll();
         Ok(())
