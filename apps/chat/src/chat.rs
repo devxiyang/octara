@@ -5,6 +5,7 @@
 
 use crate::engine::{Cancel, Model, Purpose, Request};
 use crate::model::{Attachment, Author, Event, Message, MessageId, Status, Thread, ThreadId};
+use crate::settings::{Generation, Preferences};
 use crate::store::Store;
 use octara::prelude::*;
 use std::cell::RefCell;
@@ -35,6 +36,7 @@ pub struct Queued {
     pub files: Vec<Attachment>,
     /// The model selected when Send was pressed, including when this message waits in a queue.
     pub model_id: String,
+    pub generation: Generation,
 }
 
 /// What the app starts with.
@@ -141,6 +143,7 @@ pub struct Chat {
     /// The model for the next send or regeneration. Changing it does not change an active
     /// request or a message already queued. A missing ID is unavailable, never an index fallback.
     pub model: Signal<Option<String>>,
+    pub generation: Signal<Generation>,
     /// Conversations with an answer streaming.
     pub answering: Signal<Vec<ThreadId>>,
     shared: Rc<Shared>,
@@ -155,7 +158,8 @@ impl Chat {
             options.models.iter().all(|entry| !entry.id.trim().is_empty() && ids.insert(&entry.id)),
             "model IDs must be nonempty and unique"
         );
-        let initial_model = options.models.first().map(|entry| entry.id.clone());
+        let preferences = options.store.as_ref().and_then(|store| store.load_preferences()).unwrap_or_default();
+        let initial_model = preferences.model_id.or_else(|| options.models.first().map(|entry| entry.id.clone()));
         let saved = options.store.as_ref().map(Store::load).unwrap_or_default();
         let mut max = 0;
         for (t, ms) in &saved {
@@ -177,6 +181,7 @@ impl Chat {
             editing: state("editing", || None),
             renaming: state("renaming", || None),
             model: state("model", || initial_model),
+            generation: state("generation", || preferences.generation),
             answering: state("answering", Vec::new),
             shared: Rc::new(Shared {
                 models: options.models,
@@ -194,6 +199,21 @@ impl Chat {
             }
         });
         chat
+    }
+
+    /// Save before publishing the settings; failure leaves the active configuration intact.
+    pub fn configure(&self, model_id: Option<String>, generation: Generation) -> Result<(), String> {
+        let generation = generation.validate()?;
+        if !model_id.as_deref().is_some_and(|id| self.model_name(id).is_some()) {
+            return Err("Choose an available model.".into());
+        }
+        let preferences = Preferences { model_id: model_id.clone(), generation };
+        if let Some(store) = &self.shared.store {
+            store.save_preferences(&preferences)?;
+        }
+        self.model.set(model_id);
+        self.generation.set(generation);
+        Ok(())
     }
 
     pub fn models(&self) -> &[ModelEntry] {
@@ -298,6 +318,7 @@ impl Chat {
             return;
         }
         let Some(model) = self.model_now() else { return };
+        let Ok(generation) = untrack(|| self.generation.get()).validate() else { return };
         self.draft.set(String::new());
         self.files.retain(|_| false);
         let thread = match untrack(|| self.current.get()) {
@@ -314,10 +335,10 @@ impl Chat {
             self.truncate(thread, edited);
         } else if self.is_answering_now(thread) {
             let id = self.id();
-            self.queue.push(Queued { id, thread, text, files, model_id: model.id });
+            self.queue.push(Queued { id, thread, text, files, model_id: model.id, generation });
             return;
         }
-        self.start(thread, &text, files, model.model);
+        self.start(thread, &text, files, model.model, generation);
     }
 
     /// Puts the person's message `id` back in the composer: sending replaces it and what followed.
@@ -337,11 +358,12 @@ impl Chat {
     /// Answers again: the answer `id` and what followed go, and its question is sent again.
     pub fn regenerate(&self, id: MessageId) {
         let Some(model) = self.model_now() else { return };
+        let Ok(generation) = untrack(|| self.generation.get()).validate() else { return };
         let Some(answer) = self.messages.item(&id).map(|m| untrack(|| m.get())) else { return };
         let all = self.thread_messages(answer.thread);
         let Some(question) = all.iter().rev().find(|m| m.id < id && m.author == Author::User).cloned() else { return };
         self.truncate(answer.thread, question.id);
-        self.start(answer.thread, &question.text(), question.files(), model.model);
+        self.start(answer.thread, &question.text(), question.files(), model.model, generation);
     }
 
     // ---- the queue ----
@@ -352,13 +374,14 @@ impl Chat {
         let Some(model) = self.model_by_id(&q.model_id) else { return };
         self.queue.remove(&id);
         self.stop(q.thread);
-        self.start(q.thread, &q.text, q.files, model.model);
+        self.start(q.thread, &q.text, q.files, model.model, q.generation);
     }
     /// Takes a queued message back into the composer.
     pub fn edit_queued(&self, id: u64) {
         let Some(q) = self.queue.item(&id).map(|q| untrack(|| q.get())) else { return };
         self.queue.remove(&id);
         self.model.set(Some(q.model_id));
+        self.generation.set(q.generation);
         self.draft.set(q.text);
         for f in q.files {
             let id = self.id();
@@ -383,7 +406,7 @@ impl Chat {
     }
 
     /// Sends `text` in `thread` and starts the answer.
-    fn start(&self, thread: ThreadId, text: &str, files: Vec<Attachment>, model: Rc<dyn Model>) {
+    fn start(&self, thread: ThreadId, text: &str, files: Vec<Attachment>, model: Rc<dyn Model>, generation: Generation) {
         // Regenerate/retry removes the initiating message row. Requests belong to Chat,
         // not that row: Shared retires them on stop, replacement and Chat's cleanup.
         App::current().run(|| {
@@ -399,7 +422,7 @@ impl Chat {
             let chat = self.clone();
             let receiver = rx.on(move |ev| chat.on_event(thread, answer, ev));
             self.shared.answers.borrow_mut().insert(thread, Running { id: answer, receiver, cancel: None });
-            let cancel = model.respond(Request { purpose: Purpose::Reply, history: history.clone() }, tx);
+            let cancel = model.respond(Request { purpose: Purpose::Reply, generation, history: history.clone() }, tx);
             self.shared.install_cancel(PurposeOwner::Answer, thread, answer, cancel);
             if first && self.shared.current(PurposeOwner::Answer, thread, answer) {
                 self.name(thread, answer, history, model);
@@ -437,7 +460,7 @@ impl Chat {
             }
         });
         self.shared.titles.borrow_mut().insert(thread, Running { id: answer, receiver, cancel: None });
-        let cancel = model.respond(Request { purpose: Purpose::Title, history }, tx);
+        let cancel = model.respond(Request { purpose: Purpose::Title, generation: Generation::default(), history }, tx);
         self.shared.install_cancel(PurposeOwner::Title, thread, answer, cancel);
     }
 
@@ -480,7 +503,7 @@ impl Chat {
                 && let Some(model) = self.model_by_id(&q.model_id)
             {
                 self.queue.remove(&q.id);
-                self.start(thread, &q.text, q.files, model.model);
+                self.start(thread, &q.text, q.files, model.model, q.generation);
             }
         }
         if let Some(cancel) = retired.and_then(|request| request.cancel) {

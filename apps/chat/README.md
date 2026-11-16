@@ -1,7 +1,14 @@
 # Chat reference app
 
-Run the normal app with `cargo run -p octara-chat`. It uses the offline scripted model and saves
-conversations in its application data directory (`OCTARA_CHAT_DIR` overrides that location).
+Run the normal app with `cargo run -p octara-chat`. With `OPENROUTER_API_KEY` already set in
+the environment, it connects to OpenRouter's `deepseek/deepseek-v4.1-flash`. Without network
+configuration it uses the offline Scripted model. Conversations and explicitly saved settings
+stay in the application data directory (`OCTARA_CHAT_DIR` overrides that location).
+
+The desktop design uses a warm reading surface, a quiet navigation sidebar, restrained green
+accents, a centered transcript and a composer kept separate from scrolling messages. The
+welcome cards put an editable prompt in the composer; they never submit automatically.
+The compact layout replaces the sidebar with a modal conversation list.
 
 Messages now persist stable part IDs and their next-ID allocator in `<thread>.v2.json`.
 The previous positional-part `<thread>.json` files are neither loaded nor overwritten/deleted
@@ -14,6 +21,11 @@ supplies the bearer token. The configured model is selected first; Scripted rema
 available in the picker. Incomplete configuration fails at startup instead of silently
 falling back. See [NETWORK.md](NETWORK.md) for local HTTP verification, configuration,
 supported streaming events, cancellation and Agent observations.
+
+The gear button opens conversation settings: model, optional temperature and optional output
+token limit. Cancel discards the draft; Save persists it; Restore defaults is itself a draft
+change until saved. Active and queued requests retain their captured settings. See
+[SETTINGS.md](SETTINGS.md) for semantics, verification commands and screenshots.
 
 ## Model selection
 

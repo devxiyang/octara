@@ -63,7 +63,7 @@ class State:
             self.events.append(record)
             print(json.dumps(record, ensure_ascii=False), file=self.output, flush=True)
 
-    def begin(self, messages, model):
+    def begin(self, messages, model, generation):
         latest = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
         fingerprint = hashlib.sha256(latest.encode()).hexdigest()
         first = latest.strip().split(maxsplit=1)
@@ -82,10 +82,10 @@ class State:
             self.attempts[fingerprint] = attempt
             effective = "normal" if mode == "drop" and attempt > 1 else mode
             self.requests[ordinal] = {
-                "model": model, "mode": effective, "attempt": attempt, "history": history,
+                "model": model, "mode": effective, "attempt": attempt, "history": history, "generation": generation,
                 "active": True, "control": None, "sent_chunks": 0, "sent_bytes": 0,
             }
-        self.event("request_started", ordinal, model=model, mode=effective, attempt=attempt, history=history)
+        self.event("request_started", ordinal, model=model, mode=effective, attempt=attempt, history=history, generation=generation)
         return ordinal, effective
 
     def snapshot(self):
@@ -158,7 +158,8 @@ class Handler(BaseHTTPRequestHandler):
         if any(not isinstance(m, dict) or m.get("role") not in {"system", "user", "assistant"}
                or not isinstance(m.get("content"), str) for m in messages):
             return self.json_reply(400, {"error": "expected text message history"})
-        begun = self.server.state.begin(messages, model)
+        generation = {key: value[key] for key in ("temperature", "max_completion_tokens") if key in value}
+        begun = self.server.state.begin(messages, model, generation)
         if begun is None:
             return self.json_reply(503, {"error": "fixture request limit reached"})
         ordinal, mode = begun

@@ -225,3 +225,73 @@ fn conversations_are_kept_on_disk() {
     assert!(texts(&w, "transcript").contains("remember this"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn settings_validate_cancel_save_restore_and_survive_restart() {
+    use octara_chat::settings::Generation;
+    let path = std::env::temp_dir().join(format!(
+        "octara-settings-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    let store = Store::new(&path);
+    let saved = store.clone();
+    let mut w = open(move || Options { store: Some(saved.clone()), ..options() });
+    w.tap("settings-open").unwrap();
+    w.dispatch(Event::Input("settings-temperature".into(), "oops".into())).unwrap();
+    assert!(text_of(&w, "settings-error").contains("number"));
+    w.tap("settings-cancel").unwrap();
+    assert!(store.load_preferences().is_none());
+    w.tap("settings-open").unwrap();
+    w.dispatch(Event::Input("settings-temperature".into(), "0.7".into())).unwrap();
+    w.dispatch(Event::Input("settings-tokens".into(), "2048".into())).unwrap();
+    w.tap("settings-save").unwrap();
+    let expected = Generation { temperature: Some(0.7), max_completion_tokens: Some(2048) };
+    assert_eq!(store.load_preferences().unwrap().generation, expected);
+    w.app().shutdown();
+    let saved = store.clone();
+    let mut reopened = open(move || Options { store: Some(saved.clone()), ..options() });
+    reopened.tap("settings-open").unwrap();
+    reopened.tap("settings-save").unwrap();
+    assert_eq!(store.load_preferences().unwrap().generation, expected);
+    reopened.tap("settings-open").unwrap();
+    reopened.tap("settings-reset").unwrap();
+    reopened.tap("settings-save").unwrap();
+    assert_eq!(store.load_preferences().unwrap().generation, Generation::default());
+    assert!(reopened.app().diagnostics().is_empty(), "{:?}", reopened.app().diagnostics());
+    assert!(reopened.layout_issues().is_empty(), "{:?}", reopened.layout_issues());
+    reopened.app().shutdown();
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn failed_settings_save_keeps_the_previous_configuration_and_invalid_files_use_defaults() {
+    use octara_chat::settings::Generation;
+    let path = std::env::temp_dir().join(format!(
+        "octara-settings-failure-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    std::fs::create_dir_all(&path).unwrap();
+    std::fs::write(path.join("settings.json"), r#"{"generation":{"temperature":9}}"#).unwrap();
+    let store = Store::new(&path);
+    assert!(store.load_preferences().is_none());
+    std::fs::remove_file(path.join("settings.json")).unwrap();
+    // A directory in place of the destination makes atomic rename fail on every platform.
+    std::fs::create_dir(path.join("settings.json")).unwrap();
+    let saved = store.clone();
+    let mut w = open(move || Options { store: Some(saved.clone()), ..options() });
+    w.tap("settings-open").unwrap();
+    w.dispatch(Event::Input("settings-temperature".into(), "0.8".into())).unwrap();
+    w.tap("settings-save").unwrap();
+    assert!(text_of(&w, "settings-error").contains("could not be saved"));
+    assert_eq!(std::fs::read_dir(&path).unwrap().count(), 1, "failed commits remove their temporary file");
+    w.tap("settings-cancel").unwrap();
+    std::fs::remove_dir(path.join("settings.json")).unwrap();
+    w.tap("settings-open").unwrap();
+    w.tap("settings-save").unwrap();
+    assert_eq!(store.load_preferences().unwrap().generation, Generation::default());
+    assert!(w.app().diagnostics().is_empty());
+    w.app().shutdown();
+    std::fs::remove_dir_all(path).unwrap();
+}

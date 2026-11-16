@@ -81,6 +81,29 @@ impl Store {
         self.dir.join(format!("{id}.v2.json"))
     }
 
+    pub fn load_preferences(&self) -> Option<crate::settings::Preferences> {
+        let settings: crate::settings::Preferences = serde_json::from_slice(&std::fs::read(self.dir.join("settings.json")).ok()?).ok()?;
+        settings.generation.validate().ok()?;
+        Some(settings)
+    }
+
+    /// A small explicit settings commit. Atomic rename precedes publishing the UI state.
+    pub fn save_preferences(&self, settings: &crate::settings::Preferences) -> Result<(), String> {
+        settings.generation.validate()?;
+        let json = serde_json::to_vec_pretty(settings).map_err(|_| "Settings could not be encoded.")?;
+        let file = self.dir.join("settings.json");
+        let temporary = self.dir.join(format!("settings-{}-{}.tmp", std::process::id(), next_revision()));
+        let result = (|| {
+            std::fs::create_dir_all(&self.dir)?;
+            std::fs::write(&temporary, json)?;
+            std::fs::rename(&temporary, file)
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(temporary);
+        }
+        result.map_err(|_: std::io::Error| "Settings could not be saved. Check the application data directory.".into())
+    }
+
     /// Current-format conversations, newest first (unreadable files are skipped).
     /// Positional-part v1 files remain untouched; saves/deletes only address v2 paths.
     pub fn load(&self) -> Vec<(Thread, Vec<SavedMessage>)> {

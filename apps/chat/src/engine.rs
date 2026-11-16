@@ -19,6 +19,7 @@ pub enum Purpose {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Request {
     pub purpose: Purpose,
+    pub generation: crate::settings::Generation,
     /// The conversation so far, oldest first; the last is the person's.
     pub history: Vec<(Author, String)>,
 }
@@ -120,7 +121,7 @@ mod tests {
     use super::*;
 
     fn ask(q: &str, purpose: Purpose) -> Vec<Event> {
-        script(&Request { purpose, history: vec![(Author::User, q.into())] })
+        script(&Request { purpose, generation: Default::default(), history: vec![(Author::User, q.into())] })
     }
 
     #[test]

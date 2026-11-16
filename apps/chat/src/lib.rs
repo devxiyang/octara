@@ -7,6 +7,7 @@ pub mod chat;
 pub mod engine;
 pub mod model;
 pub mod network;
+pub mod settings;
 pub mod store;
 mod ui;
 

@@ -172,12 +172,25 @@ fn sidebar() -> El {
         .id("sidebar")
         .size_full()
         .bg(Token::Surface)
-        .child(row().items_center().h(44.0).px_3().child(text("Chats").font_medium().text_sm().flex_1()).child(
-            icon_button(icons::SQUARE_PEN, "New chat").id("new-chat").on_press(move || {
-                new.new_chat();
-                listing.set(false);
-            }),
-        ))
+        .child(row().items_center().gap_3().h(72.0).px_5().child(brand_mark(32.0)).child(text("octara").text_xl().font_semibold()))
+        .child(
+            el().px_3().pb_4().child(
+                button("New conversation")
+                    .id("new-chat")
+                    .label("New chat")
+                    .w_full()
+                    .justify_start()
+                    .gap_2()
+                    .h(40.0)
+                    .rounded_lg()
+                    .bg(Token::Background)
+                    .on_press(move || {
+                        new.new_chat();
+                        listing.set(false);
+                    }),
+            ),
+        )
+        .child(text("YOUR CONVERSATIONS").text_xs().text_color(Token::TextMuted).px_5().pb_2())
         .child(list().id("threads").label("Conversations").flex_1().min_h(0.0).px_2().pb_2().overflow_y_scroll().child(virtual_each(
             move || flat.clone(),
             |item| if item.header().is_some() { 36.0 } else { 34.0 },
@@ -186,6 +199,26 @@ fn sidebar() -> El {
                 FlatKey::Item(id) => thread_row(id, move || item.with(|f| f.item().cloned())),
             },
         )))
+        .child(el().h(1.0).w_full().bg(Token::Border).a11y_hidden())
+        .child(
+            row().items_center().gap_3().p_4().child(icon(icons::HARD_DRIVE).size_4().text_color(Token::TextMuted)).child(
+                col()
+                    .gap_1()
+                    .child(text("Personal workspace").text_sm().font_medium())
+                    .child(text("History saved on this device").text_xs().text_color(Token::TextMuted)),
+            ),
+        )
+}
+
+fn brand_mark(size: f32) -> El {
+    el().size(size)
+        .flex_shrink_0()
+        .rounded_lg()
+        .bg(Token::Accent)
+        .items_center()
+        .justify_center()
+        .child(icon(icons::SPARKLES).size_4().text_color(Token::AccentText))
+        .a11y_hidden()
 }
 
 fn thread_row(id: ThreadId, thread: impl Fn() -> Option<Thread> + Clone + 'static) -> View {
@@ -273,6 +306,8 @@ fn thread_menu(chat: &Chat, id: ThreadId, title: String) {
 
 fn main_pane() -> El {
     let chat = chat();
+    let settings_open = state("settings-open", || false);
+    let settings = settings_dialog(chat.clone(), settings_open);
     let title = chat.clone();
     let listing = listing();
     col()
@@ -284,7 +319,7 @@ fn main_pane() -> El {
                 .id("conversation-header")
                 .items_center()
                 .gap_2()
-                .h(44.0)
+                .h(64.0)
                 .px_4()
                 .child(show(compact, move || {
                     icon_button(icons::MENU, "Conversations").id("conversations").on_press(move || listing.set(true)).into()
@@ -303,11 +338,96 @@ fn main_pane() -> El {
                     .min_w(0.0)
                     .flex_1(),
                 )
-                .child(model_picker(&chat)),
+                .child(model_picker(&chat))
+                .child(icon_button(icons::SETTINGS, "Settings").id("settings-open").on_press(move || settings_open.set(true))),
         )
-        .child(el().h(1.0).w_full().bg(Token::Border).a11y_hidden())
         .child(el().relative().flex_1().min_h(0.0).child(keyed(move || chat.current.get().unwrap_or(0), |t| transcript(*t))))
         .child(composer())
+        .child(settings)
+}
+
+#[component]
+fn settings_dialog(chat: Chat, open: Signal<bool>) -> View {
+    dialog(
+        "settings",
+        "Conversation settings",
+        open,
+        DialogOptions {
+            description: "Choose how your next answer is generated. Messages already sent or queued keep their settings.".into(),
+            click_outside: false,
+        },
+        move || {
+            let initial = untrack(|| chat.generation.get());
+            let model = state("settings-model", || untrack(|| chat.model.get()));
+            let temperature = state("temperature", || initial.temperature.map_or_else(String::new, |n| n.to_string()));
+            let tokens = state("tokens", || initial.max_completion_tokens.map_or_else(String::new, |n| n.to_string()));
+            let error = state("save-error", String::new);
+            let options: Vec<_> = chat.models().iter().map(|entry| ComboboxOption::new(&entry.id, entry.model.name())).collect();
+            let available: Vec<_> = chat.models().iter().map(|entry| entry.id.clone()).collect();
+            let valid = memo(move || {
+                model.get().is_some_and(|id| available.contains(&id))
+                    && crate::settings::Generation::parse(&temperature.get(), &tokens.get()).is_ok()
+            });
+            let save = chat.clone();
+            let default_model = chat.models().first().map(|entry| entry.id.clone());
+            col()
+                .gap_3()
+                .child(text("Model").font_medium())
+                .child(combobox("settings-model", "Model", model, move || options.clone()))
+                .child(text("Temperature (0–2)").font_medium())
+                .child(
+                    number_field(temperature, 0.0, 2.0, 0.1)
+                        .id("settings-temperature")
+                        .label("Temperature")
+                        .invalid(move || crate::settings::Generation::parse(&temperature.get(), "").is_err())
+                        .w_full(),
+                )
+                .child(text("Maximum output tokens (1–131072)").font_medium())
+                .child(
+                    number_field(tokens, 1.0, 131072.0, 1.0)
+                        .id("settings-tokens")
+                        .label("Maximum output tokens")
+                        .invalid(move || crate::settings::Generation::parse("", &tokens.get()).is_err())
+                        .w_full(),
+                )
+                .child(
+                    text("Leave blank to use model defaults. Available parameters and output limits vary by model.")
+                        .text_sm()
+                        .text_color(Token::TextMuted),
+                )
+                .child(
+                    text(move || {
+                        crate::settings::Generation::parse(&temperature.get(), &tokens.get())
+                            .err()
+                            .unwrap_or_else(|| if !valid.get() { "Choose an available model.".into() } else { error.get() })
+                    })
+                    .id("settings-error")
+                    .role(Role::Status)
+                    .text_sm(),
+                )
+                .child(
+                    row()
+                        .gap_2()
+                        .child(button("Restore defaults").id("settings-reset").on_press(move || {
+                            model.set(default_model.clone());
+                            temperature.set(String::new());
+                            tokens.set(String::new());
+                            error.set(String::new());
+                        }))
+                        .child(spacer())
+                        .child(button("Cancel").id("settings-cancel").on_press(move || open.set(false)))
+                        .child(primary_button("Save").id("settings-save").disabled(move || !valid.get()).on_press(move || {
+                            let result = crate::settings::Generation::parse(&temperature.get(), &tokens.get())
+                                .and_then(|generation| save.configure(model.get(), generation));
+                            match result {
+                                Ok(()) => open.set(false),
+                                Err(message) => error.set(message),
+                            }
+                        })),
+                )
+                .into()
+        },
+    )
 }
 
 /// Labels belong to people; the selection and retained option rows use the model's stable ID.
@@ -324,7 +444,7 @@ fn model_picker(chat: &Chat) -> El {
         .min_w(0.0)
         .max_w(relative(0.55))
         .flex_shrink_0()
-        .style_with(|style| style.w(if compact() { 160.0 } else { 220.0 }))
+        .style_with(|style| style.w(if compact() { 128.0 } else { 220.0 }))
         .tooltip(move || {
             let selected = hint.model.get();
             let name = selected.as_deref().and_then(|id| hint.model_name(id)).unwrap_or("Model");
@@ -358,11 +478,68 @@ fn transcript(thread: ThreadId) -> View {
                     col()
                         .items_center()
                         .justify_center()
-                        .flex_1()
-                        .gap_2()
-                        .p_8()
-                        .child(icon(icons::MESSAGE_SQUARE).size_8().text_color(Token::TextMuted))
-                        .child(text("Ask anything to start a conversation.").text_sm().text_color(Token::TextMuted))
+                        .flex_grow()
+                        .flex_shrink_0()
+                        .gap_4()
+                        .px_6()
+                        .py_8()
+                        .w_full()
+                        .max_w(650.0)
+                        .mx_auto()
+                        .child(brand_mark(48.0))
+                        .child(
+                            col()
+                                .items_center()
+                                .gap_1()
+                                .child(
+                                    text("A little curiosity.")
+                                        .font_medium()
+                                        .style_with(|p| if compact() { p.text_2xl() } else { p.text_3xl() }),
+                                )
+                                .child(
+                                    text("A world of possibilities.")
+                                        .font_medium()
+                                        .style_with(|p| if compact() { p.text_2xl() } else { p.text_3xl() }),
+                                ),
+                        )
+                        .child(
+                            text("Make room for your next idea. Think, write, and build together.")
+                                .text_sm()
+                                .text_color(Token::TextMuted)
+                                .self_center(),
+                        )
+                        .child(show(
+                            || !compact(),
+                            || {
+                                row()
+                                    .w_full()
+                                    .gap_2()
+                                    .mt_4()
+                                    .flex_wrap()
+                                    .child(starter(
+                                        "starter-write",
+                                        icons::PENCIL,
+                                        "Find the right words",
+                                        "Help me write",
+                                        "Help me write a thoughtful, concise introduction. Ask me what it is for first.",
+                                    ))
+                                    .child(starter(
+                                        "starter-learn",
+                                        icons::BOOK_OPEN,
+                                        "Make it click",
+                                        "Explain a concept",
+                                        "Explain a complex idea in simple terms. Ask me which topic I want to understand.",
+                                    ))
+                                    .child(starter(
+                                        "starter-build",
+                                        icons::CODE,
+                                        "Build something",
+                                        "Explore an idea",
+                                        "Help me turn an idea into a small, practical project. Ask me about my idea first.",
+                                    ))
+                                    .into()
+                            },
+                        ))
                         .select_none()
                         .into()
                 },
@@ -394,6 +571,34 @@ fn transcript(thread: ThreadId) -> View {
     ])
 }
 
+fn starter(id: &str, symbol: icons::Icon, title: &str, caption: &str, prompt: &'static str) -> El {
+    let draft = chat().draft;
+    el().id(id)
+        .role(Role::Button)
+        .label(title.to_owned())
+        .focusable()
+        .flex_1()
+        .min_w(150.0)
+        .p_4()
+        .rounded_xl()
+        .border()
+        .border_color(Token::Border)
+        .bg(Token::Background)
+        .hover(|p| p.bg(Token::Surface))
+        .cursor(CursorStyle::PointingHand)
+        .child(
+            col()
+                .gap_2()
+                .child(icon(symbol).size_4().text_color(Token::Accent))
+                .child(text(title.to_owned()).text_sm().font_medium())
+                .child(text(caption.to_owned()).text_xs().text_color(Token::TextMuted)),
+        )
+        .on_press(move || {
+            draft.set(prompt.into());
+            focus("composer");
+        })
+}
+
 /// One message: the person's on the right; an answer's parts, its state and actions.
 fn message(id: u64, m: ReadSignal<Message>) -> View {
     let author = untrack(|| m.with(|m| m.author));
@@ -401,7 +606,7 @@ fn message(id: u64, m: ReadSignal<Message>) -> View {
         Author::User => user_message(id, m),
         Author::Assistant => answer(id, m),
     };
-    col().id(format!("msg-{id}")).px_4().py_2().w_full().max_w(760.0).mx_auto().child(body).into()
+    col().id(format!("msg-{id}")).px_6().py_4().w_full().max_w(800.0).mx_auto().child(body).into()
 }
 
 fn user_message(id: u64, m: ReadSignal<Message>) -> El {
@@ -420,11 +625,11 @@ fn user_message(id: u64, m: ReadSignal<Message>) -> El {
         .children(body.map(|t| {
             text(t)
                 .id(format!("msg-body-{id}"))
-                .px_3()
-                .py_2()
-                .rounded_lg()
+                .px_4()
+                .py_3()
+                .rounded_2xl()
                 .bg(Token::Surface)
-                .text_sm()
+                .text_base()
                 .max_w(560.0)
                 .style_when(State::SELECTED, |p| p.border_color(Token::Accent))
         }))
@@ -451,7 +656,8 @@ fn answer(id: u64, m: ReadSignal<Message>) -> El {
     let (regenerate, copy) = (chat.clone(), m);
     col()
         .group("msg")
-        .gap_2()
+        .gap_3()
+        .child(row().items_center().gap_2().select_none().child(brand_mark(24.0)).child(text("Octara").text_sm().font_semibold()))
         .child(each(move || m.with(|m| m.parts.clone()), move |part_id, p| part(id, *part_id, p).into()))
         .child(show(
             move || status() == Status::Streaming && m.with(|m| m.parts.is_empty()),
@@ -698,7 +904,7 @@ fn composer() -> El {
     col()
         .id("composer-area")
         .w_full()
-        .max_w(760.0)
+        .max_w(800.0)
         .mx_auto()
         .px_4()
         .pb_4()
@@ -721,11 +927,13 @@ fn composer() -> El {
         .child(
             col()
                 .gap_2()
-                .p_2()
-                .rounded_lg()
+                .p_3()
+                .rounded_2xl()
                 .border()
                 .border_color(Token::Border)
                 .bg(Token::Background)
+                .shadow_sm()
+                .child(text("Message").text_xs().text_color(Token::TextMuted).px_3())
                 .child(show(
                     move || !files.is_empty(),
                     move || {
@@ -747,6 +955,7 @@ fn composer() -> El {
                     text_field(chat.draft)
                         .id("composer")
                         .label("Message")
+                        .text_base()
                         .multiline()
                         .rows(1, 8)
                         .submit_on_enter()
@@ -765,21 +974,27 @@ fn composer() -> El {
                     row()
                         .items_center()
                         .gap_1()
-                        .child(icon_button(icons::PAPERCLIP, "Attach files").id("attach").on_press(move || {
-                            let attach = attach.clone();
-                            spawn(async move {
-                                if let Some(paths) = prompt_for_paths(PathPromptOptions {
-                                    files: true,
-                                    directories: false,
-                                    multiple: true,
-                                    prompt: Some("Attach".into()),
-                                })
-                                .await
-                                {
-                                    attach.attach(&paths);
-                                }
-                            });
-                        }))
+                        .child(
+                            icon_button(icons::PAPERCLIP, "Attach files")
+                                .id("attach")
+                                .tooltip("Keep a local file reference. File contents are not sent to the model.")
+                                .on_press(move || {
+                                    let attach = attach.clone();
+                                    spawn(async move {
+                                        if let Some(paths) = prompt_for_paths(PathPromptOptions {
+                                            files: true,
+                                            directories: false,
+                                            multiple: true,
+                                            prompt: Some("Attach".into()),
+                                        })
+                                        .await
+                                        {
+                                            attach.attach(&paths);
+                                        }
+                                    });
+                                }),
+                        )
+                        .child(text("Enter to send").text_xs().text_color(Token::TextMuted))
                         .child(spacer())
                         .child(show_else(
                             answering,
@@ -808,6 +1023,7 @@ fn composer() -> El {
                         )),
                 ),
         )
+        .child(text("A place to think. Double-check the details that matter.").text_xs().text_color(Token::TextMuted).self_center())
 }
 
 /// A send button's look: the accent.

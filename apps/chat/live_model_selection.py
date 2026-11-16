@@ -157,13 +157,16 @@ class ModelWindow(LiveWindow):
         self.store, self.fixture_server = store, fixture
         self.routes = []
 
-    def __enter__(self):
-        self.log = (self.output / "model-selection-window.log").open("x", encoding="utf-8")
-        self.transcript = (self.output / "model-selection-cli.jsonl").open("x", encoding="utf-8")
+    def environment(self):
         env = {k: v for k, v in os.environ.items() if not k.startswith("OCTARA_")}
         env.update(OCTARA_INSPECT=str(self.endpoint), OCTARA_CHAT_DIR=str(self.store),
                    OCTARA_CHAT_ENDPOINT=self.fixture_server.endpoint, NO_PROXY="127.0.0.1", no_proxy="127.0.0.1")
-        self.process = subprocess.Popen([str(self.args.window)], cwd=REPO, env=env, stdout=self.log, stderr=subprocess.STDOUT)
+        return env
+
+    def __enter__(self):
+        self.log = (self.output / f"{self.fixture}-window.log").open("x", encoding="utf-8")
+        self.transcript = (self.output / f"{self.fixture}-cli.jsonl").open("x", encoding="utf-8")
+        self.process = subprocess.Popen([str(self.args.window)], cwd=REPO, env=self.environment(), stdout=self.log, stderr=subprocess.STDOUT)
         try:
             def available():
                 self.alive()

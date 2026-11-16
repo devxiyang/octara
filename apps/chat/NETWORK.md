@@ -11,22 +11,47 @@ Set these variables before starting `octara-chat`:
 
 | Variable | Meaning |
 | --- | --- |
+| `OPENROUTER_API_KEY` | Enables the DeepSeek V4.1 Flash preset when no explicit Chat endpoint/model/key is configured |
 | `OCTARA_CHAT_ENDPOINT` | Complete URL, including `/v1/chat/completions` or the provider's equivalent path |
 | `OCTARA_CHAT_MODEL` | Model identifier accepted by that server |
 | `OCTARA_CHAT_API_KEY` | Optional bearer token; kept outside conversation storage and diagnostics |
-| `OCTARA_CHAT_TIMEOUT_SECS` | Connect and read-idle timeout, default 30, from 1 to 600 seconds |
+| `OCTARA_CHAT_TIMEOUT_SECS` | Connect and read-idle timeout, default 60, from 1 to 600 seconds |
 | `OCTARA_CHAT_DIR` | Conversation directory; use an isolated directory for verification |
 
-With no network variables the app opens with Scripted. Configuring any network
-variable requires both endpoint and model; invalid configuration exits with a
-readable error. A configured network model is selected first, with Scripted still
+With no network credentials or explicit endpoint/model the app opens with Scripted.
+`OPENROUTER_API_KEY` enables `https://openrouter.ai/api/v1/chat/completions` and
+`deepseek/deepseek-v4.1-flash`. Explicit `OCTARA_CHAT_ENDPOINT`, `OCTARA_CHAT_MODEL` or
+`OCTARA_CHAT_API_KEY` configuration requires both endpoint and model and takes precedence.
+The OpenRouter key is never used as a fallback credential for a custom endpoint.
+Invalid configuration exits with a readable error. A configured network model is selected first
+unless a saved model preference exists, with Scripted still
 available in the picker. The CLI/headless `octara_chat::app` stays deterministic
 and offline; attach to the normal window to inspect real network behavior.
 
 The adapter sends text history as user/assistant messages with `stream: true` and
 `n: 1`. It derives short conversation titles locally. File contents, images, tools,
-provider-specific reasoning and usage accounting are outside this text adapter.
-Attachment chips do not imply file upload. A tool-call response fails explicitly.
+usage accounting are outside this text adapter. `delta.reasoning` (OpenRouter) and
+`delta.reasoning_content` (DeepSeek-compatible servers) feed the existing collapsible reasoning
+part, separately from the answer. Reasoning alone cannot count as a completed answer.
+Attachment chips are local references, not file uploads; the attachment button explains this.
+A tool-call response fails explicitly.
+
+Optional settings send `temperature` and `max_completion_tokens`; blank settings omit both
+keys so the server chooses its defaults. Parameter support depends on the selected model.
+See [OpenRouter's model page](https://openrouter.ai/deepseek/deepseek-v4.1-flash) and
+[streaming documentation](https://openrouter.ai/docs/api/reference/streaming).
+
+To run the opt-in real service check (uses API credits):
+
+```sh
+cargo build -p octara-chat --bin octara-chat -p octara-cli --bin octara
+python3 apps/chat/live_openrouter.py
+```
+
+The script uses the ordinary application, a new isolated store and synthetic prompts only.
+It verifies a Chinese answer, a contextual follow-up, regeneration, Stop, persistence, settings
+and native resize, retaining GPU screenshots and Inspector observations. It never prints or
+saves the key. Input uses the framework route; it does not verify OS keyboard/IME injection.
 
 ## Stream and lifetime behavior
 

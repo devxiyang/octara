@@ -96,16 +96,16 @@ impl Drop for NetworkModel {
 
 impl Model for NetworkModel {
     fn name(&self) -> &str {
-        &self.model
+        match self.model.as_str() {
+            "deepseek/deepseek-v4.1-flash" => "DeepSeek V4.1 Flash",
+            _ => &self.model,
+        }
     }
 
     fn respond(&self, request: Request, send: Sender<Event>) -> Cancel {
         if request.purpose == Purpose::Title {
             let question = request.history.iter().rev().find(|(author, _)| *author == Author::User).map_or("", |(_, text)| text.as_str());
-            let title = question.split_whitespace().take(5).collect::<Vec<_>>().join(" ");
-            let title = title.chars().take(64).collect::<String>();
-            let title = title.trim_end_matches(['?', '.', '!']);
-            let _ = send.send(Event::Text(if title.is_empty() { "New chat".into() } else { title.into() }));
+            let _ = send.send(Event::Text(conversation_title(question)));
             let _ = send.send(Event::Done);
             return Box::new(|| {});
         }
@@ -130,6 +130,14 @@ impl Model for NetworkModel {
     }
 }
 
+fn conversation_title(question: &str) -> String {
+    let lead = question.trim().split(['\n', '：', ':', '。', '？', '?', '！', '!']).next().unwrap_or_default();
+    let words = lead.split_whitespace().take(5).collect::<Vec<_>>().join(" ");
+    let title = words.chars().take(32).collect::<String>();
+    let title = title.trim_end_matches('.');
+    if title.is_empty() { "New chat".into() } else { title.into() }
+}
+
 async fn reply(
     client: Client,
     endpoint: Url,
@@ -138,13 +146,20 @@ async fn reply(
     send: &Sender<Event>,
     cancelled: &AtomicBool,
 ) -> Result<(), String> {
+    let generation = request.generation.validate()?;
     let messages: Vec<_> = request
         .history
         .into_iter()
         .map(|(author, text)| json!({"role":match author { Author::User => "user", Author::Assistant => "assistant" }, "content":text}))
         .collect();
-    let mut response =
-        client.post(endpoint).json(&json!({"model":model,"messages":messages,"stream":true,"n":1})).send().await.map_err(network_error)?;
+    let mut body = json!({"model":model,"messages":messages,"stream":true,"n":1});
+    if let Some(value) = generation.temperature {
+        body["temperature"] = json!(value);
+    }
+    if let Some(value) = generation.max_completion_tokens {
+        body["max_completion_tokens"] = json!(value);
+    }
+    let mut response = client.post(endpoint).json(&body).send().await.map_err(network_error)?;
     if !response.status().is_success() {
         return Err(status_error(response.status()));
     }
@@ -212,6 +227,8 @@ struct Delta {
     role: Option<String>,
     content: Option<String>,
     refusal: Option<String>,
+    reasoning: Option<String>,
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<Value>>,
     function_call: Option<Value>,
 }
@@ -267,6 +284,11 @@ fn completion(data: &str, received_text: &mut bool, emit: &mut impl FnMut(Event)
     }
     if choice.delta.role.as_deref().is_some_and(|role| role != "assistant") {
         return Err(INVALID_EVENT);
+    }
+    if let Some(reasoning) = choice.delta.reasoning.or(choice.delta.reasoning_content).filter(|text| !text.is_empty())
+        && !emit(Event::Reasoning(reasoning))
+    {
+        return Ok(true);
     }
     for text in [choice.delta.content, choice.delta.refusal].into_iter().flatten().filter(|text| !text.is_empty()) {
         *received_text = true;
@@ -401,6 +423,37 @@ mod tests {
         assert_eq!(parse([source.into_bytes()]), (vec![Event::Text("I cannot help with that.".into()), Event::Done], Ok(())));
         let source = event(json!({"content":"text without tools","tool_calls":[]}), Some("stop"));
         assert_eq!(parse([source.into_bytes()]), (vec![Event::Text("text without tools".into()), Event::Done], Ok(())));
+    }
+
+    #[test]
+    fn openrouter_and_deepseek_reasoning_remain_separate_from_the_answer() {
+        let source = format!(
+            "{}{}{}",
+            event(json!({"reasoning":"Let me think.", "reasoning_content":"duplicate fallback"}), None),
+            event(json!({"reasoning_content":"One more step."}), None),
+            event(json!({"content":"The answer."}), Some("stop"))
+        );
+        assert_eq!(
+            parse(source.as_bytes().chunks(3).map(<[u8]>::to_vec)),
+            (
+                vec![
+                    Event::Reasoning("Let me think.".into()),
+                    Event::Reasoning("One more step.".into()),
+                    Event::Text("The answer.".into()),
+                    Event::Done
+                ],
+                Ok(())
+            )
+        );
+        let source = format!("{}data: [DONE]\n\n", event(json!({"reasoning":"Still thinking"}), None));
+        assert_eq!(parse([source.into_bytes()]).1, Err(EMPTY_RESPONSE), "reasoning alone is not a finished answer");
+    }
+
+    #[test]
+    fn local_titles_keep_the_topic_without_chinese_prompt_instructions() {
+        assert_eq!(conversation_title("请用中文解释 Rust 的所有权：列出三个要点。"), "请用中文解释 Rust 的所有权");
+        assert_eq!(conversation_title("Explain ownership\nInclude a code example"), "Explain ownership");
+        assert_eq!(conversation_title("  "), "New chat");
     }
 
     #[test]

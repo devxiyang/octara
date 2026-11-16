@@ -389,3 +389,32 @@ fn an_idle_http_stream_times_out_without_advancing_the_app_clock() {
     assert_eq!(h.window.app().now(), clock, "wall-clock network timeout is not a virtual-time advance");
     h.until(&server, "the idle request to close", || server.inspect(|s| s.closed.contains(&0)));
 }
+
+#[test]
+fn generation_settings_are_snapshotted_for_active_queued_and_regenerated_requests() {
+    use octara_chat::settings::Generation;
+    let server = Fixture::new(vec![Plan::hold(Some("first")), Plan::success("queued"), Plan::success("regenerated")]);
+    let mut h = Harness::new(&server, TIMEOUT);
+    h.act(|chat| chat.configure(Some("fixture".into()), Generation { temperature: Some(0.4), max_completion_tokens: Some(512) }).unwrap());
+    let thread = h.send("first question");
+    h.until(&server, "first prefix", || h.answer_text(thread) == "first");
+    h.act(|chat| chat.configure(Some("fixture".into()), Generation { temperature: Some(0.8), max_completion_tokens: Some(1024) }).unwrap());
+    h.send("queued question");
+    h.act(|chat| chat.configure(Some("fixture".into()), Generation::default()).unwrap());
+    server.finish(0);
+    h.until(&server, "queued completion", || {
+        server.inspect(|s| s.requests.len() == 2) && h.answer_text(thread) == "queued" && h.answer(thread).status == Status::Done
+    });
+    let answer = h.answer(thread).id;
+    h.act(move |chat| chat.regenerate(answer));
+    h.done(&server, thread);
+    server.inspect(|s| {
+        assert_eq!(s.requests.len(), 3);
+        assert_eq!(s.requests[0]["temperature"], json!(0.4));
+        assert_eq!(s.requests[0]["max_completion_tokens"], json!(512));
+        assert_eq!(s.requests[1]["temperature"], json!(0.8));
+        assert_eq!(s.requests[1]["max_completion_tokens"], json!(1024));
+        assert!(s.requests[2].get("temperature").is_none());
+        assert!(s.requests[2].get("max_completion_tokens").is_none());
+    });
+}
