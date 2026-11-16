@@ -5,8 +5,8 @@
 //!   scope is disposed. Choose the app root with `App::current().run` before spawning work
 //!   that must outlive its initiating UI scope. Tasks run on the UI thread and may write signals.
 //! - Every result from another thread comes back one way: it wakes a task, which the runtime
-//!   polls at a frame boundary. Woken tasks run in spawn order, so the order threads finish in
-//!   does not change what happens.
+//!   polls at a frame boundary. Each ready batch runs in spawn order; thread completion timing
+//!   still determines which batch a result enters.
 //! - Time is the app's clock (`App::advance`), never the wall clock: `sleep`, `interval` and
 //!   `now` follow it, so tests decide when timers fire.
 //! - Pending work is listed (`App::pending`), with the scope and source location of each.
@@ -47,8 +47,8 @@ struct NamedChannel {
     _cleanup: Option<crate::reactive::graph::CleanupRegistration>,
 }
 
-/// A task's id: slot and generation (a reused slot gets a new id).
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+/// A task's identity: slot and generation. Identity has no scheduling order.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 struct TaskId(u64);
 
 impl TaskId {
@@ -91,6 +91,7 @@ pub struct PendingWork {
 struct Entry {
     cleanup: Option<crate::reactive::graph::CleanupRegistration>,
     id: TaskId,
+    spawn_order: u64,
     future: Option<BoxFuture>,
     scope: ScopeId,
     kind: WorkKind,
@@ -152,6 +153,7 @@ pub(crate) struct Scheduler {
     slots: RefCell<Vec<Option<Entry>>>,
     generations: RefCell<Vec<u32>>,
     free: RefCell<Vec<usize>>,
+    next_spawn_order: Cell<u64>,
     shared: Arc<Shared>,
     /// Timers: (due, sequence, task) — the task is woken when the clock reaches `due`.
     timers: RefCell<Vec<(f64, u64, TaskId)>>,
@@ -208,6 +210,7 @@ impl Default for Scheduler {
             slots: RefCell::default(),
             generations: RefCell::default(),
             free: RefCell::default(),
+            next_spawn_order: Cell::new(0),
             shared: Arc::new(Shared {
                 closed: AtomicBool::new(false),
                 ready: Mutex::default(),
@@ -267,6 +270,8 @@ impl Scheduler {
     }
 
     fn insert(&self, future: BoxFuture, scope: ScopeId, kind: WorkKind, label: String, at: &'static Location<'static>) -> TaskId {
+        let spawn_order = self.next_spawn_order.get();
+        self.next_spawn_order.set(spawn_order.checked_add(1).expect("task spawn order exhausted"));
         let slot = self.free.borrow_mut().pop().unwrap_or_else(|| {
             self.slots.borrow_mut().push(None);
             self.generations.borrow_mut().push(0);
@@ -280,7 +285,7 @@ impl Scheduler {
         let id = TaskId::new(slot, generation);
         let owner = rt(|r| r.owner());
         self.slots.borrow_mut()[slot] =
-            Some(Entry { cleanup: None, id, future: Some(future), scope, kind, label, at, cancelled: false, owner });
+            Some(Entry { cleanup: None, id, spawn_order, future: Some(future), scope, kind, label, at, cancelled: false, owner });
         self.shared.ready.lock().expect("ready").push(id);
         id
     }
@@ -319,8 +324,12 @@ impl Scheduler {
             if batch.is_empty() {
                 break;
             }
-            batch.sort();
-            batch.dedup();
+            {
+                let slots = self.slots.borrow();
+                batch.retain(|id| slots.get(id.slot()).and_then(Option::as_ref).is_some_and(|entry| entry.id == *id && !entry.cancelled));
+                batch.sort_unstable_by_key(|id| slots[id.slot()].as_ref().expect("live ready task").spawn_order);
+                batch.dedup();
+            }
             let mut batch = ReadyBatch { shared: &self.shared, remaining: batch.into_iter() };
             for id in batch.remaining.by_ref() {
                 if self.shared.closed.load(Ordering::Acquire) {
@@ -1079,6 +1088,98 @@ mod tests {
     use crate::reactive::state;
     use crate::view::{Styled, el};
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn reused_slots_do_not_reorder_ready_tasks() {
+        let app = App::new(HeadlessPlatform::default());
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let wakes = Rc::new(RefCell::new(Vec::new()));
+        let ready = Rc::new(Cell::new(false));
+        app.run(|| {
+            // Reusing slot zero must not make the next task younger than a fresh slot.
+            for _ in 0..4 {
+                spawn(std::future::pending()).cancel();
+            }
+            for name in ["older", "newer"] {
+                let (log, wakes, ready) = (log.clone(), wakes.clone(), ready.clone());
+                spawn(std::future::poll_fn(move |cx| {
+                    if ready.get() {
+                        log.borrow_mut().push(name);
+                        Poll::Ready(())
+                    } else {
+                        wakes.borrow_mut().push((name, cx.waker().clone()));
+                        Poll::Pending
+                    }
+                }));
+            }
+        });
+        app.poll();
+        ready.set(true);
+        let wakes = wakes.borrow();
+        for name in ["newer", "older"] {
+            let waker = &wakes.iter().find(|(n, _)| *n == name).unwrap().1;
+            waker.wake_by_ref();
+            waker.wake_by_ref();
+        }
+        app.poll();
+        assert_eq!(*log.borrow(), ["older", "newer"], "arrival order and slot generation must not override spawn order");
+        assert!(app.pending().is_empty());
+        app.shutdown();
+    }
+
+    #[test]
+    fn creation_order_keeps_older_cancellation_ahead_of_newer_work_after_slot_reuse() {
+        let app = App::new(HeadlessPlatform::default());
+        let younger = Rc::new(RefCell::new(None::<Task>));
+        let ran = Rc::new(Cell::new(false));
+        app.run(|| {
+            for _ in 0..4 {
+                spawn(std::future::pending()).cancel();
+            }
+            let target = younger.clone();
+            spawn(async move {
+                target.borrow().as_ref().unwrap().cancel();
+            });
+            let ran = ran.clone();
+            *younger.borrow_mut() = Some(spawn(async move {
+                ran.set(true);
+            }));
+        });
+        app.poll();
+        assert!(!ran.get(), "the earlier cancellation must win even when its slot was reused");
+        assert!(app.pending().is_empty());
+        app.shutdown();
+    }
+
+    #[test]
+    fn a_retired_waker_cannot_poll_the_task_reusing_its_slot() {
+        let app = App::new(HeadlessPlatform::default());
+        let saved = Rc::new(RefCell::new(None::<Waker>));
+        let capture = saved.clone();
+        let old = app.run(|| {
+            spawn(std::future::poll_fn(move |cx| {
+                *capture.borrow_mut() = Some(cx.waker().clone());
+                Poll::<()>::Pending
+            }))
+        });
+        app.poll();
+        old.cancel();
+        let polls = Rc::new(Cell::new(0));
+        let capture = polls.clone();
+        let replacement = app.run(|| {
+            spawn(std::future::poll_fn(move |_| {
+                capture.set(capture.get() + 1);
+                Poll::<()>::Pending
+            }))
+        });
+        assert_eq!(old.id.unwrap().slot(), replacement.id.unwrap().slot());
+        app.poll();
+        assert_eq!(polls.get(), 1);
+        saved.borrow().as_ref().unwrap().wake_by_ref();
+        app.poll();
+        assert_eq!(polls.get(), 1, "filter stale identity before looking up creation order");
+        app.shutdown();
+    }
 
     #[test]
     fn a_sleep_has_one_timer_and_cancellation_removes_it_immediately() {

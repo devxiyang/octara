@@ -425,3 +425,20 @@ registration. Replacing a name releases the old registration immediately. Droppi
 the receiver retires its interest and wakes the host; dead names are removed at the next App
 boundary or named send. Channels remain Send when their values are Send. No UI-owned cleanup
 token crosses threads, and an obsolete receiver cannot unregister a replacement.
+
+### Task identity and scheduling order
+
+A task identity is its allocation slot plus generation. It validates cancellation and late
+wakes, but it has no ordering relation: a reused slot's larger generation does not make its
+task newer than a subsequently allocated slot.
+
+Each task therefore receives an internal monotonic spawn order. Ready processing first removes
+retired identities, then sorts live tasks by that order and deduplicates repeated wakes.
+The task table borrow is released before polling; an earlier task can still cancel a later
+one or spawn work for the next ready batch. A panic preserves the not-yet-polled portion of
+the batch through the existing unwind guard.
+
+This guarantees ordering within a ready batch, not deterministic arrival of external work.
+No new public handle, priority API or scheduler is introduced. Regressions cover slot reuse,
+reverse wake arrival, repeated wakes, cancellation ordering and an obsolete waker targeting
+a slot now occupied by another task.
