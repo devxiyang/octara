@@ -11,7 +11,7 @@
 //! applying its log (`ReadList::subscribe` / `ReadList::take`); a `Move` moves a row.
 
 use crate::diagnostics as codes;
-use crate::reactive::graph::{Ctx, ReadSignal, Signal, rt, state, untrack};
+use crate::reactive::graph::{Ctx, ReadSignal, Runtime, Signal, rt, state, untrack};
 use crate::reactive::seq::Seq;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -111,11 +111,26 @@ pub(crate) struct Emitter<K, T> {
     log: RefCell<Log<Change<K>>>,
     version: Signal<u64>,
     observers: RefCell<Vec<Weak<dyn Observer<K, T>>>>,
+    runtime: Weak<Runtime>,
+}
+
+impl<K, T> Emitter<K, T> {
+    /// A stage's nodes belong to its creating runtime, even if its last handle drops elsewhere.
+    fn dispose<U>(&self, signal: Signal<U>) {
+        if let Some(runtime) = self.runtime.upgrade() {
+            signal.dispose_in(&runtime);
+        }
+    }
 }
 
 impl<K: Clone + 'static, T: 'static> Emitter<K, T> {
     fn new() -> Self {
-        Emitter { log: RefCell::new(Log::new()), version: Signal::detached(0), observers: RefCell::new(Vec::new()) }
+        Emitter {
+            log: RefCell::new(Log::new()),
+            version: Signal::detached(0),
+            observers: RefCell::new(Vec::new()),
+            runtime: Rc::downgrade(&Runtime::current()),
+        }
     }
     fn bump(&self) {
         self.version.set_internal(untrack(|| self.version.get()) + 1);
@@ -147,7 +162,7 @@ impl<K: Clone + 'static, T: 'static> Emitter<K, T> {
 
 impl<K, T> Drop for Emitter<K, T> {
     fn drop(&mut self) {
-        self.version.dispose();
+        self.dispose(self.version);
     }
 }
 
@@ -427,7 +442,7 @@ struct ListInner<K, T> {
 impl<K, T> Drop for ListInner<K, T> {
     fn drop(&mut self) {
         for s in self.items.get_mut().values() {
-            s.dispose();
+            self.emitter.dispose(*s);
         }
     }
 }
@@ -611,7 +626,7 @@ where
         let index = inner.seq.borrow_mut().remove(k).expect("key in seq");
         let old = untrack(|| s.get());
         inner.emitter.remove(index, k, &old);
-        s.dispose();
+        inner.emitter.dispose(s);
     }
 
     /// Keeps the items matching `pred` (one O(n) scan, then O(log n) per removal).
@@ -863,7 +878,7 @@ struct MapInner<K, T, U> {
 impl<K, T, U> Drop for MapInner<K, T, U> {
     fn drop(&mut self) {
         for s in self.out.get_mut().values() {
-            s.dispose();
+            self.emitter.dispose(*s);
         }
     }
 }
@@ -879,7 +894,7 @@ impl<K: Eq + Hash + Clone + 'static, T: Clone + 'static, U: Clone + PartialEq + 
         if let Some(s) = s {
             let u = untrack(|| s.get());
             self.emitter.remove(index, k, &u);
-            s.dispose();
+            self.emitter.dispose(s);
         }
     }
     fn updated(&self, k: &K, _: &T, new: &T) {
@@ -952,7 +967,7 @@ struct JoinRight<K, T, RK, R, U> {
 impl<K, T, RK, R, U> Drop for JoinInner<K, T, RK, R, U> {
     fn drop(&mut self) {
         for (_, s) in self.out.get_mut().values() {
-            s.dispose();
+            self.emitter.dispose(*s);
         }
     }
 }
@@ -1043,7 +1058,7 @@ where
             self.unlink(&rk, k);
             let u = untrack(|| s.get());
             self.emitter.remove(index, k, &u);
-            s.dispose();
+            self.emitter.dispose(s);
         }
     }
     fn updated(&self, k: &K, _: &T, new: &T) {
@@ -1196,7 +1211,7 @@ struct GroupsInner<G, K, T> {
 impl<G, K, T> Drop for GroupsInner<G, K, T> {
     fn drop(&mut self) {
         for e in self.members.get_mut().values() {
-            e.info.dispose();
+            self.emitter.dispose(e.info);
         }
     }
 }
@@ -1228,7 +1243,7 @@ where
             let i = self.groups.borrow_mut().remove(g).expect("group");
             self.members.borrow_mut().remove(g);
             self.emitter.remove(i, g, &new);
-            info.dispose();
+            self.emitter.dispose(info);
         } else {
             self.emitter.update(g, &old, &new);
         }
@@ -1391,7 +1406,7 @@ struct FlatInner<G, K, T> {
 impl<G, K, T> Drop for FlatInner<G, K, T> {
     fn drop(&mut self) {
         for s in self.items.get_mut().values() {
-            s.dispose();
+            self.emitter.dispose(*s);
         }
     }
 }
@@ -1456,7 +1471,7 @@ where
         if let (Some(i), Some(s)) = (i, s) {
             let item = untrack(|| s.get());
             self.emitter.remove(i, key, &item);
-            s.dispose();
+            self.emitter.dispose(s);
         }
     }
     fn replace(&self, key: &FlatKey<G, K>, old: FlatItem<G, T>, new: FlatItem<G, T>) {

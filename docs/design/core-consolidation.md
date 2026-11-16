@@ -592,6 +592,31 @@ freshness and doctests. Clippy with warnings denied, formatting and diff checks 
 Evidence: `/tmp/octara-read-list-workspace.log` and `/tmp/octara-read-list-clippy.log`.
 The naming-only migration did not rerun the real-window suite above.
 
+## Eleventh-round retained list ownership
+
+A ReadList may outlive the window scope that produced it. Previously, dropping its last handle
+outside App entry or inside another App left detached item and version nodes in the creating
+runtime: a three-item state list retained four nodes after its final release.
+
+Each stage's existing Emitter now keeps one weak reference to its creating runtime. Stage
+destructors and item removal release their signals through that runtime, covering state lists,
+map/join outputs, group metadata, flattened rows and emitter versions. No global registry or
+per-item owner handle is added; public handles and scope ownership remain unchanged. Destruction
+does not switch the ambient App, and a retained list does not keep its runtime alive.
+
+Regression coverage closes the owning window while retaining cloned ReadList handles, then
+releases them outside App entry and inside a foreign App. It covers state, filter, sort, map,
+join, groups, group members, flatten and items containing TextBuffer. The foreign App's own
+signal must survive, and all owner nodes must return to baseline after final release. A separate
+test retains a list past shutdown and verifies that dropping the App still releases its graph
+values. The two release regressions failed before the fix and passed afterward.
+
+Validation: 665 workspace tests passed (three ignored); the focused lifetime tests also passed
+after adding the nested TextBuffer case. Clippy with warnings denied, formatting and diff checks
+passed. Evidence: `/tmp/octara-list-lifetime-before.log`, `/tmp/octara-list-lifetime-after.log`,
+`/tmp/octara-list-lifetime-workspace.log` and `/tmp/octara-list-lifetime-clippy.log`.
+This lifetime change was verified headlessly; the real-window suite was not rerun.
+
 ## References
 
 - [Signals contract](signals-redesign.md), [runtime contract](runtime-contract.md),

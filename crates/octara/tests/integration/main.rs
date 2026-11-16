@@ -23,6 +23,7 @@ mod inspect;
 mod interaction;
 mod keys;
 mod layout_issues;
+mod list_lifetime;
 mod menus;
 mod motion;
 mod multiline;
