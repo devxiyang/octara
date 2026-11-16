@@ -225,7 +225,7 @@ fn named_channels_take_text_from_tests_and_agents() {
 fn search_app() -> Window {
     Window::headless(|| {
         let query = state("query", || "a".to_string());
-        let found = resource(
+        let found = async_memo(
             move || query.get(),
             |q: String| async move {
                 // A slower answer for "a" than for "ab": the older one would arrive last.
@@ -234,10 +234,10 @@ fn search_app() -> Window {
             },
         );
         col()
-            .child(text(move || found.value().unwrap_or_default()).id("value"))
-            .child(text(move || if found.loading() { "loading" } else { "idle" }.to_string()).id("loading"))
-            .child(text(move || found.error().unwrap_or_default()).id("error"))
-            .child(el().id("refetch").w(px(10.0)).h(px(10.0)).on_press(move || found.refetch()))
+            .child(text(move || found.with(|s| s.value().cloned()).unwrap_or_default()).id("value"))
+            .child(text(move || if found.with(AsyncState::is_pending) { "loading" } else { "idle" }.to_string()).id("loading"))
+            .child(text(move || found.with(|s| s.error().cloned()).unwrap_or_default()).id("error"))
+            .child(el().id("refresh").w(px(10.0)).h(px(10.0)).on_press(move || found.refresh()))
             .child(text_input().id("q").w(px(100.0)).value(move || query.get()).on_input(move |v| query.set(v)))
             .into()
     })
@@ -249,10 +249,10 @@ fn texts(app: &Window) -> (String, String, String) {
 }
 
 #[test]
-fn a_resource_loads_by_key_and_an_old_answer_never_lands() {
+fn an_async_memo_loads_by_key_and_an_old_answer_never_lands() {
     let mut app = search_app();
     assert_eq!(texts(&app), ("".into(), "loading".into(), "".into()));
-    assert_eq!(app.app().pending()[0].label, "resource");
+    assert_eq!(app.app().pending()[0].label, "async_memo");
     // The key changes while "a" is still loading: "a" is cancelled, "ab" lands.
     app.app().advance(ms(5));
     app.dispatch(Event::Input("q".into(), "ab".into())).unwrap();
@@ -265,7 +265,7 @@ fn a_resource_loads_by_key_and_an_old_answer_never_lands() {
     assert_eq!(texts(&app), ("results for ab".into(), "idle".into(), "no results for bad".into()));
     // Refetch loads the same key again; a success clears the error.
     app.dispatch(Event::Input("q".into(), "ok".into())).unwrap();
-    app.tap("refetch").unwrap();
+    app.tap("refresh").unwrap();
     assert!(app.app().run_until_idle(ms(1000)).is_ok());
     assert_eq!(texts(&app), ("results for ok".into(), "idle".into(), "".into()));
 }
@@ -532,4 +532,205 @@ fn closing_a_window_cancels_its_waiting_requests() {
     assert!(window.asks().is_empty());
     assert!(app.pending().is_empty());
     assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+}
+
+#[test]
+fn an_async_memo_rechecks_its_input_after_polling_user_code() {
+    let app = App::new(octara::platform::HeadlessPlatform::default());
+    let (key, found) = app.run(|| {
+        let key = state("key", || 1u32);
+        let found = async_memo(
+            move || key.get(),
+            move |requested| async move {
+                if requested == 1 {
+                    key.set(2);
+                    Ok::<_, String>("obsolete")
+                } else {
+                    std::future::pending().await
+                }
+            },
+        );
+        (key, found)
+    });
+    app.poll();
+    app.run(|| {
+        assert_eq!(key.get(), 2);
+        assert_eq!(
+            found.with(|s| s.value().cloned()),
+            None,
+            "a result whose input changed during poll must never become the retained value"
+        );
+        assert!(found.with(AsyncState::is_pending));
+    });
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    app.shutdown();
+    assert!(app.pending().is_empty());
+}
+
+#[test]
+fn an_async_memo_refreshed_during_its_poll_cannot_publish_the_previous_attempt() {
+    let app = App::new(octara::platform::HeadlessPlatform::default());
+    let slot = Rc::new(Cell::new(None::<octara::task::AsyncMemo<u32, String>>));
+    let attempts = Rc::new(Cell::new(0));
+    let found = app.run(|| {
+        let (slot_for_load, attempts) = (slot.clone(), attempts.clone());
+        let found = async_memo(
+            || (),
+            move |_| {
+                let (slot, attempts) = (slot_for_load.clone(), attempts.clone());
+                async move {
+                    attempts.set(attempts.get() + 1);
+                    if attempts.get() == 1 {
+                        slot.get().unwrap().refresh();
+                        Ok(1)
+                    } else {
+                        std::future::pending().await
+                    }
+                }
+            },
+        );
+        slot.set(Some(found));
+        found
+    });
+    app.poll();
+    app.run(|| ());
+    app.poll();
+    app.run(|| {
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(found.with(|s| s.value().cloned()), None);
+        assert!(found.with(AsyncState::is_pending));
+    });
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    app.shutdown();
+    assert!(app.pending().is_empty());
+}
+
+#[test]
+fn async_memo_replacement_retires_each_attempt_even_when_the_key_returns() {
+    use std::cell::RefCell;
+    struct Attempt(Rc<Cell<usize>>);
+    impl Drop for Attempt {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+    let app = App::new(octara::platform::HeadlessPlatform::default());
+    let senders = Rc::new(RefCell::new(Vec::new()));
+    let dropped = Rc::new(Cell::new(0));
+    let (key, found) = app.run(|| {
+        let key = state("key", || "a");
+        let (senders, dropped) = (senders.clone(), dropped.clone());
+        let found = async_memo(
+            move || key.get(),
+            move |_| {
+                let (tx, rx) = channel::<u32>();
+                senders.borrow_mut().push(tx);
+                let guard = Attempt(dropped.clone());
+                async move {
+                    let _guard = guard;
+                    Ok::<_, String>(rx.recv().await.unwrap())
+                }
+            },
+        );
+        (key, found)
+    });
+    app.run(|| key.set("b"));
+    app.run(|| key.set("a"));
+    app.run(|| found.refresh());
+    assert_eq!(senders.borrow().len(), 4);
+    assert_eq!(dropped.get(), 3);
+    for sender in &senders.borrow()[..3] {
+        assert!(sender.send(99).is_err(), "retired receivers reject late results");
+    }
+    senders.borrow()[3].send(4).unwrap();
+    app.poll();
+    app.run(|| {
+        assert_eq!(found.with(|s| s.value().cloned()), Some(4));
+        assert!(!found.with(AsyncState::is_pending));
+        found.refresh();
+    });
+    assert_eq!(dropped.get(), 4);
+    assert_eq!(app.pending().len(), 1);
+    app.shutdown();
+    assert_eq!(dropped.get(), 5);
+    assert!(senders.borrow()[4].send(5).is_err());
+    assert!(app.pending().is_empty());
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+}
+
+#[test]
+fn an_async_memo_retired_during_poll_does_not_touch_disposed_state() {
+    let app = App::new(octara::platform::HeadlessPlatform::default());
+    let dropped = Rc::new(Cell::new(false));
+    app.run(|| {
+        let dropped = dropped.clone();
+        async_memo(
+            || (),
+            move |_| {
+                let guard = Dropped(dropped.clone());
+                async move {
+                    let _guard = guard;
+                    App::current().shutdown();
+                    Ok::<_, String>(1)
+                }
+            },
+        );
+    });
+    app.poll();
+    assert!(dropped.get());
+    assert!(app.pending().is_empty());
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+}
+
+#[test]
+fn async_memo_borrows_non_clone_results_and_clears_errors_when_refreshed() {
+    struct Value(u32);
+    struct Failure;
+    let app = App::new(octara::platform::HeadlessPlatform::default());
+    let calls = Rc::new(Cell::new(0));
+    let (input, incidental, derived) = app.run(|| {
+        let input = state("input", || 7u32);
+        let incidental = state("incidental", || 0u32);
+        let calls = calls.clone();
+        let derived = async_memo(
+            move || input.get(),
+            move |key| {
+                let _sample = incidental.get();
+                calls.set(calls.get() + 1);
+                let attempt = calls.get();
+                async move {
+                    let _sample = incidental.get();
+                    if attempt == 2 { Err(Failure) } else { Ok(Value(key)) }
+                }
+            },
+        );
+        assert!(derived.with(AsyncState::is_pending));
+        assert!(derived.with(|s| s.value().is_none()));
+        (input, incidental, derived)
+    });
+    app.poll();
+    app.run(|| {
+        assert!(derived.with(|s| matches!(s, AsyncState::Ready(Value(7)))));
+        input.set(7);
+        incidental.set(1);
+    });
+    assert_eq!(calls.get(), 1, "equal input and incidental reads do not restart work");
+    app.run(|| derived.refresh());
+    app.run(|| assert!(derived.with(|s| matches!(s, AsyncState::Pending { previous: Some(Value(7)) }))));
+    app.poll();
+    app.run(|| {
+        assert!(derived.with(|s| matches!(s, AsyncState::Failed { error: Failure, previous: Some(Value(7)) })));
+        assert!(derived.with(|s| s.error().is_some()));
+        derived.refresh();
+    });
+    app.run(|| {
+        assert!(derived.with(AsyncState::is_pending));
+        assert!(derived.with(|s| s.error().is_none()), "retry clears the previous error");
+        assert_eq!(derived.with(|s| s.value().map(|v| v.0)), Some(7));
+    });
+    app.poll();
+    app.run(|| assert!(derived.with(|s| matches!(s, AsyncState::Ready(Value(7))))));
+    assert_eq!(calls.get(), 3);
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    app.shutdown();
 }

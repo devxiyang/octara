@@ -111,7 +111,7 @@ paths private. Module extraction follows semantic changes, not a standalone rewr
 | Side effect | watch(source, callback) -> Watch; explicit stop(), scope-owned lifetime |
 | Intentional sample | One untrack(f) utility; no duplicate untracked read methods |
 | Shared dependencies | Existing provide / use_context; values can be handles or Rc services |
-| Async UI work | spawn, resource, channels and timers, under the captured scope |
+| Async UI work | spawn, async_memo, channels and timers, under the captured scope |
 | App-lifetime work | Explicit App::run root entry, then spawn; no task promotion via detach |
 | Large changing lists/text | StateList/ReadList and TextBuffer; preserve incremental changes |
 | Control inputs | Static values, tracked closures or matching Signal/ReadSignal property inputs |

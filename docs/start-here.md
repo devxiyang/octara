@@ -416,8 +416,10 @@ app.app().run_until_idle(Duration::from_secs(1)).unwrap();
 assert_eq!(app.kernel().text_of("status").as_deref(), Some("ready"));
 ```
 
-- `resource(key, fetch)`: a load that re-runs when its key changes; read `.loading()`,
-  `.value()`, `.error()`. A newer load cancels the older one.
+- `async_memo(source, compute)`: an async derivation that restarts when its source changes.
+  Read its `AsyncState` with `.with(|s| ..)` or `.get()`; states are `Pending`, `Ready`, and
+  `Failed`. Refresh with `.refresh()`. Only the synchronous source tracks dependencies;
+  superseded results cannot publish. Refresh and failure retain the last successful value.
 - `background(|| ..)`: blocking work on a worker thread, awaited in a task.
 - `channel()`: a `Sender` for other threads (a socket, an LLM's tokens) and a `Receiver` on the UI
   thread. `interval(period, f)` ticks while its scope lives.

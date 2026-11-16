@@ -1,5 +1,5 @@
 //! A tour of what Octara draws and does: shadows, gradients, images, a canvas chart, icons, group
-//! opacity, cut text, text editing, a select, focus, timers, an async resource, a web view, a
+//! opacity, cut text, text editing, a select, focus, timers, an async derivation, a web view, a
 //! map, and motion. One file per card; [`page`] shows one card alone (`window -- showcase web`).
 
 use octara::prelude::*;

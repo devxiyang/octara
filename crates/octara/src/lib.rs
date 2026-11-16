@@ -62,7 +62,7 @@ pub mod prelude {
     pub use crate::reactive::on_cleanup;
     pub use crate::reactive::text::{TextBuffer, text_buffer};
     pub use crate::reactive::{ReadSignal, Signal, Watch, memo, provide, state, untrack, use_context, watch};
-    pub use crate::task::{Load, Receiver, Resource, Sender, Task, background, channel, interval, resource, sleep, spawn};
+    pub use crate::task::{AsyncMemo, AsyncState, Receiver, Sender, Task, async_memo, background, channel, interval, sleep, spawn};
     pub use crate::view::{
         Behavior, El, IntoElement, IntoProp, IntoRows, IntoText, Length, Patch, Rich, Span, Styled, View, bind_keys, breakpoint, canvas,
         clock, col, component, component_keyed, each, el, focus, following_tail, icon, instant, invoke, invoke_after_update, is_composing,

@@ -163,7 +163,7 @@ window clears the current window; it must not mean "inherit whichever window hap
 App::run establishes the root owner for shared state and intentional App-lifetime tasks. Remove
 Task::detach: choose the lifetime before spawning. App work must access windows explicitly and
 check their liveness. Moving a future to the root does not extend the lifetime of UI handles it
-captures. Normal spawn/resource/interval/channel subscriptions remain scoped; ignoring their
+captures. Normal spawn/async_memo/interval/channel subscriptions remain scoped; ignoring their
 handles does not cancel them. Task cancellation remains explicit or owner-driven.
 
 App lifetime ends through explicit, idempotent `App::shutdown`, not Rc handle counts. The desktop

@@ -32,7 +32,7 @@ must land with the replacement semantics; deleting them first would break workin
   contacts example use them; deleting the capability would push equivalent logic into apps.
 - `StateList`/`ReadList` remain explicit incremental tools. Ordinary Vec rendering must not
   require them. Do not replace large-list incremental updates with full Vec scans for uniformity.
-- `Resource`/`Load` provide keyed asynchronous loading, cancellation and refetch, retaining the
+- `AsyncMemo`/`AsyncState` provide keyed asynchronous loading, cancellation and refetch, retaining the
   previous value during reload/error. They are a higher-level task utility, not another Signal
   primitive. Keep the behavior; removing it would distribute the lifecycle protocol to callers.
 - `paced`, `clock` and `interval` are presentation/time conveniences. They do not require another

@@ -1,4 +1,4 @@
-# Async: Tasks, Timers, Channels and Resources
+# Async: Tasks, Timers, Channels and Async derivations
 
 Status: current implementation baseline. The selected [runtime contract](runtime-contract.md)
 and [consolidation plan](core-consolidation.md) distinguish the first correctness refactor from
@@ -80,11 +80,33 @@ not imply aborting arbitrary transport work or undoing external effects.
 - `rx.named("token")` (`T: FromStr`): tests and agents feed text by name (`App::send(name, payload)`, `Event::Send`); the name itself counts as a
   sender, and the channel stays open while it is registered.
 
-## Resources
+## Async derivations
 
-- `resource(key, |k| async { .. }) -> Resource<T, E>`: loads now, and reloads when `key()` changes or on `refetch()`; the same key does not load again.
+- `async_memo(key, |k| async { .. }) -> AsyncMemo<T, E>`: loads now, and reloads when `key()` changes or on `refresh()`; the same key does not load again.
   A new load cancels the old one, and an old answer never overwrites a new answer.
-- State is signals: `loading()`, `value()` (keeps the last value during a reload and after an error), `error()`, `get() -> Load`.
+- Read state through `with` (borrowed, no Clone bound) or `get` (cloned): `AsyncState::Pending`,
+  `Ready`, or `Failed`. Pending and failure retain the last successful value. Refresh clears
+  the previous error. `AsyncState` provides borrowed `value`, `error`, and `is_pending` accessors.
+  See [the async derivation contract](async-derived.md).
+
+Result admission is separate from cancellation. The async derivation keeps its key and refresh count
+in a private memo shared by the replacement watch and the completion path. After user future
+polling returns, publication requires both a live current task and matching current inputs.
+This prevents a future that changes its own key or calls `refresh()` from publishing an obsolete
+value before the replacement watch runs. A task cancelled during its active poll cannot publish
+either; the scheduler's existing task identity handles replacement and scope retirement.
+No new request ID or public primitive is needed. A→B→A without an intervening replacement
+still denotes the same current key; an explicit refresh always distinguishes a new attempt.
+Cancellation does not undo external side effects already performed by user futures.
+
+The regression tests in `tests/integration/task.rs` cover input changes and same-key refresh
+during polling, shutdown during polling, A→B→A replacement, rejected late channel results,
+captured-value release, and pending-work retirement. This follows the validity-before-publication
+principle selected in [the reference review](../research/core-mechanism-selection.md).
+
+Validated 2026-11-16: 24 task integration tests passed; the complete workspace passed 765
+tests with 3 existing ignored tests. Workspace/all-target Clippy with warnings denied,
+formatting and diff checks passed. No native-window validation was required for this core change.
 
 ## Tests and agents
 
@@ -94,7 +116,7 @@ not imply aborting arbitrary transport work or undoing external effects.
 | `advance(d)` / `advance_to(t)` | Advance the clock; whatever expires along the way is handled in time order |
 | `settle()` | Without moving the clock: wait for background work to finish (real time, with a limit) and run all ready tasks; returns the work still pending |
 | `run_until_idle(limit)` | Repeatedly settle and advance to the next deadline until there are no tasks (subscriptions do not count); past the limit, returns the remaining work |
-| `pending()` | Tasks, subscriptions, background work: kind, label (`task`, `resource`, `interval`, `channel "token"`), scope path, source location, timer expiry time |
+| `pending()` | Tasks, subscriptions, background work: kind, label (`task`, `async_memo`, `interval`, `channel "token"`), scope path, source location, timer expiry time |
 
 ## Later
 

@@ -11,7 +11,7 @@
 //!   `now` follow it, so tests decide when timers fire.
 //! - Pending work is listed (`App::pending`), with the scope and source location of each.
 
-use crate::reactive::graph::{Ctx, ScopeId, Signal, rt, watch};
+use crate::reactive::graph::{Ctx, ScopeId, Signal, memo, rt, untrack, watch};
 use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -44,7 +44,7 @@ impl TaskId {
 /// What a piece of pending work is, for `App::pending`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WorkKind {
-    /// A task (`spawn`, a resource's load).
+    /// A task (`spawn`, a async derivation's load).
     Task,
     /// A long-lived listener (`interval`, a channel's `on`): not work that finishes.
     Subscription,
@@ -59,7 +59,7 @@ pub enum WorkKind {
 #[derive(Clone, PartialEq, Debug)]
 pub struct PendingWork {
     pub kind: WorkKind,
-    /// What it is: `task`, `resource`, `interval`, `channel "token"`, ….
+    /// What it is: `task`, `async_memo`, `interval`, `channel "token"`, ….
     pub label: String,
     /// The scope that owns it (`app`, `app/window…/chat/…`).
     pub scope: String,
@@ -805,94 +805,131 @@ impl<T: Send + std::str::FromStr + 'static> Receiver<T> {
     }
 }
 
-// ---- resources ----
+// ---- async derivations ----
 
-/// A resource's state: loading or not, the last value, and the last error. A new load keeps the
-/// value it replaces until it lands; an error keeps the last value too.
+/// The current async derivation state. Refresh and failure retain the last successful value.
 #[derive(Clone, PartialEq, Debug)]
-pub struct Load<T, E> {
-    pub loading: bool,
-    pub value: Option<T>,
-    pub error: Option<E>,
+pub enum AsyncState<T, E> {
+    /// Computing a new result, optionally retaining the last successful value.
+    Pending { previous: Option<T> },
+    /// The current attempt succeeded.
+    Ready(T),
+    /// The current attempt failed; the last successful value remains available.
+    Failed { error: E, previous: Option<T> },
 }
 
-/// An async load keyed by reactive input (see [`resource`]).
-pub struct Resource<T: 'static, E: 'static = String> {
-    state: Signal<Load<T, E>>,
-    refetches: Signal<u64>,
+impl<T, E> AsyncState<T, E> {
+    /// The last successful value, including while refreshing or after failure.
+    pub fn value(&self) -> Option<&T> {
+        match self {
+            Self::Ready(value) => Some(value),
+            Self::Pending { previous } | Self::Failed { previous, .. } => previous.as_ref(),
+        }
+    }
+    /// The current failure. Refresh clears it before starting another attempt.
+    pub fn error(&self) -> Option<&E> {
+        match self {
+            Self::Failed { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+    /// Whether the derivation is waiting for its current attempt.
+    pub fn is_pending(&self) -> bool {
+        matches!(self, Self::Pending { .. })
+    }
+    fn take_value(&mut self) -> Option<T> {
+        match std::mem::replace(self, Self::Pending { previous: None }) {
+            Self::Ready(value) => Some(value),
+            Self::Pending { previous } | Self::Failed { previous, .. } => previous,
+        }
+    }
 }
 
-impl<T, E> Clone for Resource<T, E> {
+/// A scope-owned asynchronous derivation (see [`async_memo`]). Reads never block or suspend UI.
+pub struct AsyncMemo<T: 'static, E: 'static = String> {
+    state: Signal<AsyncState<T, E>>,
+    refreshes: Signal<u64>,
+}
+
+impl<T, E> Clone for AsyncMemo<T, E> {
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<T, E> Copy for Resource<T, E> {}
+impl<T, E> Copy for AsyncMemo<T, E> {}
 
-impl<T: Clone + 'static, E: Clone + 'static> Resource<T, E> {
-    /// The whole state (tracked).
-    pub fn get(&self) -> Load<T, E> {
+impl<T: 'static, E: 'static> AsyncMemo<T, E> {
+    /// Borrows the current state and tracks this read. Values and errors need not be Clone.
+    pub fn with<R>(&self, f: impl FnOnce(&AsyncState<T, E>) -> R) -> R {
+        self.state.with(f)
+    }
+    /// Clones the current state and tracks this read.
+    pub fn get(&self) -> AsyncState<T, E>
+    where
+        T: Clone,
+        E: Clone,
+    {
         self.state.get()
     }
-    pub fn loading(&self) -> bool {
-        self.state.with(|s| s.loading)
-    }
-    /// The last value loaded, if any (kept while reloading and after an error).
-    pub fn value(&self) -> Option<T> {
-        self.state.with(|s| s.value.clone())
-    }
-    pub fn error(&self) -> Option<E> {
-        self.state.with(|s| s.error.clone())
-    }
-    /// Loads again with the same key (the running load, if any, is cancelled).
-    pub fn refetch(&self) {
-        self.refetches.update(|n| *n += 1);
+    /// Recomputes the same input, cancelling the previous attempt and clearing its error.
+    pub fn refresh(&self) {
+        self.refreshes.update(|n| *n += 1);
     }
 }
 
-/// Loads with `fetch(key())` now and again whenever the key changes (or on `refetch`): the
+/// Loads with `fetch(key())` now and again whenever the key changes (or on `refresh`): the
 /// previous load is cancelled, so an old answer never overwrites a newer one; an unchanged key
-/// loads nothing. Owned by the current scope.
+/// loads nothing. Before publishing, the load rechecks its task and key/refresh input, including
+/// changes made during its final poll. Only `key` is tracked; reads in `fetch` or its future do not subscribe.
+/// Owned by the current scope.
 #[track_caller]
-pub fn resource<K, T, E, Fut>(key: impl Fn() -> K + 'static, fetch: impl Fn(K) -> Fut + 'static) -> Resource<T, E>
+pub fn async_memo<K, T, E, Fut>(key: impl Fn() -> K + 'static, fetch: impl Fn(K) -> Fut + 'static) -> AsyncMemo<T, E>
 where
     K: Clone + PartialEq + 'static,
-    T: Clone + 'static,
-    E: Clone + 'static,
+    T: 'static,
+    E: 'static,
     Fut: Future<Output = Result<T, E>> + 'static,
 {
     let at = Location::caller();
-    let state = Signal::scoped(Load { loading: true, value: None, error: None });
-    let refetches = Signal::scoped(0u64);
+    let state = Signal::scoped(AsyncState::Pending { previous: None });
+    let refreshes = Signal::scoped(0u64);
+    let request = memo(move || (key(), refreshes.get()));
     let running: Rc<RefCell<Option<Task>>> = Rc::default();
     let scope = rt(|r| r.current_scope());
     watch(
-        move || (key(), refetches.get()),
-        move |(k, _), _| {
-            if let Some(t) = running.borrow_mut().take() {
+        move || request.get(),
+        move |requested, _| {
+            let previous = running.borrow_mut().take();
+            if let Some(t) = previous {
                 t.cancel();
             }
-            state.update(|s| s.loading = true);
-            let load = fetch(k.clone());
+            state.update(|s| *s = AsyncState::Pending { previous: s.take_value() });
+            let requested = requested.clone();
+            let load = fetch(requested.0.clone());
             let fut = async move {
                 let r = load.await;
+                // User polling can change the key/refresh input or retire this task.
+                // Cancellation cannot interrupt an active poll, so validate at publication.
+                let scheduler = sched();
+                if !scheduler.current.get().is_some_and(|id| scheduler.alive(id))
+                    || untrack(|| request.with(|current| current != &requested))
+                {
+                    return;
+                }
                 state.update(|s| {
-                    s.loading = false;
-                    match r {
-                        Ok(v) => {
-                            s.value = Some(v);
-                            s.error = None;
-                        }
-                        Err(e) => s.error = Some(e),
-                    }
+                    let previous = s.take_value();
+                    *s = match r {
+                        Ok(value) => AsyncState::Ready(value),
+                        Err(error) => AsyncState::Failed { error, previous },
+                    };
                 });
             };
-            // The load belongs to the resource's scope, not to whatever runs the watch.
-            let task = rt(|r| r.with_frame(Ctx::Handler, None, Some(scope), || spawn_with(fut, WorkKind::Task, "resource".into(), at)));
+            // The load belongs to the async derivation's scope, not to whatever runs the watch.
+            let task = rt(|r| r.with_frame(Ctx::Handler, None, Some(scope), || spawn_with(fut, WorkKind::Task, "async_memo".into(), at)));
             *running.borrow_mut() = Some(task);
         },
     );
-    Resource { state, refetches }
+    AsyncMemo { state, refreshes }
 }
 
 #[cfg(test)]

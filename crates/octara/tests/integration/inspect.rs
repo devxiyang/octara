@@ -223,11 +223,11 @@ fn accepted_findings_need_a_reason_and_leave_the_report_clean() {
 }
 
 #[test]
-fn a_resource_in_a_component_reports_nothing() {
-    // `resource` keeps its state in framework signals, not the app's `Signal::new`.
+fn an_async_memo_in_a_component_reports_nothing() {
+    // `async_memo` keeps its state in framework signals, not the app's `Signal::new`.
     let app = Window::headless(|| {
-        let r = resource(|| 1u32, |n: u32| async move { Ok::<u32, String>(n) });
-        text(move || format!("{:?}", r.value())).into()
+        let r = async_memo(|| 1u32, |n: u32| async move { Ok::<u32, String>(n) });
+        text(move || format!("{:?}", r.with(|s| s.value().cloned()))).into()
     });
     assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 }
