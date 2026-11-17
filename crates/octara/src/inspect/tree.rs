@@ -77,6 +77,7 @@ fn inspect_one(kernel: &Kernel, id: NodeId) -> Node {
         max_numeric_value: range.map(|r| r.max),
         numeric_value_step: range.and_then(|r| r.step),
         checked: kernel.checked(id),
+        placeholder: kernel.placeholder(id).map(str::to_owned),
         required: kernel.required(id),
         invalid: kernel.invalid(id),
         expanded: kernel.expanded(id),

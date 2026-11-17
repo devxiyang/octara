@@ -55,6 +55,7 @@ fn atomic_content_rejects_application_children_before_conversion_or_iteration() 
 
 #[test]
 fn specialized_configuration_requires_matching_content() {
+    rejected("placeholder", || el().placeholder(|| -> String { panic!("rejected hint must not run") }));
     rejected("multiline", || el().multiline());
     rejected("rows", || text("label").rows(1, 3));
     rejected("submit_on_enter", || el().submit_on_enter());

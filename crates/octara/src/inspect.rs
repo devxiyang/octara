@@ -168,6 +168,9 @@ pub struct Node {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    /// Display-only input hint, independent of its name and editable value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
     /// The finite current number of a range control; omitted for indeterminate progress or
     /// a number field whose raw draft does not parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]

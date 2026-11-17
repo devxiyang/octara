@@ -388,6 +388,8 @@ struct TextContent {
 #[derive(Default)]
 struct InputContent {
     value: String,
+    /// Display-only hint; never part of the editing document or its layout cache.
+    placeholder: String,
     composition: Option<text_input::Composition>,
     selection: (usize, usize),
     /// How far the text is scrolled: x for a single line, y for a multi-line field.

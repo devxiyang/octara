@@ -1,7 +1,7 @@
 # Shared semantic resolution
 
-Status: C2a node-local resolution implemented on `init`. Input prompt presentation and broader
-composite naming remain open; this is not a full accessible-name computation algorithm.
+Status: C2a node-local resolution and C2b independent input hints are implemented on `init`.
+Broader composite naming remains open; this is not a full accessible-name computation algorithm.
 
 `kernel/semantics.rs` is the owner of the node-local name rule. AX, Inspector, name lookup,
 diagnostic descriptions and missing-name checks consume it rather than each reconstructing
@@ -13,6 +13,7 @@ or new public primitive. `Kernel::label` still reads only the explicit label.
 | Explicit label | Wins, including an explicit empty string |
 | Absent label on document text | Nonempty own text supplies the name |
 | Editable or other control value | Never supplies the name |
+| Input placeholder | Independently exported display hint; never supplies a name or description |
 | Empty document text | No fallback name |
 | Description | Explicit description wins, including empty; otherwise tooltip unless it equals the resolved name |
 | Visibility | Name lookup follows the same visible subtree rule as AX, including clipped internal links |

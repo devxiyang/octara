@@ -558,6 +558,91 @@ fn drawn_glyphs(app: &Window, id: &str) -> usize {
 }
 
 #[test]
+fn placeholder_is_presentation_not_an_editing_document_or_name() {
+    for multiline in [false, true] {
+        let mut app = Window::headless(move || {
+            let value = state("value", String::new);
+            let hint = state("hint", || "Write here".to_owned());
+            on_command("hint", move || hint.set("中文提示很长但不改变输入高度\n第二行".into()));
+            on_command("clear-hint", move || hint.set(String::new()));
+            let field = text_input().id("field").w(100).placeholder(hint).value(value).on_input(move |v| value.set(v));
+            (if multiline { field.rows(1, 3) } else { field }).into()
+        });
+        app.tap("field").unwrap();
+        let id = app.kernel().find("field").unwrap();
+        let initial = app.inspect();
+        let native = native_input(&app);
+        let frame = app.kernel().rect(id);
+        assert_eq!(initial.find("field").unwrap().placeholder.as_deref(), Some("Write here"));
+        assert_eq!(initial.find("field").unwrap().name, None, "a hint never names a control");
+        assert!(app.kernel().accessibility_issues().iter().any(|i| i.code == "UNNAMED_CONTROL"));
+        let ax = app.accessibility_update();
+        let node = &ax.nodes.iter().find(|(n, _)| *n == octara::kernel::a11y::a11y_id(id)).unwrap().1;
+        assert_eq!(node.placeholder(), Some("Write here"));
+        assert_eq!(node.value(), Some(""));
+        assert!(drawn_glyphs(&app, "field") > 0);
+        assert!(app.display_list().glyph_runs().filter(|r| r.source == id).all(|r| r.color == Theme::light().get(Token::TextMuted)));
+        assert_eq!(native.document.as_ref().unwrap().text(), "");
+        assert_eq!(native.geometry.as_ref().unwrap().lines[0].end, 0);
+        assert_eq!(app.kernel().input_offset_at(id, frame.0 + 80.0, frame.1 + 8.0, false), Some(0));
+        app.invoke("hint").unwrap();
+        let changed = app.inspect();
+        assert_eq!(changed.text_input, initial.text_input);
+        assert_eq!(changed.find("field").unwrap().target, initial.find("field").unwrap().target);
+        assert_eq!(app.kernel().rect(id), frame, "hint text never grows the field");
+        assert_eq!(native_input(&app).geometry, native.geometry);
+        let drawing = app.display_list();
+        let mut baselines: Vec<_> =
+            drawing.glyph_runs().filter(|r| r.source == id).flat_map(|r| r.glyphs.iter().map(|g| g.y).collect::<Vec<_>>()).collect();
+        baselines.sort_by(f32::total_cmp);
+        baselines.dedup();
+        assert_eq!(baselines.len() > 1, multiline, "single-line hints fit one line; multiline hints wrap and clip");
+        app.event(InputEvent::Preedit { text: "ni".into(), selection: Some((0, 2)) });
+        assert_eq!(drawn_glyphs(&app, "field"), 2, "composition hides the hint");
+        let composing = app.inspect().text_input;
+        app.invoke("clear-hint").unwrap();
+        assert_eq!(app.inspect().text_input, composing, "hint updates leave composition alone");
+        assert_eq!(app.inspect().find("field").unwrap().placeholder, None);
+        let ax = app.accessibility_update();
+        assert_eq!(ax.nodes.iter().find(|(n, _)| *n == octara::kernel::a11y::a11y_id(id)).unwrap().1.placeholder(), None);
+        app.event(InputEvent::Composition(String::new()));
+        assert_eq!(drawn_glyphs(&app, "field"), 0);
+        app.invoke("hint").unwrap();
+        assert!(drawn_glyphs(&app, "field") > 0);
+        app.type_text("X");
+        assert_eq!(value(&app), "X");
+        assert_eq!(drawn_glyphs(&app, "field"), 1);
+        app.press_key("mod+z").unwrap();
+        assert_eq!(value(&app), "");
+        assert!(drawn_glyphs(&app, "field") > 0, "undo restores empty value, never the hint as text");
+    }
+}
+
+#[test]
+fn secure_placeholder_remains_a_hint_and_never_exposes_the_value() {
+    let mut app = Window::headless(|| {
+        let value = state("value", String::new);
+        text_input()
+            .id("field")
+            .w(180)
+            .secure()
+            .label("Password")
+            .placeholder("Test password")
+            .value(value)
+            .on_input(move |s| value.set(s))
+            .into()
+    });
+    app.tap("field").unwrap();
+    assert!(drawn_glyphs(&app, "field") > 0);
+    app.type_text("secret");
+    let snapshot = app.inspect();
+    assert_eq!(snapshot.text_input, None);
+    assert_eq!(snapshot.find("field").unwrap().placeholder.as_deref(), Some("Test password"));
+    assert!(!snapshot.to_json().contains("secret"));
+    assert_eq!(drawn_glyphs(&app, "field"), 6);
+}
+
+#[test]
 fn what_a_field_draws_follows_every_edit_at_once() {
     let mut app = app("hello");
     assert_eq!(drawn_glyphs(&app, "field"), 5);

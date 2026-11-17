@@ -955,6 +955,7 @@ fn composer() -> El {
                     text_field(chat.draft)
                         .id("composer")
                         .label("Message")
+                        .placeholder("Ask anything…")
                         .text_base()
                         .multiline()
                         .rows(1, 8)

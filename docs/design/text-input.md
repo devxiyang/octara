@@ -6,6 +6,35 @@ One constructor, `text_input()`, with modifiers (Rune's names); the model stays 
 `on_input`, and the editing model stays the runtime's own (not Parley's `PlainEditor`,
 [input](input.md)).
 
+## Display hints and editing ownership
+
+`text_input().placeholder(..)` (also available on kit text fields) accepts a fixed or reactive
+string. It belongs to input presentation, separately from `value`, selection, composition and
+paragraph reuse. Changing it marks paint and semantics only; it cannot resize the field, run an
+input handler, change undo history, move a caret, retire a target or end composition. An empty
+string clears it. Non-input builders reject this configuration before converting its property.
+
+The hint draws only when the committed value is empty and there is no composition. It uses
+`Token::TextMuted`, the input's fonts and content clip. Single-line hints fit one line with an
+ellipsis; multiline hints wrap but do not grow the input's rows. The empty editing document
+still provides one insertion line, and pointer selection/native geometry use that document,
+never the hint. Separate shaping uses the existing engine cache without replacing the input's
+retained paragraph layout. Empty secure inputs can show a hint; nonempty values retain their
+existing masking/redaction policy.
+
+AX exports the placeholder property, and Inspector exposes optional `placeholder` independently
+of `name` and `value`, including while the nonempty field hides it visually. Neither export uses
+it as a name or a description. Applications still supply `.label(..)`; missing-name diagnostics
+remain active. [Semantic resolution](semantics.md) defines label/text fallback. Chat now uses
+`.placeholder("Ask anything…")` on its actual composer without changing its accessible label.
+
+The headless regressions cover reactive replacement/clearing, empty/filled/preedit/cancel/undo,
+wrapped versus fitted presentation, native geometry, stable targets, fixed height, AX clearing,
+missing labels, builder misuse and secure redaction. C2b validation (2026-11-17): **904
+workspace tests passed, 0 failed, 3 existing ignored doctests**; all-targets Clippy, formatting,
+diff/layer checks, CLI lookup and generated skill freshness passed. Real OS validation is
+deferred separately.
+
 ## Multi-line
 
 - `.multiline()`: the text wraps at the field's width and Enter inserts a line break.

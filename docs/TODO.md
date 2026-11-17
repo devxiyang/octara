@@ -202,7 +202,7 @@ validation was performed. B3 includes the separately recorded consistency-mode i
       **Remaining C1 acceptance:** obtain separate real-window IME/scrolling/candidate evidence.
       Headless geometry agreement does not prove OS candidate placement. No real window/OS
       interaction or screenshot was performed in C1b/C1c.
-- [ ] Separate prompt, editable value and accessible label; consolidate semantic resolution.
+- [x] Separate prompt, editable value and accessible label; consolidate node-local semantic resolution.
       **C2a implemented:** `kernel/semantics.rs` owns node-local name resolution for AX,
       Inspector, name lookup, diagnostic descriptions and missing-name checks. Explicit labels
       override document text, including an explicit empty string. Editable values never supply
@@ -210,11 +210,22 @@ validation was performed. B3 includes the separately recorded consistency-mode i
       hidden subtrees/internal links cannot be found by name. Empty/whitespace labels no longer
       satisfy missing-name checks; hidden text does not satisfy descendant-text checks.
       See [semantic resolution](design/semantics.md). Independent input prompt presentation and
-      broader composite naming remain unfinished; no new public primitive or retained cache.
+      broader composite naming were left for subsequent slices; no new public primitive or retained cache.
       C2a validation: **902 workspace tests passed, 0 failed, 3 existing ignored doctests**;
       all-targets Clippy, format/diff and dependency-layer checks passed. The new regression
       cross-checks AX/Inspector/lookup/diagnostics and dynamic target retention.
-      Real-window acceptance is deferred at the user's request while away from the computer.
+      **C2b implemented:** `.placeholder(..)` is an input-only, reactive display property,
+      stored separately from the editing document. It draws only when empty and not composing;
+      single-line hints fit with ellipsis, multiline hints wrap under the field clip. It does
+      not affect intrinsic height, selection, history, caret/native geometry or target identity.
+      AX/Inspector report it separately from name/value; empty strings clear it. Secure fields
+      retain value redaction. Chat's composer uses it. Builder misuse is rejected before property
+      conversion. Skill/start-here copies are regenerated. See [text input](design/text-input.md).
+      C2b validation: **904 workspace tests passed, 0 failed, 3 existing ignored doctests**;
+      all-targets Clippy, format/diff, dependency-layer and skill freshness checks passed.
+      The CLI resolves `El::placeholder`; Chat, HTTP and renderer regressions pass.
+      Broader composite naming remains in phase D. Real-window acceptance is deferred at the
+      user's request while away from the computer.
 - [ ] Finalize and implement external-value/IME arbitration (same-value write, rejection,
       normalization, explicit reset, composition completion/cancellation and late callbacks).
       Candidate policies in the design are not automatically accepted requirements.

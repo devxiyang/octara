@@ -351,6 +351,8 @@ assert_eq!(app.kernel().text_of("saved").as_deref(), Some("saved 1"));
 ```
 
 - Text: `octara_kit::text_field(signal)` binds a `Signal<String>`; `.on_submit(..)` runs on Enter.
+  `.placeholder("Write here…")` shows a hint only while empty and not composing; it is not
+  editable text and never replaces `.label(..)`. Hint changes do not resize the field.
   Selection, undo, clipboard and input methods are the runtime's.
   Adding `.on_input(..)` preserves the binding and observes the model after its setter runs.
 - Component authors use `.behavior(|b| b.on_input(..).on_submit(..))` to register built-in

@@ -218,6 +218,22 @@ impl Field {
 }
 
 impl Kernel {
+    /// A text input's display-only hint, omitted when empty. It is never its name or value.
+    pub fn placeholder(&self, id: NodeId) -> Option<&str> {
+        self.node(id).input().map(|i| i.placeholder.as_str()).filter(|s| !s.is_empty())
+    }
+
+    /// Changes the display-only hint without changing selection, composition or sizing.
+    pub fn set_placeholder(&mut self, id: NodeId, placeholder: &str) -> bool {
+        let Some(input) = self.node_mut(id).input_mut() else { return false };
+        if input.placeholder == placeholder {
+            return false;
+        }
+        input.placeholder = placeholder.to_owned();
+        self.changed(id, Dirty::PAINT | Dirty::SEMANTICS, "placeholder", || placeholder.to_owned());
+        true
+    }
+
     /// Sets a text input's selection (`anchor`, `caret`: byte offsets into its value); the
     /// caret's goal x for moves by lines is forgotten.
     /// Kept as given: the value may be about to change (an edit sets the selection, then its
@@ -544,10 +560,23 @@ impl Kernel {
                 out.push(quad(r, fade(fill)));
             }
         }
-        if !f.shown.is_empty() {
+        let placeholder = n.input().filter(|i| i.value.is_empty() && i.composition.is_none()).and_then(|_| self.placeholder(id));
+        if !f.shown.is_empty() || placeholder.is_some() {
             let multiline = self.is_multiline(id);
             let style = input_style(v.text_style(), multiline);
-            let runs = self.shown_layout(id, &f.shown, &style).present(multiline.then_some(f.width), None, None, None).glyphs;
+            let (runs, color) = if let Some(placeholder) = placeholder {
+                // Shape hints separately: they must not displace the editable paragraph cache
+                // or change native query, hit-test, selection and caret geometry.
+                let mut engine = self.res.text.borrow_mut();
+                let layout = engine.layout(placeholder, &style, &[], None, 0);
+                let ellipsis = (!multiline).then(|| engine.ellipsis(&style)).flatten();
+                let runs = layout
+                    .present(multiline.then_some(f.width), (!multiline).then_some(1), (!multiline).then_some(f.width), ellipsis.as_ref())
+                    .glyphs;
+                (runs, self.res.theme.borrow().get(Token::TextMuted))
+            } else {
+                (self.shown_layout(id, &f.shown, &style).present(multiline.then_some(f.width), None, None, None).glyphs, v.text)
+            };
             for r in runs {
                 let glyphs = r.glyphs.into_iter().map(|g| crate::paint::Glyph { id: g.id, x: g.x, y: g.y }).collect();
                 self.glyph_runs_built.set(self.glyph_runs_built.get() + 1);
@@ -557,7 +586,7 @@ impl Kernel {
                     size: r.size,
                     coords: r.coords,
                     embolden: r.embolden,
-                    color: fade(v.text),
+                    color: fade(color),
                     origin: (ox, oy),
                     glyphs,
                 }));

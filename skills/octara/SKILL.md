@@ -59,6 +59,9 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
   the chain. Kit bindings and number commits survive added application callbacks. Read the model
   for the accepted value; input/numeric arguments remain proposed values, and setters can reject
   or transform them. Submit/blur can notify invalid drafts: validate before saving.
+- Input `.placeholder(..)` is a display-only hint for an empty field without composition;
+  it never supplies a label, value or automatic height. Keep `.label(..)` explicit. Hint
+  updates preserve selection/composition and target identity; an empty hint clears it.
 - Each element has one content kind. Use input settings on `text_input()`, native settings on
   `native_view()` / `web_view()`, and image fit after `.img(..)`. Only containers (`el`, `row`,
   `col`) accept `.child(..)` / `.children(..)`; `.img(..)` requires an empty box or an existing

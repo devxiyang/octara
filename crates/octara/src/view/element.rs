@@ -260,6 +260,7 @@ enum Content {
 
 #[derive(Default)]
 struct Input {
+    placeholder: Option<Prop<String>>,
     multiline: bool,
     rows: Option<(u16, u16)>,
     submit_on_enter: bool,
@@ -968,6 +969,16 @@ impl El {
         }
         self
     }
+    /// Display-only hint for an empty input without composition. It never supplies the
+    /// accessible name or editable value and does not affect automatic height. Single-line
+    /// hints truncate; multiline hints wrap within the content box. Use `.label(..)` as well.
+    #[track_caller]
+    pub fn placeholder(mut self, hint: impl IntoProp<String>) -> Self {
+        let input = self.content.input_mut("placeholder");
+        input.placeholder = Some(hint.into_prop());
+        self
+    }
+
     /// Makes a text input multi-line: the text wraps at its width and the field grows with it,
     /// Enter (and Shift+Enter) breaks the line, Cmd+Enter (Ctrl+Enter) submits; Up, Down, Page
     /// Up, Page Down, Home and End move by visual lines; a paste keeps its line breaks.
@@ -1236,6 +1247,9 @@ pub(crate) fn build_el(mut e: El) -> NodeId {
             });
         }
         Content::Input(input) => {
+            if let Some(p) = input.placeholder {
+                bind(at, node, p, |k, n, v: &String| k.set_placeholder(n, v));
+            }
             if let Some(p) = input.revealed {
                 bind(at, node, p, |k, n, v: &bool| {
                     k.set_revealed(n, *v);

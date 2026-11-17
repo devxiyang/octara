@@ -421,6 +421,9 @@ impl Kernel {
                 node.set_label(name);
             }
         }
+        if let Some(placeholder) = self.placeholder(id) {
+            node.set_placeholder(placeholder);
+        }
         if let Some(l) = n.level {
             node.set_level(usize::from(l));
         }
