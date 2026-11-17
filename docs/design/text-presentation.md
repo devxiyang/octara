@@ -1,6 +1,8 @@
 # C1: one text presentation result
 
-Status: design and reproduced defect, not implemented. Follows C1a's shared TextBox constraints.
+Status: C1b implements the shared presentation result and ordinary document consumers.
+C1c (common editable Field/reveal construction) and real-window IME evidence remain unfinished.
+Follows C1a's shared TextBox constraints.
 
 ## Evidence
 
@@ -14,12 +16,16 @@ text(rich().text("visible\n").link("hidden", "/hidden"))
 The assertion that the hidden link had no rectangles failed: `link_rects` returned
 `Rect { x: 0, y: 20, w: 51.710938, h: 20 }`. This establishes a geometry mismatch;
 it does not by itself prove an OS click, keyboard activation or screen-reader announcement.
-The temporary test was removed after recording the reproducer; no failing/ignored regression
-is added to the passing suite. Restore it as a required passing test with implementation.
+The reproducer is now a required passing integration test in `text_presentation.rs`, alongside
+selection, copy and activation checks. The hidden second-line link has no rectangles and is
+absent from the actionable accessibility/Inspector projection.
 
-`octara-text::LaidText::glyph_runs` applies max_lines, fit width and ellipsis, but
-`visual_lines` only receives wrap width. Kernel rich links, document selection and AccessKit
-runs consume the latter. TextBox removed duplicate box arithmetic, not this semantic split.
+Before C1b, `octara-text::LaidText::glyph_runs` applied max_lines, fit width and ellipsis, but
+`visual_lines` only received wrap width. Kernel links, selection and AccessKit consumed the
+latter. C1b removes `glyph_runs` and the independent Kernel glyph/line caches. `LaidText::present`
+returns `TextPresentation`, and every ordinary document consumer uses that one result.
+`visual_lines` remains an explicitly full editable-layout API for input navigation and native
+queries; it is not a document presentation fallback.
 
 Inputs already share `Field` for paint, hit testing and navigation. Native queries rebuild
 from TextInputLayout plus the platform's current TextDocument and also use Field::reveal.
@@ -35,8 +41,9 @@ glyphs, visible source fragments/caret stops and synthetic ellipsis geometry. Co
 not reconstruct visibility by comparing final glyph positions or by slicing UTF-8 bytes.
 
 Keep full-document measurement separate: intrinsic sizing and editable navigation can need
-the full layout. Presentation applies wrap width, fit width and line limits once. The exact
-Rust names remain an implementation choice; do not add a runtime/public UI primitive.
+the full layout. Presentation applies wrap width, fit width and line limits once. `TextPresentation` contains glyph runs and presented lines with visible source fragments;
+`TextEllipsis` records synthetic geometry and its caret boundary. These are text-engine data,
+not runtime/public UI primitives.
 
 Implement this inside octara-text first, retaining its downward-only dependencies. Migrate
 Mono/Parley and custom test engines together; remove the superseded split presentation APIs
@@ -65,19 +72,68 @@ on every width change or use developer IDs as continuity keys.
 The copy and accessibility policies above must be exercised explicitly during implementation;
 preserving logical text does not authorize inventing offscreen positional rectangles.
 
-## Implementation and acceptance
+## Implemented document contract
 
-1. Add the shared presentation result in octara-text. Cover one-line truncation, max_lines,
-   hard newlines, empty lines, tiny widths, Chinese/emoji, ligatures and bidirectional text.
-   Ellipsis is synthetic and must not accidentally inherit the final link's action.
-2. Migrate Kernel glyph painting, link ranges, selection and AccessKit positional runs.
-   Add visibility qualification for internal links using that same result. Retire old caches.
-3. Consolidate the common Field construction/reveal calculation used by committed input and
-   native query layout. Keep the current-document input and try-borrow failure behavior explicit.
-4. Verify hidden/partly visible links by point, keyboard and guarded Agent requests; resize
-   to hide/reveal and assert retained identity without hidden activation. Verify selection and
-   copy independently, plus CJK/emoji caret/range round trips with composition and scrolling.
-5. Run workspace/renderer regressions and focused shaping/cache checks. Obtain separate real
-   window evidence for IME, scrolling and candidate positioning; headless evidence is insufficient.
+- Parley records grapheme/source byte ranges, direction and advances before glyph extraction.
+  Shaping atoms record fragment/glyph intervals, so a ligature is retained or removed whole.
+  Font metadata and glyph buffers are allocated per styled font run, not per grapheme. Mono
+  supplies the same source projection without drawing glyphs. There is no unbounded default
+  implementation for custom engines.
+- `present` applies a line limit and fits the final presented line. `Wrap::Truncate` explicitly
+  presents one line, including when the logical text contains hard newlines; this corrects the
+  former paint/measurement disagreement. A zero line limit produces no presented lines.
+  A width too small for the ellipsis omits it and retains only complete atoms that fit.
+- Fitting keeps the physical left portion, then places the ellipsis to its right, including in
+  bidi text. Its caret maps to the source boundary at the physical right edge of the retained
+  fragments, or the original line start if none fit. This is a source boundary, not an invented
+  character. Ellipsis glyphs use brush zero and cannot inherit the final link's styling/action.
+- Document range geometry intersects visible fragments and merges touching visual intervals;
+  it does not deduplicate bidi affinities by byte or assume RTL ranges have increasing x.
+  Selection painting excludes the ellipsis and hidden line breaks. A hard newline gets a
+  positional fragment only while its following line is also presented. Explicit document
+  selection/copy still reads the complete logical string.
+- AX positional runs are assembled from visible source fragments, splitting at hidden gaps,
+  direction changes and character limits. Character positions come directly from those
+  fragments. The text node retains its full logical value/label. A hidden selection endpoint
+  maps to the closest visible source boundary (downstream on equal-distance boundaries).
+- Internal link allocations are unchanged by constraints. Shared shown/activation checks and
+  the AX projection reject fully hidden links; partly visible links keep their original target.
+  A current guarded target that is hidden is refused with `STEP_FAILED`, not `STALE_TARGET`.
+  Revealing it permits activation with the same target again.
+- One Kernel presentation cache is keyed by content/runs version, wrap/fit constraints, text
+  style, font generation and content origin. Layout invalidates the AX child projection before
+  its dirty set is drained, even for fixed-height texts whose visible link set changes without
+  a height change. Revealed links are sent again with fresh bounds. Paragraph shape caching and
+  unchanged-prefix reuse remain unchanged.
 
-No broader context, Signals, lifecycle or identity redesign is required for this change.
+## Acceptance and remaining work
+
+- [x] Engine cases: one-line fitting, line limits (including zero), hard newlines, empty lines,
+      tiny widths, Chinese/emoji, a real multi-grapheme Inter ligature and bidi affinities.
+      Mixed size/weight/slant/CJK/bidi glyph positions match Parley's original positioned glyphs
+      at unbounded and wrapped widths.
+- [x] Ordinary paint, link ranges, selection hit/paint and AccessKit positional runs use the
+      shared result. Superseded document caches and the old glyph extraction API are removed.
+- [x] Historical hidden second-line link, partly visible link/ellipsis, direct/pointer/keyboard/
+      accessibility activation, guarded Agent refusal, repeated resize identity preservation,
+      fixed-height incremental AX updates and full logical copy have passing headless regressions.
+- [ ] Consolidate Field construction/reveal for committed input and current-document native
+      queries. Preserve native try-borrow failure and synchronous current-document behavior.
+- [ ] Qualify editable CJK/emoji range round trips with composition and scrolling against that
+      common construction. Existing multiline/native-query/IME tests pass but do not complete
+      this migration.
+- [ ] Obtain real-window IME, scrolling and candidate-position evidence. No real window/OS input
+      or screenshot was used in C1b.
+
+C1b validation (2026-11-17, Rust 1.100.0): **900 workspace tests passed, 0 failed,
+3 existing ignored doctests**. The full run includes renderer, Chat queued long-paragraph/code
+bursts, HTTP, multiline and native-query regressions. Workspace all-targets Clippy, strict
+`octara`/`octara-text` rustdoc, no-default-features core build, formatting, diff/layer checks pass.
+The first sandboxed workspace attempt could not bind the local HTTP test sockets; the authorized
+loopback-enabled rerun passed.
+
+The existing `bench --stream` completed using the active debug cache: 5.2 glyph runs built per
+token in both motion cases, 1.4/2.8 drawings built and 48/64 AX nodes compared. These are headless
+debug work observations, not a release CPU comparison or a native frame-time claim; no new
+release build cache was created. No broader context, Signals, lifecycle or identity redesign
+was introduced.

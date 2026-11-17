@@ -531,7 +531,7 @@ impl Kernel {
         if !f.shown.is_empty() {
             let multiline = self.is_multiline(id);
             let style = input_style(v.text_style(), multiline);
-            let runs = self.shown_layout(id, &f.shown, &style).glyph_runs(multiline.then_some(f.width), None, None, None);
+            let runs = self.shown_layout(id, &f.shown, &style).present(multiline.then_some(f.width), None, None, None).glyphs;
             for r in runs {
                 let glyphs = r.glyphs.into_iter().map(|g| crate::paint::Glyph { id: g.id, x: g.x, y: g.y }).collect();
                 self.glyph_runs_built.set(self.glyph_runs_built.get() + 1);

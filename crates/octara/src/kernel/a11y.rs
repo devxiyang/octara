@@ -34,7 +34,8 @@ type AkNode = (ak::NodeId, ak::Node);
 struct Run {
     bytes: Range<usize>,
     line: usize,
-    chars: Vec<Range<usize>>,
+    chars: Vec<super::text::TextFragment>,
+    rtl: bool,
 }
 
 impl Kernel {
@@ -52,31 +53,38 @@ impl Kernel {
             && self.region_of(id).is_some_and(|r| self.selectable_in(r, id))
     }
 
-    /// A text's runs: its laid-out lines, a hard break ending the line before it, split at
-    /// [`RUN_CHARS`]. Empty when it has none.
+    /// Positional runs contain only visible source fragments, split at hidden gaps, direction
+    /// changes and AccessKit's character limit. The text node retains its full logical value.
     fn text_runs(&self, id: NodeId) -> Vec<Run> {
         let text = self.text_str(id);
         if text.is_empty() || !self.has_runs(id) {
             return Vec::new();
         }
-        let lines = self.text_lines(id);
+        let presentation = self.text_presentation(id);
         let mut out = Vec::new();
-        for (i, l) in lines.iter().enumerate() {
-            let end = lines.get(i + 1).map_or(text.len(), |n| n.start);
-            let start = if i == 0 { 0 } else { l.start };
-            let mut chars = Vec::new();
-            for (b, g) in text[start..end].grapheme_indices(true) {
-                if g.len() > usize::from(u8::MAX) {
+        for (i, l) in presentation.lines.iter().enumerate() {
+            let mut visible = l.fragments.clone();
+            visible.sort_by_key(|f| f.source.start);
+            if let Some(b) = l.hard_break {
+                let rtl = visible.last().is_some_and(|f| f.rtl);
+                visible.push(super::text::TextFragment { source: b..b + 1, x: l.break_x(), width: 0.0, rtl });
+            }
+            let mut chars: Vec<super::text::TextFragment> = Vec::new();
+            let mut direction = false;
+            for fragment in visible {
+                let (range, rtl) = (&fragment.source, fragment.rtl);
+                if range.len() > usize::from(u8::MAX) {
                     return Vec::new();
                 }
-                chars.push(start + b..start + b + g.len());
-                if chars.len() == RUN_CHARS {
+                if !chars.is_empty() && (chars.len() == RUN_CHARS || chars.last().unwrap().source.end != range.start || direction != rtl) {
                     let c = std::mem::take(&mut chars);
-                    out.push(Run { bytes: c[0].start..c[c.len() - 1].end, line: i, chars: c });
+                    out.push(Run { bytes: c[0].source.start..c[c.len() - 1].source.end, line: i, chars: c, rtl: direction });
                 }
+                direction = rtl;
+                chars.push(fragment);
             }
             if !chars.is_empty() {
-                out.push(Run { bytes: chars[0].start..chars[chars.len() - 1].end, line: i, chars });
+                out.push(Run { bytes: chars[0].source.start..chars[chars.len() - 1].source.end, line: i, chars, rtl: direction });
             }
             if out.len() > MAX_RUNS {
                 return Vec::new();
@@ -88,7 +96,7 @@ impl Kernel {
     /// The AccessKit nodes of a text's runs, in its node's space.
     fn a11y_runs(&self, id: NodeId, runs: &[Run]) -> Vec<AkNode> {
         let text = self.text_str(id);
-        let lines = self.text_lines(id);
+        let presentation = self.text_presentation(id);
         let (ox, oy) = self.text_box(id).origin;
         // Where words start: the first character of each segment that is not blank.
         let starts: rustc_hash::FxHashSet<usize> =
@@ -98,20 +106,13 @@ impl Kernel {
             .map(|(i, r)| {
                 let mut node = ak::Node::new(Role::TextRun);
                 node.set_value(&text[r.bytes.clone()]);
-                node.set_character_lengths(r.chars.iter().map(|c| c.len() as u8).collect::<Vec<_>>());
+                node.set_character_lengths(r.chars.iter().map(|c| c.source.len() as u8).collect::<Vec<_>>());
                 node.set_word_starts(
-                    r.chars.iter().enumerate().filter(|(_, c)| starts.contains(&c.start)).map(|(n, _)| n as u8).collect::<Vec<_>>(),
+                    r.chars.iter().enumerate().filter(|(_, c)| starts.contains(&c.source.start)).map(|(n, _)| n as u8).collect::<Vec<_>>(),
                 );
-                let line = &lines[r.line];
-                // Each character's edges: the stops at or before its bytes, in one pass.
-                let mut stop = 0;
-                let mut x_at = |b: usize| {
-                    while line.stops.get(stop + 1).is_some_and(|s| s.0 <= b) {
-                        stop += 1;
-                    }
-                    line.stops.get(stop).map_or(0.0, |s| s.1)
-                };
-                let xs: Vec<(f32, f32)> = r.chars.iter().map(|c| (x_at(c.start), x_at(c.end))).collect();
+                let line = &presentation.lines[r.line];
+                node.set_text_direction(if r.rtl { ak::TextDirection::RightToLeft } else { ak::TextDirection::LeftToRight });
+                let xs: Vec<(f32, f32)> = r.chars.iter().map(super::text::TextFragment::edges).collect();
                 let x0 = xs.iter().map(|(a, b)| a.min(*b)).fold(f32::INFINITY, f32::min);
                 let x1 = xs.iter().map(|(a, b)| a.max(*b)).fold(f32::NEG_INFINITY, f32::max);
                 let x0 = if x0.is_finite() { x0 } else { 0.0 };
@@ -133,8 +134,13 @@ impl Kernel {
 
     /// Where byte `at` of a text is among its runs.
     fn run_position(&self, id: NodeId, runs: &[Run], at: usize) -> Option<ak::TextPosition> {
-        let (i, r) = runs.iter().enumerate().find(|(_, r)| at < r.bytes.end).or_else(|| runs.iter().enumerate().next_back())?;
-        let index = r.chars.iter().position(|c| at < c.end).unwrap_or(r.chars.len());
+        let (i, index, _, _) = runs
+            .iter()
+            .enumerate()
+            .flat_map(|(i, r)| {
+                r.chars.iter().enumerate().flat_map(move |(index, c)| [(i, index, c.source.start, 0), (i, index + 1, c.source.end, 1)])
+            })
+            .min_by_key(|(_, _, b, affinity)| (b.abs_diff(at), *affinity))?;
         Some(ak::TextPosition { node: run_id(id, i), character_index: index })
     }
 
@@ -146,7 +152,7 @@ impl Kernel {
         let text = self.node_of_a11y(pos.node)?;
         let runs = self.text_runs(text);
         let run = runs.get(((pos.node.0 >> 51) & 0xFFF) as usize)?;
-        Some((text, run.chars.get(pos.character_index).map_or(run.bytes.end, |c| c.start)))
+        Some((text, run.chars.get(pos.character_index).map_or(run.bytes.end, |c| c.source.start)))
     }
 
     /// A region's selection among its texts' runs.
@@ -164,7 +170,7 @@ impl Kernel {
     pub fn accessibility_tree(&self, focus: Option<NodeId>, scale: f64) -> ak::TreeUpdate {
         let mut nodes = Vec::new();
         self.a11y_subtree(self.root, scale, &mut nodes, &mut |_, _| {});
-        let focus = focus.filter(|n| self.is_alive(*n)).unwrap_or(self.root);
+        let focus = focus.filter(|n| self.is_alive(*n) && self.a11y_reachable(*n)).unwrap_or(self.root);
         ak::TreeUpdate { nodes, tree: Some(ak::TreeInfo::new(a11y_id(self.root))), tree_id: ak::TreeId::ROOT, focus: a11y_id(focus) }
     }
 
@@ -172,7 +178,7 @@ impl Kernel {
     /// children or place changed, and subtrees new to it. The first update (and the first after
     /// [`restart_accessibility`](Self::restart_accessibility)) is the whole tree.
     pub fn accessibility_update(&self, focus: Option<NodeId>, scale: f64) -> ak::TreeUpdate {
-        let focus = a11y_id(focus.filter(|n| self.is_alive(*n)).unwrap_or(self.root));
+        let focus = a11y_id(focus.filter(|n| self.is_alive(*n) && self.a11y_reachable(*n)).unwrap_or(self.root));
         if !self.a11y_live.get() || self.a11y_scale.get() != scale {
             self.a11y_live.set(true);
             self.a11y_scale.set(scale);
@@ -392,7 +398,7 @@ impl Kernel {
     pub(crate) fn shown_to_a11y(&self, id: NodeId) -> bool {
         let n = self.node(id);
         let empty_layer = id == self.overlay_layer && n.children().is_empty();
-        !n.hidden && !empty_layer && n.layout.display != taffy::Display::None
+        !n.hidden && !empty_layer && n.layout.display != taffy::Display::None && self.link_is_visible(id)
     }
 
     /// One node for AccessKit, its geometry, and its shown children.

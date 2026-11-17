@@ -9,13 +9,16 @@
 //! a byte budget: appending to a stream reshapes its last paragraph, a row scrolling back or a
 //! repeated label reshapes nothing, and a new width only breaks lines again. [`MonoEngine`] is
 //! a deterministic monospace model for isolating text cost in benchmarks.
+use octara_primitives::paint::Rect;
 use parley::fontique::{Blob, Collection, CollectionOptions, FallbackKey, Script, SourceCache};
 use parley::{FontContext, FontWeight, Layout, LayoutContext, StyleProperty};
 use rustc_hash::{FxHashMap, FxHasher};
 use std::cell::{Cell, RefCell};
 use std::hash::{Hash, Hasher};
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// How a text uses the width it is given.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -78,19 +81,19 @@ pub trait LaidText {
     /// Width, line count and height of every paragraph broken at `max_width` (`None`:
     /// unbounded), before any line limit.
     fn measure(&self, max_width: Option<f32>) -> (f32, u32, f32);
-    /// The positioned glyphs broken at `max_width`, at most `max_lines` lines, relative to the
-    /// text's top-left corner. With `ellipsis` (its runs and width) and `fit`, a last line wider
-    /// than `fit`, or followed by lines the limit hides, ends in it within `fit`. Engines that only
-    /// measure return nothing.
-    fn glyph_runs(
+    /// Drawing and visible source geometry, relative to the text's top-left. Line limits and
+    /// fitting are applied together, at whole shaping-cluster boundaries. An ellipsis is
+    /// synthetic: it has geometry and a visible boundary, but owns no source bytes or brush.
+    /// Even engines without glyphs must return the visible source geometry.
+    fn present(
         &self,
         max_width: Option<f32>,
         max_lines: Option<u16>,
         fit: Option<f32>,
         ellipsis: Option<&(Vec<ShapedRun>, f32)>,
-    ) -> Vec<ShapedRun>;
-    /// The visual lines broken at `max_width` (`None`: one per paragraph): what editing places
-    /// the caret with, and links and selections are drawn by.
+    ) -> TextPresentation;
+    /// Full editable lines, before document clipping or ellipsis. Native queries can lay out
+    /// the platform's current document independently of the last committed presentation.
     fn visual_lines(&self, max_width: Option<f32>) -> Vec<VisualLine>;
     fn as_any(&self) -> &dyn std::any::Any;
 }
@@ -142,7 +145,7 @@ pub fn metrics(layout: &TextLayout, style: &TextStyle, limit: Option<f32>) -> Te
     }
 }
 
-/// One line of a laid-out text as shown: its byte range (a line break's `\n` is in neither
+/// One full editable line before document clipping: its byte range (a line break's `\n` is in neither
 /// line), its top (from the text's top) and height, and where a caret can stand on it, `(byte,
 /// x)` in byte order from `(start, ..)` to `(end, ..)`. A line that wraps ends where the next one
 /// starts.
@@ -182,6 +185,204 @@ pub fn range_rects(lines: &[VisualLine], range: std::ops::Range<usize>) -> Vec<o
 pub fn offset_at(lines: &[VisualLine], x: f32, y: f32) -> usize {
     let Some(line) = lines.iter().find(|l| y < l.top + l.height).or(lines.last()) else { return 0 };
     line.stops.iter().min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs())).map_or(line.start, |s| s.0)
+}
+
+/// One visible grapheme's source bytes and advance. Logical edges run right-to-left when
+/// `rtl` is true. Several fragments may share a shaping ligature; fitting keeps it whole.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextFragment {
+    pub source: Range<usize>,
+    pub x: f32,
+    pub width: f32,
+    pub rtl: bool,
+}
+
+impl TextFragment {
+    /// The logical start and end caret coordinates, preserving bidi boundary affinity.
+    pub fn edges(&self) -> (f32, f32) {
+        if self.rtl { (self.x + self.width, self.x) } else { (self.x, self.x + self.width) }
+    }
+}
+
+/// A synthetic ellipsis. Pressing or selecting it maps to `boundary`, the source boundary at
+/// the physical right edge of the retained fragments (or the empty line's start).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextEllipsis {
+    pub rect: Rect,
+    pub boundary: usize,
+}
+
+/// A presented line. Fragments are in visual order and never include hidden source bytes.
+/// A hard newline is positional only when the following line is also presented. `break_at`
+/// also marks a visible soft wrap for document selection painting.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PresentedLine {
+    pub start: usize,
+    pub top: f32,
+    pub height: f32,
+    pub fragments: Vec<TextFragment>,
+    pub hard_break: Option<usize>,
+    pub break_at: Option<usize>,
+    pub ellipsis: Option<TextEllipsis>,
+}
+
+impl PresentedLine {
+    /// Geometry of a visible source range, coalesced only across touching visual fragments.
+    pub fn range_rects(&self, range: Range<usize>) -> Vec<Rect> {
+        let mut rects: Vec<Rect> = Vec::new();
+        for f in &self.fragments {
+            if f.source.start >= range.end || f.source.end <= range.start || f.width <= 0.0 {
+                continue;
+            }
+            if let Some(last) = rects.last_mut()
+                && (last.right() - f.x).abs() <= 0.01
+            {
+                last.w = f.x + f.width - last.x;
+            } else {
+                rects.push(Rect { x: f.x, y: self.top, w: f.width, h: self.height });
+            }
+        }
+        rects
+    }
+
+    /// Both edges of a visible grapheme (a hard newline has zero advance).
+    pub fn edges(&self, range: &Range<usize>) -> Option<(f32, f32)> {
+        if self.hard_break == Some(range.start) {
+            let x = self.break_x();
+            return Some((x, x));
+        }
+        self.fragments.iter().find(|f| f.source.start <= range.start && f.source.end >= range.end).map(TextFragment::edges)
+    }
+
+    /// The logical line-end edge used by a visible hard break or soft wrap.
+    pub fn break_x(&self) -> f32 {
+        let Some(end) = self.break_at.or(self.hard_break) else { return self.right_boundary().1 };
+        self.fragments.iter().find(|f| f.source.end == end).map_or(0.0, |f| f.edges().1)
+    }
+
+    fn right_boundary(&self) -> (usize, f32) {
+        self.fragments.last().map_or((self.start, 0.0), |f| (if f.rtl { f.source.start } else { f.source.end }, f.x + f.width))
+    }
+}
+
+/// A single document presentation: glyphs, visible source fragments and synthetic ellipses.
+/// Measurement and full editable navigation remain separate from this projection.
+#[derive(Clone, Debug, Default)]
+pub struct TextPresentation {
+    pub glyphs: Vec<ShapedRun>,
+    pub lines: Vec<PresentedLine>,
+}
+
+impl TextPresentation {
+    /// Only the visible fragments of `range`, excluding synthetic ellipses.
+    pub fn range_rects(&self, range: Range<usize>) -> Vec<Rect> {
+        self.lines.iter().flat_map(|line| line.range_rects(range.clone())).collect()
+    }
+
+    /// The nearest visible caret boundary. An ellipsis maps to its retained boundary; hidden
+    /// bytes are never manufactured as pointer destinations.
+    pub fn offset_at(&self, x: f32, y: f32) -> usize {
+        let Some(line) = self.lines.iter().find(|l| y < l.top + l.height).or(self.lines.last()) else { return 0 };
+        if let Some(e) = &line.ellipsis
+            && x >= e.rect.x
+        {
+            return e.boundary;
+        }
+        line.fragments
+            .iter()
+            .flat_map(|f| {
+                let (start, end) = f.edges();
+                [(f.source.start, start), (f.source.end, end)]
+            })
+            .min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs()))
+            .map_or(line.start, |s| s.0)
+    }
+}
+
+/// Cluster/source and glyph intervals are recorded together while shaping data is available.
+/// Atoms need no per-grapheme allocation or duplicated font/run metadata.
+struct PresentationAtom {
+    fragments: Range<usize>,
+    glyph_end: Option<(usize, usize)>,
+    space: bool,
+}
+
+struct PresentationLine {
+    line: PresentedLine,
+    atoms: Vec<PresentationAtom>,
+    glyphs: Vec<ShapedRun>,
+    baseline: f32,
+}
+
+fn present_lines(
+    mut lines: Vec<PresentationLine>,
+    max_lines: Option<u16>,
+    fit: Option<f32>,
+    ellipsis: Option<&(Vec<ShapedRun>, f32)>,
+) -> TextPresentation {
+    let count = max_lines.map_or(lines.len(), usize::from);
+    let hidden = lines.len() > count;
+    lines.truncate(count);
+    let mut dots = Vec::new();
+    if let Some(last) = lines.last_mut() {
+        let end = last.line.fragments.last().map_or(0.0, |f| f.x + f.width);
+        if hidden {
+            last.line.hard_break = None;
+            last.line.break_at = None;
+        }
+        if let Some(fit) = fit
+            && (hidden || end > fit + 0.01)
+        {
+            let ellipsis = ellipsis.filter(|(_, w)| *w <= fit && *w > 0.0);
+            let limit = (fit - ellipsis.map_or(0.0, |(_, w)| *w)).max(0.0);
+            let keep = last
+                .atoms
+                .iter()
+                .take_while(|a| last.line.fragments.get(a.fragments.end - 1).is_none_or(|f| f.x + f.width <= limit + 0.01))
+                .count();
+            last.atoms.truncate(keep);
+            while last.atoms.last().is_some_and(|a| a.space) {
+                last.atoms.pop();
+            }
+            last.line.hard_break = None;
+            last.line.break_at = None;
+            last.line.fragments.truncate(last.atoms.last().map_or(0, |a| a.fragments.end));
+            if let Some((atom, (run, end))) = last.atoms.iter().rev().find_map(|a| a.glyph_end.map(|g| (a, g))) {
+                last.glyphs.truncate(run + 1);
+                let run = &mut last.glyphs[run];
+                run.glyphs.truncate(end);
+                let f = &last.line.fragments[atom.fragments.end - 1];
+                run.width = f.x + f.width - run.x;
+            } else {
+                last.glyphs.clear();
+            }
+            let (boundary, at) = last.line.right_boundary();
+            if let Some((runs, width)) = ellipsis {
+                last.line.ellipsis =
+                    Some(TextEllipsis { rect: Rect { x: at, y: last.line.top, w: *width, h: last.line.height }, boundary });
+                for run in runs {
+                    let mut run = run.clone();
+                    for glyph in &mut run.glyphs {
+                        glyph.x += at;
+                        glyph.y += last.baseline - run.baseline;
+                    }
+                    run.x += at;
+                    run.brush = 0;
+                    run.baseline = last.baseline;
+                    run.line_top = last.line.top;
+                    run.line_height = last.line.height;
+                    dots.push(run);
+                }
+            }
+        }
+    }
+    let mut out = TextPresentation::default();
+    for l in lines {
+        out.glyphs.extend(l.glyphs);
+        out.lines.push(l.line);
+    }
+    out.glyphs.extend(dots);
+    out
 }
 
 /// Monospace lines: `em` per character, broken at spaces to fit `max_width` (as
@@ -279,8 +480,48 @@ impl LaidText for MonoText {
         }
         (width, lines, lines as f32 * self.line_height)
     }
-    fn glyph_runs(&self, _: Option<f32>, _: Option<u16>, _: Option<f32>, _: Option<&(Vec<ShapedRun>, f32)>) -> Vec<ShapedRun> {
-        Vec::new()
+    fn present(
+        &self,
+        max_width: Option<f32>,
+        max_lines: Option<u16>,
+        fit: Option<f32>,
+        ellipsis: Option<&(Vec<ShapedRun>, f32)>,
+    ) -> TextPresentation {
+        let lines = even_lines(&self.text, self.em, self.line_height, max_width);
+        let mut presented = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            let mut x = 0.0;
+            let mut fragments = Vec::new();
+            let atoms = self.text[l.start..l.end]
+                .grapheme_indices(true)
+                .map(|(b, g)| {
+                    let width = g.chars().count() as f32 * self.em;
+                    fragments.push(TextFragment { source: l.start + b..l.start + b + g.len(), x, width, rtl: false });
+                    x += width;
+                    PresentationAtom {
+                        fragments: fragments.len() - 1..fragments.len(),
+                        glyph_end: None,
+                        space: g.chars().all(|c| c == ' ' || c == '\u{a0}'),
+                    }
+                })
+                .collect();
+            let hard_break = (self.text.as_bytes().get(l.end) == Some(&b'\n')).then_some(l.end);
+            presented.push(PresentationLine {
+                line: PresentedLine {
+                    start: l.start,
+                    top: l.top,
+                    height: l.height,
+                    fragments,
+                    hard_break,
+                    break_at: lines.get(i + 1).map(|_| l.end),
+                    ellipsis: None,
+                },
+                atoms,
+                glyphs: Vec::new(),
+                baseline: l.top + self.line_height,
+            });
+        }
+        present_lines(presented, max_lines, fit, ellipsis)
     }
     fn visual_lines(&self, max_width: Option<f32>) -> Vec<VisualLine> {
         even_lines(&self.text, self.em, self.line_height, max_width)
@@ -293,6 +534,9 @@ impl LaidText for MonoText {
 impl TextEngine for MonoEngine {
     fn layout(&mut self, text: &str, style: &TextStyle, _: &[StyleRun], _: Option<&TextLayout>, _: usize) -> TextLayout {
         Rc::new(MonoText { text: text.to_owned(), em: style.font_size * 0.5, line_height: style.line_height })
+    }
+    fn ellipsis(&mut self, style: &TextStyle) -> Option<(Vec<ShapedRun>, f32)> {
+        Some((Vec::new(), style.font_size * 0.5))
     }
 }
 
@@ -385,86 +629,92 @@ impl LaidText for ParleyText {
         }
         (width, lines, height)
     }
-    fn glyph_runs(
+    fn present(
         &self,
         max_width: Option<f32>,
         max_lines: Option<u16>,
         fit: Option<f32>,
         ellipsis: Option<&(Vec<ShapedRun>, f32)>,
-    ) -> Vec<ShapedRun> {
-        let max_lines = max_lines.map_or(u32::MAX, u32::from);
-        // Every line shown, as runs with their glyphs' advances.
-        let mut lines: Vec<Vec<(ShapedRun, Vec<f32>)>> = Vec::new();
-        let (mut top, mut hidden) = (0.0f32, false);
-        'paras: for p in &self.paras {
+    ) -> TextPresentation {
+        let mut lines = Vec::new();
+        let (mut top, mut base) = (0.0, 0);
+        // One extra line establishes hidden content without extracting the entire hidden tail.
+        let needed = max_lines.map_or(usize::MAX, |n| usize::from(n) + 1);
+        'paras: for (pi, p) in self.paras.iter().enumerate() {
             p.break_at(max_width);
             let layout = p.layout.borrow();
-            for line in layout.lines() {
-                if lines.len() as u32 >= max_lines {
-                    hidden = true;
+            let count = lines.len();
+            for (li, line) in layout.lines().enumerate() {
+                if lines.len() == needed {
                     break 'paras;
                 }
-                let mut runs = Vec::new();
-                for item in line.items() {
-                    let parley::PositionedLayoutItem::GlyphRun(run) = item else { continue };
-                    runs.push(shaped_run(&run, top, line.metrics()));
+                let m = line.metrics();
+                let range = line.text_range();
+                let end = base + range.end.min(p.text.len());
+                let hard_break = (li + 1 == layout.len() && pi + 1 < self.paras.len()).then_some(base + p.text.len());
+                let baselines: Vec<_> = line
+                    .items()
+                    .filter_map(|item| match item {
+                        parley::PositionedLayoutItem::GlyphRun(run) => Some((run.style_index(), run.baseline())),
+                        _ => None,
+                    })
+                    .collect();
+                let mut presented = PresentationLine {
+                    line: PresentedLine {
+                        start: base + range.start.min(p.text.len()),
+                        top: top + m.block_min_coord,
+                        height: m.block_max_coord - m.block_min_coord,
+                        fragments: Vec::new(),
+                        hard_break,
+                        break_at: (li + 1 < layout.len() || pi + 1 < self.paras.len()).then_some(end),
+                        ellipsis: None,
+                    },
+                    atoms: Vec::new(),
+                    glyphs: Vec::new(),
+                    baseline: top + m.baseline,
+                };
+                let mut x = m.offset + m.inline_min_coord;
+                for run in line.runs() {
+                    let clusters: Vec<_> = run.visual_clusters().collect();
+                    let mut current_run = None;
+                    let mut start = 0;
+                    for end in 1..=clusters.len() {
+                        // RTL ligatures are visited continuation-first; LTR ones start-first.
+                        let joins = clusters.get(end).is_some_and(|c| {
+                            if c.is_rtl() { clusters[end - 1].is_ligature_continuation() } else { c.is_ligature_continuation() }
+                        });
+                        if !joins {
+                            x = append_parley_atom(&mut presented, &clusters[start..end], base, x, top, &baselines, &mut current_run);
+                            start = end;
+                        }
+                    }
                 }
-                lines.push(runs);
+                lines.push(presented);
             }
-            if layout.is_empty() {
-                if lines.len() as u32 >= max_lines {
-                    hidden = true;
+            if lines.len() == count {
+                if lines.len() == needed {
                     break;
                 }
-                lines.push(Vec::new());
+                let hard_break = (pi + 1 < self.paras.len()).then_some(base);
+                lines.push(PresentationLine {
+                    line: PresentedLine {
+                        start: base,
+                        top,
+                        height: self.line_height,
+                        fragments: Vec::new(),
+                        hard_break,
+                        break_at: hard_break,
+                        ellipsis: None,
+                    },
+                    atoms: Vec::new(),
+                    glyphs: Vec::new(),
+                    baseline: top + self.line_height,
+                });
             }
             top += if layout.is_empty() { self.line_height } else { layout.height() };
+            base += p.text.len() + 1;
         }
-        // The last line ends in an ellipsis if it does not fit or lines are hidden after it.
-        if let (Some(fit), Some((dots, dots_w))) = (fit, ellipsis)
-            && let Some(last) = lines.last_mut()
-        {
-            let end = last.iter().flat_map(|(r, a)| r.glyphs.iter().zip(a).map(|(g, a)| g.x + a.abs())).fold(0.0f32, f32::max);
-            if hidden || end > fit + 0.01 {
-                let limit = (fit - dots_w).max(0.0);
-                let mut at = 0.0f32;
-                let line_top = last.first().map_or(0.0, |(r, _)| r.line_top);
-                let baseline_shift = last.first().map_or(0.0, |(r, _)| r.baseline - r.line_top);
-                for (run, advances) in last.iter_mut() {
-                    let keep: Vec<bool> = run.glyphs.iter().zip(advances.iter()).map(|(g, a)| g.x + a.abs() <= limit + 0.01).collect();
-                    let mut k = keep.iter();
-                    run.glyphs.retain(|_| *k.next().unwrap());
-                    let mut k = keep.iter();
-                    advances.retain(|_| *k.next().unwrap());
-                }
-                // No space before the ellipsis.
-                'trim: for (run, advances) in last.iter_mut().rev() {
-                    while advances.last().is_some_and(|a| *a < 0.0) {
-                        advances.pop();
-                        run.glyphs.pop();
-                    }
-                    if !run.glyphs.is_empty() {
-                        break 'trim;
-                    }
-                }
-                for (run, advances) in last.iter() {
-                    at = run.glyphs.iter().zip(advances.iter()).map(|(g, a)| g.x + a.abs()).fold(at, f32::max);
-                }
-                last.retain(|(r, _)| !r.glyphs.is_empty());
-                for run in dots.iter() {
-                    let mut run = run.clone();
-                    for g in &mut run.glyphs {
-                        g.x += at;
-                        g.y += line_top + baseline_shift - run.baseline;
-                    }
-                    run.x += at;
-                    run.line_top = line_top;
-                    run.baseline = line_top + baseline_shift;
-                    last.push((run, Vec::new()));
-                }
-            }
-        }
-        lines.into_iter().flatten().map(|(r, _)| r).collect()
+        present_lines(lines, max_lines, fit, ellipsis)
     }
     fn visual_lines(&self, max_width: Option<f32>) -> Vec<VisualLine> {
         let mut out = Vec::new();
@@ -516,6 +766,68 @@ impl LaidText for ParleyText {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+}
+
+/// Extract glyphs and source intervals together, without inferring bytes from glyph x later.
+/// Font metadata and glyph storage are allocated once per actual styled font run.
+fn append_parley_atom(
+    line: &mut PresentationLine,
+    clusters: &[parley::Cluster<'_, u16>],
+    base: usize,
+    x: f32,
+    top: f32,
+    baselines: &[(u16, f32)],
+    current_run: &mut Option<(u16, usize)>,
+) -> f32 {
+    let start = line.line.fragments.len();
+    let mut edge = x;
+    for c in clusters {
+        let range = c.text_range();
+        let width = c.advance();
+        line.line.fragments.push(TextFragment { source: base + range.start..base + range.end, x: edge, width, rtl: c.is_rtl() });
+        edge += width;
+    }
+    let glyph_end = clusters.iter().find(|c| c.glyphs().next().is_some()).map(|c| {
+        let index = match *current_run {
+            Some((style, index)) if style == c.style_index() => index,
+            _ => {
+                let r = c.run();
+                let baseline =
+                    top + baselines.iter().find(|(style, _)| *style == c.style_index()).expect("a glyph cluster has a positioned run").1;
+                let index = line.glyphs.len();
+                line.glyphs.push(ShapedRun {
+                    font: r.font().clone(),
+                    size: r.font_size(),
+                    coords: r.normalized_coords().iter().map(|c| c.to_bits()).collect(),
+                    embolden: r.synthesis().embolden(),
+                    glyphs: Vec::new(),
+                    brush: c.style().brush,
+                    x,
+                    width: 0.0,
+                    baseline,
+                    line_top: line.line.top,
+                    line_height: line.line.height,
+                });
+                *current_run = Some((c.style_index(), index));
+                index
+            }
+        };
+        let run = &mut line.glyphs[index];
+        let mut at = x;
+        run.glyphs.extend(c.glyphs().map(|g| {
+            let glyph = octara_primitives::paint::Glyph { id: g.id, x: at + g.x, y: run.baseline + g.y };
+            at += g.advance;
+            glyph
+        }));
+        run.width = edge - run.x;
+        (index, run.glyphs.len())
+    });
+    line.atoms.push(PresentationAtom {
+        fragments: start..line.line.fragments.len(),
+        glyph_end,
+        space: clusters.iter().all(parley::Cluster::is_space_or_nbsp),
+    });
+    edge
 }
 
 /// How much shaped text an engine keeps by default.
@@ -601,23 +913,11 @@ impl ParleyEngine {
     }
 }
 
-/// A positioned run as the renderers want it, `top` down, with each glyph's advance (negative
-/// for a space, so an ellipsis can drop trailing ones).
-fn shaped_run(run: &parley::GlyphRun<'_, u16>, top: f32, line: &parley::LineMetrics) -> (ShapedRun, Vec<f32>) {
+/// A positioned glyph run used to shape a synthetic ellipsis.
+fn shaped_run(run: &parley::GlyphRun<'_, u16>, top: f32, line: &parley::LineMetrics) -> ShapedRun {
     let r = run.run();
-    let spaces: Vec<bool> = r.visual_clusters().flat_map(|c| std::iter::repeat_n(c.is_space_or_nbsp(), c.glyphs().count())).collect();
-    let (glyphs, advances) = run
-        .positioned_glyphs()
-        .enumerate()
-        .map(|(i, g)| {
-            let space = spaces.get(i).copied().unwrap_or(false);
-            (
-                octara_primitives::paint::Glyph { id: g.id, x: g.x, y: g.y + top },
-                if space { -g.advance.max(f32::MIN_POSITIVE) } else { g.advance },
-            )
-        })
-        .unzip();
-    let shaped = ShapedRun {
+    let glyphs = run.positioned_glyphs().map(|g| octara_primitives::paint::Glyph { id: g.id, x: g.x, y: g.y + top }).collect();
+    ShapedRun {
         font: r.font().clone(),
         size: r.font_size(),
         coords: r.normalized_coords().iter().map(|c| c.to_bits()).collect(),
@@ -629,8 +929,7 @@ fn shaped_run(run: &parley::GlyphRun<'_, u16>, top: f32, line: &parley::LineMetr
         baseline: top + run.baseline(),
         line_top: top + line.block_min_coord,
         line_height: line.block_max_coord - line.block_min_coord,
-    };
-    (shaped, advances)
+    }
 }
 
 impl ParleyEngine {
@@ -791,7 +1090,7 @@ impl TextEngine for ParleyEngine {
         if let Some(line) = layout.lines().next() {
             for item in line.items() {
                 let parley::PositionedLayoutItem::GlyphRun(run) = item else { continue };
-                runs.push(shaped_run(&run, 0.0, line.metrics()).0);
+                runs.push(shaped_run(&run, 0.0, line.metrics()));
             }
         }
         let w = layout.width();
@@ -933,5 +1232,163 @@ mod tests {
         assert_eq!(metrics(&lay(&mut e, "abcd", &s), &s, None).width, 32.0);
         let m = metrics(&lay(&mut e, "abcd efgh", &s), &s, Some(40.0));
         assert_eq!((m.width, m.lines), (32.0, 2));
+    }
+
+    #[test]
+    fn presentations_share_line_limits_breaks_and_unicode_boundaries() {
+        for mut engine in [Box::new(MonoEngine) as Box<dyn TextEngine>, Box::new(ParleyEngine::default())] {
+            let style = TextStyle::default();
+            let text = "中文😀\n\nhidden";
+            let layout = lay(&mut *engine, text, &style);
+            let full = layout.present(None, None, None, None);
+            assert_eq!(full.lines.len(), 3);
+            assert_eq!(full.lines[0].hard_break, Some("中文😀".len()));
+            assert!(full.lines[1].fragments.is_empty());
+            assert_eq!(full.lines[1].hard_break, Some("中文😀\n".len()));
+            let dots = engine.ellipsis(&style);
+            let shown = layout.present(None, Some(1), Some(200.0), dots.as_ref());
+            assert_eq!(shown.lines.len(), 1);
+            assert_eq!(shown.lines[0].hard_break, None, "a hidden next line has no positional newline");
+            assert!(shown.range_rects("中文😀\n\n".len()..text.len()).is_empty());
+            assert!(shown.lines[0].ellipsis.is_some());
+            for f in &shown.lines[0].fragments {
+                assert!(text.get(f.source.clone()).is_some(), "source bytes stay on UTF-8 boundaries");
+                let (start, end) = f.edges();
+                assert_eq!(shown.offset_at(start, 1.0), f.source.start);
+                assert_eq!(shown.offset_at(end, 1.0), f.source.end);
+            }
+            let empty = layout.present(None, Some(0), Some(200.0), dots.as_ref());
+            assert!(empty.lines.is_empty() && empty.glyphs.is_empty());
+            let tiny = layout.present(None, Some(1), Some(0.01), dots.as_ref());
+            assert!(tiny.glyphs.is_empty());
+            assert!(tiny.lines[0].fragments.is_empty() && tiny.lines[0].ellipsis.is_none());
+        }
+    }
+
+    #[test]
+    fn truncation_never_splits_emoji_and_ellipsis_owns_no_source_or_brush() {
+        let mut engine = ParleyEngine::default();
+        let style = TextStyle::default();
+        let text = "中👩‍👩‍👧‍👦文 suffix";
+        let layout = engine.layout(
+            text,
+            &style,
+            &[StyleRun { start: 0, end: text.len(), brush: 1, family: None, size: None, weight: None, italic: false }],
+            None,
+            0,
+        );
+        let full = layout.present(None, None, None, None);
+        let emoji = &full.lines[0].fragments[1];
+        assert_eq!(&text[emoji.source.clone()], "👩‍👩‍👧‍👦");
+        let dots = engine.ellipsis(&style).unwrap();
+        let width = emoji.x + emoji.width * 0.5 + dots.1;
+        let shown = layout.present(None, Some(1), Some(width), Some(&dots));
+        assert!(shown.range_rects(emoji.source.clone()).is_empty(), "a partial emoji is not visible");
+        let ellipsis = shown.lines[0].ellipsis.as_ref().unwrap();
+        assert_eq!(ellipsis.boundary, "中".len());
+        assert_eq!(shown.offset_at(ellipsis.rect.right(), 1.0), "中".len());
+        assert_eq!(shown.glyphs.last().unwrap().brush, 0);
+        assert!(shown.glyphs.iter().filter(|r| r.brush != 0).all(|r| r.x + r.width <= ellipsis.rect.x + 0.01));
+    }
+
+    #[test]
+    fn fitting_keeps_real_multi_grapheme_ligatures_whole() {
+        let mut engine = ParleyEngine::default();
+        let style = TextStyle::default();
+        // Inter's discretionary arrow ligature spans several graphemes. Enable it in the
+        // shaping fixture so this regression cannot pass by merely counting ordinary letters.
+        let text = "A --> Z";
+        let mut builder = engine.layouts.ranged_builder(&mut engine.fonts, text, 1.0, true);
+        builder.push_default(StyleProperty::FontFamily("Inter".into()));
+        builder.push_default(StyleProperty::FontSize(style.font_size));
+        builder.push_default(StyleProperty::LineHeight(parley::LineHeight::Absolute(style.line_height)));
+        builder.push_default(StyleProperty::FontFeatures("dlig".into()));
+        let mut shaped = builder.build(text);
+        shaped.break_all_lines(None);
+        assert!(shaped.lines().flat_map(|l| l.runs()).flat_map(|r| r.clusters()).any(|c| c.is_ligature_start()));
+        let layout = ParleyText {
+            paras: vec![Rc::new(Shaped {
+                text: text.into(),
+                style: ShapeStyle::of(&style),
+                runs: Vec::new(),
+                layout: RefCell::new(shaped),
+                broken: Cell::new(Some(None)),
+                results: RefCell::default(),
+            })],
+            line_height: style.line_height,
+        };
+        let full = layout.present(None, None, None, None);
+        let arrow = full.range_rects(2..5)[0];
+        let dots = engine.ellipsis(&style).unwrap();
+        let cut = layout.present(None, Some(1), Some(arrow.x + arrow.w * 0.5 + dots.1), Some(&dots));
+        assert!(cut.range_rects(2..5).is_empty(), "no continuation of an undrawn ligature gets source geometry");
+        let boundary = cut.lines[0].ellipsis.as_ref().unwrap().boundary;
+        assert!(boundary <= 2);
+    }
+
+    #[test]
+    fn presented_glyph_positions_match_parley_for_mixed_styles_and_bidi() {
+        let mut engine = ParleyEngine::default();
+        let text = "Hello 中文 office אבג مرحبا fin\nnext";
+        let style = TextStyle::default();
+        let runs = [
+            StyleRun { start: 6, end: 12, brush: 1, family: None, size: Some(28.0), weight: Some(600), italic: false },
+            StyleRun { start: 13, end: 19, brush: 2, family: None, size: Some(12.0), weight: Some(500), italic: true },
+        ];
+        let layout = engine.layout(text, &style, &runs, None, 0);
+        for width in [None, Some(120.0), Some(250.0)] {
+            let shown = layout.present(width, None, None, None);
+            let mut expected = Vec::new();
+            let mut top = 0.0;
+            for p in &layout.as_any().downcast_ref::<ParleyText>().unwrap().paras {
+                p.break_at(width);
+                let shaped = p.layout.borrow();
+                for line in shaped.lines() {
+                    for item in line.items() {
+                        if let parley::PositionedLayoutItem::GlyphRun(run) = item {
+                            expected.extend(run.positioned_glyphs().map(|g| (g.id, g.x, g.y + top)));
+                        }
+                    }
+                }
+                top += shaped.height();
+            }
+            let actual: Vec<_> = shown.glyphs.iter().flat_map(|r| r.glyphs.iter().map(|g| (g.id, g.x, g.y))).collect();
+            assert_eq!(actual.len(), expected.len());
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert_eq!(actual.0, expected.0);
+                assert!((actual.1 - expected.1).abs() < 0.01 && (actual.2 - expected.2).abs() < 0.01, "{actual:?} != {expected:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn rtl_ranges_and_bidi_affinities_remain_visible_after_fitting() {
+        let mut engine = ParleyEngine::default();
+        let style = TextStyle::default();
+        let text = "abc אבג def";
+        let layout = lay(&mut engine, text, &style);
+        let full = layout.present(None, None, None, None);
+        let rtl = "abc ".len().."abc אבג".len();
+        let rects = full.range_rects(rtl.clone());
+        assert_eq!(rects.len(), 1);
+        assert!(rects[0].w > 0.0);
+        let fragments = &full.lines[0].fragments;
+        let boundary = rtl.start;
+        let edges: Vec<_> = fragments
+            .iter()
+            .flat_map(|f| {
+                let (s, e) = f.edges();
+                [(f.source.start, s), (f.source.end, e)]
+            })
+            .filter(|(b, _)| *b == boundary)
+            .collect();
+        assert!(edges.len() >= 2 && edges[0].1 != edges[1].1, "one source byte can have two bidi affinities: {edges:?}");
+        let dots = engine.ellipsis(&style).unwrap();
+        let shown = layout.present(None, Some(1), Some(rects[0].x + rects[0].w * 0.7 + dots.1), Some(&dots));
+        for f in &shown.lines[0].fragments {
+            assert_eq!(shown.range_rects(f.source.clone()).len(), 1);
+            assert!(text.get(f.source.clone()).is_some());
+        }
+        assert!(shown.lines[0].fragments.iter().any(|f| f.rtl));
     }
 }

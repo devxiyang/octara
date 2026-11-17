@@ -375,10 +375,8 @@ struct TextContent {
     shape: Vec<text::StyleRun>,
     /// Bumped by every change of the text or its runs: what kept layouts and glyphs are keyed by.
     version: u64,
-    /// The glyphs painted last, for the same version, width and style.
-    painted: RefCell<Option<rich::Painted>>,
-    /// The lines laid out last, for the same version, width and style (links, selection).
-    lines: RefCell<Option<rich::Lines>>,
+    /// The shared document presentation for this version, constraints, fonts and style.
+    presented: RefCell<Option<rich::Presented>>,
     /// Its layout (see `node_layout`): the one place its shaped paragraphs are held.
     layout: RefCell<Option<(LayoutKey, text::TextLayout)>>,
 }
@@ -2166,6 +2164,7 @@ impl Kernel {
         self.layouts += 1;
         self.clamp_scrolls();
         self.track_frames();
+        self.invalidate_text_presentations();
         self.counters.layout_runs += 1;
         true
     }

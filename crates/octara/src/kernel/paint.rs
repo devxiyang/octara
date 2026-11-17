@@ -517,7 +517,8 @@ impl Kernel {
             let cy = rect.y + geometry.origin.1;
             if !s.is_empty() {
                 // Cut text (one line, or `line_clamp`) ends in an ellipsis inside the box.
-                let runs = self.text_glyphs(id, &style, geometry.wrap_width, geometry.fit_width);
+                let presentation = self.text_presentation(id);
+                let runs = &presentation.glyphs;
                 // A truncated line is clipped to the box (an ellipsis comes with the renderer).
                 let clip_text = style.wrap == Wrap::Truncate;
                 if clip_text {
@@ -538,7 +539,7 @@ impl Kernel {
                         }));
                     }
                 }
-                self.paint_runs(id, &runs, (cx, cy), v.text, opacity, out);
+                self.paint_runs(id, runs, (cx, cy), v.text, opacity, out);
                 if clip_text {
                     out.push(Item::PopClip);
                 }
@@ -626,7 +627,7 @@ impl Kernel {
                     // Found by content in the engine: a canvas redrawing the same text shapes nothing.
                     let layout = self.res.text.borrow_mut().layout(&t.text, &style, &[], None, 0);
                     let m = text::metrics(&layout, &style, limit);
-                    let runs = layout.glyph_runs(limit, None, None, None);
+                    let runs = layout.present(limit, None, None, None).glyphs;
                     let along = |a: Align, len: f32| match a {
                         Align::Start => 0.0,
                         Align::Center => len / 2.0,

@@ -157,7 +157,7 @@ impl From<&String> for Rich {
 
 // ---- in the kernel ----
 
-use super::text::{self, ShapedRun, StyleRun, TextStyle, VisualLine, Wrap};
+use super::text::{ShapedRun, StyleRun, TextPresentation, TextStyle, Wrap};
 use super::{Content, Kernel, Kind, NodeId, Role};
 use crate::paint::Rect;
 
@@ -182,18 +182,14 @@ pub(crate) struct TextBox {
     pub fit_width: Option<f32>,
 }
 
-/// What a text's glyphs were painted for, and the glyphs.
-#[derive(Debug)]
-pub(crate) struct Painted {
-    key: (u64, Option<u32>, Option<u32>, TextStyle, u64),
-    pub runs: Rc<Vec<ShapedRun>>,
-}
+/// One cache key for document glyphs and visible source geometry. Origin participates because
+/// changing content insets also invalidates positional accessibility runs.
+type PresentationKey = (u64, Option<u32>, Option<u32>, TextStyle, u64, (u32, u32));
 
-/// What a text's lines were laid out for, and the lines.
 #[derive(Debug)]
-pub(crate) struct Lines {
-    key: (u64, Option<u32>, TextStyle, u64),
-    pub lines: Rc<Vec<VisualLine>>,
+pub(crate) struct Presented {
+    key: PresentationKey,
+    value: Rc<TextPresentation>,
 }
 
 impl Kernel {
@@ -384,38 +380,62 @@ impl Kernel {
         }
     }
 
-    /// A text's lines as laid out now (kept until the text, its width or its style changes).
-    pub(crate) fn text_lines(&self, id: NodeId) -> Rc<Vec<VisualLine>> {
+    fn presentation_key(&self, id: NodeId) -> PresentationKey {
         let n = self.node(id);
-        let Content::Text(t) = &n.content else { return Rc::default() };
-        let style = n.visual.text_style();
-        let limit = self.text_box(id).wrap_width;
-        let key = (t.version, limit.map(f32::to_bits), style, self.fonts_generation);
-        if let Some(l) = t.lines.borrow().as_ref().filter(|l| l.key == key) {
-            return l.lines.clone();
-        }
-        let Some(layout) = super::node_layout(&mut **self.res.text.borrow_mut(), n, self.fonts_generation) else { return Rc::default() };
-        let lines = Rc::new(layout.visual_lines(limit));
-        *t.lines.borrow_mut() = Some(Lines { key, lines: lines.clone() });
-        lines
+        let Content::Text(t) = &n.content else { unreachable!("a document text") };
+        let b = self.text_box(id);
+        (
+            t.version,
+            b.wrap_width.map(f32::to_bits),
+            b.fit_width.map(f32::to_bits),
+            n.visual.text_style(),
+            self.fonts_generation,
+            (b.origin.0.to_bits(), b.origin.1.to_bits()),
+        )
     }
 
-    /// A text's glyphs at `limit`, ending in an ellipsis within `fit` (kept until the text, the
-    /// width or the style changes).
-    pub(crate) fn text_glyphs(&self, id: NodeId, style: &TextStyle, limit: Option<f32>, fit: Option<f32>) -> Rc<Vec<ShapedRun>> {
+    /// Drawing, links, selection and positional accessibility share this single projection.
+    pub(crate) fn text_presentation(&self, id: NodeId) -> Rc<TextPresentation> {
         let n = self.node(id);
         let Content::Text(t) = &n.content else { return Rc::default() };
-        let key = (t.version, limit.map(f32::to_bits), fit.map(f32::to_bits), *style, self.fonts_generation);
-        if let Some(p) = t.painted.borrow().as_ref().filter(|p| p.key == key) {
-            return p.runs.clone();
+        let key = self.presentation_key(id);
+        if let Some(p) = t.presented.borrow().as_ref().filter(|p| p.key == key) {
+            return p.value.clone();
         }
+        let b = self.text_box(id);
+        let style = n.visual.text_style();
         let mut engine = self.res.text.borrow_mut();
         let Some(layout) = super::node_layout(&mut **engine, n, self.fonts_generation) else { return Rc::default() };
-        let ellipsis = fit.and_then(|_| engine.ellipsis(style));
-        let runs = Rc::new(layout.glyph_runs(limit, style.max_lines, fit, ellipsis.as_ref()));
+        let ellipsis = b.fit_width.and_then(|_| engine.ellipsis(&style));
+        let max_lines = if style.wrap == Wrap::Truncate { Some(1) } else { style.max_lines };
+        let value = Rc::new(layout.present(b.wrap_width, max_lines, b.fit_width, ellipsis.as_ref()));
         self.glyphs_taken.set(self.glyphs_taken.get() + 1);
-        *t.painted.borrow_mut() = Some(Painted { key, runs: runs.clone() });
-        runs
+        *t.presented.borrow_mut() = Some(Presented { key, value: value.clone() });
+        value
+    }
+
+    /// Layout may change visible text without changing a fixed-height text's outer frame.
+    /// Invalidate its AX child projection before the next update drains the dirty set. A
+    /// revealed link keeps its allocation but must be sent again with its new geometry.
+    pub(super) fn invalidate_text_presentations(&self) {
+        if !self.a11y_live.get() {
+            return;
+        }
+        for (id, n) in &self.nodes {
+            let Content::Text(t) = &n.content else { continue };
+            if t.presented.borrow().as_ref().is_some_and(|p| p.key != self.presentation_key(id)) {
+                self.a11y_children_changed(id);
+                for &link in &t.links {
+                    self.a11y_forget(link);
+                }
+            }
+        }
+    }
+
+    /// Internal link identity is independent of whether its source currently has geometry.
+    pub(crate) fn link_is_visible(&self, id: NodeId) -> bool {
+        let Content::Link(c) = &self.node(id).content else { return true };
+        self.parent(id).is_some_and(|text| !self.text_presentation(text).range_rects(c.range.clone()).is_empty())
     }
 
     /// The rects a link covers, in its parent text's node coordinates.
@@ -423,7 +443,7 @@ impl Kernel {
         let Content::Link(c) = &self.node(link).content else { return Vec::new() };
         let Some(text) = self.node(link).parent else { return Vec::new() };
         let (ox, oy) = self.text_box(text).origin;
-        text::range_rects(&self.text_lines(text), c.range.clone()).into_iter().map(|r| Rect { x: r.x + ox, y: r.y + oy, ..r }).collect()
+        self.text_presentation(text).range_rects(c.range.clone()).into_iter().map(|r| Rect { x: r.x + ox, y: r.y + oy, ..r }).collect()
     }
 
     /// A link's frame in its text: the box around the rects it covers.

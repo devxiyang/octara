@@ -43,7 +43,7 @@ impl Kernel {
     }
 
     fn shown(&self, id: NodeId) -> bool {
-        self.node(id).layout.display != taffy::Display::None
+        self.node(id).layout.display != taffy::Display::None && self.link_is_visible(id)
     }
 
     /// Still mounted and displayed, including every ancestor, and not leaving the tree.

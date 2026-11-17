@@ -143,12 +143,16 @@ impl Kernel {
     pub(crate) fn selected_rects(&self, text: NodeId) -> Vec<crate::paint::Rect> {
         let Some(range) = self.node(text).selected.clone() else { return Vec::new() };
         let (ox, oy) = self.text_box(text).origin;
-        let lines = self.text_lines(text);
-        let mut rects = super::text::range_rects(&lines, range.clone());
-        // A selection reaching past a line's end marks its break, as editors do.
-        for l in lines.iter() {
-            if range.start <= l.end && range.end > l.end && l.end < self.node(text).text().len() {
-                let x = l.x_of(l.end);
+        let presentation = self.text_presentation(text);
+        let mut rects = presentation.range_rects(range.clone());
+        // Mark only breaks that remain in the visible presentation, never the boundary
+        // replaced by an ellipsis or a hidden following line.
+        for l in &presentation.lines {
+            if let Some(end) = l.break_at
+                && range.start <= end
+                && range.end > end
+            {
+                let x = l.break_x();
                 rects.push(crate::paint::Rect { x, y: l.top, w: (self.node(text).visual.font_size * 0.3).max(4.0), h: l.height });
             }
         }

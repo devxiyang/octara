@@ -60,11 +60,14 @@ renderers  glyph runs in the display list; swash rasterizes into an atlas both r
 ## Rich text
 
 Document text's private `TextBox` is the common source of the node-local content origin,
-content width, wrap width and ellipsis fit width. Drawing, visual-line layout, links, document
-selection and accessibility take their constraints from this calculation; painting no longer
-duplicates border/padding and wrapping arithmetic. It is computed from the current layout,
-not retained as another cache. Input scrolling/composition and clipped-text interaction policy
-remain separate follow-up work; this does not yet unify every text geometry path.
+content width, wrap width and ellipsis fit width. It is computed from the current layout,
+not retained as another cache. The engine's `TextPresentation` applies those constraints once:
+glyphs, visible source fragments and synthetic ellipsis geometry are shared by drawing, links,
+document selection and positional accessibility. One keyed cache replaces the independent
+painted-glyph and visual-line caches. Fully hidden links are ineligible for activation/focus/AX
+while keeping their allocation for a later reveal; explicit whole-document copy retains the
+logical string. See [text presentation](text-presentation.md) for the clipping, bidi and copy
+contracts. Input Field/reveal construction and native IME geometry remain follow-up work.
 
 - A text node holds one string and **runs**: ordered, non-overlapping UTF-8 byte ranges, each a style
   patch over the node's inherited text style: weight, slant, family (or `mono`), size, color and

@@ -2684,6 +2684,7 @@ dependencies = [
  "octara-primitives",
  "parley",
  "rustc-hash 2.1.3",
+ "unicode-segmentation",
 ]
 
 [[package]]

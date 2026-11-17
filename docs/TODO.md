@@ -169,12 +169,29 @@ validation was performed. B3 includes the separately recorded consistency-mode i
       Existing rich-text/selection/accessibility, multiline/IME, Chat and renderer regressions,
       all-targets Clippy, strict core rustdoc, formatting and diff/layer checks passed.
       No real-window validation or new performance claim in this constraint-only slice.
-      **C1b design/evidence:** a headless probe reproduced nonempty link geometry on a hidden
-      second line under line_clamp(1). The engine currently clips glyphs without providing
-      equivalent visible source fragments to interaction/AX consumers. Follow
-      [text presentation](design/text-presentation.md) for the coordinated engine/consumer
-      migration and acceptance matrix. No truncation fix is claimed yet; do not patch only hit
-      testing or merge native queries into stale committed-frame geometry.
+      **C1b implemented:** `LaidText::present` now supplies document glyphs, visible source
+      fragments/caret boundaries and synthetic ellipsis geometry together. Parley retains
+      cluster/source intervals before extraction and clips complete shaping atoms; Mono provides
+      the same projection. The old glyph API and independent document glyph/line caches are gone.
+      Paint, link geometry, selection hit/paint and AX positional runs use one keyed presentation.
+      Fully hidden links are rejected by shared shown/activation checks and omitted from AX;
+      resize preserves allocation/Agent identity, including through hide/reveal cycles. AX child
+      invalidation covers fixed-height texts too. `truncate` explicitly shows one line even with
+      hard newlines; tiny widths omit an ellipsis that cannot fit. Logical whole-document copy
+      remains complete, and synthetic ellipses have no source/action. See
+      [text presentation](design/text-presentation.md) for exact policies and remaining work.
+      C1b validation: **900 workspace tests passed, 0 failed, 3 existing ignored doctests**;
+      new engine/integration checks cover CJK/emoji, real multi-grapheme ligatures, bidi/RTL,
+      original Parley glyph positions, line limits/tiny widths, hidden/partly visible links,
+      guarded refusal and resize identity, selection/full copy and incremental AX. Renderer,
+      Chat queued long-paragraph/code bursts, HTTP and existing multiline/native-query tests pass.
+      All-targets Clippy, strict core/text rustdoc, no-default-features core, format/diff/layer
+      checks pass. Existing debug `bench --stream` completed with bounded work; no release/native
+      timing claim. The full test run needed authorized local-loopback access for HTTP fixtures.
+      **C1c remains:** consolidate editable Field/reveal construction while preserving native
+      current-document queries/try-borrow behavior; qualify composition/scrolling and obtain
+      separate real-window IME/candidate evidence. C1 is not marked complete by C1b. No real
+      window/OS interaction or screenshot was performed in this slice.
 - [ ] Separate prompt, editable value and accessible label; consolidate semantic resolution.
 - [ ] Finalize and implement external-value/IME arbitration (same-value write, rejection,
       normalization, explicit reset, composition completion/cancellation and late callbacks).
