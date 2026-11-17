@@ -1,6 +1,7 @@
 //! Content-specific builder calls fail before mounting incompatible payloads or bindings.
 
 use octara::prelude::*;
+use octara::view::{canvas, native_view, web_view};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 fn rejected(method: &str, build: impl FnOnce() -> El) {

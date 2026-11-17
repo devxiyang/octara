@@ -2,8 +2,10 @@
 //! the content box, clipped to it; an image to assistive technology.
 
 use octara::prelude::*;
+use octara::view::canvas;
 use octara_primitives::canvas::CanvasOp;
 use octara_primitives::paint::Item;
+use octara_primitives::path::{Path, Stroke, Transform, point};
 use std::cell::Cell;
 use std::rc::Rc;
 

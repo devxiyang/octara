@@ -124,8 +124,8 @@ impl Shared {
     }
 }
 
-/// The chat: its lists and signals, and the flows over them. Cheap to clone; views get it with
-/// `use_context`.
+/// The chat: its lists and signals, and the flows over them. Cheap to clone; views receive
+/// an explicit reference and retain cloned handles in callbacks and deferred content.
 #[derive(Clone)]
 pub struct Chat {
     pub threads: StateList<ThreadId, Thread>,
@@ -150,8 +150,8 @@ pub struct Chat {
 }
 
 impl Chat {
-    /// The chat's state, as named state of the current component (it survives hot reload),
-    /// loaded from the store.
+    /// The chat's state, as named state of the current owner (it survives hot reload),
+    /// loaded from the store. Requests are retired when that owner is disposed.
     pub fn new(options: Options) -> Chat {
         let mut ids = std::collections::HashSet::new();
         assert!(

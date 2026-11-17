@@ -4,6 +4,7 @@
 
 use octara::platform::{HeadlessPlatform, WindowOptions};
 use octara::prelude::*;
+use octara::view::native_view;
 use std::time::Duration;
 
 #[test]

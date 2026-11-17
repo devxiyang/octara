@@ -2,7 +2,9 @@
 
 use super::section;
 use octara::prelude::*;
+use octara::view::canvas;
 use octara_icons as icons;
+use octara_primitives::path::{LineCap, LineJoin, Path, Stroke, point};
 
 /// Monthly figures for the chart.
 const SALES: [f32; 12] = [42.0, 51.0, 47.0, 63.0, 58.0, 72.0, 69.0, 81.0, 77.0, 88.0, 84.0, 96.0];

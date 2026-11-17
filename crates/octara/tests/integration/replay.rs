@@ -6,6 +6,7 @@ use octara::app::Recording;
 use octara::inspect::handle_line;
 use octara::platform::{HeadlessWindow, WindowOptions};
 use octara::prelude::*;
+use octara::view::web_view;
 use std::time::Duration;
 
 /// A list with a field, an add button and a delayed counter.

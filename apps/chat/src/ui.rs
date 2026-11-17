@@ -16,60 +16,55 @@ use std::cmp::Reverse;
 use std::rc::Rc;
 use std::time::Duration;
 
-/// Whether a phone shows the conversations (instead of the open one).
-#[derive(Clone, Copy)]
-struct Listing(Signal<bool>);
-
-fn listing() -> Signal<bool> {
-    use_context::<Listing>().expect("inside the chat").0
-}
-
 fn compact() -> bool {
     breakpoint().get() == Breakpoint::Compact
 }
 
-fn chat() -> Chat {
-    use_context::<Chat>().expect("inside the chat")
-}
-
 /// The app: conversations beside the open one.
 pub fn root(options: impl Fn() -> Options + 'static) -> View {
-    scope("Chat", move || -> View {
+    scope("Chat", move || {
         let chat = Chat::new(options());
-        provide(chat.clone());
-        let width = state("sidebar", || 260.0f32);
-        // A phone shows the conversations or the open one; wider windows show both.
-        let compact = memo(|| breakpoint().get() == Breakpoint::Compact);
-        let listing = state("listing", || false);
-        provide(Listing(listing));
-        commands(&chat, listing);
-        row()
-            .id("panes")
-            .relative()
-            .size_full()
-            .child(show(move || !compact.get(), move || desktop_navigation(width)))
-            .child(el().h_full().flex_1().min_w(0.0).child(main_pane()))
-            .child(show(
-                move || compact.get() && listing.get(),
-                move || {
-                    el().id("chat-listing")
-                        .role(Role::Dialog)
-                        .label("Conversations")
-                        .absolute()
-                        .inset_0()
-                        .size_full()
-                        .bg(Token::Surface)
-                        .modal(false, move || listing.set(false))
-                        .child(sidebar())
-                        .into()
-                },
-            ))
-            .into()
+        view(&chat)
     })
 }
 
+/// Composes the product UI from an explicitly supplied model in the current owner.
+/// Build once within a window root or an explicit scope; UI state and cleanup stay in that
+/// owner. Handlers and deferred content retain cloned model handles, not this borrow.
 #[ui]
-fn desktop_navigation(width: Signal<f32>) -> View {
+pub fn view(chat: &Chat) -> View {
+    let width = state("sidebar", || 260.0f32);
+    // A phone shows the conversations or the open one; wider windows show both.
+    let compact = memo(|| breakpoint().get() == Breakpoint::Compact);
+    let listing = state("listing", || false);
+    let (desktop, phone) = (chat.clone(), chat.clone());
+    commands(chat, listing);
+    row()
+        .id("panes")
+        .relative()
+        .size_full()
+        .child(show(move || !compact.get(), move || desktop_navigation(&desktop, listing, width)))
+        .child(el().h_full().flex_1().min_w(0.0).child(main_pane(chat, listing)))
+        .child(show(
+            move || compact.get() && listing.get(),
+            move || {
+                el().id("chat-listing")
+                    .role(Role::Dialog)
+                    .label("Conversations")
+                    .absolute()
+                    .inset_0()
+                    .size_full()
+                    .bg(Token::Surface)
+                    .modal(false, move || listing.set(false))
+                    .child(sidebar(&phone, listing))
+                    .into()
+            },
+        ))
+        .into()
+}
+
+#[ui]
+fn desktop_navigation(chat: &Chat, listing: Signal<bool>, width: Signal<f32>) -> View {
     let start = Rc::new(Cell::new(0.0));
     let divider = el()
         .id("panes-divider")
@@ -99,7 +94,10 @@ fn desktop_navigation(width: Signal<f32>) -> View {
             width.set((width.get() + by).clamp(180.0, 420.0));
             true
         });
-    View::fragment(vec![el().h_full().flex_shrink_0().style_with(move |s| s.w(width.get())).child(sidebar()).into(), divider.into()])
+    View::fragment(vec![
+        el().h_full().flex_shrink_0().style_with(move |s| s.w(width.get())).child(sidebar(chat, listing)).into(),
+        divider.into(),
+    ])
 }
 
 /// What the app's commands do, and its menu bar.
@@ -162,12 +160,11 @@ fn age(updated: u64, now: u64) -> Age {
     }
 }
 
-fn sidebar() -> El {
-    let chat = chat();
+fn sidebar(chat: &Chat, listing: Signal<bool>) -> El {
     let now = chat.now();
     let flat = chat.threads.sort_by(|t| Reverse(t.updated)).group_by(move |t| age(t.updated, now)).flatten();
     let new = chat.clone();
-    let listing = listing();
+    let rows = chat.clone();
     col()
         .id("sidebar")
         .size_full()
@@ -196,7 +193,7 @@ fn sidebar() -> El {
             |item| if item.header().is_some() { 36.0 } else { 34.0 },
             move |key, item| match key.clone() {
                 FlatKey::Header(age) => list_header(age.to_string()).id(format!("age-{age:?}")).into(),
-                FlatKey::Item(id) => thread_row(id, move || item.with(|f| f.item().cloned())),
+                FlatKey::Item(id) => thread_row(&rows, listing, id, move || item.with(|f| f.item().cloned())),
             },
         )))
         .child(el().h(1.0).w_full().bg(Token::Border).a11y_hidden())
@@ -221,11 +218,9 @@ fn brand_mark(size: f32) -> El {
         .a11y_hidden()
 }
 
-fn thread_row(id: ThreadId, thread: impl Fn() -> Option<Thread> + Clone + 'static) -> View {
-    let chat = chat();
+fn thread_row(chat: &Chat, listing: Signal<bool>, id: ThreadId, thread: impl Fn() -> Option<Thread> + Clone + 'static) -> View {
     let title = move || thread().map(|t| t.title).unwrap_or_default();
     let renaming = chat.renaming;
-    let back = listing();
     let (open, menu, busy, selected) = (chat.clone(), chat.clone(), chat.clone(), chat.current);
     let (shown, named, menu_title) = (title.clone(), title.clone(), title.clone());
     // One element per row: while renaming, its title is a field.
@@ -245,7 +240,7 @@ fn thread_row(id: ThreadId, thread: impl Fn() -> Option<Thread> + Clone + 'stati
     .selected(move || selected.get() == Some(id))
     .on_press(move || {
         open.open(id);
-        back.set(false);
+        listing.set(false);
     })
     .on_secondary_press(move || thread_menu(&menu, id, menu_title()))
     .child(show(move || busy.is_answering(id), || spinner().into()))
@@ -304,12 +299,12 @@ fn thread_menu(chat: &Chat, id: ThreadId, title: String) {
 
 // ---- the open conversation ----
 
-fn main_pane() -> El {
-    let chat = chat();
+fn main_pane(chat: &Chat, listing: Signal<bool>) -> El {
     let settings_open = state("settings-open", || false);
     let settings = settings_dialog(chat.clone(), settings_open);
     let title = chat.clone();
-    let listing = listing();
+    let current = chat.current;
+    let history = chat.clone();
     col()
         .id("conversation")
         .size_full()
@@ -338,11 +333,11 @@ fn main_pane() -> El {
                     .min_w(0.0)
                     .flex_1(),
                 )
-                .child(model_picker(&chat))
+                .child(model_picker(chat))
                 .child(icon_button(icons::SETTINGS, "Settings").id("settings-open").on_press(move || settings_open.set(true))),
         )
-        .child(el().relative().flex_1().min_h(0.0).child(keyed(move || chat.current.get().unwrap_or(0), |t| transcript(*t))))
-        .child(composer())
+        .child(el().relative().flex_1().min_h(0.0).child(keyed(move || current.get().unwrap_or(0), move |t| transcript(&history, *t))))
+        .child(composer(chat))
         .child(settings)
 }
 
@@ -455,10 +450,11 @@ fn model_picker(chat: &Chat) -> El {
 
 /// The open conversation's messages: one document to select across, following its end as the
 /// answer streams, with a way back to the end when scrolled away.
-fn transcript(thread: ThreadId) -> View {
-    let chat = chat();
+fn transcript(chat: &Chat, thread: ThreadId) -> View {
     let messages = chat.messages.filter(move |m| m.thread == thread);
     let empty = messages.clone();
+    let rows = chat.clone();
+    let draft = chat.draft;
     View::fragment(vec![
         col()
             .id("transcript")
@@ -470,11 +466,11 @@ fn transcript(thread: ThreadId) -> View {
             .child(virtual_each(
                 move || messages.clone(),
                 |m: &Message| if m.author == Author::User { 60.0 } else { 160.0 },
-                |id, m| message(*id, m),
+                move |id, m| message(&rows, *id, m),
             ))
             .child(show(
                 move || empty.is_empty(),
-                || {
+                move || {
                     col()
                         .items_center()
                         .justify_center()
@@ -510,13 +506,14 @@ fn transcript(thread: ThreadId) -> View {
                         )
                         .child(show(
                             || !compact(),
-                            || {
+                            move || {
                                 row()
                                     .w_full()
                                     .gap_2()
                                     .mt_4()
                                     .flex_wrap()
                                     .child(starter(
+                                        draft,
                                         "starter-write",
                                         icons::PENCIL,
                                         "Find the right words",
@@ -524,6 +521,7 @@ fn transcript(thread: ThreadId) -> View {
                                         "Help me write a thoughtful, concise introduction. Ask me what it is for first.",
                                     ))
                                     .child(starter(
+                                        draft,
                                         "starter-learn",
                                         icons::BOOK_OPEN,
                                         "Make it click",
@@ -531,6 +529,7 @@ fn transcript(thread: ThreadId) -> View {
                                         "Explain a complex idea in simple terms. Ask me which topic I want to understand.",
                                     ))
                                     .child(starter(
+                                        draft,
                                         "starter-build",
                                         icons::CODE,
                                         "Build something",
@@ -571,8 +570,7 @@ fn transcript(thread: ThreadId) -> View {
     ])
 }
 
-fn starter(id: &str, symbol: icons::Icon, title: &str, caption: &str, prompt: &'static str) -> El {
-    let draft = chat().draft;
+fn starter(draft: Signal<String>, id: &str, symbol: icons::Icon, title: &str, caption: &str, prompt: &'static str) -> El {
     el().id(id)
         .role(Role::Button)
         .label(title.to_owned())
@@ -600,17 +598,16 @@ fn starter(id: &str, symbol: icons::Icon, title: &str, caption: &str, prompt: &'
 }
 
 /// One message: the person's on the right; an answer's parts, its state and actions.
-fn message(id: u64, m: ReadSignal<Message>) -> View {
+fn message(chat: &Chat, id: u64, m: ReadSignal<Message>) -> View {
     let author = untrack(|| m.with(|m| m.author));
     let body = match author {
-        Author::User => user_message(id, m),
-        Author::Assistant => answer(id, m),
+        Author::User => user_message(chat, id, m),
+        Author::Assistant => answer(chat, id, m),
     };
     col().id(format!("msg-{id}")).px_6().py_4().w_full().max_w(800.0).mx_auto().child(body).into()
 }
 
-fn user_message(id: u64, m: ReadSignal<Message>) -> El {
-    let chat = chat();
+fn user_message(chat: &Chat, id: u64, m: ReadSignal<Message>) -> El {
     let (edit, copy) = (chat.clone(), m);
     let editing = chat.editing;
     let parts = untrack(|| m.with(|m| m.parts.clone()));
@@ -650,8 +647,7 @@ fn user_message(id: u64, m: ReadSignal<Message>) -> El {
         ))
 }
 
-fn answer(id: u64, m: ReadSignal<Message>) -> El {
-    let chat = chat();
+fn answer(chat: &Chat, id: u64, m: ReadSignal<Message>) -> El {
     let status = move || m.with(|m| m.status.clone());
     let (regenerate, copy) = (chat.clone(), m);
     col()
@@ -892,8 +888,7 @@ fn tool(id: u64, part_id: PartId, p: ReadSignal<Part>) -> View {
 
 // ---- the composer ----
 
-fn composer() -> El {
-    let chat = chat();
+fn composer(chat: &Chat) -> El {
     let current = chat.current;
     let queued = chat.queue.filter(move |q| Some(q.thread) == untrack(|| current.get()));
     let (send, stop, attach, drop_in, busy, busy2, editing, cancel_edit) =
@@ -901,6 +896,8 @@ fn composer() -> El {
     let answering = move || current.get().is_some_and(|t| busy.is_answering(t));
     let files = chat.files;
     let available = chat.clone();
+    let queued_chat = chat.clone();
+    let file_actions = chat.clone();
     col()
         .id("composer-area")
         .w_full()
@@ -911,7 +908,7 @@ fn composer() -> El {
         .gap_2()
         .on_drop(move |paths| drop_in.attach(paths))
         .drag_over(|p| p.bg(Token::Surface))
-        .child(each(move || queued.clone(), |qid, q| queued_row(*qid, q)))
+        .child(each(move || queued.clone(), move |qid, q| queued_row(&queued_chat, *qid, q)))
         .child(show(move || !available.has_model(), {
             let no_models = chat.models().is_empty();
             move || {
@@ -937,13 +934,14 @@ fn composer() -> El {
                 .child(show(
                     move || !files.is_empty(),
                     move || {
+                        let file_actions = file_actions.clone();
                         row()
                             .gap_1()
                             .flex_wrap()
                             .child(each(
                                 move || files.read_only(),
                                 move |fid, f| {
-                                    let (fid, c) = (*fid, use_context::<Chat>().expect("inside the chat"));
+                                    let (fid, c) = (*fid, file_actions.clone());
                                     let name = untrack(|| f.get()).1.name;
                                     removable_chip(&name, move || c.detach(fid)).id(format!("file-{fid}")).into()
                                 },
@@ -1032,8 +1030,7 @@ fn primary_icon(b: El) -> El {
     b.bg(Token::Accent).text_color(Token::AccentText).rounded_full().hover(|p| p.bg(Token::AccentHover).text_color(Token::AccentText))
 }
 
-fn queued_row(id: u64, q: ReadSignal<crate::chat::Queued>) -> View {
-    let chat = chat();
+fn queued_row(chat: &Chat, id: u64, q: ReadSignal<crate::chat::Queued>) -> View {
     let (now, edit, remove, available, label, hint) = (chat.clone(), chat.clone(), chat.clone(), chat.clone(), chat.clone(), chat.clone());
     row()
         .id(format!("queued-{id}"))
@@ -1079,7 +1076,31 @@ fn queued_row(id: u64, q: ReadSignal<crate::chat::Queued>) -> View {
 mod tests {
     use super::*;
     use crate::model::{Attachment, Event, Tool};
+    use octara::platform::HeadlessPlatform;
     use std::cell::RefCell;
+
+    #[test]
+    fn an_explicit_model_outlives_and_drives_reopened_product_views() {
+        let app = App::new(HeadlessPlatform::default());
+        let chat = app.run(|| Chat::new(Options::default()));
+        let shown = chat.clone();
+        let mut first = app.open_window(WindowOptions::new("First chat").size(1000.0, 720.0), move || view(&shown)).unwrap();
+
+        first.dispatch(octara::app::Event::Input("composer".into(), "From the first window".into())).unwrap();
+
+        assert_eq!(app.run(|| chat.draft.get()), "From the first window");
+        app.close_window(first.id());
+        app.run(|| chat.draft.set("Kept by the caller".into()));
+        let shown = chat.clone();
+        let mut second = app.open_window(WindowOptions::new("Second chat").size(1000.0, 720.0), move || view(&shown)).unwrap();
+
+        assert_eq!(second.kernel().value_of("composer").as_deref(), Some("Kept by the caller"));
+        second.dispatch(octara::app::Event::Input("composer".into(), "From the second window".into())).unwrap();
+        assert_eq!(app.run(|| chat.draft.get()), "From the second window", "view callbacks act on the supplied model");
+        assert!(second.layout_issues().is_empty(), "{:?}", second.layout_issues());
+        assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+        app.shutdown();
+    }
 
     type Action = Box<dyn FnOnce(Signal<Message>)>;
 
@@ -1097,7 +1118,7 @@ mod tests {
             let counted = reads.clone();
             let init = RefCell::new(Some(init));
             let window = Window::headless(move || {
-                provide(Chat::new(Options { models: Vec::new(), ..Options::default() }));
+                let chat = Chat::new(Options { models: Vec::new(), ..Options::default() });
                 let message = state("message", || init.borrow_mut().take().unwrap()());
                 let counted = counted.clone();
                 // Every structural source reads this memo. Buffer edits must leave it clean.
@@ -1111,7 +1132,7 @@ mod tests {
                         action(message);
                     }
                 });
-                col().size_full().child(answer(1, current).id("answer")).into()
+                col().size_full().child(answer(&chat, 1, current).id("answer")).into()
             });
             Self { window, action, reads }
         }

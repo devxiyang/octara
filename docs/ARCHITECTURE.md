@@ -31,13 +31,18 @@ keeps Signals and the retained tree as peer foundations, connected by mounting a
 coordination. Ordinary Rust functions compose UI; provenance does not create lifetime scopes.
 Implementation proceeds through option snapshots, construction/owner/provenance, execution-stage
 boundaries, then composition-library/public-surface cleanup. [TODO](TODO.md#bottom-up-architecture-convergence-approved-2026-11-17)
-tracks per-stage validation and commits. This is the selected direction, not a claim that all
+tracks per-stage validation and commits. The implemented content-owner API is `scope(key, factory)`;
+`#[ui]` records provenance without creating an owner. Plain/keyed snapshots drive chooser rows,
+text providers execute through a shared read-only boundary, and unfinished focus preparation
+cannot publish a completed frame. Specialized graphics/native APIs use explicit module imports;
+Chat's ordinary `view(&Chat)` receives its model directly. This is the selected direction, not a claim that all
 replacement APIs already exist.
 
 
 The proposed next collection boundary is [Collection data, row identity and content lifetime](design/collection-regions.md).
 It replaces application-maintained Vec/list mirrors and separates retained row identity from
-current row input and replaceable content. It is not implemented; [latest Rune/Exact source
+current row input and replaceable content. The broader replacement remains a proposal; chooser option mirrors have been removed using
+the existing keyed snapshot path. [Latest Rune/Exact source
 research](research/collection-regions.md) records the evidence and tradeoffs.
 
 The [first-round scope](design/core-consolidation.md#scope-and-necessity) is limited to correct

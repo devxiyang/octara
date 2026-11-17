@@ -2,6 +2,7 @@
 //! levels per channel (premultiplied). Skipped when there is no GPU.
 
 use octara::prelude::*;
+use octara::view::native_view;
 use octara_render::{Bitmap, CpuRenderer, GpuRenderer};
 
 fn compare(name: &str, cpu: &Bitmap, gpu: &Bitmap) {

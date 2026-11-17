@@ -12,7 +12,7 @@ pub mod store;
 mod ui;
 
 pub use chat::{Chat, ModelEntry, Options, Queued};
-pub use ui::root;
+pub use ui::{root, view};
 
 /// The app with the scripted model and nothing saved (what `octara check` and tests drive).
 pub fn app() -> octara::view::View {

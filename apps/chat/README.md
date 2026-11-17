@@ -120,3 +120,14 @@ After sending a question, a live `invoke` of `lifecycle.reply.0.text` releases i
 `lifecycle.reply.0.done` ends that reply. The ordinal counts model reply requests from zero in
 that process. `late` and `failed` release stale data, even after cancellation. All of these
 commands require the corresponding reply to have started.
+
+
+## Composition and ownership
+
+`root(options)` creates the product's explicit `scope("Chat", ..)`, constructs its model, then
+calls `view(&Chat)`. Applications and fixtures that already own a model can call `view(&chat)`
+in their window root or explicit scope. The view creates UI-local state in that owner; use a
+separate scope per instance. Deferred content and callbacks clone model handles, while listing
+state is passed explicitly. No Chat/Listing context provider is required. Keeping the model in
+an App owner allows closing/reopening its window without disposing the model's draft/history;
+closing a root-owned Chat still follows that scope's lifecycle.

@@ -6,6 +6,7 @@ use octara::capture::{Pixels, Shown};
 use octara::inspect::{Request, handle};
 use octara::platform::{HeadlessPlatform, HeadlessWindow};
 use octara::prelude::*;
+use octara::view::web_view;
 use octara_primitives::capture::{Painter, Picture};
 use octara_primitives::paint::{DisplayList, Item};
 use std::cell::RefCell;

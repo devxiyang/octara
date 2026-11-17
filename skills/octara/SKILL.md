@@ -28,6 +28,10 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
 
 ## Rules
 
+- Keep ordinary UI imports small. Drawing/native constructors live in `octara::view`; their
+  specialized types live in `octara_primitives::canvas`, `path` and `native`. Import JSON via
+  `octara::serde_json::json`. These are not default prelude exports; use vocab for canonical paths.
+
 - A view function runs **once** and builds a retained tree. What changes is read in closures:
   `text(move || format!("{}", n.get()))`, `.opacity(move || ..)`. Reading `.get()` in the body
   bakes the value in (`STRICT_READ_UNTRACKED`).

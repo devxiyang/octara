@@ -319,17 +319,17 @@ copy of the same layer inside core, or duplicate complex interaction state machi
       kit/application boundaries, findings, selective Rune/Exact/React references and acceptance
       criteria in [component-tree review](design/component-tree-review.md). This is a review,
       not acceptance of the uncommitted button draft or a new implementation stage.
-- [ ] Apply the selected function model to provenance and owner entry points (`#[component]`
-      currently records provenance; `component` creates a mounted scope), with ordinary wrappers,
-      two independent states and deferred content examples. See [bottom-up API review](design/bottom-up-api-review.md).
+- [x] Apply the selected function model: `#[ui]` records provenance and explicit `scope(key, factory)`
+      owns deferred content; old component entry points are removed. Ordinary wrappers, two
+      independent states, provider ownership and reordered reload are verified. See [bottom-up API review](design/bottom-up-api-review.md).
 - [ ] Agree on content, configuration targets, construction context and identity contracts using
       Button and Field call-site sketches together; then replace the paused D2a draft and its
       documentation. Prefer ordinary component-tree composition over specialized constructors.
 - [ ] Share stable action roots while allowing different visual content. Make actual control,
       label and container configuration explicit for composite widgets; remove misleading bare
       El forwarding. Prefer parameters/builders before public Parts or new traits.
-- [ ] Share option identity/navigation where semantics agree; remove Combobox/PopupList's
-      redundant option mirrors. Preserve Menu versus suggestions versus selection differences.
+- [x] Remove Combobox/PopupList option mirrors through keyed snapshots; keep active-option
+      reconciliation/navigation/reveal and Menu/suggestion/selection policy differences.
 - [ ] Separate component appearance from behavior using the existing style/theme machinery;
       migrate application-specific policy out of the kernel without a second theme system.
       If kit-layer removal is selected, preserve one tested interaction implementation while
@@ -514,7 +514,7 @@ research-first hold above and narrows earlier D/E proposals; do not run a parall
 - [x] **3 — Execution stages.** Audit measure/feedback/publish permissions; fix demonstrated
       crossings using internal capabilities, retain sound paths. Verify retries, cross-window
       convergence, failure and user callbacks; commit code/evidence as appropriate.
-- [ ] **4 — Composition library and public surface.** Reuse shared interaction mechanisms,
+- [x] **4 — Composition library and public surface.** Reuse shared interaction mechanisms,
       move appearance to ordinary functions/recipes, prune redundant wrappers and prelude exports.
       Verify custom content, keyboard/IME/disabled/accessibility and Chat; commit independently.
 
@@ -549,3 +549,22 @@ workspace all-targets Clippy, format/diff and layer checks passed; teaching expo
 Retained layout-cache downcasts, empty/busy native queries, shutdown idempotency and resumable
 cleanup remain covered. See [execution-stage audit](research/execution-stage-audit.md).
 These are headless/native-protocol checks; no physical OS window or candidate popup was verified.
+
+Stage 4 evidence (2026-11-17): Chat now uses explicit Chat/listing arguments and exported
+`view(&Chat)`; the long-session fixture and reopened-window regression exercise caller-owned
+models without context providers. Removed 14 specialized prelude aliases, migrated imports,
+and verified canonical paths through CLI vocabulary/catalog. No replacement public primitive,
+new package or second component runtime was added. The optional kit, existing controlled
+models and distinct interaction policies remain; custom core composition stays covered by D1.
+The paused arbitrary-button-content proposal is not adopted: its stronger content contract is
+still a separate design candidate, not a reason to change a11y_hidden globally. Its original
+working patch/new files are preserved locally under `.git/codex-backups/paused-buttons-20261117`.
+
+Final full workspace regression: **954 passed, 0 failed, 3 existing ignored doctests**.
+Workspace all-targets check/Clippy, format/diff, dependency-layer checks and skill freshness passed.
+This includes local HTTP, model-selection/request lifecycle, long sessions, custom core input
+and suggestion composition, and the new scope/execution/provider/API regressions. Real OS window,
+IME candidate UI and screenshots were not exercised in this refactor; no performance gain is claimed.
+
+The four selected convergence stages are complete. Earlier open content/kit proposals remain
+explicit candidates; they do not imply another required kernel rewrite or mandatory kit removal.

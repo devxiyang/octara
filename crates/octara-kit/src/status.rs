@@ -3,7 +3,9 @@
 
 use crate::icon_button;
 use octara::prelude::*;
+use octara::view::canvas;
 use octara_icons as icons;
+use octara_primitives::path::{LineCap, Path, Stroke, point};
 use std::time::Duration;
 
 /// How often the spinner's arc steps round (twelve steps a second turn, as AppKit's).

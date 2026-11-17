@@ -21,8 +21,11 @@ GPUI's names, which are Tailwind's vocabulary (`p_4`, `gap_2`, `rounded_md`, `te
 `octara` provides the runtime and UI construction. `octara-primitives` owns window-independent
 geometry, drawing, theme values and presentation data; the renderers consume that package without
 depending on the UI runtime. Most views use `octara::prelude::*`, which also imports the common
-primitive types. For direct module APIs such as `octara_primitives::path` or
-`octara_primitives::paint`, add `octara-primitives` as a dependency. `octara-kit` is optional:
+primitive types. Specialized drawing and native interop use explicit imports:
+`octara::view::{canvas, native_view, web_view}`, `octara_primitives::canvas::Canvas`,
+`octara_primitives::path::{Path, Stroke, point}` and `octara_primitives::native::{NativeEvent, Slot}`.
+Import JSON explicitly from `octara::serde_json::json`. These capabilities remain available;
+they are not default prelude names. For primitive module APIs add `octara-primitives` as a dependency. `octara-kit` is optional:
 applications and custom component libraries use the same public foundation.
 Text shaping, fonts and layout are owned by `octara-text`; add it as a direct dependency when
 using a custom `TextEngine` or the deterministic `MonoEngine`. The runtime uses it internally;
@@ -60,7 +63,8 @@ cleanup may still update its resources, but shutdown cleanup may not.
 Custom text engines and their returned layouts run without dependency collection, UI write
 permission or an ambient window/scope, including native prediction outside an App operation.
 They must perform text-provider work, not reenter UI driving/layout. Native queries can decline
-while the engine is busy; empty geometry needs no engine lease. Queries decline after shutdown or for failed/dropped owners, including empty text. An escaping provider panic fails the App; it does not
+while the engine is busy; empty geometry needs no engine lease. Queries decline after shutdown
+or for failed/dropped owners, including empty text. An escaping provider panic fails the App; it does not
 publish a partially updated frame or roll back arbitrary provider work.
 
 Desktop `octara_shell::Options::default()` already uses system fonts. Customize its `app.theme`

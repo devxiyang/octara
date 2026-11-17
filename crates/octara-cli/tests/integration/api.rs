@@ -2,6 +2,51 @@
 //! macros, impl blocks' bounds, trait impls, re-exports, and where each item is.
 
 use octara_cli::api::{self, Kind};
+use octara_cli::catalog::Catalog;
+
+#[test]
+fn specialized_drawing_native_and_json_apis_require_explicit_imports() {
+    let api = api::load();
+    let catalog = Catalog::build(api);
+    for (name, owner) in [
+        ("Canvas", "octara_primitives::canvas::Canvas"),
+        ("FillRule", "octara_primitives::path::FillRule"),
+        ("LineCap", "octara_primitives::path::LineCap"),
+        ("LineJoin", "octara_primitives::path::LineJoin"),
+        ("Path", "octara_primitives::path::Path"),
+        ("Stroke", "octara_primitives::path::Stroke"),
+        ("Transform", "octara_primitives::path::Transform"),
+        ("point", "octara_primitives::path::point"),
+        ("NativeEvent", "octara_primitives::native::NativeEvent"),
+        ("Slot", "octara_primitives::native::Slot"),
+        ("canvas", "octara::view::canvas"),
+        ("native_view", "octara::view::native_view"),
+        ("web_view", "octara::view::web_view"),
+    ] {
+        assert!(api.get(&format!("octara::prelude::{name}")).is_none(), "{name} is no longer a prelude alias");
+        assert!(api.get(owner).is_some(), "{owner} remains public");
+        assert!(!catalog.get(owner).unwrap().prelude, "vocab requires an explicit import for {owner}");
+        assert!(catalog.lookup(name).matches.iter().any(|entry| entry.path == owner), "vocab still finds {owner}");
+    }
+    assert!(api.get("octara::prelude::json").is_none());
+    assert_eq!(octara::serde_json::json!({"explicit": true})["explicit"], true);
+    for name in [
+        "Rect",
+        "Signal",
+        "ReadSignal",
+        "Watch",
+        "state",
+        "memo",
+        "watch",
+        "StateList",
+        "ReadList",
+        "state_list",
+        "TextBuffer",
+        "text_buffer",
+    ] {
+        assert!(api.get(&format!("octara::prelude::{name}")).is_some(), "the common prelude keeps {name}");
+    }
+}
 
 #[test]
 fn items_are_found_by_canonical_path_and_alias() {

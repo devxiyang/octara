@@ -8,6 +8,8 @@
 use crate::{Model, spinner, text_field};
 use octara::kernel::NumericRange;
 use octara::prelude::*;
+use octara::view::canvas;
+use octara_primitives::path::{Path, point};
 use std::cell::Cell;
 use std::rc::Rc;
 

@@ -1,6 +1,7 @@
 //! Numeric editing and command menus in the actual Showcase controls scene.
 
 use octara::prelude::*;
+use octara::serde_json::json;
 use std::time::Duration;
 
 fn scene() -> View {

@@ -4,6 +4,7 @@
 
 use octara::platform::{HeadlessPlatform, HeadlessWindow};
 use octara::prelude::*;
+use octara::view::{native_view, web_view};
 use octara_primitives::native::{NativeChange, NativeEvent, Slot};
 
 /// The native changes the window's platform was presented.

@@ -53,26 +53,21 @@ pub mod prelude {
     pub use crate::reactive::{ReadSignal, Signal, Watch, memo, provide, state, untrack, use_context, watch};
     pub use crate::task::{AsyncMemo, AsyncState, Receiver, Sender, Task, async_memo, background, channel, interval, sleep, spawn};
     pub use crate::view::{
-        Behavior, El, IntoElement, IntoProp, IntoRows, IntoText, Length, Patch, Rich, Span, Styled, View, bind_keys, breakpoint, canvas,
-        clock, col, each, el, focus, following_tail, icon, instant, invoke, invoke_after_update, is_composing, keyed, native_view,
-        on_command, open_url, paced, pointer_position_in, px, read_from_clipboard, relative, rems, rich, row, scope, scroll_into_view,
-        scroll_to, scroll_to_end, set_theme, settle_motion, show, show_else, size_of, sp, spacer, text, text_input, ui, viewport,
-        virtual_each, web_view, write_to_clipboard,
+        Behavior, El, IntoElement, IntoProp, IntoRows, IntoText, Length, Patch, Rich, Span, Styled, View, bind_keys, breakpoint, clock,
+        col, each, el, focus, following_tail, icon, instant, invoke, invoke_after_update, is_composing, keyed, on_command, open_url, paced,
+        pointer_position_in, px, read_from_clipboard, relative, rems, rich, row, scope, scroll_into_view, scroll_to, scroll_to_end,
+        set_theme, settle_motion, show, show_else, size_of, sp, spacer, text, text_input, ui, viewport, virtual_each, write_to_clipboard,
     };
     pub use crate::window::{WindowId, WindowKind, WindowOptions, close_window, current_window, open_window, windows};
     pub use accesskit::Live;
-    pub use octara_primitives::canvas::Canvas;
     pub use octara_primitives::icon::Icon;
     pub use octara_primitives::image::{Image, ObjectFit};
     pub use octara_primitives::input::CursorStyle;
     pub use octara_primitives::layout::{Align, Placement, Side};
     pub use octara_primitives::motion::{Curve, Spring};
-    pub use octara_primitives::native::{NativeEvent, Slot};
     pub use octara_primitives::paint::Rect;
-    pub use octara_primitives::path::{FillRule, LineCap, LineJoin, Path, Stroke, Transform, point};
     pub use octara_primitives::theme::{
         BoxShadow, Breakpoint, Color, ContainerStep, Family, Fill, Paint, RadiusStep, ShadowStep, TextStep, Theme, Token,
         linear_color_stop, linear_gradient, rgb,
     };
-    pub use serde_json::json;
 }

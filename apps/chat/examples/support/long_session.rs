@@ -209,21 +209,21 @@ impl LongSession {
         Options { models: vec![octara_chat::ModelEntry::new("long-session", Rc::new(self.clone()))], store, clock: Rc::new(|| NOW) }
     }
 
-    /// The unchanged product root, with fixture commands registered in its Chat scope.
+    /// The product view, with its model and fixture commands owned by one Chat scope.
     #[ui]
     pub fn view(&self, store: Option<Store>) -> View {
         let model = self.clone();
-        octara_chat::root(move || {
+        scope("Chat", move || {
+            let chat = Rc::new(Chat::new(model.options(store)));
             let controls = model.clone();
-            // Tasks restore their construction scope; commands restore only their window.
-            // Capture Chat once here instead of looking context up from an input handler.
+            let initialized = chat.clone();
+            // Opening the seeded thread is a handler-time change after the product is built.
             spawn(async move {
-                let chat = Rc::new(use_context::<Chat>().expect("initialization runs in the product Chat scope"));
-                *controls.chat.borrow_mut() = Rc::downgrade(&chat);
-                chat.open(THREAD);
-                controls.controls(chat);
+                *controls.chat.borrow_mut() = Rc::downgrade(&initialized);
+                initialized.open(THREAD);
+                controls.controls(initialized);
             });
-            model.options(store.clone())
+            octara_chat::view(&chat)
         })
     }
 

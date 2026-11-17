@@ -4,6 +4,7 @@
 use octara::kernel::{TextDocument, TextInputLayout};
 use octara::platform::{HeadlessPlatform, HeadlessWindow};
 use octara::prelude::*;
+use octara::view::canvas;
 use octara_primitives::path::point;
 use octara_text::{LaidText, MonoEngine, ShapedRun, StyleRun, TextEngine, TextLayout, TextPresentation, TextStyle, VisualLine};
 use std::any::Any;
