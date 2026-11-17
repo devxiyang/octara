@@ -767,10 +767,24 @@ Review: [core and primitives](design/core-primitives-review-2026-11-18.md), base
 - [x] Reproduce abandoned reload state surviving window close (6 nodes until App shutdown).
 - [x] Reproduce Image accepting invalid huge dimensions with empty bytes when overflow checks
       are disabled; compile the original source with both settings, no implementation patch.
-- [ ] Design reload retention by window and surviving owner path, preserving delayed handler
+- [x] Design reload retention by window and surviving owner path, preserving delayed handler
       state registration; cover failure recovery and close ownership before implementation.
 - [ ] Unify checked pixel layout validation and review renderer allocation arithmetic.
 
 Snapshot equality and external-asset wake semantics remain explicit design candidates, not
 approved new public primitives or mandatory performance projects. Core lib 158 and primitives
 lib 13 tests passed; temporary reproduction changes were restored. No real OS/GPU validation.
+
+## Implement core review: reload ownership (2026-11-18)
+
+- [x] Add one window-scoped named-state settlement path after rebuild and on close; adopt
+      surviving owner paths even before delayed state lookups, retire absent paths.
+- [x] Revoke all absent names before user destructors; graph-owned values remain reachable
+      for shutdown if release panics or triggers a nested reload.
+- [x] Verify repeated shape changes, multiple windows/App isolation, delayed handler state,
+      nested reload, build/drop/cleanup failure and shutdown; commit independently.
+
+Reload ownership validation: workspace tests passed, including five new scope regressions for
+retirement, delayed lookup, failure recovery and destructor reentry. Existing interrupted-cleanup
+coverage also passed. Strict workspace Clippy, formatting, diff and layer checks passed.
+No real OS window input was exercised.

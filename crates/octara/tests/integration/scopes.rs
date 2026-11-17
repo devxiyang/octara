@@ -201,3 +201,231 @@ fn scope_keys_with_path_syntax_and_percent_escapes_have_distinct_state() {
     }
     clean(&window);
 }
+
+struct ReloadValue {
+    id: usize,
+    drops: Rc<RefCell<Vec<usize>>>,
+    panic: bool,
+}
+
+impl Drop for ReloadValue {
+    fn drop(&mut self) {
+        self.drops.borrow_mut().push(self.id);
+        assert!(!self.panic, "reload value destructor");
+    }
+}
+
+#[test]
+fn reload_retires_absent_paths_without_touching_other_windows_or_app_state() {
+    let app = App::new(octara::platform::HeadlessPlatform::default());
+    let drops = Rc::new(RefCell::new(Vec::new()));
+    app.run(|| {
+        state("app-value", || ReloadValue { id: 100, drops: drops.clone(), panic: false });
+    });
+    let key = Rc::new(Cell::new(0usize));
+    let (source, retired) = (key.clone(), drops.clone());
+    let first = app
+        .open_window(WindowOptions::new("Changing"), move || {
+            let id = source.get();
+            let retired = retired.clone();
+            scope(id, move || {
+                state("payload", || ReloadValue { id, drops: retired, panic: false });
+                text("changing")
+            })
+        })
+        .unwrap();
+    let retired = drops.clone();
+    let second = app
+        .open_window(WindowOptions::new("Stable"), move || {
+            let retired = retired.clone();
+            scope(0usize, move || {
+                state("payload", || ReloadValue { id: 99, drops: retired, panic: false });
+                text("stable")
+            })
+        })
+        .unwrap();
+    let baseline = app.work().reactive_nodes;
+    for id in 1..=6 {
+        key.set(id);
+        app.hot_reload();
+        assert_eq!(app.work().reactive_nodes, baseline, "absent paths cannot accumulate");
+        assert_eq!(*drops.borrow(), (0..id).collect::<Vec<_>>());
+    }
+    app.close_window(first.id());
+    assert_eq!(*drops.borrow(), (0..=6).collect::<Vec<_>>());
+    assert!(!second.is_closed());
+    app.close_window(second.id());
+    assert_eq!(drops.borrow().last(), Some(&99));
+    assert_eq!(app.work().reactive_nodes, 1, "only App-owned state remains");
+    app.shutdown();
+    assert_eq!(drops.borrow().last(), Some(&100));
+    assert_eq!(app.work().reactive_nodes, 0);
+}
+
+#[test]
+fn reload_adopts_delayed_handler_state_even_when_it_is_not_looked_up_before_close() {
+    let drops = Rc::new(RefCell::new(Vec::new()));
+    let retired = drops.clone();
+    let mut window = Window::headless(move || {
+        let retired = retired.clone();
+        scope("stable", move || {
+            el().id("pick").role(Role::Button).label("Pick").size_12().on_press(move || {
+                let local = state("late", || ReloadValue { id: 10, drops: retired.clone(), panic: false });
+                local.update(|v| v.id += 1);
+            })
+        })
+    });
+    window.tap("pick").unwrap();
+    let baseline = window.app().work().reactive_nodes;
+    window.app().hot_reload();
+    assert_eq!(window.app().work().reactive_nodes, baseline);
+    assert!(drops.borrow().is_empty());
+    window.tap("pick").unwrap();
+    window.app().hot_reload();
+    // No state() call in this incarnation: the surviving owner still owns the retained value.
+    window.app().close_window(window.id());
+    assert_eq!(*drops.borrow(), [12]);
+    assert_eq!(window.app().work().reactive_nodes, 0);
+    assert!(window.app().diagnostics().is_empty(), "{:?}", window.app().diagnostics());
+    window.app().shutdown();
+}
+
+#[test]
+fn failed_reload_or_retirement_keeps_remaining_state_reachable_for_shutdown() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    for fail_build in [false, true] {
+        let key = Rc::new(Cell::new(0usize));
+        let drops = Rc::new(RefCell::new(Vec::new()));
+        let (source, retired) = (key.clone(), drops.clone());
+        let window = Window::headless(move || {
+            let id = source.get();
+            assert!(!(fail_build && id == 1), "reload build failed");
+            let retired = retired.clone();
+            scope(id, move || {
+                state("payload", || ReloadValue { id, drops: retired, panic: !fail_build && id == 0 });
+                text("value")
+            })
+        });
+        key.set(1);
+        assert!(catch_unwind(AssertUnwindSafe(|| window.app().hot_reload())).is_err());
+        window.app().shutdown();
+        window.app().shutdown();
+        let mut actual = drops.borrow().clone();
+        actual.sort_unstable();
+        assert_eq!(actual, if fail_build { vec![0] } else { vec![0, 1] }, "each started destructor is consumed once");
+        assert_eq!(window.app().work().reactive_nodes, 0);
+    }
+}
+
+#[test]
+fn retirement_cannot_reuse_a_pending_orphan_during_destructor_reentry() {
+    struct Reenter {
+        id: usize,
+        serial: usize,
+        value: usize,
+        source: Rc<RefCell<Vec<usize>>>,
+        reentered: Rc<Cell<bool>>,
+        drops: Rc<RefCell<Vec<usize>>>,
+    }
+
+    impl Drop for Reenter {
+        fn drop(&mut self) {
+            self.drops.borrow_mut().push(self.serial);
+            if self.serial < 2 && !self.reentered.replace(true) {
+                // Whichever old path retires first rebuilds the other, so map order does
+                // not matter. Both old records must already be unavailable for reuse.
+                *self.source.borrow_mut() = vec![1 - self.id];
+                App::current().hot_reload();
+            }
+        }
+    }
+
+    let source = Rc::new(RefCell::new(vec![0usize, 1]));
+    let initialized = Rc::new(Cell::new(0usize));
+    let reentered = Rc::new(Cell::new(false));
+    let drops = Rc::new(RefCell::new(Vec::new()));
+    let (keys, created, entered, retired) = (source.clone(), initialized.clone(), reentered.clone(), drops.clone());
+    let mut window = Window::headless(move || {
+        let mut root = col().size_full();
+        let ids = keys.borrow().clone();
+        for id in ids {
+            let (source, initialized, reentered, drops) = (keys.clone(), created.clone(), entered.clone(), retired.clone());
+            root = root.child(scope(id, move || {
+                let value = state("payload", || {
+                    let serial = initialized.get();
+                    initialized.set(serial + 1);
+                    Reenter { id, serial, value: 0, source, reentered, drops }
+                });
+                col().child(text(move || value.with(|v| format!("{}:{}", v.serial, v.value))).id(format!("value-{id}"))).child(
+                    el().id(format!("change-{id}"))
+                        .role(Role::Button)
+                        .label("Change")
+                        .size_12()
+                        .on_press(move || value.update(|v| v.value += 1)),
+                )
+            }));
+        }
+        root.into()
+    });
+    source.borrow_mut().clear();
+    window.app().hot_reload();
+    assert!(reentered.get());
+    assert_eq!(initialized.get(), 3, "a retired path starts fresh even during a destructor");
+    let survivor = source.borrow()[0];
+    let value_id = format!("value-{survivor}");
+    assert_eq!(window.kernel().text_of(&value_id).as_deref(), Some("2:0"));
+    window.tap(&format!("change-{survivor}")).unwrap();
+    assert_eq!(window.kernel().text_of(&value_id).as_deref(), Some("2:1"));
+    clean(&window);
+    window.app().close_window(window.id());
+    let mut actual = drops.borrow().clone();
+    actual.sort_unstable();
+    assert_eq!(actual, [0, 1, 2]);
+    assert_eq!(window.app().work().reactive_nodes, 0);
+    window.app().shutdown();
+}
+
+#[test]
+fn shutdown_releases_all_pending_orphans_after_the_first_destructor_panics() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    struct PanicOnce {
+        id: usize,
+        panic_next: Rc<Cell<bool>>,
+        drops: Rc<RefCell<Vec<usize>>>,
+    }
+
+    impl Drop for PanicOnce {
+        fn drop(&mut self) {
+            self.drops.borrow_mut().push(self.id);
+            assert!(!self.panic_next.replace(false), "first orphan destructor");
+        }
+    }
+
+    let changed = Rc::new(Cell::new(false));
+    let panic_next = Rc::new(Cell::new(false));
+    let drops = Rc::new(RefCell::new(Vec::new()));
+    let (source, fail, retired) = (changed.clone(), panic_next.clone(), drops.clone());
+    let window = Window::headless(move || {
+        let mut root = col().size_full();
+        let ids = if source.get() { 3..4 } else { 0..3 };
+        for id in ids {
+            let (panic_next, drops) = (fail.clone(), retired.clone());
+            root = root.child(scope(id, move || {
+                state("payload", || PanicOnce { id, panic_next, drops });
+                text("value")
+            }));
+        }
+        root.into()
+    });
+    changed.set(true);
+    panic_next.set(true);
+    assert!(catch_unwind(AssertUnwindSafe(|| window.app().hot_reload())).is_err());
+    assert_eq!(drops.borrow().len(), 1, "retirement stops after its first started destructor");
+    window.app().shutdown();
+    window.app().shutdown();
+    let mut actual = drops.borrow().clone();
+    actual.sort_unstable();
+    assert_eq!(actual, [0, 1, 2, 3], "unstarted orphan destructors remain owned by the runtime");
+    assert_eq!(window.app().work().reactive_nodes, 0);
+}

@@ -153,7 +153,7 @@ Based on Nominal Adapton: first-class names determine identity, and name ambigui
 - Computations and handlers restore their registration scope/window. Cleanup retires the scope
   before invoking callbacks and drops values outside internal table borrows; it cannot start new
   work in the retired scope.
-- Hot reload: destroy and rebuild all scopes; named state stays in the store and is found again by name, and is reset and reported when its type changes (migration functions to be added later).
+- Hot reload: retain named state while rebuilding, then attach it to surviving owner paths (including delayed handler lookups). Revoke all absent-path names before dropping their values, so a destructor-triggered nested reload cannot reclaim a half-retired entry. Closing the window retires its retained values; App-owned state remains until shutdown. A type change resets the value and reports it.
 
 ## 5. Incremental collections
 

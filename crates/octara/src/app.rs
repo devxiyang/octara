@@ -903,6 +903,7 @@ impl AppState {
         }
         // The signals the window itself holds (no scope owns them).
         w.enter(|| {
+            self.rt.settle_named_state(Owner(w.w.id.number()));
             w.w.viewport.dispose();
             w.w.breakpoint.dispose();
             w.w.interaction_revision.dispose();
@@ -1415,6 +1416,7 @@ impl Window {
             // A rebuild is not content arriving: nothing enters.
             self.w.kernel.borrow_mut().set_quiet(true);
             self.mount_root();
+            self.app.rt.settle_named_state(Owner(self.w.id.number()));
             self.w.kernel.borrow_mut().set_quiet(false);
         });
     }
@@ -1429,8 +1431,10 @@ impl App {
     pub fn theme(&self) -> Theme {
         self.app.res.theme.borrow().clone()
     }
-    /// Rebuilds every window's scope from the current state, as after a code patch; named state
-    /// survives. Rejected during construction, pure computations and after shutdown.
+    /// Rebuilds every window's scope from the current state, as after a code patch. Named state
+    /// survives for owner paths present in the rebuilt tree, even if a handler looks it up
+    /// later. State under absent paths is released after rebuilding; closing a window releases
+    /// all of its retained state. Rejected during construction, pure computations and shutdown.
     #[track_caller]
     pub fn hot_reload(&self) {
         use crate::reactive::graph::Operation;

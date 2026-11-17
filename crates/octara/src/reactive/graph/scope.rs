@@ -249,6 +249,54 @@ impl Runtime {
         self.reloading.set(on);
     }
 
+    /// Finish a window's rebuild (or close). Retained state belongs to surviving owner paths,
+    /// even when a handler will only look it up later. Absent paths retire now, not at App exit.
+    pub(crate) fn settle_named_state(&self, owner: Owner) {
+        #[allow(clippy::mutable_key_type, reason = "Scope paths hash immutable key identity; retirement flags do not affect Eq/Hash")]
+        let live: HashMap<_, _> = self
+            .scopes
+            .borrow()
+            .iter()
+            .enumerate()
+            .filter(|(_, scope)| scope.state == ScopeState::Live && scope.owner == Some(owner))
+            .map(|(i, scope)| (scope.path.clone(), ScopeId { runtime: self.identity, i: i as u32, g: scope.g }))
+            .collect();
+        let entries: Vec<_> = self
+            .store
+            .borrow()
+            .iter()
+            .filter(|((path, _), _)| path.contains(&ScopeSegment::Window(owner.0)))
+            .map(|(key, (idx, _))| (key.clone(), *idx))
+            .collect();
+        let mut retired = Vec::new();
+        for (key, idx) in entries {
+            if self.alive(idx)
+                && let Some(&scope) = live.get(&key.0)
+            {
+                if self.nodes.borrow()[idx.i as usize].scope != Some(scope) {
+                    self.scopes.borrow_mut()[scope.i as usize].nodes.push(idx);
+                    self.nodes.borrow_mut()[idx.i as usize].scope = Some(scope);
+                }
+            } else {
+                retired.push((key, idx));
+            }
+        }
+        // Reattach survivors and revoke every absent name before user code can reenter a
+        // rebuild. A nested reload must not reclaim a half-retired entry. The graph still owns
+        // every value until dispose_node consumes it, so shutdown can resume after a panic.
+        {
+            let mut store = self.store.borrow_mut();
+            for (key, _) in &retired {
+                store.remove(key);
+            }
+        }
+        self.with_execution(ExecutionOwner { scope: None, window: Some(owner) }, Ctx::Cleanup, None, || {
+            for (_, idx) in retired {
+                self.dispose_node(idx);
+            }
+        });
+    }
+
     pub(super) fn named_state(&self, key: &'static str, ty: TypeId, init: impl FnOnce() -> Value, at: &'static Location<'static>) -> Idx {
         if !self.allows(Operation::Register, at) {
             panic!("state(\"{key}\") is not allowed in this execution phase");
