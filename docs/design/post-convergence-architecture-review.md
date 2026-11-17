@@ -226,3 +226,23 @@ Rune 的默认字体替换规则或系统字体发现机制。依赖检查同步
 （CJK 用例按 feature 关闭）。首帧混合文本和输入框无缺字，400/600 字重按字体字节核验，独立
 CPU 绘制像素一致。普通依赖树只剩字体包自身；工作区 all-targets 严格 Clippy、格式、diff 与
 分层检查通过。未做真实 OS 窗口验证，也不声称性能收益。
+
+## 后续阶段：选择组件的纯运算复用（2026-11-18，init）
+
+对照本地 Rune 固定版本 3686e94 的 combobox.rs::build_list 调用：它共享 PopupList 行构造，
+但把 active 与 choose 回调留给 Combobox。这一边界值得学习；Octara 当前更适合先共享纯计算。
+新增私有 choices 模块，仅包含 unique_ids 与 adjacent_id；合并两处重复 ID 检查和循环定位。
+函数不持有状态、不读 Signals、不处理事件，不引入公开类型、控制器或新的生命周期。
+
+唯一性仍检查整个原始选项集合；Combobox 在输入无效时仍把全部选项交给 each 诊断并退休行，
+不能先按搜索词过滤而隐藏重复 ID。循环定位只消费已经筛出的可用 ID：缺失 active 从对应首/尾
+进入、首尾回绕、空集合无目标。空集合时是否写 active 继续由调用组件决定，保持原有行为。
+
+本阶段不共享整行构造：Combobox 的 selected 是提交值、highlight 单独控制背景，行是可截断
+的 button；PopupList 的 selected 是待选项，支持描述文字并保持编辑器焦点和选择。把这些塞进
+一个多开关行工厂会增加概念负担。模态、查询、提交、关闭、IME 及 Model 拒绝写入语义保持原位。
+Tabs/Menu/Radio 没有被并入同一个状态机；后续 scope 精简仍须先证明其资源与命名空间等价。
+
+纯运算阶段验证：kit 120 项、Chat 模型身份/选择 9 项通过，0 失败、1 个既有忽略 doctest。
+沿用组件级回归覆盖禁用/空选项、回绕、重复 ID 退休与恢复、稳定目标、Model 拒绝写入和 IME
+输入协议。工作区 all-targets 严格 Clippy、格式、diff、分层检查通过；未做真实 OS 输入验证。

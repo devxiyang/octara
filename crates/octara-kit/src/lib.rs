@@ -11,6 +11,7 @@
 use octara::prelude::*;
 use std::rc::Rc;
 
+mod choices;
 mod combobox;
 mod dialog;
 mod forms;

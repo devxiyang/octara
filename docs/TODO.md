@@ -701,3 +701,22 @@ glyphs in mixed text or input, regular/semibold use the expected font bytes, and
 CPU renders match. `cargo tree --edges normal` contains only octara-fonts itself. Workspace
 all-targets Clippy with `-D warnings`, formatting, diff and layer checks passed. This is
 headless first-frame/render validation; no real OS window or performance claim.
+
+## Continuation on init: shared choice calculations (2026-11-18)
+
+- [x] Review Rune's Combobox/PopupList reuse against Octara's actual row semantics.
+- [x] Share only whole-input ID uniqueness and enabled-ID circular navigation as two private
+      pure functions; keep component-owned filtering, state, focus and commit policies.
+- [x] Keep distinct row composition: committed choice versus pending suggestion, truncation
+      versus descriptions, modal choice versus focus-preserving editor suggestions.
+- [x] Run existing kit interaction/duplicate recovery/IME protocol tests, Chat model-picker
+      regressions, all-targets Clippy and layer/format checks; commit separately on init.
+
+No public API, dependency, state machine or scope change. Existing behavioral tests cover the
+shared rules through real components; no tests merely duplicating the helper implementation.
+
+Choice calculation validation: **120 kit tests + 9 Chat model identity/picker tests passed**,
+0 failed, 1 existing ignored kit doctest. Existing coverage includes wrapping, disabled/empty
+choices, duplicate-ID retirement/recovery, retained targets, rejected models, editor selection
+and IME protocol ownership. Workspace all-targets Clippy with `-D warnings`, formatting, diff
+and layer checks passed. No real OS window input or performance improvement is claimed.

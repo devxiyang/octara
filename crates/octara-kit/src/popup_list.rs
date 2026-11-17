@@ -1,8 +1,8 @@
 //! Suggestions owned by an existing editor, without moving keyboard focus into the popup.
 
 use crate::Model;
+use crate::choices::{adjacent_id, unique_ids};
 use octara::prelude::*;
-use std::collections::HashSet;
 use std::rc::Rc;
 
 /// A suggestion with a stable identity. Filtering belongs to the application; labels may repeat.
@@ -61,12 +61,7 @@ pub fn popup_list(
     scope(format!("PopupList[{id}]"), move || -> View {
         let active = state("active", || None::<String>);
         let items = memo(items);
-        let valid = memo(move || {
-            items.with(|items| {
-                let mut ids = HashSet::new();
-                items.iter().all(|item| ids.insert(&item.id))
-            })
-        });
+        let valid = memo(move || items.with(|items| unique_ids(items.iter().map(|item| item.id.as_str()))));
         let enabled = memo(move || {
             if !valid.get() {
                 return Vec::new();
@@ -130,15 +125,8 @@ pub fn popup_list(
                     match event.key {
                         Key::Up | Key::Down => {
                             let choices = enabled.get();
-                            if !choices.is_empty() {
-                                let at = active.get().and_then(|id| choices.iter().position(|item| item == &id));
-                                let at = match (event.key, at) {
-                                    (Key::Up, Some(at)) => (at + choices.len() - 1) % choices.len(),
-                                    (Key::Down, Some(at)) => (at + 1) % choices.len(),
-                                    (Key::Up, None) => choices.len() - 1,
-                                    _ => 0,
-                                };
-                                active.set(Some(choices[at].clone()));
+                            if let Some(next) = adjacent_id(&choices, active.get().as_deref(), event.key == Key::Up) {
+                                active.set(Some(next.to_owned()));
                             }
                             true
                         }

@@ -1,8 +1,8 @@
 //! A searchable, externally controlled choice with stable option identities.
 
+use crate::choices::{adjacent_id, unique_ids};
 use crate::{Model, button, popover, text_field};
 use octara::prelude::*;
-use std::collections::HashSet;
 use std::rc::Rc;
 
 /// One choice in a [`combobox`]. IDs must be unique and remain stable when options move or
@@ -61,12 +61,7 @@ pub fn combobox(
         let query = state("query", String::new);
         let highlight = state("highlight", || None::<String>);
         let options = memo(options);
-        let valid = memo(move || {
-            options.with(|options| {
-                let mut ids = HashSet::new();
-                options.iter().all(|option| ids.insert(&option.id))
-            })
-        });
+        let valid = memo(move || options.with(|options| unique_ids(options.iter().map(|option| option.id.as_str()))));
         let matches = memo(move || {
             let query = query.get().to_lowercase();
             options
@@ -164,15 +159,7 @@ pub fn combobox(
                             Key::Up | Key::Down => {
                                 let choices = enabled.get();
                                 let current = highlight.get();
-                                let index = current.as_ref().and_then(|id| choices.iter().position(|choice| choice == id));
-                                let next = match (key.key, index) {
-                                    (_, _) if choices.is_empty() => None,
-                                    (Key::Down, Some(index)) => Some((index + 1) % choices.len()),
-                                    (Key::Up, Some(index)) => Some((index + choices.len() - 1) % choices.len()),
-                                    (Key::Up, None) => Some(choices.len() - 1),
-                                    _ => Some(0),
-                                };
-                                highlight.set(next.map(|index| choices[index].clone()));
+                                highlight.set(adjacent_id(&choices, current.as_deref(), key.key == Key::Up).map(str::to_owned));
                                 true
                             }
                             Key::Enter => {
