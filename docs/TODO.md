@@ -251,12 +251,21 @@ validation was performed. B3 includes the separately recorded consistency-mode i
             Validation: **918 workspace tests passed, 0 failed, 3 existing ignored doctests**;
             all-targets Clippy, format/diff, dependency layers and skill freshness passed.
             No real-window claim; OS IME/candidate validation stays in R3.
-      - [ ] **R3:** close same-value/external-replacement/IME/native-batch/lifecycle matrices,
-            then real-window qualification when the user is available.
+      - [ ] **R3:** editing lifecycle and native protocol qualification.
+            **Automated portion completed:** same-value binding refresh keeps draft/redo;
+            rejected/normalized Insert and Unmark refuse old native continuations; explicit
+            selection wins; blur/cancel/commit, hot reload, close and epoch retirement are tested.
+            Private shell State owns its existing identity predicate and retirement; no new
+            public primitive or acceptance policy. See the review's test matrix.
+            Validation: **924 workspace tests passed, 0 failed, 3 existing ignored doctests**;
+            all-targets Clippy, format/diff, dependency layers and skill freshness passed.
+            **Remaining:** real-window Chinese IME, candidate content/placement, scroll/resize
+            and reload/reopen qualification when the user is available.
       The review recommends retaining immediate different-value replacement, without adding a
       pending external value queue or reset primitive. This supersedes the earlier deferred-write
       candidate; R1 retains immediate replacement. R3 lifecycle/platform acceptance remains
-      unfinished, including real-window verification deferred by the user.
+      open only for real-window verification deferred by the user; automated evidence is not
+      presented as an OS acceptance result.
 
 ### D. Core composition and ui-kit
 

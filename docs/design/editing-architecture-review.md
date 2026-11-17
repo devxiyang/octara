@@ -1,6 +1,6 @@
 # 从状态到呈现：架构复核与编辑协议重设计
 
-状态：2026-11-17 架构评审与实施方案；**R1/R2 已实现，R3 待办**。评审基线 `59b9bb5`。
+状态：2026-11-17 架构评审与实施方案；**R1/R2 已实现，R3 自动化已补齐，真实 OS 验收待办**。评审基线 `59b9bb5`。
 本轮按用户要求重新审查已推进的分层、内容、文本呈现、Field、语义和 placeholder；
 不以已提交为保留理由，也不以测试总数代替契约完整性。真实窗口验收由用户明确延期。
 本次是沿输入链路贯穿各层的复核，不宣称重新审计了 Signals、调度器或所有平台实现。
@@ -233,12 +233,45 @@ R2 进一步核对上述固定版本：Rune 的 `runtime/commit/text_layout.rs` 
 工作区 **918 passed、0 failed、3 个既有 ignored doctest**；全目标 Clippy、格式、
 分层和 skill 新鲜度检查通过。Chat、HTTP、shell 和 renderer 回归均通过。
 
-### R3：关闭行为矩阵与平台验收
+### R3：关闭行为矩阵与平台验收（自动化已补齐，OS 待验收）
 
 - 同值 no-op、不同外部值立即覆盖、旧 draft 不复活、cancel/commit/blur 顺序都有用例。
 - 与 native mirror 的 batch/epoch/owner/expected 协议交叉验证；失败后不重放输入。
 - 补真实窗口中文 IME、候选位置、滚动和选择；用户不在电脑旁时明确保持待办。
 - 重跑工作区、Clippy、分层和 skill；不新增 VM、通用事务或新的公开编辑器原语。
+
+自动化矩阵（测试位于 `crates/octara/tests/integration/edit.rs`，除另注明）：
+
+| 契约 | 覆盖用例 |
+| --- | --- |
+| 同值绑定重算保留 draft/选区；取消不清 redo | `same_value_binding_refresh_preserves_composition_and_cancel_preserves_redo` |
+| 不同外部值立即取代 draft；旧 expected 不得提交 | `queued_native_edits_reject_a_changed_owner_or_asynchronously_changed_value` |
+| 拒绝/归一化 Insert 和 Unmark 后，不接受旧 native continuation；新文档可继续 | `native_batch_continuations_require_the_accepted_document` |
+| blur、cancel→blur、commit→blur 的文档与撤销边界 | `composition_terminal_order_and_blur_preserve_only_accepted_history` |
+| 回调中显式选择优先于提议，取消的提议不产生历史 | `explicit_selection_in_an_input_callback_takes_precedence_over_its_proposal` |
+| 热重载保留 model，不继承 editor；关闭后拒绝迟到 native 输入 | `reload_and_close_retire_native_drafts_and_editor_history` |
+| 回调关闭/同名替换与 callback/binding panic | R1 的 integration/edit 与 app/edit 单测 |
+| 已取出的 batch、重入队列、相同 owner/document 的 epoch 退休、无 session 时的 discard 回调 | shell `text_input_mac::tests::retiring_a_native_batch_invalidates_detached_edits_even_when_owner_and_text_return` |
+
+这一轮未发现需要改变接受政策的新反例。shell 仅将既有 `is_current` 与 Rust 状态退休
+集中到私有 `State`，让测试调用生产判断；InputView 继续在释放状态借用后调用 AppKit。
+保留现有 epoch 回绕政策、owner/expected 校验和拒绝后同步，不增加公开原语。
+headless 的 `apply_text_edit == true` 仍只表示投递；业务拒绝/归一化后的旧 continuation
+依靠后继 expected 检查拒绝，shell 不重放剩余批次。单个投递完成后以最终 core 文档同步。
+
+自动化验证：工作区 **924 passed、0 failed、3 个既有 ignored doctest**；
+全目标 Clippy、格式、分层和 skill 新鲜度检查通过。未新增忽略测试。
+
+**仍未完成的真实 OS 验收：**
+
+1. 中文 IME 连续预编辑、候选选择、取消、提交后切焦点；确认只提交接受文本且 undo 单位正确。
+2. 组合期间同值刷新和不同外部更新；确认 IMKit 旧候选/迟到回调不恢复退休 draft。
+3. 拒绝与归一化后继续输入；确认 native mirror 恢复后可以开始新组合，候选内容/位置正确。
+4. 上翻多行字段、查询/截图、窗口缩放，再编辑；观察手动滚动保持及 caret reveal。
+5. 热重载、同名字段重建、关闭重开；保留窗口截图、原生 trace 和最终文档作为证据。
+
+这些必须等用户可进行真实窗口操作后执行。协议状态单测没有创建 AppKit 窗口，
+不能作为 IMKit 候选内容、位置或 OS 事件时序已经验收的证据。
 
 每个阶段包含迁移、旧路径删除、验证、文档和提交。不得仅将旧函数搬入新模块后宣称 R1/R2 完成。
 C2 的属性隔离可以保留，复合语义在 D 阶段处理。收敛完成后回到基础组件及应用验证，

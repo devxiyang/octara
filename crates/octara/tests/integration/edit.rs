@@ -942,3 +942,163 @@ fn reentered_input_is_refused_without_overwriting_the_outer_proposal() {
     holder.borrow_mut().take();
     app.app().shutdown();
 }
+
+#[test]
+fn native_batch_continuations_require_the_accepted_document() {
+    use std::{cell::Cell, rc::Rc};
+    for (reject, composing) in [(false, false), (true, false), (false, true), (true, true)] {
+        let calls = Rc::new(Cell::new(0));
+        let counted = calls.clone();
+        let mut app = Window::headless(move || {
+            let value = state("value", || "ab".to_owned());
+            let counted = counted.clone();
+            text_input()
+                .id("field")
+                .value(value)
+                .on_input(move |s| {
+                    counted.set(counted.get() + 1);
+                    if !reject {
+                        value.set(s.replace('!', ""));
+                    }
+                })
+                .into()
+        });
+        app.tap("field").unwrap();
+        app.set_selection(1, 1);
+        if composing {
+            let before = native_input(&app);
+            let mark = TextEdit::Mark { text: "!😀".into(), selection: Some(5..5), replacement: None };
+            assert!(app.apply_text_edit(before.id, &before.document.unwrap(), &mark));
+        }
+        let before = native_input(&app);
+        let expected = before.document.unwrap();
+        let first = if composing { TextEdit::Unmark } else { TextEdit::Insert { text: "!😀".into(), replacement: None } };
+        let mut native_result = expected.clone();
+        native_result.apply(&first);
+        assert!(app.apply_text_edit(before.id, &expected, &first), "delivery is not business acceptance");
+        let accepted = native_input(&app).document.unwrap();
+        assert_ne!(accepted, native_result);
+        let tail = TextEdit::Insert { text: "late".into(), replacement: None };
+        assert!(!app.apply_text_edit(before.id, &native_result, &tail));
+        assert_eq!(calls.get(), 1, "the stale tail never reaches application code");
+        assert_eq!(value(&app), if reject { "ab" } else { "a😀b" });
+        assert_eq!(selection(&app), if reject { 1..1 } else { 5..5 });
+        assert!(app.apply_text_edit(before.id, &accepted, &TextEdit::Insert { text: "新".into(), replacement: None }));
+        assert_eq!(calls.get(), 2, "a fresh native document can start a new operation");
+        assert!(app.app().diagnostics().is_empty());
+    }
+}
+
+#[test]
+fn same_value_binding_refresh_preserves_composition_and_cancel_preserves_redo() {
+    let mut app = Window::headless(|| {
+        let value = state("value", || "A😀Z".to_owned());
+        let refresh = state("refresh", || 0);
+        on_command("refresh", move || refresh.update(|v| *v += 1));
+        text_input()
+            .id("field")
+            .value(move || {
+                let _ = refresh.get();
+                value.get()
+            })
+            .on_input(move |s| value.set(s))
+            .into()
+    });
+    app.tap("field").unwrap();
+    app.set_selection(6, 6);
+    app.type_text("!");
+    app.press_key("mod+z").unwrap();
+    app.set_selection(5, 1);
+    let input = native_input(&app);
+    let original = input.document.unwrap();
+    let mark = TextEdit::Mark { text: "你好".into(), selection: Some(0..6), replacement: None };
+    assert!(app.apply_text_edit(input.id, &original, &mark));
+    let composing = native_input(&app).document.unwrap();
+    app.invoke("refresh").unwrap();
+    assert_eq!(native_input(&app).document, Some(composing.clone()));
+    assert!(app.apply_text_edit(input.id, &composing, &TextEdit::Cancel));
+    assert_eq!(native_input(&app).document, Some(original));
+    app.press_key("mod+shift+z").unwrap();
+    assert_eq!(value(&app), "A😀Z!");
+    assert!(app.app().diagnostics().is_empty());
+}
+
+#[test]
+fn reload_and_close_retire_native_drafts_and_editor_history() {
+    let mut app = app("before");
+    app.set_selection(6, 6);
+    app.type_text("!");
+    let old = native_input(&app);
+    let mark = TextEdit::Mark { text: "nihao".into(), selection: Some(5..5), replacement: None };
+    assert!(app.apply_text_edit(old.id, &old.document.unwrap(), &mark));
+    let draft = native_input(&app).document.unwrap();
+    app.app().hot_reload();
+    app.dispatch(Event::Focus("field".into())).unwrap();
+    let fresh = native_input(&app);
+    assert_ne!(fresh.id, old.id);
+    assert!(!app.apply_text_edit(old.id, &draft, &TextEdit::Unmark));
+    assert_eq!(value(&app), "before!");
+    assert!(app.text_field().unwrap().composition.is_empty());
+    app.press_key("mod+z").unwrap();
+    assert_eq!(value(&app), "before!", "hot reload retains model state, not the old editor's history");
+    app.app().close_window(app.id());
+    assert!(app.is_closed());
+    assert!(!app.apply_text_edit(fresh.id, &fresh.document.unwrap(), &mark));
+    app.app().shutdown();
+}
+
+#[test]
+fn explicit_selection_in_an_input_callback_takes_precedence_over_its_proposal() {
+    use std::{cell::RefCell, rc::Rc};
+    let holder: Rc<RefCell<Option<Window>>> = Rc::default();
+    let captured = holder.clone();
+    let mut app = Window::headless(move || {
+        let value = state("value", || "abc".to_owned());
+        let captured = captured.clone();
+        text_input()
+            .id("field")
+            .value(value)
+            .on_input(move |text| {
+                captured.borrow().as_ref().unwrap().clone().set_selection(0, 0);
+                value.set(text);
+            })
+            .into()
+    });
+    *holder.borrow_mut() = Some(app.clone());
+    app.tap("field").unwrap();
+    app.set_selection(3, 3);
+    app.type_text("d");
+    assert_eq!(value(&app), "abcd");
+    assert_eq!(selection(&app), 0..0, "the later explicit selection wins over the proposed caret");
+    app.press_key("mod+z").unwrap();
+    assert_eq!(value(&app), "abcd", "the cancelled proposal creates no undo record");
+    assert!(app.app().diagnostics().is_empty());
+    holder.borrow_mut().take();
+    app.app().shutdown();
+}
+
+#[test]
+fn composition_terminal_order_and_blur_preserve_only_accepted_history() {
+    for terminal in [None, Some(TextEdit::Cancel), Some(TextEdit::Unmark)] {
+        let mut app = app("A😀Z");
+        app.set_selection(6, 6);
+        app.type_text("!");
+        app.set_selection(5, 1);
+        let input = native_input(&app);
+        let mark = TextEdit::Mark { text: "你好".into(), selection: Some(6..6), replacement: None };
+        assert!(app.apply_text_edit(input.id, &input.document.unwrap(), &mark));
+        let draft = native_input(&app).document.unwrap();
+        if let Some(edit) = &terminal {
+            assert!(app.apply_text_edit(input.id, &draft, edit));
+        }
+        app.dispatch(Event::Focus("narrow".into())).unwrap();
+        assert!(!app.apply_text_edit(input.id, &draft, &TextEdit::Unmark));
+        app.dispatch(Event::Focus("field".into())).unwrap();
+        let committed = terminal == Some(TextEdit::Unmark);
+        assert_eq!(value(&app), if committed { "A你好Z!" } else { "A😀Z!" });
+        assert!(app.text_field().unwrap().composition.is_empty());
+        app.press_key("mod+z").unwrap();
+        assert_eq!(value(&app), if committed { "A😀Z!" } else { "A😀Z" }, "only accepted commits add history");
+        assert!(app.app().diagnostics().is_empty());
+    }
+}

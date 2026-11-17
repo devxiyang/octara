@@ -90,6 +90,19 @@ struct State {
 }
 
 impl State {
+    fn is_current(&self, edit: &NativeEdit) -> bool {
+        self.epoch == edit.epoch && self.session.as_ref().is_some_and(|s| s.owner == edit.owner)
+    }
+
+    /// Retire Rust-owned protocol state before AppKit is asked to discard its composer.
+    fn retire(&mut self) {
+        self.session = None;
+        self.pending.clear();
+        self.inflight = false;
+        self.epoch = self.epoch.wrapping_add(1);
+        self.notified = None;
+    }
+
     fn should_retire(&self) -> bool {
         let input = self.latest.as_ref().filter(|i| i.document.is_some());
         if self.session.as_ref().map(|s| s.owner) != input.map(|i| i.id) {
@@ -533,8 +546,7 @@ impl TextInputMac {
     }
 
     pub(crate) fn is_current(&self, edit: &NativeEdit) -> bool {
-        let state = self.view.ivars().state.borrow();
-        state.epoch == edit.epoch && state.session.as_ref().is_some_and(|s| s.owner == edit.owner)
+        self.view.ivars().state.borrow().is_current(edit)
     }
 
     /// The batch has reached the safe application boundary. A reentrant native edit remains
@@ -569,14 +581,7 @@ impl TextInputMac {
     }
 
     fn retire(&self) {
-        {
-            let mut state = self.view.ivars().state.borrow_mut();
-            state.session = None;
-            state.pending.clear();
-            state.inflight = false;
-            state.epoch = state.epoch.wrapping_add(1);
-            state.notified = None;
-        }
+        self.view.ivars().state.borrow_mut().retire();
         self.view.ivars().anchor.set(None);
         self.view.ivars().first_rect_request.set(None);
         self.view.ivars().first_rect_failure.set(None);
@@ -720,6 +725,51 @@ unsafe fn write_range(pointer: NSRangePointer, range: NSRange) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retiring_a_native_batch_invalidates_detached_edits_even_when_owner_and_text_return() {
+        let mut kernel = octara::kernel::Kernel::default();
+        let owner = kernel.create(octara::kernel::Kind::TextInput);
+        let other = kernel.create(octara::kernel::Kind::TextInput);
+        let original = TextDocument::new("A😀Z".into(), 1, 5);
+        let mut state = State {
+            latest: Some(TextInput {
+                id: owner,
+                caret: Default::default(),
+                secure: false,
+                multiline: false,
+                document: Some(original.clone()),
+                geometry: None,
+                layout: None,
+            }),
+            ..State::default()
+        };
+        state.synchronize();
+        assert!(state.edit(TextEdit::Mark { text: "ni".into(), selection: Some(2..2), replacement: None }));
+        assert!(state.edit(TextEdit::Unmark));
+        let detached = std::mem::take(&mut state.pending);
+        state.inflight = true;
+        assert!(detached.iter().all(|edit| state.is_current(edit)));
+        // A reentrant callback has also queued work while this batch is in flight.
+        state.edit(TextEdit::Insert { text: "late".into(), replacement: None });
+        state.retire();
+        assert!(state.pending.is_empty());
+        assert!(!state.inflight);
+        assert!(!state.edit(TextEdit::Unmark), "discard callbacks see no live session");
+        state.synchronize();
+        assert_eq!(state.session.as_ref().unwrap().document, original);
+        assert!(detached.iter().all(|edit| !state.is_current(edit)), "same owner and text cannot revive the old epoch");
+        assert!(state.edit(TextEdit::Insert { text: "新".into(), replacement: None }));
+        assert!(state.is_current(&state.pending[0]));
+        state.latest.as_mut().unwrap().id = other;
+        assert!(state.should_retire());
+        state.synchronize();
+        assert!(!state.is_current(&state.pending[0]), "owner is checked independently of epoch");
+        state.retire();
+        state.latest = None;
+        state.synchronize();
+        assert!(!state.edit(TextEdit::Unmark), "closed windows accept no late composition");
+    }
 
     #[test]
     fn utf16_ranges_preserve_surrogates_and_combining_marks() {
