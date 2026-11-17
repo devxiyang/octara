@@ -122,6 +122,28 @@ Octara follows the latest stable Rust, with Rust 1.100 as its minimum and Editio
 local toolchain. CI updates stable before every build. The Rust version floor is declared
 once in the workspace and inherited by every package; it does not pin the development compiler.
 
+### Local build cache
+
+Reuse the workspace's ignored `target/` for development and tests. Keep the profile, features,
+target architecture and compiler settings consistent for repeat work. Desktop verification
+scripts find executables in `target/debug` by default. After a run, remove its temporary outputs
+such as screenshots, logs and sockets. Cargo can reuse its compiled artifacts and Octara's
+generated headless harness on the next run.
+
+If disk space is tight, inspect usage with `du -sh target`. Preview targeted cleanup with
+`cargo clean --release --dry-run` for an unused release build or
+`cargo clean --workspace --dry-run` for workspace members while keeping compiled dependencies.
+If DWARF size is the main cost, a consistent `CARGO_PROFILE_DEV_DEBUG=line-tables-only`
+retains file and line information for backtraces with less debug data. Changing the setting
+builds a different set of artifacts. [Cargo clean](https://doc.rust-lang.org/cargo/commands/cargo-clean.html) ·
+[Cargo profiles](https://doc.rust-lang.org/cargo/reference/profiles.html#debug)
+
+Cargo's `build.build-dir` or `CARGO_BUILD_BUILD_DIR` can relocate intermediate artifacts
+while keeping the final executable paths. A full `cargo clean` clears both configured
+directories. Rust 1.100's layout reduces cache collisions. Cross-workspace deduplication and
+automatic cleanup of compiled artifacts are future Cargo work. [Cargo build cache](https://doc.rust-lang.org/cargo/reference/build-cache.html) ·
+[Rust 1.100 release](https://blog.rust-lang.org/2026/11/12/Rust-1.100.0/#reducing-cargo-cache-collisions)
+
 ## Repository
 
 | Path | Contents |

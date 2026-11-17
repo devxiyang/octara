@@ -52,7 +52,8 @@ temporary directory under Cargo's target directory, and records its SHA-256 dige
 lifetime. The launcher waits for the child to exit before removing the copy, so a new build can
 replace Cargo's output even while the earlier window is still open. Use ordinary local executables
 that can be run directly, with any resources they need available from the caller's environment.
-After an interrupted launch has stopped, `cargo clean` also removes its staged executable.
+After an interrupted launch has stopped, remove that launch's private directory under
+`<target>/octara/octara-launch-*` if it remains. The Cargo cache is reusable across launches.
 
 `inspect` reports the running and expected build digests in `provenance`. For a matching receipt
 with a source record, `source` is `matches` or `changed` and `source_scope` is `workspace_rust`.

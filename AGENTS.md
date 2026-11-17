@@ -4,9 +4,11 @@
 
 - Do not publicly share the user's private Gmail address without explicit
   confirmation.
-- Keep build artifacts bounded. After each Rust build and run batch, stop its
-  test processes, remove its temporary products, and clean this workspace's Cargo
-  build output. Leave global Cargo registries and toolchains alone.
+- Reuse this workspace's Cargo build cache across runs. After a build or test
+  batch, stop the processes it started and remove its temporary files, sockets,
+  and captures. Keep Cargo's build output for the next batch. Under disk pressure,
+  inspect the cache and preview targeted cleanup before reclaiming space.
+  Leave global Cargo registries and toolchains alone.
 - Treat Git branches matching `archive/*` as permanent. Deleting, rewriting, or
   repointing one requires one explicit confirmation naming the exact branch and
   whether it is local or remote.
