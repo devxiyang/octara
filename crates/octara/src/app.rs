@@ -6,6 +6,7 @@ mod config;
 mod drive;
 mod edit;
 mod event;
+mod feedback;
 mod focus;
 mod frame;
 mod guard;
@@ -212,18 +213,18 @@ pub(crate) struct WindowState {
     pub(crate) viewport: Signal<(f32, f32)>,
     pub(crate) breakpoint: Signal<Breakpoint>,
     /// Scroll containers someone follows (virtual lists), with their state as a signal.
-    pub(crate) scrolls: RefCell<rustc_hash::FxHashMap<NodeId, Signal<crate::view::ScrollState>>>,
+    scrolls: RefCell<rustc_hash::FxHashMap<NodeId, Signal<feedback::ScrollState>>>,
     /// Element sizes someone follows (`size_of`), by test id.
-    pub(crate) sizes: RefCell<rustc_hash::FxHashMap<String, Signal<(f32, f32)>>>,
+    sizes: RefCell<rustc_hash::FxHashMap<String, Signal<(f32, f32)>>>,
     /// Whether scroll containers follow their tail, as someone reads it (`following_tail`), by
     /// test id.
-    pub(crate) tails: RefCell<rustc_hash::FxHashMap<String, Signal<bool>>>,
+    tails: RefCell<rustc_hash::FxHashMap<String, Signal<bool>>>,
     /// Clocks someone reads (`clock`), by period in nanoseconds.
     pub(crate) clocks: RefCell<rustc_hash::FxHashMap<u128, Clock>>,
     /// Paced texts (`paced`) in this window, by number.
     pub(crate) paced: RefCell<Vec<(u64, Rc<crate::view::Paced>)>>,
     /// Run after each layout; return whether they changed anything (then the window lays out again).
-    pub(crate) after_layout: RefCell<Vec<(u64, crate::view::AfterLayout)>>,
+    after_layout: RefCell<Vec<(u64, feedback::AfterLayout)>>,
     pub(crate) next: Cell<u64>,
     options: crate::platform::WindowOptions,
     /// Closed: its scope is disposed and it left the app.
@@ -837,7 +838,8 @@ impl AppState {
             return;
         }
         self.checking.set(true);
-        for id in self.order.borrow().clone() {
+        let windows = self.order.borrow().clone();
+        for id in windows {
             let Some(w) = self.handle(id) else { continue };
             let incremental = w.w.kernel.borrow().tree_dump();
             w.reload();
@@ -890,15 +892,7 @@ impl AppState {
             w.w.viewport.dispose();
             w.w.breakpoint.dispose();
             w.w.interaction_revision.dispose();
-            for (_, s) in w.w.scrolls.borrow_mut().drain() {
-                s.dispose();
-            }
-            for (_, s) in w.w.sizes.borrow_mut().drain() {
-                s.dispose();
-            }
-            for (_, s) in w.w.tails.borrow_mut().drain() {
-                s.dispose();
-            }
+            w.w.release_feedback();
             for (_, c) in w.w.clocks.borrow_mut().drain() {
                 c.task.cancel_owned();
                 c.signal.dispose();

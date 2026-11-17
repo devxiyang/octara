@@ -1361,7 +1361,7 @@ pub(crate) fn build_el(mut e: El) -> NodeId {
 fn mount_canvas(at: &'static Location<'static>, node: NodeId, draw: Draw) {
     let u = crate::app::window();
     let size = graph::Signal::detached((0.0f32, 0.0f32));
-    let hook = {
+    {
         let u = u.clone();
         u.clone().after_layout(Rc::new(move || {
             let k = u.kernel.borrow();
@@ -1375,17 +1375,9 @@ fn mount_canvas(at: &'static Location<'static>, node: NodeId, draw: Draw) {
             }
             size.set(s);
             true
-        }))
-    };
-    {
-        let u = u.clone();
-        rt(|rt| {
-            rt.on_cleanup(Box::new(move || {
-                u.remove_after_layout(hook);
-                size.dispose();
-            }))
-        });
+        }));
     }
+    rt(|rt| rt.on_cleanup(Box::new(move || size.dispose())));
     graph::binding(at, move || {
         let (w, h) = size.get();
         let mut c = crate::canvas::Canvas::new(w, h);

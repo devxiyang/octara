@@ -20,7 +20,8 @@ impl AppState {
             let mut generations = rustc_hash::FxHashMap::default();
             generations.extend(settled);
             for _ in 0..16 {
-                for id in self.order.borrow().clone() {
+                let windows = self.order.borrow().clone();
+                for id in windows {
                     if let Some(w) = self.handle(id) {
                         if generations
                             .get(&id)
@@ -227,12 +228,18 @@ impl Window {
 
     fn settle_layout(&self, at: &'static std::panic::Location<'static>) -> Result<(), ()> {
         for _ in 0..4 {
+            if !self.feedback_active() {
+                return Err(());
+            }
             self.app.rt.flush();
-            if self.app.rt.has_pending() {
+            if !self.feedback_active() || self.app.rt.has_pending() {
                 return Err(());
             }
             self.w.kernel.borrow_mut().layout(self.size().0, self.size().1);
-            let changed = self.app.rt.with_frame(Ctx::Handler, None, Some(None), || self.w.sync_after_layout());
+            let changed = self.app.rt.with_frame(Ctx::Handler, None, Some(None), || self.sync_after_layout());
+            if !self.feedback_active() {
+                return Err(());
+            }
             if !changed {
                 return Ok(());
             }

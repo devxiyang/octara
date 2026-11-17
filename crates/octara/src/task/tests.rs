@@ -1417,31 +1417,6 @@ fn subscription_failure_prevents_the_next_callback_and_retires_the_receiver() {
 }
 
 #[test]
-fn after_layout_does_not_run_a_hook_removed_by_an_earlier_hook() {
-    let app = App::new(HeadlessPlatform::default());
-    let window = app.open_window(Default::default(), || el().size_full().into()).unwrap();
-    let called = Rc::new(Cell::new(false));
-    let later = Rc::new(Cell::new(0));
-    let window_state = window.enter(crate::app::window);
-    let first = app.run(|| {
-        let (state, next) = (window_state.clone(), later.clone());
-        let first = window_state.after_layout(Rc::new(move || {
-            state.remove_after_layout(next.get());
-            false
-        }));
-        let out = called.clone();
-        later.set(window_state.after_layout(Rc::new(move || {
-            out.set(true);
-            false
-        })));
-        first
-    });
-    assert!(!called.get());
-    app.run(|| window_state.remove_after_layout(first));
-    app.shutdown();
-}
-
-#[test]
 fn async_memo_rechecks_publication_after_key_comparison_closes_the_app() {
     #[derive(Clone)]
     struct Key;

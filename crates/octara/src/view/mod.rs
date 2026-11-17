@@ -22,7 +22,7 @@ pub use style::{Length, Patch, Styled, px, relative, rems, sp};
 
 use crate::diagnostics as codes;
 use crate::kernel::{Breakpoint, NodeId, Theme};
-use crate::reactive::graph::{self, Ctx, ReadSignal, ScopeId, Signal, rt, untrack};
+use crate::reactive::graph::{self, Ctx, ReadSignal, ScopeId, Signal, rt};
 use std::cell::{Cell, RefCell};
 use std::fmt::Display;
 use std::panic::Location;
@@ -65,104 +65,6 @@ impl ScopedHandler {
 
 /// What an element does with files dropped on it.
 pub(crate) type OnDrop = Rc<dyn Fn(&[std::path::PathBuf])>;
-
-/// A hook run after each layout; returns whether it changed anything.
-pub(crate) type AfterLayout = Rc<dyn Fn() -> bool>;
-
-/// A scroll container's offset and visible size.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub(crate) struct ScrollState {
-    pub offset: (f32, f32),
-    pub client: (f32, f32),
-}
-
-impl crate::app::WindowState {
-    /// The (shared) scroll state signal of `node`, kept in step after every layout and scroll.
-    pub(crate) fn scroll_state(&self, node: NodeId) -> Signal<ScrollState> {
-        *self.scrolls.borrow_mut().entry(node).or_insert_with(|| Signal::detached(ScrollState::default()))
-    }
-    /// Shows all of every paced text now.
-    pub(crate) fn land_paced(&self) {
-        let paced: Vec<_> = self.paced.borrow().iter().map(|(_, p)| p.clone()).collect();
-        for p in paced {
-            p.land();
-        }
-    }
-    pub(crate) fn after_layout(&self, f: Rc<dyn Fn() -> bool>) -> u64 {
-        let id = self.next.get() + 1;
-        self.next.set(id);
-        let owner = rt(|rt| rt.capture_owner());
-        let hook = Rc::new(move || rt(|rt| rt.admits(owner) && rt.with_execution(owner, Ctx::Handler, None, || f())));
-        self.after_layout.borrow_mut().push((id, hook));
-        id
-    }
-    pub(crate) fn remove_after_layout(&self, id: u64) {
-        self.after_layout.borrow_mut().retain(|(i, _)| *i != id);
-    }
-    /// Runs the after-layout hooks and refreshes scroll signals; true if anything changed.
-    pub(crate) fn sync_after_layout(&self) -> bool {
-        let hooks = self.after_layout.borrow().clone();
-        let mut changed = false;
-        for (id, f) in hooks {
-            if crate::app::App::current().window(self.id).is_none_or(|window| window.is_closed()) {
-                return changed;
-            }
-            // An earlier hook can unregister a later hook in this detached batch.
-            if self.after_layout.borrow().iter().any(|(live, _)| *live == id) {
-                changed |= f();
-            }
-        }
-        let k = self.kernel.borrow();
-        for (id, sig) in self.sizes.borrow().iter() {
-            let size = k.find(id).map_or((0.0, 0.0), |n| {
-                let r = k.rect(n);
-                (r.2, r.3)
-            });
-            if untrack(|| sig.get()) != size {
-                sig.set(size);
-                changed = true;
-            }
-        }
-        for (id, sig) in self.tails.borrow().iter() {
-            let on = k.find(id).is_some_and(|n| k.is_following_tail(n));
-            if untrack(|| sig.get()) != on {
-                sig.set(on);
-                changed = true;
-            }
-        }
-        let mut dead = Vec::new();
-        for (&node, sig) in self.scrolls.borrow().iter() {
-            if !k.is_alive(node) {
-                dead.push(node);
-                continue;
-            }
-            let s = ScrollState { offset: k.scroll_offset(node), client: k.client_size(node) };
-            if untrack(|| sig.get()) != s {
-                sig.set(s);
-                changed = true;
-            }
-        }
-        drop(k);
-        for node in dead {
-            if let Some(sig) = self.scrolls.borrow_mut().remove(&node) {
-                sig.dispose();
-            }
-        }
-        changed
-    }
-    pub(crate) fn register(self: &Rc<Self>, h: Handler) -> u64 {
-        let id = self.next.get() + 1;
-        self.next.set(id);
-        self.handlers.borrow_mut().insert(id, ScopedHandler::capture(h));
-        let me = self.clone();
-        rt(|rt| {
-            rt.on_cleanup(Box::new(move || {
-                me.handlers.borrow_mut().remove(&id);
-            }))
-        });
-        id
-    }
-}
 
 /// A one-shot description of UI, consumed when mounted.
 pub enum View {
@@ -525,21 +427,7 @@ pub fn breakpoint() -> ReadSignal<Breakpoint> {
 /// `let narrow = memo(|| size_of("panel").get().0 < 320.0);`. A size that feeds back into
 /// itself is cut after a few rounds and reported as `LAYOUT_LOOP`.
 pub fn size_of(id: &str) -> ReadSignal<(f32, f32)> {
-    let u = crate::app::window();
-    let mut sizes = u.sizes.borrow_mut();
-    if let Some(s) = sizes.get(id) {
-        return s.read_only();
-    }
-    let size = {
-        let k = u.kernel.borrow();
-        k.find(id).map_or((0.0, 0.0), |n| {
-            let r = k.rect(n);
-            (r.2, r.3)
-        })
-    };
-    let s = Signal::detached(size);
-    sizes.insert(id.to_owned(), s);
-    s.read_only()
+    crate::app::window().size_signal(id)
 }
 
 /// The current pointer press in an element's local coordinates. Available only inside its
@@ -613,18 +501,7 @@ pub fn scroll_to_end(id: &str) -> bool {
 /// while it does not exist), tracked: a binding that reads it reruns when the person scrolls
 /// away from the end or back to it (to show a way back to the end).
 pub fn following_tail(id: &str) -> ReadSignal<bool> {
-    let u = crate::app::window();
-    let mut tails = u.tails.borrow_mut();
-    if let Some(s) = tails.get(id) {
-        return s.read_only();
-    }
-    let on = {
-        let k = u.kernel.borrow();
-        k.find(id).is_some_and(|n| k.is_following_tail(n))
-    };
-    let s = Signal::detached(on);
-    tails.insert(id.to_owned(), s);
-    s.read_only()
+    crate::app::window().tail_signal(id)
 }
 
 /// The app's clock, tracked, moving in steps of `period` (SwiftUI's periodic `TimelineView`): a

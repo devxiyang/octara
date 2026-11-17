@@ -3,7 +3,7 @@
 //! asynchronous work with `settle` and run it out with `run_until_idle`. One clock for the app;
 //! each window's long presses, glides and motion follow it.
 
-use super::{App, Window};
+use super::{App, Window, WindowState};
 use crate::task::{PendingWork, WorkKind};
 use std::time::Duration;
 
@@ -278,5 +278,15 @@ impl Window {
             })
             .chain(paced)
             .collect()
+    }
+}
+
+impl WindowState {
+    /// Shows all registered paced texts now, outside the registry borrow.
+    pub(crate) fn land_paced(&self) {
+        let paced: Vec<_> = self.paced.borrow().iter().map(|(_, p)| p.clone()).collect();
+        for p in paced {
+            p.land();
+        }
     }
 }

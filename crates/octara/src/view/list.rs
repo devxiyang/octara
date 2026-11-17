@@ -493,7 +493,7 @@ where
         }
 
         // After each layout: where the list starts in the container, and the rows' real heights.
-        let hook = {
+        {
             let (u, list_top, mirror, rows, measured, row_gap, estimates) =
                 (u.clone(), list_top.clone(), mirror.clone(), rows.clone(), measured.clone(), row_gap.clone(), estimates.clone());
             let pending_anchor = pending_anchor.clone();
@@ -578,13 +578,12 @@ where
                     revision.update(|r| *r += 1);
                 }
                 changed
-            }))
-        };
+            }));
+        }
         {
             let (u, gaps) = (u.clone(), gaps.clone());
             rt(|rt| {
                 rt.on_cleanup(Box::new(move || {
-                    u.remove_after_layout(hook);
                     let mut k = u.kernel.borrow_mut();
                     for n in [top, bottom].into_iter().chain(gaps.borrow_mut().drain(..)) {
                         if k.is_alive(n) {

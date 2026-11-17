@@ -2,9 +2,11 @@
 //! recognizer (`pointer.rs`) reports gestures through this interface and knows no element kinds;
 //! each kind with behavior of its own (a text field places its caret and selects) implements it.
 
-use super::Window;
 use super::pointer::{PointerEvent, PointerKind};
+use super::{Window, WindowState};
 use crate::kernel::{Kind, NodeId};
+use crate::view::{Handler, ScopedHandler};
+use std::rc::Rc;
 
 pub(crate) trait Behavior: Sync {
     /// The primary button (or a finger) went down on `n`; `clicks` counts the run on it (1, then
@@ -24,5 +26,20 @@ pub(crate) fn behavior(kind: Kind) -> Option<&'static dyn Behavior> {
     match kind {
         Kind::TextInput => Some(&super::edit::FIELD),
         Kind::Root | Kind::Box | Kind::Text | Kind::Link => None,
+    }
+}
+
+impl WindowState {
+    pub(crate) fn register(self: &Rc<Self>, h: Handler) -> u64 {
+        let id = self.next.get() + 1;
+        self.next.set(id);
+        self.handlers.borrow_mut().insert(id, ScopedHandler::capture(h));
+        let me = self.clone();
+        crate::reactive::graph::rt(|rt| {
+            rt.on_cleanup(Box::new(move || {
+                me.handlers.borrow_mut().remove(&id);
+            }))
+        });
+        id
     }
 }

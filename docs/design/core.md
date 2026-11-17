@@ -41,6 +41,18 @@ Font registration takes the engine out of its storage while calling the provider
 Native layout queries return `None` while the engine is unavailable. An escaping panic fails the
 App and suppresses publication; no rollback of custom provider side effects is promised.
 
+Layout feedback is also window-owned (`app/feedback.rs`). View declares work via the
+window's private registration API and reads size/tail projections; it does not implement
+WindowState coordination or own mutable feedback registries. Measurement hooks keep their
+captured execution owner and are removed on scope cleanup. An earlier callback can cancel a
+later one, and window close/shutdown prevents further hooks or geometry publication.
+
+Only subscribed geometry is sampled, with kernel/registry borrows released before internal
+signal publication; this is not a full-tree snapshot or another scheduler. Dead scroll signals
+and window feedback are retired outside registry borrows. Virtual-list measurement and Canvas
+content-size logic remain with their view bindings; the window owns when they run. The four
+layout rounds and sixteen App rounds, pending-output semantics and later recovery are unchanged.
+
 ## Context
 
 - Two thread-locals, both set by the app's entry points and nothing else: the reactive runtime

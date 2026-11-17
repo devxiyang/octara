@@ -10,6 +10,7 @@ Execution plan for the [layered redesign](design/layered-architecture-redesign.m
 [primitive contracts](design/core-primitive-contracts.md). Work on `init`; no compatibility
 aliases or permanent parallel implementations. Keep this checklist as the progress record;
 update the design documents with implemented contracts and verification evidence.
+Commit each completed and verified stage before proceeding to the next stage.
 
 Completed foundation: `octara-primitives` and `octara-text` are independent packages;
 production dependency directions are enforced by `tools/check_layers.py`.
@@ -28,7 +29,7 @@ Package extraction alone does not complete the responsibility redesign.
       setters/manual cross-kernel notification protocols; use explicit private test assembly.
       Verify forbidden build/derive/observe calls, shutdown/failure, multi-window invalidation
       and callback/borrow boundaries without adding public permission primitives.
-- [ ] **A3 — Window coordination (next).** Move after-layout/scroll/size feedback coordination out of
+- [x] **A3 — Window coordination.** Move after-layout/scroll/size feedback coordination out of
       View into Window; View only registers required bindings/work. Preserve bounded feedback,
       cancellation and scope ownership. Delete the old coordination path.
 
@@ -55,9 +56,29 @@ publication. Storage-borrow release and panic restoration also have a focused un
 Workspace all-targets check/Clippy, strict library rustdoc, no-default-features core build,
 formatting, diff/layer checks and actual CLI vocab lookup passed. Skill export is synchronized.
 No real OS/window validation was performed; native-query evidence uses the headless protocol.
-A3 and subsequent contracts remain open.
+A3 completion is recorded below; subsequent content contracts remain open.
 
-### B. Document and content composition
+A3 evidence (2026-11-17, Rust 1.100.0): `app/feedback.rs` now owns feedback
+registration, automatic scope cleanup, geometry sampling/publication and release at window
+close. View only requests size/tail signals or registers virtual-list/Canvas measurements;
+its WindowState implementation and direct mutable feedback-table access are removed. Paced
+text landing and handler registration moved to their Window modules. Scope cleanup replaces
+manual callback removal in virtual lists and Canvas.
+
+The closing-hook regression exposed a window-order RefCell borrow spanning callbacks; frame
+and consistency traversal now snapshot IDs before invocation. Closing/shutdown stops subsequent
+hooks and geometry publication. Registry removal releases captures outside borrows, and sampled
+geometry publishes after releasing kernel/registry borrows. Existing 4/16 round limits remain.
+
+Full workspace regression: **879 passed, 0 failed, 3 existing ignored doctests**. Added tests cover
+scope retirement/re-registration, close and shutdown from feedback with no later callbacks or
+frames, and reentrant callback-capture destruction. The prior hook-cancellation test moved from
+task tests to the window feedback module. Existing finite/oscillating feedback, virtual geometry,
+Canvas, multi-window, Chat and rendering tests passed. All-targets compilation/Clippy, strict
+library docs, no-default-features core build and format/diff/layer checks passed. Public APIs and
+the skill are unchanged. No real-window/OS validation was performed in A3.
+
+### B. Document and content composition (next)
 
 - [ ] Separate application container children from atomic text/input/image/canvas/native
       content. Keep ordinary Rust builders and shared styling; avoid generic state explosions.

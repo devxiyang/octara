@@ -85,7 +85,7 @@ dependencies. Dev dependencies may use the runtime to host integration tests.
 | `reactive` / `task` | Dependency propagation, scope execution and teardown, scheduled work |
 | `kernel` | Retained document, styles, text and editing geometry, layout, semantic and paint output |
 | `view` | Construction, property bindings and structure coordination |
-| `app` | App/Window ownership, entry boundaries, input routing, frame preparation and presentation |
+| `app` | App/Window ownership, entry boundaries, input routing, layout feedback, frame preparation and presentation |
 | `platform` | Host protocols and headless adapters; consumes document editing/layout data |
 | `inspect` / `capture` / `diagnostics` | Observation, operations, capture workflow and registered explanations |
 
@@ -144,7 +144,14 @@ Reduce Motion changes share the App's resource-write path (`app/resources.rs`): 
 admission precede mutation; affected windows invalidate before the outer update settles.
 Kernel's shared Resources and resource constructor/setters/notification hooks are internal.
 Standalone Kernel tests use private assembly; public `Kernel::default` owns independent defaults.
-The next coordination work is tracked in [TODO](TODO.md#init-architecture-refactor-2026-11-17).
+Window owns feedback registration, geometry projections and release (`app/feedback.rs`).
+View's `size_of` / `following_tail` delegate to it; virtual lists and Canvas register scoped
+measurement callbacks. Hooks are automatically removed with their scope and all remaining
+feedback is released when the window closes. Sampling releases tree/registry borrows before
+publishing geometry; callbacks run outside registry borrows, with eligibility checked between
+callbacks. Frame/consistency traversal also releases the window-order borrow before invoking
+window code. The existing four layout / sixteen App rounds remain bounded and recoverable.
+Further content/API work is tracked in [TODO](TODO.md#init-architecture-refactor-2026-11-17).
 
 - `App` is a handle on the app's state: the reactive runtime, the scheduler and its clock, the
   resources every window's kernel reads (theme, text system), the platform, and the windows. A
