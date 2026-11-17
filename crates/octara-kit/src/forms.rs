@@ -2,7 +2,6 @@
 
 use crate::Model;
 use octara::prelude::*;
-use std::collections::HashSet;
 use std::rc::Rc;
 
 /// The helper text and current validation of a [`field`]. Compute it from ordinary application
@@ -120,12 +119,6 @@ impl RadioOption {
     }
 }
 
-#[derive(Clone, PartialEq)]
-struct RadioRow {
-    option: RadioOption,
-    order: usize,
-}
-
 /// A labeled group choosing one option ID in the caller's `value`.
 ///
 /// The group is `id`, its visible label `{id}-label`, and each radio
@@ -150,31 +143,6 @@ pub fn radio_group(
     let label = label.into();
     let value: Rc<dyn Model<Option<String>>> = Rc::new(value);
     scope(format!("RadioGroup[{id}]"), move || -> View {
-        let options = memo(options);
-        let rows = state_list("options", Vec::<RadioRow>::new, |row: &RadioRow| row.option.id.clone());
-        let ordered = rows.sort_by(|row| row.order);
-        watch(
-            move || options.get(),
-            move |options, _| {
-                let keys: HashSet<_> = options.iter().map(|option| option.id.as_str()).collect();
-                rows.retain(|row| keys.contains(row.option.id.as_str()));
-                let mut seen = HashSet::new();
-                for (order, option) in options.iter().enumerate() {
-                    let row = RadioRow { option: option.clone(), order };
-                    if !seen.insert(option.id.clone()) {
-                        // Keep the ordinary list diagnostic for duplicate stable IDs.
-                        rows.push(row);
-                    } else if let Some(old) = rows.item(&option.id) {
-                        if untrack(|| old.get()) != row {
-                            rows.update(&option.id, |old| *old = row);
-                        }
-                    } else {
-                        rows.push(row);
-                    }
-                }
-            },
-        );
-        let option_id = id.clone();
         col()
             .id(id.clone())
             .role(Role::RadioGroup)
@@ -185,7 +153,7 @@ pub fn radio_group(
             .gap_1()
             .child(text(label).id(format!("{id}-label")).text_sm().font_medium().text_color(Token::Text))
             .child(each(
-                move || ordered.clone(),
+                move || options().into_iter().map(|option| (option.id.clone(), option)).collect::<Vec<_>>(),
                 move |key, item| {
                     let (checked, shown, dot, pick) = (value.clone(), value.clone(), value.clone(), value.clone());
                     let (checked_key, shown_key, dot_key, pick_key) = (key.clone(), key.clone(), key.clone(), key.clone());
@@ -209,12 +177,12 @@ pub fn radio_group(
                         )
                         .a11y_hidden();
                     row()
-                        .id(format!("{option_id}-option-{key}"))
+                        .id(format!("{id}-option-{key}"))
                         .role(Role::RadioButton)
-                        .label(move || item.with(|row| row.option.label.clone()))
-                        .description(move || item.with(|row| row.option.description.clone()))
+                        .label(move || item.with(|row| row.label.clone()))
+                        .description(move || item.with(|row| row.description.clone()))
                         .checked(move || checked.get().as_ref() == Some(&checked_key))
-                        .disabled(move || item.with(|row| row.option.disabled))
+                        .disabled(move || item.with(|row| row.disabled))
                         .focusable()
                         .w_full()
                         .min_w(0.0)
@@ -240,11 +208,11 @@ pub fn radio_group(
                                 .flex_1()
                                 .min_w(0.0)
                                 .gap_0p5()
-                                .child(text(move || item.with(|row| row.option.label.clone())).select_none())
+                                .child(text(move || item.with(|row| row.label.clone())).select_none())
                                 .child(show(
-                                    move || item.with(|row| !row.option.description.trim().is_empty()),
+                                    move || item.with(|row| !row.description.trim().is_empty()),
                                     move || {
-                                        text(move || item.with(|row| row.option.description.clone()))
+                                        text(move || item.with(|row| row.description.clone()))
                                             .text_color(Token::TextMuted)
                                             .select_none()
                                             .into()

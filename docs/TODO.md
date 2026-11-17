@@ -578,7 +578,7 @@ Approved follow-up: [architecture review](design/post-convergence-architecture-r
 - [x] Unify structural identity across explicit scopes, branches and list rows; separate key
       equality from diagnostic labels, preserve reload identity, verify collision/reorder/removal
       and virtual selection behavior; commit independently.
-- [ ] Remove RadioGroup's mirrored collection and synchronization; verify retained targets/focus,
+- [x] Remove RadioGroup's mirrored collection and synchronization; verify retained targets/focus,
       duplicate recovery, disabled and missing selection behavior; commit independently.
 - [ ] Delete the private Children conversion family and boxed adapter; verify overlay lifecycle,
       reload, nesting and placement; commit independently.
@@ -593,3 +593,8 @@ equality despite colliding hashes/display labels, both snapshot and incremental 
 reorder/removal/reload, stale targets, virtual offscreen copy, sampled key callbacks/destructors,
 registry reclamation and shutdown. Construction/pure callers cannot request hot reload or
 register named state through a captured App. No real OS window input was exercised.
+
+RadioGroup slice evidence: **8 kit unit + 107 kit integration tests passed** against the new
+identity implementation. Removed RadioRow, writable option mirror, order/sort and reconciliation
+watch. Duplicate snapshots retire rows; recovery creates fresh targets and rejects stale actions.
+Reordering retains focus/targets; existing disabled and missing selection policies pass.

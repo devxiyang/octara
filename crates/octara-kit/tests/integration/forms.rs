@@ -1,7 +1,9 @@
 //! Retained form controls, validation semantics and native radio keyboard behavior.
 
 use octara::accesskit::{Invalid, Toggled};
+use octara::inspect::{self, Delivery};
 use octara::prelude::*;
+use octara::serde_json::json;
 use octara_kit::*;
 
 fn clean(window: &Window) {
@@ -164,6 +166,8 @@ fn plans() -> View {
         options.update(|options| options.iter_mut().find(|option| option.id == "team").unwrap().disabled = true);
     });
     on_command("radios.disable-all", move || options.update(|options| options.iter_mut().for_each(|option| option.disabled = true)));
+    on_command("radios.duplicate", move || options.update(|options| options.push(RadioOption::new("team", "Duplicate"))));
+    on_command("radios.restore", move || options.set(radio_options()));
     on_command("radios.empty", move || options.set(vec![]));
     on_command("radios.business", move || value.set(Some("business".into())));
     on_command("radios.clear", move || value.set(None));
@@ -229,12 +233,14 @@ fn radios_have_checked_semantics_and_navigation_chooses_without_focus_side_effec
 #[test]
 fn radio_source_changes_keep_row_targets_and_follow_live_order() {
     let mut window = Window::headless(plans);
+    window.dispatch(Event::Focus("plan-option-team".into())).unwrap();
     let target = window.inspect().find("plan-option-team").unwrap().target.clone();
     let nodes = window.kernel().live_nodes();
     for _ in 0..20 {
         window.invoke("radios.reverse").unwrap();
         assert_eq!(window.kernel().live_nodes(), nodes, "reordering keeps a bounded retained list");
         assert_eq!(window.inspect().find("plan-option-team").unwrap().target, target);
+        assert!(focused(&window, "plan-option-team"), "focus stays with the retained key");
     }
     window.invoke("radios.reverse").unwrap();
     let snapshot = window.inspect();
@@ -261,6 +267,41 @@ fn radio_source_changes_keep_row_targets_and_follow_live_order() {
     assert!(!window.kernel().exists("plan-option-team"));
     assert!(window.kernel().live_nodes() < nodes);
     clean(&window);
+}
+
+#[test]
+fn duplicate_radio_ids_retire_rows_and_recover_with_fresh_targets() {
+    let mut window = Window::headless(plans);
+    let before = window.inspect();
+    let group = before.find("plan").unwrap().target.clone();
+    let team = before.find("plan-option-team").unwrap().target.clone();
+    window.tap("plan-option-team").unwrap();
+    window.invoke("radios.duplicate").unwrap();
+    for id in ["basic", "team", "legacy", "business"] {
+        assert!(!window.kernel().exists(&format!("plan-option-{id}")), "duplicate IDs invalidate the entire snapshot");
+    }
+    assert_eq!(window.inspect().find("plan").unwrap().target, group);
+    assert_eq!(window.kernel().text_of("chosen").as_deref(), Some("team"));
+    window.tap("before").unwrap();
+    window.press_key("tab").unwrap();
+    assert!(focused(&window, "after"), "an unavailable snapshot has no radio Tab stop");
+    assert!(window.app().diagnostics().iter().any(|d| d.code.id == "DUPLICATE_KEY"));
+
+    window.invoke("radios.restore").unwrap();
+    assert_eq!(window.inspect().find("plan").unwrap().target, group);
+    assert_ne!(window.inspect().find("plan-option-team").unwrap().target, team);
+    let reply = inspect::handle_line(&mut window, &json!({"op": "tap", "id": "plan-option-team", "target": team}).to_string());
+    assert_eq!(reply.code.as_deref(), Some("STALE_TARGET"), "{reply:?}");
+    assert_eq!(reply.delivery, Some(Delivery::Refused));
+    assert_eq!(window.kernel().checked_of("plan-option-team"), Some(true));
+    window.tap("before").unwrap();
+    window.press_key("tab").unwrap();
+    assert!(focused(&window, "plan-option-team"));
+    window.press_key("right").unwrap();
+    assert!(focused(&window, "plan-option-business"), "recovery restores navigation and skips disabled radios");
+    assert_eq!(window.kernel().text_of("chosen").as_deref(), Some("business"));
+    assert!(window.layout_issues().is_empty(), "{:?}", window.layout_issues());
+    assert!(window.app().diagnostics().iter().all(|d| d.code.id == "DUPLICATE_KEY"), "{:?}", window.app().diagnostics());
 }
 
 #[test]
