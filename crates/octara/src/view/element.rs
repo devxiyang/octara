@@ -2,7 +2,7 @@
 //! element becomes a kernel node.
 
 use super::style::{Patch, Styled};
-use super::{Behavior, Children, Handler, IntoElement, Parent, Slot, Slots, View, mount, show};
+use super::{Behavior, Handler, IntoElement, Parent, Slot, Slots, View, mount, show};
 use crate::app::{Drag, KeyEvent};
 use crate::diagnostics as codes;
 use crate::kernel::rich::Rich;
@@ -419,10 +419,6 @@ fn new_el(content: Content, at: &'static Location<'static>) -> El {
         anchor: None,
         overlay_owner: None,
     }
-}
-
-fn boxed(children: impl Children, at: &'static Location<'static>) -> El {
-    new_el(Content::Box(children.into_views()), at)
 }
 
 /// A box: a flex container laying children out in a row until told otherwise (Rune's `el()`).
@@ -1428,7 +1424,7 @@ fn mount_overlay(anchor: NodeId, o: Overlay) {
     let (placement, content, at, by) = (o.placement, o.content, o.at, o.by);
     let view = super::as_part_of(o.made, || {
         show(o.open, move || {
-            let mut b = boxed(content(), at);
+            let mut b = new_el(Content::Box(vec![content()]), at);
             b.overlay_owner = Some(anchor);
             b.anchor = placement.map(|placement| (by.unwrap_or(anchor), placement));
             if placement.is_none() {

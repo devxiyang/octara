@@ -202,6 +202,7 @@ impl Runtime {
         for node in nodes {
             self.dispose_node(node);
         }
+        #[allow(clippy::mutable_key_type, reason = "RowKey hashes immutable identity; the Cell only marks retirement")]
         let retired = std::mem::take(&mut *self.store.borrow_mut());
         drop(retired);
         self.keys.clear();

@@ -140,54 +140,6 @@ impl IntoElement for String {
     }
 }
 
-/// Several views at once (internal: overlay content).
-pub(crate) trait Children {
-    fn into_views(self) -> Vec<View>;
-}
-impl Children for Vec<View> {
-    fn into_views(self) -> Vec<View> {
-        self
-    }
-}
-impl Children for View {
-    fn into_views(self) -> Vec<View> {
-        vec![self]
-    }
-}
-impl Children for El {
-    fn into_views(self) -> Vec<View> {
-        vec![View::element(Box::new(self))]
-    }
-}
-impl Children for () {
-    fn into_views(self) -> Vec<View> {
-        Vec::new()
-    }
-}
-macro_rules! tuple_children {
-    ($($t:ident),+) => {
-        impl<$($t: Into<View>),+> Children for ($($t,)+) {
-            #[allow(non_snake_case)]
-            fn into_views(self) -> Vec<View> {
-                let ($($t,)+) = self;
-                vec![$($t.into()),+]
-            }
-        }
-    };
-}
-tuple_children!(A);
-tuple_children!(A, B);
-tuple_children!(A, B, C);
-tuple_children!(A, B, C, D);
-tuple_children!(A, B, C, D, E);
-tuple_children!(A, B, C, D, E, F);
-tuple_children!(A, B, C, D, E, F, G);
-tuple_children!(A, B, C, D, E, F, G, H);
-tuple_children!(A, B, C, D, E, F, G, H, I);
-tuple_children!(A, B, C, D, E, F, G, H, I, J);
-tuple_children!(A, B, C, D, E, F, G, H, I, J, K);
-tuple_children!(A, B, C, D, E, F, G, H, I, J, K, L);
-
 // ---- mounting ----
 
 /// A parent's children as slots: plain nodes, nested regions (`show`) and counted regions

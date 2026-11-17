@@ -125,3 +125,15 @@ scope 各自声明的 each，可以重复使用同一个业务 key 而互不混�
 删除 RadioRow、可写 StateList 选项镜像、order 字段、排序和同步 watch，直接向 each 提供 keyed 快照。
 保留现有受控值、禁用导航、焦点和缺失选中值政策。重复 ID 沿用快照拒绝规则，恢复后旧目标仍被拒绝。
 基于新核心复验：8 项 kit 单元测试和 107 项集成测试全部通过。
+
+## 获批实施：删除 Children 转换
+
+删除私有 Children trait、12 组 tuple 实现及 boxed 适配器。唯一调用方 overlay 直接构造
+Content::Box(vec![content()])，保留原来的来源位置、容器节点、延迟工厂和 owner。
+公开 child/children 接口不变。10 项 overlay 相关回归全部通过；本阶段不为等价转换新增镜像测试。
+
+最终工作区验证：**966 通过、0 失败、3 既有忽略项**，包含全部 11 项本地 HTTP 验证。
+初次沙箱运行拒绝回环端口绑定；取得所需执行权限后完整重跑通过。严格 all-targets Clippy、格式、
+分层与 diff 检查均通过。对身份 token 的退休标记导致的 mutable_key_type 保守诊断，
+只在四个具体集合使用处注明其不参与 Eq/Hash 的理由，没有放宽全局 lint。
+这些结果不代表真实 OS 输入、窗口呈现或 IME 候选窗验收。

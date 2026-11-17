@@ -580,7 +580,7 @@ Approved follow-up: [architecture review](design/post-convergence-architecture-r
       and virtual selection behavior; commit independently.
 - [x] Remove RadioGroup's mirrored collection and synchronization; verify retained targets/focus,
       duplicate recovery, disabled and missing selection behavior; commit independently.
-- [ ] Delete the private Children conversion family and boxed adapter; verify overlay lifecycle,
+- [x] Delete the private Children conversion family and boxed adapter; verify overlay lifecycle,
       reload, nesting and placement; commit independently.
 
 Keep the broader review's pixel-result, private pointer dispatch, Markdown and optional-scope
@@ -598,3 +598,16 @@ RadioGroup slice evidence: **8 kit unit + 107 kit integration tests passed** aga
 identity implementation. Removed RadioRow, writable option mirror, order/sort and reconciliation
 watch. Duplicate snapshots retire rows; recovery creates fresh targets and rejects stale actions.
 Reordering retains focus/targets; existing disabled and missing selection policies pass.
+
+Children slice evidence: removed the private trait, tuple implementations and boxed adapter;
+overlay directly wraps its one View with the existing source location. **10 overlay-related
+integration tests passed**, including nesting, reload, placement and modal focus. Public
+child/children composition is unchanged.
+
+Final validation for these three slices: **966 workspace tests passed, 0 failed, 3 existing
+ignored doctests**. The initial sandbox run could not bind loopback sockets; the authorized
+rerun passed all 11 local HTTP cases and the entire workspace. Workspace all-targets Clippy
+with `-D warnings`, formatting, diff and dependency-layer checks passed. Four narrowly scoped
+Clippy annotations document that RowKey's retirement flag never participates in Eq/Hash; no
+global lint policy was relaxed. Skill freshness and teaching examples passed in the workspace
+suite. No real OS window or IME candidate UI was exercised.

@@ -365,8 +365,9 @@ Combobox/PopupList 现在从 memo 的选项快照直接派生 keyed rows；删�
 新 owner 内，不新增布局节点。预先创建的内容不重新读取 provider，也不转移已创建资源。
 
 删除 `#[component]`、`component`、`component_keyed` 及序号身份路径，不提供别名。
-重复 scope key 报 `DUPLICATE_SCOPE_KEY`，不执行第二个工厂；key 中的 `%` 和 `/` 转义以免
-路径与嵌套 scope 混淆。已有 owner/scope 引擎不变。新路径不兼容旧组件路径的热重载快照；
+重复 scope key 报 `DUPLICATE_SCOPE_KEY`，不执行第二个工厂。后续[结构身份收敛](post-convergence-architecture-review.md#获批实施结构身份)
+已用有类型的路径段替代文本拼接/转义：key 类型与 Eq/Hash 决定身份，Display 只提供标签；
+列表选择还包含稳定 owner 路径和区域。已有 owner/scope 生命周期引擎保留。新路径不兼容旧组件路径的热重载快照；
 进入新版本后，稳定 key 的状态恢复不依赖兄弟顺序。迁移时先冷启动，不承诺跨此 API 迁移
 保留进程中的旧状态。普通函数需要独立实例数据时优先接收调用方分配的 Signal；只有实际
 生命周期或 provider 隔离需要才创建 scope。

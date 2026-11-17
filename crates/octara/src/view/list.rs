@@ -200,6 +200,7 @@ impl<K: Eq + Hash + Clone + Display + 'static, T: Clone + 'static> Rows<K, T> {
     }
 
     fn reconcile(&mut self, keys: &[RowKey], exit: bool) -> bool {
+        #[allow(clippy::mutable_key_type, reason = "RowKey hashes immutable identity; the Cell only marks retirement")]
         let wanted: HashSet<_> = keys.iter().collect();
         let removed: Vec<_> = self.entries.keys().filter(|key| !wanted.contains(key)).cloned().collect();
         let mut changed = !removed.is_empty();
@@ -257,6 +258,7 @@ where
                         if let Changes::Delta(changes) = changes {
                             // A key inserted and removed before propagation has no current value
                             // to build. Reconcile the final snapshot, still honoring retirements.
+                            #[allow(clippy::mutable_key_type, reason = "RowKey hashes immutable identity; the Cell only marks retirement")]
                             let removed: HashSet<_> = changes
                                 .iter()
                                 .filter_map(|change| match change {
@@ -528,6 +530,7 @@ where
                 let pending = pending_anchor.borrow_mut().take().filter(|_| anchor_request.get() == k.scroll_request(container));
                 let mut anchor = pending.clone().or_else(|| RowAnchor::at(&m, y));
                 let rows = rows.borrow();
+                #[allow(clippy::mutable_key_type, reason = "RowKey hashes immutable identity; the Cell only marks retirement")]
                 let rows = &rows.entries;
                 let mut measured = measured.borrow_mut();
                 // Prefer an already displayed row when estimates are still converging.
