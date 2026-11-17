@@ -246,6 +246,9 @@ codes! {
     STALE_TARGET: Error, Inspect, "docs/design/agent-knowledge.md#inspector-protocol-and-checks",
         "An Inspector target no longer names the requested window, node or focus.",
         cause: "Targets belong to one app instance, window and tree incarnation, and optionally one node allocation. A reload, close, replacement or focus change can retire them. Inspect again before choosing another target; a failed later phase does not undo input already delivered.";
+    BUILD_MISMATCH: Error, Inspect, "docs/design/agent-context.md#verify-the-running-build",
+        "The live window did not report the requested build.",
+        cause: "The CLI checks the running executable against the launch receipt before sending script requests. Connect to the window started by that launch, or build and launch the intended executable.";
     NO_SUCH_ELEMENT: Error, Inspect, "docs/design/agent-knowledge.md#inspector-protocol-and-checks",
         "No element has the test id a request named.",
         cause: "The element is not in the tree now: never given that `.id(..)`, not shown yet, or already removed.";

@@ -13,6 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 struct Server {
     path: PathBuf,
     script: PathBuf,
+    receipt: PathBuf,
     task: Option<JoinHandle<Vec<Value>>>,
 }
 
@@ -55,7 +56,7 @@ impl Server {
             }
             requests
         });
-        Self { script: path.with_extension("jsonl"), path, task: Some(task) }
+        Self { script: path.with_extension("jsonl"), receipt: path.with_extension("receipt.json"), path, task: Some(task) }
     }
 
     fn path(&self) -> &str {
@@ -67,6 +68,11 @@ impl Server {
         self.script.to_str().unwrap()
     }
 
+    fn receipt(&self, build: &str) -> &str {
+        std::fs::write(&self.receipt, json!({"build": build, "sources": null}).to_string()).unwrap();
+        self.receipt.to_str().unwrap()
+    }
+
     fn finish(mut self) -> Vec<Value> {
         self.task.take().unwrap().join().unwrap()
     }
@@ -76,6 +82,7 @@ impl Drop for Server {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
         let _ = std::fs::remove_file(&self.script);
+        let _ = std::fs::remove_file(&self.receipt);
     }
 }
 
@@ -103,6 +110,95 @@ fn inspect_connect_reads_the_window_without_a_harness() {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(serde_json::from_slice::<Value>(&output.stdout).unwrap(), snapshot);
     assert_eq!(server.finish(), [json!({"op":"inspect"})]);
+}
+
+#[test]
+fn inspect_connect_reports_the_running_build_without_a_receipt() {
+    let build = "a".repeat(64);
+    let mut snapshot = json!({
+        "schema": "octara.inspect/1", "viewport": [640, 480],
+        "root": {"role": "button", "id": "save", "target": "observed-target"}
+    });
+    let server = Server::new(vec![Some(json!({"ok": true, "snapshot": snapshot, "live": {"route": "read", "build": build}}))]);
+    let output = cli(&["inspect", "--connect", server.path(), "--json"], "");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    snapshot["provenance"] = json!({"build": build, "expected_build": null, "source": "unknown"});
+    assert_eq!(serde_json::from_slice::<Value>(&output.stdout).unwrap(), snapshot);
+    assert_eq!(server.finish(), [json!({"op": "inspect"})]);
+}
+
+#[test]
+fn inspect_receipts_report_provenance_without_refusing_the_snapshot() {
+    let expected = "a".repeat(64);
+    let different = "b".repeat(64);
+    for observed in [Some(expected.as_str()), Some(different.as_str()), None] {
+        let mut snapshot = json!({
+            "schema": "octara.inspect/1", "viewport": [640, 480],
+            "root": {"role": "button", "id": "save", "source": "src/app.rs:12:9", "target": "observed-target"}
+        });
+        let mut live = json!({"route": "read"});
+        if let Some(build) = observed {
+            live["build"] = json!(build);
+        }
+        let server = Server::new(vec![Some(json!({"ok": true, "snapshot": snapshot, "live": live}))]);
+        let output = cli(&["inspect", "--connect", server.path(), "--receipt", server.receipt(&expected), "--json"], "");
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        snapshot["provenance"] = json!({"build": observed, "expected_build": expected, "source": "unknown"});
+        assert_eq!(serde_json::from_slice::<Value>(&output.stdout).unwrap(), snapshot);
+        assert_eq!(server.finish(), [json!({"op": "inspect"})]);
+    }
+}
+
+#[test]
+fn required_build_refuses_input_when_the_running_build_is_missing_or_different() {
+    let expected = "a".repeat(64);
+    let different = "b".repeat(64);
+    for observed in [None, Some(different.as_str())] {
+        let mut live = json!({"route": "read"});
+        if let Some(build) = observed {
+            live["build"] = json!(build);
+        }
+        let server = Server::new(vec![
+            Some(json!({"ok": true, "snapshot": {"schema": "octara.inspect/1", "root": null}, "live": live})),
+            Some(json!({"ok": true})),
+        ]);
+        let script = server.script("{\"op\":\"tap\",\"id\":\"save\"}\n{\"op\":\"key\",\"chord\":\"enter\"}\n");
+        let output =
+            cli(&["run", "--connect", server.path(), "--require-build", server.receipt(&expected), "--script", script, "--json"], "");
+        assert_eq!(output.status.code(), Some(1), "{}", String::from_utf8_lossy(&output.stderr));
+        let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(reply["ok"], false);
+        assert_eq!(reply["code"], "BUILD_MISMATCH");
+        assert_eq!(reply["delivery"], "refused");
+        assert_eq!(reply["expected"], expected);
+        assert_eq!(reply["observed"], json!(observed));
+        assert_eq!(server.finish(), [json!({"op": "inspect"})]);
+    }
+}
+
+#[test]
+fn required_build_preflights_then_delivers_input_once_on_the_same_connection() {
+    let build = "a".repeat(64);
+    let input = json!({"op": "tap", "window": 17, "id": "save", "target": "observed-target"});
+    let text = format!("{input}\n");
+    let response = json!({"ok": true, "live": {"route": "framework", "delivery": "delivered"}});
+    for scripted in [false, true] {
+        let server = Server::new(vec![
+            Some(json!({"ok": true, "snapshot": {"schema": "octara.inspect/1", "root": null}, "live": {"route": "read", "build": build}})),
+            Some(response.clone()),
+        ]);
+        let mut args = vec!["run", "--connect", server.path(), "--require-build", server.receipt(&build), "--json"];
+        if scripted {
+            args.extend(["--script", server.script(&text)]);
+        }
+        let output = cli(&args, if scripted { "" } else { &text });
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply["line"], 1);
+        assert_eq!(reply["live"], response["live"]);
+        assert_eq!(server.finish(), [json!({"op": "inspect"}), input.clone()]);
+    }
 }
 
 #[test]

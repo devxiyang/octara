@@ -375,8 +375,8 @@ Basis: [runtime design](design/runtime-contract.md), [Agent context](design/agen
 [agent knowledge](design/agent-knowledge.md), and [the Exact comparison](research/exact-runtime-simplicity.md).
 Build the loop with existing owners and inspector facilities, preserving Rust + Signals.
 
-- [ ] Add reliable attached-build identity and stronger target validation across tree replacement,
-      using existing handles and local generations where required.
+- [x] Guard targets across tree replacement and verify locally launched executables against an
+      explicit build receipt before driving them. See [running builds](design/agent-context.md#verify-the-running-build).
 - [ ] Expose useful property origins and sampled opacity/color: `visual_of` currently gives the
       target value. Semantic values, source, bounds, diagnostics and pending work already come
       from the live owners. Business-value adapters stay optional; arbitrary Rust values need no
@@ -805,3 +805,20 @@ comparisons confirm actual GPU execution (maximum channel difference 1). Primiti
 Image source-level tests and the original overflow probe pass with overflow checks both on/off.
 Workspace all-targets Clippy with `-D warnings`, formatting, diff and layer checks passed.
 GPU evidence is offscreen rendering/readback, not real OS window input or IME validation.
+
+## Continuation on init: verify the running build
+
+- [x] Launch the actual Cargo executable from a private staged copy and record its digest.
+- [x] Compare recorded workspace Rust sources in `inspect`. Gate `run --require-build` on
+      the expected executable before passing any script request to the running window.
+- [x] Verify two real Counter windows. Build B replaced A at the same Cargo output path.
+      A kept its original build digest and source location after the rebuild. The B receipt
+      refused input to A with the count still 0. B reported the new source line, accepted
+      one guarded click and captured a GPU frame.
+
+Workspace validation passed with 1,001 tests and three existing ignored doctests. After finishing
+the staging cleanup path, the two launcher unit tests and ten live CLI tests passed again.
+Workspace all-targets Clippy with `-D warnings`, formatting and layer checks passed.
+
+This source comparison covers Rust files recorded for the Git workspace. Chinese IME and
+candidate placement in the current architecture still require the real OS input checks in R3.

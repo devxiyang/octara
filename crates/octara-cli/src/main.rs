@@ -1,11 +1,16 @@
 //! `octara`: the framework's API, usage and diagnostics, for agents and people.
 
 use clap::{Parser, Subcommand};
+use octara::diagnostics as codes;
+use octara::inspect::{Delivery, Reply};
 use octara_cli::api;
 use octara_cli::catalog::{Catalog, Entry};
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
+
+mod launch;
+mod receipt;
 
 #[derive(Parser)]
 #[command(name = "octara", version, about = "The Octara framework's API, usage and diagnostics.")]
@@ -58,6 +63,9 @@ enum Command {
         /// Inspect an existing window at its OCTARA_INSPECT Unix socket, without building a harness.
         #[arg(long, value_name = "SOCKET", conflicts_with_all = ["manifest_path", "package", "size", "theme"])]
         connect: Option<std::path::PathBuf>,
+        /// Compare the connected window with a receipt from `octara launch`.
+        #[arg(long, value_name = "FILE", requires = "connect")]
+        receipt: Option<std::path::PathBuf>,
         /// Print the snapshot as JSON (`octara.inspect/1`).
         #[arg(long)]
         json: bool,
@@ -72,6 +80,9 @@ enum Command {
         /// Drive an existing window at its OCTARA_INSPECT Unix socket, without building a harness.
         #[arg(long, value_name = "SOCKET", conflicts_with_all = ["manifest_path", "package", "size", "theme"])]
         connect: Option<std::path::PathBuf>,
+        /// Check the running build against this launch receipt before sending any script request.
+        #[arg(long, value_name = "RECEIPT", requires = "connect")]
+        require_build: Option<std::path::PathBuf>,
         /// A file of requests, one JSON line each (`//` comments allowed).
         #[arg(long)]
         script: Option<std::path::PathBuf>,
@@ -79,6 +90,8 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Build and run a local desktop app with an Inspector socket and build receipt.
+    Launch(launch::LaunchArgs),
     /// The `octara` skill for coding agents: install it into a project, or export it.
     Skill {
         #[command(subcommand)]
@@ -152,13 +165,20 @@ fn main() -> ExitCode {
         Command::Vocab { name, json } => vocab(&mut out, name.as_deref(), json),
         Command::Explain { code, json } => explain(&mut out, code.as_deref(), json),
         Command::Check { app, json } => check(&mut out, &app, json),
-        Command::Inspect { app, window, connect, json } => match connect {
-            Some(path) => inspect_live(&mut out, &path, json),
+        Command::Inspect { app, window, connect, receipt, json } => match connect {
+            Some(path) => inspect_live(&mut out, &path, receipt.as_deref(), json),
             None => inspect(&mut out, &app, &window, json),
         },
-        Command::Run { app, window, connect, script, json } => match connect {
-            Some(path) => run_live(&mut out, &path, script.as_deref(), json),
+        Command::Run { app, window, connect, require_build, script, json } => match connect {
+            Some(path) => run_live(&mut out, &path, require_build.as_deref(), script.as_deref(), json),
             None => run(&mut out, &app, &window, script.as_deref(), json),
+        },
+        Command::Launch(args) => match launch::launch(args) {
+            Ok(status) => status.code().and_then(|code| u8::try_from(code).ok()).map_or(ExitCode::FAILURE, ExitCode::from),
+            Err(error) => {
+                eprintln!("error: {error}");
+                ExitCode::from(2)
+            }
         },
         Command::Skill { action } => skill(&mut out, action),
     };
@@ -464,12 +484,25 @@ fn live_client(path: &Path) -> Result<octara_cli::live::Client, ExitCode> {
     })
 }
 
-fn inspect_live(out: &mut String, path: &Path, json: bool) -> ExitCode {
+fn read_receipt(path: Option<&Path>) -> Result<Option<receipt::Receipt>, ExitCode> {
+    path.map(receipt::Receipt::read).transpose().map_err(|error| {
+        eprintln!("error: {error}");
+        ExitCode::from(2)
+    })
+}
+
+const INSPECT_REQUEST: &str = r#"{"op":"inspect"}"#;
+
+fn inspect_live(out: &mut String, path: &Path, receipt: Option<&Path>, json: bool) -> ExitCode {
+    let receipt = match read_receipt(receipt) {
+        Ok(receipt) => receipt,
+        Err(code) => return code,
+    };
     let mut client = match live_client(path) {
         Ok(client) => client,
         Err(code) => return code,
     };
-    let reply = match client.request(r#"{"op":"inspect"}"#) {
+    let mut reply = match client.request(INSPECT_REQUEST) {
         Ok(reply) => reply,
         Err(e) => {
             eprintln!("error: {e}");
@@ -484,10 +517,31 @@ fn inspect_live(out: &mut String, path: &Path, json: bool) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    let Some(snapshot) = reply.get("snapshot").filter(|s| s.is_object()) else {
+    let build = reply["live"]["build"].as_str().map(str::to_owned);
+    let Some(snapshot) = reply.get_mut("snapshot").filter(|s| s.is_object()) else {
         eprintln!("error: live inspect returned no snapshot");
         return ExitCode::from(2);
     };
+    if build.is_some() || receipt.is_some() {
+        let source = receipt.as_ref().map_or("unknown", |receipt| receipt.source_status(build.as_deref()));
+        let mut provenance = serde_json::json!({
+            "build": build,
+            "expected_build": receipt.as_ref().map(|receipt| &receipt.build),
+            "source": source,
+        });
+        if source != "unknown" {
+            provenance["source_scope"] = "workspace_rust".into();
+        }
+        if !json {
+            let _ = writeln!(out, "build: {}, workspace Rust sources: {source}", build.as_deref().unwrap_or("unknown"));
+            if let Some(receipt) = &receipt
+                && build.as_deref() != Some(&receipt.build)
+            {
+                let _ = writeln!(out, "expected build: {}", receipt.build);
+            }
+        }
+        snapshot["provenance"] = provenance;
+    }
     if json {
         json_to(out, snapshot);
     } else {
@@ -496,8 +550,12 @@ fn inspect_live(out: &mut String, path: &Path, json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_live(out: &mut String, path: &Path, script: Option<&Path>, json: bool) -> ExitCode {
+fn run_live(out: &mut String, path: &Path, require_build: Option<&Path>, script: Option<&Path>, json: bool) -> ExitCode {
     use std::io::{BufRead, Write};
+    let receipt = match read_receipt(require_build) {
+        Ok(receipt) => receipt,
+        Err(code) => return code,
+    };
     let stdin = std::io::stdin();
     let input: Box<dyn BufRead + '_> = match script {
         Some(path) => match std::fs::File::open(path) {
@@ -514,6 +572,41 @@ fn run_live(out: &mut String, path: &Path, script: Option<&Path>, json: bool) ->
         Err(code) => return code,
     };
     let interactive = script.is_none();
+    if let Some(receipt) = receipt {
+        let reply = match client.request(INSPECT_REQUEST) {
+            Ok(reply) => reply,
+            Err(error) => {
+                eprintln!("error: could not check the build before submitting requests: {error}");
+                return ExitCode::from(2);
+            }
+        };
+        if reply["ok"] != true {
+            let reason = reply["message"].as_str().unwrap_or("the window refused inspection");
+            eprintln!("error: could not check the build before submitting requests: {reason}");
+            return ExitCode::from(2);
+        }
+        let observed = reply["live"]["build"].as_str();
+        if observed != Some(&receipt.build) {
+            let message = format!(
+                "required build {}, connected window reported {}. No script request was sent",
+                receipt.build,
+                observed.unwrap_or("no build")
+            );
+            if interactive || json {
+                let mut reply = Reply::fail(&codes::BUILD_MISMATCH, message);
+                reply.delivery = Some(Delivery::Refused);
+                let mut refusal = serde_json::to_value(reply).expect("an Inspector reply serializes");
+                refusal["expected"] = receipt.build.into();
+                if let Some(observed) = observed {
+                    refusal["observed"] = observed.into();
+                }
+                let _ = writeln!(out, "{refusal}");
+            } else {
+                let _ = writeln!(out, "{}: {message}", codes::BUILD_MISMATCH.id);
+            }
+            return ExitCode::FAILURE;
+        }
+    }
     let stdout = std::io::stdout();
     let mut failed = false;
     for (i, line) in input.lines().enumerate() {

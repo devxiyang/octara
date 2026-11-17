@@ -137,6 +137,14 @@ from the native window and waits for its actual size, GPU surface and framework 
 timeout. Live settling also waits within a wall-clock budget. Virtual `advance` remains headless.
 If a connection fails after an action, inspect the app before retrying: it may already have run.
 
+For a local build you intend to verify, start the real executable with
+`octara launch -p my-app --bin my-app --socket /absolute/path/app.sock --receipt build.json`.
+Use unused socket and receipt paths. From another terminal, `octara inspect --connect SOCKET
+--receipt build.json --json` reports the running build and, when available, whether the recorded
+workspace Rust sources match. `octara run --connect SOCKET --require-build build.json
+--script steps.jsonl --json` stops with `BUILD_MISMATCH` before sending script input if the
+window reports a different or unknown build. Use a new launch after changing code.
+
 Use `inspect --json` or JSON `inspect`/`pick` requests to retain the returned opaque `target`,
 then send it with the operation, for example
 `{"op":"tap","id":"save","target":"<node.target>"}`. Node operations require that

@@ -13,7 +13,8 @@ uses its normal edit, build, run and inspect loop to improve the app.
 
 | Implemented | Remaining boundary |
 | --- | --- |
-| Opt-in Unix socket, one client, ordered JSON-line requests executed on the main thread | Windows transport and stronger attached-build identity |
+| Opt-in Unix socket, one client, ordered JSON-line requests executed on the main thread | Windows transport |
+| Managed Cargo launch pairs an executable with a receipt and compares recorded workspace Rust files | Build provenance for unmanaged launches and inputs outside the recorded workspace |
 | Live semantic values, bounds, actions, source and component call sites; opaque allocation targets checked before input and between phases | Property origins and sampled opacity/color |
 | Pending work, asks, diagnostics and explicit realtime settling | Reset/restart policy for broken internal invariants |
 | Framework pointer/key/text dispatch and semantic actions with route/delivery feedback | OS input injection and native focus/IME/gesture qualification |
@@ -29,8 +30,42 @@ headless workflow remains available.
 The existing Inspector request/reply format is reused; snapshots retain `octara.inspect/1`.
 Live replies add clock, platform,
 PID and route information; snapshot replies also list supported operations and transport. Input
-replies report delivery, and wait replies report settling and pending reasons. A PID and framework
-version are useful context, but do not prove the running build matches edited local source.
+replies report delivery, and wait replies report settling and pending reasons. A managed launch adds
+the staged executable digest to `live.build`.
+
+## Verify the running build
+
+Use two terminals on macOS or Linux. Choose unused paths for the Inspector socket and receipt.
+
+```sh
+octara launch -p octara-examples --bin window --socket /tmp/octara-counter.sock \
+  --receipt /tmp/octara-counter.json -- counter
+```
+
+```sh
+octara inspect --connect /tmp/octara-counter.sock --receipt /tmp/octara-counter.json --json
+octara run --connect /tmp/octara-counter.sock --require-build /tmp/octara-counter.json --script steps.jsonl --json
+```
+
+The launcher builds the requested Cargo binary or example, copies that executable into a private
+temporary directory under Cargo's target directory, and records its SHA-256 digest. The child reports this digest for its
+lifetime. The launcher waits for the child to exit before removing the copy, so a new build can
+replace Cargo's output even while the earlier window is still open. Use ordinary local executables
+that can be run directly, with any resources they need available from the caller's environment.
+After an interrupted launch has stopped, `cargo clean` also removes its staged executable.
+
+`inspect` reports the running and expected build digests in `provenance`. For a matching receipt
+with a source record, `source` is `matches` or `changed` and `source_scope` is `workspace_rust`.
+The comparison covers tracked and nonignored untracked Rust files under the Cargo workspace in a Git checkout,
+sampled before and after the build. It is `unknown` when the files cannot be compared or the receipt
+belongs to a different build. Cargo manifests, lockfiles, toolchain configuration, non-Rust assets
+and external path dependencies are outside this source comparison.
+
+With `--require-build`, the CLI checks the digest via `inspect` on the same ordered connection
+that would carry the script. A different or missing digest returns `BUILD_MISMATCH` with refusal
+before any script request is sent. The requirement selects an executable, so a script can still
+intentionally validate it after editing the workspace. An unmanaged window remains inspectable
+and has no managed build digest. Receipt checks are for the local development workflow.
 
 ## Direct questions over the real app
 
@@ -46,8 +81,8 @@ not yet expose every sampled visual property or establish a shared native/drawn 
 
 Business values may opt into a debug adapter. Ordinary Rust application state needs no mandatory
 `Serialize` or `Debug` bound. Collect response data at the safe boundary before formatting; never
-invoke arbitrary application formatting under a Kernel borrow. Source locations identify their
-available build context rather than silently treating edited local files as the running code.
+invoke arbitrary application formatting under a Kernel borrow. Source locations describe the
+compiled code. Use a matching launch receipt before following them into edited local files.
 
 ## One local connection with ordered replies
 
@@ -67,9 +102,8 @@ Replies belong to their originating connection and are discarded after it discon
 does not automatically resend a command after a transport failure. An accepted capture can finish
 within its budget after disconnect; a new capture is refused while that job is still active.
 Requests are limited to 1 MiB and replies to 16 MiB; an oversized reply closes the connection
-because the operation may already have run. More explicit runtime/build
-identity, including replacement inside one OS process, remains future work. No fixed set of six
-public identifier types is required for this first connection.
+because the operation may already have run. Managed build identity applies to the launched
+executable. Tree replacements inside the process use the target lifetime checks below.
 
 ## Targets and observation identity
 

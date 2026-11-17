@@ -66,8 +66,9 @@ Extend the minimal P0 capabilities into the Inspector, Source Map, Headless, eve
 > on the main thread; framework input (including realtime double taps and long presses), realtime settling and
 > asynchronous GPU captures are implemented. Captures return their report without exiting the app. Live `size`
 > requests the native client-area size, waits at most five seconds for host/framework agreement, and reports
-> actual dimensions in `live.resize`. Virtual `advance` remains unsupported; OS input injection and stronger
-> build/target identity remain open. Broader tracing and continuous
+> actual dimensions in `live.resize`. Observed targets check allocation lifetime, and managed
+> launches support build-checked scripts. Virtual `advance` and OS input injection remain open.
+> Broader tracing and continuous
 > observation are optional extensions to justify through concrete tool tasks.
 
 - Form a complete Generate → Compile → Run → Inspect → Test → Fix workflow.
@@ -75,9 +76,8 @@ Extend the minimal P0 capabilities into the Inspector, Source Map, Headless, eve
   act, expect the result and capture it; exercise errors, window lifetime and reconnect behavior.
 - Query actual nodes, geometry, diagnostics and pending work through their current owners;
   application-value adapters stay optional. See [Agent context](design/agent-context.md).
-- Extend connection information with reliable build identity and target lifetime validation.
-  Current live replies report protocol/host capabilities, semantic/framework routes and input
-  delivery; native behavior still needs real OS input and platform verification.
+- Verify native behavior with real OS input. Current live replies report protocol/host capabilities,
+  build and target identity, semantic/framework routes and input delivery.
 - Keep explicit, bounded realtime waiting and its pending reasons. Design any live clock control
   separately; headless virtual-time operations do not imply control over the OS or external I/O.
 - State clearly the clock, async, and external I/O boundaries covered by replay.

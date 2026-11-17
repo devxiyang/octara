@@ -338,7 +338,9 @@ and prompts in the window, and tooltips are currently drawn on every desktop.
   [OS-input fixture](../examples/IME.md) records real keyboard/Chinese IME checks separately.
   Inspector operations can retain opaque window/tree or node targets across reads and reject
   replaced allocations before further input. The actual hot-reload path retires tree targets.
-  Stronger build identity and richer sampled property information remain open.
+  `octara launch` records the executable identity for guarded live scripts and compares recorded
+  workspace Rust sources. See [running builds](design/agent-context.md#verify-the-running-build).
+  Richer sampled property information remains open.
 - **Update and sample boundaries**: frames are submitted per window and display lists are pulled
   later. The first runtime refactor restores mounted callback owners, retires cancelled asks and
   revisits windows invalidated by later windows. Bounded unfinished reactive/window work remains

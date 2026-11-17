@@ -133,7 +133,9 @@ fn every_code_mentioned_anywhere_is_registered() {
 fn every_registered_code_is_reported() {
     let root = workspace();
     let mut rs = Vec::new();
-    files(&root.join("crates/octara/src"), "rs", &mut rs);
+    for dir in ["crates/octara/src", "crates/octara-cli/src", "crates/octara-shell/src"] {
+        files(&root.join(dir), "rs", &mut rs);
+    }
     let source: String = rs.iter().filter(|f| !f.ends_with("diagnostics.rs")).map(|f| std::fs::read_to_string(f).unwrap()).collect();
     let unused: Vec<&str> = CODES.iter().map(|c| c.id).filter(|id| !source.contains(&format!("codes::{id}"))).collect();
     assert!(unused.is_empty(), "registered codes nothing reports (remove them or report them): {unused:?}");

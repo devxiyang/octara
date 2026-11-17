@@ -43,6 +43,7 @@ const OPERATIONS: &[&str] = &[
 pub(crate) struct Server {
     #[cfg(unix)]
     _wire: wire::Server,
+    build: Option<Arc<str>>,
 }
 
 impl Server {
@@ -55,8 +56,12 @@ impl Server {
                 return Err("OCTARA_INSPECT needs an absolute Unix socket path".into());
             }
             let server = wire::Server::start(&path, proxy)?;
+            let build = std::env::var("OCTARA_INSPECT_BUILD")
+                .ok()
+                .filter(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+                .map(Arc::from);
             eprintln!("octara-shell: inspector {}", path.display());
-            Ok(Some(Server { _wire: server }))
+            Ok(Some(Server { _wire: server, build }))
         }
         #[cfg(not(unix))]
         {
@@ -72,6 +77,7 @@ pub(crate) struct Responder {
     pub(crate) connected: Arc<AtomicBool>,
     route: &'static str,
     input: bool,
+    build: Option<Arc<str>>,
     target: Option<(octara::app::Window, TargetGuard)>,
     app: Option<octara::app::App>,
     sent: std::cell::Cell<bool>,
@@ -85,6 +91,7 @@ impl Responder {
             connected,
             route,
             input,
+            build: None,
             target: None,
             app: None,
             sent: std::cell::Cell::new(false),
@@ -126,6 +133,9 @@ impl Responder {
             return;
         }
         let mut live = json!({ "clock": "realtime", "route": self.route, "pid": std::process::id(), "platform": std::env::consts::OS });
+        if let Some(build) = &self.build {
+            live["build"] = build.as_ref().into();
+        }
         if self.input {
             if reply.delivery.is_none() {
                 reply.delivery = match extra.get("delivery").and_then(serde_json::Value::as_str) {
@@ -242,9 +252,15 @@ impl Shell {
         if !connected.load(Ordering::Relaxed) {
             return;
         }
+        let build = self.inspector.as_ref().and_then(|server| server.build.clone());
+        let respond = move |route, input| {
+            let mut response = Responder::new(tx, connected, route, input);
+            response.build = build;
+            response
+        };
         let window = self.main_window().or_else(|| self.app.as_ref().and_then(|app| app.windows().first().and_then(|id| app.window(*id))));
         let Some(window) = window else {
-            Responder::new(tx, connected, "query", false).send(Reply::fail(&codes::BAD_REQUEST, "the app has no open main window"));
+            respond("query", false).send(Reply::fail(&codes::BAD_REQUEST, "the app has no open main window"));
             return;
         };
         let octara::inspect::ParsedRequest { window: mut target, request, guard } =
@@ -252,12 +268,12 @@ impl Shell {
                 Ok(parsed) => parsed,
                 Err(reply) => {
                     let (route, input) = route_line(&line);
-                    Responder::new(tx, connected, route, input).send(*reply);
+                    respond(route, input).send(*reply);
                     return;
                 }
             };
         let (route, input) = route(&request);
-        let response = Responder::new(tx, connected, route, input).with_target(&target, guard.as_ref());
+        let response = respond(route, input).with_target(&target, guard.as_ref());
         if let Some(reply) = octara::inspect::failure_refusal(&target, &request) {
             response.send(reply);
             return;
