@@ -269,8 +269,15 @@ validation was performed. B3 includes the separately recorded consistency-mode i
 
 ### D. Core composition and ui-kit
 
-- [ ] Validate public foundation sufficiency with a no-kit custom button, labeled Chinese
-      input with errors, and anchored suggestions. No kit-only focus/editing privileges.
+- [x] **D1:** validate public foundation sufficiency with a no-kit custom button, labeled
+      Chinese input with errors, and anchored suggestions. External integration tests compile
+      without any octara-kit dependency and use only public APIs. Pointer/keyboard/semantic/AX
+      activation, disabled gates, stable targets, validation, IME precedence, focus-preserving
+      suggestions and resize are covered. No new production primitive was necessary.
+      See [foundation verification and kit review](design/component-foundation.md).
+      This verifies the bounded scenarios, not all dynamic choice policies or real OS behavior.
+      Validation: **926 workspace tests passed, 0 failed, 3 existing ignored doctests**;
+      all-targets Clippy, format/diff, dependency layers and skill freshness passed.
 - [ ] Share stable action roots while allowing different visual content. Make actual control,
       label and container configuration explicit for composite widgets; remove misleading bare
       El forwarding. Prefer parameters/builders before public Parts or new traits.
