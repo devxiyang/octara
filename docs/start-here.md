@@ -173,7 +173,7 @@ assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
   `combobox`, `popover`, `field`, `radio_group`, `dialog`, `tabs`, `segmented`, `popup_list`,
   `slider`, `number_field`, `progress`, `menu_button`,
   `spinner`, `chip`, `removable_chip`, `callout`, `collapsible`, `list` / `list_item` /
-  `list_header`, `split`.
+  `list_header`, `split`, `splitter`.
 - `octara_kit::markdown::markdown(source)` renders Markdown as a selectable document (headings,
   lists, tasks, code blocks with a copy button, quotes, tables). Pass a `&TextBuffer` to stream an
   answer in: each token re-parses only the block it lands in; `paced(&reply)` shows a stream

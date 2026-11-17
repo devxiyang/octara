@@ -273,3 +273,23 @@ Tabs/Menu/Radio 没有被并入同一个状态机；后续 scope 精简仍须先
 
 最终验证：121 项 kit 测试通过、0 失败、1 个既有忽略 doctest；工作区 all-targets 严格 Clippy、
 格式、diff 与分层检查通过。删除实验均已恢复；本次是 headless 身份/生命周期验证，未做真实 OS 输入。
+
+## 后续阶段：复用分隔条组件（2026-11-18，init）
+
+Chat::desktop_navigation 与 kit::split 重复同一套横向宽度拖动、8/40 像素键盘步长、Splitter
+语义和可视样式。差异在模型边界：split 最小 120，Chat 限制在 180–420。新增 kit::splitter(id,
+model) 作为独立布局的窄组件，让 split 和 Chat 都通过它组合；不新增内核原语、控制器或 scope。
+它只提出宽度变化，显示值读取 Model；clamp、拒绝和归一化仍由调用方处理，下一次拖动重新采样
+已接受宽度。用已有 behavior 注册组件事件，调用方添加 on_key/on_drag 不会覆盖内置调整行为。
+
+Chat 保留自己的响应式外壳和桌面导航分支，避免把整套布局替换成 split 后跨断点重建主面板。
+本地 Rune 固定版本 3686e94 的 shell/split.rs 同样把 grip 的外观和应用状态回调拆开组合；其
+PaneState 还负责折叠、悬停和松手回退，本轮不迁移这些并不存在于 Octara split 中的产品状态。
+
+这个变化增加一个可单独组合的 kit 叶组件，同时删除 Chat 中重复的分隔条实现；不以导出数量
+衡量简洁度。split 继续负责两栏布局和原有最小宽度，splitter 不强制应用布局或宽度范围。
+
+分隔条阶段验证：kit 122 项、Chat 长会话 3 项、教程 doctests 12 项、skill 5 项通过，0 失败、
+1 个既有忽略 doctest。验证 Model 拒绝/限制写入、外部修改后的键盘读值、新拖动基于已接受值，
+以及 Chat 宽度边界和断点往返保持编辑器身份。工作区严格 Clippy、格式、diff 与分层检查通过；
+教程及导出 skill 同步，vocab 可查新组件。没有真实 OS 窗口或帧时间验证。

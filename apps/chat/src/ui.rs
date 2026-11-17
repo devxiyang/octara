@@ -11,9 +11,7 @@ use octara::reactive::list::FlatKey;
 use octara_icons as icons;
 use octara_kit::markdown::markdown;
 use octara_kit::*;
-use std::cell::Cell;
 use std::cmp::Reverse;
-use std::rc::Rc;
 use std::time::Duration;
 
 fn compact() -> bool {
@@ -65,35 +63,7 @@ pub fn view(chat: &Chat) -> View {
 
 #[ui]
 fn desktop_navigation(chat: &Chat, listing: Signal<bool>, width: Signal<f32>) -> View {
-    let start = Rc::new(Cell::new(0.0));
-    let divider = el()
-        .id("panes-divider")
-        .role(Role::Splitter)
-        .label("Resize")
-        .value(move || format!("{}", width.get().round()))
-        .focusable()
-        .w(7.0)
-        .when_touch(|p| p.w(20.0))
-        .h_full()
-        .flex_shrink_0()
-        .justify_center()
-        .cursor(CursorStyle::ResizeLeftRight)
-        .child(el().w(1.0).h_full().bg(Token::Border).style_when(State::FOCUS_VISIBLE, |p| p.bg(Token::Focus)).a11y_hidden())
-        .on_drag(move |drag| match drag.phase {
-            DragPhase::Start => start.set(width.get()),
-            DragPhase::Move => width.set((start.get() + drag.dx).clamp(180.0, 420.0)),
-            _ => {}
-        })
-        .on_key(move |key| {
-            let step = if key.modifiers.contains(Modifiers::SHIFT) { 40.0 } else { 8.0 };
-            let by = match key.key {
-                Key::Left => -step,
-                Key::Right => step,
-                _ => return false,
-            };
-            width.set((width.get() + by).clamp(180.0, 420.0));
-            true
-        });
+    let divider = splitter("panes-divider", (move || width.get(), move |next: f32| width.set(next.clamp(180.0, 420.0))));
     View::fragment(vec![
         el().h_full().flex_shrink_0().style_with(move |s| s.w(width.get())).child(sidebar(chat, listing)).into(),
         divider.into(),
@@ -1077,7 +1047,8 @@ mod tests {
     use super::*;
     use crate::model::{Attachment, Event, Tool};
     use octara::platform::HeadlessPlatform;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
 
     #[test]
     fn an_explicit_model_outlives_and_drives_reopened_product_views() {

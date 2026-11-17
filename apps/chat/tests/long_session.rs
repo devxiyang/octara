@@ -216,6 +216,12 @@ fn compact_navigation_is_modal_and_desktop_resizing_survives() {
     window.dispatch(Event::Focus("panes-divider".into())).unwrap();
     window.press_key("right").unwrap();
     assert_eq!(value(&window, "panes-divider"), "300");
+    window.drag("panes-divider", 500.0, 0.0).unwrap();
+    assert_eq!(value(&window, "panes-divider"), "420", "Chat owns its upper bound");
+    window.drag("panes-divider", -500.0, 0.0).unwrap();
+    assert_eq!(value(&window, "panes-divider"), "180", "Chat owns its lower bound");
+    window.drag("panes-divider", 120.0, 0.0).unwrap();
+    assert_eq!(value(&window, "panes-divider"), "300");
     window.resize(480.0, 720.0);
     assert!(!window.kernel().exists("panes-divider"));
     window.tap("conversations").unwrap();

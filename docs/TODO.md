@@ -739,3 +739,21 @@ Owner-boundary validation: **121 kit tests passed, 0 failed, 1 existing ignored 
 Workspace all-targets Clippy with `-D warnings`, formatting, diff and layer checks passed.
 The intentionally failing scope-removal probes were all restored before final validation.
 This is headless ownership/reload evidence; no real OS window input was exercised.
+
+## Continuation on init: shared split handle (2026-11-18)
+
+- [x] Extract the duplicated split/Chat divider into the kit's standalone splitter component.
+- [x] Keep bounds in controlled models (split minimum 120; Chat 180–420), accepted-value reads,
+      and Chat's responsive main-pane lifetime; no new core primitive or owner.
+- [x] Register resize behavior through the existing component event layer; verify application
+      handlers coexist, clamped/rejected proposals, external changes and fresh drag baselines.
+- [x] Extend the existing Chat breakpoint regression to cover both sidebar bounds.
+- [x] Finish kit/Chat, CLI teaching and strict workspace checks; commit this stage separately.
+
+The new public item is a kit component, not a lower-layer primitive. The tutorial inventory and
+exported skill are synchronized. Real OS input/presentation is outside this headless refactor.
+
+Split-handle validation: **122 kit tests, 3 Chat long-session tests, 12 CLI teaching doctests
+and 5 skill tests passed**, 0 failed, 1 existing ignored kit doctest. Workspace all-targets
+Clippy with `-D warnings`, format/diff and layer checks passed; vocab resolves splitter and
+the exported skill is fresh. No real OS window or frame-time measurement was performed.

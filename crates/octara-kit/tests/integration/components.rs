@@ -301,3 +301,58 @@ fn a_split_resizes_its_leading_pane() {
     app.press_key("right").unwrap();
     assert_eq!(pane(&app, "side"), 128.0);
 }
+
+#[test]
+fn a_splitter_uses_accepted_model_values_and_keeps_its_component_handlers() {
+    let mut window = Window::headless(|| {
+        let width = state("width", || 240.0f32);
+        let reject = state("reject", || false);
+        let drags = state("drags", || 0);
+        let keys = state("keys", || 0);
+        on_command("reject", move || reject.set(true));
+        on_command("external", move || width.set(200.0));
+        row()
+            .size_full()
+            .child(
+                splitter(
+                    "grip",
+                    (
+                        move || width.get(),
+                        move |next: f32| {
+                            if !reject.get() {
+                                width.set(next.clamp(180.0, 300.0));
+                            }
+                        },
+                    ),
+                )
+                .on_drag(move |_| drags.update(|n| *n += 1))
+                .on_key(move |_| {
+                    keys.update(|n| *n += 1);
+                    true
+                }),
+            )
+            .child(text(move || drags.get().to_string()).id("drags"))
+            .child(text(move || keys.get().to_string()).id("keys"))
+            .into()
+    });
+    let value = |window: &Window| window.kernel().value_of("grip").unwrap();
+    window.drag("grip", 100.0, 0.0).unwrap();
+    assert_eq!(value(&window), "300");
+    window.drag("grip", -10.0, 0.0).unwrap();
+    assert_eq!(value(&window), "290", "new drags start from the accepted width, not the last proposal");
+    assert_ne!(window.kernel().text_of("drags").as_deref(), Some("0"));
+    window.tap("grip").unwrap();
+    window.press_key("shift+left").unwrap();
+    assert_eq!(value(&window), "250");
+    assert_eq!(window.kernel().text_of("keys").as_deref(), Some("0"), "resize keys are consumed by the component");
+    window.press_key("home").unwrap();
+    assert_eq!(window.kernel().text_of("keys").as_deref(), Some("1"));
+    window.invoke("external").unwrap();
+    window.press_key("right").unwrap();
+    assert_eq!(value(&window), "208", "keyboard uses the current model value");
+    window.invoke("reject").unwrap();
+    window.drag("grip", 50.0, 0.0).unwrap();
+    window.press_key("right").unwrap();
+    assert_eq!(value(&window), "208", "rejected proposals never become displayed state");
+    assert!(window.app().diagnostics().is_empty(), "{:?}", window.app().diagnostics());
+}

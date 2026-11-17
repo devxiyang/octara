@@ -101,10 +101,29 @@ const MIN_PANE: f32 = 120.0;
 #[track_caller]
 pub fn split(id: &str, width: impl Model<f32>, leading: impl IntoElement, trailing: impl IntoElement) -> El {
     let width = Rc::new(width);
+    let (pane, read, write) = (width.clone(), width.clone(), width);
+    let handle = splitter(&format!("{id}-divider"), (move || read.get(), move |value: f32| write.set(value.max(MIN_PANE))));
+    row()
+        .id(id.to_owned())
+        .size_full()
+        .child(el().h_full().flex_shrink_0().style_with(move |s| s.w(pane.get())).child(leading))
+        .child(handle)
+        .child(el().h_full().flex_1().min_w(0.0).child(trailing))
+}
+
+/// A horizontal resize handle, independent of pane layout. `id` names the handle itself.
+/// Dragging proposes the width at drag start plus total horizontal movement; Left/Right
+/// propose changes of 8, or 40 with Shift. The model owns bounds and may reject or normalize
+/// writes; displayed values always read the accepted width. This component imposes no bounds.
+/// Add application handlers without replacing resize behavior. It creates no owner or named
+/// state; use it where a responsive layout must mount its handle separately from its panes.
+#[ui]
+#[track_caller]
+pub fn splitter(id: &str, width: impl Model<f32>) -> El {
+    let width = Rc::new(width);
     let start = Rc::new(Cell::new(0.0f32));
-    let (read, drag, keys, value) = (width.clone(), width.clone(), width.clone(), width);
-    let handle = el()
-        .id(format!("{id}-divider"))
+    let (drag, keys, value) = (width.clone(), width.clone(), width);
+    el().id(id.to_owned())
         .role(Role::Splitter)
         .label("Resize")
         .value(move || format!("{}", value.get().round()))
@@ -116,25 +135,21 @@ pub fn split(id: &str, width: impl Model<f32>, leading: impl IntoElement, traili
         .justify_center()
         .cursor(CursorStyle::ResizeLeftRight)
         .child(el().w(1.0).h_full().bg(Token::Border).style_when(State::FOCUS_VISIBLE, |p| p.bg(Token::Focus)).a11y_hidden())
-        .on_drag(move |d| match d.phase {
-            DragPhase::Start => start.set(drag.get()),
-            DragPhase::Move => drag.set((start.get() + d.dx).max(MIN_PANE)),
-            _ => {}
+        .behavior(|b| {
+            b.on_drag(move |d| match d.phase {
+                DragPhase::Start => start.set(drag.get()),
+                DragPhase::Move => drag.set(start.get() + d.dx),
+                _ => {}
+            })
+            .on_key(move |k| {
+                let step = if k.modifiers.contains(Modifiers::SHIFT) { 40.0 } else { 8.0 };
+                let by = match k.key {
+                    Key::Left => -step,
+                    Key::Right => step,
+                    _ => return false,
+                };
+                keys.set(keys.get() + by);
+                true
+            })
         })
-        .on_key(move |k| {
-            let step = if k.modifiers.contains(Modifiers::SHIFT) { 40.0 } else { 8.0 };
-            let by = match k.key {
-                Key::Left => -step,
-                Key::Right => step,
-                _ => return false,
-            };
-            keys.set((keys.get() + by).max(MIN_PANE));
-            true
-        });
-    row()
-        .id(id.to_owned())
-        .size_full()
-        .child(el().h_full().flex_shrink_0().style_with(move |s| s.w(read.get())).child(leading))
-        .child(handle)
-        .child(el().h_full().flex_1().min_w(0.0).child(trailing))
 }

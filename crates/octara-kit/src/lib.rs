@@ -33,7 +33,7 @@ pub use popover::popover;
 pub use popup_list::{PopupItem, popup_list};
 pub use range::{normalize_number, number_field, parse_number, progress, slider};
 pub use status::{callout, chip, removable_chip, spinner};
-pub use structure::{collapsible, list, list_header, list_item, split};
+pub use structure::{collapsible, list, list_header, list_item, split, splitter};
 
 // ---- models ----
 
