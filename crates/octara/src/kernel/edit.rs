@@ -628,6 +628,9 @@ impl TextInputLayout {
     /// none if shaping finds the shared text engine borrowed; no window, kernel or
     /// application handlers are entered. An empty document still has an insertion-point line.
     pub fn layout(&self, document: &TextDocument) -> Option<TextGeometry> {
+        if !self.resources.text.is_available() {
+            return None;
+        }
         let shown = document.text();
         let caret = document.composition.as_ref().map_or(document.caret, |c| c.selection.as_ref().map_or(c.marked.end, |s| s.end));
         let lines = if shown.is_empty() {

@@ -1,8 +1,114 @@
 //! App-owned resource writes: admission, mutation, invalidation and the outer frame boundary.
 
 use super::*;
-use crate::reactive::graph::Operation;
+use crate::reactive::graph::{ExecutionOwner, Operation};
+use octara_text::{LaidText, ShapedRun, StyleRun, TextEngine, TextLayout, TextPresentation, TextStyle, VisualLine};
+use std::any::Any;
 use std::panic::Location;
+use std::rc::Weak;
+
+/// Provider permissions travel with the text resources, including native snapshots queried
+/// without an App entry. A weak reference avoids a cycle through window-owned bindings.
+#[derive(Clone)]
+struct Provider {
+    runtime: Weak<Runtime>,
+}
+
+impl Provider {
+    #[track_caller]
+    fn run<R>(&self, f: impl FnOnce() -> R) -> R {
+        let runtime = self.runtime.upgrade().expect("text provider belongs to a dropped App");
+        runtime.assert_healthy();
+        let at = Location::caller();
+        let _failure = std::mem::DropGuard::new(&*runtime, move |runtime| {
+            if std::thread::panicking() {
+                runtime.fail("panic escaped a text provider call; shut down this App and create a new one", at);
+            }
+        });
+        let value =
+            runtime.enter(|| runtime.with_execution(ExecutionOwner { scope: None, window: None }, Ctx::Observe, None, || untrack(f)));
+        runtime.assert_healthy();
+        value
+    }
+}
+
+pub(super) fn text_resources(
+    theme: Theme,
+    engine: Box<dyn TextEngine>,
+    touch: bool,
+    runtime: &Rc<Runtime>,
+) -> Rc<crate::kernel::Resources> {
+    let provider = Provider { runtime: Rc::downgrade(runtime) };
+    let available = provider.runtime.clone();
+    let failed = runtime.failure_flag();
+    let engine = Box::new(GuardedTextEngine { engine, provider });
+    let mut resources = crate::kernel::Resources::new(theme, engine, touch);
+    resources.text.set_available(move || !failed.get() && available.upgrade().is_some());
+    Rc::new(resources)
+}
+
+struct GuardedTextEngine {
+    engine: Box<dyn TextEngine>,
+    provider: Provider,
+}
+
+impl TextEngine for GuardedTextEngine {
+    fn layout(&mut self, text: &str, style: &TextStyle, runs: &[StyleRun], previous: Option<&TextLayout>, clean: usize) -> TextLayout {
+        let layout = self.provider.run(|| self.engine.layout(text, style, runs, previous, clean));
+        Rc::new(GuardedLayout { layout, provider: self.provider.clone() })
+    }
+
+    fn ellipsis(&mut self, style: &TextStyle) -> Option<(Vec<ShapedRun>, f32)> {
+        self.provider.run(|| self.engine.ellipsis(style))
+    }
+
+    fn register_font(&mut self, data: &'static [u8]) {
+        self.provider.run(|| self.engine.register_font(data));
+    }
+
+    fn register_fallback_font(&mut self, data: &'static [u8], scripts: &[[u8; 4]]) {
+        self.provider.run(|| self.engine.register_fallback_font(data, scripts));
+    }
+
+    fn shaped(&self) -> u64 {
+        self.provider.run(|| self.engine.shaped())
+    }
+
+    fn kept_bytes(&self) -> usize {
+        self.provider.run(|| self.engine.kept_bytes())
+    }
+}
+
+/// Text layouts call back into the provider after shaping, during measurement, painting and
+/// native document queries. Keep the same boundary and preserve provider cache downcasts.
+struct GuardedLayout {
+    layout: TextLayout,
+    provider: Provider,
+}
+
+impl LaidText for GuardedLayout {
+    fn measure(&self, max_width: Option<f32>) -> (f32, u32, f32) {
+        self.provider.run(|| self.layout.measure(max_width))
+    }
+
+    fn present(
+        &self,
+        max_width: Option<f32>,
+        max_lines: Option<u16>,
+        fit: Option<f32>,
+        ellipsis: Option<&(Vec<ShapedRun>, f32)>,
+    ) -> TextPresentation {
+        self.provider.run(|| self.layout.present(max_width, max_lines, fit, ellipsis))
+    }
+
+    fn visual_lines(&self, max_width: Option<f32>) -> Vec<VisualLine> {
+        self.provider.run(|| self.layout.visual_lines(max_width))
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self.provider.run(|| self.layout.as_any())
+    }
+}
 
 enum Change<'a> {
     Theme(Box<Theme>),
@@ -77,13 +183,9 @@ impl App {
                 Change::Font { data, scripts } => {
                     // The engine is temporarily taken out, not held behind a RefCell borrow
                     // across provider code. Native queries return None while it is unavailable.
-                    res.text.with_detached(|engine| {
-                        self.app.rt.with_frame(Ctx::Observe, None, None, || {
-                            untrack(|| match scripts {
-                                Some(scripts) => engine.register_fallback_font(data, scripts),
-                                None => engine.register_font(data),
-                            })
-                        });
+                    res.text.with_detached(|engine| match scripts {
+                        Some(scripts) => engine.register_fallback_font(data, scripts),
+                        None => engine.register_font(data),
                     });
                     self.app.rt.assert_healthy();
                     if self.app.shutdown.get() {

@@ -60,3 +60,7 @@ mod text_presentation;
 mod theme;
 mod theme_contrast;
 mod windows;
+
+mod action_permissions;
+mod focus_budget;
+mod provider_permissions;

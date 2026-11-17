@@ -608,6 +608,7 @@ impl App {
         let rt = Runtime::new();
         let root_scope = rt.create_app_scope();
         let failed = rt.failure_flag();
+        let res = resources::text_resources(theme, text_engine, target_platform.is_touch(), &rt);
         let state = AppState {
             namespace: crate::identity::new_namespace(),
             rt,
@@ -616,7 +617,7 @@ impl App {
             teardown: Cell::new(Teardown::Pending),
             failed,
             sched: Rc::new(crate::task::Scheduler::default()),
-            res: Rc::new(crate::kernel::Resources::new(theme, text_engine, target_platform.is_touch())),
+            res,
             windows: RefCell::default(),
             order: RefCell::default(),
             opening: RefCell::default(),
@@ -680,6 +681,12 @@ impl App {
     #[track_caller]
     pub fn shutdown(&self) {
         let at = std::panic::Location::caller();
+        if self.app.teardown.get() != Teardown::Pending {
+            return;
+        }
+        if !Runtime::caller_allows(crate::reactive::graph::Operation::Shutdown, at) {
+            return;
+        }
         enter_app_context(&self.app, || {
             if self.app.teardown.get() != Teardown::Pending {
                 return;
@@ -688,6 +695,7 @@ impl App {
                 return;
             }
             self.app.shutdown.set(true);
+            self.app.res.text.retire();
             self.app.teardown.set(Teardown::Running);
             let _progress = std::mem::DropGuard::new(&self.app.teardown, |progress| {
                 if progress.get() == Teardown::Running {

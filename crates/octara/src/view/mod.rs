@@ -482,16 +482,31 @@ pub fn read_from_clipboard() -> Option<crate::platform::ClipboardItem> {
     crate::app::app_state().read_clipboard()
 }
 
+fn allows_ui_write(at: &'static Location<'static>) -> bool {
+    rt(|runtime| runtime.allows(graph::Operation::Write, at))
+}
+
 /// Runs `f`; what it changes lands at once this frame, even where `motion` is set (Rune's
 /// `tx.instant`): a value jumping to where the user put it.
+/// Callable from handlers and tasks. During construction, initialization or pure computations,
+/// the motion change is rejected; `f` still runs with the caller's unchanged permissions.
+#[track_caller]
 pub fn instant<R>(f: impl FnOnce() -> R) -> R {
-    crate::app::window().kernel.borrow_mut().set_instant(true);
+    if allows_ui_write(Location::caller()) {
+        crate::app::window().kernel.borrow_mut().set_instant(true);
+    }
     f()
 }
 
 /// Scrolls the scroll container with test id `id` to `(x, y)`: it glides there where its layout
 /// moves (`layout_motion` / `motion`), else jumps. Returns whether there is such a container.
+/// Callable from handlers and tasks; construction, initialization and pure computations are
+/// rejected and return `false` without scrolling.
+#[track_caller]
 pub fn scroll_to(id: &str, x: f32, y: f32) -> bool {
+    if !allows_ui_write(Location::caller()) {
+        return false;
+    }
     let u = crate::app::window();
     let mut k = u.kernel.borrow_mut();
     let Some(n) = k.find(id) else { return false };
@@ -502,14 +517,26 @@ pub fn scroll_to(id: &str, x: f32, y: f32) -> bool {
 /// Reveals the element with test id `id` in its scroll containers after the next layout,
 /// keeping keyboard focus where it is. The element can be mounted in the same frame; a missing
 /// or hidden target then does nothing. The last request in a frame wins.
+/// Callable from handlers and tasks; construction, initialization and pure computations cannot
+/// enqueue a reveal request.
+#[track_caller]
 pub fn scroll_into_view(id: &str) {
+    if !allows_ui_write(Location::caller()) {
+        return;
+    }
     crate::app::window().interaction_request_scroll_into_view(id)
 }
 
 /// Scrolls the scroll container with test id `id` to the end of its content, gliding where its
 /// layout moves, and follows its tail from there if it is set to (`follow_tail`). Returns whether
 /// there is such a container.
+/// Callable from handlers and tasks; construction, initialization and pure computations are
+/// rejected and return `false` without scrolling.
+#[track_caller]
 pub fn scroll_to_end(id: &str) -> bool {
+    if !allows_ui_write(Location::caller()) {
+        return false;
+    }
     let u = crate::app::window();
     let mut k = u.kernel.borrow_mut();
     let Some(n) = k.find(id) else { return false };
@@ -568,8 +595,15 @@ pub fn clock(period: std::time::Duration) -> ReadSignal<std::time::Duration> {
 
 /// Adds the app's key bindings (GPUI's `bind_keys`): `(chord, command, context)`, a context
 /// naming a `key_context` the focus must be in (`None`: anywhere). A binding added again (a hot
-/// reload) replaces itself. `Err` names a chord that does not parse.
+/// reload) replaces itself. Register during construction or from handlers and tasks. Pure
+/// computations, initializers and cleanup cannot register bindings. `Err` names a chord that
+/// does not parse or a rejected registration, which leaves the keymap unchanged.
+#[track_caller]
 pub fn bind_keys<'a>(bindings: impl IntoIterator<Item = (&'a str, &'a str, Option<&'a str>)>) -> Result<(), String> {
+    let at = Location::caller();
+    if !rt(|runtime| runtime.allows(graph::Operation::Register, at)) {
+        return Err("key binding registration is not allowed in this execution phase".into());
+    }
     let app = crate::app::app_state();
     app.keymap_changed();
     let mut keymap = app.keymap.borrow_mut();
@@ -586,15 +620,25 @@ pub fn bind_keys<'a>(bindings: impl IntoIterator<Item = (&'a str, &'a str, Optio
 /// Moves keyboard focus to the element with test id `id` once this frame is built (GPUI's
 /// `window.focus`): a field after the view that holds it was rebuilt, the composer after "New
 /// chat". It must be focusable and enabled then; otherwise focus stays where it is. Callable
-/// from handlers and tasks.
+/// from handlers and tasks; construction, initialization and pure computations cannot request
+/// focus. Use an element's `autofocus` property for initial focus.
+#[track_caller]
 pub fn focus(id: &str) {
+    if !allows_ui_write(Location::caller()) {
+        return;
+    }
     crate::app::window().interaction_request_focus(id);
 }
 
 /// Run a command in this window using its current focus path and registered handlers.
 /// Callable from handlers and tasks. For a popup that closes before invoking against restored
-/// focus, use [`invoke_after_update`].
+/// focus, use [`invoke_after_update`]. Construction, initialization and pure computations are
+/// rejected with `Err` before dispatching the command.
+#[track_caller]
 pub fn invoke(command: &str) -> Result<(), String> {
+    if !allows_ui_write(Location::caller()) {
+        return Err("command invocation is not allowed in this execution phase".into());
+    }
     crate::app::current().invoke(command)
 }
 
@@ -606,8 +650,12 @@ pub fn invoke(command: &str) -> Result<(), String> {
 /// An unhandled command reports `COMMAND_UNHANDLED`. At most 16 commands run in one update;
 /// further queued commands are discarded with `COMMAND_QUEUE_LIMIT`, including commands
 /// that keep queuing themselves. This does not wait for animation to finish or advance time.
+/// Construction, initialization and pure computations cannot enqueue commands.
 #[track_caller]
 pub fn invoke_after_update(command: &str) {
+    if !allows_ui_write(Location::caller()) {
+        return;
+    }
     crate::app::window().interaction_request_command(command, Location::caller());
 }
 
@@ -621,7 +669,13 @@ pub fn is_composing(id: &str) -> bool {
 }
 
 /// Lands everything in motion on its target now (Rune's `tx.settle`).
+/// Callable from handlers and tasks; construction, initialization and pure computations are
+/// rejected without changing motion or paced text.
+#[track_caller]
 pub fn settle_motion() {
+    if !allows_ui_write(Location::caller()) {
+        return;
+    }
     let u = crate::app::window();
     {
         let mut k = u.kernel.borrow_mut();

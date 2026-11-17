@@ -12,6 +12,7 @@ use super::pointer::Modifiers;
 use super::{Handler, Modality, TargetPlatform, Window};
 use crate::diagnostics as codes;
 use crate::kernel::{Arrow, HandlerKind, NodeId, State};
+use crate::reactive::graph::{Operation, Runtime};
 use std::fmt;
 
 /// A key, as the keyboard layout produces it.
@@ -660,8 +661,19 @@ impl Window {
     }
 
     /// Runs a command as its key would, for the focused element (agents and menus call this).
+    /// Host calls, handlers and tasks may dispatch commands. Construction, initialization and
+    /// pure computations are rejected before dispatch, even through a captured window in
+    /// another App.
+    #[track_caller]
     pub fn invoke(&mut self, command: &str) -> Result<(), String> {
+        let at = std::panic::Location::caller();
+        if !Runtime::caller_allows(Operation::Write, at) {
+            return Err("command invocation is not allowed in this execution phase".into());
+        }
         self.check_running()?;
+        if !self.app.rt.allows(Operation::Write, at) {
+            return Err("command invocation is not allowed in this execution phase".into());
+        }
         let mut done = false;
         self.input_frame(|| {
             let path = self.focus_path();

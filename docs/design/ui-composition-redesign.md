@@ -370,3 +370,11 @@ Combobox/PopupList 现在从 memo 的选项快照直接派生 keyed rows；删�
 进入新版本后，稳定 key 的状态恢复不依赖兄弟顺序。迁移时先冷启动，不承诺跨此 API 迁移
 保留进程中的旧状态。普通函数需要独立实例数据时优先接收调用方分配的 Signal；只有实际
 生命周期或 provider 隔离需要才创建 scope。
+
+
+### 第三阶段执行边界
+
+[执行阶段审查](../research/execution-stage-audit.md)保留已正确的局部反馈机制，只修复复现的
+权限/发布越界。窗口完成需有稳定出口证据；UI 动作复用现有权限；App 注入的文本 provider
+和布局对象统一以只读、untracked、无窗口 owner 的能力运行，覆盖普通帧和原生预测查询。
+保留 detached 字体注册及其失败恢复；不新增另一套阶段枚举或公开事务 API。

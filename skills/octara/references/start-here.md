@@ -57,11 +57,11 @@ state initializers, memos and binding/watch sources may not, including through a
 handle. Shutdown rejects resource writes; a failed App must be shut down. A live App's window
 cleanup may still update its resources, but shutdown cleanup may not.
 
-Custom text engines' runtime font-registration callbacks run without dependency collection or UI
-write permission. They must update the font provider, not reenter UI driving/layout. Native text
-queries can decline while registration is in progress and query again afterwards. An escaping
-provider panic fails the App; it does not publish a partially updated frame or roll back arbitrary
-provider work.
+Custom text engines and their returned layouts run without dependency collection, UI write
+permission or an ambient window/scope, including native prediction outside an App operation.
+They must perform text-provider work, not reenter UI driving/layout. Native queries can decline
+while the engine is busy; empty geometry needs no engine lease. Queries decline after shutdown or for failed/dropped owners, including empty text. An escaping provider panic fails the App; it does not
+publish a partially updated frame or roll back arbitrary provider work.
 
 Desktop `octara_shell::Options::default()` already uses system fonts. Customize its `app.theme`
 before `run_with`; assign `app: AppConfig::default()` to use bundled fonts. Do not spawn a task
@@ -327,6 +327,12 @@ assert!(!app.kernel().exists("todo-1"));
   kept inside the window.
 
 ## Input
+
+Imperative focus, scroll, motion and command helpers use the same write permissions as state.
+Call them from handlers/tasks; pure sources cannot bypass this through `untrack` or a captured
+`Window::invoke` handle. `instant(f)` still evaluates `f` under the original permissions when
+its motion request is rejected. `bind_keys` is registration, so construction can declare bindings.
+
 
 - Pointer and touch: `on_press`, `on_double_press`, `on_long_press`, `on_secondary_press`,
   `on_drag(|d| ..)`. Presses come from mouse, touch, keyboard and assistive technology alike.

@@ -114,6 +114,7 @@ impl Window {
         // Tasks woken (or spawned) by what just happened run to their next wait first; what they
         // change is laid out with the rest. They may wake or spawn more, so repeat (bounded).
         let mut command_ran = false;
+        let mut prepared = false;
         for _ in 0..16 {
             if self.app.shutdown.get() || self.w.closed.get() || self.app.closing.borrow().contains(&self.w.id) {
                 self.w.interaction.borrow_mut().after_update.clear();
@@ -143,6 +144,7 @@ impl Window {
                 && (!self.app.sched.has_ready() || self.app.sched.yielded())
                 && self.w.interaction.borrow().after_update.is_empty()
             {
+                prepared = true;
                 break;
             }
         }
@@ -152,8 +154,9 @@ impl Window {
             if self.sync_modals() {
                 self.settle_layout(at)?;
             }
-            self.settle_requested_focus(at)?;
-            self.reconcile_focus();
+            // Focus callbacks need another full preparation pass before their changes can be
+            // published. The exhausted budget cannot prove that work settled here.
+            prepared = !(self.settle_requested_focus(at)? || self.reconcile_focus());
         }
         let pending = std::mem::take(&mut self.w.interaction.borrow_mut().after_update);
         if let Some((command, source)) = pending.front() {
@@ -165,6 +168,14 @@ impl Window {
                 ),
                 source,
             );
+        }
+        if !prepared {
+            self.app.rt.diag(
+                &codes::LAYOUT_LOOP,
+                "window preparation is still pending after 16 rounds; focus or callback feedback needs more work".into(),
+                at,
+            );
+            return Err(());
         }
         // A caret that moved shows: the scroll containers around its field follow it.
         let reveal = self.w.interaction.borrow_mut().reveal.take();

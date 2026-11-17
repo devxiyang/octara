@@ -511,7 +511,7 @@ research-first hold above and narrows earlier D/E proposals; do not run a parall
       separate source annotations from explicit content scope, replace component/component_keyed
       without aliases, migrate callers/CLI/skill. Verify multiple instances, provider boundaries,
       cleanup, hot reload and diagnostic origins; commit independently.
-- [ ] **3 — Execution stages.** Audit measure/feedback/publish permissions; fix demonstrated
+- [x] **3 — Execution stages.** Audit measure/feedback/publish permissions; fix demonstrated
       crossings using internal capabilities, retain sound paths. Verify retries, cross-window
       convergence, failure and user callbacks; commit code/evidence as appropriate.
 - [ ] **4 — Composition library and public surface.** Reuse shared interaction mechanisms,
@@ -539,3 +539,13 @@ also passed in the focused run. CLI skill export regenerated; the workspace test
 and start-here doctests. Old component construction APIs and macro are removed, with no aliases.
 The new scope path intentionally does not recover old component-path snapshots; cold-start at
 this migration. No native OS validation was performed for this API-only stage.
+
+Stage 3 evidence (2026-11-17): reproduced focus-budget publication, pure action invocation and
+measurement-time Signal writes before fixing them. Full workspace regression passed **950 tests,
+0 failed, 3 ignored**. Independent review then added no-window invoke rejection and successful
+shutdown snapshot retirement; the final core suite passed **583 tests, 0 failed, 1 ignored**,
+including five action-permission, four focus-budget and seven provider regressions. Final
+workspace all-targets Clippy, format/diff and layer checks passed; teaching export regenerated.
+Retained layout-cache downcasts, empty/busy native queries, shutdown idempotency and resumable
+cleanup remain covered. See [execution-stage audit](research/execution-stage-audit.md).
+These are headless/native-protocol checks; no physical OS window or candidate popup was verified.
