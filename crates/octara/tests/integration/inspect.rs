@@ -37,6 +37,26 @@ fn a_snapshot_is_the_semantic_tree() {
 }
 
 #[test]
+fn consistency_inspection_samples_targets_after_selection_work() {
+    let mut window = Window::headless(|| col().size_full().selectable().child(text("中文 hello").id("text")).into());
+    window.select(("text", 0), ("text", 6)).unwrap();
+    assert_eq!(window.inspect().selection.as_deref(), Some("中文"));
+    window.app().set_check_consistency(true);
+    // Consistency rebuilds intentionally retire document selection.
+    let _ = window.selected_text();
+    for _ in 0..2 {
+        let snapshot = window.inspect();
+        assert_eq!(snapshot.selection, None);
+        assert_eq!(snapshot.target, window.target());
+        assert_eq!(snapshot.windows.iter().find(|w| w.window == snapshot.window).unwrap().target, snapshot.target);
+        let text = snapshot.find("text").unwrap();
+        assert_eq!(text.name.as_deref(), Some("中文 hello"));
+        assert!(!text.target.is_empty());
+    }
+    assert!(window.app().diagnostics().is_empty());
+}
+
+#[test]
 fn old_nodes_default_new_form_semantics_to_absent() {
     let node: inspect::Node = serde_json::from_str(r#"{"role":"text_input","bounds":[0,0,240,32]}"#).unwrap();
     assert_eq!((node.required, node.invalid, node.description.as_deref()), (None, None, None));

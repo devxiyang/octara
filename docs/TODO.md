@@ -88,10 +88,13 @@ the skill are unchanged. No real-window/OS validation was performed in A3.
       reject stale replaced targets. Enforce the distinction at kernel structural-write entrances.
 - [ ] **B3 — Opaque composition.** Hide View's mount representation and converge structural updates on one private path.
       Validate illegal composition, keyed reorder, editor lifetime and link replacement.
-      Also close the observed Inspector/read boundary: `inspect()` currently holds a Kernel
-      borrow while selection extraction can enter a consistency-check rebuild. Verify that
-      inspection in consistency mode does not panic. That mode deliberately rebuilds identities;
-      target-continuity tests must exercise ordinary retained execution separately.
+      **B3a completed:** Inspector selection extraction now finishes before borrowing the tree
+      and sampling targets, so consistency rebuilds cannot conflict with that borrow or mix
+      pre/post-rebuild identities in one snapshot. Regression checks Chinese selection in ordinary
+      mode, then repeated consistency-mode snapshots and agreement with the current window target.
+      That mode deliberately rebuilds identities and clears document selection; target-continuity
+      tests exercise ordinary retained execution separately. Opaque View and structural updates
+      remain unfinished B3 work. No real-window validation in this slice.
 
 B1 evidence (2026-11-17, Rust 1.100.0): only `Content::Box(Vec<View>)` stores application
 children; the shared `El.children` field is removed. Atomic builders reject child conversion

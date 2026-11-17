@@ -1222,6 +1222,10 @@ impl Window {
     /// The semantic tree and app state as the Inspector protocol gives them (see
     /// [`crate::inspect`]).
     pub fn inspect(&self) -> crate::inspect::Snapshot {
+        // Selection extraction may mount virtual rows and trigger a consistency rebuild.
+        // Complete that work before borrowing the tree or sampling any allocation targets.
+        // Failed apps must not execute selection extraction.
+        let selection = (!self.app.failed.get()).then(|| self.selected_text()).flatten().map(|t| t.chars().take(2000).collect());
         let (w, h) = self.size();
         let k = self.w.kernel.borrow();
         let focus = self.w.interaction.borrow().focused.filter(|n| k.is_alive(*n)).and_then(|n| k.test_id(n).map(str::to_owned));
@@ -1242,8 +1246,7 @@ impl Window {
             pending: self.app().pending().len(),
             window: self.w.id.number(),
             target: crate::inspect::window_target(&k),
-            // Selection extraction may build unmounted virtual rows; never execute it after failure.
-            selection: (!self.app.failed.get()).then(|| self.selected_text()).flatten().map(|t| t.chars().take(2000).collect()),
+            selection,
             asks: self.asks().into_iter().map(|(id, ask)| crate::inspect::AskInfo { id, ask }).collect(),
             windows: self
                 .app()
