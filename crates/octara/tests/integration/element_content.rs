@@ -18,7 +18,7 @@ fn images_cannot_replace_another_content_kind() {
     rejected("img", || web_view("about:blank").img(&image));
     rejected("img", || el().child("Caption").img(&image));
     // A structural declaration is still content even when it currently produces no nodes.
-    rejected("img", || el().child(View::Empty).img(&image));
+    rejected("img", || el().child(View::empty()).img(&image));
 }
 
 #[test]

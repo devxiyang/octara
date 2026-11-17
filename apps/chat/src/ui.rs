@@ -99,7 +99,7 @@ fn desktop_navigation(width: Signal<f32>) -> View {
             width.set((width.get() + by).clamp(180.0, 420.0));
             true
         });
-    View::Fragment(vec![el().h_full().flex_shrink_0().style_with(move |s| s.w(width.get())).child(sidebar()).into(), divider.into()])
+    View::fragment(vec![el().h_full().flex_shrink_0().style_with(move |s| s.w(width.get())).child(sidebar()).into(), divider.into()])
 }
 
 /// What the app's commands do, and its menu bar.
@@ -459,7 +459,7 @@ fn transcript(thread: ThreadId) -> View {
     let chat = chat();
     let messages = chat.messages.filter(move |m| m.thread == thread);
     let empty = messages.clone();
-    View::Fragment(vec![
+    View::fragment(vec![
         col()
             .id("transcript")
             .size_full()

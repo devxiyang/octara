@@ -67,18 +67,48 @@ impl ScopedHandler {
 pub(crate) type OnDrop = Rc<dyn Fn(&[std::path::PathBuf])>;
 
 /// A one-shot description of UI, consumed when mounted.
-pub enum View {
+/// Use element conversion, [`View::empty`] or [`View::fragment`] to compose descriptions.
+/// The representation and mounting callbacks are private.
+///
+/// ```compile_fail
+/// use octara::view::View;
+/// let view = View::empty();
+/// let representation = view.0;
+/// ```
+///
+/// ```compile_fail
+/// use octara::view::Mount;
+/// ```
+pub struct View(ViewKind);
+
+enum ViewKind {
     El(Box<El>),
     Fragment(Vec<View>),
     Empty,
-    /// Structure (show, components, lists): mounts itself.
-    Dyn(Mount),
+    Dyn(MountFn),
 }
 
-/// How a structural view mounts itself (opaque).
-pub struct Mount(pub(crate) MountFn);
+type MountFn = Box<dyn FnOnce(&Parent, &Slots)>;
 
-pub(crate) type MountFn = Box<dyn FnOnce(&Parent, &Slots)>;
+impl View {
+    /// An empty UI description.
+    pub fn empty() -> Self {
+        Self(ViewKind::Empty)
+    }
+
+    /// Sibling views without an extra container or layout box.
+    pub fn fragment(views: impl IntoIterator<Item = View>) -> Self {
+        Self(ViewKind::Fragment(views.into_iter().collect()))
+    }
+
+    fn element(element: Box<El>) -> Self {
+        Self(ViewKind::El(element))
+    }
+
+    fn dynamic(mount: MountFn) -> Self {
+        Self(ViewKind::Dyn(mount))
+    }
+}
 
 /// What `.child(..)` takes (as GPUI's `IntoElement`): an element, a view, or a string, which is
 /// shown as text.
@@ -122,7 +152,7 @@ impl Children for View {
 }
 impl Children for El {
     fn into_views(self) -> Vec<View> {
-        vec![View::El(Box::new(self))]
+        vec![View::element(Box::new(self))]
     }
 }
 impl Children for () {
@@ -224,16 +254,16 @@ pub(crate) fn count_offset(parent: &Parent, count: &Rc<Cell<usize>>) -> usize {
 }
 
 pub(crate) fn mount(view: View, parent: &Parent, target: &Slots) {
-    match view {
-        View::El(e) => {
+    match view.0 {
+        ViewKind::El(e) => {
             let node = build_el(*e);
             let index = offset(&parent.root, &Target::Slots(target)).expect("region in parent") + flat_len(target);
             crate::app::window().kernel.borrow_mut().insert_child(parent.node, node, index);
             target.borrow_mut().push(Slot::Node);
         }
-        View::Fragment(vs) => vs.into_iter().for_each(|v| mount(v, parent, target)),
-        View::Empty => {}
-        View::Dyn(Mount(f)) => f(parent, target),
+        ViewKind::Fragment(vs) => vs.into_iter().for_each(|v| mount(v, parent, target)),
+        ViewKind::Empty => {}
+        ViewKind::Dyn(f) => f(parent, target),
     }
 }
 
@@ -255,7 +285,7 @@ pub fn component(name: &'static str, f: impl FnOnce() -> View + 'static) -> View
 
 fn component_at(at: &'static Location<'static>, name: &'static str, key: Option<String>, f: impl FnOnce() -> View + 'static) -> View {
     let made = building();
-    View::Dyn(Mount(Box::new(move |parent, target| {
+    View::dynamic(Box::new(move |parent, target| {
         let s = rt(|rt| {
             let cur = rt.current_scope().expect("component outside a scope");
             let path = rt.scope_path(cur);
@@ -287,7 +317,7 @@ fn component_at(at: &'static Location<'static>, name: &'static str, key: Option<
             rt.create_scope(Some(cur), &seg)
         });
         rt(|rt| rt.with_frame(Ctx::Build, None, Some(Some(s)), || mount(as_part_of(made, f), parent, target)));
-    })))
+    }))
 }
 
 // ---- the component being built (`#[component]`) ----
@@ -336,7 +366,7 @@ pub(crate) fn as_part_of<R>(component: Option<Component>, f: impl FnOnce() -> R)
 /// Shows `then` while `cond` holds; the branch is a scope, so its state lives while it is shown.
 #[track_caller]
 pub fn show(cond: impl Fn() -> bool + 'static, then: impl Fn() -> View + 'static) -> View {
-    show_else_at(Location::caller(), cond, then, || View::Empty)
+    show_else_at(Location::caller(), cond, then, View::empty)
 }
 
 #[track_caller]
@@ -370,7 +400,7 @@ fn switch_at<K: PartialEq + 'static>(
     view: impl Fn(&K) -> View + 'static,
 ) -> View {
     let made = building();
-    View::Dyn(Mount(Box::new(move |parent, target| {
+    View::dynamic(Box::new(move |parent, target| {
         let region = Slots::default();
         target.borrow_mut().push(Slot::Region(region.clone()));
         let (owner, base) = rt(|rt| {
@@ -406,7 +436,7 @@ fn switch_at<K: PartialEq + 'static>(
             });
             *last.borrow_mut() = Some(k);
         });
-    })))
+    }))
 }
 
 /// The window size `(width, height)`, tracked: a binding that reads it reruns on resize.

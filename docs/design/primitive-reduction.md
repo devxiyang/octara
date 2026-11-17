@@ -50,8 +50,8 @@ names as well as intentional application APIs. Prefer an explicit curated list.
 - `Building`/`enter_component` are already doc-hidden macro plumbing. Generated code in another
   crate must still be able to call its support entry. Move it behind a clearly internal public
   macro-support path if useful; simply making it crate-private would break the macro.
-- `Mount` is opaque but appears in public `View::Dyn`. Hiding it requires encapsulating View's
-  representation and migrating callers; it is not a one-line visibility deletion.
+- B3b removed `Mount` and encapsulated View's representation. Callers now use element conversion,
+  `View::empty()` and `View::fragment(..)`; mounting closures are private.
 - `Prop` is already doc-hidden, but appears in the public IntoProp conversion signature.
   `TextContent` similarly participates in IntoText. Audit custom conversions before changing
   their visibility. Remove unnecessary default imports without claiming the types disappeared.

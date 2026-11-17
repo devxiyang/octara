@@ -369,7 +369,7 @@ pub struct El {
 
 impl From<El> for View {
     fn from(e: El) -> View {
-        View::El(Box::new(e))
+        View::element(Box::new(e))
     }
 }
 

@@ -132,7 +132,7 @@ fn blocks(doc: Rc<RefCell<Doc>>, source: Source, streaming: bool) -> View {
     if streaming {
         parts.push(el().w(0.0).h(0.0).live(Live::Polite).label(move || heard.get()).into());
     }
-    View::Fragment(parts)
+    View::fragment(parts)
 }
 
 /// The Markdown for a selection: the source of the blocks it touches, whole; the whole source

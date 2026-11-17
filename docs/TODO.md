@@ -95,6 +95,15 @@ the skill are unchanged. No real-window/OS validation was performed in A3.
       That mode deliberately rebuilds identities and clears document selection; target-continuity
       tests exercise ordinary retained execution separately. Opaque View and structural updates
       remain unfinished B3 work. No real-window validation in this slice.
+      **B3b implemented:** View is now an opaque description; its enum and the public Mount
+      wrapper are removed. Use element conversion, `View::empty()` and `View::fragment(..)`.
+      Chat, Markdown, system prompts and content tests are migrated with no compatibility
+      aliases. Compile-fail doctests guard private representation and removal of Mount.
+      Ordinary mounting and list reconciliation still have distinct structural write call
+      sites; unifying those remains B3c. No real-window validation in B3b.
+      B3b validation: 890 workspace tests passed, 0 failed, 3 existing ignored doctests;
+      all-targets compilation/Clippy, strict core rustdoc, formatting, diff/layer checks and
+      CLI lookup of `View::fragment` passed. Existing keyed-list/editor and Chat regressions pass.
 
 B1 evidence (2026-11-17, Rust 1.100.0): only `Content::Box(Vec<View>)` stores application
 children; the shared `El.children` field is removed. Atomic builders reject child conversion

@@ -1,6 +1,6 @@
 //! Keyed rows from ordinary snapshots or incremental collections, with shared row ownership.
 
-use super::{Mount, Parent, Slot, Slots, View, build_el, col, count_offset};
+use super::{Parent, Slot, Slots, View, ViewKind, build_el, col, count_offset};
 use crate::diagnostics as codes;
 use crate::kernel::NodeId;
 use crate::reactive::graph::{Ctx, ReadSignal, ScopeId, Signal, memo, memo_with, rt, untrack};
@@ -149,8 +149,8 @@ impl<K: Eq + Hash + Clone + Display + 'static, T: Clone + 'static> Rows<K, T> {
                     },
                     |_, _| false,
                 );
-                match (self.row)(key, item) {
-                    View::El(e) => build_el(*e),
+                match (self.row)(key, item).0 {
+                    ViewKind::El(e) => build_el(*e),
                     _ => {
                         rt.diag(&codes::EACH_ROW_NOT_ELEMENT, "a list row must be one element".into(), self.at);
                         build_el(col())
@@ -226,7 +226,7 @@ where
     let at = Location::caller();
     let made = super::building();
     let row = move |k: &K, t: ReadSignal<T>| super::as_part_of(made, || row(k, t));
-    View::Dyn(Mount(Box::new(move |parent: &Parent, target: &Slots| {
+    View::dynamic(Box::new(move |parent: &Parent, target: &Slots| {
         let count: Rc<Cell<usize>> = Rc::default();
         target.borrow_mut().push(Slot::Count(count.clone()));
         let (owner, base) = rt(|rt| {
@@ -303,7 +303,7 @@ where
                 })
             });
         });
-    })))
+    }))
 }
 
 // ---- virtualization ----
@@ -397,7 +397,7 @@ where
     let at = Location::caller();
     let made = super::building();
     let row = move |k: &K, t: ReadSignal<T>| super::as_part_of(made, || row(k, t));
-    View::Dyn(Mount(Box::new(move |parent: &Parent, target: &Slots| {
+    View::dynamic(Box::new(move |parent: &Parent, target: &Slots| {
         let count: Rc<Cell<usize>> = Rc::default();
         target.borrow_mut().push(Slot::Count(count.clone()));
         let (owner, base) = rt(|rt| {
@@ -793,5 +793,5 @@ where
                 })
             });
         });
-    })))
+    }))
 }
