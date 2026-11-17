@@ -182,7 +182,7 @@ codes! {
     // ---- view ----
     ELEMENT_CONTENT: Error, View, "docs/design/ui-primitives.md#element-content",
         "An element-specific method was called on incompatible content (this panics).",
-        cause: "An element has one content kind. Input configuration requires text_input(), native configuration requires native_view() or web_view(), and image fitting follows img(). Use a parent with children to compose different content kinds. The builder rejects the call before mounting; the panic names the method and points to its caller.";
+        cause: "An element has one content kind. Only containers (el, row, col) accept child/children, even when the supplied iterator is empty. img() requires an empty box or an existing image. Input configuration requires text_input(), native configuration requires native_view() or web_view(), and image fitting follows img(). Compose atomic content inside an external container. The builder rejects the call before mounting; the panic names the method and points to its caller.";
     COMMAND_UNHANDLED: Error, View, "docs/design/input.md#deferred-commands",
         "A deferred command has no handler on the restored focus path.",
         cause: "The command ran after pending updates and focus restoration, but neither the focused control, its ancestors, built-ins nor app-level handlers handled it. Disable unavailable menu actions or register the command where it is used.";

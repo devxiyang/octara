@@ -78,14 +78,32 @@ Canvas, multi-window, Chat and rendering tests passed. All-targets compilation/C
 library docs, no-default-features core build and format/diff/layer checks passed. Public APIs and
 the skill are unchanged. No real-window/OS validation was performed in A3.
 
-### B. Document and content composition (next)
+### B. Document and content composition (in progress)
 
-- [ ] Separate application container children from atomic text/input/image/canvas/native
-      content. Keep ordinary Rust builders and shared styling; avoid generic state explosions.
-- [ ] Give rich text explicit ownership of runs and internal links, separate from application
-      children. Preserve identity where continuity is known; reject stale replaced targets.
-- [ ] Hide View's mount representation and converge structural updates on one private path.
+- [x] **B1 — Builder content ownership.** Separate application container children from atomic
+      text/input/image/icon/canvas/native content. Keep ordinary Rust builders and shared styling;
+      avoid generic state explosions. Reject incompatible composition before conversion/mount.
+- [ ] **B2 — Internal text structure.** Give rich text explicit ownership of runs and internal
+      links, separate from application children. Preserve identity where continuity is known;
+      reject stale replaced targets. Enforce the distinction at kernel structural-write entrances.
+- [ ] **B3 — Opaque composition.** Hide View's mount representation and converge structural updates on one private path.
       Validate illegal composition, keyed reorder, editor lifetime and link replacement.
+
+B1 evidence (2026-11-17, Rust 1.100.0): only `Content::Box(Vec<View>)` stores application
+children; the shared `El.children` field is removed. Atomic builders reject child conversion
+and iterator consumption, including empty iterators. Image replacement rejects occupied boxes
+and declared empty views; valid image replacement preserves fit and semantics, with its caption
+composed by an external container. No new public types, traits or compatibility paths were added.
+Rune's ordinary El methods and Exact's separate content/measurement capabilities were checked
+against the recorded local reference sources; their broader child acceptance is not copied.
+
+Full workspace regression: **880 passed, 0 failed, 3 existing ignored doctests**. The content
+tests cover every atomic builder and the valid external image/caption composition. Existing
+dynamic lists, rich links, editing, overlays, native content, Chat and rendering tests passed.
+Workspace all-targets Clippy, strict library rustdoc, no-default-features core build, formatting,
+diff/layer checks, CLI vocab/diagnostic lookup and generated skill freshness passed. No real
+OS/window validation was performed. Kernel child ownership/validation and opaque View remain
+B2/B3 work, not claimed complete by the builder invariant.
 
 ### C. Editing, geometry and semantic facts
 

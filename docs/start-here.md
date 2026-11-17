@@ -133,7 +133,10 @@ assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 - Each element has one content kind. Input settings require `text_input()`; native settings
   require `native_view(..)` or `web_view(..)`. For images, write
   `el().img(&image).object_fit(ObjectFit::Contain)` in that order. Compose different content
-  with children; incompatible content-specific methods panic with `ELEMENT_CONTENT`.
+  inside an `el()` / `row()` / `col()` container. Text, inputs, images, icons, Canvas and native
+  views reject `.child(..)` / `.children(..)`; `.img(..)` also rejects a box with declared children.
+  Use an external container for captions, badges and input affixes. Incompatible calls panic
+  with `ELEMENT_CONTENT` before mounting.
 - Rich text is one `text` with styled runs:
   `text(rich().text("Run ").code("cargo test").text(" or read ").link("the guide", url))`, with
   `bold`, `italic`, `styled(s, |s| s.strike().color(Token::Danger))`. A link is an element of

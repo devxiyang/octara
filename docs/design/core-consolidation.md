@@ -370,6 +370,11 @@ GPU captures. Style evidence: `/tmp/octara-style-order-live-20261115`; form evid
 
 ## Fifth-round exclusive element content
 
+Historical evidence below describes the 2026-11-15 slice. The subsequent `init` B1 redesign
+restricts application children to containers and img to empty boxes/existing images; see
+[current element content](ui-primitives.md#element-content). Image-owned children are no longer
+supported, and the replacement regression now composes its caption in an external container.
+
 `El` now owns one private Content enum (box, text, input, image, icon, canvas or native view),
 instead of an independent Kind plus optional competing payloads. Kind is derived at mount.
 Input settings, image fit, icon stroke width and native slot/props/event callback live only

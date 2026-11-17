@@ -60,8 +60,10 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
   for the accepted value; input/numeric arguments remain proposed values, and setters can reject
   or transform them. Submit/blur can notify invalid drafts: validate before saving.
 - Each element has one content kind. Use input settings on `text_input()`, native settings on
-  `native_view()` / `web_view()`, and image fit after `.img(..)`. Combine different content with
-  children; incompatible content-specific methods panic with `ELEMENT_CONTENT`.
+  `native_view()` / `web_view()`, and image fit after `.img(..)`. Only containers (`el`, `row`,
+  `col`) accept `.child(..)` / `.children(..)`; `.img(..)` requires an empty box or an existing
+  image. Put captions, badges and input affixes in an external container around atomic content.
+  Incompatible calls panic with `ELEMENT_CONTENT` before mounting.
 - Give interactive and checked elements a test id (`.id("save")`); tests and agents drive and
   read the app by it (`app.tap("save")`, `app.kernel().text_of("total")`).
 - Configure the initial theme, fonts and target conventions with `AppConfig` before

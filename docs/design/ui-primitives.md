@@ -63,14 +63,20 @@ image fit and icon stroke width live with their respective content.
 Use `text_input().rows(..).secure()` for input configuration, `native_view(..).slot(..).props(..)`
 for native configuration, `icon(..).stroke_width(..)` for icons, and
 `el().img(&image).object_fit(..)` for images. A second `.img(..)` replaces an existing image and
-keeps its fit. It cannot overwrite text, input, icon, canvas or native content. Compose different
-content with parent/child elements. Children, styles, handlers and semantics remain shared;
-`.value(..)` still sets accessible string values on non-input nodes.
+keeps its fit. It cannot overwrite text, input, icon, canvas, native content or a box with declared
+children. Only the box content owns application children; text/input/image/icon/canvas/native
+content cannot hold them. Put a caption, badge or input affix alongside the atomic content inside
+an external container. Styles, handlers and semantics remain shared; `.value(..)` still sets
+accessible string values on non-input nodes. Anchored overlays remain separate window-layer
+content, so atomic elements can still own tooltips and popovers.
 
 An incompatible content-specific call panics with `ELEMENT_CONTENT` at the builder caller,
 before mounting or running its binding. Builders can be assembled without a current App, so
 this failure is reported directly in the panic, not retained in `App::diagnostics()`. There is
 no ignored configuration, deferred invalid-content variant or compatibility conversion.
+`child` validates before converting its argument, and `children` before consuming its iterator,
+including an empty iterator. A declared child counts even if it currently mounts no nodes;
+`.img(..)` cannot silently discard an empty/dynamic child declaration.
 
 ## 4. Style
 
@@ -78,7 +84,7 @@ Aimed at desktop and mobile, not web standards: **method names follow GPUI** (it
 For layout semantics see [layout](layout.md).
 
 - Containers: `el()` / `row()` / `col()` / `spacer()`, constructors with no arguments; `.child(..)` (an element, view or string), `.children(iter)`;
-  every element is a flex container, boxes do not shrink by default, and text wraps by default.
+  only containers accept application children; boxes do not shrink by default, and text wraps by default.
 - Method names as in GPUI: `p_4`, `gap_2`, `items_center`, `flex_1`, `flex_grow`, `flex_shrink_0`, `w_full`, `size_full`, `rounded_md`,
   `text_sm`, `line_height`, `whitespace_nowrap`, `truncate`, `text_ellipsis`, `line_clamp`, `overflow_y_scroll`;
   half steps and fractions: `p_0p5`, `w_1_2`; `.map(f)`, `.when(cond, f)`, `.when_some(opt, f)` (GPUI's FluentBuilder).

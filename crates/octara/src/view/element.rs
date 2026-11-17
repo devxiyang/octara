@@ -249,7 +249,7 @@ struct Overlay {
 // ---- elements ----
 
 enum Content {
-    Box,
+    Box(Vec<View>),
     Text(TextContent),
     Input(Input),
     Image { image: crate::image::Image, fit: crate::image::ObjectFit },
@@ -275,6 +275,14 @@ struct Native {
 }
 
 impl Content {
+    #[track_caller]
+    fn children_mut(&mut self, method: &str) -> &mut Vec<View> {
+        match self {
+            Self::Box(children) => children,
+            _ => wrong_content(method, "a container: el(), row() or col()"),
+        }
+    }
+
     fn kind(&self) -> Kind {
         match self {
             Self::Text(_) => Kind::Text,
@@ -308,7 +316,9 @@ fn wrong_content(method: &str, expected: &str) -> ! {
     panic!("{code}: .{method}() requires {expected}")
 }
 
-/// An element with one content kind and shared styles, semantics, handlers and children.
+/// An element with one content kind and shared styles, semantics and handlers.
+/// Only containers (`el`, `row`, `col`) accept application children; compose atomic content
+/// such as text, inputs and images inside an external container.
 /// Content-specific methods panic with `ELEMENT_CONTENT` on a mismatched kind; for example,
 /// use `text_input().rows(..)` and `el().img(..).object_fit(..)`.
 pub struct El {
@@ -355,7 +365,6 @@ pub struct El {
     overlays: Vec<Overlay>,
     anchor: Option<(NodeId, Placement)>,
     overlay_owner: Option<NodeId>,
-    pub(crate) children: Vec<View>,
 }
 
 impl From<El> for View {
@@ -408,21 +417,18 @@ fn new_el(content: Content, at: &'static Location<'static>) -> El {
         overlays: Vec::new(),
         anchor: None,
         overlay_owner: None,
-        children: Vec::new(),
     }
 }
 
 fn boxed(children: impl Children, at: &'static Location<'static>) -> El {
-    let mut e = new_el(Content::Box, at);
-    e.children = children.into_views();
-    e
+    new_el(Content::Box(children.into_views()), at)
 }
 
 /// A box: a flex container laying children out in a row until told otherwise (Rune's `el()`).
 /// Add children with `.child(..)` / `.children(..)`.
 #[track_caller]
 pub fn el() -> El {
-    new_el(Content::Box, Location::caller())
+    new_el(Content::Box(Vec::new()), Location::caller())
 }
 
 /// A horizontal stack (Rune `row()`, SwiftUI `HStack`, Compose `Row`).
@@ -949,14 +955,16 @@ impl El {
     /// Shows `image` in the element, fitted by [`object_fit`](Self::object_fit) (stretched by
     /// default) and clipped to its corners. With only a width or a height, the other side follows
     /// the image's aspect ratio; with neither, the element takes the image's size. New pixels set
-    /// on the handle draw on the next frame without rerunning the view. Requires a plain box
-    /// or an existing image; use separate children to combine images with other content.
+    /// on the handle draw on the next frame without rerunning the view. Requires an empty box
+    /// or an existing image; put the image and other content inside an external container.
     #[track_caller]
     pub fn img(mut self, image: &crate::image::Image) -> Self {
         match &mut self.content {
-            Content::Box => self.content = Content::Image { image: image.clone(), fit: crate::image::ObjectFit::Fill },
+            Content::Box(children) if children.is_empty() => {
+                self.content = Content::Image { image: image.clone(), fit: crate::image::ObjectFit::Fill };
+            }
             Content::Image { image: current, .. } => *current = image.clone(),
-            _ => wrong_content("img", "a plain box or an existing image"),
+            _ => wrong_content("img", "an empty box or an existing image"),
         }
         self
     }
@@ -1058,19 +1066,19 @@ impl El {
         self
     }
 
-    /// Adds a child: an element, a view (`each(..)`, `show(..)`, a component), or a string,
-    /// shown as text (as in GPUI and Rune).
+    /// Adds a container child: an element, a view (`each(..)`, `show(..)`, a component), or a
+    /// string shown as text. Atomic content rejects this call with `ELEMENT_CONTENT`.
     #[track_caller]
     pub fn child(mut self, v: impl IntoElement) -> Self {
-        let v = v.into_view(Location::caller());
-        self.children.push(v);
+        self.content.children_mut("child").push(v.into_view(Location::caller()));
         self
     }
     /// Adds children from any iterator: `.children(items.iter().map(|i| ..))`.
+    /// Requires a container, even for an empty iterator; validates before consuming it.
     #[track_caller]
     pub fn children<C: IntoElement>(mut self, c: impl IntoIterator<Item = C>) -> Self {
         let at = Location::caller();
-        self.children.extend(c.into_iter().map(|v| v.into_view(at)));
+        self.content.children_mut("children").extend(c.into_iter().map(|v| v.into_view(at)));
         self
     }
 }
@@ -1117,7 +1125,7 @@ pub(crate) fn build_el(mut e: El) -> NodeId {
         }
         // Establish exactly one content kind before its bindings and layout styles.
         match &e.content {
-            Content::Box | Content::Text(_) => {}
+            Content::Box(_) | Content::Text(_) => {}
             Content::Input(input) => {
                 k.set_multiline(node, input.multiline);
                 if let Some((min, max)) = input.rows {
@@ -1194,6 +1202,7 @@ pub(crate) fn build_el(mut e: El) -> NodeId {
     if let Some(p) = e.test_id {
         bind(at, node, p, |k, n, v: &String| k.set_test_id(n, Some(v)));
     }
+    let mut children = Vec::new();
     match e.content {
         Content::Text(TextContent::Prop(p)) => bind(at, node, p, |k, n, v: &Rich| k.set_rich(n, v.as_str(), v.runs())),
         Content::Text(TextContent::Buffer(t)) => {
@@ -1246,7 +1255,8 @@ pub(crate) fn build_el(mut e: El) -> NodeId {
             }
         }
         Content::Canvas(draw) => mount_canvas(at, node, draw),
-        Content::Box | Content::Image { .. } | Content::Icon { .. } => {}
+        Content::Box(content) => children = content,
+        Content::Image { .. } | Content::Icon { .. } => {}
     }
     if let Some(p) = e.value {
         bind(at, node, p, |k, n, v: &String| k.set_value(n, v));
@@ -1347,7 +1357,7 @@ pub(crate) fn build_el(mut e: El) -> NodeId {
         u.kernel.borrow_mut().set_handler(node, kind, Some(HandlerId(id)));
     }
     let p = Parent { node, root: Slots::default() };
-    for c in e.children {
+    for c in children {
         mount(c, &p, &p.root);
     }
     for o in e.overlays {
