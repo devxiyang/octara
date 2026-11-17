@@ -228,14 +228,21 @@ validation was performed. B3 includes the separately recorded consistency-mode i
       user's request while away from the computer.
 - [ ] Finalize and implement external-value/IME arbitration (same-value write, rejection,
       normalization, explicit reset, composition completion/cancellation and late callbacks).
-      **C3 architecture review completed (not implementation):** see
+      **C3 architecture review completed; R1 implemented:** see
       [state-to-presentation review](design/editing-architecture-review.md), including a fresh
       review of A/B/C1/C2. Three temporary probes reproduced rejected-selection drift,
       normalized Unicode caret drift, and stale undo panicking after an external emoji value.
-      Probes were removed after recording evidence; no production fix is claimed.
-      - [ ] **R1:** one edit acceptance path and node-owned editing history; separate history
-            validity from typing coalescing. Delete pre-callback success history and per-route
-            SetValue/Undo reconciliation. Restore the three probes as passing regressions.
+      The probes are now permanent passing R1 regressions.
+      - [x] **R1:** one edit acceptance path and node-owned editing history. History validity
+            follows actual value writes, independently of typing coalescing. Deleted the
+            Window history map, fingerprints and pre-callback history commits. Typing, paste,
+            IME commit, semantic Input, AX SetValue and Undo/Redo reconcile after Signals flush.
+            Rejection preserves selection and redo; normalization maps Unicode selection and
+            retires history. Reentry, close/replacement, panic, secure and same-value cases
+            have headless coverage. No new public editing primitive.
+            Validation: **915 workspace tests passed, 0 failed, 3 existing ignored doctests**;
+            all-targets Clippy, format/diff, dependency layers and skill freshness passed.
+            The CLI resolves `EDIT_PENDING`. Real-window validation remains deferred.
       - [ ] **R2:** move persistent reveal/scroll writes from Field reads into existing
             settlement; geometry consumers become read-only, native current-document queries
             remain synchronous and non-reentrant.
@@ -243,7 +250,8 @@ validation was performed. B3 includes the separately recorded consistency-mode i
             then real-window qualification when the user is available.
       The review recommends retaining immediate different-value replacement, without adding a
       pending external value queue or reset primitive. This supersedes the earlier deferred-write
-      candidate as the recommended plan; policy and implementation remain clearly distinguished.
+      candidate; R1 retains immediate replacement. R2 geometry and R3 platform acceptance
+      remain separate, unfinished stages.
 
 ### D. Core composition and ui-kit
 

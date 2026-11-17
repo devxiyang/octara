@@ -12,6 +12,8 @@
 pub mod a11y;
 mod anim;
 mod edit;
+mod editor;
+pub(crate) use editor::EditKind;
 mod focus;
 mod issues;
 mod paint;
@@ -388,6 +390,7 @@ struct TextContent {
 #[derive(Default)]
 struct InputContent {
     value: String,
+    editing: editor::Editing,
     /// Display-only hint; never part of the editing document or its layout cache.
     placeholder: String,
     composition: Option<text_input::Composition>,
@@ -1454,6 +1457,11 @@ impl Kernel {
         let n = self.node_mut(id);
         match n.input_mut() {
             Some(i) => {
+                if !i.editing.pending() {
+                    i.selection = editor::map_selection(&i.value, value, i.selection);
+                    i.editing = editor::Editing::default();
+                    i.goal.set(None);
+                }
                 // A draft contains the whole displayed document. A newer app value retires
                 // it, so a subsequent input-method commit cannot restore the old document.
                 if i.composition.take().is_some() {

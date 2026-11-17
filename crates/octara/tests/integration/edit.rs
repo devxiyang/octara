@@ -726,3 +726,207 @@ fn an_inactive_window_shows_no_caret() {
     app.event(InputEvent::Active(true));
     assert!(caret(&app), "back: shown at once");
 }
+
+#[test]
+fn rejected_proposal_restores_selection_and_preserves_redo() {
+    let mut app = Window::headless(|| {
+        let v = state("value", || "abcd".to_owned());
+        let reject = state("reject", || false);
+        on_command("reject", move || reject.set(true));
+        on_command("accept", move || reject.set(false));
+        text_input()
+            .id("field")
+            .value(v)
+            .on_input(move |s| {
+                if !reject.get() {
+                    v.set(s);
+                }
+            })
+            .into()
+    });
+    app.tap("field").unwrap();
+    app.set_selection(4, 4);
+    app.type_text("!");
+    app.press_key("mod+z").unwrap();
+    app.set_selection(3, 1);
+    app.invoke("reject").unwrap();
+    app.type_text("X");
+    assert_eq!(value(&app), "abcd");
+    let field = app.text_field().unwrap();
+    assert_eq!(field.selection, 1..3);
+    assert!(field.reversed);
+    app.invoke("accept").unwrap();
+    app.press_key("mod+shift+z").unwrap();
+    assert_eq!(value(&app), "abcd!");
+}
+
+#[test]
+fn normalized_proposal_maps_unicode_selection_and_retires_history() {
+    let mut app = Window::headless(|| {
+        let v = state("value", || "ab".to_owned());
+        text_input().id("field").value(v).on_input(move |s| v.set(s.replace('!', ""))).into()
+    });
+    app.tap("field").unwrap();
+    app.set_selection(1, 1);
+    app.type_text("!😀");
+    assert_eq!(value(&app), "a😀b");
+    assert_eq!(selection(&app), 5..5);
+    app.press_key("mod+z").unwrap();
+    assert_eq!(value(&app), "a😀b");
+}
+
+#[test]
+fn external_value_after_caret_move_retires_history() {
+    let mut app = Window::headless(|| {
+        let v = state("value", || "a".to_owned());
+        on_command("external", move || v.set("😀".into()));
+        text_input().id("field").value(v).on_input(move |s| v.set(s)).into()
+    });
+    app.tap("field").unwrap();
+    app.press_key("end").unwrap();
+    app.type_text("b");
+    app.press_key("left").unwrap();
+    app.invoke("external").unwrap();
+    app.press_key("mod+z").unwrap();
+    assert_eq!(value(&app), "😀");
+    assert!(value(&app).is_char_boundary(selection(&app).start));
+}
+
+#[test]
+fn rejected_edits_share_selection_and_history_rules_across_input_routes() {
+    for route in ["typing", "paste", "native", "accessibility", "semantic", "replace", "no-handler"] {
+        let mut app = Window::headless(move || {
+            let input = text_input().id("field").value("abcd");
+            (if route == "no-handler" { input } else { input.on_input(|_| {}) }).into()
+        });
+        app.tap("field").unwrap();
+        app.set_selection(3, 1);
+        match route {
+            "typing" | "no-handler" => app.type_text("X"),
+            "paste" => {
+                app.app().run(|| write_to_clipboard("X"));
+                app.press_key("mod+v").unwrap();
+            }
+            "replace" => app.replace_text(1..3, "X"),
+            "semantic" => app.dispatch(Event::Input("field".into(), "X".into())).unwrap(),
+            "native" => {
+                let input = native_input(&app);
+                let mark = TextEdit::Mark { text: "你好".into(), selection: Some(6..6), replacement: None };
+                assert!(app.apply_text_edit(input.id, &input.document.unwrap(), &mark));
+                let composing = native_input(&app).document.unwrap();
+                assert!(app.apply_text_edit(input.id, &composing, &TextEdit::Unmark));
+            }
+            "accessibility" => {
+                let n = app.kernel().find("field").unwrap();
+                assert!(app.event(InputEvent::Accessibility {
+                    target: octara::kernel::a11y::a11y_id(n),
+                    action: accesskit::Action::SetValue,
+                    data: Some(accesskit::ActionData::Value("X".into())),
+                }));
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(value(&app), "abcd", "{route}");
+        let field = app.text_field().unwrap();
+        assert_eq!(field.selection, 1..3, "{route}");
+        assert!(field.reversed, "{route}");
+        assert!(field.composition.is_empty(), "{route}");
+        app.press_key("mod+z").unwrap();
+        assert_eq!(value(&app), "abcd");
+        assert!(app.app().diagnostics().is_empty());
+    }
+}
+
+#[test]
+fn rejected_undo_and_redo_leave_their_stacks_intact() {
+    let mut app = Window::headless(|| {
+        let v = state("value", || "abc".to_owned());
+        let reject = state("reject", || false);
+        on_command("reject", move || reject.set(true));
+        on_command("accept", move || reject.set(false));
+        text_input()
+            .id("field")
+            .value(v)
+            .on_input(move |s| {
+                if !reject.get() {
+                    v.set(s);
+                }
+            })
+            .into()
+    });
+    app.tap("field").unwrap();
+    app.set_selection(3, 3);
+    app.type_text("!");
+    app.invoke("reject").unwrap();
+    app.press_key("mod+z").unwrap();
+    assert_eq!(value(&app), "abc!");
+    assert_eq!(selection(&app), 4..4);
+    app.invoke("accept").unwrap();
+    app.press_key("mod+z").unwrap();
+    assert_eq!(value(&app), "abc");
+    app.invoke("reject").unwrap();
+    app.press_key("mod+shift+z").unwrap();
+    assert_eq!(value(&app), "abc");
+    assert_eq!(selection(&app), 3..3);
+    app.invoke("accept").unwrap();
+    app.press_key("mod+shift+z").unwrap();
+    assert_eq!(value(&app), "abc!");
+}
+
+#[test]
+fn edit_callback_may_close_or_replace_its_editor_without_finishing_on_a_new_owner() {
+    let mut closed = Window::headless(|| text_input().id("field").on_input(|_| App::current().close_window(current_window())).into());
+    closed.tap("field").unwrap();
+    closed.type_text("X");
+    assert!(closed.is_closed());
+
+    let mut app = Window::headless(|| {
+        let replaced = state("replaced", || false);
+        show_else(
+            move || replaced.get(),
+            || text_input().id("field").value("replacement").into(),
+            move || text_input().id("field").value("original").on_input(move |_| replaced.set(true)).into(),
+        )
+    });
+    app.tap("field").unwrap();
+    let old = native_input(&app);
+    app.type_text("X");
+    let replacement = app.kernel().find("field").unwrap();
+    assert_ne!(replacement, old.id);
+    app.dispatch(Event::Focus("field".into())).unwrap();
+    assert!(!app.apply_text_edit(old.id, &old.document.unwrap(), &TextEdit::Insert { text: "late".into(), replacement: None }));
+    app.press_key("mod+z").unwrap();
+    assert_eq!(value(&app), "replacement");
+    assert!(app.app().diagnostics().is_empty());
+}
+
+#[test]
+fn reentered_input_is_refused_without_overwriting_the_outer_proposal() {
+    use std::{cell::RefCell, rc::Rc};
+    let holder: Rc<RefCell<Option<Window>>> = Rc::default();
+    let captured = holder.clone();
+    let mut app = Window::headless(move || {
+        let v = state("value", String::new);
+        let captured = captured.clone();
+        text_input()
+            .id("field")
+            .value(v)
+            .on_input(move |s| {
+                let mut nested = captured.borrow().as_ref().unwrap().clone();
+                let frames = nested.frames_presented();
+                nested.type_text("nested");
+                assert_eq!(nested.frames_presented(), frames, "an unresolved edit cannot publish");
+                v.set(s);
+            })
+            .into()
+    });
+    *holder.borrow_mut() = Some(app.clone());
+    app.tap("field").unwrap();
+    app.type_text("outer");
+    assert_eq!(value(&app), "outer");
+    assert_eq!(selection(&app), 5..5);
+    let diagnostics = app.app().diagnostics();
+    assert_eq!(diagnostics.iter().filter(|d| d.code == "EDIT_PENDING").count(), 1);
+    holder.borrow_mut().take();
+    app.app().shutdown();
+}

@@ -317,6 +317,9 @@ fn enter_app_context<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
         if app.failed.get() {
             for window in app.windows.borrow().values() {
                 window.settled_generation.set(None);
+                if let Ok(mut kernel) = window.kernel.try_borrow_mut() {
+                    kernel.cancel_pending_edits();
+                }
             }
         }
     });
@@ -445,8 +448,8 @@ impl WindowState {
         if interaction.reveal.is_some_and(within) {
             interaction.reveal = None;
         }
-        interaction.edits.retain(|&target, _| !within(target));
         let held = interaction.pointer.retire(&within);
+        kernel.retire_editors(node);
         let changed = focused.is_some() || held.is_some();
         if let Some(target) = focused.filter(|&target| kernel.is_alive(target)) {
             kernel.set_preedit(target, "");
@@ -496,8 +499,6 @@ struct Interaction {
     pointer: pointer::PointerState,
     /// Open modals, outermost first.
     modals: Vec<focus::OpenModal>,
-    /// Text fields' editing history.
-    edits: rustc_hash::FxHashMap<NodeId, edit::EditState>,
     /// Test ids of the hovered and focused elements across a hot reload.
     reload: (Option<crate::kernel::Address>, Option<crate::kernel::Address>),
     /// Modal identities and their original focus targets across a hot reload.
@@ -1333,9 +1334,15 @@ impl Window {
             let h = self.handler_for(&ev)?;
             self.app.next_cause.set(cause);
             self.w.kernel.borrow_mut().set_cause(Some(cause));
+            if let Event::Input(id, value) = ev {
+                let node = self.w.kernel.borrow().find(&id).expect("handler target was validated");
+                let delivered = self.set_value_of(node, value);
+                self.settle_frame();
+                self.w.kernel.borrow_mut().set_cause(None);
+                return delivered.then_some(()).ok_or_else(|| "input target has an unresolved edit".into());
+            }
             h.run(&self.app.rt, |h| match (h, ev) {
                 (Handler::Press(f), _) | (Handler::Toggle(f), _) => f(),
-                (Handler::Input(f), Event::Input(_, v)) => f(v),
                 (Handler::NumericInput(f), Event::NumericInput(_, v)) => f(v),
                 _ => unreachable!("handler kind matches event kind"),
             });
@@ -1384,7 +1391,6 @@ impl Window {
                 i.hover_chain.clear();
                 i.pointer = pointer::PointerState::default();
                 i.modals.clear();
-                i.edits.clear();
             }
             if let Some(s) = self.w.root_scope.get() {
                 self.app.rt.set_reloading(true);

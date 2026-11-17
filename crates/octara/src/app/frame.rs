@@ -235,7 +235,14 @@ impl Window {
             if !self.feedback_active() || self.app.rt.has_pending() {
                 return Err(());
             }
-            self.w.kernel.borrow_mut().layout(self.size().0, self.size().1);
+            {
+                let mut kernel = self.w.kernel.borrow_mut();
+                if kernel.has_active_edit() {
+                    return Err(());
+                }
+                kernel.reconcile_edits();
+                kernel.layout(self.size().0, self.size().1);
+            }
             let changed = self.app.rt.with_frame(Ctx::Handler, None, Some(None), || self.sync_after_layout());
             if !self.feedback_active() {
                 return Err(());

@@ -180,6 +180,9 @@ codes! {
         "A retained row read a key absent from its current source (this panics).",
         cause: "Row inputs resolve the current collection even before view propagation. After removing the key or producing duplicate keys, the previous row value is not a valid fallback. Do not read a row after removing it; resolve optional data from the model instead.";
     // ---- view ----
+    EDIT_PENDING: Error, View, "docs/design/input.md#edit-acceptance",
+        "A field cannot accept another proposal before its current edit settles.",
+        cause: "An input callback reentered the same editor. Update its bound value in the callback; schedule a separate edit after this operation settles.";
     ELEMENT_CONTENT: Error, View, "docs/design/ui-primitives.md#element-content",
         "An operation is incompatible with an element's content or ownership (this panics).",
         cause: "Only containers accept application children; atomic content belongs inside an external container. img() requires an empty box or an existing image. Input/native/image configuration requires the matching content kind. Kernel structural writes enforce the same ownership: text owns its internal links, which cannot be independently created, moved or destroyed. Rich runs must be ordered, non-overlapping UTF-8 ranges. Calls are rejected before mutating structure or content; builder misuse is rejected before mounting.";

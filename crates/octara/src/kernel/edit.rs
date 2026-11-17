@@ -242,6 +242,7 @@ impl Kernel {
         let sel = (anchor, caret);
         let Some(i) = self.node_mut(id).input_mut() else { return };
         i.goal.set(None);
+        i.editing.selection_changed();
         if i.selection != sel {
             // A direct selection change ends the input method's draft without committing it.
             if i.composition.take().is_some() {
@@ -262,6 +263,7 @@ impl Kernel {
     pub fn set_secure(&mut self, id: NodeId, on: bool) {
         let Some(i) = self.node_mut(id).input_mut() else { return };
         if i.secure != on {
+            i.editing = super::editor::Editing::default();
             i.secure = on;
             i.clean.set(0);
             i.composition = None;

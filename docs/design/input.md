@@ -196,8 +196,9 @@ reports and discards the remaining queue so the window stays responsive.
   `on_submit`, `submit` is not handled and Enter falls through to `press`. Selection, composition and undo records are kept by the runtime per node.
   Hot reload restores named application state and focus, but currently rebuilds the text editor;
   its selection, composition and undo history are not carried over.
-- Each edit computes a new value and calls `on_input`; if the app does not adopt it (the value is unchanged), the selection is clamped to the new value's
-  range. Values written by the app take effect immediately; deferring those writes during composition remains open.
+- Each changed edit proposes a value through `on_input`; refusal restores the previous selection.
+  Acceptance, normalization and history are coordinated after binding settlement (see below).
+  Different values written by the app take effect immediately, including during composition.
 - Caret movement is by grapheme cluster, and word movement by Unicode word boundary (`unicode-segmentation`).
 - The model is the runtime's own (value, selection byte offsets, undo stack), not Parley's `PlainEditor`: the latter brings its own layout and font
   context, bypassing the kernel's `TextEngine` and paragraph cache. Caret geometry comes from `TextEngine::caret_stops` (Parley by cluster, the
@@ -214,6 +215,25 @@ reports and discards the remaining queue so the window stays responsive.
   rectangle; internally byte offsets are used, with a UTF-16 conversion provided for NSTextInputClient, UITextInput and TSF. The macOS shell bridges
   NSTextInputClient directly; the other desktop shells use winit composition and commit events.
 - Multi-line fields wrap, grow or scroll within row limits, and support visual-line movement and selection. Enter inserts a line break and Cmd/Ctrl+Enter submits; `.submit_on_enter()` reverses the default for a chat composer ([text input](text-input.md)).
+
+## Edit acceptance
+
+Input callbacks receive a proposal. Selection and undo/redo are finalized after the existing
+Signals flush, from the value the binding actually accepted. An unchanged binding rejects a
+changed proposal and restores its previous selection. A transformed value maps selection across
+unchanged prefix/suffix text and starts a new history boundary. Native edit delivery is distinct
+from business acceptance. Same-value external writes remain no-ops; different external values
+replace the draft and invalidate history immediately.
+
+`EDIT_PENDING` rejects a same-field edit reentered before the previous callback and binding
+settlement have completed. Update the bound model in the callback; schedule a separate input
+operation afterwards. A native edit with an unresolved predecessor returns false. No unresolved
+callback may publish a partial editor frame. Failure, retirement and closure discard temporary
+proposals without replaying application callbacks. This is per-editor coordination, not a
+transaction over arbitrary application state. Explicit selection changes cancel an unresolved
+proposal and retire its history; that selection takes precedence. Preedit/native updates cannot
+replace a pending proposal. Non-editor elements with an `on_input` handler remain ordinary
+semantic callbacks; they have no editing document or history to reconcile.
 
 ## Scrolling
 

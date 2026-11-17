@@ -1,6 +1,6 @@
-//! Text editing in text inputs, owned by the runtime: the app keeps writing `value` and
-//! handling `on_input(new)`; the selection, the composition and the undo history live here, per
-//! field. Carets move by grapheme clusters and Unicode words.
+//! Text input intents and application callbacks. The app writes `value` and handles
+//! `on_input(new)`; the Kernel's input node owns selection, composition and accepted history.
+//! Carets move by grapheme clusters and Unicode words.
 //!
 //! TargetPlatform text protocols (NSTextInputClient, UITextInput, InputConnection, TSF,
 //! text-input-v3) map onto [`App::text_field`], [`App::replace_text`], [`App::set_selection`]
@@ -10,88 +10,10 @@
 use super::behavior::Behavior;
 use super::pointer::{Modifiers, PointerEvent, PointerKind};
 use super::{Modality, TextDocument, TextEdit, Window};
-use crate::kernel::{HandlerKind, NodeId};
-use crate::view::Handler;
+use crate::diagnostics as codes;
+use crate::kernel::{EditKind as Kind, HandlerKind, NodeId};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
-
-/// The most undo steps a field keeps (Rune).
-const UNDO_LIMIT: usize = 128;
-
-/// One undo step: at byte `at`, `removed` was replaced by `inserted`; the selection
-/// `(anchor, caret)` before and after. Only the change is kept, so long texts cost their edits,
-/// not a copy per step.
-#[derive(Clone, PartialEq, Eq, Debug)]
-struct Step {
-    at: usize,
-    removed: String,
-    inserted: String,
-    before: (usize, usize),
-    after: (usize, usize),
-}
-
-impl Step {
-    /// The step from `old` to `new` (their common start and end left out).
-    fn between(old: &str, new: &str, before: (usize, usize), after: (usize, usize)) -> Step {
-        let mut p = old.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
-        while !old.is_char_boundary(p) || !new.is_char_boundary(p) {
-            p -= 1;
-        }
-        let max = old.len().min(new.len()) - p;
-        let mut q = old.bytes().rev().zip(new.bytes().rev()).take(max).take_while(|(a, b)| a == b).count();
-        while !old.is_char_boundary(old.len() - q) || !new.is_char_boundary(new.len() - q) {
-            q -= 1;
-        }
-        Step { at: p, removed: old[p..old.len() - q].to_owned(), inserted: new[p..new.len() - q].to_owned(), before, after }
-    }
-    /// `v` with this step undone (`back`) or done again.
-    fn apply(&self, v: &str, back: bool) -> String {
-        let (out, ins) = if back { (&self.inserted, &self.removed) } else { (&self.removed, &self.inserted) };
-        let end = (self.at + out.len()).min(v.len());
-        format!("{}{ins}{}", &v[..self.at.min(v.len())], &v[end..])
-    }
-    /// This step followed by `next` as one step, if `next` continues it (typing on, deleting
-    /// back or forward from where it stopped).
-    fn merge(&mut self, next: &Step) -> bool {
-        if next.removed.is_empty() && self.removed.is_empty() && next.at == self.at + self.inserted.len() {
-            self.inserted.push_str(&next.inserted);
-        } else if next.inserted.is_empty() && self.inserted.is_empty() && next.at + next.removed.len() == self.at {
-            self.removed.insert_str(0, &next.removed);
-            self.at = next.at;
-        } else if next.inserted.is_empty() && self.inserted.is_empty() && next.at == self.at {
-            self.removed.push_str(&next.removed);
-        } else {
-            return false;
-        }
-        self.after = next.after;
-        true
-    }
-}
-
-/// A fingerprint of a field's value: the history applies only to the value it left.
-fn fingerprint(v: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = rustc_hash::FxHasher::default();
-    v.hash(&mut h);
-    h.finish()
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Kind {
-    Insert,
-    Delete,
-    Other,
-}
-
-/// A field's editing history.
-#[derive(Default, Debug)]
-pub(crate) struct EditState {
-    undo: Vec<Step>,
-    redo: Vec<Step>,
-    /// The kind of the last edit (a run of typing or deleting merges into one step), the value
-    /// it left and the selection after it.
-    last: Option<(Kind, u64, (usize, usize))>,
-}
 
 /// The focused text field, as platform text protocols see it.
 #[derive(Clone, PartialEq, Debug)]
@@ -186,48 +108,36 @@ impl Window {
         Some((n, value, a, c))
     }
 
-    /// Writes an edit: the selection now, the new value through the field's `on_input`, and an
-    /// undo step (a run of typing or deleting is one step).
-    fn apply(&self, n: NodeId, value: String, anchor: usize, caret: usize, kind: Kind) {
-        let (old, a0, c0) = {
-            let k = self.w.kernel.borrow();
-            let (a, c) = k.selection(n);
-            (k.value(n).to_owned(), a, c)
-        };
-        // A secure field keeps no history.
-        let secure = self.w.kernel.borrow().is_secure(n);
-        if value != old && !secure {
-            let mut i = self.w.interaction.borrow_mut();
-            let st = i.edits.entry(n).or_default();
-            let step = Step::between(&old, &value, (a0, c0), (anchor, caret));
-            // Typing on from where the last edit of the same kind left off continues its step.
-            let continues =
-                st.last.is_some_and(|(k, h, sel)| k == kind && kind != Kind::Other && sel == (a0, c0) && h == fingerprint(&old));
-            if !(continues && st.undo.last_mut().is_some_and(|last| last.merge(&step))) {
-                st.undo.push(step);
-                if st.undo.len() > UNDO_LIMIT {
-                    st.undo.remove(0);
-                }
-            }
-            st.redo.clear();
-            st.last = Some((kind, fingerprint(&value), (anchor, caret)));
+    /// Propose an edit; selection and history are finalized only after bindings settle.
+    fn apply(&self, n: NodeId, value: String, anchor: usize, caret: usize, kind: Kind) -> bool {
+        if self.w.kernel.borrow().edit_pending(n) {
+            self.app.rt.diag(
+                &codes::EDIT_PENDING,
+                "the field already has an unresolved edit proposal".into(),
+                std::panic::Location::caller(),
+            );
+            return false;
         }
-        // Typing is direct manipulation: what it changes lands at once.
+        let notify = self.w.kernel.borrow_mut().begin_edit(n, &value, (anchor, caret), kind);
+        let Some(notify) = notify else { return false };
+        let _abandon = std::mem::DropGuard::new(self, |window| {
+            if std::thread::panicking() {
+                window.w.kernel.borrow_mut().cancel_edit(n);
+            }
+        });
         self.w.kernel.borrow_mut().set_instant(true);
         self.w.interaction.borrow_mut().reveal = Some(n);
-        self.w.kernel.borrow_mut().set_selection(n, anchor, caret);
-        if value != old {
+        if notify {
             self.run(n, &[HandlerKind::Input], Some(value));
         }
+        self.w.kernel.borrow_mut().finish_edit_callback(n);
+        true
     }
 
     /// Moves the caret (extending the selection with `extend`).
     fn select_field(&self, n: NodeId, anchor: usize, caret: usize) {
         self.w.kernel.borrow_mut().set_selection(n, anchor, caret);
         self.w.interaction.borrow_mut().reveal = Some(n);
-        if let Some(st) = self.w.interaction.borrow_mut().edits.get_mut(&n) {
-            st.last = None;
-        }
     }
 
     /// Text typed or committed into the focused field: replaces the selection.
@@ -236,11 +146,9 @@ impl Window {
         let document = self.w.kernel.borrow().text_document(n);
         if let Some(mut document) = document.filter(|d| d.composition.is_some()) {
             document.apply(&TextEdit::Insert { text: text.to_owned(), replacement: None });
-            self.w.kernel.borrow_mut().set_preedit(n, "");
             self.apply(n, document.value, document.anchor, document.caret, Kind::Other);
             return;
         }
-        self.w.kernel.borrow_mut().set_preedit(n, "");
         let (s, e) = (a.min(c), a.max(c));
         let new = format!("{}{text}{}", &value[..s], &value[e..]);
         let at = s + text.len();
@@ -250,7 +158,11 @@ impl Window {
             (k.is_secure(n) && k.touch()).then(|| new[..at].grapheme_indices(true).next_back().map(|(b, _)| b)).flatten()
         };
         self.apply(n, new, at, at, Kind::Insert);
-        if self.w.kernel.borrow().is_secure(n) {
+        let secure = {
+            let k = self.w.kernel.borrow();
+            k.is_alive(n) && k.is_secure(n)
+        };
+        if secure {
             self.w.kernel.borrow_mut().reveal_typed(n, reveal);
         }
     }
@@ -272,14 +184,7 @@ impl Window {
         let secure = k.is_secure(n);
         Some(match command {
             "edit.copy" | "edit.cut" => a != c && !secure,
-            "edit.undo" | "edit.redo" => {
-                let i = self.w.interaction.borrow();
-                let fresh = |st: &EditState| st.last.is_none_or(|(_, h, _)| h == fingerprint(&v));
-                !secure
-                    && i.edits
-                        .get(&n)
-                        .is_some_and(|st| fresh(st) && if command == "edit.undo" { !st.undo.is_empty() } else { !st.redo.is_empty() })
-            }
+            "edit.undo" | "edit.redo" => k.history_available(n, command == "edit.undo"),
             "edit.select_all" => !v.is_empty(),
             "edit.newline" => k.is_multiline(n),
             _ => true,
@@ -400,30 +305,9 @@ impl Window {
             }
             "edit.undo" | "edit.redo" => {
                 let undo = command == "edit.undo";
-                let done = {
-                    let mut i = self.w.interaction.borrow_mut();
-                    let st = i.edits.entry(n).or_default();
-                    // The app changed the value itself since: the history no longer applies.
-                    if st.last.is_some_and(|(_, h, _)| h != fingerprint(&v)) {
-                        *st = EditState::default();
-                    }
-                    let step = if undo { st.undo.pop() } else { st.redo.pop() };
-                    step.map(|step| {
-                        let value = step.apply(&v, undo);
-                        let sel = if undo { step.before } else { step.after };
-                        st.last = Some((Kind::Other, fingerprint(&value), sel));
-                        if undo {
-                            st.redo.push(step)
-                        } else {
-                            st.undo.push(step)
-                        }
-                        (value, sel)
-                    })
-                };
-                if let Some((value, (anchor, caret))) = done {
-                    self.w.kernel.borrow_mut().set_selection(n, anchor, caret);
-                    self.w.interaction.borrow_mut().reveal = Some(n);
-                    self.run(n, &[HandlerKind::Input], Some(value));
+                let proposal = self.w.kernel.borrow_mut().history_proposal(n, undo);
+                if let Some((value, (anchor, caret))) = proposal {
+                    self.apply(n, value, anchor, caret, if undo { Kind::Undo } else { Kind::Redo });
                 }
             }
             _ => return false,
@@ -488,7 +372,6 @@ impl Window {
             let Some((n, v, _, _)) = self.field() else { return };
             let s = crate::kernel::floor_boundary(&v, range.start);
             let e = crate::kernel::floor_boundary(&v, range.end.max(s));
-            self.w.kernel.borrow_mut().set_preedit(n, "");
             let at = s + text.len();
             self.apply(n, format!("{}{text}{}", &v[..s], &v[e..]), at, at, Kind::Insert);
         });
@@ -513,7 +396,7 @@ impl Window {
             let Some((id, ..)) = self.field() else { return };
             let mut document = {
                 let k = self.w.kernel.borrow();
-                if id != owner || k.is_secure(id) {
+                if id != owner || k.is_secure(id) || k.edit_pending(id) {
                     return;
                 }
                 let Some(document) = k.text_document(id) else { return };
@@ -527,8 +410,8 @@ impl Window {
             accepted = true;
             match edit {
                 TextEdit::Insert { .. } | TextEdit::Unmark if composing || matches!(edit, TextEdit::Insert { .. }) => {
-                    self.w.kernel.borrow_mut().set_composition(id, None);
-                    self.apply(id, document.value, document.anchor, document.caret, if composing { Kind::Other } else { Kind::Insert });
+                    accepted =
+                        self.apply(id, document.value, document.anchor, document.caret, if composing { Kind::Other } else { Kind::Insert });
                 }
                 _ => {
                     self.w.kernel.borrow_mut().set_composition(id, document.composition);
@@ -548,8 +431,12 @@ impl Window {
     pub(super) fn on_preedit(&mut self, text: &str, selection: Option<(usize, usize)>) {
         self.input_frame(|| {
             let Some((n, ..)) = self.field() else { return };
-            // No input method in a secure field.
-            if self.w.kernel.borrow().is_secure(n) {
+            // No input method in a secure field or over an unresolved edit.
+            let unavailable = {
+                let k = self.w.kernel.borrow();
+                k.is_secure(n) || k.edit_pending(n)
+            };
+            if unavailable {
                 return;
             }
             self.w.kernel.borrow_mut().set_preedit_selection(n, text, selection);
@@ -559,59 +446,88 @@ impl Window {
     /// A value set by assistive technology (or an agent) for `n`: through its `on_input`, with
     /// the caret at the end.
     pub(super) fn set_value_of(&self, n: NodeId, value: String) -> bool {
-        let handler = {
+        {
             let k = self.w.kernel.borrow();
-            if k.check_activation(n, self.top_modal()).is_err() {
+            if k.check_activation(n, self.top_modal()).is_err() || k.handler(n, HandlerKind::Input).is_none() {
                 return false;
             }
-            k.handler(n, HandlerKind::Input).and_then(|h| self.w.handlers.borrow().get(&h.0).cloned())
-        };
-        let Some(handler) = handler else { return false };
-        handler
-            .run(&self.app.rt, |handler| {
-                let Handler::Input(input) = handler else { return false };
-                self.set_modality(Modality::Keyboard);
-                let len = value.len();
-                self.w.kernel.borrow_mut().set_selection(n, len, len);
-                input(value);
-                true
-            })
-            .unwrap_or(false)
+        }
+        self.set_modality(Modality::Keyboard);
+        if self.w.kernel.borrow().kind(n) != crate::kernel::Kind::TextInput {
+            self.run(n, &[HandlerKind::Input], Some(value));
+            return true;
+        }
+        let len = value.len();
+        self.apply(n, value, len, len, Kind::Other)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Step, TextDocument, TextEdit, byte_offset, utf16_offset};
+    use super::{TextDocument, TextEdit, byte_offset, utf16_offset};
     use std::ops::Range;
 
     #[test]
-    fn steps_keep_only_the_change_and_round_trip() {
-        let old = "héllo wörld";
-        let new = "héllo, wörld";
-        let s = Step::between(old, new, (6, 6), (7, 7));
-        assert_eq!((s.at, s.removed.as_str(), s.inserted.as_str()), (6, "", ","), "the first difference");
-        let both = Step::between("aé", "aè", (0, 0), (0, 0));
-        assert_eq!((both.at, both.removed.as_str(), both.inserted.as_str()), (1, "é", "è"), "whole characters");
-        for (a, b) in [(old, new), (old, "héllo, wörld!"), ("", "abc"), ("abc", ""), ("aaa", "aaaa"), ("日本語", "日本")] {
-            let s = Step::between(a, b, (0, 0), (0, 0));
-            assert_eq!(s.apply(a, false), b);
-            assert_eq!(s.apply(b, true), a);
+    fn editor_history_follows_value_and_security_boundaries() {
+        use crate::prelude::*;
+
+        let mut window = Window::headless(|| {
+            let value = state("value", || "a".to_owned());
+            text_input().id("field").value(value).on_input(move |text| value.set(text)).into()
+        });
+        window.tap("field").unwrap();
+        window.set_selection(1, 1);
+        window.type_text("b");
+        let id = window.kernel().find("field").unwrap();
+        {
+            let mut kernel = window.w.kernel.borrow_mut();
+            assert!(kernel.history_available(id, true));
+            kernel.set_preedit(id, "ni");
+            kernel.set_value(id, "ab");
+            assert!(kernel.history_available(id, true), "same-value writes preserve history");
+            assert_eq!(kernel.preedit(id), "ni");
+            kernel.set_value(id, "😀");
+            assert!(!kernel.history_available(id, true));
+            assert!(kernel.preedit(id).is_empty());
+            kernel.set_secure(id, true);
         }
+        window.type_text("secret");
+        assert!(!window.w.kernel.borrow().history_available(id, true));
+        assert!(!window.w.kernel.borrow().edit_pending(id));
+        window.app().shutdown();
     }
 
     #[test]
-    fn runs_of_typing_and_deleting_merge() {
-        let mut typing = Step::between("ab", "abc", (2, 2), (3, 3));
-        assert!(typing.merge(&Step::between("abc", "abcd", (3, 3), (4, 4))));
-        assert_eq!((typing.at, typing.inserted.as_str(), typing.after), (2, "cd", (4, 4)));
-        let mut back = Step::between("abcd", "abc", (4, 4), (3, 3));
-        assert!(back.merge(&Step::between("abc", "ab", (3, 3), (2, 2))));
-        assert_eq!((back.at, back.removed.as_str()), (2, "cd"));
-        let mut forward = Step::between("abcd", "acd", (1, 1), (1, 1));
-        assert!(forward.merge(&Step::between("acd", "ad", (1, 1), (1, 1))));
-        assert_eq!((forward.at, forward.removed.as_str()), (1, "bc"));
-        assert!(!typing.merge(&Step::between("abcd", "xabcd", (0, 0), (1, 1))), "elsewhere: a new step");
+    fn failed_edit_callbacks_and_bindings_retire_proposals_without_publishing() {
+        use crate::prelude::*;
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        for fail_in_binding in [false, true] {
+            let mut window = Window::headless(move || {
+                let value = state("value", || "before".to_owned());
+                text_input()
+                    .id("field")
+                    .value(move || {
+                        let value = value.get();
+                        assert!(!fail_in_binding || value == "before", "binding failed");
+                        value
+                    })
+                    .on_input(move |text| {
+                        value.set(text);
+                        assert!(fail_in_binding, "callback failed");
+                    })
+                    .into()
+            });
+            window.tap("field").unwrap();
+            let id = window.kernel().find("field").unwrap();
+            let frames = window.frames_presented();
+            assert!(catch_unwind(AssertUnwindSafe(|| window.type_text("X"))).is_err());
+            assert!(window.app().is_failed());
+            assert!(!window.w.kernel.borrow().edit_pending(id));
+            assert!(!window.w.kernel.borrow().history_available(id, true));
+            assert_eq!(window.frames_presented(), frames);
+            window.app().shutdown();
+        }
     }
 
     #[test]
