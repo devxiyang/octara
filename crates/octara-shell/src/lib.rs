@@ -89,22 +89,26 @@ impl From<accesskit_winit::Event> for ShellEvent {
 const LINE: f32 = 40.0;
 
 /// Options for [`run_with`].
-#[derive(Clone, Debug)]
 pub struct Options {
     pub title: String,
     /// Initial size in logical pixels.
     pub size: (f32, f32),
     /// Exit after the first window drew this many frames (smoke tests).
     pub exit_after_frames: Option<u32>,
-    /// Use the platform's fonts and fallback (CJK, emoji, …), and its UI font when the app's
-    /// theme keeps the default sans family. On by default.
-    pub system_fonts: bool,
+    /// Resources prepared before the root is built. Defaults to system fonts and fallback.
+    /// Use `AppConfig::default()` here for bundled fonts instead.
+    pub app: octara::app::AppConfig,
 }
 
 impl Default for Options {
     fn default() -> Self {
         let exit_after_frames = std::env::var("OCTARA_EXIT_AFTER_FRAMES").ok().and_then(|v| v.parse().ok());
-        Options { title: "Octara".into(), size: (800.0, 600.0), exit_after_frames, system_fonts: true }
+        Options {
+            title: "Octara".into(),
+            size: (800.0, 600.0),
+            exit_after_frames,
+            app: octara::app::AppConfig::default().with_system_fonts(),
+        }
     }
 }
 
@@ -125,7 +129,9 @@ pub fn run_with(options: Options, root: impl Fn() -> View + 'static) {
         trace: std::env::var_os("OCTARA_TRACE_INPUT").is_some_and(|v| v != "0"),
     });
     let mut shell = Shell {
-        options,
+        window_options: octara::platform::WindowOptions::new(options.title).size(options.size.0, options.size.1),
+        config: Some(options.app),
+        exit_after_frames: options.exit_after_frames,
         root: Some(Box::new(root)),
         shared,
         app: None,
@@ -190,7 +196,9 @@ impl Drop for InLoop {
 }
 
 struct Shell {
-    options: Options,
+    window_options: octara::platform::WindowOptions,
+    config: Option<octara::app::AppConfig>,
+    exit_after_frames: Option<u32>,
     root: Option<Box<dyn Fn() -> View>>,
     shared: Rc<Shared>,
     app: Option<App>,
@@ -439,7 +447,7 @@ impl Shell {
         };
         if shown
             && Some(w.id()) == self.main
-            && let Some(n) = self.options.exit_after_frames
+            && let Some(n) = self.exit_after_frames
         {
             let (frames, (width, height), scale) = ww(w, |x| (x.frames, (x.config.width, x.config.height), x.scale())).unwrap_or_default();
             if frames >= n {
@@ -700,12 +708,8 @@ impl Shell {
         }
         let _in = InLoop::enter(&self.shared, event_loop);
         let root = self.root.take().expect("root view");
-        let app = App::new(platform::WinitPlatform::new(self.shared.clone()));
-        let options = octara::platform::WindowOptions::new(self.options.title.clone()).size(self.options.size.0, self.options.size.1);
-        let mut w = app.open_window(options, root).expect("the window");
-        if self.options.system_fonts {
-            app.use_system_fonts();
-        }
+        let app = App::with_config(platform::WinitPlatform::new(self.shared.clone()), self.config.take().expect("initial App config"));
+        let mut w = app.open_window(self.window_options.clone(), root).expect("the window");
         self.capture = capture::Job::from_env(&self.shared.proxy);
         if std::env::var("OCTARA_PICK").is_ok_and(|v| v == "1") {
             w.set_picking(true);

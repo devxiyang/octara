@@ -7,8 +7,15 @@ use octara::app::{Phase, PointerEvent, TargetPlatform};
 use octara::prelude::*;
 use octara_text::MonoEngine;
 
+fn mono_window(root: impl Fn() -> View + 'static) -> Window {
+    let config = AppConfig { text_engine: Box::new(MonoEngine), target_platform: TargetPlatform::MacOs, ..Default::default() };
+    App::with_config(octara::platform::HeadlessPlatform::default(), config)
+        .open_window(octara::platform::WindowOptions::new("Multiline"), root)
+        .unwrap()
+}
+
 fn app(initial: &'static str, width: f32) -> Window {
-    let mut app = Window::headless(move || {
+    let mut app = mono_window(move || {
         let v = state("v", move || initial.to_owned());
         let sent = state("sent", || 0u32);
         col()
@@ -29,8 +36,6 @@ fn app(initial: &'static str, width: f32) -> Window {
             .child(text(move || format!("sent {}", sent.get())).id("sent"))
             .into()
     });
-    app.app().set_text_engine(Box::new(MonoEngine));
-    app.app().set_target_platform(TargetPlatform::MacOs);
     app.tap("area").unwrap();
     app
 }
@@ -137,7 +142,7 @@ fn selection_rectangles_pointer_paste() {
 }
 
 fn rows_app(chat: bool) -> Window {
-    let mut app = Window::headless(move || {
+    let mut app = mono_window(move || {
         let v = state("v", String::new);
         let sent = state("sent", || 0u32);
         let field = text_input()
@@ -152,8 +157,6 @@ fn rows_app(chat: bool) -> Window {
         let field = if chat { field.submit_on_enter() } else { field.rows(2, 4) };
         col().size_full().items_start().child(field).child(text(move || format!("sent {}", sent.get())).id("sent")).into()
     });
-    app.app().set_text_engine(Box::new(MonoEngine));
-    app.app().set_target_platform(TargetPlatform::MacOs);
     app.tap("area").unwrap();
     app
 }
@@ -186,7 +189,7 @@ fn rows_bound_the_height_and_the_text_scrolls_inside() {
 
 #[test]
 fn a_growing_field_keeps_its_caret_in_view_in_a_scroll_container() {
-    let mut app = Window::headless(|| {
+    let mut app = mono_window(|| {
         let v = state("v", String::new);
         col()
             .id("page")
@@ -206,7 +209,6 @@ fn a_growing_field_keeps_its_caret_in_view_in_a_scroll_container() {
             )
             .into()
     });
-    app.app().set_text_engine(Box::new(MonoEngine));
     app.tap("area").unwrap();
     for _ in 0..5 {
         app.press_key("enter").unwrap();

@@ -2,6 +2,7 @@
 
 mod asks;
 mod behavior;
+mod config;
 mod drive;
 mod edit;
 mod event;
@@ -19,6 +20,7 @@ mod tooltip;
 
 pub(crate) use crate::kernel::TextDocument;
 pub use asks::menu_surface;
+pub use config::AppConfig;
 pub use edit::{TextField, byte_offset, utf16_offset};
 pub use event::{FileDrag, InputEvent, Recorded, Recording};
 pub use guard::TargetGuard;
@@ -594,6 +596,12 @@ impl App {
     /// An app on `platform` (a backend's; `HeadlessPlatform` for tests and agents), with no
     /// window yet.
     pub fn new(platform: impl crate::platform::Platform + 'static) -> App {
+        Self::with_config(platform, AppConfig::default())
+    }
+
+    /// Creates an App with its resources ready before the first window or view is created.
+    pub fn with_config(platform: impl crate::platform::Platform + 'static, config: AppConfig) -> App {
+        let AppConfig { theme, text_engine, target_platform } = config;
         let rt = Runtime::new();
         let root_scope = rt.create_app_scope();
         let failed = rt.failure_flag();
@@ -605,14 +613,19 @@ impl App {
             teardown: Cell::new(Teardown::Pending),
             failed,
             sched: Rc::new(crate::task::Scheduler::default()),
-            res: Rc::default(),
+            res: Rc::new(crate::kernel::Resources {
+                theme: RefCell::new(theme),
+                text: RefCell::new(text_engine),
+                touch: Cell::new(target_platform.is_touch()),
+                reduced_motion: Cell::new(false),
+            }),
             windows: RefCell::default(),
             order: RefCell::default(),
             opening: RefCell::default(),
             closing: RefCell::default(),
             next_cause: Cell::new(0),
             tuning: Cell::new(Tuning::default()),
-            platform: Cell::new(TargetPlatform::current()),
+            platform: Cell::new(target_platform),
             keymap: RefCell::new(keys::Keymap::default()),
             keymap_full: RefCell::new(None),
             system: RefCell::new(Box::new(platform)),
@@ -1454,20 +1467,6 @@ impl App {
     pub fn register_fallback_font(&self, data: &'static [u8], scripts: &[[u8; 4]]) {
         self.app.res.text.borrow_mut().register_fallback_font(data, scripts);
         self.app.fonts_changed();
-    }
-    /// Replaces the text engine (e.g. `MonoEngine` for benchmarks): every window measures again
-    /// (fonts registered with the old one are not carried over).
-    pub fn set_text_engine(&self, engine: Box<dyn octara_text::TextEngine>) {
-        self.app.res.set_text_engine(engine);
-        self.app.fonts_changed();
-    }
-    /// Uses the platform's fonts: `system-ui` and `ui-monospace` (the theme's families) become
-    /// its UI and monospace fonts (San Francisco and Menlo, Segoe UI and Cascadia Mono, …), with
-    /// its fallback for scripts (CJK, emoji, …): what a window shows. Headless screenshots meant
-    /// to match a window use it; deterministic tests do not (results then depend on the machine).
-    #[cfg(feature = "system-fonts")]
-    pub fn use_system_fonts(&self) {
-        self.set_text_engine(Box::new(octara_text::ParleyEngine::system()));
     }
     /// The theme every window shows.
     pub fn theme(&self) -> Theme {

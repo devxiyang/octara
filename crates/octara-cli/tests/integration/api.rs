@@ -70,6 +70,11 @@ fn items_are_found_by_canonical_path_and_alias() {
     assert!(!api.get("octara::app::App::platform").unwrap().sig.contains("RefMut"));
     assert!(api.get("octara::kernel::Kernel::resources").is_none());
     assert!(api.get("octara::kernel::Resources::set_text_engine").is_none());
+    assert!(api.get("octara::kernel::Kernel::set_text_engine").is_none());
+    assert!(api.get("octara::app::App::set_text_engine").is_none());
+    assert!(api.get("octara::app::App::use_system_fonts").is_none());
+    assert!(api.get("octara::app::App::with_config").is_some());
+    assert_eq!(api.get("octara::prelude::AppConfig").unwrap().path, "octara::app::AppConfig");
     for method in ["kernel", "reset_counters", "set_layout_enabled", "set_culling"] {
         assert!(api.get(&format!("octara::app::Window::{method}")).is_some());
     }

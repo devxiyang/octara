@@ -442,6 +442,10 @@ not requalified.
 
 ## Seventh-round Window mutation boundary
 
+Update 2026-11-17 (`init` A1): the runtime text-engine replacement described below has since
+been removed. `AppConfig` / `App::with_config` now select and own the engine before mounting;
+see [initialization](layered-architecture-redesign.md#41-资源只有一个修改所有者).
+
 `Window::kernel_mut` is removed without an alias or a replacement closure that lends out the
 whole mutable tree. `Window::kernel` remains available for read-only inspection. Standalone
 `Kernel` remains the low-level retained-tree API; a mounted window's tree is changed internally

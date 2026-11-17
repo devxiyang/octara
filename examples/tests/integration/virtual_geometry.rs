@@ -533,8 +533,10 @@ fn assert_bounded_and_clean(app: &App, window: &Window) {
 }
 
 fn check_wrapping_invalidation(snapshots: bool, theme_change: bool) {
-    let app = App::new(HeadlessPlatform::default());
-    app.set_text_engine(Box::new(octara_text::MonoEngine));
+    let app = App::with_config(
+        HeadlessPlatform::default(),
+        octara::app::AppConfig { text_engine: Box::new(octara_text::MonoEngine), ..Default::default() },
+    );
     let (items, snapshot) = app
         .run(|| (state_list("items", || (0..ROWS).collect(), |key| *key), state("snapshot", || (0..ROWS).map(|key| (key, key)).collect())));
     let mut window = app

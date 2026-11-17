@@ -28,6 +28,33 @@ Text shaping, fonts and layout are owned by `octara-text`; add it as a direct de
 using a custom `TextEngine` or the deterministic `MonoEngine`. The runtime uses it internally;
 renderers only consume primitive glyph data.
 
+## Initial resources
+
+Configure resources before mounting, so the first build and frame use the intended theme,
+fonts and input conventions:
+
+```rust
+use octara::prelude::*;
+use octara::platform::HeadlessPlatform;
+
+let app = App::with_config(HeadlessPlatform::default(), AppConfig {
+    theme: Theme::dark(),
+    ..Default::default()
+});
+let window = app.open_window(WindowOptions::new("Configured"), || text("Ready").into()).unwrap();
+assert_eq!(window.inspect().theme, "dark");
+app.shutdown();
+```
+
+`AppConfig::default()` uses bundled fonts. With the `system-fonts` feature,
+`AppConfig::default().with_system_fonts()` selects installed fonts before mounting. For a custom
+engine, set `text_engine`; register initial fonts on that engine before passing the config to
+`App::with_config`. The engine is owned by the App and cannot be replaced at runtime.
+
+Desktop `octara_shell::Options::default()` already uses system fonts. Customize its `app.theme`
+before `run_with`; assign `app: AppConfig::default()` to use bundled fonts. Do not spawn a task
+just to set the initial theme. `Window::headless` remains the short default setup.
+
 ## A first app
 
 ```rust,no_run

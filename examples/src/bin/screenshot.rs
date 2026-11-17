@@ -30,15 +30,15 @@ fn main() {
         ("chat_virtual", || apps::chat_virtual(1000)),
     ];
     for (name, view) in cases {
-        let mut app = Window::headless(view);
-        if let Some((w, h)) = size {
-            app.resize(w, h);
-        }
+        let mut config = if bundled { AppConfig::default() } else { AppConfig::default().with_system_fonts() };
         if bundled {
-            octara_fonts::cjk::install(&app.app());
-        } else {
-            app.app().use_system_fonts();
+            for data in [octara_fonts::cjk::REGULAR, octara_fonts::cjk::SEMIBOLD] {
+                config.text_engine.register_fallback_font(data, &octara_fonts::cjk::SCRIPTS);
+            }
         }
+        let runtime = App::with_config(octara::platform::HeadlessPlatform::default(), config);
+        let (w, h) = size.unwrap_or((800.0, 600.0));
+        let app = runtime.open_window(octara::platform::WindowOptions::new(name).size(w, h), view).expect("headless window");
         let path = format!("{dir}/{name}.png");
         octara_render::CpuRenderer::new().render(&app.display_list(), scale).save_png(&path).expect("write png");
         println!("{path}");

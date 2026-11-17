@@ -41,7 +41,7 @@ pub mod view;
 pub mod window;
 
 pub mod prelude {
-    pub use crate::app::{App, Drag, DragPhase, Event, InputEvent, Key, KeyEvent, Modifiers, Window};
+    pub use crate::app::{App, AppConfig, Drag, DragPhase, Event, InputEvent, Key, KeyEvent, Modifiers, Window};
     pub use crate::ask::{PathPromptOptions, PromptLevel, popup_menu, prompt, prompt_for_new_path, prompt_for_paths};
     pub use crate::kernel::select::Copied;
     pub use crate::kernel::{NumericRange, Role, State};

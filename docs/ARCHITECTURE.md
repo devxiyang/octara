@@ -136,14 +136,20 @@ CLI `vocab` resolves public paths and cross-crate prelude exports to their defin
 
 ## App and windows
 
+Initial resources use `AppConfig` (theme, owned text engine and target-platform conventions),
+consumed by `App::with_config` before any window is opened. `App::new` uses bundled-font defaults;
+the desktop shell's `Options.app` uses system fonts by default and is consumed on first resume.
+Chat supplies its theme there, without a startup task. The `init` refactor's remaining resource
+mutation ownership and permission work is tracked separately in [TODO](TODO.md#init-architecture-refactor-2026-11-17).
+
 - `App` is a handle on the app's state: the reactive runtime, the scheduler and its clock, the
   resources every window's kernel reads (theme, text system), the platform, and the windows. A
   `Window` is a handle on one window's state: its kernel, interaction, size and scale, root
   scope and platform window. Closing a window disposes its scope and frees it.
 - `Window::kernel()` reads the retained tree; windows expose no mutable Kernel borrow. Views
   update nodes through bindings and events so scope cleanup, focus, IME and frame delivery stay
-  coordinated. Use `App::set_text_engine` for shared text resources and semantic scroll events
-  for scrolling. Counter resets, the benchmark layout switch and the reference-rendering culling
+  coordinated. Configure the text engine before mounting with `AppConfig` and `App::with_config`;
+  runtime engine replacement is removed. Use semantic scroll events for scrolling. Counter resets, the benchmark layout switch and the reference-rendering culling
   switch are explicit instrumentation controls; they do not grant tree mutation access.
 - Platform inspection is read-only too: `App::platform()` and `Window::platform_window()` expose
   their protocols without mutable borrows. The desktop shell mutates its private `WindowHost`

@@ -394,8 +394,45 @@ fn closing_a_window_disposes_its_scope_and_frees_it() {
 }
 
 #[test]
-fn theme_and_fonts_are_the_apps() {
-    let app = App::new(HeadlessPlatform::default());
+fn configured_resources_are_visible_during_build_and_first_frame() {
+    use octara::app::TargetPlatform;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let builds = Rc::new(Cell::new(0));
+    let config = AppConfig { theme: Theme::dark(), text_engine: Box::new(octara_text::MonoEngine), target_platform: TargetPlatform::Ios };
+    let app = App::with_config(HeadlessPlatform::default(), config);
+    for name in ["First", "Second"] {
+        let builds = builds.clone();
+        let window = app
+            .open_window(WindowOptions::new(name), move || {
+                builds.set(builds.get() + 1);
+                assert_eq!(App::current().theme().name, "dark", "configuration is visible before any view exists");
+                assert_eq!(App::current().target_platform(), TargetPlatform::Ios);
+                col()
+                    .size_full()
+                    .items_start()
+                    .child(text("Ready").id("label").text_size(px(20.0)))
+                    .child(el().id("touch").w(px(30.0)).h_8().when_touch(|p| p.w(px(80.0))))
+                    .into()
+            })
+            .unwrap();
+        let k = window.kernel();
+        assert_eq!(k.text_metrics(k.find("label").unwrap()).width, 50.0);
+        assert_eq!(k.visual_of("label").unwrap().text, Theme::dark().get(Token::Text));
+        assert_eq!(k.rect(k.find("touch").unwrap()).2, 80.0, "touch policy applied in the initial layout");
+        assert_eq!(window.frames_presented(), 1, "no second frame to fix startup resources");
+        assert!(window.layout_issues().is_empty(), "{:?}", window.layout_issues());
+    }
+    assert_eq!(builds.get(), 2, "each window builds once");
+    assert!(app.pending().is_empty(), "initialization needs no deferred task");
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+}
+
+#[test]
+fn theme_and_text_engine_are_the_apps() {
+    let app =
+        App::with_config(HeadlessPlatform::default(), AppConfig { text_engine: Box::new(octara_text::MonoEngine), ..Default::default() });
     let view = || text("Shared").id("label").into();
     let a = app.open_window(WindowOptions::new("A"), view).unwrap();
     let b = app.open_window(WindowOptions::new("B"), view).unwrap();
@@ -403,18 +440,8 @@ fn theme_and_fonts_are_the_apps() {
     for w in [&a, &b] {
         assert_eq!(w.kernel().theme().name, "dark", "every window follows the theme");
         assert_eq!(w.kernel().visual_of("label").unwrap().text, Theme::dark().get(Token::Text), "its text restyled");
-    }
-    // One text system: the same text measures the same in both windows.
-    let width = |w: &Window| {
-        let n = w.kernel().find("label").unwrap();
-        w.kernel().text_metrics(n).width
-    };
-    assert_eq!(width(&a), width(&b));
-    let before = width(&a);
-    app.set_text_engine(Box::new(octara_text::MonoEngine));
-    for w in [&a, &b] {
-        assert_eq!(width(w), 6.0 * 8.0, "both windows remeasure with the new engine without an extra event");
-        assert_ne!(width(w), before, "old measurements were invalidated");
+        let k = w.kernel();
+        assert_eq!(k.text_metrics(k.find("label").unwrap()).width, 6.0 * 8.0, "both windows use the configured engine");
         assert!(w.layout_issues().is_empty(), "{:?}", w.layout_issues());
     }
     assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());

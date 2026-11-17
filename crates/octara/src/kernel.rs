@@ -688,14 +688,6 @@ impl Default for Resources {
     }
 }
 
-impl Resources {
-    /// The text system's engine (e.g. `MonoEngine` for benchmarks); kernels sharing it then
-    /// measure again (`fonts_changed`).
-    pub(crate) fn set_text_engine(&self, engine: Box<dyn TextEngine>) {
-        *self.text.borrow_mut() = engine;
-    }
-}
-
 impl Default for Kernel {
     fn default() -> Self {
         Self::new(Rc::default())
@@ -807,13 +799,6 @@ impl Kernel {
 
     pub(crate) fn identity(&self) -> crate::identity::TreeIdentity {
         self.identity
-    }
-    /// Replaces the text engine (e.g. `MonoEngine` for benchmarks) and remeasures this kernel.
-    /// Fonts registered with the old engine are not carried over. If other standalone kernels
-    /// share its resources, notify them with [`Self::fonts_changed`] as well.
-    pub fn set_text_engine(&mut self, engine: Box<dyn TextEngine>) {
-        self.res.set_text_engine(engine);
-        self.fonts_changed();
     }
     /// How a text node's content is laid out at its current width: lines shown and whether
     /// any of it is cut off.
@@ -2672,7 +2657,7 @@ mod tests {
     #[test]
     fn layout_measures_text_from_its_font() {
         let (mut k, col, t) = tree();
-        k.set_text_engine(Box::new(text::MonoEngine));
+        *k.res.text.borrow_mut() = Box::new(text::MonoEngine);
         assert!(k.layout(400.0, 300.0));
         assert_eq!((k.text_metrics(t).width, k.rect(t).3), (5.0 * 8.0, 20.0), "half an em per char; lines 1.25 × 16 px");
         assert!(!k.layout(400.0, 300.0), "nothing changed");

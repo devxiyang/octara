@@ -118,10 +118,17 @@ flowchart TD
 
 ### 4.1 资源只有一个修改所有者
 
+2026-11-17 `init` A1 已落地初始化部分：`AppConfig` 配置 theme、text_engine 和
+target_platform，由 `App::with_config` 消费。Shell 的 `Options.app` 走同一入口，
+默认系统字体在首次挂载前准备；Chat 不再用启动任务设置主题。
+`App::set_text_engine`、`App::use_system_fonts`、`Kernel::set_text_engine` 和内部替换 helper
+已删除。初始化前可直接在配置的 engine 上注册字体；运行中仍允许追加字体。
+下文的共享 Resources/Kernel 写权限收拢、运行中资源准入与失效统一属于 TODO A2，尚未实施。
+
 主题、字体目录、文本引擎和宿主配置由 App 管理。Kernel 消费资源及其有效性信息，
 只处理本窗口的失效，不对共享资源另设公共修改规则。
 
-当前 `Kernel::set_theme` / `register_font` / `set_text_engine` 修改共享资源后，
+仍存在的 `Kernel::set_theme` / `register_font` 修改共享资源后，
 文档要求调用者另行通知其他 standalone Kernel。目标删除这一公开双重职责。
 独立 Kernel 测试使用私有资源或测试装配入口；共享窗口统一经过 App。
 `Window::kernel()` 当前已经只读，**本提案不声称存在公开的活动窗口可变 Kernel 入口**。
@@ -130,9 +137,9 @@ flowchart TD
 主题和字体无需借助 `spawn` 在首次构建后补设。运行期间主题切换、字体加入等变更，
 在资源写入前执行准入，并统一通知受影响窗口。
 
-建议将文本引擎选择和目标平台约定收为初始化配置，移除其普通运行中切换入口；
-基准测试改为创建明确配置的 App。落地前逐一核对调用者；若确有运行中替换引擎的产品需求，
-必须设计资源退役与全窗口失效，而不是保留当前绕过政策的便捷入口。
+文本引擎选择已收为初始化配置，基准测试创建明确配置的 App；运行中替换引擎入口已移除。
+目标平台约定有初始化配置，但 Inspector 的运行中环境切换仍保留，准入与失效纳入 A2。
+将来若确有运行中替换引擎的产品需求，须先设计资源退役与全窗口失效。
 窗口缩放、系统主题、输入设备变化和 reduced motion 仍是合法动态环境，不随此项删除。
 
 ### 4.2 三种环境不要合成一个大字典

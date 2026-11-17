@@ -56,6 +56,10 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
   children; incompatible content-specific methods panic with `ELEMENT_CONTENT`.
 - Give interactive and checked elements a test id (`.id("save")`); tests and agents drive and
   read the app by it (`app.tap("save")`, `app.kernel().text_of("total")`).
+- Configure the initial theme, fonts and target conventions with `AppConfig` before
+  `App::with_config`. Desktop shell options own this as `Options.app` and default to system
+  fonts. Set `options.app.theme` before `run_with`, not in a deferred startup task. Text-engine
+  replacement is initialization-only; runtime theme/font changes use the App's APIs.
 - Colors are semantic tokens (`Token::Surface`, `Token::Text`, `Token::Accent`); app colors are
   `Token::custom("brand")` defined in the theme.
 - Motion is declared, never state: `.motion(Spring::SNAP)` on an element or ancestor makes changes

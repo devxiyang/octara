@@ -203,7 +203,7 @@ impl Shell {
         let now = Instant::now();
         if let Stage::Start = job.stage {
             if let Some(dy) = job.scroll {
-                let (width, height) = self.options.size;
+                let (width, height) = self.window_options.size;
                 w.wheel(width / 2.0, height / 2.0, 0.0, dy);
                 // Drawn, so the views are placed where the page now is.
                 self.draw(&w);

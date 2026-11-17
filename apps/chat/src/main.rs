@@ -55,23 +55,18 @@ fn main() -> std::process::ExitCode {
         }
     };
     let options = move || Options { models: models.clone(), store: Store::default_dir().map(Store::new), ..Options::default() };
-    octara_shell::run_with(octara_shell::Options { title: "Octara Chat".into(), size: (1180.0, 820.0), ..Default::default() }, move || {
-        use octara::prelude::*;
-        spawn(async {
-            set_theme(
-                Theme::light()
-                    .color(Token::Background, rgb(0xfdfcf9))
-                    .color(Token::Surface, rgb(0xf2f1ec))
-                    .color(Token::Border, rgb(0xe3e3da))
-                    .color(Token::Text, rgb(0x242d28))
-                    .color(Token::TextMuted, rgb(0x69726b))
-                    .color(Token::Accent, rgb(0x27634c))
-                    .color(Token::AccentHover, rgb(0x1e503d))
-                    .color(Token::Focus, rgb(0x347c60)),
-            );
-        });
-        root(options.clone())
-    });
+    use octara::prelude::*;
+    let mut shell = octara_shell::Options { title: "Octara Chat".into(), size: (1180.0, 820.0), ..Default::default() };
+    shell.app.theme = Theme::light()
+        .color(Token::Background, rgb(0xfdfcf9))
+        .color(Token::Surface, rgb(0xf2f1ec))
+        .color(Token::Border, rgb(0xe3e3da))
+        .color(Token::Text, rgb(0x242d28))
+        .color(Token::TextMuted, rgb(0x69726b))
+        .color(Token::Accent, rgb(0x27634c))
+        .color(Token::AccentHover, rgb(0x1e503d))
+        .color(Token::Focus, rgb(0x347c60));
+    octara_shell::run_with(shell, move || root(options.clone()));
     std::process::ExitCode::SUCCESS
 }
 

@@ -47,7 +47,7 @@ renderers  glyph runs in the display list; swash rasterizes into an atlas both r
   meanwhile, can come later without changing the model.
 - **Fonts**: the theme's families are `system-ui` and `monospace`. Headless (the default) they
   are the bundled Inter and IBM Plex Mono, so a run measures the same on every machine; a
-  window's engine (`use_system_fonts`) resolves them to the platform's UI and monospace fonts
+  window's configured engine (`AppConfig::with_system_fonts`, before mounting) resolves them to the platform's UI and monospace fonts
   (San Francisco, Segoe UI, …) with the system's fallback for scripts. A headless run can use
   the system fonts too, to match a window's pictures on that machine.
 - **Input**: text fields lay out with the same engine; their editing model (selection, history,

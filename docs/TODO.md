@@ -4,6 +4,89 @@ What is open, by area. For phase goals see [ROADMAP](ROADMAP.md); for what is bu
 [ARCHITECTURE](ARCHITECTURE.md) and the [designs](design/). When an item is done, remove it and
 make the corresponding design document describe it.
 
+## `init` architecture refactor (2026-11-17)
+
+Execution plan for the [layered redesign](design/layered-architecture-redesign.md) and
+[primitive contracts](design/core-primitive-contracts.md). Work on `init`; no compatibility
+aliases or permanent parallel implementations. Keep this checklist as the progress record;
+update the design documents with implemented contracts and verification evidence.
+
+Completed foundation: `octara-primitives` and `octara-text` are independent packages;
+production dependency directions are enforced by `tools/check_layers.py`.
+Package extraction alone does not complete the responsibility redesign.
+
+### A. App resources and initialization
+
+- [x] **A1 — Initial configuration.** Configure theme, text engine and target
+      conventions before creating/mounting windows. Give the shell the same initialization
+      path; migrate Chat's deferred theme setup, deterministic text tests and screenshot tools.
+      Delete runtime text-engine replacement/system-font switching APIs. Verify the first
+      build and first output use the configured resources, including multiple windows.
+- [ ] **A2 — One resource mutation owner (next).** App owns legal runtime theme/font/environment
+      changes. Check execution/lifetime permissions before mutation; invalidate all affected
+      windows through the same owner. Remove public shared Resources and Kernel resource
+      setters/manual cross-kernel notification protocols; use explicit private test assembly.
+      Verify forbidden build/derive/observe calls, shutdown/failure, multi-window invalidation
+      and callback/borrow boundaries without adding public permission primitives.
+- [ ] **A3 — Window coordination.** Move after-layout/scroll/size feedback coordination out of
+      View into Window; View only registers required bindings/work. Preserve bounded feedback,
+      cancellation and scope ownership. Delete the old coordination path.
+
+A1 evidence (2026-11-17, Rust 1.100.0): workspace all-targets check and Clippy passed;
+full workspace tests: **866 passed, 0 failed, 3 existing ignored doctests**. A dedicated test
+checks two windows' initial build, theme/text/touch geometry, exactly one initial presentation
+and no deferred task. Existing multiline, system-font, Chat and virtual-geometry tests migrated.
+No-default-features core check, strict library rustdoc, layer checks, formatting and CLI vocab
+passed; the exported skill is current. No real-window/OS validation was performed in A1.
+`AppConfig` / `App::with_config` and shell `Options.app` replace runtime engine switching;
+Chat supplies its theme before mounting. A2 and subsequent contracts remain open.
+
+### B. Document and content composition
+
+- [ ] Separate application container children from atomic text/input/image/canvas/native
+      content. Keep ordinary Rust builders and shared styling; avoid generic state explosions.
+- [ ] Give rich text explicit ownership of runs and internal links, separate from application
+      children. Preserve identity where continuity is known; reject stale replaced targets.
+- [ ] Hide View's mount representation and converge structural updates on one private path.
+      Validate illegal composition, keyed reorder, editor lifetime and link replacement.
+
+### C. Editing, geometry and semantic facts
+
+- [ ] Make drawing, hit testing, selection, IME and accessibility consume the same text
+      geometry, with alignment/constraints accounted for once.
+- [ ] Separate prompt, editable value and accessible label; consolidate semantic resolution.
+- [ ] Finalize and implement external-value/IME arbitration (same-value write, rejection,
+      normalization, explicit reset, composition completion/cancellation and late callbacks).
+      Candidate policies in the design are not automatically accepted requirements.
+
+### D. Core composition and ui-kit
+
+- [ ] Validate public foundation sufficiency with a no-kit custom button, labeled Chinese
+      input with errors, and anchored suggestions. No kit-only focus/editing privileges.
+- [ ] Share stable action roots while allowing different visual content. Make actual control,
+      label and container configuration explicit for composite widgets; remove misleading bare
+      El forwarding. Prefer parameters/builders before public Parts or new traits.
+- [ ] Share option identity/navigation where semantics agree; remove Combobox/PopupList's
+      redundant option mirrors. Preserve Menu versus suggestions versus selection differences.
+- [ ] Separate component appearance from behavior using the existing style/theme machinery;
+      migrate component-only policy out of the kernel without a second theme system.
+
+### E. Integration and completion
+
+- [ ] Migrate Chat and remove workarounds replaced by the new contracts. Update vocab, skill,
+      architecture and examples together; remove every superseded public path.
+- [ ] Run headless regressions and targeted performance checks; obtain separate real-window
+      evidence for Chinese IME, selection, anchored/nested overlays and streaming Chat.
+      Report missing OS evidence explicitly, never infer it from headless tests.
+- [ ] Final review: dependencies still point down; facts have one mutation owner; no new state
+      mirrors/VM/global transactions; custom components work without kit; API usage and code
+      ownership are simpler. Preserve existing Signals, cancellation, failure/release and
+      target-identity guarantees instead of reopening them without concrete evidence.
+
+Each slice ends with migrated callers, deleted obsolete paths, appropriate verification and
+an updated status here. The next slice starts from the resulting contract, not another patch
+on the retired architecture. Reference the recorded Rune/Exact/W3C evidence selectively.
+
 ## Priorities
 
 1. Core interaction and reusable components, exercised in Showcase and the Chat reference app:

@@ -1,15 +1,17 @@
 //! The platform's fonts and fallback (feature `system-fonts`): CJK text gets real glyphs.
 #![cfg(all(feature = "system-fonts", target_os = "macos"))]
 
+use octara::platform::{HeadlessPlatform, WindowOptions};
 use octara::prelude::*;
-use octara_text::ParleyEngine;
 
 #[test]
 fn cjk_falls_back_to_a_system_font_and_system_ui_resolves() {
-    let mut app =
-        Window::headless(|| col().child(text("Hello 世界").id("mixed")).child(text("System").id("ui").font_family("system-ui")).into());
-    app.app().set_text_engine(Box::new(ParleyEngine::system()));
-    app.resize(800.0, 600.0);
+    let runtime = App::with_config(HeadlessPlatform::default(), AppConfig::default().with_system_fonts());
+    let app = runtime
+        .open_window(WindowOptions::new("System fonts"), || {
+            col().child(text("Hello 世界").id("mixed")).child(text("System").id("ui").font_family("system-ui")).into()
+        })
+        .unwrap();
     let dl = app.display_list();
     let k = app.kernel();
     let mixed: Vec<_> = dl.glyph_runs().filter(|g| g.source == k.find("mixed").unwrap()).collect();
