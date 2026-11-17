@@ -7,6 +7,7 @@ mod behavior;
 mod element;
 mod list;
 mod pace;
+mod structure;
 mod style;
 
 pub use crate::kernel::Component;
@@ -258,7 +259,7 @@ pub(crate) fn mount(view: View, parent: &Parent, target: &Slots) {
         ViewKind::El(e) => {
             let node = build_el(*e);
             let index = offset(&parent.root, &Target::Slots(target)).expect("region in parent") + flat_len(target);
-            crate::app::window().kernel.borrow_mut().insert_child(parent.node, node, index);
+            structure::place(&mut crate::app::window().kernel.borrow_mut(), parent.node, index, [node]);
             target.borrow_mut().push(Slot::Node);
         }
         ViewKind::Fragment(vs) => vs.into_iter().for_each(|v| mount(v, parent, target)),
@@ -424,9 +425,7 @@ fn switch_at<K: PartialEq + 'static>(
                     let start = offset(&parent.root, &Target::Slots(&region)).expect("region in parent");
                     let len = flat_len(&region);
                     let tops: Vec<NodeId> = u.kernel.borrow().children(parent.node).iter().skip(start).take(len).copied().collect();
-                    for n in tops {
-                        u.kernel.borrow_mut().begin_exit(n);
-                    }
+                    structure::begin_exit(&mut u.kernel.borrow_mut(), tops);
                     rt.dispose_scope(old);
                 }
                 region.borrow_mut().clear();

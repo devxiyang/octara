@@ -86,7 +86,7 @@ the skill are unchanged. No real-window/OS validation was performed in A3.
 - [x] **B2 — Internal text structure.** Give rich text explicit ownership of runs and internal
       links, separate from application children. Preserve identity where continuity is known;
       reject stale replaced targets. Enforce the distinction at kernel structural-write entrances.
-- [ ] **B3 — Opaque composition.** Hide View's mount representation and converge structural updates on one private path.
+- [x] **B3 — Opaque composition.** Hide View's mount representation and converge structural updates on one private path.
       Validate illegal composition, keyed reorder, editor lifetime and link replacement.
       **B3a completed:** Inspector selection extraction now finishes before borrowing the tree
       and sampling targets, so consistency rebuilds cannot conflict with that borrow or mix
@@ -104,6 +104,18 @@ the skill are unchanged. No real-window/OS validation was performed in A3.
       B3b validation: 890 workspace tests passed, 0 failed, 3 existing ignored doctests;
       all-targets compilation/Clippy, strict core rustdoc, formatting, diff/layer checks and
       CLI lookup of `View::fragment` passed. Existing keyed-list/editor and Chat regressions pass.
+      **B3c implemented:** `view/structure.rs` now owns application placement, beginning exit
+      and final destruction. Ordinary mounting, conditional branches, incremental/snapshot lists
+      and virtual spacers use it; the list-only placement path is deleted. Placement inserts
+      detached nodes or moves same-parent nodes, rejects foreign owners and skips already-correct
+      positions. Final cleanup tolerates descendants already destroyed by a parent and preserves
+      Kernel-owned exiting nodes. Scope disposal, interaction retirement and slot accounting
+      stay with their owners, outside Kernel borrows; no transaction or public primitive added.
+      B3c validation: 891 workspace tests passed, 0 failed, 3 existing ignored doctests;
+      all-targets Clippy, strict core rustdoc, formatting and diff/layer checks passed. The new
+      structure test verifies retained input value/identity under reorder, foreign-owner rejection
+      before mutation and ancestor-first cleanup. Existing list, editor, exit-animation, Chat,
+      HTTP and rendering regressions passed. No real-window validation was performed.
 
 B1 evidence (2026-11-17, Rust 1.100.0): only `Content::Box(Vec<View>)` stores application
 children; the shared `El.children` field is removed. Atomic builders reject child conversion

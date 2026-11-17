@@ -1112,9 +1112,7 @@ pub(crate) fn build_el(mut e: El) -> NodeId {
             rt.on_cleanup(Box::new(move || {
                 u.retire_interactions(node);
                 let mut k = u.kernel.borrow_mut();
-                if k.is_alive(node) {
-                    k.destroy(node);
-                }
+                super::structure::destroy(&mut k, [node]);
             }))
         });
     }

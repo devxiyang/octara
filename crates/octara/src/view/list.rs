@@ -1,6 +1,6 @@
 //! Keyed rows from ordinary snapshots or incremental collections, with shared row ownership.
 
-use super::{Parent, Slot, Slots, View, ViewKind, build_el, col, count_offset};
+use super::{Parent, Slot, Slots, View, ViewKind, build_el, col, count_offset, structure};
 use crate::diagnostics as codes;
 use crate::kernel::NodeId;
 use crate::reactive::graph::{Ctx, ReadSignal, ScopeId, Signal, memo, memo_with, rt, untrack};
@@ -174,7 +174,7 @@ impl<K: Eq + Hash + Clone + Display + 'static, T: Clone + 'static> Rows<K, T> {
     fn remove(&mut self, key: &K, exit: bool) {
         if let Some((scope, node)) = self.entries.remove(key) {
             if exit {
-                crate::app::window().kernel.borrow_mut().begin_exit(node);
+                structure::begin_exit(&mut crate::app::window().kernel.borrow_mut(), [node]);
             }
             rt(|rt| rt.dispose_scope(scope));
         }
@@ -192,22 +192,6 @@ impl<K: Eq + Hash + Clone + Display + 'static, T: Clone + 'static> Rows<K, T> {
             self.ensure(key);
         }
         changed
-    }
-}
-
-/// Places `nodes` as consecutive kernel children starting at `base_index`.
-fn place(parent: NodeId, base_index: usize, nodes: impl Iterator<Item = NodeId>) {
-    let u = crate::app::window();
-    let mut kn = u.kernel.borrow_mut();
-    for (i, node) in nodes.enumerate() {
-        let want = base_index + i;
-        if kn.parent(node).is_some() {
-            if kn.children(parent).get(want) != Some(&node) {
-                kn.move_child(node, want);
-            }
-        } else {
-            kn.insert_child(parent, node, want);
-        }
     }
 }
 
@@ -268,7 +252,12 @@ where
                                 }
                                 let keys = next.snapshot();
                                 rows.borrow_mut().reconcile(&keys, true);
-                                place(parent.node, count_offset(&parent, &count), keys.iter().map(|key| rows.borrow().entries[key].1));
+                                structure::place(
+                                    &mut u.kernel.borrow_mut(),
+                                    parent.node,
+                                    count_offset(&parent, &count),
+                                    keys.iter().map(|key| rows.borrow().entries[key].1),
+                                );
                                 count.set(keys.len());
                                 return;
                             }
@@ -277,7 +266,7 @@ where
                                 match ch {
                                     Change::Insert { key, index } => {
                                         let (_, node) = rows.borrow_mut().ensure(&key);
-                                        u.kernel.borrow_mut().insert_child(parent.node, node, base_index + index);
+                                        structure::place(&mut u.kernel.borrow_mut(), parent.node, base_index + index, [node]);
                                         count.set(count.get() + 1);
                                     }
                                     Change::Remove { key, .. } => {
@@ -286,7 +275,7 @@ where
                                     }
                                     Change::Move { key, to, .. } => {
                                         if let Some((_, node)) = rows.borrow().entries.get(&key) {
-                                            u.kernel.borrow_mut().move_child(*node, base_index + to);
+                                            structure::place(&mut u.kernel.borrow_mut(), parent.node, base_index + to, [*node]);
                                         }
                                     }
                                 }
@@ -297,7 +286,12 @@ where
                     let cursor = next.subscribe();
                     let keys = next.snapshot();
                     rows.borrow_mut().reconcile(&keys, true);
-                    place(parent.node, count_offset(&parent, &count), keys.iter().map(|key| rows.borrow().entries[key].1));
+                    structure::place(
+                        &mut u.kernel.borrow_mut(),
+                        parent.node,
+                        count_offset(&parent, &count),
+                        keys.iter().map(|key| rows.borrow().entries[key].1),
+                    );
                     count.set(keys.len());
                     *current.borrow_mut() = Some((next, cursor));
                 })
@@ -585,11 +579,7 @@ where
             rt(|rt| {
                 rt.on_cleanup(Box::new(move || {
                     let mut k = u.kernel.borrow_mut();
-                    for n in [top, bottom].into_iter().chain(gaps.borrow_mut().drain(..)) {
-                        if k.is_alive(n) {
-                            k.destroy(n);
-                        }
-                    }
+                    structure::destroy(&mut k, [top, bottom].into_iter().chain(gaps.borrow_mut().drain(..)));
                 }))
             });
         }
@@ -768,9 +758,7 @@ where
                             gaps.push(spacer(&name));
                         }
                         let mut kernel = u.kernel.borrow_mut();
-                        for node in gaps.drain(gap_heights.len()..) {
-                            kernel.destroy(node);
-                        }
+                        structure::destroy(&mut kernel, gaps.drain(gap_heights.len()..));
                         for (&node, &height) in gaps.iter().zip(&gap_heights) {
                             kernel.set_style(node, crate::kernel::StyleProp::Height(crate::kernel::Length::Px(height as f32)));
                             kernel
@@ -788,7 +776,7 @@ where
                     }
                     nodes.push(bottom);
                     count.set(nodes.len());
-                    place(parent.node, count_offset(&parent, &count), nodes.into_iter());
+                    structure::place(&mut u.kernel.borrow_mut(), parent.node, count_offset(&parent, &count), nodes);
                     crate::app::window().kernel.borrow_mut().set_quiet(false);
                 })
             });
