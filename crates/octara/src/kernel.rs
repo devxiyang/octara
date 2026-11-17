@@ -18,7 +18,7 @@ mod paint;
 pub mod rich;
 pub mod select;
 pub mod style;
-pub mod text;
+pub(crate) use octara_text as text;
 mod text_input;
 pub(crate) use octara_primitives::theme;
 

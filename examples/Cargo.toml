@@ -31,3 +31,6 @@ path = "src/bin/screenshot.rs"
 [[bin]]
 name = "window"
 path = "src/bin/window.rs"
+
+[dev-dependencies]
+octara-text.workspace = true

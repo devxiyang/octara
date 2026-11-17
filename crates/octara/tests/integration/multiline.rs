@@ -4,8 +4,8 @@
 //! The monospace engine makes every position exact: 8 px a character, 24 px a line.
 
 use octara::app::{Phase, PointerEvent, TargetPlatform};
-use octara::kernel::text::MonoEngine;
 use octara::prelude::*;
+use octara_text::MonoEngine;
 
 fn app(initial: &'static str, width: f32) -> Window {
     let mut app = Window::headless(move || {

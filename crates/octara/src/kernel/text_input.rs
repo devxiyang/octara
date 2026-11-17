@@ -106,7 +106,7 @@ impl TextDocument {
 #[derive(Clone)]
 pub struct TextInputLayout {
     pub(crate) resources: std::rc::Rc<crate::kernel::Resources>,
-    pub(crate) style: crate::kernel::text::TextStyle,
+    pub(crate) style: octara_text::TextStyle,
     pub(crate) content: Rect,
     pub(crate) multiline: bool,
     pub(crate) scroll: f32,
@@ -145,7 +145,7 @@ impl std::fmt::Debug for TextInputLayout {
 pub struct TextGeometry {
     /// The text's origin in logical window coordinates, including its current scroll.
     pub origin: (f32, f32),
-    pub lines: Vec<crate::kernel::text::VisualLine>,
+    pub lines: Vec<octara_text::VisualLine>,
 }
 
 impl TextGeometry {

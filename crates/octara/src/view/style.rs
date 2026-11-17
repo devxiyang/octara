@@ -15,11 +15,11 @@
 
 use crate::kernel::BoxShadow;
 pub use crate::kernel::Length;
-use crate::kernel::text::Wrap;
 use crate::kernel::{
     AlignItems, ContainerStep, Display, Family, Fill, FlexDirection, FlexWrap, FontSize, GridPos, JustifyContent, LineHeight, Overflow,
     Paint, Position, Radius, RadiusStep, ShadowStep, Shadows, StyleProp, TextStep,
 };
+use octara_text::Wrap;
 
 /// `n` logical pixels (a plain number means the same: `.p(px(13.0))` = `.p(13.0)`).
 pub const fn px(n: f32) -> Length {

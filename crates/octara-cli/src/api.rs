@@ -15,7 +15,7 @@ use std::process::Command;
 
 /// The framework's public crates, in the order the API lists them.
 pub const CRATES: &[&str] =
-    &["octara", "octara-primitives", "octara-kit", "octara-render", "octara-shell", "octara-fonts", "octara-macros"];
+    &["octara", "octara-primitives", "octara-text", "octara-kit", "octara-render", "octara-shell", "octara-fonts", "octara-macros"];
 
 /// This workspace's directory, where the CLI was built from.
 pub fn workspace_root() -> PathBuf {

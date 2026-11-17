@@ -411,7 +411,7 @@ fn theme_and_fonts_are_the_apps() {
     };
     assert_eq!(width(&a), width(&b));
     let before = width(&a);
-    app.set_text_engine(Box::new(octara::kernel::text::MonoEngine));
+    app.set_text_engine(Box::new(octara_text::MonoEngine));
     for w in [&a, &b] {
         assert_eq!(width(w), 6.0 * 8.0, "both windows remeasure with the new engine without an extra event");
         assert_ne!(width(w), before, "old measurements were invalidated");

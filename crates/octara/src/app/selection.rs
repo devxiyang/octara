@@ -80,7 +80,7 @@ impl Window {
         let (tx, ty, _, _) = k.shown_rect(text);
         let ((ox, oy), _, _) = k.text_box(text);
         let lines = k.text_lines(text);
-        let offset = crate::kernel::text::offset_at(&lines, x - tx - ox, y - ty - oy);
+        let offset = octara_text::offset_at(&lines, x - tx - ox, y - ty - oy);
         Some(TextPoint { path: k.path_to(region, text)?, offset })
     }
 

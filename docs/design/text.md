@@ -7,6 +7,12 @@ Markdown, long transcripts, select and copy across messages.
 
 ## The engine
 
+The implementation is in `octara-text`, below the retained kernel. It owns `TextEngine`,
+`TextLayout`, shaping caches, visual lines and bundled fonts; its only workspace dependency is
+`octara-primitives`. Kernel owns text nodes, edit state and the integration of layout results
+with selection, accessibility and paint. Renderers consume primitive glyph data and do not
+depend on the text engine. `octara/system-fonts` forwards to `octara-text/system-fonts`.
+
 Parley (Linebender) lays text out, its fontique collects fonts, swash rasterizes glyphs. Not
 the platform's text engines: the same layout in every window, headless run and renderer is
 what lets agents and tests see what people see.

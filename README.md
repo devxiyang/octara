@@ -128,6 +128,7 @@ once in the workspace and inherited by every package; it does not pin the develo
 | --- | --- |
 | `crates/octara` | `reactive`, `kernel`, `view`, `app`, `platform`, `inspect`, `capture` |
 | `crates/octara-primitives` | Window-independent drawing, geometry, theme values, motion and presentation protocols |
+| `crates/octara-text` | Text shaping, line breaking, font management and text geometry |
 | `crates/octara-macros` | `#[component]` |
 | `crates/octara-kit` | Components and streaming Markdown |
 | `crates/octara-render` | CPU reference and wgpu renderers |
@@ -139,7 +140,8 @@ once in the workspace and inherited by every package; it does not pin the develo
 | `apps/chat` | The AI chat reference app, with offline and HTTP streaming models |
 
 Production dependencies point downwards: core and the renderers consume `octara-primitives`;
-renderers and icons do not depend on the App runtime. `octara::prelude` provides convenient
+core also consumes `octara-text`, which depends only on primitives within the workspace.
+Renderers and icons do not depend on the App runtime or text engine. `octara::prelude` provides convenient
 type imports; canonical drawing/value APIs live in `octara_primitives`. Run
 `python3 tools/check_layers.py` to check package boundaries (also enforced in CI).
 The implemented split and remaining work are recorded in [package boundaries](docs/design/package-boundaries.md).
@@ -154,7 +156,7 @@ and Windows. These checks do not establish complete platform support.
 Octara is licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
 [MIT license](LICENSE-MIT), at your option. Bundled assets keep their own licenses: the Lucide
 icons ([ISC](crates/octara-icons/LICENSE-LUCIDE)), and the Inter and IBM Plex Mono fonts
-([SIL Open Font License](crates/octara/assets/fonts/)).
+([SIL Open Font License](crates/octara-text/assets/fonts/)).
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion
 in Octara by you, as defined in the Apache-2.0 license, shall be dual licensed as above,

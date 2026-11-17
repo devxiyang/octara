@@ -324,13 +324,13 @@ impl PlatformWindow for HeadlessWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::text::VisualLine;
+    use octara_text::VisualLine;
 
     #[test]
     fn native_layout_handles_a_busy_engine_and_an_empty_document() {
         let layout = TextInputLayout {
             resources: std::rc::Rc::new(crate::kernel::Resources::default()),
-            style: crate::kernel::text::TextStyle::default(),
+            style: octara_text::TextStyle::default(),
             content: Rect { x: 10.0, y: 20.0, w: 80.0, h: 24.0 },
             multiline: false,
             scroll: 0.0,

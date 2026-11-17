@@ -1,8 +1,8 @@
 //! The platform's fonts and fallback (feature `system-fonts`): CJK text gets real glyphs.
 #![cfg(all(feature = "system-fonts", target_os = "macos"))]
 
-use octara::kernel::text::ParleyEngine;
 use octara::prelude::*;
+use octara_text::ParleyEngine;
 
 #[test]
 fn cjk_falls_back_to_a_system_font_and_system_ui_resolves() {

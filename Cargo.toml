@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["apps/chat", "crates/octara", "crates/octara-primitives", "crates/octara-cli", "crates/octara-fonts", "crates/octara-icons", "crates/octara-kit", "crates/octara-macros", "crates/octara-render", "crates/octara-shell", "examples"]
+members = ["apps/chat", "crates/octara", "crates/octara-primitives", "crates/octara-text", "crates/octara-cli", "crates/octara-fonts", "crates/octara-icons", "crates/octara-kit", "crates/octara-macros", "crates/octara-render", "crates/octara-shell", "examples"]
 
 [workspace.package]
 edition = "2024"
@@ -53,6 +53,7 @@ wgpu = "30.0.2"
 winit = "0.30.13"
 octara = { path = "crates/octara" }
 octara-primitives = { path = "crates/octara-primitives", default-features = false }
+octara-text = { path = "crates/octara-text" }
 octara-fonts = { path = "crates/octara-fonts" }
 octara-icons = { path = "crates/octara-icons" }
 octara-kit = { path = "crates/octara-kit" }

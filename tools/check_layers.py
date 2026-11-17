@@ -12,7 +12,8 @@ import sys
 ALLOWED = {
     "octara-primitives": set(),
     "octara-macros": set(),
-    "octara": {"octara-primitives", "octara-macros"},
+    "octara-text": {"octara-primitives"},
+    "octara": {"octara-primitives", "octara-text", "octara-macros"},
     "octara-render": {"octara-primitives"},
     "octara-icons": {"octara-primitives"},
     "octara-fonts": {"octara"},

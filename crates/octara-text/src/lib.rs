@@ -1,9 +1,10 @@
-//! Text layout behind the kernel ([design](../../../../docs/design/text.md#the-engine)): a
+//! Window-independent text layout ([design](../../../docs/design/text.md#the-engine)): a
 //! replaceable [`TextEngine`] makes [`TextLayout`]s, which text nodes own.
 //!
 //! [`ParleyEngine`] (the default) shapes with Parley. Headless it has the bundled Inter and IBM
 //! Plex Mono only (`system-ui` and `ui-monospace` resolve to them), so a run measures the same
-//! on every machine; [`ParleyEngine::system`] resolves them to the platform's fonts. It keeps
+//! on every machine; `ParleyEngine::system` (with `system-fonts`) resolves them to the platform's
+//! fonts. It keeps
 //! shaped paragraphs by content (text, style, runs), shared by every text showing them, within
 //! a byte budget: appending to a stream reshapes its last paragraph, a row scrolling back or a
 //! repeated label reshapes nothing, and a new width only breaks lines again. [`MonoEngine`] is
@@ -162,7 +163,7 @@ impl VisualLine {
 }
 
 /// The rects `range` covers in `lines`, line by line, relative to the text's top-left.
-pub fn range_rects(lines: &[VisualLine], range: std::ops::Range<usize>) -> Vec<crate::paint::Rect> {
+pub fn range_rects(lines: &[VisualLine], range: std::ops::Range<usize>) -> Vec<octara_primitives::paint::Rect> {
     let mut out = Vec::new();
     for l in lines {
         let (s, e) = (range.start.max(l.start), range.end.min(l.end));
@@ -171,7 +172,7 @@ pub fn range_rects(lines: &[VisualLine], range: std::ops::Range<usize>) -> Vec<c
         }
         let (x0, x1) = (l.x_of(s), l.x_of(e));
         if x1 > x0 {
-            out.push(crate::paint::Rect { x: x0, y: l.top, w: x1 - x0, h: l.height });
+            out.push(octara_primitives::paint::Rect { x: x0, y: l.top, w: x1 - x0, h: l.height });
         }
     }
     out
@@ -220,11 +221,11 @@ fn even_lines(text: &str, em: f32, line_height: f32, max_width: Option<f32>) -> 
 /// Glyphs of one font, positioned relative to their text's top-left corner.
 #[derive(Clone, Debug)]
 pub struct ShapedRun {
-    pub font: parley::FontData,
+    pub font: linebender_resource_handle::FontData,
     pub size: f32,
     pub coords: Vec<i16>,
     pub embolden: bool,
-    pub glyphs: Vec<crate::paint::Glyph>,
+    pub glyphs: Vec<octara_primitives::paint::Glyph>,
     /// The text's run this is from (0: the text's own style).
     pub brush: u16,
     /// Where the run starts on its line and how far it advances.
@@ -299,10 +300,10 @@ impl TextEngine for MonoEngine {
 
 /// Bundled faces (SIL OFL): Inter for sans, IBM Plex Mono for mono.
 static BUNDLED: [&[u8]; 4] = [
-    include_bytes!("../../assets/fonts/Inter-Regular.ttf"),
-    include_bytes!("../../assets/fonts/Inter-Medium.ttf"),
-    include_bytes!("../../assets/fonts/Inter-SemiBold.ttf"),
-    include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf"),
+    include_bytes!("../assets/fonts/Inter-Regular.ttf"),
+    include_bytes!("../assets/fonts/Inter-Medium.ttf"),
+    include_bytes!("../assets/fonts/Inter-SemiBold.ttf"),
+    include_bytes!("../assets/fonts/IBMPlexMono-Regular.ttf"),
 ];
 /// A width as a hashable key (`None` is unbounded).
 type WidthKey = Option<u32>;
@@ -520,8 +521,8 @@ impl LaidText for ParleyText {
 /// How much shaped text an engine keeps by default.
 const KEEP_BYTES: usize = 32 << 20;
 
-/// Parley over bundled and registered fonts (and, from [`ParleyEngine::system`], the
-/// platform's).
+/// Parley over bundled and registered fonts. With `system-fonts`, `ParleyEngine::system` also
+/// includes the platform's fonts.
 pub struct ParleyEngine {
     fonts: FontContext,
     layouts: LayoutContext<u16>,
@@ -610,7 +611,10 @@ fn shaped_run(run: &parley::GlyphRun<'_, u16>, top: f32, line: &parley::LineMetr
         .enumerate()
         .map(|(i, g)| {
             let space = spaces.get(i).copied().unwrap_or(false);
-            (crate::paint::Glyph { id: g.id, x: g.x, y: g.y + top }, if space { -g.advance.max(f32::MIN_POSITIVE) } else { g.advance })
+            (
+                octara_primitives::paint::Glyph { id: g.id, x: g.x, y: g.y + top },
+                if space { -g.advance.max(f32::MIN_POSITIVE) } else { g.advance },
+            )
         })
         .unzip();
     let shaped = ShapedRun {

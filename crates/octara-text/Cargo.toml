@@ -1,0 +1,18 @@
+[package]
+name = "octara-text"
+description = "Window-independent text shaping, layout and font management."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Headless builds use bundled fonts; hosts opt into installed fonts and fallback.
+system-fonts = ["parley/system"]
+
+[dependencies]
+octara-primitives.workspace = true
+linebender_resource_handle.workspace = true
+parley.workspace = true
+rustc-hash.workspace = true

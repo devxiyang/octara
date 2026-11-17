@@ -1457,7 +1457,7 @@ impl App {
     }
     /// Replaces the text engine (e.g. `MonoEngine` for benchmarks): every window measures again
     /// (fonts registered with the old one are not carried over).
-    pub fn set_text_engine(&self, engine: Box<dyn crate::kernel::text::TextEngine>) {
+    pub fn set_text_engine(&self, engine: Box<dyn octara_text::TextEngine>) {
         self.app.res.set_text_engine(engine);
         self.app.fonts_changed();
     }
@@ -1467,7 +1467,7 @@ impl App {
     /// to match a window use it; deterministic tests do not (results then depend on the machine).
     #[cfg(feature = "system-fonts")]
     pub fn use_system_fonts(&self) {
-        self.set_text_engine(Box::new(crate::kernel::text::ParleyEngine::system()));
+        self.set_text_engine(Box::new(octara_text::ParleyEngine::system()));
     }
     /// The theme every window shows.
     pub fn theme(&self) -> Theme {

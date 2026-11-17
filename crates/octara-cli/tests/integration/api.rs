@@ -27,6 +27,9 @@ fn items_are_found_by_canonical_path_and_alias() {
     assert_eq!(api.get("octara::kernel::Role").unwrap().target, "accesskit::Role", "re-exports name their target");
     assert!(api.get("octara::kernel::State::HOVER").is_some(), "bitflags' flags are items");
     assert!(api.get("octara_primitives::identity::NodeId").is_some(), "new_key_type's keys are items");
+    assert_eq!(api.get("octara_text::TextEngine").unwrap().kind, Kind::Trait);
+    assert!(api.get("octara_text::ParleyEngine::system").is_some());
+    assert!(api.get("octara::kernel::text::TextEngine").is_none(), "text layout has one public owner");
     assert!(api.get("octara::kernel::NodeId").is_none(), "primitive types are owned by their crate");
     assert!(api.get("octara::motion::Spring").is_none(), "removed module paths are not aliases");
     assert!(api.get("octara::diagnostics::OVERFLOW").is_some(), "codes! writes the registry's statics");

@@ -5,7 +5,8 @@ What is built, how its parts fit, and the decisions that shape them. Detailed de
 The 2026-11-17 [layered architecture redesign](design/layered-architecture-redesign.md) spans
 runtime, document, primitives, kit and host/tooling boundaries. The first
 [package split](design/package-boundaries.md) is implemented: window-independent values and
-presentation protocols belong to `octara-primitives`, with downward production dependencies.
+presentation protocols belong to `octara-primitives`; text shaping and fonts belong to
+`octara-text`, with downward production dependencies.
 The broader content, input and component-contract proposals are not yet implemented.
 Its evidence is in the [foundation review](design/ui-foundation-review.md) and
 [SwiftUI/Rune/Exact comparison](research/ui-composition-frameworks.md).
@@ -58,6 +59,7 @@ Principles:
 | Crate | Contents |
 | --- | --- |
 | `octara-primitives` | Window-independent geometry, anchor placement, theme values, paths, images, icons, canvas recording, motion, node identity and presentation protocols |
+| `octara-text` | TextEngine, Parley and deterministic monospace engines, fonts, shaping caches, line breaking and text geometry |
 | `octara` | The core: reactive runtime, retained kernel, views, App/Window coordination, tasks, inspector, checks and diagnostics |
 | `octara-macros` | `#[component]`: elements record the component function that built them and where it was called |
 | `octara-kit` | Components (buttons, fields, select, switch, …) and streaming Markdown, built only on `octara`'s public API and theme tokens |
@@ -70,7 +72,8 @@ Principles:
 | `apps/chat` | The AI chat reference app: threads, messages and model events; offline scripted or HTTP streaming `Model` implementations; JSON conversation storage and views composed from the kit |
 
 Renderers and icons depend only on `octara-primitives` in production. Core depends on primitives
-and the component macro; kit and shell use the appropriate lower public APIs. The CLI reads their
+and `octara-text` plus the component macro; the text engine depends only on primitives within
+the workspace. Kit and shell use the appropriate lower public APIs. The CLI reads their
 canonical definitions and prelude aliases from the sources the application builds with.
 `tools/check_layers.py` enforces permitted production edges, including optional and target-specific
 dependencies. Dev dependencies may use the runtime to host integration tests.
@@ -86,7 +89,8 @@ dependencies. Dev dependencies may use the runtime to host integration tests.
 | `platform` | Host protocols and headless adapters; consumes document editing/layout data |
 | `inspect` / `capture` / `diagnostics` | Observation, operations, capture workflow and registered explanations |
 
-Drawing and value modules are in `octara-primitives`. Kernel no longer imports App editing types
+Drawing and value modules are in `octara-primitives`; text layout and bundled fonts are in
+`octara-text`. Kernel owns editing and consumes text layouts. Kernel no longer imports App editing types
 or platform-owned cursor/layout types. App/View/task still share same-crate lifecycle coordination;
 the package split does not claim those remaining internal boundaries are already separate crates.
 

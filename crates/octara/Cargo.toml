@@ -13,7 +13,7 @@ default = ["svg"]
 svg = ["octara-primitives/svg"]
 # The platform's installed fonts and fallback (CJK, emoji, symbols) for real windows. Headless
 # runs leave it off and use the bundled faces only, so results do not depend on the machine.
-system-fonts = ["parley/system"]
+system-fonts = ["octara-text/system-fonts"]
 
 [dependencies]
 octara-primitives.workspace = true
@@ -22,7 +22,7 @@ accesskit.workspace = true
 bitflags.workspace = true
 color.workspace = true
 unicode-segmentation.workspace = true
-parley.workspace = true
+octara-text.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true
 serde_json.workspace = true

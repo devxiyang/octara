@@ -151,7 +151,7 @@ SwiftUI 的子树 environment 是参考机制，不是必须照搬的范围：�
 
 优先级：中。归属：Kernel 文本/样式、View 样式原语。
 
-源码确认：[`TextStyle`](../../crates/octara/src/kernel/text.rs)、
+源码确认：[`TextStyle`](../../crates/octara-text/src/lib.rs)、
 [`Visual` / `Inherited`](../../crates/octara/src/kernel/style.rs) 没有文本对齐字段。
 `items_center` 等容器对齐不能表达多行文本内部的对齐。
 

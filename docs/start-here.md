@@ -24,6 +24,9 @@ depending on the UI runtime. Most views use `octara::prelude::*`, which also imp
 primitive types. For direct module APIs such as `octara_primitives::path` or
 `octara_primitives::paint`, add `octara-primitives` as a dependency. `octara-kit` is optional:
 applications and custom component libraries use the same public foundation.
+Text shaping, fonts and layout are owned by `octara-text`; add it as a direct dependency when
+using a custom `TextEngine` or the deterministic `MonoEngine`. The runtime uses it internally;
+renderers only consume primitive glyph data.
 
 ## A first app
 

@@ -1,4 +1,4 @@
-//! Fonts for deterministic tests and screenshots: the core bundles only Latin faces (Inter, IBM
+//! Fonts for deterministic tests and screenshots: octara-text bundles only Latin faces (Inter, IBM
 //! Plex Mono), and windows use the platform's fonts, so text in other scripts renders as
 //! missing glyphs headless. A test registers these instead of relying on the machine's fonts:
 //!

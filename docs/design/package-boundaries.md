@@ -1,4 +1,4 @@
-# 第一轮包边界落地
+# 包边界落地
 
 日期：2026-11-17。本文记录实现范围；完整目标见[分层边界](layer-boundaries.md)。
 这次拆包不实施先前候选的 IME 重置政策、控件行为变化或新的 Signals API。
@@ -14,6 +14,8 @@ flowchart TD
     Shell[octara-shell] --> Core
     Shell --> Render[octara-render]
     Core --> P[octara-primitives]
+    Core --> Text[octara-text]
+    Text --> P
     Render --> P
     Icons --> P
     Kit --> P
@@ -61,6 +63,21 @@ NodeId 的声明下移不转移节点分配所有权，也不把 key/name/缓存
 公共协议操作属于原语包。TextInputLayout 和 TextGeometry 也由 Kernel 文本领域拥有，
 platform 只消费这些类型。此次只改变归属，不实现新编辑仲裁政策。
 
+## 第二轮：独立文本排版
+
+`octara-text` 从 Kernel 中提取已有排版实现，拥有 TextEngine、TextLayout、TextStyle、
+Wrap、字形与视觉行结果、Parley/MonoEngine、排版缓存和内置字体。其唯一工作区依赖是
+`octara-primitives`，不依赖 App、Signals、节点树或窗口。没有扩大内部字段和方法的可见性。
+
+公开路径由 `octara::kernel::text::*` 改为 `octara_text::*`，不保留旧公开别名；
+CLI 直接索引新包。core 的 `system-fonts` feature 转发到新包，默认仍只用内置字体。
+字体文件与许可证随实现迁移，字形输出的字体句柄仍使用 `linebender_resource_handle::FontData`。
+原语包与渲染器均不依赖排版引擎。
+
+节点文本缓存的归属、编辑历史、IME 组合状态以及选择到绘制的协调仍属于 Kernel；
+此次只提取已有独立计算服务，不增加第二套文本状态或调度机制。`octara-fonts` 仍是面向
+App 的可选 CJK 安装辅助包，并非基础字体协议层。
+
 ## 本轮没有假装完成的边界
 
 Signals、任务、挂载、焦点与窗口仍在 `octara` 内，存在生命周期相关的同包耦合。
@@ -77,7 +94,7 @@ Signals、任务、挂载、焦点与窗口仍在 `octara` 内，存在生命周
 - 检查默认 feature 与关闭 SVG 的构建，不依赖工作区 feature 合并掩盖缺失配置。
 - 包迁移不代表真实 OS 行为重新验收；没有本轮窗口记录时不宣称通过真实窗口验证。
 
-## 本轮执行结果
+## 第一轮执行结果
 
 在 macOS、Rust 1.100.0 下执行：
 
@@ -93,3 +110,20 @@ Signals、任务、挂载、焦点与窗口仍在 `octara` 内，存在生命周
 - CLI 跨包别名测试与 skill 同步验证通过；已重新导出 `skills/octara`。
 
 本轮未新增真实窗口/OS 输入验证，不以源码迁移和 headless 测试代替这类证据。
+
+## 第二轮执行结果
+
+文本排版拆包后，在 macOS、Rust 1.100.0 下执行：
+
+- 工作区 `check --all-targets`、`test`、`clippy --all-targets -- -D warnings` 均通过；
+  完整回归仍为 864 通过、0 失败、3 个原有 ignored doctest。
+- `octara-text --no-default-features --lib` 的 6 项排版测试通过；
+  core 关闭默认 feature 的独立库构建通过，未依赖工作区系统字体 feature 合并。
+- 工作区库文档及 `octara-text --no-default-features` 独立文档均以 `-D warnings` 通过。
+  独立文档检查发现并修复两处指向可选 `system` 方法的失效链接。
+- 原语、CPU renderer、排版包的生产依赖树检查通过；前两者不包含 core 或 Parley，
+  排版包不包含 core、kit、shell。`tools/check_layers.py` 已约束新增包的允许方向。
+- CLI canonical-path 回归与实际 `vocab octara_text::TextEngine` 查询通过，定义指向新包。
+  start-here 与 skill 副本已同步。
+- 字体二进制逐字节一致，许可证文本内容一致（既有 CRLF/LF 工作树规范化除外）。
+- 格式和 diff 空白检查通过。本轮不涉及行为变更，未新增真实窗口验证。
