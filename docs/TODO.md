@@ -169,6 +169,12 @@ validation was performed. B3 includes the separately recorded consistency-mode i
       Existing rich-text/selection/accessibility, multiline/IME, Chat and renderer regressions,
       all-targets Clippy, strict core rustdoc, formatting and diff/layer checks passed.
       No real-window validation or new performance claim in this constraint-only slice.
+      **C1b design/evidence:** a headless probe reproduced nonempty link geometry on a hidden
+      second line under line_clamp(1). The engine currently clips glyphs without providing
+      equivalent visible source fragments to interaction/AX consumers. Follow
+      [text presentation](design/text-presentation.md) for the coordinated engine/consumer
+      migration and acceptance matrix. No truncation fix is claimed yet; do not patch only hit
+      testing or merge native queries into stale committed-frame geometry.
 - [ ] Separate prompt, editable value and accessible label; consolidate semantic resolution.
 - [ ] Finalize and implement external-value/IME arbitration (same-value write, rejection,
       normalization, explicit reset, composition completion/cancellation and late callbacks).
