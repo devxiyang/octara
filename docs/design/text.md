@@ -67,7 +67,9 @@ document selection and positional accessibility. One keyed cache replaces the in
 painted-glyph and visual-line caches. Fully hidden links are ineligible for activation/focus/AX
 while keeping their allocation for a later reveal; explicit whole-document copy retains the
 logical string. See [text presentation](text-presentation.md) for the clipping, bidi and copy
-contracts. Input Field/reveal construction and native IME geometry remain follow-up work.
+contracts. Committed inputs and native current-document queries now share Field construction, empty-line
+handling, reveal and geometry conversion. Only Kernel persists scrolling; native queries use
+try-borrow and never enter handlers. Real OS IME/candidate evidence remains follow-up work.
 
 - A text node holds one string and **runs**: ordered, non-overlapping UTF-8 byte ranges, each a style
   patch over the node's inherited text style: weight, slant, family (or `mono`), size, color and

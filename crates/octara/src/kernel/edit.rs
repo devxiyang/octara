@@ -53,8 +53,16 @@ pub(crate) struct Field {
 }
 
 impl Field {
-    fn new(shown: String, caret: usize, content: Rect, line_height: f32, lines: Vec<VisualLine>) -> Self {
-        Self {
+    /// Complete a field from already-shaped lines and one layout configuration. Both callers
+    /// share the empty insertion line and reveal policy; only Kernel persists the returned
+    /// keep key. Native queries leave the published configuration and live input untouched.
+    fn new(shown: String, caret: usize, layout: &TextInputLayout, mut lines: Vec<VisualLine>) -> (Self, Option<(usize, usize)>) {
+        let content = layout.content;
+        let line_height = layout.style.line_height;
+        if lines.is_empty() {
+            lines.push(VisualLine { start: 0, end: 0, top: 0.0, height: line_height, stops: vec![(0, 0.0)] });
+        }
+        let mut field = Self {
             shown,
             caret,
             preedit: caret..caret,
@@ -70,7 +78,13 @@ impl Field {
             lines,
             scroll: (0.0, 0.0),
             masked: None,
-        }
+        };
+        let kept = field.reveal(layout.multiline, layout.scroll, layout.kept);
+        (field, kept)
+    }
+
+    pub(crate) fn into_geometry(self) -> TextGeometry {
+        TextGeometry { origin: (self.x - self.scroll.0, self.y - self.scroll.1), lines: self.lines }
     }
 
     /// The same caret reveal for a painted field and a native document not yet committed to
@@ -396,37 +410,39 @@ impl Kernel {
         } else {
             (caret..caret, caret..caret)
         };
-        let (x, y, _, _) = self.shown_rect(id);
-        let l = self.taffy.layout(n.taffy).expect("taffy");
-        let (cx, cy) = (x + l.border.left + l.padding.left, y + l.border.top + l.padding.top);
-        let width = (l.size.width - l.border.left - l.border.right - l.padding.left - l.padding.right).max(0.0);
-        let height = (l.size.height - l.border.top - l.border.bottom - l.padding.top - l.padding.bottom).max(0.0);
-        let style = input_style(n.visual.text_style(), input.multiline);
-        let limit = input.multiline.then_some(width);
+        let layout = self.input_layout(id);
         let lines = if shown.is_empty() {
-            vec![VisualLine { start: 0, end: 0, top: 0.0, height: style.line_height, stops: vec![(0, 0.0)] }]
+            Vec::new()
         } else {
-            self.shown_layout(id, &shown, &style).visual_lines(limit)
+            self.shown_layout(id, &shown, &layout.style).visual_lines(layout.multiline.then_some(layout.content.w))
         };
-        let mut f = Field::new(shown, shown_caret, Rect { x: cx, y: cy, w: width, h: height }, style.line_height, lines);
+        let (mut f, kept) = Field::new(shown, shown_caret, &layout, lines);
         f.preedit = preedit;
         f.overlay = overlay;
         f.replaced = replaced;
         f.sel = sel;
         f.show_caret = show_caret;
         f.masked = pairs;
-        input.kept.set(f.reveal(input.multiline, input.scroll.get(), input.kept.get()));
+        input.kept.set(kept);
         input.scroll.set(if input.multiline { f.scroll.1 } else { f.scroll.0 });
         Some(f)
     }
 
-    pub(crate) fn input_layout(&self, id: NodeId, field: &Field) -> TextInputLayout {
+    pub(crate) fn input_layout(&self, id: NodeId) -> TextInputLayout {
         let n = self.node(id);
         let input = n.input().expect("a text input");
+        let (x, y, _, _) = self.shown_rect(id);
+        let l = self.taffy.layout(n.taffy).expect("taffy");
+        let content = Rect {
+            x: x + l.border.left + l.padding.left,
+            y: y + l.border.top + l.padding.top,
+            w: (l.size.width - l.border.left - l.border.right - l.padding.left - l.padding.right).max(0.0),
+            h: (l.size.height - l.border.top - l.border.bottom - l.padding.top - l.padding.bottom).max(0.0),
+        };
         TextInputLayout {
             resources: self.res.clone(),
             style: input_style(n.visual.text_style(), input.multiline),
-            content: Rect { x: field.x, y: field.y, w: field.width, h: field.height },
+            content,
             multiline: input.multiline,
             scroll: input.scroll.get(),
             kept: input.kept.get(),
@@ -570,14 +586,13 @@ impl TextInputLayout {
         let shown = document.text();
         let caret = document.composition.as_ref().map_or(document.caret, |c| c.selection.as_ref().map_or(c.marked.end, |s| s.end));
         let lines = if shown.is_empty() {
-            vec![VisualLine { start: 0, end: 0, top: 0.0, height: self.style.line_height, stops: vec![(0, 0.0)] }]
+            Vec::new()
         } else {
             let mut engine = self.resources.text.try_borrow_mut()?;
             engine.layout(shown, &self.style, &[], None, 0).visual_lines(self.multiline.then_some(self.content.w))
         };
-        let mut field = Field::new(shown.to_owned(), caret, self.content, self.style.line_height, lines);
-        field.reveal(self.multiline, self.scroll, self.kept);
-        Some(TextGeometry { origin: (field.x - field.scroll.0, field.y - field.scroll.1), lines: field.lines })
+        let (field, _) = Field::new(shown.to_owned(), caret, self, lines);
+        Some(field.into_geometry())
     }
 }
 

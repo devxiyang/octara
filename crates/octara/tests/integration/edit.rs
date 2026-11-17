@@ -221,6 +221,57 @@ fn native_layout_predicts_fresh_preedit_geometry_before_the_core_receives_its_ed
 }
 
 #[test]
+fn native_and_committed_fields_agree_after_resize_scroll_and_composition_transitions() {
+    for multiline in [false, true] {
+        let mut app = Window::headless(move || {
+            let value = state("value", || "中文😀 one two\n三四 five six\n七八 nine ten".to_owned());
+            let field = text_input().id("field").w_full().h(64).p_2().value(value).on_input(move |s| value.set(s));
+            (if multiline { field.multiline() } else { field }).into()
+        });
+        app.tap("field").unwrap();
+        app.set_selection(value(&app).len(), value(&app).len());
+        for width in [90.0, 240.0, 110.0] {
+            app.resize(width, 160.0);
+            if multiline {
+                let n = app.kernel().find("field").unwrap();
+                let (x, y, ..) = app.kernel().rect(n);
+                app.wheel(x + 12.0, y + 12.0, 0.0, -20.0);
+            }
+            let current = native_input(&app);
+            let document = current.document.unwrap();
+            let predicted = current.layout.unwrap().layout(&document).unwrap();
+            assert_eq!(Some(&predicted), current.geometry.as_ref(), "query preserves resize and manual scroll");
+            for edit in [
+                TextEdit::Mark { text: "中文😀组合".into(), selection: Some(3..7), replacement: None },
+                TextEdit::Mark { text: "中文😀组合".into(), selection: None, replacement: None },
+                TextEdit::Cancel,
+                TextEdit::Mark { text: "你好😀".into(), selection: Some(0..0), replacement: None },
+                TextEdit::Unmark,
+            ] {
+                let before = native_input(&app);
+                let expected = before.document.unwrap();
+                let mut mirror = expected.clone();
+                mirror.apply(&edit);
+                let predicted = before.layout.unwrap().layout(&mirror).unwrap();
+                assert!(app.apply_text_edit(before.id, &expected, &edit));
+                assert_eq!(native_input(&app).geometry.as_ref(), Some(&predicted));
+            }
+        }
+        let before = native_input(&app);
+        let expected = before.document.unwrap();
+        let edit = TextEdit::Insert { text: String::new(), replacement: Some(0..expected.text().len()) };
+        let mut mirror = expected.clone();
+        mirror.apply(&edit);
+        let predicted = before.layout.unwrap().layout(&mirror).unwrap();
+        assert!(app.apply_text_edit(before.id, &expected, &edit));
+        assert_eq!(native_input(&app).geometry.as_ref(), Some(&predicted));
+        assert_eq!(predicted.lines.len(), 1, "empty fields retain one insertion line");
+        assert!(predicted.first_rect(0..0).is_some());
+        assert!(app.app().diagnostics().is_empty());
+    }
+}
+
+#[test]
 fn carets_move_by_grapheme_and_word() {
     let mut app = app("");
     app.type_text("cafe\u{301} 👍🏽 ok");

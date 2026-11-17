@@ -188,10 +188,20 @@ validation was performed. B3 includes the separately recorded consistency-mode i
       All-targets Clippy, strict core/text rustdoc, no-default-features core, format/diff/layer
       checks pass. Existing debug `bench --stream` completed with bounded work; no release/native
       timing claim. The full test run needed authorized local-loopback access for HTTP fixtures.
-      **C1c remains:** consolidate editable Field/reveal construction while preserving native
-      current-document queries/try-borrow behavior; qualify composition/scrolling and obtain
-      separate real-window IME/candidate evidence. C1 is not marked complete by C1b. No real
-      window/OS interaction or screenshot was performed in this slice.
+      **C1c implemented:** Kernel builds the input layout configuration before constructing
+      Field. Committed input and native current-document queries share Field construction,
+      the empty insertion line, reveal calculation and geometry conversion. Only Kernel
+      persists the resulting scroll/keep key; native queries retain try-borrow refusal and
+      do not enter handlers or overwrite the live input. Existing paragraph reuse and secure
+      input masking stay with Kernel. Regression compares prediction with the subsequent
+      published geometry after resize, manual scrolling, CJK/emoji composition selection,
+      hidden composition cursor, cancellation, confirmation and clearing to an empty field.
+      C1c validation: **901 workspace tests passed, 0 failed, 3 existing ignored doctests**;
+      workspace all-targets Clippy, format/diff and dependency-layer checks passed. Full tests
+      include existing native query refusal/recovery, secure input, multiline, HTTP and rendering.
+      **Remaining C1 acceptance:** obtain separate real-window IME/scrolling/candidate evidence.
+      Headless geometry agreement does not prove OS candidate placement. No real window/OS
+      interaction or screenshot was performed in C1b/C1c.
 - [ ] Separate prompt, editable value and accessible label; consolidate semantic resolution.
 - [ ] Finalize and implement external-value/IME arbitration (same-value write, rejection,
       normalization, explicit reset, composition completion/cancellation and late callbacks).

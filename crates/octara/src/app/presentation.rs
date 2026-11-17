@@ -342,11 +342,8 @@ impl Window {
                 (None, None)
             } else {
                 let field = k.field(n)?;
-                let layout = k.input_layout(n, &field);
-                (
-                    Some(crate::kernel::TextGeometry { origin: (field.x - field.scroll.0, field.y - field.scroll.1), lines: field.lines }),
-                    Some(layout),
-                )
+                let layout = k.input_layout(n);
+                (Some(field.into_geometry()), Some(layout))
             };
             Some(crate::platform::TextInput { id: n, caret, secure, multiline: k.is_multiline(n), document, geometry, layout })
         });

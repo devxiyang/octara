@@ -1,7 +1,7 @@
 # C1: one text presentation result
 
 Status: C1b implements the shared presentation result and ordinary document consumers.
-C1c (common editable Field/reveal construction) and real-window IME evidence remain unfinished.
+C1c shares editable Field/reveal construction; real-window IME evidence remains unfinished.
 Follows C1a's shared TextBox constraints.
 
 ## Evidence
@@ -117,11 +117,16 @@ preserving logical text does not authorize inventing offscreen positional rectan
 - [x] Historical hidden second-line link, partly visible link/ellipsis, direct/pointer/keyboard/
       accessibility activation, guarded Agent refusal, repeated resize identity preservation,
       fixed-height incremental AX updates and full logical copy have passing headless regressions.
-- [ ] Consolidate Field construction/reveal for committed input and current-document native
-      queries. Preserve native try-borrow failure and synchronous current-document behavior.
-- [ ] Qualify editable CJK/emoji range round trips with composition and scrolling against that
-      common construction. Existing multiline/native-query/IME tests pass but do not complete
-      this migration.
+- [x] Consolidate Field construction/reveal for committed input and current-document native
+      queries. Kernel creates the configuration before building Field; both paths share empty
+      insertion-line construction, reveal and geometry conversion. Only Kernel persists scroll
+      and its keep key. Native layout shapes its current document with try-borrow, without
+      entering handlers or mutating the published configuration; empty documents need no engine.
+      Kernel retains incremental paragraph reuse and secure masking before construction.
+- [x] Qualify editable CJK/emoji composition and scrolling against that common construction.
+      Prediction matches subsequently published geometry across repeated widths, manual scroll,
+      selected/hidden composition cursors, cancellation, unmark and clearing. Existing marked
+      range/caret round trips and busy-engine refusal/recovery remain passing requirements.
 - [ ] Obtain real-window IME, scrolling and candidate-position evidence. No real window/OS input
       or screenshot was used in C1b.
 
@@ -137,3 +142,8 @@ token in both motion cases, 1.4/2.8 drawings built and 48/64 AX nodes compared. 
 debug work observations, not a release CPU comparison or a native frame-time claim; no new
 release build cache was created. No broader context, Signals, lifecycle or identity redesign
 was introduced.
+
+C1c validation (2026-11-17): **901 workspace tests passed, 0 failed, 3 existing ignored
+doctests**; workspace all-targets Clippy, formatting, diff and dependency-layer checks passed.
+The new transition regression compares synchronous predictions with published field geometry
+for both single-line and multiline inputs. No real-window or OS candidate validation was run.
