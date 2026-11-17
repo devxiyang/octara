@@ -21,13 +21,14 @@ flowchart TD
     Kit --> P
     Shell --> P
     Core --> Macros[octara-macros：编译期支持]
+    App --> Fonts[octara-fonts：可选字体资产]
 ```
 
 箭头表示 Cargo 生产依赖。原语包没有任何 Octara 工作区依赖。
 绘制协议直接使用既有 `linebender_resource_handle::FontData`，不为字体句柄依赖完整 Parley 排版引擎。
 渲染器、图标库不再依赖 core；`octara`、kit 与 shell 可使用相同的底层类型。
 下层定义协议，上层实现和调用它；输入回传不是反向源码依赖。
-图略去字体安装辅助包与 CLI，完整允许边在 `tools/check_layers.py`。
+字体资产包不依赖运行时或排版引擎；图略去 CLI，完整允许边在 `tools/check_layers.py`。
 脚本检查普通、build、optional 和 target-specific 工作区边；dev 依赖可以用上层框架承载集成验证。
 
 ## 原语包的本轮内容
@@ -79,8 +80,9 @@ CLI 直接索引新包。core 的 `system-fonts` feature 转发到新包，默�
 原语包与渲染器均不依赖排版引擎。
 
 节点文本缓存的归属、编辑历史、IME 组合状态以及选择到绘制的协调仍属于 Kernel；
-此次只提取已有独立计算服务，不增加第二套文本状态或调度机制。`octara-fonts` 仍是面向
-App 的可选 CJK 安装辅助包，并非基础字体协议层。
+此次只提取已有独立计算服务，不增加第二套文本状态或调度机制。`octara-fonts` 只提供可选 CJK
+字体字节、family 和 scripts；不再包含运行期 installer 或依赖 core。调用方在 AppConfig.text_engine
+注册初始字体，确保首帧使用目标资源。集成测试通过 dev 依赖验证排版与截图，不进入生产依赖图。
 
 ## 本轮没有假装完成的边界
 

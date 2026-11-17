@@ -1,6 +1,8 @@
 //! With the CJK subset installed, hanzi, kana and CJK punctuation render from it (no missing
 //! glyphs), in the right weight, next to Latin text in the theme's family.
 
+#![cfg(feature = "cjk")]
+
 use octara::prelude::*;
 use octara_primitives::paint::{GlyphRun, Item};
 
@@ -14,9 +16,10 @@ fn runs(app: &Window, id: &str) -> Vec<GlyphRun> {
 }
 
 fn is(run: &GlyphRun, font: &[u8]) -> bool {
-    run.font.data.as_ref().len() == font.len()
+    run.font.data.as_ref() == font
 }
 
+#[ui]
 fn view() -> View {
     col()
         .child(text("Hello 你好，世界。ひらがな カタカナ").id("mixed"))
@@ -25,13 +28,22 @@ fn view() -> View {
         .into()
 }
 
+fn configured_window() -> Window {
+    let mut config = AppConfig::default();
+    for data in [octara_fonts::cjk::REGULAR, octara_fonts::cjk::SEMIBOLD] {
+        config.text_engine.register_fallback_font(data, &octara_fonts::cjk::SCRIPTS);
+    }
+    App::with_config(octara::platform::HeadlessPlatform::default(), config).open_window(WindowOptions::new("CJK"), view).unwrap()
+}
+
 #[test]
-fn cjk_falls_back_to_the_subset() {
+fn cjk_falls_back_to_the_subset_on_the_first_frame() {
     let app = Window::headless(view);
     // Without it: missing glyphs (glyph 0) for every CJK character.
     let missing = |app: &Window, id: &str| runs(app, id).iter().flat_map(|r| r.glyphs.iter()).filter(|g| g.id == 0).count();
     assert!(missing(&app, "mixed") > 0);
-    octara_fonts::cjk::install(&app.app());
+    app.app().shutdown();
+    let app = configured_window();
     for id in ["mixed", "bold", "field"] {
         assert_eq!(missing(&app, id), 0, "{id} has missing glyphs");
     }
@@ -40,14 +52,17 @@ fn cjk_falls_back_to_the_subset() {
     assert!(mixed.iter().any(|r| !is(r, octara_fonts::cjk::REGULAR)), "Latin stays in Inter");
     assert!(runs(&app, "bold").iter().all(|r| is(r, octara_fonts::cjk::SEMIBOLD)), "600 uses the SemiBold face");
     assert!(runs(&app, "field").iter().all(|r| is(r, octara_fonts::cjk::REGULAR)));
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+    app.app().shutdown();
 }
 
 #[test]
 fn screenshots_are_deterministic_with_it() {
     let shot = || {
-        let app = Window::headless(view);
-        octara_fonts::cjk::install(&app.app());
-        octara_render::CpuRenderer::new().render(&app.display_list(), 2.0)
+        let app = configured_window();
+        let picture = octara_render::CpuRenderer::new().render(&app.display_list(), 2.0);
+        app.app().shutdown();
+        picture
     };
     let (a, b) = (shot(), shot());
     assert!(a == b, "the same pixels every time");

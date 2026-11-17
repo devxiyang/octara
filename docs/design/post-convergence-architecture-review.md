@@ -210,3 +210,19 @@ Rune 的线程级文档缓存和跨 commit 预算。保留 Doc.kept 前缀复用
 最终验证：kit **120** 项、Chat **73** 项通过，0 失败、1 个既有忽略 doctest；包括全部 11 项本地
 HTTP 用例（沙箱拒绝回环端口后，授权重跑通过）。工作区 all-targets 严格 Clippy、格式、diff 与
 分层检查通过。未修改内核、公开 API 或依赖；实现保持在 Markdown 两个文件内。
+
+## 后续阶段：字体资产包去除运行时依赖（init）
+
+截至 120658b 的改动已推送 init，并快进推送 main；后续继续在 init。
+本阶段删除 octara-fonts::cjk::install，不保留别名或新注册包装函数。该包只导出已有 REGULAR、
+SEMIBOLD、FAMILY、SCRIPTS，生产依赖为空。调用方通过已有 AppConfig.text_engine 注册字体，
+然后创建 App/窗口；截图工具此前已经采用此路径。App 的运行期字体变更能力仍保留，二者职责不同。
+
+参考本地 Rune 固定版本 3686e94 的 text.rs::TextSystem::new：字体字节作为输入交给文本系统完成
+注册，资产不需要认识运行中的 UI。Octara 保留现有文本服务接口和显式脚本 fallback 政策，不照搬
+Rune 的默认字体替换规则或系统字体发现机制。依赖检查同步禁止字体资产包向 core 建立生产边。
+
+字体阶段验证完成：2 项 CJK 集成测试和 1 项 doctest 通过；禁用默认 feature 的构建/测试通过
+（CJK 用例按 feature 关闭）。首帧混合文本和输入框无缺字，400/600 字重按字体字节核验，独立
+CPU 绘制像素一致。普通依赖树只剩字体包自身；工作区 all-targets 严格 Clippy、格式、diff 与
+分层检查通过。未做真实 OS 窗口验证，也不声称性能收益。

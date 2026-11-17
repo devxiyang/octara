@@ -16,7 +16,7 @@ ALLOWED = {
     "octara": {"octara-primitives", "octara-text", "octara-macros"},
     "octara-render": {"octara-primitives"},
     "octara-icons": {"octara-primitives"},
-    "octara-fonts": {"octara"},
+    "octara-fonts": set(),
     "octara-kit": {"octara", "octara-primitives", "octara-icons"},
     "octara-shell": {"octara", "octara-primitives", "octara-render"},
     "octara-cli": {"octara", "octara-primitives"},

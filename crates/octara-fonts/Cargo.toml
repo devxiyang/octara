@@ -14,9 +14,7 @@ default = ["cjk"]
 # forms (about 1.3 MB each).
 cjk = []
 
-[dependencies]
-octara.workspace = true
-
 [dev-dependencies]
+octara.workspace = true
 octara-primitives.workspace = true
 octara-render = { workspace = true, default-features = false }

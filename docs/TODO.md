@@ -682,3 +682,22 @@ kit doctest. Chat includes all 11 local HTTP cases; the sandbox initially reject
 binding, then the authorized run passed. Workspace all-targets Clippy with `-D warnings`,
 formatting, diff and dependency-layer checks passed. Production changes stay in the two
 Markdown implementation files; the core/public API and dependencies are unchanged.
+
+## Continuation on init: font assets without runtime coupling (2026-11-17)
+
+Changes through `120658b` were pushed to origin/init and fast-forwarded to origin/main;
+implementation continues on init.
+
+- [x] Delete cjk::install without an alias; keep font bytes/family/scripts as the asset API.
+- [x] Move octara from production to test-only dependencies; tighten the layer checker.
+- [x] Migrate the package example/tests to AppConfig registration before window mounting;
+      retain the screenshot tool's existing initialization path.
+- [x] Verify first-frame CJK/kana/Latin fallback and weight selection, deterministic CPU
+      screenshots, disabled cjk feature, docs and workspace consumers; then commit.
+
+Font asset validation: **2 CJK integration tests + 1 doctest passed**. The no-default-features
+build/tests also pass (CJK tests correctly gated off). The first display list has no missing
+glyphs in mixed text or input, regular/semibold use the expected font bytes, and independent
+CPU renders match. `cargo tree --edges normal` contains only octara-fonts itself. Workspace
+all-targets Clippy with `-D warnings`, formatting, diff and layer checks passed. This is
+headless first-frame/render validation; no real OS window or performance claim.
