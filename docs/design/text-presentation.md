@@ -147,3 +147,11 @@ C1c validation (2026-11-17): **901 workspace tests passed, 0 failed, 3 existing 
 doctests**; workspace all-targets Clippy, formatting, diff and dependency-layer checks passed.
 The new transition regression compares synchronous predictions with published field geometry
 for both single-line and multiline inputs. No real-window or OS candidate validation was run.
+
+## Follow-up architectural review
+
+The [state-to-presentation review](editing-architecture-review.md) rechecks C1b/C1c.
+Shared Field construction is retained, but `Kernel::field` still persists reveal state during
+reads. R2 moves that mutation into explicit settlement; C1c does not establish read-only geometry.
+The review also distinguishes document bidi coverage from editable caret-affinity coverage.
+These are planned follow-ups, not changes implemented by this document.
