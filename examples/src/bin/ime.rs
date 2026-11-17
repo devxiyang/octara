@@ -4,7 +4,7 @@
 use octara::prelude::*;
 use octara_kit::{button, text_field};
 
-#[component]
+#[ui]
 fn ime() -> View {
     let single = state("single", || "A😀Z".to_owned());
     let multi = state("multi", || "alpha\nbeta".to_owned());

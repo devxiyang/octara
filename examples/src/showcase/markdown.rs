@@ -9,7 +9,7 @@ use std::time::Duration;
 
 const ANSWER: &str = "### Streaming Markdown\n\nEach block is an element of its own, so a token re-parses and re-lays out **only the block it lands in**; the ones above keep their nodes.\n\n- Open *emphasis*, `code` and [links](https://commonmark.org) show styled as they arrive\n- Markers never flash\n- [x] Tables, quotes and code blocks too\n\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\n| Block | Key |\n|---|---|\n| paragraph | `b{i}` |\n| list item | `i{j}` |\n\n> Select across blocks: `mod+c` copies the text, `mod+alt+c` the Markdown.\n";
 
-#[component]
+#[ui]
 pub fn card() -> El {
     let answer = text_buffer("answer", || ANSWER.to_owned());
     let streaming = state("streaming", || false);

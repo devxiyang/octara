@@ -192,12 +192,9 @@ codes! {
     COMMAND_QUEUE_LIMIT: Error, View, "docs/design/input.md#deferred-commands",
         "Deferred commands did not settle in 16 rounds; the remaining queue was discarded.",
         cause: "Commands keep queuing themselves or each other, or one update queued more work than the round limit. Each deferred command settles its updates before routing the next; break the cycle or reduce the batch.";
-    AMBIGUOUS_COMPONENT: Warning, View, "docs/design/reactive-core.md#4-identity-and-state",
-        "Several unkeyed components of one name share a parent; their state follows their order.",
-        cause: "`component(name, ..)` names siblings by position, so inserting one before another hands it the other's state; `component_keyed(name, key, ..)` names them by key.";
-    DUPLICATE_COMPONENT_KEY: Error, View, "docs/design/reactive-core.md#4-identity-and-state",
-        "Two components of one name have the same key under one parent; they would share state.",
-        cause: "A component's identity is its name and key within its parent's name path.";
+    DUPLICATE_SCOPE_KEY: Error, View, "docs/design/reactive-core.md#4-identity-and-state",
+        "Two content scopes have the same key within one owner; the duplicate was not mounted.",
+        cause: "`scope(key, ..)` identifies a content owner by a unique stable key within its parent. Reusing that key would share named state, so the duplicate factory is not run. Choose distinct keys for independently owned content; sibling order and UI function names do not provide identity.";
     EACH_ROW_NOT_ELEMENT: Error, View, "docs/design/reactive-core.md#5-incremental-collections",
         "A list row was not one element; an empty column was used instead.",
         cause: "`each` and `virtual_each` move, insert and remove rows as single nodes.";

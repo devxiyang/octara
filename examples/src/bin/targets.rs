@@ -13,7 +13,7 @@ struct Targets {
     error: Signal<String>,
 }
 
-#[component]
+#[ui]
 fn target(model: Targets) -> View {
     button(move || format!("Hit target — value {}", model.updates.get()))
         .id("target-action")
@@ -24,7 +24,7 @@ fn target(model: Targets) -> View {
         .into()
 }
 
-#[component]
+#[ui]
 fn stage(model: Targets) -> View {
     col()
         .id("target-stage")
@@ -37,7 +37,7 @@ fn stage(model: Targets) -> View {
         .into()
 }
 
-#[component]
+#[ui]
 fn counters(model: Targets) -> View {
     row()
         .gap_6()
@@ -47,7 +47,7 @@ fn counters(model: Targets) -> View {
         .into()
 }
 
-#[component]
+#[ui]
 fn child(model: Targets, main: WindowId) -> View {
     let id = current_window();
     // A reload runs cleanup too; the initial watch publishes this same live window again.
@@ -72,7 +72,7 @@ fn child(model: Targets, main: WindowId) -> View {
         .into()
 }
 
-#[component]
+#[ui]
 fn targets() -> View {
     let model = Targets {
         hits: state("hits", || 0),

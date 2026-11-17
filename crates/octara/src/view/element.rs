@@ -326,7 +326,7 @@ pub struct El {
     content: Content,
     role: Option<Role>,
     at: &'static Location<'static>,
-    /// The `#[component]` function building it.
+    /// The `#[ui]` function building it, independent of its runtime owner.
     made: Option<crate::kernel::Component>,
     test_id: Option<Prop<String>>,
     value: Option<Prop<String>>,

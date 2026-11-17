@@ -25,7 +25,7 @@ fn landscape() -> Image {
     Image::rgba(w, h, px)
 }
 
-#[component]
+#[ui]
 pub fn card() -> El {
     let picture = landscape();
     section("Images and fit")

@@ -12,7 +12,7 @@ use std::rc::Rc;
 /// trace, a tool call's detail, a settings group. `open` holds whether it is open; `content`
 /// is built while it is (a scope: its state lives as long). `id` names it; its trigger is
 /// `{id}-trigger` (a `Button` with `expanded`), its content `{id}-content`.
-#[component]
+#[ui]
 #[track_caller]
 pub fn collapsible(id: &str, open: impl Model<bool>, header: impl IntoElement, content: impl Fn() -> View + 'static) -> El {
     let open = Rc::new(open);
@@ -52,7 +52,7 @@ pub fn collapsible(id: &str, open: impl Model<bool>, header: impl IntoElement, c
 /// A list of rows (`list_item`s, `list_header`s between groups): a `ListBox` whose arrow keys
 /// move between its items. Make it scroll with `overflow_y_scroll`, give it `each` or
 /// `virtual_each` children.
-#[component]
+#[ui]
 #[track_caller]
 pub fn list() -> El {
     col().role(Role::ListBox).focus_group().gap_0p5()
@@ -60,7 +60,7 @@ pub fn list() -> El {
 
 /// A row of a `list` showing `content`: hovered, focused and selected looks. Chain
 /// `.selected(..)`, `.on_press(..)` (select it), `.on_secondary_press(..)` (its context menu).
-#[component]
+#[ui]
 #[track_caller]
 pub fn list_item(content: impl IntoElement) -> El {
     row()
@@ -84,7 +84,7 @@ pub fn list_item(content: impl IntoElement) -> El {
 }
 
 /// The heading of a group of rows in a `list` ("Today", "Yesterday").
-#[component]
+#[ui]
 #[track_caller]
 pub fn list_header(label: impl IntoText) -> El {
     text(label).role(Role::Heading).level(3).px_2().pt_3().pb_1().text_xs().font_medium().text_color(Token::TextMuted).select_none()
@@ -97,7 +97,7 @@ const MIN_PANE: f32 = 120.0;
 /// the rest; dragging the divider between them, or its arrow keys when focused, changes `width`
 /// (at least 120; the setter may clamp it more). `id` names it; its divider is `{id}-divider`, a
 /// `Splitter` whose value is the width: a line in a strip 7 wide to grab (20 on touch).
-#[component]
+#[ui]
 #[track_caller]
 pub fn split(id: &str, width: impl Model<f32>, leading: impl IntoElement, trailing: impl IntoElement) -> El {
     let width = Rc::new(width);

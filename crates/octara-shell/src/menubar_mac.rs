@@ -222,7 +222,7 @@ mod tests {
     use octara::prelude::*;
     use octara_primitives::text::TextEdit;
 
-    #[component]
+    #[ui]
     fn editor() -> View {
         let value = state("value", || "杭州".to_owned());
         text_input().id("field").value(move || value.get()).on_input(move |text| value.set(text)).into()

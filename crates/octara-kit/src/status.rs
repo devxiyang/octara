@@ -12,7 +12,7 @@ const STEP: Duration = Duration::from_millis(83);
 /// An activity indicator: an arc stepping round its track. Every spinner on screen keeps one
 /// phase (from the app's clock). Sized like an icon (`size_4`); its name for assistive
 /// technology is "Loading" (`label` to change it).
-#[component]
+#[ui]
 #[track_caller]
 pub fn spinner() -> El {
     let time = clock(STEP);
@@ -39,7 +39,7 @@ pub fn spinner() -> El {
 }
 
 /// A small label (an attachment, a filter, a tag).
-#[component]
+#[ui]
 #[track_caller]
 pub fn chip(label: impl IntoText) -> El {
     row()
@@ -58,7 +58,7 @@ pub fn chip(label: impl IntoText) -> El {
 
 /// A chip with a button removing it (an attachment before it is sent): `remove` runs on its
 /// press. The button is named "Remove {label}".
-#[component]
+#[ui]
 #[track_caller]
 pub fn removable_chip(label: &str, remove: impl Fn() + 'static) -> El {
     chip(label.to_owned()).pr_0p5().child(icon_button(icons::X, format!("Remove {label}")).size(20.0).on_press(remove))
@@ -68,7 +68,7 @@ pub fn removable_chip(label: &str, remove: impl Fn() + 'static) -> El {
 /// (`prompt`'s shape, in the page): an error with a retry, a warning. Actions chained as
 /// children go after the text. Assistive technology hears it when it appears; a warning or a
 /// critical one is an alert.
-#[component]
+#[ui]
 #[track_caller]
 pub fn callout(level: PromptLevel, message: impl IntoText, detail: Option<&str>) -> El {
     let (mark, color, role) = match level {

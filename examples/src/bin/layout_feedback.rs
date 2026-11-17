@@ -2,7 +2,7 @@
 use octara::prelude::*;
 use octara_kit::button;
 
-#[component]
+#[ui]
 fn layout_feedback() -> View {
     let running = state("running", || false);
     let size = size_of("feedback-box");

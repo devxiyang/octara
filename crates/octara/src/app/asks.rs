@@ -353,7 +353,7 @@ fn menu_surface_inner(
                     enabled_rows.push((row_id.clone(), label.to_lowercase()));
                 }
                 let pick = pick.clone();
-                component_keyed("MenuSubmenu", row_id.clone(), move || {
+                scope(format!("MenuSubmenu[{row_id}]"), move || {
                     let open = state("open", || false);
                     let (child_id, reveal) = (row_id.clone(), row_id.clone());
                     menu_row(&label, None, Some("›".to_owned()), enabled)
@@ -385,7 +385,6 @@ fn menu_surface_inner(
                                 .into()
                             },
                         )
-                        .into()
                 })
             }
         })

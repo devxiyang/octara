@@ -23,7 +23,7 @@ struct Model {
 
 type Drags = Rc<RefCell<Vec<(u32, DragPhase)>>>;
 
-#[component]
+#[ui]
 fn interaction_row(key: u32, item: ReadSignal<u32>, model: Model, drags: Drags, disposed: Rc<RefCell<Vec<u32>>>) -> View {
     let draft = state("draft", || "A😀bcZ".to_owned());
     let window_id = current_window();
@@ -69,7 +69,7 @@ fn interaction_row(key: u32, item: ReadSignal<u32>, model: Model, drags: Drags, 
         .into()
 }
 
-#[component]
+#[ui]
 fn interaction_list(model: Model, snapshots: bool, gap: f32, drags: Drags, disposed: Rc<RefCell<Vec<u32>>>) -> View {
     let render = move |key: &u32, item| interaction_row(*key, item, model, drags.clone(), disposed.clone());
     col()
@@ -538,7 +538,7 @@ fn deleting_a_pending_hit_cancels_the_pointer_even_when_its_ancestor_target_surv
     app.shutdown();
 }
 
-#[component]
+#[ui]
 fn nested_virtual_row(outer: u32, editors: bool) -> View {
     col()
         .id(format!("outer-{outer}"))
@@ -559,7 +559,7 @@ fn nested_virtual_row(outer: u32, editors: bool) -> View {
         .into()
 }
 
-#[component]
+#[ui]
 fn nested_virtual_lists(editors: bool) -> View {
     col()
         .size_full()

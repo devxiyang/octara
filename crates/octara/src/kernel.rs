@@ -293,7 +293,7 @@ struct Node {
     inherited_from: Inherited,
     /// Where the element was created (`file:line`), for diagnostics.
     origin: Option<&'static std::panic::Location<'static>>,
-    /// The component function that built it.
+    /// The UI function that built it, independent of its runtime owner.
     component: Option<Component>,
     test_id: Option<String>,
     handlers: [Option<HandlerId>; HandlerKind::COUNT],
@@ -306,8 +306,8 @@ struct Node {
     visual: Visual,
 }
 
-/// The component function that built an element: a `#[component]` function's name and module,
-/// and where it was called.
+/// The UI function that built an element: a `#[ui]` function's name and module,
+/// and where it was called. This is provenance, not state ownership.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Component {
     pub name: &'static str,
@@ -2450,7 +2450,7 @@ impl Kernel {
     pub fn origin(&self, id: NodeId) -> Option<&'static std::panic::Location<'static>> {
         self.node(id).origin
     }
-    /// The component function that built the element, if one was marked `#[component]`.
+    /// The UI function that built the element, if one was marked `#[ui]`.
     pub fn component(&self, id: NodeId) -> Option<Component> {
         self.node(id).component
     }

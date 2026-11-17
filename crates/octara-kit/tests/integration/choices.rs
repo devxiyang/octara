@@ -12,7 +12,7 @@ fn options() -> Vec<ComboboxOption> {
     ]
 }
 
-#[component]
+#[ui]
 fn choices() -> View {
     let value = state("value", || Some("berry".to_owned()));
     let options = state("options", options);

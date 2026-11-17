@@ -13,7 +13,7 @@ fn focused(window: &Window, id: &str) -> bool {
     window.kernel().state_of(id).is_some_and(|state| state.contains(State::FOCUSED))
 }
 
-#[component]
+#[ui]
 fn labeled_name() -> View {
     let name = state("name", || "Ada".to_owned());
     let info = state("info", || FieldInfo { description: "Use your full name.".into(), required: true, ..FieldInfo::default() });
@@ -147,7 +147,7 @@ fn radio_options() -> Vec<RadioOption> {
     ]
 }
 
-#[component]
+#[ui]
 fn plans() -> View {
     let value = state("value", || Some("team".to_owned()));
     let options = state("options", radio_options);

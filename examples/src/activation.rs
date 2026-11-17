@@ -4,7 +4,7 @@ use octara::kernel::a11y::a11y_id;
 use octara::prelude::*;
 use octara_kit::button;
 
-#[component]
+#[ui]
 pub fn view() -> View {
     let mode = state("mode", || 0u8);
     let hits = state("hits", || 0u32);

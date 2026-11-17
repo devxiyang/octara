@@ -4,7 +4,7 @@ use super::section;
 use octara::prelude::*;
 use octara_kit::{DialogOptions, PopupItem, RadioOption, TabOption, button, dialog, popup_list, segmented, tabs, text_field};
 
-#[component]
+#[ui]
 pub fn card() -> El {
     let open = state("open", || false);
     let tab = state("tab", || Some("draft".to_owned()));

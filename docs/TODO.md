@@ -507,7 +507,7 @@ research-first hold above and narrows earlier D/E proposals; do not run a parall
 - [x] **1 — Option snapshots.** Remove Combobox/PopupList writable option mirrors; retain
       interaction reconciliation, navigation/reveal, IME and stable targets. Verify duplicates,
       reorder/update/removal, rejected choices and editor lifetime; commit independently.
-- [ ] **2 — Construction, owner and provenance.** Ordinary functions are the default;
+- [x] **2 — Construction, owner and provenance.** Ordinary functions are the default;
       separate source annotations from explicit content scope, replace component/component_keyed
       without aliases, migrate callers/CLI/skill. Verify multiple instances, provider boundaries,
       cleanup, hot reload and diagnostic origins; commit independently.
@@ -530,3 +530,12 @@ Clippy, layer and diff checks passed. Retained rows act by stable ID; duplicate 
 rows and disable choices until recovery; recovery refuses stale targets. Editor composition,
 selection and identity survive option updates. These are headless protocol tests, not native IME
 candidate-window verification. No performance improvement is claimed without measurement.
+
+Stage 2 evidence (2026-11-17): full workspace tests **936 passed, 0 failed, 3 ignored**;
+workspace all-targets Clippy passed. Six new scope tests cover ordinary two-instance functions,
+El/string content, duplicate-body refusal, provider/handler/cleanup ownership, reordered hot
+reload with provenance, and slash/percent identity isolation. The existing keyed feedback test
+also passed in the focused run. CLI skill export regenerated; the workspace test checks freshness
+and start-here doctests. Old component construction APIs and macro are removed, with no aliases.
+The new scope path intentionally does not recover old component-path snapshots; cold-start at
+this migration. No native OS validation was performed for this API-only stage.

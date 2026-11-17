@@ -34,7 +34,7 @@ fn chat() -> Chat {
 
 /// The app: conversations beside the open one.
 pub fn root(options: impl Fn() -> Options + 'static) -> View {
-    component("Chat", move || {
+    scope("Chat", move || -> View {
         let chat = Chat::new(options());
         provide(chat.clone());
         let width = state("sidebar", || 260.0f32);
@@ -68,7 +68,7 @@ pub fn root(options: impl Fn() -> Options + 'static) -> View {
     })
 }
 
-#[component]
+#[ui]
 fn desktop_navigation(width: Signal<f32>) -> View {
     let start = Rc::new(Cell::new(0.0));
     let divider = el()
@@ -346,7 +346,7 @@ fn main_pane() -> El {
         .child(settings)
 }
 
-#[component]
+#[ui]
 fn settings_dialog(chat: Chat, open: Signal<bool>) -> View {
     dialog(
         "settings",
@@ -431,7 +431,7 @@ fn settings_dialog(chat: Chat, open: Signal<bool>) -> View {
 }
 
 /// Labels belong to people; the selection and retained option rows use the model's stable ID.
-#[component]
+#[ui]
 fn model_picker(chat: &Chat) -> El {
     let options: Vec<_> = chat.models().iter().map(|entry| ComboboxOption::new(&entry.id, entry.model.name())).collect();
     let hint = chat.clone();
@@ -768,7 +768,7 @@ fn text_resource(p: ReadSignal<Part>) -> TextResource {
 
 /// The row keeps its identity through replacement; its variant and captured buffers have
 /// separate child lifetimes. Status changes only update the bindings inside the current kind.
-#[component]
+#[ui]
 fn part(id: u64, part_id: PartId, p: ReadSignal<Part>) -> El {
     col().id(format!("part-{id}-{part_id}")).w_full().min_w(0.0).child(keyed(
         move || p.with(PartKind::of),
@@ -790,7 +790,7 @@ fn part(id: u64, part_id: PartId, p: ReadSignal<Part>) -> El {
 }
 
 /// What the model thought: open while it thinks, closed once it has (the person may open it).
-#[component]
+#[ui]
 fn reasoning(id: u64, part_id: PartId, p: ReadSignal<Part>) -> View {
     let ended = move || match p.get() {
         Part::Reasoning { started, ended, .. } => ended.map(|e| e.saturating_sub(started)),
@@ -828,7 +828,7 @@ fn seconds(d: Duration) -> String {
 }
 
 /// A tool call: its name and state; open, its input and output.
-#[component]
+#[ui]
 fn tool(id: u64, part_id: PartId, p: ReadSignal<Part>) -> View {
     let tool = move || match p.get() {
         Part::Tool(t) => Some(t),

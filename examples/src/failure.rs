@@ -3,7 +3,7 @@
 
 use octara::prelude::*;
 
-#[component]
+#[ui]
 pub fn view() -> View {
     let count = state("count", || 0);
     let fail_binding = state("fail_binding", || false);

@@ -33,7 +33,7 @@ impl Default for DialogOptions {
 /// Closing unmounts `content`: its local state, tasks and editor history are disposed. Keep a
 /// draft in the application's state and pass its model into the content to preserve it across
 /// openings. A new opening creates new node targets. The component owns no draft or validation.
-#[component]
+#[ui]
 #[track_caller]
 pub fn dialog(
     id: &str,

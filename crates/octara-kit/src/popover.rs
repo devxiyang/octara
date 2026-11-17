@@ -15,7 +15,7 @@ use std::rc::Rc;
 /// Escape or a press outside dismisses it, restoring the previous focus (the trigger when it
 /// opened the popup). It can also open inside another modal; dismissing it leaves that enclosing
 /// modal open.
-#[component]
+#[ui]
 #[track_caller]
 pub fn popover(id: &str, open: impl Model<bool>, placement: Placement, trigger: El, content: impl Fn() -> View + 'static) -> El {
     let open = Rc::new(open);

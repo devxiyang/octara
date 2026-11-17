@@ -210,7 +210,7 @@ impl LongSession {
     }
 
     /// The unchanged product root, with fixture commands registered in its Chat scope.
-    #[component]
+    #[ui]
     pub fn view(&self, store: Option<Store>) -> View {
         let model = self.clone();
         octara_chat::root(move || {

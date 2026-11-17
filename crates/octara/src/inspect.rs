@@ -215,8 +215,8 @@ pub struct Node {
     /// Where it was created (`file:line:column`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    /// The `#[component]` function that built it, shown where it differs from its parent's:
-    /// the component boundaries.
+    /// The `#[ui]` function that built it, shown where it differs from its parent's.
+    /// These source boundaries do not identify state ownership.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub component: Option<ComponentInfo>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -448,7 +448,7 @@ pub struct Reply {
     pub text: Option<String>,
 }
 
-/// A `#[component]` function, as the inspector names it.
+/// A `#[ui]` function, as the inspector names its provenance.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComponentInfo {
     /// The function's name (`toolbar`).

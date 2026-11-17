@@ -1,50 +1,51 @@
-//! Octara's attribute macros, re-exported by `octara` (`octara::prelude::component`).
+//! Octara's attribute macros, re-exported by `octara` (`octara::prelude::ui`).
 //!
 //! Written on the token stream alone (no parser crate): an attribute on a function needs only
 //! its name and its body.
 
 use proc_macro::{Delimiter, Group, Ident, Punct, Spacing, Span, TokenStream, TokenTree};
 
-/// Marks a function as a component: the elements it builds (and those its views build later)
+/// Records a UI function's provenance: the elements it builds (and those its views build later)
 /// record it, with where it was called, so the inspector, picking and marked captures can say
-/// "made by `toolbar()`, called at `src/app.rs:30:5`". Nothing is allocated, and state scopes
-/// stay `component(name, ..)`'s.
+/// "made by `toolbar()`, called at `src/app.rs:30:5`". The function remains an ordinary Rust
+/// function: it runs immediately, accepts borrowed inputs and keeps its return type. This
+/// annotation allocates no owner; named state belongs to the current explicit scope or root.
 ///
-/// Each element's own source stays the line in the body that built it. A component that is
+/// Each element's own source stays the line in the body that built it. A UI function that is
 /// also `#[track_caller]` is a leaf whose insides are not its caller's to edit (a library's
 /// button): its elements' sources are where it was called, as `#[track_caller]` means.
 ///
 /// ```ignore
-/// #[component]
+/// #[ui]
 /// fn toolbar(save: impl Fn() + 'static) -> El {
 ///     row().gap_2().child(primary_button("Save").id("save").on_press(save))
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn ui(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !attr.is_empty() {
-        return error(Span::call_site(), "`#[component]` takes no arguments");
+        return error(Span::call_site(), "`#[ui]` takes no arguments");
     }
     let mut tokens: Vec<TokenTree> = item.into_iter().collect();
     let Some(at) = tokens.iter().position(|t| matches!(t, TokenTree::Ident(i) if i.to_string() == "fn")) else {
-        return error(Span::call_site(), "`#[component]` goes on a function");
+        return error(Span::call_site(), "`#[ui]` goes on a function");
     };
     if tokens[..at].iter().any(|t| matches!(t, TokenTree::Ident(i) if i.to_string() == "async")) {
-        return error(Span::call_site(), "a component builds its view at once: it cannot be `async`");
+        return error(Span::call_site(), "a UI function builds its view at once: it cannot be `async`");
     }
     let Some(TokenTree::Ident(name)) = tokens.get(at + 1).cloned() else {
-        return error(Span::call_site(), "`#[component]` goes on a named function");
+        return error(Span::call_site(), "`#[ui]` goes on a named function");
     };
     let Some(TokenTree::Group(body)) =
         tokens.last().cloned().filter(|t| matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Brace))
     else {
-        return error(name.span(), "`#[component]` needs the function's body");
+        return error(name.span(), "`#[ui]` needs the function's body");
     };
     let leaf = tokens[..at].iter().any(
         |t| matches!(t, TokenTree::Group(g) if g.delimiter() == Delimiter::Bracket && g.stream().to_string().trim() == "track_caller"),
     );
     let guard: TokenStream = format!(
-        "let __octara_component = ::octara::view::enter_component({:?}, ::core::module_path!(), ::core::panic::Location::caller());",
+        "let __octara_ui = ::octara::view::enter_ui({:?}, ::core::module_path!(), ::core::panic::Location::caller());",
         name.to_string()
     )
     .parse()

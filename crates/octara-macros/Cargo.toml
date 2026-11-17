@@ -1,6 +1,6 @@
 [package]
 name = "octara-macros"
-description = "Octara's attribute macros: `#[component]`."
+description = "Octara's attribute macros: `#[ui]`."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

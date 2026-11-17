@@ -70,7 +70,7 @@ fn a_size_that_feeds_back_into_itself_stays_pending_until_input_stops_it() {
     app.shutdown();
 }
 
-#[component]
+#[ui]
 fn feedback(enabled: Signal<bool>) -> View {
     let size = size_of("feedback");
     col()

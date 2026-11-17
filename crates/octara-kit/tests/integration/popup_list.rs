@@ -20,7 +20,7 @@ fn choices() -> Vec<PopupItem> {
     ]
 }
 
-#[component]
+#[ui]
 fn scene() -> View {
     let draft = state("text", || "Original".to_owned());
     let open = state("open", || false);

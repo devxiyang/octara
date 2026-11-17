@@ -45,7 +45,7 @@ impl ComboboxOption {
 /// rather than a virtual list or an asynchronous search source.
 /// The trigger fills its containing box and truncates long labels. Use an ordinary wrapper
 /// element to constrain its width or attach a tooltip; the full selected label remains its value.
-#[component]
+#[ui]
 #[track_caller]
 pub fn combobox(
     id: &str,
@@ -56,7 +56,7 @@ pub fn combobox(
     let id = id.to_owned();
     let label = label.into();
     let value: Rc<dyn Model<Option<String>>> = Rc::new(value);
-    component_keyed("Combobox", id.clone(), move || {
+    scope(format!("Combobox[{id}]"), move || -> View {
         let open = state("open", || false);
         let query = state("query", String::new);
         let highlight = state("highlight", || None::<String>);

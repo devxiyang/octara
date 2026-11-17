@@ -39,14 +39,14 @@ fn counter_with(body: fn(Signal<i64>) -> ()) -> View {
 }
 
 fn panel(id: &'static str, keyed: bool) -> View {
-    let body = move || {
+    let body = move || -> View {
         let open = state("open", || false);
         col()
             .child(button("t").id(format!("{id}-toggle")).on_press(move || open.update(|o| *o = !*o)))
             .child(show(move || open.get(), move || text("body").id(format!("{id}-body")).into()))
             .into()
     };
-    if keyed { component_keyed("Panel", id, body) } else { component("Panel", body) }
+    scope(if keyed { id } else { "panel" }, body)
 }
 
 fn panels(keyed: bool) -> View {
@@ -187,13 +187,13 @@ fn variants() -> Vec<Variant> {
         },
         Variant {
             id: "I7",
-            intent: "patch inserts a same-named component first",
+            intent: "patch inserts a duplicate scope key first",
             build: || Window::headless(|| panels(false)),
             check: reload_keeps_panel,
         },
         Variant {
             id: "I7-keyed",
-            intent: "same patch, `component_keyed`",
+            intent: "same patch, unique scope keys",
             build: || Window::headless(|| panels(true)),
             check: reload_keeps_panel,
         },
@@ -293,7 +293,7 @@ fn expected(id: &str) -> Expect {
         "I4b" => e(&["FLUSH_RUNAWAY"], None, false),
         "I5" => e(&[], Some("READ_DISPOSED"), false),
         "I6" => e(&[], None, false), // known silent: an explicit `untrack` capture
-        "I7" => e(&["AMBIGUOUS_COMPONENT"], None, false),
+        "I7" => e(&["DUPLICATE_SCOPE_KEY"], None, false),
         "I7-keyed" => e(&[], None, true),
         "I8-watch" => e(&[], None, true),
         "I9" => e(&["STRICT_READ_UNTRACKED"], None, false),

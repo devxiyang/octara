@@ -47,13 +47,13 @@ impl TabOption {
 /// The application controls panel focus and background work, including when selection changes
 /// externally. Panel IDs are a naming convention; this bar does not create accessibility
 /// relations or manage navigation stacks.
-#[component]
+#[ui]
 #[track_caller]
 pub fn tabs(id: &str, label: impl Into<String>, value: impl Model<Option<String>>, options: impl Fn() -> Vec<TabOption> + 'static) -> View {
     let id = id.to_owned();
     let label = label.into();
     let value: Rc<dyn Model<Option<String>>> = Rc::new(value);
-    component_keyed("Tabs", id.clone(), move || {
+    scope(format!("Tabs[{id}]"), move || -> View {
         row()
             .id(id.clone())
             .role(Role::TabList)
@@ -112,7 +112,7 @@ pub fn tabs(id: &str, label: impl Into<String>, value: impl Model<Option<String>
 /// otherwise the first enabled choice. Focus alone does not choose. Arrows wrap and choose;
 /// Home/End choose the first/last enabled option. Press, Space and Enter choose too. This is a
 /// radio choice, so it uses `checked`, while [`tabs`] uses `selected` and manual activation.
-#[component]
+#[ui]
 #[track_caller]
 pub fn segmented(
     id: &str,
@@ -123,7 +123,7 @@ pub fn segmented(
     let id = id.to_owned();
     let label = label.into();
     let value: Rc<dyn Model<Option<String>>> = Rc::new(value);
-    component_keyed("Segmented", id.clone(), move || {
+    scope(format!("Segmented[{id}]"), move || -> View {
         col()
             .id(id.clone())
             .role(Role::RadioGroup)

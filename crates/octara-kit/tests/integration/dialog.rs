@@ -15,7 +15,7 @@ fn focus(window: &Window) -> Option<String> {
     window.inspect().focus
 }
 
-#[component]
+#[ui]
 fn editor(click_outside: bool) -> View {
     let open = state("open", || false);
     let draft = state("draft", String::new);

@@ -183,7 +183,7 @@ fn a_value_is_announced_for_any_control() {
     assert_eq!(node.1.value(), Some("Dark"));
 }
 
-#[component]
+#[ui]
 fn active_option_view() -> View {
     let active = state("active", || Some("option-b".to_owned()));
     col()

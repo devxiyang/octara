@@ -24,7 +24,7 @@ fn tab_options() -> Vec<TabOption> {
     ]
 }
 
-#[component]
+#[ui]
 fn tab_scene() -> View {
     let value = state("value", || Some("two".to_owned()));
     let writes = state("writes", || 0);

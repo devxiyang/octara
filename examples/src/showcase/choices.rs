@@ -17,7 +17,7 @@ fn cities() -> Vec<ComboboxOption> {
     options
 }
 
-#[component]
+#[ui]
 pub fn card() -> El {
     let selected = state("city", || Some("hangzhou".to_owned()));
     let options = state("cities", cities);

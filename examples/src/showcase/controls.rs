@@ -4,7 +4,7 @@ use super::section;
 use octara::prelude::*;
 use octara_kit::{FieldInfo, button, field, menu_button, normalize_number, number_field, parse_number, progress, slider};
 
-#[component]
+#[ui]
 pub fn card() -> El {
     let value = state("value", || 0.35);
     let draft = state("draft", || "0.35".to_owned());

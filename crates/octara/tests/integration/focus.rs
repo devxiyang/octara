@@ -413,7 +413,7 @@ struct ReloadModalChanges {
     remove_inner_field: Cell<bool>,
 }
 
-#[component]
+#[ui]
 fn reload_modal_view(changes: Rc<ReloadModalChanges>) -> View {
     let outer_open = state("outer-open", || false);
     let inner_open = state("inner-open", || false);

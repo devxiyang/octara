@@ -23,9 +23,11 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
 - A view function runs **once** and builds a retained tree. What changes is read in closures:
   `text(move || format!("{}", n.get()))`, `.opacity(move || ..)`. Reading `.get()` in the body
   bakes the value in (`STRICT_READ_UNTRACKED`).
-- Mark every function that builds part of the view `#[component]`: elements then record which
+- Mark every function that builds part of the view `#[ui]`: elements then record which
   component made them and where it was called, for the inspector and picking.
-- State in components is named: `state("key", || init)`, `state_list("key", init, key_fn)`,
+- Ordinary functions do not create owners. Pass state handles into reusable functions; use
+  `scope(key, || content)` only for an independent lifetime/context range. Duplicate scope keys
+  refuse the duplicate content (`DUPLICATE_SCOPE_KEY`). Named state belongs to the active owner: `state("key", || init)`, `state_list("key", init, key_fn)`,
   `text_buffer(..)`. Use `App::current().run(|| state("key", || init))` for shared App state;
   same-key/type App lookups reuse the value until shutdown.
 - Register `on_cleanup(..)` during construction to retire external requests and cancel retained

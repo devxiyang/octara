@@ -42,7 +42,7 @@ impl FieldInfo {
 /// Pass the actual focusable control, not a container around it. Set `disabled` and handlers
 /// on that control before passing it in; chaining them on the returned field affects only its
 /// wrapper. For example, `field("name", "Name", text_field(name).disabled(busy), info)`.
-#[component]
+#[ui]
 #[track_caller]
 pub fn field(id: &str, label: impl Into<String>, control: El, info: impl Fn() -> FieldInfo + 'static) -> El {
     let label = label.into();
@@ -138,7 +138,7 @@ struct RadioRow {
 /// Focus alone does not choose. Arrow keys wrap between enabled options and choose them;
 /// Home and End choose the first and last enabled options.
 /// Press, Space and Enter choose the focused option. Disabled options refuse activation.
-#[component]
+#[ui]
 #[track_caller]
 pub fn radio_group(
     id: &str,
@@ -149,7 +149,7 @@ pub fn radio_group(
     let id = id.to_owned();
     let label = label.into();
     let value: Rc<dyn Model<Option<String>>> = Rc::new(value);
-    component_keyed("RadioGroup", id.clone(), move || {
+    scope(format!("RadioGroup[{id}]"), move || -> View {
         let options = memo(options);
         let rows = state_list("options", Vec::<RadioRow>::new, |row: &RadioRow| row.option.id.clone());
         let ordered = rows.sort_by(|row| row.order);

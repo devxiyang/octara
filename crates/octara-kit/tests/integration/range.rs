@@ -12,7 +12,7 @@ fn clean(window: &Window) {
     assert!(window.app().diagnostics().is_empty(), "{:?}", window.app().diagnostics());
 }
 
-#[component]
+#[ui]
 fn controls() -> View {
     let level = state("level", || 2.0);
     let raw = state("raw", || "2.00".to_owned());

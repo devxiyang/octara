@@ -5,7 +5,7 @@ use super::section;
 use octara::prelude::*;
 use octara_kit::button;
 
-#[component]
+#[ui]
 pub fn card() -> El {
     let wrap = state("wrap", || true);
     let said = state("said", || "Right-click the box, or press Delete…".to_string());

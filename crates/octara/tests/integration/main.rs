@@ -45,6 +45,7 @@ mod replay;
 mod resources;
 mod responsive;
 mod rich;
+mod scopes;
 mod scroll;
 mod secure;
 mod selection;

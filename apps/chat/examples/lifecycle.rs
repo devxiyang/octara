@@ -83,7 +83,7 @@ fn controls(model: &Controlled) {
     });
 }
 
-#[component]
+#[ui]
 fn lifecycle(model: Controlled, directory: PathBuf) -> View {
     root(move || {
         controls(&model);

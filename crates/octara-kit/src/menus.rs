@@ -25,7 +25,7 @@ use std::rc::Rc;
 /// their original selection and context. Keyboard opening restores focus to the trigger.
 /// Component behavior opens before application `on_press`; application `on_key` receives only
 /// unconsumed keys. Adding these callbacks preserves opening and navigation.
-#[component]
+#[ui]
 #[track_caller]
 pub fn menu_button(id: &str, label: impl Into<String>, open: impl Model<bool>, menu: impl Fn() -> Menu + 'static) -> El {
     let id = id.to_owned();

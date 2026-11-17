@@ -44,7 +44,7 @@ impl PopupItem {
 /// During IME composition, keyboard navigation belongs to the IME and pointer choices do
 /// nothing. Rows are retained through option updates; closing disposes only the popup.
 /// `selected` denotes the pending suggestion, not a committed application value.
-#[component]
+#[ui]
 #[track_caller]
 pub fn popup_list(
     id: &str,
@@ -58,7 +58,7 @@ pub fn popup_list(
     let label = label.into();
     let open: Rc<dyn Model<bool>> = Rc::new(open);
     let choose: Rc<dyn Fn(String)> = Rc::new(on_choose);
-    component_keyed("PopupList", id.clone(), move || {
+    scope(format!("PopupList[{id}]"), move || -> View {
         let active = state("active", || None::<String>);
         let items = memo(items);
         let valid = memo(move || {

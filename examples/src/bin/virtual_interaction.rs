@@ -55,12 +55,12 @@ fn scroll(window: &mut Window, offset: f32) {
     window.dispatch(Event::ScrollTo("virtual-list".into(), 0.0, offset)).unwrap();
 }
 
-#[component]
+#[ui]
 fn action(label: &'static str, id: &'static str, name: &'static str) -> View {
     button(label).id(id).preserve_focus_on_press(true).on_press(move || invoke(name).unwrap()).into()
 }
 
-#[component]
+#[ui]
 fn virtual_row(key: u32, model: Model) -> View {
     let draft = state("draft", || SEED.to_owned());
     row()
@@ -108,7 +108,7 @@ fn virtual_row(key: u32, model: Model) -> View {
         .into()
 }
 
-#[component]
+#[ui]
 fn virtual_list(model: Model) -> View {
     col()
         .id("virtual-list")
@@ -119,7 +119,7 @@ fn virtual_list(model: Model) -> View {
         .into()
 }
 
-#[component]
+#[ui]
 fn virtual_interaction() -> View {
     let model = Model {
         items: state_list("items", || (0..ROWS).collect(), |key| *key),

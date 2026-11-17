@@ -11,12 +11,12 @@ fn choose(value: Signal<String>, open: Signal<bool>, index: usize) {
     }
 }
 
-#[component]
+#[ui]
 fn custom_action(content: El) -> El {
     row().role(Role::Button).label("发送").focusable().h(44).px_3().gap_2().child(content)
 }
 
-#[component]
+#[ui]
 fn foundation_view() -> View {
     let value = state("query", String::new);
     let open = state("suggestions", || false);

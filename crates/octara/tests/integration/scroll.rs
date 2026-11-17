@@ -144,7 +144,7 @@ fn top_row(app: &Window) -> (String, f32) {
         .expect("a row covers the top of the window")
 }
 
-#[component]
+#[ui]
 fn reading_feed(wrapping: bool) -> View {
     let items = state_list(
         "reading-items",

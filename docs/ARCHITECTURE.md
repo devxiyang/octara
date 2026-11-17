@@ -70,7 +70,7 @@ Principles:
 | `octara-primitives` | Window-independent geometry, anchor placement, theme values, paths, images, icons, canvas recording, motion, node identity and presentation protocols |
 | `octara-text` | TextEngine, Parley and deterministic monospace engines, fonts, shaping caches, line breaking and text geometry |
 | `octara` | The core: reactive runtime, retained kernel, views, App/Window coordination, tasks, inspector, checks and diagnostics |
-| `octara-macros` | `#[component]`: elements record the component function that built them and where it was called |
+| `octara-macros` | `#[ui]`: elements record the component function that built them and where it was called |
 | `octara-kit` | Components (buttons, fields, select, switch, …) and streaming Markdown, built only on `octara`'s public API and theme tokens |
 | `octara-render` | Primitive display list → pixels: CPU and wgpu renderers; no production dependency on the App runtime |
 | `octara-shell` | Desktop windows (winit): multiple windows, input, IME, system fonts, scale, frames, AccessKit, file dialogs; macOS native web views, maps, menus and alerts |

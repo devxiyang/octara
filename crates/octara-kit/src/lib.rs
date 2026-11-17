@@ -84,7 +84,7 @@ fn interactive(e: El) -> El {
 // ---- button ----
 
 /// A secondary button: surface background, border, hover and pressed shades.
-#[component]
+#[ui]
 #[track_caller]
 pub fn button(label: impl IntoText) -> El {
     interactive(text(label).role(Role::Button))
@@ -102,7 +102,7 @@ pub fn button(label: impl IntoText) -> El {
 }
 
 /// The main action of a view: accent background.
-#[component]
+#[ui]
 #[track_caller]
 pub fn primary_button(label: impl IntoText) -> El {
     button(label)
@@ -114,14 +114,14 @@ pub fn primary_button(label: impl IntoText) -> El {
 }
 
 /// A low-emphasis button: no background until hovered.
-#[component]
+#[ui]
 #[track_caller]
 pub fn ghost_button(label: impl IntoText) -> El {
     button(label).bg(Paint::Color(Color::TRANSPARENT)).border_color(Paint::Color(Color::TRANSPARENT))
 }
 
 /// A button that stays selected while `selected` holds (tabs, segmented controls, filters).
-#[component]
+#[ui]
 #[track_caller]
 pub fn toggle_button(label: impl IntoText, selected: impl Fn() -> bool + 'static) -> El {
     ghost_button(label)
@@ -131,7 +131,7 @@ pub fn toggle_button(label: impl IntoText, selected: impl Fn() -> bool + 'static
 
 /// A button showing only `icon`, named `label`: its name for assistive technology and its
 /// tooltip. Quiet until hovered (a toolbar's, a message's actions).
-#[component]
+#[ui]
 #[track_caller]
 pub fn icon_button(icon: octara_primitives::icon::Icon, label: impl Into<String>) -> El {
     let label = label.into();
@@ -179,7 +179,7 @@ fn target(role: Role, visual: El) -> El {
 
 /// A checkbox bound to `checked`; `Event::Toggle` flips it. An application `on_toggle`
 /// runs after the model setter and preserves the binding.
-#[component]
+#[ui]
 #[track_caller]
 pub fn checkbox(checked: impl Model<bool>) -> El {
     let (get, flip) = toggle_model(checked);
@@ -202,7 +202,7 @@ pub fn checkbox(checked: impl Model<bool>) -> El {
 
 /// An on/off switch bound to `on`; `Event::Toggle` flips it. An application `on_toggle`
 /// runs after the model setter and preserves the binding.
-#[component]
+#[ui]
 #[track_caller]
 pub fn switch(on: impl Model<bool>) -> El {
     let (get, flip) = toggle_model(on);
@@ -228,7 +228,7 @@ pub fn switch(on: impl Model<bool>) -> El {
 
 /// A single-line text field bound to `value`. The model is updated before the replaceable
 /// `on_input` application callback; adding that callback preserves the binding.
-#[component]
+#[ui]
 #[track_caller]
 pub fn text_field(value: impl Model<String>) -> El {
     let m = Rc::new(value);
@@ -252,7 +252,7 @@ pub fn text_field(value: impl Model<String>) -> El {
 /// `id` names the trigger and keys the component, so its open state survives hot reload. The
 /// trigger has role `ComboBox` and `expanded`; pressing it opens a `ListBox` below it (flipped
 /// above when there is no room) with options `{id}-option-{index}`, the current one `selected`.
-#[component]
+#[ui]
 #[track_caller]
 pub fn select<T: Clone + PartialEq + 'static>(
     id: &str,
@@ -262,7 +262,7 @@ pub fn select<T: Clone + PartialEq + 'static>(
     let id = id.to_owned();
     let options: Rc<Vec<(T, String)>> = Rc::new(options.into_iter().map(|(v, l)| (v, l.into())).collect());
     let value: Rc<dyn Model<T>> = Rc::new(value);
-    component_keyed("Select", id.clone(), move || {
+    scope(format!("Select[{id}]"), move || -> View {
         let open = state("open", || false);
         let label = {
             let (value, options) = (value.clone(), options.clone());

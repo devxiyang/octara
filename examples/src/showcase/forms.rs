@@ -14,7 +14,7 @@ fn name_error(name: &str) -> Option<String> {
     }
 }
 
-#[component]
+#[ui]
 pub fn card() -> El {
     let name = state("profile_name", || "小明".to_owned());
     let style = state("reply_style", || Some("balanced".to_owned()));

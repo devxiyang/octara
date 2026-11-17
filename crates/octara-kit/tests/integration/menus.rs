@@ -31,7 +31,7 @@ fn actions() -> Menu {
     ])
 }
 
-#[component]
+#[ui]
 fn commands() -> View {
     let open = state("open", || false);
     let source = state("source", actions);

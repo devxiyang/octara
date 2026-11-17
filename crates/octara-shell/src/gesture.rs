@@ -509,7 +509,7 @@ mod tests {
         octara::inspect::parse_guarded_request(window, &request.to_string()).unwrap().guard.unwrap()
     }
 
-    #[component]
+    #[ui]
     fn removing_long_target() -> View {
         let shown = state("shown", || true);
         col()

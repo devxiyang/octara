@@ -4,7 +4,7 @@ use super::section;
 use octara::prelude::*;
 use octara_kit::switch;
 
-#[component]
+#[ui]
 pub fn card() -> El {
     let faded = state("faded", || true);
     section("Group opacity")

@@ -87,12 +87,12 @@ fn command(name: &'static str, model: Model, action: impl Fn(&Window, Model) + '
     });
 }
 
-#[component]
+#[ui]
 fn action(label: &'static str, id: &'static str, command: &'static str) -> View {
     button(label).id(id).preserve_focus_on_press(true).on_press(move || invoke_after_update(command)).into()
 }
 
-#[component]
+#[ui]
 fn geometry_row(key: u32, row: ReadSignal<GeometryRow>) -> View {
     text(move || row.with(|row| row.text.clone()))
         .id(format!("geometry-row-{key}"))
@@ -104,7 +104,7 @@ fn geometry_row(key: u32, row: ReadSignal<GeometryRow>) -> View {
         .into()
 }
 
-#[component]
+#[ui]
 fn virtual_geometry() -> View {
     let model = Model {
         rows: state("rows", || (0..ROWS).map(seed_row).collect()),

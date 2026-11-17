@@ -192,7 +192,7 @@ fn a_finite_effect_fanout_does_not_exhaust_the_feedback_round_limit() {
                 .size_full()
                 .children((0..1_100).map(|index| {
                     let counted = counted.clone();
-                    component_keyed("Row", index, move || {
+                    scope(index, move || {
                         let value = state("value", || 0u32);
                         watch(
                             move || trigger.get(),
@@ -203,7 +203,7 @@ fn a_finite_effect_fanout_does_not_exhaust_the_feedback_round_limit() {
                                 }
                             },
                         );
-                        text(move || value.get().to_string()).into()
+                        text(move || value.get().to_string())
                     })
                 }))
                 .into()

@@ -356,3 +356,17 @@ Combobox/PopupList 现在从 memo 的选项快照直接派生 keyed rows；删�
 可写 state_list 以及 retain/update/push 同步逻辑。active/open/query 的协调与 reveal 保留。
 来源存在重复 ID 时，不让筛选隐藏非法身份；行退出且不能键盘选择，恢复时生成新目标。
 选择提议仍由应用接受或拒绝。验证和环境边界记录在 TODO 的 Stage 1 evidence。
+
+
+### 第二阶段替代接口
+
+普通 UI 函数可用 `#[ui]` 记录来源，不改变生命周期。显式范围使用
+`scope(key, factory)`，factory 可返回 El、View 或字符串；其执行和内容转换都发生在挂载后的
+新 owner 内，不新增布局节点。预先创建的内容不重新读取 provider，也不转移已创建资源。
+
+删除 `#[component]`、`component`、`component_keyed` 及序号身份路径，不提供别名。
+重复 scope key 报 `DUPLICATE_SCOPE_KEY`，不执行第二个工厂；key 中的 `%` 和 `/` 转义以免
+路径与嵌套 scope 混淆。已有 owner/scope 引擎不变。新路径不兼容旧组件路径的热重载快照；
+进入新版本后，稳定 key 的状态恢复不依赖兄弟顺序。迁移时先冷启动，不承诺跨此 API 迁移
+保留进程中的旧状态。普通函数需要独立实例数据时优先接收调用方分配的 Signal；只有实际
+生命周期或 provider 隔离需要才创建 scope。

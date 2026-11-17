@@ -3,7 +3,7 @@
 
 use octara::prelude::*;
 
-#[component]
+#[ui]
 pub fn card() -> El {
     let opened = state("opened", String::new);
     super::section("Rich text")

@@ -72,7 +72,7 @@ just to set the initial theme. `Window::headless` remains the short default setu
 ```rust
 use octara::prelude::*;
 
-#[component]
+#[ui]
 fn counter() -> View {
     let count = state("count", || 0);
     col()
@@ -102,7 +102,7 @@ fn main() {
 - `state(key, init)` is named state: the key identifies it within the component, so it survives
   hot reload. Use it for every piece of state a component owns.
 - `text(move || ..)` is a binding; `text("fixed")` is not.
-- `#[component]` marks a function that builds part of the view: every element it builds records
+- `#[ui]` marks a function that builds part of the view: every element it builds records
   it and where it was called, so the inspector and picking can say "made by
   `counter()`, called at `src/main.rs:30`". Put it on every such function.
 - The app root gets `size_full()`: without it the root is only as big as its content.
@@ -316,9 +316,13 @@ assert!(!app.kernel().exists("todo-1"));
 
 - `show(cond, then)` / `show_else(cond, then, otherwise)`: the branch is a scope; its state
   lives while it is shown.
-- `component_keyed("Card", id, || ..)`: a named scope with its own state. Prefer it over
-  `component` whenever siblings share a name (`AMBIGUOUS_COMPONENT`). The attribute
-  `#[component]` only names who built what; state scopes are these functions'.
+- `scope(key, || content)`: an explicit lifetime/context range, built when mounted without
+  an extra layout node. Its key is unique within its owner; duplicate keys report
+  `DUPLICATE_SCOPE_KEY` and the duplicate body is not run. State follows the key on reload,
+  not sibling position. `#[ui]` records provenance only; ordinary functions do not create scopes.
+- Prefer passing Signal handles into reusable functions. If a helper creates named state or
+  provides local context, build it inside an explicit scope (or an existing branch/list owner).
+  Prebuilt content has already run its state/context reads; inserting it does not re-run them.
 - `.overlay(open, Placement::BELOW, || ..)`: popovers and menus, placed next to the element and
   kept inside the window.
 

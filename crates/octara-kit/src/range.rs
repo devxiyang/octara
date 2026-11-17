@@ -91,7 +91,7 @@ const THUMB: f32 = 16.0;
 /// for display only. Application press, drag and numeric callbacks run after the model setter;
 /// `on_key` receives only unconsumed keys. Add a specific accessible `label` and chain `disabled`
 /// as usual. Numeric callbacks receive the requested value; read the model for its accepted value.
-#[component]
+#[ui]
 #[track_caller]
 pub fn slider(id: &str, value: impl Model<f64>, min: f64, max: f64, step: f64) -> El {
     let range = Range::new(min, max, step);
@@ -176,7 +176,7 @@ pub fn slider(id: &str, value: impl Model<f64>, min: f64, max: f64, step: f64) -
 /// commits its model. They preserve the binding and normalization; `on_key` receives unconsumed
 /// keys. Invalid drafts still notify submit/blur, so validate before saving.
 /// Add a label or wrap this `El` with [`crate::field`] for required state and explanatory errors.
-#[component]
+#[ui]
 #[track_caller]
 pub fn number_field(value: impl Model<String>, min: f64, max: f64, step: f64) -> El {
     let range = Range::new(min, max, step);
@@ -220,7 +220,7 @@ pub fn number_field(value: impl Model<String>, min: f64, max: f64, step: f64) ->
 /// Progress from zero to positive finite `max`. `Some(value)` paints a bounded bar and
 /// publishes its number; `None` reuses [`spinner`] and publishes no current number. Non-finite
 /// dynamic values also count as unknown. This is read-only and never takes keyboard focus.
-#[component]
+#[ui]
 #[track_caller]
 pub fn progress(value: impl Fn() -> Option<f64> + 'static, max: f64) -> El {
     assert!(max.is_finite() && max > 0.0, "progress requires a positive finite maximum");

@@ -5,17 +5,17 @@ use octara::inspect::{Request, handle};
 use octara::platform::HeadlessWindow;
 use octara::prelude::*;
 
-#[component]
+#[ui]
 fn toolbar(saved: Signal<u32>) -> El {
     row().id("toolbar").gap_2().child(save_button(saved)).child(text(move || format!("saved {}", saved.get())).id("count"))
 }
 
-#[component]
+#[ui]
 fn save_button(saved: Signal<u32>) -> El {
     el().id("save").role(Role::Button).label("Save").size_8().on_press(move || saved.update(|s| *s += 1))
 }
 
-#[component]
+#[ui]
 fn rows(items: StateList<u32, (u32, String)>) -> El {
     col().id("rows").child(each(move || items.read_only(), |k, t| text(move || t.with(|t| t.1.clone())).id(format!("row-{k}")).into()))
 }

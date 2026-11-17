@@ -1,7 +1,8 @@
-//! Views: elements, property bindings, structure (`show`, components, lists).
+//! Views: elements, property bindings, structure (`show`, content scopes, lists).
 //!
-//! A `View` is a one-shot description consumed when mounted. Components run once; each dynamic
-//! property is one binding that writes one kernel property. Lists: [`each`], [`virtual_each`].
+//! A `View` is a one-shot description consumed when mounted. Ordinary UI functions compose
+//! descriptions; explicit scopes own content. Each dynamic property is one binding that writes
+//! one kernel property. Lists: [`each`], [`virtual_each`].
 
 mod behavior;
 mod element;
@@ -16,7 +17,7 @@ pub use behavior::Behavior;
 pub(crate) use element::build_el;
 pub use element::{El, IntoProp, IntoText, Prop, TextContent, canvas, col, el, icon, native_view, row, spacer, text, text_input, web_view};
 pub use list::{IntoRows, each, virtual_each};
-pub use octara_macros::component;
+pub use octara_macros::ui;
 pub(crate) use pace::Paced;
 pub use pace::paced;
 pub use style::{Length, Patch, Styled, px, relative, rems, sp};
@@ -268,60 +269,51 @@ pub(crate) fn mount(view: View, parent: &Parent, target: &Slots) {
     }
 }
 
-// ---- components and show ----
+// ---- content ownership and show ----
 
-/// A component identified by an explicit name, `Name[key]`: its identity and state do not depend
-/// on sibling order. Two instances with the same key are an error.
+/// Builds content once when mounted, in an explicitly keyed owner without an extra node.
+/// Named state, context, watches, tasks and cleanup created by the factory belong to this scope.
+/// Ordinary UI functions, including those marked [`macro@ui`], do not create owners.
+///
+/// The key must be unique within the current owner and stable across hot reloads. Sibling order
+/// and function names do not identify scopes. A duplicate key reports `DUPLICATE_SCOPE_KEY` and
+/// leaves the duplicate content unmounted without running its factory.
+///
+/// The factory resolves context where the scope is mounted. Content built beforehand is not
+/// rebuilt, and resources created beforehand keep their original owner. Pass state handles to
+/// ordinary functions when they need no separate lifetime or context boundary.
+///
+/// State paths use `scope[key]` segments (`%` and `/` in keys are escaped). These paths replace
+/// the former component name/key paths; existing state is not recovered through old path aliases.
 #[track_caller]
-pub fn component_keyed(name: &'static str, key: impl Display, f: impl FnOnce() -> View + 'static) -> View {
-    component_at(Location::caller(), name, Some(key.to_string()), f)
-}
-
-/// A component named by order among same-named siblings (`Name`, `Name#2`); a second unkeyed
-/// sibling is reported because its state then follows its position.
-#[track_caller]
-pub fn component(name: &'static str, f: impl FnOnce() -> View + 'static) -> View {
-    component_at(Location::caller(), name, None, f)
-}
-
-fn component_at(at: &'static Location<'static>, name: &'static str, key: Option<String>, f: impl FnOnce() -> View + 'static) -> View {
+pub fn scope<C: IntoElement>(key: impl Display, content: impl FnOnce() -> C + 'static) -> View {
+    let at = Location::caller();
+    let key = key.to_string();
+    let segment = format!("scope[{}]", key.replace('%', "%25").replace('/', "%2F"));
     let made = building();
     View::dynamic(Box::new(move |parent, target| {
         let s = rt(|rt| {
-            let cur = rt.current_scope().expect("component outside a scope");
-            let path = rt.scope_path(cur);
-            let seg = match &key {
-                None => {
-                    let seg = rt.child_name(cur, name);
-                    if seg != name {
-                        rt.diag(
-                            &codes::AMBIGUOUS_COMPONENT,
-                            format!("several unkeyed `{name}` in {path}; their state follows their order. Use `component_keyed`"),
-                            at,
-                        );
-                    }
-                    seg
-                }
-                Some(k) => {
-                    let want = format!("{name}[{k}]");
-                    let seg = rt.child_name(cur, &want);
-                    if seg != want {
-                        rt.diag(
-                            &codes::DUPLICATE_COMPONENT_KEY,
-                            format!("two `{name}` with key `{k}` in {path}; they would share state"),
-                            at,
-                        );
-                    }
-                    seg
-                }
-            };
-            rt.create_scope(Some(cur), &seg)
+            let owner = rt.current_scope().expect("scope outside an owner");
+            if rt.child_name(owner, &segment) != segment {
+                rt.diag(
+                    &codes::DUPLICATE_SCOPE_KEY,
+                    format!("scope key `{key}` used twice in {}; duplicate content was not mounted", rt.scope_path(owner)),
+                    at,
+                );
+                return None;
+            }
+            Some(rt.create_scope(Some(owner), &segment))
         });
-        rt(|rt| rt.with_frame(Ctx::Build, None, Some(Some(s)), || mount(as_part_of(made, f), parent, target)));
+        let Some(s) = s else { return };
+        rt(|rt| {
+            rt.with_frame(Ctx::Build, None, Some(Some(s)), || {
+                mount(as_part_of(made, || content().into_view(at)), parent, target);
+            });
+        });
     }))
 }
 
-// ---- the component being built (`#[component]`) ----
+// ---- UI function provenance (`#[ui]`) ----
 
 thread_local! {
     static BUILDING: Cell<Option<Component>> = const { Cell::new(None) };
@@ -337,12 +329,12 @@ impl Drop for Building {
     }
 }
 
-/// What a `#[component]` function runs first: the elements it builds, and those its views build
-/// later, are its own until the guard drops. A component called through another's
+/// What a `#[ui]` function runs first: the elements it builds, and those its views build
+/// later, record its provenance until the guard drops. A UI function called through another's
 /// `#[track_caller]` chain from the same call site (`primary_button` calling `button`) belongs to
-/// the outer one: that is the one its caller wrote.
+/// the outer one: that is the one its caller wrote. This never changes the active owner.
 #[doc(hidden)]
-pub fn enter_component(name: &'static str, module: &'static str, at: &'static Location<'static>) -> Building {
+pub fn enter_ui(name: &'static str, module: &'static str, at: &'static Location<'static>) -> Building {
     let prev = BUILDING.get();
     let next = match prev {
         Some(p) if p.at == at => p,
@@ -352,12 +344,12 @@ pub fn enter_component(name: &'static str, module: &'static str, at: &'static Lo
     Building(prev)
 }
 
-/// The component being built now.
+/// The UI function whose provenance is being recorded now.
 pub(crate) fn building() -> Option<Component> {
     BUILDING.get()
 }
 
-/// Runs `f` as part of `component` (a view's closure, run after its component returned).
+/// Restores only provenance for a delayed factory, without restoring its construction owner.
 pub(crate) fn as_part_of<R>(component: Option<Component>, f: impl FnOnce() -> R) -> R {
     let prev = BUILDING.replace(component);
     let _restore = Building(prev);

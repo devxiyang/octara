@@ -2,7 +2,7 @@
 use octara::prelude::*;
 use octara_kit::{PopupItem, popup_list, text_field};
 
-#[component]
+#[ui]
 pub fn view() -> View {
     let value = state("value", String::new);
     let seen = state("seen", String::new);
@@ -41,7 +41,7 @@ pub fn view() -> View {
 }
 
 /// Bound controls with application callbacks on every supported editing route.
-#[component]
+#[ui]
 pub fn bindings() -> View {
     use octara_kit::{button, checkbox, menu_button, number_field, popover, slider, switch};
     let checked = state("checked", || false);

@@ -5,7 +5,7 @@ use octara::inspect::{self, Delivery};
 use octara::kernel::{NumericRange, a11y::a11y_id};
 use octara::prelude::*;
 
-#[component]
+#[ui]
 fn ranges() -> View {
     let value = state("value", || 2.0);
     let disabled = state("disabled", || false);

@@ -146,7 +146,7 @@ Based on Nominal Adapton: first-class names determine identity, and name ambigui
 
 - Each stateful scope has a name path, for example `app/window1/Disclosure[account]/open` (a window's root scope is named by the window, so
   two windows' roots never share a key); state, hot reload and the Inspector all locate by name path;
-- The identity of `component_keyed(name, key, ..)` is independent of sibling order; `component(name, ..)` is named by its ordinal among same-named siblings, and `AMBIGUOUS_COMPONENT` is reported when a second one appears;
+- The identity of `scope(key, ..)` is independent of sibling order; duplicate keys within an owner report `DUPLICATE_SCOPE_KEY` and refuse the duplicate body;
 - A state's lifetime is the lifetime of its scope: when a `show` branch is hidden or a list row is deleted, the state inside is destroyed with it;
 - Handles identify their runtime as well as slot/generation. WRONG_RUNTIME rejects cross-App
   access rather than accidentally reading or changing another App's matching slot.
@@ -187,7 +187,7 @@ Diagnostics carry a fixed code and source location, are deduplicated and counted
 | I4b | Two `watch`es write to each other | `FLUSH_RUNAWAY` |
 | I5 | Use the entry of a deleted row | `READ_DISPOSED` |
 | I6 | A handler captures a stale value sampled with `untrack` | **Silent** (explicitly opting out of tracking, undetectable in principle) |
-| I7 | A hot patch inserts a new component before a same-named component | `AMBIGUOUS_COMPONENT`; behaves correctly under `component_keyed` |
+| I7 | A hot patch inserts a new component before a same-named component | `DUPLICATE_SCOPE_KEY`; behaves correctly with unique explicit scope keys |
 | I8 | A helper function that reads other state is called in a `watch` callback | Behaves correctly (callbacks do not track) |
 | I9 | A list row reads once and uses it as a fixed value | `STRICT_READ_UNTRACKED` |
 | I10 | Unnamed public Signal construction | Rejected at compile time; no public constructor |

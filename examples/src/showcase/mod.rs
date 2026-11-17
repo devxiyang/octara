@@ -47,7 +47,7 @@ pub const CARDS: [Card; 17] = [
 ];
 
 /// The frame every card shares.
-#[component]
+#[ui]
 pub(crate) fn section(title: &'static str) -> El {
     // Lifts while the mouse is anywhere over it (the card has no handlers of its own). Boxes do
     // not shrink by default; a card does, so on a phone it narrows and its rows wrap.
@@ -65,7 +65,7 @@ pub(crate) fn section(title: &'static str) -> El {
 }
 
 /// The page around the cards: it scrolls, and its layout moves.
-#[component]
+#[ui]
 fn frame(content: El) -> View {
     col()
         .size_full()
@@ -84,7 +84,7 @@ fn frame(content: El) -> View {
 }
 
 /// Every card.
-#[component]
+#[ui]
 pub fn showcase() -> View {
     let wrap = || row().gap_6().flex_wrap().items_start();
     let dark = state("dark", || false);

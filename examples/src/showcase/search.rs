@@ -5,7 +5,7 @@ use octara::prelude::*;
 use octara_kit::{button, text_field};
 use std::time::Duration;
 
-#[component]
+#[ui]
 pub fn card() -> El {
     let query = state("query", || "octara".to_string());
     // A pretend search: answers 600 ms later on the app's clock.

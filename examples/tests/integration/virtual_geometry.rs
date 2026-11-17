@@ -31,7 +31,7 @@ struct Model {
     snapshot: Signal<Vec<(u32, Item)>>,
 }
 
-#[component]
+#[ui]
 fn geometry_row(key: u32, item: ReadSignal<Item>) -> View {
     col()
         .id(format!("row-{key}"))
@@ -41,7 +41,7 @@ fn geometry_row(key: u32, item: ReadSignal<Item>) -> View {
         .into()
 }
 
-#[component]
+#[ui]
 fn geometry_list(model: Model, snapshots: bool, follow: bool, gap: f32) -> View {
     let sorted = model.items.sort_by(|item| item.order);
     let render = |key: &u32, item| geometry_row(*key, item);
@@ -493,7 +493,7 @@ const TEXT_ESTIMATE: f32 = 32.0;
 const FIXED_HEIGHT: f32 = 64.0;
 const WORDS: &str = "word word word word word word word word word word word word word word word word";
 
-#[component]
+#[ui]
 fn wrapping_row(key: u32) -> View {
     if key == WRAPPING {
         col().id(format!("row-{key}")).flex_shrink_0().child(text(WORDS).w_full().text_base().flex_shrink_0()).into()
@@ -502,7 +502,7 @@ fn wrapping_row(key: u32) -> View {
     }
 }
 
-#[component]
+#[ui]
 fn wrapping_list(items: StateList<u32, u32>, snapshot: Signal<Vec<(u32, u32)>>, snapshots: bool) -> View {
     let estimate = |key: &u32| if *key == WRAPPING { TEXT_ESTIMATE } else { FIXED_HEIGHT };
     let render = |key: &u32, _| wrapping_row(*key);
@@ -611,7 +611,7 @@ impl Clone for CountedItem {
     }
 }
 
-#[component]
+#[ui]
 fn counted_list(items: StateList<u32, CountedItem>, second: StateList<u32, CountedItem>, use_second: Signal<bool>) -> View {
     col()
         .id("list")

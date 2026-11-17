@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::cell::Cell;
 use std::rc::Rc;
 
-#[component]
+#[ui]
 fn target_view() -> View {
     let replaced = state("replaced", || false);
     let count = state("count", || 0);

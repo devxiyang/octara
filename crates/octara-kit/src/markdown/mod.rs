@@ -65,7 +65,7 @@ impl<F: Fn() -> String + 'static> IntoMarkdown for F {
 /// [`TextBuffer`] streaming in) parses again from its last finished block, and the blocks before
 /// keep their nodes; a stream's end shows open spans styled and no stray markers, and assistive
 /// technology hears each block as it finishes, not each token. Links come to `on_link`.
-#[component]
+#[ui]
 #[track_caller]
 pub fn markdown(source: impl IntoMarkdown) -> El {
     let source = source.into_markdown();
@@ -81,11 +81,11 @@ pub fn markdown(source: impl IntoMarkdown) -> El {
     // instance has its own, whatever its siblings.
     static INSTANCES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let instance = INSTANCES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    col().selectable().copy_markdown(move |copied| source_copy(&source_of.borrow(), copied)).gap_3().child(component_keyed(
-        "markdown",
-        instance,
-        move || blocks(doc, source, streaming),
-    ))
+    col()
+        .selectable()
+        .copy_markdown(move |copied| source_copy(&source_of.borrow(), copied))
+        .gap_3()
+        .child(scope(format!("markdown[{instance}]"), move || blocks(doc, source, streaming)))
 }
 
 /// The blocks of a document, kept in step with its source.
