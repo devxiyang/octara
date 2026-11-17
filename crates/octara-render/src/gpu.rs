@@ -12,6 +12,7 @@ use octara_primitives::capture::{Painter, Picture};
 use octara_primitives::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, Quad, Shadow};
 use octara_primitives::theme::Color;
 use rustc_hash::FxHashMap;
+use std::alloc::Layout;
 
 const ATLAS: u32 = 2048;
 /// The mask atlas's size where the device allows it (paths can be window-sized).
@@ -21,6 +22,26 @@ const TILE: u32 = 1024;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// No clip: a rect far larger than any window.
 const NO_CLIP: [f32; 4] = [-1.0e6, -1.0e6, 2.0e6, 2.0e6];
+
+struct ReadbackLayout {
+    row: u32,
+    bytes: u64,
+    rgba_len: usize,
+}
+
+fn readback_layout(width: u32, height: u32) -> Option<ReadbackLayout> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let count = crate::pixels::count(width, height)?;
+    let rgba_len = Layout::array::<[u8; 4]>(count).ok()?.size();
+    let row = (u64::from(width) * 4).div_ceil(256) * 256;
+    let row = u32::try_from(row).ok()?;
+    let bytes = u64::from(row).checked_mul(u64::from(height))?;
+    // The mapped buffer must also fit a Rust byte slice on this host.
+    Layout::array::<u8>(usize::try_from(bytes).ok()?).ok()?;
+    Some(ReadbackLayout { row, bytes, rgba_len })
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -73,12 +94,15 @@ impl Shelf {
         Shelf { size, x: 0, y: 0, row: 0 }
     }
     fn alloc(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
+        if w > self.size || h > self.size {
+            return None;
+        }
         if self.x + w > self.size {
             self.x = 0;
             self.y += self.row;
             self.row = 0;
         }
-        if self.y + h > self.size || w > self.size {
+        if self.y + h > self.size {
             return None;
         }
         let at = (self.x, self.y);
@@ -316,10 +340,11 @@ impl GpuRenderer {
     }
 
     fn upload(&self, texture: &wgpu::Texture, (x, y): (u32, u32), (w, h): (u32, u32), bpp: u32, data: &[u8], stride: u32) {
+        let bytes_per_row = stride.checked_mul(bpp).expect("atlas upload row exceeds the pixel coordinate range");
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d { x, y, z: 0 }, aspect: wgpu::TextureAspect::All },
             data,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(stride * bpp), rows_per_image: Some(h) },
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bytes_per_row), rows_per_image: Some(h) },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
     }
@@ -338,8 +363,8 @@ impl GpuRenderer {
                     self.overflow = true;
                     return None;
                 };
-                let start = (dy * mask.width + dx) as usize;
-                let end = start + ((h - 1) * mask.width + w) as usize;
+                let start = dy as usize * mask.width as usize + dx as usize;
+                let end = start + (h - 1) as usize * mask.width as usize + w as usize;
                 self.upload(&self.mask, (ax, ay), (w, h), 1, &mask.data[start..end], mask.width);
                 tiles.push(Tile { ax, ay, dx, dy, w, h });
             }
@@ -643,15 +668,31 @@ impl GpuRenderer {
     }
 
     /// Renders offscreen and reads the pixels back (tests, screenshots, a window's captures), in
-    /// straight-alpha sRGB RGBA8, regardless of the renderer's texture format.
+    /// straight-alpha sRGB RGBA8, regardless of the renderer's texture format. Each axis has a
+    /// one-pixel minimum.
+    ///
+    /// # Panics
+    /// If the scale or dimensions are invalid, or the target exceeds the device or host limits.
+    /// [`Painter::paint`] returns an error for these inputs instead.
     pub fn render(&mut self, dl: &DisplayList, scale: f32) -> Picture {
+        self.try_render(dl, scale).expect("GPU rendering failed")
+    }
+
+    fn try_render(&mut self, dl: &DisplayList, scale: f32) -> Result<Picture, String> {
         let bgra = match self.format {
             wgpu::TextureFormat::Rgba8Unorm => false,
             wgpu::TextureFormat::Bgra8Unorm => true,
             f => panic!("offscreen rendering reads RGBA8 or BGRA8, not {f:?}"),
         };
-        let width = (dl.size.0 * scale).ceil().max(1.0) as u32;
-        let height = (dl.size.1 * scale).ceil().max(1.0) as u32;
+        let (width, height) = crate::pixels::dimensions(dl.size, scale)?;
+        let limits = self.device.limits();
+        if width > limits.max_texture_dimension_2d || height > limits.max_texture_dimension_2d {
+            return Err(format!("capture {width}×{height} exceeds the GPU texture dimension limit {}", limits.max_texture_dimension_2d));
+        }
+        let layout = readback_layout(width, height).ok_or("capture readback exceeds addressable memory or row limits")?;
+        if layout.bytes > limits.max_buffer_size {
+            return Err(format!("capture readback exceeds the GPU buffer limit of {} bytes", limits.max_buffer_size));
+        }
         let target = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("octara offscreen"),
             size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -663,10 +704,9 @@ impl GpuRenderer {
             view_formats: &[],
         });
         self.draw(dl, scale, &target.create_view(&Default::default()), (width, height));
-        let row = (width * 4).div_ceil(256) * 256;
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("octara readback"),
-            size: (row * height) as u64,
+            size: layout.bytes,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -675,7 +715,7 @@ impl GpuRenderer {
             target.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
                 buffer: &readback,
-                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(height) },
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(layout.row), rows_per_image: Some(height) },
             },
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
@@ -683,9 +723,9 @@ impl GpuRenderer {
         readback.map_async(wgpu::MapMode::Read, .., |r| r.expect("map readback"));
         self.device.poll(wgpu::PollType::wait_indefinitely()).expect("gpu poll");
         let data = readback.get_mapped_range(..).expect("mapped readback");
-        let mut rgba = Vec::with_capacity((width * height * 4) as usize);
-        for y in 0..height {
-            let line = &data[(y * row) as usize..(y * row + width * 4) as usize];
+        let mut rgba = Vec::with_capacity(layout.rgba_len);
+        for line in data.chunks_exact(layout.row as usize) {
+            let line = &line[..width as usize * 4];
             for p in line.as_chunks::<4>().0 {
                 // Premultiplied to straight alpha.
                 let a = p[3];
@@ -704,7 +744,7 @@ impl GpuRenderer {
         }
         drop(data);
         readback.unmap();
-        Picture { width, height, rgba }
+        Ok(Picture { width, height, rgba })
     }
 }
 
@@ -763,27 +803,38 @@ impl Painter for GpuRenderer {
         "gpu"
     }
     fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<Picture, String> {
-        if !scale.is_finite() || scale <= 0.0 {
-            return Err("capture scale must be finite and positive".into());
+        self.try_render(list, scale)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn readback_layout_aligns_rows_and_checks_allocation_without_allocating() {
+        assert!(readback_layout(0, 1).is_none());
+        assert!(readback_layout(1, 0).is_none());
+        let layout = readback_layout(65, 3).unwrap();
+        assert_eq!((layout.row, layout.bytes, layout.rgba_len), (512, 1536, 65 * 3 * 4));
+        assert!(readback_layout(u32::MAX / 4, 1).is_none(), "row padding must fit bytes_per_row");
+        assert!(readback_layout(u32::MAX, u32::MAX).is_none());
+        if usize::BITS == 64 {
+            let layout = readback_layout(65536, 65536).unwrap();
+            assert_eq!(layout.row, 262144);
+            assert_eq!(layout.bytes, 1_u64 << 34);
+            assert_eq!(layout.rgba_len, usize::try_from(1_u64 << 34).unwrap());
+        } else {
+            assert!(readback_layout(65536, 65536).is_none());
         }
-        if !list.size.0.is_finite() || !list.size.1.is_finite() || list.size.0 < 0.0 || list.size.1 < 0.0 {
-            return Err("capture dimensions must be finite and non-negative".into());
-        }
-        // Match render's pixel rounding before converting to integers or allocating GPU data.
-        let width = (list.size.0 * scale).ceil().max(1.0);
-        let height = (list.size.1 * scale).ceil().max(1.0);
-        let limits = self.device.limits();
-        let max_dimension = f64::from(limits.max_texture_dimension_2d);
-        if !width.is_finite() || !height.is_finite() || f64::from(width) > max_dimension || f64::from(height) > max_dimension {
-            return Err(format!("capture {width}×{height} exceeds the GPU texture dimension limit {}", limits.max_texture_dimension_2d));
-        }
-        let row = (width as u64 * 4).div_ceil(256) * 256;
-        let readback = row.checked_mul(height as u64);
-        // render indexes its rows with u32 arithmetic as well as honoring the device's limit.
-        let max_buffer = limits.max_buffer_size.min(u64::from(u32::MAX));
-        if readback.is_none_or(|bytes| bytes > max_buffer) {
-            return Err(format!("capture readback exceeds the GPU buffer limit of {max_buffer} bytes"));
-        }
-        Ok(self.render(list, scale))
+    }
+
+    #[test]
+    fn atlas_refuses_oversized_images_without_wrapping_or_moving_the_shelf() {
+        let mut shelf = Shelf::new(ATLAS);
+        assert_eq!(shelf.alloc(1, 1), Some((0, 0)));
+        assert_eq!(shelf.alloc(u32::MAX, 1), None);
+        assert_eq!(shelf.alloc(1, u32::MAX), None);
+        assert_eq!(shelf.alloc(1, 1), Some((2, 0)));
     }
 }

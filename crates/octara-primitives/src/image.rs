@@ -67,11 +67,25 @@ pub struct Image(Arc<Inner>);
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// The byte length of a tightly packed RGBA8 frame, if it fits the address space.
+pub(crate) fn rgba_len(width: u32, height: u32) -> Option<usize> {
+    (width as usize).checked_mul(height as usize)?.checked_mul(4)
+}
+
+fn assert_rgba_len(width: u32, height: u32, len: usize) {
+    let expected = rgba_len(width, height).expect("RGBA dimensions exceed the address space");
+    assert_eq!(len, expected, "RGBA data must be width × height × 4 bytes");
+}
+
 impl Image {
     /// An image from straight RGBA bytes (`width × height × 4`).
+    /// Either dimension may be zero for an empty image.
+    ///
+    /// # Panics
+    /// If the byte length does not match the dimensions or the required length overflows.
     pub fn rgba(width: u32, height: u32, rgba: impl Into<Arc<[u8]>>) -> Image {
         let rgba = rgba.into();
-        assert_eq!(rgba.len(), (width * height * 4) as usize, "RGBA data must be width × height × 4 bytes");
+        assert_rgba_len(width, height, rgba.len());
         Image(Arc::new(Inner { id: NEXT_ID.fetch_add(1, Ordering::Relaxed), frame: Mutex::new(Frame { width, height, rgba, version: 0 }) }))
     }
 
@@ -111,10 +125,14 @@ impl Image {
     }
 
     /// Replaces the pixels (a video frame, a decoded download): every element showing the image
-    /// draws them on its next frame.
+    /// draws them on its next frame. Either dimension may be zero for an empty image.
+    ///
+    /// # Panics
+    /// If the byte length does not match the dimensions or the required length overflows.
+    /// Invalid replacement data leaves the current frame and version unchanged.
     pub fn set(&self, width: u32, height: u32, rgba: impl Into<Arc<[u8]>>) {
         let rgba = rgba.into();
-        assert_eq!(rgba.len(), (width * height * 4) as usize, "RGBA data must be width × height × 4 bytes");
+        assert_rgba_len(width, height, rgba.len());
         let mut f = self.0.frame.lock().expect("image");
         let version = f.version + 1;
         *f = Frame { width, height, rgba, version };
@@ -131,5 +149,52 @@ impl std::fmt::Debug for Image {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (w, h) = self.size();
         write!(f, "Image#{}({w}×{h})", self.0.id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::panic::catch_unwind;
+
+    #[test]
+    fn shared_image_replaces_a_complete_frame() {
+        let image = Image::rgba(1, 1, [1, 2, 3, 4]);
+        let clone = image.clone();
+        let first = image.frame();
+        assert_eq!((first.width, first.height, first.version), (1, 1, 0));
+        image.set(2, 1, [5, 6, 7, 8, 9, 10, 11, 12]);
+        let frame = clone.frame();
+        assert_eq!((frame.width, frame.height, frame.version), (2, 1, 1));
+        assert_eq!(frame.rgba.as_ref(), &[5, 6, 7, 8, 9, 10, 11, 12]);
+        assert_eq!(first.rgba.as_ref(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn empty_images_allow_either_zero_dimension() {
+        for (width, height) in [(0, 0), (0, u32::MAX), (u32::MAX, 0)] {
+            let image = Image::rgba(width, height, []);
+            assert_eq!(image.size(), (width, height));
+            assert!(image.frame().rgba.is_empty());
+            image.set(1, 1, [0; 4]);
+            image.set(width, height, []);
+            assert_eq!(image.size(), (width, height));
+            assert_eq!(image.frame().version, 2);
+        }
+    }
+
+    #[test]
+    fn invalid_rgba_is_rejected_before_replacing_the_frame() {
+        let image = Image::rgba(1, 1, [1, 2, 3, 4]);
+        let first = image.frame();
+        for (width, height, rgba) in
+            [(1, 1, vec![0; 3]), (1, 1, vec![0; 5]), (0, 1, vec![0; 4]), (65536, 65536, vec![]), (u32::MAX, u32::MAX, vec![])]
+        {
+            assert!(catch_unwind(|| Image::rgba(width, height, rgba.clone())).is_err());
+            assert!(catch_unwind(|| image.set(width, height, rgba)).is_err());
+            assert_eq!(image.frame(), first);
+        }
+        image.set(1, 1, [5, 6, 7, 8]);
+        assert_eq!(image.frame().version, 1);
     }
 }

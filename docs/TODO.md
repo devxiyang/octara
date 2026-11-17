@@ -769,7 +769,7 @@ Review: [core and primitives](design/core-primitives-review-2026-11-18.md), base
       are disabled; compile the original source with both settings, no implementation patch.
 - [x] Design reload retention by window and surviving owner path, preserving delayed handler
       state registration; cover failure recovery and close ownership before implementation.
-- [ ] Unify checked pixel layout validation and review renderer allocation arithmetic.
+- [x] Unify checked pixel layout validation and review renderer allocation arithmetic.
 
 Snapshot equality and external-asset wake semantics remain explicit design candidates, not
 approved new public primitives or mandatory performance projects. Core lib 158 and primitives
@@ -788,3 +788,20 @@ Reload ownership validation: workspace tests passed, including five new scope re
 retirement, delayed lookup, failure recovery and destructor reentry. Existing interrupted-cleanup
 coverage also passed. Strict workspace Clippy, formatting, diff and layer checks passed.
 No real OS window input was exercised.
+
+## Implement core review: pixel layout invariants (2026-11-18)
+
+- [x] Validate Image RGBA byte lengths with checked arithmetic before publication/locking;
+      invalid replacement preserves the previous frame and version.
+- [x] Validate Picture coordinates, complete RGBA layout and PNG dimensions.
+- [x] Share capture dimension validation; check CPU allocation and GPU padded readback sizes,
+      widen pixel indices before multiplication, and preserve existing zero-size policies.
+- [x] Verify original Image overflow probe with overflow checks on/off; both reject bad data.
+- [x] Run workspace tests, final renderer tests on an actual GPU, and strict static checks.
+
+Combined validation: **995 workspace tests passed, 0 failed, 3 existing ignored doctests**.
+Final renderer rerun: **8 unit + 10 integration tests passed**; uncaptured GPU/reference pixel
+comparisons confirm actual GPU execution (maximum channel difference 1). Primitives: 17 tests.
+Image source-level tests and the original overflow probe pass with overflow checks both on/off.
+Workspace all-targets Clippy with `-D warnings`, formatting, diff and layer checks passed.
+GPU evidence is offscreen rendering/readback, not real OS window input or IME validation.

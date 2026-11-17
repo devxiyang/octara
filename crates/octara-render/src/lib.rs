@@ -12,6 +12,7 @@ pub mod glyphs;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod paths;
+mod pixels;
 pub mod shape;
 
 pub use cpu::CpuRenderer;

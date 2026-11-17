@@ -8,6 +8,7 @@ use crate::shape::{blend, blend_premultiplied, coverage, image_color, inner_rect
 use octara_primitives::capture::{Painter, Picture};
 use octara_primitives::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, Quad, Rect, Shadow};
 use octara_primitives::theme::Color;
+use std::alloc::Layout;
 
 /// A clip in device pixels.
 #[derive(Clone, Copy)]
@@ -79,13 +80,21 @@ impl CpuRenderer {
         self.paths.len()
     }
 
-    /// Renders at `scale` device pixels per logical pixel.
+    /// Renders at `scale` device pixels per logical pixel, with a one-pixel minimum in each axis.
+    ///
+    /// # Panics
+    /// If the scale or dimensions are invalid, or the target exceeds addressable memory.
+    /// [`Painter::paint`] returns an error for these inputs instead.
     pub fn render(&mut self, dl: &DisplayList, scale: f32) -> Picture {
-        let width = (dl.size.0 * scale).ceil().max(1.0) as u32;
-        let height = (dl.size.1 * scale).ceil().max(1.0) as u32;
+        self.try_render(dl, scale).expect("CPU rendering failed")
+    }
+
+    fn try_render(&mut self, dl: &DisplayList, scale: f32) -> Result<Picture, String> {
+        let (width, height) = crate::pixels::dimensions(dl.size, scale)?;
+        let count = target_len(width, height).ok_or("CPU target exceeds addressable memory")?;
         let (bg, bga) = rgb(dl.background);
         let base = [bg[0] * bga, bg[1] * bga, bg[2] * bga, bga];
-        let mut t = Target { width, height, pixels: vec![base; (width * height) as usize], clips: Vec::new(), layers: Vec::new() };
+        let mut t = Target { width, height, pixels: vec![base; count], clips: Vec::new(), layers: Vec::new() };
         for item in &dl.items() {
             match item {
                 Item::Shadow(s) => shadow(&mut t, s, scale),
@@ -105,7 +114,7 @@ impl CpuRenderer {
                     t.clips.pop();
                 }
                 Item::PushLayer { opacity, .. } => {
-                    let below = std::mem::replace(&mut t.pixels, vec![[0.0; 4]; (width * height) as usize]);
+                    let below = std::mem::replace(&mut t.pixels, vec![[0.0; 4]; count]);
                     t.layers.push((below, *opacity));
                 }
                 Item::PopLayer => {
@@ -120,7 +129,7 @@ impl CpuRenderer {
             }
         }
         self.paths.end_frame();
-        from_premultiplied(width, height, &t.pixels)
+        Ok(from_premultiplied(width, height, &t.pixels))
     }
 
     fn path(&mut self, t: &mut Target, p: &PathPaint, scale: f32) {
@@ -134,13 +143,13 @@ impl CpuRenderer {
             let py = at.y + row as i32;
             for col in 0..mask.width {
                 let px = at.x + col as i32;
-                let cov = mask.data[(row * mask.width + col) as usize];
+                let cov = mask.data[row as usize * mask.width as usize + col as usize];
                 if cov == 0 || px < 0 || py < 0 || px >= t.width as i32 || py >= t.height as i32 {
                     continue;
                 }
                 let (cx, cy) = (px as f32 + 0.5, py as f32 + 0.5);
                 let k = cov as f32 / 255.0 * t.clip_coverage(cx, cy);
-                let dst = &mut t.pixels[(py as u32 * t.width + px as u32) as usize];
+                let dst = &mut t.pixels[py as usize * t.width as usize + px as usize];
                 if let Some(g) = &p.gradient {
                     let [r, gr, bl, a] = g.at(cx, cy, gbox.0, gbox.1, gbox.2, gbox.3);
                     blend(dst, [r, gr, bl], a * k);
@@ -169,8 +178,8 @@ impl CpuRenderer {
                         continue;
                     }
                     let clip = t.clip_coverage(px as f32 + 0.5, py as f32 + 0.5);
-                    let i = (sy as u32 * img.width + sx as u32) as usize;
-                    let dst = &mut t.pixels[(py * t.width + px) as usize];
+                    let i = sy as usize * img.width as usize + sx as usize;
+                    let dst = &mut t.pixels[py as usize * t.width as usize + px as usize];
                     if img.color {
                         let p = &img.data[i * 4..i * 4 + 4];
                         let a = p[3] as f32 / 255.0;
@@ -200,7 +209,7 @@ fn shadow(t: &mut Target, s: &Shadow, scale: f32) {
                 continue;
             }
             let clip = t.clip_coverage(cx, cy);
-            blend(&mut t.pixels[(py * t.width + px) as usize], c, a * alpha * clip);
+            blend(&mut t.pixels[py as usize * t.width as usize + px as usize], c, a * alpha * clip);
         }
     }
 }
@@ -215,7 +224,7 @@ fn image(t: &mut Target, i: &ImagePaint, scale: f32) {
     let b = s(i.bounds);
     let bounds = (b.0, b.1, b.2, b.3, i.radius * scale);
     let texel = |x: u32, y: u32| {
-        let k = ((y * f.width + x) * 4) as usize;
+        let k = (y as usize * f.width as usize + x as usize) * 4;
         let p = &f.rgba[k..k + 4];
         [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0, p[3] as f32 / 255.0]
     };
@@ -233,7 +242,7 @@ fn image(t: &mut Target, i: &ImagePaint, scale: f32) {
             if c[3] * k <= 0.0 {
                 continue;
             }
-            blend_premultiplied(&mut t.pixels[(py * t.width + px) as usize], c.map(|v| v * k));
+            blend_premultiplied(&mut t.pixels[py as usize * t.width as usize + px as usize], c.map(|v| v * k));
         }
     }
 }
@@ -251,7 +260,7 @@ fn cutout(t: &mut Target, rect: Rect, radius: f32, scale: f32) {
             let (cx, cy) = (px as f32 + 0.5, py as f32 + 0.5);
             let k = coverage(sd_round_rect(cx, cy, x, y, w, h, r)) * t.clip_coverage(cx, cy);
             if k > 0.0 {
-                let p = &mut t.pixels[(py * t.width + px) as usize];
+                let p = &mut t.pixels[py as usize * t.width as usize + px as usize];
                 *p = p.map(|v| v * (1.0 - k));
             }
         }
@@ -276,7 +285,7 @@ fn quad(t: &mut Target, q: &Quad, scale: f32) {
                 continue;
             }
             let clip = t.clip_coverage(cx, cy);
-            let dst = &mut t.pixels[(py * t.width + px) as usize];
+            let dst = &mut t.pixels[py as usize * t.width as usize + px as usize];
             if let Some(g) = &gradient {
                 let [r, gr, b, a] = g.at(cx, cy, x, y, w, h);
                 blend(dst, [r, gr, b], a * outer * clip);
@@ -290,6 +299,12 @@ fn quad(t: &mut Target, q: &Quad, scale: f32) {
             }
         }
     }
+}
+
+fn target_len(width: u32, height: u32) -> Option<usize> {
+    let count = crate::pixels::count(width, height)?;
+    Layout::array::<[f32; 4]>(count).ok()?;
+    Some(count)
 }
 
 fn from_premultiplied(width: u32, height: u32, pixels: &[[f32; 4]]) -> Picture {
@@ -309,6 +324,35 @@ impl Painter for CpuRenderer {
         "reference"
     }
     fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<Picture, String> {
-        Ok(self.render(list, scale))
+        self.try_render(list, scale)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_allocation_checks_the_full_size_without_allocating() {
+        assert_eq!(target_len(7, 5), Some(35));
+        assert_eq!(target_len(u32::MAX, u32::MAX), None);
+        if usize::BITS == 64 {
+            assert_eq!(target_len(65536, 65536), Some(usize::try_from(1_u64 << 32).unwrap()));
+        } else {
+            assert_eq!(target_len(65536, 65536), None);
+        }
+    }
+
+    #[test]
+    fn invalid_capture_keeps_the_cpu_renderer_usable() {
+        let mut cpu = CpuRenderer::new();
+        let mut list = DisplayList { size: (1.0, 1.0), background: Color::WHITE, parts: vec![] };
+        assert!(cpu.paint(&list, f32::NAN).is_err());
+        list.size = (4_000_000_000.0, 4_000_000_000.0);
+        assert!(cpu.paint(&list, 1.0).is_err());
+        list.size = (0.0, 0.0);
+        let picture = cpu.paint(&list, 1.0).unwrap();
+        assert_eq!((picture.width, picture.height), (1, 1));
+        assert_eq!(picture.rgba, [255; 4]);
     }
 }

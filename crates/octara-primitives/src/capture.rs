@@ -1,12 +1,14 @@
 //! Rendering protocol and pixels, independent of the App capture workflow.
 
+use crate::image::rgba_len;
 use crate::paint::DisplayList;
 use std::io::{self, Write};
 use std::path::Path;
 
 /// A painted frame: RGBA8, straight alpha, sRGB, rows top to bottom.
 ///
-/// `rgba` contains `width × height × 4` bytes.
+/// `rgba` must contain `width × height × 4` bytes. Its public fields may be assembled directly;
+/// pixel access and PNG encoding validate this layout. PNG output requires nonzero dimensions.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Picture {
     pub width: u32,
@@ -22,8 +24,13 @@ impl std::fmt::Debug for Picture {
 
 impl Picture {
     /// The pixel at `(x, y)` as `[r, g, b, a]`.
+    ///
+    /// # Panics
+    /// If the coordinates are out of bounds or the RGBA data does not match the dimensions.
     pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
-        let i = ((y * self.width + x) * 4) as usize;
+        assert!(x < self.width && y < self.height, "pixel coordinates are outside the picture");
+        assert_eq!(rgba_len(self.width, self.height), Some(self.rgba.len()), "RGBA data must be width × height × 4 bytes");
+        let i = (y as usize * self.width as usize + x as usize) * 4;
         [self.rgba[i], self.rgba[i + 1], self.rgba[i + 2], self.rgba[i + 3]]
     }
 
@@ -41,6 +48,12 @@ impl Picture {
     }
 
     fn write_png(&self, output: impl Write) -> io::Result<()> {
+        if self.width == 0 || self.height == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "PNG dimensions must be nonzero"));
+        }
+        if rgba_len(self.width, self.height) != Some(self.rgba.len()) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "RGBA data must be width × height × 4 bytes"));
+        }
         let mut enc = png::Encoder::new(output, self.width, self.height);
         enc.set_color(png::ColorType::Rgba);
         enc.set_depth(png::BitDepth::Eight);
@@ -101,8 +114,30 @@ mod tests {
             Picture { width: 0, height: 1, rgba: vec![] },
             Picture { width: 1, height: 0, rgba: vec![] },
             Picture { width: 1, height: 1, rgba: vec![0; 3] },
+            Picture { width: 1, height: 1, rgba: vec![0; 5] },
+            Picture { width: 65536, height: 65536, rgba: vec![] },
+            Picture { width: u32::MAX, height: u32::MAX, rgba: vec![] },
         ] {
-            assert!(picture.encode_png().is_err());
+            assert_eq!(picture.encode_png().unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        }
+    }
+
+    #[test]
+    fn pixel_access_rejects_invalid_coordinates_and_layouts() {
+        let picture = Picture { width: 1, height: 2, rgba: vec![1, 2, 3, 4, 5, 6, 7, 8] };
+        assert_eq!(picture.pixel(0, 1), [5, 6, 7, 8]);
+        // x == width used to alias the next row; large coordinates could wrap to a valid pixel.
+        for (x, y) in [(1, 0), (0, 2), (1 << 30, 0), (0, 1 << 30)] {
+            assert!(std::panic::catch_unwind(|| picture.pixel(x, y)).is_err());
+        }
+        for picture in [
+            Picture { width: 0, height: 0, rgba: vec![] },
+            Picture { width: 1, height: 1, rgba: vec![0; 3] },
+            Picture { width: 1, height: 1, rgba: vec![0; 5] },
+            Picture { width: 65536, height: 65536, rgba: vec![0; 4] },
+            Picture { width: u32::MAX, height: u32::MAX, rgba: vec![0; 4] },
+        ] {
+            assert!(std::panic::catch_unwind(|| picture.pixel(0, 0)).is_err());
         }
     }
 
