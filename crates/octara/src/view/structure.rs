@@ -40,15 +40,14 @@ pub(super) fn destroy(kernel: &mut Kernel, nodes: impl IntoIterator<Item = NodeI
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::Kind;
 
     #[test]
     fn placement_preserves_identity_and_rejects_foreign_ownership() {
         let mut k = Kernel::default();
-        let parent = k.create(Kind::Box);
-        let other = k.create(Kind::Box);
-        let a = k.create(Kind::TextInput);
-        let b = k.create(Kind::Box);
+        let parent = k.create_box();
+        let other = k.create_box();
+        let a = k.create_input();
+        let b = k.create_box();
         k.set_value(a, "draft");
         place(&mut k, parent, 0, [a, b]);
         place(&mut k, parent, 0, [b, a]);

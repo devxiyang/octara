@@ -132,15 +132,14 @@ assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 
 ## Elements and style
 
-- Primitives: `el()` (a box, a row-direction flex container), `row()`, `col()`, `text(..)`,
-  `text_input()`, `spacer()`. `.child(..)` takes an element, a `View` or a string.
-- Each element has one content kind. Input settings require `text_input()`; native settings
-  require `native_view(..)` or `web_view(..)`. For images, write
-  `el().img(&image).object_fit(ObjectFit::Contain)` in that order. Compose different content
-  inside an `el()` / `row()` / `col()` container. Text, inputs, images, icons, Canvas and native
-  views reject `.child(..)` / `.children(..)`; `.img(..)` also rejects a box with declared children.
-  Use an external container for captions, badges and input affixes. Incompatible calls panic
-  with `ELEMENT_CONTENT` before mounting.
+- Use `el()` for a row-direction flex container, or `row()` and `col()` for stacks.
+  `.child(..)` takes an element, a `View` or a string. Other primitives include `text(..)`,
+  `text_input()`, `image(..)` and `spacer()`.
+- Each constructor sets the element's content kind. Apply input settings to `text_input()`,
+  native settings to `native_view(..)` or `web_view(..)`, and image fit with
+  `image(&picture).object_fit(ObjectFit::Contain)`. Only containers accept `.child(..)` or
+  `.children(..)`. Use an external container for captions, badges and input affixes.
+  Incompatible calls panic with `ELEMENT_CONTENT` before mounting.
 - Rich text is one `text` with styled runs:
   `text(rich().text("Run ").code("cargo test").text(" or read ").link("the guide", url))`, with
   `bold`, `italic`, `styled(s, |s| s.strike().color(Token::Danger))`. A link is an element of

@@ -158,7 +158,7 @@ impl From<&String> for Rich {
 // ---- in the kernel ----
 
 use super::text::{ShapedRun, StyleRun, TextPresentation, TextStyle, Wrap};
-use super::{Content, Kernel, Kind, NodeId, Role};
+use super::{Content, Kernel, NodeId, Role};
 use crate::paint::Rect;
 
 /// A link run: its run number, range, target, test id and words.
@@ -318,7 +318,7 @@ impl Kernel {
             let link = if let Some(index) = keep {
                 retained.swap_remove(index).0
             } else {
-                let link = self.create_node(Kind::Link);
+                let link = self.create_node(Content::Link(Box::default()));
                 self.node_mut(link).parent = Some(id);
                 self.node_mut(link).focusable = true;
                 self.resolve(link, "inherit");

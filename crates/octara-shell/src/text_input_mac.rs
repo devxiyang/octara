@@ -729,8 +729,8 @@ mod tests {
     #[test]
     fn retiring_a_native_batch_invalidates_detached_edits_even_when_owner_and_text_return() {
         let mut kernel = octara::kernel::Kernel::default();
-        let owner = kernel.create(octara::kernel::Kind::TextInput);
-        let other = kernel.create(octara::kernel::Kind::TextInput);
+        let owner = kernel.create_input();
+        let other = kernel.create_input();
         let original = TextDocument::new("A😀Z".into(), 1, 5);
         let mut state = State {
             latest: Some(TextInput {

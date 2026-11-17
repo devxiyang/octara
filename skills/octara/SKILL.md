@@ -70,11 +70,11 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
 - Input `.placeholder(..)` is a display-only hint for an empty field without composition;
   it never supplies a label, value or automatic height. Keep `.label(..)` explicit. Hint
   updates preserve selection/composition and target identity; an empty hint clears it.
-- Each element has one content kind. Use input settings on `text_input()`, native settings on
-  `native_view()` / `web_view()`, and image fit after `.img(..)`. Only containers (`el`, `row`,
-  `col`) accept `.child(..)` / `.children(..)`; `.img(..)` requires an empty box or an existing
-  image. Put captions, badges and input affixes in an external container around atomic content.
-  Incompatible calls panic with `ELEMENT_CONTENT` before mounting.
+- Each constructor sets the element's content kind. Use input settings on `text_input()`,
+  native settings on `native_view(..)` or `web_view(..)`, and image fit with
+  `image(&picture).object_fit(ObjectFit::Contain)`. Only containers accept `.child(..)` or
+  `.children(..)`. Put captions, badges and input affixes in an external container around
+  atomic content. Incompatible calls panic with `ELEMENT_CONTENT` before mounting.
 - Rich-text links belong to their text. `Span::id` names a link for lookup; it is not a reuse
   key. Unchanged ranges with the same destination retain identity across style/position changes;
   replaced words or destinations retire old Agent targets even with the same id. Observe again

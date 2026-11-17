@@ -189,6 +189,45 @@ Inspector 回答实际窗口的请求。
 [Chat 验证入口](../../apps/chat/README.md#request-lifecycle-verification) ·
 [Kit 接口](ui-primitives.md)
 
+## 内容原语与挂载边界复核
+
+重读当前代码时，以“谁能创建这个事实、谁能更新它、谁负责结束它”检查各层。
+以下是对先前[原语推演](core-primitives-derivation.md)和[内容契约](core-primitive-contracts.md)的实施取舍。
+
+| 边界 | 保留 | 收敛决定 |
+| --- | --- | --- |
+| 基础值与资源 | 几何、样式、编辑协议；共享图片资源 `Image`、截图结果 `Picture` | 图片资源归像素生产者。UI 的 `image(&pixels)` 创建一个可布局、命名和检查的节点 |
+| Signals 与 owner | `state`、`memo`、`watch`、只读句柄、按 key 的 owner 和退休后的释放 | 派生值由 Signals 传播。动态结构需要在调用用户代码之后重新确认 owner 的执行资格 |
+| 声明与保留树 | 普通函数返回 `El` 或 `View`；容器接收孩子；文本管理内部链接 | 构造时确定内容种类。删除先建 Box 再初始化图片、图标、画布、原生视图的路径 |
+| 窗口与输出 | Window 路由输入、协调布局与发布；Inspector 和宿主读取相同节点 | 内容种类、可访问角色、能否持有应用孩子分别有各自的来源。图片可保持节点身份并由显式角色表达按钮等用途 |
+| Kit 与应用 | 视觉外观和复合交互继续由普通 Rust 函数组装 | 图注作为容器中的兄弟元素；图片、编辑器和复合控件共用样式、事件和语义接口 |
+
+Rune 的普通函数返回同一个可组合元素。Exact 将内容类别、可容纳孩子和测量分别判断。
+Octara 采用统一的 Rust 组合方式，同时只让容器拥有应用孩子。[Rune 元素构造](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune/src/el.rs#L319-L356) · [Exact 节点契约](https://github.com/expo/exact/blob/08c889a9de21a30b7c3b308422fc588cf1a480d3/kernel/src/node.rs#L69-L147)
+
+### 内容从创建起确定
+
+此前 `El::img` 可以把空容器改成图片。图片、图标、画布、原生视图在内核的创建日志中都写作
+`Box`，随后再用 setter 替换内容。画布要等到执行绘制绑定才取得实际内容类型。
+现在每种节点在创建时已经持有正确的内容，独立 Kernel 的调用者也遵守这份契约。
+`Kernel::kind` 和创建日志区分这些种类，富文本链接只由文本创建。画布更新只写绘制指令，
+原生属性更新沿用当前宿主实例。旧的 `Kernel::create(Kind)`、跨种类 setter 和 `El::img` 已删除。
+
+作者用 `image(&pixels).object_fit(ObjectFit::Contain)`。共享句柄继续通过 `Image::set` 发布像素。
+图片默认的可访问角色从 GenericContainer 改为 Image，调用者可以显式赋予其他角色。
+布局尺寸、圆角、图注、标签和事件仍由相同的 builder 组合。所有内容构造函数都返回 `El`，
+让样式和行为函数仍只接收一个元素类型。删除改种类的操作可以在编译期挡住旧写法；
+同一 `El` 上的 `child`、`object_fit` 等专用方法仍在调用时检查内容。
+[节点创建](../../crates/octara/src/kernel.rs) · [内容构造](../../crates/octara/src/view/element.rs) · [作者契约](ui-primitives.md#element-content)
+
+### 下一处像素边界
+
+在自然尺寸或等比适配的图片上，样式解析和缓存的绘图几何使用当时的资源尺寸，绘制器可以稍后读取
+同一图的新像素。应先验证横图换竖图、空图变非空、同图多处展示和旧显示列表重画，然后决定何时
+让布局和绘制取得同一版资源。独立验证单图超过图集和多张图挤满图集两种情况，再选择 GPU 的容量政策。
+同尺寸更新、跨尺寸更新和 GPU 容量各自需要观测证据。
+[布局](../../crates/octara/src/kernel.rs) · [绘图缓存](../../crates/octara/src/kernel/paint.rs) · [GPU 上传](../../crates/octara-render/src/gpu.rs)
+
 [rune]: https://github.com/anomalyco/rune/commit/10a39584cc1ff739477be52e333a742a024ac956
 [exact]: https://github.com/expo/exact/commit/1dcad174583dfee6d2690af9a5d67a3538ef7c31
 [rune-first]: https://github.com/anomalyco/rune/blob/10a39584cc1ff739477be52e333a742a024ac956/crates/rune/src/runtime/tests/window_wake.rs#L75-L106

@@ -436,7 +436,7 @@ where
             let (u, prefix) = (u.clone(), prefix.clone());
             move |side: &str| {
                 let mut k = u.kernel.borrow_mut();
-                let n = k.create(crate::kernel::Kind::Box);
+                let n = k.create_box();
                 k.set_hidden(n, true);
                 // Spacers stand for rows: they must not shrink in the scroll container's column.
                 k.set_style(n, crate::kernel::StyleProp::Shrink(0.0));

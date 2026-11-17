@@ -1,4 +1,4 @@
-//! Images: a shared handle to pixels (Rune's `Pixels`), shown on any element with `.img(..)`.
+//! Images: a shared handle to pixels (Rune's `Pixels`), shown by the UI’s `image(..)` constructor.
 //! Setting new pixels on a handle redraws whatever shows it on the next frame, without
 //! rerunning the view.
 

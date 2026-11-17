@@ -673,12 +673,12 @@ impl Kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::{Kind, Length, StyleProp};
+    use crate::kernel::{Length, StyleProp};
 
     fn editor(multiline: bool) -> (Kernel, NodeId) {
         let mut k = Kernel::default();
         *k.res.text.borrow_mut() = Box::new(text::MonoEngine);
-        let id = k.create(Kind::TextInput);
+        let id = k.create_input();
         k.append_child(k.root(), id);
         k.set_style(id, StyleProp::Width(Length::Px(80.0)));
         k.set_style(id, StyleProp::Height(Length::Px(40.0)));

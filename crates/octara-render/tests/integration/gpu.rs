@@ -136,12 +136,12 @@ fn images() -> View {
         .gap_3()
         .flex_wrap()
         .items_start()
-        .child(el().img(&img))
-        .child(el().w(96).img(&img).rounded_lg())
-        .child(el().size_16().img(&img).object_fit(ObjectFit::Contain).bg(Token::Surface))
-        .child(el().size_16().img(&img).object_fit(ObjectFit::Cover).rounded_full())
-        .child(el().w(120).h(40).img(&img).object_fit(ObjectFit::None).border_2().border_color(Token::Border))
-        .child(el().w(12).img(&img).opacity(0.6))
+        .child(image(&img))
+        .child(image(&img).w(96).rounded_lg())
+        .child(image(&img).size_16().object_fit(ObjectFit::Contain).bg(Token::Surface))
+        .child(image(&img).size_16().object_fit(ObjectFit::Cover).rounded_full())
+        .child(image(&img).w(120).h(40).object_fit(ObjectFit::None).border_2().border_color(Token::Border))
+        .child(image(&img).w(12).opacity(0.6))
         .into()
 }
 

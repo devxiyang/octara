@@ -11,18 +11,6 @@ fn rejected(method: &str, build: impl FnOnce() -> El) {
 }
 
 #[test]
-fn images_cannot_replace_another_content_kind() {
-    let image = Image::rgba(1, 1, vec![255; 4]);
-    rejected("img", || text(|| -> String { panic!("a rejected text binding must not run") }).img(&image));
-    rejected("img", || canvas(|_| panic!("a rejected canvas must not run")).img(&image));
-    rejected("img", || text_input().secure().value("private draft").img(&image));
-    rejected("img", || web_view("about:blank").img(&image));
-    rejected("img", || el().child("Caption").img(&image));
-    // A structural declaration is still content even when it currently produces no nodes.
-    rejected("img", || el().child(View::empty()).img(&image));
-}
-
-#[test]
 fn atomic_content_rejects_application_children_before_conversion_or_iteration() {
     struct Unconverted;
     impl IntoElement for Unconverted {
@@ -31,12 +19,12 @@ fn atomic_content_rejects_application_children_before_conversion_or_iteration() 
         }
     }
 
-    let image = Image::rgba(1, 1, vec![255; 4]);
+    let picture = Image::rgba(1, 1, vec![255; 4]);
     let atomic = || {
         vec![
             text("Text"),
             text_input(),
-            el().img(&image),
+            image(&picture),
             icon(Icon::stroked("empty", &[])),
             canvas(|_| panic!("rejected canvas must not draw")),
             native_view("test"),
@@ -70,33 +58,33 @@ fn specialized_configuration_requires_matching_content() {
 }
 
 #[test]
-fn image_replacement_preserves_fit_and_shared_semantics_inside_a_container() {
-    let first = Image::rgba(2, 1, vec![255; 8]);
-    let second = Image::rgba(1, 1, vec![255; 4]);
-    let expected = second.clone();
+fn an_image_has_its_own_fit_and_semantics_inside_a_container() {
+    let picture = Image::rgba(1, 1, vec![255; 4]);
+    let expected = picture.clone();
     let window = Window::headless(move || {
         col()
             .size_full()
             .child(
                 col()
                     .id("figure")
-                    .child(
-                        el().id("picture")
-                            .size(80)
-                            .img(&first)
-                            .object_fit(ObjectFit::Contain)
-                            .img(&second)
-                            .label("Picture")
-                            .value("Image metadata"),
-                    )
+                    .child(image(&picture).id("picture").size(80).object_fit(ObjectFit::Contain).label("Picture").value("Image metadata"))
                     .child(text("Caption").id("caption")),
             )
+            .child(image(&picture).id("preview").size(40).role(Role::Button).label("Preview image").on_press(|| {}))
             .child(el().id("status").value("Ready"))
             .into()
     });
+    let tree = window.inspect();
+    assert_eq!(tree.find("picture").unwrap().role, "image");
+    let preview = tree.find("preview").unwrap();
+    assert_eq!(preview.role, "button");
+    assert!(preview.actions.iter().any(|action| action == "press"));
     let k = window.kernel();
     let node = k.find("picture").unwrap();
+    assert_eq!(k.kind(node), octara::kernel::Kind::Image);
+    assert_eq!(k.role(node), Role::Image);
     assert_eq!(k.image(node), Some((&expected, ObjectFit::Contain)));
+    assert_eq!(k.origin(node).unwrap().file(), file!());
     assert!(k.children(node).is_empty());
     assert_eq!(k.children(k.find("figure").unwrap()), &[node, k.find("caption").unwrap()]);
     assert_eq!(k.text_of("caption").as_deref(), Some("Caption"));

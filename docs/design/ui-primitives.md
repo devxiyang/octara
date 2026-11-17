@@ -4,8 +4,7 @@ Status: a settled direction. Follows Rune's layering ([research](../research/run
 Parts marked "implemented" are in `crates/octara`; the rest are next steps.
 
 The [2026-11-16 reduction audit](primitive-reduction.md) distinguishes actual removal candidates,
-specialized APIs, and internal exports. It is a proposal; the implemented inventory below has
-not yet changed.
+specialized APIs, and internal exports. The inventory below tracks the implemented surface.
 
 ## 1. Layers
 
@@ -28,12 +27,12 @@ errors give the correct way to write it. Behavior stays native (text input, acce
 | | `state_list` and `filter` / `sort_by` / `group_by` / `map` / `join` / `flatten` | Implemented ([map and join](map-join.md)) |
 | | `TextBuffer`, `text_buffer`, `paced` | Implemented |
 | | Context `provide` / `use_context` | Implemented |
-| | Tasks, subscriptions, resources, `clock` | Implemented ([async](async.md)) |
-| Structure | `component_keyed` / `component`, `show` / `show_else`, `keyed` (a view built anew when its key changes), `each`, `virtual_each` | Implemented |
+| | Tasks, subscriptions, `async_memo`, `clock` | Implemented ([async](async.md)) |
+| Structure | `scope(key, factory)`, `show` / `show_else`, `keyed` (a view built anew when its key changes), `each`, `virtual_each` | Implemented |
 | | `.child(..)` / `.children(iter)`, `El::overlay`, modals (Escape, press outside, focus kept inside) | Implemented |
 | Elements | `el`, `row`, `col`, `spacer`; `text(fixed value \| closure \| TextBuffer)` | Implemented |
 | | `text_input`: single line, `.multiline()`, `.rows(min, max)`, `.submit_on_enter()`, `.secure()` / `.revealed(..)`, selection, undo, clipboard, IME composition | Implemented headless and through the shell, including macOS `NSTextInputClient`; other direct platform protocols remain ([text input](text-input.md)) |
-| | Scroll containers (`overflow_*_scroll`, `scroll_to`, `follow_tail` / `following_tail` / `scroll_to_end`), images (`img`, `object_fit`) | Implemented |
+| | Scroll containers (`overflow_*_scroll`, `scroll_to`, `follow_tail` / `following_tail` / `scroll_to_end`), images (`image(&pixels)`, `object_fit`) | Implemented |
 | | Vector paths (`Path`, fills, strokes); `icon` with the Lucide set (`octara-icons`), `Icon::svg` | Implemented ([vector graphics](vector-graphics.md)) |
 | | `canvas` (declarative recording: paths, rects, text, images, transforms, clips) | Implemented; labeled regions to do |
 | | Native Island: `native_view(kind)`, `web_view(url)`, slots, placements, the host protocol, headless host | Implemented headless and on macOS (web views and maps); Windows/Linux hosts to do ([Native Island](native-island.md)) |
@@ -61,30 +60,22 @@ Input settings live with the input; native slot/props/event callback live with t
 image fit and icon stroke width live with their respective content.
 
 Use `text_input().rows(..).secure()` for input configuration, `native_view(..).slot(..).props(..)`
-for native configuration, `icon(..).stroke_width(..)` for icons, and
-`el().img(&image).object_fit(..)` for images. A second `.img(..)` replaces an existing image and
-keeps its fit. It cannot overwrite text, input, icon, canvas, native content or a box with declared
-children. Only the box content owns application children; text/input/image/icon/canvas/native
-content cannot hold them. Put a caption, badge or input affix alongside the atomic content inside
-an external container. Styles, handlers and semantics remain shared; `.value(..)` still sets
-accessible string values on non-input nodes. Anchored overlays remain separate window-layer
-content, so atomic elements can still own tooltips and popovers.
+for a native view, `icon(..).stroke_width(..)` for icons, and `image(&pixels).object_fit(..)`
+for images. An image has the Image accessibility role by default. Set a label for a meaningful
+image or use `a11y_hidden()` for decoration. Styles, handlers, explicit roles and values work
+on each element. Compose a caption, badge or input affix in an enclosing container. Atomic
+elements can still anchor tooltips and popovers in the window overlay layer.
 
-An incompatible content-specific call panics with `ELEMENT_CONTENT` at the builder caller,
-before mounting or running its binding. Builders can be assembled without a current App, so
-this failure is reported directly in the panic, not retained in `App::diagnostics()`. There is
-no ignored configuration, deferred invalid-content variant or compatibility conversion.
-`child` validates before converting its argument, and `children` before consuming its iterator,
-including an empty iterator. A declared child counts even if it currently mounts no nodes;
-`.img(..)` cannot silently discard an empty/dynamic child declaration.
+A container validates `child` before converting its argument and `children` before consuming
+its iterator. Content-specific configuration on an incompatible element raises `ELEMENT_CONTENT`
+at the builder call, including when building outside an App.
 
-The Kernel enforces the same ownership: only container content stores application children;
-text stores its own internal links. Direct structural methods reject link manipulation and
-atomic parents before mutation. Atomic setters require an empty box (no live or exiting
-children) or the same content kind; clearing an icon/image restores an empty box. Text/input/
-native lifetimes cannot be bypassed by changing them to another content kind. Rich runs are
-validated before replacement. These violations use `ELEMENT_CONTENT` as well; see
-[rich text](text.md#rich-text) for link continuity and plain-edit semantics.
+A Kernel node is created with its final content. Creation records that kind, establishes any
+measurement callback and registers native nodes with the window. A canvas can replace its drawing,
+an editor can change its document, and a native view can receive new properties. These updates
+preserve the node's kind and identity. Only a box owns application children. A text node owns
+its rich links and retires them according to [text continuity](text.md#rich-text). The window
+owns its root. The Kernel's structural operations enforce those ownership rules as well.
 
 ## 4. Style
 

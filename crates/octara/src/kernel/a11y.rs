@@ -513,19 +513,19 @@ mod tests {
     #[test]
     fn active_relations_follow_target_visibility_attachment_and_replacement() {
         let mut k = Kernel::default();
-        let owner = k.create(Kind::TextInput);
+        let owner = k.create_input();
         k.set_role(owner, Role::ComboBox);
         k.set_state(owner, State::FOCUSED, true);
         k.set_active_descendant(owner, Some("option-b"));
         k.append_child(k.root(), owner);
-        let list = k.create(Kind::Box);
+        let list = k.create_box();
         k.set_role(list, Role::ListBox);
         k.append_child(k.root(), list);
-        let selected = k.create(Kind::Box);
+        let selected = k.create_box();
         k.set_role(selected, Role::ListBoxOption);
         k.set_state(selected, State::SELECTED, true);
         k.append_child(list, selected);
-        let option = k.create(Kind::Box);
+        let option = k.create_box();
         k.set_role(option, Role::ListBoxOption);
         k.set_test_id(option, Some("option-b"));
         k.append_child(list, option);
@@ -572,7 +572,7 @@ mod tests {
         // Replace within one frame: the owner's binding stays the same, but its exported
         // relation must name the new node, never the retired slot's generation.
         k.destroy(option);
-        let replacement = k.create(Kind::Box);
+        let replacement = k.create_box();
         k.set_test_id(replacement, Some("option-b"));
         k.set_role(replacement, Role::ListBoxOption);
         k.set_label(replacement, Some("Replacement B"));
@@ -582,7 +582,7 @@ mod tests {
         k.destroy(replacement);
         check(&k, None);
         assert!(k.accessibility_update(Some(owner), 1.0).nodes.is_empty());
-        let inserted = k.create(Kind::Box);
+        let inserted = k.create_box();
         k.set_test_id(inserted, Some("option-b"));
         k.set_role(inserted, Role::ListBoxOption);
         k.append_child(list, inserted);

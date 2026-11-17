@@ -7,7 +7,7 @@ runtime, document, primitives, kit and host/tooling boundaries. The first
 [package split](design/package-boundaries.md) is implemented: window-independent values and
 presentation protocols belong to `octara-primitives`; text shaping and fonts belong to
 `octara-text`, with downward production dependencies.
-The broader content, input and component-contract proposals are not yet implemented.
+Element construction and retained-node content ownership now follow the [content contract](design/ui-primitives.md#element-content). Further editing and component work is tracked in [TODO](TODO.md).
 Its evidence is in the [foundation review](design/ui-foundation-review.md) and
 [SwiftUI/Rune/Exact comparison](research/ui-composition-frameworks.md).
 

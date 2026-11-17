@@ -661,6 +661,15 @@ def content(args, output, sockets):
         with LiveWindow(card, args, output, sockets, ["showcase", card]) as app:
             app.requests({"op": "expect", "clean": True})
             before = app.capture(f"{card}-before.png")
+            if card == "images":
+                expected = {
+                    "Landscape at its natural aspect ratio": [200, 125],
+                    "Landscape cropped to a circle": [96, 96],
+                    "Landscape fitted inside a frame": [120, 96],
+                }
+                sizes = {n["name"]: n["bounds"][2:] for n in nodes(app.inspect())
+                         if n["role"] == "image" and n.get("name") in expected}
+                require(sizes == expected, f"images: accessible image names and sizes differ: {sizes}")
             if card == "drawing":
                 chart = find(app.inspect(), "chart")
                 require(chart["role"] == "image" and "Dec selected" in chart["name"], "canvas semantics differ")

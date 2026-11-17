@@ -19,11 +19,11 @@ fn an_image_sizes_its_box() {
     let mut app = Window::headless(move || {
         col()
             .items_start()
-            .child(el().id("natural").img(&img))
-            .child(el().id("wide").w(100).img(&img))
-            .child(el().id("tall").h(50).img(&img))
-            .child(el().id("square").w(30).aspect_square().img(&img))
-            .child(el().id("both").w(10).h(10).img(&img))
+            .child(image(&img).id("natural"))
+            .child(image(&img).id("wide").w(100))
+            .child(image(&img).id("tall").h(50))
+            .child(image(&img).id("square").w(30).aspect_square())
+            .child(image(&img).id("both").w(10).h(10))
             .into()
     });
     assert_eq!(size(&app, "natural"), (40.0, 20.0));
@@ -48,7 +48,7 @@ fn fits_place_the_image() {
 fn the_display_list_draws_it_clipped_to_the_box() {
     let img = solid(20, 20, [0, 0, 255, 255]);
     let app = Window::headless(move || {
-        col().child(el().id("pic").w(100).h(50).p_2().border_2().rounded_lg().img(&img).object_fit(ObjectFit::Cover)).into()
+        col().child(image(&img).id("pic").w(100).h(50).p_2().border_2().rounded_lg().object_fit(ObjectFit::Cover)).into()
     });
     let n = app.kernel().find("pic").unwrap();
     let (x, y, w, h) = app.kernel().rect(n);
@@ -80,7 +80,7 @@ fn png_decodes() {
 fn new_pixels_draw_without_rerunning_the_view() {
     let img = solid(4, 4, [0, 0, 0, 255]);
     let shown = img.clone();
-    let app = Window::headless(move || col().child(el().id("pic").w(40).img(&shown)).into());
+    let app = Window::headless(move || col().child(image(&shown).id("pic").w(40)).into());
     app.app().reset_work();
     img.set(4, 4, [255u8, 255, 255, 255].repeat(16));
     let frame = app

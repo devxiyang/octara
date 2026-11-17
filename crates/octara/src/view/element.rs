@@ -11,8 +11,7 @@ type Draw = Rc<dyn Fn(&mut crate::canvas::Canvas)>;
 type OnNative = Rc<dyn Fn(&crate::native::NativeEvent)>;
 
 use crate::kernel::{
-    Breakpoint, Color, Fill, HandlerId, HandlerKind, Kernel, Kind, NodeId, NumericRange, Paint, Placement, Role, State, StyleProp, Token,
-    When,
+    Breakpoint, Color, Fill, HandlerId, HandlerKind, Kernel, NodeId, NumericRange, Paint, Placement, Role, State, StyleProp, Token, When,
 };
 use crate::reactive::graph::{self, rt};
 use crate::reactive::log::Changes;
@@ -284,11 +283,15 @@ impl Content {
         }
     }
 
-    fn kind(&self) -> Kind {
+    fn create_node(&self, kernel: &mut Kernel) -> NodeId {
         match self {
-            Self::Text(_) => Kind::Text,
-            Self::Input(_) => Kind::TextInput,
-            _ => Kind::Box,
+            Self::Box(_) => kernel.create_box(),
+            Self::Text(_) => kernel.create_text(),
+            Self::Input(_) => kernel.create_input(),
+            Self::Image { image, fit } => kernel.create_image(image.clone(), *fit),
+            Self::Icon { icon, stroke_width } => kernel.create_icon(icon, *stroke_width),
+            Self::Canvas(_) => kernel.create_canvas(),
+            Self::Native(native) => kernel.create_native(native.kind, native.slot),
         }
     }
 
@@ -318,10 +321,16 @@ fn wrong_content(method: &str, expected: &str) -> ! {
 }
 
 /// An element with one content kind and shared styles, semantics and handlers.
-/// Only containers (`el`, `row`, `col`) accept application children; compose atomic content
-/// such as text, inputs and images inside an external container.
-/// Content-specific methods panic with `ELEMENT_CONTENT` on a mismatched kind; for example,
-/// use `text_input().rows(..)` and `el().img(..).object_fit(..)`.
+/// Only containers accept application children. Compose atomic content such as text, inputs
+/// and images inside a container built with [`el`], [`row`] or [`col`].
+/// Content-specific methods require the matching constructor, such as `text_input().rows(..)`
+/// and `image(..).object_fit(..)`. A mismatched kind panics with `ELEMENT_CONTENT`.
+///
+/// ```compile_fail
+/// use octara::prelude::*;
+/// let picture = Image::rgba(1, 1, vec![255; 4]);
+/// el().img(&picture);
+/// ```
 pub struct El {
     content: Content,
     role: Option<Role>,
@@ -455,6 +464,16 @@ pub fn text(t: impl IntoText) -> El {
 
 pub(crate) fn text_at(t: impl IntoText, at: &'static Location<'static>) -> El {
     new_el(Content::Text(t.into_text()), at)
+}
+
+/// Shows shared pixels, stretched by default and clipped to the element's corners.
+/// Use [`El::object_fit`] to change how the image fits. With no authored dimensions the
+/// element takes the image's size. With one dimension the other follows the aspect ratio.
+/// Give meaningful images a label and hide decorative images with `a11y_hidden()`.
+/// Updating the pixels of a same-size image preserves this element and its bindings.
+#[track_caller]
+pub fn image(picture: &crate::image::Image) -> El {
+    new_el(Content::Image { image: picture.clone(), fit: crate::image::ObjectFit::Fill }, Location::caller())
 }
 
 /// An icon (`icon(icons::SEARCH)`, from `octara-icons`, or an [`Icon`](crate::icon::Icon) of
@@ -949,22 +968,6 @@ impl El {
         self
     }
 
-    /// Shows `image` in the element, fitted by [`object_fit`](Self::object_fit) (stretched by
-    /// default) and clipped to its corners. With only a width or a height, the other side follows
-    /// the image's aspect ratio; with neither, the element takes the image's size. New pixels set
-    /// on the handle draw on the next frame without rerunning the view. Requires an empty box
-    /// or an existing image; put the image and other content inside an external container.
-    #[track_caller]
-    pub fn img(mut self, image: &crate::image::Image) -> Self {
-        match &mut self.content {
-            Content::Box(children) if children.is_empty() => {
-                self.content = Content::Image { image: image.clone(), fit: crate::image::ObjectFit::Fill };
-            }
-            Content::Image { image: current, .. } => *current = image.clone(),
-            _ => wrong_content("img", "an empty box or an existing image"),
-        }
-        self
-    }
     /// Display-only hint for an empty input without composition. It never supplies the
     /// accessible name or editable value and does not affect automatic height. Single-line
     /// hints truncate; multiline hints wrap within the content box. Use `.label(..)` as well.
@@ -1063,12 +1066,12 @@ impl El {
         }
         self
     }
-    /// How the image fills the element (GPUI's `object_fit`). Call after `.img(..)`.
+    /// How the image fits the element (GPUI's `object_fit`). Requires [`image`].
     #[track_caller]
     pub fn object_fit(mut self, fit: crate::image::ObjectFit) -> Self {
         match &mut self.content {
             Content::Image { fit: current, .. } => *current = fit,
-            _ => wrong_content("object_fit", ".img(..) first"),
+            _ => wrong_content("object_fit", "image()"),
         }
         self
     }
@@ -1110,7 +1113,7 @@ fn bind<T: 'static>(at: &'static Location<'static>, node: NodeId, prop: Prop<T>,
 pub(crate) fn build_el(mut e: El) -> NodeId {
     let u = crate::app::window();
     let at = e.at;
-    let node = u.kernel.borrow_mut().create(e.content.kind());
+    let node = e.content.create_node(&mut u.kernel.borrow_mut());
     u.kernel.borrow_mut().set_origin(node, at);
     u.kernel.borrow_mut().set_component(node, e.made);
     {
@@ -1128,39 +1131,16 @@ pub(crate) fn build_el(mut e: El) -> NodeId {
         if let Some(r) = e.role {
             k.set_role(node, r);
         }
-        // Establish exactly one content kind before its bindings and layout styles.
-        match &e.content {
-            Content::Box(_) | Content::Text(_) => {}
-            Content::Input(input) => {
-                k.set_multiline(node, input.multiline);
-                if let Some((min, max)) = input.rows {
-                    k.set_rows(node, min, max);
-                }
-                k.set_submit_on_enter(node, input.submit_on_enter);
-                k.set_secure(node, input.secure);
+        if let Content::Input(input) = &e.content {
+            k.set_multiline(node, input.multiline);
+            if let Some((min, max)) = input.rows {
+                k.set_rows(node, min, max);
             }
-            Content::Image { image, fit } => k.set_image(node, Some((image.clone(), *fit))),
-            Content::Icon { icon, stroke_width } => {
-                // An icon is an image when labeled, else decoration.
-                match (&e.label, e.role) {
-                    (Some(_), None) => {
-                        k.set_role(node, Role::Image);
-                    }
-                    (None, None) => {
-                        k.set_hidden(node, true);
-                    }
-                    _ => {}
-                }
-                k.set_icon(node, Some((icon, *stroke_width)));
-            }
-            Content::Canvas(_) => {
-                if e.role.is_none() {
-                    k.set_role(node, Role::Image);
-                }
-            }
-            Content::Native(native) => k.set_native(node, native.kind, native.slot),
+            k.set_submit_on_enter(node, input.submit_on_enter);
+            k.set_secure(node, input.secure);
         }
-        if e.hidden {
+        let decorative_icon = matches!(e.content, Content::Icon { .. }) && e.label.is_none() && e.role.is_none();
+        if e.hidden || decorative_icon {
             k.set_hidden(node, true);
         }
         if e.anchor.is_some() {

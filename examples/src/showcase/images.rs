@@ -34,9 +34,24 @@ pub fn card() -> El {
                 .gap_4()
                 .flex_wrap()
                 .items_end()
-                .child(el().w(200).img(&picture).rounded_lg().shadow_md())
-                .child(el().size_24().img(&picture).object_fit(ObjectFit::Cover).rounded_full().shadow_md())
-                .child(el().w(120).h(96).img(&picture).bg(Token::Surface).rounded_md().object_fit(ObjectFit::Contain)),
+                .child(image(&picture).label("Landscape at its natural aspect ratio").w(200).rounded_lg().shadow_md())
+                .child(
+                    image(&picture)
+                        .label("Landscape cropped to a circle")
+                        .size_24()
+                        .object_fit(ObjectFit::Cover)
+                        .rounded_full()
+                        .shadow_md(),
+                )
+                .child(
+                    image(&picture)
+                        .label("Landscape fitted inside a frame")
+                        .w(120)
+                        .h(96)
+                        .bg(Token::Surface)
+                        .rounded_md()
+                        .object_fit(ObjectFit::Contain),
+                ),
         )
         .child(text("200 wide (height from the image) · cover in a circle · contain").text_xs().text_color(Token::TextMuted))
 }

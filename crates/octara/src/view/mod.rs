@@ -15,7 +15,9 @@ pub use crate::kernel::Component;
 pub use crate::kernel::rich::{Rich, Span, rich};
 pub use behavior::Behavior;
 pub(crate) use element::build_el;
-pub use element::{El, IntoProp, IntoText, Prop, TextContent, canvas, col, el, icon, native_view, row, spacer, text, text_input, web_view};
+pub use element::{
+    El, IntoProp, IntoText, Prop, TextContent, canvas, col, el, icon, image, native_view, row, spacer, text, text_input, web_view,
+};
 pub use list::{IntoRows, each, virtual_each};
 pub use octara_macros::ui;
 pub(crate) use pace::Paced;

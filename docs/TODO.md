@@ -16,6 +16,10 @@ the evidence for each follow-up.
       targets immediately before host dispatch.
 - [x] Scope Chat's queue to the open conversation, unify send eligibility, and put focus and
       stable attachment actions on their actual buttons.
+- [x] Construct every retained node with its final content. Replace `El::img` with `image(&pixels)`,
+      preserve image sizing and explicit roles, and make creation logs and Kernel queries agree.
+- [ ] Validate image dimensions and pixel versions across frame publication, and large or multiple
+      images against GPU capacity. See the [resource and rendering boundary](design/bottom-up-review-2026-11-18.md#下一处像素边界).
 
 Validation on Rust 1.100.0 passed 1,006 workspace tests with 3 existing ignored doctests.
 Strict all-targets Clippy, formatting and layer checks passed. First-submission evidence

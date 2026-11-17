@@ -61,16 +61,25 @@ pub(crate) use octara_primitives::layout::{Align, Placed, Placement, Side};
 // Nodes
 // ---------------------------------------------------------------------------------------------
 
-/// What a node is, which decides how it is measured. Its semantic role is separate.
+/// The retained content of a node. Layout and accessible role are configured separately.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
+    /// The window root. Each document creates its own root.
     Root,
     /// A box laid out by its children (and its explicit size).
     Box,
     /// Text measured from its content and font size.
     Text,
-    /// A text input (a fixed default size; the platform owns editing).
+    /// An editable document, coordinated with the platform input method.
     TextInput,
+    /// A shared pixel resource with a fit policy.
+    Image,
+    /// A vector icon drawn in the current text color.
+    Icon,
+    /// Drawing commands supplied by a canvas.
+    Canvas,
+    /// A mounted platform view.
+    Native,
     /// A link inside a text: a range of its parent text's runs, not laid out on its own (its
     /// frame is the lines the range covers).
     Link,
@@ -80,7 +89,8 @@ impl Kind {
     fn default_role(self) -> Role {
         match self {
             Kind::Root => Role::Window,
-            Kind::Box => Role::GenericContainer,
+            Kind::Box | Kind::Native => Role::GenericContainer,
+            Kind::Image | Kind::Icon | Kind::Canvas => Role::Image,
             Kind::Text => Role::Label,
             Kind::TextInput => Role::TextInput,
             Kind::Link => Role::Link,
@@ -334,6 +344,21 @@ enum Content {
     Link(Box<rich::LinkContent>),
 }
 
+impl Content {
+    fn kind(&self) -> Kind {
+        match self {
+            Self::Box(_) => Kind::Box,
+            Self::Text(_) => Kind::Text,
+            Self::Input(_) => Kind::TextInput,
+            Self::Image(..) => Kind::Image,
+            Self::Icon(_) => Kind::Icon,
+            Self::Canvas(_) => Kind::Canvas,
+            Self::Native(_) => Kind::Native,
+            Self::Link(_) => Kind::Link,
+        }
+    }
+}
+
 /// A native view's element: its kind, slot, props (and their version, so the host hears of a
 /// change once) and the size the view reported.
 #[derive(Debug)]
@@ -479,12 +504,7 @@ impl Node {
     }
 
     fn kind(&self) -> Kind {
-        match self.content {
-            Content::Text(_) => Kind::Text,
-            Content::Input(_) => Kind::TextInput,
-            Content::Link(_) => Kind::Link,
-            _ => Kind::Box,
-        }
+        self.content.kind()
     }
     /// A text's own text (empty for other nodes).
     fn text(&self) -> &str {
@@ -757,7 +777,7 @@ impl Kernel {
             glides: rustc_hash::FxHashMap::default(),
             index: FxHashMap::default(),
         };
-        k.root = k.create(Kind::Root);
+        k.root = k.create_box();
         k.nodes[k.root].attached = true;
         // The root is the window, a column (as in React Native): content fills its width and
         // wraps to it; an app root takes the full height with `size_full()` or `flex_1()`.
@@ -765,7 +785,7 @@ impl Kernel {
         k.set_style(k.root, StyleProp::Height(Length::Pct(1.0)));
         k.set_style(k.root, StyleProp::Direction(FlexDirection::Column));
         // The overlay layer: the root's last child, covering the window, so overlays paint on top.
-        let layer = k.create(Kind::Box);
+        let layer = k.create_box();
         for p in [
             StyleProp::Position(Position::Absolute),
             StyleProp::Top(Length::Px(0.0)),
@@ -937,6 +957,7 @@ impl Kernel {
     pub fn is_alive(&self, id: NodeId) -> bool {
         self.nodes.contains_key(id)
     }
+    /// The content kind chosen when the node was created.
     pub fn kind(&self, id: NodeId) -> Kind {
         if id == self.root { Kind::Root } else { self.node(id).kind() }
     }
@@ -1024,29 +1045,54 @@ impl Kernel {
 
     // ---- structure ----
 
-    /// Creates application content. Links are created only by their text's `set_rich`.
-    #[track_caller]
-    pub fn create(&mut self, kind: Kind) -> NodeId {
-        let code = &codes::ELEMENT_CONTENT;
-        assert!(kind != Kind::Link, "{code}: links are owned by rich text");
-        self.create_node(kind)
+    /// Creates a detached container. Only containers accept application children.
+    pub fn create_box(&mut self) -> NodeId {
+        self.create_node(Content::Box(Vec::new()))
     }
 
-    fn create_node(&mut self, kind: Kind) -> NodeId {
+    /// Creates a text node. Its rich-text links are allocated by the text itself.
+    pub fn create_text(&mut self) -> NodeId {
+        self.create_node(Content::Text(Box::default()))
+    }
+
+    /// Creates an editor with an empty document and the default row limits.
+    pub fn create_input(&mut self) -> NodeId {
+        let mut input = Box::<InputContent>::default();
+        input.rows = (1, u16::MAX);
+        self.create_node(Content::Input(input))
+    }
+
+    /// Creates an image with its natural size and the requested fit.
+    pub fn create_image(&mut self, image: crate::image::Image, fit: crate::image::ObjectFit) -> NodeId {
+        let id = self.create_node(Content::Image(image, fit));
+        self.resolve(id, "image");
+        id
+    }
+
+    /// Creates an icon using its own stroke width or a supplied override.
+    pub fn create_icon(&mut self, icon: &crate::icon::Icon, stroke_width: Option<f32>) -> NodeId {
+        let icon = NodeIcon { name: icon.name().to_owned(), view_box: icon.bounds(), shapes: icon.shapes(stroke_width) };
+        self.create_node(Content::Icon(Rc::new(icon)))
+    }
+
+    /// Creates an empty canvas. Its drawing can be replaced with [`Self::set_canvas`].
+    pub fn create_canvas(&mut self) -> NodeId {
+        self.create_node(Content::Canvas(Rc::default()))
+    }
+
+    /// Creates a native view in its platform slot. Its kind and slot last for this mount.
+    pub fn create_native(&mut self, kind: &str, slot: crate::native::Slot) -> NodeId {
+        let native =
+            NativeContent { kind: kind.to_owned(), slot, props: serde_json::Value::Null, version: 0, intrinsic: None, live: false };
+        self.create_node(Content::Native(Box::new(native)))
+    }
+
+    fn create_node(&mut self, content: Content) -> NodeId {
+        let kind = content.kind();
         let layout = default_layout(kind);
         let t = self.taffy.new_leaf(layout.clone()).expect("taffy");
         let root_inh = Inherited::root(&self.res.theme.borrow());
         let visual = Unresolved::new(&self.res.theme.borrow(), &root_inh).resolve(&self.res.theme.borrow(), &mut Vec::new());
-        let content = match kind {
-            Kind::Text => Content::Text(Box::default()),
-            Kind::Link => Content::Link(Box::default()),
-            Kind::TextInput => Content::Input({
-                let mut i = Box::<InputContent>::default();
-                i.rows = (1, u16::MAX);
-                i
-            }),
-            Kind::Root | Kind::Box => Content::Box(Vec::new()),
-        };
         let id = self.nodes.insert(Node {
             content,
             ink: Cell::new([0.0; 4]),
@@ -1113,7 +1159,11 @@ impl Kernel {
         let measure = match kind {
             Kind::Text => Some(Measure::Text(id)),
             Kind::TextInput => Some(Measure::Input(id)),
-            Kind::Root | Kind::Box | Kind::Link => None,
+            Kind::Native => {
+                self.native_nodes.insert(id);
+                Some(Measure::Native(id))
+            }
+            Kind::Root | Kind::Box | Kind::Image | Kind::Icon | Kind::Canvas | Kind::Link => None,
         };
         if measure.is_some() {
             self.taffy.set_node_context(t, measure).expect("taffy");
@@ -1678,63 +1728,26 @@ impl Kernel {
         None
     }
 
-    /// Initializes an empty box or updates the same atomic content kind. Cross-kind replacement
-    /// would bypass its owner's lifetime (native hosts, input state, text links).
-    #[track_caller]
-    fn set_content(&mut self, id: NodeId, content: Content) {
-        let code = &codes::ELEMENT_CONTENT;
-        let has_leaving_children = self.ghosts.iter().any(|&child| self.node(child).parent == Some(id));
-        let n = self.node_mut(id);
-        let allowed = match (&n.content, &content) {
-            (Content::Box(children), _) => children.is_empty() && !has_leaving_children,
-            (Content::Icon(_) | Content::Image(..), Content::Box(_)) => true,
-            _ => std::mem::discriminant(&n.content) == std::mem::discriminant(&content),
-        };
-        assert!(allowed, "{code}: content replacement requires an empty box or the same content kind");
-        n.content = content;
-    }
-
-    /// Draws `icon` in the box (`None`: no icon), its strokes `stroke_width` wide on its view box
-    /// (`None`: the icon's own).
-    #[track_caller]
-    pub fn set_icon(&mut self, id: NodeId, icon: Option<(&crate::icon::Icon, Option<f32>)>) {
-        let name = icon.map(|(i, _)| i.name().to_owned());
-        let icon = icon.map(|(i, w)| NodeIcon { name: i.name().to_owned(), view_box: i.bounds(), shapes: i.shapes(w) });
-        if self.icon(id) == icon.as_ref() {
-            return;
-        }
-        self.set_content(id, icon.map_or(Content::Box(Vec::new()), |i| Content::Icon(std::rc::Rc::new(i))));
-        self.changed(id, Dirty::PAINT, "icon", || name.unwrap_or_default());
-    }
     pub fn icon(&self, id: NodeId) -> Option<&NodeIcon> {
         if let Content::Icon(i) = &self.node(id).content { Some(i) } else { None }
     }
 
-    /// Makes the box a canvas drawing `ops` (in its content box's coordinates).
+    /// Replaces the drawing of an existing canvas, in content-box coordinates.
     #[track_caller]
     pub fn set_canvas(&mut self, id: NodeId, ops: Vec<crate::canvas::CanvasOp>) {
-        if self.canvas(id) == Some(ops.as_slice()) {
+        let Content::Canvas(drawing) = &mut self.node_mut(id).content else {
+            let code = &codes::ELEMENT_CONTENT;
+            panic!("{code}: set_canvas requires a canvas");
+        };
+        if **drawing == ops {
             return;
         }
         let count = ops.len();
-        self.set_content(id, Content::Canvas(std::rc::Rc::new(ops)));
+        *drawing = Rc::new(ops);
         self.changed(id, Dirty::PAINT, "canvas", || format!("{count} ops"));
     }
     pub fn canvas(&self, id: NodeId) -> Option<&[crate::canvas::CanvasOp]> {
         if let Content::Canvas(ops) = &self.node(id).content { Some(ops) } else { None }
-    }
-    /// Makes the box a native view of `kind` in `slot`, sized by the size it reports until an
-    /// authored one.
-    #[track_caller]
-    pub fn set_native(&mut self, id: NodeId, kind: &str, slot: crate::native::Slot) {
-        let content =
-            NativeContent { kind: kind.to_owned(), slot, props: serde_json::Value::Null, version: 0, intrinsic: None, live: false };
-        self.set_content(id, Content::Native(Box::new(content)));
-        let t = self.node(id).taffy;
-        self.taffy.set_node_context(t, Some(Measure::Native(id))).expect("taffy");
-        self.taffy.mark_dirty(t).expect("taffy");
-        self.native_nodes.insert(id);
-        self.changed(id, Dirty::LAYOUT | Dirty::PAINT | Dirty::SEMANTICS, "native", || kind.to_owned());
     }
     /// A native view's props: handed to its host whole when they change.
     pub fn set_native_props(&mut self, id: NodeId, props: &serde_json::Value) -> bool {
@@ -1786,16 +1799,6 @@ impl Kernel {
         (w.max(0.0), h.max(0.0))
     }
 
-    /// Shows `image` in the box (`None`: no image), fitted by `fit`.
-    #[track_caller]
-    pub fn set_image(&mut self, id: NodeId, image: Option<(crate::image::Image, crate::image::ObjectFit)>) {
-        if self.image(id) == image.as_ref().map(|(i, f)| (i, *f)) {
-            return;
-        }
-        self.set_content(id, image.map_or(Content::Box(Vec::new()), |(i, f)| Content::Image(i, f)));
-        self.resolve(id, "image");
-        self.mark(Dirty::PAINT);
-    }
     pub fn image(&self, id: NodeId) -> Option<(&crate::image::Image, crate::image::ObjectFit)> {
         if let Content::Image(i, f) = &self.node(id).content { Some((i, *f)) } else { None }
     }
@@ -2624,12 +2627,12 @@ mod tests {
 
     fn tree() -> (Kernel, NodeId, NodeId) {
         let mut k = Kernel::default();
-        let col = k.create(Kind::Box);
+        let col = k.create_box();
         k.set_test_id(col, Some("col"));
         k.set_style(col, StyleProp::Direction(FlexDirection::Column));
         let root = k.root();
         k.append_child(root, col);
-        let t = k.create(Kind::Text);
+        let t = k.create_text();
         k.set_test_id(t, Some("label"));
         k.set_text(t, "hello");
         k.append_child(col, t);
@@ -2660,7 +2663,7 @@ mod tests {
     #[test]
     fn parley_text_follows_the_viewport() {
         let mut k = Kernel::default();
-        let t = k.create(Kind::Text);
+        let t = k.create_text();
         k.set_text(t, &"word ".repeat(60));
         k.append_child(k.root(), t);
         k.layout(800.0, 600.0);
@@ -2732,12 +2735,12 @@ mod tests {
     #[test]
     fn semantics_index_and_dump() {
         let (mut k, col, t) = tree();
-        let b = k.create(Kind::Box);
+        let b = k.create_box();
         k.set_role(b, Role::Button);
         k.set_label(b, Some("Go"));
         k.set_test_id(b, Some("go"));
         k.append_child(col, b);
-        let s = k.create(Kind::Box);
+        let s = k.create_box();
         k.set_hidden(s, true);
         k.set_test_id(s, Some("spacer"));
         k.append_child(col, s);
@@ -2755,10 +2758,10 @@ mod tests {
     fn removing_the_last_absolute_child_keeps_layout_valid() {
         let mut k = Kernel::default();
         let root = k.root();
-        let host = k.create(Kind::Box);
+        let host = k.create_box();
         k.set_style(host, StyleProp::Position(Position::Absolute));
         k.append_child(root, host);
-        let child = k.create(Kind::Box);
+        let child = k.create_box();
         k.set_style(child, StyleProp::Position(Position::Absolute));
         k.set_style(child, StyleProp::Width(Length::Px(10.0)));
         k.append_child(host, child);
@@ -2776,7 +2779,7 @@ mod tests {
         let root = k.root();
         let ids: Vec<_> = (0..3)
             .map(|i| {
-                let n = k.create(Kind::Text);
+                let n = k.create_text();
                 k.set_test_id(n, Some(&format!("n{i}")));
                 k.append_child(root, n);
                 n
