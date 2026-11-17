@@ -757,3 +757,20 @@ Split-handle validation: **122 kit tests, 3 Chat long-session tests, 12 CLI teac
 and 5 skill tests passed**, 0 failed, 1 existing ignored kit doctest. Workspace all-targets
 Clippy with `-D warnings`, format/diff and layer checks passed; vocab resolves splitter and
 the exported skill is fresh. No real OS window or frame-time measurement was performed.
+
+## Core/primitives review, before further implementation (2026-11-18)
+
+Review: [core and primitives](design/core-primitives-review-2026-11-18.md), baseline `4d0f021`.
+
+- [x] Review execution/Signals, scope and reload ownership, typed identity, list propagation,
+      async wake/delivery, and image/presentation data boundaries; record limits of coverage.
+- [x] Reproduce abandoned reload state surviving window close (6 nodes until App shutdown).
+- [x] Reproduce Image accepting invalid huge dimensions with empty bytes when overflow checks
+      are disabled; compile the original source with both settings, no implementation patch.
+- [ ] Design reload retention by window and surviving owner path, preserving delayed handler
+      state registration; cover failure recovery and close ownership before implementation.
+- [ ] Unify checked pixel layout validation and review renderer allocation arithmetic.
+
+Snapshot equality and external-asset wake semantics remain explicit design candidates, not
+approved new public primitives or mandatory performance projects. Core lib 158 and primitives
+lib 13 tests passed; temporary reproduction changes were restored. No real OS/GPU validation.
