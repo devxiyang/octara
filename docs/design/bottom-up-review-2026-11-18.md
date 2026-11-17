@@ -174,6 +174,21 @@ Inspector 在推进 App 工作后复核缩放目标，确认仍有效才请求�
 覆盖有窗、无窗、开窗与关闭，再处理宿主投递和截图结果。Chat 队列、纯附件发送与图片容量
 可各自用具体场景验证。R3 验收按系统输入窗口的可用时间安排。字形回收以实际数据确定预算。
 
+## 第三阶段实现
+
+Chat 的队列区域以会话 ID 跟踪挂载，区域内保留增量筛选。切走时只退休队列行及其动作目标；
+会话的请求继续由模型持有。返回时从模型恢复可见队列，输入框身份和编辑数据保持。
+发送按钮通过 `Chat::can_send` 读取发送资格。该检查与 `Chat::send` 共用内容、模型和参数规则，
+鼠标、键盘和无障碍动作走同一模型入口。
+
+Kit 的 `button_root` 让欢迎卡继承标准按钮的键盘焦点样式，卡片仍自定义布局和视觉内容。
+`removable_chip` 的配置闭包接收实际移除按钮，Chat 将每个附件的动作 ID 设在该按钮上。
+真实 macOS Chat 用可控模型验证了 A → B → A、旧目标拒绝、同名附件移除、纯附件发送及
+Tab 聚焦和 Enter 激活欢迎卡。GPU 截图中的卡片边框颜色与焦点 token 一致。文件选择通过
+Inspector 回答实际窗口的请求。
+[Chat 验证入口](../../apps/chat/README.md#request-lifecycle-verification) ·
+[Kit 接口](ui-primitives.md)
+
 [rune]: https://github.com/anomalyco/rune/commit/10a39584cc1ff739477be52e333a742a024ac956
 [exact]: https://github.com/expo/exact/commit/1dcad174583dfee6d2690af9a5d67a3538ef7c31
 [rune-first]: https://github.com/anomalyco/rune/blob/10a39584cc1ff739477be52e333a742a024ac956/crates/rune/src/runtime/tests/window_wake.rs#L75-L106

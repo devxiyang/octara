@@ -145,6 +145,7 @@ After each layout it is positioned relative to the anchor (as in Rune's `anchore
 | Component | Semantics | Event |
 | --- | --- | --- |
 | `button` / `primary_button` / `ghost_button` / `toggle_button(label, selected)` | `Button` | Press |
+| `button_root(element)` | Adds the button role, keyboard focus ring and disabled styling to a custom element | Set `on_press` on the returned element |
 | `checkbox(model)` | `CheckBox` + checked | Toggle |
 | `switch(model)` | `Switch` + checked (the thumb moves with `CHECKED`) | Toggle |
 | `text_field(model)` | `TextInput` + value | Input |
@@ -163,7 +164,7 @@ After each layout it is positioned relative to the anchor (as in Rune's `anchore
 | `popover(id, open, placement, trigger, content)` | An anchored modal surface; the trigger exposes `expanded`, and focus stays inside until it closes | Press, Escape, press outside |
 | `icon_button(icon, label)` | `Button` named `label`, which is also its tooltip | Press |
 | `spinner()` | `ProgressIndicator` named "Loading"; its arc steps round on the app's clock, every spinner in one phase | — |
-| `chip(label)` / `removable_chip(label, remove)` | A small label; the second has a button named "Remove {label}" | Press (remove) |
+| `chip(label)` / `removable_chip(label, configure_remove)` | A small label with an optional button named "Remove {label}" | Set the remove button's ID and `on_press` in `configure_remove` |
 | `collapsible(id, open, header, content)` | A `Group`; its trigger `{id}-trigger` is a `Button` with `expanded`; the content `{id}-content` is built while open | Press |
 | `list()` / `list_item(content)` / `list_header(label)` | `ListBox` (a focus group: arrow keys move between items) / `ListBoxOption` with hovered, focused and selected looks / a `Heading` | Press, secondary press |
 | `split(id, width, leading, trailing)` | Two panes; the divider `{id}-divider` is a `Splitter` whose value is the width; drag or arrow keys (Shift: by 40) change it, at least 120 | Drag, keys |

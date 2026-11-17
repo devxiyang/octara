@@ -5,10 +5,13 @@
 mod controlled;
 
 use controlled::Controlled;
+use octara::accesskit::Action as AccessibilityAction;
 use octara::app::Window;
+use octara::kernel::a11y::a11y_id;
 use octara::prelude::*;
 use octara_chat::engine::Purpose;
 use octara_chat::model::{Event, Message, MessageId, SavedMessage, Status, ThreadId};
+use octara_chat::settings::Generation;
 use octara_chat::store::Store;
 use octara_chat::{Chat, Options};
 use std::cell::RefCell;
@@ -26,6 +29,10 @@ struct Harness {
 
 impl Harness {
     fn new(store: Option<Store>) -> Self {
+        Self::with_view(store, |chat| col().size_full().child(octara_kit::text_field(chat.draft).id("composer").label("Message")).into())
+    }
+
+    fn with_view(store: Option<Store>, view: impl Fn(&Chat) -> View + 'static) -> Self {
         let model = Controlled::default();
         let engine = model.clone();
         let exposed = Rc::new(RefCell::new(None));
@@ -39,15 +46,17 @@ impl Harness {
                 ..Options::default()
             });
             *slot.borrow_mut() = Some(chat.clone());
-            let draft = chat.draft;
             let invoke = invoke.clone();
-            on_command("test.chat", move || {
-                let action = invoke.borrow_mut().take();
-                if let Some(action) = action {
-                    action(&chat);
+            on_command("test.chat", {
+                let chat = chat.clone();
+                move || {
+                    let action = invoke.borrow_mut().take();
+                    if let Some(action) = action {
+                        action(&chat);
+                    }
                 }
             });
-            col().size_full().child(octara_kit::text_field(draft).id("composer").label("Message")).into()
+            view(&chat)
         });
         let chat = exposed.borrow_mut().take().expect("the root exposes its Chat");
         Self { window, chat, model, action }
@@ -99,6 +108,64 @@ impl Harness {
     fn queued(&self) -> usize {
         self.read(|chat| chat.queue.keys().len())
     }
+}
+
+#[test]
+fn the_composer_shares_send_eligibility_across_input_routes() {
+    let mut h = Harness::with_view(None, octara_chat::view);
+    let send_disabled = |window: &Window| window.kernel().state_of("send").unwrap().contains(State::DISABLED);
+    let accessible_send = |window: &mut Window| {
+        let target = a11y_id(window.kernel().find("send").unwrap());
+        window.event(InputEvent::Accessibility { target, action: AccessibilityAction::Click, data: None })
+    };
+    h.window.invoke("chat.focus_composer").unwrap();
+    h.window.type_text("   ");
+    assert!(send_disabled(&h.window));
+    assert!(!accessible_send(&mut h.window));
+    h.window.press_key("enter").unwrap();
+    assert_eq!(h.model.count(Purpose::Reply), 0);
+    assert_eq!(h.window.kernel().value_of("composer").as_deref(), Some("   "));
+
+    h.run(|chat| {
+        chat.attach(&["pointer.txt".into()]);
+        chat.generation.set(Generation { max_completion_tokens: Some(0), ..Generation::default() });
+    });
+    assert!(send_disabled(&h.window));
+    h.window.press_key("enter").unwrap();
+    assert_eq!(h.model.count(Purpose::Reply), 0);
+    assert_eq!(h.read(|chat| chat.files.len()), 1);
+
+    h.run(|chat| chat.generation.set(Generation::default()));
+    assert!(!send_disabled(&h.window));
+    h.window.tap("send").unwrap();
+    let thread = h.read(|chat| untrack(|| chat.current.get()).unwrap());
+    let first = h.reply(0);
+    assert!(h.window.kernel().exists("stop"));
+
+    h.run(|chat| chat.attach(&["keyboard.txt".into()]));
+    h.window.invoke("chat.focus_composer").unwrap();
+    h.window.press_key("enter").unwrap();
+    assert_eq!(h.queued(), 1);
+    assert_eq!(h.model.count(Purpose::Reply), 1);
+    h.emit(first, [Event::Done]);
+    assert_eq!(h.queued(), 0);
+    assert_eq!(h.model.count(Purpose::Reply), 2);
+    h.window.invoke("chat.stop").unwrap();
+
+    h.run(|chat| chat.attach(&["accessibility.txt".into()]));
+    assert!(!send_disabled(&h.window));
+    assert!(accessible_send(&mut h.window));
+    assert_eq!(h.model.count(Purpose::Reply), 3);
+    h.read(|chat| {
+        let messages = chat.thread_messages(thread);
+        for (index, name) in ["pointer.txt", "keyboard.txt", "accessibility.txt"].into_iter().enumerate() {
+            let message = &messages[2 * index];
+            assert!(message.text().is_empty());
+            assert_eq!(message.files()[0].name, name);
+        }
+        assert!(chat.files.is_empty());
+    });
+    assert!(h.window.app().diagnostics().is_empty(), "{:?}", h.window.app().diagnostics());
 }
 
 #[test]

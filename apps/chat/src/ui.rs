@@ -540,23 +540,23 @@ fn transcript(chat: &Chat, thread: ThreadId) -> View {
     ])
 }
 
+#[ui]
 fn starter(draft: Signal<String>, id: &str, symbol: icons::Icon, title: &str, caption: &str, prompt: &'static str) -> El {
-    el().id(id)
-        .role(Role::Button)
-        .label(title.to_owned())
-        .focusable()
+    button_root(el())
+        .id(id)
+        .label(title)
+        .description(caption)
         .flex_1()
         .min_w(150.0)
         .p_4()
         .rounded_xl()
-        .border()
-        .border_color(Token::Border)
         .bg(Token::Background)
         .hover(|p| p.bg(Token::Surface))
-        .cursor(CursorStyle::PointingHand)
+        .cursor_pointer()
         .child(
             col()
                 .gap_2()
+                .a11y_hidden()
                 .child(icon(symbol).size_4().text_color(Token::Accent))
                 .child(text(title.to_owned()).text_sm().font_medium())
                 .child(text(caption.to_owned()).text_xs().text_color(Token::TextMuted)),
@@ -860,13 +860,11 @@ fn tool(id: u64, part_id: PartId, p: ReadSignal<Part>) -> View {
 
 fn composer(chat: &Chat) -> El {
     let current = chat.current;
-    let queued = chat.queue.filter(move |q| Some(q.thread) == untrack(|| current.get()));
     let (send, stop, attach, drop_in, busy, busy2, editing, cancel_edit) =
         (chat.clone(), chat.clone(), chat.clone(), chat.clone(), chat.clone(), chat.clone(), chat.editing, chat.clone());
     let answering = move || current.get().is_some_and(|t| busy.is_answering(t));
     let files = chat.files;
     let available = chat.clone();
-    let queued_chat = chat.clone();
     let file_actions = chat.clone();
     col()
         .id("composer-area")
@@ -878,7 +876,7 @@ fn composer(chat: &Chat) -> El {
         .gap_2()
         .on_drop(move |paths| drop_in.attach(paths))
         .drag_over(|p| p.bg(Token::Surface))
-        .child(each(move || queued.clone(), move |qid, q| queued_row(&queued_chat, *qid, q)))
+        .child(composer_queue(chat))
         .child(show(move || !available.has_model(), {
             let no_models = chat.models().is_empty();
             move || {
@@ -911,9 +909,13 @@ fn composer(chat: &Chat) -> El {
                             .child(each(
                                 move || files.read_only(),
                                 move |fid, f| {
-                                    let (fid, c) = (*fid, file_actions.clone());
-                                    let name = untrack(|| f.get()).1.name;
-                                    removable_chip(&name, move || c.detach(fid)).id(format!("file-{fid}")).into()
+                                    let (fid, chat) = (*fid, file_actions.clone());
+                                    let name = untrack(|| f.with(|(_, file)| file.name.clone()));
+                                    removable_chip(&name, |remove| {
+                                        remove.id(format!("remove-file-{fid}")).on_press(move || chat.detach(fid))
+                                    })
+                                    .id(format!("file-{fid}"))
+                                    .into()
                                 },
                             ))
                             .into()
@@ -980,11 +982,10 @@ fn composer(chat: &Chat) -> El {
                             },
                             move || {
                                 let (send, available) = (busy2.clone(), busy2.clone());
-                                let draft = send.draft;
                                 primary_icon(
                                     icon_button(icons::ARROW_UP, "Send")
                                         .id("send")
-                                        .disabled(move || !available.has_model() || draft.get().trim().is_empty())
+                                        .disabled(move || !available.can_send())
                                         .on_press(move || send.send()),
                                 )
                                 .into()
@@ -998,6 +999,33 @@ fn composer(chat: &Chat) -> El {
 /// A send button's look: the accent.
 fn primary_icon(b: El) -> El {
     b.bg(Token::Accent).text_color(Token::AccentText).rounded_full().hover(|p| p.bg(Token::AccentHover).text_color(Token::AccentText))
+}
+
+#[derive(PartialEq, Eq, Hash)]
+struct QueueThread(Option<ThreadId>);
+
+impl std::fmt::Display for QueueThread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(thread) => write!(f, "{thread}"),
+            None => f.write_str("new chat"),
+        }
+    }
+}
+
+#[ui]
+fn composer_queue(chat: &Chat) -> View {
+    let current = chat.current;
+    let chat = chat.clone();
+    keyed(
+        move || QueueThread(current.get()),
+        move |key| {
+            let Some(thread) = key.0 else { return View::empty() };
+            let queued = chat.queue.filter(move |q| q.thread == thread);
+            let chat = chat.clone();
+            each(move || queued.clone(), move |id, q| queued_row(&chat, *id, q))
+        },
+    )
 }
 
 fn queued_row(chat: &Chat, id: u64, q: ReadSignal<crate::chat::Queued>) -> View {

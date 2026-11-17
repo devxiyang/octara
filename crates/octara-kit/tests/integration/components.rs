@@ -202,7 +202,7 @@ fn chips_and_callouts() {
         let r = r.clone();
         col()
             .child(chip("draft").id("tag"))
-            .child(removable_chip("report.pdf", move || r.set(r.get() + 1)).id("file"))
+            .child(removable_chip("report.pdf", |remove| remove.id("remove-file").on_press(move || r.set(r.get() + 1))).id("file"))
             .child(
                 callout(PromptLevel::Critical, "The reply failed", Some("The connection closed."))
                     .id("error")
@@ -215,9 +215,9 @@ fn chips_and_callouts() {
     let file = k.find("file").unwrap();
     let b = *k.children(file).last().unwrap();
     assert_eq!(k.label(b), Some("Remove report.pdf"));
-    let (x, y, w, h) = k.shown_rect(b);
+    assert_eq!(k.test_id(b), Some("remove-file"));
     drop(k);
-    app.click_at(x + w / 2.0, y + h / 2.0);
+    app.tap("remove-file").unwrap();
     assert_eq!(removed.get(), 1);
     let k = app.kernel();
     assert_eq!(k.role_of("error"), Some(Role::Alert));

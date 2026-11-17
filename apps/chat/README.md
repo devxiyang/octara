@@ -98,7 +98,10 @@ python3 apps/chat/live_lifecycle.py
 
 The script opens the actual Chat UI, uses the live Inspector for input and observation, and
 checks stopping, a replacement answer, queued questions, regeneration after stopping and after
-completion, deletion of a streaming conversation, and restart.
+completion, deletion of a streaming conversation, and restart. In a separate store it also
+checks keyboard activation of a welcome card, removal of one of two identically named
+attachments, an attachment-only Send, and A → B → A queue ownership with an unchanged
+composer target. The attachment checks answer the live file prompt through Inspector.
 Streaming, stopped, replacement and restored states are captured with the window's GPU renderer.
 Its isolated store, screenshots, window log and JSONL transcripts stay in the printed temporary
 directory. An explicit `--output DIRECTORY` must name an empty directory. The script only stops
@@ -131,3 +134,12 @@ separate scope per instance. Deferred content and callbacks clone model handles,
 state is passed explicitly. No Chat/Listing context provider is required. Keeping the model in
 an App owner allows closing/reopening its window without disposing the model's draft/history;
 closing a root-owned Chat still follows that scope's lifecycle.
+
+The composer stays mounted across conversations. Its queue alone is keyed by the open
+conversation. That region filters the shared queue by a fixed thread ID and keeps row targets
+while the same conversation is open. Switching away retires those targets while its answer and
+queued requests stay owned by the model.
+
+`Chat::can_send` and `Chat::send` use the same eligibility check. A trimmed message or a local
+file reference supplies draft content. The selected model and generation options must also be
+valid. The Send button, keyboard submit and accessible activation all go through `Chat::send`.

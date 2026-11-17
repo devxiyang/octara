@@ -1,11 +1,21 @@
-//! The chat app end to end, headless, answered by the scripted model on the app's clock.
+//! The chat app end to end, headless, with scripted and controlled models.
 
+#[path = "../examples/support/controlled.rs"]
+mod controlled;
+
+use controlled::Controlled;
+
+use octara::accesskit::{Action, NodeId};
 use octara::app::{Event, Window};
 use octara::ask::{Answer, Ask};
+use octara::inspect::{self, Delivery};
 use octara::platform::{HeadlessPlatform, WindowOptions};
 use octara::prelude::*;
+use octara::serde_json::json;
+use octara_chat::engine::Purpose;
+use octara_chat::model::Event as ModelEvent;
 use octara_chat::store::Store;
-use octara_chat::{Options, root};
+use octara_chat::{ModelEntry, Options, root};
 use std::time::Duration;
 
 const LONG: Duration = Duration::from_secs(30);
@@ -42,6 +52,10 @@ fn messages(w: &Window) -> Vec<String> {
     w.kernel().child_ids("transcript").into_iter().filter(|id| id.starts_with("msg-")).collect()
 }
 
+fn queued_rows(w: &Window) -> Vec<String> {
+    w.kernel().child_ids("composer-area").into_iter().filter(|id| id.starts_with("queued-")).collect()
+}
+
 /// Every text under the element with test id `id`.
 fn texts(w: &Window, id: &str) -> String {
     let k = w.kernel();
@@ -55,6 +69,57 @@ fn texts(w: &Window, id: &str) -> String {
         stack.extend(k.children(n).iter().rev());
     }
     out.join(" ")
+}
+
+fn accessible_button(w: &Window, id: &str, name: &str) -> NodeId {
+    let (target, node) = w.accessibility_tree().nodes.into_iter().find(|(_, node)| node.author_id() == Some(id)).unwrap();
+    assert_eq!((node.role(), node.label()), (Role::Button, Some(name)));
+    assert!(node.supports_action(Action::Click) && node.supports_action(Action::Focus));
+    target
+}
+
+#[test]
+fn the_welcome_card_has_a_visible_keyboard_focus_ring_and_activates() {
+    let mut w = open(options);
+    let id = "starter-build";
+    let target = accessible_button(&w, id, "Build something");
+    let theme = w.app().theme();
+    assert_eq!(w.kernel().visual_of(id).unwrap().border, theme.get(Token::Border));
+
+    w.invoke("chat.focus_composer").unwrap();
+    w.press_key("shift+tab").unwrap();
+    w.app().settle_motion();
+    assert_eq!(w.accessibility_tree().focus, target);
+    assert_eq!(w.kernel().visual_of(id).unwrap().border, theme.get(Token::Focus));
+    w.press_key("enter").unwrap();
+    assert_eq!(w.inspect().focus.as_deref(), Some("composer"));
+    assert_eq!(
+        w.kernel().value_of("composer").as_deref(),
+        Some("Help me turn an idea into a small, practical project. Ask me about my idea first.")
+    );
+    assert!(w.app().diagnostics().is_empty(), "{:?}", w.app().diagnostics());
+}
+
+#[test]
+fn attachments_with_the_same_name_have_independent_remove_buttons() {
+    let mut w = open(options);
+    w.tap("attach").unwrap();
+    let asks = w.asks();
+    assert!(matches!(asks.as_slice(), [(_, Ask::Paths(options))] if options.multiple), "{asks:?}");
+    w.answer(asks[0].0, Answer::Paths(Some(vec!["/tmp/first/report.txt".into(), "/tmp/second/report.txt".into()]))).unwrap();
+
+    let first = accessible_button(&w, "remove-file-1", "Remove report.txt");
+    let second = accessible_button(&w, "remove-file-2", "Remove report.txt");
+    assert_ne!(first, second);
+    assert!(w.event(InputEvent::Accessibility { target: first, action: Action::Click, data: None }));
+    assert!(!w.kernel().exists("file-1"));
+    assert!(!w.kernel().exists("remove-file-1"));
+    assert_eq!(accessible_button(&w, "remove-file-2", "Remove report.txt"), second);
+
+    w.tap("remove-file-2").unwrap();
+    assert!(!w.kernel().exists("file-2"));
+    assert!(!w.kernel().exists("remove-file-2"));
+    assert!(w.app().diagnostics().is_empty(), "{:?}", w.app().diagnostics());
 }
 
 #[test]
@@ -85,12 +150,90 @@ fn what_is_sent_while_answering_waits_in_the_queue() {
     say(&mut w, "first");
     w.app().advance(Duration::from_millis(100));
     say(&mut w, "second");
-    let queued: Vec<String> = w.kernel().child_ids("composer-area").into_iter().filter(|id| id.starts_with("queued-")).collect();
+    let queued = queued_rows(&w);
     assert_eq!(queued.len(), 1, "queued while the first answer streams");
     assert_eq!(messages(&w).len(), 2);
     assert!(w.app().run_until_idle(LONG).is_ok());
     assert_eq!(messages(&w).len(), 4, "sent once the first answer came");
     assert!(w.kernel().find(&queued[0]).is_none());
+}
+
+#[test]
+fn the_queue_follows_the_open_conversation_and_keeps_the_composer_mounted() {
+    let model = Controlled::default();
+    let engine = model.clone();
+    let mut w = open(move || Options { models: vec![ModelEntry::new("controlled", std::rc::Rc::new(engine.clone()))], ..options() });
+    let selected_thread = |w: &Window| {
+        let kernel = w.kernel();
+        kernel
+            .child_ids("threads")
+            .into_iter()
+            .find(|id| kernel.state_of(id).is_some_and(|state| state.contains(State::SELECTED)))
+            .expect("the open conversation is selected in the sidebar")
+    };
+
+    say(&mut w, "Question in B");
+    let b = selected_thread(&w);
+    w.invoke("chat.new").unwrap();
+    say(&mut w, "Question in A");
+    let a = selected_thread(&w);
+    assert_ne!(a, b);
+    let a_reply = model.index(Purpose::Reply, 1).unwrap();
+    let b_reply = model.index(Purpose::Reply, 0).unwrap();
+
+    say(&mut w, "A follow-up");
+    let first = queued_rows(&w).into_iter().next().expect("A is answering, so its follow-up waits");
+    let first_target = w.inspect().find(&first).unwrap().target.clone();
+    say(&mut w, "A second follow-up");
+    let a_queue = queued_rows(&w);
+    assert_eq!(a_queue.len(), 2);
+    assert_eq!(model.count(Purpose::Reply), 2);
+
+    w.type_text("Keep this draft");
+    w.set_selection(4, 0);
+    let before = w.inspect();
+    assert_eq!(before.find(&first).unwrap().target, first_target, "inserting a sibling keeps the existing row");
+    let composer = &before.find("composer").unwrap().target;
+    let id = first.strip_prefix("queued-").unwrap();
+    let actions = ["send-now", "edit-queued", "unqueue"].map(|action| format!("{action}-{id}"));
+    let remove = &actions[2];
+    let stale_remove = json!({"op": "tap", "id": remove, "target": before.find(remove).unwrap().target}).to_string();
+
+    for (thread, rows) in [(b.as_str(), &[][..]), (a.as_str(), a_queue.as_slice())] {
+        w.dispatch(Event::Press(thread.into())).unwrap();
+        assert_eq!(selected_thread(&w), thread);
+        assert_eq!(queued_rows(&w).as_slice(), rows);
+        let current = w.inspect();
+        assert_eq!(&current.find("composer").unwrap().target, composer);
+        assert_eq!(current.focus.as_deref(), Some("composer"));
+        let field = w.text_field().unwrap();
+        assert_eq!((field.text.as_str(), field.selection, field.reversed), ("Keep this draft", 0..4, true));
+        for action in &actions {
+            if rows.is_empty() {
+                assert!(current.find(action).is_none(), "{action} belongs to the closed queue");
+            } else {
+                assert_ne!(current.find(action).unwrap().target, before.find(action).unwrap().target);
+            }
+        }
+        let reply = inspect::handle_line(&mut w, &stale_remove);
+        assert_eq!(reply.code.as_deref(), Some("STALE_TARGET"), "{reply:?}");
+        assert_eq!(reply.delivery, Some(Delivery::Refused), "{reply:?}");
+        if thread == b {
+            assert!(model.emit(a_reply, ModelEvent::Text("Still answering in A".into())));
+            w.app().poll();
+        }
+    }
+    assert!(texts(&w, "transcript").contains("Still answering in A"));
+    assert_ne!(w.inspect().find(&first).unwrap().target, first_target, "returning mounts a new row target");
+    w.tap(&actions[0]).unwrap();
+    assert_eq!(queued_rows(&w).as_slice(), &a_queue[1..]);
+    assert!(model.cancelled(a_reply));
+    assert!(!model.cancelled(b_reply));
+    assert_eq!(model.count(Purpose::Reply), 3);
+    assert_eq!(model.requests().last().unwrap().history.last().unwrap().1, "A follow-up");
+    assert!(w.layout_issues().is_empty(), "{:?}", w.layout_issues());
+    assert!(w.app().diagnostics().is_empty(), "{:?}", w.app().diagnostics());
+    w.app().shutdown();
 }
 
 #[test]

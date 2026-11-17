@@ -84,11 +84,17 @@ fn interactive(e: El) -> El {
 
 // ---- button ----
 
+/// Applies the Kit button role, keyboard focus ring and disabled styling to an element.
+/// Chain the button's ID, accessible label, visuals and press handler on the returned element.
+pub fn button_root(element: El) -> El {
+    interactive(element.role(Role::Button))
+}
+
 /// A secondary button: surface background, border, hover and pressed shades.
 #[ui]
 #[track_caller]
 pub fn button(label: impl IntoText) -> El {
-    interactive(text(label).role(Role::Button))
+    button_root(text(label))
         .px_3()
         .py_1p5()
         // 20 px of text and 12 px above and below: 44 on touch.
@@ -136,7 +142,8 @@ pub fn toggle_button(label: impl IntoText, selected: impl Fn() -> bool + 'static
 #[track_caller]
 pub fn icon_button(icon: octara_primitives::icon::Icon, label: impl Into<String>) -> El {
     let label = label.into();
-    interactive(el().role(Role::Button).child(octara::view::icon(icon).a11y_hidden()))
+    button_root(el())
+        .child(octara::view::icon(icon).a11y_hidden())
         .label(label.clone())
         .tooltip(label)
         .items_center()

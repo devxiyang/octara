@@ -129,6 +129,79 @@ def delete_conversation(app, row):
     app.wait_for(lambda s: not has(s, row), "deleted conversation")
 
 
+def composer_contracts(args, output, sockets):
+    store = output / "composer-store"
+    store.mkdir()
+    attachments = []
+    for folder in ("first", "second"):
+        path = output / folder / "notes.txt"
+        path.parent.mkdir()
+        path.write_text(f"{folder} attachment", encoding="utf-8")
+        attachments.append(str(path))
+
+    with ChatWindow("chat-composer", args, output, sockets, store) as app:
+        starter = "starter-write"
+        for _ in range(16):
+            if app.inspect().get("focus") == starter:
+                break
+            app.requests({"op": "key", "chord": "tab"})
+        focused = find(app.inspect(), starter)
+        require(focused["role"] == "button" and focused["name"] == "Find the right words"
+                and "press" in focused.get("actions", []) and "focus_visible" in focused.get("states", []),
+                f"welcome card did not expose a keyboard-focused action: {focused}")
+        app.capture("chat-starter-focused.png")
+        app.requests({"op": "key", "chord": "enter"})
+        after_starter = app.inspect()
+        require(after_starter.get("focus") == "composer"
+                and find(after_starter, "composer").get("value", "").startswith("Help me write"),
+                "keyboard activation did not fill and focus the composer")
+        app.requests({"op": "key", "chord": "mod+a"}, {"op": "type", "id": "composer", "text": "  "})
+        require("disabled" in find(app.inspect(), "send").get("states", []),
+                "a whitespace-only draft enabled Send")
+
+        app.requests({"op": "tap", "id": "attach"})
+        choosing = app.wait_for(lambda s: any("paths" in a["ask"] for a in s.get("asks", [])), "attachment picker")
+        picker = next(a for a in choosing["asks"] if "paths" in a["ask"])
+        app.requests({"op": "answer", "id": picker["id"], "answer": {"paths": attachments}})
+        attached = app.inspect()
+        remove = [n for n in nodes(attached) if re.fullmatch(r"remove-file-\d+", n.get("id", ""))]
+        require(len(remove) == 2 and all(n["role"] == "button" and n["name"] == "Remove notes.txt"
+                                         and "press" in n.get("actions", []) for n in remove),
+                f"same-name attachments lack distinct removable actions: {remove}")
+        app.requests({"op": "tap", "id": remove[0]["id"], "target": remove[0]["target"]})
+        remaining = app.inspect()
+        require(not has(remaining, remove[0]["id"]) and find(remaining, remove[1]["id"])["target"] == remove[1]["target"],
+                "removing one attachment retired the other action")
+        require("disabled" not in find(remaining, "send").get("states", []), "the attachment-only draft cannot be sent")
+        app.requests({"op": "tap", "id": "send"})
+        app.count(1)
+        app.say("queued in A")
+        waiting_a = app.inspect()
+        thread_a, = threads(waiting_a)
+        queue_a, = queued(waiting_a)
+        editor = find(waiting_a, "composer")["target"]
+        remove_a = "unqueue-" + queue_a.removeprefix("queued-")
+        old_action = find(waiting_a, remove_a)["target"]
+
+        app.requests({"op": "tap", "id": "new-chat"})
+        app.say("start B")
+        app.count(2)
+        app.say("queued in B")
+        waiting_b = app.inspect()
+        queue_b, = queued(waiting_b)
+        require(queue_b != queue_a and not has(waiting_b, remove_a), "conversation B exposed an action from A")
+        require(find(waiting_b, "composer")["target"] == editor, "switching to B replaced the composer")
+        with app.wire() as stream:
+            refusal = app.wire_request(stream, {"op": "tap", "id": remove_a, "target": old_action})
+            require(refusal.get("code") == "STALE_TARGET" and refusal.get("delivery") == "refused",
+                    f"old queue action was not refused: {refusal}")
+        app.requests({"op": "tap", "id": thread_a})
+        returned = app.inspect()
+        require(queued(returned) == {queue_a} and find(returned, remove_a)["target"] != old_action,
+                "A did not restore its queue with a fresh action target")
+        require(find(returned, "composer")["target"] == editor, "returning to A replaced the composer")
+
+
 def run(args, output, sockets, store):
     with ChatWindow("chat-live", args, output, sockets, store) as app:
         app.say("frozen question")
@@ -279,7 +352,8 @@ def main():
     print(f"Chat lifecycle artifacts: {output}", flush=True)
     with tempfile.TemporaryDirectory(prefix="octara-chat-sock-", dir="/tmp") as temporary:
         run(args, output, Path(temporary), store)
-    print("PASS Chat live lifecycle: stop, replacement, queue, regenerate, delete, restart and GPU captures")
+        composer_contracts(args, output, Path(temporary))
+    print("PASS Chat live lifecycle: cancellation, regeneration, persistence, session queues, attachment actions and keyboard focus")
     return 0
 
 

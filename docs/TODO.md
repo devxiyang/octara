@@ -14,6 +14,8 @@ the evidence for each follow-up.
       cancellation, skipped delivery after close, and nested poll during an AsyncMemo read.
 - [x] Match native capture replies to the active capture request and validate Inspector resize
       targets immediately before host dispatch.
+- [x] Scope Chat's queue to the open conversation, unify send eligibility, and put focus and
+      stable attachment actions on their actual buttons.
 
 Validation on Rust 1.100.0 passed 1,006 workspace tests with 3 existing ignored doctests.
 Strict all-targets Clippy, formatting and layer checks passed. First-submission evidence
@@ -24,6 +26,12 @@ Capture and resize follow-up passed 1,012 workspace tests with 3 existing ignore
 strict all-targets Clippy, formatting and layer checks. The macOS WebKit example verified live
 resize, rejection of a stale resize and repeated painted captures containing native pixels.
 The one-shot capture wrote its PNG and exited normally.
+
+Chat's desktop lifecycle check covers A → B → A with a stable composer target, refusal of
+old queue actions, same-name attachment removal, and attachment-only Send. It also captures
+the keyboard-focused welcome card, whose GPU border matches the focus token. Workspace
+tests passed 1,016 cases with 3 existing ignored doctests. Strict all-targets Clippy,
+formatting and layer checks passed.
 
 ## `init` architecture refactor (2026-11-17)
 

@@ -58,12 +58,13 @@ pub fn chip(label: impl IntoText) -> El {
         .child(text(label).truncate())
 }
 
-/// A chip with a button removing it (an attachment before it is sent): `remove` runs on its
-/// press. The button is named "Remove {label}".
+/// A chip with a button named "Remove {label}". Use `configure_remove` to set the button's
+/// ID and press handler. The returned element is the chip container.
 #[ui]
 #[track_caller]
-pub fn removable_chip(label: &str, remove: impl Fn() + 'static) -> El {
-    chip(label.to_owned()).pr_0p5().child(icon_button(icons::X, format!("Remove {label}")).size(20.0).on_press(remove))
+pub fn removable_chip(label: &str, configure_remove: impl FnOnce(El) -> El) -> El {
+    let remove = configure_remove(icon_button(icons::X, format!("Remove {label}")).size(20.0));
+    chip(label).pr_0p5().child(remove)
 }
 
 /// A message that needs attention, with its level's icon and color, and a detail below
