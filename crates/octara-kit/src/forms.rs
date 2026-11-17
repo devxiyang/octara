@@ -125,6 +125,8 @@ impl RadioOption {
 /// `{id}-option-{option.id}`. `options` is tracked; insertion, removal, reordering, renaming and
 /// availability update retained rows. Removing the chosen option leaves the caller's value
 /// intact, with no radio checked. This is a retained list for finite groups.
+/// `id` also keys the owner namespace for row work registered by model setters; named row
+/// state follows this component when sibling groups change order across hot reloads.
 ///
 /// From outside the group, Tab enters at the checked enabled radio, otherwise the remembered
 /// enabled radio, otherwise the first enabled radio. The next Tab leaves the group.

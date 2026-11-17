@@ -390,3 +390,61 @@ fn accessibility_activation_uses_the_same_manual_tab_handler() {
     assert_eq!(window.kernel().text_of("writes").as_deref(), Some("1"));
     clean(&window);
 }
+
+#[test]
+fn controlled_choice_scopes_keep_handler_state_with_component_ids_across_reload() {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    for kind in ["tabs", "segmented", "radio"] {
+        let reversed = Rc::new(Cell::new(false));
+        let picks = Rc::new(RefCell::new(Vec::new()));
+        let retired = Rc::new(RefCell::new(Vec::new()));
+        let (order, seen, cleaned) = (reversed.clone(), picks.clone(), retired.clone());
+        let mut window = Window::headless(move || {
+            let ids = if order.get() { ["right", "left"] } else { ["left", "right"] };
+            col()
+                .size_full()
+                .children(ids.map(|id| {
+                    let (seen, cleaned) = (seen.clone(), cleaned.clone());
+                    let model = (
+                        || None::<String>,
+                        move |_: Option<String>| {
+                            // Register once per mounted row, just as a handler can start owner-bound work.
+                            let local = state("handler-count", || if id == "left" { 10 } else { 20 });
+                            local.update(|n| *n += 1);
+                            seen.borrow_mut().push((id, local.get()));
+                            let cleaned = cleaned.clone();
+                            on_cleanup(move || cleaned.borrow_mut().push(id));
+                        },
+                    );
+                    match kind {
+                        "tabs" => tabs(id, id, model, || vec![TabOption::new("shared", "Choice")]),
+                        "segmented" => segmented(id, id, model, || vec![RadioOption::new("shared", "Choice")]),
+                        _ => radio_group(id, id, model, || vec![RadioOption::new("shared", "Choice")]),
+                    }
+                }))
+                .into()
+        });
+        let suffix = if kind == "tabs" { "tab" } else { "option" };
+        for id in ["left", "right"] {
+            window.tap(&format!("{id}-{suffix}-shared")).unwrap();
+        }
+        reversed.set(true);
+        window.app().hot_reload();
+        let mut old = retired.borrow().clone();
+        old.sort_unstable();
+        assert_eq!(old, ["left", "right"], "reload retires the old handlers' work");
+        for id in ["left", "right"] {
+            window.tap(&format!("{id}-{suffix}-shared")).unwrap();
+        }
+        assert_eq!(
+            *picks.borrow(),
+            [("left", 11), ("right", 21), ("left", 12), ("right", 22)],
+            "{kind}: handler state follows component IDs, not sibling positions"
+        );
+        clean(&window);
+        window.app().shutdown();
+        assert_eq!(retired.borrow().len(), 4, "shutdown retires the replacement rows' work");
+    }
+}

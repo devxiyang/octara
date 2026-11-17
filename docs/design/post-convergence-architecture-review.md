@@ -246,3 +246,30 @@ Tabs/Menu/Radio 没有被并入同一个状态机；后续 scope 精简仍须先
 纯运算阶段验证：kit 120 项、Chat 模型身份/选择 9 项通过，0 失败、1 个既有忽略 doctest。
 沿用组件级回归覆盖禁用/空选项、回绕、重复 ID 退休与恢复、稳定目标、Model 拒绝写入和 IME
 输入协议。工作区 all-targets 严格 Clippy、格式、diff、分层检查通过；未做真实 OS 输入验证。
+
+## scope 删除候选的验收结论（2026-11-18，init）
+
+**保留 Tabs、Segmented、RadioGroup 的显式 scope。** 组件内部没有命名状态，并不代表整个
+组件子树没有命名状态。Model setter 在行 owner 中执行，允许注册 state、cleanup 和任务；
+外层按组件 id 建立的 scope 是这些资源的稳定命名空间。普通函数和 each 不能自动替代它。
+
+新增回归：同一父 owner 下的 left/right 两个组件均使用选项 key `shared`；每个 setter 在首次
+调用时注册自己的 handler-count，初值分别 10/20，并注册 cleanup。首次选择后为 11/21，
+交换组件顺序并热重载，再次选择应为 12/22。分别临时移除三种组件的 scope 后，三个实验均
+失败，得到 left=22/right=12：each 区域按父 owner 的声明顺序编号，命名状态跟随位置而非组件。
+所有实验改动已撤回；保留原 scope 后回归通过，reload 与 shutdown 各自释放对应旧行 cleanup。
+
+延迟构造的审查也需要精确：each 的输入 memo 在挂载时创建，并非调用 each 时立即运行；因此
+不能以“删 scope 必然提前求值 options”为理由保留它。本次保留的实证理由是跨重排 reload 的
+命名身份，而不是假定所有包装都不可删。Select、Combobox、PopupList 另有明确的命名交互状态，
+继续保留各自 scope。没有新增自动 owner、容器身份规则或公开原语。
+
+本地 Rune 固定版本 3686e94 的 SegmentedControl/RadioItem 接收外部选择与回调，并使用元素 key
+组合子节点。这支持把状态留给调用方，但不能证明 Octara 的 owner 边界可删：两个框架的状态
+存储和执行协议不同。此次不搬用 Rune 的索引 key 来替换 Octara 的组件 id / 业务选项 key。
+
+该候选已审查关闭：若未来要删除此 scope，必须先给出替代的稳定命名身份方案和实际收益；
+不为了少一层包装引入另一个隐式命名空间机制。
+
+最终验证：121 项 kit 测试通过、0 失败、1 个既有忽略 doctest；工作区 all-targets 严格 Clippy、
+格式、diff 与分层检查通过。删除实验均已恢复；本次是 headless 身份/生命周期验证，未做真实 OS 输入。

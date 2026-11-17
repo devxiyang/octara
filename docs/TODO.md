@@ -720,3 +720,22 @@ Choice calculation validation: **120 kit tests + 9 Chat model identity/picker te
 choices, duplicate-ID retirement/recovery, retained targets, rejected models, editor selection
 and IME protocol ownership. Workspace all-targets Clippy with `-D warnings`, formatting, diff
 and layer checks passed. No real OS window input or performance improvement is claimed.
+
+## Continuation on init: validate stateless choice owner boundaries (2026-11-18)
+
+- [x] Review Tabs, Segmented and RadioGroup's deferred construction, row ownership and namespace.
+- [x] Add a component-level regression for handler-created named state and cleanup through
+      reordered hot reload and shutdown.
+- [x] Temporarily remove each candidate scope independently: all three experiments swap the
+      left/right restored counts (22/12 instead of 12/22). Restore all production wrappers.
+- [x] Retain and document the stable component owner namespace; close this deletion candidate.
+- [x] Run the kit regressions and strict workspace checks, then commit evidence and contracts.
+
+No runtime implementation or public signature change. `each` already defers source evaluation
+until mounting; the demonstrated reason to retain these scopes is stable identity for owner-bound
+work registered by model setters, not a blanket rule that stateless components need scopes.
+
+Owner-boundary validation: **121 kit tests passed, 0 failed, 1 existing ignored doctest**.
+Workspace all-targets Clippy with `-D warnings`, formatting, diff and layer checks passed.
+The intentionally failing scope-removal probes were all restored before final validation.
+This is headless ownership/reload evidence; no real OS window input was exercised.

@@ -29,6 +29,8 @@ impl TabOption {
 /// `id` names the `TabList`; each `Tab` is `{id}-tab-{option.id}`. `label` is the bar's
 /// accessible name. The tracked options retain their targets when reordered, renamed or
 /// disabled. A missing or removed selected ID leaves `value` unchanged and no tab selected.
+/// `id` also keys the component's owner namespace: work registered by a model setter belongs
+/// to its tab row, and named row state follows the component across reordered hot reloads.
 ///
 /// Tab enters at the selected enabled tab, otherwise its remembered enabled tab, otherwise
 /// its first enabled tab. The next Tab leaves the bar. Arrows and Home/End only move focus,
@@ -107,6 +109,7 @@ pub fn tabs(id: &str, label: impl Into<String>, value: impl Model<Option<String>
 /// descriptions are exposed to assistive technology without adding a second visible line.
 /// Reordering and renaming preserve each choice's target. Missing selected IDs leave the
 /// model untouched. Disabled choices stay visible and refuse activation.
+/// `id` also keys the owner namespace for row work registered by model setters, as in [`tabs`].
 ///
 /// Tab enters at the checked enabled choice, otherwise the remembered enabled choice,
 /// otherwise the first enabled choice. Focus alone does not choose. Arrows wrap and choose;
