@@ -26,13 +26,6 @@ impl ComboboxOption {
     }
 }
 
-#[derive(Clone, PartialEq)]
-struct OptionRow {
-    option: ComboboxOption,
-    order: usize,
-    matches: bool,
-}
-
 /// A searchable choice, with its selected option ID in `value`.
 ///
 /// `label` names the control and is shown when the selected ID is absent from `options`.
@@ -68,42 +61,35 @@ pub fn combobox(
         let query = state("query", String::new);
         let highlight = state("highlight", || None::<String>);
         let options = memo(options);
-        let rows = state_list("options", Vec::<OptionRow>::new, |row: &OptionRow| row.option.id.clone());
-        let matches = rows.filter(|row| row.matches).sort_by(|row| row.order);
-        let enabled = memo(move || {
+        let valid = memo(move || {
+            options.with(|options| {
+                let mut ids = HashSet::new();
+                options.iter().all(|option| ids.insert(&option.id))
+            })
+        });
+        let matches = memo(move || {
             let query = query.get().to_lowercase();
             options
                 .get()
                 .into_iter()
-                .filter(|option| !option.disabled && option.label.to_lowercase().contains(&query))
-                .map(|option| option.id)
+                // Pass invalid input through so `each` reports and retires the whole region.
+                .filter(|option| !valid.get() || option.label.to_lowercase().contains(&query))
+                .map(|option| (option.id.clone(), option))
                 .collect::<Vec<_>>()
         });
+        let enabled = memo(move || {
+            if !valid.get() {
+                return Vec::new();
+            }
+            matches.with(|options| options.iter().filter(|(_, option)| !option.disabled).map(|(id, _)| id.clone()).collect::<Vec<_>>())
+        });
 
-        // Keep keyed rows rather than rebuilding the popup when its query or source changes.
-        // Only the list observes these patches; the retained search field keeps its editor/IME.
+        // Only reconcile interaction state; `each` owns keyed row updates and retirement.
         let current = value.clone();
         watch(
             move || (options.get(), query.get(), open.get(), current.get()),
-            move |(options, query, is_open, selected), previous| {
+            move |(_, query, is_open, selected), previous| {
                 let query_changed = previous.is_some_and(|old| old.1 != *query);
-                let keys: HashSet<_> = options.iter().map(|option| option.id.as_str()).collect();
-                rows.retain(|row| keys.contains(row.option.id.as_str()));
-                let query = query.to_lowercase();
-                let mut seen = HashSet::new();
-                for (order, option) in options.iter().enumerate() {
-                    let row = OptionRow { option: option.clone(), order, matches: option.label.to_lowercase().contains(&query) };
-                    if !seen.insert(option.id.clone()) {
-                        // Let the list report its ordinary DUPLICATE_KEY diagnostic.
-                        rows.push(row);
-                    } else if let Some(old) = rows.item(&option.id) {
-                        if untrack(|| old.get()) != row {
-                            rows.update(&option.id, |old| *old = row);
-                        }
-                    } else {
-                        rows.push(row);
-                    }
-                }
                 if !is_open {
                     return;
                 }
@@ -201,8 +187,6 @@ pub fn combobox(
                     });
                 let list_id = popup_id.clone();
                 let row_value = popup_value.clone();
-                let rendered_matches = matches.clone();
-                let empty_matches = matches.clone();
                 let list = col()
                     .id(format!("{popup_id}-list"))
                     .role(Role::ListBox)
@@ -211,11 +195,11 @@ pub fn combobox(
                     .max_h(240.0)
                     .overflow_y_scroll()
                     .child(each(
-                        move || rendered_matches.clone(),
+                        move || matches.get(),
                         move |key, row| {
                             let (selected, pick) = (row_value.clone(), row_value.clone());
                             let (selected_key, active_key, pick_key) = (key.clone(), key.clone(), key.clone());
-                            button(move || row.with(|row| row.option.label.clone()))
+                            button(move || row.with(|row| row.label.clone()))
                                 .id(format!("{list_id}-option-{key}"))
                                 .role(Role::ListBoxOption)
                                 .tab_index(-1)
@@ -224,7 +208,7 @@ pub fn combobox(
                                 .truncate()
                                 .rounded_sm()
                                 .border_color(Paint::Color(Color::TRANSPARENT))
-                                .disabled(move || row.with(|row| row.option.disabled))
+                                .disabled(move || row.with(|row| row.disabled))
                                 .selected(move || selected.get().as_ref() == Some(&selected_key))
                                 .style_when(State::SELECTED, |p| p.text_color(Token::Accent))
                                 .style_with(move |p| {
@@ -244,7 +228,7 @@ pub fn combobox(
                     .child(search)
                     .child(list)
                     .child(show(
-                        move || empty_matches.is_empty(),
+                        move || matches.with(Vec::is_empty),
                         move || {
                             text("No results").id(format!("{empty_id}-empty")).px_3().py_2().text_sm().text_color(Token::TextMuted).into()
                         },

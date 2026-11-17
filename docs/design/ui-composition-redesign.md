@@ -348,3 +348,11 @@ El 是可配置元素，View 是可挂载内容，保留不同职责；show/keye
 最终标准：普通函数即可写 UI；可变事实有唯一所有者；多实例/分支/列表/弹层生命周期一致；
 自定义外观不复制交互；测量重试不重复发布业务副作用；Agent 能追溯来源并拒绝过期目标。
 原生 OS 验证与 headless 分开记录，未执行不得视为通过。
+
+
+### 第一阶段实施记录
+
+Combobox/PopupList 现在从 memo 的选项快照直接派生 keyed rows；删除私有 OptionRow/Row、
+可写 state_list 以及 retain/update/push 同步逻辑。active/open/query 的协调与 reveal 保留。
+来源存在重复 ID 时，不让筛选隐藏非法身份；行退出且不能键盘选择，恢复时生成新目标。
+选择提议仍由应用接受或拒绝。验证和环境边界记录在 TODO 的 Stage 1 evidence。

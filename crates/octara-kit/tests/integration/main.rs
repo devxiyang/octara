@@ -8,6 +8,7 @@ mod handler_composition;
 mod markdown;
 mod menus;
 mod navigation;
+mod option_snapshots;
 mod popup_list;
 mod range;
 mod readme;

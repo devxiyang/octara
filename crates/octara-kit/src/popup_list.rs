@@ -28,12 +28,6 @@ impl PopupItem {
     }
 }
 
-#[derive(Clone, PartialEq)]
-struct Row {
-    item: PopupItem,
-    order: usize,
-}
-
 /// Attach suggestions to `editor`, whose text model and input handler remain the caller's.
 ///
 /// `id` names the editor, `{id}-list` the listbox and `{id}-option-{item.id}` each row.
@@ -67,28 +61,22 @@ pub fn popup_list(
     component_keyed("PopupList", id.clone(), move || {
         let active = state("active", || None::<String>);
         let items = memo(items);
-        let rows = state_list("items", Vec::<Row>::new, |row: &Row| row.item.id.clone());
-        let ordered = rows.sort_by(|row| row.order);
-        let enabled = memo(move || items.get().into_iter().filter(|item| !item.disabled).map(|item| item.id).collect::<Vec<_>>());
+        let valid = memo(move || {
+            items.with(|items| {
+                let mut ids = HashSet::new();
+                items.iter().all(|item| ids.insert(&item.id))
+            })
+        });
+        let enabled = memo(move || {
+            if !valid.get() {
+                return Vec::new();
+            }
+            items.with(|items| items.iter().filter(|item| !item.disabled).map(|item| item.id.clone()).collect::<Vec<_>>())
+        });
         let shown = open.clone();
         watch(
             move || (items.get(), shown.get()),
-            move |(items, shown), previous| {
-                let keys: HashSet<_> = items.iter().map(|item| item.id.as_str()).collect();
-                rows.retain(|row| keys.contains(row.item.id.as_str()));
-                let mut seen = HashSet::new();
-                for (order, item) in items.iter().enumerate() {
-                    let row = Row { item: item.clone(), order };
-                    if !seen.insert(item.id.clone()) {
-                        rows.push(row); // The ordinary stable-list duplicate-key diagnostic.
-                    } else if let Some(old) = rows.item(&item.id) {
-                        if untrack(|| old.get()) != row {
-                            rows.update(&item.id, |old| *old = row);
-                        }
-                    } else {
-                        rows.push(row);
-                    }
-                }
+            move |(_, shown), previous| {
                 if *shown {
                     let choices = enabled.get();
                     if previous.is_none_or(|old| !old.1) || !active.get().is_some_and(|id| choices.contains(&id)) {
@@ -177,7 +165,6 @@ pub fn popup_list(
                 Placement::BELOW.fit(true),
                 move || {
                     let (row_id, pick) = (panel_id.clone(), pick.clone());
-                    let ordered = ordered.clone();
                     col()
                         .id(format!("{panel_id}-list"))
                         .role(Role::ListBox)
@@ -195,15 +182,15 @@ pub fn popup_list(
                         .bg(Token::Surface)
                         .shadow_lg()
                         .child(each(
-                            move || ordered.clone(),
+                            move || items.get().into_iter().map(|item| (item.id.clone(), item)).collect::<Vec<_>>(),
                             move |key, item| {
                                 let (selected, chosen, description_key, pick) = (key.clone(), key.clone(), key.clone(), pick.clone());
                                 col()
                                     .id(format!("{row_id}-option-{key}"))
                                     .role(Role::ListBoxOption)
-                                    .label(move || item.with(|row| row.item.label.clone()))
-                                    .description(move || item.with(|row| row.item.description.clone()))
-                                    .disabled(move || item.with(|row| row.item.disabled))
+                                    .label(move || item.with(|row| row.label.clone()))
+                                    .description(move || item.with(|row| row.description.clone()))
+                                    .disabled(move || item.with(|row| row.disabled))
                                     .selected(move || active.get().as_ref() == Some(&selected))
                                     .w_full()
                                     .min_w(0.0)
@@ -218,12 +205,12 @@ pub fn popup_list(
                                     .hover(|p| p.bg(Token::SurfaceHover))
                                     .style_when(State::SELECTED, |p| p.bg(Token::SurfacePressed))
                                     .style_when(State::DISABLED, |p| p.opacity(0.5))
-                                    .child(text(move || item.with(|row| row.item.label.clone())).select_none())
+                                    .child(text(move || item.with(|row| row.label.clone())).select_none())
                                     .child(show(
-                                        move || item.with(|row| !row.item.description.trim().is_empty()),
+                                        move || item.with(|row| !row.description.trim().is_empty()),
                                         move || {
                                             let description_key = description_key.clone();
-                                            text(move || item.with(|row| row.item.description.clone()))
+                                            text(move || item.with(|row| row.description.clone()))
                                                 .text_xs()
                                                 .style_with(move |p| {
                                                     p.text_color(if active.get().as_ref() == Some(&description_key) {

@@ -504,7 +504,7 @@ with [Rune execution evidence](research/rune-execution-architecture.md). This re
 research-first hold above and narrows earlier D/E proposals; do not run a parallel refactor track.
 
 - [x] Record keep/merge/remove decisions, dependencies and stage acceptance gates.
-- [ ] **1 — Option snapshots.** Remove Combobox/PopupList writable option mirrors; retain
+- [x] **1 — Option snapshots.** Remove Combobox/PopupList writable option mirrors; retain
       interaction reconciliation, navigation/reveal, IME and stable targets. Verify duplicates,
       reorder/update/removal, rejected choices and editor lifetime; commit independently.
 - [ ] **2 — Construction, owner and provenance.** Ordinary functions are the default;
@@ -522,3 +522,11 @@ Keep Signals, retained tree and existing execution/lifetime guarantees. No addit
 protocol, mandatory component instances or forced kit-crate deletion. The paused button draft
 is separate until stage 4 reconciles its content and source contracts. Record real OS validation
 separately; headless tests do not validate a system IME candidate window.
+
+Stage 1 evidence (2026-11-17): isolated checkout of the staged change, excluding the paused
+button draft: full workspace tests **929 passed, 0 failed, 3 ignored**; after adding the PopupList
+source-update/preedit regression, all **4 option snapshot tests passed**. Workspace all-targets
+Clippy, layer and diff checks passed. Retained rows act by stable ID; duplicate sources retire
+rows and disable choices until recovery; recovery refuses stale targets. Editor composition,
+selection and identity survive option updates. These are headless protocol tests, not native IME
+candidate-window verification. No performance improvement is claimed without measurement.
