@@ -89,7 +89,7 @@ impl Kernel {
     fn a11y_runs(&self, id: NodeId, runs: &[Run]) -> Vec<AkNode> {
         let text = self.text_str(id);
         let lines = self.text_lines(id);
-        let ((ox, oy), _, _) = self.text_box(id);
+        let (ox, oy) = self.text_box(id).origin;
         // Where words start: the first character of each segment that is not blank.
         let starts: rustc_hash::FxHashSet<usize> =
             text.split_word_bound_indices().filter(|(_, w)| !w.trim().is_empty()).map(|(b, _)| b).collect();

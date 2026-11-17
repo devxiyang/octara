@@ -59,6 +59,13 @@ renderers  glyph runs in the display list; swash rasterizes into an atlas both r
 
 ## Rich text
 
+Document text's private `TextBox` is the common source of the node-local content origin,
+content width, wrap width and ellipsis fit width. Drawing, visual-line layout, links, document
+selection and accessibility take their constraints from this calculation; painting no longer
+duplicates border/padding and wrapping arithmetic. It is computed from the current layout,
+not retained as another cache. Input scrolling/composition and clipped-text interaction policy
+remain separate follow-up work; this does not yet unify every text geometry path.
+
 - A text node holds one string and **runs**: ordered, non-overlapping UTF-8 byte ranges, each a style
   patch over the node's inherited text style: weight, slant, family (or `mono`), size, color and
   background (tokens or colors), underline, strikethrough, and a **link** (a URL or a name the

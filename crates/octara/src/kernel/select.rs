@@ -142,7 +142,7 @@ impl Kernel {
     /// The selection's rects in `text`, in its node's coordinates.
     pub(crate) fn selected_rects(&self, text: NodeId) -> Vec<crate::paint::Rect> {
         let Some(range) = self.node(text).selected.clone() else { return Vec::new() };
-        let ((ox, oy), _, _) = self.text_box(text);
+        let (ox, oy) = self.text_box(text).origin;
         let lines = self.text_lines(text);
         let mut rects = super::text::range_rects(&lines, range.clone());
         // A selection reaching past a line's end marks its break, as editors do.

@@ -173,6 +173,15 @@ pub(crate) struct LinkContent {
     pub run: usize,
 }
 
+/// The content-space constraints shared by document text drawing and interaction.
+/// Coordinates are local to the text node; window placement is applied by the consumer.
+pub(crate) struct TextBox {
+    pub origin: (f32, f32),
+    pub width: f32,
+    pub wrap_width: Option<f32>,
+    pub fit_width: Option<f32>,
+}
+
 /// What a text's glyphs were painted for, and the glyphs.
 #[derive(Debug)]
 pub(crate) struct Painted {
@@ -358,15 +367,21 @@ impl Kernel {
 
     /// Where a text's content box starts inside its node, the width it breaks at (`None`:
     /// unbounded) and the content box's width.
-    pub(crate) fn text_box(&self, id: NodeId) -> ((f32, f32), Option<f32>, f32) {
+    pub(crate) fn text_box(&self, id: NodeId) -> TextBox {
         let n = self.node(id);
         let l = self.taffy.layout(n.taffy).expect("taffy");
         let inner = (l.size.width - l.border.left - l.border.right - l.padding.left - l.padding.right).max(0.0);
-        let limit = match n.visual.text_style().wrap {
+        let style = n.visual.text_style();
+        let limit = match style.wrap {
             Wrap::Words => Some(inner),
             Wrap::None | Wrap::Truncate => None,
         };
-        ((l.border.left + l.padding.left, l.border.top + l.padding.top), limit, inner)
+        TextBox {
+            origin: (l.border.left + l.padding.left, l.border.top + l.padding.top),
+            width: inner,
+            wrap_width: limit,
+            fit_width: (style.wrap == Wrap::Truncate || style.max_lines.is_some()).then_some(inner),
+        }
     }
 
     /// A text's lines as laid out now (kept until the text, its width or its style changes).
@@ -374,7 +389,7 @@ impl Kernel {
         let n = self.node(id);
         let Content::Text(t) = &n.content else { return Rc::default() };
         let style = n.visual.text_style();
-        let (_, limit, _) = self.text_box(id);
+        let limit = self.text_box(id).wrap_width;
         let key = (t.version, limit.map(f32::to_bits), style, self.fonts_generation);
         if let Some(l) = t.lines.borrow().as_ref().filter(|l| l.key == key) {
             return l.lines.clone();
@@ -407,7 +422,7 @@ impl Kernel {
     pub fn link_rects(&self, link: NodeId) -> Vec<Rect> {
         let Content::Link(c) = &self.node(link).content else { return Vec::new() };
         let Some(text) = self.node(link).parent else { return Vec::new() };
-        let ((ox, oy), _, _) = self.text_box(text);
+        let (ox, oy) = self.text_box(text).origin;
         text::range_rects(&self.text_lines(text), c.range.clone()).into_iter().map(|r| Rect { x: r.x + ox, y: r.y + oy, ..r }).collect()
     }
 

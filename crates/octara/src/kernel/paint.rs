@@ -512,21 +512,16 @@ impl Kernel {
         // A label's text.
         if n.kind() == Kind::Text && visible {
             let (s, style) = (n.text(), v.text_style());
-            let cx = rect.x + l.border.left + l.padding.left;
-            let cy = rect.y + l.border.top + l.padding.top;
-            let inner = (l.size.width - l.border.left - l.border.right - l.padding.left - l.padding.right).max(0.0);
-            let limit = match style.wrap {
-                Wrap::Words => Some(inner),
-                Wrap::None | Wrap::Truncate => None,
-            };
+            let geometry = self.text_box(id);
+            let cx = rect.x + geometry.origin.0;
+            let cy = rect.y + geometry.origin.1;
             if !s.is_empty() {
                 // Cut text (one line, or `line_clamp`) ends in an ellipsis inside the box.
-                let fit = (style.wrap == Wrap::Truncate || style.max_lines.is_some()).then_some(inner);
-                let runs = self.text_glyphs(id, &style, limit, fit);
+                let runs = self.text_glyphs(id, &style, geometry.wrap_width, geometry.fit_width);
                 // A truncated line is clipped to the box (an ellipsis comes with the renderer).
                 let clip_text = style.wrap == Wrap::Truncate;
                 if clip_text {
-                    out.push(Item::PushClip { source: id, rect: Rect { x: cx, y: cy, w: inner, h: rect.h }, radius: 0.0 });
+                    out.push(Item::PushClip { source: id, rect: Rect { x: cx, y: cy, w: geometry.width, h: rect.h }, radius: 0.0 });
                 }
                 // A document selection, behind the glyphs (as a field draws its own).
                 if n.selected.is_some() {

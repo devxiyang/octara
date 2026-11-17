@@ -159,6 +159,16 @@ validation was performed. B3 includes the separately recorded consistency-mode i
 
 - [ ] Make drawing, hit testing, selection, IME and accessibility consume the same text
       geometry, with alignment/constraints accounted for once.
+      **C1a implemented:** document text now has one named private TextBox result for content
+      origin/width, wrapping and truncation constraints. Drawing no longer recomputes these
+      independently; visual-line caching, link rectangles, selection painting/hit testing and
+      accessibility use the same box calculation. This is a constraint-source consolidation,
+      not completion of C1: input scroll/composition geometry and the visibility policy for
+      truncated/clamped text still need review. No public primitive or new cache was added.
+      C1a validation: 891 workspace tests passed, 0 failed, 3 existing ignored doctests.
+      Existing rich-text/selection/accessibility, multiline/IME, Chat and renderer regressions,
+      all-targets Clippy, strict core rustdoc, formatting and diff/layer checks passed.
+      No real-window validation or new performance claim in this constraint-only slice.
 - [ ] Separate prompt, editable value and accessible label; consolidate semantic resolution.
 - [ ] Finalize and implement external-value/IME arbitration (same-value write, rejection,
       normalization, explicit reset, composition completion/cancellation and late callbacks).
