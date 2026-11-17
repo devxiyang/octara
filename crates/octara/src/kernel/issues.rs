@@ -305,13 +305,14 @@ impl Kernel {
                 _ => under,
             }
         };
-        if matches!(n.content, super::Content::Native(_)) && n.label.is_none() {
+        let named = self.semantic_name(id).is_some_and(|name| !name.trim().is_empty());
+        if matches!(n.content, super::Content::Native(_)) && !named {
             let (.., w, h) = self.shown_rect(id);
             if w > 0.0 && h > 0.0 {
                 out.push(self.issue(id, &codes::UNLABELED_NATIVE_VIEW, format!("native view {} has no label", self.name(id))));
             }
         }
-        if matches!(n.content, super::Content::Canvas(_)) && n.label.is_none() {
+        if matches!(n.content, super::Content::Canvas(_)) && !named {
             let (.., w, h) = self.shown_rect(id);
             if w > 0.0 && h > 0.0 {
                 out.push(self.issue(id, &codes::UNLABELED_CANVAS, format!("canvas {} has no label", self.name(id))));
@@ -321,14 +322,14 @@ impl Kernel {
         let control = n.kind() == Kind::TextInput || super::HandlerKind::POINTER.iter().any(|k| n.handlers[*k as usize].is_some());
         let (.., w, h) = self.shown_rect(id);
         if control && w > 0.0 && h > 0.0 {
-            if n.label.is_none() && !self.has_text(id) && n.kind() != Kind::TextInput {
+            if !named && (n.label.is_some() || !self.has_text(id)) && n.kind() != Kind::TextInput {
                 out.push(self.issue(
                     id,
                     &codes::UNNAMED_CONTROL,
                     format!("{} can be operated but has no name for assistive technology", self.name(id)),
                 ));
             }
-            if n.kind() == Kind::TextInput && n.label.is_none() {
+            if n.kind() == Kind::TextInput && !named {
                 out.push(self.issue(
                     id,
                     &codes::UNNAMED_CONTROL,
@@ -365,6 +366,7 @@ impl Kernel {
     /// Whether any shown text lies inside `id`.
     fn has_text(&self, id: NodeId) -> bool {
         let n = self.node(id);
-        (n.kind() == Kind::Text && !n.text().trim().is_empty()) || n.children().iter().any(|c| !self.node(*c).hidden && self.has_text(*c))
+        (n.kind() == Kind::Text && self.semantic_name(id).is_some_and(|name| !name.trim().is_empty()))
+            || n.children().iter().any(|c| self.shown_to_a11y(*c) && self.has_text(*c))
     }
 }

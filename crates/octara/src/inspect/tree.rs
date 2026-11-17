@@ -48,10 +48,7 @@ fn node_actions(kernel: &Kernel, id: NodeId) -> Vec<String> {
 
 fn inspect_one(kernel: &Kernel, id: NodeId) -> Node {
     let role = if id == kernel.root() { Role::Window } else { kernel.role(id) };
-    let name = kernel
-        .label(id)
-        .map(str::to_owned)
-        .or_else(|| (kernel.kind(id) == Kind::Text && !kernel.text(id).is_empty()).then(|| kernel.text(id).to_owned()));
+    let name = kernel.semantic_name(id).map(str::to_owned);
     let mut states = Vec::new();
     for (flag, name) in [
         (State::HOVER, "hovered"),

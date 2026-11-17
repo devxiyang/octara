@@ -203,6 +203,18 @@ validation was performed. B3 includes the separately recorded consistency-mode i
       Headless geometry agreement does not prove OS candidate placement. No real window/OS
       interaction or screenshot was performed in C1b/C1c.
 - [ ] Separate prompt, editable value and accessible label; consolidate semantic resolution.
+      **C2a implemented:** `kernel/semantics.rs` owns node-local name resolution for AX,
+      Inspector, name lookup, diagnostic descriptions and missing-name checks. Explicit labels
+      override document text, including an explicit empty string. Editable values never supply
+      names. Tooltip fallback compares the resolved name. Name lookup uses AX visibility;
+      hidden subtrees/internal links cannot be found by name. Empty/whitespace labels no longer
+      satisfy missing-name checks; hidden text does not satisfy descendant-text checks.
+      See [semantic resolution](design/semantics.md). Independent input prompt presentation and
+      broader composite naming remain unfinished; no new public primitive or retained cache.
+      C2a validation: **902 workspace tests passed, 0 failed, 3 existing ignored doctests**;
+      all-targets Clippy, format/diff and dependency-layer checks passed. The new regression
+      cross-checks AX/Inspector/lookup/diagnostics and dynamic target retention.
+      Real-window acceptance is deferred at the user's request while away from the computer.
 - [ ] Finalize and implement external-value/IME arbitration (same-value write, rejection,
       normalization, explicit reset, composition completion/cancellation and late callbacks).
       Candidate policies in the design are not automatically accepted requirements.

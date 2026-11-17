@@ -163,7 +163,7 @@ pub struct Node {
     /// What assistive technology announces: the label, else a text's own text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// The explicit description, else the tooltip unless it repeats the label.
+    /// The explicit description, else the tooltip unless it repeats the resolved name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -16,6 +16,7 @@ mod focus;
 mod issues;
 mod paint;
 mod resources;
+mod semantics;
 pub(crate) use resources::Resources;
 pub mod rich;
 pub mod select;
@@ -983,11 +984,6 @@ impl Kernel {
     }
     pub fn label(&self, id: NodeId) -> Option<&str> {
         self.node(id).label.as_deref()
-    }
-    /// The explicit description, else the tooltip unless it repeats the label.
-    pub fn description(&self, id: NodeId) -> Option<&str> {
-        let n = self.node(id);
-        n.description.as_deref().or_else(|| n.tooltip.as_deref().filter(|t| n.label.as_deref() != Some(*t)))
     }
     pub fn expanded(&self, id: NodeId) -> Option<bool> {
         self.node(id).expanded
@@ -2553,36 +2549,6 @@ impl Kernel {
     pub fn child_ids(&self, test_id: &str) -> Vec<String> {
         let Some(id) = self.find(test_id) else { return Vec::new() };
         self.children(id).iter().filter(|c| !self.node(**c).hidden).filter_map(|c| self.test_id(*c).map(str::to_owned)).collect()
-    }
-
-    /// Shown nodes whose accessible name is `name`: an explicit label, else a text's own text.
-    /// In tree order.
-    pub fn find_by_name(&self, name: &str) -> Vec<NodeId> {
-        let mut out = Vec::new();
-        let mut stack = vec![self.root];
-        while let Some(id) = stack.pop() {
-            let n = self.node(id);
-            if n.layout.display == taffy::Display::None {
-                continue;
-            }
-            let own = n.label.as_deref().or((n.kind() == Kind::Text).then_some(n.text()));
-            if own == Some(name) {
-                out.push(id);
-            }
-            stack.extend(n.children().iter().rev().copied());
-        }
-        out
-    }
-    /// How to name a node in a message: its test id, else its accessible name, else its role.
-    pub fn describe(&self, id: NodeId) -> String {
-        let n = self.node(id);
-        if let Some(t) = &n.test_id {
-            format!("`{t}`")
-        } else if let Some(l) = n.label.as_deref().or((n.kind() == Kind::Text).then_some(n.text())).filter(|l| !l.is_empty()) {
-            format!("{:?} \"{l}\"", self.role(id))
-        } else {
-            format!("a {:?}", self.role(id))
-        }
     }
 
     /// Deterministic semantic dump of the attached tree.

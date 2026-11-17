@@ -413,15 +413,12 @@ impl Kernel {
         let place = ak::Affine::translate((x - sx, y - sy));
         node.set_transform(if id == self.root { ak::Affine::scale(scale) * place } else { place });
         node.set_bounds(ak::Rect { x0: sx, y0: sy, x1: sx + w, y1: sy + h });
-        // The name: an explicit label, else a text's own text (a label's value, AccessKit's
-        // static text).
-        if let Some(label) = &n.label {
-            node.set_label(label.as_str());
-        } else if n.kind() == Kind::Text && !n.text().is_empty() {
-            if role == Role::Label {
-                node.set_value(n.text());
+        if let Some(name) = self.semantic_name(id) {
+            if n.label.is_none() && role == Role::Label {
+                // AccessKit encodes static text as a value, not a label.
+                node.set_value(name);
             } else {
-                node.set_label(n.text());
+                node.set_label(name);
             }
         }
         if let Some(l) = n.level {

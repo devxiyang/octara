@@ -5,6 +5,53 @@ use octara::kernel::a11y::a11y_id;
 use octara::prelude::*;
 
 #[test]
+fn semantic_names_agree_across_inspector_ax_lookup_and_diagnostics() {
+    let mut app = Window::headless(|| {
+        let caption = state("caption", || "中文标题".to_owned());
+        on_command("rename", move || caption.set("新标题".into()));
+        col()
+            .size_full()
+            .child(text(caption).id("caption").tooltip("中文标题"))
+            .child(text("fallback").id("override").label("Explicit"))
+            .child(text("suppressed").id("empty").label("").on_press(|| {}))
+            .child(text_input().id("input").w(200).value("not a name"))
+            .child(text("concealed").id("concealed").a11y_hidden())
+            .child(el().hidden().child(text("offscreen").id("offscreen")))
+            .into()
+    });
+    let initial = app.inspect();
+    let ax = app.accessibility_update();
+    for (id, name) in [("caption", Some("中文标题")), ("override", Some("Explicit")), ("empty", Some("")), ("input", None)] {
+        let node_id = app.kernel().find(id).unwrap();
+        assert_eq!(initial.find(id).unwrap().name.as_deref(), name);
+        let node = &ax.nodes.iter().find(|(n, _)| *n == a11y_id(node_id)).unwrap().1;
+        let ax_name = if id == "caption" { node.value() } else { node.label() };
+        assert_eq!(ax_name, name);
+        if let Some(name) = name {
+            assert_eq!(app.kernel().find_by_name(name), vec![node_id]);
+        }
+    }
+    for name in ["not a name", "fallback", "suppressed", "concealed", "offscreen"] {
+        assert!(app.kernel().find_by_name(name).is_empty(), "{name}");
+    }
+    assert_eq!(initial.find("caption").unwrap().description, None);
+    let unnamed: Vec<_> =
+        app.kernel().accessibility_issues().into_iter().filter(|i| i.code == "UNNAMED_CONTROL").map(|i| i.test_id).collect();
+    assert_eq!(unnamed, vec![Some("empty".into()), Some("input".into())]);
+    app.invoke("rename").unwrap();
+    let after = app.inspect();
+    assert_eq!(after.find("caption").unwrap().target, initial.find("caption").unwrap().target);
+    assert_eq!(after.find("caption").unwrap().name.as_deref(), Some("新标题"));
+    assert_eq!(after.find("caption").unwrap().description.as_deref(), Some("中文标题"));
+    assert!(app.kernel().find_by_name("中文标题").is_empty());
+    let id = app.kernel().find("caption").unwrap();
+    let update = app.accessibility_update();
+    let node = &update.nodes.iter().find(|(n, _)| *n == a11y_id(id)).unwrap().1;
+    assert_eq!(node.value(), Some("新标题"));
+    assert_eq!(node.description(), Some("中文标题"));
+}
+
+#[test]
 fn form_semantics_update_without_replacing_the_editor_or_its_target() {
     let mut app = Window::headless(|| {
         let invalid = state("invalid", || true);
