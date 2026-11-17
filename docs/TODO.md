@@ -269,6 +269,43 @@ validation was performed. B3 includes the separately recorded consistency-mode i
 
 ### D. Core composition and ui-kit
 
+Current direction: redesign the UI composition layer before resuming the paused D2a button
+draft. Keep Signals and the retained tree. The [replacement proposal](design/ui-composition-redesign.md)
+supersedes interface-preserving local fixes below; its public names and signatures are proposals.
+The authoring model is now selected: ordinary Rust function composition, following Rune selectively,
+with AI generation, source traceability, live interaction and feedback as the primary evaluation loop.
+Latest discussion proposes removing the separate kit layer; see the proposal's responsibility
+inventory. Crate removal is not yet selected or implemented. Do not replace it with a renamed
+copy of the same layer inside core, or duplicate complex interaction state machines in each app.
+
+- [x] Record the replacement architecture, four scenario derivations, retained/deleted mechanisms
+      and migration gates. No production migration or runtime acceptance claimed.
+- [x] Cross-check mechanisms and failure cases against Rune/Exact source, official frontend/native
+      framework material and papers; record [evidence and discriminating scenarios](research/ui-composition-mechanisms.md).
+      Explicit scope and action assembly remain candidates, not approved API decisions.
+- [x] Examine the named-state premise behind component scopes. Record fresh allocation versus
+      recovery, region ownership, eager construction counterexamples and context boundaries in
+      the research note, cross-checked with Leptos and pinned Rune/Exact source. This is contract
+      reasoning, not an implemented anonymous-state API or passing runtime validation.
+- [x] Select ordinary function composition for AI authors; separate that decision from anonymous
+      state allocation and hot-reload policy. Preserve source metadata without mandatory component
+      instance macros, and record Agent-facing acceptance criteria in the replacement proposal.
+- [x] Check the ordinary-function direction with current public core APIs in an isolated probe:
+      **4 headless checks passed** for state sharing/separation and provenance, branch lifetime,
+      input callback ordering/editor identity, and keyed snapshot row identity without a writable
+      mirror. Source and bounded claims are recorded in the research note; no production migration
+      or real-window qualification is implied.
+- [ ] Decide the proposed kit-layer removal using the responsibility inventory: appearance to
+      application functions/verified recipes, common interaction contracts shared by the framework,
+      duplicates removed, and Markdown assigned independently. Map all callers before deleting
+      the crate, and avoid a new per-control state/controller API family.
+- [ ] Compare concrete Rust call signatures for ordinary composition, explicit state ownership,
+      a custom action and deferred suggestions; settle contracts before implementing the replacement.
+      Follow the selected function model with explicit state/behavior parameters and factories
+      for deferred content. Anonymous local state remains a separate candidate; it is not a
+      prerequisite for function composition. Verify Rust ownership, unmounted work, provider
+      timing and hot-reload preservation before choosing or deleting APIs.
+
 - [x] **D1:** validate public foundation sufficiency with a no-kit custom button, labeled
       Chinese input with errors, and anchored suggestions. External integration tests compile
       without any octara-kit dependency and use only public APIs. Pointer/keyboard/semantic/AX
@@ -278,13 +315,25 @@ validation was performed. B3 includes the separately recorded consistency-mode i
       This verifies the bounded scenarios, not all dynamic choice policies or real OS behavior.
       Validation: **926 workspace tests passed, 0 failed, 3 existing ignored doctests**;
       all-targets Clippy, format/diff, dependency layers and skill freshness passed.
+- [x] Review composition bottom-up before continuing D2. Recorded the foundation/runtime/view/
+      kit/application boundaries, findings, selective Rune/Exact/React references and acceptance
+      criteria in [component-tree review](design/component-tree-review.md). This is a review,
+      not acceptance of the uncommitted button draft or a new implementation stage.
+- [ ] Apply the selected function model to provenance and owner entry points (`#[component]`
+      currently records provenance; `component` creates a mounted scope), with ordinary wrappers,
+      two independent states and deferred content examples. See [bottom-up API review](design/bottom-up-api-review.md).
+- [ ] Agree on content, configuration targets, construction context and identity contracts using
+      Button and Field call-site sketches together; then replace the paused D2a draft and its
+      documentation. Prefer ordinary component-tree composition over specialized constructors.
 - [ ] Share stable action roots while allowing different visual content. Make actual control,
       label and container configuration explicit for composite widgets; remove misleading bare
       El forwarding. Prefer parameters/builders before public Parts or new traits.
 - [ ] Share option identity/navigation where semantics agree; remove Combobox/PopupList's
       redundant option mirrors. Preserve Menu versus suggestions versus selection differences.
 - [ ] Separate component appearance from behavior using the existing style/theme machinery;
-      migrate component-only policy out of the kernel without a second theme system.
+      migrate application-specific policy out of the kernel without a second theme system.
+      If kit-layer removal is selected, preserve one tested interaction implementation while
+      moving appearance/assembly to ordinary functions rather than retaining a mandatory kit.
 
 ### E. Integration and completion
 
@@ -446,3 +495,30 @@ From section 9 of [Reactive core](design/reactive-core.md):
 - [ ] Taffy 0.15.1: after a container removes its last absolutely positioned child, the hoisted
       list is not cleared, and rounding reads a deleted node. The kernel gives that container a
       fresh taffy node (`refresh_taffy_node`); report upstream and delete once fixed.
+
+
+## Bottom-up architecture convergence (approved 2026-11-17)
+
+Authoritative scope: [function composition architecture §11](design/ui-composition-redesign.md#11-已批准的自底向上收敛方案),
+with [Rune execution evidence](research/rune-execution-architecture.md). This replaces the
+research-first hold above and narrows earlier D/E proposals; do not run a parallel refactor track.
+
+- [x] Record keep/merge/remove decisions, dependencies and stage acceptance gates.
+- [ ] **1 — Option snapshots.** Remove Combobox/PopupList writable option mirrors; retain
+      interaction reconciliation, navigation/reveal, IME and stable targets. Verify duplicates,
+      reorder/update/removal, rejected choices and editor lifetime; commit independently.
+- [ ] **2 — Construction, owner and provenance.** Ordinary functions are the default;
+      separate source annotations from explicit content scope, replace component/component_keyed
+      without aliases, migrate callers/CLI/skill. Verify multiple instances, provider boundaries,
+      cleanup, hot reload and diagnostic origins; commit independently.
+- [ ] **3 — Execution stages.** Audit measure/feedback/publish permissions; fix demonstrated
+      crossings using internal capabilities, retain sound paths. Verify retries, cross-window
+      convergence, failure and user callbacks; commit code/evidence as appropriate.
+- [ ] **4 — Composition library and public surface.** Reuse shared interaction mechanisms,
+      move appearance to ordinary functions/recipes, prune redundant wrappers and prelude exports.
+      Verify custom content, keyboard/IME/disabled/accessibility and Chat; commit independently.
+
+Keep Signals, retained tree and existing execution/lifetime guarantees. No additional version
+protocol, mandatory component instances or forced kit-crate deletion. The paused button draft
+is separate until stage 4 reconciles its content and source contracts. Record real OS validation
+separately; headless tests do not validate a system IME candidate window.

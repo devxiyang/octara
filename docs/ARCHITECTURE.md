@@ -26,6 +26,15 @@ App root lifetime, style declaration ordering, exclusive element content and Ins
 broader primitive migration remains pending.
 The sections below describe the current code.
 
+The approved [bottom-up convergence plan](design/ui-composition-redesign.md#11-已批准的自底向上收敛方案)
+keeps Signals and the retained tree as peer foundations, connected by mounting and window
+coordination. Ordinary Rust functions compose UI; provenance does not create lifetime scopes.
+Implementation proceeds through option snapshots, construction/owner/provenance, execution-stage
+boundaries, then composition-library/public-surface cleanup. [TODO](TODO.md#bottom-up-architecture-convergence-approved-2026-11-17)
+tracks per-stage validation and commits. This is the selected direction, not a claim that all
+replacement APIs already exist.
+
+
 The proposed next collection boundary is [Collection data, row identity and content lifetime](design/collection-regions.md).
 It replaces application-maintained Vec/list mirrors and separates retained row identity from
 current row input and replaceable content. It is not implemented; [latest Rune/Exact source

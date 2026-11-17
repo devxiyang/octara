@@ -8,6 +8,11 @@ A newer targeted review on 2026-11-16 pins `dev` to `631e8a67`: see
 [collections and regions](collection-regions.md) for `Tracked`/`region`, dependency-boundary
 corrections and virtual-list lifecycle fixes. The broad survey below retains its older baseline.
 
+The 2026-11-17 [execution architecture review](rune-execution-architecture.md) follows the
+state → view → measurement → apply → presentation chain. It distinguishes the newer
+`Tracked`/`region` model from manual memoization, and corrects the render-thread claim below:
+independent presentation updates do not by themselves establish a dedicated thread on every host.
+
 ## Positioning
 
 Rune is a Rust-native UI framework from Anomaly (the OpenCode team): its own renderer, text, layout, animation and
@@ -27,7 +32,7 @@ It overlaps heavily with Octara's positioning: Agent First, Rust Only, GPU rende
 | Editing / IME | Zed's `sum_tree` + rope; each platform's native text protocol implemented directly | winit IME, hidden native input boxes |
 | Layout | Taffy 0.15 running on its own node arena; very long lists use a sum-tree row-height index | Custom layout engine, SwiftUI-style proposal layout |
 | State | Keyed retained tree, rebuilt by plain view functions and then diffed (details below) | Fine-grained signals, GPUI Entity, immediate mode |
-| Animation | The render thread owns the presented tree; each property is an analytic spring track that can be retargeted with velocity | Driving animation by re-running views on the main thread |
+| Animation | Retained presentation tracks can advance and retarget without re-running the business view; thread ownership requires separate host verification | Driving every animation sample by re-running views |
 | Accessibility | AccessKit; the same tree is also the Agent Inspector's tree | Custom accessibility bridge |
 | Shell | winit 0.30 first; switch to its own platform layer when text input lands (borrowing Zed's `gpui_*`, Apache-2.0) | Long-term reliance on winit, SDL3 |
 | Hot reload | subsecond binary hot patching; tokens and live literals need no recompilation | View DSL interpreter |
@@ -74,7 +79,7 @@ Rune's reasons for rejecting signals, and Octara's response, are in [Reactive co
   Linebender moved compute Vello into `research/` in 2026, so it should not be the default renderer.
 - Text stack and two-level line cache; IME must implement each platform's native protocol, since winit IME is not enough for production.
 - Taffy running directly on its own node arena, maintaining only one tree.
-- Animation on the render thread, independent of the state-model choice; any state approach should adopt it.
+- Presentation updates independent of business-view rebuilding; decide thread placement separately from this state-model choice.
 - Semantic tree shared with AccessKit; performance gates based on counts rather than wall-clock time; Scenes as the unit of testing and preview.
 - No macro DSL as the View API.
 
