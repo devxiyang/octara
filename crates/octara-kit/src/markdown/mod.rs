@@ -12,8 +12,8 @@ pub use parse::{Align, Block, Inline, Item, Kind, Style};
 pub use stream::Doc;
 
 use octara::prelude::*;
-use render::{Keyed, keyed, sync};
-use std::cell::{Cell, RefCell};
+use render::{BlockCache, BlockKey, BlockRef};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 /// What [`markdown`] renders: a text, a closure (followed), or a [`TextBuffer`] (a stream: its end
@@ -70,69 +70,58 @@ impl<F: Fn() -> String + 'static> IntoMarkdown for F {
 pub fn markdown(source: impl IntoMarkdown) -> El {
     let source = source.into_markdown();
     let streaming = matches!(source, Source::Buffer(_));
-    let doc = Rc::new(RefCell::new(Doc::new(streaming)));
-    untrack(|| match &source {
-        Source::Text(s) => doc.borrow_mut().update(s),
-        Source::Dyn(f) => doc.borrow_mut().update(&f()),
-        Source::Buffer(t) => t.with(|s| doc.borrow_mut().update(s)),
-    });
-    let source_of = doc.clone();
-    // Its blocks live in a scope of its own: what it keeps is made from its source, so each
-    // instance has its own, whatever its siblings.
-    static INSTANCES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let instance = INSTANCES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    col()
-        .selectable()
-        .copy_markdown(move |copied| source_copy(&source_of.borrow(), copied))
-        .gap_3()
-        .child(scope(format!("markdown[{instance}]"), move || blocks(doc, source, streaming)))
-}
-
-/// The blocks of a document, kept in step with its source.
-fn blocks(doc: Rc<RefCell<Doc>>, source: Source, streaming: bool) -> View {
-    let blocks = state_list("blocks", || keyed("b", doc.borrow().blocks().to_vec()), |e: &Keyed<Block>| e.0.clone());
-    // What assistive technology hears: each block as it finishes (the one before the last).
-    let heard = state("heard", String::new);
-    let finished = Rc::new(Cell::new(doc.borrow().blocks().len().saturating_sub(1)));
-    let follow = move |s: &str| {
-        let mut d = doc.borrow_mut();
-        d.update(s);
-        sync(blocks, "b", d.blocks(), d.kept(), render::same_kind);
-        let done = d.blocks().len().saturating_sub(1);
-        if streaming && done > finished.get() {
-            heard.set(d.blocks()[finished.get()..done].iter().map(plain).collect::<Vec<_>>().join("\n"));
-        }
-        finished.set(done);
-    };
-    match source {
-        Source::Text(_) => {}
+    let cache =
+        Rc::new(RefCell::new(Cache { doc: Doc::new(streaming), blocks: BlockCache::default(), finished: None, heard: String::new() }));
+    let parse = cache.clone();
+    let rendered = memo(move || match &source {
+        Source::Text(s) => parse.borrow_mut().update(s, streaming),
         Source::Dyn(f) => {
-            watch(
-                move || f(),
-                move |s, before| {
-                    if before.is_some() {
-                        follow(s);
-                    }
-                },
-            );
+            let source = f();
+            parse.borrow_mut().update(&source, streaming)
         }
-        Source::Buffer(t) => {
-            let live = t.clone();
-            watch(
-                move || live.version(),
-                move |_, before| {
-                    if before.is_some() {
-                        t.with(|s| follow(s));
-                    }
-                },
-            );
-        }
-    }
-    let mut parts = vec![each(move || blocks.read_only(), |_, b| render::block_view(b))];
+        Source::Buffer(t) => t.with(|s| parse.borrow_mut().update(s, streaming)),
+    });
+    let mut parts = vec![each(move || rendered.with(|r| r.blocks.clone()), |_, b| render::block_view(b))];
     if streaming {
+        let heard = memo(move || rendered.with(|r| r.heard.clone()));
         parts.push(el().w(0.0).h(0.0).live(Live::Polite).label(move || heard.get()).into());
     }
-    View::fragment(parts)
+    col()
+        .selectable()
+        // Virtual selection invokes this snapshot after its temporary row owner is retired.
+        .copy_markdown(move |copied| source_copy(&cache.borrow().doc, copied))
+        .gap_3()
+        .child(View::fragment(parts))
+}
+
+#[derive(PartialEq)]
+struct Rendered {
+    blocks: Vec<(BlockKey, BlockRef)>,
+    heard: String,
+}
+
+/// The parse, rendered references and announcement advance together. This is a memo's cache,
+/// retired with its mounted owner, never named application state restored across a reload.
+struct Cache {
+    doc: Doc,
+    blocks: BlockCache,
+    finished: Option<usize>,
+    heard: String,
+}
+
+impl Cache {
+    fn update(&mut self, source: &str, streaming: bool) -> Rendered {
+        self.doc.update(source);
+        let done = self.doc.blocks().len().saturating_sub(1);
+        if streaming
+            && let Some(finished) = self.finished
+            && done > finished
+        {
+            self.heard = self.doc.blocks()[finished..done].iter().map(plain).collect::<Vec<_>>().join("\n");
+        }
+        self.finished = Some(done);
+        Rendered { blocks: self.blocks.update(self.doc.blocks(), self.doc.kept()), heard: self.heard.clone() }
+    }
 }
 
 /// The Markdown for a selection: the source of the blocks it touches, whole; the whole source

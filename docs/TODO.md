@@ -654,3 +654,31 @@ a held field with both destroyed and still-exiting original nodes. Existing clic
 selection, event composition and editor lifetime tests passed in the core suite. Workspace
 all-targets Clippy with -D warnings, format/diff and layer checks passed; independent production
 review found no remaining issues. These are headless input-protocol tests, not real OS input.
+
+## Continuation on init: Markdown cache ownership (2026-11-17)
+
+- [x] Reproduce retained derived nodes across reload; remove the global scope counter and all
+      Markdown named StateList/state mirrors and synchronization watches.
+- [x] Own Doc, rendered block references, code-line cache and announcements through existing
+      memos; retain tail parsing and unchanged-row equality boundaries without a new public API.
+- [x] Keep copy callbacks self-contained after temporary virtual row owners retire; dynamically
+      update ordered-list starts, task markers and table alignment.
+- [x] Verify same/different-shape reload for static, closure and TextBuffer sources, repeated
+      mount/unmount, code-tail work, existing streaming, selection and virtual copy regressions.
+
+The original reproduction retained **51 extra reactive nodes per reload**. Eight same-shape
+reloads now retain a constant count; 18 alternating-shape reloads across all three source forms
+reuse the same count per shape, and 16 mount/unmount cycles return to the empty branch baseline.
+The existing 2,000-token stream/node-retention and virtual offscreen source-copy tests pass.
+
+Measured code-tail work: a one-character append to 9 / 513 lines runs **29 / 1,037 closures**;
+both write only the changed 5-byte tail, dirty one text, create/destroy no nodes and retain all
+line identities. Snapshot identity traversal and memo checks remain O(rows); this is a lifecycle
+fix preserving incremental parsing/text work, not a constant-time or wall-clock speedup claim.
+No real OS window input or frame-latency verification was performed in this slice.
+
+Final validation: **120 kit tests + 73 Chat tests passed, 0 failed**, with 1 existing ignored
+kit doctest. Chat includes all 11 local HTTP cases; the sandbox initially rejected loopback
+binding, then the authorized run passed. Workspace all-targets Clippy with `-D warnings`,
+formatting, diff and dependency-layer checks passed. Production changes stay in the two
+Markdown implementation files; the core/public API and dependencies are unchanged.

@@ -1,81 +1,103 @@
 //! Blocks into elements: each block its own element under a stable key, so a block that did
 //! not change keeps its node, and the block that grows updates its text only.
 
-use super::parse::{Align, Block, Inline, Item, Kind, Style};
+use super::parse::{Align, Block, Inline, Kind, Style};
 use octara::prelude::*;
+use std::cell::RefCell;
+use std::fmt;
+use std::mem::{Discriminant, discriminant};
+use std::ops::Deref;
+use std::rc::Rc;
 
-/// Keyed entries of a list kept in step with a value (`key` from the position).
-pub(super) type Keyed<T> = (String, T);
+/// Position is the display label; structure also participates in row identity so a new kind
+/// gets a new element. Content changes keep the same row.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(super) struct BlockKey {
+    index: usize,
+    kind: Discriminant<Kind>,
+    detail: u8,
+}
 
-fn key_of<T>(e: &Keyed<T>) -> String {
-    e.0.clone()
+impl fmt::Display for BlockKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "b{}", self.index)
+    }
+}
+
+/// Reference identity lets a row's memo cut off an unchanged prefix without comparing or
+/// cloning its blocks again when a snapshot changes elsewhere.
+#[derive(Clone)]
+pub(super) struct BlockRef(Rc<Block>);
+
+impl PartialEq for BlockRef {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Deref for BlockRef {
+    type Target = Block;
+
+    fn deref(&self) -> &Block {
+        &self.0
+    }
+}
+
+#[derive(Default)]
+pub(super) struct BlockCache(Vec<BlockRef>);
+
+impl BlockCache {
+    pub(super) fn update(&mut self, blocks: &[Block], kept: usize) -> Vec<(BlockKey, BlockRef)> {
+        for (i, block) in blocks.iter().enumerate().skip(kept.min(self.0.len())) {
+            if self.0.get(i).is_some_and(|old| **old == *block) {
+                continue;
+            }
+            let block = BlockRef(Rc::new(block.clone()));
+            match self.0.get_mut(i) {
+                Some(old) => *old = block,
+                None => self.0.push(block),
+            }
+        }
+        self.0.truncate(blocks.len());
+        self.0
+            .iter()
+            .enumerate()
+            .map(|(index, block)| {
+                let detail = match block.kind {
+                    Kind::Heading(level, _) => level,
+                    Kind::List { start, .. } => u8::from(start.is_some()),
+                    _ => 0,
+                };
+                (BlockKey { index, kind: discriminant(&block.kind), detail }, block.clone())
+            })
+            .collect()
+    }
 }
 
 /// The keyed entries for `items`: `{prefix}{index}`.
-pub(super) fn keyed<T>(prefix: &str, items: impl IntoIterator<Item = T>) -> Vec<Keyed<T>> {
+fn keyed<T>(prefix: &str, items: impl IntoIterator<Item = T>) -> Vec<(String, T)> {
     items.into_iter().enumerate().map(|(i, t)| (format!("{prefix}{i}"), t)).collect()
-}
-
-/// Brings `list` to `items` from position `from` on (earlier entries are the same): an entry
-/// whose value changed is updated, one whose kind changed is made again, extra ones are removed.
-pub(super) fn sync<T: Clone + PartialEq + 'static>(
-    list: StateList<String, Keyed<T>>,
-    prefix: &str,
-    items: &[T],
-    from: usize,
-    same_kind: impl Fn(&T, &T) -> bool,
-) {
-    let had = list.len();
-    for (i, t) in items.iter().enumerate().skip(from.min(had)) {
-        let key = format!("{prefix}{i}");
-        if i < had {
-            let Some(old) = list.item(&key).map(|s| untrack(|| s.get()).1) else { continue };
-            if old == *t {
-                continue;
-            }
-            if same_kind(&old, t) {
-                list.update(&key, |e| e.1 = t.clone());
-            } else {
-                list.remove(&key);
-                list.insert(i, (key, t.clone()));
-            }
-        } else {
-            list.push((key, t.clone()));
-        }
-    }
-    for i in items.len()..had {
-        list.remove(&format!("{prefix}{i}"));
-    }
-}
-
-pub(super) fn same_kind(a: &Block, b: &Block) -> bool {
-    std::mem::discriminant(&a.kind) == std::mem::discriminant(&b.kind)
-        && match (&a.kind, &b.kind) {
-            (Kind::Heading(x, _), Kind::Heading(y, _)) => x == y,
-            (Kind::List { start: x, .. }, Kind::List { start: y, .. }) => x.is_some() == y.is_some(),
-            _ => true,
-        }
 }
 
 /// Blocks kept in step with `get`, each keyed `b{i}`.
 pub(super) fn blocks_view(get: impl Fn() -> Vec<Block> + 'static) -> El {
-    let blocks = state_list("blocks", || keyed("b", untrack(&get)), key_of::<Block>);
-    watch(get, move |now, before| {
-        if before.is_some() {
-            sync(blocks, "b", now, 0, same_kind);
-        }
+    let cache = RefCell::new(BlockCache::default());
+    let blocks = memo(move || {
+        let blocks = get();
+        cache.borrow_mut().update(&blocks, 0)
     });
-    col().gap_3().child(each(move || blocks.read_only(), |_, b| block_view(b)))
+    col().gap_3().child(each(move || blocks.get(), |_, b| block_view(b)))
 }
 
 /// One block's element: its kind is fixed (a block of another kind is a new entry); what it
 /// shows follows its signal.
-pub(super) fn block_view(b: ReadSignal<Keyed<Block>>) -> View {
-    let kind = untrack(|| b.with(|(_, b)| b.kind.clone()));
+pub(super) fn block_view(b: ReadSignal<BlockRef>) -> View {
+    let b = memo(move || b.get());
+    let kind = untrack(|| b.with(|b| b.kind.clone()));
     match kind {
-        Kind::Paragraph(_) => text(move || b.with(|(_, b)| inline_of(b))).role(Role::Paragraph).into(),
+        Kind::Paragraph(_) => text(move || b.with(|b| inline_of(b))).role(Role::Paragraph).into(),
         Kind::Heading(level, _) => {
-            let t = text(move || b.with(|(_, b)| inline_of(b))).role(Role::Heading).level(level).font_semibold();
+            let t = text(move || b.with(|b| inline_of(b))).role(Role::Heading).level(level).font_semibold();
             match level {
                 1 => t.text_2xl(),
                 2 => t.text_xl(),
@@ -92,7 +114,7 @@ pub(super) fn block_view(b: ReadSignal<Keyed<Block>>) -> View {
             .child(el().w(3.0).flex_shrink_0().rounded_full().bg(Token::Border).a11y_hidden())
             .child(
                 blocks_view(move || {
-                    b.with(|(_, b)| match &b.kind {
+                    b.with(|b| match &b.kind {
                         Kind::Quote(q) => q.clone(),
                         _ => Vec::new(),
                     })
@@ -150,46 +172,27 @@ pub(super) fn rich_of(i: &Inline) -> Rich {
 
 /// A code block: its language and a copy button over its lines, one text per line (`l{n}`), so a
 /// stream into it re-lays out its last line.
-fn code_view(b: ReadSignal<Keyed<Block>>) -> View {
+fn code_view(b: ReadSignal<BlockRef>) -> View {
     let code = move || {
-        b.with(|(_, b)| match &b.kind {
+        b.with(|b| match &b.kind {
             Kind::Code { text, .. } => text.clone(),
             _ => String::new(),
         })
     };
-    let lines_of = |s: &str| s.split('\n').map(str::to_owned).collect::<Vec<_>>();
-    let lines = state_list("lines", || keyed("l", lines_of(&untrack(code))), key_of::<String>);
-    watch(code, move |now, before| {
-        let Some(before) = before else { return };
-        let had = lines.len();
-        // Only a proven append keeps the earlier lines. Split its tail without allocating
-        // every previous line again; a rewrite can change any line, including the first.
-        let (from, cut) =
-            if now.starts_with(before.as_str()) { (had.saturating_sub(1), before.rfind('\n').map_or(0, |at| at + 1)) } else { (0, 0) };
-        let mut end = from;
-        for line in now[cut..].split('\n') {
-            let key = format!("l{end}");
-            match lines.item(&key) {
-                Some(old) if untrack(|| old.with(|(_, text)| text == line)) => {}
-                Some(_) => lines.update(&key, |(_, text)| {
-                    text.clear();
-                    text.push_str(line);
-                }),
-                None => lines.push((key, line.to_owned())),
-            }
-            end += 1;
-        }
-        for index in end..had {
-            lines.remove(&format!("l{index}"));
-        }
+    let cache = RefCell::new(Lines::default());
+    let lines = memo(move || {
+        b.with(|b| match &b.kind {
+            Kind::Code { text, .. } => cache.borrow_mut().update(text),
+            _ => Vec::new(),
+        })
     });
     // The language follows too: a fence's info string may still be arriving.
-    let lang = move || {
-        b.with(|(_, b)| match &b.kind {
+    let lang = memo(move || {
+        b.with(|b| match &b.kind {
             Kind::Code { lang, .. } if !lang.is_empty() => lang.clone(),
             _ => "text".to_owned(),
         })
-    };
+    });
     col()
         .role(Role::Code)
         .rounded_md()
@@ -208,59 +211,94 @@ fn code_view(b: ReadSignal<Keyed<Block>>) -> View {
         )
         .child(el().h(1.0).bg(Token::Border).a11y_hidden())
         .child(col().p_3().overflow_x_scroll().child(each(
-            move || lines.read_only(),
+            move || lines.get(),
             |_, l| {
+                let l = memo(move || l.get());
                 // An empty line keeps its height.
-                text(move || l.with(|(_, s)| if s.is_empty() { " ".to_owned() } else { s.clone() })).font_mono().text_sm().into()
+                text(move || l.with(|s| if s.is_empty() { " ".to_owned() } else { s.to_string() })).font_mono().text_sm().into()
             },
         )))
         .into()
 }
 
+/// Only a proven append retains earlier line allocations. A rewrite can change any line.
+#[derive(Default)]
+struct Lines {
+    source: String,
+    lines: Vec<Rc<str>>,
+}
+
+impl Lines {
+    fn update(&mut self, source: &str) -> Vec<(String, Rc<str>)> {
+        let appended = source.starts_with(&self.source);
+        let (from, cut) =
+            if appended { (self.lines.len().saturating_sub(1), self.source.rfind('\n').map_or(0, |at| at + 1)) } else { (0, 0) };
+        let mut end = from;
+        for line in source[cut..].split('\n') {
+            match self.lines.get_mut(end) {
+                Some(old) if **old == *line => {}
+                Some(old) => *old = Rc::from(line),
+                None => self.lines.push(Rc::from(line)),
+            }
+            end += 1;
+        }
+        self.lines.truncate(end);
+        if appended {
+            self.source.push_str(&source[self.source.len()..]);
+        } else {
+            self.source.clear();
+            self.source.push_str(source);
+        }
+        keyed("l", self.lines.clone())
+    }
+}
+
 /// A list: its items (`i{j}`), each a marker (not selected, not read) and the item's blocks.
-fn list_view(b: ReadSignal<Keyed<Block>>, start: Option<u64>) -> View {
-    let items_of = move || {
-        b.with(|(_, b)| match &b.kind {
+fn list_view(b: ReadSignal<BlockRef>, start: Option<u64>) -> View {
+    let items = memo(move || {
+        b.with(|b| match &b.kind {
             Kind::List { items, .. } => items.clone(),
             _ => Vec::new(),
         })
-    };
-    let items = state_list("items", || keyed("i", untrack(items_of)), key_of::<Item>);
-    watch(items_of, move |now, before| {
-        if before.is_some() {
-            sync(items, "i", now, 0, |a, b| a.task.is_some() == b.task.is_some());
-        }
     });
     let ordered = start.is_some();
+    let start = memo(move || b.with(|b| if let Kind::List { start, .. } = b.kind { start } else { None }));
     col()
         .role(Role::List)
         .gap_1()
         .child(each(
-            move || items.read_only(),
+            move || items.with(|items| keyed("i", items.clone())),
             move |k, it| {
+                let it = memo(move || it.get());
                 let j: u64 = k[1..].parse().unwrap_or(0);
-                let marker = match start {
+                let marker = move || match start.get() {
                     Some(n) => format!("{}.", n + j),
                     None => "•".to_owned(),
                 };
-                let task = untrack(|| it.with(|(_, i)| i.task));
                 row()
                     .role(Role::ListItem)
                     .gap_2()
                     .items_start()
                     // A task item shows its box, not a bullet.
-                    .children((task.is_none() || ordered).then(|| {
-                        text(marker.clone()).select_none().a11y_hidden().text_color(Token::TextMuted).min_w(if ordered {
-                            20.0
-                        } else {
-                            12.0
-                        })
-                    }))
-                    .children(task.map(|_| {
-                        let done = move || it.with(|(_, i)| i.task == Some(true));
-                        text(move || if done() { "☑" } else { "☐" }).select_none().role(Role::CheckBox).checked(done)
-                    }))
-                    .child(blocks_view(move || it.with(|(_, i)| i.blocks.clone())).flex_1().gap_2())
+                    .child(show(
+                        move || ordered || it.with(|i| i.task.is_none()),
+                        move || {
+                            text(marker)
+                                .select_none()
+                                .a11y_hidden()
+                                .text_color(Token::TextMuted)
+                                .min_w(if ordered { 20.0 } else { 12.0 })
+                                .into()
+                        },
+                    ))
+                    .child(show(
+                        move || it.with(|i| i.task.is_some()),
+                        move || {
+                            let done = move || it.with(|i| i.task == Some(true));
+                            text(move || if done() { "☑" } else { "☐" }).select_none().role(Role::CheckBox).checked(done).into()
+                        },
+                    ))
+                    .child(blocks_view(move || it.with(|i| i.blocks.clone())).flex_1().gap_2())
                     .into()
             },
         ))
@@ -268,9 +306,9 @@ fn list_view(b: ReadSignal<Keyed<Block>>, start: Option<u64>) -> View {
 }
 
 /// A table: a head row and body rows (`h`, `r{k}`), cells (`c{j}`) sharing the width equally.
-fn table_view(b: ReadSignal<Keyed<Block>>) -> View {
-    let rows_of = move || {
-        b.with(|(_, b)| match &b.kind {
+fn table_view(b: ReadSignal<BlockRef>) -> View {
+    let rows = memo(move || {
+        b.with(|b| match &b.kind {
             Kind::Table { head, rows, align } => {
                 let width = head.len().max(rows.iter().map(Vec::len).max().unwrap_or(0));
                 std::iter::once(head)
@@ -285,12 +323,6 @@ fn table_view(b: ReadSignal<Keyed<Block>>) -> View {
             }
             _ => Vec::new(),
         })
-    };
-    let rows = state_list("rows", || keyed("r", untrack(rows_of)), key_of::<Vec<(Inline, Align)>>);
-    watch(rows_of, move |now, before| {
-        if before.is_some() {
-            sync(rows, "r", now, 0, |_, _| true);
-        }
     });
     // Rules between rows: the table's border color through a 1 px gap.
     col()
@@ -302,29 +334,31 @@ fn table_view(b: ReadSignal<Keyed<Block>>) -> View {
         .gap(1.0)
         .overflow_hidden()
         .child(each(
-            move || rows.read_only(),
+            move || rows.with(|rows| keyed("r", rows.clone())),
             |k, r| {
+                let r = memo(move || r.get());
                 let head = k == "r0";
-                let cells_of = move || r.with(|(_, r)| r.clone());
-                let cells = state_list("cells", || keyed("c", untrack(cells_of)), key_of::<(Inline, Align)>);
-                watch(cells_of, move |now, before| {
-                    if before.is_some() {
-                        sync(cells, "c", now, 0, |_, _| true);
-                    }
-                });
                 let line = row().role(Role::Row);
                 let line = if head { line.bg(Token::Surface).font_semibold() } else { line.bg(Token::Background) };
                 line.child(each(
-                    move || cells.read_only(),
+                    move || r.with(|r| keyed("c", r.clone())),
                     |_, c| {
-                        let align = untrack(|| c.with(|(_, (_, a))| *a));
-                        let cell = col().role(Role::Cell).flex_1().flex_basis(0.0).px_3().py_2();
-                        let cell = match align {
-                            Align::Center => cell.items_center(),
-                            Align::Right => cell.items_end(),
-                            _ => cell.items_start(),
-                        };
-                        cell.child(text(move || c.with(|(_, (i, _))| rich_of(i)))).into()
+                        let c = memo(move || c.get());
+                        col()
+                            .role(Role::Cell)
+                            .flex_1()
+                            .flex_basis(0.0)
+                            .px_3()
+                            .py_2()
+                            .style_with(move |p| {
+                                c.with(|(_, align)| match align {
+                                    Align::Center => p.items_center(),
+                                    Align::Right => p.items_end(),
+                                    _ => p.items_start(),
+                                })
+                            })
+                            .child(text(move || c.with(|(i, _)| rich_of(i))))
+                            .into()
                     },
                 ))
                 .into()

@@ -6,6 +6,9 @@ use octara::platform::{HeadlessPlatform, WindowOptions};
 use octara::prelude::*;
 use octara_kit::markdown::markdown;
 use octara_primitives::identity::NodeId;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 const DOC: &str = "# Title\n\nHello **world** and [link](https://x.dev/a).\n\n- alpha\n- [x] beta\n\n```rust\nfn main() {}\n\nlet x = 1;\n```\n\n> quoted\n\n| a | b |\n|---|--:|\n| 1 | `2` |\n\n---\n\n3. three\n4. four\n";
 
@@ -279,6 +282,161 @@ fn instances_keep_their_own_blocks() {
     let k = w.kernel();
     let first = |id: &str| texts(&k, k.find(id).unwrap())[0].clone();
     assert_eq!([first("s0"), first("s1"), first("t")], ["static 0", "static 1", "live one two"]);
+}
+
+#[test]
+fn reload_releases_derived_markdown_state() {
+    let window = Window::headless(|| markdown(DOC).id("md").into());
+    let before = window.app().work().reactive_nodes;
+    let mut counts = vec![before];
+    for _ in 0..8 {
+        window.app().hot_reload();
+        counts.push(window.app().work().reactive_nodes);
+    }
+    assert!(counts.iter().all(|count| *count == before), "reload retained derived Markdown state: {counts:?}");
+    assert!(window.app().diagnostics().is_empty(), "{:?}", window.app().diagnostics());
+}
+
+#[test]
+fn reload_rebuilds_all_source_kinds_from_their_current_source() {
+    let app = App::new(HeadlessPlatform::default());
+    let dynamic = app.run(|| state("dynamic", String::new));
+    let buffer = app.run(|| TextBuffer::new(""));
+    let host = Rc::new(RefCell::new(String::new()));
+    let (static_source, stream) = (host.clone(), buffer.clone());
+    let mut window = app
+        .open_window(WindowOptions::new("Sources"), move || {
+            col()
+                .child(markdown(static_source.borrow().as_str()).id("static"))
+                .child(markdown(move || dynamic.get()).id("dynamic"))
+                .child(markdown(&stream).id("buffer"))
+                .into()
+        })
+        .unwrap();
+    let sources = [DOC, "## Rebuilt\n\nA [new link](https://x.dev/new).\n", "> quoted\n>\n> ```\n> nested code\n> ```\n"];
+    let mut counts = HashMap::new();
+    for source in sources.into_iter().cycle().take(18) {
+        // A static source receives no reactive notification: reload must rebuild its cache.
+        *host.borrow_mut() = source.to_owned();
+        app.run(|| {
+            dynamic.set(source.to_owned());
+            buffer.set(source);
+        });
+        app.hot_reload();
+        let count = app.work().reactive_nodes;
+        assert_eq!(*counts.entry(source).or_insert(count), count, "unclaimed cache paths accumulate across shape changes");
+        let expected = {
+            let fresh = Window::headless(move || markdown(source).id("fresh").into());
+            let k = fresh.kernel();
+            texts(&k, k.find("fresh").unwrap())
+        };
+        for id in ["static", "dynamic", "buffer"] {
+            let k = window.kernel();
+            assert_eq!(texts(&k, k.find(id).unwrap()), expected, "{id} rebuilt from its current source");
+            drop(k);
+            window.select_all(id).unwrap();
+            assert_eq!(window.selected_markdown().as_deref(), Some(source), "{id} copies the same source it draws");
+        }
+    }
+    app.run(|| {
+        dynamic.set("dynamic keeps following".to_owned());
+        buffer.append("\n\na buffer keeps following");
+    });
+    let k = window.kernel();
+    assert_eq!(texts(&k, k.find("dynamic").unwrap()), ["dynamic keeps following"]);
+    assert_eq!(texts(&k, k.find("buffer").unwrap()).last().map(String::as_str), Some("a buffer keeps following"));
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+}
+
+#[test]
+fn unmount_releases_every_markdown_cache() {
+    let app = App::new(HeadlessPlatform::default());
+    let visible = app.run(|| state("visible", || false));
+    let window = app
+        .open_window(WindowOptions::new("Mount"), move || col().child(show(move || visible.get(), || markdown(DOC).id("md").into())).into())
+        .unwrap();
+    let empty = app.work().reactive_nodes;
+    let mut mounted = None;
+    for _ in 0..16 {
+        app.run(|| visible.set(true));
+        let count = app.work().reactive_nodes;
+        assert_eq!(*mounted.get_or_insert(count), count);
+        assert!(window.kernel().exists("md"));
+        app.run(|| visible.set(false));
+        assert!(!window.kernel().exists("md"));
+        assert_eq!(app.work().reactive_nodes, empty, "derived work belongs to the mounted branch");
+    }
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+}
+
+#[test]
+fn retained_nested_rows_follow_task_number_and_alignment_changes() {
+    let app = App::new(HeadlessPlatform::default());
+    let source = app.run(|| TextBuffer::new("1. first\n2. second\n\n- task\n\n| a | b |\n|:---|---|\n| c | d |\n"));
+    let stream = source.clone();
+    let window = app.open_window(WindowOptions::new("Structure"), move || markdown(&stream).id("md").w(600.0).into()).unwrap();
+    let before = blocks(&window.kernel());
+    let (cell, text) = {
+        let k = window.kernel();
+        let row = k.children(before[2].1)[0];
+        let cell = k.children(row)[0];
+        (cell, k.children(cell)[0])
+    };
+    let left = window.kernel().shown_rect(text).0;
+    app.run(|| source.set("4. first\n5. second\n\n- [x] task\n\n| a | b |\n|---:|---|\n| c | d |\n"));
+    assert_eq!(blocks(&window.kernel()), before, "content and alignment retain the outer block nodes");
+    assert_eq!(texts(&window.kernel(), before[0].1), ["4.", "first", "5.", "second"]);
+    assert_eq!(texts(&window.kernel(), before[1].1), ["☑", "task"]);
+    let k = window.kernel();
+    assert_eq!(k.children(cell)[0], text, "alignment retains the cell's text");
+    assert!(k.shown_rect(text).0 > left + 100.0, "right alignment follows a changed delimiter row");
+    drop(k);
+    app.run(|| source.set("4. first\n5. second\n\n- task\n\n| a | b |\n|:---:|---|\n| c | d |\n"));
+    assert_eq!(texts(&window.kernel(), before[1].1), ["•", "task"]);
+    let center = window.kernel().shown_rect(text).0;
+    assert!(center > left + 20.0 && center < left + 200.0);
+    app.run(|| source.set("> # Heading\n>\n> paragraph\n\n```\ncode\n```\n"));
+    let changed = blocks(&window.kernel());
+    assert_ne!(changed[0].1, before[0].1, "a new block kind receives a new element");
+    assert_eq!(window.kernel().role(changed[0].1), Role::Blockquote);
+    assert_eq!(texts(&window.kernel(), changed[0].1), ["Heading", "paragraph"]);
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+}
+
+#[test]
+fn long_code_snapshots_only_write_the_changed_line() {
+    for count in [8, 512] {
+        let app = App::new(HeadlessPlatform::default());
+        let mut source = "```text\n".to_owned();
+        for line in 0..count {
+            source.push_str(&format!("line {line}\n"));
+        }
+        source.push_str("tail");
+        let source = app.run(|| TextBuffer::new(source));
+        let stream = source.clone();
+        let window = app.open_window(WindowOptions::new("Code work"), move || markdown(&stream).id("md").into()).unwrap();
+        let nodes = {
+            let k = window.kernel();
+            k.selectable_texts(k.find("md").unwrap())
+        };
+        window.reset_counters();
+        app.reset_work();
+        app.run(|| source.append("x"));
+        let counters = window.kernel().counters();
+        assert_eq!(counters.nodes_created, 0);
+        assert_eq!(counters.nodes_destroyed, 0);
+        assert_eq!(counters.dirty_text, 1, "only the tail line needs text layout");
+        assert_eq!(counters.text_bytes, 5, "only the changed tail is written to the kernel");
+        assert_eq!(window.kernel().selectable_texts(window.kernel().find("md").unwrap()), nodes);
+        eprintln!(
+            "code lines={}: closures={}, text bytes={}, dirty texts={}",
+            count + 1,
+            app.work().closures_run,
+            counters.text_bytes,
+            counters.dirty_text
+        );
+        assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    }
 }
 
 /// A selectable transcript of selectable messages: one document.

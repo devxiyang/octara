@@ -155,9 +155,15 @@ appends, and Reduce Motion, show at once. It is motion: pending work lists it wh
   stream into it re-lays out its last line.
 - **Streaming**: when the source grows, parsing restarts at the last top-level block whose first
   line is finished (the start of a line may still change what block it starts); earlier blocks
-  keep their keys and nodes, and the list is synced from the first block that changed. A source
+  keep their keys, nodes and cached block references. Existing `each` snapshots reconcile the
+  keys; per-row memos stop unchanged content before its text bindings. A source
   that changed otherwise, or holds `]:` (a reference definition or footnote may change links
   anywhere), parses whole.
+- **Ownership**: parsing, rendered block references, code-line caches and announcements belong
+  to the current owner through memos. They are derived from the source, not named application
+  state restored by hot reload. Reload rebuilds them from the current source; no global Markdown
+  instance ID or mirrored StateList is involved. Snapshot key traversal still scales with row
+  count; tail parsing and unchanged text bindings do not imply constant-time whole updates.
 - **The end of a stream** is repaired for the parse only, never in the source, within the last
   inline run (a paragraph until a blank line, a heading's line, a table cell): emphasis, strong
   and strike opened at a word start, code spans and links are closed; a trailing run of markers,
