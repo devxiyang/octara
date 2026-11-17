@@ -241,6 +241,18 @@ fn native_and_committed_fields_agree_after_resize_scroll_and_composition_transit
             let document = current.document.unwrap();
             let predicted = current.layout.unwrap().layout(&document).unwrap();
             assert_eq!(Some(&predicted), current.geometry.as_ref(), "query preserves resize and manual scroll");
+            let n = app.kernel().find("field").unwrap();
+            let scroll = app.kernel().scroll_offset(n);
+            let caret = app.kernel().caret(n);
+            let generation = app.kernel().paint_generation();
+            app.inspect();
+            app.display_list();
+            app.kernel().accessibility_tree(Some(n), 1.0);
+            app.kernel().input_offset_at(n, current.caret.x, current.caret.y, false);
+            assert_eq!(app.kernel().scroll_offset(n), scroll);
+            assert_eq!(app.kernel().caret(n), caret);
+            assert_eq!(app.kernel().paint_generation(), generation, "observation does not settle editing state");
+            assert_eq!(native_input(&app).geometry, current.geometry);
             for edit in [
                 TextEdit::Mark { text: "中文😀组合".into(), selection: Some(3..7), replacement: None },
                 TextEdit::Mark { text: "中文😀组合".into(), selection: None, replacement: None },

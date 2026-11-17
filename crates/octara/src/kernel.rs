@@ -396,7 +396,7 @@ struct InputContent {
     composition: Option<text_input::Composition>,
     selection: (usize, usize),
     /// How far the text is scrolled: x for a single line, y for a multi-line field.
-    scroll: Cell<f32>,
+    scroll: f32,
     /// Bytes of the shown text (value with composition) known unchanged since last measured.
     clean: Cell<usize>,
     /// The layout of what it shows last (its value, a composition spliced in), of what, in
@@ -412,7 +412,7 @@ struct InputContent {
     submit_on_enter: bool,
     /// The caret (and text length) the scroll last kept in view: the text scrolls back to the
     /// caret only when it moves, not after a wheel moved the text away from it.
-    kept: Cell<Option<(usize, usize)>>,
+    kept: Option<(usize, usize)>,
     /// A password: shown masked, kept out of copies, history, input methods and every report.
     secure: bool,
     /// A secure field showing its text (a "show password" toggle); the rest still applies.
@@ -2143,9 +2143,14 @@ impl Kernel {
         self.layout_enabled = on;
     }
 
-    /// Runs Taffy if anything invalidated layout since the last run. Returns whether it ran.
+    /// Runs Taffy if layout was invalidated, then settles editor scrolling even for caret-only
+    /// changes. Returns whether Taffy ran. Geometry reads use the resulting offsets unchanged.
     pub fn layout(&mut self, width: f32, height: f32) -> bool {
-        if (!self.needs_layout && self.viewport == (width, height)) || !self.layout_enabled {
+        if !self.layout_enabled {
+            return false;
+        }
+        if !self.needs_layout && self.viewport == (width, height) {
+            self.settle_fields();
             return false;
         }
         self.viewport = (width, height);
@@ -2171,6 +2176,7 @@ impl Kernel {
         self.clamp_scrolls();
         self.track_frames();
         self.invalidate_text_presentations();
+        self.settle_fields();
         self.counters.layout_runs += 1;
         true
     }
@@ -2330,7 +2336,7 @@ impl Kernel {
     /// is how far its text is scrolled.
     pub fn scroll_offset(&self, id: NodeId) -> (f32, f32) {
         match self.node(id).input() {
-            Some(i) if i.multiline => (0.0, i.scroll.get()),
+            Some(i) if i.multiline => (0.0, i.scroll),
             _ => self.node(id).scroll,
         }
     }
@@ -2349,11 +2355,14 @@ impl Kernel {
         if self.is_multiline(id) {
             let Some(f) = self.field(id) else { return false };
             let to = y.clamp(0.0, (f.text_height() - f.height).max(0.0));
-            let i = self.node(id).input().expect("a text input");
-            if i.scroll.get() == to {
+            let i = self.node_mut(id).input_mut().expect("a text input");
+            // A manual scroll acknowledges this caret; observation/settlement must not pull
+            // it back until the editing position changes again.
+            i.kept = Some((f.caret, f.shown.len()));
+            if i.scroll == to {
                 return false;
             }
-            i.scroll.set(to);
+            i.scroll = to;
             self.a11y_touch(id);
             self.changed(id, Dirty::PAINT, "scroll", || format!("{to:?}"));
             return true;

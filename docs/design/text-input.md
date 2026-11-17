@@ -61,6 +61,20 @@ deferred separately.
   typing. The kernel's clock flips it (`caret_deadline` wakes the shell).
 - Accessibility: `Role::MultilineTextInput`.
 
+## Geometry settlement
+
+Field reads, painting, hit testing, Inspector and accessibility consume the stored editor scroll
+without changing it. After layout, the Kernel explicitly settles caret reveal and range clamping;
+this also runs for selection-only updates that do not need Taffy. Scroll and the multiline keep
+key are ordinary node-owned fields, not interior-mutable query caches. A manual scroll records
+the current caret/text length, so observation cannot pull the field back to its caret.
+
+Native current-document queries still predict geometry immediately from an owned document and
+published configuration, using the same reveal calculation. They never write core state or enter
+handlers, and refuse shaping while the shared engine is borrowed. Paragraph caches may be filled
+by reads; persistent scrolling may not. This headless contract does not verify OS candidate-window
+placement, which remains a separate acceptance step.
+
 ## Secure
 
 - `.secure()`: the value is shown as one `•` per grapheme. Copy, cut and drag do nothing,

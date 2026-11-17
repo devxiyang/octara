@@ -1,6 +1,6 @@
 # 从状态到呈现：架构复核与编辑协议重设计
 
-状态：2026-11-17 架构评审与实施方案；**R1 已实现，R2/R3 待办**。评审基线 `59b9bb5`。
+状态：2026-11-17 架构评审与实施方案；**R1/R2 已实现，R3 待办**。评审基线 `59b9bb5`。
 本轮按用户要求重新审查已推进的分层、内容、文本呈现、Field、语义和 placeholder；
 不以已提交为保留理由，也不以测试总数代替契约完整性。真实窗口验收由用户明确延期。
 本次是沿输入链路贯穿各层的复核，不宣称重新审计了 Signals、调度器或所有平台实现。
@@ -36,6 +36,8 @@
 - 字节夹紧只能避免其中一次 panic，不能证明旧历史仍适用于新文档。
 
 ## 3. 从下到上的保留、重构与边界
+
+下表记录评审基线的差距；R1/R2 的已实施结果和验证见第 9 节。
 
 | 层 / 已完成项 | 保留 | 必须继续收敛 |
 | --- | --- | --- |
@@ -138,10 +140,10 @@ Octara 不把预编辑当作 on_input，因此一般格式化回调不会逐个 
 
 ## 7. 几何与发布：重新审查 C1
 
-当前 `field()` 被 caret、命中、导航、绘制和原生发布调用，同时会保存 reveal 结果。
-这使读取顺序可能参与滚动状态演进。C1c 共用算法是正确基础，但不能把它等同于只读快照。
+评审基线中 `field()` 被 caret、命中、导航、绘制和原生发布调用，同时保存 reveal 结果，
+使读取顺序参与滚动状态演进。R2 已移除这条写路径；C1c 的共用算法继续保留。
 
-目标：
+已实施边界：
 
 - 纯计算：当前编辑事实 + 当前布局约束 + 滚动策略 → field geometry 与建议滚动结果。
 - 显式落地：Window 的既有更新阶段应用 caret reveal/clamp；手动滚动与要求显示 caret 的编辑
@@ -175,6 +177,12 @@ Octara 不把预编辑当作 on_input，因此一般格式化回调不会逐个 
   [Rune 架构复核](../research/agent-rune-architecture-review.md) 继续约束 kit/host 的职责。
   共同机制是所有者与提交边界清楚，而不是表面上都增加同名类或同名属性。
 
+R2 进一步核对上述固定版本：Rune 的 `runtime/commit/text_layout.rs` 分离
+`single_line_offset` 计算和 `single_line_scroll` 保存，但 `runtime/paint/helpers.rs::input_caret`
+仍调用保存路径。借鉴可共用的计算，不复制绘制时写滚动。Exact 的
+`FieldAtoms.swift::atomFrames` 让 TextKit 确保排版后读取 segment geometry，说明排版缓存
+填充与编辑/滚动事实写入应分别看待；这不是对 Exact 全部查询路径无副作用的保证。
+
 ## 9. 实施、删除清单与完成标准
 
 ### R1：统一编辑接受与历史所有者（已实现）
@@ -202,13 +210,28 @@ Octara 不把预编辑当作 on_input，因此一般格式化回调不会逐个 
 工作区 **915 passed、0 failed、3 个既有 ignored doctest**；全目标 Clippy、格式、
 分层及 skill 新鲜度检查通过，CLI 可解释 `EDIT_PENDING`。真实窗口仍延期。
 
-### R2：让几何读取不修改编辑事实
+### R2：让几何读取不修改编辑事实（已实现）
 
 - Field 构建与 reveal 计算保持共用；持久 scroll/keep 落地只在既有更新阶段。
 - 删除 paint/caret/hit 查询中的持久滚动写入和重复独立发布计算。
 - 同一已完成更新内任意顺序执行绘制、Inspector、AX、caret/hit，状态/几何一致；
   手动滚动不被观察拉回，真实编辑会按策略显示 caret。
 - 保留原生当前文档预测、busy-engine 拒绝、字体变化与 resize 约束一致性。
+
+`Kernel::layout` 在布局后执行私有 `settle_fields`；不需要 Taffy 的 caret-only 更新
+仍执行收尾，但 `layout` 的返回值继续只表示 Taffy 是否运行。禁用布局的 benchmark
+保持几何过期，不暗中恢复布局工作。Window 在读反馈和发布前沿用这个入口。
+`InputContent.scroll/kept` 从 `Cell` 改成普通字段，只允许可变内核入口写入。
+`Field::new` 读取已协调 offset，`Field::reveal` 只改变临时几何；收尾显式落地其结果。
+手动滚动（包括 offset 不变的请求）记录当前 caret/文本长度，直到编辑位置改变前不自动拉回。
+
+原生 `TextInputLayout::layout` 继续显式调用同一 reveal 算法，在自己的文档上预测几何；
+不会写回 core，也没有新增持久 Field 快照或第二份编辑文档。纯查询仍允许排版缓存填充。
+验证包含 pending caret 状态下交错 paint/AX/hit/caret 读取无写入、caret-only 收尾、
+手动滚动保持、resize clamp、原生 busy-engine 拒绝与恢复；Window 层交叉检查 Inspector、
+绘制、AX 与原生文档几何的一致性。真实窗口验收仍归 R3。
+工作区 **918 passed、0 failed、3 个既有 ignored doctest**；全目标 Clippy、格式、
+分层和 skill 新鲜度检查通过。Chat、HTTP、shell 和 renderer 回归均通过。
 
 ### R3：关闭行为矩阵与平台验收
 

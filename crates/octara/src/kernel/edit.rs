@@ -53,16 +53,15 @@ pub(crate) struct Field {
 }
 
 impl Field {
-    /// Complete a field from already-shaped lines and one layout configuration. Both callers
-    /// share the empty insertion line and reveal policy; only Kernel persists the returned
-    /// keep key. Native queries leave the published configuration and live input untouched.
-    fn new(shown: String, caret: usize, layout: &TextInputLayout, mut lines: Vec<VisualLine>) -> (Self, Option<(usize, usize)>) {
+    /// Read geometry at the already-settled offset. Reveal is an explicit operation on this
+    /// owned geometry, used by settlement and native document prediction, never by readers.
+    fn new(shown: String, caret: usize, layout: &TextInputLayout, mut lines: Vec<VisualLine>) -> Self {
         let content = layout.content;
         let line_height = layout.style.line_height;
         if lines.is_empty() {
             lines.push(VisualLine { start: 0, end: 0, top: 0.0, height: line_height, stops: vec![(0, 0.0)] });
         }
-        let mut field = Self {
+        Self {
             shown,
             caret,
             preedit: caret..caret,
@@ -76,11 +75,9 @@ impl Field {
             height: content.h,
             line_height,
             lines,
-            scroll: (0.0, 0.0),
+            scroll: if layout.multiline { (0.0, layout.scroll) } else { (layout.scroll, 0.0) },
             masked: None,
-        };
-        let kept = field.reveal(layout.multiline, layout.scroll, layout.kept);
-        (field, kept)
+        }
     }
 
     pub(crate) fn into_geometry(self) -> TextGeometry {
@@ -236,8 +233,8 @@ impl Kernel {
 
     /// Sets a text input's selection (`anchor`, `caret`: byte offsets into its value); the
     /// caret's goal x for moves by lines is forgotten.
-    /// Kept as given: the value may be about to change (an edit sets the selection, then its
-    /// handler sets the value); reads clamp to the value.
+    /// Explicit selection changes take precedence over a pending edit proposal. Stored as
+    /// given so callers can update a value afterwards; reads clamp to the current value.
     pub fn set_selection(&mut self, id: NodeId, anchor: usize, caret: usize) {
         let sel = (anchor, caret);
         let Some(i) = self.node_mut(id).input_mut() else { return };
@@ -434,16 +431,33 @@ impl Kernel {
         } else {
             self.shown_layout(id, &shown, &layout.style).visual_lines(layout.multiline.then_some(layout.content.w))
         };
-        let (mut f, kept) = Field::new(shown, shown_caret, &layout, lines);
+        let mut f = Field::new(shown, shown_caret, &layout, lines);
         f.preedit = preedit;
         f.overlay = overlay;
         f.replaced = replaced;
         f.sel = sel;
         f.show_caret = show_caret;
         f.masked = pairs;
-        input.kept.set(kept);
-        input.scroll.set(if input.multiline { f.scroll.1 } else { f.scroll.0 });
         Some(f)
+    }
+
+    /// Settle internal editor scrolling after layout, including caret-only updates that did
+    /// not need Taffy. Geometry reads never write these node-owned facts.
+    pub(super) fn settle_fields(&mut self) {
+        let ids: Vec<_> = self.nodes.iter().filter(|(_, n)| n.input().is_some()).map(|(id, _)| id).collect();
+        for id in ids {
+            let Some(mut field) = self.field(id) else { continue };
+            let input = self.node_mut(id).input_mut().expect("an input");
+            let kept = field.reveal(input.multiline, input.scroll, input.kept);
+            let scroll = if input.multiline { field.scroll.1 } else { field.scroll.0 };
+            if input.scroll == scroll && input.kept == kept {
+                continue;
+            }
+            input.scroll = scroll;
+            input.kept = kept;
+            self.a11y_touch(id);
+            self.mark(Dirty::PAINT);
+        }
     }
 
     pub(crate) fn input_layout(&self, id: NodeId) -> TextInputLayout {
@@ -462,8 +476,8 @@ impl Kernel {
             style: input_style(n.visual.text_style(), input.multiline),
             content,
             multiline: input.multiline,
-            scroll: input.scroll.get(),
-            kept: input.kept.get(),
+            scroll: input.scroll,
+            kept: input.kept,
             fonts: self.fonts_generation,
         }
     }
@@ -622,7 +636,8 @@ impl TextInputLayout {
             let mut engine = self.resources.text.try_borrow_mut()?;
             engine.layout(shown, &self.style, &[], None, 0).visual_lines(self.multiline.then_some(self.content.w))
         };
-        let (field, _) = Field::new(shown.to_owned(), caret, self, lines);
+        let mut field = Field::new(shown.to_owned(), caret, self, lines);
+        field.reveal(self.multiline, self.scroll, self.kept);
         Some(field.into_geometry())
     }
 }
@@ -649,5 +664,108 @@ impl Kernel {
         let layout = self.res.text.borrow_mut().layout(shown, style, &[], kept.as_ref().map(|k| &k.3), clean);
         *kept = Some((shown.to_owned(), *style, self.fonts_generation, layout.clone()));
         layout
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kernel::{Kind, Length, StyleProp};
+
+    fn editor(multiline: bool) -> (Kernel, NodeId) {
+        let mut k = Kernel::default();
+        *k.res.text.borrow_mut() = Box::new(text::MonoEngine);
+        let id = k.create(Kind::TextInput);
+        k.append_child(k.root(), id);
+        k.set_style(id, StyleProp::Width(Length::Px(80.0)));
+        k.set_style(id, StyleProp::Height(Length::Px(40.0)));
+        k.set_multiline(id, multiline);
+        k.set_value(id, "中文 abc def\n中文 ghi jkl\n中文 mno pqr\n中文 stu xyz");
+        k.layout(400.0, 300.0);
+        (k, id)
+    }
+
+    fn observe(k: &Kernel, id: NodeId, reverse: bool) -> TextGeometry {
+        if reverse {
+            k.accessibility_tree(Some(id), 1.0);
+            k.display_list();
+        }
+        let caret = k.caret(id).unwrap();
+        k.input_offset_at(id, caret.x, caret.y, false);
+        let geometry = k.field(id).unwrap().into_geometry();
+        if !reverse {
+            k.display_list();
+            k.accessibility_tree(Some(id), 1.0);
+        }
+        geometry
+    }
+
+    #[test]
+    fn editor_geometry_reads_do_not_settle_pending_caret_scroll() {
+        for multiline in [false, true] {
+            let (mut k, id) = editor(multiline);
+            let before = k.input_layout(id);
+            let end = k.value(id).len();
+            k.set_selection(id, end, end);
+            let generation = k.mutation_generation();
+            assert_eq!(observe(&k, id, false), observe(&k, id, true));
+            assert_eq!(k.input_layout(id), before, "even pending reads cannot change scroll or keep state");
+            assert_eq!(k.mutation_generation(), generation);
+            assert!(!k.layout(400.0, 300.0), "caret-only settlement does not run Taffy");
+            assert!(k.input_layout(id).scroll > 0.0, "settlement reveals the caret");
+            let settled = k.input_layout(id);
+            let geometry = observe(&k, id, true);
+            assert_eq!(geometry, observe(&k, id, false));
+            assert_eq!(settled.layout(&k.text_document(id).unwrap()), Some(geometry));
+            assert_eq!(k.input_layout(id), settled);
+        }
+    }
+
+    #[test]
+    fn manual_editor_scroll_survives_observation_until_editing_moves_the_caret() {
+        let (mut k, id) = editor(true);
+        let end = k.value(id).len();
+        k.set_selection(id, end, end);
+        k.layout(400.0, 300.0);
+        assert!(k.scroll_offset(id).1 > 0.0);
+        k.scroll_to(id, 0.0, 0.0);
+        let before = k.input_layout(id);
+        observe(&k, id, false);
+        k.layout(400.0, 300.0);
+        observe(&k, id, true);
+        assert_eq!(k.input_layout(id), before);
+        k.set_selection(id, end - 1, end - 1);
+        k.layout(400.0, 300.0);
+        assert!(k.scroll_offset(id).1 > 0.0);
+        k.set_style(id, StyleProp::Height(Length::Px(300.0)));
+        k.layout(400.0, 400.0);
+        assert_eq!(k.scroll_offset(id).1, 0.0, "resize clamps before any geometry query");
+        k.set_style(id, StyleProp::Height(Length::Px(40.0)));
+        k.set_selection(id, end, end);
+        assert!(!k.scroll_to(id, 0.0, 0.0), "a manual no-op still acknowledges the new caret");
+        k.layout(400.0, 300.0);
+        assert_eq!(k.scroll_offset(id).1, 0.0);
+    }
+
+    #[test]
+    fn native_prediction_is_owned_and_busy_shaping_refuses_without_changing_scroll() {
+        let (k, id) = editor(true);
+        let published = k.input_layout(id);
+        let original = k.text_document(id).unwrap();
+        let mut draft = original.clone();
+        let end = original.text().len();
+        draft.apply(&octara_primitives::text::TextEdit::Mark {
+            text: "候选中文\n更多候选中文".into(),
+            selection: Some(25..25),
+            replacement: Some(end..end),
+        });
+        {
+            let _busy = k.res.text.borrow_mut();
+            assert!(published.layout(&draft).is_none());
+        }
+        let predicted = published.layout(&draft).unwrap();
+        assert!(predicted.origin.1 < published.content.y);
+        assert_eq!(k.input_layout(id), published);
+        assert_eq!(k.text_document(id), Some(original));
     }
 }
