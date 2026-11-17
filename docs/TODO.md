@@ -634,3 +634,23 @@ the real adapter and passed** (CPU/GPU comparison, transparent underlay, paths, 
 and transparent PNG roundtrip). This is offscreen GPU verification, not OS window presentation.
 Workspace all-targets Clippy with -D warnings, formatting, layer and diff checks passed.
 No dependency was added; render no longer depends directly on png.
+
+## Continuation on init: direct field pointer dispatch (2026-11-17)
+
+- [x] Delete private app::behavior::Behavior, its Field singleton and trait-object dispatch;
+      pointer input calls the editor directly through the existing live/non-exiting input guard.
+- [x] Move unchanged owner-bound handler registration into app/input.rs; remove behavior.rs.
+- [x] Verify mouse/pen selection priority, touch scrolling, cancellation, target retirement and
+      existing editing/gesture regressions; run core tests and all-targets Clippy, then commit.
+
+Public view::Behavior remains the component event-composition API. No new public primitive,
+replacement dispatcher or pointer state machine. Markdown cache ownership remains a separate
+follow-up; this slice changes no Markdown behavior.
+
+Direct field-dispatch evidence: **597 core tests passed, 0 failed, 1 existing ignored doctest**,
+plus **18 virtual-interaction tests passed**. Three new regressions cover Mouse/Pen selection
+priority over app on_drag, Up/Cancel and late events, touch scrolling from a field, and replacing
+a held field with both destroyed and still-exiting original nodes. Existing click-count/Shift
+selection, event composition and editor lifetime tests passed in the core suite. Workspace
+all-targets Clippy with -D warnings, format/diff and layer checks passed; independent production
+review found no remaining issues. These are headless input-protocol tests, not real OS input.

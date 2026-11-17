@@ -7,8 +7,6 @@
 //! and `InputEvent::Composition`; ranges are byte offsets, with [`utf16_offset`] and
 //! [`byte_offset`] for the protocols that count UTF-16 units.
 
-use super::behavior::Behavior;
-use super::pointer::{Modifiers, PointerEvent, PointerKind};
 use super::{Modality, TextDocument, TextEdit, Window};
 use crate::diagnostics as codes;
 use crate::kernel::{EditKind as Kind, HandlerKind, NodeId};
@@ -81,23 +79,6 @@ fn word_at(s: &str, i: usize) -> (usize, usize) {
         last = (b, e);
     }
     last
-}
-
-/// A text field's pointer behavior: a press places the caret (2 clicks select a word, 3
-/// everything, Shift extends); a mouse or pen drag selects (a finger's scrolls).
-pub(super) struct Field;
-pub(super) static FIELD: Field = Field;
-
-impl Behavior for Field {
-    fn down(&self, app: &Window, n: NodeId, ev: &PointerEvent, clicks: u32) {
-        app.press_in_field(n, (ev.x, ev.y), clicks, ev.modifiers.contains(Modifiers::SHIFT));
-    }
-    fn drags(&self, kind: PointerKind) -> bool {
-        kind != PointerKind::Touch
-    }
-    fn drag(&self, app: &Window, n: NodeId, at: (f32, f32)) {
-        app.drag_in_field(n, at);
-    }
 }
 
 impl Window {
@@ -317,7 +298,7 @@ impl Window {
 
     /// A primary press at window point `at` in text field `n`: `clicks` 1 places the caret (or
     /// extends the selection with Shift), 2 selects a word, 3 selects everything.
-    fn press_in_field(&self, n: NodeId, (x, y): (f32, f32), clicks: u32, extend: bool) {
+    pub(super) fn press_in_field(&self, n: NodeId, (x, y): (f32, f32), clicks: u32, extend: bool) {
         let Some(at) = self.w.kernel.borrow().input_offset_at(n, x, y, clicks == 2) else { return };
         let v = self.w.kernel.borrow().value(n).to_owned();
         let (a, _) = self.w.kernel.borrow().selection(n);
@@ -333,7 +314,7 @@ impl Window {
     }
 
     /// A drag in text field `n` to window point `(x, y)`: the caret follows, the anchor stays.
-    fn drag_in_field(&self, n: NodeId, (x, y): (f32, f32)) {
+    pub(super) fn drag_in_field(&self, n: NodeId, (x, y): (f32, f32)) {
         let Some(at) = self.w.kernel.borrow().input_offset_at(n, x, y, false) else { return };
         let (a, _) = self.w.kernel.borrow().selection(n);
         self.select_field(n, a, at);

@@ -2,7 +2,7 @@
 //! undo, composition at the caret, pointer selection, and the platform text protocol.
 
 use octara::accesskit;
-use octara::app::{Phase, PointerEvent, TargetPlatform, byte_offset, utf16_offset};
+use octara::app::{Phase, PointerEvent, PointerKind, TargetPlatform, byte_offset, utf16_offset};
 use octara::prelude::*;
 use octara_primitives::text::TextEdit;
 
@@ -517,6 +517,137 @@ fn pointer_places_the_caret_and_selects() {
     app.pointer_move(caret_after_beta, cy);
     app.pointer_up(caret_after_beta, cy);
     assert_eq!(selection(&app), 0..10);
+}
+
+#[test]
+fn mouse_and_pen_select_fields_before_drag_handlers_and_ignore_late_releases() {
+    for kind in [PointerKind::Mouse, PointerKind::Pen] {
+        for terminal in [Phase::Up, Phase::Cancel] {
+            let mut app = Window::headless(|| {
+                col()
+                    .size_full()
+                    .child(
+                        text_input()
+                            .id("field")
+                            .w(240)
+                            .h(40)
+                            .value("alpha beta gamma")
+                            .on_drag(|_| panic!("field selection takes the mouse or pen drag"))
+                            .on_press(|| panic!("a selection drag is not a press")),
+                    )
+                    .into()
+            });
+            let field = app.kernel().find("field").unwrap();
+            let (x, y, w, h) = app.kernel().rect(field);
+            let event = |phase, x| InputEvent::Pointer(PointerEvent { id: 7, kind, ..PointerEvent::mouse(phase, x, y + h / 2.0) });
+            app.event(event(Phase::Down, x + 1.0));
+            assert_eq!(selection(&app), 0..0, "{kind:?}: the press places the caret");
+            app.event(event(Phase::Move, x + 30.0));
+            let selected = selection(&app);
+            assert_eq!(selected.start, 0);
+            assert!((1..16).contains(&selected.end), "{kind:?}: the first drag move selects a prefix");
+            app.event(event(Phase::Move, x + w - 2.0));
+            assert_eq!(selection(&app), 0..16, "{kind:?}: later drag moves keep the anchor");
+
+            app.event(event(terminal, x + 1.0));
+            let finished = if terminal == Phase::Cancel { 0..16 } else { 0..0 };
+            assert_eq!(selection(&app), finished, "{kind:?}: {terminal:?}");
+            assert_eq!(app.held_pointer(), None);
+            assert!(!app.kernel().state(field).contains(State::PRESSED));
+            app.event(event(Phase::Move, x + w - 2.0));
+            app.event(event(Phase::Up, x + w - 2.0));
+            assert_eq!(selection(&app), finished, "{kind:?}: late native input cannot resume the selection");
+            assert!(app.layout_issues().is_empty(), "{:?}", app.layout_issues());
+            assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+        }
+    }
+}
+
+#[test]
+fn touch_on_a_field_scrolls_its_container_instead_of_selecting() {
+    let mut app = Window::headless(|| {
+        col()
+            .size_full()
+            .child(
+                col()
+                    .id("list")
+                    .w(240)
+                    .h(160)
+                    .overflow_y_scroll()
+                    .child(el().h(80))
+                    .child(text_input().id("field").h(40).value("alpha beta gamma").on_press(|| panic!("a touch scroll is not a press")))
+                    .child(el().h(400)),
+            )
+            .into()
+    });
+    let field = app.kernel().find("field").unwrap();
+    let list = app.kernel().find("list").unwrap();
+    let (x, y, _, h) = app.kernel().rect(field);
+    let event = |phase, dy| InputEvent::Pointer(PointerEvent::touch(7, phase, x + 1.0, y + h / 2.0 - dy));
+    app.event(event(Phase::Down, 0.0));
+    assert!(app.kernel().state(field).contains(State::PRESSED));
+    let caret = app.kernel().selection(field);
+    app.event(event(Phase::Move, 40.0));
+    assert_eq!(app.kernel().scroll_offset(list).1, 40.0);
+    assert_eq!(app.kernel().selection(field), caret, "a finger scrolls without extending the field selection");
+    assert!(!app.kernel().state(field).contains(State::PRESSED));
+    app.event(event(Phase::Move, 60.0));
+    app.event(event(Phase::Up, 60.0));
+    assert_eq!(app.kernel().scroll_offset(list).1, 60.0);
+    assert_eq!(app.kernel().selection(field), caret);
+    assert_eq!(app.held_pointer(), None);
+    assert!(app.layout_issues().is_empty(), "{:?}", app.layout_issues());
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
+fn replacing_a_held_field_retires_its_selection_capture() {
+    for with_motion in [false, true] {
+        let mut app = Window::headless(move || {
+            let replaced = state("replaced", || false);
+            on_command("replace", move || replaced.set(true));
+            let root = col().size_full();
+            let root = if with_motion { root.motion(Spring::SNAP) } else { root };
+            root.child(show_else(
+                move || replaced.get(),
+                || {
+                    text_input()
+                        .id("field")
+                        .w(240)
+                        .h(40)
+                        .value("replacement")
+                        .on_drag(|_| panic!("a replacement cannot inherit the old field's drag"))
+                        .on_press(|| panic!("a replacement cannot receive the old field's release"))
+                        .into()
+                },
+                || text_input().id("field").w(240).h(40).value("original").into(),
+            ))
+            .into()
+        });
+        let original = app.kernel().find("field").unwrap();
+        let (x, y, w, h) = app.kernel().rect(original);
+        let cy = y + h / 2.0;
+        app.pointer_down(x + 1.0, cy);
+        app.pointer_move(x + w - 2.0, cy);
+        assert_eq!(selection(&app), 0..8);
+        assert!(app.held_pointer().is_some());
+
+        app.invoke("replace").unwrap();
+        let replacement = app.kernel().find("field").unwrap();
+        assert_ne!(replacement, original);
+        assert_eq!(app.held_pointer(), None);
+        if with_motion {
+            assert!(app.kernel().is_alive(original) && app.kernel().is_exiting(original));
+        } else {
+            assert!(!app.kernel().is_alive(original));
+        }
+        app.pointer_move(x + w - 2.0, cy);
+        app.pointer_up(x + w - 2.0, cy);
+        app.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Cancel, x + w - 2.0, cy)));
+        assert_eq!(app.kernel().selection(replacement), (0, 0), "late native input cannot select the replacement");
+        assert!(app.layout_issues().is_empty(), "{:?}", app.layout_issues());
+        assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+    }
 }
 
 #[test]

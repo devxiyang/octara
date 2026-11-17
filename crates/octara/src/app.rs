@@ -1,7 +1,6 @@
 //! The app runtime: mounts a root view, dispatches events, lays out, and rebuilds for hot reload.
 
 mod asks;
-mod behavior;
 mod config;
 mod drive;
 mod edit;

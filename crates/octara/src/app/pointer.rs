@@ -5,10 +5,9 @@
 //! One target per pointer (Rune): the topmost element under it that handles the pointer. From
 //! the press on, that pointer belongs to the target until it lifts or is cancelled.
 
-use super::behavior::{Behavior, behavior};
 use super::event::InputEvent;
 use super::{Handler, Modality, Window, WindowState};
-use crate::kernel::{HandlerKind, Kernel, NodeId, State};
+use crate::kernel::{HandlerKind, Kernel, Kind, NodeId, State};
 use bitflags::bitflags;
 use std::rc::Rc;
 use std::time::Duration;
@@ -313,8 +312,8 @@ impl Window {
         self.live(self.w.kernel.borrow().hit_test(x, y))
     }
 
-    /// The behavior of `n`'s element kind, if it has any.
-    fn behavior_of(&self, n: Option<NodeId>) -> Option<(NodeId, &'static dyn Behavior)> {
+    /// A captured field that still owns a live, non-exiting input node.
+    fn pointer_field(&self, n: Option<NodeId>) -> Option<NodeId> {
         let n = n?;
         let kernel = self.w.kernel.borrow();
         // A drag handler can remove its allocation while this pointer is still captured.
@@ -322,12 +321,11 @@ impl Window {
         if !kernel.is_alive(n) || kernel.is_exiting(n) {
             return None;
         }
-        let kind = kernel.kind(n);
-        behavior(kind).map(|b| (n, b))
+        (kernel.kind(n) == Kind::TextInput).then_some(n)
     }
-    /// The target's own drag behavior for this pointer, if it has one.
-    fn own_drag(&self, h: &Held) -> Option<(NodeId, &'static dyn Behavior)> {
-        self.behavior_of(h.target).filter(|(_, b)| b.drags(h.kind))
+    /// Mouse and pen drag a field's selection; touch remains available for scrolling.
+    fn field_drag_target(&self, h: &Held) -> Option<NodeId> {
+        if h.kind == PointerKind::Touch { None } else { self.pointer_field(h.target) }
     }
 
     pub(super) fn now_ms(&self) -> f64 {
@@ -599,12 +597,12 @@ impl Window {
             selecting,
             long_pressed: false,
         });
-        // An element kind with behavior of its own acts on the press (a field's caret).
+        // A field places its caret on the primary press.
         if mode == Mode::Pending
             && button == Button::Primary
-            && let Some((n, b)) = self.behavior_of(target)
+            && let Some(n) = self.pointer_field(target)
         {
-            b.down(self, n, &ev, clicks);
+            self.press_in_field(n, (ev.x, ev.y), clicks, ev.modifiers.contains(Modifiers::SHIFT));
         }
     }
 
@@ -642,16 +640,16 @@ impl Window {
         let tuning = self.app.tuning.get();
         let slop = if h.kind == PointerKind::Touch { tuning.touch_slop } else { tuning.mouse_slop };
         if h.mode == Mode::Pending && distance(h.start, h.at) > slop {
-            // The element's own drag behavior, else its `on_drag`, takes the drag.
-            let own = self.own_drag(&h);
+            // Field selection takes a mouse/pen drag before the application's `on_drag`.
+            let field = self.field_drag_target(&h);
             let drags = h.button == Button::Primary
-                && (own.is_some() || h.target.is_some_and(|n| self.w.kernel.borrow().handler(n, HandlerKind::Drag).is_some()));
+                && (field.is_some() || h.target.is_some_and(|n| self.w.kernel.borrow().handler(n, HandlerKind::Drag).is_some()));
             if drags {
                 h.mode = Mode::Dragging;
                 // A drag ends a run of clicks.
                 self.w.interaction.borrow_mut().pointer.last_press = None;
-                match own {
-                    Some((n, b)) => b.drag(self, n, h.at),
+                match field {
+                    Some(n) => self.drag_in_field(n, h.at),
                     None => self.send_drag(&h, DragPhase::Start),
                 }
                 self.update_held(h);
@@ -692,8 +690,8 @@ impl Window {
                     }
                 }
             }
-            Mode::Dragging => match self.own_drag(&h) {
-                Some((n, b)) => b.drag(self, n, h.at),
+            Mode::Dragging => match self.field_drag_target(&h) {
+                Some(n) => self.drag_in_field(n, h.at),
                 None => self.send_drag(&h, DragPhase::Move),
             },
             Mode::Panning(c) => self.scroll_by(c, prev.0 - h.at.0, prev.1 - h.at.1),
@@ -731,8 +729,8 @@ impl Window {
                     }
                 }
             }
-            Mode::Dragging => match self.own_drag(h) {
-                Some((n, b)) => b.drag(self, n, h.at),
+            Mode::Dragging => match self.field_drag_target(h) {
+                Some(n) => self.drag_in_field(n, h.at),
                 None => self.send_drag(h, DragPhase::End),
             },
             Mode::Panning(c) => self.start_momentum(c, h),
@@ -751,7 +749,7 @@ impl Window {
         let Some(h) = held else { return };
         self.unpress(&h);
         self.finishing_pointer(h, |h| {
-            if h.mode == Mode::Dragging && self.own_drag(h).is_none() {
+            if h.mode == Mode::Dragging && self.field_drag_target(h).is_none() {
                 self.send_drag(h, DragPhase::Cancel);
             }
         });

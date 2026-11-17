@@ -1,8 +1,10 @@
 //! Input by position and by key, as a window delivers it: what a platform shell calls, and what
 //! tests and agents can call too ("click at 120, 40").
 
-use super::{Handler, Modality, Window};
+use super::{Handler, Modality, Window, WindowState};
 use crate::kernel::{HandlerKind, Kind, NodeId};
+use crate::view::ScopedHandler;
+use std::rc::Rc;
 
 impl Window {
     /// Numeric changes from accessibility share the same handler as semantic numeric input.
@@ -207,5 +209,20 @@ impl Window {
             _ => {}
         }
         done
+    }
+}
+
+impl WindowState {
+    pub(crate) fn register(self: &Rc<Self>, h: Handler) -> u64 {
+        let id = self.next.get() + 1;
+        self.next.set(id);
+        self.handlers.borrow_mut().insert(id, ScopedHandler::capture(h));
+        let me = self.clone();
+        crate::reactive::graph::rt(|rt| {
+            rt.on_cleanup(Box::new(move || {
+                me.handlers.borrow_mut().remove(&id);
+            }))
+        });
+        id
     }
 }
