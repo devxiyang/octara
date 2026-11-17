@@ -168,9 +168,14 @@ pub(crate) struct AppState {
     windows: RefCell<slotmap::SlotMap<WindowId, Rc<WindowState>>>,
     /// The open windows, in the order they opened.
     order: RefCell<Vec<WindowId>>,
-    /// Windows opened from app code, mounted at the end of the frame; windows to close then.
+    /// Allocated windows to mount and retired windows to dispose in the App update.
     opening: RefCell<Vec<WindowId>>,
     closing: RefCell<Vec<WindowId>>,
+    /// Window requests share one allowance across the operation's preparation checkpoints.
+    window_rounds_left: Cell<u8>,
+    updating: Cell<bool>,
+    /// A nested poll leaves ready work to the enclosing update, after its borrows end.
+    poll_requested: Cell<bool>,
     next_cause: Cell<u64>,
     tuning: Cell<Tuning>,
     platform: Cell<TargetPlatform>,
@@ -230,6 +235,7 @@ pub(crate) struct WindowState {
     closed: Cell<bool>,
     root: Rc<dyn Fn() -> View>,
     root_scope: Cell<Option<ScopeId>>,
+    rebuild_pending: Cell<bool>,
     root_slots: Slots,
     interaction: RefCell<Interaction>,
     /// Invalidates virtual residency when the actual focus or pointer owner changes.
@@ -325,6 +331,7 @@ fn enter_app_context<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
     if app.depth.get() == 0 && !app.checking.get() {
         app.sched.begin_turn();
         app.rt.resume_propagation();
+        app.window_rounds_left.set(frame::WINDOW_ROUNDS);
     }
     struct Restore(Option<Rc<AppState>>);
     impl Drop for Restore {
@@ -556,6 +563,7 @@ impl WindowState {
             closed: Cell::new(false),
             root,
             root_scope: Cell::new(None),
+            rebuild_pending: Cell::new(false),
             root_slots: Slots::default(),
             interaction: RefCell::default(),
             interaction_revision: app.rt.enter(|| Signal::detached(0)),
@@ -627,6 +635,9 @@ impl App {
             order: RefCell::default(),
             opening: RefCell::default(),
             closing: RefCell::default(),
+            window_rounds_left: Cell::new(0),
+            updating: Cell::new(false),
+            poll_requested: Cell::new(false),
             next_cause: Cell::new(0),
             tuning: Cell::new(Tuning::default()),
             platform: Cell::new(target_platform),
@@ -648,11 +659,16 @@ impl App {
         App { app: Rc::new(state) }
     }
 
-    /// Opens a window showing `root`, built and laid out now.
+    /// Opens a window showing `root`. A host call mounts and lays it out before returning.
+    /// Calls during an App update mount it when that update processes its window requests.
+    #[track_caller]
     pub fn open_window(&self, options: crate::platform::WindowOptions, root: impl Fn() -> View + 'static) -> Result<Window, String> {
-        let id = self.app.insert_window(options, Rc::new(root))?;
+        let at = std::panic::Location::caller();
+        let id = self.app.request_open(options, Rc::new(root), at)?;
         let w = self.app.handle(id).expect("just opened");
-        w.enter(|| w.mount_root());
+        if self.app.depth.get() == 0 {
+            self.app.frame(Some(id), at);
+        }
         Ok(w)
     }
 
@@ -666,14 +682,13 @@ impl App {
         self.app.order.borrow().clone()
     }
 
-    /// Closes window `id` now: its scope (state, watches, tasks) is disposed, its platform
-    /// window let go, and the other windows settle.
+    /// Retires window `id` immediately. The App update disposes its scope and platform window.
+    #[track_caller]
     pub fn close_window(&self, id: WindowId) {
-        if self.app.shutdown.get() {
-            return;
+        let at = std::panic::Location::caller();
+        if self.app.request_close(id, at) && self.app.depth.get() == 0 {
+            self.app.frame(None, at);
         }
-        self.app.closing.borrow_mut().push(id);
-        self.app.frame(std::panic::Location::caller());
     }
 
     /// Ends this App, even when other handles remain. Closes windows, runs scope cleanup and
@@ -765,7 +780,7 @@ impl App {
             // A nested call belongs to its enclosing operation; in particular, a memo or
             // binding must finish computing before that operation flushes and lays out.
             if self.app.depth.get() == 1 {
-                self.app.frame(std::panic::Location::caller());
+                self.app.frame(None, at);
             }
             r
         })
@@ -779,7 +794,11 @@ impl AppState {
 
     /// The window whose commands the menus run: the active one, else the first.
     pub(crate) fn command_window(self: &Rc<Self>) -> Option<Window> {
-        self.active.get().and_then(|id| self.handle(id)).or_else(|| self.order.borrow().first().and_then(|id| self.handle(*id)))
+        self.active
+            .get()
+            .and_then(|id| self.handle(id))
+            .filter(Window::can_prepare)
+            .or_else(|| self.order.borrow().iter().filter_map(|id| self.handle(*id)).find(Window::can_prepare))
     }
 
     /// At the end of a frame: the menus as they stand now (each item enabled while the active
@@ -823,17 +842,6 @@ impl AppState {
         crate::platform::ClipboardItem::parts(text, image)
     }
 
-    /// Makes window `id` with its platform window; `root` is mounted by the caller.
-    fn insert_window(&self, options: crate::platform::WindowOptions, root: Rc<dyn Fn() -> View>) -> Result<WindowId, String> {
-        self.check_running()?;
-        let id = self.windows.borrow_mut().try_insert_with_key(|id| {
-            let platform = self.system.borrow_mut().open_window(id, &options)?;
-            Ok::<_, String>(Rc::new(WindowState::new(self, id, options, root, platform)))
-        })?;
-        self.order.borrow_mut().push(id);
-        Ok(id)
-    }
-
     /// After an operation: with consistency checks on, every window's tree must equal its
     /// from-scratch rebuild.
     fn check_consistency(self: &Rc<Self>) {
@@ -842,7 +850,8 @@ impl AppState {
         }
         // A budget cutoff leaves unfinished work visible to the caller. There is no settled
         // incremental baseline to compare until a later operation completes that work.
-        let unfinished = self.rt.has_pending()
+        let unfinished = self.has_window_requests()
+            || self.rt.has_pending()
             || self
                 .windows
                 .borrow()
@@ -854,9 +863,10 @@ impl AppState {
         self.checking.set(true);
         let windows = self.order.borrow().clone();
         for id in windows {
-            let Some(w) = self.handle(id) else { continue };
+            let Some(w) = self.handle(id).filter(Window::can_prepare) else { continue };
             let incremental = w.w.kernel.borrow().tree_dump();
             w.reload();
+            w.enter(|| w.settle_window(std::panic::Location::caller()));
             let scratch = w.w.kernel.borrow().tree_dump();
             if incremental != scratch {
                 self.checking.set(false);
@@ -869,18 +879,41 @@ impl AppState {
         self.checking.set(false);
     }
 
-    /// Opens a window from app code: made now, built at the end of the frame.
-    pub(crate) fn request_open(&self, options: crate::platform::WindowOptions, root: Rc<dyn Fn() -> View>) -> Result<WindowId, String> {
-        let id = self.insert_window(options, root)?;
+    /// Allocates the host window now and queues its root for the App update.
+    pub(crate) fn request_open(
+        &self,
+        options: crate::platform::WindowOptions,
+        root: Rc<dyn Fn() -> View>,
+        at: &'static std::panic::Location<'static>,
+    ) -> Result<WindowId, String> {
+        use crate::reactive::graph::Operation;
+        self.check_running()?;
+        if !Runtime::caller_allows(Operation::Write, at) || !Runtime::caller_allows(Operation::Register, at) {
+            return Err("window creation is not allowed in this execution phase".into());
+        }
+        let id = self.windows.borrow_mut().try_insert_with_key(|id| {
+            let platform = self.system.borrow_mut().open_window(id, &options)?;
+            Ok::<_, String>(Rc::new(WindowState::new(self, id, options, root, platform)))
+        })?;
+        self.order.borrow_mut().push(id);
         self.opening.borrow_mut().push(id);
         Ok(id)
     }
 
-    /// Closes window `id` at the end of the frame.
-    pub(crate) fn request_close(&self, id: WindowId) {
-        if !self.shutdown.get() {
-            self.closing.borrow_mut().push(id);
+    /// Revoke delivery before resuming the current callback. The App drain owns disposal.
+    pub(crate) fn request_close(&self, id: WindowId, at: &'static std::panic::Location<'static>) -> bool {
+        if self.check_running().is_err() || !Runtime::caller_allows(crate::reactive::graph::Operation::Write, at) {
+            return false;
         }
+        let Some(w) = self.windows.borrow().get(id).cloned() else { return false };
+        if w.closed.replace(true) {
+            return false;
+        }
+        if let Some(scope) = w.root_scope.get() {
+            self.rt.retire_scope_tree(scope);
+        }
+        self.closing.borrow_mut().push(id);
+        true
     }
 
     pub(crate) fn open_windows(&self) -> Vec<WindowId> {
@@ -1391,6 +1424,9 @@ impl Window {
     /// Rebuilds this window's scope from the current state, keeping hover and focus by address
     /// (the nearest test id and the child indices below it) and scroll by test id.
     fn reload(&self) {
+        if self.is_closed() || self.w.root_scope.get().is_none() {
+            return;
+        }
         self.enter(|| {
             self.w.kernel.borrow_mut().advance_identity();
             let modals = self.save_modals();
@@ -1412,12 +1448,14 @@ impl Window {
                 self.app.rt.dispose_scope(s);
                 self.w.root_scope.set(None);
             }
+            if self.is_closed() || self.app.shutdown.get() {
+                return;
+            }
             self.w.root_slots.borrow_mut().clear();
             // A rebuild is not content arriving: nothing enters.
             self.w.kernel.borrow_mut().set_quiet(true);
+            self.w.rebuild_pending.set(true);
             self.mount_root();
-            self.app.rt.settle_named_state(Owner(self.w.id.number()));
-            self.w.kernel.borrow_mut().set_quiet(false);
         });
     }
 }
@@ -1454,6 +1492,9 @@ impl App {
             }
             for w in self.each() {
                 w.reload();
+            }
+            if self.app.depth.get() == 1 {
+                self.app.frame(None, at);
             }
         });
     }

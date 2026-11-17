@@ -80,12 +80,13 @@ path described below. An explicit wait/settle is not allowed to re-enter a runni
    recompute on demand. Automatic propagation happens after the current callback/poll boundary.
    The reactive runtime updates affected bindings; structures mount or dispose scopes. Kernel,
    graph-table, scheduler and platform borrows are released before user code runs.
-3. Process affected windows, required layout and controlled measurement feedback under a budget.
-   A later window invalidating an earlier one must preserve that dirty work and schedule it again.
-   Unchanged windows and subtrees reuse existing data.
+3. The App drains a batch of queued window closes and opens. Closing revokes admission
+   immediately when requested. Disposal and mounting take place in the drain, which processes
+   new requests in a later round under the same outer turn's allowance.
 4. Complete applicable lifecycle, focus and hover repair before preparing output that depends on
-   them. Prepare geometry, native placements, drawing and accessibility from compatible window
-   data at the declared app time.
+   them. Prepare affected windows' geometry, native placements, drawing and accessibility at
+   the declared App time. An invalidation from a later window schedules another pass for the
+   affected earlier window. Unchanged windows and subtrees reuse existing data.
 5. Submit output according to host pacing. Queue native notifications for later safe processing;
    transport work cannot recursively enter application handlers while state is borrowed.
 
@@ -114,6 +115,12 @@ boundary. Submission and the presentation evidence supplied by the host remain s
 App time advance is explicit. A read may prepare or drain bounded ready work at its documented
 boundary, but does not secretly move app time or wait indefinitely. Preserve existing inspect
 semantics; introducing an independent sampling clock is not a prerequisite for live attachment.
+
+`App::poll` drains ready tasks and their reactive consequences even before the first window or
+after the last one closes. A call inside the same App's operation requests a drain after the
+current callback gives back its borrows. A windowless `App::run` by itself propagates changes
+and processes window requests. An explicit poll runs ready tasks; advancing to a scheduled
+deadline also runs work woken by the clock.
 
 There are four distinct observations: input was delivered; framework propagation/layout is ready;
 output was submitted; the host supplied presentation evidence. Internal per-window generations

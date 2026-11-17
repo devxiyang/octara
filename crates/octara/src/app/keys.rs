@@ -683,7 +683,7 @@ impl Window {
     }
 
     pub(super) fn run_after_update_command(&self, command: &str, at: &'static std::panic::Location<'static>) -> bool {
-        if self.w.closed.get() || self.app.closing.borrow().contains(&self.w.id) {
+        if self.w.closed.get() {
             self.w.interaction.borrow_mut().after_update.clear();
             return false;
         }

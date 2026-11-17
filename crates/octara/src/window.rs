@@ -15,14 +15,16 @@ pub use crate::platform::{WindowKind, WindowOptions};
 use crate::view::View;
 
 /// Opens a window showing `root` (built at the end of the frame); `Err` when the platform
-/// refuses.
+/// or the current execution phase refuses.
+#[track_caller]
 pub fn open_window(options: WindowOptions, root: impl Fn() -> View + 'static) -> Result<WindowId, String> {
-    crate::app::app_state().request_open(options, std::rc::Rc::new(root))
+    crate::app::app_state().request_open(options, std::rc::Rc::new(root), std::panic::Location::caller())
 }
 
-/// Closes window `id` at the end of the frame: its scope (state, watches, tasks) is disposed.
+/// Retires window `id` for input immediately and releases its scope at the next App update.
+#[track_caller]
 pub fn close_window(id: WindowId) {
-    crate::app::app_state().request_close(id);
+    crate::app::app_state().request_close(id, std::panic::Location::caller());
 }
 
 /// The open windows, in the order they opened.

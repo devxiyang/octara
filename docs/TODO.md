@@ -4,6 +4,22 @@ What is open, by area. For phase goals see [ROADMAP](ROADMAP.md); for what is bu
 [ARCHITECTURE](ARCHITECTURE.md) and the [designs](design/). When an item is done, remove it and
 make the corresponding design document describe it.
 
+## Bottom-up review follow-up (2026-11-18)
+
+The [review](design/bottom-up-review-2026-11-18.md) records the Rune and Exact comparisons and
+the evidence for each follow-up.
+
+- [x] Unify App updates for queued window open and close, first host submission, and polling
+      with or without windows. Cover execution permissions, bounded mounting, same-turn
+      cancellation, skipped delivery after close, and nested poll during an AsyncMemo read.
+- [ ] Match native capture replies to the active capture request and validate Inspector resize
+      targets immediately before host dispatch.
+
+Validation on Rust 1.100.0 passed 1,006 workspace tests with 3 existing ignored doctests.
+Strict all-targets Clippy, formatting and layer checks passed. First-submission evidence
+comes from a recording host. Native screen presentation and the deferred system editing
+verification remain separate acceptance work.
+
 ## `init` architecture refactor (2026-11-17)
 
 Execution plan for the [layered redesign](design/layered-architecture-redesign.md) and

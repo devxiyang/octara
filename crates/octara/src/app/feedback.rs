@@ -96,7 +96,7 @@ impl WindowState {
 impl Window {
     pub(super) fn feedback_active(&self) -> bool {
         self.app.assert_usable();
-        !self.app.shutdown.get() && !self.w.closed.get() && !self.app.closing.borrow().contains(&self.w.id)
+        !self.app.shutdown.get() && !self.w.closed.get()
     }
 
     pub(super) fn sync_after_layout(&self) -> bool {

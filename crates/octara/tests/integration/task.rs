@@ -143,6 +143,44 @@ fn values_from_other_threads_arrive_through_a_channel() {
 }
 
 #[test]
+fn app_poll_drains_root_work_before_opening_and_after_closing_windows() {
+    use octara::platform::{HeadlessPlatform, WindowOptions};
+    let app = App::new(HeadlessPlatform::default());
+    let delivered = Rc::new(RefCell::new(Vec::new()));
+    let seen = delivered.clone();
+    let send = app.run(|| {
+        let count = state("count", || 0u32);
+        let (send, receive) = channel();
+        let (forward, forwarded) = channel();
+        receive.on(move |value| count.set(value));
+        watch(
+            move || count.get(),
+            move |&value, previous| {
+                if previous.is_some() {
+                    forward.send(value).unwrap();
+                }
+            },
+        );
+        forwarded.on(move |value| seen.borrow_mut().push(value));
+        send
+    });
+
+    send.send(1).unwrap();
+    app.poll();
+    assert_eq!(*delivered.borrow(), [1]);
+
+    let window = app.open_window(WindowOptions::default(), || el().size_full().into()).unwrap();
+    app.close_window(window.id());
+    assert!(app.windows().is_empty());
+
+    send.send(2).unwrap();
+    app.poll();
+    assert_eq!(*delivered.borrow(), [1, 2]);
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    app.shutdown();
+}
+
+#[test]
 fn a_bursting_channel_yields_to_a_ready_cancellation() {
     const BURST: usize = 4_096;
     let delivered = Rc::new(Cell::new(0));
@@ -597,8 +635,6 @@ fn an_async_memo_refreshed_during_its_poll_cannot_publish_the_previous_attempt()
         found
     });
     app.poll();
-    app.run(|| ());
-    app.poll();
     app.run(|| {
         assert_eq!(attempts.get(), 2);
         assert_eq!(found.with(|s| s.value().cloned()), None);
@@ -607,6 +643,35 @@ fn an_async_memo_refreshed_during_its_poll_cannot_publish_the_previous_attempt()
     assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
     app.shutdown();
     assert!(app.pending().is_empty());
+}
+
+#[test]
+fn polling_inside_an_async_memo_read_preserves_its_ready_result() {
+    let app = App::new(octara::platform::HeadlessPlatform::default());
+    let (send, found) = app.run(|| {
+        let (send, receive) = channel::<u32>();
+        let receive = RefCell::new(Some(receive));
+        let found = async_memo(
+            || (),
+            move |_| {
+                let mut receive = receive.borrow_mut().take().unwrap();
+                async move { Ok::<_, ()>(receive.recv().await.unwrap()) }
+            },
+        );
+        (send, found)
+    });
+    app.poll();
+    send.send(7).unwrap();
+
+    app.run(|| {
+        found.with(|state| {
+            assert!(state.is_pending());
+            app.poll();
+        });
+    });
+    app.run(|| assert_eq!(found.get(), AsyncState::Ready(7)));
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    app.shutdown();
 }
 
 #[test]

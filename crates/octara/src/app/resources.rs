@@ -214,7 +214,7 @@ impl App {
             // A nested handler/watch/cleanup belongs to its enclosing update. In particular,
             // do not flush bindings inside a provider callback or a running watch callback.
             if self.app.depth.get() == 1 {
-                self.app.frame(at);
+                self.app.frame(None, at);
             }
         });
     }

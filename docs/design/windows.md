@@ -21,8 +21,19 @@ Ownership and context are [the core's](core.md).
 ## API (GPUI's names, Octara's free functions)
 
 - `App::open_window(WindowOptions, || View) -> Result<Window, String>`; from app code,
-  `open_window(..) -> Result<WindowId, String>` (built at the end of the frame),
+  `open_window(..) -> Result<WindowId, String>`,
   `close_window(id)`, `windows()`, `current_window()`. `WindowOptions`: title, size, kind.
+- Both open methods allocate through the platform to obtain an ID and report allocation errors.
+  The App update mounts the root before preparing its first platform output. A host call to
+  `App::open_window` runs that update before returning. Inside the same App's callback, the
+  returned handle can refer to a window whose root is still queued for mounting.
+- Closing a window immediately retires its input, callbacks and tasks. The App update disposes
+  its scope and releases the platform window after the current callback returns. A window
+  closed before its root mounts produces no window output. Closing the last window leaves
+  App-owned tasks and state alive.
+- Both entry points check the caller's execution phase, even when the receiver is another App.
+  Build, initialization and pure computation reject open and close. Opening also requires
+  permission to register new work.
 - `WindowKind::{Normal, Dialog}`; `Popup(PopupOptions)` with `PopupOptions { parent,
   anchor_rect, anchor, gravity, constraint_adjustment, offset, grab }`, placed by the platform,
   comes with popups. `on_window_closed(..)` comes with close requests.

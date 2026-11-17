@@ -2,27 +2,34 @@
 
 use super::*;
 
-impl AppState {
-    /// A frame for the whole app: every window settles (shared state may have changed what any
-    /// of them shows), then windows asked for open and windows asked to close go.
-    pub(super) fn frame(self: &Rc<Self>, at: &'static std::panic::Location<'static>) {
-        self.frame_except(None, at);
-    }
+pub(super) const WINDOW_ROUNDS: u8 = 16;
 
-    /// Retain this frame's completed and incomplete attempts. Later windows can invalidate a
-    /// completed window; an incomplete one waits for the next explicit update boundary.
-    pub(super) fn frame_except(self: &Rc<Self>, settled: Option<(WindowId, WindowUpdate)>, at: &'static std::panic::Location<'static>) {
+impl AppState {
+    /// One App drain owns window requests and publication. Later windows can invalidate a
+    /// completed window; an incomplete one waits for the next explicit preparation checkpoint.
+    pub(super) fn frame(self: &Rc<Self>, first: Option<WindowId>, at: &'static std::panic::Location<'static>) {
         self.assert_usable();
-        if self.shutdown.get() {
+        if self.shutdown.get() || self.updating.get() {
             return;
         }
         enter_app(self, || {
+            self.updating.set(true);
+            let _update = std::mem::DropGuard::new(&self.updating, |updating| updating.set(false));
             let mut generations = rustc_hash::FxHashMap::default();
-            generations.extend(settled);
-            for _ in 0..16 {
+            let mut poll = false;
+            for _ in 0..WINDOW_ROUNDS {
+                poll |= self.poll_requested.replace(false);
+                if poll {
+                    self.sched.run_ready();
+                    self.rt.flush();
+                }
+                self.apply_window_requests();
+                if self.shutdown.get() {
+                    return;
+                }
                 let windows = self.order.borrow().clone();
-                for id in windows {
-                    if let Some(w) = self.handle(id) {
+                for id in first.into_iter().chain(windows.into_iter().filter(|id| Some(*id) != first)) {
+                    if let Some(w) = self.handle(id).filter(Window::can_prepare) {
                         if generations
                             .get(&id)
                             .is_some_and(|outcome: &WindowUpdate| !outcome.invalidated(w.w.kernel.borrow().mutation_generation()))
@@ -35,41 +42,65 @@ impl AppState {
                 }
                 // The last window's focus or hover cleanup can queue reactive work too.
                 self.rt.flush();
-                let opening = std::mem::take(&mut *self.opening.borrow_mut());
-                let closing = std::mem::take(&mut *self.closing.borrow_mut());
-                if opening.is_empty() && closing.is_empty() {
-                    let invalidated = self.order.borrow().iter().any(|id| {
-                        self.handle(*id).is_some_and(|w| {
-                            generations.get(id).is_none_or(|outcome| outcome.invalidated(w.w.kernel.borrow().mutation_generation()))
-                        })
-                    });
-                    if !invalidated {
-                        self.present_menus();
-                        return;
-                    }
+                if self.shutdown.get() {
+                    return;
                 }
-                for id in opening {
-                    if let Some(w) = self.handle(id) {
-                        w.enter(|| w.mount_root());
-                    }
+                let invalidated = self.order.borrow().iter().any(|id| {
+                    self.handle(*id).filter(Window::can_prepare).is_some_and(|w| {
+                        generations.get(id).is_none_or(|outcome| outcome.invalidated(w.w.kernel.borrow().mutation_generation()))
+                    })
+                });
+                let work = self.poll_requested.get() || (poll && self.sched.has_ready() && !self.sched.yielded() && !self.rt.has_pending());
+                if !invalidated && !work && !self.has_window_requests() {
+                    self.present_menus();
+                    return;
                 }
-                for id in closing {
-                    self.close(id);
+                if !invalidated && !work && self.window_rounds_left.get() == 0 {
+                    break;
                 }
             }
             // Keep every window's invalidation intact; another operation can settle it once the
             // feedback stops. Do not schedule an immediate retry of the same runaway frame.
             self.rt.diag(
                 &codes::LAYOUT_LOOP,
-                "window updates did not settle in 16 rounds: windows keep changing each other's layout or presentation".into(),
+                "App update did not settle in 16 rounds; window lifecycle, layout feedback or ready work is still pending".into(),
                 at,
             );
             self.present_menus();
         });
     }
+
+    pub(super) fn has_window_requests(&self) -> bool {
+        !self.opening.borrow().is_empty() || !self.closing.borrow().is_empty()
+    }
+
+    fn apply_window_requests(self: &Rc<Self>) {
+        if self.shutdown.get() || self.window_rounds_left.get() == 0 || !self.has_window_requests() {
+            return;
+        }
+        self.window_rounds_left.set(self.window_rounds_left.get() - 1);
+        // Take one batch. Requests from mounting and cleanup belong to a later round.
+        let opening = std::mem::take(&mut *self.opening.borrow_mut());
+        let closing = std::mem::take(&mut *self.closing.borrow_mut());
+        for id in closing {
+            self.close(id);
+        }
+        for id in opening {
+            if self.shutdown.get() {
+                break;
+            }
+            if let Some(w) = self.handle(id).filter(|w| !w.is_closed()) {
+                w.enter(|| w.mount_root());
+            }
+        }
+    }
 }
 
 impl Window {
+    pub(super) fn can_prepare(&self) -> bool {
+        !self.is_closed() && self.w.root_scope.get().is_some()
+    }
+
     pub(super) fn mount_root(&self) {
         // Named by the window: state is kept by its scope's path (across a hot reload), so two
         // windows' roots never share a key.
@@ -78,13 +109,15 @@ impl Window {
         let parent = Parent { node: self.w.kernel.borrow().root(), root: self.w.root_slots.clone() };
         let root = self.w.root.clone();
         self.app.rt.with_frame(Ctx::Build, None, Some(Some(s)), || {
-            mount(root(), &parent, &self.w.root_slots);
-            // What the window draws of its requests, above the app's view.
-            mount(asks::layer(), &parent, &self.w.root_slots);
+            let view = root();
+            if !self.is_closed() && !self.app.shutdown.get() {
+                mount(view, &parent, &self.w.root_slots);
+                // What the window draws of its requests, above the app's view.
+                mount(asks::layer(), &parent, &self.w.root_slots);
+            }
         });
         self.app.rt.flush();
         self.restore_interaction();
-        self.settle_frame();
     }
 
     /// Applies pending updates and lays out until nothing changes: after a layout, virtual
@@ -94,14 +127,17 @@ impl Window {
     /// changed them) and windows asked for open or close.
     #[track_caller]
     pub(super) fn settle_frame(&self) {
-        let at = std::panic::Location::caller();
-        let generation = self.settle_window(at);
-        self.app.frame_except(Some((self.w.id, generation)), at);
+        self.app.frame(Some(self.w.id), std::panic::Location::caller());
     }
 
     /// One window's part of a frame: tasks, layout, native views, text input, focus and hover.
     pub(super) fn settle_window(&self, at: &'static std::panic::Location<'static>) -> WindowUpdate {
-        match self.prepare_window(at) {
+        let result = self.prepare_window(at);
+        if self.w.rebuild_pending.replace(false) {
+            self.w.kernel.borrow_mut().set_quiet(false);
+            self.app.rt.settle_named_state(Owner(self.w.id.number()));
+        }
+        match result {
             Ok(generation) => WindowUpdate::Ready(generation),
             Err(()) => {
                 self.w.settled_generation.set(None);
@@ -116,7 +152,7 @@ impl Window {
         let mut command_ran = false;
         let mut prepared = false;
         for _ in 0..16 {
-            if self.app.shutdown.get() || self.w.closed.get() || self.app.closing.borrow().contains(&self.w.id) {
+            if self.app.shutdown.get() || self.w.closed.get() {
                 self.w.interaction.borrow_mut().after_update.clear();
                 return Ok(self.w.kernel.borrow().mutation_generation());
             }

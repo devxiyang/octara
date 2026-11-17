@@ -2,10 +2,63 @@
 //! signals, theme and fonts; each has its own tree; code runs as the window it belongs to;
 //! closing one disposes its scope and frees it.
 
-use octara::platform::{HeadlessPlatform, WindowOptions};
+use octara::platform::{Frame, HeadlessPlatform, Platform, PlatformWindow, WindowOptions};
 use octara::prelude::*;
+use octara::task::WorkKind;
 use octara::view::native_view;
+use octara_primitives::native::NativeChange;
+use std::any::Any;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::time::Duration;
+
+#[derive(Default)]
+struct HostLog {
+    opened: Vec<WindowId>,
+    frames: Vec<(WindowId, Frame)>,
+    dropped: Vec<WindowId>,
+}
+
+struct RecordingPlatform(Rc<RefCell<HostLog>>);
+
+impl Platform for RecordingPlatform {
+    fn read_text(&mut self) -> Option<String> {
+        None
+    }
+    fn write_text(&mut self, _: &str) {}
+    fn open_window(&mut self, id: WindowId, _: &WindowOptions) -> Result<Box<dyn PlatformWindow>, String> {
+        self.0.borrow_mut().opened.push(id);
+        Ok(Box::new(RecordingWindow { id, log: self.0.clone() }))
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+struct RecordingWindow {
+    id: WindowId,
+    log: Rc<RefCell<HostLog>>,
+}
+
+impl PlatformWindow for RecordingWindow {
+    fn present(&mut self, frame: Frame) {
+        self.log.borrow_mut().frames.push((self.id, frame));
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl Drop for RecordingWindow {
+    fn drop(&mut self) {
+        self.log.borrow_mut().dropped.push(self.id);
+    }
+}
+
+fn recording_app() -> (App, Rc<RefCell<HostLog>>) {
+    let log = Rc::new(RefCell::new(HostLog::default()));
+    (App::new(RecordingPlatform(log.clone())), log)
+}
 
 #[test]
 fn later_window_measurements_relayout_an_earlier_window() {
@@ -49,7 +102,6 @@ fn later_window_measurements_relayout_an_earlier_window() {
 #[test]
 fn later_window_measurements_present_native_props_in_an_earlier_window() {
     use octara::platform::HeadlessWindow;
-    use octara_primitives::native::NativeChange;
 
     let app = App::new(HeadlessPlatform::default());
     let (width, measured) = app.run(|| (state("width", || 100.0f32), state("measured", || 100.0f32)));
@@ -127,9 +179,6 @@ fn cross_window_layout_feedback_is_bounded_and_can_recover() {
 
 #[test]
 fn app_run_inside_a_handler_keeps_shared_state_after_the_window_closes() {
-    use std::cell::Cell;
-    use std::rc::Rc;
-
     let app = App::new(HeadlessPlatform::default());
     let shared = Rc::new(Cell::new(None));
     let captured = shared.clone();
@@ -283,7 +332,16 @@ fn code_runs_as_the_window_it_belongs_to() {
 
 #[test]
 fn a_handler_opens_a_window_at_the_end_of_its_frame() {
-    let app = App::new(HeadlessPlatform::default());
+    #[ui]
+    fn preferences() -> View {
+        col()
+            .size_full()
+            .child(text("Preferences").id("title"))
+            .child(native_view("preview").label("Preview").size_8().props(serde_json::json!({ "caption": "Preferences" })))
+            .into()
+    }
+
+    let (app, host) = recording_app();
     let mut main = app
         .open_window(WindowOptions::new("Main"), || {
             el().id("open")
@@ -291,7 +349,7 @@ fn a_handler_opens_a_window_at_the_end_of_its_frame() {
                 .label("Open")
                 .size_8()
                 .on_press(|| {
-                    open_window(WindowOptions::new("Preferences"), || text("Preferences").id("title").into()).unwrap();
+                    open_window(WindowOptions::new("Preferences"), preferences).unwrap();
                 })
                 .into()
         })
@@ -302,68 +360,185 @@ fn a_handler_opens_a_window_at_the_end_of_its_frame() {
     let prefs = app.window(windows[1]).unwrap();
     assert_eq!(prefs.options().title, "Preferences");
     assert_eq!(prefs.kernel().text_of("title").as_deref(), Some("Preferences"), "built by the end of the frame");
+
+    let host = host.borrow();
+    let (_, first) = host.frames.iter().find(|(id, _)| *id == prefs.id()).expect("preferences was presented");
+    assert!(first.redraw, "{first:?}");
+    let Some(NativeChange::Create { id, kind, props, .. }) = first.native.first() else {
+        panic!("missing mounted content in the first frame: {first:?}");
+    };
+    assert_eq!((kind.as_str(), props["caption"].as_str()), ("preview", Some("Preferences")));
+    assert!(
+        first
+            .native
+            .iter()
+            .any(|change| { matches!(change, NativeChange::Place { placements } if placements.iter().any(|p| p.id == *id && p.visible)) }),
+        "missing the mounted view's first placement: {first:?}"
+    );
+}
+
+#[test]
+fn immediate_watches_open_windows_within_one_app_update_budget() {
+    #[ui]
+    fn chain(mounted: Rc<Cell<usize>>, limit: Rc<Cell<usize>>) -> View {
+        let ordinal = mounted.get() + 1;
+        mounted.set(ordinal);
+        watch(
+            || (),
+            move |_, _| {
+                if ordinal < limit.get() {
+                    let mounted = mounted.clone();
+                    let limit = limit.clone();
+                    open_window(WindowOptions::new("Chain"), move || chain(mounted.clone(), limit.clone())).unwrap();
+                }
+            },
+        );
+        text("Chain").id("chain").size_full().into()
+    }
+
+    let app = App::new(HeadlessPlatform::default());
+    let mounted = Rc::new(Cell::new(0));
+    let limit = Rc::new(Cell::new(20)); // A regression must fail the assertion without exhausting the test thread's stack.
+    let (root_mounted, root_limit) = (mounted.clone(), limit.clone());
+    app.run(|| {
+        open_window(WindowOptions::new("Chain"), move || chain(root_mounted.clone(), root_limit.clone())).unwrap();
+    });
+
+    let first_update = mounted.get();
+    assert!((1..=16).contains(&first_update), "mounted {first_update} roots in one App update");
+    assert!(app.diagnostics().iter().any(|d| d.code == "LAYOUT_LOOP"), "{:?}", app.diagnostics());
+    let pending = app.pending();
+    assert!(pending.iter().any(|work| work.kind == WorkKind::Update), "{pending:?}");
+    assert_eq!(mounted.get(), first_update, "observing pending work must leave it queued");
+
+    limit.set(first_update);
+    app.run(|| {});
+
+    assert_eq!(mounted.get(), first_update + 1, "the queued root mounts in the next update");
+    let windows = app.windows();
+    assert_eq!(windows.len(), mounted.get());
+    let last = app.window(*windows.last().unwrap()).unwrap();
+    assert_eq!(last.kernel().text_of("chain").as_deref(), Some("Chain"));
+    assert!(last.frames_presented() > 0);
+    assert!(app.pending().is_empty(), "{:?}", app.pending());
+    app.shutdown();
+}
+
+#[test]
+fn pure_phases_cannot_open_or_close_windows() {
+    #[ui]
+    fn ready() -> View {
+        text("Ready").size_full().into()
+    }
+
+    for phase in ["build", "init", "memo", "binding", "watch source"] {
+        let (app, host) = recording_app();
+        let (foreign, foreign_host) = recording_app();
+        let main = app.open_window(WindowOptions::new("Main"), ready).unwrap();
+        let other = foreign.open_window(WindowOptions::new("Other"), ready).unwrap();
+        let (main_id, other_id) = (main.id(), other.id());
+        let target = foreign.clone();
+        let probe = app
+            .open_window(WindowOptions::new(phase), move || {
+                let target = target.clone();
+                let attempt = move || {
+                    assert!(open_window(WindowOptions::new("Refused"), ready).is_err(), "{phase}: ambient open");
+                    close_window(main_id);
+                    for (app, id) in [(&App::current(), main_id), (&target, other_id)] {
+                        assert!(app.open_window(WindowOptions::new("Refused"), ready).is_err(), "{phase}: handle open");
+                        app.close_window(id);
+                    }
+                    "Ready".to_owned()
+                };
+                let label = match phase {
+                    "build" => text(attempt()),
+                    "init" => text(state("initial", attempt)),
+                    "memo" => text(memo(attempt)),
+                    "binding" => text(attempt),
+                    "watch source" => {
+                        watch(attempt, |_, _| {});
+                        text("Ready")
+                    }
+                    _ => unreachable!(),
+                };
+                label.id("probe").size_full().into()
+            })
+            .unwrap();
+
+        assert_eq!(probe.kernel().text_of("probe").as_deref(), Some("Ready"));
+        assert_eq!(app.windows(), [main_id, probe.id()], "{phase}");
+        assert_eq!(host.borrow().opened, [main_id, probe.id()], "{phase}");
+        assert_eq!(foreign.windows(), [other_id], "{phase}");
+        assert_eq!(foreign_host.borrow().opened, [other_id], "{phase}");
+        assert!(!main.is_closed() && !other.is_closed(), "{phase}");
+        let code = if matches!(phase, "build" | "init") { "WRITE_IN_BUILD" } else { "WRITE_IN_DERIVE" };
+        let diagnostics = app.diagnostic_counts();
+        assert!(diagnostics.iter().all(|&(actual, _)| actual == code), "{phase}: {diagnostics:?}");
+        assert_eq!(diagnostics.iter().map(|&(_, count)| count).sum::<u32>(), 6, "{phase}: one diagnostic per request");
+        assert!(foreign.diagnostics().is_empty(), "{:?}", foreign.diagnostics());
+        app.shutdown();
+        foreign.shutdown();
+    }
+}
+
+#[test]
+fn closing_a_window_in_its_opening_turn_skips_mount_and_presentation() {
+    for through_handle in [false, true] {
+        let (app, host) = recording_app();
+        let mounted = Rc::new(Cell::new(false));
+        let root_mounted = mounted.clone();
+        let id = app.run(|| {
+            let options = WindowOptions::new("Canceled");
+            let root = move || {
+                root_mounted.set(true);
+                text("Canceled").size_full().into()
+            };
+            if through_handle {
+                let window = app.open_window(options, root).unwrap();
+                app.close_window(window.id());
+                window.id()
+            } else {
+                let id = open_window(options, root).unwrap();
+                close_window(id);
+                id
+            }
+        });
+
+        assert!(!mounted.get(), "through_handle={through_handle}");
+        assert!(app.window(id).is_none());
+        assert!(app.windows().is_empty());
+        assert!(host.borrow().frames.is_empty());
+        assert!(app.pending().is_empty(), "{:?}", app.pending());
+        assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+        app.shutdown();
+    }
 }
 
 #[test]
 fn closing_and_shutdown_release_hosts_even_when_window_handles_survive() {
-    use octara::platform::{Frame, Platform, PlatformWindow};
-    use std::any::Any;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    struct Host {
-        id: WindowId,
-        dropped: Rc<RefCell<Vec<WindowId>>>,
-    }
-    impl PlatformWindow for Host {
-        fn present(&mut self, _: Frame) {}
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-    }
-    impl Drop for Host {
-        fn drop(&mut self) {
-            self.dropped.borrow_mut().push(self.id);
-        }
-    }
-    struct System(Rc<RefCell<Vec<WindowId>>>);
-    impl Platform for System {
-        fn read_text(&mut self) -> Option<String> {
-            None
-        }
-        fn write_text(&mut self, _: &str) {}
-        fn open_window(&mut self, id: WindowId, _: &WindowOptions) -> Result<Box<dyn PlatformWindow>, String> {
-            Ok(Box::new(Host { id, dropped: self.0.clone() }))
-        }
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-    }
-
-    let dropped = Rc::new(RefCell::new(Vec::new()));
-    let app = App::new(System(dropped.clone()));
+    let (app, host) = recording_app();
     let open = || app.open_window(WindowOptions::new("Same name"), || el().into()).unwrap();
     let first = open();
     let second = open();
-    assert!(dropped.borrow().is_empty());
+    assert!(host.borrow().dropped.is_empty());
     app.close_window(first.id());
-    assert_eq!(*dropped.borrow(), [first.id()], "closing immediately releases only its host");
+    assert_eq!(host.borrow().dropped, [first.id()], "closing immediately releases only its host");
     assert!(first.is_closed());
     assert!(!second.is_closed());
     let reopened = open();
     assert_ne!(reopened.id(), first.id());
     app.close_window(first.id());
-    assert_eq!(*dropped.borrow(), [first.id()], "an old handle cannot close the replacement host");
+    assert_eq!(host.borrow().dropped, [first.id()], "an old handle cannot close the replacement host");
 
     app.shutdown();
     assert!(second.is_closed() && reopened.is_closed());
     let mut expected = vec![first.id(), second.id(), reopened.id()];
     expected.sort();
-    dropped.borrow_mut().sort();
-    assert_eq!(*dropped.borrow(), expected, "shutdown releases each live host once");
+    host.borrow_mut().dropped.sort();
+    assert_eq!(host.borrow().dropped, expected, "shutdown releases each live host once");
     app.shutdown();
     drop((first, second, reopened));
-    assert_eq!(*dropped.borrow(), expected, "dropping stale handles does not release a host twice");
+    assert_eq!(host.borrow().dropped, expected, "dropping stale handles does not release a host twice");
 }
 
 #[test]
@@ -397,8 +572,6 @@ fn closing_a_window_disposes_its_scope_and_frees_it() {
 #[test]
 fn configured_resources_are_visible_during_build_and_first_frame() {
     use octara::app::TargetPlatform;
-    use std::cell::Cell;
-    use std::rc::Rc;
 
     let builds = Rc::new(Cell::new(0));
     let config = AppConfig { theme: Theme::dark(), text_engine: Box::new(octara_text::MonoEngine), target_platform: TargetPlatform::Ios };

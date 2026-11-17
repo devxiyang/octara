@@ -66,8 +66,8 @@ impl App {
             if windows.is_empty() {
                 // App work survives its last window. Run it at this timer's own time, then
                 // settle any app watches or window requests before advancing to the next due.
-                self.poll();
-                self.app.frame(std::panic::Location::caller());
+                self.app.poll_requested.set(true);
+                self.app.frame(None, std::panic::Location::caller());
             }
             for w in &windows {
                 w.input_frame(|| w.pointer_time());
@@ -87,7 +87,7 @@ impl App {
         }
         // The clock moving is an operation like any other: it ends with a frame, which presents
         // what time alone changed (motion's next frame, a caret's blink) to each platform window.
-        self.app.frame(std::panic::Location::caller());
+        self.app.frame(None, std::panic::Location::caller());
     }
 
     /// When the app next needs the clock advanced (a timer, a long press coming due, the next
@@ -122,16 +122,23 @@ impl App {
 
     /// Runs what other threads woke (background results, channel messages). Shells call this
     /// when the app's waker fires. A bounded turn may leave ready work pending and request
-    /// another wake; use `pending()` to inspect unfinished work.
+    /// another wake; use `pending()` to inspect unfinished work. A nested call requests a drain
+    /// at the enclosing update boundary, after the caller gives back its borrows.
+    #[track_caller]
     pub fn poll(&self) {
-        if self.is_shutdown() {
+        use crate::reactive::graph::{Operation, Runtime};
+        let at = std::panic::Location::caller();
+        if self.is_shutdown() || !Runtime::caller_allows(Operation::Write, at) {
             return;
         }
-        match self.each().first() {
+        self.app.poll_requested.set(true);
+        if self.app.depth.get() != 0 {
+            return;
+        }
+        // Keep the input cause and stationary-pointer refresh of a window-host poll.
+        match self.each().into_iter().find(Window::can_prepare) {
             Some(w) => w.input_frame(|| {}),
-            None => self.enter(|| {
-                self.app.sched.run_ready();
-            }),
+            None => self.app.frame(None, at),
         }
     }
 
@@ -215,9 +222,21 @@ impl App {
                 due: None,
             });
         }
+        if self.app.has_window_requests() {
+            out.push(PendingWork {
+                kind: WorkKind::Update,
+                label: "window lifecycle requests are still pending".into(),
+                scope: "app".into(),
+                at: String::new(),
+                due: None,
+            });
+        }
         for w in self.each() {
+            if !w.can_prepare() {
+                continue;
+            }
             out.extend(w.motion_work());
-            if !w.w.closed.get() && w.w.settled_generation.get() != Some(w.w.kernel.borrow().mutation_generation()) {
+            if w.w.settled_generation.get() != Some(w.w.kernel.borrow().mutation_generation()) {
                 out.push(PendingWork {
                     kind: WorkKind::Update,
                     label: "window updates are still pending".into(),

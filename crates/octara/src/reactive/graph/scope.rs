@@ -110,6 +110,24 @@ impl Runtime {
         self.scopes.borrow()[scope.i as usize].cleanups.len()
     }
 
+    /// Refuse further work in an owner tree before the App drains its queued disposal.
+    pub(crate) fn retire_scope_tree(&self, root: ScopeId) {
+        let mut scopes = self.scopes.borrow_mut();
+        let mut pending = vec![root];
+        while let Some(id) = pending.pop() {
+            let Some(scope) = scopes.get_mut(id.i as usize).filter(|scope| id.runtime == self.identity && scope.g == id.g) else {
+                continue;
+            };
+            if matches!(scope.state, ScopeState::Disposed) {
+                continue;
+            }
+            if scope.state == ScopeState::Live {
+                scope.state = ScopeState::Retiring;
+            }
+            pending.extend(scope.children.iter().copied());
+        }
+    }
+
     /// Disposes a scope with its children, cleanups and nodes. During a hot reload named state
     /// stays in the store; otherwise it goes with the scope.
     pub fn dispose_scope(&self, s: ScopeId) {
