@@ -69,6 +69,20 @@ fn items_are_found_by_canonical_path_and_alias() {
     assert!(api.get("octara::platform::PlatformWindow::as_any_mut").is_none());
     assert!(!api.get("octara::app::App::platform").unwrap().sig.contains("RefMut"));
     assert!(api.get("octara::kernel::Kernel::resources").is_none());
+    assert!(api.get("octara::kernel::Resources").is_none());
+    for method in [
+        "new",
+        "set_theme",
+        "register_font",
+        "register_fallback_font",
+        "set_touch",
+        "set_reduced_motion",
+        "theme_changed",
+        "fonts_changed",
+        "touch_changed",
+    ] {
+        assert!(api.get(&format!("octara::kernel::Kernel::{method}")).is_none(), "Kernel no longer owns resource mutation: {method}");
+    }
     assert!(api.get("octara::kernel::Resources::set_text_engine").is_none());
     assert!(api.get("octara::kernel::Kernel::set_text_engine").is_none());
     assert!(api.get("octara::app::App::set_text_engine").is_none());

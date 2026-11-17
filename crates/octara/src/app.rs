@@ -14,6 +14,7 @@ mod keys;
 mod pick;
 mod pointer;
 mod presentation;
+mod resources;
 mod selection;
 mod time;
 mod tooltip;
@@ -613,12 +614,7 @@ impl App {
             teardown: Cell::new(Teardown::Pending),
             failed,
             sched: Rc::new(crate::task::Scheduler::default()),
-            res: Rc::new(crate::kernel::Resources {
-                theme: RefCell::new(theme),
-                text: RefCell::new(text_engine),
-                touch: Cell::new(target_platform.is_touch()),
-                reduced_motion: Cell::new(false),
-            }),
+            res: Rc::new(crate::kernel::Resources::new(theme, text_engine, target_platform.is_touch())),
             windows: RefCell::default(),
             order: RefCell::default(),
             opening: RefCell::default(),
@@ -855,33 +851,6 @@ impl AppState {
             }
         }
         self.checking.set(false);
-    }
-
-    /// Switches the theme every window shows; each window's kernel restyles and its breakpoint
-    /// follows (the theme may move the breakpoints).
-    pub(crate) fn set_theme(self: &Rc<Self>, theme: Theme) {
-        if theme == *self.res.theme.borrow() {
-            return;
-        }
-        *self.res.theme.borrow_mut() = theme;
-        for id in self.order.borrow().clone() {
-            let Some(w) = self.handle(id) else { continue };
-            w.w.kernel.borrow_mut().theme_changed();
-            let bp = self.res.theme.borrow().breakpoint_of(w.w.size.get().0);
-            if untrack(|| w.w.breakpoint.get()) != bp {
-                w.enter(|| w.w.breakpoint.set(bp));
-            }
-        }
-    }
-
-    /// The shared text system's fonts changed: every window measures its text again.
-    fn fonts_changed(self: &Rc<Self>) {
-        for id in self.order.borrow().clone() {
-            if let Some(w) = self.handle(id) {
-                w.w.kernel.borrow_mut().fonts_changed();
-            }
-        }
-        self.frame(std::panic::Location::caller());
     }
 
     /// Opens a window from app code: made now, built at the end of the frame.
@@ -1439,34 +1408,6 @@ impl App {
     /// The platform whose conventions input follows (the build's by default).
     pub fn target_platform(&self) -> TargetPlatform {
         self.app.platform.get()
-    }
-    /// The platform whose conventions input follows: its keymap, and on touch platforms the
-    /// controls' touch sizes (`when_touch`), in every window.
-    pub fn set_target_platform(&self, p: TargetPlatform) {
-        self.app.platform.set(p);
-        self.app.res.touch.set(p.is_touch());
-        for w in self.each() {
-            w.w.kernel.borrow_mut().touch_changed();
-        }
-        self.app.frame(std::panic::Location::caller());
-    }
-    /// Switches the theme of every window. Token colors resolve in the kernels, so no closure
-    /// reruns; only nodes whose resolved colors change are repainted.
-    pub fn set_theme(&self, theme: Theme) {
-        self.enter(|| self.app.set_theme(theme));
-        self.app.frame(std::panic::Location::caller());
-    }
-    /// Adds font data (TTF/OTF); its families can then be named by the theme or `font_family`,
-    /// in every window.
-    pub fn register_font(&self, data: &'static [u8]) {
-        self.app.res.text.borrow_mut().register_font(data);
-        self.app.fonts_changed();
-    }
-    /// Adds a font text falls back to for `scripts` (ISO 15924 tags: `*b"Hani"` for hanzi,
-    /// `*b"Hira"`, `*b"Kana"`, `*b"Hang"`, …) when its own family lacks a character.
-    pub fn register_fallback_font(&self, data: &'static [u8], scripts: &[[u8; 4]]) {
-        self.app.res.text.borrow_mut().register_fallback_font(data, scripts);
-        self.app.fonts_changed();
     }
     /// The theme every window shows.
     pub fn theme(&self) -> Theme {

@@ -59,7 +59,9 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
 - Configure the initial theme, fonts and target conventions with `AppConfig` before
   `App::with_config`. Desktop shell options own this as `Options.app` and default to system
   fonts. Set `options.app.theme` before `run_with`, not in a deferred startup task. Text-engine
-  replacement is initialization-only; runtime theme/font changes use the App's APIs.
+  replacement is initialization-only; runtime theme/font/environment changes use the App's APIs
+  in handlers, watch callbacks or host operations. Construction, initializers and pure sources
+  cannot mutate resources, even through another App handle. Shutdown rejects resource writes.
 - Colors are semantic tokens (`Token::Surface`, `Token::Text`, `Token::Accent`); app colors are
   `Token::custom("brand")` defined in the theme.
 - Motion is declared, never state: `.motion(Spring::SNAP)` on an element or ancestor makes changes

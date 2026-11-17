@@ -572,7 +572,7 @@ impl TextInputLayout {
         let lines = if shown.is_empty() {
             vec![VisualLine { start: 0, end: 0, top: 0.0, height: self.style.line_height, stops: vec![(0, 0.0)] }]
         } else {
-            let mut engine = self.resources.text.try_borrow_mut().ok()?;
+            let mut engine = self.resources.text.try_borrow_mut()?;
             engine.layout(shown, &self.style, &[], None, 0).visual_lines(self.multiline.then_some(self.content.w))
         };
         let mut field = Field::new(shown.to_owned(), caret, self.content, self.style.line_height, lines);

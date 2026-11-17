@@ -118,10 +118,10 @@ impl Runtime {
         false
     }
 
-    /// Handle-based release can run without an ambient App. If there is a caller,
+    /// Handle-based operations can run without an ambient App. If there is a caller,
     /// check its phase before switching owners, including cross-App cancellation.
-    pub(crate) fn release_allowed(at: &'static Location<'static>) -> bool {
+    pub(crate) fn caller_allows(operation: Operation, at: &'static Location<'static>) -> bool {
         let caller = CURRENT.with(|current| current.borrow().clone());
-        caller.is_none_or(|runtime| runtime.allows(Operation::Release, at))
+        caller.is_none_or(|runtime| runtime.allows(operation, at))
     }
 }

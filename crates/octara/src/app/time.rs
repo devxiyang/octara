@@ -112,14 +112,6 @@ impl App {
         }
     }
 
-    /// Reduce Motion (the system setting): positions and sizes land at once; opacity and
-    /// colors fade briefly instead of moving on their springs.
-    pub fn set_reduced_motion(&self, on: bool) {
-        for w in self.each() {
-            w.w.kernel.borrow_mut().set_reduced_motion(on);
-        }
-    }
-
     /// Lands everything in motion on its target now, in every window.
     pub fn settle_motion(&self) {
         for w in self.each() {

@@ -51,6 +51,18 @@ app.shutdown();
 engine, set `text_engine`; register initial fonts on that engine before passing the config to
 `App::with_config`. The engine is owned by the App and cannot be replaced at runtime.
 
+Runtime resource changes use the App's methods (or `set_theme` for the current App). They obey
+write permissions: handlers, watch callbacks and host operations may change them; construction,
+state initializers, memos and binding/watch sources may not, including through another App's
+handle. Shutdown rejects resource writes; a failed App must be shut down. A live App's window
+cleanup may still update its resources, but shutdown cleanup may not.
+
+Custom text engines' runtime font-registration callbacks run without dependency collection or UI
+write permission. They must update the font provider, not reenter UI driving/layout. Native text
+queries can decline while registration is in progress and query again afterwards. An escaping
+provider panic fails the App; it does not publish a partially updated frame or roll back arbitrary
+provider work.
+
 Desktop `octara_shell::Options::default()` already uses system fonts. Customize its `app.theme`
 before `run_with`; assign `app: AppConfig::default()` to use bundled fonts. Do not spawn a task
 just to set the initial theme. `Window::headless` remains the short default setup.

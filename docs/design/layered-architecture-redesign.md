@@ -123,14 +123,20 @@ target_platform，由 `App::with_config` 消费。Shell 的 `Options.app` 走同
 默认系统字体在首次挂载前准备；Chat 不再用启动任务设置主题。
 `App::set_text_engine`、`App::use_system_fonts`、`Kernel::set_text_engine` 和内部替换 helper
 已删除。初始化前可直接在配置的 engine 上注册字体；运行中仍允许追加字体。
-下文的共享 Resources/Kernel 写权限收拢、运行中资源准入与失效统一属于 TODO A2，尚未实施。
+A2 也已落地：共享 Resources、Kernel 资源构造/写入口和通知 hook 已改为内部；
+主题、字体、目标平台、Reduce Motion 经 `app/resources.rs` 统一检查调用阶段及 App 存活资格，
+再修改并通知相关窗口。嵌套 handler/watch/cleanup 不递归推进帧，由外层更新统一收尾。
+关闭后的修改拒绝并报告 WRITE_DISPOSED；失败 App 沿用 APP_FAILED。窗口 cleanup 可以修改
+仍存活 App 的资源，App shutdown cleanup 不能修改已关闭资源。
+字体注册 provider 临时取出引擎，在无存储借用、无依赖收集且禁止 UI 写入的阶段执行；
+DropGuard 确保 panic 后归还引擎。原生查询在引擎不可用时返回 None；不新增替代引擎或第二份缓存。
+回调返回后重新检查 App 资格，再失效和发布；panic 不回滚任意 provider 副作用。
 
 主题、字体目录、文本引擎和宿主配置由 App 管理。Kernel 消费资源及其有效性信息，
 只处理本窗口的失效，不对共享资源另设公共修改规则。
 
-仍存在的 `Kernel::set_theme` / `register_font` 修改共享资源后，
-文档要求调用者另行通知其他 standalone Kernel。目标删除这一公开双重职责。
-独立 Kernel 测试使用私有资源或测试装配入口；共享窗口统一经过 App。
+原有 `Kernel::set_theme` / `register_font` 等共享写入口和公开手动通知协议已删除。
+独立 Kernel 使用独立默认资源，内部测试按需私有装配；共享窗口统一经过 App。
 `Window::kernel()` 当前已经只读，**本提案不声称存在公开的活动窗口可变 Kernel 入口**。
 
 初始化流程调整为：宿主配置 → 创建 App 及资源 → 创建窗口 → 挂载首个 View → 首帧。
@@ -138,7 +144,7 @@ target_platform，由 `App::with_config` 消费。Shell 的 `Options.app` 走同
 在资源写入前执行准入，并统一通知受影响窗口。
 
 文本引擎选择已收为初始化配置，基准测试创建明确配置的 App；运行中替换引擎入口已移除。
-目标平台约定有初始化配置，但 Inspector 的运行中环境切换仍保留，准入与失效纳入 A2。
+目标平台约定有初始化配置，但 Inspector 的运行中环境切换仍保留，准入与失效统一由 A2 的 App 入口处理。
 将来若确有运行中替换引擎的产品需求，须先设计资源退役与全窗口失效。
 窗口缩放、系统主题、输入设备变化和 reduced motion 仍是合法动态环境，不随此项删除。
 

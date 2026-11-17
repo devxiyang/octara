@@ -41,6 +41,7 @@ mod position;
 mod range;
 mod reactive_props;
 mod replay;
+mod resources;
 mod responsive;
 mod rich;
 mod scroll;

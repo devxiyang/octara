@@ -177,10 +177,6 @@ impl Kernel {
     pub fn set_instant(&mut self, on: bool) {
         self.instant = on;
     }
-    /// Reduce Motion: spatial motion lands at once, opacity and colors fade briefly.
-    pub fn set_reduced_motion(&mut self, on: bool) {
-        self.res.reduced_motion.set(on);
-    }
     pub fn reduced_motion(&self) -> bool {
         self.res.reduced_motion.get()
     }

@@ -22,13 +22,13 @@ Package extraction alone does not complete the responsibility redesign.
       path; migrate Chat's deferred theme setup, deterministic text tests and screenshot tools.
       Delete runtime text-engine replacement/system-font switching APIs. Verify the first
       build and first output use the configured resources, including multiple windows.
-- [ ] **A2 — One resource mutation owner (next).** App owns legal runtime theme/font/environment
+- [x] **A2 — One resource mutation owner.** App owns legal runtime theme/font/environment
       changes. Check execution/lifetime permissions before mutation; invalidate all affected
       windows through the same owner. Remove public shared Resources and Kernel resource
       setters/manual cross-kernel notification protocols; use explicit private test assembly.
       Verify forbidden build/derive/observe calls, shutdown/failure, multi-window invalidation
       and callback/borrow boundaries without adding public permission primitives.
-- [ ] **A3 — Window coordination.** Move after-layout/scroll/size feedback coordination out of
+- [ ] **A3 — Window coordination (next).** Move after-layout/scroll/size feedback coordination out of
       View into Window; View only registers required bindings/work. Preserve bounded feedback,
       cancellation and scope ownership. Delete the old coordination path.
 
@@ -39,7 +39,23 @@ and no deferred task. Existing multiline, system-font, Chat and virtual-geometry
 No-default-features core check, strict library rustdoc, layer checks, formatting and CLI vocab
 passed; the exported skill is current. No real-window/OS validation was performed in A1.
 `AppConfig` / `App::with_config` and shell `Options.app` replace runtime engine switching;
-Chat supplies its theme before mounting. A2 and subsequent contracts remain open.
+Chat supplies its theme before mounting.
+
+A2 evidence (2026-11-17, Rust 1.100.0): runtime resource mutations now share
+`app/resources.rs`; public Resources, Kernel resource setters/constructor and manual invalidation
+hooks are removed. The current-App theme helper uses the same gate. Reduced Motion is retained
+before any windows exist. Provider registration is detached from storage, untracked and denied
+UI write permission; DropGuard restores engine ownership on panic.
+
+Full workspace regression: **876 passed, 0 failed, 3 existing ignored doctests**. New tests cover
+build/init/derive/observe rejection including cross-App handles, shutdown/failure, live window
+cleanup versus shutdown cleanup, font invalidation of two windows with stable targets, provider
+reentry/read isolation, native-query unavailability/recovery, and panic without partial frame
+publication. Storage-borrow release and panic restoration also have a focused unit test.
+Workspace all-targets check/Clippy, strict library rustdoc, no-default-features core build,
+formatting, diff/layer checks and actual CLI vocab lookup passed. Skill export is synchronized.
+No real OS/window validation was performed; native-query evidence uses the headless protocol.
+A3 and subsequent contracts remain open.
 
 ### B. Document and content composition
 

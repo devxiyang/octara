@@ -692,7 +692,7 @@ impl Task {
     /// This handle can be used outside App::run, including after its owner has closed.
     #[track_caller]
     pub fn cancel(&self) {
-        if !crate::reactive::graph::Runtime::release_allowed(Location::caller()) {
+        if !crate::reactive::graph::Runtime::caller_allows(crate::reactive::graph::Operation::Release, Location::caller()) {
             return;
         }
         self.cancel_owned();

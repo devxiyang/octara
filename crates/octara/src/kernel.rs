@@ -15,6 +15,8 @@ mod edit;
 mod focus;
 mod issues;
 mod paint;
+mod resources;
+pub(crate) use resources::Resources;
 pub mod rich;
 pub mod select;
 pub mod style;
@@ -667,27 +669,6 @@ pub struct Kernel {
     index: FxHashMap<String, Vec<NodeId>>,
 }
 
-/// What every window's kernel shares ([design](https://github.com/octoii-works/octara/blob/main/docs/design/core.md)):
-/// the theme, the text system (fonts, fallback, shaping and layout caches), whether input is
-/// touch, and the reduced-motion preference. The app changes them and tells each kernel.
-pub struct Resources {
-    pub(crate) theme: RefCell<Theme>,
-    pub(crate) text: RefCell<Box<dyn TextEngine>>,
-    pub(crate) touch: Cell<bool>,
-    pub(crate) reduced_motion: Cell<bool>,
-}
-
-impl Default for Resources {
-    fn default() -> Self {
-        Resources {
-            theme: RefCell::new(Theme::default()),
-            text: RefCell::new(Box::new(text::ParleyEngine::default())),
-            touch: Cell::new(false),
-            reduced_motion: Cell::new(false),
-        }
-    }
-}
-
 impl Default for Kernel {
     fn default() -> Self {
         Self::new(Rc::default())
@@ -696,7 +677,7 @@ impl Default for Kernel {
 
 impl Kernel {
     /// A kernel reading `res` (shared by an app's windows).
-    pub fn new(res: Rc<Resources>) -> Self {
+    pub(crate) fn new(res: Rc<Resources>) -> Self {
         let mut k = Kernel {
             identity: crate::identity::TreeIdentity::new(crate::identity::new_namespace(), 0),
             nodes: SlotMap::with_key(),
@@ -1931,17 +1912,8 @@ impl Kernel {
         changed || semantic || drawn.is_some()
     }
 
-    /// Sets the shared theme and restyles this kernel (other kernels sharing it are told with
-    /// [`theme_changed`](Self::theme_changed)).
-    pub fn set_theme(&mut self, theme: Theme) {
-        if theme == *self.res.theme.borrow() {
-            return;
-        }
-        *self.res.theme.borrow_mut() = theme;
-        self.theme_changed();
-    }
     /// The shared theme changed: every node resolves against it again.
-    pub fn theme_changed(&mut self) {
+    pub(crate) fn theme_changed(&mut self) {
         self.paint_gen += 1;
         self.mutation_gen += 1;
         self.theme_gen += 1;
@@ -1963,19 +1935,9 @@ impl Kernel {
         v.dedup();
         v
     }
-    /// Adds font data; its families become available to `font_family` and the theme.
-    pub fn register_font(&mut self, data: &'static [u8]) {
-        self.res.text.borrow_mut().register_font(data);
-        self.fonts_changed();
-    }
-    /// Adds a font text falls back to for `scripts` (see [`TextEngine::register_fallback_font`]).
-    pub fn register_fallback_font(&mut self, data: &'static [u8], scripts: &[[u8; 4]]) {
-        self.res.text.borrow_mut().register_fallback_font(data, scripts);
-        self.fonts_changed();
-    }
     /// Every text measures again: shapes may now resolve to other faces (after the shared text
     /// system's fonts changed).
-    pub fn fonts_changed(&mut self) {
+    pub(crate) fn fonts_changed(&mut self) {
         self.fonts_generation += 1;
         self.mutation_gen += 1;
         let ids: Vec<NodeId> =
@@ -2187,17 +2149,8 @@ impl Kernel {
         self.res.touch.get()
     }
 
-    /// Switching between touch and pointer input re-resolves the nodes with touch overrides (no
-    /// closure runs).
-    pub fn set_touch(&mut self, on: bool) {
-        if on == self.res.touch.get() {
-            return;
-        }
-        self.res.touch.set(on);
-        self.touch_changed();
-    }
     /// The shared touch setting changed: the nodes with touch overrides resolve again.
-    pub fn touch_changed(&mut self) {
+    pub(crate) fn touch_changed(&mut self) {
         let ids: Vec<NodeId> =
             self.nodes.iter().filter(|(_, n)| n.overrides.iter().any(|(w, _)| *w == When::Touch)).map(|(id, _)| id).collect();
         for id in ids {
@@ -2740,7 +2693,8 @@ mod tests {
         assert_eq!(bg(&k), Theme::light().get(Token::SurfaceHover));
         k.set_state(col, State::DISABLED, true);
         assert_eq!(k.visual_of("col").unwrap().opacity, 0.5);
-        k.set_theme(Theme::dark());
+        *k.res.theme.borrow_mut() = Theme::dark();
+        k.theme_changed();
         assert_eq!(bg(&k), Theme::dark().get(Token::SurfaceHover), "tokens follow the theme");
         k.set_state(col, State::HOVER, false);
         assert_eq!(bg(&k), Theme::dark().get(Token::Surface));

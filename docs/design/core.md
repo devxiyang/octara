@@ -22,13 +22,24 @@ and scopes the next work to live inspection and concrete lifecycle/output fixes;
 | --- | --- |
 | `App` (a handle, `Clone`) | an `Rc<AppState>`; nothing else |
 | `AppState` (one per app) | the reactive `Runtime`; the `Scheduler` and its clock; `Resources`; the `Platform`; the windows (`SlotMap<WindowId, Rc<WindowState>>`) in the order they opened; windows to open and close at the end of the frame; tuning, the target platform's conventions, the keymap; the capture painter; the recording |
-| `Resources` (`kernel::Resources`, shared by every window's kernel) | the theme (one value: a change restyles every window), the text engine (font collection, fallback, shaping and layout caches; texts are keyed by kernel and node), touch, reduced motion |
+| `Resources` (private kernel data, shared by every window's kernel) | the theme (one value: a change restyles every window), the text engine (font collection, fallback, shaping and layout caches; texts are keyed by kernel and node), touch, reduced motion |
 | `Window` (a handle on an `App` and a `WindowState`, `Clone`) | its `Kernel` (tree, styles, layout, paint, semantics); interaction (focus, hover, presses, edits, selection); size and scale, with their signals; handlers and commands; overlay slots; followed scroll states and sizes; after-layout hooks; its root view, scope and slots; its `PlatformWindow`; what its platform was last sent; a capture in progress |
 | `Kernel` | the node tree and everything per node; it reads `Resources` (an `Rc`), it owns none of them |
 
 A window handle outlives its window (`is_closed`). Closing a window disposes its root scope (its
 bindings, watches and tasks) and the signals the window holds, then frees it; a thousand opens
 and closes leave nothing behind.
+
+Resource changes are owned by App (`app/resources.rs`). Every runtime mutation checks the
+caller's execution phase and the destination App's lifetime before changing anything; shared
+windows invalidate together. Theme/font/target conventions and Reduce Motion use this path.
+Reduce Motion is stored even with no windows. Kernels expose no shared-resource setters or
+manual cross-kernel notification protocol; independent low-level tests use private assembly.
+
+Font registration takes the engine out of its storage while calling the provider, with a Rust
+`DropGuard` restoring ownership even on panic. It runs untracked and without UI write permission.
+Native layout queries return `None` while the engine is unavailable. An escaping panic fails the
+App and suppresses publication; no rollback of custom provider side effects is promised.
 
 ## Context
 

@@ -139,8 +139,12 @@ CLI `vocab` resolves public paths and cross-crate prelude exports to their defin
 Initial resources use `AppConfig` (theme, owned text engine and target-platform conventions),
 consumed by `App::with_config` before any window is opened. `App::new` uses bundled-font defaults;
 the desktop shell's `Options.app` uses system fonts by default and is consumed on first resume.
-Chat supplies its theme there, without a startup task. The `init` refactor's remaining resource
-mutation ownership and permission work is tracked separately in [TODO](TODO.md#init-architecture-refactor-2026-11-17).
+Chat supplies its theme there, without a startup task. Runtime theme, font, target-platform and
+Reduce Motion changes share the App's resource-write path (`app/resources.rs`): caller and App
+admission precede mutation; affected windows invalidate before the outer update settles.
+Kernel's shared Resources and resource constructor/setters/notification hooks are internal.
+Standalone Kernel tests use private assembly; public `Kernel::default` owns independent defaults.
+The next coordination work is tracked in [TODO](TODO.md#init-architecture-refactor-2026-11-17).
 
 - `App` is a handle on the app's state: the reactive runtime, the scheduler and its clock, the
   resources every window's kernel reads (theme, text system), the platform, and the windows. A

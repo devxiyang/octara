@@ -551,8 +551,9 @@ pub fn pointer_position_in(id: &str) -> Option<(f32, f32)> {
 
 /// Switches the theme of every window. Token colors resolve in the kernels, so no closure
 /// reruns; only nodes whose resolved colors change are repainted. Callable from handlers.
+#[track_caller]
 pub fn set_theme(theme: Theme) {
-    crate::app::app_state().set_theme(theme);
+    crate::app::App::current().set_theme(theme);
 }
 
 /// Opens `url` with the system: the browser, the mail app (GPUI's `open_url`). A link no
