@@ -346,21 +346,23 @@ impl Kernel {
     /// shown, it leaves the tree now — layout, hit testing, focus, assistive technology and test
     /// ids no longer see it — while it fades out where it was; it is destroyed when it has. Its
     /// destroy calls until then do nothing. Returns whether it is leaving this way.
+    #[track_caller]
     pub fn begin_exit(&mut self, id: NodeId) -> bool {
         if self.quiet || !self.is_alive(id) {
             return false;
         }
+        self.require_application_node(id);
         let n = self.node(id);
         let Some(parent) = n.parent else { return false };
         let curve = self.curve(n.visual.motion.opacity, PropClass::Opacity);
         if !n.attached || n.born == self.layouts || n.anim.is_none() || matches!(curve, Curve::Instant) {
             return false;
         }
-        let pos = self.node(parent).children.iter().position(|c| *c == id).expect("child of parent");
-        self.node_mut(parent).children.remove(pos);
+        let pos = self.node(parent).children().iter().position(|c| *c == id).expect("child of parent");
+        self.node_mut(parent).application_children_mut().remove(pos);
         let pt = self.node(parent).taffy;
         self.taffy.remove_child_at_index(pt, pos).expect("taffy");
-        if self.node(parent).children.is_empty() && self.node(id).layout.position == taffy::Position::Absolute {
+        if self.node(parent).children().is_empty() && self.node(id).layout.position == taffy::Position::Absolute {
             self.refresh_taffy_node(parent);
         }
         self.set_attached(id, false);

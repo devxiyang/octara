@@ -83,11 +83,15 @@ the skill are unchanged. No real-window/OS validation was performed in A3.
 - [x] **B1 — Builder content ownership.** Separate application container children from atomic
       text/input/image/icon/canvas/native content. Keep ordinary Rust builders and shared styling;
       avoid generic state explosions. Reject incompatible composition before conversion/mount.
-- [ ] **B2 — Internal text structure.** Give rich text explicit ownership of runs and internal
+- [x] **B2 — Internal text structure.** Give rich text explicit ownership of runs and internal
       links, separate from application children. Preserve identity where continuity is known;
       reject stale replaced targets. Enforce the distinction at kernel structural-write entrances.
 - [ ] **B3 — Opaque composition.** Hide View's mount representation and converge structural updates on one private path.
       Validate illegal composition, keyed reorder, editor lifetime and link replacement.
+      Also close the observed Inspector/read boundary: `inspect()` currently holds a Kernel
+      borrow while selection extraction can enter a consistency-check rebuild. Verify that
+      inspection in consistency mode does not panic. That mode deliberately rebuilds identities;
+      target-continuity tests must exercise ordinary retained execution separately.
 
 B1 evidence (2026-11-17, Rust 1.100.0): only `Content::Box(Vec<View>)` stores application
 children; the shared `El.children` field is removed. Atomic builders reject child conversion
@@ -104,6 +108,28 @@ Workspace all-targets Clippy, strict library rustdoc, no-default-features core b
 diff/layer checks, CLI vocab/diagnostic lookup and generated skill freshness passed. No real
 OS/window validation was performed. Kernel child ownership/validation and opaque View remain
 B2/B3 work, not claimed complete by the builder invariant.
+
+B2 evidence (2026-11-17, Rust 1.100.0): Kernel content now owns structure too:
+`Content::Box` owns application children and `TextContent.links` owns internal links. The generic
+Node child field and positional link reuse are removed. Read traversals project owned descendants;
+application structural methods cannot independently create/move/remove/destroy links, insert into
+atomic content or create cycles. Content replacement rejects occupied containers (including exiting
+children) and incompatible atomic kinds. Text-owned links never enter Taffy's child lists.
+
+Rich replacement validates UTF-8 run ranges before mutation and retains only unchanged mapped
+ranges with the same destination. A Chinese/emoji prefix test exposed byte-prefix ambiguity; both
+prefix and suffix now stop at character boundaries. Plain replacement/splice clears annotations;
+append preserves existing runs. The existing diagnostic and Agent skill describe these contracts.
+
+Full workspace regression: **887 passed, 0 failed, 3 existing ignored doctests**. Six new kernel
+tests cover atomic/occupied-content rejection, ownership/lifetime/index cleanup, continuity and
+same-range replacement, plain edits, invalid runs with no partial mutation, and cycle rejection.
+A headless window test covers retained focus, prefix/style changes, replacement retiring focus and
+pending pointer input, stale Agent target refusal, new-target activation and link removal. Existing
+rich rendering, accessibility, selection, virtual lists, Chat/HTTP and GPU regression suites passed.
+Workspace all-targets Clippy, strict library rustdoc, no-default-features core build, formatting,
+diff/layer checks, CLI vocab/diagnostic lookup and exported skill freshness passed. No real OS/window
+validation was performed. B3 includes the separately recorded consistency-mode inspection issue.
 
 ### C. Editing, geometry and semantic facts
 

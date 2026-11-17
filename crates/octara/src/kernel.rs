@@ -21,9 +21,12 @@ pub mod rich;
 pub mod select;
 pub mod style;
 pub(crate) use octara_text as text;
+#[cfg(test)]
+mod content_tests;
 mod text_input;
 pub(crate) use octara_primitives::theme;
 
+use crate::diagnostics as codes;
 pub(crate) use octara_primitives::identity::NodeId;
 use rustc_hash::FxHashMap;
 use slotmap::SlotMap;
@@ -208,7 +211,6 @@ struct Node {
     a11y_active_descendant_sent: Cell<Option<NodeId>>,
     role: Option<Role>,
     parent: Option<NodeId>,
-    children: Vec<NodeId>,
     /// The value assistive technology announces for a node that is not a text input (a
     /// combo box's choice, a slider's level); a text input's value is its content.
     value: Option<String>,
@@ -318,7 +320,7 @@ type LastFrame = (u64, (f32, f32), std::rc::Rc<crate::paint::DisplayList>);
 #[derive(Debug)]
 enum Content {
     /// A plain box (or the root).
-    None,
+    Box(Vec<NodeId>),
     Text(Box<TextContent>),
     Input(Box<InputContent>),
     Image(crate::image::Image, crate::image::ObjectFit),
@@ -367,6 +369,8 @@ struct TextContent {
     clean: Cell<usize>,
     /// Styled ranges (rich text), sorted; plain text has none.
     runs: Vec<(std::ops::Range<usize>, rich::Span)>,
+    /// Internal interactive links, owned by this text rather than application layout.
+    links: Vec<NodeId>,
     /// The runs as the text engine shapes them (families resolved by the theme).
     shape: Vec<text::StyleRun>,
     /// Bumped by every change of the text or its runs: what kept layouts and glyphs are keyed by.
@@ -454,6 +458,25 @@ impl std::fmt::Debug for InputContent {
 }
 
 impl Node {
+    /// Owned descendants for inspection, interaction and lifetime traversal. Only Box children
+    /// participate in application structure and Taffy; a Text owns internal links instead.
+    fn children(&self) -> &[NodeId] {
+        match &self.content {
+            Content::Box(children) => children,
+            Content::Text(text) => &text.links,
+            _ => &[],
+        }
+    }
+
+    #[track_caller]
+    fn application_children_mut(&mut self) -> &mut Vec<NodeId> {
+        let code = &codes::ELEMENT_CONTENT;
+        match &mut self.content {
+            Content::Box(children) => children,
+            _ => panic!("{code}: application structure requires a container"),
+        }
+    }
+
     fn kind(&self) -> Kind {
         match self.content {
             Content::Text(_) => Kind::Text,
@@ -873,7 +896,7 @@ impl Kernel {
         while let Some(n) = stack.pop() {
             let node = self.node(n);
             node.a11y_sent.set(None);
-            stack.extend(node.children.iter().copied());
+            stack.extend(node.children().iter().copied());
         }
     }
 
@@ -980,8 +1003,10 @@ impl Kernel {
     pub fn test_id(&self, id: NodeId) -> Option<&str> {
         self.node(id).test_id.as_deref()
     }
+    /// Owned descendants: application children for a container, internal links for text.
+    /// Text links are inspectable but cannot be edited through application structure methods.
     pub fn children(&self, id: NodeId) -> &[NodeId] {
-        &self.node(id).children
+        self.node(id).children()
     }
     pub fn parent(&self, id: NodeId) -> Option<NodeId> {
         self.node(id).parent
@@ -1003,7 +1028,15 @@ impl Kernel {
 
     // ---- structure ----
 
+    /// Creates application content. Links are created only by their text's `set_rich`.
+    #[track_caller]
     pub fn create(&mut self, kind: Kind) -> NodeId {
+        let code = &codes::ELEMENT_CONTENT;
+        assert!(kind != Kind::Link, "{code}: links are owned by rich text");
+        self.create_node(kind)
+    }
+
+    fn create_node(&mut self, kind: Kind) -> NodeId {
         let layout = default_layout(kind);
         let t = self.taffy.new_leaf(layout.clone()).expect("taffy");
         let root_inh = Inherited::root(&self.res.theme.borrow());
@@ -1016,7 +1049,7 @@ impl Kernel {
                 i.rows = (1, u16::MAX);
                 i
             }),
-            Kind::Root | Kind::Box => Content::None,
+            Kind::Root | Kind::Box => Content::Box(Vec::new()),
         };
         let id = self.nodes.insert(Node {
             content,
@@ -1027,7 +1060,6 @@ impl Kernel {
             a11y_active_descendant_sent: Cell::new(None),
             role: None,
             parent: None,
-            children: Vec::new(),
             value: None,
             numeric_range: None,
             checked: None,
@@ -1098,10 +1130,19 @@ impl Kernel {
     }
 
     /// Inserts a detached `child` under `parent` at `index` (clamped to the end).
+    #[track_caller]
     pub fn insert_child(&mut self, parent: NodeId, child: NodeId, index: usize) {
+        let code = &codes::ELEMENT_CONTENT;
+        self.require_application_node(child);
+        assert!(matches!(self.node(parent).content, Content::Box(_)), "{code}: only containers accept application children");
         assert!(self.node(child).parent.is_none(), "kernel: child already attached");
+        let mut ancestor = Some(parent);
+        while let Some(id) = ancestor {
+            assert!(id != child, "kernel: inserting a child would create a cycle");
+            ancestor = self.node(id).parent;
+        }
         let index = index.min(self.child_limit(parent));
-        self.node_mut(parent).children.insert(index, child);
+        self.node_mut(parent).application_children_mut().insert(index, child);
         self.node_mut(child).parent = Some(parent);
         if self.node(parent).attached {
             self.set_attached(child, true);
@@ -1138,27 +1179,30 @@ impl Kernel {
 
     /// The highest index a new child can take: the overlay layer stays the root's last child.
     fn child_limit(&self, parent: NodeId) -> usize {
-        let kids = &self.node(parent).children;
+        let kids = self.node(parent).children();
         kids.len() - usize::from(parent == self.root && kids.last() == Some(&self.overlay_layer))
     }
 
+    #[track_caller]
     pub fn append_child(&mut self, parent: NodeId, child: NodeId) {
-        let n = self.node(parent).children.len();
+        let n = self.node(parent).children().len();
         self.insert_child(parent, child, n);
     }
 
     /// Detaches `child` from its parent without destroying it.
+    #[track_caller]
     pub fn remove_child(&mut self, child: NodeId) {
+        self.require_application_node(child);
         let parent = self.node(child).parent.expect("kernel: child not attached");
-        let pos = self.node(parent).children.iter().position(|c| *c == child).expect("child of parent");
-        self.node_mut(parent).children.remove(pos);
+        let pos = self.node(parent).children().iter().position(|c| *c == child).expect("child of parent");
+        self.node_mut(parent).application_children_mut().remove(pos);
         self.node_mut(child).parent = None;
         if self.node(child).attached {
             self.set_attached(child, false);
         }
         let pt = self.node(parent).taffy;
         self.taffy.remove_child_at_index(pt, pos).expect("taffy");
-        if self.node(parent).children.is_empty() && self.node(child).layout.position == Position::Absolute {
+        if self.node(parent).children().is_empty() && self.node(child).layout.position == Position::Absolute {
             self.refresh_taffy_node(parent);
         }
         self.counters.structural_ops += 1;
@@ -1169,15 +1213,17 @@ impl Kernel {
     }
 
     /// Moves an attached `child` to `index` among its siblings.
+    #[track_caller]
     pub fn move_child(&mut self, child: NodeId, index: usize) {
+        self.require_application_node(child);
         let parent = self.node(child).parent.expect("kernel: child not attached");
-        let pos = self.node(parent).children.iter().position(|c| *c == child).expect("child of parent");
+        let pos = self.node(parent).children().iter().position(|c| *c == child).expect("child of parent");
         if pos == index {
             return;
         }
-        self.node_mut(parent).children.remove(pos);
+        self.node_mut(parent).application_children_mut().remove(pos);
         let index = index.min(self.child_limit(parent));
-        self.node_mut(parent).children.insert(index, child);
+        self.node_mut(parent).application_children_mut().insert(index, child);
         let (pt, ct) = (self.node(parent).taffy, self.node(child).taffy);
         self.taffy.remove_child_at_index(pt, pos).expect("taffy");
         self.taffy.insert_child_at_index(pt, index, ct).expect("taffy");
@@ -1188,7 +1234,9 @@ impl Kernel {
     }
 
     /// Destroys `id` and its subtree, detaching it first.
+    #[track_caller]
     pub fn destroy(&mut self, id: NodeId) {
+        self.require_application_node(id);
         // Part of a subtree on its way out: it goes with that subtree once it has faded.
         if self.is_exiting(id) {
             return;
@@ -1199,8 +1247,18 @@ impl Kernel {
         self.destroy_rec(id);
     }
 
+    #[track_caller]
+    fn require_application_node(&self, id: NodeId) {
+        let code = &codes::ELEMENT_CONTENT;
+        assert!(!matches!(self.node(id).content, Content::Link(_)), "{code}: internal links can only be replaced by their text owner");
+    }
+
     fn destroy_rec(&mut self, id: NodeId) {
-        let mut children = std::mem::take(&mut self.node_mut(id).children);
+        let mut children = match &mut self.node_mut(id).content {
+            Content::Box(children) => std::mem::take(children),
+            Content::Text(text) => std::mem::take(&mut text.links),
+            _ => Vec::new(),
+        };
         // Subtrees leaving this node go with it.
         let leaving: Vec<NodeId> = self.ghosts.iter().copied().filter(|g| self.node(*g).parent == Some(id)).collect();
         self.ghosts.retain(|g| !leaving.contains(g));
@@ -1227,7 +1285,7 @@ impl Kernel {
         while let Some(n) = stack.pop() {
             let node = self.node_mut(n);
             node.attached = on;
-            stack.extend(node.children.iter().copied());
+            stack.extend(node.children().iter().copied());
             if let Some(t) = node.test_id.clone() {
                 self.index_set(&t, n, on);
             }
@@ -1299,23 +1357,13 @@ impl Kernel {
         true
     }
 
-    /// Sets a text's text (other nodes have none: ignored).
+    /// Replaces a text with plain text, clearing rich runs and their internal links even when
+    /// the string is unchanged (other node kinds: ignored). Use `set_rich` to retain annotations.
     pub fn set_text(&mut self, id: NodeId, text: &str) -> bool {
-        let Content::Text(t) = &mut self.node_mut(id).content else { return false };
-        if t.text == text {
-            self.counters.prop_noops += 1;
-            return false;
-        }
-        let same = t.text.bytes().zip(text.bytes()).take_while(|(a, b)| a == b).count();
-        t.clean.set(t.clean.get().min(same));
-        t.text.clear();
-        t.text.push_str(text);
-        self.counters.text_bytes += text.len() as u64;
-        self.text_changed(id, "text", text);
-        true
+        self.set_rich(id, text, &[])
     }
 
-    /// Appends to a node's text: O(appended).
+    /// Appends plain text after existing runs: O(appended), preserving their links.
     pub fn append_text(&mut self, id: NodeId, more: &str) -> bool {
         if more.is_empty() {
             self.counters.prop_noops += 1;
@@ -1329,12 +1377,14 @@ impl Kernel {
         true
     }
 
-    /// Replaces the byte range `start..end` of a node's text with `insert`.
+    /// Replaces the byte range `start..end` with plain text, clearing rich annotations.
+    /// Use `set_rich` for an edit that also supplies updated runs.
     pub fn splice_text(&mut self, id: NodeId, start: usize, end: usize, insert: &str) -> bool {
         let Content::Text(t) = &mut self.node_mut(id).content else { return false };
         t.clean.set(t.clean.get().min(start));
         t.text.replace_range(start..end, insert);
         self.counters.text_bytes += insert.len() as u64;
+        self.clear_text_runs(id);
         self.text_changed(id, "text~", insert);
         true
     }
@@ -1627,24 +1677,32 @@ impl Kernel {
         None
     }
 
-    /// Replaces a box's content (texts and text inputs keep theirs: ignored).
+    /// Initializes an empty box or updates the same atomic content kind. Cross-kind replacement
+    /// would bypass its owner's lifetime (native hosts, input state, text links).
+    #[track_caller]
     fn set_content(&mut self, id: NodeId, content: Content) {
+        let code = &codes::ELEMENT_CONTENT;
+        let has_leaving_children = self.ghosts.iter().any(|&child| self.node(child).parent == Some(id));
         let n = self.node_mut(id);
-        if matches!(n.content, Content::Text(_) | Content::Input(_)) {
-            return;
-        }
+        let allowed = match (&n.content, &content) {
+            (Content::Box(children), _) => children.is_empty() && !has_leaving_children,
+            (Content::Icon(_) | Content::Image(..), Content::Box(_)) => true,
+            _ => std::mem::discriminant(&n.content) == std::mem::discriminant(&content),
+        };
+        assert!(allowed, "{code}: content replacement requires an empty box or the same content kind");
         n.content = content;
     }
 
     /// Draws `icon` in the box (`None`: no icon), its strokes `stroke_width` wide on its view box
     /// (`None`: the icon's own).
+    #[track_caller]
     pub fn set_icon(&mut self, id: NodeId, icon: Option<(&crate::icon::Icon, Option<f32>)>) {
         let name = icon.map(|(i, _)| i.name().to_owned());
         let icon = icon.map(|(i, w)| NodeIcon { name: i.name().to_owned(), view_box: i.bounds(), shapes: i.shapes(w) });
         if self.icon(id) == icon.as_ref() {
             return;
         }
-        self.set_content(id, icon.map_or(Content::None, |i| Content::Icon(std::rc::Rc::new(i))));
+        self.set_content(id, icon.map_or(Content::Box(Vec::new()), |i| Content::Icon(std::rc::Rc::new(i))));
         self.changed(id, Dirty::PAINT, "icon", || name.unwrap_or_default());
     }
     pub fn icon(&self, id: NodeId) -> Option<&NodeIcon> {
@@ -1652,6 +1710,7 @@ impl Kernel {
     }
 
     /// Makes the box a canvas drawing `ops` (in its content box's coordinates).
+    #[track_caller]
     pub fn set_canvas(&mut self, id: NodeId, ops: Vec<crate::canvas::CanvasOp>) {
         if self.canvas(id) == Some(ops.as_slice()) {
             return;
@@ -1665,6 +1724,7 @@ impl Kernel {
     }
     /// Makes the box a native view of `kind` in `slot`, sized by the size it reports until an
     /// authored one.
+    #[track_caller]
     pub fn set_native(&mut self, id: NodeId, kind: &str, slot: crate::native::Slot) {
         let content = NativeContent {
             kind: kind.to_owned(),
@@ -1739,11 +1799,12 @@ impl Kernel {
     }
 
     /// Shows `image` in the box (`None`: no image), fitted by `fit`.
+    #[track_caller]
     pub fn set_image(&mut self, id: NodeId, image: Option<(crate::image::Image, crate::image::ObjectFit)>) {
         if self.image(id) == image.as_ref().map(|(i, f)| (i, *f)) {
             return;
         }
-        self.set_content(id, image.map_or(Content::None, |(i, f)| Content::Image(i, f)));
+        self.set_content(id, image.map_or(Content::Box(Vec::new()), |(i, f)| Content::Image(i, f)));
         self.resolve(id, "image");
         self.mark(Dirty::PAINT);
     }
@@ -1924,7 +1985,7 @@ impl Kernel {
         let mut stack: Vec<NodeId> = self.nodes.iter().filter(|(_, n)| n.parent.is_none()).map(|(id, _)| id).collect();
         while let Some(id) = stack.pop() {
             self.resolve(id, "theme");
-            stack.extend(self.node(id).children.iter().copied());
+            stack.extend(self.node(id).children().iter().copied());
         }
         self.restyle_runs();
     }
@@ -2021,7 +2082,7 @@ impl Kernel {
         // What the children inherit changed: they resolve again (and so on, while it changes).
         if inherited != n.inherited {
             self.node_mut(id).inherited = inherited;
-            let children = self.node(id).children.clone();
+            let children = self.node(id).children().to_vec();
             for c in children {
                 self.resolve(c, "inherit");
             }
@@ -2509,7 +2570,7 @@ impl Kernel {
             if own == Some(name) {
                 out.push(id);
             }
-            stack.extend(n.children.iter().rev().copied());
+            stack.extend(n.children().iter().rev().copied());
         }
         out
     }
@@ -2580,8 +2641,8 @@ impl Kernel {
             let _ = write!(out, " fg={}", hex(n.visual.text));
         }
         out.push('\n');
-        for c in &n.children {
-            if *c == self.overlay_layer && self.node(*c).children.is_empty() {
+        for c in n.children() {
+            if *c == self.overlay_layer && self.node(*c).children().is_empty() {
                 continue;
             }
             self.dump_rec(*c, depth + 1, out);

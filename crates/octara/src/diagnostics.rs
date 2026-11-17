@@ -181,8 +181,8 @@ codes! {
         cause: "Row inputs resolve the current collection even before view propagation. After removing the key or producing duplicate keys, the previous row value is not a valid fallback. Do not read a row after removing it; resolve optional data from the model instead.";
     // ---- view ----
     ELEMENT_CONTENT: Error, View, "docs/design/ui-primitives.md#element-content",
-        "An element-specific method was called on incompatible content (this panics).",
-        cause: "An element has one content kind. Only containers (el, row, col) accept child/children, even when the supplied iterator is empty. img() requires an empty box or an existing image. Input configuration requires text_input(), native configuration requires native_view() or web_view(), and image fitting follows img(). Compose atomic content inside an external container. The builder rejects the call before mounting; the panic names the method and points to its caller.";
+        "An operation is incompatible with an element's content or ownership (this panics).",
+        cause: "Only containers accept application children; atomic content belongs inside an external container. img() requires an empty box or an existing image. Input/native/image configuration requires the matching content kind. Kernel structural writes enforce the same ownership: text owns its internal links, which cannot be independently created, moved or destroyed. Rich runs must be ordered, non-overlapping UTF-8 ranges. Calls are rejected before mutating structure or content; builder misuse is rejected before mounting.";
     COMMAND_UNHANDLED: Error, View, "docs/design/input.md#deferred-commands",
         "A deferred command has no handler on the restored focus path.",
         cause: "The command ran after pending updates and focus restoration, but neither the focused control, its ancestors, built-ins nor app-level handlers handled it. Disable unavailable menu actions or register the command where it is used.";

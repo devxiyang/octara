@@ -198,11 +198,15 @@ Further content/API work is tracked in [TODO](TODO.md#init-architecture-refactor
 
 - **View builders** carry one content enum, with input, image, icon and native settings attached
   to the matching payload. They derive the Kernel kind and mount only that content's bindings.
-  Incompatible content-specific calls fail at the builder caller; shared children and semantic
-  properties remain available on `El`.
+  Incompatible content-specific calls fail at the builder caller. Only containers hold application
+  children; styles, handlers and semantic properties remain shared on `El`.
 - **Nodes** live in a slotmap (`NodeId`); each has a role, semantics, handlers, styles and state
-  overrides, and one **content**: none, text, a text input (value, composition, selection,
+  overrides, and one **content**: a container owning children, text owning runs/internal links, a text input (value, composition, selection,
   scroll), an image, an icon, a canvas recording or a native view. Its `Kind` follows from the content.
+- **Internal links** remain inspectable/focusable nodes, owned only by their text and absent from
+  Taffy's child lists. Structural writes cannot create, detach, move or destroy a link independently.
+  Reconciliation preserves unchanged UTF-8 ranges with the same target and retires replacements;
+  neither run position nor test id is an identity key. See [text contracts](design/text.md#rich-text).
 - **Styles** resolve against the theme (semantic tokens, scales, breakpoints) and the node's
   states (hover, focus, pressed, disabled, touch, window size class); inherited text properties
   flow down. View bindings retain their declaration positions and replace their own patches;

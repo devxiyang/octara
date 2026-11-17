@@ -139,7 +139,7 @@ impl Kernel {
                 continue;
             }
             self.check(id, &mut out);
-            stack.extend(n.children.iter().rev().copied());
+            stack.extend(n.children().iter().rev().copied());
         }
         out
     }
@@ -182,7 +182,7 @@ impl Kernel {
             let sized_zero = explicit_zero(n.layout.size.width) || explicit_zero(n.layout.size.height);
             let content = match n.kind() {
                 Kind::Text => !n.text().is_empty(),
-                _ => n.children.iter().any(|c| {
+                _ => n.children().iter().any(|c| {
                     let (.., cw, ch) = self.rect(*c);
                     self.node(*c).layout.display != taffy::Display::None && cw > TOLERANCE && ch > TOLERANCE
                 }),
@@ -200,7 +200,7 @@ impl Kernel {
         // One issue per container and edge, like Flutter's "RenderFlex overflowed by N px".
         let (mut right, mut bottom) = ((0.0f32, Vec::new()), (0.0f32, Vec::new()));
         let mut nowrap_text = false;
-        for &c in &n.children {
+        for &c in n.children() {
             let cn = self.node(c);
             if c == self.overlay_layer || cn.anchor.is_some() || cn.hidden || cn.layout.display == taffy::Display::None {
                 continue;
@@ -357,7 +357,7 @@ impl Kernel {
                 ));
             }
         }
-        for &c in &n.children {
+        for &c in n.children() {
             self.a11y_check(c, bg, controls, out);
         }
     }
@@ -365,6 +365,6 @@ impl Kernel {
     /// Whether any shown text lies inside `id`.
     fn has_text(&self, id: NodeId) -> bool {
         let n = self.node(id);
-        (n.kind() == Kind::Text && !n.text().trim().is_empty()) || n.children.iter().any(|c| !self.node(*c).hidden && self.has_text(*c))
+        (n.kind() == Kind::Text && !n.text().trim().is_empty()) || n.children().iter().any(|c| !self.node(*c).hidden && self.has_text(*c))
     }
 }

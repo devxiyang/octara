@@ -202,7 +202,7 @@ impl Kernel {
             e[3] = e[3].max(o.bottom - l.size.height + Self::INK_MARGIN);
         }
         let clips = n.layout.overflow.x != taffy::Overflow::Visible || n.layout.overflow.y != taffy::Overflow::Visible;
-        for &c in &n.children {
+        for &c in n.children() {
             let ce = self.ink_of(c);
             if clips {
                 continue;
@@ -294,7 +294,7 @@ impl Kernel {
         }
 
         // Children, clipped to the padding box when the node scrolls or clips.
-        if n.children.is_empty() && self.ghosts_of(id).is_empty() {
+        if n.children().is_empty() && self.ghosts_of(id).is_empty() {
             return;
         }
         let clips = n.layout.overflow.x != taffy::Overflow::Visible || n.layout.overflow.y != taffy::Overflow::Visible;
@@ -314,7 +314,7 @@ impl Kernel {
             out.push(Part::Item(Item::PushClip { source: id, rect: inner, radius: (v.radius - l.border.left).max(0.0) }));
         }
         let origin = self.content_origin(id, rect);
-        for &c in &n.children {
+        for &c in n.children() {
             self.paint(c, origin, opacity, child_clip, out, keep);
         }
         // Subtrees on their way out, where they were.
@@ -694,7 +694,7 @@ impl Kernel {
             child_clip = clip.intersect(&rect);
         }
         let origin = self.content_origin(id, rect);
-        for &c in &n.children {
+        for &c in n.children() {
             self.hit(c, origin, x, y, child_clip, hit);
         }
     }
@@ -739,7 +739,7 @@ impl Kernel {
             child_clip = clip.intersect(&rect);
         }
         let origin = self.content_origin(id, rect);
-        for &c in &n.children {
+        for &c in n.children() {
             self.cover(c, origin, child_clip, view, area, passed, out);
         }
     }

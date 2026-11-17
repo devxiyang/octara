@@ -3,6 +3,7 @@
 //! decorations, and a link. Plain text is rich text without runs.
 
 use super::theme::{Paint, Token};
+use crate::diagnostics as codes;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -187,29 +188,67 @@ pub(crate) struct Lines {
 }
 
 impl Kernel {
-    /// Sets a text node's rich text: its string and runs. A run with a link gets a `link` child
-    /// (pressable and focusable, named by its text). Returns whether anything changed.
+    /// Replaces a text and its styled runs together. Runs must be ordered, non-overlapping
+    /// UTF-8 byte ranges. Internal links retain identity only across unchanged text ranges
+    /// with the same target; labels/test ids are not identity keys.
+    #[track_caller]
     pub fn set_rich(&mut self, id: NodeId, text: &str, runs: &[(Range<usize>, Span)]) -> bool {
-        let (same_text, same_runs) = match &self.node(id).content {
-            Content::Text(t) => (t.text == text, t.runs == runs),
-            _ => return false,
-        };
-        if same_text && same_runs {
+        let Content::Text(old) = &self.node(id).content else { return false };
+        let code = &codes::ELEMENT_CONTENT;
+        let mut end = 0;
+        for (range, _) in runs {
+            assert!(
+                range.start >= end && range.start <= range.end && text.get(range.clone()).is_some(),
+                "{code}: rich text requires ordered, non-overlapping UTF-8 ranges"
+            );
+            end = range.end;
+        }
+        let same_text = old.text == text;
+        if same_text && old.runs == runs {
             self.counters.prop_noops += 1;
             return false;
         }
-        if !same_text {
-            self.set_text(id, text);
+        // A single changed interval gives a conservative continuity proof. We do not match
+        // links by their label, developer id or ordinal, nor guess moves inside that interval.
+        let mut prefix = old.text.bytes().zip(text.bytes()).take_while(|(a, b)| a == b).count();
+        while !old.text.is_char_boundary(prefix) || !text.is_char_boundary(prefix) {
+            prefix -= 1;
         }
-        if !same_runs {
-            let shape = self.style_runs(runs);
-            if let Content::Text(t) = &mut self.node_mut(id).content {
-                t.runs = runs.to_vec();
-                t.shape = shape;
+        let mut suffix =
+            old.text.as_bytes()[prefix..].iter().rev().zip(text.as_bytes()[prefix..].iter().rev()).take_while(|(a, b)| a == b).count();
+        while !old.text.is_char_boundary(old.text.len() - suffix) || !text.is_char_boundary(text.len() - suffix) {
+            suffix -= 1;
+        }
+        let retained: Vec<_> = old
+            .links
+            .iter()
+            .filter_map(|&link| {
+                let Content::Link(c) = &self.node(link).content else { unreachable!("text owns links") };
+                let range = if c.range.end <= prefix {
+                    c.range.clone()
+                } else if c.range.start >= old.text.len() - suffix {
+                    text.len() - (old.text.len() - c.range.start)..text.len() - (old.text.len() - c.range.end)
+                } else {
+                    return None;
+                };
+                Some((link, range))
+            })
+            .collect();
+        let shape = self.style_runs(runs);
+        if let Content::Text(t) = &mut self.node_mut(id).content {
+            if !same_text {
+                t.clean.set(t.clean.get().min(prefix));
+                t.text.clear();
+                t.text.push_str(text);
             }
-            self.text_changed(id, "runs", "");
-            self.sync_links(id);
+            t.runs = runs.to_vec();
+            t.shape = shape;
         }
+        if !same_text {
+            self.counters.text_bytes += text.len() as u64;
+        }
+        self.sync_links(id, retained);
+        self.text_changed(id, if same_text { "runs" } else { "text" }, if same_text { "" } else { text });
         true
     }
 
@@ -251,8 +290,8 @@ impl Kernel {
         }
     }
 
-    /// Keeps a text's link children one per link run, in order.
-    fn sync_links(&mut self, id: NodeId) {
+    /// Reconciles only this text's owned links. Application structure never touches them.
+    fn sync_links(&mut self, id: NodeId, mut retained: Vec<(NodeId, Range<usize>)>) {
         let wanted: Vec<LinkSpec> = match &self.node(id).content {
             Content::Text(t) => t
                 .runs
@@ -262,38 +301,59 @@ impl Kernel {
                 .collect(),
             _ => return,
         };
-        let existing: Vec<NodeId> = self.node(id).children.clone();
-        for (k, (run, range, target, test_id, label)) in wanted.iter().enumerate() {
-            let link = match existing.get(k) {
-                Some(l) => *l,
-                None => {
-                    let l = self.create(Kind::Link);
-                    self.node_mut(l).parent = Some(id);
-                    self.node_mut(l).focusable = true;
-                    self.node_mut(id).children.push(l);
-                    if self.node(id).attached {
-                        self.set_attached(l, true);
-                    }
-                    self.a11y_children_changed(id);
-                    l
+        let existing = match &mut self.node_mut(id).content {
+            Content::Text(t) => std::mem::take(&mut t.links),
+            _ => unreachable!(),
+        };
+        let mut links = Vec::with_capacity(wanted.len());
+        for (run, range, target, test_id, label) in wanted {
+            let keep = retained
+                .iter()
+                .position(|(link, mapped)| *mapped == range && matches!(&self.node(*link).content, Content::Link(c) if c.target == target));
+            let link = if let Some(index) = keep {
+                retained.swap_remove(index).0
+            } else {
+                let link = self.create_node(Kind::Link);
+                self.node_mut(link).parent = Some(id);
+                self.node_mut(link).focusable = true;
+                self.resolve(link, "inherit");
+                if self.node(id).attached {
+                    self.set_attached(link, true);
                 }
+                link
             };
             if let Content::Link(c) = &mut self.node_mut(link).content {
-                **c = LinkContent { range: range.clone(), target: target.clone(), run: *run };
+                **c = LinkContent { range, target: target.clone(), run };
             }
             self.set_role(link, Role::Link);
-            self.set_label(link, Some(label));
-            self.set_value(link, target);
+            self.set_label(link, Some(&label));
+            self.set_value(link, &target);
             self.set_test_id(link, test_id.as_deref());
+            links.push(link);
         }
-        for extra in existing.into_iter().skip(wanted.len()) {
-            let pos = self.node(id).children.iter().position(|c| *c == extra).expect("a link child");
-            self.node_mut(id).children.remove(pos);
-            self.node_mut(extra).parent = None;
+        if existing != links {
             self.a11y_children_changed(id);
-            self.a11y_forget(extra);
-            self.destroy(extra);
         }
+        for old in existing.into_iter().filter(|old| !links.contains(old)) {
+            self.set_attached(old, false);
+            self.a11y_forget(old);
+            self.node_mut(old).parent = None;
+            self.destroy_rec(old);
+        }
+        if let Content::Text(t) = &mut self.node_mut(id).content {
+            t.links = links;
+        }
+    }
+
+    /// Plain byte splices do not carry rich-run edits. Retire their annotations together.
+    pub(super) fn clear_text_runs(&mut self, id: NodeId) {
+        let Content::Text(t) = &mut self.node_mut(id).content else { return };
+        if t.runs.is_empty() {
+            return;
+        }
+        t.runs.clear();
+        t.shape.clear();
+        self.sync_links(id, Vec::new());
     }
 
     /// Where a text's content box starts inside its node, the width it breaks at (`None`:
@@ -393,7 +453,7 @@ impl Kernel {
             if id != self.root && self.role(id) == role {
                 return Some(id);
             }
-            stack.extend(self.node(id).children.iter().rev().copied());
+            stack.extend(self.node(id).children().iter().rev().copied());
         }
         None
     }
@@ -421,9 +481,9 @@ impl Kernel {
         let fade = |c: super::Color| c.multiply_alpha(opacity);
         let theme = self.res.theme.borrow();
         let spans = self.runs(id);
-        // A link's state: its node is the n-th link child.
+        // Link state comes from the text-owned link associated with this run.
         let link_state = |run: usize| {
-            self.node(id).children.iter().find_map(|c| match &self.node(*c).content {
+            self.node(id).children().iter().find_map(|c| match &self.node(*c).content {
                 Content::Link(l) if l.run == run => Some(self.node(*c).state),
                 _ => None,
             })

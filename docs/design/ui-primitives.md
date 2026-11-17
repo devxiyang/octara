@@ -78,6 +78,14 @@ no ignored configuration, deferred invalid-content variant or compatibility conv
 including an empty iterator. A declared child counts even if it currently mounts no nodes;
 `.img(..)` cannot silently discard an empty/dynamic child declaration.
 
+The Kernel enforces the same ownership: only container content stores application children;
+text stores its own internal links. Direct structural methods reject link manipulation and
+atomic parents before mutation. Atomic setters require an empty box (no live or exiting
+children) or the same content kind; clearing an icon/image restores an empty box. Text/input/
+native lifetimes cannot be bypassed by changing them to another content kind. Rich runs are
+validated before replacement. These violations use `ELEMENT_CONTENT` as well; see
+[rich text](text.md#rich-text) for link continuity and plain-edit semantics.
+
 ## 4. Style
 
 Aimed at desktop and mobile, not web standards: **method names follow GPUI** (its vocabulary comes from Tailwind, which AI knows best), **semantics follow native**, mainly Rune.

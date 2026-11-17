@@ -79,7 +79,7 @@ impl Kernel {
                 out.push(id);
                 continue;
             }
-            stack.extend(n.children.iter().rev().copied().filter(|c| self.node(*c).kind() != Kind::Link));
+            stack.extend(n.children().iter().rev().copied().filter(|c| self.node(*c).kind() != Kind::Link));
         }
         out
     }
@@ -90,7 +90,7 @@ impl Kernel {
         let mut n = node;
         while n != region {
             let parent = self.node(n).parent?;
-            let index = self.node(parent).children.iter().position(|c| *c == n)? as u32;
+            let index = self.node(parent).children().iter().position(|c| *c == n)? as u32;
             segs.push(match &self.node(n).row_key {
                 Some(key) => Seg::Row { key: key.clone(), index },
                 None => Seg::Child(index),
@@ -105,7 +105,7 @@ impl Kernel {
     pub fn resolve_path(&self, region: NodeId, path: &[Seg]) -> Option<NodeId> {
         let mut n = region;
         for seg in path {
-            let children = &self.node(n).children;
+            let children = self.node(n).children();
             n = match seg {
                 Seg::Child(i) => *children.get(*i as usize)?,
                 Seg::Row { key, .. } => *children.iter().find(|c| self.node(**c).row_key.as_ref() == Some(key))?,
@@ -234,7 +234,7 @@ impl Kernel {
                 return Address { id: Some(id.to_owned()), path };
             }
             let Some(parent) = self.node(at).parent else { break };
-            path.push(self.node(parent).children.iter().position(|c| *c == at).unwrap_or(0) as u32);
+            path.push(self.node(parent).children().iter().position(|c| *c == at).unwrap_or(0) as u32);
             at = parent;
         }
         path.reverse();
@@ -248,7 +248,7 @@ impl Kernel {
             None => self.root,
         };
         for i in &a.path {
-            n = *self.node(n).children.get(*i as usize)?;
+            n = *self.node(n).children().get(*i as usize)?;
         }
         Some(n)
     }

@@ -99,7 +99,7 @@ impl Kernel {
                 return None;
             }
             let Some(p) = self.node(at).parent else { break };
-            path.push(self.node(p).children.iter().position(|c| *c == at)?);
+            path.push(self.node(p).children().iter().position(|c| *c == at)?);
             at = p;
         }
         (at == self.root).then(|| {
@@ -113,7 +113,7 @@ impl Kernel {
             return;
         }
         f(id);
-        for &c in &self.node(id).children {
+        for &c in self.node(id).children() {
             self.walk_shown(c, f);
         }
     }
@@ -149,7 +149,7 @@ impl Kernel {
     /// The focusable members of a focus group, in tree order (nested groups' members included).
     fn group_members(&self, group: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
-        for &c in &self.node(group).children {
+        for &c in self.node(group).children() {
             self.walk_shown(c, &mut |id| {
                 if self.takes_focus(id) {
                     out.push(id);
@@ -284,11 +284,11 @@ impl Kernel {
 
     /// Resolves the descendants of `group_node` styled on group `name`.
     pub(crate) fn resolve_group_members(&mut self, group_node: NodeId, name: &'static str) {
-        let mut stack: Vec<NodeId> = self.node(group_node).children.clone();
+        let mut stack: Vec<NodeId> = self.node(group_node).children().to_vec();
         while let Some(id) = stack.pop() {
             let n = self.node(id);
             let member = n.overrides.iter().any(|(w, _)| *w == super::When::GroupHover(name));
-            stack.extend(n.children.iter().copied());
+            stack.extend(n.children().iter().copied());
             if member {
                 self.resolve(id, "group hover");
             }

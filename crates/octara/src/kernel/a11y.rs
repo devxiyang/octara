@@ -293,7 +293,7 @@ impl Kernel {
             }
         }
         for a in parents {
-            for &c in &self.node(a).children {
+            for &c in self.node(a).children() {
                 if self.shown_to_a11y(c) {
                     self.a11y_place_check(c, out);
                 }
@@ -312,7 +312,7 @@ impl Kernel {
         }
         out.push(id);
         if was[2..4] != now[2..4] {
-            for &c in &n.children {
+            for &c in n.children() {
                 if self.shown_to_a11y(c) {
                     self.a11y_place_check(c, out);
                 }
@@ -328,7 +328,7 @@ impl Kernel {
         if was != self.a11y_geometry_of(id) {
             out.push(id);
         }
-        for &c in &n.children {
+        for &c in n.children() {
             if self.shown_to_a11y(c) {
                 self.a11y_moved(c, out);
             }
@@ -391,7 +391,7 @@ impl Kernel {
 
     pub(crate) fn shown_to_a11y(&self, id: NodeId) -> bool {
         let n = self.node(id);
-        let empty_layer = id == self.overlay_layer && n.children.is_empty();
+        let empty_layer = id == self.overlay_layer && n.children().is_empty();
         !n.hidden && !empty_layer && n.layout.display != taffy::Display::None
     }
 
@@ -491,7 +491,7 @@ impl Kernel {
         if let Some(t) = &n.test_id {
             node.set_author_id(t.as_str());
         }
-        let children: Vec<NodeId> = n.children.iter().copied().filter(|c| self.shown_to_a11y(*c)).collect();
+        let children: Vec<NodeId> = n.children().iter().copied().filter(|c| self.shown_to_a11y(*c)).collect();
         // A selectable text's runs come first, its links after.
         let runs = if n.kind() == Kind::Text { self.a11y_runs(id, &self.text_runs(id)) } else { Vec::new() };
         node.set_children(runs.iter().map(|(r, _)| *r).chain(children.iter().map(|c| a11y_id(*c))).collect::<Vec<_>>());

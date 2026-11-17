@@ -72,6 +72,54 @@ fn a_link_is_an_element() {
 }
 
 #[test]
+fn replacing_a_rich_link_retires_its_agent_target_focus_and_pending_press() {
+    use octara::inspect::{self, Delivery};
+    use serde_json::json;
+
+    let app = App::new(octara::platform::HeadlessPlatform::default());
+    let content = app.run(|| state("content", || rich().styled("guide", |s| s.link("/old").id("guide"))));
+    let opened = app.run(|| state("opened", Vec::<String>::new));
+    let mut w = app
+        .open_window(octara::platform::WindowOptions::new("Links"), move || {
+            col()
+                .size_full()
+                .child(text(move || content.get()).id("text"))
+                .on_link(move |target| opened.update(|v| v.push(target.to_owned())))
+                .into()
+        })
+        .unwrap();
+    let old = w.inspect().find("guide").unwrap().target.clone();
+    w.press_key("tab").unwrap();
+    assert!(w.inspect().find("guide").unwrap().states.iter().any(|s| s == "focused"));
+    app.run(|| content.set(rich().text("Read ").styled("guide", |s| s.link("/old").id("guide").bold())));
+    app.settle();
+    let link = w.inspect().find("guide").unwrap().clone();
+    assert_eq!(link.target, old, "prefix insertion and restyling retain the same link");
+    assert!(link.states.iter().any(|s| s == "focused"));
+    let [x, y, _, h] = link.bounds;
+    w.pointer_down(x + 2.0, y + h / 2.0);
+    app.run(|| content.set(rich().text("Read ").styled("guide", |s| s.link("/new").id("guide").bold())));
+    app.settle();
+    let new = w.inspect().find("guide").unwrap().clone();
+    assert_ne!(new.target, old, "same developer id does not retain a replaced target");
+    assert!(!new.states.iter().any(|s| s == "focused"));
+    w.pointer_up(x + 2.0, y + h / 2.0);
+    assert!(app.run(|| opened.get()).is_empty(), "old pointer press must not activate the replacement");
+    let reply = inspect::handle_line(&mut w, &json!({"op":"tap","id":"guide","target":old}).to_string());
+    assert_eq!(reply.code.as_deref(), Some("STALE_TARGET"));
+    assert_eq!(reply.delivery, Some(Delivery::Refused));
+    let reply = inspect::handle_line(&mut w, &json!({"op":"tap","id":"guide","target":new.target}).to_string());
+    assert!(reply.ok, "{reply:?}");
+    assert_eq!(app.run(|| opened.get()), ["/new"]);
+    app.run(|| content.set(rich().text("Plain")));
+    app.settle();
+    assert!(w.inspect().find("guide").is_none());
+    assert_eq!(w.inspect().root.walk().into_iter().filter(|n| n.role == "link").count(), 0);
+    assert!(w.layout_issues().is_empty());
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+}
+
+#[test]
 fn a_link_that_wraps_is_pressed_on_either_line() {
     let app = App::new(octara::platform::HeadlessPlatform::default());
     let opened = app.run(|| state("opened", || 0u32));

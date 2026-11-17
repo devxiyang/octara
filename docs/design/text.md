@@ -59,7 +59,7 @@ renderers  glyph runs in the display list; swash rasterizes into an atlas both r
 
 ## Rich text
 
-- A text node holds one string and **runs**: contiguous byte ranges covering it, each a style
+- A text node holds one string and **runs**: ordered, non-overlapping UTF-8 byte ranges, each a style
   patch over the node's inherited text style: weight, slant, family (or `mono`), size, color and
   background (tokens or colors), underline, strikethrough, and a **link** (a URL or a name the
   app's handler gets).
@@ -70,7 +70,7 @@ renderers  glyph runs in the display list; swash rasterizes into an atlas both r
 - Layout: the engine builds the paragraph with Parley's style-run builder (a style table and the
   runs); its cache keys a node's paragraph by its text, its runs and the width, as today by text
   and width. Inline boxes (pills, images in a line) come later, on Parley's `InlineBox`.
-- Links are nodes: each link run gets a `link` child of its text (kind `Link`), outside layout:
+- Links are nodes: each link run gets a text-owned internal node (kind `Link`), outside layout:
   its frame is the box around the line pieces its range covers in the text's lines, and only
   those pieces take the pointer. So a link has what every element has: focus (Tab reaches it,
   Enter presses it), hover and press states (the run draws in `AccentHover` then), a test id
@@ -78,6 +78,23 @@ renderers  glyph runs in the display list; swash rasterizes into an atlas both r
   and `Click` for assistive technology. `.on_link(|target: &str| ..)` on the text or an
   ancestor gets every press. The pointing-hand cursor comes with the platform boundary's
   cursor.
+- Ownership: container content holds application children; text content holds runs and its own
+  link IDs. The common read traversal (`Kernel::children`, Inspector, focus, accessibility)
+  projects either kind of owned descendants. Application insert/move/remove/destroy operations
+  cannot edit internal links, and `create(Kind::Link)` is rejected. Destroying or detaching a
+  text includes its links and removes their test-id index entries. Links never enter Taffy's
+  child lists. No second mirrored child list or generic subtree partition is introduced.
+- Continuity: `set_rich` compares the old/new text's common prefix and suffix at UTF-8 boundaries.
+  A link wholly within an unchanged range keeps its allocation if the new run covers that mapped
+  range and has the same target. Presentation, test-id and run-number changes do not define identity.
+  Replaced words/targets retire old allocations even with the same developer id. Multiple edits
+  inside the changed interval conservatively recreate links: no general text diff or inferred
+  key matching. This protects Agent targets and pending input from being redirected to a replacement.
+- Plain writes: `set_text` replaces annotations too, even for an identical string; `splice_text`
+  is a plain edit and clears rich runs/links. `append_text` appends outside existing ranges and
+  preserves them. Use `set_rich` to supply updated annotations together with a rich edit. All
+  run ranges are validated before mutation, so malformed UTF-8/overlapping ranges cannot leave
+  partially updated text or links.
 - Drawing: a run's color is its span's, else a link's accent, else the text's; backgrounds are
   drawn behind the glyphs around their ascent and descent; underlines (links too) and
   strikethroughs over them at the run's baseline.

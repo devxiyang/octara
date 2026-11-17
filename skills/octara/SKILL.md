@@ -64,6 +64,10 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
   `col`) accept `.child(..)` / `.children(..)`; `.img(..)` requires an empty box or an existing
   image. Put captions, badges and input affixes in an external container around atomic content.
   Incompatible calls panic with `ELEMENT_CONTENT` before mounting.
+- Rich-text links belong to their text. `Span::id` names a link for lookup; it is not a reuse
+  key. Unchanged ranges with the same destination retain identity across style/position changes;
+  replaced words or destinations retire old Agent targets even with the same id. Observe again
+  after `STALE_TARGET`; do not redirect a pending press to the replacement.
 - Give interactive and checked elements a test id (`.id("save")`); tests and agents drive and
   read the app by it (`app.tap("save")`, `app.kernel().text_of("total")`).
 - Configure the initial theme, fonts and target conventions with `AppConfig` before
