@@ -137,3 +137,25 @@ Content::Box(vec![content()])，保留原来的来源位置、容器节点、延
 分层与 diff 检查均通过。对身份 token 的退休标记导致的 mutable_key_type 保守诊断，
 只在四个具体集合使用处注明其不参与 Eq/Hash 的理由，没有放宽全局 lint。
 这些结果不代表真实 OS 输入、窗口呈现或 IME 候选窗验收。
+
+
+## 后续阶段：统一绘制像素结果（init）
+
+截至 d5756aa 的收敛改动已推送 init，并快进推送 main；后续改动继续留在 init。
+本阶段合并 Bitmap 与 Picture，规范类型位于 primitives::capture，renderer 不再声明平行类型或旧名别名。
+CPU 的浮点预乘转换和 GPU 的读回格式转换仍由各自后端负责；标准结果为自顶向下的 straight-alpha sRGB RGBA8。
+像素访问、内存 PNG 编码和文件保存共用同一种结果；编码与 IO 失败返回 io::Result，
+App 截图边界继续附带文件路径并负责 native snapshot 收尾。
+
+参考本地 Rune 固定版本 3686e94 的 render.rs::write_png：明确 RGBA8/sRGB 与 IO 错误；
+image/pixels.rs 的 Pixels 则另有可变帧、generation 和唤醒状态。借鉴的是结果数据与可变资源的分工，
+不迁移它的图集/缓存，也不照搬 PNG 保存时自动创建父目录的行为。
+Octara 的 Image（资源）和 Capture（窗口/原生覆盖报告）继续保留独立语义。
+原 Painter 适配只是移动字段，本次删除不宣称减少像素复制或提升渲染性能。
+
+像素阶段已完成：无 Bitmap 兼容别名，无 renderer 的平行 PNG 实现或直接 png 依赖。
+验证通过：primitives 13 项单元测试与 1 项 doctest、render 2 项单元测试与 10 项集成测试、
+core 截图相关 5 项、CLI harness 2 项。沙箱最初无法取得 GPU 适配器；取得执行权限后，
+4 项 GPU 用例在真实适配器上全部通过，包含 CPU/GPU 像素比对、透明度、路径及 PNG 往返。
+内存与文件 PNG 保留相同 RGBA8/sRGB 元数据；flush 错误保留 IO kind，截图保存失败仍清理原生快照并附路径。
+工作区 all-targets 严格 Clippy、格式、分层和 diff 检查通过；没有声称完成真实窗口呈现验证。

@@ -20,59 +20,6 @@ pub use gpu::GpuRenderer;
 #[cfg(feature = "gpu")]
 pub use wgpu;
 
-use std::io;
-use std::path::Path;
-
-/// A rendered frame: RGBA8 (straight alpha, sRGB).
-#[derive(Clone, PartialEq, Eq)]
-pub struct Bitmap {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
-}
-
-impl std::fmt::Debug for Bitmap {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Bitmap({}×{})", self.width, self.height)
-    }
-}
-
-impl Bitmap {
-    fn from_premultiplied(width: u32, height: u32, pixels: &[[f32; 4]]) -> Bitmap {
-        let mut rgba = Vec::with_capacity(pixels.len() * 4);
-        for p in pixels {
-            let a = p[3];
-            let un = |v: f32| if a > 0.0 { (v / a).clamp(0.0, 1.0) } else { 0.0 };
-            for v in [un(p[0]), un(p[1]), un(p[2]), a.clamp(0.0, 1.0)] {
-                rgba.push((v * 255.0 + 0.5) as u8);
-            }
-        }
-        Bitmap { width, height, rgba }
-    }
-
-    /// The pixel at `(x, y)` as `[r, g, b, a]`.
-    pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
-        let i = ((y * self.width + x) * 4) as usize;
-        [self.rgba[i], self.rgba[i + 1], self.rgba[i + 2], self.rgba[i + 3]]
-    }
-
-    /// PNG bytes.
-    pub fn encode_png(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        let mut enc = png::Encoder::new(&mut out, self.width, self.height);
-        enc.set_color(png::ColorType::Rgba);
-        enc.set_depth(png::BitDepth::Eight);
-        let mut w = enc.write_header().expect("png header");
-        w.write_image_data(&self.rgba).expect("png data");
-        w.finish().expect("png finish");
-        out
-    }
-
-    pub fn save_png(&self, path: impl AsRef<Path>) -> io::Result<()> {
-        std::fs::write(path, self.encode_png())
-    }
-}
-
 /// The reference renderer as a reusable capture painter.
 pub fn reference_painter() -> Box<dyn octara_primitives::capture::Painter> {
     Box::new(CpuRenderer::new())

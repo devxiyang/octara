@@ -611,3 +611,26 @@ with `-D warnings`, formatting, diff and dependency-layer checks passed. Four na
 Clippy annotations document that RowKey's retirement flag never participates in Eq/Hash; no
 global lint policy was relaxed. Skill freshness and teaching examples passed in the workspace
 suite. No real OS window or IME candidate UI was exercised.
+
+## Continuation on init: canonical painted pixels (2026-11-17)
+
+The reviewed convergence commits through `d5756aa` were pushed to origin/init and fast-forwarded
+to origin/main. New work continues on init.
+
+- [x] Consolidate render::Bitmap into primitives::capture::Picture; remove the duplicate type
+      and field-shuffling Painter adapters without a compatibility alias.
+- [x] Share one PNG encoder with explicit straight-alpha RGBA8 / sRGB metadata and consistent
+      fallible errors; keep renderer premultiplication conversion private.
+- [x] Verify pixels/alpha, encoded metadata, file/encoding failures, renderer and capture
+      consumers; check layers and all-targets compilation/Clippy, then commit this slice.
+
+Picture remains pixels; Capture remains the window/native-overlay report. This does not merge
+Image's mutable asset lifetime, change render backends or claim a pixel-copy performance win.
+
+Pixel slice evidence: primitives **13 unit + 1 doctest**, render **2 unit + 10 integration**,
+core capture-filter **5 integration**, CLI harness **2 integration** passed. The first sandbox
+render run reported four unavailable-adapter skips; all **4 GPU cases were then rerun against
+the real adapter and passed** (CPU/GPU comparison, transparent underlay, paths, capture rejection
+and transparent PNG roundtrip). This is offscreen GPU verification, not OS window presentation.
+Workspace all-targets Clippy with -D warnings, formatting, layer and diff checks passed.
+No dependency was added; render no longer depends directly on png.

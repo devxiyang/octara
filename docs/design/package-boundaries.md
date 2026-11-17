@@ -42,8 +42,12 @@ flowchart TD
 | `canvas` | 局部绘制命令记录 | 记录与响应式重算/窗口大小来源分开 |
 | `motion` | 弹簧、曲线与轨道计算 | 时间采样不需要 App 时钟所有者 |
 | `native` | 原生视图身份、placement、变更与事件数据 | 协议数据与平台窗口实例分开 |
-| `capture` | Painter 协议、Picture 像素结果 | 渲染器实现底层协议，截图协调留在 core |
+| `capture` | Painter 协议、Picture 像素结果及统一 PNG 编码 | CPU/GPU 直接返回同一底层结果，截图协调留在 core |
 | `text` / `input` | 平台文本编辑操作、光标类型 | 纯输入数据不属于 App 或平台适配模块 |
+
+`Picture` 是直通 alpha、sRGB RGBA8 像素结果；`encode_png` 与 `save_png` 共用编码路径并返回 `io::Result`。
+渲染后端私有处理预乘/读回格式，不再维护 `Bitmap` 或第二套 PNG 编码。可变 `Image` 资源和 core 的
+`Capture` 窗口/原生覆盖报告仍是不同事实，不因字段相似而合并。
 
 Theme 的共享写权限仍归 App；移动 Theme 值不意味着允许绕过执行准入修改活动窗口资源。
 Canvas 回调何时执行仍归 core 的绑定机制，原语记录器不建立自己的调度。

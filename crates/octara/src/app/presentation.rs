@@ -228,7 +228,8 @@ impl Window {
                 misses,
             });
         }
-        let painted = painter.paint(&self.display_list(), scale).and_then(|p| p.save_png(path).map(|()| p));
+        let painted =
+            painter.paint(&self.display_list(), scale).and_then(|p| p.save_png(path).map(|()| p).map_err(|e| format!("{path}: {e}")));
         for (id, _) in &asked {
             self.on_native_snapshot(*id, None);
         }
@@ -260,7 +261,7 @@ impl Window {
             return Err(format!("[{}] cannot capture a failed App", codes::APP_FAILED));
         }
         use crate::capture::{NativeShot, Shown};
-        picture.save_png(path)?;
+        picture.save_png(path).map_err(|e| format!("{path}: {e}"))?;
         let placements = self.w.kernel.borrow().native_placements();
         let k = self.w.kernel.borrow();
         let native = placements

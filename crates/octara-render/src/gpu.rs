@@ -4,11 +4,11 @@
 //! takes several) and an RGBA atlas (color glyphs). When an atlas fills up, every atlas starts
 //! over and the frame is built again with only what it draws.
 
-use crate::Bitmap;
 use crate::glyphs::{GlyphCache, SUBPIXEL_STEPS};
 use crate::paths::{self, MaskKey};
 use crate::shape::push_clip;
 use bytemuck::{Pod, Zeroable};
+use octara_primitives::capture::{Painter, Picture};
 use octara_primitives::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, Quad, Shadow};
 use octara_primitives::theme::Color;
 use rustc_hash::FxHashMap;
@@ -643,8 +643,8 @@ impl GpuRenderer {
     }
 
     /// Renders offscreen and reads the pixels back (tests, screenshots, a window's captures), in
-    /// the renderer's format (RGBA or BGRA, 8 bits).
-    pub fn render(&mut self, dl: &DisplayList, scale: f32) -> Bitmap {
+    /// straight-alpha sRGB RGBA8, regardless of the renderer's texture format.
+    pub fn render(&mut self, dl: &DisplayList, scale: f32) -> Picture {
         let bgra = match self.format {
             wgpu::TextureFormat::Rgba8Unorm => false,
             wgpu::TextureFormat::Bgra8Unorm => true,
@@ -704,7 +704,7 @@ impl GpuRenderer {
         }
         drop(data);
         readback.unmap();
-        Bitmap { width, height, rgba }
+        Picture { width, height, rgba }
     }
 }
 
@@ -758,11 +758,11 @@ fn quad(q: &Quad, scale: f32, clip: [f32; 4], clip_r: f32) -> Inst {
     }
 }
 
-impl octara_primitives::capture::Painter for GpuRenderer {
+impl Painter for GpuRenderer {
     fn renderer(&self) -> &'static str {
         "gpu"
     }
-    fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<octara_primitives::capture::Picture, String> {
+    fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<Picture, String> {
         if !scale.is_finite() || scale <= 0.0 {
             return Err("capture scale must be finite and positive".into());
         }
@@ -784,7 +784,6 @@ impl octara_primitives::capture::Painter for GpuRenderer {
         if readback.is_none_or(|bytes| bytes > max_buffer) {
             return Err(format!("capture readback exceeds the GPU buffer limit of {max_buffer} bytes"));
         }
-        let b = self.render(list, scale);
-        Ok(octara_primitives::capture::Picture { width: b.width, height: b.height, rgba: b.rgba })
+        Ok(self.render(list, scale))
     }
 }

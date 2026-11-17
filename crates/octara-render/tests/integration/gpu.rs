@@ -3,9 +3,10 @@
 
 use octara::prelude::*;
 use octara::view::native_view;
-use octara_render::{Bitmap, CpuRenderer, GpuRenderer};
+use octara_primitives::capture::Picture;
+use octara_render::{CpuRenderer, GpuRenderer};
 
-fn compare(name: &str, cpu: &Bitmap, gpu: &Bitmap) {
+fn compare(name: &str, cpu: &Picture, gpu: &Picture) {
     assert_eq!((cpu.width, cpu.height), (gpu.width, gpu.height), "{name}: size");
     let (mut worst, mut off, mut at) = (0u8, 0usize, (0, 0));
     for y in 0..cpu.height {
@@ -216,6 +217,16 @@ fn capture_painter_rejects_invalid_sizes_without_losing_the_renderer() {
     let picture = gpu.paint(&list, 2.0).expect("a valid capture still works after refusals");
     assert_eq!((picture.width, picture.height), (7, 5));
     assert_eq!(picture.rgba, [255; 7 * 5 * 4]);
+
+    for (background, expected) in [(Color::new([1.0, 0.25, 0.5, 0.5]), [255, 64, 128, 128]), (Color::new([1.0, 0.0, 1.0, 0.0]), [0; 4])] {
+        list.background = background;
+        let picture: Picture = gpu.render(&list, 2.0);
+        assert_eq!(picture.pixel(0, 0), expected);
+        assert_eq!(picture, gpu.paint(&list, 2.0).unwrap());
+        let frame = Image::decode(&picture.encode_png().unwrap()).unwrap().frame();
+        assert_eq!((frame.width, frame.height), (7, 5));
+        assert_eq!(frame.rgba.as_ref(), picture.rgba);
+    }
 }
 
 /// Paths of every kind, and one larger than an atlas tile.

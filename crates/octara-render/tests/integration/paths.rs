@@ -1,11 +1,12 @@
 //! Paths in the reference renderer: fills with both rules, strokes with caps, joins and dashes,
 //! gradients, transforms, clips; masks cached by content and dropped when unused.
 
+use octara_primitives::capture::Picture;
 use octara_primitives::identity::NodeId;
 use octara_primitives::paint::{DisplayList, Gradient, Item, Part, PathPaint, Rect};
 use octara_primitives::path::{FillRule, LineCap, LineJoin, Path, PathStyle, Stroke, Transform, point};
 use octara_primitives::theme::{Color, rgb};
-use octara_render::{Bitmap, CpuRenderer};
+use octara_render::CpuRenderer;
 
 fn paint(path: Path, style: PathStyle, color: Color) -> Item {
     let bounds = path.bounds().unwrap_or_default();
@@ -16,7 +17,7 @@ fn list(items: Vec<Item>) -> DisplayList {
     DisplayList { size: (100.0, 60.0), background: Color::WHITE, parts: items.into_iter().map(Part::Item).collect() }
 }
 
-fn rgb8(b: &Bitmap, x: u32, y: u32) -> [u8; 3] {
+fn rgb8(b: &Picture, x: u32, y: u32) -> [u8; 3] {
     let p = b.pixel(x, y);
     [p[0], p[1], p[2]]
 }

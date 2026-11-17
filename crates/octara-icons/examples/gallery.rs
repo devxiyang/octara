@@ -89,6 +89,6 @@ fn main() {
     let (w, h) = (shots[0].width, shots[0].height);
     let mut rgba = shots[0].rgba.clone();
     rgba.extend_from_slice(&shots[1].rgba);
-    octara_render::Bitmap { width: w, height: h * 2, rgba }.save_png(&out).unwrap();
+    octara_primitives::capture::Picture { width: w, height: h * 2, rgba }.save_png(&out).unwrap();
     eprintln!("wrote {out}");
 }

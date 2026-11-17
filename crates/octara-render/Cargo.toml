@@ -17,7 +17,6 @@ bytemuck = { workspace = true, optional = true }
 octara-primitives.workspace = true
 pollster = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
-png.workspace = true
 rustc-hash.workspace = true
 swash.workspace = true
 kurbo.workspace = true

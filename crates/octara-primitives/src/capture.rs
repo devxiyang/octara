@@ -1,8 +1,12 @@
 //! Rendering protocol and pixels, independent of the App capture workflow.
 
 use crate::paint::DisplayList;
+use std::io::{self, Write};
+use std::path::Path;
 
-/// A painted frame: RGBA8, straight alpha, sRGB.
+/// A painted frame: RGBA8, straight alpha, sRGB, rows top to bottom.
+///
+/// `rgba` contains `width × height × 4` bytes.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Picture {
     pub width: u32,
@@ -17,16 +21,40 @@ impl std::fmt::Debug for Picture {
 }
 
 impl Picture {
-    /// Writes it as an 8-bit sRGB PNG.
-    pub fn save_png(&self, path: &str) -> Result<(), String> {
-        let file = std::fs::File::create(path).map_err(|e| format!("{path}: {e}"))?;
-        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), self.width, self.height);
+    /// The pixel at `(x, y)` as `[r, g, b, a]`.
+    pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * self.width + x) * 4) as usize;
+        [self.rgba[i], self.rgba[i + 1], self.rgba[i + 2], self.rgba[i + 3]]
+    }
+
+    /// Encodes an 8-bit sRGB PNG. Invalid dimensions or RGBA data return an error.
+    pub fn encode_png(&self) -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        self.write_png(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    /// Writes an 8-bit sRGB PNG. Encoding and filesystem failures return an error.
+    pub fn save_png(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        let file = std::fs::File::create(path)?;
+        self.write_png(io::BufWriter::new(file))
+    }
+
+    fn write_png(&self, output: impl Write) -> io::Result<()> {
+        let mut enc = png::Encoder::new(output, self.width, self.height);
         enc.set_color(png::ColorType::Rgba);
         enc.set_depth(png::BitDepth::Eight);
         enc.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
-        let mut w = enc.write_header().map_err(|e| format!("{path}: {e}"))?;
-        w.write_image_data(&self.rgba).map_err(|e| format!("{path}: {e}"))?;
-        w.finish().map_err(|e| format!("{path}: {e}"))
+        let mut w = enc.write_header().map_err(png_error)?;
+        w.write_image_data(&self.rgba).map_err(png_error)?;
+        w.finish().map_err(png_error)
+    }
+}
+
+fn png_error(error: png::EncodingError) -> io::Error {
+    match error {
+        png::EncodingError::IoError(error) => error,
+        error => io::Error::other(error),
     }
 }
 
@@ -36,4 +64,64 @@ pub trait Painter {
     fn renderer(&self) -> &'static str;
     /// The display list at `scale` device pixels per logical pixel.
     fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<Picture, String>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_png(picture: &Picture, bytes: &[u8]) {
+        let mut reader = png::Decoder::new(io::Cursor::new(bytes)).read_info().unwrap();
+        assert_eq!(reader.info().srgb, Some(png::SrgbRenderingIntent::Perceptual));
+        let mut decoded = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut decoded).unwrap();
+        assert_eq!((info.width, info.height), (picture.width, picture.height));
+        assert_eq!((info.color_type, info.bit_depth), (png::ColorType::Rgba, png::BitDepth::Eight));
+        assert_eq!(&decoded[..info.buffer_size()], picture.rgba);
+    }
+
+    #[test]
+    fn memory_and_file_pngs_preserve_straight_alpha_pixels_and_srgb() {
+        let picture = Picture { width: 2, height: 2, rgba: vec![25, 150, 250, 0, 250, 128, 64, 64, 45, 90, 180, 128, 12, 34, 56, 255] };
+        assert_eq!(picture.pixel(1, 1), [12, 34, 56, 255]);
+        let bytes = picture.encode_png().unwrap();
+        assert_png(&picture, &bytes);
+
+        let path = std::env::temp_dir().join(format!("octara-picture-{}.png", std::process::id()));
+        picture.save_png(&path).unwrap();
+        let saved = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_png(&picture, &saved);
+        assert_eq!(saved, bytes);
+    }
+
+    #[test]
+    fn invalid_pictures_return_encoding_errors() {
+        for picture in [
+            Picture { width: 0, height: 1, rgba: vec![] },
+            Picture { width: 1, height: 0, rgba: vec![] },
+            Picture { width: 1, height: 1, rgba: vec![0; 3] },
+        ] {
+            assert!(picture.encode_png().is_err());
+        }
+    }
+
+    #[test]
+    fn png_finalization_preserves_io_error_kinds() {
+        struct FailsOnFlush;
+        impl Write for FailsOnFlush {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "cannot flush PNG"))
+            }
+        }
+
+        let picture = Picture { width: 1, height: 1, rgba: vec![0; 4] };
+        let error = picture.write_png(FailsOnFlush).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(error.to_string(), "cannot flush PNG");
+    }
 }

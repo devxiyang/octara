@@ -96,14 +96,26 @@ fn snapshots_draw_in_place_and_are_cleared() {
     let c = app.capture_finish(&mut Counting(painted.clone()), &shot, 1.0, vec!["motion".into()], None).unwrap();
     std::fs::remove_file(&shot).unwrap();
     assert_eq!((c.native[0].shown, c.settled, c.pending.as_slice()), (Shown::Failed, false, ["motion".to_string()].as_slice()));
+
+    // A failed PNG write still clears snapshots, and its error identifies the destination.
+    let coming = app.capture_begin();
+    app.event(InputEvent::NativeSnapshot { id: coming[0], image: Some(Image::rgba(1, 1, vec![255, 0, 0, 255])) });
+    let shot = format!("{}/shot.png", path("missing-parent"));
+    let error = app.capture_finish(&mut Counting(painted), &shot, 1.0, vec![], None).unwrap_err();
+    assert!(error.starts_with(&format!("{shot}: ")), "{error}");
+    assert!(app.capture_awaiting().is_empty());
+    assert!(!app.display_list().items().iter().any(|i| matches!(i, Item::Image(_))), "snapshots are cleared after a write failure");
 }
 
 #[test]
 fn a_display_capture_shows_views_live() {
     let mut app = Window::headless(view);
     let shot = path("display");
-    let picture = Picture { width: 2, height: 1, rgba: vec![0, 0, 0, 255, 255, 255, 255, 255] };
+    let picture = Picture { width: 2, height: 1, rgba: vec![22, 44, 88, 0, 240, 128, 32, 96] };
     let c = app.capture_display(&picture, &shot, 2.0, vec![]).unwrap();
+    let frame = Image::decode(&std::fs::read(&shot).unwrap()).unwrap().frame();
+    assert_eq!((frame.width, frame.height), (picture.width, picture.height));
+    assert_eq!(frame.rgba.as_ref(), picture.rgba);
     std::fs::remove_file(&shot).unwrap();
     assert_eq!((c.pixels, c.renderer.as_str(), c.width, c.settled), (Pixels::Display, "display", 2, true));
     assert_eq!((c.native[0].id.as_deref(), c.native[0].shown), (Some("web"), Shown::Live));

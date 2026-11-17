@@ -75,6 +75,23 @@ fn deterministic_and_pixels_where_expected() {
     assert_eq!(px(list.0 + 20.0, list.1 + list.3 + 2.0)[..3], rgb(t.get(Token::Background)));
     assert_eq!(px(list.0 + 150.0, list.1 + 10.0)[..3], rgb(t.get(Token::Surface)));
 
-    let png = a.encode_png();
+    let png = a.encode_png().unwrap();
     assert_eq!(&png[1..4], b"PNG");
+}
+
+#[test]
+fn render_and_capture_preserve_straight_alpha_in_pngs() {
+    use octara_primitives::capture::{Painter, Picture};
+    use octara_primitives::paint::DisplayList;
+
+    let mut cpu = CpuRenderer::new();
+    for (background, expected) in [(Color::new([1.0, 0.25, 0.5, 0.5]), [255, 64, 128, 128]), (Color::new([1.0, 0.0, 1.0, 0.0]), [0; 4])] {
+        let list = DisplayList { size: (3.25, 2.5), background, parts: vec![] };
+        let picture: Picture = cpu.render(&list, 2.0);
+        assert_eq!(picture.pixel(0, 0), expected);
+        assert_eq!(picture, cpu.paint(&list, 2.0).unwrap());
+        let frame = Image::decode(&picture.encode_png().unwrap()).unwrap().frame();
+        assert_eq!((frame.width, frame.height), (7, 5));
+        assert_eq!(frame.rgba.as_ref(), picture.rgba);
+    }
 }

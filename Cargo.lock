@@ -2643,7 +2643,6 @@ dependencies = [
  "kurbo",
  "octara",
  "octara-primitives",
- "png",
  "pollster",
  "rustc-hash 2.1.3",
  "swash",

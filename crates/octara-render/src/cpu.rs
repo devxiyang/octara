@@ -2,10 +2,10 @@
 //! pixel by pixel. It is the oracle the GPU renderer is tested against, and how agents and tests
 //! take screenshots without a GPU.
 
-use crate::Bitmap;
 use crate::glyphs::{GlyphCache, SUBPIXEL_STEPS};
 use crate::paths::{self, PathCache};
 use crate::shape::{blend, blend_premultiplied, coverage, image_color, inner_rect, sd_round_rect, shadow_alpha};
+use octara_primitives::capture::{Painter, Picture};
 use octara_primitives::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, Quad, Rect, Shadow};
 use octara_primitives::theme::Color;
 
@@ -80,7 +80,7 @@ impl CpuRenderer {
     }
 
     /// Renders at `scale` device pixels per logical pixel.
-    pub fn render(&mut self, dl: &DisplayList, scale: f32) -> Bitmap {
+    pub fn render(&mut self, dl: &DisplayList, scale: f32) -> Picture {
         let width = (dl.size.0 * scale).ceil().max(1.0) as u32;
         let height = (dl.size.1 * scale).ceil().max(1.0) as u32;
         let (bg, bga) = rgb(dl.background);
@@ -120,7 +120,7 @@ impl CpuRenderer {
             }
         }
         self.paths.end_frame();
-        Bitmap::from_premultiplied(width, height, &t.pixels)
+        from_premultiplied(width, height, &t.pixels)
     }
 
     fn path(&mut self, t: &mut Target, p: &PathPaint, scale: f32) {
@@ -292,12 +292,23 @@ fn quad(t: &mut Target, q: &Quad, scale: f32) {
     }
 }
 
-impl octara_primitives::capture::Painter for CpuRenderer {
+fn from_premultiplied(width: u32, height: u32, pixels: &[[f32; 4]]) -> Picture {
+    let mut rgba = Vec::with_capacity(pixels.len() * 4);
+    for p in pixels {
+        let a = p[3];
+        let un = |v: f32| if a > 0.0 { (v / a).clamp(0.0, 1.0) } else { 0.0 };
+        for v in [un(p[0]), un(p[1]), un(p[2]), a.clamp(0.0, 1.0)] {
+            rgba.push((v * 255.0 + 0.5) as u8);
+        }
+    }
+    Picture { width, height, rgba }
+}
+
+impl Painter for CpuRenderer {
     fn renderer(&self) -> &'static str {
         "reference"
     }
-    fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<octara_primitives::capture::Picture, String> {
-        let b = self.render(list, scale);
-        Ok(octara_primitives::capture::Picture { width: b.width, height: b.height, rgba: b.rgba })
+    fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<Picture, String> {
+        Ok(self.render(list, scale))
     }
 }
