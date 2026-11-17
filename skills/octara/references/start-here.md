@@ -323,7 +323,12 @@ assert!(!app.kernel().exists("todo-1"));
 - `scope(key, || content)`: an explicit lifetime/context range, built when mounted without
   an extra layout node. Its key is unique within its owner; duplicate keys report
   `DUPLICATE_SCOPE_KEY` and the duplicate body is not run. State follows the key on reload,
-  not sibling position. `#[ui]` records provenance only; ordinary functions do not create scopes.
+  not sibling position. Keys implement `Eq + Hash + Display + 'static`: equality and type identify
+  them; display text is only a diagnostic label. Different keys may share a label; hash collisions
+  do not merge identities. Keep equality/hash stable while a key is in use; key operations
+  should be pure and must not depend on reactive reads or perform UI actions.
+  `keyed` uses the same contract, and lists retain their actual item keys.
+  `#[ui]` records provenance only; ordinary functions do not create scopes.
 - Prefer passing Signal handles into reusable functions. If a helper creates named state or
   provides local context, build it inside an explicit scope (or an existing branch/list owner).
   Prebuilt content has already run its state/context reads; inserting it does not re-run them.

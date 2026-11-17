@@ -7,7 +7,7 @@
 //! range each mounted text covers; the kernel draws it.
 
 use super::Window;
-use crate::kernel::select::{Copied, CopyMarkdown, Seg};
+use crate::kernel::select::{Copied, CopyMarkdown, RowKey, Seg};
 use crate::kernel::{Kernel, NodeId, Role};
 use std::cmp::Ordering;
 use std::rc::Rc;
@@ -28,9 +28,9 @@ pub(crate) struct DocSelection {
 }
 
 /// A row's index by its key.
-pub(crate) type IndexOf = Rc<dyn Fn(&str) -> Option<usize>>;
+pub(crate) type IndexOf = Rc<dyn Fn(&RowKey) -> Option<usize>>;
 /// Builds a row off screen: its root node, and what disposes it.
-pub(crate) type BuildRow = Rc<dyn Fn(&str) -> Option<(NodeId, Box<dyn FnOnce()>)>>;
+pub(crate) type BuildRow = Rc<dyn Fn(&RowKey) -> Option<(NodeId, Box<dyn FnOnce()>)>>;
 
 /// How a list orders its rows (registered by `each` and `virtual_each` on their container), and
 /// how it builds a row it has not mounted (a virtual list's).
@@ -39,7 +39,7 @@ pub(crate) struct ListOrder {
     /// A row's index by its key (as the path writes it).
     pub index_of: IndexOf,
     /// The row keys from `start` to `end` (exclusive).
-    pub keys: Rc<dyn Fn(usize, usize) -> Vec<Rc<str>>>,
+    pub keys: Rc<dyn Fn(usize, usize) -> Vec<RowKey>>,
     /// Builds a row off screen: its root node, until the returned closure disposes it.
     pub build: Option<BuildRow>,
 }
@@ -223,8 +223,14 @@ impl Window {
                 }
                 let group = &pieces[i..j];
                 let md = group[0].copier.as_ref().and_then(|(d, f)| {
-                    let copied: Vec<Copied> =
-                        group.iter().map(|p| Copied { rows: rows_of(&p.path[*d..]), text: p.text.clone(), whole: p.whole }).collect();
+                    let copied: Vec<Copied> = group
+                        .iter()
+                        .map(|p| Copied {
+                            rows: rows_of(&p.path[*d..]).iter().map(|key| key.to_string().into()).collect(),
+                            text: p.text.clone(),
+                            whole: p.whole,
+                        })
+                        .collect();
                     f(&copied)
                 });
                 out.push(md.unwrap_or_else(|| join(group)));
@@ -244,7 +250,7 @@ impl Window {
         let mounted: Vec<(NodeId, Vec<Seg>)> =
             k.selectable_texts(region).into_iter().filter_map(|t| k.path_to(region, t).map(|p| (t, p))).collect();
         // Rows of virtual lists between the ends that are not mounted are built to read them.
-        let mut missing: Vec<(Vec<Seg>, Rc<str>)> = Vec::new();
+        let mut missing: Vec<(Vec<Seg>, RowKey)> = Vec::new();
         for (container, order) in lists.iter() {
             let (Some(cpath), true) = (k.path_to(region, *container), order.build.is_some()) else { continue };
             let row_index = |p: &TextPoint| match p.path.get(cpath.len()) {
@@ -447,7 +453,7 @@ struct Piece {
     copier: Option<(usize, CopyMarkdown)>,
 }
 
-fn rows_of(path: &[Seg]) -> Vec<Rc<str>> {
+fn rows_of(path: &[Seg]) -> Vec<RowKey> {
     path.iter()
         .filter_map(|s| match s {
             Seg::Row { key, .. } => Some(key.clone()),

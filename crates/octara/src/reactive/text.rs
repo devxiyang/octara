@@ -47,6 +47,14 @@ impl PartialEq for TextBuffer {
     }
 }
 
+impl Eq for TextBuffer {}
+
+impl std::hash::Hash for TextBuffer {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&Rc::as_ptr(&self.0), state);
+    }
+}
+
 impl std::fmt::Debug for TextBuffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "TextBuffer({:?})", self.0.value.borrow())

@@ -1,7 +1,7 @@
 # 收敛后的分层架构复核
 
 日期：2026-11-17。Octara 基线：`8170b32`，已 push 到 `origin/init`。
-本轮只做评审；没有实施下列生产代码修改。
+原评审只做分析；后续获批实施记录见文末。
 
 Rune 依据为本地固定版本 `3686e94ae09545fd5f2a61e22aabfbeba1cd896f`，以及前轮已保存的
 `631e8a67cb3c40225efa3f6c4f57b80e7b18f190` 执行链研究；本轮没有声称验证上游最新 HEAD。
@@ -92,3 +92,30 @@ Signal / ReadSignal、ScopeId / NodeId、TextBuffer / String 和 El / View 各�
 完成标准是每条事实只有一个权威来源、同类结构身份遵循同一规则、删除路径无遗留消费者，
 原有输入/目标/所有权语义通过验证。headless 身份复现不代表已完成真实 OS 输入或 IME 验证。
 不为追求统一再引入通用组件管理器，不以删除 kit 包本身作为本轮目标。
+
+
+## 获批实施：结构身份
+
+第一阶段以结构化 ScopeSegment 替代字符串路径：App、Window、显式 scope、branch、普通/虚拟列表各有明确的段类型。
+动态 key 按类型、Hash 和实际 Eq 认领运行时内的规范身份；碰撞仍比较真实 key，不使用裸 hash 作为身份。
+命名状态恢复和内核选择路径使用同一规范身份。Display 不参与身份判定；Copied.rows 为 Markdown 回调保留显示标签载荷，
+已注明标签可能重复，不用于框架内部选择定位。删除虚拟列表显示名反查表和旧 child_name 拼接政策。
+
+内核 token 不持有用户值；用户 key 的 Hash/Eq/Display 和临时释放在不追踪、无环境 owner 的只读边界执行。
+最后一个 token 释放仅标记待清理；最外层 App 操作返回时在内部借用结束后回收失效 key。无退休标记时不扫描。
+shutdown 清空 key 值，即使外部仍持有选择 token。热重载保留的命名状态路径保有 token，按真实 key 恢复。
+
+公开 scope/keyed 明确要求 Eq + Hash + Display + 'static，不增加作者需要管理的 ID 或新状态原语。
+TextBuffer 的 Eq/Hash 延续其原有缓冲区身份语义，Chat key 类型同步迁移；不兼容旧字符串状态路径。
+身份回调审查同时闭合 named_state 注册和 hot_reload 写权限入口，保留合法主机/handler 重载。
+
+验证：核心 594 通过、0 失败、1 既有忽略项；教程 doctests 12 通过。
+新增用例覆盖 snapshot/增量 each 与 virtual_each 的同显示名、同 hash、重排、移除重建、reload、过期目标，
+以及虚拟离屏复制、类型隔离、比较/释放不订阅、索引借用释放与 shutdown 回收。独立代码复核无剩余阻塞项。
+
+选择用 RowKey 还包含稳定的 owner 路径和列表区域：同一容器中的相邻 each，或两个无包装节点的
+scope 各自声明的 each，可以重复使用同一个业务 key 而互不混淆。新增测试验证单独选择右侧行、
+跨列表选择与保存路径在 reload 后仍定位正确。最终核心验证更新为 **594 通过、0 失败、1 忽略**。
+
+范围边界：现有虚拟列表排序注册仍以滚动容器为单位，本轮没有扩展同一容器内多个 virtual_each 的布局/排序协议；
+需要多个独立虚拟列表时使用各自的容器。显示标签载荷不承担选择定位。

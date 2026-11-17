@@ -39,7 +39,9 @@ If `octara` is not installed: `cargo install --git https://github.com/octoii-wor
   component made them and where it was called, for the inspector and picking.
 - Ordinary functions do not create owners. Pass state handles into reusable functions; use
   `scope(key, || content)` only for an independent lifetime/context range. Duplicate scope keys
-  refuse the duplicate content (`DUPLICATE_SCOPE_KEY`). Named state belongs to the active owner: `state("key", || init)`, `state_list("key", init, key_fn)`,
+  refuse the duplicate content (`DUPLICATE_SCOPE_KEY`). Structural keys use `Eq + Hash` and their
+  type for identity; `Display` is only a label. `scope` and `keyed` require keys with a `'static` lifetime.
+  Named state belongs to the active owner: `state("key", || init)`, `state_list("key", init, key_fn)`,
   `text_buffer(..)`. Use `App::current().run(|| state("key", || init))` for shared App state;
   same-key/type App lookups reuse the value until shutdown.
 - Register `on_cleanup(..)` during construction to retire external requests and cancel retained

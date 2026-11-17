@@ -73,7 +73,7 @@ impl Window {
     pub(super) fn mount_root(&self) {
         // Named by the window: state is kept by its scope's path (across a hot reload), so two
         // windows' roots never share a key.
-        let s = self.app.rt.create_scope(Some(self.app.root_scope), &format!("window{}", self.w.id.number()));
+        let s = self.app.rt.create_scope(Some(self.app.root_scope), crate::identity::ScopeSegment::Window(self.w.id.number()));
         self.w.root_scope.set(Some(s));
         let parent = Parent { node: self.w.kernel.borrow().root(), root: self.w.root_slots.clone() };
         let root = self.w.root.clone();

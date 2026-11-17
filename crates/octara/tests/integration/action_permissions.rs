@@ -3,7 +3,7 @@
 use octara::platform::HeadlessPlatform;
 use octara::prelude::*;
 use octara::task::WorkKind;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -227,6 +227,114 @@ fn captured_windows_cannot_dispatch_from_pure_computations_in_either_app() {
         source_app.shutdown();
         target_app.shutdown();
     }
+}
+
+#[test]
+fn captured_apps_cannot_reload_from_build_or_pure_sources_even_across_apps() {
+    for cross_app in [false, true] {
+        for phase in ["build", "init", "memo", "watch", "property"] {
+            for sampled in [false, true] {
+                let target_app = App::new(HeadlessPlatform::default());
+                let target_window = target_app
+                    .open_window(WindowOptions::new("Target"), || col().size_full().child(text("Target").id("target")).into())
+                    .unwrap();
+                let before = target_window.inspect().find("target").unwrap().target.clone();
+                let source_app = if cross_app { App::new(HeadlessPlatform::default()) } else { target_app.clone() };
+                let destination = target_app.clone();
+                let attempted = Rc::new(Cell::new(false));
+                let request_attempted = attempted.clone();
+                let source_window = source_app
+                    .open_window(WindowOptions::new("Source"), move || {
+                        let target = destination.clone();
+                        let attempted = request_attempted.clone();
+                        let request = move || {
+                            if !attempted.replace(true) {
+                                if sampled {
+                                    untrack(|| target.hot_reload());
+                                } else {
+                                    target.hot_reload();
+                                }
+                            }
+                        };
+                        let probe = match phase {
+                            "build" => {
+                                request();
+                                text("Probe")
+                            }
+                            "init" => {
+                                state("initial", || {
+                                    request();
+                                    0
+                                });
+                                text("Probe")
+                            }
+                            "memo" => {
+                                let probe = memo(move || {
+                                    request();
+                                    "Probe".to_owned()
+                                });
+                                text(probe)
+                            }
+                            "watch" => {
+                                watch(
+                                    move || {
+                                        request();
+                                        0
+                                    },
+                                    |_, _| {},
+                                );
+                                text("Probe")
+                            }
+                            "property" => text(move || {
+                                request();
+                                "Probe".to_owned()
+                            }),
+                            _ => unreachable!(),
+                        };
+                        col().size_full().child(probe).into()
+                    })
+                    .unwrap();
+                assert!(attempted.get());
+                assert_eq!(target_window.inspect().find("target").unwrap().target, before, "{phase}, cross={cross_app}, untrack={sampled}");
+                let diagnostics = source_app.diagnostics();
+                assert_eq!(diagnostics.len(), 1, "{phase}, cross={cross_app}, untrack={sampled}: {diagnostics:?}");
+                assert_eq!(diagnostics[0].code.id, if matches!(phase, "build" | "init") { "WRITE_IN_BUILD" } else { "WRITE_IN_DERIVE" });
+                assert!(!source_app.is_failed());
+                assert!(!target_app.is_failed());
+                if cross_app {
+                    assert!(target_app.diagnostics().is_empty(), "rejection belongs to the caller App");
+                }
+                target_app.hot_reload();
+                assert_ne!(target_window.inspect().find("target").unwrap().target, before, "host reload remains available");
+                assert!(source_window.layout_issues().is_empty(), "{:?}", source_window.layout_issues());
+                assert!(target_window.layout_issues().is_empty(), "{:?}", target_window.layout_issues());
+                source_app.shutdown();
+                target_app.shutdown();
+            }
+        }
+    }
+}
+
+#[test]
+fn shutdown_refuses_reload_from_cleanup_and_the_host() {
+    let app = App::new(HeadlessPlatform::default());
+    let builds = Rc::new(Cell::new(0));
+    let root_builds = builds.clone();
+    let window = app
+        .open_window(WindowOptions::new("Target"), move || {
+            root_builds.set(root_builds.get() + 1);
+            on_cleanup(|| App::current().hot_reload());
+            col().size_full().child(text("Target").id("target")).into()
+        })
+        .unwrap();
+    app.shutdown();
+    app.hot_reload();
+    assert_eq!(builds.get(), 1);
+    assert!(window.is_closed());
+    assert!(!app.is_failed());
+    let diagnostics = app.diagnostics();
+    assert_eq!(diagnostics.len(), 2, "cleanup and host calls both report rejection: {diagnostics:?}");
+    assert!(diagnostics.iter().all(|diagnostic| diagnostic.code.id == "WRITE_DISPOSED"), "{diagnostics:?}");
 }
 
 #[test]

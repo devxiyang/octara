@@ -712,7 +712,7 @@ fn answer(chat: &Chat, id: u64, m: ReadSignal<Message>) -> El {
         ))
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum PartKind {
     Text,
     Reasoning,
@@ -743,7 +743,7 @@ impl std::fmt::Display for PartKind {
 }
 
 /// Equality is the buffer's identity; its diagnostic label never includes its changing text.
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq, Hash)]
 struct TextResource(TextBuffer);
 
 impl std::fmt::Display for TextResource {

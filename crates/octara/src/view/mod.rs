@@ -23,10 +23,12 @@ pub use pace::paced;
 pub use style::{Length, Patch, Styled, px, relative, rems, sp};
 
 use crate::diagnostics as codes;
+use crate::identity::{RegionKind, RowKey, ScopeSegment};
 use crate::kernel::{Breakpoint, NodeId, Theme};
 use crate::reactive::graph::{self, Ctx, ReadSignal, ScopeId, Signal, rt};
 use std::cell::{Cell, RefCell};
 use std::fmt::Display;
+use std::hash::Hash;
 use std::panic::Location;
 use std::rc::Rc;
 
@@ -283,18 +285,20 @@ pub(crate) fn mount(view: View, parent: &Parent, target: &Slots) {
 /// rebuilt, and resources created beforehand keep their original owner. Pass state handles to
 /// ordinary functions when they need no separate lifetime or context boundary.
 ///
-/// State paths use `scope[key]` segments (`%` and `/` in keys are escaped). These paths replace
-/// the former component name/key paths; existing state is not recovered through old path aliases.
+/// Identity uses the key's type, equality and hash. `Display` supplies diagnostics only.
 #[track_caller]
-pub fn scope<C: IntoElement>(key: impl Display, content: impl FnOnce() -> C + 'static) -> View {
+pub fn scope<K: Eq + Hash + Display + 'static, C: IntoElement>(key: K, content: impl FnOnce() -> C + 'static) -> View {
     let at = Location::caller();
-    let key = key.to_string();
-    let segment = format!("scope[{}]", key.replace('%', "%25").replace('/', "%2F"));
+    let key = Rc::new(key);
     let made = building();
     View::dynamic(Box::new(move |parent, target| {
         let s = rt(|rt| {
             let owner = rt.current_scope().expect("scope outside an owner");
-            if rt.child_name(owner, &segment) != segment {
+            let key = rt.intern_key(key);
+            if !rt.scope_alive(owner) {
+                return None;
+            }
+            if !rt.register_scope_key(owner, key.clone()) {
                 rt.diag(
                     &codes::DUPLICATE_SCOPE_KEY,
                     format!("scope key `{key}` used twice in {}; duplicate content was not mounted", rt.scope_path(owner)),
@@ -302,7 +306,7 @@ pub fn scope<C: IntoElement>(key: impl Display, content: impl FnOnce() -> C + 's
                 );
                 return None;
             }
-            Some(rt.create_scope(Some(owner), &segment))
+            Some(rt.create_scope(Some(owner), ScopeSegment::Scope(key)))
         });
         let Some(s) = s else { return };
         rt(|rt| {
@@ -373,7 +377,7 @@ fn show_else_at(
     then: impl Fn() -> View + 'static,
     els: impl Fn() -> View + 'static,
 ) -> View {
-    switch_at(at, cond, |c| if *c { "then".into() } else { "else".into() }, move |c| if *c { then() } else { els() })
+    switch_at(at, cond, move |c| if *c { then() } else { els() })
 }
 
 /// Shows `view(key)` for the current `key`; when the key changes, the view is built anew (React's
@@ -381,15 +385,14 @@ fn show_else_at(
 /// Each build is a scope named by the key, so its state lives while the key stays (and comes back
 /// by name across a hot reload).
 #[track_caller]
-pub fn keyed<K: PartialEq + Display + 'static>(key: impl Fn() -> K + 'static, view: impl Fn(&K) -> View + 'static) -> View {
-    switch_at(Location::caller(), key, |k| k.to_string(), view)
+pub fn keyed<K: Eq + Hash + Display + 'static>(key: impl Fn() -> K + 'static, view: impl Fn(&K) -> View + 'static) -> View {
+    switch_at(Location::caller(), key, view)
 }
 
-/// A view rebuilt whenever `key` changes, in a scope named by `name(key)`.
-fn switch_at<K: PartialEq + 'static>(
+/// A view rebuilt whenever the typed logical key changes.
+fn switch_at<K: Eq + Hash + Display + 'static>(
     at: &'static Location<'static>,
     key: impl Fn() -> K + 'static,
-    name: impl Fn(&K) -> String + 'static,
     view: impl Fn(&K) -> View + 'static,
 ) -> View {
     let made = building();
@@ -398,18 +401,22 @@ fn switch_at<K: PartialEq + 'static>(
         target.borrow_mut().push(Slot::Region(region.clone()));
         let (owner, base) = rt(|rt| {
             let owner = rt.current_scope().expect("show outside a scope");
-            (owner, rt.child_name(owner, "show"))
+            (owner, rt.next_region(owner, RegionKind::Branch))
         });
         let parent = parent.clone();
-        let last: Rc<RefCell<Option<K>>> = Rc::default();
+        let last: Rc<RefCell<Option<RowKey>>> = Rc::default();
         let branch: Rc<Cell<Option<ScopeId>>> = Rc::default();
-        let (name, view) = (Rc::new(name), Rc::new(view));
+        let view = Rc::new(view);
         graph::structural_binding(at, move || {
-            let k = key();
-            if last.borrow().as_ref() == Some(&k) {
+            let k = std::mem::DropGuard::new(Rc::new(key()), |key| rt(|rt| rt.retire_key(key)));
+            let identity = rt(|rt| rt.intern_key(k.clone()));
+            if last.borrow().as_ref() == Some(&identity) {
                 return;
             }
             rt(|rt| {
+                if !rt.scope_alive(owner) {
+                    return;
+                }
                 if let Some(old) = branch.take() {
                     // The branch's top nodes leave (fading out where motion is set) before their
                     // scope is disposed.
@@ -421,11 +428,11 @@ fn switch_at<K: PartialEq + 'static>(
                     rt.dispose_scope(old);
                 }
                 region.borrow_mut().clear();
-                let s = rt.create_scope(Some(owner), &format!("{base}:{}", name(&k)));
+                let s = rt.create_scope(Some(owner), ScopeSegment::Branch { region: base, key: identity.clone() });
                 branch.set(Some(s));
                 rt.with_frame(Ctx::Build, None, Some(Some(s)), || mount(as_part_of(made, || view(&k)), &parent, &region));
             });
-            *last.borrow_mut() = Some(k);
+            *last.borrow_mut() = Some(identity);
         });
     }))
 }

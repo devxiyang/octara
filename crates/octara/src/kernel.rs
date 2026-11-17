@@ -261,7 +261,7 @@ struct Node {
     /// Its texts are never selected (`.select_none()`).
     select_none: bool,
     /// A list row's key (`each`, `virtual_each`): selections address rows by it.
-    row_key: Option<std::rc::Rc<str>>,
+    row_key: Option<select::RowKey>,
     /// The range of its text a document selection covers now.
     selected: Option<std::ops::Range<usize>>,
     /// A region's selection as assistive technology gets it: anchor and focus, each a mounted

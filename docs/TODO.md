@@ -568,3 +568,28 @@ IME candidate UI and screenshots were not exercised in this refactor; no perform
 
 The four selected convergence stages are complete. Earlier open content/kit proposals remain
 explicit candidates; they do not imply another required kernel rewrite or mandatory kit removal.
+
+
+## Post-convergence structural identity and deletion slices (2026-11-17)
+
+Approved follow-up: [architecture review](design/post-convergence-architecture-review.md).
+
+- [x] Commit the review before implementation (`9e28e96`).
+- [x] Unify structural identity across explicit scopes, branches and list rows; separate key
+      equality from diagnostic labels, preserve reload identity, verify collision/reorder/removal
+      and virtual selection behavior; commit independently.
+- [ ] Remove RadioGroup's mirrored collection and synchronization; verify retained targets/focus,
+      duplicate recovery, disabled and missing selection behavior; commit independently.
+- [ ] Delete the private Children conversion family and boxed adapter; verify overlay lifecycle,
+      reload, nesting and placement; commit independently.
+
+Keep the broader review's pixel-result, private pointer dispatch, Markdown and optional-scope
+proposals outside these approved implementation slices. No mandatory kit deletion or second
+reactive engine.
+
+Identity slice evidence: core regression **594 passed, 0 failed, 1 existing ignored doctest**;
+12 CLI teaching doctests, format and dependency-layer checks passed. New cases cover typed
+equality despite colliding hashes/display labels, both snapshot and incremental rows,
+reorder/removal/reload, stale targets, virtual offscreen copy, sampled key callbacks/destructors,
+registry reclamation and shutdown. Construction/pure callers cannot request hot reload or
+register named state through a captured App. No real OS window input was exercised.

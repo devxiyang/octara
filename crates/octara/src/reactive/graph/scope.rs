@@ -12,22 +12,40 @@ impl Runtime {
         self.scope.get()
     }
     pub fn scope_path(&self, s: ScopeId) -> String {
-        self.scopes.borrow()[s.i as usize].path.clone()
+        self.scopes.borrow()[s.i as usize].path.iter().map(ToString::to_string).collect::<Vec<_>>().join("/")
     }
 
-    /// Registers `name` under `parent`; returns the segment (`name`, then `name#2`, ...).
-    pub fn child_name(&self, parent: ScopeId, name: &str) -> String {
+    pub(crate) fn intern_key<K: Eq + std::hash::Hash + std::fmt::Display + 'static>(&self, key: Rc<K>) -> RowKey {
+        self.with_execution(ExecutionOwner { scope: None, window: None }, Ctx::Observe, None, || self.sample(|| self.keys.intern(key)))
+    }
+
+    pub(crate) fn prune_keys(&self) {
+        self.with_execution(ExecutionOwner { scope: None, window: None }, Ctx::Observe, None, || self.sample(|| self.keys.prune()));
+    }
+
+    pub(crate) fn retire_key<K>(&self, key: K) {
+        self.with_execution(ExecutionOwner { scope: None, window: None }, Ctx::Observe, None, || self.sample(|| drop(key)));
+    }
+
+    /// Automatic regions follow construction order within their structural kind.
+    pub(crate) fn next_region(&self, parent: ScopeId, kind: RegionKind) -> RegionId {
         let mut scopes = self.scopes.borrow_mut();
-        let n = scopes[parent.i as usize].names.entry(name.to_owned()).or_insert(0);
-        *n += 1;
-        if *n == 1 { name.to_owned() } else { format!("{name}#{n}") }
+        let n = scopes[parent.i as usize].regions.entry(kind).or_insert(0);
+        *n = n.checked_add(1).expect("structural region identity exhausted");
+        RegionId { kind, index: *n }
     }
 
-    pub fn create_scope(&self, parent: Option<ScopeId>, segment: &str) -> ScopeId {
-        let path = match parent {
-            Some(p) => format!("{}/{segment}", self.scope_path(p)),
-            None => segment.to_owned(),
-        };
+    pub(crate) fn row_namespace(&self, owner: ScopeId, region: RegionId) -> Rc<RowNamespace> {
+        Rc::new(RowNamespace { owner: self.scopes.borrow()[owner.i as usize].path.clone(), region })
+    }
+
+    pub(crate) fn register_scope_key(&self, parent: ScopeId, key: RowKey) -> bool {
+        self.scopes.borrow_mut()[parent.i as usize].scope_keys.insert(key)
+    }
+
+    pub fn create_scope(&self, parent: Option<ScopeId>, segment: impl Into<ScopeSegment>) -> ScopeId {
+        let mut path = parent.map_or_else(Vec::new, |p| self.scopes.borrow()[p.i as usize].path.clone());
+        path.push(segment.into());
         let make = |g| ScopeData {
             g,
             state: ScopeState::Live,
@@ -37,24 +55,26 @@ impl Runtime {
             cleanups: BTreeMap::new(),
             next_cleanup: 0,
             path,
-            names: HashMap::new(),
+            regions: HashMap::new(),
+            scope_keys: HashSet::new(),
             state_keys: HashSet::new(),
             persistent_names: false,
             contexts: Vec::new(),
             owner: self.owner.get(),
         };
-        let id = {
+        let (id, retired) = {
             let mut scopes = self.scopes.borrow_mut();
             if let Some(i) = self.free_scopes.borrow_mut().pop() {
                 let g = scopes[i as usize].g.checked_add(1).expect("scope generation exhausted");
-                scopes[i as usize] = make(g);
-                ScopeId { runtime: self.identity, i, g }
+                let retired = std::mem::replace(&mut scopes[i as usize], make(g));
+                (ScopeId { runtime: self.identity, i, g }, Some(retired))
             } else {
                 let i = u32::try_from(scopes.len()).expect("scope slots exhausted");
                 scopes.push(make(0));
-                ScopeId { runtime: self.identity, i, g: 0 }
+                (ScopeId { runtime: self.identity, i, g: 0 }, None)
             }
         };
+        drop(retired);
         if let Some(p) = parent {
             self.scopes.borrow_mut()[p.i as usize].children.push(id);
         }
@@ -62,7 +82,7 @@ impl Runtime {
     }
 
     pub(crate) fn create_app_scope(&self) -> ScopeId {
-        let scope = self.create_scope(None, "app");
+        let scope = self.create_scope(None, ScopeSegment::App);
         self.scopes.borrow_mut()[scope.i as usize].persistent_names = true;
         scope
     }
@@ -132,7 +152,8 @@ impl Runtime {
                 }
             }
             if !self.reloading.get() {
-                self.store.borrow_mut().retain(|(p, _), _| p != &path);
+                let retired: Vec<_> = self.store.borrow_mut().extract_if(|(p, _), _| p == &path).collect();
+                drop(retired);
             }
             loop {
                 let context = self.scopes.borrow_mut()[s.i as usize].contexts.pop();
@@ -145,7 +166,13 @@ impl Runtime {
                     d.children.retain(|c| *c != s);
                 }
             }
-            self.scopes.borrow_mut()[s.i as usize].state = ScopeState::Disposed;
+            let retired = {
+                let mut scopes = self.scopes.borrow_mut();
+                let data = &mut scopes[s.i as usize];
+                data.state = ScopeState::Disposed;
+                (std::mem::take(&mut data.path), std::mem::take(&mut data.scope_keys))
+            };
+            drop(retired);
             self.free_scopes.borrow_mut().push(s.i);
         });
     }
@@ -175,7 +202,9 @@ impl Runtime {
         for node in nodes {
             self.dispose_node(node);
         }
-        self.store.borrow_mut().clear();
+        let retired = std::mem::take(&mut *self.store.borrow_mut());
+        drop(retired);
+        self.keys.clear();
         self.queue.borrow_mut().clear();
     }
 
@@ -220,6 +249,9 @@ impl Runtime {
     }
 
     pub(super) fn named_state(&self, key: &'static str, ty: TypeId, init: impl FnOnce() -> Value, at: &'static Location<'static>) -> Idx {
+        if !self.allows(Operation::Register, at) {
+            panic!("state(\"{key}\") is not allowed in this execution phase");
+        }
         let Some(scope) = self.scope.get() else {
             panic!("state(\"{key}\") outside a component at {}", loc(at));
         };
@@ -227,13 +259,13 @@ impl Runtime {
             self.diag(&codes::WRITE_DISPOSED, "cannot initialize state in a retired scope".into(), at);
             panic!("[{}] state owner was disposed", codes::WRITE_DISPOSED);
         }
-        let path = self.scope_path(scope);
+        let path = self.scopes.borrow()[scope.i as usize].path.clone();
         let persistent = self.scopes.borrow()[scope.i as usize].persistent_names;
         let duplicate = !persistent && !self.scopes.borrow_mut()[scope.i as usize].state_keys.insert(key);
         if duplicate {
             self.diag(
                 &codes::DUPLICATE_STATE_KEY,
-                format!("state key \"{key}\" used twice in {path}; both calls would share one signal"),
+                format!("state key \"{key}\" used twice in {}; both calls would share one signal", self.scope_path(scope)),
                 at,
             );
         }
@@ -256,7 +288,11 @@ impl Runtime {
                 return self.create_node(Kind::Source, Some(init()), None, true, None, at);
             }
             if self.alive(idx) {
-                self.diag(&codes::STATE_TYPE_CHANGED, format!("state \"{key}\" in {path} changed type across a reload; reset"), at);
+                self.diag(
+                    &codes::STATE_TYPE_CHANGED,
+                    format!("state \"{key}\" in {} changed type across a reload; reset", self.scope_path(scope)),
+                    at,
+                );
                 self.dispose_node(idx);
             }
         }

@@ -3,6 +3,7 @@
 //! the ranges a selection covers, drawn behind the glyphs.
 
 use super::{Content, Kernel, Kind, NodeId};
+pub use crate::identity::RowKey;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -11,7 +12,7 @@ use std::rc::Rc;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Seg {
     Child(u32),
-    Row { key: Rc<str>, index: u32 },
+    Row { key: RowKey, index: u32 },
 }
 
 impl Kernel {
@@ -24,10 +25,10 @@ impl Kernel {
     pub fn set_select_none(&mut self, id: NodeId, on: bool) {
         self.node_mut(id).select_none = on;
     }
-    pub fn set_row_key(&mut self, id: NodeId, key: Option<Rc<str>>) {
+    pub fn set_row_key(&mut self, id: NodeId, key: Option<RowKey>) {
         self.node_mut(id).row_key = key;
     }
-    pub fn row_key(&self, id: NodeId) -> Option<&Rc<str>> {
+    pub fn row_key(&self, id: NodeId) -> Option<&RowKey> {
         self.node(id).row_key.as_ref()
     }
 
@@ -168,10 +169,11 @@ impl Kernel {
     }
 }
 
-/// A selected text as a copy as Markdown gets it: the keys of the list rows between the element
-/// that copies and the text, the selected part of the text, and whether that is all of it.
+/// A selected text as a copy as Markdown gets it: row labels between the copying element
+/// and the text, the selected part, and whether that is all of it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Copied {
+    /// The keys' `Display` labels. Labels may repeat; framework identity uses [`RowKey`].
     pub rows: Vec<Rc<str>>,
     pub text: String,
     pub whole: bool,

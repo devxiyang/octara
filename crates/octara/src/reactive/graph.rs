@@ -25,6 +25,7 @@ pub use signal::{ReadSignal, Signal, Watch, memo, provide, state, untrack, use_c
 pub(crate) use signal::{binding, memo_with, structural_binding};
 
 use crate::diagnostics::{self as codes, Code, Diagnostic};
+use crate::identity::{KeyInterner, RegionId, RegionKind, RowKey, RowNamespace, ScopeSegment};
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -143,8 +144,9 @@ struct ScopeData {
     nodes: Vec<Idx>,
     cleanups: BTreeMap<u64, Box<dyn FnOnce()>>,
     next_cleanup: u64,
-    path: String,
-    names: HashMap<String, u32>,
+    path: Vec<ScopeSegment>,
+    regions: HashMap<RegionKind, u32>,
+    scope_keys: HashSet<RowKey>,
     state_keys: HashSet<&'static str>,
     /// App state is looked up repeatedly; mounted components declare keys once per build.
     persistent_names: bool,
@@ -153,7 +155,7 @@ struct ScopeData {
 }
 
 /// Named state by (scope path, key), with the value's type.
-type NamedStore = HashMap<(String, &'static str), (Idx, TypeId)>;
+type NamedStore = HashMap<(Vec<ScopeSegment>, &'static str), (Idx, TypeId)>;
 
 type CollectionDelivery = Box<dyn FnOnce()>;
 
@@ -180,6 +182,7 @@ pub(crate) struct Runtime {
     scope: Cell<Option<ScopeId>>,
     queue: RefCell<Vec<Idx>>,
     store: RefCell<NamedStore>,
+    keys: KeyInterner,
     diagnostics: RefCell<Vec<Diagnostic>>,
     seen: RefCell<HashMap<(&'static str, String), u32>>,
     seq: Cell<u64>,

@@ -344,7 +344,13 @@ fn enter_app_context<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
         let _restore = Restore(APP.with(|a| a.replace(Some(app.clone()))));
         app.depth.set(app.depth.get() + 1);
         let _depth = Depth(&app.depth);
-        app.rt.enter(f)
+        app.rt.enter(|| {
+            let result = f();
+            if app.depth.get() == 1 && !app.failed.get() {
+                app.rt.prune_keys();
+            }
+            result
+        })
     };
     if app.depth.get() == 0 && !app.failed.get() {
         app.sched.retire_names();
@@ -1425,11 +1431,28 @@ impl App {
         self.app.res.theme.borrow().clone()
     }
     /// Rebuilds every window's scope from the current state, as after a code patch; named state
-    /// survives.
+    /// survives. Rejected during construction, pure computations and after shutdown.
+    #[track_caller]
     pub fn hot_reload(&self) {
-        for w in self.each() {
-            w.reload();
+        use crate::reactive::graph::Operation;
+
+        let at = std::panic::Location::caller();
+        // Check the caller before restoring the destination App's execution context.
+        if !Runtime::caller_allows(Operation::Write, at) {
+            return;
         }
+        if self.app.shutdown.get() {
+            self.app.rt.diag(&codes::WRITE_DISPOSED, "cannot hot reload a shut down App".into(), at);
+            return;
+        }
+        self.enter(|| {
+            if !self.app.rt.allows(Operation::Write, at) {
+                return;
+            }
+            for w in self.each() {
+                w.reload();
+            }
+        });
     }
     pub fn diagnostics(&self) -> Vec<Diagnostic> {
         let mut diagnostics = self.app.rt.diagnostics();
