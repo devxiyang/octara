@@ -5,7 +5,7 @@
 //! hash, so renderers cache what they rasterize by what the path is, not by which value it is.
 //!
 //! ```
-//! use octara::path::{FillRule, LineCap, Path, Stroke, point};
+//! use octara_primitives::path::{FillRule, LineCap, Path, Stroke, point};
 //!
 //! let check = Path::new().move_to(point(4.0, 12.0)).line_to(point(9.0, 17.0)).line_to(point(20.0, 6.0));
 //! let ring = Path::circle(point(12.0, 12.0), 10.0).append(&Path::circle(point(12.0, 12.0), 6.0));

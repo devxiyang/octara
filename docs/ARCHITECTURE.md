@@ -2,6 +2,14 @@
 
 What is built, how its parts fit, and the decisions that shape them. Detailed designs are in [`docs/design/`](design/), research in [`docs/research/`](research/).
 
+The 2026-11-17 [layered architecture redesign](design/layered-architecture-redesign.md) spans
+runtime, document, primitives, kit and host/tooling boundaries. The first
+[package split](design/package-boundaries.md) is implemented: window-independent values and
+presentation protocols belong to `octara-primitives`, with downward production dependencies.
+The broader content, input and component-contract proposals are not yet implemented.
+Its evidence is in the [foundation review](design/ui-foundation-review.md) and
+[SwiftUI/Rune/Exact comparison](research/ui-composition-frameworks.md).
+
 The selected direction is in [Runtime architecture](design/runtime-contract.md): keep Rust and
 Signals, connect the existing Inspector to real windows, and improve concrete lifecycle/output
 boundaries. [Agent context and live inspection](design/agent-context.md) defines that small tool
@@ -49,10 +57,11 @@ Principles:
 
 | Crate | Contents |
 | --- | --- |
-| `octara` | The core: reactive runtime, retained kernel, views, app runtime, tasks, motion, display list, paths, icons, canvas, inspector and checks, diagnostics |
+| `octara-primitives` | Window-independent geometry, anchor placement, theme values, paths, images, icons, canvas recording, motion, node identity and presentation protocols |
+| `octara` | The core: reactive runtime, retained kernel, views, App/Window coordination, tasks, inspector, checks and diagnostics |
 | `octara-macros` | `#[component]`: elements record the component function that built them and where it was called |
 | `octara-kit` | Components (buttons, fields, select, switch, …) and streaming Markdown, built only on `octara`'s public API and theme tokens |
-| `octara-render` | Display list → pixels: the CPU reference renderer and the wgpu renderer |
+| `octara-render` | Primitive display list → pixels: CPU and wgpu renderers; no production dependency on the App runtime |
 | `octara-shell` | Desktop windows (winit): multiple windows, input, IME, system fonts, scale, frames, AccessKit, file dialogs; macOS native web views, maps, menus and alerts |
 | `octara-icons` | The Lucide set as path data (generated, checked in) |
 | `octara-fonts` | A CJK subset for deterministic tests and screenshots |
@@ -60,29 +69,31 @@ Principles:
 | `examples` | Example apps, their acceptance tests, benchmarks, screenshot and window tools |
 | `apps/chat` | The AI chat reference app: threads, messages and model events; offline scripted or HTTP streaming `Model` implementations; JSON conversation storage and views composed from the kit |
 
-Everything but `octara` and `octara-macros` depends only on `octara`'s public API, which the CLI reads from the source an app builds with.
+Renderers and icons depend only on `octara-primitives` in production. Core depends on primitives
+and the component macro; kit and shell use the appropriate lower public APIs. The CLI reads their
+canonical definitions and prelude aliases from the sources the application builds with.
+`tools/check_layers.py` enforces permitted production edges, including optional and target-specific
+dependencies. Dev dependencies may use the runtime to host integration tests.
 
 ## Inside `octara`
 
-```text
-diagnostics ◄── reactive        signals, memos, watch, scopes; incremental lists; TextBuffer
-                    ▲
-kernel ─────────────┼──────────  retained node tree, styles and states, taffy layout, parley
-  (paint, path,     │            text, motion, semantics, focus, display list, checks
-   icon, canvas)    │            (does not depend on view or app)
-    ▲               │
-view ───────────────┘            elements and builders; each property is one binding
-    ▲
-app ◄── task                     App and its windows: input events, frames, recognizers, focus,
-    ▲                            keymap, clock, recording; a single-threaded executor whose
-    │                            tasks belong to scopes
-inspect                          snapshots, scripts, `check` (the agent's protocol)
-platform                         what the app needs from the system (traits); headless impl
-```
+| Module | Responsibility |
+| --- | --- |
+| `reactive` / `task` | Dependency propagation, scope execution and teardown, scheduled work |
+| `kernel` | Retained document, styles, text and editing geometry, layout, semantic and paint output |
+| `view` | Construction, property bindings and structure coordination |
+| `app` | App/Window ownership, entry boundaries, input routing, frame preparation and presentation |
+| `platform` | Host protocols and headless adapters; consumes document editing/layout data |
+| `inspect` / `capture` / `diagnostics` | Observation, operations, capture workflow and registered explanations |
+
+Drawing and value modules are in `octara-primitives`. Kernel no longer imports App editing types
+or platform-owned cursor/layout types. App/View/task still share same-crate lifecycle coordination;
+the package split does not claim those remaining internal boundaries are already separate crates.
+
 
 ### Source layout
 
-Public paths are stable while implementation files follow responsibility:
+The primitive modules live in `crates/octara-primitives/src/`; the runtime implementation follows responsibility:
 
 ```text
 crates/octara/src/
@@ -116,9 +127,8 @@ crates/octara/src/
 The new implementation submodules are private. Public primitives are re-exported through the
 existing `reactive` and `task` paths; moved methods remain inherent App/Window methods. Helpers
 shared across child files use at most their enclosing module's visibility where possible;
-channel internals remain private, with their tests colocated beneath that module. No extra
-crate, runtime abstraction or compatibility API is introduced. CLI `vocab` resolves the public
-paths to their current implementation files.
+channel internals remain private, with their tests colocated beneath that module. The primitive package owns moved value types; the remaining runtime modules stay in this crate.
+CLI `vocab` resolves public paths and cross-crate prelude exports to their defining files.
 
 ## App and windows
 

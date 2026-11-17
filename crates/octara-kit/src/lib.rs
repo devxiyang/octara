@@ -133,7 +133,7 @@ pub fn toggle_button(label: impl IntoText, selected: impl Fn() -> bool + 'static
 /// tooltip. Quiet until hovered (a toolbar's, a message's actions).
 #[component]
 #[track_caller]
-pub fn icon_button(icon: octara::icon::Icon, label: impl Into<String>) -> El {
+pub fn icon_button(icon: octara_primitives::icon::Icon, label: impl Into<String>) -> El {
     let label = label.into();
     interactive(el().role(Role::Button).child(octara::view::icon(icon).a11y_hidden()))
         .label(label.clone())

@@ -1,7 +1,7 @@
 //! Images: sizing like a replaced element, fitting, PNG decoding, and live pixels.
 
-use octara::paint::Item;
 use octara::prelude::*;
+use octara_primitives::paint::Item;
 
 fn solid(w: u32, h: u32, c: [u8; 4]) -> Image {
     Image::rgba(w, h, c.repeat((w * h) as usize))

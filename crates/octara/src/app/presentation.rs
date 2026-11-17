@@ -323,10 +323,10 @@ impl Window {
     }
 
     /// How the pointer looks now: over the element it is on (an arrow off the window).
-    pub fn cursor(&self) -> crate::platform::CursorStyle {
+    pub fn cursor(&self) -> octara_primitives::input::CursorStyle {
         let hovered = self.w.interaction.borrow().hovered;
         let k = self.w.kernel.borrow();
-        hovered.filter(|n| k.is_alive(*n)).map_or(crate::platform::CursorStyle::Arrow, |n| k.cursor_over(n))
+        hovered.filter(|n| k.is_alive(*n)).map_or(octara_primitives::input::CursorStyle::Arrow, |n| k.cursor_over(n))
     }
 
     /// Presents what changed to the window's platform: native view changes, the text input,
@@ -344,10 +344,7 @@ impl Window {
                 let field = k.field(n)?;
                 let layout = k.input_layout(n, &field);
                 (
-                    Some(crate::platform::TextGeometry {
-                        origin: (field.x - field.scroll.0, field.y - field.scroll.1),
-                        lines: field.lines,
-                    }),
+                    Some(crate::kernel::TextGeometry { origin: (field.x - field.scroll.0, field.y - field.scroll.1), lines: field.lines }),
                     Some(layout),
                 )
             };

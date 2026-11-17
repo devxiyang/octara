@@ -40,6 +40,8 @@ fn the_skill_follows_the_agent_skills_format() {
     // The API reference: an index of modules, a file per module, a large type on its own.
     let (_, index) = files.iter().find(|(p, _)| p == "references/api/index.md").unwrap();
     assert!(index.contains("[`octara::view`](octara.view.md)"), "{index}");
+    assert!(index.contains("[`octara_primitives::theme`](octara_primitives.theme.md)"), "{index}");
+    assert!(!index.contains("use octara_primitives::prelude::*"), "facade prelude aliases are listed for their importing crate");
     let (_, view) = files.iter().find(|(p, _)| p == "references/api/octara.view.md").unwrap();
     assert!(view.contains("- `pub fn text(") && view.contains("members: [octara.view.Styled.md]"), "{view}");
     let (_, styled) = files.iter().find(|(p, _)| p == "references/api/octara.view.Styled.md").unwrap();

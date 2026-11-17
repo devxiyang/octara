@@ -582,7 +582,8 @@ impl Window {
 
 #[cfg(test)]
 mod tests {
-    use super::Step;
+    use super::{Step, TextDocument, TextEdit, byte_offset, utf16_offset};
+    use std::ops::Range;
 
     #[test]
     fn steps_keep_only_the_change_and_round_trip() {
@@ -611,5 +612,23 @@ mod tests {
         assert!(forward.merge(&Step::between("acd", "ad", (1, 1), (1, 1))));
         assert_eq!((forward.at, forward.removed.as_str()), (1, "bc"));
         assert!(!typing.merge(&Step::between("abcd", "xabcd", (0, 0), (1, 1))), "elsewhere: a new step");
+    }
+
+    #[test]
+    fn utf16_surrogates_and_invalid_byte_ranges_are_clamped_without_splitting_text() {
+        let mut document = TextDocument::new("A😀Z".into(), 1, 5);
+        assert_eq!(byte_offset(document.text(), 2), 1, "the inside of a surrogate pair floors to its start");
+        document.apply(&TextEdit::Mark {
+            text: "中😀文".into(),
+            selection: Some(Range { start: usize::MAX, end: 4 }),
+            replacement: Some(Range { start: 4, end: 2 }),
+        });
+        assert_eq!(document.text(), "A中😀文😀Z");
+        assert_eq!(document.marked(), Some(1..11));
+        let selection = document.selection().unwrap();
+        assert_eq!(selection, 4..11);
+        assert_eq!(utf16_offset(document.text(), selection.start)..utf16_offset(document.text(), selection.end), 2..5);
+        document.apply(&TextEdit::Insert { text: "好".into(), replacement: Some(Range { start: usize::MAX, end: 4 }) });
+        assert_eq!(document.text(), "A中好");
     }
 }

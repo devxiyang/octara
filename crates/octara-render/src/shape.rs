@@ -1,6 +1,8 @@
 //! The geometry both renderers share. The GPU shaders implement exactly these formulas, and a
 //! differential test keeps the two within a level or two per channel.
 
+use octara_primitives::paint::Rect;
+
 /// Signed distance from `(px, py)` to a rounded rectangle at `(x, y, w, h)` with corner radius
 /// `r`: negative inside, positive outside.
 pub fn sd_round_rect(px: f32, py: f32, x: f32, y: f32, w: f32, h: f32, r: f32) -> f32 {
@@ -27,7 +29,7 @@ pub fn inner_rect(x: f32, y: f32, w: f32, h: f32, r: f32, b: [f32; 4]) -> (f32, 
 
 /// The clip after pushing `rect` (logical, rounded by `radius`) inside `outer` (device pixels):
 /// their intersection, rounded by the inner clip's radius. Device pixels `(x, y, w, h, r)`.
-pub fn push_clip(outer: Option<(f32, f32, f32, f32)>, rect: octara::paint::Rect, radius: f32, scale: f32) -> (f32, f32, f32, f32, f32) {
+pub fn push_clip(outer: Option<(f32, f32, f32, f32)>, rect: Rect, radius: f32, scale: f32) -> (f32, f32, f32, f32, f32) {
     let (mut x, mut y, mut w, mut h) = (rect.x * scale, rect.y * scale, rect.w * scale, rect.h * scale);
     if let Some((ox, oy, ow, oh)) = outer {
         let (r, b) = ((x + w).min(ox + ow), (y + h).min(oy + oh));

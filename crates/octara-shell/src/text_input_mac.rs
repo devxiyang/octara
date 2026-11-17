@@ -9,9 +9,10 @@ use objc2_app_kit::{NSEvent, NSTextInputClient, NSTextInputContext, NSView};
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSNotFound, NSPoint, NSRange, NSRangePointer, NSRect, NSSize, NSString,
 };
-use octara::app::{TextDocument, TextEdit};
-use octara::kernel::NodeId;
-use octara::platform::{TextGeometry, TextInput, TextInputLayout};
+use octara::kernel::{TextDocument, TextGeometry, TextInputLayout};
+use octara::platform::TextInput;
+use octara_primitives::identity::NodeId;
+use octara_primitives::text::TextEdit;
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;

@@ -5,8 +5,8 @@
 
 use octara::app::{Modifiers, Phase, PointerEvent};
 use octara::inspect::{Request, handle};
-use octara::paint::Item;
 use octara::prelude::*;
+use octara_primitives::paint::Item;
 use std::time::Duration;
 
 fn note() -> View {

@@ -47,8 +47,8 @@ fn later_window_measurements_relayout_an_earlier_window() {
 
 #[test]
 fn later_window_measurements_present_native_props_in_an_earlier_window() {
-    use octara::native::NativeChange;
     use octara::platform::HeadlessWindow;
+    use octara_primitives::native::NativeChange;
 
     let app = App::new(HeadlessPlatform::default());
     let (width, measured) = app.run(|| (state("width", || 100.0f32), state("measured", || 100.0f32)));

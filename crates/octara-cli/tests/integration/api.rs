@@ -17,13 +17,18 @@ fn items_are_found_by_canonical_path_and_alias() {
     assert_eq!(set.within, "impl<T: 'static> Signal<T>", "writes do not require Clone");
     let get = api.get("octara::reactive::Signal::get").unwrap();
     assert!(get.sig.contains("T: Clone"), "owned reads retain their method-local bound: {}", get.sig);
-    let spring = api.get("octara::motion::Spring").unwrap();
+    let spring = api.get("octara::prelude::Spring").unwrap();
+    assert_eq!(spring.path, "octara_primitives::motion::Spring");
+    assert_eq!(spring.kind, Kind::Struct);
     assert!(spring.traits.iter().any(|t| t == "Into<Curve>"), "{:?}", spring.traits);
+    assert_eq!(api.get("octara::prelude::Spring::SNAP").unwrap().path, "octara_primitives::motion::Spring::SNAP");
     let el = api.get("octara::view::El").unwrap();
     assert!(el.traits.iter().any(|t| t == "Styled"));
     assert_eq!(api.get("octara::kernel::Role").unwrap().target, "accesskit::Role", "re-exports name their target");
     assert!(api.get("octara::kernel::State::HOVER").is_some(), "bitflags' flags are items");
-    assert!(api.get("octara::kernel::NodeId").is_some(), "new_key_type's keys are items");
+    assert!(api.get("octara_primitives::identity::NodeId").is_some(), "new_key_type's keys are items");
+    assert!(api.get("octara::kernel::NodeId").is_none(), "primitive types are owned by their crate");
+    assert!(api.get("octara::motion::Spring").is_none(), "removed module paths are not aliases");
     assert!(api.get("octara::diagnostics::OVERFLOW").is_some(), "codes! writes the registry's statics");
     assert!(api.get("octara::view::enter_component").is_none(), "#[doc(hidden)] is not API");
     assert!(api.get("octara::kernel::Node").is_none(), "private items are not API");
@@ -92,6 +97,97 @@ fn items_say_where_they_are() {
     let source = std::fs::read_to_string(api::workspace_root().join("crates/octara").join(file)).unwrap();
     let at = source.lines().nth(line.parse::<usize>().unwrap() - 1).unwrap();
     assert!(at.contains("pub fn text("), "the line is the declaration: {at}");
+
+    let theme = api.get("octara::prelude::Theme").unwrap();
+    assert_eq!(theme.path, "octara_primitives::theme::Theme");
+    assert_eq!(theme.kind, Kind::Struct);
+    assert!(!theme.docs.is_empty(), "facade aliases retain the definition's docs");
+    let (file, line) = theme.file.rsplit_once(':').unwrap();
+    let source = std::fs::read_to_string(api::workspace_root().join("crates/octara-primitives").join(file)).unwrap();
+    let at = source.lines().nth(line.parse::<usize>().unwrap() - 1).unwrap();
+    assert!(at.contains("pub struct Theme"), "the alias points to the real declaration: {at}");
+}
+
+#[test]
+fn reexports_between_crates_resolve_types_modules_globs_and_members() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("api-cross-crate-exports");
+    let sources: Vec<_> = [
+        (
+            "octara-primitives",
+            r#"
+pub mod shapes {
+    /// A rectangle with a public width.
+    pub struct Rect {
+        /// Its width in logical pixels.
+        pub width: f32,
+    }
+    impl Rect {
+        /// Build a rectangle.
+        pub fn new(width: f32) -> Self { Self { width } }
+        /// Read the width.
+        pub fn width(&self) -> f32 { self.width }
+    }
+}
+pub mod edges {
+    /// A rectangle edge.
+    pub enum Edge { Top, Bottom }
+}
+"#,
+        ),
+        ("octara-bridge", "pub use octara_primitives::shapes as geometry;\npub use octara_primitives::shapes::Rect as Rectangle;"),
+        (
+            "octara",
+            r#"
+pub mod prelude {
+    pub use octara_bridge::geometry::*;
+    pub use octara_primitives::edges::*;
+    pub use octara_bridge::Rectangle as Box;
+}
+pub use octara_bridge::geometry;
+pub use outside::Thing;
+"#,
+        ),
+    ]
+    .into_iter()
+    .map(|(name, text)| {
+        let dir = dir.join(name);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), format!("[package]\nname = \"{name}\"\nversion = \"0.0.0\"\n")).unwrap();
+        let lib = dir.join("src/lib.rs");
+        std::fs::write(&lib, text).unwrap();
+        api::Source { name: name.into(), dir, lib }
+    })
+    .collect();
+    let api = api::read(&sources).unwrap();
+    let rect = api.get("octara::prelude::Box").unwrap();
+    assert_eq!(rect.path, "octara_primitives::shapes::Rect");
+    assert_eq!(rect.docs, "A rectangle with a public width.");
+    assert_eq!(rect.kind, Kind::Struct);
+    assert!(rect.target.is_empty());
+    assert_eq!(api.get("octara::geometry::Rect").unwrap(), rect);
+    assert_eq!(api.get("octara::prelude::Rect").unwrap(), rect);
+    assert_eq!(api.get("octara::prelude::Edge::Top").unwrap().path, "octara_primitives::edges::Edge::Top");
+    let constructor = api.get("octara::prelude::Box::new").unwrap();
+    assert_eq!(constructor.path, "octara_primitives::shapes::Rect::new");
+    assert_eq!(constructor.docs, "Build a rectangle.");
+    assert_eq!(constructor.kind, Kind::AssocFn);
+    assert_eq!(constructor.sig, "pub fn new(width: f32) -> Self");
+    let widths: Vec<_> = api.all("octara::prelude::Box::width").collect();
+    assert_eq!(widths.len(), 2, "a field and method retain their shared alias");
+    assert_eq!(api.get("octara::Thing").unwrap().target, "outside::Thing", "unindexed dependencies remain explicit re-exports");
+    assert!(api.items().all(|i| !i.path.ends_with("::*")));
+
+    let catalog = octara_cli::catalog::Catalog::build(&api);
+    let found = catalog.lookup("octara::prelude::Box::new");
+    let entry = found.matches[0];
+    assert_eq!(entry.path, constructor.path);
+    assert_eq!(entry.docs, constructor.docs);
+    assert!(entry.file.starts_with(&format!("{}/src/lib.rs:", sources[0].dir.display())), "{}", entry.file);
+    assert!(catalog.prelude().all(|entry| entry.path != constructor.path), "member aliases do not become prelude imports");
+    let (_, index) = octara_cli::reference::files(&api).into_iter().find(|(path, _)| path == "index.md").unwrap();
+    assert!(index.contains("Prelude (`use octara::prelude::*`): Box, Edge, Rect"), "{index}");
+    assert!(!index.contains("use octara_primitives::prelude::*"), "the facade's prelude belongs to its own crate");
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]

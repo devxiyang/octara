@@ -1,7 +1,7 @@
 //! Customizing the theme (Tailwind v4 `@theme`) and writing arbitrary values.
 
-use octara::kernel::MISSING;
 use octara::prelude::*;
+use octara_primitives::theme::MISSING;
 
 const BRAND: Token = Token::custom("brand");
 const GHOST: Token = Token::custom("ghost");

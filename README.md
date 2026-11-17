@@ -127,6 +127,7 @@ once in the workspace and inherited by every package; it does not pin the develo
 | Path | Contents |
 | --- | --- |
 | `crates/octara` | `reactive`, `kernel`, `view`, `app`, `platform`, `inspect`, `capture` |
+| `crates/octara-primitives` | Window-independent drawing, geometry, theme values, motion and presentation protocols |
 | `crates/octara-macros` | `#[component]` |
 | `crates/octara-kit` | Components and streaming Markdown |
 | `crates/octara-render` | CPU reference and wgpu renderers |
@@ -136,6 +137,12 @@ once in the workspace and inherited by every package; it does not pin the develo
 | `crates/octara-fonts` | Bundled CJK subset for deterministic tests and screenshots |
 | `examples` | Example apps, shared scenarios, tests and the benchmark |
 | `apps/chat` | The AI chat reference app, with offline and HTTP streaming models |
+
+Production dependencies point downwards: core and the renderers consume `octara-primitives`;
+renderers and icons do not depend on the App runtime. `octara::prelude` provides convenient
+type imports; canonical drawing/value APIs live in `octara_primitives`. Run
+`python3 tools/check_layers.py` to check package boundaries (also enforced in CI).
+The implemented split and remaining work are recorded in [package boundaries](docs/design/package-boundaries.md).
 
 The core and agent tooling are exercised through headless interaction tests, incremental
 consistency checks, input replay and CPU/GPU rendering comparisons. CI is configured to build

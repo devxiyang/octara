@@ -1,6 +1,6 @@
 //! The display list: what a frame draws, in order, as plain data.
 //!
-//! The kernel produces it from the laid-out tree ([`Kernel::display_list`]); renderers consume
+//! The kernel produces it from the laid-out tree (its display-list output); renderers consume
 //! it (a deterministic CPU reference renderer for screenshots, and a GPU renderer). A frame is a
 //! list of [`Part`]s: each node's own drawing, kept from frame to frame in the node's own
 //! coordinates and shown at an offset (so a node that moves or scrolls keeps its items), and the
@@ -8,11 +8,11 @@
 //! screen scale. Every item names the node it comes from, so a pixel can be traced back to an
 //! element.
 //!
-//! [`Kernel::display_list`]: crate::kernel::Kernel::display_list
 
-pub use parley::FontData;
+pub use linebender_resource_handle::FontData;
 
-use crate::kernel::{Color, NodeId};
+use crate::identity::NodeId;
+use crate::theme::Color;
 
 /// An axis-aligned rectangle in logical pixels.
 #[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]

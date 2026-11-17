@@ -18,4 +18,5 @@ cjk = []
 octara.workspace = true
 
 [dev-dependencies]
+octara-primitives.workspace = true
 octara-render = { workspace = true, default-features = false }

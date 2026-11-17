@@ -2,7 +2,7 @@
 // Do not edit. The icons are ISC licensed (some MIT, from Feather): see LICENSE-LUCIDE.
 
 use crate::Entry;
-use octara::icon::{Icon, IconPart};
+use octara_primitives::icon::{Icon, IconPart};
 
 /// The Lucide version the set was generated from.
 pub const VERSION: &str = "1.72.0";

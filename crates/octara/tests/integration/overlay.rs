@@ -1,8 +1,8 @@
 //! Overlays: shown above everything, placed next to their anchor, flipped and clamped.
 
 use octara::app::DEFAULT_VIEWPORT;
-use octara::kernel::Placed;
 use octara::prelude::*;
+use octara_primitives::layout::Placed;
 
 /// A trigger at `(left, top)` opening a 100×40 panel.
 fn trigger_at(left: f32, top: f32, placement: Placement) -> impl Fn() -> View {

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["apps/chat", "crates/octara", "crates/octara-cli", "crates/octara-fonts", "crates/octara-icons", "crates/octara-kit", "crates/octara-macros", "crates/octara-render", "crates/octara-shell", "examples"]
+members = ["apps/chat", "crates/octara", "crates/octara-primitives", "crates/octara-cli", "crates/octara-fonts", "crates/octara-icons", "crates/octara-kit", "crates/octara-macros", "crates/octara-render", "crates/octara-shell", "examples"]
 
 [workspace.package]
 edition = "2024"
@@ -42,6 +42,7 @@ proptest = "1.12.0"
 pulldown-cmark = { version = "0.13.6", default-features = false }
 open = "5.4.5"
 rfd = "0.18.0"
+linebender_resource_handle = "0.1.1"
 parley = { version = "0.13.0", default-features = false, features = ["std", "complex-scripts"] }
 png = "0.18.1"
 roxmltree = "0.21.2"
@@ -51,6 +52,7 @@ taffy = { version = "0.15.1", default-features = false, features = ["std", "taff
 wgpu = "30.0.2"
 winit = "0.30.13"
 octara = { path = "crates/octara" }
+octara-primitives = { path = "crates/octara-primitives", default-features = false }
 octara-fonts = { path = "crates/octara-fonts" }
 octara-icons = { path = "crates/octara-icons" }
 octara-kit = { path = "crates/octara-kit" }

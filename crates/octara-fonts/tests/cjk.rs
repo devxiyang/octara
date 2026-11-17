@@ -1,8 +1,8 @@
 //! With the CJK subset installed, hanzi, kana and CJK punctuation render from it (no missing
 //! glyphs), in the right weight, next to Latin text in the theme's family.
 
-use octara::paint::{GlyphRun, Item};
 use octara::prelude::*;
+use octara_primitives::paint::{GlyphRun, Item};
 
 fn runs(app: &Window, id: &str) -> Vec<GlyphRun> {
     let n = app.kernel().find(id).unwrap();
@@ -47,7 +47,7 @@ fn screenshots_are_deterministic_with_it() {
     let shot = || {
         let app = Window::headless(view);
         octara_fonts::cjk::install(&app.app());
-        octara_render::screenshot(&app, 2.0)
+        octara_render::CpuRenderer::new().render(&app.display_list(), 2.0)
     };
     let (a, b) = (shot(), shot());
     assert!(a == b, "the same pixels every time");

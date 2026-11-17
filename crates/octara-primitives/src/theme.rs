@@ -3,7 +3,28 @@
 //! font families. Scale names follow Tailwind; lengths are logical pixels (points / dp). The kernel resolves styles against it, so switching themes
 //! (dark mode, a brand, a denser spacing) reruns no closure.
 
-use super::style::BoxShadow;
+/// A drop shadow (GPUI's `BoxShadow`). As in CSS (and Rune), `blur_radius` is twice the
+/// Gaussian's standard deviation; `spread_radius` grows (or, negative, shrinks) the shape.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct BoxShadow {
+    pub color: Color,
+    pub offset: (f32, f32),
+    pub blur_radius: f32,
+    pub spread_radius: f32,
+}
+
+impl BoxShadow {
+    /// A sharp shadow offset by `(x, y)`.
+    pub fn new(x: f32, y: f32, color: Color) -> Self {
+        BoxShadow { color, offset: (x, y), blur_radius: 0.0, spread_radius: 0.0 }
+    }
+    pub fn blur_radius(self, r: f32) -> Self {
+        BoxShadow { blur_radius: r.max(0.0), ..self }
+    }
+    pub fn spread_radius(self, r: f32) -> Self {
+        BoxShadow { spread_radius: r, ..self }
+    }
+}
 
 pub type Color = color::AlphaColor<color::Srgb>;
 
@@ -429,7 +450,7 @@ impl<P: Into<Paint>> From<P> for Fill {
 
 impl Paint {
     /// The color, and the custom token name if the theme lacks it.
-    pub(crate) fn resolve(self, theme: &Theme) -> (Color, Option<&'static str>) {
+    pub fn resolve(self, theme: &Theme) -> (Color, Option<&'static str>) {
         match self {
             Paint::Color(c) => (c, None),
             Paint::Token(t) => match theme.try_get(t) {
@@ -448,7 +469,7 @@ fn luminance(c: Color) -> f32 {
 }
 
 /// `fg` (with its alpha) over the opaque `bg`.
-pub(crate) fn over(fg: Color, bg: Color) -> Color {
+pub fn over(fg: Color, bg: Color) -> Color {
     let a = fg.components[3];
     let mix = |i: usize| fg.components[i] * a + bg.components[i] * (1.0 - a);
     Color::new([mix(0), mix(1), mix(2), 1.0])

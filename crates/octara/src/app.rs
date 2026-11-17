@@ -14,20 +14,19 @@ mod pick;
 mod pointer;
 mod presentation;
 mod selection;
-mod text_input;
 mod time;
 mod tooltip;
 
+pub(crate) use crate::kernel::TextDocument;
 pub use asks::menu_surface;
 pub use edit::{TextField, byte_offset, utf16_offset};
 pub use event::{FileDrag, InputEvent, Recorded, Recording};
 pub use guard::TargetGuard;
 pub use keys::{BUILTIN_COMMANDS, Binding, Chord, Key, KeyEvent, Keymap};
+pub(crate) use octara_primitives::text::TextEdit;
 pub use pointer::{Button, Drag, DragPhase, Modifiers, Phase, PointerEvent, PointerKind, Tuning};
 pub(crate) use selection::ListOrder;
 pub use selection::TextPoint;
-pub(crate) use text_input::Composition;
-pub use text_input::{TextDocument, TextEdit};
 
 use crate::diagnostics::{self as codes, Diagnostic};
 use crate::kernel::{Breakpoint, HandlerKind, Kernel, NodeId, State, Theme};
@@ -240,7 +239,7 @@ pub(crate) struct WindowState {
     /// The text input state last sent to it.
     text_input: RefCell<Option<crate::platform::TextInput>>,
     /// The pointer's look last presented.
-    cursor: Cell<crate::platform::CursorStyle>,
+    cursor: Cell<octara_primitives::input::CursorStyle>,
     /// What the platform was last told of each native view: its props version and placement.
     native_sent: RefCell<rustc_hash::FxHashMap<NodeId, (u64, Option<crate::native::Placement>)>>,
     /// Native changes not presented yet.
@@ -554,7 +553,7 @@ impl WindowState {
             scale: Cell::new(1.0),
             platform: RefCell::new(platform),
             text_input: RefCell::new(None),
-            cursor: Cell::new(crate::platform::CursorStyle::Arrow),
+            cursor: Cell::new(octara_primitives::input::CursorStyle::Arrow),
             native_sent: RefCell::default(),
             native_changes: RefCell::default(),
             presented: Cell::new(u64::MAX),

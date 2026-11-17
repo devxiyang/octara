@@ -168,7 +168,7 @@ fn shadows_move_between_steps() {
         app.display_list()
             .items()
             .iter()
-            .filter_map(|i| if let octara::paint::Item::Shadow(s) = i { (s.source == n).then_some(s.blur) } else { None })
+            .filter_map(|i| if let octara_primitives::paint::Item::Shadow(s) = i { (s.source == n).then_some(s.blur) } else { None })
             .fold(0.0, f32::max)
     };
     assert_eq!(blur(&app), 3.0);
@@ -234,7 +234,7 @@ mod layout {
                 .into()
         });
         let help = app.kernel().find("help").unwrap();
-        let baselines = |list: &octara::paint::DisplayList| {
+        let baselines = |list: &octara_primitives::paint::DisplayList| {
             let mut ys = Vec::new();
             for run in list.glyph_runs().filter(|run| run.source == help) {
                 ys.extend(run.glyphs.iter().map(|glyph| glyph.y.to_bits()));
@@ -344,10 +344,10 @@ mod presence {
     }
 
     /// How opaque the element is drawn: its group layer's opacity, else its fill's alpha.
-    fn drawn(app: &Window, id: octara::kernel::NodeId) -> Option<f32> {
+    fn drawn(app: &Window, id: octara_primitives::identity::NodeId) -> Option<f32> {
         let dl = app.display_list();
         let layer = dl.items().iter().find_map(|i| {
-            if let octara::paint::Item::PushLayer { source, opacity } = i { (*source == id).then_some(*opacity) } else { None }
+            if let octara_primitives::paint::Item::PushLayer { source, opacity } = i { (*source == id).then_some(*opacity) } else { None }
         });
         let fill = dl.quads().find(|q| q.source == id).and_then(|q| q.fill).map(|c| c.components[3]);
         fill.map(|f| f * layer.unwrap_or(1.0))

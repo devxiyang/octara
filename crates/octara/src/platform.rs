@@ -8,8 +8,10 @@
 //! presents a [`Frame`] to each platform window after every operation (native view changes, the
 //! text input) and asks the platform for the clipboard, waking the loop and new windows.
 
+use crate::kernel::{TextGeometry, TextInputLayout};
 use crate::native::NativeChange;
 use crate::paint::Rect;
+use octara_primitives::input::CursorStyle;
 use std::any::Any;
 use std::sync::Arc;
 
@@ -167,28 +169,6 @@ impl From<crate::image::Image> for ClipboardItem {
     }
 }
 
-/// How the pointer looks (GPUI's names).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CursorStyle {
-    #[default]
-    Arrow,
-    /// Over text that can be selected or typed in.
-    IBeam,
-    /// Over a link.
-    PointingHand,
-    Crosshair,
-    /// Over something that can be dragged.
-    OpenHand,
-    /// While dragging it.
-    ClosedHand,
-    ResizeLeftRight,
-    ResizeUpDown,
-    ResizeColumn,
-    ResizeRow,
-    OperationNotAllowed,
-}
-
 /// What a window's platform is told after an operation.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Frame {
@@ -226,92 +206,12 @@ pub struct TextInput {
     pub multiline: bool,
     /// Owned editing state for synchronous platform queries. Secure fields omit the entire
     /// document, including their length and selection.
-    pub document: Option<crate::app::TextDocument>,
+    pub document: Option<crate::kernel::TextDocument>,
     /// Displayed text geometry from this frame; omitted with a secure document.
     pub geometry: Option<TextGeometry>,
     /// Frozen field configuration for laying out newer native text before its queued edit
     /// reaches the app. It owns no window or application callback; secure fields omit it.
     pub layout: Option<TextInputLayout>,
-}
-
-/// A focused field's published layout configuration. Native text queries can shape their
-/// current document with the same fonts, wrapping and caret scrolling as the field, without
-/// reentering a window. Only the shared text engine's bounded caches may change.
-#[derive(Clone)]
-pub struct TextInputLayout {
-    pub(crate) resources: std::rc::Rc<crate::kernel::Resources>,
-    pub(crate) style: crate::kernel::text::TextStyle,
-    pub(crate) content: Rect,
-    pub(crate) multiline: bool,
-    pub(crate) scroll: f32,
-    pub(crate) kept: Option<(usize, usize)>,
-    pub(crate) fonts: u64,
-}
-
-impl PartialEq for TextInputLayout {
-    fn eq(&self, other: &Self) -> bool {
-        std::rc::Rc::ptr_eq(&self.resources, &other.resources)
-            && self.style == other.style
-            && self.content == other.content
-            && self.multiline == other.multiline
-            && self.scroll == other.scroll
-            && self.kept == other.kept
-            && self.fonts == other.fonts
-    }
-}
-
-impl std::fmt::Debug for TextInputLayout {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TextInputLayout")
-            .field("style", &self.style)
-            .field("content", &self.content)
-            .field("multiline", &self.multiline)
-            .field("scroll", &self.scroll)
-            .field("kept", &self.kept)
-            .field("fonts", &self.fonts)
-            .finish_non_exhaustive()
-    }
-}
-
-/// An owned layout for platform text queries, with displayed UTF-8 byte offsets (including
-/// marked text). A host may use it only while its document text still matches this frame.
-#[derive(Clone, PartialEq, Debug)]
-pub struct TextGeometry {
-    /// The text's origin in logical window coordinates, including its current scroll.
-    pub origin: (f32, f32),
-    pub lines: Vec<crate::kernel::text::VisualLine>,
-}
-
-impl TextGeometry {
-    /// The first line fragment of a displayed range: its actual byte range and logical
-    /// window rect. The actual range expands to available caret stops. An insertion point
-    /// has zero width; the host converts the rect to screen coordinates.
-    pub fn first_rect(&self, range: std::ops::Range<usize>) -> Option<(std::ops::Range<usize>, Rect)> {
-        let last = self.lines.last()?.end;
-        let start = range.start.min(range.end).min(last);
-        let end = range.start.max(range.end).min(last);
-        let index = self.lines.iter().rposition(|l| l.start <= start).unwrap_or(0);
-        let line = &self.lines[index];
-        let (s, x) = line.stops.iter().rev().find(|(b, _)| *b <= start).or(line.stops.first()).copied()?;
-        let (e, right) =
-            if start == end { (s, x) } else { line.stops.iter().find(|(b, _)| *b >= end.min(line.end)).or(line.stops.last()).copied()? };
-        // Line ranges omit their newline. Include that gap in a nonempty actual range so
-        // a caller iterating line fragments advances even across an otherwise empty line.
-        let e = if start != end && end > line.end {
-            self.lines.get(index + 1).filter(|next| next.start > line.end).map_or(e, |next| e.max(end.min(next.start)))
-        } else {
-            e
-        };
-        Some((s..e, Rect { x: self.origin.0 + x.min(right), y: self.origin.1 + line.top, w: (right - x).abs(), h: line.height }))
-    }
-
-    /// The displayed byte index nearest a point in logical window coordinates. Unlike an
-    /// editing caret's value offset, indices inside marked text are kept distinct.
-    pub fn index_at(&self, x: f32, y: f32) -> Option<usize> {
-        let line = self.lines.iter().rev().find(|l| l.top <= y - self.origin.1).or(self.lines.first())?;
-        let x = x - self.origin.0;
-        line.stops.iter().min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs())).map(|s| s.0)
-    }
 }
 
 /// The platform of headless runs: a clipboard in memory, no waker; its windows are
@@ -437,10 +337,10 @@ mod tests {
             kept: None,
             fonts: 0,
         };
-        let document = crate::app::TextDocument::new("nihao".into(), 5, 5);
+        let document = crate::kernel::TextDocument::new("nihao".into(), 5, 5);
         let engine = layout.resources.text.borrow_mut();
         assert!(layout.layout(&document).is_none(), "a reentrant native query must not panic or enter the app");
-        let empty = layout.layout(&crate::app::TextDocument::new(String::new(), 0, 0)).unwrap();
+        let empty = layout.layout(&crate::kernel::TextDocument::new(String::new(), 0, 0)).unwrap();
         assert_eq!(empty.first_rect(0..0).unwrap(), (0..0, Rect { x: 10.0, y: 20.0, w: 0.0, h: 24.0 }));
         drop(engine);
         assert!(layout.layout(&document).is_some());

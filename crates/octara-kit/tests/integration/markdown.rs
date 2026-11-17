@@ -1,10 +1,11 @@
 //! Markdown ([text core](../../../../docs/design/text.md) step 4): blocks as elements with stable
 //! keys; a stream re-parses its end and keeps every earlier block's node.
 
-use octara::kernel::{Kernel, NodeId};
+use octara::kernel::Kernel;
 use octara::platform::{HeadlessPlatform, WindowOptions};
 use octara::prelude::*;
 use octara_kit::markdown::markdown;
+use octara_primitives::identity::NodeId;
 
 const DOC: &str = "# Title\n\nHello **world** and [link](https://x.dev/a).\n\n- alpha\n- [x] beta\n\n```rust\nfn main() {}\n\nlet x = 1;\n```\n\n> quoted\n\n| a | b |\n|---|--:|\n| 1 | `2` |\n\n---\n\n3. three\n4. four\n";
 

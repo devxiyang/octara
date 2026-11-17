@@ -5,8 +5,8 @@
 use crate::api::{Api, Kind};
 use octara::app::{BUILTIN_COMMANDS, Keymap, TargetPlatform};
 use octara::diagnostics::{self, Area, Code, Severity};
-use octara::kernel::{Theme, Token};
-use octara::motion::Spring;
+use octara_primitives::motion::Spring;
+use octara_primitives::theme::{Color, Theme, Token};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -94,7 +94,7 @@ pub fn first_sentence(s: &str) -> &str {
     s.find(". ").map(|i| &s[..=i]).unwrap_or(s)
 }
 
-fn hex(c: octara::kernel::Color) -> String {
+fn hex(c: Color) -> String {
     let c = c.to_rgba8();
     if c.a == 255 { format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b) } else { format!("#{:02x}{:02x}{:02x}{:02x}", c.r, c.g, c.b, c.a) }
 }
@@ -168,13 +168,13 @@ impl Catalog {
             let mut facts = BTreeMap::new();
             let parent = item.path.rsplit_once("::").map(|(p, _)| p.to_string()).unwrap_or_default();
             let name = item.path.rsplit("::").next().unwrap_or_default();
-            if parent == "octara::kernel::Token"
+            if parent == "octara_primitives::theme::Token"
                 && let Some(t) = Token::BUILTIN.iter().find(|t| format!("{t:?}") == name)
             {
                 facts.insert("light".into(), hex(light.get(*t)));
                 facts.insert("dark".into(), hex(dark.get(*t)));
             }
-            if parent == "octara::motion::Spring"
+            if parent == "octara_primitives::motion::Spring"
                 && let Some((_, s)) = Spring::NAMED.iter().find(|(n, _)| *n == name)
             {
                 facts.insert("duration".into(), format!("{} s", s.duration));
@@ -337,7 +337,9 @@ impl Catalog {
 
     /// What `use octara::prelude::*` brings in (not the members of those types).
     pub fn prelude(&self) -> impl Iterator<Item = &Entry> {
-        self.entries.iter().filter(|e| e.aliases.iter().any(|a| a.starts_with("octara::prelude::")))
+        self.entries
+            .iter()
+            .filter(|e| e.aliases.iter().any(|a| a.strip_prefix("octara::prelude::").is_some_and(|name| !name.contains("::"))))
     }
 
     pub fn get(&self, path: &str) -> Option<&Entry> {

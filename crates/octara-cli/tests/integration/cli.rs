@@ -2,10 +2,10 @@
 //! the kernel's tables, and the binary prints it as text and JSON.
 
 use octara::app::BUILTIN_COMMANDS;
-use octara::kernel::{Theme, Token};
-use octara::motion::Spring;
 use octara_cli::api::{self, Kind};
 use octara_cli::catalog::Catalog;
+use octara_primitives::motion::Spring;
+use octara_primitives::theme::{Color, Theme, Token};
 use std::process::Command;
 
 fn catalog() -> Catalog {
@@ -24,7 +24,8 @@ fn lookups_take_paths_suffixes_and_prelude_names() {
     assert_eq!(found.matches[0].path, "octara::reactive::state", "the prelude's `state` comes first");
     assert!(found.matches[0].prelude);
     assert_eq!(cat.lookup("Styled::p_4").matches[0].path, "octara::view::Styled::p_4");
-    assert_eq!(cat.lookup("octara::prelude::Spring").matches[0].path, "octara::motion::Spring");
+    assert_eq!(cat.lookup("octara::prelude::Spring").matches[0].path, "octara_primitives::motion::Spring");
+    assert_eq!(cat.lookup("octara::prelude::Spring::SNAP").matches[0].path, "octara_primitives::motion::Spring::SNAP");
     assert_eq!(cat.lookup(".hover()").matches[0].path, "octara::view::El::hover", "a written call is found too");
     assert!(cat.lookup("El::bg").matches[0].prelude, "members of prelude types are in reach");
     assert!(cat.lookup("hover").similar.contains(&"octara::view::El::hover_alone"));
@@ -33,15 +34,15 @@ fn lookups_take_paths_suffixes_and_prelude_names() {
 #[test]
 fn kernel_tables_are_merged_in() {
     let cat = catalog();
-    let accent = cat.get("octara::kernel::Token::Accent").unwrap();
-    let hex = |c: octara::kernel::Color| {
+    let accent = cat.get("octara_primitives::theme::Token::Accent").unwrap();
+    let hex = |c: Color| {
         let c = c.to_rgba8();
         format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
     };
     assert_eq!(accent.facts["light"], hex(Theme::light().get(Token::Accent)));
     assert_eq!(accent.facts["dark"], hex(Theme::dark().get(Token::Accent)));
     for t in Token::BUILTIN {
-        assert!(cat.get(&format!("octara::kernel::Token::{t:?}")).unwrap().facts.contains_key("light"), "{t:?}");
+        assert!(cat.get(&format!("octara_primitives::theme::Token::{t:?}")).unwrap().facts.contains_key("light"), "{t:?}");
     }
     for (command, _) in BUILTIN_COMMANDS {
         assert_eq!(cat.get(command).unwrap().kind, "command");
@@ -61,7 +62,7 @@ fn every_named_spring_is_in_the_table() {
     let api = api::load();
     let consts: Vec<&str> = api
         .items()
-        .filter(|i| i.kind == Kind::AssocConst && i.path.starts_with("octara::motion::Spring::"))
+        .filter(|i| i.kind == Kind::AssocConst && i.path.starts_with("octara_primitives::motion::Spring::"))
         .map(|i| i.path.rsplit("::").next().unwrap())
         .filter(|n| *n != "NAMED")
         .collect();
@@ -69,7 +70,7 @@ fn every_named_spring_is_in_the_table() {
     for c in consts {
         assert!(Spring::NAMED.iter().any(|(n, _)| *n == c), "Spring::{c} is missing from Spring::NAMED");
     }
-    assert_eq!(catalog().get("octara::motion::Spring::POP").unwrap().facts["bounce"], "0.15");
+    assert_eq!(catalog().get("octara_primitives::motion::Spring::POP").unwrap().facts["bounce"], "0.15");
 }
 
 #[test]

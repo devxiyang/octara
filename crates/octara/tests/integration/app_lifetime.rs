@@ -184,7 +184,7 @@ fn an_escaped_panic_blocks_all_windows_but_allows_teardown_and_other_apps() {
     assert_eq!((first.frames_presented(), second.frames_presented()), frames);
     assert!(!first.unsettled().is_empty());
     assert!(!second.unsettled().is_empty());
-    let picture = octara::capture::Picture { width: 1, height: 1, rgba: vec![0, 0, 0, 255] };
+    let picture = octara_primitives::capture::Picture { width: 1, height: 1, rgba: vec![0, 0, 0, 255] };
     let path = std::env::temp_dir().join(format!("octara-failed-app-{}.png", std::process::id()));
     assert!(second.capture_display(&picture, path.to_str().unwrap(), 1.0, vec![]).unwrap_err().contains("APP_FAILED"));
     assert!(!path.exists(), "failure is refused even if the caller supplied an empty pending list");

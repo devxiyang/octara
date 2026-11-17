@@ -117,7 +117,7 @@ fn image_color(p: vec2f, v: VsOut) -> vec4f {
     return (top + (bottom - top) * ty) * cov;
 }
 
-// The formula of `octara::paint::Gradient::at`: the CSS gradient line through the box's center,
+// The formula of `octara_primitives::paint::Gradient::at`: the CSS gradient line through the box's center,
 // colors mixed premultiplied. Returns a straight color.
 fn gradient_at(p: vec2f, r: vec4f, g: vec4f, c0: vec4f, c1: vec4f) -> vec4f {
     let a = g.x * PI / 180.0;

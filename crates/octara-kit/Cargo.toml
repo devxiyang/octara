@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+octara-primitives.workspace = true
 octara.workspace = true
 octara-icons.workspace = true
 pulldown-cmark.workspace = true

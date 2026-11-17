@@ -9,8 +9,8 @@ use crate::glyphs::{GlyphCache, SUBPIXEL_STEPS};
 use crate::paths::{self, MaskKey};
 use crate::shape::push_clip;
 use bytemuck::{Pod, Zeroable};
-use octara::kernel::Color;
-use octara::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, Quad, Shadow};
+use octara_primitives::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, Quad, Shadow};
+use octara_primitives::theme::Color;
 use rustc_hash::FxHashMap;
 
 const ATLAS: u32 = 2048;
@@ -758,11 +758,11 @@ fn quad(q: &Quad, scale: f32, clip: [f32; 4], clip_r: f32) -> Inst {
     }
 }
 
-impl octara::capture::Painter for GpuRenderer {
+impl octara_primitives::capture::Painter for GpuRenderer {
     fn renderer(&self) -> &'static str {
         "gpu"
     }
-    fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<octara::capture::Picture, String> {
+    fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<octara_primitives::capture::Picture, String> {
         if !scale.is_finite() || scale <= 0.0 {
             return Err("capture scale must be finite and positive".into());
         }
@@ -785,6 +785,6 @@ impl octara::capture::Painter for GpuRenderer {
             return Err(format!("capture readback exceeds the GPU buffer limit of {max_buffer} bytes"));
         }
         let b = self.render(list, scale);
-        Ok(octara::capture::Picture { width: b.width, height: b.height, rgba: b.rgba })
+        Ok(octara_primitives::capture::Picture { width: b.width, height: b.height, rgba: b.rgba })
     }
 }

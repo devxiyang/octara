@@ -2,9 +2,9 @@
 //! and scrolling) and removal; events and sizes come back from it; inspect shows the view; check
 //! finds content an overlay view would hide, and views without a label.
 
-use octara::native::{NativeChange, NativeEvent, Slot};
 use octara::platform::{HeadlessPlatform, HeadlessWindow};
 use octara::prelude::*;
+use octara_primitives::native::{NativeChange, NativeEvent, Slot};
 
 /// The native changes the window's platform was presented.
 fn calls(app: &Window) -> Vec<NativeChange> {
@@ -162,7 +162,7 @@ fn map_with_controls() -> View {
 
 #[test]
 fn a_shown_underlay_view_is_cut_out_and_its_covered_parts_known() {
-    use octara::paint::Item;
+    use octara_primitives::paint::Item;
     let app = Window::headless(map_with_controls);
     let natives = |app: &Window| -> Vec<bool> {
         app.display_list().items().iter().filter_map(|i| if let Item::Native { cut, .. } = i { Some(*cut) } else { None }).collect()

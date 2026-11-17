@@ -104,7 +104,7 @@ pub struct TextInputState {
 }
 
 impl TextInputState {
-    pub(crate) fn from_field(field: crate::app::TextField, document: crate::app::TextDocument) -> Option<Self> {
+    pub(crate) fn from_field(field: crate::app::TextField, document: crate::kernel::TextDocument) -> Option<Self> {
         if field.secure {
             return None;
         }

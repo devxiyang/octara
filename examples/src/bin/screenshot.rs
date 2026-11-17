@@ -40,7 +40,7 @@ fn main() {
             app.app().use_system_fonts();
         }
         let path = format!("{dir}/{name}.png");
-        octara_render::screenshot(&app, scale).save_png(&path).expect("write png");
+        octara_render::CpuRenderer::new().render(&app.display_list(), scale).save_png(&path).expect("write png");
         println!("{path}");
     }
 }

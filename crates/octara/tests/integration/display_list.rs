@@ -1,9 +1,9 @@
 //! The display list: quads, glyph runs and clips in drawing order, traced to their nodes.
 
-use octara::paint::{DisplayList, Item};
 use octara::prelude::*;
+use octara_primitives::paint::{DisplayList, Item};
 
-fn source(app: &Window, id: &str) -> octara::kernel::NodeId {
+fn source(app: &Window, id: &str) -> octara_primitives::identity::NodeId {
     app.kernel().find(id).unwrap()
 }
 
@@ -73,8 +73,8 @@ fn opacity_and_theme_reach_the_colors() {
 }
 
 mod ellipsis {
-    use octara::paint::Item;
     use octara::prelude::*;
+    use octara_primitives::paint::Item;
 
     fn glyphs(app: &Window, id: &str) -> Vec<(u32, f32, f32)> {
         let n = app.kernel().find(id).unwrap();
@@ -121,8 +121,8 @@ mod ellipsis {
 }
 
 mod shadows {
-    use octara::paint::Item;
     use octara::prelude::*;
+    use octara_primitives::paint::Item;
 
     #[test]
     fn shadows_come_before_their_box_offset_and_spread() {

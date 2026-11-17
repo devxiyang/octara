@@ -2,8 +2,8 @@
 //! in their styles; links as elements of their own, pressed by name, by point, by key and by
 //! assistive technology; restyling reshapes only what changes shape; kept glyphs.
 
-use octara::paint::Item;
 use octara::prelude::*;
+use octara_primitives::paint::Item;
 use std::time::Duration;
 
 fn note(opened: Signal<Vec<String>>) -> impl Fn() -> View + 'static {
@@ -220,7 +220,7 @@ fn a_link_no_handler_takes_opens_with_the_system() {
 #[test]
 fn the_clipboard_takes_text_or_an_image() {
     let mut w = Window::headless(|| {
-        let image = octara::image::Image::rgba(2, 1, vec![255, 0, 0, 255, 0, 0, 255, 255]);
+        let image = octara_primitives::image::Image::rgba(2, 1, vec![255, 0, 0, 255, 0, 0, 255, 255]);
         col()
             .child(el().id("text").size_4().on_press(|| write_to_clipboard("words")))
             .child(el().id("image").size_4().on_press(move || write_to_clipboard(image.clone())))

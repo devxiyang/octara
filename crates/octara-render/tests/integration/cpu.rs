@@ -1,7 +1,7 @@
 //! The reference renderer: deterministic pixels for quads, borders, text and clips.
 
 use octara::prelude::*;
-use octara_render::{CpuRenderer, screenshot};
+use octara_render::CpuRenderer;
 
 fn rgb(c: Color) -> [u8; 3] {
     let [r, g, b, _] = c.to_rgba8().to_u8_array();
@@ -32,8 +32,9 @@ fn view() -> View {
 #[test]
 fn deterministic_and_pixels_where_expected() {
     let app = Window::headless(view);
-    let a = screenshot(&app, 2.0);
-    let b = CpuRenderer::new().render(&app.display_list(), 2.0);
+    let list = app.display_list();
+    let a = CpuRenderer::new().render(&list, 2.0);
+    let b = CpuRenderer::new().render(&list, 2.0);
     assert_eq!((a.width, a.height), (1600, 1200));
     assert!(a == b, "the same frame renders to the same bytes");
 

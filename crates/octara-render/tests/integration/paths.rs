@@ -1,10 +1,10 @@
 //! Paths in the reference renderer: fills with both rules, strokes with caps, joins and dashes,
 //! gradients, transforms, clips; masks cached by content and dropped when unused.
 
-use octara::kernel::{Color, NodeId};
-use octara::paint::{DisplayList, Gradient, Item, Part, PathPaint, Rect};
-use octara::path::{FillRule, LineCap, LineJoin, Path, PathStyle, Stroke, Transform, point};
-use octara::prelude::rgb;
+use octara_primitives::identity::NodeId;
+use octara_primitives::paint::{DisplayList, Gradient, Item, Part, PathPaint, Rect};
+use octara_primitives::path::{FillRule, LineCap, LineJoin, Path, PathStyle, Stroke, Transform, point};
+use octara_primitives::theme::{Color, rgb};
 use octara_render::{Bitmap, CpuRenderer};
 
 fn paint(path: Path, style: PathStyle, color: Color) -> Item {

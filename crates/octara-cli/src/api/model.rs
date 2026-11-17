@@ -3,8 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Bumped when the shape below changes incompatibly.
-pub const FORMAT: u32 = 1;
+/// Bumped when the API representation changes incompatibly.
+pub const FORMAT: u32 = 2;
 
 /// The whole public API of the framework.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

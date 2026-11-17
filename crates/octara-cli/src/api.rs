@@ -3,6 +3,7 @@
 //! a read is cached under the app's target directory until a source file changes.
 
 mod expand;
+mod link;
 mod model;
 pub mod source;
 
@@ -13,7 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The framework's public crates, in the order the API lists them.
-pub const CRATES: &[&str] = &["octara", "octara-kit", "octara-render", "octara-shell", "octara-fonts", "octara-macros"];
+pub const CRATES: &[&str] =
+    &["octara", "octara-primitives", "octara-kit", "octara-render", "octara-shell", "octara-fonts", "octara-macros"];
 
 /// This workspace's directory, where the CLI was built from.
 pub fn workspace_root() -> PathBuf {
@@ -79,7 +81,9 @@ pub fn project_sources(dir: &Path) -> Result<(Vec<Source>, PathBuf), String> {
 /// Reads every crate of `sources`.
 pub fn read(sources: &[Source]) -> Result<Api, String> {
     let crates = sources.iter().map(source::read).collect::<Result<Vec<_>, _>>()?;
-    Ok(Api { format: FORMAT, crates })
+    let mut api = Api { format: FORMAT, crates };
+    link::reexports(&mut api);
+    Ok(api)
 }
 
 /// What the sources' files are now (paths, sizes, times): a read stays valid while this does.

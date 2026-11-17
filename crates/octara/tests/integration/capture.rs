@@ -2,11 +2,12 @@
 //! reports what each native view shows; snapshots draw in their views' places and are cleared
 //! after.
 
-use octara::capture::{Painter, Picture, Pixels, Shown};
+use octara::capture::{Pixels, Shown};
 use octara::inspect::{Request, handle};
-use octara::paint::{DisplayList, Item};
 use octara::platform::{HeadlessPlatform, HeadlessWindow};
 use octara::prelude::*;
+use octara_primitives::capture::{Painter, Picture};
+use octara_primitives::paint::{DisplayList, Item};
 use std::cell::RefCell;
 use std::rc::Rc;
 

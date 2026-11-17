@@ -4,7 +4,8 @@
 pub use octara::app::Window;
 pub use octara::app::{DEFAULT_VIEWPORT, Event, Work};
 pub use octara::diagnostics::{Diagnostic, Severity};
-pub use octara::kernel::{Kernel, State, Theme, Token};
+pub use octara::kernel::{Kernel, State};
+use octara_primitives::theme::{Theme, Token};
 
 /// Builds the four spec apps.
 pub trait Factory {
@@ -61,7 +62,7 @@ fn selected(h: &Window, id: &str) -> Option<bool> {
     h.kernel().state_of(id).map(|s| s.contains(State::SELECTED))
 }
 
-fn text_color(h: &Window, id: &str) -> Option<octara::kernel::Color> {
+fn text_color(h: &Window, id: &str) -> Option<octara_primitives::theme::Color> {
     h.kernel().visual_of(id).map(|v| v.text)
 }
 

@@ -3,7 +3,7 @@
 //! caret position is, the scroll that keeps the caret in view, and how it is painted.
 
 use super::text::{self, VisualLine, Wrap};
-use super::{Color, Dirty, Kernel, NodeId, State, Token};
+use super::{Color, Dirty, Kernel, NodeId, State, TextDocument, TextGeometry, TextInputLayout, Token};
 use crate::paint::{GlyphRun, Item, Quad, Rect};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -420,10 +420,10 @@ impl Kernel {
         Some(f)
     }
 
-    pub(crate) fn input_layout(&self, id: NodeId, field: &Field) -> crate::platform::TextInputLayout {
+    pub(crate) fn input_layout(&self, id: NodeId, field: &Field) -> TextInputLayout {
         let n = self.node(id);
         let input = n.input().expect("a text input");
-        crate::platform::TextInputLayout {
+        TextInputLayout {
             resources: self.res.clone(),
             style: input_style(n.visual.text_style(), input.multiline),
             content: Rect { x: field.x, y: field.y, w: field.width, h: field.height },
@@ -562,11 +562,11 @@ impl Kernel {
     }
 }
 
-impl crate::platform::TextInputLayout {
+impl TextInputLayout {
     /// Lays out the current native document using this frame's field configuration. Returns
     /// none if shaping finds the shared text engine borrowed; no window, kernel or
     /// application handlers are entered. An empty document still has an insertion-point line.
-    pub fn layout(&self, document: &crate::app::TextDocument) -> Option<crate::platform::TextGeometry> {
+    pub fn layout(&self, document: &TextDocument) -> Option<TextGeometry> {
         let shown = document.text();
         let caret = document.composition.as_ref().map_or(document.caret, |c| c.selection.as_ref().map_or(c.marked.end, |s| s.end));
         let lines = if shown.is_empty() {
@@ -577,7 +577,7 @@ impl crate::platform::TextInputLayout {
         };
         let mut field = Field::new(shown.to_owned(), caret, self.content, self.style.line_height, lines);
         field.reveal(self.multiline, self.scroll, self.kept);
-        Some(crate::platform::TextGeometry { origin: (field.x - field.scroll.0, field.y - field.scroll.1), lines: field.lines })
+        Some(TextGeometry { origin: (field.x - field.scroll.0, field.y - field.scroll.1), lines: field.lines })
     }
 }
 

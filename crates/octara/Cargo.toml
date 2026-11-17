@@ -10,27 +10,25 @@ publish.workspace = true
 [features]
 default = ["svg"]
 # `Icon::svg`: icons from SVG source (an XML parser). The bundled icons do not need it.
-svg = ["dep:roxmltree"]
+svg = ["octara-primitives/svg"]
 # The platform's installed fonts and fallback (CJK, emoji, symbols) for real windows. Headless
 # runs leave it off and use the bundled faces only, so results do not depend on the machine.
 system-fonts = ["parley/system"]
 
 [dependencies]
+octara-primitives.workspace = true
 octara-macros = { path = "../octara-macros" }
 accesskit.workspace = true
 bitflags.workspace = true
-unicode-segmentation.workspace = true
-png.workspace = true
-roxmltree = { workspace = true, optional = true }
 color.workspace = true
+unicode-segmentation.workspace = true
 parley.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 slotmap.workspace = true
 taffy.workspace = true
-kurbo.workspace = true
-zeno.workspace = true
 
 [dev-dependencies]
+png.workspace = true
 proptest.workspace = true

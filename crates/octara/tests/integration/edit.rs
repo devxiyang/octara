@@ -2,8 +2,9 @@
 //! undo, composition at the caret, pointer selection, and the platform text protocol.
 
 use octara::accesskit;
-use octara::app::{Phase, PointerEvent, TargetPlatform, TextEdit, byte_offset, utf16_offset};
+use octara::app::{Phase, PointerEvent, TargetPlatform, byte_offset, utf16_offset};
 use octara::prelude::*;
+use octara_primitives::text::TextEdit;
 
 fn app(initial: &'static str) -> Window {
     let mut app = Window::headless(move || {

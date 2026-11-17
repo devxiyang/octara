@@ -12,6 +12,7 @@ publish.workspace = true
 view = "octara_examples::apps::counter"
 
 [dependencies]
+octara-primitives.workspace = true
 octara = { workspace = true, features = ["system-fonts"] }
 octara-fonts.workspace = true
 octara-icons.workspace = true

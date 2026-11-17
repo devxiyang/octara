@@ -18,6 +18,13 @@ GPUI's names, which are Tailwind's vocabulary (`p_4`, `gap_2`, `rounded_md`, `te
 - Elements are found by their **test id** (`.id("save")`): tests, agents and the accessibility
   tree all address them that way.
 
+`octara` provides the runtime and UI construction. `octara-primitives` owns window-independent
+geometry, drawing, theme values and presentation data; the renderers consume that package without
+depending on the UI runtime. Most views use `octara::prelude::*`, which also imports the common
+primitive types. For direct module APIs such as `octara_primitives::path` or
+`octara_primitives::paint`, add `octara-primitives` as a dependency. `octara-kit` is optional:
+applications and custom component libraries use the same public foundation.
+
 ## A first app
 
 ```rust

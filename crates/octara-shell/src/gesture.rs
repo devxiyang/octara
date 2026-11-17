@@ -5,7 +5,7 @@ use octara::app::TargetGuard;
 use octara::app::{InputEvent, Phase, PointerEvent, PointerKind, Window, WindowId};
 use octara::diagnostics as codes;
 use octara::inspect::{Delivery, Reply, Request};
-use octara::kernel::NodeId;
+use octara_primitives::identity::NodeId;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 

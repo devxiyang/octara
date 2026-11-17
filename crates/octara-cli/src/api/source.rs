@@ -379,8 +379,10 @@ impl Crate {
                     for (name, path, glob) in use_paths(&u.tree, Vec::new()) {
                         if glob {
                             for t in self.resolve(m, &path, depth + 1) {
-                                if let Target::Module(g) = t {
-                                    out.extend(self.exports(g, depth + 1));
+                                match t {
+                                    Target::Module(g) => out.extend(self.exports(g, depth + 1)),
+                                    Target::External(p) => out.push(("*".into(), Target::External(format!("{p}::*")))),
+                                    Target::Def(..) => {}
                                 }
                             }
                         } else {
@@ -419,7 +421,7 @@ impl Crate {
     fn convert(&self, src: &Source) -> CrateApi {
         // Every public path of every item and module.
         let mut paths: BTreeMap<Target, BTreeSet<String>> = BTreeMap::new();
-        let mut reexports: BTreeMap<String, String> = BTreeMap::new();
+        let mut reexports = BTreeSet::new();
         let mut seen = BTreeSet::new();
         let mut queue = vec![(0usize, self.name.clone())];
         while let Some((m, prefix)) = queue.pop() {
@@ -437,7 +439,7 @@ impl Crate {
                         paths.entry(t).or_default().insert(at);
                     }
                     Target::External(p) => {
-                        reexports.insert(at, p.clone());
+                        reexports.insert((at, p.clone()));
                     }
                 }
             }
@@ -547,7 +549,7 @@ impl Crate {
             });
         }
         items.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
-        items.dedup_by(|a, b| a.path == b.path && a.kind == b.kind);
+        items.dedup_by(|a, b| a.path == b.path && a.kind == b.kind && a.target == b.target);
         CrateApi { name: src.name.clone(), root: src.dir.to_string_lossy().replace('\\', "/"), docs: self.modules[0].docs.clone(), items }
     }
 }

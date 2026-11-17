@@ -1,4 +1,4 @@
-//! Renderers for Octara's display list ([`octara::paint`]).
+//! Renderers for Octara's display list ([`octara_primitives::paint`]).
 //!
 //! - [`CpuRenderer`]: the reference renderer. Deterministic (bundled fonts, plain float math), it
 //!   gives agents and tests screenshots without a GPU and is the oracle the GPU renderer is
@@ -73,14 +73,7 @@ impl Bitmap {
     }
 }
 
-/// The reference renderer as a capture painter: what the `octara` harness installs
-/// ([`octara::inspect::main_with`]).
-pub fn reference_painter() -> Box<dyn octara::capture::Painter> {
+/// The reference renderer as a reusable capture painter.
+pub fn reference_painter() -> Box<dyn octara_primitives::capture::Painter> {
     Box::new(CpuRenderer::new())
-}
-
-/// A screenshot of `window`'s current frame at `scale` device pixels per logical pixel,
-/// rendered by the reference renderer.
-pub fn screenshot(window: &octara::app::Window, scale: f32) -> Bitmap {
-    CpuRenderer::new().render(&window.display_list(), scale)
 }

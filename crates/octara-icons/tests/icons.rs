@@ -3,7 +3,7 @@
 
 use octara::prelude::*;
 use octara_icons as icons;
-use octara_render::screenshot;
+use octara_render::CpuRenderer;
 
 #[test]
 fn the_set_is_found_by_name_and_tag() {
@@ -48,10 +48,10 @@ fn icons_draw_in_the_text_color_and_hide_unless_labeled() {
     // The check inherits its row's color and takes its stroke width.
     let blue: Vec<_> = dl.paths().filter(|p| p.source == check).collect();
     assert!(blue.iter().all(|p| p.color == rgb(0x0000ff)));
-    assert!(matches!(&blue[0].style, octara::path::PathStyle::Stroke(s) if s.width == 3.0));
+    assert!(matches!(&blue[0].style, octara_primitives::path::PathStyle::Stroke(s) if s.width == 3.0));
 
     // Pixels: the X's diagonal crosses its center in red.
-    let shot = screenshot(&app, 2.0);
+    let shot = CpuRenderer::new().render(&dl, 2.0);
     let r = app.kernel().rect(x);
     let c = shot.pixel(((r.0 + r.2 / 2.0) * 2.0) as u32, ((r.1 + r.3 / 2.0) * 2.0) as u32);
     assert!(c[0] > 200 && c[1] < 60 && c[2] < 60, "{c:?}");

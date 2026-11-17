@@ -1,19 +1,5 @@
-//! Native Island: platform views placed in Octara's layout ([design](../../../docs/design/native-island.md)).
-//!
-//! [`native_view`](crate::view::native_view)`(kind)` is a leaf box a platform view fills: a web
-//! view, a map, a platform picker. Views live in one of two [`Slot`]s per window: an
-//! **underlay** behind Octara's surface (shown through a cutout where the view is, so content
-//! painted after it draws over it, as map controls do) and an **overlay** above it (a web view,
-//! a picker): Octara content painted over an overlay view would be hidden by it, so `check`
-//! reports it (`NATIVE_COVERED`).
-//!
-//! After each frame the app presents what changed to the window's platform window as
-//! [`NativeChange`]s: views created and destroyed, props (one JSON value, handed over whole), and
-//! [`Placement`]s (where each view is, its corner radius, the clip around it, its opacity,
-//! whether it shows). Events and natural sizes come back as input
-//! ([`InputEvent::Native`](crate::app::InputEvent::Native), `NativeSize`). A view the platform
-//! does not show draws as a placeholder box; its snapshot (taken for a
-//! [capture](crate::capture)) draws in its place, so captures show the page or the map.
+//! Native-view data exchanged between the document and platform adapters.
+//! This module owns no windows and performs no OS calls.
 
 use crate::paint::Rect;
 use serde::Serialize;
@@ -64,7 +50,7 @@ pub struct NativeEvent {
 }
 
 /// What changed about a window's native views in a frame: the app presents these to its
-/// platform window ([`Frame::native`](crate::platform::Frame::native)), which applies them
+/// platform window as part of its frame, which applies them
 /// with the frame (placements in its transaction). Headless they are kept for tests.
 #[derive(Clone, PartialEq, Debug, Serialize, serde::Deserialize)]
 #[serde(tag = "change", rename_all = "snake_case")]

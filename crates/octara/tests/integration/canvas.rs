@@ -1,9 +1,9 @@
 //! Canvas: a recording made by a binding over the element's size and what it reads; drawn in
 //! the content box, clipped to it; an image to assistive technology.
 
-use octara::canvas::CanvasOp;
-use octara::paint::Item;
 use octara::prelude::*;
+use octara_primitives::canvas::CanvasOp;
+use octara_primitives::paint::Item;
 use std::cell::Cell;
 use std::rc::Rc;
 

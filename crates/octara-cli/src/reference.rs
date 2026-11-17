@@ -46,12 +46,15 @@ pub fn files(api: &Api) -> Vec<(String, String)> {
         if !docs.is_empty() {
             let _ = writeln!(index, "{}\n", first_sentence(&docs));
         }
-        let prelude: Vec<&str> = c
-            .items
-            .iter()
-            .filter(|i| !member(i.kind) && i.aliases.iter().any(|a| a.contains("::prelude::")))
-            .map(|i| i.path.rsplit("::").next().unwrap_or(&i.path))
+        let prelude_prefix = format!("{krate}::prelude::");
+        let mut prelude: Vec<&str> = api
+            .items()
+            .filter(|i| !member(i.kind))
+            .flat_map(|i| &i.aliases)
+            .filter_map(|a| a.strip_prefix(&prelude_prefix).filter(|name| !name.contains("::")))
             .collect();
+        prelude.sort_unstable();
+        prelude.dedup();
         if !prelude.is_empty() {
             let _ = writeln!(index, "Prelude (`use {krate}::prelude::*`): {}\n", prelude.join(", "));
         }

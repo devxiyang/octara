@@ -8,7 +8,8 @@
 //! stated `fallback` where there is none.
 
 use super::{Shell, ShellEvent};
-use octara::capture::{Painter, Picture, Pixels};
+use octara::capture::Pixels;
+use octara_primitives::capture::{Painter, Picture};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -54,7 +55,7 @@ impl Painter for CapturePainter<'_> {
         self.renderer.as_ref().map_or("gpu", |renderer| renderer.renderer())
     }
 
-    fn paint(&mut self, list: &octara::paint::DisplayList, scale: f32) -> Result<Picture, String> {
+    fn paint(&mut self, list: &octara_primitives::paint::DisplayList, scale: f32) -> Result<Picture, String> {
         if self.bounded {
             validate_size(list.size, scale)?;
         }
@@ -303,7 +304,7 @@ impl Shell {
 }
 
 /// The window server's picture of the window, or why there is none.
-fn window_picture(w: &octara::app::Window) -> Result<octara::capture::Picture, String> {
+fn window_picture(w: &octara::app::Window) -> Result<octara_primitives::capture::Picture, String> {
     #[cfg(target_os = "macos")]
     if let Some(p) = super::ww(w, |x| x.native.as_ref().map(|n| n.window_picture())).flatten() {
         return p;

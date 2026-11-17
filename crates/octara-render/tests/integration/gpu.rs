@@ -196,8 +196,8 @@ fn gpu_matches_the_reference_renderer() {
 
 #[test]
 fn capture_painter_rejects_invalid_sizes_without_losing_the_renderer() {
-    use octara::capture::Painter;
-    use octara::paint::DisplayList;
+    use octara_primitives::capture::Painter;
+    use octara_primitives::paint::DisplayList;
 
     let Some(mut gpu) = GpuRenderer::new() else {
         eprintln!("no GPU adapter: skipped");
@@ -218,10 +218,10 @@ fn capture_painter_rejects_invalid_sizes_without_losing_the_renderer() {
 }
 
 /// Paths of every kind, and one larger than an atlas tile.
-fn paths_list() -> octara::paint::DisplayList {
-    use octara::kernel::NodeId;
-    use octara::paint::{DisplayList, Gradient, Item, Part, PathPaint, Rect};
-    use octara::path::{FillRule, LineCap, LineJoin, Path, PathStyle, Stroke, Transform, point};
+fn paths_list() -> octara_primitives::paint::DisplayList {
+    use octara_primitives::identity::NodeId;
+    use octara_primitives::paint::{DisplayList, Gradient, Item, Part, PathPaint, Rect};
+    use octara_primitives::path::{FillRule, LineCap, LineJoin, Path, PathStyle, Stroke, Transform, point};
     let item = |path: Path, style: PathStyle, color: Color, transform: Transform| {
         let b = path.bounds().unwrap_or_default();
         let o = transform.apply(point(b.x, b.y));
@@ -326,13 +326,9 @@ fn underlay() -> View {
     el().size_full()
         .bg(Token::Surface)
         .child(
-            el().absolute()
-                .top(px(10.0))
-                .left(px(10.0))
-                .p_4()
-                .rounded_xl()
-                .bg(Token::Background)
-                .child(native_view("map").slot(octara::native::Slot::Underlay).label("Map").w(px(160.0)).h(px(90.0)).rounded_lg()),
+            el().absolute().top(px(10.0)).left(px(10.0)).p_4().rounded_xl().bg(Token::Background).child(
+                native_view("map").slot(octara_primitives::native::Slot::Underlay).label("Map").w(px(160.0)).h(px(90.0)).rounded_lg(),
+            ),
         )
         .child(el().absolute().top(px(40.0)).left(px(40.0)).size_8().rounded_full().bg(Token::Accent))
         .into()

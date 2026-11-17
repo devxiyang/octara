@@ -2529,19 +2529,17 @@ dependencies = [
  "accesskit",
  "bitflags 2.13.2",
  "color",
- "kurbo",
  "octara-macros",
+ "octara-primitives",
  "parley",
  "png",
  "proptest",
- "roxmltree",
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
  "slotmap",
  "taffy",
  "unicode-segmentation",
- "zeno",
 ]
 
 [[package]]
@@ -2565,6 +2563,7 @@ dependencies = [
  "clap",
  "octara",
  "octara-kit",
+ "octara-primitives",
  "octara-shell",
  "prettyplease",
  "proc-macro2",
@@ -2582,6 +2581,7 @@ dependencies = [
  "octara-fonts",
  "octara-icons",
  "octara-kit",
+ "octara-primitives",
  "octara-render",
  "octara-shell",
 ]
@@ -2591,6 +2591,7 @@ name = "octara-fonts"
 version = "0.0.0"
 dependencies = [
  "octara",
+ "octara-primitives",
  "octara-render",
 ]
 
@@ -2599,6 +2600,7 @@ name = "octara-icons"
 version = "0.0.0"
 dependencies = [
  "octara",
+ "octara-primitives",
  "octara-render",
  "serde_json",
 ]
@@ -2609,6 +2611,7 @@ version = "0.0.0"
 dependencies = [
  "octara",
  "octara-icons",
+ "octara-primitives",
  "pulldown-cmark",
 ]
 
@@ -2617,12 +2620,28 @@ name = "octara-macros"
 version = "0.0.0"
 
 [[package]]
+name = "octara-primitives"
+version = "0.0.0"
+dependencies = [
+ "color",
+ "kurbo",
+ "linebender_resource_handle",
+ "png",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "slotmap",
+ "zeno",
+]
+
+[[package]]
 name = "octara-render"
 version = "0.0.0"
 dependencies = [
  "bytemuck",
  "kurbo",
  "octara",
+ "octara-primitives",
  "png",
  "pollster",
  "rustc-hash 2.1.3",
@@ -2647,6 +2666,7 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "objc2-web-kit",
  "octara",
+ "octara-primitives",
  "octara-render",
  "open",
  "pollster",

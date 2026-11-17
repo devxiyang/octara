@@ -1,7 +1,7 @@
 //! Glyph rasterization with swash, cached per font, glyph, size and subpixel offset. Shared by
 //! the CPU renderer and (next) the GPU glyph atlas.
 
-use octara::paint::FontData;
+use octara_primitives::paint::FontData;
 use rustc_hash::FxHashMap;
 use swash::FontRef;
 use swash::scale::image::Content;

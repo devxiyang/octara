@@ -1,22 +1,9 @@
 //! The document a platform text input sees. Native callbacks edit this owned value, then
 //! deliver the edit to the window at a safe event-loop boundary. No app handlers run here.
 
+use octara_primitives::paint::Rect;
+use octara_primitives::text::TextEdit;
 use std::ops::Range;
-
-/// An edit from a platform text input. Ranges count UTF-8 bytes in the displayed document,
-/// including marked text. A missing replacement uses the marked range, then the selection.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum TextEdit {
-    /// Replace a displayed range with uncommitted text. `selection` is relative to `text`;
-    /// none hides the input method's cursor. Empty text cancels the composition.
-    Mark { text: String, selection: Option<Range<usize>>, replacement: Option<Range<usize>> },
-    /// Replace a displayed range and accept the resulting document as one committed edit.
-    Insert { text: String, replacement: Option<Range<usize>> },
-    /// Accept the displayed document, removing its input-method marking.
-    Unmark,
-    /// Restore the committed document and the selection from before composition began.
-    Cancel,
-}
 
 /// An owned platform editing document, suitable for synchronous native queries. The
 /// committed value stays unchanged while a composition edits its displayed draft.
@@ -36,16 +23,16 @@ pub(crate) struct Composition {
 }
 
 fn range(text: &str, range: Range<usize>) -> Range<usize> {
-    let a = crate::kernel::floor_boundary(text, range.start);
-    let b = crate::kernel::floor_boundary(text, range.end);
+    let a = super::floor_boundary(text, range.start);
+    let b = super::floor_boundary(text, range.end);
     a.min(b)..a.max(b)
 }
 
 impl TextDocument {
     /// A committed document and its UTF-8 byte selection. The caret may precede the anchor.
     pub fn new(text: String, anchor: usize, caret: usize) -> Self {
-        let anchor = crate::kernel::floor_boundary(&text, anchor);
-        let caret = crate::kernel::floor_boundary(&text, caret);
+        let anchor = super::floor_boundary(&text, anchor);
+        let caret = super::floor_boundary(&text, caret);
         Self { value: text, anchor, caret, composition: None }
     }
 
@@ -113,10 +100,89 @@ impl TextDocument {
     }
 }
 
+/// A focused field's published layout configuration. Native text queries can shape their
+/// current document with the same fonts, wrapping and caret scrolling as the field, without
+/// reentering a window. Only the shared text engine's bounded caches may change.
+#[derive(Clone)]
+pub struct TextInputLayout {
+    pub(crate) resources: std::rc::Rc<crate::kernel::Resources>,
+    pub(crate) style: crate::kernel::text::TextStyle,
+    pub(crate) content: Rect,
+    pub(crate) multiline: bool,
+    pub(crate) scroll: f32,
+    pub(crate) kept: Option<(usize, usize)>,
+    pub(crate) fonts: u64,
+}
+
+impl PartialEq for TextInputLayout {
+    fn eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.resources, &other.resources)
+            && self.style == other.style
+            && self.content == other.content
+            && self.multiline == other.multiline
+            && self.scroll == other.scroll
+            && self.kept == other.kept
+            && self.fonts == other.fonts
+    }
+}
+
+impl std::fmt::Debug for TextInputLayout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextInputLayout")
+            .field("style", &self.style)
+            .field("content", &self.content)
+            .field("multiline", &self.multiline)
+            .field("scroll", &self.scroll)
+            .field("kept", &self.kept)
+            .field("fonts", &self.fonts)
+            .finish_non_exhaustive()
+    }
+}
+
+/// An owned layout for platform text queries, with displayed UTF-8 byte offsets (including
+/// marked text). A host may use it only while its document text still matches this frame.
+#[derive(Clone, PartialEq, Debug)]
+pub struct TextGeometry {
+    /// The text's origin in logical window coordinates, including its current scroll.
+    pub origin: (f32, f32),
+    pub lines: Vec<crate::kernel::text::VisualLine>,
+}
+
+impl TextGeometry {
+    /// The first line fragment of a displayed range: its actual byte range and logical
+    /// window rect. The actual range expands to available caret stops. An insertion point
+    /// has zero width; the host converts the rect to screen coordinates.
+    pub fn first_rect(&self, range: std::ops::Range<usize>) -> Option<(std::ops::Range<usize>, Rect)> {
+        let last = self.lines.last()?.end;
+        let start = range.start.min(range.end).min(last);
+        let end = range.start.max(range.end).min(last);
+        let index = self.lines.iter().rposition(|l| l.start <= start).unwrap_or(0);
+        let line = &self.lines[index];
+        let (s, x) = line.stops.iter().rev().find(|(b, _)| *b <= start).or(line.stops.first()).copied()?;
+        let (e, right) =
+            if start == end { (s, x) } else { line.stops.iter().find(|(b, _)| *b >= end.min(line.end)).or(line.stops.last()).copied()? };
+        // Line ranges omit their newline. Include that gap in a nonempty actual range so
+        // a caller iterating line fragments advances even across an otherwise empty line.
+        let e = if start != end && end > line.end {
+            self.lines.get(index + 1).filter(|next| next.start > line.end).map_or(e, |next| e.max(end.min(next.start)))
+        } else {
+            e
+        };
+        Some((s..e, Rect { x: self.origin.0 + x.min(right), y: self.origin.1 + line.top, w: (right - x).abs(), h: line.height }))
+    }
+
+    /// The displayed byte index nearest a point in logical window coordinates. Unlike an
+    /// editing caret's value offset, indices inside marked text are kept distinct.
+    pub fn index_at(&self, x: f32, y: f32) -> Option<usize> {
+        let line = self.lines.iter().rev().find(|l| l.top <= y - self.origin.1).or(self.lines.first())?;
+        let x = x - self.origin.0;
+        line.stops.iter().min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs())).map(|s| s.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{byte_offset, utf16_offset};
 
     #[test]
     fn reconversion_uses_displayed_ranges_and_preserves_the_original_until_commit() {
@@ -154,23 +220,5 @@ mod tests {
         assert_eq!(document.text(), "拼a你de>");
         assert_eq!(document.selection(), Some(0..3));
         assert_eq!(document.marked(), None, "unmark accepts the draft instead of cancelling it");
-    }
-
-    #[test]
-    fn utf16_surrogates_and_invalid_byte_ranges_are_clamped_without_splitting_text() {
-        let mut document = TextDocument::new("A😀Z".into(), 1, 5);
-        assert_eq!(byte_offset(document.text(), 2), 1, "the inside of a surrogate pair floors to its start");
-        document.apply(&TextEdit::Mark {
-            text: "中😀文".into(),
-            selection: Some(Range { start: usize::MAX, end: 4 }),
-            replacement: Some(Range { start: 4, end: 2 }),
-        });
-        assert_eq!(document.text(), "A中😀文😀Z");
-        assert_eq!(document.marked(), Some(1..11));
-        let selection = document.selection().unwrap();
-        assert_eq!(selection, 4..11);
-        assert_eq!(utf16_offset(document.text(), selection.start)..utf16_offset(document.text(), selection.end), 2..5);
-        document.apply(&TextEdit::Insert { text: "好".into(), replacement: Some(Range { start: usize::MAX, end: 4 }) });
-        assert_eq!(document.text(), "A中好");
     }
 }

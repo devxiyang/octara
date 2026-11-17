@@ -1,7 +1,7 @@
 //! The built-in themes keep their text readable: every text token on every surface it is used
 //! on meets WCAG's 4.5:1 (`octara check` judges apps by the same rule).
 
-use octara::kernel::{Theme, Token, contrast};
+use octara_primitives::theme::{Theme, Token, contrast};
 
 #[test]
 fn text_tokens_meet_wcag_on_their_surfaces() {

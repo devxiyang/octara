@@ -7,8 +7,7 @@
 //! - [`window`]: opening and closing windows from app code;
 //! - [`task`]: tasks, timers, channels and resources on the app clock;
 //! - [`platform`]: what the app needs from the system, and the headless platform;
-//! - [`paint`], [`path`], [`icon`], [`image`], [`canvas`], [`motion`], [`native`]: what is drawn
-//!   and how it moves;
+//! - [`octara_primitives`]: drawing, paths, images, theme values, motion and presentation protocols;
 //! - [`diagnostics`]: every reported problem's code, cause and fix;
 //! - [`inspect`] and [`capture`]: the semantic tree, scripts, checks and pictures agents drive an
 //!   app with.
@@ -21,20 +20,20 @@ pub use serde_json;
 
 pub mod app;
 pub mod ask;
-pub mod canvas;
+pub(crate) use octara_primitives::canvas;
 pub mod capture;
 pub mod conformance;
 pub mod diagnostics;
-pub mod icon;
+pub(crate) use octara_primitives::icon;
 mod identity;
-pub mod image;
+pub(crate) use octara_primitives::image;
 pub mod inspect;
 pub mod kernel;
 pub mod menu;
-pub mod motion;
-pub mod native;
-pub mod paint;
-pub mod path;
+pub(crate) use octara_primitives::motion;
+pub(crate) use octara_primitives::native;
+pub(crate) use octara_primitives::paint;
+pub(crate) use octara_primitives::path;
 pub mod platform;
 pub mod reactive;
 pub mod task;
@@ -44,20 +43,10 @@ pub mod window;
 pub mod prelude {
     pub use crate::app::{App, Drag, DragPhase, Event, InputEvent, Key, KeyEvent, Modifiers, Window};
     pub use crate::ask::{PathPromptOptions, PromptLevel, popup_menu, prompt, prompt_for_new_path, prompt_for_paths};
-    pub use crate::canvas::Canvas;
-    pub use crate::icon::Icon;
-    pub use crate::image::{Image, ObjectFit};
     pub use crate::kernel::select::Copied;
-    pub use crate::kernel::{
-        Align, BoxShadow, Breakpoint, Color, ContainerStep, Family, Fill, NumericRange, Paint, Placement, RadiusStep, Role, ShadowStep,
-        Side, State, TextStep, Theme, Token, linear_color_stop, linear_gradient, rgb,
-    };
+    pub use crate::kernel::{NumericRange, Role, State};
     pub use crate::menu::{Menu, MenuItem, set_menus};
-    pub use crate::motion::{Curve, Spring};
-    pub use crate::native::{NativeEvent, Slot};
-    pub use crate::paint::Rect;
-    pub use crate::path::{FillRule, LineCap, LineJoin, Path, Stroke, Transform, point};
-    pub use crate::platform::{ClipboardItem, CursorStyle};
+    pub use crate::platform::ClipboardItem;
     pub use crate::reactive::list::{ReadList, StateList, state_list};
     pub use crate::reactive::on_cleanup;
     pub use crate::reactive::text::{TextBuffer, text_buffer};
@@ -72,5 +61,18 @@ pub mod prelude {
     };
     pub use crate::window::{WindowId, WindowKind, WindowOptions, close_window, current_window, open_window, windows};
     pub use accesskit::Live;
+    pub use octara_primitives::canvas::Canvas;
+    pub use octara_primitives::icon::Icon;
+    pub use octara_primitives::image::{Image, ObjectFit};
+    pub use octara_primitives::input::CursorStyle;
+    pub use octara_primitives::layout::{Align, Placement, Side};
+    pub use octara_primitives::motion::{Curve, Spring};
+    pub use octara_primitives::native::{NativeEvent, Slot};
+    pub use octara_primitives::paint::Rect;
+    pub use octara_primitives::path::{FillRule, LineCap, LineJoin, Path, Stroke, Transform, point};
+    pub use octara_primitives::theme::{
+        BoxShadow, Breakpoint, Color, ContainerStep, Family, Fill, Paint, RadiusStep, ShadowStep, TextStep, Theme, Token,
+        linear_color_stop, linear_gradient, rgb,
+    };
     pub use serde_json::json;
 }

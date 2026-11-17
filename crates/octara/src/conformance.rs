@@ -5,8 +5,9 @@
 //! (opening a URL, a file dialog) is not among them.
 
 use crate::app::{App, InputEvent};
-use crate::platform::{ClipboardItem, CursorStyle, WindowOptions};
+use crate::platform::{ClipboardItem, WindowOptions};
 use crate::prelude::*;
+use octara_primitives::input::CursorStyle;
 
 /// One check's outcome.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]

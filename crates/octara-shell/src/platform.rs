@@ -4,9 +4,10 @@
 //! its frame clock.
 
 use super::{Shared, ShellEvent};
-use octara::paint::DisplayList;
-use octara::platform::{CursorStyle, Frame, Platform, PlatformWindow, TextInput};
+use octara::platform::{Frame, Platform, PlatformWindow, TextInput};
 use octara::serde_json::{Value, json};
+use octara_primitives::input::CursorStyle;
+use octara_primitives::paint::DisplayList;
 use octara_render::{GpuRenderer, wgpu};
 use std::any::Any;
 use std::cell::RefCell;
@@ -56,11 +57,11 @@ impl Platform for WinitPlatform {
             let _ = c.set_text(text);
         }
     }
-    fn read_image(&mut self) -> Option<octara::image::Image> {
+    fn read_image(&mut self) -> Option<octara_primitives::image::Image> {
         let i = self.clipboard.as_mut()?.get_image().ok()?;
-        Some(octara::image::Image::rgba(i.width as u32, i.height as u32, i.bytes.into_owned()))
+        Some(octara_primitives::image::Image::rgba(i.width as u32, i.height as u32, i.bytes.into_owned()))
     }
-    fn write_image(&mut self, image: &octara::image::Image) {
+    fn write_image(&mut self, image: &octara_primitives::image::Image) {
         let f = image.frame();
         let data = arboard::ImageData { width: f.width as usize, height: f.height as usize, bytes: std::borrow::Cow::Borrowed(&f.rgba) };
         if let Some(c) = &mut self.clipboard {
@@ -225,13 +226,13 @@ impl PlatformWindow for WindowHost {
     fn shows_ask(&self, ask: &octara::ask::Ask) -> bool {
         self.0.borrow().shows_ask(ask)
     }
-    fn shows_native(&self, kind: &str, slot: octara::native::Slot) -> bool {
+    fn shows_native(&self, kind: &str, slot: octara_primitives::native::Slot) -> bool {
         self.0.borrow().shows_native(kind, slot)
     }
-    fn snapshot_native(&mut self, id: octara::native::NativeId) -> Result<Vec<String>, String> {
+    fn snapshot_native(&mut self, id: octara_primitives::native::NativeId) -> Result<Vec<String>, String> {
         self.0.get_mut().snapshot_native(id)
     }
-    fn native_busy(&self, id: octara::native::NativeId) -> Option<String> {
+    fn native_busy(&self, id: octara_primitives::native::NativeId) -> Option<String> {
         self.0.borrow().native_busy(id)
     }
     fn as_any(&self) -> &dyn Any {
@@ -265,8 +266,8 @@ pub(crate) struct WinitWindow {
     /// Whether the focused field currently accepts input-method composition.
     ime_allowed: bool,
     /// Current logical field, and the field that enabled the native composition session.
-    input_owner: Option<octara::kernel::NodeId>,
-    ime_owner: Option<octara::kernel::NodeId>,
+    input_owner: Option<octara_primitives::identity::NodeId>,
+    ime_owner: Option<octara_primitives::identity::NodeId>,
     /// How the pointer looks.
     cursor_style: CursorStyle,
     /// The pointer, in logical pixels.
@@ -645,7 +646,7 @@ impl WinitWindow {
         }
         matches!(ask, octara::ask::Ask::Paths(_) | octara::ask::Ask::NewPath { .. })
     }
-    fn shows_native(&self, kind: &str, slot: octara::native::Slot) -> bool {
+    fn shows_native(&self, kind: &str, slot: octara_primitives::native::Slot) -> bool {
         #[cfg(target_os = "macos")]
         if self.host.is_some() {
             return super::native_mac::Host::shows(kind, slot);
@@ -653,7 +654,7 @@ impl WinitWindow {
         let _ = (kind, slot);
         false
     }
-    fn snapshot_native(&mut self, id: octara::native::NativeId) -> Result<Vec<String>, String> {
+    fn snapshot_native(&mut self, id: octara_primitives::native::NativeId) -> Result<Vec<String>, String> {
         #[cfg(target_os = "macos")]
         if let Some(host) = &self.host {
             return host.snapshot(id);
@@ -661,7 +662,7 @@ impl WinitWindow {
         let _ = id;
         Err("this platform takes no snapshots of native views yet".into())
     }
-    fn native_busy(&self, id: octara::native::NativeId) -> Option<String> {
+    fn native_busy(&self, id: octara_primitives::native::NativeId) -> Option<String> {
         #[cfg(target_os = "macos")]
         if let Some(host) = &self.host {
             return host.busy(id);

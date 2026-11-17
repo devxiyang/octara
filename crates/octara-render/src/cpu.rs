@@ -6,8 +6,8 @@ use crate::Bitmap;
 use crate::glyphs::{GlyphCache, SUBPIXEL_STEPS};
 use crate::paths::{self, PathCache};
 use crate::shape::{blend, blend_premultiplied, coverage, image_color, inner_rect, sd_round_rect, shadow_alpha};
-use octara::kernel::Color;
-use octara::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, Quad, Rect, Shadow};
+use octara_primitives::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, Quad, Rect, Shadow};
+use octara_primitives::theme::Color;
 
 /// A clip in device pixels.
 #[derive(Clone, Copy)]
@@ -292,12 +292,12 @@ fn quad(t: &mut Target, q: &Quad, scale: f32) {
     }
 }
 
-impl octara::capture::Painter for CpuRenderer {
+impl octara_primitives::capture::Painter for CpuRenderer {
     fn renderer(&self) -> &'static str {
         "reference"
     }
-    fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<octara::capture::Picture, String> {
+    fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<octara_primitives::capture::Picture, String> {
         let b = self.render(list, scale);
-        Ok(octara::capture::Picture { width: b.width, height: b.height, rgba: b.rgba })
+        Ok(octara_primitives::capture::Picture { width: b.width, height: b.height, rgba: b.rgba })
     }
 }

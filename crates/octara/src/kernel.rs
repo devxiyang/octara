@@ -19,10 +19,12 @@ pub mod rich;
 pub mod select;
 pub mod style;
 pub mod text;
-pub mod theme;
+mod text_input;
+pub(crate) use octara_primitives::theme;
 
+pub(crate) use octara_primitives::identity::NodeId;
 use rustc_hash::FxHashMap;
-use slotmap::{SlotMap, new_key_type};
+use slotmap::SlotMap;
 use std::cell::{Cell, RefCell};
 use std::fmt::Write as _;
 use std::rc::Rc;
@@ -33,156 +35,19 @@ pub use accesskit::Role;
 pub use edit::floor_boundary;
 pub use focus::Arrow;
 pub use issues::LayoutIssue;
+pub(crate) use octara_primitives::theme::BoxShadow;
 pub use select::Address;
-pub use style::{BoxShadow, Dirty, FontSize, GridPos, Length, LineHeight, Motion, Radius, Shadows, State, StyleProp, Visual, When};
+pub use style::{Dirty, FontSize, GridPos, Length, LineHeight, Motion, Radius, Shadows, State, StyleProp, Visual, When};
 pub use taffy::{AlignItems, Dimension, Display, FlexDirection, FlexWrap, JustifyContent, LengthPercentageAuto, Overflow, Position};
-pub use theme::{
-    Breakpoint, Color, ColorStop, ContainerStep, Family, Fill, LinearGradient, MISSING, Paint, RadiusStep, ShadowStep, TextStep, Theme,
-    Token, contrast, linear_color_stop, linear_gradient, rgb,
-};
-
-new_key_type! {
-    /// A node handle; a destroyed node's handle never aliases a new node.
-    pub struct NodeId;
-}
+pub use text_input::{TextDocument, TextGeometry, TextInputLayout};
+pub(crate) use theme::{Breakpoint, Color, ContainerStep, Family, Fill, Paint, RadiusStep, ShadowStep, TextStep, Theme, Token, rgb};
 
 fn hex(c: Color) -> String {
     let c = c.to_rgba8();
     if c.a == 255 { format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b) } else { format!("#{:02x}{:02x}{:02x}{:02x}", c.r, c.g, c.b, c.a) }
 }
 
-/// Which side of its anchor an overlay opens on.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Side {
-    Top,
-    Bottom,
-    Left,
-    Right,
-}
-
-impl Side {
-    fn opposite(self) -> Side {
-        match self {
-            Side::Top => Side::Bottom,
-            Side::Bottom => Side::Top,
-            Side::Left => Side::Right,
-            Side::Right => Side::Left,
-        }
-    }
-}
-
-/// How an overlay lines up with its anchor along the other axis.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Align {
-    Start,
-    Center,
-    End,
-}
-
-/// Where an overlay goes relative to its anchor (as Rune's `anchored`). It opens on `side`,
-/// flips to the opposite one when it does not fit there, and stays `margin` inside the window.
-/// With `fit`, it is also limited to the room on its side and scrolls the rest (Rune's
-/// `anchored_fit`, Floating UI's `size`), instead of being pushed over its anchor.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Placement {
-    pub side: Side,
-    pub align: Align,
-    /// Distance from the anchor.
-    pub gap: f32,
-    /// Minimum distance from the window's edges (8, as in Rune).
-    pub margin: f32,
-    /// Limit the size to the room available and scroll the content.
-    pub fit: bool,
-}
-
-/// Where the last layout put an overlay.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Placed {
-    pub x: f32,
-    pub y: f32,
-    pub side: Side,
-    /// The size limit along the side's axis (with `fit`).
-    pub limit: Option<f32>,
-    /// It fits neither side and was pushed into the window (without `fit`).
-    pub clamped: bool,
-}
-
-impl Placement {
-    /// Below the anchor, left edges aligned, limited to the room below or above (menus, selects).
-    pub const BELOW: Placement = Placement { side: Side::Bottom, align: Align::Start, gap: 4.0, margin: 8.0, fit: true };
-    /// Above the anchor, centered (tooltips).
-    pub const ABOVE: Placement = Placement { side: Side::Top, align: Align::Center, gap: 4.0, margin: 8.0, fit: false };
-    /// To the right, top edges aligned (submenus).
-    pub const RIGHT: Placement = Placement { side: Side::Right, align: Align::Start, gap: 0.0, margin: 8.0, fit: true };
-
-    pub const fn side(self, side: Side) -> Self {
-        Placement { side, ..self }
-    }
-    pub const fn align(self, align: Align) -> Self {
-        Placement { align, ..self }
-    }
-    pub const fn gap(self, gap: f32) -> Self {
-        Placement { gap, ..self }
-    }
-    pub const fn margin(self, margin: f32) -> Self {
-        Placement { margin, ..self }
-    }
-    pub const fn fit(self, fit: bool) -> Self {
-        Placement { fit, ..self }
-    }
-
-    /// Room for the overlay on `side` of anchor `a` in viewport `vp`, and the overlay's extent
-    /// along that axis.
-    fn room(self, side: Side, a: (f32, f32, f32, f32), size: (f32, f32), vp: (f32, f32)) -> (f32, f32) {
-        let (ax, ay, aw, ah) = a;
-        let m = self.margin;
-        match side {
-            Side::Bottom => (vp.1 - m - (ay + ah + self.gap), size.1),
-            Side::Top => (ay - self.gap - m, size.1),
-            Side::Right => (vp.0 - m - (ax + aw + self.gap), size.0),
-            Side::Left => (ax - self.gap - m, size.0),
-        }
-    }
-
-    /// Places an overlay of natural `size` next to anchor rect `a` in viewport `vp`.
-    pub fn place(self, a: (f32, f32, f32, f32), size: (f32, f32), vp: (f32, f32)) -> Placed {
-        let (ax, ay, aw, ah) = a;
-        let opp = self.side.opposite();
-        let (room, extent) = self.room(self.side, a, size, vp);
-        let (room_opp, _) = self.room(opp, a, size, vp);
-        let fits = |r: f32| r >= extent;
-        // The requested side if it fits, else the opposite if that fits, else the roomier one.
-        let side = if fits(room) || (!fits(room_opp) && room >= room_opp) { self.side } else { opp };
-        let room_side = if side == self.side { room } else { room_opp };
-        let neither = !fits(room) && !fits(room_opp);
-        let limit = (self.fit && neither).then_some(room_side.max(0.0));
-        let (mut w, mut h) = size;
-        if let Some(l) = limit {
-            match side {
-                Side::Top | Side::Bottom => h = l,
-                Side::Left | Side::Right => w = l,
-            }
-        }
-        let main = match side {
-            Side::Bottom => ay + ah + self.gap,
-            Side::Top => ay - self.gap - h,
-            Side::Right => ax + aw + self.gap,
-            Side::Left => ax - self.gap - w,
-        };
-        let m = self.margin;
-        let clamp = |v: f32, len: f32, max: f32| v.min(max - m - len).max(m);
-        let cross = |start: f32, alen: f32, len: f32| match self.align {
-            Align::Start => start,
-            Align::Center => start + (alen - len) / 2.0,
-            Align::End => start + alen - len,
-        };
-        let (x, y) = match side {
-            Side::Top | Side::Bottom => (clamp(cross(ax, aw, w), w, vp.0), clamp(main, h, vp.1)),
-            Side::Left | Side::Right => (clamp(main, w, vp.0), clamp(cross(ay, ah, h), h, vp.1)),
-        };
-        Placed { x, y, side, limit, clamped: neither && !self.fit }
-    }
-}
+pub(crate) use octara_primitives::layout::{Align, Placed, Placement, Side};
 
 // ---------------------------------------------------------------------------------------------
 // Nodes
@@ -398,7 +263,7 @@ struct Node {
     /// Copies the selected part of it as Markdown (`copy_markdown`).
     copy_markdown: Option<select::CopyMarkdown>,
     /// How the pointer looks over it (else as its kind and ancestors say).
-    cursor: Option<crate::platform::CursorStyle>,
+    cursor: Option<octara_primitives::input::CursorStyle>,
     /// Its level (a heading's, a list item's nesting), for assistive technology.
     level: Option<u8>,
     /// How assistive technology announces its changes (a live region).
@@ -518,7 +383,7 @@ struct TextContent {
 #[derive(Default)]
 struct InputContent {
     value: String,
-    composition: Option<crate::app::Composition>,
+    composition: Option<text_input::Composition>,
     selection: (usize, usize),
     /// How far the text is scrolled: x for a single line, y for a multi-line field.
     scroll: Cell<f32>,
@@ -1416,14 +1281,14 @@ impl Kernel {
 
     // ---- content and semantics ----
 
-    pub fn set_cursor(&mut self, id: NodeId, cursor: crate::platform::CursorStyle) {
+    pub fn set_cursor(&mut self, id: NodeId, cursor: octara_primitives::input::CursorStyle) {
         self.node_mut(id).cursor = Some(cursor);
     }
 
     /// How the pointer looks over `id` (the node it is on): the nearest style set on it or an
     /// ancestor; else a text field's or selectable text's I-beam, a link's hand, an arrow.
-    pub fn cursor_over(&self, id: NodeId) -> crate::platform::CursorStyle {
-        use crate::platform::CursorStyle;
+    pub fn cursor_over(&self, id: NodeId) -> octara_primitives::input::CursorStyle {
+        use octara_primitives::input::CursorStyle;
         let mut n = Some(id);
         while let Some(a) = n {
             if let Some(c) = self.node(a).cursor {
@@ -1531,7 +1396,11 @@ impl Kernel {
 
     pub(crate) fn set_preedit_selection(&mut self, id: NodeId, text: &str, selection: Option<(usize, usize)>) -> bool {
         let Some(mut document) = self.text_document(id) else { return false };
-        document.apply(&crate::app::TextEdit::Mark { text: text.to_owned(), selection: selection.map(|(a, b)| a..b), replacement: None });
+        document.apply(&octara_primitives::text::TextEdit::Mark {
+            text: text.to_owned(),
+            selection: selection.map(|(a, b)| a..b),
+            replacement: None,
+        });
         self.set_composition(id, document.composition)
     }
     pub fn preedit(&self, id: NodeId) -> &str {
@@ -1543,15 +1412,15 @@ impl Kernel {
         c.selection.as_ref().map(|s| s.start.saturating_sub(c.marked.start)..s.end.saturating_sub(c.marked.start))
     }
 
-    pub(crate) fn text_document(&self, id: NodeId) -> Option<crate::app::TextDocument> {
+    pub(crate) fn text_document(&self, id: NodeId) -> Option<TextDocument> {
         let i = self.node(id).input()?;
         let (anchor, caret) = self.selection(id);
-        let mut document = crate::app::TextDocument::new(i.value.clone(), anchor, caret);
+        let mut document = TextDocument::new(i.value.clone(), anchor, caret);
         document.composition = i.composition.clone();
         Some(document)
     }
 
-    pub(crate) fn set_composition(&mut self, id: NodeId, composition: Option<crate::app::Composition>) -> bool {
+    pub(crate) fn set_composition(&mut self, id: NodeId, composition: Option<text_input::Composition>) -> bool {
         let Some(i) = self.node_mut(id).input_mut() else { return false };
         let composition = composition.filter(|_| !i.secure);
         if i.composition == composition {
@@ -2102,7 +1971,7 @@ impl Kernel {
         }
         self.restyle_runs();
     }
-    /// Custom tokens styles use but the theme does not define (drawn as [`MISSING`]).
+    /// Custom tokens styles use but the theme does not define (drawn as [`MISSING`](octara_primitives::theme::MISSING)).
     pub fn missing_tokens(&self) -> Vec<&'static str> {
         let mut v: Vec<_> = self.missing_tokens.values().flatten().copied().collect();
         v.sort();

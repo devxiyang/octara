@@ -8,8 +8,8 @@
 //! rasterized only where it shows.
 
 use crate::glyphs::SUBPIXEL_STEPS;
-use octara::paint::PathPaint;
-use octara::path::{FillRule, LineCap, LineJoin, PathCommand, PathStyle, Transform};
+use octara_primitives::paint::PathPaint;
+use octara_primitives::path::{FillRule, LineCap, LineJoin, PathCommand, PathStyle, Transform};
 use rustc_hash::{FxHashMap, FxHasher};
 use std::hash::{Hash, Hasher};
 use swash::zeno;
@@ -45,11 +45,11 @@ pub struct PathMask {
     pub data: Vec<u8>,
 }
 
-fn zpoint(v: octara::path::Point) -> zeno::Point {
+fn zpoint(v: octara_primitives::path::Point) -> zeno::Point {
     zeno::Point::new(v.x, v.y)
 }
 
-fn kpoint(v: octara::path::Point) -> kurbo::Point {
+fn kpoint(v: octara_primitives::path::Point) -> kurbo::Point {
     kurbo::Point::new(v.x as f64, v.y as f64)
 }
 
@@ -148,7 +148,7 @@ pub fn place(p: &PathPaint, scale: f32, window: (f32, f32, f32, f32)) -> Option<
     let b = p.path.bounds()?;
     let corners = [(b.x, b.y), (b.right(), b.y), (b.x, b.bottom()), (b.right(), b.bottom())];
     let lt = Transform { x: local.x, y: local.y, ..t };
-    let pts = corners.map(|(x, y)| lt.apply(octara::path::point(x, y)));
+    let pts = corners.map(|(x, y)| lt.apply(octara_primitives::path::point(x, y)));
     let grow = match &p.style {
         PathStyle::Fill(_) => 0.0,
         PathStyle::Stroke(s) => s.reach() * stretch(&t),

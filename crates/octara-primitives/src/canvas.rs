@@ -1,39 +1,13 @@
-//! Canvas: a drawing built by a closure, as data.
+//! Recorded drawing commands in local coordinates.
 //!
-//! [`canvas`](crate::view::canvas)`(move |c| ..)` is an element whose drawing a closure records
-//! into a [`Canvas`]: paths filled or stroked, rectangles, text, images, under scoped transforms
-//! and clips, in the element's own coordinates (its content box, `(0, 0)` to
-//! [`size`](Canvas::size)). The closure is a binding: it reruns only when what it reads (signals,
-//! the element's size) changes, and the recording is kept as plain data ([`CanvasOp`]) that tests
-//! can compare. Nothing redraws per frame unless something changed (Rune's declarative canvas,
-//! Exact's recorder; not GPUI's per-frame paint closures).
-//!
-//! ```
-//! use octara::prelude::*;
-//!
-//! fn meter() -> View {
-//!     let level = state("level", || 0.6);
-//!     canvas(move |c| {
-//!         let (w, h) = c.size();
-//!         c.fill(&Path::rounded_rect(Rect::new(0.0, 0.0, w, h), h / 2.0), Token::Surface);
-//!         c.fill(&Path::rounded_rect(Rect::new(0.0, 0.0, w * level.get(), h), h / 2.0), Token::Accent);
-//!     })
-//!     .w(200)
-//!     .h(8)
-//!     .label("Level")
-//!     .into()
-//! }
-//! # let app = Window::headless(meter);
-//! # assert_eq!(app.kernel().canvas(app.kernel().find_by_name("Level")[0]).unwrap().len(), 2);
-//! ```
-//!
-//! A canvas is an image to assistive technology: give it a `label` (`check` reports a visible
-//! canvas without one, `UNLABELED_CANVAS`), or `a11y_hidden()` when it is decoration.
+//! A Canvas records paths, images and text without a window or reactive runtime.
+//! The UI layer supplies its size and decides when to record it again.
 
 use crate::image::Image;
-use crate::kernel::{Align, Fill, Paint};
+use crate::layout::Align;
 use crate::paint::Rect;
 use crate::path::{FillRule, Path, PathStyle, Point, Stroke, Transform, point};
+use crate::theme::{Fill, Paint};
 
 /// One recorded drawing step, in the canvas's coordinates (`transform` maps the path's).
 #[derive(Clone, PartialEq, Debug)]

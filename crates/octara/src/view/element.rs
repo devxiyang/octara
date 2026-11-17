@@ -349,7 +349,7 @@ pub struct El {
     level: Option<u8>,
     live: Option<accesskit::Live>,
     copy_markdown: Option<crate::kernel::select::CopyMarkdown>,
-    cursor: Option<crate::platform::CursorStyle>,
+    cursor: Option<octara_primitives::input::CursorStyle>,
     follow_tail: bool,
     select_none: bool,
     overlays: Vec<Overlay>,
@@ -717,29 +717,29 @@ impl El {
         self
     }
     /// How the pointer looks over it and its descendants (unless one sets its own).
-    pub fn cursor(mut self, style: crate::platform::CursorStyle) -> Self {
+    pub fn cursor(mut self, style: octara_primitives::input::CursorStyle) -> Self {
         self.cursor = Some(style);
         self
     }
     /// The pointing hand (a link's look; native buttons keep the arrow).
     pub fn cursor_pointer(self) -> Self {
-        self.cursor(crate::platform::CursorStyle::PointingHand)
+        self.cursor(octara_primitives::input::CursorStyle::PointingHand)
     }
     /// The I-beam, as over text.
     pub fn cursor_text(self) -> Self {
-        self.cursor(crate::platform::CursorStyle::IBeam)
+        self.cursor(octara_primitives::input::CursorStyle::IBeam)
     }
     /// The arrow (over selectable text or a field inside it too).
     pub fn cursor_default(self) -> Self {
-        self.cursor(crate::platform::CursorStyle::Arrow)
+        self.cursor(octara_primitives::input::CursorStyle::Arrow)
     }
     /// The open hand (something to drag).
     pub fn cursor_grab(self) -> Self {
-        self.cursor(crate::platform::CursorStyle::OpenHand)
+        self.cursor(octara_primitives::input::CursorStyle::OpenHand)
     }
     /// The closed hand (dragging it).
     pub fn cursor_grabbing(self) -> Self {
-        self.cursor(crate::platform::CursorStyle::ClosedHand)
+        self.cursor(octara_primitives::input::CursorStyle::ClosedHand)
     }
     /// Its level for assistive technology: a heading's (1 to 6), a list item's nesting.
     pub fn level(mut self, level: u8) -> Self {

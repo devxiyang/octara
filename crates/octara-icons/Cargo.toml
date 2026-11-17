@@ -9,8 +9,9 @@ publish.workspace = true
 # The icons themselves are under the ISC license (some under MIT, from Feather): LICENSE-LUCIDE.
 
 [dependencies]
-octara.workspace = true
+octara-primitives.workspace = true
 
 [dev-dependencies]
+octara.workspace = true
 octara-render = { workspace = true, default-features = false }
 serde_json.workspace = true

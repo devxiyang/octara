@@ -1,6 +1,8 @@
 //! Style properties as written (lengths in theme steps or pixels, colors as tokens) and their
 //! resolution against a [`Theme`] into Taffy layout and a [`Visual`].
 
+pub(crate) use octara_primitives::theme::BoxShadow;
+
 use super::text::{TextStyle, Wrap};
 use super::theme::{Breakpoint, Color, ContainerStep, Family, Fill, Paint, RadiusStep, TextStep, Theme, Token};
 use bitflags::bitflags;
@@ -179,29 +181,6 @@ pub enum LineHeight {
     Len(Length),
     /// A multiple of the font size (`line_height(relative(1.5))`).
     Relative(f32),
-}
-
-/// A drop shadow (GPUI's `BoxShadow`). As in CSS (and Rune), `blur_radius` is twice the
-/// Gaussian's standard deviation; `spread_radius` grows (or, negative, shrinks) the shape.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct BoxShadow {
-    pub color: Color,
-    pub offset: (f32, f32),
-    pub blur_radius: f32,
-    pub spread_radius: f32,
-}
-
-impl BoxShadow {
-    /// A sharp shadow offset by `(x, y)`.
-    pub fn new(x: f32, y: f32, color: Color) -> Self {
-        BoxShadow { color, offset: (x, y), blur_radius: 0.0, spread_radius: 0.0 }
-    }
-    pub fn blur_radius(self, r: f32) -> Self {
-        BoxShadow { blur_radius: r.max(0.0), ..self }
-    }
-    pub fn spread_radius(self, r: f32) -> Self {
-        BoxShadow { spread_radius: r, ..self }
-    }
 }
 
 /// Shadows as written: none, a theme step, or up to four of the element's own.

@@ -26,7 +26,7 @@ fn specialized_configuration_requires_matching_content() {
     rejected("secure", || el().secure());
     rejected("revealed", || el().revealed(|| panic!("a rejected binding must not run")));
     rejected("props", || el().props(|| panic!("a rejected binding must not run")));
-    rejected("slot", || el().slot(octara::native::Slot::Underlay));
+    rejected("slot", || el().slot(octara_primitives::native::Slot::Underlay));
     rejected("on_native", || el().on_native(|_| {}));
     rejected("stroke_width", || el().stroke_width(1.0));
     rejected("object_fit", || el().object_fit(ObjectFit::Cover));

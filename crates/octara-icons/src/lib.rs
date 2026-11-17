@@ -14,7 +14,7 @@
 //! them all. Generated from lucide-static [`VERSION`] (see `examples/generate.rs`); the icons are
 //! ISC licensed, some MIT from Feather (`LICENSE-LUCIDE`).
 
-pub use octara::icon::Icon;
+pub use octara_primitives::icon::Icon;
 
 // Generated, one icon per line: rustfmt would spread it over ten times the lines.
 #[rustfmt::skip]

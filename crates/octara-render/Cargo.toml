@@ -14,10 +14,13 @@ gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
 
 [dependencies]
 bytemuck = { workspace = true, optional = true }
-octara.workspace = true
+octara-primitives.workspace = true
 pollster = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 png.workspace = true
 rustc-hash.workspace = true
 swash.workspace = true
 kurbo.workspace = true
+
+[dev-dependencies]
+octara.workspace = true

@@ -83,7 +83,7 @@ fn main() {
         });
         app.resize(720.0, 520.0);
         app.app().set_theme(theme);
-        shots.push(octara_render::screenshot(&app, 2.0));
+        shots.push(octara_render::CpuRenderer::new().render(&app.display_list(), 2.0));
     }
     // Light above dark.
     let (w, h) = (shots[0].width, shots[0].height);

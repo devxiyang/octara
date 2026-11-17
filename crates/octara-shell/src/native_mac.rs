@@ -37,9 +37,9 @@ use objc2_map_kit::{
 };
 use objc2_quartz_core::{CAMetalLayer, CATransaction};
 use objc2_web_kit::{WKNavigation, WKNavigationDelegate, WKSnapshotConfiguration, WKWebView, WKWebViewConfiguration};
-use octara::image::Image;
-use octara::native::{NativeChange, NativeEvent, NativeId, Placement, Slot};
-use octara::paint::Rect;
+use octara_primitives::image::Image;
+use octara_primitives::native::{NativeChange, NativeEvent, NativeId, Placement, Slot};
+use octara_primitives::paint::Rect;
 use octara_render::wgpu;
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
@@ -824,7 +824,7 @@ impl Native {
 
     /// The window server's picture of the window's content (what the user sees, native views
     /// live), straight RGBA at the window's backing scale; `Err` says why there is none.
-    pub(crate) fn window_picture(&self) -> Result<octara::capture::Picture, String> {
+    pub(crate) fn window_picture(&self) -> Result<octara_primitives::capture::Picture, String> {
         if screen_locked() {
             return Err("the screen is locked: the window server draws no window".into());
         }
@@ -853,7 +853,7 @@ impl Native {
         }
         let ns = NSImage::initWithCGImage_size(NSImage::alloc(), &image, screen.size);
         let (width, height, rgba) = pixels(&ns, scale).ok_or("the picture could not be read")?;
-        Ok(octara::capture::Picture { width, height, rgba })
+        Ok(octara_primitives::capture::Picture { width, height, rgba })
     }
 
     /// After the present: commits the transaction.
