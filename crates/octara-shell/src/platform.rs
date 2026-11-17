@@ -4,7 +4,7 @@
 //! its frame clock.
 
 use super::{Shared, ShellEvent};
-use octara::platform::{Frame, Platform, PlatformWindow, TextInput};
+use octara::platform::{Frame, NativeSnapshotRequest, Platform, PlatformWindow, TextInput};
 use octara::serde_json::{Value, json};
 use octara_primitives::input::CursorStyle;
 use octara_primitives::paint::DisplayList;
@@ -229,8 +229,8 @@ impl PlatformWindow for WindowHost {
     fn shows_native(&self, kind: &str, slot: octara_primitives::native::Slot) -> bool {
         self.0.borrow().shows_native(kind, slot)
     }
-    fn snapshot_native(&mut self, id: octara_primitives::native::NativeId) -> Result<Vec<String>, String> {
-        self.0.get_mut().snapshot_native(id)
+    fn snapshot_native(&mut self, request: NativeSnapshotRequest) -> Result<Vec<String>, String> {
+        self.0.get_mut().snapshot_native(request)
     }
     fn native_busy(&self, id: octara_primitives::native::NativeId) -> Option<String> {
         self.0.borrow().native_busy(id)
@@ -654,12 +654,12 @@ impl WinitWindow {
         let _ = (kind, slot);
         false
     }
-    fn snapshot_native(&mut self, id: octara_primitives::native::NativeId) -> Result<Vec<String>, String> {
+    fn snapshot_native(&mut self, request: NativeSnapshotRequest) -> Result<Vec<String>, String> {
         #[cfg(target_os = "macos")]
         if let Some(host) = &self.host {
-            return host.snapshot(id);
+            return host.snapshot(request);
         }
-        let _ = id;
+        let _ = request;
         Err("this platform takes no snapshots of native views yet".into())
     }
     fn native_busy(&self, id: octara_primitives::native::NativeId) -> Option<String> {

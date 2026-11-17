@@ -259,7 +259,7 @@ pub(crate) struct WindowState {
     settled_generation: Cell<Option<u64>>,
     /// Frames presented to the platform window.
     frames: Cell<u64>,
-    /// A capture in progress: the snapshots asked for.
+    /// The active painted capture and its native responses.
     capturing: RefCell<Option<crate::capture::Capturing>>,
     /// Picking an element to hand to an agent.
     picking: RefCell<pick::Picking>,
@@ -322,6 +322,9 @@ fn enter_app_context<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
         if app.failed.get() {
             for window in app.windows.borrow().values() {
                 window.settled_generation.set(None);
+                if let Ok(mut capture) = window.capturing.try_borrow_mut() {
+                    capture.take();
+                }
                 if let Ok(mut kernel) = window.kernel.try_borrow_mut() {
                     kernel.cancel_pending_edits();
                 }
@@ -909,6 +912,7 @@ impl AppState {
         if w.closed.replace(true) {
             return false;
         }
+        w.capturing.borrow_mut().take();
         if let Some(scope) = w.root_scope.get() {
             self.rt.retire_scope_tree(scope);
         }
@@ -930,6 +934,7 @@ impl AppState {
     fn close(self: &Rc<Self>, id: WindowId) {
         let Some(w) = self.handle(id) else { return };
         w.w.closed.set(true);
+        w.w.capturing.borrow_mut().take();
         if let Some(s) = w.w.root_scope.get() {
             w.enter(|| self.rt.dispose_scope(s));
             w.w.root_scope.set(None);
@@ -1229,6 +1234,9 @@ impl Window {
         self.w.scale.get()
     }
     pub(crate) fn on_resize(&mut self, width: f32, height: f32, scale: f32) {
+        if self.size() != (width, height) || self.scale() != scale {
+            self.capture_resized();
+        }
         self.w.scale.set(scale);
         self.w.size.set((width, height));
         self.enter(|| {
@@ -1311,16 +1319,15 @@ impl Window {
         }
     }
     /// What the current frame draws, in order (see [`crate::paint`]).
-    pub fn display_list(&self) -> std::rc::Rc<crate::paint::DisplayList> {
-        let list = self.w.kernel.borrow().display_list();
-        match self.picking_overlay() {
-            Some(over) => {
-                let mut list = (*list).clone();
-                list.parts.extend(over.into_iter().map(crate::paint::Part::Item));
-                std::rc::Rc::new(list)
-            }
-            None => list,
+    pub fn display_list(&self) -> Rc<crate::paint::DisplayList> {
+        self.with_picking_overlay(self.w.kernel.borrow().display_list())
+    }
+
+    fn with_picking_overlay(&self, mut list: Rc<crate::paint::DisplayList>) -> Rc<crate::paint::DisplayList> {
+        if let Some(over) = self.picking_overlay() {
+            Rc::make_mut(&mut list).parts.extend(over.into_iter().map(crate::paint::Part::Item));
         }
+        list
     }
     /// Read the retained tree and its measurements. Update UI through state and events.
     pub fn kernel(&self) -> Ref<'_, Kernel> {
@@ -1427,6 +1434,7 @@ impl Window {
         if self.is_closed() || self.w.root_scope.get().is_none() {
             return;
         }
+        self.w.capturing.borrow_mut().take();
         self.enter(|| {
             self.w.kernel.borrow_mut().advance_identity();
             let modals = self.save_modals();

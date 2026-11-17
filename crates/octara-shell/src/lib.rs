@@ -639,8 +639,8 @@ impl Shell {
                         for (id, event) in events {
                             w.event(InputEvent::Native { id, event });
                         }
-                        for (id, image) in snapshots {
-                            w.event(InputEvent::NativeSnapshot { id, image });
+                        for (request, image) in snapshots {
+                            w.event(InputEvent::NativeSnapshot { request, image });
                         }
                     }
                 }
@@ -710,7 +710,7 @@ impl Shell {
         let root = self.root.take().expect("root view");
         let app = App::with_config(platform::WinitPlatform::new(self.shared.clone()), self.config.take().expect("initial App config"));
         let mut w = app.open_window(self.window_options.clone(), root).expect("the window");
-        self.capture = capture::Job::from_env(&self.shared.proxy);
+        self.capture = capture::Job::from_env(w.id(), &self.shared.proxy);
         if std::env::var("OCTARA_PICK").is_ok_and(|v| v == "1") {
             w.set_picking(true);
         }

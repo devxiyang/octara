@@ -8,7 +8,8 @@
 //! stated `fallback` where there is none.
 
 use super::{Shell, ShellEvent};
-use octara::capture::Pixels;
+use octara::app::{Window, WindowId};
+use octara::capture::{CaptureId, Pixels};
 use octara_primitives::capture::{Painter, Picture};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,7 +45,6 @@ pub(crate) fn validate_size(size: (f32, f32), scale: f32) -> Result<(), String> 
 }
 
 /// Validate at paint time: the window can resize while native snapshots are pending.
-/// Going through capture_finish even on failure also clears those snapshots.
 struct CapturePainter<'a> {
     renderer: Option<&'a mut dyn Painter>,
     bounded: bool,
@@ -65,7 +65,7 @@ impl Painter for CapturePainter<'_> {
 
 /// A capture in progress.
 pub(crate) struct Job {
-    window: Option<octara::app::WindowId>,
+    window: WindowId,
     path: String,
     settle: Duration,
     scroll: Option<f32>,
@@ -87,7 +87,8 @@ enum Stage {
         pending: Vec<String>,
     },
     Snapshots {
-        until: Instant,
+        window: Window,
+        id: CaptureId,
         pending: Vec<String>,
         fallback: Option<String>,
     },
@@ -99,11 +100,11 @@ fn env<T: std::str::FromStr>(name: &str) -> Option<T> {
 
 impl Job {
     /// The capture `OCTARA_CAPTURE` asks for, if any; a thread wakes the loop to drive it.
-    pub(crate) fn from_env(proxy: &winit::event_loop::EventLoopProxy<ShellEvent>) -> Option<Job> {
+    pub(crate) fn from_env(window: WindowId, proxy: &winit::event_loop::EventLoopProxy<ShellEvent>) -> Option<Job> {
         let path = std::env::var("OCTARA_CAPTURE").ok()?;
         let after = Duration::from_millis(env("OCTARA_CAPTURE_AFTER_MS").unwrap_or(300));
         Some(Job {
-            window: None,
+            window,
             path,
             settle: Duration::from_millis(env("OCTARA_CAPTURE_SETTLE_MS").unwrap_or(5000)),
             scroll: env("OCTARA_CAPTURE_SCROLL"),
@@ -116,7 +117,7 @@ impl Job {
     }
 
     pub(crate) fn live(
-        window: octara::app::WindowId,
+        window: WindowId,
         path: String,
         settle: Duration,
         scale: Option<f32>,
@@ -125,7 +126,7 @@ impl Job {
         proxy: &winit::event_loop::EventLoopProxy<ShellEvent>,
     ) -> Self {
         Self {
-            window: Some(window),
+            window,
             path,
             settle,
             scroll: None,
@@ -135,6 +136,12 @@ impl Job {
             reply: Some(reply),
             waking: wake(proxy, Duration::ZERO),
         }
+    }
+
+    fn begin_snapshots(&mut self, window: &mut Window, pending: Vec<String>, fallback: Option<String>) -> Result<(), String> {
+        let id = window.capture_begin(Instant::now() + SNAPSHOT_LIMIT)?;
+        self.stage = Stage::Snapshots { window: window.clone(), id, pending, fallback };
+        Ok(())
     }
 }
 
@@ -157,41 +164,39 @@ fn wake(proxy: &winit::event_loop::EventLoopProxy<ShellEvent>, after: Duration) 
 impl Drop for Job {
     fn drop(&mut self) {
         self.waking.store(false, Ordering::Relaxed);
+        if let Stage::Snapshots { window, id, .. } = &self.stage {
+            window.capture_cancel(*id);
+        }
     }
 }
 
 impl Shell {
-    /// One step of the capture in progress (of the first window).
+    /// One step of the capture in progress.
     pub(crate) fn capture_step(&mut self) {
         let Some(mut job) = self.capture.take() else { return };
         self.tick();
         if let Some(app) = &self.app {
             app.poll();
         }
-        let window = match job.window {
-            Some(id) => self.app.as_ref().and_then(|app| app.window(id)),
-            None => self.main_window(),
-        };
-        let Some(mut w) = window else {
+        if job.reply.as_ref().is_some_and(|reply| !reply.connected.load(Ordering::Relaxed)) {
+            return;
+        }
+        let Some(mut w) = self.app.as_ref().and_then(|app| app.window(job.window)) else {
+            let message = "the target window closed while capturing";
             if let Some(reply) = job.reply.take() {
                 let (code, message) = if reply.target_current() {
-                    (&octara::diagnostics::CAPTURE_FAILED, "the target window closed while capturing")
+                    (&octara::diagnostics::CAPTURE_FAILED, message)
                 } else {
                     (&octara::diagnostics::STALE_TARGET, "the observed window closed while capturing; inspect again")
                 };
                 reply.send(octara::inspect::Reply::fail(code, message));
             } else {
-                self.capture = Some(job);
+                eprintln!("octara-shell: capture {}: {message}", job.path);
+                self.done = true;
             }
             return;
         };
         if job.reply.as_ref().is_some_and(|reply| !reply.target_current()) {
-            // Finish through a painter that cannot write a picture, so any outstanding
-            // native snapshots are cleared without saving pixels from the replacement tree.
-            if matches!(job.stage, Stage::Snapshots { .. }) {
-                let mut painter = CapturePainter { renderer: None, bounded: true };
-                let _ = w.capture_finish(&mut painter, &job.path, 1.0, Vec::new(), None);
-            }
             if let Some(reply) = job.reply.take() {
                 reply.send(octara::inspect::Reply::fail(
                     &octara::diagnostics::STALE_TARGET,
@@ -230,8 +235,10 @@ impl Shell {
                 self.capture = Some(job);
                 return;
             }
-            w.capture_begin();
-            job.stage = Stage::Snapshots { until: now + SNAPSHOT_LIMIT, pending, fallback: None };
+            if let Err(why) = job.begin_snapshots(&mut w, pending, None) {
+                self.report(&w, Err(why), job);
+                return;
+            }
         }
         if let Stage::Display { at, ref pending } = job.stage {
             if now < at {
@@ -257,13 +264,15 @@ impl Shell {
                     return;
                 }
                 Err(why) => {
-                    w.capture_begin();
-                    job.stage = Stage::Snapshots { until: now + SNAPSHOT_LIMIT, pending, fallback: Some(why) };
+                    if let Err(error) = job.begin_snapshots(&mut w, pending, Some(why)) {
+                        self.report(&w, Err(error), job);
+                        return;
+                    }
                 }
             }
         }
-        if let Stage::Snapshots { until, ref pending, ref fallback } = job.stage {
-            if !w.capture_awaiting().is_empty() && now < until {
+        if let Stage::Snapshots { id, ref pending, ref fallback, .. } = job.stage {
+            if !w.capture_awaiting(id).is_empty() {
                 self.capture = Some(job);
                 return;
             }
@@ -274,14 +283,14 @@ impl Shell {
                 let mut gpu = self.shared.gpu.borrow_mut();
                 let renderer = gpu.as_mut().map(|g| &mut g.renderer as &mut dyn Painter);
                 let mut painter = CapturePainter { renderer, bounded: job.reply.is_some() };
-                w.capture_finish(&mut painter, &job.path, scale, pending, fallback)
+                w.capture_finish(id, &mut painter, &job.path, scale, pending, fallback)
             };
             self.report(&w, result, job);
         }
     }
 
     /// Prints the report (stdout) and each native view's AppKit frame (stderr), and exits.
-    fn report(&mut self, w: &octara::app::Window, result: Result<octara::capture::Capture, String>, mut job: Job) {
+    fn report(&mut self, w: &Window, result: Result<octara::capture::Capture, String>, mut job: Job) {
         if let Some(reply) = job.reply.take() {
             let response = match result {
                 Ok(report) => octara::inspect::Reply { capture: Some(Box::new(report)), ..octara::inspect::Reply::ok() },
@@ -304,7 +313,7 @@ impl Shell {
 }
 
 /// The window server's picture of the window, or why there is none.
-fn window_picture(w: &octara::app::Window) -> Result<octara_primitives::capture::Picture, String> {
+fn window_picture(w: &Window) -> Result<Picture, String> {
     #[cfg(target_os = "macos")]
     if let Some(p) = super::ww(w, |x| x.native.as_ref().map(|n| n.window_picture())).flatten() {
         return p;

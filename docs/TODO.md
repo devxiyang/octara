@@ -12,13 +12,18 @@ the evidence for each follow-up.
 - [x] Unify App updates for queued window open and close, first host submission, and polling
       with or without windows. Cover execution permissions, bounded mounting, same-turn
       cancellation, skipped delivery after close, and nested poll during an AsyncMemo read.
-- [ ] Match native capture replies to the active capture request and validate Inspector resize
+- [x] Match native capture replies to the active capture request and validate Inspector resize
       targets immediately before host dispatch.
 
 Validation on Rust 1.100.0 passed 1,006 workspace tests with 3 existing ignored doctests.
 Strict all-targets Clippy, formatting and layer checks passed. First-submission evidence
 comes from a recording host. Native screen presentation and the deferred system editing
 verification remain separate acceptance work.
+
+Capture and resize follow-up passed 1,012 workspace tests with 3 existing ignored doctests,
+strict all-targets Clippy, formatting and layer checks. The macOS WebKit example verified live
+resize, rejection of a stale resize and repeated painted captures containing native pixels.
+The one-shot capture wrote its PNG and exited normally.
 
 ## `init` architecture refactor (2026-11-17)
 

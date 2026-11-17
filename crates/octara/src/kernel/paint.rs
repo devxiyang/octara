@@ -4,8 +4,10 @@
 
 use super::text::{self, Wrap};
 use super::{Align, BoxShadow, Color, Kernel, Kind, NodeId, Token};
+use crate::image::Image;
 use crate::paint::{DisplayList, GlyphRun, Item, Part, PathPaint, Quad, Rect};
 use crate::path::Transform;
+use rustc_hash::FxHashMap;
 use std::rc::Rc;
 
 /// What a node's own drawing was built from: while it stays the same, the drawing is kept.
@@ -28,6 +30,18 @@ pub(crate) struct DrawKey {
 /// A node's kept drawing.
 pub(crate) type Drawn = (DrawKey, Rc<[Item]>);
 
+#[derive(Clone, Copy)]
+enum PaintMode<'a> {
+    Live { keep: bool },
+    Capture(&'a FxHashMap<NodeId, Image>),
+}
+
+impl PaintMode<'_> {
+    fn keeps_drawings(self) -> bool {
+        !matches!(self, Self::Live { keep: false })
+    }
+}
+
 fn fade(c: Color, opacity: f32) -> Color {
     if opacity >= 1.0 { c } else { c.multiply_alpha(opacity) }
 }
@@ -45,23 +59,28 @@ impl Kernel {
             // Debug builds check that reusing it is right: every change must bump the count.
             #[cfg(debug_assertions)]
             debug_assert_eq!(
-                format!("{:?}", self.build_display_list(false).items()),
+                format!("{:?}", self.build_display_list(PaintMode::Live { keep: false }).items()),
                 format!("{:?}", dl.items()),
                 "a change did not invalidate the last frame"
             );
             return dl.clone();
         }
-        let dl = Rc::new(self.build_display_list(true));
+        let dl = Rc::new(self.build_display_list(PaintMode::Live { keep: true }));
         // Debug builds check the kept drawings: the frame built without them is the same.
         #[cfg(debug_assertions)]
         debug_assert_eq!(
-            format!("{:?}", self.build_display_list(false).items()),
+            format!("{:?}", self.build_display_list(PaintMode::Live { keep: false }).items()),
             format!("{:?}", dl.items()),
             "a change did not reach a kept drawing"
         );
         self.frames_built.set(self.frames_built.get() + 1);
         *self.last_frame.borrow_mut() = still.then(|| (self.paint_gen, self.viewport, dl.clone()));
         dl
+    }
+
+    /// Builds an offscreen frame with the native snapshots belonging to this capture.
+    pub(crate) fn capture_display_list(&self, snapshots: &FxHashMap<NodeId, Image>) -> DisplayList {
+        self.build_display_list(PaintMode::Capture(snapshots))
     }
 
     /// Display lists built rather than reused.
@@ -76,21 +95,21 @@ impl Kernel {
 
     /// The frame: kept drawings used where nothing they are drawn from changed (`keep`), else
     /// every drawing built again (without keeping it, and without counting it: a check).
-    fn build_display_list(&self, keep: bool) -> DisplayList {
+    fn build_display_list(&self, mode: PaintMode<'_>) -> DisplayList {
         let runs = self.glyph_runs_built.get();
-        let dl = self.assemble(keep);
-        if !keep {
+        let dl = self.assemble(mode);
+        if !mode.keeps_drawings() {
             self.glyph_runs_built.set(runs);
         }
         dl
     }
 
-    fn assemble(&self, keep: bool) -> DisplayList {
+    fn assemble(&self, mode: PaintMode<'_>) -> DisplayList {
         let mut parts = Vec::new();
         self.update_ink();
         self.update_motion();
         let window = Rect { x: 0.0, y: 0.0, w: self.viewport.0, h: self.viewport.1 };
-        self.paint(self.root, (0.0, 0.0), 1.0, window, &mut parts, keep);
+        self.paint(self.root, (0.0, 0.0), 1.0, window, &mut parts, mode);
         DisplayList { size: self.viewport, background: self.res.theme.borrow().get(Token::Background), parts }
     }
 
@@ -221,7 +240,7 @@ impl Kernel {
     /// Paints `id` and its subtree. Below full opacity, a subtree that draws more than one thing
     /// goes into a layer composited at that opacity (Rune's group opacity); a single thing is
     /// faded directly.
-    fn paint(&self, id: NodeId, origin: (f32, f32), opacity: f32, clip: Rect, out: &mut Vec<Part>, keep: bool) {
+    fn paint(&self, id: NodeId, origin: (f32, f32), opacity: f32, clip: Rect, out: &mut Vec<Part>, mode: PaintMode<'_>) {
         let n = self.node(id);
         if n.layout.display == taffy::Display::None {
             return;
@@ -232,14 +251,14 @@ impl Kernel {
         }
         let own = self.presented(id).opacity;
         if own >= 1.0 {
-            return self.paint_node(id, rect, opacity, clip, out, keep);
+            return self.paint_node(id, rect, opacity, clip, out, mode);
         }
         let k = opacity * own;
         if k <= 0.0 {
             return;
         }
         let mut inner = Vec::new();
-        self.paint_node(id, rect, 1.0, clip, &mut inner, keep);
+        self.paint_node(id, rect, 1.0, clip, &mut inner, mode);
         let draws: usize = inner
             .iter()
             .map(|p| match p {
@@ -264,7 +283,7 @@ impl Kernel {
 
     /// Paints `id` (its own drawing, kept or built) and its subtree, fading colors by `opacity`
     /// (the node's own opacity is the caller's to apply).
-    fn paint_node(&self, id: NodeId, rect: Rect, opacity: f32, clip: Rect, out: &mut Vec<Part>, keep: bool) {
+    fn paint_node(&self, id: NodeId, rect: Rect, opacity: f32, clip: Rect, out: &mut Vec<Part>, mode: PaintMode<'_>) {
         let n = self.node(id);
         let l = self.taffy.layout(n.taffy).expect("taffy");
         // Its own drawing shows: the box, a line of text running past it, or a shadow.
@@ -286,7 +305,7 @@ impl Kernel {
             // Fields, canvases and native views draw where they are (what they show moves with
             // more than their own changes); the others in their own coordinates, kept.
             let local = n.kind() != Kind::TextInput && !matches!(n.content, super::Content::Canvas(_) | super::Content::Native(_));
-            let items = if local { self.own_drawing(id, rect, keep) } else { self.draw_own(id, rect).into() };
+            let items = if local { self.own_drawing(id, rect, mode.keeps_drawings()) } else { self.draw_own(id, rect, mode).into() };
             if !items.is_empty() {
                 let offset = if local { (rect.x, rect.y) } else { (0.0, 0.0) };
                 out.push(Part::Drawing { offset, fade: opacity, items });
@@ -315,11 +334,11 @@ impl Kernel {
         }
         let origin = self.content_origin(id, rect);
         for &c in n.children() {
-            self.paint(c, origin, opacity, child_clip, out, keep);
+            self.paint(c, origin, opacity, child_clip, out, mode);
         }
         // Subtrees on their way out, where they were.
         for g in self.ghosts_of(id) {
-            self.paint(g, origin, opacity, child_clip, out, keep);
+            self.paint(g, origin, opacity, child_clip, out, mode);
         }
         if clips {
             out.push(Part::Item(Item::PopClip));
@@ -355,7 +374,7 @@ impl Kernel {
             self.drawings_reused.set(self.drawings_reused.get() + 1);
             return items.clone();
         }
-        let items: Rc<[Item]> = self.draw_own(id, Rect { x: 0.0, y: 0.0, ..rect }).into();
+        let items: Rc<[Item]> = self.draw_own(id, Rect { x: 0.0, y: 0.0, ..rect }, PaintMode::Live { keep }).into();
         if keep {
             self.drawings_built.set(self.drawings_built.get() + 1);
             *n.drawn.borrow_mut() = Some((key, items.clone()));
@@ -365,7 +384,7 @@ impl Kernel {
 
     /// `id`'s own drawing with its box at `rect`: shadows, background and border, its image,
     /// icon, native view, canvas, field or text.
-    fn draw_own(&self, id: NodeId, rect: Rect) -> Vec<Item> {
+    fn draw_own(&self, id: NodeId, rect: Rect, mode: PaintMode<'_>) -> Vec<Item> {
         let mut items = Vec::new();
         let out = &mut items;
         let opacity = 1.0;
@@ -468,16 +487,17 @@ impl Kernel {
             }
         }
 
-        // A native view: its snapshot, else a placeholder box where it goes (what headless runs
-        // and screenshots show), then its place in paint order.
+        // A native view's drawing and its place in paint order.
         if let super::Content::Native(nv) = &n.content
             && visible
         {
-            if let Some(image) = &nv.snapshot {
+            let (snapshot, live) = match mode {
+                PaintMode::Live { .. } => (None, nv.live),
+                PaintMode::Capture(snapshots) => (snapshots.get(&id), false),
+            };
+            if let Some(image) = snapshot {
                 out.push(Item::Image(crate::paint::ImagePaint { source: id, image: image.clone(), rect, bounds: rect, radius, opacity }));
-            } else if nv.live {
-                // The platform draws it.
-            } else {
+            } else if !live {
                 out.push(Item::Quad(Quad {
                     source: id,
                     rect,
@@ -488,7 +508,7 @@ impl Kernel {
                     border_color: fade(self.res.theme.borrow().get(Token::Border), opacity),
                 }));
             }
-            let cut = nv.live && nv.snapshot.is_none() && nv.slot == crate::native::Slot::Underlay;
+            let cut = live && nv.slot == crate::native::Slot::Underlay;
             out.push(Item::Native { source: id, rect, radius, slot: nv.slot, cut });
         }
 

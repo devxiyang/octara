@@ -113,6 +113,19 @@ impl Responder {
         self.target.as_ref().is_none_or(|(window, guard)| guard.is_current(window))
     }
 
+    fn with_current_resize_target(self, resize: impl FnOnce(Self)) {
+        if self.target_current() {
+            resize(self);
+            return;
+        }
+        let delivery = self.delivery.get().unwrap_or(Delivery::Refused);
+        let message = match delivery {
+            Delivery::Refused => "the observed window changed before the resize request; inspect again",
+            Delivery::Delivered => "the observed window changed after the resize request; inspect again",
+        };
+        self.send(Reply { delivery: Some(delivery), ..Reply::fail(&codes::STALE_TARGET, message) });
+    }
+
     pub(crate) fn send(self, reply: Reply) {
         self.send_with(reply, json!({}));
     }
@@ -306,19 +319,21 @@ impl Shell {
                     Err(reply) => response.send_gesture(*reply, false),
                 }
             }
-            Request::Size { width, height } => match super::resize::Job::start(self, &mut target, width, height) {
-                Ok(job) => {
-                    response.delivery.set(Some(Delivery::Delivered));
-                    self.inspect_pending = Some(Pending::Resize { job, reply: response });
-                    self.show();
-                    self.inspect_poll();
-                }
-                Err(reply) if reply.code.as_deref() == Some(codes::STEP_FAILED.id) => {
-                    let actual = reply.actual.clone();
-                    response.send_with(*reply, json!({ "delivery": "delivered", "resize": actual }));
-                }
-                Err(reply) => response.send(*reply),
-            },
+            Request::Size { width, height } => {
+                response.with_current_resize_target(|response| match super::resize::Job::start(self, &mut target, width, height) {
+                    Ok(job) => {
+                        response.delivery.set(Some(Delivery::Delivered));
+                        self.inspect_pending = Some(Pending::Resize { job, reply: response });
+                        self.show();
+                        self.inspect_poll();
+                    }
+                    Err(reply) if reply.code.as_deref() == Some(codes::STEP_FAILED.id) => {
+                        let actual = reply.actual.clone();
+                        response.send_with(*reply, json!({ "delivery": "delivered", "resize": actual }));
+                    }
+                    Err(reply) => response.send(*reply),
+                })
+            }
             Request::Capture { path, settle_ms, scale, pixels } => {
                 let ms = settle_ms.unwrap_or(5000);
                 let actual_scale = scale.unwrap_or_else(|| ww(&target, |w| w.scale()).unwrap_or(1.0));
@@ -437,19 +452,10 @@ impl Shell {
                 }
                 self.show();
             }
-            Pending::Resize { job, reply } => {
-                if !reply.target_current() {
-                    reply.send_with(
-                        Reply::fail(&codes::STALE_TARGET, "the observed window changed after the resize request; inspect again"),
-                        json!({ "delivery": "delivered" }),
-                    );
-                    return;
-                }
-                match job.poll(self) {
-                    Some(done) => reply.send_with(done.reply, json!({ "resize": done.resize, "delivery": "delivered" })),
-                    None => self.inspect_pending = Some(Pending::Resize { job, reply }),
-                }
-            }
+            Pending::Resize { job, reply } => reply.with_current_resize_target(|reply| match job.poll(self) {
+                Some(done) => reply.send_with(done.reply, json!({ "resize": done.resize, "delivery": "delivered" })),
+                None => self.inspect_pending = Some(Pending::Resize { job, reply }),
+            }),
         }
     }
 }
@@ -457,6 +463,93 @@ impl Shell {
 #[cfg(test)]
 mod target_feedback {
     use super::*;
+
+    fn resize_response(window: &octara::app::Window, guarded: bool) -> (Responder, std::sync::mpsc::Receiver<String>) {
+        let mut request = json!({ "op": "size", "width": 700, "height": 500 });
+        if guarded {
+            request["target"] = window.target().into();
+        }
+        let parsed = octara::inspect::parse_guarded_request(window, &request.to_string()).unwrap();
+        let (route, input) = route(&parsed.request);
+        let (send, receive) = std::sync::mpsc::channel();
+        let response =
+            Responder::new(send, Arc::new(AtomicBool::new(true)), route, input).with_target(&parsed.window, parsed.guard.as_ref());
+        (response, receive)
+    }
+
+    fn reload_on_poll(app: &octara::app::App) {
+        let (trigger, mut reload) = octara::task::channel();
+        app.run(|| {
+            octara::task::spawn(async move {
+                reload.recv().await.unwrap();
+                octara::app::App::current().hot_reload();
+            });
+        });
+        trigger.send(()).unwrap();
+    }
+
+    #[test]
+    fn resizing_refuses_a_target_reloaded_during_pre_dispatch_poll() {
+        let window = octara::app::Window::headless(|| octara::view::el().into());
+        let app = window.app();
+        let (response, receive) = resize_response(&window, true);
+        reload_on_poll(&app);
+        assert!(response.target_current());
+        app.poll();
+        response.begin();
+
+        let mut native_calls = 0;
+        response.with_current_resize_target(|_| native_calls += 1);
+        assert_eq!(native_calls, 0);
+        let reply: serde_json::Value = serde_json::from_str(&receive.try_recv().unwrap()).unwrap();
+        assert_eq!(reply["code"], "STALE_TARGET");
+        assert_eq!(reply["delivery"], "refused");
+        assert_eq!(reply["live"]["route"], "native-window");
+        assert_eq!(reply["live"]["delivery"], "refused");
+        app.shutdown();
+    }
+
+    #[test]
+    fn a_pending_resize_keeps_its_delivery_when_poll_reloads_the_target() {
+        let window = octara::app::Window::headless(|| octara::view::el().into());
+        let app = window.app();
+        let (response, receive) = resize_response(&window, true);
+        response.begin();
+
+        let mut pending = None;
+        response.with_current_resize_target(|response| {
+            response.delivery.set(Some(Delivery::Delivered));
+            pending = Some(response);
+        });
+        let response = pending.expect("a current target can dispatch the native resize and wait");
+        reload_on_poll(&app);
+        assert!(response.target_current());
+        app.poll();
+        response.with_current_resize_target(|_| panic!("a stale resize must stop waiting"));
+
+        let reply: serde_json::Value = serde_json::from_str(&receive.try_recv().unwrap()).unwrap();
+        assert_eq!(reply["code"], "STALE_TARGET");
+        assert_eq!(reply["delivery"], "delivered");
+        assert_eq!(reply["live"]["route"], "native-window");
+        assert_eq!(reply["live"]["delivery"], "delivered");
+        app.shutdown();
+    }
+
+    #[test]
+    fn resizing_without_an_observed_target_can_dispatch_after_reload() {
+        let window = octara::app::Window::headless(|| octara::view::el().into());
+        let app = window.app();
+        let (response, receive) = resize_response(&window, false);
+        reload_on_poll(&app);
+        app.poll();
+        response.begin();
+        response.with_current_resize_target(|response| response.send(Reply::ok()));
+
+        let reply: serde_json::Value = serde_json::from_str(&receive.try_recv().unwrap()).unwrap();
+        assert!(reply["ok"].as_bool().unwrap());
+        assert_eq!(reply["live"]["delivery"], "delivered");
+        app.shutdown();
+    }
 
     fn response(line: &str, reply: Reply, gesture: bool) -> serde_json::Value {
         let (send, receive) = std::sync::mpsc::channel();

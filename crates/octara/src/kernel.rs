@@ -343,9 +343,6 @@ pub struct NativeContent {
     pub props: serde_json::Value,
     pub version: u64,
     pub intrinsic: Option<(f32, f32)>,
-    /// What the view last showed, from its host: drawn in its place instead of the placeholder
-    /// (captures and screenshots).
-    pub snapshot: Option<crate::image::Image>,
     /// The platform shows it (its host said so): no placeholder; an underlay view gets a
     /// cutout.
     pub live: bool,
@@ -1730,15 +1727,8 @@ impl Kernel {
     /// authored one.
     #[track_caller]
     pub fn set_native(&mut self, id: NodeId, kind: &str, slot: crate::native::Slot) {
-        let content = NativeContent {
-            kind: kind.to_owned(),
-            slot,
-            props: serde_json::Value::Null,
-            version: 0,
-            intrinsic: None,
-            snapshot: None,
-            live: false,
-        };
+        let content =
+            NativeContent { kind: kind.to_owned(), slot, props: serde_json::Value::Null, version: 0, intrinsic: None, live: false };
         self.set_content(id, Content::Native(Box::new(content)));
         let t = self.node(id).taffy;
         self.taffy.set_node_context(t, Some(Measure::Native(id))).expect("taffy");
@@ -1776,12 +1766,6 @@ impl Kernel {
             v.live = live;
             self.changed(id, Dirty::PAINT, "native live", || live.to_string());
         }
-    }
-    /// An image of what a native view shows (or none, back to the placeholder).
-    pub fn set_native_snapshot(&mut self, id: NodeId, snapshot: Option<crate::image::Image>) {
-        let Content::Native(v) = &mut self.node_mut(id).content else { return };
-        v.snapshot = snapshot;
-        self.changed(id, Dirty::PAINT, "native snapshot", String::new);
     }
     pub fn native(&self, id: NodeId) -> Option<&NativeContent> {
         if let Content::Native(v) = &self.node(id).content { Some(v) } else { None }

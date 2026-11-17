@@ -105,6 +105,24 @@ R3 继续用相同构建测试真正的系统拼音、候选内容和位置、�
 [R3 清单](editing-architecture-review.md) ·
 [构建收据](agent-context.md#verify-the-running-build)
 
+### 第二阶段实现
+
+窗口只保留当前 painted capture 的收集状态。宿主原样回传每个原生视图的请求，匹配且仍在
+等待的回包只会被消费一次。旧截图完成或取消时也要匹配截图身份。超时、窗口重载和关闭后
+抵达的回包不会写入后续截图。窗口收到尺寸或比例变化时撤销旧尺寸的像素，结果按新布局绘制，
+并在报告中标记失效的原生快照。实时显示列表继续独立生成。
+
+Inspector 在推进 App 工作后复核缩放目标，确认仍有效才请求宿主调整窗口。已投递的操作
+在等待时继续复核，失效回包保留 `delivered`；投递前失效返回 `refused`。
+[截图协议](capture.md#painted-default) · [Inspector 目标规则](agent-context.md#targets-and-observation-identity)
+
+可控宿主覆盖超时后重试、重复回包、显式失败、缩放、重载、关闭及实时绘制缓存。
+真实 macOS WebKit 示例用 Inspector 从宿主取得 680 × 640 的调整结果，连续两次 GPU
+截图为 1360 × 1280。截图报告均包含 WebKit 快照，视图内取样与页面背景色一致。
+重载后用旧目标请求另一个尺寸返回 `STALE_TARGET / refused`，视口维持 680 × 640。
+独立的 `OCTARA_CAPTURE` 入口保存含 WebKit 快照的 PNG 后正常退出。
+在准备及等待期间失效的精确时序由可控测试验证。
+
 ## 其他层的验证候选
 
 - **GPU 图片容量。** `Image` 接受合法的 2560×1440 RGBA，CPU 可绘制。GPU 按原图尺寸放进

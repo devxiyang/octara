@@ -99,8 +99,8 @@ inspect or recover rather than assume failure and repeat the action. Explicit re
 useful when actual concurrent commands or separate result delivery require them.
 
 Replies belong to their originating connection and are discarded after it disconnects. The client
-does not automatically resend a command after a transport failure. An accepted capture can finish
-within its budget after disconnect; a new capture is refused while that job is still active.
+does not automatically resend a command after a transport failure. Disconnecting releases the
+active capture and its pending native snapshots on the next host update.
 Requests are limited to 1 MiB and replies to 16 MiB; an oversized reply closes the connection
 because the operation may already have run. Managed build identity applies to the launched
 executable. Tree replacements inside the process use the target lifetime checks below.
@@ -139,7 +139,9 @@ The operation retains its guard between input phases. Focusing can run applicati
 so text is sent only if the original node still exists and owns focus afterward. Pointer phases
 and timed gestures likewise stop rather than continue into a replacement. `delivery: "refused"`
 reports a pre-input refusal; `"delivered"` on a failed result records earlier input and a stopped
-continuation. A successful final handler may remove its own node or change focus. The guard is
+continuation. A resize checks the guard after driving ready App work and before requesting the
+native size. It checks again while waiting for the host and viewport to agree. A successful
+final handler may remove its own node or change focus. The guard is
 not rechecked after that legitimate final effect. Tokens are lifetime checks, not authority or
 locks on application state; matching local source paths still do not prove build identity.
 

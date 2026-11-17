@@ -140,10 +140,9 @@ platforms are not.
   first underlay view, below every subview, the Metal layer kept above it (z position 1, overlay
   containers at 2) and configured non-opaque. A view inside a group-opacity layer is not cut
   through the layer (a known limit).
-- Snapshots belong to [captures](capture.md): `Window::capture_begin()` asks the platform window
-  (`snapshot_native`, which says what the snapshot misses or why it takes none) for an image of
-  every visible view; it comes back as `InputEvent::NativeSnapshot` and is drawn in the view's
-  place instead of the placeholder until the capture ends. `native_busy` (a page loading) keeps
+- Snapshots belong to [captures](capture.md): the window asks its platform for an image of each
+  visible view with `snapshot_native`. Each `InputEvent::NativeSnapshot` echoes the originating
+  request. The active capture draws its own images in the views' places. `native_busy` (a page loading) keeps
   a capture waiting. The macOS host uses `WKWebView`'s snapshot (not waiting for a screen
   update), redrawn into straight RGBA. The shell's capture prints each view's AppKit frame next
   to its placement.

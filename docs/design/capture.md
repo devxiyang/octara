@@ -28,14 +28,23 @@ what the picture can be trusted for. One request, the same on every platform and
 1. Settle: run until no task, timer or motion is left (subscriptions do not count) and no
    native view is busy (`PlatformWindow::native_busy`: a page loading), at most `settle_ms`. Headless this
    runs on the app clock; in a window, on the wall clock.
-2. Snapshots: the platform window is asked for each shown view's snapshot
-   (`PlatformWindow::snapshot_native`, which
-   says what the snapshot misses, or why it cannot take one); each comes back through
-   `InputEvent::NativeSnapshot` within 5 s or the view is reported `failed`.
-3. Paint: the display list, with each snapshot drawn in its view's place, rendered by the
-   window's GPU renderer offscreen (the renderer that ships) or, headless, the reference
-   renderer; written as an 8-bit sRGB PNG. The snapshots are cleared afterwards, so the live
-   frame never shows a stale one.
+2. Snapshots: the platform window receives a `NativeSnapshotRequest` for each visible view.
+   `PlatformWindow::snapshot_native` reports limitations or declines synchronously.
+   For each accepted request the platform echoes that request in `InputEvent::NativeSnapshot`
+   with its image or an explicit failure. The live shell allows 5 s for these replies.
+   The active capture consumes each matching reply once. Replies after its deadline, cancellation
+   or completion have no effect on later captures.
+3. Paint: the capture draws each received image in its view's place. Views without an image
+   use placeholders. The window's GPU renderer paints offscreen and headless uses the
+   reference renderer. The result is written as an 8-bit sRGB PNG. The capture consumes its
+   images independently of the live display list and its cache.
+
+A window size or scale change retires snapshot replies and pixels requested at the previous size.
+The painted result uses the new layout and reports those unavailable images as failed. A closed
+window ends its capture. An Inspector capture bound to an observed tree returns `STALE_TARGET`
+if that tree is replaced while the capture is in progress.
+Input recordings keep the response identity without its image. Replay skips these responses
+because their requesting capture belonged to the original run.
 
 Works without permission, headless, and with the screen locked or the display asleep (when
 the window server draws nothing). Secure fields are painted as bullets as always.

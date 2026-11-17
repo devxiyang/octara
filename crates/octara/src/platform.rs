@@ -9,11 +9,12 @@
 //! text input) and asks the platform for the clipboard, waking the loop and new windows.
 
 use crate::kernel::{TextGeometry, TextInputLayout};
-use crate::native::NativeChange;
+use crate::native::{NativeChange, NativeId};
 use crate::paint::Rect;
 use octara_primitives::input::CursorStyle;
 use std::any::Any;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The system an app runs on (one per app).
 pub trait Platform {
@@ -86,6 +87,24 @@ impl WindowOptions {
     }
 }
 
+/// One snapshot request issued to a platform window. Echo it in the completion event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NativeSnapshotRequest {
+    /// The target native view.
+    pub id: NativeId,
+    // Older recordings contain only the view ID. Zero names no issued request.
+    #[serde(default)]
+    token: u64,
+}
+
+impl NativeSnapshotRequest {
+    pub(crate) fn new(id: NativeId) -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let token = NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1)).expect("snapshot identity exhausted");
+        Self { id, token }
+    }
+}
+
 /// One window on that system. The app presents a [`Frame`] after each operation; the backend
 /// draws the window's display list ([`Window::display_list`](crate::app::Window::display_list))
 /// on its own pacing. Questions that need an answer are methods.
@@ -105,11 +124,11 @@ pub trait PlatformWindow {
         let _ = (kind, slot);
         false
     }
-    /// Takes a snapshot of view `id`, sent back as input (`NativeSnapshot`): `Ok` with what the
-    /// snapshot cannot show (WebKit: hardware video and WebGL come out black), or `Err` with why
-    /// this platform takes none.
-    fn snapshot_native(&mut self, id: crate::native::NativeId) -> Result<Vec<String>, String> {
-        let _ = id;
+    /// Requests a snapshot. `Ok` lists what the snapshot cannot show (WebKit: hardware video
+    /// and WebGL). Complete it asynchronously with `InputEvent::NativeSnapshot`, echoing
+    /// `request` and providing an image if available. `Err` explains why no request started.
+    fn snapshot_native(&mut self, request: NativeSnapshotRequest) -> Result<Vec<String>, String> {
+        let _ = request;
         Err("this platform takes no snapshots".into())
     }
     /// What view `id` is busy with (a page loading), so a capture waits for it.
@@ -280,6 +299,8 @@ pub struct HeadlessWindow {
     pub shows_native: bool,
     /// Pretend snapshots are taken, missing these (`None`: no snapshots).
     pub snapshots: Option<Vec<String>>,
+    /// Every snapshot request received, in order.
+    pub snapshot_requests: Vec<NativeSnapshotRequest>,
     /// Pretend every native view is busy with this. Keep a clone before opening the window
     /// to simulate native work starting or completing without borrowing the host mutably.
     pub busy: std::rc::Rc<std::cell::RefCell<Option<String>>>,
@@ -310,7 +331,8 @@ impl PlatformWindow for HeadlessWindow {
     fn shows_native(&self, _: &str, _: crate::native::Slot) -> bool {
         self.shows_native
     }
-    fn snapshot_native(&mut self, _: crate::native::NativeId) -> Result<Vec<String>, String> {
+    fn snapshot_native(&mut self, request: NativeSnapshotRequest) -> Result<Vec<String>, String> {
+        self.snapshot_requests.push(request);
         self.snapshots.clone().ok_or_else(|| "headless: no platform view to take a snapshot of".into())
     }
     fn native_busy(&self, _: crate::native::NativeId) -> Option<String> {

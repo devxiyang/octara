@@ -37,6 +37,7 @@ use objc2_map_kit::{
 };
 use objc2_quartz_core::{CAMetalLayer, CATransaction};
 use objc2_web_kit::{WKNavigation, WKNavigationDelegate, WKSnapshotConfiguration, WKWebView, WKWebViewConfiguration};
+use octara::platform::NativeSnapshotRequest;
 use octara_primitives::image::Image;
 use octara_primitives::native::{NativeChange, NativeEvent, NativeId, Placement, Slot};
 use octara_primitives::paint::Rect;
@@ -53,8 +54,8 @@ use winit::window::Window;
 /// AppKit's dispatch; the shell hands them to the app when it wakes).
 pub(crate) struct Inbox {
     events: RefCell<Vec<(NativeId, NativeEvent)>>,
-    /// Snapshots taken (none when the view could not take one).
-    snapshots: RefCell<Vec<(NativeId, Option<Image>)>>,
+    /// Snapshot completions paired with the originating request.
+    snapshots: RefCell<Vec<(NativeSnapshotRequest, Option<Image>)>>,
     wake: Box<dyn Fn()>,
 }
 
@@ -68,7 +69,7 @@ impl Inbox {
         std::mem::take(&mut *self.events.borrow_mut())
     }
 
-    pub(crate) fn take_snapshots(&self) -> Vec<(NativeId, Option<Image>)> {
+    pub(crate) fn take_snapshots(&self) -> Vec<(NativeSnapshotRequest, Option<Image>)> {
         std::mem::take(&mut *self.snapshots.borrow_mut())
     }
 }
@@ -548,16 +549,16 @@ impl Views {
         self.update_regions();
     }
 
-    /// Takes a snapshot of view `id`, handed to the inbox when the platform has it.
-    fn snapshot(&self, id: NativeId) -> Result<Vec<String>, String> {
-        let Some(h) = self.hosted.get(&id) else { return Err("no platform view of this kind on macOS yet".into()) };
+    /// Requests a snapshot and echoes the request when the platform answers.
+    fn snapshot(&self, request: NativeSnapshotRequest) -> Result<Vec<String>, String> {
+        let Some(h) = self.hosted.get(&request.id) else { return Err("no platform view of this kind on macOS yet".into()) };
         if h.placed.is_none() {
             return Err("not placed yet".into());
         }
         let scale = self.parent.window().map_or(2.0, |w| w.backingScaleFactor());
         let inbox = self.inbox.clone();
         let send = move |image: Option<Image>| {
-            inbox.snapshots.borrow_mut().push((id, image));
+            inbox.snapshots.borrow_mut().push((request, image));
             (inbox.wake)();
         };
         match &h.platform {
@@ -727,8 +728,8 @@ impl Host {
     pub(crate) fn shows(kind: &str, slot: Slot) -> bool {
         matches!((kind, slot), ("web", Slot::Overlay) | ("map", Slot::Underlay))
     }
-    pub(crate) fn snapshot(&self, id: NativeId) -> Result<Vec<String>, String> {
-        self.0.borrow().snapshot(id)
+    pub(crate) fn snapshot(&self, request: NativeSnapshotRequest) -> Result<Vec<String>, String> {
+        self.0.borrow().snapshot(request)
     }
     pub(crate) fn busy(&self, id: NativeId) -> Option<String> {
         self.0.borrow().busy(id)

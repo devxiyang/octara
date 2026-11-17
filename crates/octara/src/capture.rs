@@ -7,9 +7,23 @@
 //! shell, the reference renderer headless (`octara-render` implements both). The reply is a
 //! [`Capture`] report.
 
+use crate::image::Image;
 use crate::native::NativeId;
+use crate::platform::NativeSnapshotRequest;
 pub(crate) use octara_primitives::capture::{Painter, Picture};
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
+
+/// The identity of one painted capture started by the platform host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptureId(u128);
+
+impl CaptureId {
+    pub(crate) fn new() -> Self {
+        Self(crate::identity::new_namespace())
+    }
+}
 
 /// Where a capture's pixels come from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,7 +44,7 @@ pub enum Shown {
     Snapshot,
     /// The placeholder box: its host takes no snapshots (`reason` says why).
     Placeholder,
-    /// The snapshot was asked for and did not come (`reason` says why).
+    /// The capture could not use a snapshot (`reason` says why).
     Failed,
     /// The view itself (the window server's picture).
     Live,
@@ -81,9 +95,22 @@ impl Capture {
     }
 }
 
-/// A capture in progress: the snapshots asked for, and what each host answered.
-#[derive(Default)]
+/// A capture in progress and its collected native responses.
 pub(crate) struct Capturing {
-    /// Each shown view: `Ok(misses)` when its snapshot is coming, `Err(reason)` when not.
-    pub asked: Vec<(NativeId, Result<Vec<String>, String>)>,
+    pub id: CaptureId,
+    pub deadline: Instant,
+    pub shots: FxHashMap<NativeId, NativeShotRequest>,
+}
+
+pub(crate) struct NativeShotRequest {
+    pub request: NativeSnapshotRequest,
+    pub status: SnapshotStatus,
+    pub misses: Vec<String>,
+}
+
+pub(crate) enum SnapshotStatus {
+    Waiting,
+    Captured(Image),
+    Failed(&'static str),
+    Placeholder(String),
 }

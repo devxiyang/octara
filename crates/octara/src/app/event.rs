@@ -7,6 +7,7 @@
 
 use super::{App, Event, KeyEvent, PointerEvent, Window, WindowId};
 use crate::native::{NativeEvent, NativeId};
+use crate::platform::NativeSnapshotRequest;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -47,9 +48,10 @@ pub enum InputEvent {
     Native { id: NativeId, event: NativeEvent },
     /// A native view's natural size.
     NativeSize { id: NativeId, width: f32, height: f32 },
-    /// A native view's snapshot (for a capture); a recording keeps that it came, not its pixels.
+    /// A response to one capture request, with an image when the snapshot succeeded.
     NativeSnapshot {
-        id: NativeId,
+        #[serde(flatten)]
+        request: NativeSnapshotRequest,
         #[serde(skip)]
         image: Option<crate::image::Image>,
     },
@@ -122,7 +124,7 @@ impl Window {
             InputEvent::Accessibility { target, action, data } => self.on_accessibility(target, action, data),
             InputEvent::Native { id, event } => self.on_native_event(id, event),
             InputEvent::NativeSize { id, width, height } => self.on_native_size(id, width, height),
-            InputEvent::NativeSnapshot { id, image } => self.on_native_snapshot(id, image),
+            InputEvent::NativeSnapshot { request, image } => self.on_native_snapshot(request, image),
             InputEvent::Semantic(ev) => self.on_semantic(ev).is_ok(),
             InputEvent::Picking(on) => {
                 self.on_picking(on);
@@ -178,6 +180,10 @@ impl App {
             if at > self.now() {
                 self.advance_to(at);
             }
+            // The original capture request only exists in the host session that made it.
+            if matches!(r.event, InputEvent::NativeSnapshot { .. }) {
+                continue;
+            }
             let mut w =
                 self.window(r.window).ok_or_else(|| format!("no window {:?} to replay into (open it as the recording did)", r.window))?;
             w.event(r.event.clone());
@@ -190,7 +196,11 @@ impl super::AppState {
     /// Records `event` for window `window` when a recording is on.
     pub(crate) fn record(&self, window: WindowId, event: &InputEvent) {
         if let Some(r) = self.recording.borrow_mut().as_mut() {
-            r.events.push(Recorded { at: self.sched.now_ms(), window, event: event.clone() });
+            let event = match event {
+                InputEvent::NativeSnapshot { request, .. } => InputEvent::NativeSnapshot { request: *request, image: None },
+                _ => event.clone(),
+            };
+            r.events.push(Recorded { at: self.sched.now_ms(), window, event });
         }
     }
 }

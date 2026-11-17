@@ -723,10 +723,11 @@ fn handle_inner(app: &mut Window, req: Request) -> Reply {
             };
             let _ = app.app().run_until_idle(Duration::from_millis(settle_ms.unwrap_or(5_000)));
             let pending = app.unsettled();
-            app.capture_begin();
             let fallback =
                 (pixels == crate::capture::Pixels::Display).then(|| "headless: there is no window to take a picture of".to_owned());
-            let result = app.capture_finish(&mut *painter, &path, scale.unwrap_or(2.0), pending, fallback);
+            let result = app
+                .capture_begin(std::time::Instant::now())
+                .and_then(|id| app.capture_finish(id, &mut *painter, &path, scale.unwrap_or(2.0), pending, fallback));
             app.app().set_painter(painter);
             match result {
                 Ok(c) => Reply { capture: Some(Box::new(c)), ..Reply::ok() },
