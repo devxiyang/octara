@@ -1,4 +1,4 @@
-//! Markdown ([text core](../../../../docs/design/text.md) step 4): blocks as elements with stable
+//! Markdown ([text layout and selection](../../../../docs/design/text.md)): blocks as elements with stable
 //! keys; a stream re-parses its end and keeps every earlier block's node.
 
 use octara::kernel::Kernel;

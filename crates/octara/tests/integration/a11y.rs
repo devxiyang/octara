@@ -347,7 +347,7 @@ fn updates_send_only_what_changed() {
     assert!(app.accessibility_update().tree.is_some());
 }
 
-// ---- Text ([text core](../../../../docs/design/text.md) step 3) ----
+// ---- Text ([text layout and selection](../../../../docs/design/text.md)) ----
 
 fn article() -> View {
     col()

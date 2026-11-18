@@ -1,355 +1,48 @@
-# Octara Architecture
+# Octara 架构
 
-What is built, how its parts fit, and the decisions that shape them. Detailed designs are in [`docs/design/`](design/), research in [`docs/research/`](research/).
+**设计结论**　保留 Rust、Signals 和 retained tree。重新划定三处责任边界：作者如何组合界面，窗口如何协调多个参与者，宿主如何接入操作系统。本文给出目标架构。下文的实现映射和路线图单独标出已落地的部分。[当前实现与缺口](ROADMAP.md)
 
-The 2026-11-17 [layered architecture redesign](design/layered-architecture-redesign.md) spans
-runtime, document, primitives, kit and host/tooling boundaries. The first
-[package split](design/package-boundaries.md) is implemented: window-independent values and
-presentation protocols belong to `octara-primitives`; text shaping and fonts belong to
-`octara-text`, with downward production dependencies.
-Element construction and retained-node content ownership now follow the [content contract](design/ui-primitives.md#element-content). Further editing and component work is tracked in [TODO](TODO.md).
-Its evidence is in the [foundation review](design/ui-foundation-review.md) and
-[SwiftUI/Rune/Exact comparison](research/ui-composition-frameworks.md).
+## 哪些问题必须由框架解决
 
-The selected direction is in [Runtime architecture](design/runtime-contract.md): keep Rust and
-Signals, connect the existing Inspector to real windows, and improve concrete lifecycle/output
-boundaries. [Agent context and live inspection](design/agent-context.md) defines that small tool
-interface. These documents identify planned changes separately from the implementation below;
-the [Exact comparison](research/exact-runtime-simplicity.md) explains the reduced scope.
+文件重命名到一半时，另一个进程可能让目录重新排序。用户期望选区仍在同一个文件名里。手机地图中的一次拖动可以先展开面板，再滚动内部列表。用户反向拖动时，同一个接触点会继续产生位移。这两个交互要求框架记住谁还活着、谁有权处理下一步输入、已经生效了什么；单个组件只能看见其中一部分。[逐步推演与反例](design/interaction-scenarios.md)
 
-The selected next architecture is [Runtime and Signals consolidation](design/core-consolidation.md):
-native Rust execution with no VM, a small Signals API, explicit ownership and App update boundaries.
-It includes a source-based refactor/removal inventory and ordered acceptance gates. Its
-[Signals contract](design/signals-redesign.md) and [runtime contract](design/runtime-contract.md)
-define the breaking replacement without compatibility aliases. Correctness, Signals API,
-App root lifetime, style declaration ordering, exclusive element content and Inspector boundary slices are implemented;
-broader primitive migration remains pending.
-The sections below describe the current code.
+## 从底层到应用
 
-The approved [bottom-up convergence plan](design/ui-composition-redesign.md#11-已批准的自底向上收敛方案)
-keeps Signals and the retained tree as peer foundations, connected by mounting and window
-coordination. Ordinary Rust functions compose UI; provenance does not create lifetime scopes.
-Implementation proceeds through option snapshots, construction/owner/provenance, execution-stage
-boundaries, then composition-library/public-surface cleanup. [TODO](TODO.md#bottom-up-architecture-convergence-approved-2026-11-17)
-tracks per-stage validation and commits. The implemented content-owner API is `scope(key, factory)`;
-`#[ui]` records provenance without creating an owner. Plain/keyed snapshots drive chooser rows,
-text providers execute through a shared read-only boundary, and unfinished focus preparation
-cannot publish a completed frame. Specialized graphics/native APIs use explicit module imports;
-Chat's ordinary `view(&Chat)` receives its model directly. This is the selected direction, not a claim that all
-replacement APIs already exist.
-
-
-The proposed next collection boundary is [Collection data, row identity and content lifetime](design/collection-regions.md).
-It replaces application-maintained Vec/list mirrors and separates retained row identity from
-current row input and replaceable content. The broader replacement remains a proposal; chooser option mirrors have been removed using
-the existing keyed snapshot path. [Latest Rune/Exact source
-research](research/collection-regions.md) records the evidence and tradeoffs.
-
-The [first-round scope](design/core-consolidation.md#scope-and-necessity) is limited to correct
-value access, dependencies, lifetime and propagation. The remaining API/primitive inventory is
-follow-up work, not a prerequisite for establishing those contracts.
-
-## Product
-
-**Agent-first. Rust-native. Cross-platform.** Apps are written in Rust with fine-grained
-reactivity, drawn on the GPU, with native views and platform-owned interaction where appropriate.
-The agent's loop is generate → compile → run → inspect → test → fix, and the framework answers
-the agent's questions itself (semantic tree, diagnostics with causes, checks, scripted driving).
-
-Principles:
-
-1. **Agent first**: an agent can understand, generate, debug, test and change the UI.
-2. **Rust only**: no JavaScript runtime, no view DSL; builder methods with GPUI's names.
-3. **Fine-grained reactivity**: signals, memos and incremental collections update properties;
-   a component runs once ([reactive core](design/reactive-core.md)).
-4. **GPU first**, with native views as islands where they must be ([Native Island](design/native-island.md)).
-5. **Cross-platform**: desktop first; the architecture covers iOS and Android.
-6. **Reproducible tests**: headless runs, bundled fonts, an app clock and a CPU reference renderer
-   control framework inputs. Replay also requires the same initial state and ordered external
-   results; arbitrary I/O and host behavior are not controlled by input recording.
-
-## Crates
-
-| Crate | Contents |
-| --- | --- |
-| `octara-primitives` | Window-independent geometry, anchor placement, theme values, paths, images, icons, canvas recording, motion, node identity and presentation protocols |
-| `octara-text` | TextEngine, Parley and deterministic monospace engines, fonts, shaping caches, line breaking and text geometry |
-| `octara` | The core: reactive runtime, retained kernel, views, App/Window coordination, tasks, inspector, checks and diagnostics |
-| `octara-macros` | `#[ui]`: elements record the component function that built them and where it was called |
-| `octara-kit` | Components (buttons, fields, select, switch, …) and streaming Markdown, built only on `octara`'s public API and theme tokens |
-| `octara-render` | Primitive display list → pixels: CPU and wgpu renderers; no production dependency on the App runtime |
-| `octara-shell` | Desktop windows (winit): multiple windows, input, IME, system fonts, scale, frames, AccessKit, file dialogs; macOS native web views, maps, menus and alerts |
-| `octara-icons` | The Lucide set as path data (generated, checked in) |
-| `octara-fonts` | A CJK subset for deterministic tests and screenshots |
-| `octara-cli` | The `octara` command: `check`, `inspect`, `run`, `vocab`, `explain`, `skill`; public API extraction from source |
-| `examples` | Example apps, their acceptance tests, benchmarks, screenshot and window tools |
-| `apps/chat` | The AI chat reference app: threads, messages and model events; offline scripted or HTTP streaming `Model` implementations; JSON conversation storage and views composed from the kit |
-
-Renderers and icons depend only on `octara-primitives` in production. Core depends on primitives
-and `octara-text` plus the component macro; the text engine depends only on primitives within
-the workspace. Kit and shell use the appropriate lower public APIs. The CLI reads their
-canonical definitions and prelude aliases from the sources the application builds with.
-`tools/check_layers.py` enforces permitted production edges, including optional and target-specific
-dependencies. Dev dependencies may use the runtime to host integration tests.
-
-## Inside `octara`
-
-| Module | Responsibility |
-| --- | --- |
-| `reactive` / `task` | Dependency propagation, scope execution and teardown, scheduled work |
-| `kernel` | Retained document, styles, text and editing geometry, layout, semantic and paint output |
-| `view` | Construction, property bindings and structure coordination |
-| `app` | App/Window ownership, entry boundaries, input routing, layout feedback, frame preparation and presentation |
-| `platform` | Host protocols and headless adapters; consumes document editing/layout data |
-| `inspect` / `capture` / `diagnostics` | Observation, operations, capture workflow and registered explanations |
-
-Drawing and value modules are in `octara-primitives`; text layout and bundled fonts are in
-`octara-text`. Kernel owns editing and consumes text layouts. Kernel no longer imports App editing types
-or platform-owned cursor/layout types. App/View/task still share same-crate lifecycle coordination;
-the package split does not claim those remaining internal boundaries are already separate crates.
-
-
-### Source layout
-
-The primitive modules live in `crates/octara-primitives/src/`; the runtime implementation follows responsibility:
-
-```text
-crates/octara/src/
-├── reactive/
-│   ├── mod.rs                 public reactive exports and on_cleanup
-│   ├── graph.rs               graph storage, tracking and propagation
-│   ├── graph/
-│   │   ├── signal.rs          Signal/ReadSignal, memo, watch and public helpers
-│   │   ├── scope.rs           scope ownership, named state, context and teardown
-│   │   └── tests.rs           graph and lifetime regressions
-│   ├── list.rs                incremental collections
-│   ├── text.rs                text buffers
-│   ├── seq.rs                 internal ordered/weighted index
-│   └── log.rs                 bounded change history
-├── task.rs                    scheduler, task identity/ownership and public exports
-├── task/
-│   ├── time.rs                app-clock waits and intervals
-│   ├── background.rs          worker pool and one-shot/native replies
-│   ├── channel.rs             channel ownership, waits and named receivers
-│   ├── channel/tests.rs       channel-private invariant tests
-│   ├── async_memo.rs          async derivations and result admission
-│   ├── tests.rs               scheduler and cross-primitive lifetime regressions
-│   └── test_support.rs        shared test-only drop/wake probes
-├── app.rs                     App/Window state, entry boundaries and lifecycle
-└── app/
-    ├── frame.rs               mounting and bounded frame/layout preparation
-    ├── presentation.rs        native view synchronization, capture and presentation
-    └── …                      existing input, focus, IME, time and interaction modules
-```
-
-The new implementation submodules are private. Public primitives are re-exported through the
-existing `reactive` and `task` paths; moved methods remain inherent App/Window methods. Helpers
-shared across child files use at most their enclosing module's visibility where possible;
-channel internals remain private, with their tests colocated beneath that module. The primitive package owns moved value types; the remaining runtime modules stay in this crate.
-CLI `vocab` resolves public paths and cross-crate prelude exports to their defining files.
-
-## App and windows
-
-Initial resources use `AppConfig` (theme, owned text engine and target-platform conventions),
-consumed by `App::with_config` before any window is opened. `App::new` uses bundled-font defaults;
-the desktop shell's `Options.app` uses system fonts by default and is consumed on first resume.
-Chat supplies its theme there, without a startup task. Runtime theme, font, target-platform and
-Reduce Motion changes share the App's resource-write path (`app/resources.rs`): caller and App
-admission precede mutation; affected windows invalidate before the outer update settles.
-Kernel's shared Resources and resource constructor/setters/notification hooks are internal.
-Standalone Kernel tests use private assembly; public `Kernel::default` owns independent defaults.
-Window owns feedback registration, geometry projections and release (`app/feedback.rs`).
-View's `size_of` / `following_tail` delegate to it; virtual lists and Canvas register scoped
-measurement callbacks. Hooks are automatically removed with their scope and all remaining
-feedback is released when the window closes. Sampling releases tree/registry borrows before
-publishing geometry; callbacks run outside registry borrows, with eligibility checked between
-callbacks. Frame/consistency traversal also releases the window-order borrow before invoking
-window code. The existing four layout / sixteen App rounds remain bounded and recoverable.
-Further content/API work is tracked in [TODO](TODO.md#init-architecture-refactor-2026-11-17).
-
-- `App` is a handle on the app's state: the reactive runtime, the scheduler and its clock, the
-  resources every window's kernel reads (theme, text system), the platform, and the windows. A
-  `Window` is a handle on one window's state: its kernel, interaction, size and scale, root
-  scope and platform window. Closing a window disposes its scope and frees it.
-- `Window::kernel()` reads the retained tree; windows expose no mutable Kernel borrow. Views
-  update nodes through bindings and events so scope cleanup, focus, IME and frame delivery stay
-  coordinated. Configure the text engine before mounting with `AppConfig` and `App::with_config`;
-  runtime engine replacement is removed. Use semantic scroll events for scrolling. Counter resets, the benchmark layout switch and the reference-rendering culling
-  switch are explicit instrumentation controls; they do not grant tree mutation access.
-- Platform inspection is read-only too: `App::platform()` and `Window::platform_window()` expose
-  their protocols without mutable borrows. The desktop shell mutates its private `WindowHost`
-  adapter's native state; closing the window drops that adapter. Apps use scoped clipboard and
-  window operations, and headless tests configure host capabilities before opening.
-- The reactive runtime carries one owner (a window): every binding, memo, watch and task runs as
-  the window that made it, so free functions (`state`, `spawn`, `current_window`) need no
-  context passed.
-- Every input is an `InputEvent` through `Window::event`, recordable and replayable; after each
-  operation every window settles and presents a `Frame` (native view changes, text input, redraw)
-  to its platform window. See [the core](design/core.md).
-
-## A frame
-
-1. A signal changes; the bindings that read it rerun, each writing one kernel property. Component
-   functions do not rerun and the tree is not diffed. Structure (`show`, `each`) inserts and
-   removes nodes with their scopes.
-2. A property change marks its categories (layout, paint, text, semantics); only layout changes
-   make the next frame lay out again.
-3. `settle_frame`: run ready tasks, flush the reactive graph, lay out with taffy (cached per
-   node), run after-layout hooks (virtual lists measure rows, scroll state, canvas sizes) and
-   repeat while they change something (four rounds at most, then `LAYOUT_LOOP`). An unfinished
-   attempt preserves pending work and withholds native/platform frame publication; later update
-   boundaries can recover. [Window completion](design/window-completion.md) defines the outcome.
-4. The display list is built from the tree in paint order (shadows, quads, images, icons,
-   canvases, glyphs, paths, clips, opacity layers), with moving properties sampled at the app's
-   time, skipping subtrees that cannot show; unchanged and at rest, the last one is reused.
-   Renderers draw it.
-5. When assistive technology is active, the shell sends AccessKit what changed: nodes whose
-   semantics, children or place changed, and subtrees new to it. Each node is placed in its
-   parent's space (a scroll container's offset is its own), so moving or scrolling sends one
-   node, not its subtree.
-
-## Kernel
-
-- **View builders** carry one content enum, with input, image, icon and native settings attached
-  to the matching payload. They derive the Kernel kind and mount only that content's bindings.
-  Incompatible content-specific calls fail at the builder caller. Only containers hold application
-  children; styles, handlers and semantic properties remain shared on `El`.
-- **Nodes** live in a slotmap (`NodeId`); each has a role, semantics, handlers, styles and state
-  overrides, and one **content**: a container owning children, text owning runs/internal links, a text input (value, composition, selection,
-  scroll), an image, an icon, a canvas recording or a native view. Its `Kind` follows from the content.
-- **Internal links** remain inspectable/focusable nodes, owned only by their text and absent from
-  Taffy's child lists. Structural writes cannot create, detach, move or destroy a link independently.
-  Reconciliation preserves unchanged UTF-8 ranges with the same target and retires replacements;
-  neither run position nor test id is an identity key. See [text contracts](design/text.md#rich-text).
-- **Styles** resolve against the theme (semantic tokens, scales, breakpoints) and the node's
-  states (hover, focus, pressed, disabled, touch, window size class); inherited text properties
-  flow down. View bindings retain their declaration positions and replace their own patches;
-  the Kernel receives the ordered base and applies its existing overrides. Static-only elements
-  need no slot cache. Missing tokens are diagnostics.
-- **Layout** is taffy (flexbox and grid); texts and inputs are measured by the text engine, which
-  caches by `TextKey` (a node and a slot) per paragraph and width.
-- **Motion**: changed visual and layout properties can move (springs, curves) on the app clock;
-  presented values are sampled per frame; leaving subtrees stay as ghosts until they finish.
-- **Semantics**: roles, names, values, states and actions feed AccessKit and the inspector from
-  one place; `check` judges unnamed controls, unlabeled canvases, contrast and target sizes.
-
-## Rendering
-
-- The display list is plain data in logical pixels; every item names its source node.
-- The CPU reference renderer is deterministic: screenshots for agents and tests, and the oracle
-  the GPU renderer is compared with (at most two levels per channel).
-- The GPU renderer (wgpu) draws instanced SDF quads, shadows, images, glyph masks and path masks
-  with one WGSL shader; glyphs (swash) and paths (kurbo strokes, zeno coverage) are rasterized
-  on the CPU by code both renderers share, into atlases that start over when full.
-- See [rendering](design/rendering.md) and [vector graphics](design/vector-graphics.md).
-
-## Input, focus, async
-
-Pointer recognizers (tap, double, long press, secondary, drag, swipe with momentum), focus order
-and groups, keymap and commands ([input](design/input.md)); tasks, timers, channels and resources
-owned by scopes on the app clock ([async](design/async.md)).
-
-## Agent runtime
-
-- `octara::inspect`: the semantic tree with test ids, bounds, actions, source locations and
-  component boundaries; requests (tap, type, key, advance, settle, size, theme, expect, …) over
-  JSON lines; `check` across themes and sizes.
-- Kernel owns tree identity and read-only node facts, with no Inspector dependency. `inspect::tree`
-  and `inspect::pick` project those facts into the protocol. `app::TargetGuard` checks typed
-  tree/node identity and focus between operation phases; only Inspector encodes opaque tokens.
-  Window's `inspect`, `pick` and `target` are convenience calls into that adapter.
-- What people point at: `pick` names the element at a point; a picking window (`mod+shift+c` in
-  debug shells) outlines what the pointer is over and copies the clicked element's line, with
-  the component that made it.
-- Diagnostics are registered codes with cause and doc anchor; tests keep the registry
-  complete.
-- By default the CLI builds a headless harness around an app's view (`[package.metadata.octara]
-  view`). `inspect --connect PATH` and `run --connect PATH` instead attach to a running desktop
-  app without building a harness. The `octara` skill teaches agents the framework
-  ([agent knowledge](design/agent-knowledge.md)).
-- The winit shell's [live inspector](design/agent-context.md) is opt-in through
-  `OCTARA_INSPECT=/absolute/path.sock` on Unix. One client sends ordered JSON-line requests;
-  the shell executes them on the main thread against the actual `App`, windows and Kernels.
-  Queries return the existing semantic values, bounds, source locations, diagnostics and pending
-  work. Replies identify the realtime clock, input route and supported operations.
-- Live tap/double-tap/long-press/type/key requests use framework input dispatch; they do not inject
-  OS input. Multi-stage gestures wait on wall time while the event loop continues, validating the
-  target again before completing. `size` requests the native client-area size and confirms the
-  actual window, GPU surface and framework viewport agree within five seconds; `live.resize`
-  reports the requested and actual dimensions. `settle` also waits on wall time. Captures run asynchronously through
-  the window's GPU renderer and return the existing capture report without exiting the app;
-  display-pixel requests retain the report's explicit fallback behavior.
-
-Further dependency tracing or watch delivery must serve a concrete tool task. The Agent performs
-improvement through its ordinary edit, run and observe loop.
-
-The [Chat reference app](../apps/chat/README.md) tracks the current answer and title request per
-conversation. Stop, replacement and deletion retire receivers before cancelling the transport;
-queued or late events cannot update retired messages or release a newer answer's queue. Component
-cleanup closes outstanding requests. Store clones serialize disk effects and discard stale saves
-so an older worker cannot overwrite a newer save or recreate a deleted conversation.
-
-## Platforms
-
-| Platform | GPU target | Current integration and remaining work |
+| 层 | 拥有什么 | 向上一层提供什么 |
 | --- | --- | --- |
-| macOS | Metal | winit shell with AppKit web/map islands, menus and alert sheets; owned backend planned |
-| Windows | D3D12 | winit shell; native menus and WebView2 in DirectComposition planned |
-| Linux | Vulkan / GLES | winit shell; native menu bar and texture islands (WPE WebKit) planned |
-| iOS | Metal | UIKit integration and mobile shell planned (P4) |
-| Android | Vulkan / GLES | Android Views integration and mobile shell planned (P4) |
+| 基础值与协议 | 坐标、范围、图像、绘制和平台消息的数据表示 | 可在窗口之外创建、比较、传递的 Rust 值 |
+| 反应式运行时 | 状态、依赖、执行权限、作用域和任务生命周期 | 对值的读写、派生、订阅与释放 |
+| 视图与窗口 | 组件挂载身份、保留树、布局结果、焦点、命中、命令路由和交互会话 | 内容构造、函数组合、绑定和少量需要窗口协调的行为 |
+| 宿主与绘制器 | 原生事件、输入法、系统坐标、窗口表面、平台视图及呈现回执 | 实现内核定义的协议。无窗口实现可控制时间，桌面实现接收系统事件 |
+| 组件与应用 | 控件的交互约定、外观、业务对象和产品策略 | 可替换的组件函数与完整应用 |
 
-CI is configured to build and test all three desktop platforms and run the platform conformance
-suite in real windows on macOS and Windows. Linux's real-window behavior and the full range of
-desktop input, accessibility and native integration still need platform verification.
+宿主和组件库都是内核的使用方。窗口通过协议请求系统工作，生产依赖由适配器指向内核。绘制器只需要基础绘制数据。应用可直接用视图接口构造完整界面；组件库的公开实现也应能被应用复写。[包依赖检查](../tools/check_layers.py) · [组件库入口](../crates/octara-kit/src/lib.rs)
 
-Desktop windows use system UI fonts and fallback by default. Headless tests and reference
-screenshots can use bundled fonts for deterministic output. File dialogs are provided by rfd;
-macOS uses AppKit for context menus, the menu bar and alert sheets. Other desktops draw menus
-and prompts in the window, and tooltips are currently drawn on every desktop.
+## 怎样判定一个公开原语
 
-## Known limits
+| 设计决定 | 桌面与移动端的理由 |
+| --- | --- |
+| 保留函数组合、通用容器、文字与图像内容 | 工具栏、卡片、表单行都能由内容和布局组成。横排与纵排共享容器身份，只改变布局参数。函数调用本身无需分配节点或建立作用域 |
+| 保留文本编辑和滚动视口的专门能力 | 编辑器需要同步回答系统对组合区、选区和候选窗锚点的查询。视口需要协调裁剪、可见范围和剩余位移。二者都跨越组件边界 |
+| 把动作、焦点、可访问名称和状态附着在实际交互对象上 | 同一动作可能来自鼠标、快捷键、辅助技术或 Agent。工具栏图标可以更换，动作的可用性和接收者仍应一致 |
+| 让 Button、Tabs、Menu、Dialog 和表单策略留在组件层 | 这些组件提供完整键盘行为和默认外观。弹层定位、焦点恢复可由窗口共享，选项排序、选中策略和对话框内容由组件或应用决定 |
+| 以场景证明新的公开入口 | 先尝试用现有接口表达。如果必须复制窗口状态、绕过系统协议，或两个组件各自认为自己接管了同一次输入，再提出最小的新契约 |
 
-- **One thread.** Layout, display list, rasterization of glyphs and paths, and GPU submission run
-  on the main thread (as in Rune and GPUI); the display list is data, so a render thread can
-  come later.
-- **Frames cost what shows.** Painting and hit testing skip subtrees whose drawing cannot reach
-  the clip (each node knows how far its drawing reaches past its box), and a frame with nothing
-  changed and nothing moving reuses the last display list (`bench -- --frames`: 0 µs idle,
-  about 70 µs for a 5000-node list after a change, release build). Accessibility updates are
-  incremental (4 nodes and about 40 µs after a press in that list, against 0.4 ms for the whole
-  tree). Debug builds check both against a full rebuild every time they are reused or sent.
-- **The shell is winit's**: it implements the [platform layer](design/platform.md)'s traits
-  (clipboard, waker, multiple windows, native views, text input). On macOS, an owned
-  `NSTextInputClient` child view answers document, selection, replacement and geometry queries
-  synchronously; winit still owns the window and ordinary input delivery. Native tooltips and
-  an owned macOS window backend remain open.
-- **Native views**: macOS overlay web views and underlay maps are built
-  ([Native Island](design/native-island.md)); Windows and Linux are designed.
-- **Live inspection**: the opt-in transport currently requires Unix sockets (macOS/Linux).
-  Live virtual `advance` remains rejected; the realtime host does not virtually advance the app
-  clock. Native resize can be constrained or refused by the window system and reports actual
-  dimensions on failure. A focused nonsecure editor exposes committed text, UTF-8/UTF-16
-  selection, the displayed draft and marked range, preedit selection and caret geometry in the
-  same snapshot; secure editors omit this context. Native queries reuse the text layout engine
-  when the input method asks about a draft before its next frame. IME composition belongs to
-  the focused field and is cancelled when that owner
-  changes. Framework input does not qualify OS focus, IME or native gesture behavior; the
-  [OS-input fixture](../examples/IME.md) records real keyboard/Chinese IME checks separately.
-  Inspector operations can retain opaque window/tree or node targets across reads and reject
-  replaced allocations before further input. The actual hot-reload path retires tree targets.
-  `octara launch` records the executable identity for guarded live scripts and compares recorded
-  workspace Rust sources. See [running builds](design/agent-context.md#verify-the-running-build).
-  Richer sampled property information remains open.
-- **Update and sample boundaries**: frames are submitted per window and display lists are pulled
-  later. The first runtime refactor restores mounted callback owners, retires cancelled asks and
-  revisits windows invalidated by later windows. Bounded unfinished reactive/window work remains
-  inspectable. Stronger publication/native geometry contracts remain in the
-  [runtime architecture](design/runtime-contract.md).
+绘制区域、原生嵌入等专门入口可按需要导入。这个分类描述责任，不要求为表中每一项建立新类型、crate 或同名构造函数。[当前视图接口](design/ui-primitives.md)
 
-## Out of scope
+## 三种身份
 
-A custom VM, bytecode or Plan interpreter, a custom language or contract DSL, a JavaScript runtime,
-a web target, a custom GPU backend or
-layout algorithm, dynamic plugins over an unstable ABI, and multi-threaded rendering designed in
-advance.
+业务 key 表示“哪个文件”，由应用定义。挂载身份表示“这一代行或编辑器”，由框架维护。观察目标表示“Agent 刚才看到的这个对象”。排序可以保留前两者；行销毁后，同一个业务 key 再次出现会得到新的挂载身份。Agent 持旧观察目标操作时应收到过期反馈。应用选择把草稿保存在文件模型还是编辑会话，从而决定离开视口后是否恢复。显示名和行号都可能改变。[集合身份](design/reactive-core.md#4-identity-and-state) · [Agent 操作](design/agent-knowledge.md)
+
+## 一次输入如何成为一帧
+
+1. 宿主上报带窗口、位置或焦点上下文的事件。窗口依据最近生效的几何和输入会话确定接收者。
+2. 接收者可以预览、消费部分输入、提交动作或取消。编辑草稿与已提交值分开保存。接管方在同一次输入里能看到前一方已经消费的部分。
+3. 业务状态改变后，Signals 更新相关绑定。窗口完成布局，把同一次更新的坐标变换提供给绘制、命中、文本光标和语义范围。需要把窗口坐标换成屏幕坐标的操作由宿主完成。
+4. Agent 读回语义、焦点、状态和动作结果。内核完成布局、宿主收到帧、屏幕显示像素是三个可分别验证的事实。系统候选窗还需要系统侧观测。
+
+已有代码包含绑定、窗口更新、桌面检查和原生文本桥。跨组件拖动的交接与取消、移动端系统返回以及各输出使用一致几何的完整性，列为设计验收项。[窗口更新](design/core.md) · [验收清单](TODO.md)
+
+## 怎样判断架构收敛了
+
+应用能用函数和公开能力实现上述场景，组件无需保存第二份焦点、滚动位置或已提交文本。每次交接都能说清状态属于谁，旧对象何时失效，取消后哪些变化仍有效。Agent 能在真实窗口观察结果，且记录能说明输入来自框架、辅助技术还是操作系统。达到这些条件后，再把反复出现的写法提升为公共 API。[参考机制与取舍](research/README.md)

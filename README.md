@@ -1,185 +1,30 @@
 # Octara
 
-**Agent-first native apps. Built with Rust.**
+Octara 是一个用 Rust 编写原生界面的框架。视图由普通函数组合，Signals 驱动属性更新，窗口保存可跨帧复用的节点。应用可以在无窗口环境中运行交互测试，也可以让 Agent 连接正在运行的桌面窗口，读取控件语义并验证操作结果。
 
-[octara.dev](https://octara.dev)
+## 从哪里开始
 
-Octara is an Agent-Native Application Platform being designed for AI agents to
-build, inspect, test, and ship cross-platform native applications using Rust.
-It combines fine-grained reactivity, a retained UI tree, GPU rendering, and native
-platform capabilities with inspection and testing built into the runtime.
+| 如果你想 | 从这里读起 |
+| --- | --- |
+| 写一个可运行、可测试的界面 | [入门指南](docs/start-here.md) |
+| 判断一个能力应该放在内核、宿主还是组件库 | [架构设计](docs/ARCHITECTURE.md) |
+| 看桌面和移动交互如何推导出原语 | [交互时序](docs/design/interaction-scenarios.md) |
+| 区分已有实现、设计目标和待验收项 | [路线图](docs/ROADMAP.md)与[工作清单](docs/TODO.md) |
+| 运行桌面示例或配置流式模型服务 | [示例与验证](examples/README.md)或 [Chat 使用说明](apps/chat/README.md) |
 
-**Status:** early development. The reactive core, incremental collections, virtualization,
-retained UI tree, headless runtime, component kit, CPU/GPU renderers and CLI are implemented.
-The winit desktop shell supports multiple windows, with deeper native integration on macOS
-(web views, maps, menus and alerts). The AI chat reference app exercises streaming Markdown,
-tasks and conversation storage with an offline scripted model or a configured HTTP streaming
-model. Mobile shells, packaging and
-the broader native SDK remain future work; see [Architecture](docs/ARCHITECTURE.md) and
-[TODO](docs/TODO.md) for the current boundaries.
+## 运行
+
+在仓库根目录使用 stable Rust，工作区最低版本为 1.100。第一条命令打开桌面窗口，第二条查询当前源码里的 API。
 
 ```sh
-cargo test                                            # workspace tests; GPU checks where available
-cargo run --release -p octara-examples --bin bench    # benchmark tables
-cargo run -p octara-chat                              # the AI chat reference app
+cargo run -p octara-examples --bin window -- counter
+cargo run -q -p octara-cli -- vocab state
 ```
 
-```rust
-use octara::prelude::*;
-use octara_kit::{button, switch};
+桌面宿主使用 winit，macOS 另有系统文本输入、菜单和原生视图适配。移动交互用于推导设计，iOS 和 Android 宿主仍待实现。各层依赖由仓库脚本检查。[桌面宿主](crates/octara-shell/src/) · [分层检查](tools/check_layers.py)
 
-fn counter() -> View {
-    let count = state("count", || 0);
-    let fast = state("fast", || false);
-    col()
-        .child(text(move || format!("Count: {}", count.get())).id("count").text_lg())
-        .child(
-            row()
-                .child(button("+1").id("inc").on_press(move || count.update(|n| *n += if fast.get() { 10 } else { 1 })))
-                .child(switch(fast).id("fast").label("Count by ten"))
-                .items_center()
-                .gap_2(),
-        )
-        .p_4()
-        .gap_3()
-        .into()
-}
-```
+## 本地构建
 
-## Principles
+重复验证时，使用同一套工具链、编译配置和 Cargo 缓存路径。更换 `CARGO_TARGET_DIR` 时，也要把新的二进制路径交给默认从 `target/debug` 读取的窗口验证脚本。磁盘空间紧张时，可用 `du -sh target` 看占用，再用 `cargo clean --release --dry-run` 预览清理范围。每次验证生成的截图、日志和 socket 有各自的生命周期。[仓库约定](AGENTS.md) · [Cargo 构建缓存](https://doc.rust-lang.org/cargo/reference/build-cache.html)
 
-- **Agent first:** make UI structure, actions, updates, and diagnostics observable.
-- **Rust only:** expose Rust APIs for applications and the framework, without
-  requiring a JavaScript runtime.
-- **Fine-grained reactivity:** use scoped Signals, Memos, and Effects to update
-  individual UI properties.
-- **GPU first:** render the default UI with wgpu.
-- **Native extensibility:** treat native views and operating system modules as
-  first-class capabilities.
-- **Cross-platform:** deliver desktop support first while preserving architectural
-  boundaries for iOS and Android.
-
-## Architecture
-
-```mermaid
-flowchart TD
-    API[Declarative Rust UI] --> Reactive[Scoped Reactive Runtime]
-    Reactive -->|Property bindings| Tree[Retained UI Tree]
-    Tree --> Layout[Taffy Layout]
-    Tree --> Text[Parley Text]
-    Tree --> Semantics[Semantics and AccessKit]
-    Layout --> GPU[wgpu Renderer]
-    Text --> GPU
-    Layout --> Native[Native View Islands]
-    API --> Modules[Native Modules and OS APIs]
-    Agent[Agent Runtime] <--> Reactive
-    Agent <--> Tree
-    Agent <--> Modules
-```
-
-The default update path is:
-
-**Signal → Reactive Effect → UI Property → Incremental Layout / Scene Update.**
-
-Ordinary property updates should preserve component instances and UI node identity.
-Structural changes such as conditional views and keyed lists require explicit
-scope and child-lifecycle handling.
-
-## Four product layers
-
-| Layer | Planned responsibility |
-| --- | --- |
-| UI Framework | Rust components, Signals, retained UI, layout, text, GPU rendering |
-| Native SDK | Operating system capabilities and native view integration |
-| Development Toolchain | Project creation, builds, preview, debugging, packaging |
-| Agent Runtime | Semantic inspection, typed interaction, causal traces, replay, verification |
-
-## Platform targets
-
-| Platform | Planned GPU backend | Native integration | Delivery target |
-| --- | --- | --- | --- |
-| macOS | Metal | AppKit | Initial desktop release |
-| Windows | D3D12 | Win32 / WinUI | Initial desktop release |
-| Linux | Vulkan / GLES | Texture islands (WPE WebKit) | Initial desktop release |
-| iOS | Metal | UIKit | Later mobile phase |
-| Android | Vulkan / GLES | JNI / Android Views | Later mobile phase |
-
-These are architectural targets, not a current support matrix.
-
-## Design documents
-
-- [Architecture](docs/ARCHITECTURE.md)
-- [Roadmap](docs/ROADMAP.md)
-- [TODO](docs/TODO.md)
-- [Reactive core](docs/design/reactive-core.md)
-- [UI primitives and component layering](docs/design/ui-primitives.md)
-- [Research](docs/research/): Rune, Exact, prior art, signals implementations, papers
-
-## Rust toolchain
-
-Octara follows the latest stable Rust, with Rust 1.100 as its minimum and Edition 2024.
-`rust-toolchain.toml` selects `stable`; run `rustup update stable` to refresh an installed
-local toolchain. CI updates stable before every build. The Rust version floor is declared
-once in the workspace and inherited by every package; it does not pin the development compiler.
-
-### Local build cache
-
-Reuse the workspace's ignored `target/` for development and tests. Keep the profile, features,
-target architecture and compiler settings consistent for repeat work. Desktop verification
-scripts find executables in `target/debug` by default. After a run, remove its temporary outputs
-such as screenshots, logs and sockets. Cargo can reuse its compiled artifacts and Octara's
-generated headless harness on the next run.
-
-If disk space is tight, inspect usage with `du -sh target`. Preview targeted cleanup with
-`cargo clean --release --dry-run` for an unused release build or
-`cargo clean --workspace --dry-run` for workspace members while keeping compiled dependencies.
-If DWARF size is the main cost, a consistent `CARGO_PROFILE_DEV_DEBUG=line-tables-only`
-retains file and line information for backtraces with less debug data. Changing the setting
-builds a different set of artifacts. [Cargo clean](https://doc.rust-lang.org/cargo/commands/cargo-clean.html) ·
-[Cargo profiles](https://doc.rust-lang.org/cargo/reference/profiles.html#debug)
-
-Cargo's `build.build-dir` or `CARGO_BUILD_BUILD_DIR` can relocate intermediate artifacts
-while keeping the final executable paths. A full `cargo clean` clears both configured
-directories. Rust 1.100's layout reduces cache collisions. Cross-workspace deduplication and
-automatic cleanup of compiled artifacts are future Cargo work. [Cargo build cache](https://doc.rust-lang.org/cargo/reference/build-cache.html) ·
-[Rust 1.100 release](https://blog.rust-lang.org/2026/11/12/Rust-1.100.0/#reducing-cargo-cache-collisions)
-
-## Repository
-
-| Path | Contents |
-| --- | --- |
-| `crates/octara` | `reactive`, `kernel`, `view`, `app`, `platform`, `inspect`, `capture` |
-| `crates/octara-primitives` | Window-independent drawing, geometry, theme values, motion and presentation protocols |
-| `crates/octara-text` | Text shaping, line breaking, font management and text geometry |
-| `crates/octara-macros` | `#[component]` |
-| `crates/octara-kit` | Components and streaming Markdown |
-| `crates/octara-render` | CPU reference and wgpu renderers |
-| `crates/octara-shell` | Desktop windows, input, accessibility and native integration |
-| `crates/octara-cli` | Checks, semantic inspection, scripted driving, API lookup and agent skill installation |
-| `crates/octara-icons` | Lucide icons as path data |
-| `crates/octara-fonts` | Bundled CJK subset for deterministic tests and screenshots |
-| `examples` | Example apps, shared scenarios, tests and the benchmark |
-| `apps/chat` | The AI chat reference app, with offline and HTTP streaming models |
-
-Production dependencies point downwards: core and the renderers consume `octara-primitives`;
-core also consumes `octara-text`, which depends only on primitives within the workspace.
-Renderers and icons do not depend on the App runtime or text engine. `octara::prelude` provides convenient
-type imports; canonical drawing/value APIs live in `octara_primitives`. Run
-`python3 tools/check_layers.py` to check package boundaries (also enforced in CI).
-The implemented split and remaining work are recorded in [package boundaries](docs/design/package-boundaries.md).
-
-The core and agent tooling are exercised through headless interaction tests, incremental
-consistency checks, input replay and CPU/GPU rendering comparisons. CI is configured to build
-and test on macOS, Windows and Linux, with real-window platform conformance checks on macOS
-and Windows. These checks do not establish complete platform support.
-
-## License
-
-Octara is licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT license](LICENSE-MIT), at your option. Bundled assets keep their own licenses: the Lucide
-icons ([ISC](crates/octara-icons/LICENSE-LUCIDE)), and the Inter and IBM Plex Mono fonts
-([SIL Open Font License](crates/octara-text/assets/fonts/)).
-
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion
-in Octara by you, as defined in the Apache-2.0 license, shall be dual licensed as above,
-without any additional terms or conditions.
+项目按 [MIT](LICENSE-MIT) 或 [Apache-2.0](LICENSE-APACHE) 许可发布。

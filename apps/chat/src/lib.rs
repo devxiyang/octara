@@ -1,4 +1,4 @@
-//! The AI chat reference app ([core](../../../docs/design/core.md) step 7): conversations in a
+//! The AI chat reference app ([app guide](../README.md)): conversations in a
 //! sidebar, a transcript following its answer as it streams, a composer that queues what is sent
 //! while an answer streams. It is built only from Octara's general mechanisms and the kit's
 //! components; the chat itself (its data, its model, its flows) lives here.

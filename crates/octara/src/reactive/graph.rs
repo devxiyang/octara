@@ -1,4 +1,4 @@
-//! The reactive graph (design: `docs/research/reactive-design-v2.md`).
+//! The reactive graph and its [execution and identity rules](../../../../docs/design/reactive-core.md).
 //!
 //! Layers and their contexts:
 //! - inputs: signals and named state, written only from handlers and `watch` callbacks;

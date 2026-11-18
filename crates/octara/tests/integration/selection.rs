@@ -1,4 +1,4 @@
-//! Document selection ([text core](../../../../docs/design/text.md) step 2): the texts of a
+//! Document selection ([text layout and selection](../../../../docs/design/text.md)): the texts of a
 //! selectable region selected as one document by drag, word, block, Shift, `mod+a`; copied as
 //! text; rows of a virtual list keep their part while they scroll out and back, and copy reads
 //! the rows that are not mounted.

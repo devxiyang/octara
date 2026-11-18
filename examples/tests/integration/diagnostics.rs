@@ -1,6 +1,6 @@
 //! Diagnostics regression tests: each variant contains one deliberate mistake and asserts how it
 //! surfaces (a diagnostic code, a panic, or correct behaviour when the API rules it out).
-//! Mistake ids follow `docs/design/reactive-core.md`.
+//! The [reactive guide](../../../docs/design/reactive-core.md) explains the reported causes.
 
 use octara::prelude::*;
 use octara_examples::scenarios::{Check, press};

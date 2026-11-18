@@ -1,4 +1,4 @@
-//! Rich text ([text core](../../../../docs/design/text.md) step 1): runs over one string, drawn
+//! Rich text ([text layout and selection](../../../../docs/design/text.md)): runs over one string, drawn
 //! in their styles; links as elements of their own, pressed by name, by point, by key and by
 //! assistive technology; restyling reshapes only what changes shape; kept glyphs.
 

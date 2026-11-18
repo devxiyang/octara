@@ -1,4 +1,4 @@
-//! Example apps (specs: `examples/README.md`).
+//! Example apps ([running the examples](../README.md)).
 
 use octara::app::Window;
 use octara::prelude::*;

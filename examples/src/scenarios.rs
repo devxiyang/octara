@@ -1,5 +1,5 @@
 //! Shared scenarios for the example apps: acceptance tests, hot-reload scenarios and benchmark
-//! steps, written against `octara::testing::Host`. Specs: `examples/README.md`.
+//! steps, written against `octara::testing::Host`. See the [example guide](../README.md).
 
 pub use octara::app::Window;
 pub use octara::app::{DEFAULT_VIEWPORT, Event, Work};

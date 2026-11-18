@@ -1,145 +1,40 @@
-# Chat reference app
+# 运行 Chat
 
-Run the normal app with `cargo run -p octara-chat`. With `OPENROUTER_API_KEY` already set in
-the environment, it connects to OpenRouter's `deepseek/deepseek-v4.1-flash`. Without network
-configuration it uses the offline Scripted model. Conversations and explicitly saved settings
-stay in the application data directory (`OCTARA_CHAT_DIR` overrides that location).
+在仓库根目录运行 `cargo run -p octara-chat`。可以创建会话、流式阅读回复、停止或重新生成、调整模型和输出设置。Chat 是消费框架的一款桌面应用；通用原语的验收场景见[框架架构](../../docs/ARCHITECTURE.md)。
 
-The desktop design uses a warm reading surface, a quiet navigation sidebar, restrained green
-accents, a centered transcript and a composer kept separate from scrolling messages. The
-welcome cards put an editable prompt in the composer; they never submit automatically.
-The compact layout replaces the sidebar with a modal conversation list.
+## 选择后端
 
-Messages now persist stable part IDs and their next-ID allocator in `<thread>.v2.json`.
-The previous positional-part `<thread>.json` files are neither loaded nor overwritten/deleted
-by this format. There is no compatibility loader; use the new format for current sessions.
-
-
-To use an HTTP model, configure `OCTARA_CHAT_ENDPOINT` with a complete Chat Completions
-endpoint and `OCTARA_CHAT_MODEL` with its model name. `OCTARA_CHAT_API_KEY` optionally
-supplies the bearer token. The configured model is selected first; Scripted remains
-available in the picker. Incomplete configuration fails at startup instead of silently
-falling back. See [NETWORK.md](NETWORK.md) for local HTTP verification, configuration,
-supported streaming events, cancellation and Agent observations.
-
-The gear button opens conversation settings: model, optional temperature and optional output
-token limit. Cancel discards the draft; Save persists it; Restore defaults is itself a draft
-change until saved. Active and queued requests retain their captured settings. See
-[SETTINGS.md](SETTINGS.md) for semantics, verification commands and screenshots.
-
-## Model selection
-
-The header uses the kit's searchable Combobox. Search supports ordinary text editing and IME;
-Up/Down highlight a result, Enter chooses it, and Escape closes the picker. The composer stays
-mounted, preserving its draft and selection. Long model names are truncated in the header and
-shown in full by its tooltip. `model-search`, `model-option-<stable ID>` and Inspector's
-`active_descendant` expose the current search and highlight.
-
-Applications configure models with an explicit ID:
-
-```rust
-use octara_chat::{ModelEntry, Options};
-use octara_chat::engine::Scripted;
-use std::rc::Rc;
-
-let options = Options {
-    models: vec![ModelEntry::new("offline", Rc::new(Scripted::default()))],
-    ..Options::default()
-};
-```
-
-`ModelEntry.id` identifies the configured entry, independently of its display name, list
-position or provider's HTTP `model` string. IDs must be nonempty and unique; duplicate display
-names are allowed. IDs appear in control identifiers, so use application keys without endpoints
-or credentials. The normal executable registers `network` and `scripted`.
-
-`Chat.model` holds `Option<String>`. Reordering or renaming configuration across a reload keeps
-the selected ID. Removing it makes the selection unavailable instead of selecting another entry
-at its previous index. With no available selection, Send/Retry/Regenerate are disabled, keyboard
-submission preserves the draft and attachments, and an existing request's Stop still works.
-
-| Action | Model used |
+| 启动环境 | 应用行为 |
 | --- | --- |
-| Select a model while an answer streams | The active request continues with its captured model |
-| Send, edit and resend, Retry, or Regenerate | Capture the current selection before changing the conversation |
-| Generate the first answer and its title | Both use the same captured model, even if a callback changes selection |
-| Send while already answering | The queued message stores the model selected when Send was pressed |
-| Automatic queue release or Send now | Use that queued model; later picker changes do not retarget it |
-| Edit a queued message | Restore its draft and model choice; choose another model before resending if desired |
-| Stop | Cancel the active request's transport, regardless of the current picker selection |
+| 无模型服务配置 | 使用离线 Scripted 后端，可验证界面、队列和取消 |
+| 设置 `OPENROUTER_API_KEY` | 使用应用内置的 OpenRouter 预设 `deepseek/deepseek-v4.1-flash` |
+| 设置 `OCTARA_CHAT_ENDPOINT` 和 `OCTARA_CHAT_MODEL` | 连接指定的完整 Chat Completions 地址与模型。`OCTARA_CHAT_API_KEY` 是可选的专用凭据，显式配置优先 |
+| 设置 `OCTARA_CHAT_DIR` | 将会话与保存的设置放在指定目录，便于隔离测试 |
+| 设置 `OCTARA_CHAT_TIMEOUT_SECS` | 配置连接或读取空闲超时，取值 1 至 600 秒，默认 60 秒 |
 
-Each queued row shows its bound model. A queued entry whose model is no longer configured stays
-queued; Send now is disabled until it is edited with an available model or removed. There is no
-silent fallback. See [MODEL_SELECTION.md](MODEL_SELECTION.md) for HTTP and real-window evidence.
+新会话存储写入 `<thread>.v2.json`。较早的 `<thread>.json` 文件仍留在原处，当前版本只加载新格式。启动配置和网络事件可在[网络测试](tests/network.rs)中核查。
 
-## Long-session verification
+## 请求何时确定
 
-The `long_session` example opens the unchanged Chat UI with an isolated 1,000- or
-10,000-message history and a controllable streaming Model. The headless regression,
-real-window recording commands, Release CPU benchmark, source references and observed
-results are documented in [LONG_SESSION.md](LONG_SESSION.md).
+模型以稳定 ID 保存。用户按发送或将消息加入队列时，应用捕获模型及当时生效的设置。流式输出途中切换模型只影响之后创建的请求。停止或重新生成会退休旧请求；迟到的增量、错误和结束事件不能再写入新回复或释放新队列。取消设置对话框会丢弃草稿，保存才更新配置。[模型身份测试](tests/model_identity.rs) · [生命周期测试](tests/lifecycle.rs)
 
-High-rate input, selection, scrolling and cancellation workloads, measurement boundaries
-and the Exact/Rune design references are in [RESPONSIVENESS.md](RESPONSIVENESS.md).
-
-## Request lifecycle verification
-
-The headless lifecycle tests and real-window fixture use a controllable model which retains its
-old senders after cancellation. This reproduces in-flight text and terminal events without a
-network service or timing-dependent sleeps. The fixture also attempts late events from inside
-the transport's cancel callback.
-
-Build the fixture and CLI, then run the desktop check:
+## 离线与本地 HTTP 验证
 
 ```sh
-cargo build -p octara-chat --example lifecycle -p octara-cli --bin octara
-python3 apps/chat/live_lifecycle.py
+cargo test -p octara-chat --test lifecycle --test network --test model_picker
+cargo test -p octara-chat --test long_session --test responsiveness
 ```
 
-The script opens the actual Chat UI, uses the live Inspector for input and observation, and
-checks stopping, a replacement answer, queued questions, regeneration after stopping and after
-completion, deletion of a streaming conversation, and restart. In a separate store it also
-checks keyboard activation of a welcome card, removal of one of two identically named
-attachments, an attachment-only Send, and A → B → A queue ownership with an unchanged
-composer target. The attachment checks answer the live file prompt through Inspector.
-Streaming, stopped, replacement and restored states are captured with the window's GPU renderer.
-Its isolated store, screenshots, window log and JSONL transcripts stay in the printed temporary
-directory. An explicit `--output DIRECTORY` must name an empty directory. The script only stops
-the child windows it started.
-
-The `lifecycle.*` commands belong to this verification example. They release model data and
-assert request counts; they are not part of the normal Chat executable. The log records each
-late-event delivery attempt, including those rejected because the receiving request has retired.
-Chat interactions use the product's normal controls and the framework input route.
-
-To open the fixture manually, supply an isolated store and Inspector socket:
+需要对照真实窗口与 HTTP 服务时，先将本地测试服务指向一个全新目录。它运行在前台，并把完整地址写入目录中的 `endpoint.txt`。
 
 ```sh
-OCTARA_CHAT_DIR=/tmp/octara-chat-fixture OCTARA_INSPECT=/tmp/octara-chat.sock \
-  cargo run -p octara-chat --example lifecycle
+python3 apps/chat/serve_network_fixture.py --output /tmp/octara-chat-peer
 ```
 
-After sending a question, a live `invoke` of `lifecycle.reply.0.text` releases its first text;
-`lifecycle.reply.0.done` ends that reply. The ordinal counts model reply requests from zero in
-that process. `late` and `failed` release stale data, even after cancellation. All of these
-commands require the corresponding reply to have started.
+另开终端，使用该地址和独立的数据目录。测试服务不需要凭据。
 
+```sh
+OCTARA_CHAT_ENDPOINT="$(cat /tmp/octara-chat-peer/endpoint.txt)" OCTARA_CHAT_MODEL=local-fixture OCTARA_CHAT_DIR=/tmp/octara-chat-session cargo run -p octara-chat
+```
 
-## Composition and ownership
-
-`root(options)` creates the product's explicit `scope("Chat", ..)`, constructs its model, then
-calls `view(&Chat)`. Applications and fixtures that already own a model can call `view(&chat)`
-in their window root or explicit scope. The view creates UI-local state in that owner; use a
-separate scope per instance. Deferred content and callbacks clone model handles, while listing
-state is passed explicitly. No Chat/Listing context provider is required. Keeping the model in
-an App owner allows closing/reopening its window without disposing the model's draft/history;
-closing a root-owned Chat still follows that scope's lifecycle.
-
-The composer stays mounted across conversations. Its queue alone is keyed by the open
-conversation. That region filters the shared queue by a fixed thread ID and keeps row targets
-while the same conversation is open. Switching away retires those targets while its answer and
-queued requests stay owned by the model.
-
-`Chat::can_send` and `Chat::send` use the same eligibility check. A trimmed message or a local
-file reference supplies draft content. The selected model and generation options must also be
-valid. The Send button, keyboard submit and accessible activation all go through `Chat::send`.
+窗口验证脚本各有专用 fixture 和 `--help`。请求停止与队列见[生命周期验证](live_lifecycle.py)，请求使用的实际模型见[模型选择验证](live_model_selection.py)，设置持久化见[设置验证](live_settings.py)，长段落、滚动位置和窗口缩放见[长会话观测](observe_long_session.py)。性能记录应保留输入途径、样本量和窗口尺寸。
