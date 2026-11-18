@@ -16,7 +16,7 @@ fn view() -> View {
         .child(row().id("card").p_3().rounded_lg().border().bg(Token::Surface).child(text("Hello").id("hello")).overlay(
             move || open.get(),
             Placement::BELOW,
-            || text("menu").id("menu").bg(Token::Background).into(),
+            || text("menu").id("menu").bg(Token::Background),
         ))
         .child(col().id("list").h(40).overflow_y_scroll().children((0..10).map(|i| text(format!("row {i}")).id(format!("r{i}")))))
         .child(text("one two three four five six").id("clamped").w(40).line_clamp(2))
@@ -64,7 +64,7 @@ fn quads_glyphs_and_clips_in_order() {
 
 #[test]
 fn opacity_and_theme_reach_the_colors() {
-    let app = Window::headless(|| el().id("box").size_8().bg(Token::Accent).opacity(0.5).into());
+    let app = Window::headless(|| el().id("box").size_8().bg(Token::Accent).opacity(0.5));
     let fill = app.display_list().quads().next().unwrap().fill.unwrap();
     assert!((fill.components[3] - 0.5).abs() < 1e-6);
     app.app().set_theme(Theme::dark());
@@ -95,7 +95,6 @@ mod ellipsis {
                 .child(text("A sentence far too long for its box").id("cut").w(px(120.0)).truncate())
                 .child(text("Fits").id("fits").w(px(120.0)).truncate())
                 .child(text("One two three four five six seven eight nine ten eleven twelve").id("clamped").w(px(120.0)).line_clamp(2))
-                .into()
         })
     }
 
@@ -131,7 +130,6 @@ mod shadows {
                 .p_8()
                 .child(el().id("card").size_16().rounded_md().bg(Token::Surface).shadow_md())
                 .child(el().id("own").size_8().shadow([BoxShadow::new(2.0, 3.0, rgb(0xff0000)).blur_radius(4.0).spread_radius(1.0)]))
-                .into()
         });
         let n = app.kernel().find("card").unwrap();
         let dl = app.display_list();
@@ -161,14 +159,14 @@ mod gradients {
 
     #[test]
     fn gradients_resolve_tokens_and_follow_states_and_themes() {
-        let mut app =
-            Window::headless(|| {
-                col()
-                    .child(el().id("g").size_16().bg(Token::Surface).hover(|p| {
-                        p.bg(linear_gradient(90.0, linear_color_stop(Token::Accent, 0.0), linear_color_stop(Token::Surface, 1.0)))
-                    }))
-                    .into()
-            });
+        let mut app = Window::headless(|| {
+            col().child(
+                el().id("g")
+                    .size_16()
+                    .bg(Token::Surface)
+                    .hover(|p| p.bg(linear_gradient(90.0, linear_color_stop(Token::Accent, 0.0), linear_color_stop(Token::Surface, 1.0)))),
+            )
+        });
         let v = app.kernel().visual_of("g").unwrap();
         assert_eq!((v.background, v.gradient), (Some(Theme::light().get(Token::Surface)), None));
         app.dispatch(Event::Hover("g".into(), true)).unwrap();
@@ -199,7 +197,6 @@ fn an_unchanged_frame_is_reused() {
                     .on_press(move || on.update(|v| *v = !*v)),
             )
             .child(el().id("moving").size_8().bg(move || if on.get() { Token::Danger } else { Token::Surface }).motion(Spring::SNAP))
-            .into()
     });
     let built = |app: &Window| app.kernel().frames_built();
     let first = app.display_list();

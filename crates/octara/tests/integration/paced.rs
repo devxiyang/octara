@@ -12,7 +12,7 @@ fn setup() -> (App, Window, TextBuffer) {
     let app = App::new(HeadlessPlatform::default());
     let source = app.run(|| TextBuffer::new("Hi. "));
     let s = source.clone();
-    let w = app.open_window(WindowOptions::new("Paced"), move || text(paced(&s)).id("shown").into()).unwrap();
+    let w = app.open_window(WindowOptions::new("Paced"), move || text(paced(&s)).id("shown")).unwrap();
     (app, w, source)
 }
 
@@ -85,7 +85,7 @@ fn selectable_setup(initial: &'static str) -> (App, Window, TextBuffer) {
     let stream = source.clone();
     let window = app
         .open_window(WindowOptions::new("Paced selection"), move || {
-            col().size_full().overflow_y_scroll().selectable().child(text(paced(&stream)).id("shown")).into()
+            col().size_full().overflow_y_scroll().selectable().child(text(paced(&stream)).id("shown"))
         })
         .unwrap();
     (app, window, source)

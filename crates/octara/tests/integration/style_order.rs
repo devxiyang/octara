@@ -28,7 +28,6 @@ fn declaration_order_survives_updates_in_either_order() {
             .child(el().id("static-last").size_8().opacity(early).opacity(0.7))
             .child(el().id("dynamic-last").size_8().opacity(0.7).opacity(early))
             .child(el().id("two-bindings").size_8().opacity(early).opacity(late))
-            .into()
     });
     assert_eq!(opacity(&window, "static-last"), 0.7);
     assert_eq!(opacity(&window, "dynamic-last"), 0.2);
@@ -60,15 +59,12 @@ fn replacing_a_patch_restores_earlier_properties_and_defaults() {
         let width = state("width", || 70);
         on_command("toggle", move || active.update(|v| *v = !*v));
         on_command("width", move || width.set(90));
-        col()
-            .size_full()
-            .child(
-                el().id("panel")
-                    .h(20)
-                    .style_with(move |p| p.w(width.get()))
-                    .style_with(move |p| if active.get() { p.w(120).opacity(0.3) } else { p }),
-            )
-            .into()
+        col().size_full().child(
+            el().id("panel")
+                .h(20)
+                .style_with(move |p| p.w(width.get()))
+                .style_with(move |p| if active.get() { p.w(120).opacity(0.3) } else { p }),
+        )
     });
     assert_eq!((rect(&window, "panel").2, opacity(&window, "panel")), (120.0, 0.3));
     window.invoke("toggle").unwrap();
@@ -105,7 +101,6 @@ fn shorthand_and_longhand_follow_their_authored_positions() {
                     .child(el().id("c").size(10))
                     .child(el().id("d").size(10)),
             )
-            .into()
     });
     for changed in [false, true] {
         if changed {
@@ -124,19 +119,16 @@ fn state_and_screen_overrides_resolve_over_the_current_ordered_base() {
         let selected = state("selected", || false);
         on_command("width", move || width.set(100));
         on_command("select", move || selected.update(|v| *v = !*v));
-        col()
-            .size_full()
-            .child(
-                el().id("panel")
-                    .h(20)
-                    .style_with(move |p| p.w(width.get()))
-                    .w(80)
-                    .bg(Token::Surface)
-                    .selected(selected)
-                    .when_medium(|p| p.w(120))
-                    .style_when(State::SELECTED, |p| p.w(160)),
-            )
-            .into()
+        col().size_full().child(
+            el().id("panel")
+                .h(20)
+                .style_with(move |p| p.w(width.get()))
+                .w(80)
+                .bg(Token::Surface)
+                .selected(selected)
+                .when_medium(|p| p.w(120))
+                .style_when(State::SELECTED, |p| p.w(160)),
+        )
     });
     assert_eq!(rect(&window, "panel").2, 120.0);
     window.invoke("select").unwrap();

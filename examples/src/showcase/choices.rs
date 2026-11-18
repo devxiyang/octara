@@ -91,7 +91,6 @@ pub fn card() -> El {
                     .child(text("选择目的地").font_semibold())
                     .child(combobox("dialog-city", "目的地 / Destination", selected, move || options.get()))
                     .child(button("完成").id("close-choices-dialog").on_press(move || dialog.set(false)))
-                    .into()
             },
         ))
         .child(text(move || if updated.get() { "选项已更新" } else { "原始选项" }).id("choices-revision").text_sm())

@@ -202,7 +202,6 @@ fn menu_commands_run_on_the_restored_editor_context_and_keep_its_selection() {
                 Menu::new("Edit").items([MenuItem::action("Copy", "edit.copy"), MenuItem::action("Context", "editor.context")])
             }))
             .child(text(move || result.get()).id("result"))
-            .into()
     });
     window.tap("editor").unwrap();
     window.set_selection(4, 7);
@@ -225,18 +224,19 @@ fn menu_inside_a_dialog_restores_the_editor_without_dismissing_its_enclosing_mod
         let open = state("dialog", || false);
         let menu = state("menu", || false);
         let value = state("value", || "draft".to_owned());
-        col()
-            .size_full()
-            .p_4()
-            .child(button("Open").id("open").on_press(move || open.set(true)))
-            .child(dialog("dialog", "Editor", open, DialogOptions::default(), move || {
+        col().size_full().p_4().child(button("Open").id("open").on_press(move || open.set(true))).child(dialog(
+            "dialog",
+            "Editor",
+            open,
+            DialogOptions::default(),
+            move || {
                 col()
                     .gap_2()
                     .child(text_field(value).id("editor").label("Editor").w_full())
                     .child(menu_button("edit", "Edit", menu, || Menu::new("Edit").item(MenuItem::action("Copy", "edit.copy"))))
                     .into()
-            }))
-            .into()
+            },
+        ))
     });
     window.tap("open").unwrap();
     window.press_key("mod+a").unwrap();
@@ -265,7 +265,6 @@ fn context_menu_requests_share_the_submenu_keyboard_and_typeahead_implementation
                 });
             }))
             .child(text(move || result.get()).id("result"))
-            .into()
     });
     window.secondary_tap("context").unwrap();
     window.press_key("m").unwrap();
@@ -285,14 +284,9 @@ fn context_menu_requests_share_the_submenu_keyboard_and_typeahead_implementation
 fn a_submenu_without_enabled_items_still_handles_left_and_escape() {
     let mut window = Window::headless(|| {
         let open = state("open", || false);
-        col()
-            .size_full()
-            .p_4()
-            .child(menu_button("empty", "Menu", open, || {
-                Menu::new("Menu")
-                    .item(MenuItem::submenu(Menu::new("Unavailable").item(MenuItem::action("Unavailable", "missing").disabled())))
-            }))
-            .into()
+        col().size_full().p_4().child(menu_button("empty", "Menu", open, || {
+            Menu::new("Menu").item(MenuItem::submenu(Menu::new("Unavailable").item(MenuItem::action("Unavailable", "missing").disabled())))
+        }))
     });
     window.tap("empty").unwrap();
     window.press_key("right").unwrap();
@@ -341,7 +335,6 @@ fn deferred_commands_settle_explicit_focus_and_each_preceding_command_before_rou
                 invoke_after_update("context");
             }))
             .child(text(move || result.get()).id("result"))
-            .into()
     });
     window.tap("queue").unwrap();
     assert_eq!(focused(&window).as_deref(), Some("second"));
@@ -362,7 +355,6 @@ fn unavailable_or_runaway_deferred_commands_report_and_leave_no_work_queued() {
             .child(button("Loop").id("loop").on_press(|| invoke_after_update("loop")))
             .child(button("Unavailable").id("unavailable").on_press(|| invoke_after_update("missing.command")))
             .child(text(move || count.get().to_string()).id("count"))
-            .into()
     });
     window.tap("unavailable").unwrap();
     assert!(window.app().diagnostics().iter().any(|diagnostic| diagnostic.code == "COMMAND_UNHANDLED"));
@@ -381,13 +373,10 @@ fn closing_the_window_discards_its_deferred_commands() {
     let mut window = Window::headless(move || {
         let calls = calls.clone();
         on_command("closed.run", move || calls.set(calls.get() + 1));
-        col()
-            .size_full()
-            .child(button("Close").id("close").on_press(|| {
-                invoke_after_update("closed.run");
-                close_window(current_window());
-            }))
-            .into()
+        col().size_full().child(button("Close").id("close").on_press(|| {
+            invoke_after_update("closed.run");
+            close_window(current_window());
+        }))
     });
     window.tap("close").unwrap();
     assert!(window.is_closed());
@@ -414,7 +403,6 @@ fn a_hidden_or_disabled_retained_editor_stops_receiving_text_and_semantic_focus(
                     .child(text_field(draft).id("editor").label("Editor").disabled(move || disabled.get())),
             )
             .child(text(move || draft.get()).id("draft"))
-            .into()
     });
     window.tap("editor").unwrap();
     window.event(InputEvent::Preedit { text: "候选".into(), selection: None });
@@ -455,7 +443,6 @@ fn a_deferred_command_that_hides_the_editor_retires_its_context_before_the_next_
                     invoke_after_update("context");
                 }))
                 .child(text(move || result.get()).id("result"))
-                .into()
         });
     window.tap("editor").unwrap();
     window.tap("queue").unwrap();
@@ -489,7 +476,6 @@ fn a_task_or_focus_callback_closing_the_window_cancels_commands_before_dispatch(
                     }
                     invoke_after_update("closed.run");
                 }))
-                .into()
         });
         window.tap("queue").unwrap();
         assert!(window.is_closed());
@@ -507,7 +493,6 @@ fn semantic_focus_cannot_leave_an_open_modal() {
             .child(button("Outside").id("outside"))
             .child(button("Open").id("open").on_press(move || open.set(true)))
             .child(dialog("modal", "Modal", open, DialogOptions::default(), || button("Inside").id("inside").into()))
-            .into()
     });
     window.tap("open").unwrap();
     assert!(window.dispatch(Event::Focus("outside".into())).is_err());

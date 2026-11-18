@@ -384,7 +384,7 @@ fn closing_the_owning_window_cancels_transport_interest_and_rejects_delivery() {
     let current = model.index(Purpose::Reply, 0).unwrap();
     let title = model.index(Purpose::Title, 0).unwrap();
     let app = window.app();
-    let survivor = app.open_window(octara::platform::WindowOptions::new("Still open"), || col().size_full().into()).unwrap();
+    let survivor = app.open_window(octara::platform::WindowOptions::new("Still open"), || col().size_full()).unwrap();
     app.close_window(window.id());
     assert!(window.is_closed());
     assert!(!survivor.is_closed(), "the runtime stays alive after the chat owner closes");

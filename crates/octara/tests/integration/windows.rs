@@ -71,13 +71,12 @@ fn later_window_measurements_relayout_an_earlier_window() {
                     .size_full()
                     .child(el().id("measured").h_8().style_with(move |p| p.w(measured.get())))
                     .child(el().id("resize").role(Role::Button).label("Resize").size_8().on_press(move || width.set(220.0)))
-                    .into()
             })
             .unwrap();
         let b = app
             .open_window(WindowOptions::new("B"), move || {
                 watch(|| size_of("source").get().0, move |width, _| measured.set(*width));
-                col().size_full().child(el().id("source").h_8().style_with(move |p| p.w(width.get()))).into()
+                col().size_full().child(el().id("source").h_8().style_with(move |p| p.w(width.get())))
             })
             .unwrap();
         // The rebuild checker intentionally resets in-progress pointer gestures, including
@@ -107,21 +106,15 @@ fn later_window_measurements_present_native_props_in_an_earlier_window() {
     let (width, measured) = app.run(|| (state("width", || 100.0f32), state("measured", || 100.0f32)));
     let a = app
         .open_window(WindowOptions::new("A"), move || {
-            col()
-                .size_full()
-                .child(
-                    native_view("measurement")
-                        .id("native")
-                        .label("Measurement")
-                        .props(move || serde_json::json!({ "width": measured.get() })),
-                )
-                .into()
+            col().size_full().child(
+                native_view("measurement").id("native").label("Measurement").props(move || serde_json::json!({ "width": measured.get() })),
+            )
         })
         .unwrap();
     let _b = app
         .open_window(WindowOptions::new("B"), move || {
             watch(|| size_of("source").get().0, move |width, _| measured.set(*width));
-            col().size_full().child(el().id("source").h_8().style_with(move |p| p.w(width.get()))).into()
+            col().size_full().child(el().id("source").h_8().style_with(move |p| p.w(width.get())))
         })
         .unwrap();
 
@@ -149,7 +142,7 @@ fn cross_window_layout_feedback_is_bounded_and_can_recover() {
                     }
                 },
             );
-            col().size_full().child(el().id("source").h_8().style_with(move |p| p.w(width.get()))).into()
+            col().size_full().child(el().id("source").h_8().style_with(move |p| p.w(width.get())))
         }
     };
     let a = app.open_window(WindowOptions::new("A"), view(a_width, b_width)).unwrap();
@@ -187,12 +180,9 @@ fn app_run_inside_a_handler_keeps_shared_state_after_the_window_closes() {
         .open_window(WindowOptions::new("A"), move || {
             let captured = captured.clone();
             let nested = nested.clone();
-            col()
-                .size_full()
-                .child(el().id("share").role(Role::Button).label("Share").size_8().on_press(move || {
-                    captured.set(Some(nested.run(|| state("captured", || 7))));
-                }))
-                .into()
+            col().size_full().child(el().id("share").role(Role::Button).label("Share").size_8().on_press(move || {
+                captured.set(Some(nested.run(|| state("captured", || 7))));
+            }))
         })
         .unwrap();
 
@@ -215,7 +205,7 @@ fn app_run_preserves_pure_computation_write_restrictions() {
                 nested.run(|| count.set(1));
                 1
             });
-            col().size_full().child(text(move || value.get().to_string())).into()
+            col().size_full().child(text(move || value.get().to_string()))
         })
         .unwrap();
 
@@ -233,7 +223,7 @@ fn nested_app_run_reads_keep_the_callers_reactive_dependencies() {
         .open_window(WindowOptions::new("A"), move || {
             let nested = nested.clone();
             let doubled = memo(move || nested.run(|| count.get() * 2));
-            col().size_full().child(text(move || doubled.get().to_string()).id("doubled")).into()
+            col().size_full().child(text(move || doubled.get().to_string()).id("doubled"))
         })
         .unwrap();
 
@@ -259,7 +249,7 @@ fn reactive_feedback_stays_unsettled_until_later_input_stops_it() {
                     }
                 },
             );
-            col().size_full().child(text(move || count.get().to_string()).id("count")).into()
+            col().size_full().child(text(move || count.get().to_string()).id("count"))
         })
         .unwrap();
     app.set_check_consistency(true);
@@ -318,7 +308,7 @@ fn code_runs_as_the_window_it_belongs_to() {
             seen.update(|s| s.push(here));
             assert_eq!(current_window(), here, "a task runs as the window that spawned it");
         });
-        el().into()
+        el()
     };
     let a = app.open_window(WindowOptions::new("A"), view).unwrap();
     let b = app.open_window(WindowOptions::new("B"), view).unwrap();
@@ -333,25 +323,19 @@ fn code_runs_as_the_window_it_belongs_to() {
 #[test]
 fn a_handler_opens_a_window_at_the_end_of_its_frame() {
     #[ui]
-    fn preferences() -> View {
+    fn preferences() -> El {
         col()
             .size_full()
             .child(text("Preferences").id("title"))
             .child(native_view("preview").label("Preview").size_8().props(serde_json::json!({ "caption": "Preferences" })))
-            .into()
     }
 
     let (app, host) = recording_app();
     let mut main = app
         .open_window(WindowOptions::new("Main"), || {
-            el().id("open")
-                .role(Role::Button)
-                .label("Open")
-                .size_8()
-                .on_press(|| {
-                    open_window(WindowOptions::new("Preferences"), preferences).unwrap();
-                })
-                .into()
+            el().id("open").role(Role::Button).label("Open").size_8().on_press(|| {
+                open_window(WindowOptions::new("Preferences"), preferences).unwrap();
+            })
         })
         .unwrap();
     main.tap("open").unwrap();
@@ -461,7 +445,7 @@ fn pure_phases_cannot_open_or_close_windows() {
                     }
                     _ => unreachable!(),
                 };
-                label.id("probe").size_full().into()
+                label.id("probe").size_full()
             })
             .unwrap();
 
@@ -491,7 +475,7 @@ fn closing_a_window_in_its_opening_turn_skips_mount_and_presentation() {
             let options = WindowOptions::new("Canceled");
             let root = move || {
                 root_mounted.set(true);
-                text("Canceled").size_full().into()
+                text("Canceled").size_full()
             };
             if through_handle {
                 let window = app.open_window(options, root).unwrap();
@@ -515,9 +499,126 @@ fn closing_a_window_in_its_opening_turn_skips_mount_and_presentation() {
 }
 
 #[test]
+fn retiring_during_scope_mount_skips_remaining_content_and_presentation() {
+    struct DeferredContent(Rc<RefCell<Vec<&'static str>>>);
+
+    impl octara::view::IntoView for DeferredContent {
+        fn into_view(self, _: &'static std::panic::Location<'static>) -> View {
+            self.0.borrow_mut().push("content conversion");
+            text(move || {
+                self.0.borrow_mut().push("binding");
+                "Closing".to_owned()
+            })
+            .into()
+        }
+    }
+
+    for shutdown in [false, true] {
+        let (app, host) = recording_app();
+        let baseline = app.work().reactive_nodes;
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mounted = events.clone();
+        let window = app
+            .open_window(WindowOptions::new("Retiring"), move || {
+                let (first, later) = (mounted.clone(), mounted.clone());
+                col()
+                    .id("parent")
+                    .size_full()
+                    .child(scope("closing", move || {
+                        let cleaned = first.clone();
+                        on_cleanup(move || cleaned.borrow_mut().push("cleanup"));
+                        watch(
+                            || (),
+                            move |_, _| {
+                                if shutdown {
+                                    App::current().shutdown();
+                                } else {
+                                    close_window(current_window());
+                                }
+                            },
+                        );
+                        first.borrow_mut().push("factory finished");
+                        DeferredContent(first)
+                    }))
+                    .child(scope("later", move || {
+                        later.borrow_mut().push("later factory");
+                        text("Later")
+                    }))
+            })
+            .unwrap();
+
+        assert!(window.is_closed());
+        assert_eq!(app.is_shutdown(), shutdown);
+        assert!(!app.is_failed());
+        assert_eq!(app.work().reactive_nodes, baseline);
+        assert!(!window.kernel().exists("parent"));
+        assert!(host.borrow().frames.is_empty());
+        assert_eq!(host.borrow().dropped, [window.id()]);
+        let expected = if shutdown { ["cleanup", "factory finished"] } else { ["factory finished", "cleanup"] };
+        assert_eq!(*events.borrow(), expected);
+        assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+        app.shutdown();
+    }
+}
+
+#[test]
+fn retiring_from_a_content_factory_skips_its_conversion() {
+    struct Unconverted;
+
+    impl IntoView for Unconverted {
+        fn into_view(self, _: &'static std::panic::Location<'static>) -> View {
+            panic!("a retired factory must not convert its result");
+        }
+    }
+
+    fn retire() -> Unconverted {
+        watch(|| (), |_, _| close_window(current_window()));
+        Unconverted
+    }
+
+    #[derive(Debug)]
+    enum Factory {
+        Root,
+        Show,
+        Keyed,
+        AnchoredOverlay,
+        WindowOverlay,
+    }
+
+    for factory in [Factory::Root, Factory::Show, Factory::Keyed, Factory::AnchoredOverlay, Factory::WindowOverlay] {
+        let (app, host) = recording_app();
+        let options = WindowOptions::new("Retiring");
+        let window = match factory {
+            Factory::Root => app.open_window(options, retire),
+            Factory::Show => app.open_window(options, || show(|| true, retire)),
+            Factory::Keyed => app.open_window(options, || keyed(|| "key", |_| retire())),
+            Factory::AnchoredOverlay => app.open_window(options, || el().size_8().overlay(|| true, Placement::BELOW, retire)),
+            Factory::WindowOverlay => app.open_window(options, || el().overlay_window(|| true, retire)),
+        }
+        .unwrap();
+        assert!(window.is_closed(), "{factory:?}");
+        assert!(host.borrow().frames.is_empty());
+        assert_eq!(host.borrow().dropped, [window.id()]);
+        assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+        app.shutdown();
+    }
+}
+
+#[test]
+fn a_string_root_uses_the_headless_call_site_as_its_source() {
+    let line = line!() + 1;
+    let window = Window::headless(|| "Ready");
+    let kernel = window.kernel();
+    let node = kernel.children(kernel.root())[0];
+    let source = kernel.origin(node).unwrap();
+    assert_eq!(kernel.text(node), "Ready");
+    assert_eq!((source.file(), source.line()), (file!(), line));
+}
+
+#[test]
 fn closing_and_shutdown_release_hosts_even_when_window_handles_survive() {
     let (app, host) = recording_app();
-    let open = || app.open_window(WindowOptions::new("Same name"), || el().into()).unwrap();
+    let open = || app.open_window(WindowOptions::new("Same name"), || el()).unwrap();
     let first = open();
     let second = open();
     assert!(host.borrow().dropped.is_empty());
@@ -545,12 +646,12 @@ fn closing_and_shutdown_release_hosts_even_when_window_handles_survive() {
 fn closing_a_window_disposes_its_scope_and_frees_it() {
     let app = App::new(HeadlessPlatform::default());
     let ticks = app.run(|| state("ticks", || 0u32));
-    let _main = app.open_window(WindowOptions::new("Main"), || el().into()).unwrap();
+    let _main = app.open_window(WindowOptions::new("Main"), || el()).unwrap();
     let baseline = app.work().reactive_nodes;
     let view = move || {
         interval(Duration::from_millis(10), move || ticks.update(|t| *t += 1));
         let local = state("local", || 0u32);
-        text(move || local.get().to_string()).into()
+        text(move || local.get().to_string())
     };
     let w = app.open_window(WindowOptions::new("Ticking"), view).unwrap();
     app.advance(Duration::from_millis(25));
@@ -588,7 +689,6 @@ fn configured_resources_are_visible_during_build_and_first_frame() {
                     .items_start()
                     .child(text("Ready").id("label").text_size(px(20.0)))
                     .child(el().id("touch").w(px(30.0)).h_8().when_touch(|p| p.w(px(80.0))))
-                    .into()
             })
             .unwrap();
         let k = window.kernel();
@@ -607,7 +707,7 @@ fn configured_resources_are_visible_during_build_and_first_frame() {
 fn theme_and_text_engine_are_the_apps() {
     let app =
         App::with_config(HeadlessPlatform::default(), AppConfig { text_engine: Box::new(octara_text::MonoEngine), ..Default::default() });
-    let view = || text("Shared").id("label").into();
+    let view = || text("Shared").id("label");
     let a = app.open_window(WindowOptions::new("A"), view).unwrap();
     let b = app.open_window(WindowOptions::new("B"), view).unwrap();
     app.set_theme(Theme::dark());
@@ -626,7 +726,7 @@ fn two_windows_of_one_view_keep_their_own_state() {
     let app = App::new(HeadlessPlatform::default());
     let view = || {
         let n = state("n", || 0u32);
-        el().id("count").size_8().on_press(move || n.update(|n| *n += 1)).child(text(move || n.get().to_string()).id("n")).into()
+        el().id("count").size_8().on_press(move || n.update(|n| *n += 1)).child(text(move || n.get().to_string()).id("n"))
     };
     let mut a = app.open_window(WindowOptions::new("A"), view).unwrap();
     let b = app.open_window(WindowOptions::new("B"), view).unwrap();

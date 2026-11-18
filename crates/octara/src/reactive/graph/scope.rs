@@ -43,9 +43,24 @@ impl Runtime {
         self.scopes.borrow_mut()[parent.i as usize].scope_keys.insert(key)
     }
 
-    pub fn create_scope(&self, parent: Option<ScopeId>, segment: impl Into<ScopeSegment>) -> ScopeId {
+    /// A mount can lose its parent while an earlier factory or cleanup runs.
+    pub(crate) fn create_child_scope(&self, parent: ScopeId, segment: ScopeSegment) -> Option<ScopeId> {
+        self.assert_healthy();
+        self.scope_alive(parent).then(|| self.allocate_scope(Some(parent), segment))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn create_scope(&self, parent: Option<ScopeId>, segment: impl Into<ScopeSegment>) -> ScopeId {
+        let segment = segment.into();
+        match parent {
+            Some(parent) => self.create_child_scope(parent, segment).expect("live parent scope"),
+            None => self.allocate_scope(None, segment),
+        }
+    }
+
+    fn allocate_scope(&self, parent: Option<ScopeId>, segment: ScopeSegment) -> ScopeId {
         let mut path = parent.map_or_else(Vec::new, |p| self.scopes.borrow()[p.i as usize].path.clone());
-        path.push(segment.into());
+        path.push(segment);
         let make = |g| ScopeData {
             g,
             state: ScopeState::Live,
@@ -82,7 +97,7 @@ impl Runtime {
     }
 
     pub(crate) fn create_app_scope(&self) -> ScopeId {
-        let scope = self.create_scope(None, ScopeSegment::App);
+        let scope = self.allocate_scope(None, ScopeSegment::App);
         self.scopes.borrow_mut()[scope.i as usize].persistent_names = true;
         scope
     }

@@ -61,7 +61,7 @@ fn action(label: &'static str, id: &'static str, name: &'static str) -> View {
 }
 
 #[ui]
-fn virtual_row(key: u32, model: Model) -> View {
+fn virtual_row(key: u32, model: Model) -> El {
     let draft = state("draft", || SEED.to_owned());
     row()
         .id(format!("virtual-row-{key}"))
@@ -105,7 +105,6 @@ fn virtual_row(key: u32, model: Model) -> View {
                 .child("Drag this row")
                 .on_drag(move |drag| model.drags.update(|events| events.push(format!("{key}:{:?}", drag.phase)))),
         )
-        .into()
 }
 
 #[ui]

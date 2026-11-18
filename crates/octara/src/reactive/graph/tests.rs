@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn child_scope_allocation_requires_the_live_parent_generation_in_this_runtime() {
+    let rt = Runtime::new();
+    let parent = rt.create_app_scope();
+    let foreign = Runtime::new().create_app_scope();
+    assert_eq!((parent.i, parent.g), (foreign.i, foreign.g));
+    assert!(rt.create_child_scope(foreign, "foreign child".into()).is_none());
+
+    rt.dispose_scope(parent);
+    let reused = rt.create_app_scope();
+    assert_eq!(parent.i, reused.i);
+    assert_ne!(parent.g, reused.g);
+    assert!(rt.create_child_scope(parent, "stale child".into()).is_none());
+
+    let child = rt.create_child_scope(reused, "mounted".into()).unwrap();
+    rt.retire_scope_tree(reused);
+    assert!(!rt.scope_alive(child));
+    assert!(rt.create_child_scope(reused, "late child".into()).is_none());
+    assert_eq!(rt.scopes.borrow()[reused.i as usize].children, [child]);
+    rt.dispose_scope(reused);
+}
+
+#[test]
 fn released_cleanup_preserves_order_and_cannot_remove_a_reused_scopes_work() {
     let rt = Runtime::new();
     let calls = Rc::new(RefCell::new(Vec::new()));

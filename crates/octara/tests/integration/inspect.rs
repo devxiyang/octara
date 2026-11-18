@@ -38,7 +38,7 @@ fn a_snapshot_is_the_semantic_tree() {
 
 #[test]
 fn consistency_inspection_samples_targets_after_selection_work() {
-    let mut window = Window::headless(|| col().size_full().selectable().child(text("中文 hello").id("text")).into());
+    let mut window = Window::headless(|| col().size_full().selectable().child(text("中文 hello").id("text")));
     window.select(("text", 0), ("text", 6)).unwrap();
     assert_eq!(window.inspect().selection.as_deref(), Some("中文"));
     window.app().set_check_consistency(true);
@@ -82,7 +82,7 @@ fn requests_drive_the_app() {
 fn a_snapshot_reads_committed_and_preedit_state_with_explicit_units() {
     let mut app = Window::headless(|| {
         let value = state("value", || "A🙂你B".to_owned());
-        col().size_full().child(text_input().id("field").w(240).value(move || value.get()).on_input(move |text| value.set(text))).into()
+        col().size_full().child(text_input().id("field").w(240).value(move || value.get()).on_input(move |text| value.set(text)))
     });
     assert!(app.inspect().text_input.is_none());
     app.tap("field").unwrap();
@@ -247,7 +247,7 @@ fn an_async_memo_in_a_component_reports_nothing() {
     // `async_memo` keeps its state in framework signals, not the app's `Signal::new`.
     let app = Window::headless(|| {
         let r = async_memo(|| 1u32, |n: u32| async move { Ok::<u32, String>(n) });
-        text(move || format!("{:?}", r.with(|s| s.value().cloned()))).into()
+        text(move || format!("{:?}", r.with(|s| s.value().cloned())))
     });
     assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 }
@@ -275,7 +275,7 @@ fn targets_are_judged_by_the_platforms_minimum() {
 #[test]
 fn panic_feedback_preserves_unknown_delivery_and_allows_only_diagnostics() {
     for guarded in [false, true] {
-        let mut window = Window::headless(|| el().id("fail").size(40).on_press(|| panic!("inspector callback failed")).into());
+        let mut window = Window::headless(|| el().id("fail").size(40).on_press(|| panic!("inspector callback failed")));
         let request = if guarded {
             let target = window.inspect().find("fail").unwrap().target.clone();
             octara::serde_json::json!({"op": "tap", "id": "fail", "target": target}).to_string()

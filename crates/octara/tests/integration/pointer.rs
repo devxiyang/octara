@@ -148,8 +148,7 @@ fn a_long_press_timer_does_not_use_a_target_removed_in_the_same_clock_step() {
         col()
             .size_full()
             .child(text(move || count.get().to_string()).id("count"))
-            .child(show(move || alive.get(), move || el().id("hold").w(120).h(48).on_long_press(move || count.update(|n| *n += 1)).into()))
-            .into()
+            .child(show(move || alive.get(), move || el().id("hold").w(120).h(48).on_long_press(move || count.update(|n| *n += 1))))
     });
     let at = center(&app, "hold");
     touch(&mut app, Phase::Down, at);
@@ -175,7 +174,6 @@ fn becoming_disabled_during_a_hold_does_not_report_long_press_recognition() {
             .size_full()
             .child(text(move || count.get().to_string()).id("count"))
             .child(el().id("hold").w(120).h(48).disabled(move || disabled.get()).on_long_press(move || count.update(|n| *n += 1)))
-            .into()
     });
     let at = center(&app, "hold");
     touch(&mut app, Phase::Down, at);
@@ -313,8 +311,7 @@ fn driving_by_element_checks_what_a_person_could_reach() {
             .child(el().id("open").child("Open").on_press(move || open.set(true)))
             .child(el().id("target").w(px(80.0)).h(px(30.0)).on_press(move || n.update(|n| *n += 100)))
             .child(el().id("far").absolute().top(px(2000.0)).w(px(10.0)).h(px(10.0)).on_press(|| {}))
-            .child(show(move || open.get(), || el().id("cover").absolute().inset_0().bg(Token::Surface).into()))
-            .into()
+            .child(show(move || open.get(), || el().id("cover").absolute().inset_0().bg(Token::Surface)))
     });
     app.tap("Save").unwrap();
     app.tap("Add").unwrap();

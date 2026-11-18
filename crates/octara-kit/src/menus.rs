@@ -79,7 +79,6 @@ pub fn menu_button(id: &str, label: impl Into<String>, open: impl Model<bool>, m
                     },
                     move || dismiss.set(false),
                 )
-                .into()
             },
         )
 }

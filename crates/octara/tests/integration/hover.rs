@@ -108,9 +108,8 @@ fn hover_holds_while_layout_moves_under_a_still_pointer() {
             }))
             .child(col().child(each(
                 move || items.read_only(),
-                |id, _| el().id(format!("row-{id}")).w(100).h(20).hover(|p| p.bg(Token::SurfaceHover)).into(),
+                |id, _| el().id(format!("row-{id}")).w(100).h(20).hover(|p| p.bg(Token::SurfaceHover)),
             )))
-            .into()
     });
     let (x, y) = center(&app, "row-2");
     app.pointer_move(x, y);
@@ -142,7 +141,6 @@ mod tooltips {
                 .child(el().id("copy").size(24.0).focusable().on_press(|| {}).tooltip("Copy"))
                 .child(el().id("retry").size(24.0).on_press(|| {}).tooltip("Retry"))
                 .child(el().id("plain").size(24.0))
-                .into()
         })
     }
 
@@ -197,7 +195,6 @@ mod tooltips {
             row()
                 .child(el().id("a").size(24.0).label("Copy").tooltip("Copy"))
                 .child(el().id("b").size(24.0).label("Copy").tooltip("Copy the reply as Markdown"))
-                .into()
         });
         let tree = w.accessibility_tree();
         let desc = |id: &str| {

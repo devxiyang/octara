@@ -12,7 +12,6 @@ fn the_pointer_takes_the_look_of_what_it_is_over() {
             .child(col().id("doc").selectable().child(text(rich().text("Read ").link("the docs", "https://x.dev")).id("para")))
             .child(text("Not selectable").id("plain"))
             .child(el().id("handle").size_8().cursor_grab().child(text("grip").id("grip")))
-            .into()
     });
     fn cursor_at(w: &mut Window, (x, y): (f32, f32)) -> CursorStyle {
         w.pointer_move(x, y);

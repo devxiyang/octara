@@ -34,7 +34,7 @@ impl Harness {
                 let run = action.borrow_mut().take().unwrap();
                 run(&chat);
             });
-            el().size_full().into()
+            el().size_full()
         });
         Self { window, current, entries, action }
     }

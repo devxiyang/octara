@@ -104,20 +104,24 @@ impl Window {
     pub(super) fn mount_root(&self) {
         // Named by the window: state is kept by its scope's path (across a hot reload), so two
         // windows' roots never share a key.
-        let s = self.app.rt.create_scope(Some(self.app.root_scope), crate::identity::ScopeSegment::Window(self.w.id.number()));
+        let rt = &self.app.rt;
+        let Some(s) = rt.create_child_scope(self.app.root_scope, crate::identity::ScopeSegment::Window(self.w.id.number())) else { return };
         self.w.root_scope.set(Some(s));
         let parent = Parent { node: self.w.kernel.borrow().root(), root: self.w.root_slots.clone() };
         let root = self.w.root.clone();
-        self.app.rt.with_frame(Ctx::Build, None, Some(Some(s)), || {
-            let view = root();
-            if !self.is_closed() && !self.app.shutdown.get() {
-                mount(view, &parent, &self.w.root_slots);
+        rt.with_frame(Ctx::Build, None, Some(Some(s)), || {
+            mount(root(), &parent, &self.w.root_slots);
+            if rt.scope_alive(s) {
                 // What the window draws of its requests, above the app's view.
                 mount(asks::layer(), &parent, &self.w.root_slots);
             }
         });
-        self.app.rt.flush();
-        self.restore_interaction();
+        if rt.scope_alive(s) {
+            rt.flush();
+        }
+        if rt.scope_alive(s) {
+            self.restore_interaction();
+        }
     }
 
     /// Applies pending updates and lays out until nothing changes: after a layout, virtual

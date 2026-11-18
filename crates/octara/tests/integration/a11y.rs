@@ -17,7 +17,6 @@ fn semantic_names_agree_across_inspector_ax_lookup_and_diagnostics() {
             .child(text_input().id("input").w(200).value("not a name"))
             .child(text("concealed").id("concealed").a11y_hidden())
             .child(el().hidden().child(text("offscreen").id("offscreen")))
-            .into()
     });
     let initial = app.inspect();
     let ax = app.accessibility_update();
@@ -71,7 +70,6 @@ fn form_semantics_update_without_replacing_the_editor_or_its_target() {
             )
             .child(el().id("hint").label("Name").tooltip(move || if invalid.get() { "Name".to_owned() } else { "Enter a name".to_owned() }))
             .child(el().id("optional").required(false).invalid(false))
-            .into()
     });
     app.dispatch(Event::Focus("field".into())).unwrap();
     app.set_selection(1, 3);
@@ -172,7 +170,6 @@ fn a_value_is_announced_for_any_control() {
         col()
             .child(el().id("theme").role(Role::ComboBox).label("Theme").value("Dark").focusable().on_press(|| {}))
             .child(text_input().id("name").label("Name").value("Ada"))
-            .into()
     });
     let snap = app.inspect();
     assert_eq!(snap.find("theme").unwrap().value.as_deref(), Some("Dark"));
@@ -281,7 +278,7 @@ fn busy() -> View {
         .child(el().id("toggle").size_8().role(Role::Button).label("Toggle").on_press(move || open.update(|o| *o = !*o)))
         .child(show(
             move || open.get(),
-            || col().id("panel").child(text("Inside")).child(el().id("deep").role(Role::Button).label("Deep").on_press(|| {})).into(),
+            || col().id("panel").child(text("Inside")).child(el().id("deep").role(Role::Button).label("Deep").on_press(|| {})),
         ))
         .child(el().id("add").size_8().role(Role::Button).label("Add").on_press(move || {
             let n = next.get();
@@ -296,15 +293,9 @@ fn busy() -> View {
         .child(el().id("menu-button").size_8().role(Role::Button).label("Menu").on_press(move || menu.update(|m| *m = !*m)).overlay(
             move || menu.get(),
             Placement::BELOW,
-            || text("A menu item").id("menu-item").into(),
+            || text("A menu item").id("menu-item"),
         ))
-        .child(
-            col()
-                .id("list")
-                .h(100)
-                .overflow_y_scroll()
-                .child(each(move || items.read_only(), |i, _| text(format!("Item {i}")).h(30).into())),
-        )
+        .child(col().id("list").h(100).overflow_y_scroll().child(each(move || items.read_only(), |i, _| text(format!("Item {i}")).h(30))))
         .into()
 }
 
@@ -449,7 +440,7 @@ fn runs_and_the_selection_follow_changes() {
     let stream = live.clone();
     let mut w = app
         .open_window(octara::platform::WindowOptions::new("Chat"), move || {
-            col().id("chat").selectable().w(200.0).child(text("first").id("a")).child(text(&stream).id("live")).into()
+            col().id("chat").selectable().w(200.0).child(text("first").id("a")).child(text(&stream).id("live"))
         })
         .unwrap();
     // Every update below is checked against the whole tree in debug builds.
@@ -473,14 +464,11 @@ fn runs_and_the_selection_follow_changes() {
 fn a_selection_through_unmounted_rows_ends_at_the_mounted_runs() {
     let mut w = Window::headless(|| {
         let items = state_list("rows", || (0..1000u32).map(|i| (i, format!("Message {i}"))).collect::<Vec<_>>(), |m: &(u32, String)| m.0);
-        col()
-            .size_full()
-            .child(col().id("list").selectable().flex_1().overflow_y_scroll().child(virtual_each(
-                move || items.read_only(),
-                |_| 24.0,
-                |k, m| text(move || m.with(|m| m.1.clone())).id(format!("m{k}")).into(),
-            )))
-            .into()
+        col().size_full().child(col().id("list").selectable().flex_1().overflow_y_scroll().child(virtual_each(
+            move || items.read_only(),
+            |_| 24.0,
+            |k, m| text(move || m.with(|m| m.1.clone())).id(format!("m{k}")),
+        )))
     });
     w.select(("m3", 2), ("m20", 4)).unwrap();
     // Scroll row 3 out; row 20 stays.

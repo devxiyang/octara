@@ -14,7 +14,6 @@ fn text_field_updates_its_model_before_the_user_input_callback() {
             .id("field")
             .on_input(|_| panic!("replaced user callback"))
             .on_input(move |text| saved.borrow_mut().push((value.get(), text)))
-            .into()
     });
     window.dispatch(Event::Input("field".into(), "你好".into())).unwrap();
     assert_eq!(&*seen.borrow(), &[("你好".to_owned(), "你好".to_owned())]);
@@ -54,7 +53,6 @@ fn popup_preserves_editor_callbacks_and_consumes_only_its_keys() {
                 move |id| picks.borrow_mut().push(format!("pick:{id}")),
             ))
             .child(text_input().id("other").value("other"))
-            .into()
     });
     window.dispatch(Event::Focus("field".into())).unwrap();
     window.set_selection(3, 3);
@@ -81,11 +79,7 @@ fn toggle_callbacks_observe_the_bound_value_on_pointer_keyboard_and_accessibilit
         let mut window = Window::headless(move || {
             let value = state("value", || false);
             let saved = saved.clone();
-            control(value)
-                .id("toggle")
-                .on_toggle(|| panic!("replaced callback"))
-                .on_toggle(move || saved.borrow_mut().push(value.get()))
-                .into()
+            control(value).id("toggle").on_toggle(|| panic!("replaced callback")).on_toggle(move || saved.borrow_mut().push(value.get()))
         });
         window.tap("toggle").unwrap();
         assert_eq!(&*seen.borrow(), &[true]);
@@ -117,7 +111,6 @@ fn slider_preserves_numeric_pointer_drag_and_key_behavior_with_application_callb
                 keys.borrow_mut().push(format!("key:{:?}", event.key));
                 false
             })
-            .into()
     });
     window.dispatch(Event::NumericInput("slider".into(), 6.3)).unwrap();
     assert_eq!(&*seen.borrow(), &["numeric:6.3:6.5"]);
@@ -176,7 +169,6 @@ fn number_callbacks_observe_commits_without_rewriting_drafts_or_intercepting_ime
                     }),
             )
             .child(text_input().id("other"))
-            .into()
     });
     window.dispatch(Event::Focus("number".into())).unwrap();
     window.dispatch(Event::Input("number".into(), " 6.30 ".into())).unwrap();
@@ -230,7 +222,6 @@ fn custom_models_can_reject_or_transform_values_before_application_notification(
                     .id("number")
                     .on_submit(move || submit.borrow_mut().push(raw.get())),
             )
-            .into()
     });
     window.dispatch(Event::Toggle("toggle".into())).unwrap();
     assert_eq!(window.inspect().find("toggle").unwrap().checked, Some(false));
@@ -259,7 +250,6 @@ fn a_model_setter_closing_the_window_skips_application_notification() {
                     .on_submit(|| panic!("notification after setter retired scope")),
                 _ => unreachable!(),
             }
-            .into()
         });
         match kind {
             "toggle" => {
@@ -293,7 +283,7 @@ fn popover_preserves_trigger_callbacks_and_later_replacement_keeps_open_behavior
             });
             let popup =
                 if replace { popup.on_press(move || replacement.borrow_mut().push(format!("replacement:{}", open.get()))) } else { popup };
-            col().size_full().p_4().child(popup).into()
+            col().size_full().p_4().child(popup)
         });
         window.tap("details").unwrap();
         assert!(window.kernel().exists("details-popover"));
@@ -330,7 +320,6 @@ fn menu_button_keeps_opening_navigation_and_deferred_commands_with_application_c
                     }),
             )
             .child(text_input().id("editor").value("draft"))
-            .into()
     });
     window.dispatch(Event::Focus("editor".into())).unwrap();
     window.set_selection(1, 4);
@@ -366,12 +355,10 @@ fn popup_trigger_notification_can_close_the_window_after_its_model_updates() {
             } else {
                 octara_kit::popover("trigger", open, Placement::BELOW, octara_kit::button("Details"), || text("Details").into())
             };
-            trigger
-                .on_press(move || {
-                    assert!(open.get(), "the component updates before notifying");
-                    App::current().close_window(current_window());
-                })
-                .into()
+            trigger.on_press(move || {
+                assert!(open.get(), "the component updates before notifying");
+                App::current().close_window(current_window());
+            })
         });
         window.tap("trigger").unwrap();
         assert!(window.is_closed());

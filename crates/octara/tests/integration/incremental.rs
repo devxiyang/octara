@@ -23,7 +23,7 @@ fn stream(n: usize, motion: bool) -> (f64, f64, f64, f64) {
                     (0..n).map(|i| text(format!("Message {i} with a few words that wrap over the window's width at times.")).w(300.0)),
                 )
                 .child(text(&tail).id("tail").w(300.0));
-            if motion { c.motion(Spring::SNAP).into() } else { c.into() }
+            if motion { c.motion(Spring::SNAP) } else { c }
         })
         .unwrap();
     w.resize(400.0, 600.0);
@@ -72,9 +72,8 @@ fn a_moved_subtree_is_sent_at_its_root() {
         let shown = state("shown", || false);
         col()
             .child(button_like("toggle", move || shown.update(|s| *s = !*s)))
-            .child(show(move || shown.get(), || text("Inserted above").id("new").into()))
+            .child(show(move || shown.get(), || text("Inserted above").id("new")))
             .child(col().id("card").child(text("A").id("a")).child(text("B").id("b")))
-            .into()
     });
     let _ = w.accessibility_update();
     w.tap("toggle").unwrap();

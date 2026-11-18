@@ -205,7 +205,6 @@ pub fn combobox(
                                     pick.set(Some(pick_key.clone()));
                                     open.set(false);
                                 })
-                                .into()
                         },
                     ));
                 let empty_id = popup_id.clone();
@@ -216,9 +215,7 @@ pub fn combobox(
                     .child(list)
                     .child(show(
                         move || matches.with(Vec::is_empty),
-                        move || {
-                            text("No results").id(format!("{empty_id}-empty")).px_3().py_2().text_sm().text_color(Token::TextMuted).into()
-                        },
+                        move || text("No results").id(format!("{empty_id}-empty")).px_3().py_2().text_sm().text_color(Token::TextMuted),
                     ))
                     .into()
             },

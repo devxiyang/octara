@@ -148,7 +148,7 @@ fn select_works_from_the_keyboard() {
 /// component it records is the one the app wrote (`primary_button`, not the `button` inside).
 #[test]
 fn kit_components_point_at_the_app() {
-    let w = Window::headless(|| col().child(primary_button("Save").id("save")).into());
+    let w = Window::headless(|| col().child(primary_button("Save").id("save")));
     let snap = w.inspect();
     let save = snap.find("save").unwrap();
     let made = save.component.as_ref().expect("made by the kit");
@@ -163,7 +163,7 @@ fn an_icon_button_is_named_by_its_label_and_tooltip() {
     let p = pressed.clone();
     let mut app = Window::headless(move || {
         let p = p.clone();
-        row().child(icon_button(octara_icons::COPY, "Copy").id("copy").on_press(move || p.set(p.get() + 1))).into()
+        row().child(icon_button(octara_icons::COPY, "Copy").id("copy").on_press(move || p.set(p.get() + 1)))
     });
     let k = app.kernel();
     let n = k.find("copy").unwrap();
@@ -180,7 +180,7 @@ fn state_cell() -> std::rc::Rc<std::cell::Cell<u32>> {
 
 #[test]
 fn a_spinner_steps_round_on_the_clock() {
-    let app = Window::headless(|| row().child(spinner().id("busy")).child(spinner().id("busy2")).into());
+    let app = Window::headless(|| row().child(spinner().id("busy")).child(spinner().id("busy2")));
     assert!(app.app().diagnostics().is_empty(), "two spinners side by side: {:?}", app.app().diagnostics());
     let k = app.kernel();
     let n = k.find("busy").unwrap();
@@ -209,7 +209,6 @@ fn chips_and_callouts() {
                     .child(button("Retry").id("retry")),
             )
             .child(callout(PromptLevel::Info, "Saved", None).id("info"))
-            .into()
     });
     let k = app.kernel();
     let file = k.find("file").unwrap();
@@ -233,7 +232,6 @@ fn a_collapsible_opens_and_closes_its_content() {
         col()
             .child(collapsible("thinking", open, text("Thought for 3 s"), || text("Step one.").id("step").into()))
             .child(button("Open").id("open").on_press(move || open.set(true)))
-            .into()
     });
     let k = app.kernel();
     assert_eq!(k.role_of("thinking-trigger"), Some(Role::Button));
@@ -252,17 +250,13 @@ fn a_collapsible_opens_and_closes_its_content() {
 fn a_list_selects_and_moves_by_arrow_keys() {
     let mut app = Window::headless(|| {
         let selected = state("selected", || 0u32);
-        list()
-            .id("chats")
-            .child(list_header("Today").id("today"))
-            .children((0..3u32).map(move |i| {
-                list_item(text(format!("Chat {i}")))
-                    .id(format!("chat-{i}"))
-                    .selected(move || selected.get() == i)
-                    .on_press(move || selected.set(i))
-                    .on_focus(move || selected.set(i))
-            }))
-            .into()
+        list().id("chats").child(list_header("Today").id("today")).children((0..3u32).map(move |i| {
+            list_item(text(format!("Chat {i}")))
+                .id(format!("chat-{i}"))
+                .selected(move || selected.get() == i)
+                .on_press(move || selected.set(i))
+                .on_focus(move || selected.set(i))
+        }))
     });
     let k = app.kernel();
     assert_eq!(k.role_of("chats"), Some(Role::ListBox));
@@ -284,7 +278,6 @@ fn a_split_resizes_its_leading_pane() {
         let width = state("width", || 240.0f32);
         split("panes", width, el().id("side").size_full(), el().id("main").size_full())
             .child(text(move || format!("{}", width.get())).id("w"))
-            .into()
     });
     let pane = |app: &Window, id: &str| {
         let k = app.kernel();
@@ -333,7 +326,6 @@ fn a_splitter_uses_accepted_model_values_and_keeps_its_component_handlers() {
             )
             .child(text(move || drags.get().to_string()).id("drags"))
             .child(text(move || keys.get().to_string()).id("keys"))
-            .into()
     });
     let value = |window: &Window| window.kernel().value_of("grip").unwrap();
     window.drag("grip", 100.0, 0.0).unwrap();

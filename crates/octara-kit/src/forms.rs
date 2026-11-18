@@ -75,7 +75,7 @@ pub fn field(id: &str, label: impl Into<String>, control: El, info: impl Fn() ->
         )
         .child(show(
             move || !info.get().description.trim().is_empty(),
-            move || text(move || info.get().description).id(help_id.clone()).text_sm().text_color(Token::TextMuted).into(),
+            move || text(move || info.get().description).id(help_id.clone()).text_sm().text_color(Token::TextMuted),
         ))
         .child(show(
             move || info.get().error().is_some(),
@@ -86,7 +86,6 @@ pub fn field(id: &str, label: impl Into<String>, control: El, info: impl Fn() ->
                     .live(Live::Polite)
                     .text_sm()
                     .text_color(Token::Danger)
-                    .into()
             },
         ))
 }
@@ -214,15 +213,11 @@ pub fn radio_group(
                                 .child(show(
                                     move || item.with(|row| !row.description.trim().is_empty()),
                                     move || {
-                                        text(move || item.with(|row| row.description.clone()))
-                                            .text_color(Token::TextMuted)
-                                            .select_none()
-                                            .into()
+                                        text(move || item.with(|row| row.description.clone())).text_color(Token::TextMuted).select_none()
                                     },
                                 )),
                         )
                         .on_press(move || pick.set(Some(pick_key.clone())))
-                        .into()
                 },
             ))
             .into()

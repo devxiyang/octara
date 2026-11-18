@@ -181,7 +181,6 @@ fn segmented_choices_use_ids_radio_semantics_and_one_press_per_navigation() {
             .child(button("After").id("after"))
             .child(text(move || value.get().unwrap_or_else(|| "none".into())).id("chosen"))
             .child(text(move || writes.get().to_string()).id("writes"))
-            .into()
     });
     window.press_key("tab").unwrap();
     expect_focus(&window, "mode-option-one");
@@ -235,11 +234,9 @@ fn tabs_in_a_modal_keep_keyboard_activation_separate_and_restore_focus() {
                         .bg(Token::Surface)
                         .modal(true, move || open.set(false))
                         .child(tabs("modal-tabs", "Views", value, tab_options))
-                        .into()
                 },
             ))
             .child(text(move || value.get().unwrap_or_default()).id("chosen"))
-            .into()
     });
     window.tap("open").unwrap();
     expect_focus(&window, "modal-tabs-tab-one");
@@ -279,7 +276,6 @@ fn a_reentrant_tab_setter_can_remove_its_own_tab_and_move_focus() {
             ))
             .child(button("After").id("after"))
             .child(text(move || value.get().unwrap_or_default()).id("chosen"))
-            .into()
     });
     window.press_key("tab").unwrap();
     window.press_key("right").unwrap();
@@ -324,7 +320,6 @@ fn retained_panels_keep_editor_identity_composition_and_undo_during_option_chang
                     .style_with(move |p| if selected.get().as_deref() == Some("preview") { p.flex() } else { p.hidden() })
                     .child(text(move || draft.get())),
             )
-            .into()
     });
     window.tap("draft").unwrap();
     window.press_key("mod+a").unwrap();
@@ -368,7 +363,6 @@ fn navigation_wraps_narrow_labels_in_both_themes_and_touch_targets() {
                     .child(segmented("mode", "Mode", segment, || {
                         vec![RadioOption::new("one", "A longer segment label"), RadioOption::new("two", "Another choice")]
                     }))
-                    .into()
             });
             window.app().set_target_platform(octara::app::TargetPlatform::Ios);
             window.resize(width, 844.0);
@@ -403,28 +397,25 @@ fn controlled_choice_scopes_keep_handler_state_with_component_ids_across_reload(
         let (order, seen, cleaned) = (reversed.clone(), picks.clone(), retired.clone());
         let mut window = Window::headless(move || {
             let ids = if order.get() { ["right", "left"] } else { ["left", "right"] };
-            col()
-                .size_full()
-                .children(ids.map(|id| {
-                    let (seen, cleaned) = (seen.clone(), cleaned.clone());
-                    let model = (
-                        || None::<String>,
-                        move |_: Option<String>| {
-                            // Register once per mounted row, just as a handler can start owner-bound work.
-                            let local = state("handler-count", || if id == "left" { 10 } else { 20 });
-                            local.update(|n| *n += 1);
-                            seen.borrow_mut().push((id, local.get()));
-                            let cleaned = cleaned.clone();
-                            on_cleanup(move || cleaned.borrow_mut().push(id));
-                        },
-                    );
-                    match kind {
-                        "tabs" => tabs(id, id, model, || vec![TabOption::new("shared", "Choice")]),
-                        "segmented" => segmented(id, id, model, || vec![RadioOption::new("shared", "Choice")]),
-                        _ => radio_group(id, id, model, || vec![RadioOption::new("shared", "Choice")]),
-                    }
-                }))
-                .into()
+            col().size_full().children(ids.map(|id| {
+                let (seen, cleaned) = (seen.clone(), cleaned.clone());
+                let model = (
+                    || None::<String>,
+                    move |_: Option<String>| {
+                        // Register once per mounted row, just as a handler can start owner-bound work.
+                        let local = state("handler-count", || if id == "left" { 10 } else { 20 });
+                        local.update(|n| *n += 1);
+                        seen.borrow_mut().push((id, local.get()));
+                        let cleaned = cleaned.clone();
+                        on_cleanup(move || cleaned.borrow_mut().push(id));
+                    },
+                );
+                match kind {
+                    "tabs" => tabs(id, id, model, || vec![TabOption::new("shared", "Choice")]),
+                    "segmented" => segmented(id, id, model, || vec![RadioOption::new("shared", "Choice")]),
+                    _ => radio_group(id, id, model, || vec![RadioOption::new("shared", "Choice")]),
+                }
+            }))
         });
         let suffix = if kind == "tabs" { "tab" } else { "option" };
         for id in ["left", "right"] {

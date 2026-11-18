@@ -96,11 +96,10 @@ fn foundation_view() -> View {
                                             .h(36)
                                             .on_press(move || choose(value, open, index))
                                     }))
-                                    .into()
                             },
                         ),
                 )
-                .child(show(move || invalid.get(), || text("请输入城市").id("query-error").role(Role::Alert).live(Live::Polite).into())),
+                .child(show(move || invalid.get(), || text("请输入城市").id("query-error").role(Role::Alert).live(Live::Polite))),
         )
         .child(
             custom_action(row().child(text("→").id("send-icon")).child(text(move || format!("发送 {}", sent.get())).id("send-caption")))

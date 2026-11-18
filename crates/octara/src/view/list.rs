@@ -1,6 +1,6 @@
 //! Keyed rows from ordinary snapshots or incremental collections, with shared row ownership.
 
-use super::{Parent, Slot, Slots, View, ViewKind, build_el, col, count_offset, structure};
+use super::{El, Parent, Slot, Slots, View, build_el, count_offset, structure};
 use crate::diagnostics as codes;
 use crate::identity::{RegionId, RegionKind, RowKey, RowNamespace, ScopeSegment};
 use crate::kernel::NodeId;
@@ -135,23 +135,23 @@ use source::Input;
 
 /// Both renderers own exactly the same key -> scope/node mapping and live row input.
 /// Virtualization only decides which keys reside and how their nodes are placed.
-type RowView<K, T> = dyn Fn(&K, ReadSignal<T>) -> View;
+type RowFactory<K, T> = dyn Fn(&K, ReadSignal<T>) -> El;
 
 struct Rows<K: 'static, T: 'static> {
-    entries: HashMap<RowKey, (ScopeId, NodeId)>,
+    entries: RefCell<HashMap<RowKey, (ScopeId, NodeId)>>,
     input: ReadSignal<Input<K, T>>,
     owner: ScopeId,
     base: RegionId,
     at: &'static Location<'static>,
-    row: Box<RowView<K, T>>,
+    row: Box<RowFactory<K, T>>,
 }
 
 impl<K: Eq + Hash + Clone + Display + 'static, T: Clone + 'static> Rows<K, T> {
-    fn build(&self, identity: &RowKey, offscreen: bool) -> (ScopeId, NodeId) {
+    fn build(&self, identity: &RowKey, offscreen: bool) -> Option<(ScopeId, NodeId)> {
         let key = identity.value::<K>().expect("live list row key");
         let input = self.input;
         rt(|rt| {
-            let scope = rt.create_scope(Some(self.owner), ScopeSegment::Row { region: self.base, key: identity.local(), offscreen });
+            let scope = rt.create_child_scope(self.owner, ScopeSegment::Row { region: self.base, key: identity.local(), offscreen })?;
             let node = rt.with_frame(Ctx::Build, None, Some(Some(scope)), || {
                 let k = key.clone();
                 let at = self.at;
@@ -168,50 +168,53 @@ impl<K: Eq + Hash + Clone + Display + 'static, T: Clone + 'static> Rows<K, T> {
                     },
                     |_, _| false,
                 );
-                match (self.row)(&key, item).0 {
-                    ViewKind::El(e) => build_el(*e),
-                    _ => {
-                        rt.diag(&codes::EACH_ROW_NOT_ELEMENT, "a list row must be one element".into(), self.at);
-                        build_el(col())
-                    }
+                let owner = rt.capture_owner();
+                let element = (self.row)(&key, item);
+                if !rt.admits(owner) {
+                    return None;
                 }
-            });
+                let node = build_el(element);
+                rt.admits(owner).then_some(node)
+            })?;
             crate::app::window().kernel.borrow_mut().set_row_key(node, Some(identity.clone()));
-            (scope, node)
+            Some((scope, node))
         })
     }
 
-    fn ensure(&mut self, key: &RowKey) -> (ScopeId, NodeId) {
-        if let Some(row) = self.entries.get(key) {
-            return *row;
+    fn ensure(&self, key: &RowKey) -> Option<(NodeId, bool)> {
+        if let Some(&(_, node)) = self.entries.borrow().get(key) {
+            return Some((node, false));
         }
-        let row = self.build(key, false);
-        self.entries.insert(key.clone(), row);
-        row
+        let row = self.build(key, false)?;
+        self.entries.borrow_mut().insert(key.clone(), row);
+        Some((row.1, true))
     }
 
-    fn remove(&mut self, key: &RowKey, exit: bool) {
-        if let Some((scope, node)) = self.entries.remove(key) {
+    fn remove(&self, key: &RowKey, exit: bool) -> Option<()> {
+        let removed = self.entries.borrow_mut().remove(key);
+        if let Some((scope, node)) = removed {
             if exit {
                 structure::begin_exit(&mut crate::app::window().kernel.borrow_mut(), [node]);
             }
             rt(|rt| rt.dispose_scope(scope));
         }
+        // Cleanup can retire the list's owner. Leave the rest to its teardown.
+        rt(|rt| rt.scope_alive(self.owner)).then_some(())
     }
 
-    fn reconcile(&mut self, keys: &[RowKey], exit: bool) -> bool {
+    fn reconcile(&self, keys: &[RowKey], exit: bool) -> Option<bool> {
         #[allow(clippy::mutable_key_type, reason = "RowKey hashes immutable identity; the Cell only marks retirement")]
         let wanted: HashSet<_> = keys.iter().collect();
-        let removed: Vec<_> = self.entries.keys().filter(|key| !wanted.contains(key)).cloned().collect();
+        let removed: Vec<_> = self.entries.borrow().keys().filter(|key| !wanted.contains(key)).cloned().collect();
         let mut changed = !removed.is_empty();
         for key in removed {
-            self.remove(&key, exit);
+            self.remove(&key, exit)?;
         }
         for key in keys {
-            changed |= !self.entries.contains_key(key);
-            self.ensure(key);
+            let (_, inserted) = self.ensure(key)?;
+            changed |= inserted;
         }
-        changed
+        Some(changed)
     }
 }
 
@@ -220,9 +223,15 @@ type Current<K, T> = Rc<RefCell<Option<(Input<K, T>, Option<Cursor>)>>>;
 
 /// Renders `list()`. While it stays the same stage, its log is applied row by row: one row
 /// created per insert, one disposed per remove, one moved per move. Switching to another stage
-/// reconciles by key once. A row must be one element; it receives its item's own signal.
+/// reconciles by key once. The row factory receives its item's own signal and returns one
+/// [`El`]. Filter the source to omit a row.
+///
+/// ```compile_fail
+/// use octara::prelude::*;
+/// each(|| Vec::from_iter(Some((1u32, "One"))), |_, _| View::empty());
+/// ```
 #[track_caller]
-pub fn each<K, T, S: IntoRows<K, T> + 'static>(list: impl Fn() -> S + 'static, row: impl Fn(&K, ReadSignal<T>) -> View + 'static) -> View
+pub fn each<K, T, S: IntoRows<K, T> + 'static>(list: impl Fn() -> S + 'static, row: impl Fn(&K, ReadSignal<T>) -> El + 'static) -> View
 where
     K: Eq + Hash + Clone + Display + 'static,
     T: Clone + 'static,
@@ -240,21 +249,18 @@ where
         });
         let parent = parent.clone();
         let input = memo(move || list().into_input(at));
-        let rows = Rc::new(RefCell::new(Rows { entries: HashMap::new(), input, owner, base, at, row: Box::new(row) }));
+        let rows = Rows { entries: RefCell::default(), input, owner, base, at, row: Box::new(row) };
         let current: Current<K, T> = Rc::default();
         crate::reactive::graph::structural_binding(at, move || {
             let next = input.get();
             next.track();
             rt(|rt| {
-                rt.with_frame(Ctx::Observe, None, Some(Some(owner)), || {
+                let _ = rt.with_frame(Ctx::Observe, None, Some(Some(owner)), || {
                     let u = crate::app::window();
                     let same = current.borrow().as_ref().is_some_and(|(s, _)| *s == next);
                     if same {
-                        let changes = {
-                            let cur = current.borrow();
-                            let (s, c) = cur.as_ref().unwrap();
-                            s.take(c, &namespace)
-                        };
+                        let cursor = current.borrow().as_ref().unwrap().1.clone();
+                        let changes = next.take(&cursor, &namespace);
                         if let Changes::Delta(changes) = changes {
                             // A key inserted and removed before propagation has no current value
                             // to build. Reconcile the final snapshot, still honoring retirements.
@@ -269,54 +275,59 @@ where
                             if changes.iter().any(|change| matches!(change, Change::Insert { key, .. } if removed.contains(key))) {
                                 for change in &changes {
                                     if let Change::Remove { key, .. } = change {
-                                        rows.borrow_mut().remove(key, true);
+                                        rows.remove(key, true)?;
                                     }
                                 }
                                 let keys = next.snapshot(&namespace);
-                                rows.borrow_mut().reconcile(&keys, true);
+                                rows.reconcile(&keys, true)?;
+                                let entries = rows.entries.borrow();
                                 structure::place(
                                     &mut u.kernel.borrow_mut(),
                                     parent.node,
                                     count_offset(&parent, &count),
-                                    keys.iter().map(|key| rows.borrow().entries[key].1),
+                                    keys.iter().map(|key| entries[key].1),
                                 );
                                 count.set(keys.len());
-                                return;
+                                return Some(());
                             }
                             for ch in changes {
                                 let base_index = count_offset(&parent, &count);
                                 match ch {
                                     Change::Insert { key, index } => {
-                                        let (_, node) = rows.borrow_mut().ensure(&key);
+                                        let (node, _) = rows.ensure(&key)?;
                                         structure::place(&mut u.kernel.borrow_mut(), parent.node, base_index + index, [node]);
                                         count.set(count.get() + 1);
                                     }
                                     Change::Remove { key, .. } => {
-                                        rows.borrow_mut().remove(&key, true);
+                                        rows.remove(&key, true)?;
                                         count.set(count.get() - 1);
                                     }
                                     Change::Move { key, to, .. } => {
-                                        if let Some((_, node)) = rows.borrow().entries.get(&key) {
+                                        if let Some((_, node)) = rows.entries.borrow().get(&key) {
                                             structure::place(&mut u.kernel.borrow_mut(), parent.node, base_index + to, [*node]);
                                         }
                                     }
                                 }
                             }
-                            return;
+                            return Some(());
                         }
                     }
                     let cursor = next.subscribe();
                     let keys = next.snapshot(&namespace);
-                    rows.borrow_mut().reconcile(&keys, true);
-                    structure::place(
-                        &mut u.kernel.borrow_mut(),
-                        parent.node,
-                        count_offset(&parent, &count),
-                        keys.iter().map(|key| rows.borrow().entries[key].1),
-                    );
+                    rows.reconcile(&keys, true)?;
+                    {
+                        let entries = rows.entries.borrow();
+                        structure::place(
+                            &mut u.kernel.borrow_mut(),
+                            parent.node,
+                            count_offset(&parent, &count),
+                            keys.iter().map(|key| entries[key].1),
+                        );
+                    }
                     count.set(keys.len());
-                    *current.borrow_mut() = Some((next, cursor));
-                })
+                    drop(current.replace(Some((next, cursor))));
+                    Some(())
+                });
             });
         });
     }))
@@ -404,7 +415,7 @@ const OVERSCAN: usize = 5;
 pub fn virtual_each<K, T, S: IntoRows<K, T> + 'static>(
     list: impl Fn() -> S + 'static,
     estimate: impl Fn(&T) -> f32 + 'static,
-    row: impl Fn(&K, ReadSignal<T>) -> View + 'static,
+    row: impl Fn(&K, ReadSignal<T>) -> El + 'static,
 ) -> View
 where
     K: Eq + Hash + Clone + Display + 'static,
@@ -454,7 +465,7 @@ where
         let list_top: Rc<Cell<f32>> = Rc::default();
         let mirror: Rc<RefCell<Seq<RowKey>>> = Rc::default();
         let input = memo(move || list().into_input(at));
-        let rows = Rc::new(RefCell::new(Rows { entries: HashMap::new(), input, owner, base, at, row: Box::new(row) }));
+        let rows = Rc::new(Rows { entries: RefCell::default(), input, owner, base, at, row: Box::new(row) });
         let measured: Rc<RefCell<HashSet<RowKey>>> = Rc::default();
         let estimates: Rc<RefCell<HashMap<RowKey, f64>>> = Rc::default();
         let pending_anchor: Rc<RefCell<Option<RowAnchor<RowKey>>>> = Rc::default();
@@ -484,9 +495,12 @@ where
                 })
             };
             let build = Rc::new(move |identity: &RowKey| -> Option<(NodeId, Box<dyn FnOnce()>)> {
+                if !rt(|rt| rt.scope_alive(rows.owner)) {
+                    return None;
+                }
                 let key = identity.value::<K>()?;
                 input.with(|input| input.read(&key))?;
-                let (scope, node) = rows.borrow().build(identity, true);
+                let (scope, node) = rows.build(identity, true)?;
                 Some((node, Box::new(move || rt(|rt| rt.dispose_scope(scope)))))
             });
             u.lists.borrow_mut().insert(container, crate::app::ListOrder { index_of, keys, build: Some(build) });
@@ -529,9 +543,8 @@ where
                 *constraints.borrow_mut() = Some(signature);
                 let pending = pending_anchor.borrow_mut().take().filter(|_| anchor_request.get() == k.scroll_request(container));
                 let mut anchor = pending.clone().or_else(|| RowAnchor::at(&m, y));
-                let rows = rows.borrow();
                 #[allow(clippy::mutable_key_type, reason = "RowKey hashes immutable identity; the Cell only marks retirement")]
-                let rows = &rows.entries;
+                let rows = rows.entries.borrow();
                 let mut measured = measured.borrow_mut();
                 // Prefer an already displayed row when estimates are still converging.
                 if pending.is_none()
@@ -555,7 +568,7 @@ where
                     }
                     changed = true;
                 }
-                for (key, (_, node)) in rows {
+                for (key, (_, node)) in rows.iter() {
                     if k.is_alive(*node) {
                         let weight = k.rect(*node).3 as f64 + gap;
                         if m.weight_of(key).is_some_and(|old| (old - weight).abs() > 0.5) {
@@ -605,7 +618,7 @@ where
             let mut y = (u.kernel.borrow().scroll_offset(container).1 - list_top.get()).max(0.0) as f64;
             let height = state.client.1 as f64;
             rt(|rt| {
-                rt.with_frame(Ctx::Observe, None, Some(Some(owner)), || {
+                let _ = rt.with_frame(Ctx::Observe, None, Some(Some(owner)), || {
                     if anchor_request.get() != u.kernel.borrow().scroll_request(container) {
                         pending_anchor.borrow_mut().take();
                     }
@@ -619,32 +632,34 @@ where
                     // 1. Keep the weighted mirror in step with the list.
                     let same = current.borrow().as_ref().is_some_and(|(s, _)| *s == next);
                     let changes = if same {
-                        let cur = current.borrow();
-                        let (source, cursor) = cur.as_ref().unwrap();
-                        Some(source.take(cursor, &namespace))
+                        let cursor = current.borrow().as_ref().unwrap().1.clone();
+                        Some(next.take(&cursor, &namespace))
                     } else {
                         None
                     };
                     let mut geometry_changed;
                     if let Some(Changes::Delta(changes)) = changes {
                         geometry_changed = !changes.is_empty();
-                        let mut m = mirror.borrow_mut();
                         for ch in changes {
                             match ch {
                                 Change::Insert { key, index } => {
                                     let w = weight(&key);
-                                    m.insert_weighted(index, key, w);
+                                    mirror.borrow_mut().insert_weighted(index, key, w);
                                 }
                                 Change::Remove { key, .. } => {
-                                    if let Some(anchor) = &mut anchor {
-                                        anchor.removing(&key, &m);
+                                    {
+                                        let mut m = mirror.borrow_mut();
+                                        if let Some(anchor) = &mut anchor {
+                                            anchor.removing(&key, &m);
+                                        }
+                                        m.remove(&key);
                                     }
-                                    m.remove(&key);
                                     estimates.borrow_mut().remove(&key);
-                                    rows.borrow_mut().remove(&key, false);
+                                    rows.remove(&key, false)?;
                                     measured.borrow_mut().remove(&key);
                                 }
                                 Change::Move { key, to, .. } => {
+                                    let mut m = mirror.borrow_mut();
                                     let w = m.weight_of(&key).unwrap_or(0.0);
                                     m.remove(&key);
                                     m.insert_weighted(to, key, w);
@@ -668,30 +683,30 @@ where
                         }
                         // Final membership wins over any interaction. Snapshot inputs and
                         // bounded-log recovery must retire absent rows before selecting pins.
-                        let removed: Vec<_> = rows.borrow().entries.keys().filter(|key| !m.contains(key)).cloned().collect();
+                        let removed: Vec<_> = rows.entries.borrow().keys().filter(|key| !m.contains(key)).cloned().collect();
                         for key in removed {
-                            rows.borrow_mut().remove(&key, false);
+                            rows.remove(&key, false)?;
                         }
                         measured.borrow_mut().retain(|key| m.contains(key));
                         if let Some(anchor) = &mut anchor {
                             anchor.surviving(&mirror.borrow(), &m);
                         }
                         *mirror.borrow_mut() = m;
-                        *current.borrow_mut() = Some((next.clone(), cursor));
+                        drop(current.replace(Some((next.clone(), cursor))));
                     }
                     {
                         let dirty: Vec<_> = dirty_items.borrow_mut().drain().collect();
                         let dirty: Vec<_> = dirty.into_iter().map(|key| row_key(key, &namespace)).collect();
-                        let mut m = mirror.borrow_mut();
                         for key in dirty {
-                            if m.contains(&key) {
+                            if mirror.borrow().contains(&key) {
                                 geometry_changed = true;
-                                m.set_weight(&key, weight(&key));
+                                let w = weight(&key);
+                                mirror.borrow_mut().set_weight(&key, w);
                                 measured.borrow_mut().remove(&key);
                             }
                         }
                         if !u.kernel.borrow().is_following_tail(container)
-                            && let Some(to) = anchor.as_ref().and_then(|anchor| anchor.position(&m))
+                            && let Some(to) = anchor.as_ref().and_then(|anchor| anchor.position(&mirror.borrow()))
                             && (to - y).abs() > 0.5
                         {
                             let mut kernel = u.kernel.borrow_mut();
@@ -720,7 +735,7 @@ where
                     let interactions = u.interaction_nodes();
                     if !interactions.is_empty() {
                         let kernel = u.kernel.borrow();
-                        indices.extend(rows.borrow().entries.iter().filter_map(|(key, (_, node))| {
+                        indices.extend(rows.entries.borrow().iter().filter_map(|(key, (_, node))| {
                             interactions
                                 .iter()
                                 .any(|&target| kernel.is_in_interaction_scope(target, *node))
@@ -742,11 +757,13 @@ where
                     drop(m);
                     // 3. Reconcile the window's rows by key: rows coming into and leaving the
                     // window neither enter nor exit (they are not added or removed).
-                    crate::app::window().kernel.borrow_mut().set_quiet(true);
-                    let changed = rows.borrow_mut().reconcile(&want, false);
-                    measured.borrow_mut().retain(|key| rows.borrow().entries.contains_key(key));
+                    let was_quiet = u.kernel.borrow_mut().replace_quiet(true);
+                    let _quiet = std::mem::DropGuard::new(&u, move |u| u.kernel.borrow_mut().set_quiet(was_quiet));
+                    let changed = rows.reconcile(&want, false)?;
+                    let entries = rows.entries.borrow();
+                    measured.borrow_mut().retain(|key| entries.contains_key(key));
                     if changed {
-                        crate::app::window().kernel.borrow_mut().set_instant(true);
+                        u.kernel.borrow_mut().set_instant(true);
                     }
                     {
                         let mut kn = u.kernel.borrow_mut();
@@ -783,13 +800,13 @@ where
                             nodes.push(gaps.borrow()[gap]);
                             gap += 1;
                         }
-                        nodes.push(rows.borrow().entries[key].1);
+                        nodes.push(entries[key].1);
                     }
                     nodes.push(bottom);
                     count.set(nodes.len());
                     structure::place(&mut u.kernel.borrow_mut(), parent.node, count_offset(&parent, &count), nodes);
-                    crate::app::window().kernel.borrow_mut().set_quiet(false);
-                })
+                    Some(())
+                });
             });
         });
     }))

@@ -289,7 +289,7 @@ fn progress_switches_between_finite_and_unknown_without_changing_its_identity_or
 fn slider_rejects_invalid_static_bounds() {
     Window::headless(|| {
         let value = state("value", || 0.0);
-        slider("bad", value, 1.0, 1.0, 0.1).into()
+        slider("bad", value, 1.0, 1.0, 0.1)
     });
 }
 
@@ -298,6 +298,6 @@ fn slider_rejects_invalid_static_bounds() {
 fn number_field_rejects_a_nonpositive_step() {
     Window::headless(|| {
         let value = state("value", || "0".to_owned());
-        number_field(value, 0.0, 1.0, 0.0).into()
+        number_field(value, 0.0, 1.0, 0.0)
     });
 }

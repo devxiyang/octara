@@ -325,7 +325,11 @@ impl Kernel {
     /// Structural changes neither enter nor exit while on (a hot reload rebuilding, a virtual
     /// list moving its window).
     pub fn set_quiet(&mut self, on: bool) {
-        self.quiet = on;
+        self.replace_quiet(on);
+    }
+
+    pub(crate) fn replace_quiet(&mut self, on: bool) -> bool {
+        std::mem::replace(&mut self.quiet, on)
     }
 
     /// Whether `id` is on its way out (it, or a subtree it is in, has been removed and is fading).

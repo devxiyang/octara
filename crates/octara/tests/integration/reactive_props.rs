@@ -17,7 +17,6 @@ fn signals_bind_text_and_semantics_without_reading_during_build() {
                 name.set("Second".into());
                 checked.set(true);
             }))
-            .into()
     });
     assert_eq!(window.kernel().text_of("name").as_deref(), Some("First"));
     assert_eq!(window.kernel().text_of("derived").as_deref(), Some("Chosen: First"));

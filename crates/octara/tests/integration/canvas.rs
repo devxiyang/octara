@@ -109,7 +109,6 @@ fn transforms_clips_gradients_and_semantics() {
                 .size_16(),
             )
             .child(canvas(|c| c.rect(Rect::new(0.0, 0.0, 4.0, 4.0), Token::Border)).id("deco").size_4().a11y_hidden())
-            .into()
     });
     let k = app.kernel();
     let art = k.find("art").unwrap();
@@ -138,24 +137,22 @@ fn transforms_clips_gradients_and_semantics() {
 #[test]
 fn text_takes_the_canvas_style_and_its_anchor() {
     let app = Window::headless(|| {
-        row()
-            .child(
-                canvas(|c| {
-                    let (w, h) = c.size();
-                    c.text("Mid", (w / 2.0, h / 2.0)).align(Align::Center).valign(Align::Center);
-                    c.text("Big", (0.0, 0.0)).size(28.0).weight(600).color(rgb(0xff0000));
-                    c.transform(Transform::scale(2.0, 2.0), |c| {
-                        c.text("Twice", (10.0, 10.0));
-                    });
-                })
-                .id("labels")
-                .label("Labels")
-                .w(200)
-                .h(100)
-                .text_sm()
-                .text_color(Token::TextMuted),
-            )
-            .into()
+        row().child(
+            canvas(|c| {
+                let (w, h) = c.size();
+                c.text("Mid", (w / 2.0, h / 2.0)).align(Align::Center).valign(Align::Center);
+                c.text("Big", (0.0, 0.0)).size(28.0).weight(600).color(rgb(0xff0000));
+                c.transform(Transform::scale(2.0, 2.0), |c| {
+                    c.text("Twice", (10.0, 10.0));
+                });
+            })
+            .id("labels")
+            .label("Labels")
+            .w(200)
+            .h(100)
+            .text_sm()
+            .text_color(Token::TextMuted),
+        )
     });
     let dl = app.display_list();
     let k = app.kernel();

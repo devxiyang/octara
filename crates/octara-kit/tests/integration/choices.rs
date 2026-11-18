@@ -216,13 +216,9 @@ fn modified_navigation_and_text_editing_keys_leave_the_active_option_alone() {
 fn active_rows_scroll_into_view_without_moving_search_focus() {
     let mut window = Window::headless(|| {
         let value = state("value", || Some("item-75".to_owned()));
-        col()
-            .size_full()
-            .p_4()
-            .child(combobox("color", "Item", value, || {
-                (0..120).map(|index| ComboboxOption::new(format!("item-{index}"), format!("Item {index}"))).collect()
-            }))
-            .into()
+        col().size_full().p_4().child(combobox("color", "Item", value, || {
+            (0..120).map(|index| ComboboxOption::new(format!("item-{index}"), format!("Item {index}"))).collect()
+        }))
     });
     window.tap("color").unwrap();
     assert_eq!(active(&window).as_deref(), Some("color-option-item-75"));
@@ -250,15 +246,13 @@ fn a_standalone_popover_is_controlled_modal_and_restores_previous_focus() {
         let open = state("open", || false);
         let name = state("name", String::new);
         on_command("popup.open", move || open.set(true));
-        col()
-            .size_full()
-            .p_4()
-            .gap_3()
-            .child(button("Outside").id("outside"))
-            .child(popover("details", open, Placement::BELOW, button("Details"), move || {
-                text_field(name).id("details-name").label("Name").autofocus().into()
-            }))
-            .into()
+        col().size_full().p_4().gap_3().child(button("Outside").id("outside")).child(popover(
+            "details",
+            open,
+            Placement::BELOW,
+            button("Details"),
+            move || text_field(name).id("details-name").label("Name").autofocus().into(),
+        ))
     });
     window.tap("outside").unwrap();
     window.invoke("popup.open").unwrap();
@@ -280,32 +274,26 @@ fn a_combobox_inside_a_dialog_dismisses_only_the_inner_modal() {
     let mut window = Window::headless(|| {
         let dialog = state("dialog", || false);
         let value = state("value", || Some("berry".to_owned()));
-        col()
-            .size_full()
-            .p_4()
-            .child(button("Open dialog").id("open-dialog").on_press(move || dialog.set(true)))
-            .child(show(
-                move || dialog.get(),
-                move || {
-                    col()
-                        .id("dialog")
-                        .role(Role::Dialog)
-                        .label("Choose color")
-                        .absolute()
-                        .left(40.0)
-                        .top(80.0)
-                        .w(320.0)
-                        .h(320.0)
-                        .p_4()
-                        .gap_3()
-                        .bg(Token::Surface)
-                        .modal(true, move || dialog.set(false))
-                        .child(combobox("color", "Color", value, options))
-                        .child(button("Close").id("close-dialog").on_press(move || dialog.set(false)))
-                        .into()
-                },
-            ))
-            .into()
+        col().size_full().p_4().child(button("Open dialog").id("open-dialog").on_press(move || dialog.set(true))).child(show(
+            move || dialog.get(),
+            move || {
+                col()
+                    .id("dialog")
+                    .role(Role::Dialog)
+                    .label("Choose color")
+                    .absolute()
+                    .left(40.0)
+                    .top(80.0)
+                    .w(320.0)
+                    .h(320.0)
+                    .p_4()
+                    .gap_3()
+                    .bg(Token::Surface)
+                    .modal(true, move || dialog.set(false))
+                    .child(combobox("color", "Color", value, options))
+                    .child(button("Close").id("close-dialog").on_press(move || dialog.set(false)))
+            },
+        ))
     });
     window.tap("open-dialog").unwrap();
     window.tap("color").unwrap();

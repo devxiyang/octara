@@ -147,7 +147,6 @@ fn construction_and_initializers_cannot_enqueue_focus_commands_or_instant_motion
                 .child(text_input().id("editor").label("Editor").w(160))
                 .child(text_input().id("other").label("Other editor").w(160))
                 .child(text(move || calls.get().to_string()).id("calls"))
-                .into()
         });
         assert_eq!(window.inspect().focus, None);
         assert_eq!(window.kernel().text_of("calls").as_deref(), Some("0"));
@@ -187,7 +186,7 @@ fn captured_windows_cannot_dispatch_from_pure_computations_in_either_app() {
                 .open_window(WindowOptions::new("Target"), || {
                     let calls = state("calls", || 0u32);
                     on_command("record", move || calls.update(|calls| *calls += 1));
-                    col().size_full().child(text(move || calls.get().to_string()).id("calls")).into()
+                    col().size_full().child(text(move || calls.get().to_string()).id("calls"))
                 })
                 .unwrap();
             *captured.borrow_mut() = Some(target);
@@ -207,7 +206,7 @@ fn captured_windows_cannot_dispatch_from_pure_computations_in_either_app() {
                     }
                     "Probe".to_owned()
                 });
-                col().size_full().child(text(probe)).child(text(move || calls.get().to_string()).id("calls")).into()
+                col().size_full().child(text(probe)).child(text(move || calls.get().to_string()).id("calls"))
             })
             .unwrap();
         if !cross_app {
@@ -235,9 +234,8 @@ fn captured_apps_cannot_reload_from_build_or_pure_sources_even_across_apps() {
         for phase in ["build", "init", "memo", "watch", "property"] {
             for sampled in [false, true] {
                 let target_app = App::new(HeadlessPlatform::default());
-                let target_window = target_app
-                    .open_window(WindowOptions::new("Target"), || col().size_full().child(text("Target").id("target")).into())
-                    .unwrap();
+                let target_window =
+                    target_app.open_window(WindowOptions::new("Target"), || col().size_full().child(text("Target").id("target"))).unwrap();
                 let before = target_window.inspect().find("target").unwrap().target.clone();
                 let source_app = if cross_app { App::new(HeadlessPlatform::default()) } else { target_app.clone() };
                 let destination = target_app.clone();
@@ -291,7 +289,7 @@ fn captured_apps_cannot_reload_from_build_or_pure_sources_even_across_apps() {
                             }),
                             _ => unreachable!(),
                         };
-                        col().size_full().child(probe).into()
+                        col().size_full().child(probe)
                     })
                     .unwrap();
                 assert!(attempted.get());
@@ -324,7 +322,7 @@ fn shutdown_refuses_reload_from_cleanup_and_the_host() {
         .open_window(WindowOptions::new("Target"), move || {
             root_builds.set(root_builds.get() + 1);
             on_cleanup(|| App::current().hot_reload());
-            col().size_full().child(text("Target").id("target")).into()
+            col().size_full().child(text("Target").id("target"))
         })
         .unwrap();
     app.shutdown();

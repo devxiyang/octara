@@ -24,7 +24,6 @@ fn dropped_files_reach_the_element_under_them() {
             )
             .child(text(move || got.get()).id("got"))
             .child(el().id("elsewhere").size_8())
-            .into()
     });
     let (x, y, ..) = w.kernel().shown_rect(w.kernel().find("label").unwrap());
     let paths = vec![PathBuf::from("/tmp/a.png"), PathBuf::from("/tmp/b.png")];

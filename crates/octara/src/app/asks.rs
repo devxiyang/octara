@@ -238,14 +238,12 @@ pub(crate) fn layer() -> crate::view::View {
                 |id, ask| {
                     let id = *id;
                     match untrack(|| ask.get()).1 {
-                        Ask::Menu { menu, at } => el()
-                            .absolute()
-                            .left(at.0)
-                            .top(at.1)
-                            .size(0.0)
-                            .overlay(|| true, Placement::BELOW.gap(0.0), move || menu_view(id, menu.clone()))
-                            .into(),
-                        _ => el().into(),
+                        Ask::Menu { menu, at } => el().absolute().left(at.0).top(at.1).size(0.0).overlay(
+                            || true,
+                            Placement::BELOW.gap(0.0),
+                            move || menu_view(id, menu.clone()),
+                        ),
+                        _ => el(),
                     }
                 },
             ))
@@ -253,22 +251,16 @@ pub(crate) fn layer() -> crate::view::View {
         show(
             move || !prompts.is_empty(),
             move || {
-                col()
-                    .absolute()
-                    .top(0.0)
-                    .left(0.0)
-                    .size_full()
-                    .child(each(
-                        move || prompts.read_only(),
-                        |id, ask| {
-                            let id = *id;
-                            match untrack(|| ask.get()).1 {
-                                Ask::Prompt { level, message, detail, answers } => prompt_view(id, level, message, detail, answers),
-                                _ => el().into(),
-                            }
-                        },
-                    ))
-                    .into()
+                col().absolute().top(0.0).left(0.0).size_full().child(each(
+                    move || prompts.read_only(),
+                    |id, ask| {
+                        let id = *id;
+                        match untrack(|| ask.get()).1 {
+                            Ask::Prompt { level, message, detail, answers } => prompt_view(id, level, message, detail, answers),
+                            _ => el(),
+                        }
+                    },
+                ))
             },
         ),
     ])
@@ -290,7 +282,7 @@ pub fn menu_surface(id: &str, menu: crate::menu::Menu, pick: impl Fn(String) + '
 }
 
 /// A menu request uses the same surface while keeping its established `menu:{action}` IDs.
-fn menu_view(id: AskId, menu: crate::ask::Menu) -> crate::view::View {
+fn menu_view(id: AskId, menu: crate::ask::Menu) -> crate::view::El {
     menu_surface_inner(
         format!("menu:{id}"),
         menu,
@@ -299,7 +291,6 @@ fn menu_view(id: AskId, menu: crate::ask::Menu) -> crate::view::View {
         false,
         true,
     )
-    .into()
 }
 
 fn menu_surface_inner(
@@ -382,7 +373,6 @@ fn menu_surface_inner(
                                     true,
                                     legacy,
                                 )
-                                .into()
                             },
                         )
                 })
@@ -492,7 +482,7 @@ fn prompt_view(
     message: String,
     detail: Option<String>,
     answers: Vec<String>,
-) -> crate::view::View {
+) -> crate::view::El {
     use crate::prelude::*;
     let last = answers.len().saturating_sub(1);
     let buttons: Vec<View> = answers
@@ -525,32 +515,23 @@ fn prompt_view(
         crate::ask::PromptLevel::Warning => Some(("!", Token::Accent)),
         crate::ask::PromptLevel::Critical => Some(("!", Token::Danger)),
     };
-    col()
-        .absolute()
-        .top(0.0)
-        .left(0.0)
-        .size_full()
-        .items_center()
-        .justify_center()
-        .bg(Color::BLACK.multiply_alpha(0.3))
-        .child(
-            col()
-                .role(Role::AlertDialog)
-                .label(message.as_str())
-                .w(360.0)
-                .p_5()
-                .gap_3()
-                .rounded_lg()
-                .bg(Token::Background)
-                .border()
-                .border_color(Token::Border)
-                .shadow_xl()
-                .focus_group()
-                .modal(false, move || crate::app::current().resolve_ask(id, Answer::Prompt(None)))
-                .children(mark.map(|(m, t)| text(m).font_bold().text_color(t).text_xl()))
-                .child(text(message.as_str()).font_semibold())
-                .children(detail.map(|d| text(d).text_sm().text_color(Token::TextMuted)))
-                .child(row().justify_end().gap_2().children(buttons)),
-        )
-        .into()
+    col().absolute().top(0.0).left(0.0).size_full().items_center().justify_center().bg(Color::BLACK.multiply_alpha(0.3)).child(
+        col()
+            .role(Role::AlertDialog)
+            .label(message.as_str())
+            .w(360.0)
+            .p_5()
+            .gap_3()
+            .rounded_lg()
+            .bg(Token::Background)
+            .border()
+            .border_color(Token::Border)
+            .shadow_xl()
+            .focus_group()
+            .modal(false, move || crate::app::current().resolve_ask(id, Answer::Prompt(None)))
+            .children(mark.map(|(m, t)| text(m).font_bold().text_color(t).text_xl()))
+            .child(text(message.as_str()).font_semibold())
+            .children(detail.map(|d| text(d).text_sm().text_color(Token::TextMuted)))
+            .child(row().justify_end().gap_2().children(buttons)),
+    )
 }

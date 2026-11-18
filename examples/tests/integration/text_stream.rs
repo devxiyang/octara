@@ -38,19 +38,15 @@ fn random_edits_match_a_reference_and_logs_stay_bounded() {
         let t = text_buffer("t", || "hello".into());
         HANDLE.with(|c| *c.borrow_mut() = Some(t.clone()));
         let t2 = t.clone();
-        col()
-            .child(text(&t).id("live"))
-            .child(text(move || t2.get()).id("full"))
-            .child(button("x").id("edit").on_press(move || {
-                // A deterministic pseudo-random edit derived from the current length.
-                let n = untrack(|| t.get()).len();
-                match n % 3 {
-                    0 => t.append("ab"),
-                    1 => t.splice(n / 3..n / 2, "xyz"),
-                    _ => t.set(&"q".repeat(n % 7 + 1)),
-                }
-            }))
-            .into()
+        col().child(text(&t).id("live")).child(text(move || t2.get()).id("full")).child(button("x").id("edit").on_press(move || {
+            // A deterministic pseudo-random edit derived from the current length.
+            let n = untrack(|| t.get()).len();
+            match n % 3 {
+                0 => t.append("ab"),
+                1 => t.splice(n / 3..n / 2, "xyz"),
+                _ => t.set(&"q".repeat(n % 7 + 1)),
+            }
+        }))
     });
     let mut reference = String::from("hello");
     for _ in 0..500 {

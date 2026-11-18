@@ -33,7 +33,7 @@ fn todos() -> View {
             });
         }))
         .child(text(move || format!("{} later", ticks.get())).id("ticks"))
-        .child(col().id("list").child(each(move || items.read_only(), |_, t| text(move || t.with(|t| t.1.clone())).into())))
+        .child(col().id("list").child(each(move || items.read_only(), |_, t| text(move || t.with(|t| t.1.clone())))))
         .into()
 }
 
@@ -85,7 +85,6 @@ fn each_operation_presents_a_frame() {
         col()
             .child(text_input().id("name").label("Name").secure().value("").on_input(|_| {}))
             .child(web_view("https://example.com").id("web").label("Page"))
-            .into()
     });
     let window = |w: &Window| {
         let p = w.platform_window();
@@ -112,8 +111,8 @@ fn each_operation_presents_a_frame() {
 #[test]
 fn requests_name_their_window() {
     let app = App::new(octara::platform::HeadlessPlatform::default());
-    let mut a = app.open_window(WindowOptions::new("A"), || text("in A").id("label").into()).unwrap();
-    let b = app.open_window(WindowOptions::new("B"), || text("in B").id("label").into()).unwrap();
+    let mut a = app.open_window(WindowOptions::new("A"), || text("in A").id("label")).unwrap();
+    let b = app.open_window(WindowOptions::new("B"), || text("in B").id("label")).unwrap();
     let snapshot = a.inspect();
     assert_eq!(snapshot.windows.iter().map(|w| w.title.as_str()).collect::<Vec<_>>(), ["A", "B"]);
     assert_eq!(snapshot.window, a.id().number());

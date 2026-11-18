@@ -33,7 +33,7 @@ fn stage(model: Targets) -> View {
         .border()
         .border_color(Token::Border)
         .rounded_md()
-        .child(show_else(move || model.generation.get().is_multiple_of(2), move || target(model), move || target(model)))
+        .child(keyed(move || model.generation.get().is_multiple_of(2), move |_| target(model)))
         .into()
 }
 
@@ -48,7 +48,7 @@ fn counters(model: Targets) -> View {
 }
 
 #[ui]
-fn child(model: Targets, main: WindowId) -> View {
+fn child(model: Targets, main: WindowId) -> El {
     let id = current_window();
     // A reload runs cleanup too; the initial watch publishes this same live window again.
     watch(|| (), move |_, _| model.child.set(Some(id)));
@@ -69,11 +69,10 @@ fn child(model: Targets, main: WindowId) -> View {
         .child(stage(model))
         .child(text("This window shares the main window's hit counter.").text_sm())
         .child(button("Close target window").id("targets-child-close").self_start().min_h(44.0).on_press(move || close_window(id)))
-        .into()
 }
 
 #[ui]
-fn targets() -> View {
+fn targets() -> El {
     let model = Targets {
         hits: state("hits", || 0),
         generation: state("generation", || 0),
@@ -140,7 +139,6 @@ fn targets() -> View {
         .child(text(move || format!("Child openings: {}", model.child_openings.get())).id("targets-child-openings"))
         .child(text("Use Inspector reload to rebuild all windows; named state and total hits survive.").text_sm())
         .child(text(move || model.error.get()).id("targets-error").text_color(Token::Danger))
-        .into()
 }
 
 fn main() {

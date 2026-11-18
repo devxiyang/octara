@@ -21,7 +21,6 @@ fn equal_columns_spans_and_full_rows() {
             .child(text("wide").id("wide").col_span(2))
             .child(text("d").id("d"))
             .child(text("footer").id("footer").col_span_full())
-            .into()
     });
     // 316 px, two 16 px gaps: three 94.67 px columns.
     let (ax, ay, aw, _) = rect(&app, "a");

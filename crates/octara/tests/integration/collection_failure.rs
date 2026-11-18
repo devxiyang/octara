@@ -26,7 +26,7 @@ fn caught_row_mutation_blocks_reads_and_publication_but_keeps_cleanup() {
     let window = app
         .open_window(WindowOptions::default(), move || {
             let displayed = displayed.clone();
-            text(move || displayed.len().to_string()).into()
+            text(move || displayed.len().to_string())
         })
         .unwrap();
     let frames = window.frames_presented();

@@ -24,7 +24,6 @@ fn tab_index_orders_and_skips() {
             .child(button("c"))
             .child(button("late").tab_index(2))
             .child(button("first").tab_index(1))
-            .into()
     });
     let mut seen = Vec::new();
     for _ in 0..5 {
@@ -51,7 +50,6 @@ fn focus_groups_move_on_arrows_and_stop_once_for_tab() {
                 })))
                 .child(col().role(Role::List).focus_group().children((1..=3).map(|i| button(&format!("row-{i}")).role(Role::ListItem))))
                 .child(button("c"))
-                .into()
         });
     app.press_key("tab").unwrap();
     app.press_key("tab").unwrap();
@@ -90,7 +88,6 @@ fn tab_lists_enter_at_the_current_selection_after_outside_changes() {
                 button(&format!("tab-{i}")).role(Role::Tab).selected(move || selected.get() == i).on_press(move || selected.set(i))
             })))
             .child(button("c"))
-            .into()
     });
     app.press_key("tab").unwrap();
     app.press_key("tab").unwrap();
@@ -124,7 +121,6 @@ fn radio_groups_enter_at_the_checked_radio_and_navigation_chooses_once() {
             })))
             .child(button("after"))
             .child(text(move || presses.get().to_string()).id("presses"))
-            .into()
     });
     app.press_key("tab").unwrap();
     app.press_key("tab").unwrap();
@@ -179,7 +175,6 @@ fn radio_navigation_chooses_an_unchecked_current_radio() {
                     .child(button("b").role(Role::RadioButton).checked(false).disabled(true)),
             )
             .child(text(move || presses.get().to_string()).id("presses"))
-            .into()
     });
     app.press_key("tab").unwrap();
     assert_eq!(app.inspect().focus.as_deref(), Some("a"));
@@ -224,12 +219,10 @@ fn radio_navigation_rechecks_focus_handlers_before_pressing() {
                                 _ => unreachable!(),
                             })
                             .on_press(move || recorded.set(recorded.get() + 1))
-                            .into()
                     },
                 )))
                 .child(button("outside"))
-                .child(show(move || modal.get(), || col().modal(false, || {}).child(button("modal-first")).into()))
-                .into()
+                .child(show(move || modal.get(), || col().modal(false, || {}).child(button("modal-first"))))
         });
         app.press_key("tab").unwrap();
         app.press_key("right").unwrap();
@@ -269,10 +262,8 @@ fn dialog_app(click_outside: bool) -> Window {
                         .child(text_input().id("name").value("").on_input(|_| {}))
                         .child(button("ok").on_press(move || open.set(false)))
                         .child(button("cancel").autofocus().on_press(move || open.set(false)))
-                        .into()
                 },
             ))
-            .into()
     })
 }
 
@@ -341,21 +332,15 @@ fn focus_and_blur_are_heard() {
             .child(show(move || shown.get(), {
                 let l = l.clone();
                 move || {
-                    text_input()
-                        .id("name")
-                        .on_focus(ev(&l, "focus name"))
-                        .on_blur(ev(&l, "blur name"))
-                        .on_key(move |k| {
-                            if k.key == Key::Escape {
-                                shown.set(false);
-                            }
-                            k.key == Key::Escape
-                        })
-                        .into()
+                    text_input().id("name").on_focus(ev(&l, "focus name")).on_blur(ev(&l, "blur name")).on_key(move |k| {
+                        if k.key == Key::Escape {
+                            shown.set(false);
+                        }
+                        k.key == Key::Escape
+                    })
                 }
             }))
             .child(button("ok").on_focus(ev(&l, "focus ok")).on_blur(ev(&l, "blur ok")))
-            .into()
     });
     app.tap("name").unwrap();
     app.press_key("tab").unwrap();
@@ -379,13 +364,10 @@ fn focus_and_blur_are_heard() {
 fn the_app_moves_focus_to_an_element_built_in_the_same_frame() {
     let mut app = Window::headless(|| {
         let editing = state("editing", || false);
-        col()
-            .child(show(move || editing.get(), || text_input().id("name").into()))
-            .child(button("open").on_press(move || {
-                editing.set(true);
-                focus("name");
-            }))
-            .into()
+        col().child(show(move || editing.get(), || text_input().id("name"))).child(button("open").on_press(move || {
+            editing.set(true);
+            focus("name");
+        }))
     });
     app.tap("open").unwrap();
     assert_eq!(focused(&app).as_deref(), Some("name"));
@@ -420,7 +402,7 @@ fn reload_modal_view(changes: Rc<ReloadModalChanges>) -> View {
     let (opener, outer) = (changes.clone(), changes.clone());
     col()
         .size_full()
-        .child(show(move || !opener.hide_opener.get(), move || button("open").on_press(move || outer_open.set(true)).into()))
+        .child(show(move || !opener.hide_opener.get(), move || button("open").on_press(move || outer_open.set(true))))
         .child(show(
             move || outer_open.get() && !outer.remove_outer.get(),
             move || {
@@ -435,7 +417,7 @@ fn reload_modal_view(changes: Rc<ReloadModalChanges>) -> View {
                     .child(text_input().id("outer-name"))
                     .child(show(
                         move || !opener.hide_inner_opener.get(),
-                        move || button("open-inner").on_press(move || inner_open.set(true)).into(),
+                        move || button("open-inner").on_press(move || inner_open.set(true)),
                     ))
                     // The overlay's stable anchor is separate from its opener, so a reload
                     // can remove that opener while leaving the inner modal open.
@@ -448,12 +430,10 @@ fn reload_modal_view(changes: Rc<ReloadModalChanges>) -> View {
                                 .id("inner-dialog")
                                 .w(180.0)
                                 .modal(true, move || inner_open.set(false))
-                                .child(show(move || !field.remove_inner_field.get(), || text_input().id("inner-name").into()))
+                                .child(show(move || !field.remove_inner_field.get(), || text_input().id("inner-name")))
                                 .child(button("inner-fallback"))
-                                .into()
                         },
                     ))
-                    .into()
             },
         ))
         .into()

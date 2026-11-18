@@ -116,30 +116,45 @@ impl View {
     }
 }
 
-/// What `.child(..)` takes (as GPUI's `IntoElement`): an element, a view, or a string, which is
-/// shown as text.
-pub trait IntoElement {
+/// Content that can be mounted as a [`View`], such as an element, text, or a fragment.
+pub trait IntoView {
     fn into_view(self, at: &'static Location<'static>) -> View;
 }
-impl IntoElement for El {
+impl IntoView for El {
     fn into_view(self, _: &'static Location<'static>) -> View {
         self.into()
     }
 }
-impl IntoElement for View {
+impl IntoView for View {
     fn into_view(self, _: &'static Location<'static>) -> View {
         self
     }
 }
-impl IntoElement for &str {
+impl IntoView for &str {
     fn into_view(self, at: &'static Location<'static>) -> View {
         element::text_at(self.to_owned(), at).into()
     }
 }
-impl IntoElement for String {
+impl IntoView for String {
     fn into_view(self, at: &'static Location<'static>) -> View {
         element::text_at(self, at).into()
     }
+}
+
+// A diverging factory can be passed to a generic content entry without a return type annotation.
+impl IntoView for ! {
+    fn into_view(self, _: &'static Location<'static>) -> View {
+        self
+    }
+}
+
+/// Converts a factory's result while the owner that started it is still live.
+pub(crate) fn build_content<V: IntoView>(at: &'static Location<'static>, factory: impl FnOnce() -> V) -> View {
+    rt(|rt| {
+        let owner = rt.capture_owner();
+        let content = factory();
+        if rt.admits(owner) { content.into_view(at) } else { View::empty() }
+    })
 }
 
 // ---- mounting ----
@@ -212,17 +227,27 @@ pub(crate) fn count_offset(parent: &Parent, count: &Rc<Cell<usize>>) -> usize {
 }
 
 pub(crate) fn mount(view: View, parent: &Parent, target: &Slots) {
-    match view.0 {
-        ViewKind::El(e) => {
-            let node = build_el(*e);
-            let index = offset(&parent.root, &Target::Slots(target)).expect("region in parent") + flat_len(target);
-            structure::place(&mut crate::app::window().kernel.borrow_mut(), parent.node, index, [node]);
-            target.borrow_mut().push(Slot::Node);
+    rt(|rt| {
+        let owner = rt.capture_owner();
+        if !rt.admits(owner) {
+            return;
         }
-        ViewKind::Fragment(vs) => vs.into_iter().for_each(|v| mount(v, parent, target)),
-        ViewKind::Empty => {}
-        ViewKind::Dyn(f) => f(parent, target),
-    }
+        match view.0 {
+            ViewKind::El(e) => {
+                let node = build_el(*e);
+                // A descendant's immediate watch can retire the owner while building the element.
+                if !rt.admits(owner) {
+                    return;
+                }
+                let index = offset(&parent.root, &Target::Slots(target)).expect("region in parent") + flat_len(target);
+                structure::place(&mut crate::app::window().kernel.borrow_mut(), parent.node, index, [node]);
+                target.borrow_mut().push(Slot::Node);
+            }
+            ViewKind::Fragment(vs) => vs.into_iter().for_each(|v| mount(v, parent, target)),
+            ViewKind::Empty => {}
+            ViewKind::Dyn(f) => f(parent, target),
+        }
+    });
 }
 
 // ---- content ownership and show ----
@@ -241,7 +266,7 @@ pub(crate) fn mount(view: View, parent: &Parent, target: &Slots) {
 ///
 /// Identity uses the key's type, equality and hash. `Display` supplies diagnostics only.
 #[track_caller]
-pub fn scope<K: Eq + Hash + Display + 'static, C: IntoElement>(key: K, content: impl FnOnce() -> C + 'static) -> View {
+pub fn scope<K: Eq + Hash + Display + 'static, V: IntoView>(key: K, content: impl FnOnce() -> V + 'static) -> View {
     let at = Location::caller();
     let key = Rc::new(key);
     let made = building();
@@ -260,12 +285,12 @@ pub fn scope<K: Eq + Hash + Display + 'static, C: IntoElement>(key: K, content: 
                 );
                 return None;
             }
-            Some(rt.create_scope(Some(owner), ScopeSegment::Scope(key)))
+            rt.create_child_scope(owner, ScopeSegment::Scope(key))
         });
         let Some(s) = s else { return };
         rt(|rt| {
             rt.with_frame(Ctx::Build, None, Some(Some(s)), || {
-                mount(as_part_of(made, || content().into_view(at)), parent, target);
+                mount(as_part_of(made, || build_content(at, content)), parent, target);
             });
         });
     }))
@@ -315,23 +340,11 @@ pub(crate) fn as_part_of<R>(component: Option<Component>, f: impl FnOnce() -> R)
 }
 
 /// Shows `then` while `cond` holds; the branch is a scope, so its state lives while it is shown.
+/// The factory can return an element, a view, or text accepted by [`IntoView`].
 #[track_caller]
-pub fn show(cond: impl Fn() -> bool + 'static, then: impl Fn() -> View + 'static) -> View {
-    show_else_at(Location::caller(), cond, then, View::empty)
-}
-
-#[track_caller]
-pub fn show_else(cond: impl Fn() -> bool + 'static, then: impl Fn() -> View + 'static, els: impl Fn() -> View + 'static) -> View {
-    show_else_at(Location::caller(), cond, then, els)
-}
-
-fn show_else_at(
-    at: &'static Location<'static>,
-    cond: impl Fn() -> bool + 'static,
-    then: impl Fn() -> View + 'static,
-    els: impl Fn() -> View + 'static,
-) -> View {
-    switch_at(at, cond, move |c| if *c { then() } else { els() })
+pub fn show<V: IntoView>(cond: impl Fn() -> bool + 'static, then: impl Fn() -> V + 'static) -> View {
+    let at = Location::caller();
+    switch_at(at, cond, move |visible| if *visible { build_content(at, &then) } else { View::empty() })
 }
 
 /// Shows `view(key)` for the current `key`; when the key changes, the view is built anew (React's
@@ -339,8 +352,9 @@ fn show_else_at(
 /// Each build is a scope named by the key, so its state lives while the key stays (and comes back
 /// by name across a hot reload).
 #[track_caller]
-pub fn keyed<K: Eq + Hash + Display + 'static>(key: impl Fn() -> K + 'static, view: impl Fn(&K) -> View + 'static) -> View {
-    switch_at(Location::caller(), key, view)
+pub fn keyed<K: Eq + Hash + Display + 'static, V: IntoView>(key: impl Fn() -> K + 'static, view: impl Fn(&K) -> V + 'static) -> View {
+    let at = Location::caller();
+    switch_at(at, key, move |key| build_content(at, || view(key)))
 }
 
 /// A view rebuilt whenever the typed logical key changes.
@@ -381,8 +395,8 @@ fn switch_at<K: Eq + Hash + Display + 'static>(
                     structure::begin_exit(&mut u.kernel.borrow_mut(), tops);
                     rt.dispose_scope(old);
                 }
+                let Some(s) = rt.create_child_scope(owner, ScopeSegment::Branch { region: base, key: identity.clone() }) else { return };
                 region.borrow_mut().clear();
-                let s = rt.create_scope(Some(owner), ScopeSegment::Branch { region: base, key: identity.clone() });
                 branch.set(Some(s));
                 rt.with_frame(Ctx::Build, None, Some(Some(s)), || mount(as_part_of(made, || view(&k)), &parent, &region));
             });

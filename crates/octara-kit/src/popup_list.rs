@@ -208,20 +208,15 @@ pub fn popup_list(
                                                     })
                                                 })
                                                 .select_none()
-                                                .into()
                                         },
                                     ))
                                     .on_press(move || pick(chosen.clone()))
-                                    .into()
                             },
                         ))
                         .child(show(move || items.get().is_empty(), {
                             let id = panel_id.clone();
-                            move || {
-                                text("No suggestions").id(format!("{id}-empty")).px_3().py_2().text_sm().text_color(Token::TextMuted).into()
-                            }
+                            move || text("No suggestions").id(format!("{id}-empty")).px_3().py_2().text_sm().text_color(Token::TextMuted)
                         }))
-                        .into()
                 },
             )
             .into()

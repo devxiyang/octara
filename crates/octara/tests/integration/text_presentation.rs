@@ -47,7 +47,6 @@ fn clamped_hidden_line_has_no_link_or_selection_geometry_and_copy_keeps_logical_
                 )
                 .child(el().id("next").size(40).focusable())
                 .on_link(move |_| opened.update(|n| *n += 1))
-                .into()
         })
         .unwrap();
     let hidden = w.kernel().find("hidden").unwrap();
@@ -96,7 +95,6 @@ fn partial_link_excludes_synthetic_ellipsis_from_hits_style_and_selection() {
                         .truncate(),
                 )
                 .on_link(move |_| opened.update(|n| *n += 1))
-                .into()
         })
         .unwrap();
     let (text, link) = {
@@ -145,7 +143,6 @@ fn resize_hides_and_reveals_same_target_and_updates_fixed_height_accessibility_c
                         .line_clamp(1),
                 )
                 .on_link(move |_| opened.update(|n| *n += 1))
-                .into()
         })
         .unwrap();
     let link = w.kernel().find("guide").unwrap();
@@ -194,7 +191,6 @@ fn truncate_is_one_line_even_with_hard_newlines_and_rtl_geometry_remains_actiona
                 .selectable()
                 .child(text(rich().styled("אבג", |s| s.link("/rtl").id("rtl")).text("\nhidden")).id("text").w(160).truncate())
                 .on_link(move |_| opened.update(|n| *n += 1))
-                .into()
         })
         .unwrap();
     let link = w.kernel().find("rtl").unwrap();

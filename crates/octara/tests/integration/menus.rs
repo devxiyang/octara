@@ -119,7 +119,6 @@ fn the_menu_bar_follows_what_the_active_window_handles() {
             .on_command("file.save", move || saved.update(|n| *n += 1))
             .child(text_input().id("f").value("hello"))
             .child(text(move || saved.get().to_string()).id("saved"))
-            .into()
     });
     w.app().run(|| set_menus([Menu::new("File").item(MenuItem::action("Save", "file.save")), Menu::edit()]));
     w.tap("f").unwrap();
@@ -149,7 +148,6 @@ fn a_menu_item_picked_by_its_keys_lets_the_keymap_decide() {
                     .on_command("editor.close_tab", move || what.set("closed a tab".into())),
             )
             .child(text(move || what.get()).id("what"))
-            .into()
     });
     w.bind("mod+w", Some("editor.close_tab"), Some("editor")).unwrap();
     w.tap("editor").unwrap();

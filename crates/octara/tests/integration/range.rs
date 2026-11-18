@@ -24,11 +24,10 @@ fn ranges() -> View {
             .disabled(move || disabled.get())
             .numeric_range(move || NumericRange { value: Some(value.get()), min: 0.0, max: 10.0, step: Some(0.5) })
             .on_numeric_input(move |next| value.set(next.clamp(0.0, 10.0)))
-            .into()
     };
     col()
         .size_full()
-        .child(show_else(move || replaced.get(), control, control))
+        .child(keyed(move || replaced.get(), move |_| control()))
         .child(el().id("progress").role(Role::ProgressIndicator).label("Download").numeric_range(move || NumericRange {
             value: known.get().then(|| value.get()),
             min: 0.0,
@@ -134,19 +133,16 @@ fn inspector_set_value_uses_fresh_identity_and_reports_delivery_without_retarget
 fn numeric_requests_do_not_replace_a_text_fields_active_composition() {
     let mut window = Window::headless(|| {
         let text = state("text", || "2".to_owned());
-        col()
-            .size_full()
-            .child(
-                text_input()
-                    .id("number")
-                    .label("Number")
-                    .w(200.0)
-                    .value(move || text.get())
-                    .on_input(move |value| text.set(value))
-                    .numeric_range(NumericRange { value: Some(2.0), min: 0.0, max: 10.0, step: Some(1.0) })
-                    .on_numeric_input(move |value| text.set(value.to_string())),
-            )
-            .into()
+        col().size_full().child(
+            text_input()
+                .id("number")
+                .label("Number")
+                .w(200.0)
+                .value(move || text.get())
+                .on_input(move |value| text.set(value))
+                .numeric_range(NumericRange { value: Some(2.0), min: 0.0, max: 10.0, step: Some(1.0) })
+                .on_numeric_input(move |value| text.set(value.to_string())),
+        )
     });
     window.dispatch(Event::Focus("number".into())).unwrap();
     window.set_selection(0, 1);
@@ -187,12 +183,10 @@ fn numeric_input_cannot_reach_hidden_leaving_or_modal_inert_controls() {
                         .style_with(move |style| if hidden.get() { style.hidden() } else { style.flex() })
                         .numeric_range(move || NumericRange { value: Some(value.get()), min: 0.0, max: 10.0, step: Some(1.0) })
                         .on_numeric_input(move |next| value.set(next))
-                        .into()
                 },
             ))
-            .child(show(move || modal.get(), || el().role(Role::Dialog).modal(false, || {}).child(el().focusable().size_8()).into()))
+            .child(show(move || modal.get(), || el().role(Role::Dialog).modal(false, || {}).child(el().focusable().size_8())))
             .child(text(move || value.get().to_string()).id("current"))
-            .into()
     });
     let node = window.kernel().find("level").unwrap();
     let ax = a11y_id(node);
@@ -232,7 +226,6 @@ fn inspector_drag_keeps_its_target_and_uses_four_timed_framework_moves() {
                 _ => {}
             }))
             .child(text(move || format!("{:?};{}", moved.get(), ended.get())).id("log"))
-            .into()
     });
     let target = window.inspect().find("target").unwrap().target.clone();
     let before = window.app().now();
@@ -254,13 +247,18 @@ fn inspector_drag_cancels_a_replaced_allocation_and_never_moves_its_replacement(
         let replacement_events = state("replacement_events", || 0);
         col()
             .size_full()
-            .child(show_else(
+            .child(keyed(
                 move || replaced.get(),
-                move || el().id("target").w(200.0).h(60.0).on_drag(move |_| replacement_events.update(|events| *events += 1)).into(),
-                move || el().id("target").w(200.0).h(60.0).on_drag(move |_| replaced.set(true)).into(),
+                move |replacement| {
+                    let target = el().id("target").w(200.0).h(60.0);
+                    if *replacement {
+                        target.on_drag(move |_| replacement_events.update(|events| *events += 1))
+                    } else {
+                        target.on_drag(move |_| replaced.set(true))
+                    }
+                },
             ))
             .child(text(move || replacement_events.get().to_string()).id("log"))
-            .into()
     });
     let target = window.inspect().find("target").unwrap().target.clone();
     let reply = request(&mut window, json!({"op":"drag","id":"target","dx":80,"dy":0,"target":target}));

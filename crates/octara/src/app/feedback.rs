@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn after_layout_does_not_run_a_hook_removed_by_an_earlier_hook() {
         let app = App::new(HeadlessPlatform::default());
-        let window = app.open_window(Default::default(), || el().size_full().into()).unwrap();
+        let window = app.open_window(Default::default(), || el().size_full()).unwrap();
         let called = Rc::new(Cell::new(false));
         let later = Rc::new(Cell::new(0));
         let window_state = window.enter(crate::app::window);
@@ -217,7 +217,7 @@ mod tests {
                             counted.set(counted.get() + 1);
                             false
                         }));
-                        el().into()
+                        el()
                     },
                 )
             })
@@ -242,7 +242,7 @@ mod tests {
                 .open_window(Default::default(), || {
                     let _ = size_of("box");
                     let _ = following_tail("box");
-                    el().id("box").size_8().into()
+                    el().id("box").size_8()
                 })
                 .unwrap();
             let frames = window.frames_presented();
@@ -282,7 +282,7 @@ mod tests {
             }
         }
         let app = App::new(HeadlessPlatform::default());
-        let window = app.open_window(Default::default(), || el().into()).unwrap();
+        let window = app.open_window(Default::default(), || el()).unwrap();
         app.run(|| {
             let later = window.w.after_layout(Rc::new(|| false));
             let captured = RemoveOnDrop(window.w.clone(), later);

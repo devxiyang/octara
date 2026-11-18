@@ -22,7 +22,6 @@ fn main() {
             )
             .child(el().size_16().rounded_full().bg(Token::Accent).opacity(0.5))
             .child(text("Agents see pixels without a GPU; windows use the same display list.").w(260).text_color(Token::TextMuted))
-            .into()
     });
     let dl = app.display_list();
     CpuRenderer::new().render(&dl, 2.0).save_png(format!("{dir}/card_cpu.png")).unwrap();

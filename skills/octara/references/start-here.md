@@ -11,12 +11,11 @@ use octara::prelude::*;
 use octara_kit::button;
 
 #[ui]
-fn counter() -> View {
+fn counter() -> El {
     let count = state("count", || 0);
     col().size_full().p_4().gap_2()
         .child(text(move || format!("Count: {}", count.get())).id("count"))
         .child(button("Add one").id("inc").on_press(move || count.update(|n| *n += 1)))
-        .into()
 }
 
 fn main() {
@@ -24,7 +23,7 @@ fn main() {
 }
 ```
 
-同一个构造函数也可以交给无窗口宿主。断言文字变化可以同时发现按钮没有收到点击、状态没有改变、文字没有订阅状态三类错误。
+同一个返回 `El` 的构造函数可以直接交给桌面或无窗口宿主。`.child`、`show`、`keyed` 和弹层通过 `IntoView` 组合内容。内容工厂可以直接返回元素，例如 `show(move || open.get(), || text("详情"))`。这里断言文字变化可以同时发现按钮没有收到点击、状态没有改变、文字没有订阅状态三类错误。
 
 ```rust
 let mut app = Window::headless(counter);
@@ -44,7 +43,7 @@ use octara::prelude::*;
 
 let app = Window::headless(|| {
     let n = state("n", || 1);
-    text(format!("{}", n.get())).into() // read once: this text never updates
+    text(format!("{}", n.get())) // read once: this text never updates
 });
 assert!(app.app().diagnostics().iter().any(|d| d.code == "STRICT_READ_UNTRACKED"));
 // Fix: text(move || format!("{}", n.get())), or untrack(|| n.get()) for an intentional snapshot.
@@ -63,7 +62,6 @@ let mut app = Window::headless(|| {
         .child(text(title).id("title"))
         .child(el().id("tag").role(Role::Button).label("Tag").size_8()
             .on_press(move || draft.update(|d| d.tags.push("Rust".into()))))
-        .into()
 });
 app.tap("tag").unwrap();
 assert_eq!(app.kernel().text_of("title").as_deref(), Some("Notes (1)"));
@@ -72,7 +70,7 @@ assert!(app.app().diagnostics().is_empty());
 
 ## 集合的 key 和行的内容
 
-快照来源适合小型或重算成本低的集合。下例修改文字后，行继续由相同的业务 key 标识。`.id(..)` 则供测试和 Inspector 查找当前挂载的控件。
+快照来源适合小型或重算成本低的集合。`each` 和 `virtual_each` 的行工厂直接返回一个 `El`。通过数据源过滤应省略的行。下例修改文字后，行继续由相同的业务 key 标识。`.id(..)` 供测试和 Inspector 查找当前挂载的控件。
 
 ```rust
 use octara::prelude::*;
@@ -82,8 +80,7 @@ let mut window = Window::headless(|| {
     col().size_full()
         .child(el().id("rename").size_8().child("Rename")
             .on_press(move || items.update(|items| items[0].1 = "Renamed".into())))
-        .child(each(move || items.get(), |key, item| text(item).id(format!("item-{key}")).into()))
-        .into()
+        .child(each(move || items.get(), |key, item| text(item).id(format!("item-{key}"))))
 });
 window.tap("rename").unwrap();
 assert_eq!(window.kernel().text_of("item-1").as_deref(), Some("Renamed"));
@@ -101,7 +98,7 @@ struct Todo {
     title: String,
 }
 
-fn todos() -> View {
+fn todos() -> El {
     let items = state_list("todos", || vec![Todo { id: 1, title: "Write docs".into() }], |t: &Todo| t.id);
     let next = state("next", || 2u32);
     col()
@@ -120,10 +117,8 @@ fn todos() -> View {
                     .gap_2()
                     .child(text(move || todo.with(|t| t.title.clone())))
                     .child(el().id(format!("remove-{id}")).child("Remove").on_press(move || items.remove(&id)))
-                    .into()
             },
         )))
-        .into()
 }
 
 let mut app = Window::headless(todos);
@@ -143,7 +138,7 @@ use octara::prelude::*;
 let mut app = Window::headless(|| {
     let saved = state("saved", || 0);
     on_command("save", move || saved.update(|n| *n += 1));
-    col().size_full().child(text(move || format!("saved {}", saved.get())).id("saved")).into()
+    col().size_full().child(text(move || format!("saved {}", saved.get())).id("saved"))
 });
 app.bind("mod+s", Some("save"), None).unwrap(); // `mod` is cmd on Apple platforms, ctrl elsewhere
 app.press_key("mod+s").unwrap();
@@ -160,7 +155,6 @@ let mut window = Window::headless(|| {
     text_input().id("name").value(value)
         .behavior(|b| b.on_input(move |text| value.set(text)))
         .on_input(move |proposed| assert_eq!(value.get(), proposed))
-        .into()
 });
 window.dispatch(Event::Input("name".into(), "Ada".into())).unwrap();
 assert_eq!(window.kernel().value_of("name").as_deref(), Some("Ada"));
@@ -181,7 +175,6 @@ let mut app = Window::headless(|| {
         .motion(Spring::SNAP)
         .child(el().id("toggle").size_8().on_press(move || open.update(|o| *o = !*o)))
         .child(el().id("panel").size_8().bg(Token::Surface).opacity(move || if open.get() { 1.0 } else { 0.0 }))
-        .into()
 });
 app.tap("toggle").unwrap();
 // The style is the target at once; the drawn value moves toward it frame by frame.
@@ -204,7 +197,7 @@ let mut app = Window::headless(|| {
         sleep(Duration::from_millis(300)).await;
         status.set("ready".into());
     });
-    text(move || status.get()).id("status").into()
+    text(move || status.get()).id("status")
 });
 assert_eq!(app.kernel().text_of("status").as_deref(), Some("loading"));
 app.app().run_until_idle(Duration::from_secs(1)).unwrap();
@@ -244,7 +237,7 @@ let app = App::with_config(HeadlessPlatform::default(), AppConfig {
     theme: Theme::dark(),
     ..Default::default()
 });
-let window = app.open_window(WindowOptions::new("Configured"), || text("Ready").into()).unwrap();
+let window = app.open_window(WindowOptions::new("Configured"), || text("Ready")).unwrap();
 assert_eq!(window.inspect().theme, "dark");
 app.shutdown();
 ```

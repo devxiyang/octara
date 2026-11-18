@@ -24,7 +24,7 @@ struct Model {
 type Drags = Rc<RefCell<Vec<(u32, DragPhase)>>>;
 
 #[ui]
-fn interaction_row(key: u32, item: ReadSignal<u32>, model: Model, drags: Drags, disposed: Rc<RefCell<Vec<u32>>>) -> View {
+fn interaction_row(key: u32, item: ReadSignal<u32>, model: Model, drags: Drags, disposed: Rc<RefCell<Vec<u32>>>) -> El {
     let draft = state("draft", || "A😀bcZ".to_owned());
     let window_id = current_window();
     on_cleanup(move || disposed.borrow_mut().push(key));
@@ -66,7 +66,6 @@ fn interaction_row(key: u32, item: ReadSignal<u32>, model: Model, drags: Drags, 
                     assert_eq!(item.get(), key);
                 }),
         )
-        .into()
 }
 
 #[ui]
@@ -125,7 +124,6 @@ impl Fixture {
                         move || model.shown.get(),
                         move || interaction_list(model, snapshots, gap, drags.clone(), disposed.clone()),
                     ))
-                    .into()
             })
             .unwrap();
         Self { app, window, model, drags, disposed }
@@ -461,29 +459,18 @@ fn an_input_callback_can_remove_its_row_before_the_queued_caret_reveal() {
     let mut window = Window::headless(move || {
         let items = state_list("items", || (0..100u32).collect(), |key| *key);
         let seen = seen.clone();
-        col()
-            .size_full()
-            .id("list")
-            .overflow_y_scroll()
-            .child(virtual_each(
-                move || items.read_only(),
-                |_| ROW_HEIGHT,
-                move |key, _| {
-                    let key = *key;
-                    let seen = seen.clone();
-                    text_input()
-                        .id(format!("editor-{key}"))
-                        .label(format!("Editor {key}"))
-                        .h(ROW_HEIGHT)
-                        .flex_shrink_0()
-                        .on_input(move |_| {
-                            items.remove(&key);
-                            seen.set(true);
-                        })
-                        .into()
-                },
-            ))
-            .into()
+        col().size_full().id("list").overflow_y_scroll().child(virtual_each(
+            move || items.read_only(),
+            |_| ROW_HEIGHT,
+            move |key, _| {
+                let key = *key;
+                let seen = seen.clone();
+                text_input().id(format!("editor-{key}")).label(format!("Editor {key}")).h(ROW_HEIGHT).flex_shrink_0().on_input(move |_| {
+                    items.remove(&key);
+                    seen.set(true);
+                })
+            },
+        ))
     });
     window.dispatch(Event::Focus("editor-0".into())).unwrap();
     window.type_text("remove me");
@@ -503,24 +490,17 @@ fn deleting_a_pending_hit_cancels_the_pointer_even_when_its_ancestor_target_surv
     let mut window = app
         .open_window(WindowOptions::new("Ancestor pointer target").size(640.0, 192.0), move || {
             let seen = seen.clone();
-            col()
-                .size_full()
-                .id("list")
-                .overflow_y_scroll()
-                .on_press(move || seen.set(seen.get() + 1))
-                .child(virtual_each(
-                    move || items.read_only(),
-                    |_| ROW_HEIGHT,
-                    |key, _| {
-                        col()
-                            .id(format!("row-{key}"))
-                            .h(ROW_HEIGHT)
-                            .flex_shrink_0()
-                            .child(text(format!("Hit row {key}")).id(format!("hit-{key}")))
-                            .into()
-                    },
-                ))
-                .into()
+            col().size_full().id("list").overflow_y_scroll().on_press(move || seen.set(seen.get() + 1)).child(virtual_each(
+                move || items.read_only(),
+                |_| ROW_HEIGHT,
+                |key, _| {
+                    col()
+                        .id(format!("row-{key}"))
+                        .h(ROW_HEIGHT)
+                        .flex_shrink_0()
+                        .child(text(format!("Hit row {key}")).id(format!("hit-{key}")))
+                },
+            ))
         })
         .unwrap();
     let (x, y) = center(&window, "hit-0");
@@ -539,24 +519,21 @@ fn deleting_a_pending_hit_cancels_the_pointer_even_when_its_ancestor_target_surv
 }
 
 #[ui]
-fn nested_virtual_row(outer: u32, editors: bool) -> View {
-    col()
-        .id(format!("outer-{outer}"))
-        .h(192.0)
-        .flex_shrink_0()
-        .child(col().id(format!("inner-{outer}")).h(128.0).overflow_y_scroll().child(virtual_each(
+fn nested_virtual_row(outer: u32, editors: bool) -> El {
+    col().id(format!("outer-{outer}")).h(192.0).flex_shrink_0().child(
+        col().id(format!("inner-{outer}")).h(128.0).overflow_y_scroll().child(virtual_each(
             || (0..1_000u32).map(|key| (key, key)).collect::<Vec<_>>(),
             |_| 32.0,
             move |inner, _| {
-                let content: View = if editors {
-                    text_input().id(format!("nested-editor-{outer}-{inner}")).label("Nested editor").h(32.0).into()
+                let content = if editors {
+                    text_input().id(format!("nested-editor-{outer}-{inner}")).label("Nested editor").h(32.0)
                 } else {
-                    text(format!("Nested row {outer}:{inner}")).into()
+                    text(format!("Nested row {outer}:{inner}"))
                 };
-                col().id(format!("inner-row-{outer}-{inner}")).h(32.0).flex_shrink_0().on_press(|| {}).child(content).into()
+                col().id(format!("inner-row-{outer}-{inner}")).h(32.0).flex_shrink_0().on_press(|| {}).child(content)
             },
-        )))
-        .into()
+        )),
+    )
 }
 
 #[ui]
@@ -626,32 +603,22 @@ fn a_drag_handler_that_removes_its_row_cannot_restore_a_retired_capture() {
         let items = state_list("items", || (0..1_000u32).collect(), |key| *key);
         let window_id = current_window();
         let seen = seen.clone();
-        col()
-            .size_full()
-            .id("list")
-            .overflow_y_scroll()
-            .child(virtual_each(
-                move || items.read_only(),
-                |_| ROW_HEIGHT,
-                move |key, _| {
-                    let key = *key;
-                    let seen = seen.clone();
-                    el().id(format!("row-{key}"))
-                        .label(format!("Drag {key}"))
-                        .h(ROW_HEIGHT)
-                        .flex_shrink_0()
-                        .on_drag(move |drag| {
-                            seen.borrow_mut().push(drag.phase);
-                            if drag.phase == DragPhase::Start {
-                                items.remove(&key);
-                                let mut window = App::current().window(window_id).unwrap();
-                                window.dispatch(Event::ScrollTo("list".into(), 0.0, 10_000.0)).unwrap();
-                            }
-                        })
-                        .into()
-                },
-            ))
-            .into()
+        col().size_full().id("list").overflow_y_scroll().child(virtual_each(
+            move || items.read_only(),
+            |_| ROW_HEIGHT,
+            move |key, _| {
+                let key = *key;
+                let seen = seen.clone();
+                el().id(format!("row-{key}")).label(format!("Drag {key}")).h(ROW_HEIGHT).flex_shrink_0().on_drag(move |drag| {
+                    seen.borrow_mut().push(drag.phase);
+                    if drag.phase == DragPhase::Start {
+                        items.remove(&key);
+                        let mut window = App::current().window(window_id).unwrap();
+                        window.dispatch(Event::ScrollTo("list".into(), 0.0, 10_000.0)).unwrap();
+                    }
+                })
+            },
+        ))
     });
     let (x, y) = center(&window, "row-0");
     window.pointer_down(x, y);
@@ -719,33 +686,27 @@ fn resetting_bounded_collection_history_preserves_surviving_pins_and_retires_abs
     let mut window = app
         .open_window(WindowOptions::new("Collection history reset").size(640.0, 192.0), move || {
             let seen = seen.clone();
-            col()
-                .size_full()
-                .id("list")
-                .overflow_y_scroll()
-                .child(virtual_each(
-                    move || items.read_only(),
-                    |_| ROW_HEIGHT,
-                    move |key, item| {
-                        let draft = state("draft", || "seed".to_owned());
-                        let seen = seen.clone();
-                        row()
-                            .id(format!("row-{key}"))
-                            .h(ROW_HEIGHT)
-                            .flex_shrink_0()
-                            .child(text_input().id(format!("editor-{key}")).w(240).value(draft).on_input(move |value| draft.set(value)))
-                            .child(
-                                el().id(format!("drag-{key}"))
-                                    .w(120)
-                                    .h(40)
-                                    .preserve_focus_on_press(true)
-                                    .child(text(move || item.with(|item| item.1.clone())).id(format!("label-{key}")))
-                                    .on_drag(move |drag| seen.borrow_mut().push(drag.phase)),
-                            )
-                            .into()
-                    },
-                ))
-                .into()
+            col().size_full().id("list").overflow_y_scroll().child(virtual_each(
+                move || items.read_only(),
+                |_| ROW_HEIGHT,
+                move |key, item| {
+                    let draft = state("draft", || "seed".to_owned());
+                    let seen = seen.clone();
+                    row()
+                        .id(format!("row-{key}"))
+                        .h(ROW_HEIGHT)
+                        .flex_shrink_0()
+                        .child(text_input().id(format!("editor-{key}")).w(240).value(draft).on_input(move |value| draft.set(value)))
+                        .child(
+                            el().id(format!("drag-{key}"))
+                                .w(120)
+                                .h(40)
+                                .preserve_focus_on_press(true)
+                                .child(text(move || item.with(|item| item.1.clone())).id(format!("label-{key}")))
+                                .on_drag(move |drag| seen.borrow_mut().push(drag.phase)),
+                        )
+                },
+            ))
         })
         .unwrap();
     window.dispatch(Event::Focus("editor-0".into())).unwrap();
@@ -797,27 +758,19 @@ fn a_raw_pointer_up_callback_can_close_its_window_or_shut_down_its_app() {
     for shutdown in [false, true] {
         let mut window = Window::headless(move || {
             let id = current_window();
-            col()
-                .size_full()
-                .overflow_y_scroll()
-                .child(virtual_each(
-                    || (0..100u32).map(|key| (key, key)).collect::<Vec<_>>(),
-                    |_| ROW_HEIGHT,
-                    move |key, _| {
-                        el().id(format!("close-{key}"))
-                            .h(ROW_HEIGHT)
-                            .flex_shrink_0()
-                            .on_press(move || {
-                                if shutdown {
-                                    App::current().shutdown();
-                                } else {
-                                    close_window(id);
-                                }
-                            })
-                            .into()
-                    },
-                ))
-                .into()
+            col().size_full().overflow_y_scroll().child(virtual_each(
+                || (0..100u32).map(|key| (key, key)).collect::<Vec<_>>(),
+                |_| ROW_HEIGHT,
+                move |key, _| {
+                    el().id(format!("close-{key}")).h(ROW_HEIGHT).flex_shrink_0().on_press(move || {
+                        if shutdown {
+                            App::current().shutdown();
+                        } else {
+                            close_window(id);
+                        }
+                    })
+                },
+            ))
         });
         let (x, y) = center(&window, "close-0");
         window.pointer_down(x, y);
@@ -837,34 +790,28 @@ fn row_owned_overlay_editors_pin_their_owner_until_close_or_data_removal() {
         let (items, opened) = app.run(|| (state_list("items", || (0..ROWS).collect(), |key| *key), state("opened", || None)));
         let mut window = app
             .open_window(WindowOptions::new("Row-owned overlay").size(640.0, 192.0), move || {
-                col()
-                    .size_full()
-                    .id("list")
-                    .overflow_y_scroll()
-                    .child(virtual_each(
-                        move || items.read_only(),
-                        |_| ROW_HEIGHT,
-                        move |key, _| {
-                            let key = *key;
-                            let content = move || {
-                                let draft = state("draft", || "seed".to_owned());
-                                col()
-                                    .id("row-overlay")
-                                    .w(300)
-                                    .h(80)
-                                    .modal(false, move || opened.set(None))
-                                    .child(text_input().id("overlay-editor").w(240).value(draft).on_input(move |value| draft.set(value)))
-                                    .into()
-                            };
-                            let row = el().id(format!("row-{key}")).h(ROW_HEIGHT).flex_shrink_0().child(format!("Row {key}"));
-                            if window_overlay {
-                                row.overlay_window(move || opened.get() == Some(key), content).into()
-                            } else {
-                                row.overlay(move || opened.get() == Some(key), Placement::BELOW, content).into()
-                            }
-                        },
-                    ))
-                    .into()
+                col().size_full().id("list").overflow_y_scroll().child(virtual_each(
+                    move || items.read_only(),
+                    |_| ROW_HEIGHT,
+                    move |key, _| {
+                        let key = *key;
+                        let content = move || {
+                            let draft = state("draft", || "seed".to_owned());
+                            col()
+                                .id("row-overlay")
+                                .w(300)
+                                .h(80)
+                                .modal(false, move || opened.set(None))
+                                .child(text_input().id("overlay-editor").w(240).value(draft).on_input(move |value| draft.set(value)))
+                        };
+                        let row = el().id(format!("row-{key}")).h(ROW_HEIGHT).flex_shrink_0().child(format!("Row {key}"));
+                        if window_overlay {
+                            row.overlay_window(move || opened.get() == Some(key), content)
+                        } else {
+                            row.overlay(move || opened.get() == Some(key), Placement::BELOW, content)
+                        }
+                    },
+                ))
             })
             .unwrap();
         for remove_data in [false, true] {

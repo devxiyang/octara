@@ -63,8 +63,8 @@ fn clipboard_image(app: &App) -> Result<(), String> {
 
 fn windows_open_and_close(app: &App) -> Result<(), String> {
     let before = app.windows();
-    let a = app.open_window(WindowOptions::new("Conformance A").size(240.0, 160.0), || text("A").into())?;
-    let b = app.open_window(WindowOptions::new("Conformance B").size(240.0, 160.0), || text("B").into())?;
+    let a = app.open_window(WindowOptions::new("Conformance A").size(240.0, 160.0), || text("A"))?;
+    let b = app.open_window(WindowOptions::new("Conformance B").size(240.0, 160.0), || text("B"))?;
     let open = app.windows();
     ensure(open.contains(&a.id()) && open.contains(&b.id()) && open.len() == before.len() + 2, || format!("open: {open:?}"))?;
     ensure(b.options().title == "Conformance B", || format!("titled {:?}", b.options().title))?;
@@ -77,7 +77,7 @@ fn windows_open_and_close(app: &App) -> Result<(), String> {
 fn operations_present_frames(app: &App) -> Result<(), String> {
     let w = app.open_window(WindowOptions::new("Conformance frames").size(240.0, 160.0), || {
         let n = state("n", || 0);
-        el().id("count").size_full().on_press(move || n.update(|n| *n += 1)).child(text(move || format!("{}", n.get()))).into()
+        el().id("count").size_full().on_press(move || n.update(|n| *n += 1)).child(text(move || format!("{}", n.get())))
     })?;
     let result = (|| {
         let mut w = w.clone();
@@ -94,7 +94,7 @@ fn operations_present_frames(app: &App) -> Result<(), String> {
 }
 
 fn activation(app: &App) -> Result<(), String> {
-    let mut w = app.open_window(WindowOptions::new("Conformance activation").size(240.0, 160.0), || text_input().id("f").into())?;
+    let mut w = app.open_window(WindowOptions::new("Conformance activation").size(240.0, 160.0), || text_input().id("f"))?;
     let result = (|| {
         w.tap("f")?;
         w.event(InputEvent::Active(false));
@@ -107,9 +107,8 @@ fn activation(app: &App) -> Result<(), String> {
 }
 
 fn pointer_look(app: &App) -> Result<(), String> {
-    let mut w = app.open_window(WindowOptions::new("Conformance pointer").size(240.0, 160.0), || {
-        el().id("hand").size_full().cursor_pointer().into()
-    })?;
+    let mut w =
+        app.open_window(WindowOptions::new("Conformance pointer").size(240.0, 160.0), || el().id("hand").size_full().cursor_pointer())?;
     let result = (|| {
         let (x, y, ww, h) = w.kernel().shown_rect(w.kernel().find("hand").ok_or("no element")?);
         w.pointer_move(x + ww / 2.0, y + h / 2.0);

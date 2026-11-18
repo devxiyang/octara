@@ -17,7 +17,7 @@ fn check_release<K: 'static, T: 'static>(name: &str, foreign: bool, make: impl F
     let window = app
         .open_window(WindowOptions::default(), move || {
             *saved.borrow_mut() = Some(make());
-            text("owner").into()
+            text("owner")
         })
         .unwrap();
     let list = held.borrow_mut().take().unwrap();
@@ -94,7 +94,7 @@ where
     let window = app
         .open_window(WindowOptions::default(), move || {
             *saved.borrow_mut() = Some(make(left, right, observed.clone()));
-            text("producer").into()
+            text("producer")
         })
         .unwrap();
     let list = held.borrow_mut().take().unwrap();
@@ -161,7 +161,7 @@ fn dropping_the_last_read_handle_keeps_a_producer_until_its_scope_retires() {
                 observed.set(observed.get() + 1);
                 *n
             }));
-            text("producer").into()
+            text("producer")
         })
         .unwrap();
     let initial = calls.get();
@@ -183,7 +183,7 @@ fn a_join_cannot_reenter_a_retired_upstream_from_its_live_right_side() {
     let window = app
         .open_window(WindowOptions::default(), move || {
             *saved.borrow_mut() = Some(left.filter(|_| true));
-            text("upstream").into()
+            text("upstream")
         })
         .unwrap();
     let upstream = held.borrow_mut().take().unwrap();
@@ -218,7 +218,7 @@ fn retiring_a_producer_invalidates_cached_item_reads_in_another_scope() {
     let window = app
         .open_window(WindowOptions::default(), move || {
             *saved.borrow_mut() = Some(source.filter(|_| true));
-            text("producer").into()
+            text("producer")
         })
         .unwrap();
     let list = held.borrow_mut().take().unwrap();

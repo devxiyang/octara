@@ -26,7 +26,6 @@ fn app(platform: TargetPlatform) -> Window {
                     .on_input(move |s| v.set(s)),
             )
             .child(el().id("show").role(Role::Button).label("Show").on_press(move || show.update(|s| *s = !*s)).size_8())
-            .into()
     });
     app.app().set_target_platform(platform);
     app.tap("pw").unwrap();

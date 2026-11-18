@@ -45,7 +45,6 @@ pub fn popover(id: &str, open: impl Model<bool>, placement: Placement, trigger: 
                     .shadow_lg()
                     .modal(true, move || dismiss.set(false))
                     .child(content())
-                    .into()
             },
         )
 }

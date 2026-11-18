@@ -362,7 +362,7 @@ fn stream() {
                     .p_4()
                     .children((0..40).map(move |_| markdown(m.as_str())))
                     .child(markdown(&stream));
-                if motion { c.motion(Spring::SNAP).into() } else { c.into() }
+                if motion { c.motion(Spring::SNAP) } else { c }
             })
             .unwrap();
         w.resize(1024.0, 768.0);

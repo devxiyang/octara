@@ -33,7 +33,7 @@ fn texts(k: &Kernel, n: NodeId) -> Vec<String> {
 
 #[test]
 fn blocks_are_elements_with_roles_and_keys() {
-    let w = Window::headless(|| markdown(DOC).id("md").into());
+    let w = Window::headless(|| markdown(DOC).id("md"));
     let k = &*w.kernel();
     let bs = blocks(k);
     let keys: Vec<&str> = bs.iter().map(|(key, _)| key.as_str()).collect();
@@ -55,7 +55,7 @@ fn blocks_are_elements_with_roles_and_keys() {
 
 #[test]
 fn copy_buttons_write_the_code() {
-    let mut w = Window::headless(|| markdown("```\nlet a = 1;\nlet b = 2;\n```\n").id("md").into());
+    let mut w = Window::headless(|| markdown("```\nlet a = 1;\nlet b = 2;\n```\n").id("md"));
     w.tap("Copy").unwrap();
     assert_eq!(w.clipboard_text().as_deref(), Some("let a = 1;\nlet b = 2;"));
 }
@@ -65,7 +65,7 @@ fn editing_an_earlier_code_line_updates_it_and_keeps_the_block() {
     let app = App::new(HeadlessPlatform::default());
     let live = app.run(|| TextBuffer::new("```rust\nlet first = 1;\nlet second = 2;\n```"));
     let stream = live.clone();
-    let window = app.open_window(WindowOptions::new("Code"), move || markdown(&stream).id("md").into()).unwrap();
+    let window = app.open_window(WindowOptions::new("Code"), move || markdown(&stream).id("md")).unwrap();
     let code = blocks(&window.kernel())[0].1;
 
     app.run(|| live.set("```rust\nlet first = 9;\nlet second = 2;\n```"));
@@ -101,7 +101,7 @@ fn a_stream_keeps_every_earlier_blocks_node() {
     let app = App::new(HeadlessPlatform::default());
     let live = app.run(|| TextBuffer::new(""));
     let stream = live.clone();
-    let w = app.open_window(WindowOptions::new("Chat"), move || markdown(&stream).id("md").into()).unwrap();
+    let w = app.open_window(WindowOptions::new("Chat"), move || markdown(&stream).id("md")).unwrap();
     // Each block's node when it finished (another block started after it).
     let mut finished: Vec<(String, NodeId)> = Vec::new();
     let mut steps = 0;
@@ -122,7 +122,7 @@ fn a_stream_keeps_every_earlier_blocks_node() {
     // The whole answer drawn as a fresh render draws it.
     let fresh = Window::headless({
         let a = answer.clone();
-        move || markdown(a.as_str()).id("md").into()
+        move || markdown(a.as_str()).id("md")
     });
     let all = |k: &Kernel| texts(k, k.find("md").unwrap());
     assert_eq!(all(&w.kernel()), all(&fresh.kernel()));
@@ -133,7 +133,7 @@ fn a_fence_streams_as_code_and_prose_follows_its_close() {
     let app = App::new(HeadlessPlatform::default());
     let live = app.run(|| TextBuffer::new(""));
     let stream = live.clone();
-    let w = app.open_window(WindowOptions::new("Chat"), move || markdown(&stream).id("md").into()).unwrap();
+    let w = app.open_window(WindowOptions::new("Chat"), move || markdown(&stream).id("md")).unwrap();
     let src = "Intro\n\n```py\nprint(1)\nx = **2**\n```\nAfter the *fence*.\n";
     let mut saw_open_code = false;
     for (i, _) in src.char_indices().skip(1) {
@@ -168,7 +168,7 @@ fn drag(w: &mut Window, a: NodeId, b: NodeId, to: f32) {
 
 #[test]
 fn the_pointer_selects_code_lines_as_it_selects_paragraphs() {
-    let mut w = Window::headless(|| markdown("alpha one\n\n```text\nalpha one\n```\n").id("md").w(600.0).into());
+    let mut w = Window::headless(|| markdown("alpha one\n\n```text\nalpha one\n```\n").id("md").w(600.0));
     let nodes = {
         let k = w.kernel();
         let md = k.find("md").unwrap();
@@ -198,7 +198,7 @@ fn the_pointer_selects_code_lines_as_it_selects_paragraphs() {
 
 #[test]
 fn copies_text_joined_by_roles_and_markdown_by_blocks() {
-    let mut w = Window::headless(|| markdown(DOC).id("md").w(600.0).into());
+    let mut w = Window::headless(|| markdown(DOC).id("md").w(600.0));
     w.select_all("md").unwrap();
     assert_eq!(
         copy(&mut w, "mod+c"),
@@ -244,7 +244,7 @@ fn assistive_technology_hears_each_block_as_it_finishes() {
     let app = App::new(HeadlessPlatform::default());
     let live = app.run(|| TextBuffer::new(""));
     let stream = live.clone();
-    let w = app.open_window(WindowOptions::new("Chat"), move || markdown(&stream).id("md").into()).unwrap();
+    let w = app.open_window(WindowOptions::new("Chat"), move || markdown(&stream).id("md")).unwrap();
     let heard = |w: &Window| {
         let k = w.kernel();
         let md = k.find("md").unwrap();
@@ -271,10 +271,7 @@ fn instances_keep_their_own_blocks() {
     let stream = live.clone();
     let w = app
         .open_window(WindowOptions::new("Chat"), move || {
-            col()
-                .children((0..2).map(|i| markdown(format!("static {i}").as_str()).id(format!("s{i}"))))
-                .child(markdown(&stream).id("t"))
-                .into()
+            col().children((0..2).map(|i| markdown(format!("static {i}").as_str()).id(format!("s{i}")))).child(markdown(&stream).id("t"))
         })
         .unwrap();
     app.run(|| live.append(" two"));
@@ -286,7 +283,7 @@ fn instances_keep_their_own_blocks() {
 
 #[test]
 fn reload_releases_derived_markdown_state() {
-    let window = Window::headless(|| markdown(DOC).id("md").into());
+    let window = Window::headless(|| markdown(DOC).id("md"));
     let before = window.app().work().reactive_nodes;
     let mut counts = vec![before];
     for _ in 0..8 {
@@ -310,7 +307,6 @@ fn reload_rebuilds_all_source_kinds_from_their_current_source() {
                 .child(markdown(static_source.borrow().as_str()).id("static"))
                 .child(markdown(move || dynamic.get()).id("dynamic"))
                 .child(markdown(&stream).id("buffer"))
-                .into()
         })
         .unwrap();
     let sources = [DOC, "## Rebuilt\n\nA [new link](https://x.dev/new).\n", "> quoted\n>\n> ```\n> nested code\n> ```\n"];
@@ -326,7 +322,7 @@ fn reload_rebuilds_all_source_kinds_from_their_current_source() {
         let count = app.work().reactive_nodes;
         assert_eq!(*counts.entry(source).or_insert(count), count, "unclaimed cache paths accumulate across shape changes");
         let expected = {
-            let fresh = Window::headless(move || markdown(source).id("fresh").into());
+            let fresh = Window::headless(move || markdown(source).id("fresh"));
             let k = fresh.kernel();
             texts(&k, k.find("fresh").unwrap())
         };
@@ -352,9 +348,8 @@ fn reload_rebuilds_all_source_kinds_from_their_current_source() {
 fn unmount_releases_every_markdown_cache() {
     let app = App::new(HeadlessPlatform::default());
     let visible = app.run(|| state("visible", || false));
-    let window = app
-        .open_window(WindowOptions::new("Mount"), move || col().child(show(move || visible.get(), || markdown(DOC).id("md").into())).into())
-        .unwrap();
+    let window =
+        app.open_window(WindowOptions::new("Mount"), move || col().child(show(move || visible.get(), || markdown(DOC).id("md")))).unwrap();
     let empty = app.work().reactive_nodes;
     let mut mounted = None;
     for _ in 0..16 {
@@ -374,7 +369,7 @@ fn retained_nested_rows_follow_task_number_and_alignment_changes() {
     let app = App::new(HeadlessPlatform::default());
     let source = app.run(|| TextBuffer::new("1. first\n2. second\n\n- task\n\n| a | b |\n|:---|---|\n| c | d |\n"));
     let stream = source.clone();
-    let window = app.open_window(WindowOptions::new("Structure"), move || markdown(&stream).id("md").w(600.0).into()).unwrap();
+    let window = app.open_window(WindowOptions::new("Structure"), move || markdown(&stream).id("md").w(600.0)).unwrap();
     let before = blocks(&window.kernel());
     let (cell, text) = {
         let k = window.kernel();
@@ -414,7 +409,7 @@ fn long_code_snapshots_only_write_the_changed_line() {
         source.push_str("tail");
         let source = app.run(|| TextBuffer::new(source));
         let stream = source.clone();
-        let window = app.open_window(WindowOptions::new("Code work"), move || markdown(&stream).id("md").into()).unwrap();
+        let window = app.open_window(WindowOptions::new("Code work"), move || markdown(&stream).id("md")).unwrap();
         let nodes = {
             let k = window.kernel();
             k.selectable_texts(k.find("md").unwrap())
@@ -443,11 +438,7 @@ fn long_code_snapshots_only_write_the_changed_line() {
 fn transcript() -> View {
     let messages = state_list("messages", || (0..200u32).collect(), |i: &u32| *i);
     col()
-        .child(virtual_each(
-            move || messages.read_only(),
-            |_| 40.0,
-            |i, _| markdown(format!("**m{i}** says *hi*")).id(format!("m{i}")).into(),
-        ))
+        .child(virtual_each(move || messages.read_only(), |_| 40.0, |i, _| markdown(format!("**m{i}** says *hi*")).id(format!("m{i}"))))
         .id("t")
         .selectable()
         .h(300.0)

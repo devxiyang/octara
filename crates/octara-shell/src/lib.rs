@@ -17,14 +17,16 @@
 //!
 //! ```no_run
 //! octara_shell::run("Counter", octara_examples_counter);
-//! # fn octara_examples_counter() -> octara::view::View { unimplemented!() }
+//! # fn octara_examples_counter() -> octara::view::El { octara::view::text("Counter") }
 //! ```
 
 use octara::app::{App, Button, FileDrag, InputEvent, Key, KeyEvent, Modifiers, Phase, PointerEvent, Window as AppWindow};
-use octara::view::View;
+use octara::platform::WindowOptions;
+use octara::view::{IntoView, View};
 use platform::WinitWindow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::panic::Location;
 use std::rc::Rc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
@@ -113,11 +115,14 @@ impl Default for Options {
 }
 
 /// Opens a window showing `root` and runs until the app's last window is closed.
-pub fn run(title: &str, root: impl Fn() -> View + 'static) {
+#[track_caller]
+pub fn run<V: IntoView>(title: &str, root: impl Fn() -> V + 'static) {
     run_with(Options { title: title.into(), ..Options::default() }, root)
 }
 
-pub fn run_with(options: Options, root: impl Fn() -> View + 'static) {
+/// Runs with explicit window and App options.
+#[track_caller]
+pub fn run_with<V: IntoView>(options: Options, root: impl Fn() -> V + 'static) {
     let event_loop = EventLoop::<ShellEvent>::with_user_event().build().expect("event loop");
     let shared = Rc::new(Shared {
         proxy: event_loop.create_proxy(),
@@ -129,10 +134,10 @@ pub fn run_with(options: Options, root: impl Fn() -> View + 'static) {
         trace: std::env::var_os("OCTARA_TRACE_INPUT").is_some_and(|v| v != "0"),
     });
     let mut shell = Shell {
-        window_options: octara::platform::WindowOptions::new(options.title).size(options.size.0, options.size.1),
+        window_options: WindowOptions::new(options.title).size(options.size.0, options.size.1),
         config: Some(options.app),
         exit_after_frames: options.exit_after_frames,
-        root: Some(Box::new(root)),
+        open_initial_window: Some(initial_window_factory(root)),
         shared,
         app: None,
         main: None,
@@ -195,11 +200,31 @@ impl Drop for InLoop {
     }
 }
 
+type OpenInitialWindow = Box<dyn FnOnce(&App, WindowOptions) -> Result<AppWindow, String>>;
+
+#[track_caller]
+fn initial_window_factory<V: IntoView>(root: impl Fn() -> V + 'static) -> OpenInitialWindow {
+    let source = Location::caller();
+    Box::new(move |app, options| app.open_window(options, move || RootContent { content: root(), source }))
+}
+
+// Keep the app's launch site through the deferred open. Core owns conversion and mounting.
+struct RootContent<V> {
+    content: V,
+    source: &'static Location<'static>,
+}
+
+impl<V: IntoView> IntoView for RootContent<V> {
+    fn into_view(self, _: &'static Location<'static>) -> View {
+        self.content.into_view(self.source)
+    }
+}
+
 struct Shell {
-    window_options: octara::platform::WindowOptions,
+    window_options: WindowOptions,
     config: Option<octara::app::AppConfig>,
     exit_after_frames: Option<u32>,
-    root: Option<Box<dyn Fn() -> View>>,
+    open_initial_window: Option<OpenInitialWindow>,
     shared: Rc<Shared>,
     app: Option<App>,
     /// The first window (captures and `exit_after_frames` are its).
@@ -707,9 +732,9 @@ impl Shell {
             return;
         }
         let _in = InLoop::enter(&self.shared, event_loop);
-        let root = self.root.take().expect("root view");
+        let open = self.open_initial_window.take().expect("initial window factory");
         let app = App::with_config(platform::WinitPlatform::new(self.shared.clone()), self.config.take().expect("initial App config"));
-        let mut w = app.open_window(self.window_options.clone(), root).expect("the window");
+        let mut w = open(&app, self.window_options.clone()).expect("the window");
         self.capture = capture::Job::from_env(w.id(), &self.shared.proxy);
         if std::env::var("OCTARA_PICK").is_ok_and(|v| v == "1") {
             w.set_picking(true);
@@ -964,5 +989,31 @@ impl ApplicationHandler<ShellEvent> for Shell {
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         self.host_entry(|shell| shell.on_window_event(event_loop, id, event));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_window_factory_keeps_the_window_scope_and_launch_site() {
+        let owner = Rc::new(Cell::new(None));
+        let observed = owner.clone();
+        let line = line!() + 1;
+        let open = initial_window_factory(move || {
+            observed.set(Some(octara::window::current_window()));
+            "Ready"
+        });
+        assert_eq!(owner.get(), None);
+
+        let app = App::new(octara::platform::HeadlessPlatform::default());
+        let window = open(&app, WindowOptions::default()).unwrap();
+        assert_eq!(owner.get(), Some(window.id()));
+        let kernel = window.kernel();
+        let node = kernel.children(kernel.root())[0];
+        let source = kernel.origin(node).unwrap();
+        assert_eq!(kernel.text(node), "Ready");
+        assert_eq!((source.file(), source.line()), (file!(), line));
     }
 }

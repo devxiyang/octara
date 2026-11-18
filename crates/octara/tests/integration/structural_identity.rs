@@ -55,12 +55,12 @@ fn same_label_and_hash_rows_keep_independent_state_through_reorder_reload_and_re
         let items = app.run(|| state("items", || vec![(Key(1), ()), (Key(2), ())]));
         let mut window = app
             .open_window(WindowOptions::default(), move || {
-                let row = |key: &Key, _: ReadSignal<()>| counter(*key).into();
-                col()
-                    .size_full()
-                    .overflow_y_scroll()
-                    .child(if virtualized { virtual_each(move || items.get(), |_| 40.0, row) } else { each(move || items.get(), row) })
-                    .into()
+                let row = |key: &Key, _: ReadSignal<()>| counter(*key);
+                col().size_full().overflow_y_scroll().child(if virtualized {
+                    virtual_each(move || items.get(), |_| 40.0, row)
+                } else {
+                    each(move || items.get(), row)
+                })
             })
             .unwrap();
         assert_eq!((value(&window, 1), value(&window, 2)), ("1".into(), "2".into()));
@@ -92,7 +92,7 @@ fn explicit_scope_uses_key_type_and_equality_across_reordered_reload() {
     let order = reverse.clone();
     let mut window = Window::headless(move || {
         let keys = if order.get() { [Key(2), Key(1)] } else { [Key(1), Key(2)] };
-        col().size_full().children(keys.map(|key| scope(key, move || counter(key)))).into()
+        col().size_full().children(keys.map(|key| scope(key, move || counter(key))))
     });
     window.tap("row-1").unwrap();
     reverse.set(true);
@@ -106,7 +106,6 @@ fn explicit_scope_uses_key_type_and_equality_across_reordered_reload() {
             .child(scope(1u32, || counter(Key(3))))
             .child(scope(1u64, || counter(Key(4))))
             .child(scope("1", || counter(Key(5))))
-            .into()
     });
     assert_eq!((value(&window, 3), value(&window, 4), value(&window, 5)), ("3".into(), "4".into(), "5".into()));
     clean(&window);
@@ -122,7 +121,7 @@ fn keyed_branches_reset_on_change_and_only_recover_the_equal_key_on_reload() {
                 let source = source.clone();
                 move || source.get()
             },
-            |key| counter(*key).into(),
+            |key| counter(*key),
         )
     });
     window.tap("row-1").unwrap();
@@ -136,7 +135,7 @@ fn keyed_branches_reset_on_change_and_only_recover_the_equal_key_on_reload() {
 
     let app = App::new(HeadlessPlatform::default());
     let selected = app.run(|| state("selected", || Key(1)));
-    let mut window = app.open_window(WindowOptions::default(), move || keyed(move || selected.get(), |key| counter(*key).into())).unwrap();
+    let mut window = app.open_window(WindowOptions::default(), move || keyed(move || selected.get(), |key| counter(*key))).unwrap();
     window.tap("row-1").unwrap();
     app.run(|| selected.set(Key(2)));
     app.settle();
@@ -150,13 +149,11 @@ fn keyed_branches_reset_on_change_and_only_recover_the_equal_key_on_reload() {
 #[test]
 fn virtual_selection_reads_each_same_label_key_and_retiring_rows_reset_their_state() {
     let mut window = Window::headless(|| {
-        col()
-            .id("list")
-            .size_full()
-            .selectable()
-            .overflow_y_scroll()
-            .child(virtual_each(|| (0..80).map(|id| (Key(id), ())).collect::<Vec<_>>(), |_| 40.0, |key, _| counter(*key).into()))
-            .into()
+        col().id("list").size_full().selectable().overflow_y_scroll().child(virtual_each(
+            || (0..80).map(|id| (Key(id), ())).collect::<Vec<_>>(),
+            |_| 40.0,
+            |key, _| counter(*key),
+        ))
     });
     window.tap("row-1").unwrap();
     let before = target(&window, 1);
@@ -183,17 +180,12 @@ fn colliding_incremental_keys_keep_their_owner_through_insert_move_and_remove() 
         let mut window = app
             .open_window(WindowOptions::default(), move || {
                 let sorted = sorted.clone();
-                let row = |key: &Key, _: ReadSignal<(Key, u32)>| counter(*key).into();
-                col()
-                    .id("list")
-                    .size_full()
-                    .overflow_y_scroll()
-                    .child(if virtualized {
-                        virtual_each(move || sorted.clone(), |_| 40.0, row)
-                    } else {
-                        each(move || sorted.clone(), row)
-                    })
-                    .into()
+                let row = |key: &Key, _: ReadSignal<(Key, u32)>| counter(*key);
+                col().id("list").size_full().overflow_y_scroll().child(if virtualized {
+                    virtual_each(move || sorted.clone(), |_| 40.0, row)
+                } else {
+                    each(move || sorted.clone(), row)
+                })
             })
             .unwrap();
         window.tap("row-2").unwrap();
@@ -275,7 +267,7 @@ fn key_callbacks_and_equal_temporary_key_retirement_do_not_subscribe_the_branch(
                     observed.set(observed.get() + 1);
                     SampledKey { noise: noise.read_only(), armed: callbacks.clone() }
                 },
-                |_| text("Retained").into(),
+                |_| text("Retained"),
             )
         })
         .unwrap();
@@ -298,7 +290,7 @@ fn named_row(label: &'static str) -> View {
         || vec![(Key(1), ())],
         move |_, _| {
             let value = state("local", || label);
-            text(value).id(label).into()
+            text(value).id(label)
         },
     )
 }
@@ -313,7 +305,6 @@ fn selection_row_keys_include_the_stable_owner_path_and_list_region() {
                 .selectable()
                 .child(if separate_owners { scope("left-owner", || named_row("Left")) } else { named_row("Left") })
                 .child(if separate_owners { scope("right-owner", || named_row("Right")) } else { named_row("Right") })
-                .into()
         });
         let path = {
             let kernel = window.kernel();

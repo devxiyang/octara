@@ -157,20 +157,16 @@ fn appending_an_incremental_row_does_not_reread_existing_row_values() {
     let _window = app
         .open_window(WindowOptions::default(), move || {
             let counted = counted.clone();
-            col()
-                .size_full()
-                .child(each(
-                    move || items.read_only(),
-                    move |_, item| {
-                        let counted = counted.clone();
-                        text(move || {
-                            counted.set(counted.get() + 1);
-                            item.get().to_string()
-                        })
-                        .into()
-                    },
-                ))
-                .into()
+            col().size_full().child(each(
+                move || items.read_only(),
+                move |_, item| {
+                    let counted = counted.clone();
+                    text(move || {
+                        counted.set(counted.get() + 1);
+                        item.get().to_string()
+                    })
+                },
+            ))
         })
         .unwrap();
     assert_eq!(reads.get(), 1_000);
@@ -188,25 +184,22 @@ fn a_finite_effect_fanout_does_not_exhaust_the_feedback_round_limit() {
     let counted = effects.clone();
     let _window = app
         .open_window(WindowOptions::default(), move || {
-            col()
-                .size_full()
-                .children((0..1_100).map(|index| {
-                    let counted = counted.clone();
-                    scope(index, move || {
-                        let value = state("value", || 0u32);
-                        watch(
-                            move || trigger.get(),
-                            move |trigger, _| {
-                                if *trigger {
-                                    counted.set(counted.get() + 1);
-                                    value.set(1);
-                                }
-                            },
-                        );
-                        text(move || value.get().to_string())
-                    })
-                }))
-                .into()
+            col().size_full().children((0..1_100).map(|index| {
+                let counted = counted.clone();
+                scope(index, move || {
+                    let value = state("value", || 0u32);
+                    watch(
+                        move || trigger.get(),
+                        move |trigger, _| {
+                            if *trigger {
+                                counted.set(counted.get() + 1);
+                                value.set(1);
+                            }
+                        },
+                    );
+                    text(move || value.get().to_string())
+                })
+            }))
         })
         .unwrap();
     app.run(|| trigger.set(true));
@@ -244,24 +237,21 @@ fn feedback_that_recreates_keyed_scopes_and_watches_remains_bounded_and_pending(
     let window = app
         .open_window(WindowOptions::default(), move || {
             let counted = counted.clone();
-            col()
-                .size_full()
-                .child(keyed(
-                    move || key.get(),
-                    move |_| {
-                        counted.set(counted.get() + 1);
-                        watch(
-                            move || running.get(),
-                            move |running, _| {
-                                if *running {
-                                    key.update(|key| *key += 1);
-                                }
-                            },
-                        );
-                        text("row").id("row").into()
-                    },
-                ))
-                .into()
+            col().size_full().child(keyed(
+                move || key.get(),
+                move |_| {
+                    counted.set(counted.get() + 1);
+                    watch(
+                        move || running.get(),
+                        move |running, _| {
+                            if *running {
+                                key.update(|key| *key += 1);
+                            }
+                        },
+                    );
+                    text("row").id("row")
+                },
+            ))
         })
         .unwrap();
     app.run(|| running.set(true));

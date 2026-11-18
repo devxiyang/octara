@@ -128,8 +128,7 @@ fn a_measurement_provider_cannot_change_the_model_after_bindings_were_sampled() 
             value.set(1);
         }
     });
-    let window =
-        app.open_window(WindowOptions::new("Measurement"), move || text(move || value.get().to_string()).id("value").into()).unwrap();
+    let window = app.open_window(WindowOptions::new("Measurement"), move || text(move || value.get().to_string()).id("value")).unwrap();
     assert!(attempted.get());
     assert_eq!(app.run(|| value.get()), 0, "measurement cannot write application state");
     assert_eq!(window.kernel().text_of("value").as_deref(), Some("0"));
@@ -163,7 +162,6 @@ fn measurement_paint_and_font_providers_cannot_write_or_reenter_resources() {
                     })
                     .size(40.0),
                 )
-                .into()
         })
         .unwrap();
     window.display_list();
@@ -188,7 +186,7 @@ fn native_multiline_queries_are_read_only_without_an_app_entry_and_restore_forei
     let protected = app.run(|| state("protected", || 0));
     let mut window = app
         .open_window(WindowOptions::new("Native"), || {
-            text_input().id("field").label("Field").value("Initial".to_owned()).multiline().rows(1, 4).w(40.0).into()
+            text_input().id("field").label("Field").value("Initial".to_owned()).multiline().rows(1, 4).w(40.0)
         })
         .unwrap();
     window.dispatch(Event::Focus("field".into())).unwrap();
@@ -226,7 +224,7 @@ fn native_multiline_queries_are_read_only_without_an_app_entry_and_restore_forei
 fn provider_counter_reads_do_not_subscribe_the_calling_observer() {
     let (app, probe) = app();
     let source = app.run(|| state("source", || 0));
-    let window = app.open_window(WindowOptions::new("Counter"), || text("Ready").into()).unwrap();
+    let window = app.open_window(WindowOptions::new("Counter"), || text("Ready")).unwrap();
     probe.set(move |_| {
         source.get();
     });
@@ -255,7 +253,7 @@ fn provider_panics_fail_the_owner_before_publication_or_during_native_prediction
         let (app, probe) = app();
         let value = app.run(|| state("value", || "Original".to_owned()));
         let mut window =
-            app.open_window(WindowOptions::new("Failure"), move || text_input().id("field").label("Field").value(value).into()).unwrap();
+            app.open_window(WindowOptions::new("Failure"), move || text_input().id("field").label("Field").value(value)).unwrap();
         window.dispatch(Event::Focus("field".into())).unwrap();
         let layout = input_layout(&window);
         let frames = window.frames_presented();
@@ -288,9 +286,8 @@ fn provider_panics_fail_the_owner_before_publication_or_during_native_prediction
 #[test]
 fn retained_native_layout_declines_after_shutdown_while_its_app_handle_is_alive() {
     let (app, probe) = app();
-    let mut window = app
-        .open_window(WindowOptions::new("Retired"), || text_input().id("field").label("Field").value("Original".to_owned()).into())
-        .unwrap();
+    let mut window =
+        app.open_window(WindowOptions::new("Retired"), || text_input().id("field").label("Field").value("Original".to_owned())).unwrap();
     window.dispatch(Event::Focus("field".into())).unwrap();
     let layout = input_layout(&window);
     app.shutdown();
@@ -309,9 +306,8 @@ fn retained_native_layout_declines_after_shutdown_while_its_app_handle_is_alive(
 #[test]
 fn retained_native_layout_declines_after_its_owner_drops_without_retaining_a_runtime_cycle() {
     let (app, probe) = app();
-    let mut window = app
-        .open_window(WindowOptions::new("Retained"), || text_input().id("field").label("Field").value("Original".to_owned()).into())
-        .unwrap();
+    let mut window =
+        app.open_window(WindowOptions::new("Retained"), || text_input().id("field").label("Field").value("Original".to_owned())).unwrap();
     window.dispatch(Event::Focus("field".into())).unwrap();
     let layout = input_layout(&window);
     drop(window);

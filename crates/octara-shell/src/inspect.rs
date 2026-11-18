@@ -490,7 +490,7 @@ mod target_feedback {
 
     #[test]
     fn resizing_refuses_a_target_reloaded_during_pre_dispatch_poll() {
-        let window = octara::app::Window::headless(|| octara::view::el().into());
+        let window = octara::app::Window::headless(|| octara::view::el());
         let app = window.app();
         let (response, receive) = resize_response(&window, true);
         reload_on_poll(&app);
@@ -511,7 +511,7 @@ mod target_feedback {
 
     #[test]
     fn a_pending_resize_keeps_its_delivery_when_poll_reloads_the_target() {
-        let window = octara::app::Window::headless(|| octara::view::el().into());
+        let window = octara::app::Window::headless(|| octara::view::el());
         let app = window.app();
         let (response, receive) = resize_response(&window, true);
         response.begin();
@@ -537,7 +537,7 @@ mod target_feedback {
 
     #[test]
     fn resizing_without_an_observed_target_can_dispatch_after_reload() {
-        let window = octara::app::Window::headless(|| octara::view::el().into());
+        let window = octara::app::Window::headless(|| octara::view::el());
         let app = window.app();
         let (response, receive) = resize_response(&window, false);
         reload_on_poll(&app);
@@ -566,7 +566,7 @@ mod target_feedback {
     #[test]
     fn an_interrupted_response_reports_failure_once_without_claiming_delivery() {
         let app = octara::app::App::new(octara::platform::HeadlessPlatform::default());
-        let window = app.open_window(octara::platform::WindowOptions::default(), || octara::view::el().into()).unwrap();
+        let window = app.open_window(octara::platform::WindowOptions::default(), || octara::view::el()).unwrap();
         let (send, receive) = std::sync::mpsc::channel();
         let responder = Responder::new(send, Arc::new(AtomicBool::new(true)), "framework", true).with_target(&window, None);
         responder.begin();
@@ -616,7 +616,7 @@ mod target_feedback {
                     sleep(Duration::from_millis(10)).await;
                     panic!("task failed while a gesture waited");
                 });
-                el().id("target").w(120).h(48).on_double_press(|| {}).on_long_press(move || capture.set(capture.get() + 1)).into()
+                el().id("target").w(120).h(48).on_double_press(|| {}).on_long_press(move || capture.set(capture.get() + 1))
             });
             let app = window.app();
             let (send, receive) = std::sync::mpsc::channel();
@@ -661,7 +661,7 @@ mod target_feedback {
     fn failure_before_request_admission_is_refused_and_does_not_run_input() {
         use octara::prelude::*;
         let app = App::new(octara::platform::HeadlessPlatform::default());
-        let window = app.open_window(WindowOptions::default(), || el().into()).unwrap();
+        let window = app.open_window(WindowOptions::default(), || el()).unwrap();
         let (send, receive) = std::sync::mpsc::channel();
         let response = Responder::new(send, Arc::new(AtomicBool::new(true)), "framework", true).with_target(&window, None);
         // Same order as live request preparation: tick/poll may fail before begin().

@@ -14,7 +14,7 @@ use std::rc::Rc;
 /// `{id}-trigger` (a `Button` with `expanded`), its content `{id}-content`.
 #[ui]
 #[track_caller]
-pub fn collapsible(id: &str, open: impl Model<bool>, header: impl IntoElement, content: impl Fn() -> View + 'static) -> El {
+pub fn collapsible(id: &str, open: impl Model<bool>, header: impl IntoView, content: impl Fn() -> View + 'static) -> El {
     let open = Rc::new(open);
     let (shown, flip, expanded, chevron) = (open.clone(), open.clone(), open.clone(), open.clone());
     let content_id = format!("{id}-content");
@@ -36,17 +36,19 @@ pub fn collapsible(id: &str, open: impl Model<bool>, header: impl IntoElement, c
         .text_color(Token::TextMuted)
         .hover(|p| p.text_color(Token::Text))
         .color_motion(Spring::SNAP)
-        .child(show_else(
+        .child(keyed(
             move || chevron.get(),
-            || icon(icons::CHEVRON_DOWN).size_3p5().flex_shrink_0().a11y_hidden().into(),
-            || icon(icons::CHEVRON_RIGHT).size_3p5().flex_shrink_0().a11y_hidden().into(),
+            |expanded| {
+                let glyph = if *expanded { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
+                icon(glyph).size_3p5().flex_shrink_0().a11y_hidden()
+            },
         ))
         .child(header);
     col()
         .id(id.to_owned())
         .role(Role::Group)
         .child(trigger)
-        .child(show(move || shown.get(), move || col().id(content_id.clone()).child(content()).into()))
+        .child(show(move || shown.get(), move || col().id(content_id.clone()).child(content())))
 }
 
 /// A list of rows (`list_item`s, `list_header`s between groups): a `ListBox` whose arrow keys
@@ -62,7 +64,7 @@ pub fn list() -> El {
 /// `.selected(..)`, `.on_press(..)` (select it), `.on_secondary_press(..)` (its context menu).
 #[ui]
 #[track_caller]
-pub fn list_item(content: impl IntoElement) -> El {
+pub fn list_item(content: impl IntoView) -> El {
     row()
         .role(Role::ListBoxOption)
         .focusable()
@@ -99,7 +101,7 @@ const MIN_PANE: f32 = 120.0;
 /// `Splitter` whose value is the width: a line in a strip 7 wide to grab (20 on touch).
 #[ui]
 #[track_caller]
-pub fn split(id: &str, width: impl Model<f32>, leading: impl IntoElement, trailing: impl IntoElement) -> El {
+pub fn split(id: &str, width: impl Model<f32>, leading: impl IntoView, trailing: impl IntoView) -> El {
     let width = Rc::new(width);
     let (pane, read, write) = (width.clone(), width.clone(), width);
     let handle = splitter(&format!("{id}-divider"), (move || read.get(), move |value: f32| write.set(value.max(MIN_PANE))));

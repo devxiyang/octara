@@ -119,15 +119,13 @@ fn field_applies_to_toggle_controls_without_changing_their_models_or_disabled_st
         let checked = state("checked", || false);
         let disabled = state("disabled", || false);
         on_command("toggle.disable", move || disabled.set(true));
-        col()
-            .size_full()
-            .p_4()
-            .child(field("terms", "Accept terms", checkbox(checked).disabled(move || disabled.get()), move || FieldInfo {
+        col().size_full().p_4().child(field("terms", "Accept terms", checkbox(checked).disabled(move || disabled.get()), move || {
+            FieldInfo {
                 description: "Required to continue.".into(),
                 error: (!checked.get()).then(|| "Accept the terms.".into()),
                 required: true,
-            }))
-            .into()
+            }
+        }))
     });
     assert_eq!(window.kernel().role_of("terms"), Some(Role::CheckBox));
     assert_eq!(window.inspect().find("terms").unwrap().invalid, Some(true));
@@ -352,7 +350,6 @@ fn radios_use_ids_even_when_labels_match_and_support_getter_setter_models() {
                 vec![RadioOption::new("one", "Springfield"), RadioOption::new("two", "Springfield")]
             }))
             .child(text(move || chosen.get().unwrap_or_else(|| "none".into())).id("chosen"))
-            .into()
     });
     window.press_key("tab").unwrap();
     assert!(focused(&window, "place-option-one"));
@@ -370,33 +367,27 @@ fn radios_in_a_nested_modal_choose_inside_it_and_restore_focus_when_it_closes() 
         let dialog = state("dialog", || false);
         let popup = state("popup", || false);
         let value = state("value", || Some("team".to_owned()));
-        col()
-            .size_full()
-            .p_4()
-            .child(button("Open dialog").id("open-dialog").on_press(move || dialog.set(true)))
-            .child(show(
-                move || dialog.get(),
-                move || {
-                    col()
-                        .id("dialog")
-                        .role(Role::Dialog)
-                        .label("Settings")
-                        .absolute()
-                        .left(40.0)
-                        .top(40.0)
-                        .w(320.0)
-                        .h(400.0)
-                        .p_4()
-                        .bg(Token::Surface)
-                        .modal(true, move || dialog.set(false))
-                        .child(popover("more", popup, Placement::BELOW, button("Choose plan"), move || {
-                            col().w(240.0).child(radio_group("plan", "Plan", value, radio_options)).into()
-                        }))
-                        .child(button("Close").id("close-dialog").on_press(move || dialog.set(false)))
-                        .into()
-                },
-            ))
-            .into()
+        col().size_full().p_4().child(button("Open dialog").id("open-dialog").on_press(move || dialog.set(true))).child(show(
+            move || dialog.get(),
+            move || {
+                col()
+                    .id("dialog")
+                    .role(Role::Dialog)
+                    .label("Settings")
+                    .absolute()
+                    .left(40.0)
+                    .top(40.0)
+                    .w(320.0)
+                    .h(400.0)
+                    .p_4()
+                    .bg(Token::Surface)
+                    .modal(true, move || dialog.set(false))
+                    .child(popover("more", popup, Placement::BELOW, button("Choose plan"), move || {
+                        col().w(240.0).child(radio_group("plan", "Plan", value, radio_options)).into()
+                    }))
+                    .child(button("Close").id("close-dialog").on_press(move || dialog.set(false)))
+            },
+        ))
     });
     window.tap("open-dialog").unwrap();
     window.tap("more").unwrap();
@@ -438,7 +429,6 @@ fn fields_and_radios_wrap_in_narrow_layouts_in_both_themes() {
                                 .description("Invite the people who work with you."),
                         ]
                     }))
-                    .into()
             });
             window.resize(width, 844.0);
             window.app().set_theme(theme);

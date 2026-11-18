@@ -57,8 +57,7 @@ fn scrolling_an_option_into_view_waits_for_mount_and_preserves_input_focus() {
                 scroll_into_view("r19");
                 true
             }))
-            .child(col().id("options").h(80.0).overflow_y_scroll().child(show(move || open.get(), || col().children(rows(20)).into())))
-            .into()
+            .child(col().id("options").h(80.0).overflow_y_scroll().child(show(move || open.get(), || col().children(rows(20)))))
     });
     app.tap("search").unwrap();
     assert!(!app.kernel().exists("r19"));
@@ -90,7 +89,7 @@ fn feed() -> View {
                 .child(virtual_each(
                     move || items.read_only(),
                     |_| 24.0,
-                    |id, it| text(move || vec!["line"; it.with(|i| i.lines)].join("\n")).id(format!("item-{id}")).into(),
+                    |id, it| text(move || vec!["line"; it.with(|i| i.lines)].join("\n")).id(format!("item-{id}")),
                 ))
                 .id("feed")
                 .flex_1()
@@ -166,7 +165,6 @@ fn reading_feed(wrapping: bool) -> View {
                             )
                         })
                         .id(format!("item-{id}"))
-                        .into()
                     },
                 ))
                 .id("feed")
@@ -262,7 +260,7 @@ fn jump_measures_an_offscreen_streamed_tail_and_follows_later_growth() {
 fn a_virtual_list_outside_a_scroll_container_is_reported() {
     let app = Window::headless(|| {
         let items = state_list("items", || (0..10u32).collect(), |i: &u32| *i);
-        col().child(virtual_each(move || items.read_only(), |_| 20.0, |i, _| text(format!("{i}")).into())).into()
+        col().child(virtual_each(move || items.read_only(), |_| 20.0, |i, _| text(format!("{i}"))))
     });
     assert!(app.app().diagnostics().iter().any(|d| d.code == "VIRTUAL_LIST_NOT_SCROLLABLE"), "{:?}", app.app().diagnostics());
 }
@@ -276,7 +274,7 @@ fn log() -> View {
     col()
         .child(
             col()
-                .child(each(move || lines.read_only(), |i, _| text(format!("line {i}")).id(format!("l{i}")).into()))
+                .child(each(move || lines.read_only(), |i, _| text(format!("line {i}")).id(format!("l{i}"))))
                 .id("log")
                 .flex_1()
                 .overflow_y_scroll()
@@ -370,7 +368,7 @@ fn a_virtual_list_following_its_tail_lands_on_its_measured_end() {
                     .child(virtual_each(
                         move || items.read_only(),
                         |_| 24.0,
-                        |id, it| text(move || vec!["line"; it.with(|i| i.lines)].join("\n")).id(format!("item-{id}")).into(),
+                        |id, it| text(move || vec!["line"; it.with(|i| i.lines)].join("\n")).id(format!("item-{id}")),
                     ))
                     .id("feed")
                     .flex_1()
@@ -382,7 +380,6 @@ fn a_virtual_list_following_its_tail_lands_on_its_measured_end() {
                 items.push(Item { id: n, lines: 5 });
             }))
             .size_full()
-            .into()
     });
     assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
     let bottom = |app: &Window, id: &str| {

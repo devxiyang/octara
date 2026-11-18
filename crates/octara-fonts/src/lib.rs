@@ -12,7 +12,7 @@
 //!     config.text_engine.register_fallback_font(data, &cjk::SCRIPTS);
 //! }
 //! let app = App::with_config(octara::platform::HeadlessPlatform::default(), config);
-//! let window = app.open_window(WindowOptions::new("CJK"), || text("你好").into()).unwrap();
+//! let window = app.open_window(WindowOptions::new("CJK"), || text("你好")).unwrap();
 //! app.shutdown();
 //! # }
 //! ```

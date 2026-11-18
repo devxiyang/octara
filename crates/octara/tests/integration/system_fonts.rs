@@ -9,7 +9,7 @@ fn cjk_falls_back_to_a_system_font_and_system_ui_resolves() {
     let runtime = App::with_config(HeadlessPlatform::default(), AppConfig::default().with_system_fonts());
     let app = runtime
         .open_window(WindowOptions::new("System fonts"), || {
-            col().child(text("Hello 世界").id("mixed")).child(text("System").id("ui").font_family("system-ui")).into()
+            col().child(text("Hello 世界").id("mixed")).child(text("System").id("ui").font_family("system-ui"))
         })
         .unwrap();
     let dl = app.display_list();

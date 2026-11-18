@@ -292,7 +292,6 @@ fn popup_clicks_belong_to_their_nested_dialog_and_outside_clicks_close_the_right
                     .into()
             }))
             .child(text(move || chosen.get()).id("chosen"))
-            .into()
     });
     window.tap("open").unwrap();
     window.tap("open-inner").unwrap();

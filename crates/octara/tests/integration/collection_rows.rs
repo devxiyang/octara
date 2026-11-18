@@ -9,6 +9,86 @@ fn target(window: &Window, id: &str) -> String {
 }
 
 #[test]
+fn retiring_from_row_cleanup_skips_replacement_rows() {
+    for virtualized in [false, true] {
+        let app = App::new(HeadlessPlatform::default());
+        let items = app.run(|| state_list("items", || vec![1u32], |item| *item));
+        let baseline = app.work().reactive_nodes;
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mounted = events.clone();
+        let list = app.run(|| items.read_only());
+        let window = app
+            .open_window(WindowOptions::default(), move || {
+                let (list, mounted) = (list.clone(), mounted.clone());
+                let source = move || list.clone();
+                let row = move |key: &u32, item: ReadSignal<u32>| {
+                    mounted.borrow_mut().push(*key);
+                    if *key == 1 {
+                        let cleaned = mounted.clone();
+                        on_cleanup(move || {
+                            cleaned.borrow_mut().push(0);
+                            close_window(current_window());
+                        });
+                    }
+                    text(move || item.get().to_string()).id(format!("row-{key}")).h(44).flex_shrink_0()
+                };
+                col().size_full().overflow_y_scroll().child(if virtualized {
+                    virtual_each(source, |_| 44.0, row)
+                } else {
+                    each(source, row)
+                })
+            })
+            .unwrap();
+
+        assert!(window.kernel().exists("row-1"));
+        app.run(|| {
+            items.remove(&1);
+            items.push(2);
+        });
+        assert_eq!(*events.borrow(), [1, 0], "virtualized={virtualized}");
+        assert!(window.is_closed());
+        assert!(!app.is_failed());
+        assert_eq!(app.work().reactive_nodes, baseline);
+        assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+        app.shutdown();
+    }
+}
+
+#[test]
+fn retiring_during_row_mount_skips_following_row_factories() {
+    for virtualized in [false, true] {
+        let app = App::new(HeadlessPlatform::default());
+        let built = Rc::new(RefCell::new(Vec::new()));
+        let mounted = built.clone();
+        let window = app
+            .open_window(WindowOptions::default(), move || {
+                let mounted = mounted.clone();
+                let source = || vec![(1u32, 1u32), (2, 2)];
+                let row = move |key: &u32, item: ReadSignal<u32>| {
+                    mounted.borrow_mut().push(*key);
+                    if *key == 1 {
+                        watch(|| (), |_, _| close_window(current_window()));
+                    }
+                    text(move || item.get().to_string()).h(44).flex_shrink_0()
+                };
+                col().size_full().overflow_y_scroll().child(if virtualized {
+                    virtual_each(source, |_| 44.0, row)
+                } else {
+                    each(source, row)
+                })
+            })
+            .unwrap();
+
+        assert_eq!(*built.borrow(), [1], "virtualized={virtualized}");
+        assert!(window.is_closed());
+        assert!(!app.is_failed());
+        assert_eq!(app.work().reactive_nodes, 0);
+        assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+        app.shutdown();
+    }
+}
+
+#[test]
 fn snapshots_preserve_rows_but_replace_inputs_and_retire_removed_keys() {
     for virtualized in [false, true] {
         let app = App::new(HeadlessPlatform::default());
@@ -28,13 +108,12 @@ fn snapshots_preserve_rows_but_replace_inputs_and_retire_removed_keys() {
                         .child(text(item).id(format!("value-{key}")))
                         .child(text(move || count.get().to_string()).id(format!("count-{key}")))
                         .child(el().id(format!("inc-{key}")).size_8().on_press(move || count.update(|n| *n += 1)))
-                        .into()
                 };
-                col()
-                    .size_full()
-                    .overflow_y_scroll()
-                    .child(if virtualized { virtual_each(move || items.get(), |_| 60.0, row) } else { each(move || items.get(), row) })
-                    .into()
+                col().size_full().overflow_y_scroll().child(if virtualized {
+                    virtual_each(move || items.get(), |_| 60.0, row)
+                } else {
+                    each(move || items.get(), row)
+                })
             })
             .unwrap();
         window.tap("inc-1").unwrap();
@@ -76,22 +155,18 @@ fn retained_row_reads_current_source_inside_the_switching_handler() {
                 let source = move || if choose_b.get() { b.read_only() } else { a.read_only() };
                 let row = move |_: &u32, item: ReadSignal<(u32, String)>| {
                     let saved = saved.clone();
-                    col()
-                        .id("row")
-                        .h(80)
-                        .flex_shrink_0()
-                        .child(text(move || item.with(|v| v.1.clone())).id("value"))
-                        .child(el().id("switch").size_8().on_press(move || {
+                    col().id("row").h(80).flex_shrink_0().child(text(move || item.with(|v| v.1.clone())).id("value")).child(
+                        el().id("switch").size_8().on_press(move || {
                             choose_b.set(true);
                             *saved.borrow_mut() = item.with(|v| v.1.clone());
-                        }))
-                        .into()
+                        }),
+                    )
                 };
-                col()
-                    .size_full()
-                    .overflow_y_scroll()
-                    .child(if virtualized { virtual_each(source, |_| 80.0, row) } else { each(source, row) })
-                    .into()
+                col().size_full().overflow_y_scroll().child(if virtualized {
+                    virtual_each(source, |_| 80.0, row)
+                } else {
+                    each(source, row)
+                })
             })
             .unwrap();
         let before = target(&window, "row");
@@ -117,12 +192,12 @@ fn invalid_snapshot_retires_targets_and_recovers_without_reusing_them() {
         let items = app.run(|| state("items", || vec![(1u32, "valid")]));
         let window = app
             .open_window(WindowOptions::default(), move || {
-                let row = |_: &u32, item: ReadSignal<&'static str>| text(item).id("row").h(32).flex_shrink_0().into();
-                col()
-                    .size_full()
-                    .overflow_y_scroll()
-                    .child(if virtualized { virtual_each(move || items.get(), |_| 32.0, row) } else { each(move || items.get(), row) })
-                    .into()
+                let row = |_: &u32, item: ReadSignal<&'static str>| text(item).id("row").h(32).flex_shrink_0();
+                col().size_full().overflow_y_scroll().child(if virtualized {
+                    virtual_each(move || items.get(), |_| 32.0, row)
+                } else {
+                    each(move || items.get(), row)
+                })
             })
             .unwrap();
         let before = target(&window, "row");
@@ -148,17 +223,13 @@ fn transient_incremental_keys_are_not_built_and_reinsertion_retires_identity() {
         let window = app
             .open_window(WindowOptions::default(), move || {
                 let row = |key: &u32, item: ReadSignal<(u32, &'static str)>| {
-                    text(move || item.with(|v| v.1)).id(format!("row-{key}")).h(32).flex_shrink_0().into()
+                    text(move || item.with(|v| v.1)).id(format!("row-{key}")).h(32).flex_shrink_0()
                 };
-                col()
-                    .size_full()
-                    .overflow_y_scroll()
-                    .child(if virtualized {
-                        virtual_each(move || items.read_only(), |_| 32.0, row)
-                    } else {
-                        each(move || items.read_only(), row)
-                    })
-                    .into()
+                col().size_full().overflow_y_scroll().child(if virtualized {
+                    virtual_each(move || items.read_only(), |_| 32.0, row)
+                } else {
+                    each(move || items.read_only(), row)
+                })
             })
             .unwrap();
         let before = target(&window, "row-1");
@@ -186,25 +257,18 @@ fn snapshot_reads_pull_new_values_without_flushing_and_fail_after_removal() {
     let mut window = app
         .open_window(WindowOptions::default(), move || {
             let saved = saved.clone();
-            col()
-                .size_full()
-                .child(each(
-                    move || items.get(),
-                    move |_, item| {
-                        let saved = saved.clone();
-                        el().id("row")
-                            .size_10()
-                            .child(text(item))
-                            .on_press(move || {
-                                items.set(vec![(1, "new".into())]);
-                                *saved.borrow_mut() = item.get();
-                                items.set(vec![]);
-                                assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| item.get())).is_err());
-                            })
-                            .into()
-                    },
-                ))
-                .into()
+            col().size_full().child(each(
+                move || items.get(),
+                move |_, item| {
+                    let saved = saved.clone();
+                    el().id("row").size_10().child(text(item)).on_press(move || {
+                        items.set(vec![(1, "new".into())]);
+                        *saved.borrow_mut() = item.get();
+                        items.set(vec![]);
+                        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| item.get())).is_err());
+                    })
+                },
+            ))
         })
         .unwrap();
     window.tap("row").unwrap();
@@ -232,26 +296,23 @@ fn structural_work_queued_by_an_effect_preempts_a_retiring_rows_effect() {
                 },
             );
             let calls = calls.clone();
-            col()
-                .size_full()
-                .child(each(
-                    move || items.get(),
-                    move |_, item| {
-                        let calls = calls.clone();
-                        watch(
-                            move || trigger.get(),
-                            move |trigger, _| {
-                                if *trigger {
-                                    calls.set(calls.get() + 1);
-                                    // This is invalid once the earlier effect removes our key.
-                                    item.get();
-                                }
-                            },
-                        );
-                        text(item).into()
-                    },
-                ))
-                .into()
+            col().size_full().child(each(
+                move || items.get(),
+                move |_, item| {
+                    let calls = calls.clone();
+                    watch(
+                        move || trigger.get(),
+                        move |trigger, _| {
+                            if *trigger {
+                                calls.set(calls.get() + 1);
+                                // This is invalid once the earlier effect removes our key.
+                                item.get();
+                            }
+                        },
+                    );
+                    text(item)
+                },
+            ))
         })
         .unwrap();
     app.run(|| trigger.set(true));
@@ -271,19 +332,16 @@ fn streamed_buffer_edits_do_not_recompute_the_snapshot_or_rebuild_rows() {
     let window = app
         .open_window(WindowOptions::default(), move || {
             let (computed, built) = (computed.clone(), built.clone());
-            col()
-                .size_full()
-                .child(each(
-                    move || {
-                        computed.set(computed.get() + 1);
-                        items.get()
-                    },
-                    move |_, item| {
-                        built.set(built.get() + 1);
-                        text(untrack(|| item.get())).id("stream").into()
-                    },
-                ))
-                .into()
+            col().size_full().child(each(
+                move || {
+                    computed.set(computed.get() + 1);
+                    items.get()
+                },
+                move |_, item| {
+                    built.set(built.get() + 1);
+                    text(untrack(|| item.get())).id("stream")
+                },
+            ))
         })
         .unwrap();
     for _ in 0..100 {
@@ -310,18 +368,13 @@ fn overflowing_incremental_history_reconciles_final_membership_and_preserves_sur
                 let built = built.clone();
                 let row = move |key: &u32, item: ReadSignal<(u32, &'static str)>| {
                     built.set(built.get() + 1);
-                    text(move || item.with(|item| item.1)).id(format!("row-{key}")).h(32).flex_shrink_0().into()
+                    text(move || item.with(|item| item.1)).id(format!("row-{key}")).h(32).flex_shrink_0()
                 };
-                col()
-                    .id("rows")
-                    .size_full()
-                    .overflow_y_scroll()
-                    .child(if virtualized {
-                        virtual_each(move || source.clone(), |_| 32.0, row)
-                    } else {
-                        each(move || source.clone(), row)
-                    })
-                    .into()
+                col().id("rows").size_full().overflow_y_scroll().child(if virtualized {
+                    virtual_each(move || source.clone(), |_| 32.0, row)
+                } else {
+                    each(move || source.clone(), row)
+                })
             })
             .unwrap();
         let before = target(&window, "row-1");

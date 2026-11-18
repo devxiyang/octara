@@ -37,7 +37,6 @@ pub fn card() -> El {
                     .items_center()
                     .child(text(move || n.with(|n| n.1.clone())).flex_shrink().truncate().w(300))
                     .child(ghost_button("Remove").opacity(0.0).group_hover("note", |p| p.opacity(1.0)).on_press(move || notes.remove(&id)))
-                    .into()
             },
         )))
         .child(text("Select text with the mouse, double-click a word, ⌘Z to undo, ⌘C / ⌘V.").text_xs().text_color(Token::TextMuted))

@@ -85,7 +85,6 @@ fn replacing_a_rich_link_retires_its_agent_target_focus_and_pending_press() {
                 .size_full()
                 .child(text(move || content.get()).id("text"))
                 .on_link(move |target| opened.update(|v| v.push(target.to_owned())))
-                .into()
         })
         .unwrap();
     let old = w.inspect().find("guide").unwrap().target.clone();
@@ -129,7 +128,6 @@ fn a_link_that_wraps_is_pressed_on_either_line() {
                 .w(140.0)
                 .child(text(rich().text("Read ").link("the long and winding guide", "g")).id("t"))
                 .on_link(move |_| opened.update(|n| *n += 1))
-                .into()
         })
         .unwrap();
     let link = w.kernel().find_by_role(Role::Link).unwrap();
@@ -148,17 +146,15 @@ fn restyling_reshapes_only_what_changes_shape() {
     let red = app.run(|| state("red", || false));
     let w = app
         .open_window(octara::platform::WindowOptions::new("Style"), move || {
-            col()
-                .child(
-                    text(move || {
-                        rich().text("plain ").styled("styled", |s| {
-                            let s = if bold.get() { s.bold() } else { s };
-                            if red.get() { s.color(Token::Danger) } else { s }
-                        })
+            col().child(
+                text(move || {
+                    rich().text("plain ").styled("styled", |s| {
+                        let s = if bold.get() { s.bold() } else { s };
+                        if red.get() { s.color(Token::Danger) } else { s }
                     })
-                    .id("t"),
-                )
-                .into()
+                })
+                .id("t"),
+            )
         })
         .unwrap();
     let shaped = || w.kernel().text_engine_shaped();
@@ -183,7 +179,6 @@ fn a_stream_takes_only_its_own_glyphs_again() {
             col()
                 .child(text(&stream).id("live"))
                 .children((0..20).map(|i| text(format!("Message {i} that does not change")).into()).collect::<Vec<View>>())
-                .into()
         })
         .unwrap();
     let _ = w.display_list();
@@ -200,14 +195,11 @@ fn a_stream_takes_only_its_own_glyphs_again() {
 fn rows_scrolling_back_and_repeated_labels_shape_nothing_again() {
     let mut w = Window::headless(|| {
         let items = state_list("rows", || (0..1000u32).map(|i| (i, format!("Row {i}"))).collect::<Vec<_>>(), |r: &(u32, String)| r.0);
-        col()
-            .size_full()
-            .child(col().id("list").flex_1().overflow_y_scroll().child(virtual_each(
-                move || items.read_only(),
-                |_| 24.0,
-                |k, r| row().h(24.0).child(text(move || r.with(|r| r.1.clone())).id(format!("r{k}"))).child(text("Edit")).into(),
-            )))
-            .into()
+        col().size_full().child(col().id("list").flex_1().overflow_y_scroll().child(virtual_each(
+            move || items.read_only(),
+            |_| 24.0,
+            |k, r| row().h(24.0).child(text(move || r.with(|r| r.1.clone())).id(format!("r{k}"))).child(text("Edit")),
+        )))
     });
     let shaped = |w: &Window| w.kernel().text_engine_shaped();
     // Every row has the label "Edit": shaped once, however many rows show it.
@@ -242,7 +234,6 @@ fn a_field_losing_focus_redraws_without_its_caret() {
             .selectable()
             .child(text_input().id("f").label("F").value(move || v.get()).on_input(move |s| v.set(s)))
             .child(text("words").id("t"))
-            .into()
     });
     w.tap("f").unwrap();
     let caret = |w: &Window| {
@@ -257,7 +248,7 @@ fn a_field_losing_focus_redraws_without_its_caret() {
 
 #[test]
 fn a_link_no_handler_takes_opens_with_the_system() {
-    let mut w = Window::headless(|| text(rich().text("See ").link("the docs", "https://x.dev/docs")).into());
+    let mut w = Window::headless(|| text(rich().text("See ").link("the docs", "https://x.dev/docs")));
     w.tap("the docs").unwrap();
     let app = w.app();
     let p = app.platform();
@@ -272,7 +263,6 @@ fn the_clipboard_takes_text_or_an_image() {
         col()
             .child(el().id("text").size_4().on_press(|| write_to_clipboard("words")))
             .child(el().id("image").size_4().on_press(move || write_to_clipboard(image.clone())))
-            .into()
     });
     w.tap("text").unwrap();
     let read = || w.app().run(read_from_clipboard);
@@ -298,7 +288,6 @@ fn a_request_waits_in_the_window_and_its_answer_comes_as_input() {
                 });
             }))
             .child(text(move || picked.get()).id("picked"))
-            .into()
     });
     w.app().start_recording();
     w.tap("open").unwrap();
@@ -327,14 +316,11 @@ fn a_platform_that_shows_requests_is_presented_them_and_told_when_they_go() {
     let app = App::new(platform);
     let mut w = app
         .open_window(WindowOptions::new("Files"), || {
-            el().id("save")
-                .size_4()
-                .on_press(|| {
-                    spawn(async {
-                        let _ = prompt_for_new_path(std::path::Path::new("/tmp"), Some("note.md")).await;
-                    });
-                })
-                .into()
+            el().id("save").size_4().on_press(|| {
+                spawn(async {
+                    let _ = prompt_for_new_path(std::path::Path::new("/tmp"), Some("note.md")).await;
+                });
+            })
         })
         .unwrap();
     w.tap("save").unwrap();

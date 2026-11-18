@@ -13,7 +13,7 @@ fn redirect_target(id: &'static str, next: &'static str, enabled: Rc<Cell<bool>>
         .size_8()
         .focusable()
         .bg(Token::Surface)
-        .focus(|p| p.bg(Token::Accent))
+        .style_when(State::FOCUSED, |p| p.bg(Token::Accent))
         .on_press(|| {})
         .on_focus(move || {
             let count = calls.get() + 1;
@@ -42,7 +42,6 @@ fn focus_chain(limit: Option<usize>) -> (Window, Rc<Cell<usize>>) {
                 stop.set(false);
                 focus("a");
             }))
-            .into()
     });
     (window, calls)
 }
@@ -132,7 +131,7 @@ fn the_last_command_cannot_present_before_blur_feedback_is_prepared() {
                         .size_8()
                         .focusable()
                         .bg(Token::Surface)
-                        .focus(|p| p.bg(Token::Accent))
+                        .style_when(State::FOCUSED, |p| p.bg(Token::Accent))
                         .disabled(move || !hide && retire.get())
                         .style_with(move |p| if hide && retire.get() { p.hidden() } else { p.flex() })
                         .on_press(|| {})
@@ -143,7 +142,6 @@ fn the_last_command_cannot_present_before_blur_feedback_is_prepared() {
                 )
                 .child(el().id("result").h(20).style_with(move |p| p.w(width.get())))
                 .child(el().id("queue").role(Role::Button).label("Queue").size_8().on_press(|| invoke_after_update("last")))
-                .into()
         });
         window.dispatch(Event::Focus("target".into())).unwrap();
         let frames = window.frames_presented();
@@ -187,7 +185,6 @@ fn a_command_only_cutoff_still_discards_the_queue_and_finishes_its_frame() {
             .size_full()
             .child(text(move || count.get().to_string()).id("count"))
             .child(el().id("queue").role(Role::Button).label("Queue").size_8().on_press(|| invoke_after_update("loop")))
-            .into()
     });
     let frames = window.frames_presented();
 

@@ -60,20 +60,17 @@ fn disposing_the_scope_cancels_its_tasks() {
     let mut app = Window::headless(move || {
         let open = state("open", || true);
         let d = d.clone();
-        col()
-            .child(el().id("close").w(px(10.0)).h(px(10.0)).on_press(move || open.set(false)))
-            .child(show(
-                move || open.get(),
-                move || {
-                    let guard = Dropped(d.clone());
-                    spawn(async move {
-                        let _guard = guard;
-                        sleep(ms(1000)).await;
-                    });
-                    text("panel").into()
-                },
-            ))
-            .into()
+        col().child(el().id("close").w(px(10.0)).h(px(10.0)).on_press(move || open.set(false))).child(show(
+            move || open.get(),
+            move || {
+                let guard = Dropped(d.clone());
+                spawn(async move {
+                    let _guard = guard;
+                    sleep(ms(1000)).await;
+                });
+                text("panel")
+            },
+        ))
     });
     assert_eq!(app.app().pending().len(), 1);
     assert!(app.app().pending()[0].scope.starts_with("app/window"), "{:?}", app.app().pending());
@@ -98,7 +95,7 @@ fn an_app_task_outlives_its_initiating_ui_scope() {
                             push(log, "still here");
                         });
                     });
-                    el().into()
+                    el()
                 },
             ))
             .into()
@@ -169,7 +166,7 @@ fn app_poll_drains_root_work_before_opening_and_after_closing_windows() {
     app.poll();
     assert_eq!(*delivered.borrow(), [1]);
 
-    let window = app.open_window(WindowOptions::default(), || el().size_full().into()).unwrap();
+    let window = app.open_window(WindowOptions::default(), || el().size_full()).unwrap();
     app.close_window(window.id());
     assert!(app.windows().is_empty());
 
@@ -199,7 +196,7 @@ fn a_bursting_channel_yields_to_a_ready_cancellation() {
             cancelled_at.set(Some(seen.get()));
             listener.cancel();
         });
-        el().into()
+        el()
     });
     let at = before_cancel.get().expect("the other ready task ran");
     assert!(at > 0 && at < BURST, "the cancellation must run between bounded parts of the burst, received {at}/{BURST}");
@@ -219,7 +216,7 @@ fn a_channel_burst_keeps_fifo_and_drains_its_closed_tail_across_yields() {
         drop(send);
         let counted = counted.clone();
         receive.on(move |value| counted.borrow_mut().push(value));
-        el().into()
+        el()
     });
     assert_eq!(*delivered.borrow(), (0..257).collect::<Vec<_>>());
     assert!(app.app().pending().is_empty(), "closed receiver finishes after delivering its tail");
@@ -277,7 +274,6 @@ fn search_app() -> Window {
             .child(text(move || found.with(|s| s.error().cloned()).unwrap_or_default()).id("error"))
             .child(el().id("refresh").w(px(10.0)).h(px(10.0)).on_press(move || found.refresh()))
             .child(text_input().id("q").w(px(100.0)).value(move || query.get()).on_input(move |v| query.set(v)))
-            .into()
     })
 }
 
@@ -314,7 +310,7 @@ fn run_until_idle_reports_work_still_running_at_its_limit() {
         spawn(async {
             sleep(ms(5000)).await;
         });
-        el().into()
+        el()
     });
     let left = app.app().run_until_idle(ms(1000)).unwrap_err();
     assert_eq!(left.len(), 1);
@@ -335,11 +331,10 @@ fn a_clock_steps_while_someone_reads_it() {
                 || {
                     let t = clock(Duration::from_millis(100));
                     let u = clock(Duration::from_millis(100));
-                    text(move || format!("{} {}", t.get().as_millis(), u.get().as_millis())).id("t").into()
+                    text(move || format!("{} {}", t.get().as_millis(), u.get().as_millis())).id("t")
                 },
             ))
             .child(el().id("hide").size(10.0).on_press(move || shown.set(false)))
-            .into()
     });
     assert_eq!(w.kernel().text_of("t").unwrap(), "0 0");
     assert_eq!(w.app().pending().len(), 1, "both readers share one timer");
@@ -364,7 +359,7 @@ fn timers_at_fractional_milliseconds_come_due() {
                 n.update(|n| *n += 1);
             }
         });
-        text(move || n.get().to_string()).id("n").into()
+        text(move || n.get().to_string()).id("n")
     });
     assert!(w.app().run_until_idle(Duration::from_secs(5)).is_ok(), "{:?}", w.app().pending());
     assert_eq!(w.kernel().text_of("n").unwrap(), "50", "advancing to each deadline fires its timer");
@@ -378,27 +373,21 @@ fn a_handler_restores_its_component_context_and_owns_spawned_tasks() {
     let mut app = Window::headless(move || {
         let open = state("open", || true);
         let (seen, guard) = (seen.clone(), guard.clone());
-        col()
-            .child(el().id("hide").size(10.0).on_press(move || open.set(false)))
-            .child(show(
-                move || open.get(),
-                move || {
-                    provide(42u32);
-                    let (seen, guard) = (seen.clone(), guard.clone());
-                    el().id("start")
-                        .size(10.0)
-                        .on_press(move || {
-                            seen.set(use_context::<u32>());
-                            let guard = Dropped(guard.clone());
-                            spawn(async move {
-                                let _guard = guard;
-                                sleep(ms(1000)).await;
-                            });
-                        })
-                        .into()
-                },
-            ))
-            .into()
+        col().child(el().id("hide").size(10.0).on_press(move || open.set(false))).child(show(
+            move || open.get(),
+            move || {
+                provide(42u32);
+                let (seen, guard) = (seen.clone(), guard.clone());
+                el().id("start").size(10.0).on_press(move || {
+                    seen.set(use_context::<u32>());
+                    let guard = Dropped(guard.clone());
+                    spawn(async move {
+                        let _guard = guard;
+                        sleep(ms(1000)).await;
+                    });
+                })
+            },
+        ))
     });
     app.tap("start").unwrap();
     assert_eq!(observed.get(), Some(42), "callbacks see the scope captured when mounted");
@@ -422,13 +411,11 @@ fn cancelling_a_task_withdraws_its_pending_request() {
         let mut app = Window::headless_on(platform, move || {
             let (start, cancel) = (task.clone(), task.clone());
             on_command("cancel-task", move || cancel.borrow().as_ref().unwrap().cancel());
-            col()
-                .child(el().id("ask").size(10.0).on_press(move || {
-                    *start.borrow_mut() = Some(spawn(async {
-                        prompt(PromptLevel::Info, "Continue?", None, &["Yes"]).await;
-                    }));
-                }))
-                .into()
+            col().child(el().id("ask").size(10.0).on_press(move || {
+                *start.borrow_mut() = Some(spawn(async {
+                    prompt(PromptLevel::Info, "Continue?", None, &["Yes"]).await;
+                }));
+            }))
         });
         app.tap("ask").unwrap();
         let id = app.asks()[0].0;
@@ -453,14 +440,11 @@ fn a_panicking_task_fails_the_app_without_running_ready_siblings() {
     let seen = ran.clone();
     let mut app = Window::headless(move || {
         let seen = seen.clone();
-        el().id("start")
-            .size(10.0)
-            .on_press(move || {
-                spawn(async { panic!("task poll failed") });
-                let seen = seen.clone();
-                spawn(async move { seen.set(true) });
-            })
-            .into()
+        el().id("start").size(10.0).on_press(move || {
+            spawn(async { panic!("task poll failed") });
+            let seen = seen.clone();
+            spawn(async move { seen.set(true) });
+        })
     });
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| app.tap("start")));
     assert!(result.is_err());
@@ -486,16 +470,13 @@ fn disposing_a_scope_retires_requests_even_when_the_future_is_retained() {
     let mut app = Window::headless(move || {
         let open = state("open", || true);
         let retained = retained.clone();
-        col()
-            .child(el().id("toggle").size(10.0).on_press(move || open.update(|open| *open = !*open)))
-            .child(show(
-                move || open.get(),
-                move || {
-                    retained.borrow_mut().push(Box::pin(prompt_for_paths(Default::default())));
-                    text("scope").into()
-                },
-            ))
-            .into()
+        col().child(el().id("toggle").size(10.0).on_press(move || open.update(|open| *open = !*open))).child(show(
+            move || open.get(),
+            move || {
+                retained.borrow_mut().push(Box::pin(prompt_for_paths(Default::default())));
+                text("scope")
+            },
+        ))
     });
     let old = app.asks()[0].0;
     app.tap("toggle").unwrap();
@@ -515,12 +496,9 @@ fn dropping_a_request_before_presentation_does_not_show_it() {
     use octara::platform::{HeadlessPlatform, HeadlessWindow};
     let platform = HeadlessPlatform::with_window(HeadlessWindow { shows_asks: true, ..Default::default() });
     let mut app = Window::headless_on(platform, || {
-        el().id("ask")
-            .size(10.0)
-            .on_press(|| {
-                drop(prompt_for_paths(Default::default()));
-            })
-            .into()
+        el().id("ask").size(10.0).on_press(|| {
+            drop(prompt_for_paths(Default::default()));
+        })
     });
     app.tap("ask").unwrap();
     assert!(app.asks().is_empty());
@@ -546,7 +524,7 @@ fn pure_computations_cannot_start_tasks_or_requests_through_untrack() {
             untrack(|| on_command("forbidden", move || command_seen.set(true)));
             1
         });
-        text(move || value.get().to_string()).into()
+        text(move || value.get().to_string())
     });
     assert!(!ran.get());
     assert!(finished.get());
@@ -566,7 +544,7 @@ fn closing_a_window_cancels_its_waiting_requests() {
             spawn(async {
                 prompt(PromptLevel::Info, "Continue?", None, &["Yes"]).await;
             });
-            el().size_full().into()
+            el().size_full()
         })
         .unwrap();
     assert_eq!(window.asks().len(), 1);
@@ -812,29 +790,23 @@ fn handlers_and_tasks_replace_only_their_registered_scope_context() {
         provide(1u32);
         let root = out.clone();
         let out = out.clone();
-        col()
-            .child(el().id("root-context").size(10.0).on_press(move || root.borrow_mut().push(use_context::<u32>().unwrap())))
-            .child(show(
-                || true,
-                move || {
-                    provide(2u32);
-                    let captured = use_context::<u32>().unwrap();
+        col().child(el().id("root-context").size(10.0).on_press(move || root.borrow_mut().push(use_context::<u32>().unwrap()))).child(show(
+            || true,
+            move || {
+                provide(2u32);
+                let captured = use_context::<u32>().unwrap();
+                let out = out.clone();
+                el().id("replace-context").size(10.0).on_press(move || {
+                    provide(3u32);
+                    out.borrow_mut().extend([captured, use_context::<u32>().unwrap()]);
                     let out = out.clone();
-                    el().id("replace-context")
-                        .size(10.0)
-                        .on_press(move || {
-                            provide(3u32);
-                            out.borrow_mut().extend([captured, use_context::<u32>().unwrap()]);
-                            let out = out.clone();
-                            spawn(async move {
-                                provide(4u32);
-                                out.borrow_mut().push(use_context::<u32>().unwrap());
-                            });
-                        })
-                        .into()
-                },
-            ))
-            .into()
+                    spawn(async move {
+                        provide(4u32);
+                        out.borrow_mut().push(use_context::<u32>().unwrap());
+                    });
+                })
+            },
+        ))
     });
     window.tap("replace-context").unwrap();
     window.app().poll();

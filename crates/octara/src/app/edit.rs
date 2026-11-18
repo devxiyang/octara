@@ -454,7 +454,7 @@ mod tests {
 
         let mut window = Window::headless(|| {
             let value = state("value", || "a".to_owned());
-            text_input().id("field").value(value).on_input(move |text| value.set(text)).into()
+            text_input().id("field").value(value).on_input(move |text| value.set(text))
         });
         window.tap("field").unwrap();
         window.set_selection(1, 1);
@@ -497,7 +497,6 @@ mod tests {
                         value.set(text);
                         assert!(fail_in_binding, "callback failed");
                     })
-                    .into()
             });
             window.tap("field").unwrap();
             let id = window.kernel().find("field").unwrap();

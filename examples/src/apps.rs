@@ -98,7 +98,6 @@ pub fn gestures() -> View {
                     .self_start()
                     .on_press(move || vanished.set(true))
                     .on_double_press(move || vanished_doubles.update(|n| *n += 1))
-                    .into()
             },
         ))
         .child(text(move || format!("Removed long presses: {}", volatile_longs.get())).id("volatile-longs"))
@@ -115,7 +114,6 @@ pub fn gestures() -> View {
                     .id("volatile-hold")
                     .self_start()
                     .on_long_press(move || volatile_longs.update(|n| *n += 1))
-                    .into()
             },
         ))
         .into()
@@ -178,16 +176,13 @@ pub fn todo(n: usize) -> View {
                 .child(filter_button("Done", "filter-done", Show::Done)),
         )
         .child(col().child(each(move || visible.get(), move |id, t| todo_row(*id, t, todos))).id("todos").flex_1().overflow_y_scroll())
-        .child(show(
-            move || !done.is_empty(),
-            move || button("Clear done").id("clear-done").on_press(move || todos.retain(|t| !t.done)).into(),
-        ))
+        .child(show(move || !done.is_empty(), move || button("Clear done").id("clear-done").on_press(move || todos.retain(|t| !t.done))))
         .size_full()
         .into()
 }
 
 #[ui]
-fn todo_row(id: u32, t: ReadSignal<Todo>, todos: StateList<u32, Todo>) -> View {
+fn todo_row(id: u32, t: ReadSignal<Todo>, todos: StateList<u32, Todo>) -> El {
     row()
         .child(
             checkbox((move || t.with(|t| t.done), move |v| todos.update(&id, |t| t.done = v)))
@@ -201,7 +196,6 @@ fn todo_row(id: u32, t: ReadSignal<Todo>, todos: StateList<u32, Todo>) -> View {
         )
         .child(ghost_button("Delete").id(format!("remove-{id}")).on_press(move || todos.remove(&id)))
         .id(format!("todo-{id}"))
-        .into()
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -252,7 +246,6 @@ pub fn chat(n: usize) -> View {
                             .child(text(move || m.with(|m| m.role.to_string())).id(format!("msg-role-{id}")))
                             .child(text(move || m.with(|m| m.body.clone())).id(format!("msg-body-{id}")))
                             .id(format!("msg-{id}"))
-                            .into()
                     },
                 ))
                 .id("messages")
@@ -291,7 +284,6 @@ pub fn settings() -> View {
                     .child(switch(sound).id("sound").label("Sound"))
                     .child(text_field(volume).id("volume").label("Volume"))
                     .id("notification-options")
-                    .into()
             },
         ))
         .child(row().child(theme_button("light")).child(theme_button("dark")).child(theme_button("system")))
@@ -374,7 +366,6 @@ pub fn chat_virtual(n: usize) -> View {
                             .child(text(move || m.with(|m| m.role.to_string())).id(format!("msg-role-{id}")))
                             .child(text(move || m.with(|m| m.body.clone())).id(format!("msg-body-{id}")))
                             .id(format!("msg-{id}"))
-                            .into()
                     },
                 ))
                 .id("messages")
@@ -461,7 +452,6 @@ pub fn contacts(n: usize) -> View {
                                     .id(format!("members-{team}")),
                             )
                             .id(format!("group-{team}"))
-                            .into()
                     },
                 ))
                 .id("groups")
@@ -473,7 +463,7 @@ pub fn contacts(n: usize) -> View {
 }
 
 #[ui]
-fn contact_row(id: u32, c: ReadSignal<Contact>, people: StateList<u32, Contact>) -> View {
+fn contact_row(id: u32, c: ReadSignal<Contact>, people: StateList<u32, Contact>) -> El {
     let open = state("open", || false);
     row()
         .child(text(move || c.with(|c| c.name.clone())).id(format!("name-{id}")))
@@ -483,9 +473,8 @@ fn contact_row(id: u32, c: ReadSignal<Contact>, people: StateList<u32, Contact>)
                 .label(move || c.with(|c| format!("Star {}", c.name))),
         )
         .child(ghost_button("Open").id(format!("open-{id}")).on_press(move || open.update(|o| *o = !*o)))
-        .child(show(move || open.get(), move || text("details").id(format!("detail-{id}")).into()))
+        .child(show(move || open.get(), move || text("details").id(format!("detail-{id}"))))
         .id(format!("contact-{id}"))
-        .into()
 }
 
 /// Header row height (a 20 px line + 2 × 4 px padding) and contact row height (its kit button:
@@ -544,7 +533,6 @@ pub fn contacts_virtual(n: usize) -> View {
                             text(move || item.with(|f| f.header().map(|h| format!("{} ({})", h.key, h.len)).unwrap_or_default()))
                                 .id(format!("team-{team}"))
                                 .p_1()
-                                .into()
                         }
                         FlatKey::Item(id) => {
                             let open = state("open", || false);
@@ -560,9 +548,8 @@ pub fn contacts_virtual(n: usize) -> View {
                                     .label(move || format!("Star {}", name())),
                                 )
                                 .child(ghost_button("Open").id(format!("open-{id}")).on_press(move || open.update(|o| *o = !*o)))
-                                .child(show(move || open.get(), move || text("details").id(format!("detail-{id}")).into()))
+                                .child(show(move || open.get(), move || text("details").id(format!("detail-{id}"))))
                                 .id(format!("contact-{id}"))
-                                .into()
                         }
                     },
                 ))
@@ -633,7 +620,6 @@ pub fn chat_stream(n: usize) -> View {
                             .child(text(role).id(format!("msg-role-{id}")))
                             .child(text(body).id(format!("msg-body-{id}")))
                             .id(format!("msg-{id}"))
-                            .into()
                     },
                 ))
                 .id("messages")
@@ -723,7 +709,6 @@ pub fn inbox(n: usize) -> View {
                     .child(text(move || msg.with(|r| r.0.clone())).font_semibold().id(format!("from-{id}")))
                     .child(text(move || msg.with(|r| r.1.clone())))
                     .id(format!("message-{id}"))
-                    .into()
             },
         )))
         .into()

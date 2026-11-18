@@ -78,7 +78,6 @@ pub fn view() -> View {
                         mode.set(0);
                     })
                     .child(text("Escape closes this dialog"))
-                    .into()
             },
         ))
         .into()

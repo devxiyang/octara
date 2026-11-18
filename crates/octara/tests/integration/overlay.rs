@@ -21,7 +21,6 @@ fn trigger_at(left: f32, top: f32, placement: Placement) -> impl Fn() -> View {
                 .id("panel")
                 .w(px(100.0))
                 .h(px(40.0))
-                .into()
             },
         ))
         .pl(px(left))
@@ -60,6 +59,21 @@ fn opens_below_its_anchor_and_closes() {
 }
 
 #[test]
+fn anchored_overlay_mounts_a_fragment_as_siblings() {
+    let app = Window::headless(|| {
+        el().size_8().overlay(
+            || true,
+            Placement::BELOW,
+            || View::fragment([text("First").id("first").into(), text("Second").id("second").into()]),
+        )
+    });
+    let k = app.kernel();
+    let [surface] = k.children(k.overlay_layer()) else { panic!("expected one placement surface") };
+    assert_eq!(k.children(*surface), &[k.find("first").unwrap(), k.find("second").unwrap()]);
+    assert!(app.app().diagnostics().is_empty());
+}
+
+#[test]
 fn flips_when_there_is_no_room_and_clamps_into_the_window() {
     let (vw, vh) = DEFAULT_VIEWPORT;
     let mut app = Window::headless(trigger_at(vw - 20.0, vh - 40.0, Placement::BELOW));
@@ -95,55 +109,37 @@ fn nested_overlays() -> Window {
             middle.set(true);
             inner.set(true);
         });
-        col()
-            .size_full()
-            .child(
-                text("Outer")
-                    .id("outer-trigger")
-                    .absolute()
-                    .left(relative(0.125))
-                    .top(relative(0.2))
-                    .w(80.0)
-                    .h(24.0)
-                    .on_press(move || outer.set(true))
-                    .overlay(
-                        move || outer.get(),
-                        Placement::BELOW,
-                        move || {
-                            col()
-                                .id("outer-panel")
-                                .w(240.0)
-                                .h(120.0)
-                                .p_4()
-                                .child(text("Middle").id("middle-trigger").w(80.0).h(24.0).on_press(move || middle.set(true)).overlay(
-                                    move || middle.get(),
-                                    Placement::BELOW,
-                                    move || {
-                                        col()
-                                            .id("middle-panel")
-                                            .w(140.0)
-                                            .h(80.0)
-                                            .p_2()
-                                            .child(
-                                                text("Inner")
-                                                    .id("inner-trigger")
-                                                    .w(80.0)
-                                                    .h(24.0)
-                                                    .on_press(move || inner.set(true))
-                                                    .overlay(
-                                                        move || inner.get(),
-                                                        Placement::BELOW,
-                                                        || el().id("inner-panel").w(100.0).h(32.0).into(),
-                                                    ),
-                                            )
-                                            .into()
-                                    },
-                                ))
-                                .into()
-                        },
-                    ),
-            )
-            .into()
+        col().size_full().child(
+            text("Outer")
+                .id("outer-trigger")
+                .absolute()
+                .left(relative(0.125))
+                .top(relative(0.2))
+                .w(80.0)
+                .h(24.0)
+                .on_press(move || outer.set(true))
+                .overlay(
+                    move || outer.get(),
+                    Placement::BELOW,
+                    move || {
+                        col().id("outer-panel").w(240.0).h(120.0).p_4().child(
+                            text("Middle").id("middle-trigger").w(80.0).h(24.0).on_press(move || middle.set(true)).overlay(
+                                move || middle.get(),
+                                Placement::BELOW,
+                                move || {
+                                    col().id("middle-panel").w(140.0).h(80.0).p_2().child(
+                                        text("Inner").id("inner-trigger").w(80.0).h(24.0).on_press(move || inner.set(true)).overlay(
+                                            move || inner.get(),
+                                            Placement::BELOW,
+                                            || el().id("inner-panel").w(100.0).h(32.0),
+                                        ),
+                                    )
+                                },
+                            ),
+                        )
+                    },
+                ),
+        )
     })
 }
 

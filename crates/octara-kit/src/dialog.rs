@@ -119,7 +119,6 @@ pub fn dialog(
                         el().id(format!("{id}-scrim")).absolute().inset_0().size_full().bg(Color::BLACK.multiply_alpha(0.35)).a11y_hidden(),
                     )
                     .child(panel)
-                    .into()
             },
         )
         .into()

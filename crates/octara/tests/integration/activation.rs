@@ -6,7 +6,7 @@ use octara::prelude::*;
 
 #[test]
 fn accessibility_value_without_an_input_handler_preserves_selection() {
-    let mut window = Window::headless(|| text_input().id("field").value("initial").into());
+    let mut window = Window::headless(|| text_input().id("field").value("initial"));
     window.dispatch(Event::Focus("field".into())).unwrap();
     window.set_selection(1, 3);
     let node = window.kernel().find("field").unwrap();
@@ -24,7 +24,7 @@ fn accessibility_value_without_an_input_handler_preserves_selection() {
 fn accessibility_value_runs_the_input_handler_and_updates_selection() {
     let mut window = Window::headless(|| {
         let value = state("value", || "initial".to_owned());
-        text_input().id("field").value(value).on_input(move |text| value.set(text)).into()
+        text_input().id("field").value(value).on_input(move |text| value.set(text))
     });
     window.dispatch(Event::Focus("field".into())).unwrap();
     window.set_selection(1, 3);
@@ -75,8 +75,7 @@ fn fixture() -> (App, Window, Signal<u8>, Signal<u32>) {
                                 .on_numeric_input(move |_| hits.update(|n| *n += 1)),
                         ),
                 )
-                .child(show(move || mode.get() == 3, || el().modal(false, || {}).size(60).into()))
-                .into()
+                .child(show(move || mode.get() == 3, || el().modal(false, || {}).size(60)))
         })
         .unwrap();
     (app, window, mode, hits)
@@ -146,8 +145,7 @@ fn retiring_focus_notifies_even_after_disable_hide_or_modal_open() {
                             .style_with(move |s| if mode.get() == 2 { s.hidden() } else { s.flex() })
                             .on_blur(move || blurs.update(|n| *n += 1)),
                     )
-                    .child(show(move || mode.get() == 3, || el().modal(false, || {}).into()))
-                    .into()
+                    .child(show(move || mode.get() == 3, || el().modal(false, || {})))
             })
             .unwrap();
         w.dispatch(Event::Focus("field".into())).unwrap();
@@ -171,13 +169,10 @@ fn a_disabled_modal_can_still_be_dismissed() {
         let closed = app.run(|| state("closed", || false));
         let mut w = app
             .open_window(WindowOptions::default(), move || {
-                col()
-                    .size_full()
-                    .child(show(
-                        move || !closed.get(),
-                        move || el().id("modal").size(100).disabled(true).modal(true, move || closed.set(true)).into(),
-                    ))
-                    .into()
+                col().size_full().child(show(
+                    move || !closed.get(),
+                    move || el().id("modal").size(100).disabled(true).modal(true, move || closed.set(true)),
+                ))
             })
             .unwrap();
         if outside {

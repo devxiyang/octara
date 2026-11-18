@@ -17,7 +17,7 @@ fn save_button(saved: Signal<u32>) -> El {
 
 #[ui]
 fn rows(items: StateList<u32, (u32, String)>) -> El {
-    col().id("rows").child(each(move || items.read_only(), |k, t| text(move || t.with(|t| t.1.clone())).id(format!("row-{k}")).into()))
+    col().id("rows").child(each(move || items.read_only(), |k, t| text(move || t.with(|t| t.1.clone())).id(format!("row-{k}"))))
 }
 
 fn app() -> View {

@@ -31,7 +31,7 @@ fn ordinary_functions_reuse_caller_owned_state_without_an_annotation_or_scope() 
     let mut window = Window::headless(|| {
         let left = state("left", || 0u32);
         let right = state("right", || 10u32);
-        col().size_full().child(counter("left", left)).child(counter("right", right)).into()
+        col().size_full().child(counter("left", left)).child(counter("right", right))
     });
     let left = window.inspect().find("left").unwrap().target.clone();
     window.tap("left").unwrap();
@@ -53,7 +53,6 @@ fn scope_accepts_elements_and_borrowed_or_owned_strings_without_a_wrapper_node()
             .child(scope(7, || text("Element").id("element")))
             .child(scope("borrowed", || "Borrowed"))
             .child(scope(String::from("owned"), || String::from("Owned")))
-            .into()
     });
     let snapshot = window.inspect();
     let content = snapshot.find("content").unwrap();
@@ -61,6 +60,47 @@ fn scope_accepts_elements_and_borrowed_or_owned_strings_without_a_wrapper_node()
     assert_eq!(names, [Some("Element"), Some("Borrowed"), Some("Owned")]);
     assert_eq!(content.children[0].id.as_deref(), Some("element"));
     clean(&window);
+}
+
+#[test]
+fn show_builds_and_releases_elements_with_the_visible_branch() {
+    let builds = Rc::new(Cell::new(0));
+    let cleanups = Rc::new(Cell::new(0));
+    let (observed_builds, observed_cleanups) = (builds.clone(), cleanups.clone());
+    let mut window = Window::headless(move || {
+        let visible = state("visible", || false);
+        on_command("toggle", move || visible.update(|on| *on = !*on));
+        let (builds, cleanups) = (observed_builds.clone(), observed_cleanups.clone());
+        show(
+            move || visible.get(),
+            move || {
+                builds.set(builds.get() + 1);
+                let cleanups = cleanups.clone();
+                on_cleanup(move || cleanups.set(cleanups.get() + 1));
+                counter("details", state("value", || 0))
+            },
+        )
+    });
+
+    assert_eq!(builds.get(), 0);
+    assert!(!window.kernel().exists("details"));
+    window.invoke("toggle").unwrap();
+    let first_target = window.inspect().find("details").unwrap().target.clone();
+    window.tap("details").unwrap();
+    assert_eq!(window.kernel().text_of("details-value").as_deref(), Some("1"));
+    assert_eq!(builds.get(), 1);
+    assert_eq!(window.inspect().find("details").unwrap().target, first_target);
+
+    window.invoke("toggle").unwrap();
+    assert!(!window.kernel().exists("details"));
+    assert_eq!(cleanups.get(), 1);
+    window.invoke("toggle").unwrap();
+    assert_eq!(builds.get(), 2);
+    assert_eq!(window.kernel().text_of("details-value").as_deref(), Some("0"));
+    assert_ne!(window.inspect().find("details").unwrap().target, first_target);
+    clean(&window);
+    window.app().shutdown();
+    assert_eq!(cleanups.get(), 2);
 }
 
 #[test]
@@ -86,7 +126,6 @@ fn duplicate_scope_keys_skip_the_body_and_leave_later_siblings_usable() {
                 counter("duplicate", value)
             }))
             .child(owned_counter("later", "later", 0))
-            .into()
     });
     assert_eq!(bodies.get(), 1, "duplicate content never runs");
     assert!(!window.kernel().exists("duplicate"));
@@ -135,7 +174,6 @@ fn scoped_providers_handlers_and_cleanup_keep_their_owner() {
                 },
             ))
             .child(el().id("hide").size_12().on_press(move || visible.set(false)))
-            .into()
     });
     for id in ["child", "parent", "root"] {
         window.tap(id).unwrap();
@@ -153,12 +191,50 @@ fn scoped_providers_handlers_and_cleanup_keep_their_owner() {
 }
 
 #[test]
+fn retiring_from_branch_cleanup_skips_the_replacement_factory() {
+    let app = App::new(octara::platform::HeadlessPlatform::default());
+    let key = app.run(|| state("branch", || false));
+    let baseline = app.work().reactive_nodes;
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let mounted = events.clone();
+    let window = app
+        .open_window(WindowOptions::default(), move || {
+            let mounted = mounted.clone();
+            keyed(
+                move || key.get(),
+                move |replacement| {
+                    if *replacement {
+                        mounted.borrow_mut().push("replacement factory");
+                    } else {
+                        let cleaned = mounted.clone();
+                        on_cleanup(move || {
+                            cleaned.borrow_mut().push("cleanup");
+                            close_window(current_window());
+                        });
+                    }
+                    text("Branch").id("branch")
+                },
+            )
+        })
+        .unwrap();
+
+    assert!(window.kernel().exists("branch"));
+    app.run(|| key.set(true));
+    assert_eq!(*events.borrow(), ["cleanup"]);
+    assert!(window.is_closed());
+    assert!(!app.is_failed());
+    assert_eq!(app.work().reactive_nodes, baseline);
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    app.shutdown();
+}
+
+#[test]
 fn explicit_keys_keep_state_across_reordered_reload_and_ui_keeps_deferred_provenance() {
     let reversed = Rc::new(Cell::new(false));
     let order = reversed.clone();
     let mut window = Window::headless(move || {
         let ids = if order.get() { ["right", "left"] } else { ["left", "right"] };
-        col().id("counters").size_full().children(ids.map(|id| owned_counter(id, id, 0))).into()
+        col().id("counters").size_full().children(ids.map(|id| owned_counter(id, id, 0)))
     });
     window.tap("left").unwrap();
     window.tap("right").unwrap();
@@ -188,7 +264,6 @@ fn scope_keys_with_path_syntax_and_percent_escapes_have_distinct_state() {
             .child(owned_counter("a]/scope[b", "raw", 20))
             .child(owned_counter("a/b", "slash", 30))
             .child(owned_counter("a%2Fb", "percent", 40))
-            .into()
     });
     for (id, expected) in [("nested", "10"), ("raw", "20"), ("slash", "30"), ("percent", "40")] {
         assert_eq!(window.kernel().text_of(&format!("{id}-value")).as_deref(), Some(expected));
@@ -365,7 +440,7 @@ fn retirement_cannot_reuse_a_pending_orphan_during_destructor_reentry() {
                 )
             }));
         }
-        root.into()
+        root
     });
     source.borrow_mut().clear();
     window.app().hot_reload();
@@ -416,7 +491,7 @@ fn shutdown_releases_all_pending_orphans_after_the_first_destructor_panics() {
                 text("value")
             }));
         }
-        root.into()
+        root
     });
     changed.set(true);
     panic_next.set(true);

@@ -195,9 +195,6 @@ codes! {
     DUPLICATE_SCOPE_KEY: Error, View, "docs/design/reactive-core.md#4-identity-and-state",
         "Two content scopes have the same key within one owner; the duplicate was not mounted.",
         cause: "`scope(key, ..)` identifies a content owner by a unique stable key within its parent. Reusing that key would share named state, so the duplicate factory is not run. Choose distinct keys for independently owned content; sibling order and UI function names do not provide identity.";
-    EACH_ROW_NOT_ELEMENT: Error, View, "docs/design/reactive-core.md#5-incremental-collections",
-        "A list row was not one element; an empty column was used instead.",
-        cause: "`each` and `virtual_each` move, insert and remove rows as single nodes.";
     VIRTUAL_LIST_NOT_SCROLLABLE: Error, View, "docs/design/layout.md#5-scrolling-and-overlays",
         "`virtual_each` is not directly inside a scroll container.",
         cause: "A virtual list mounts the rows in its scroll container's viewport: its parent must be `overflow_y_scroll()` with a bounded height.";

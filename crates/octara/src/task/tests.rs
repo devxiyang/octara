@@ -173,7 +173,7 @@ fn interrupted_window_teardown_and_reload_keep_resources_reachable() {
                             panic!("window cleanup failed");
                         }
                     });
-                    el().size_full().into()
+                    el().size_full()
                 })
                 .unwrap(),
             );
@@ -282,8 +282,8 @@ fn repeated_wakes_are_one_poll_and_nested_drains_share_the_allowance() {
 #[test]
 fn windows_share_one_turn_and_remain_incomplete_while_tasks_yield() {
     let app = App::new(HeadlessPlatform::default());
-    let first = app.open_window(Default::default(), || el().size_full().into()).unwrap();
-    let second = app.open_window(Default::default(), || el().size_full().into()).unwrap();
+    let first = app.open_window(Default::default(), || el().size_full()).unwrap();
+    let second = app.open_window(Default::default(), || el().size_full()).unwrap();
     let polls = Rc::new(Cell::new(0));
     let out = polls.clone();
     let task = app.run(|| {
@@ -765,7 +765,7 @@ fn an_app_task_has_no_window_owner_and_outlives_the_last_window() {
                     shared.set(1);
                 });
             });
-            el().size_full().into()
+            el().size_full()
         })
         .unwrap();
     assert_eq!(app.pending()[0].due, Some(Duration::from_millis(10)), "the task reached its first wait");
@@ -785,7 +785,7 @@ fn a_completed_ui_tasks_cleanup_does_not_cancel_a_reused_app_task() {
     let window = app
         .open_window(WindowOptions::new("temporary"), || {
             spawn(async {});
-            el().size_full().into()
+            el().size_full()
         })
         .unwrap();
     assert!(app.pending().is_empty());

@@ -18,7 +18,7 @@ fn view() -> View {
                 .text_color(move || if muted.get() { Token::TextMuted } else { Token::Accent })
                 .child(text("plain").id("plain"))
                 .child(text("own").id("own").text_color(Token::Danger).text_lg())
-                .child(show(move || more.get(), || text("late").id("late").into())),
+                .child(show(move || more.get(), || text("late").id("late"))),
         )
         .child(text("outside").id("outside"))
         .child(el().id("toggle").on_press(move || muted.update(|m| *m = !*m)))
@@ -60,7 +60,7 @@ fn text_inherits_from_its_container_and_overrides_win() {
 
 #[test]
 fn a_string_child_takes_the_container_style() {
-    let app = Window::headless(|| row().id("r").text_xs().child("tiny").into());
+    let app = Window::headless(|| row().id("r").text_xs().child("tiny"));
     let k = app.kernel();
     let r = k.find("r").unwrap();
     let t = k.children(r)[0];

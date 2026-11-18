@@ -2,7 +2,7 @@
 //! element becomes a kernel node.
 
 use super::style::{Patch, Styled};
-use super::{Behavior, Handler, IntoElement, Parent, Slot, Slots, View, mount, show};
+use super::{Behavior, Handler, IntoView, Parent, Slot, Slots, View, build_content, mount, show};
 use crate::app::{Drag, KeyEvent};
 use crate::diagnostics as codes;
 use crate::kernel::rich::Rich;
@@ -243,6 +243,19 @@ struct Overlay {
     made: Option<crate::kernel::Component>,
     /// Placed by this node instead of the element (the window's tooltip, by its element).
     by: Option<NodeId>,
+}
+
+impl Overlay {
+    #[track_caller]
+    fn new<V: IntoView>(
+        open: impl Fn() -> bool + 'static,
+        placement: Option<Placement>,
+        content: impl Fn() -> V + 'static,
+        by: Option<NodeId>,
+    ) -> Self {
+        let at = Location::caller();
+        Self { open: Box::new(open), placement, content: Rc::new(move || build_content(at, &content)), at, made: super::building(), by }
+    }
 }
 
 // ---- elements ----
@@ -633,10 +646,6 @@ impl El {
     pub fn focus_visible(self, f: impl FnOnce(Patch) -> Patch) -> Self {
         self.style_when(State::FOCUS_VISIBLE, f)
     }
-    /// Style while focused, however focus got there (GPUI `.focus(..)`).
-    pub fn focus(self, f: impl FnOnce(Patch) -> Patch) -> Self {
-        self.style_when(State::FOCUSED, f)
-    }
     /// Style while `state` is active (for `SELECTED` and `DISABLED`, set with `selected` / `disabled`).
     pub fn style_when(mut self, state: State, f: impl FnOnce(Patch) -> Patch) -> Self {
         self.overrides.push((When::State(state), f(Patch::default()).0));
@@ -928,43 +937,27 @@ impl El {
     /// While `open` holds, shows `content` above everything else, placed next to this element
     /// (flipped and clamped to stay in the window). Its state lives while it is open.
     #[track_caller]
-    pub fn overlay(mut self, open: impl Fn() -> bool + 'static, placement: Placement, content: impl Fn() -> View + 'static) -> Self {
-        self.overlays.push(Overlay {
-            open: Box::new(open),
-            placement: Some(placement),
-            content: Rc::new(content),
-            at: Location::caller(),
-            made: super::building(),
-            by: None,
-        });
+    pub fn overlay<V: IntoView>(
+        mut self,
+        open: impl Fn() -> bool + 'static,
+        placement: Placement,
+        content: impl Fn() -> V + 'static,
+    ) -> Self {
+        self.overlays.push(Overlay::new(open, Some(placement), content, None));
         self
     }
     /// While `open` holds, mounts `content` in the window's overlay layer, without an anchor.
     /// A full-window surface can use `absolute().inset_0()` for a dialog scrim. Its state lives
     /// while open and is disposed with this element; focus and dismissal come from `modal`.
     #[track_caller]
-    pub fn overlay_window(mut self, open: impl Fn() -> bool + 'static, content: impl Fn() -> View + 'static) -> Self {
-        self.overlays.push(Overlay {
-            open: Box::new(open),
-            placement: None,
-            content: Rc::new(content),
-            at: Location::caller(),
-            made: super::building(),
-            by: None,
-        });
+    pub fn overlay_window<V: IntoView>(mut self, open: impl Fn() -> bool + 'static, content: impl Fn() -> V + 'static) -> Self {
+        self.overlays.push(Overlay::new(open, None, content, None));
         self
     }
     /// An overlay placed by node `by` (not this element), open while this element is mounted.
     #[track_caller]
-    pub(crate) fn overlay_by(mut self, by: NodeId, placement: Placement, content: impl Fn() -> View + 'static) -> Self {
-        self.overlays.push(Overlay {
-            open: Box::new(|| true),
-            placement: Some(placement),
-            content: Rc::new(content),
-            at: Location::caller(),
-            made: super::building(),
-            by: Some(by),
-        });
+    pub(crate) fn overlay_by<V: IntoView>(mut self, by: NodeId, placement: Placement, content: impl Fn() -> V + 'static) -> Self {
+        self.overlays.push(Overlay::new(|| true, Some(placement), content, Some(by)));
         self
     }
 
@@ -1079,16 +1072,16 @@ impl El {
     /// Adds a container child: an element, a view (`each(..)`, `show(..)`, a component), or a
     /// string shown as text. Atomic content rejects this call with `ELEMENT_CONTENT`.
     #[track_caller]
-    pub fn child(mut self, v: impl IntoElement) -> Self {
-        self.content.children_mut("child").push(v.into_view(Location::caller()));
+    pub fn child(mut self, view: impl IntoView) -> Self {
+        self.content.children_mut("child").push(view.into_view(Location::caller()));
         self
     }
     /// Adds children from any iterator: `.children(items.iter().map(|i| ..))`.
     /// Requires a container, even for an empty iterator; validates before consuming it.
     #[track_caller]
-    pub fn children<C: IntoElement>(mut self, c: impl IntoIterator<Item = C>) -> Self {
+    pub fn children<V: IntoView>(mut self, views: impl IntoIterator<Item = V>) -> Self {
         let at = Location::caller();
-        self.content.children_mut("children").extend(c.into_iter().map(|v| v.into_view(at)));
+        self.content.children_mut("children").extend(views.into_iter().map(|view| view.into_view(at)));
         self
     }
 }
@@ -1389,6 +1382,9 @@ fn mount_canvas(at: &'static Location<'static>, node: NodeId, draw: Draw) {
 /// Mounts an overlay's `show` into its own region of the overlay layer; the region is removed
 /// with the anchor's scope.
 fn mount_overlay(anchor: NodeId, o: Overlay) {
+    if !rt(|rt| rt.admits(rt.capture_owner())) {
+        return;
+    }
     let u = crate::app::window();
     let region = Slots::default();
     u.overlay_slots.borrow_mut().push(Slot::Region(region.clone()));
@@ -1410,7 +1406,7 @@ fn mount_overlay(anchor: NodeId, o: Overlay) {
             if placement.is_none() {
                 b = b.absolute().inset_0().size_full();
             }
-            b.into()
+            b
         })
     });
     mount(view, &layer, &region);

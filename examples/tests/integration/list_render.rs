@@ -19,7 +19,7 @@ fn app(probe: Rc<Cell<usize>>) -> Window {
                 move || shown.get(),
                 move || {
                     let evens = shown_evens.clone();
-                    col().child(each(move || evens.clone(), |k, _| text(format!("{k}")).id(format!("e{k}")).into())).id("evens").into()
+                    col().child(each(move || evens.clone(), |k, _| text(format!("{k}")).id(format!("e{k}")))).id("evens")
                 },
             ))
             .child(button("add").id("add").on_press(move || {
@@ -30,7 +30,6 @@ fn app(probe: Rc<Cell<usize>>) -> Window {
             }))
             .child(button("drop").id("drop").on_press(move || items.retain(|x| x % 4 != 0)))
             .child(button("hide").id("hide").on_press(move || shown.update(|s| *s = !*s)))
-            .into()
     })
 }
 

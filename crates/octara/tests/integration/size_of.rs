@@ -8,10 +8,12 @@ fn view() -> View {
     let narrow = memo(|| size_of("panel").get().0 < 320.0);
     row()
         .size_full()
-        .child(el().id("panel").w_1_2().child(show_else(
+        .child(el().id("panel").w_1_2().child(keyed(
             move || narrow.get(),
-            || text("compact").id("compact").into(),
-            || text("wide").id("wide").into(),
+            |narrow| {
+                let mode = if *narrow { "compact" } else { "wide" };
+                text(mode).id(mode)
+            },
         )))
         .into()
 }
@@ -115,7 +117,6 @@ fn finite_size_feedback_never_reports_settled_with_a_stale_measurement() {
             .size_full()
             .child(el().id("feedback").h(20).style_with(move |p| p.w((size.get().0 + 1.0).min(12.0))))
             .child(text(move || size.get().0.to_string()).id("measured"))
-            .into()
     });
 
     for _ in 0..16 {

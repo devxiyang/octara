@@ -8,7 +8,7 @@ fn foreign_text_edits_leave_content_version_and_render_log_unchanged() {
     let app = App::new(HeadlessPlatform::default());
     let buffer = app.run(|| TextBuffer::new("original"));
     let rendered = buffer.clone();
-    let window = app.open_window(WindowOptions::default(), move || text(&rendered).id("text").into()).unwrap();
+    let window = app.open_window(WindowOptions::default(), move || text(&rendered).id("text")).unwrap();
     for edit in 0..3 {
         // Each edit must reach the ownership check, not a previous App failure gate.
         let foreign = App::new(HeadlessPlatform::default());
@@ -71,9 +71,7 @@ fn an_append_backlog_is_bounded_and_keeps_unicode_selection_when_it_resynchroniz
     let buffer = app.run(|| TextBuffer::new(PREFIX));
     let rendered = buffer.clone();
     let mut window = app
-        .open_window(WindowOptions::default(), move || {
-            col().size_full().overflow_y_scroll().selectable().child(text(&rendered).id("text")).into()
-        })
+        .open_window(WindowOptions::default(), move || col().size_full().overflow_y_scroll().selectable().child(text(&rendered).id("text")))
         .unwrap();
     window.select(("text", 0), ("text", "已选😀".len())).unwrap();
     let node = window.kernel().find("text").unwrap();
@@ -101,7 +99,7 @@ fn a_lost_splice_resynchronizes_every_text_reader_before_more_edits() {
     let rendered = buffer.clone();
     let window = app
         .open_window(WindowOptions::default(), move || {
-            col().size_full().overflow_y_scroll().child(text(&rendered).id("first")).child(text(&rendered).id("second")).into()
+            col().size_full().overflow_y_scroll().child(text(&rendered).id("first")).child(text(&rendered).id("second"))
         })
         .unwrap();
     let nodes = [window.kernel().find("first"), window.kernel().find("second")];
@@ -134,7 +132,7 @@ fn an_oversized_edit_does_not_remain_in_a_mounted_readers_log() {
     let app = App::new(HeadlessPlatform::default());
     let buffer = app.run(|| TextBuffer::new("旧😀"));
     let rendered = buffer.clone();
-    let window = app.open_window(WindowOptions::default(), move || text(&rendered).id("text").into()).unwrap();
+    let window = app.open_window(WindowOptions::default(), move || text(&rendered).id("text")).unwrap();
     app.run(|| {
         buffer.append(&"x".repeat(1_024 * 1_024 + 1));
         assert_eq!(buffer.log_len(), 0, "a single payload beyond the byte limit must be discarded");

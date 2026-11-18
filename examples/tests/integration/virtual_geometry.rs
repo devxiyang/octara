@@ -32,13 +32,12 @@ struct Model {
 }
 
 #[ui]
-fn geometry_row(key: u32, item: ReadSignal<Item>) -> View {
+fn geometry_row(key: u32, item: ReadSignal<Item>) -> El {
     col()
         .id(format!("row-{key}"))
         .flex_shrink_0()
         .style_with(move |p| p.h(item.with(|item| item.height)))
         .child(text(move || item.with(|item| format!("{}:{}", item.key, item.version))).id(format!("body-{key}")))
-        .into()
 }
 
 #[ui]
@@ -494,11 +493,11 @@ const FIXED_HEIGHT: f32 = 64.0;
 const WORDS: &str = "word word word word word word word word word word word word word word word word";
 
 #[ui]
-fn wrapping_row(key: u32) -> View {
+fn wrapping_row(key: u32) -> El {
     if key == WRAPPING {
-        col().id(format!("row-{key}")).flex_shrink_0().child(text(WORDS).w_full().text_base().flex_shrink_0()).into()
+        col().id(format!("row-{key}")).flex_shrink_0().child(text(WORDS).w_full().text_base().flex_shrink_0())
     } else {
-        col().id(format!("row-{key}")).h(FIXED_HEIGHT).flex_shrink_0().child(text(format!("Row {key}")).text_base()).into()
+        col().id(format!("row-{key}")).h(FIXED_HEIGHT).flex_shrink_0().child(text(format!("Row {key}")).text_base())
     }
 }
 
@@ -620,7 +619,7 @@ fn counted_list(items: StateList<u32, CountedItem>, second: StateList<u32, Count
         .child(virtual_each(
             move || if use_second.get() { second.read_only() } else { items.read_only() },
             |item| item.item.estimate,
-            |key, item| col().id(format!("row-{key}")).flex_shrink_0().style_with(move |p| p.h(item.with(|item| item.item.height))).into(),
+            |key, item| col().id(format!("row-{key}")).flex_shrink_0().style_with(move |p| p.h(item.with(|item| item.item.height))),
         ))
         .into()
 }
@@ -647,7 +646,7 @@ fn an_offscreen_content_edit_reads_only_changed_items_and_retires_observers_on_s
     });
     let mut window = app
         .open_window(WindowOptions::new("Dirty geometry").size(320.0, 192.0), move || {
-            col().size_full().child(show(move || shown.get(), move || counted_list(items, second, use_second))).into()
+            col().size_full().child(show(move || shown.get(), move || counted_list(items, second, use_second)))
         })
         .unwrap();
     let prefix: f32 = (0..READING).map(|key| Item::new(key).height).sum();

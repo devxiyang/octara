@@ -18,7 +18,6 @@ fn absolute_children_are_placed_against_their_parent() {
                     .child(el().id("inset").absolute().inset_0()),
             )
             .child(el().id("nudged").relative().top(5.0).left(3.0).size_4())
-            .into()
     });
     let k = app.kernel();
     let r = |id: &str| k.rect(k.find(id).unwrap());

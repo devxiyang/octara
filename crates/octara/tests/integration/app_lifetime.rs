@@ -26,7 +26,7 @@ fn app_state_initializes_once_and_is_inherited_by_reopened_windows() {
     assert_eq!(initialized.get(), 1);
     let view = || {
         let count = use_context::<Signal<i32>>().unwrap();
-        col().size_full().child(text(move || count.get().to_string()).id("count")).into()
+        col().size_full().child(text(move || count.get().to_string()).id("count"))
     };
     let first = app.open_window(WindowOptions::new("First"), view).unwrap();
     app.hot_reload();
@@ -82,7 +82,7 @@ fn shutdown_closes_windows_retires_work_and_runs_cleanup_once() {
         .open_window(WindowOptions::new("Child"), move || {
             let cleaned = child_cleaned.clone();
             on_cleanup(move || cleaned.borrow_mut().push("window".into()));
-            col().size_full().child(el().id("action").role(Role::Button).label("Action").size_8().on_press(|| panic!("late input"))).into()
+            col().size_full().child(el().id("action").role(Role::Button).label("Action").size_8().on_press(|| panic!("late input")))
         })
         .unwrap();
     app.poll();
@@ -111,7 +111,7 @@ fn shutdown_from_a_window_handler_does_not_resume_that_window() {
     let app = App::new(HeadlessPlatform::default());
     let mut window = app
         .open_window(WindowOptions::new("Exit"), || {
-            col().size_full().child(el().id("exit").role(Role::Button).label("Exit").size_8().on_press(|| App::current().shutdown())).into()
+            col().size_full().child(el().id("exit").role(Role::Button).label("Exit").size_8().on_press(|| App::current().shutdown()))
         })
         .unwrap();
     window.dispatch(Event::Press("exit".into())).unwrap();
@@ -148,15 +148,12 @@ fn an_escaped_panic_blocks_all_windows_but_allows_teardown_and_other_apps() {
     });
     let mut first = app
         .open_window(WindowOptions::default(), move || {
-            el().id("fail")
-                .size(40)
-                .on_press(move || {
-                    value.update(|v| {
-                        *v = 9;
-                        panic!("partially changed application state");
-                    })
+            el().id("fail").size(40).on_press(move || {
+                value.update(|v| {
+                    *v = 9;
+                    panic!("partially changed application state");
                 })
-                .into()
+            })
         })
         .unwrap();
     let invoked = Rc::new(Cell::new(false));
@@ -164,7 +161,7 @@ fn an_escaped_panic_blocks_all_windows_but_allows_teardown_and_other_apps() {
     let mut second = app
         .open_window(WindowOptions::default(), move || {
             let called = called.clone();
-            el().id("other").size(40).on_press(move || called.set(true)).into()
+            el().id("other").size(40).on_press(move || called.set(true))
         })
         .unwrap();
     let frames = (first.frames_presented(), second.frames_presented());
@@ -202,13 +199,10 @@ fn an_escaped_panic_blocks_all_windows_but_allows_teardown_and_other_apps() {
 #[test]
 fn catching_a_nested_entry_panic_does_not_allow_the_outer_frame_to_publish() {
     let mut window = Window::headless(|| {
-        el().id("nested")
-            .size(40)
-            .on_press(|| {
-                let result = catch_unwind(AssertUnwindSafe(|| App::current().run(|| panic!("nested operation"))));
-                assert!(result.is_err());
-            })
-            .into()
+        el().id("nested").size(40).on_press(|| {
+            let result = catch_unwind(AssertUnwindSafe(|| App::current().run(|| panic!("nested operation"))));
+            assert!(result.is_err());
+        })
     });
     let frames = window.frames_presented();
     assert!(catch_unwind(AssertUnwindSafe(|| window.tap("nested"))).is_err());
@@ -223,7 +217,7 @@ fn refused_input_keeps_the_app_running_and_closed_windows_refuse_delivery() {
     let capture = called.clone();
     let mut window = Window::headless(move || {
         let capture = capture.clone();
-        el().id("accept").size(40).on_press(move || capture.set(capture.get() + 1)).into()
+        el().id("accept").size(40).on_press(move || capture.set(capture.get() + 1))
     });
     let app = window.app();
     assert!(window.dispatch(Event::Press("missing".into())).is_err());
@@ -269,7 +263,7 @@ fn failed_host_submission_does_not_publish_a_completed_frame() {
     let fail = Rc::new(Cell::new(false));
     let app = App::new(System(fail.clone()));
     let count = app.run(|| state("count", || 0));
-    let window = app.open_window(WindowOptions::new("Publication"), move || text(move || count.get().to_string()).into()).unwrap();
+    let window = app.open_window(WindowOptions::new("Publication"), move || text(move || count.get().to_string())).unwrap();
     let frames = window.frames_presented();
     fail.set(true);
     assert!(catch_unwind(AssertUnwindSafe(|| app.run(|| count.set(1)))).is_err());

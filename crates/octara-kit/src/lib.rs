@@ -318,7 +318,6 @@ pub fn select<T: Clone + PartialEq + 'static>(
                     // and focus goes back to the select.
                     .focus_group()
                     .modal(true, move || open.set(false))
-                    .into()
             }
         };
         button(label.clone())

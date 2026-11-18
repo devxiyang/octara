@@ -13,7 +13,7 @@ fn rejected(method: &str, build: impl FnOnce() -> El) {
 #[test]
 fn atomic_content_rejects_application_children_before_conversion_or_iteration() {
     struct Unconverted;
-    impl IntoElement for Unconverted {
+    impl IntoView for Unconverted {
         fn into_view(self, _: &'static std::panic::Location<'static>) -> View {
             panic!("rejected child conversion must not run")
         }
@@ -72,7 +72,6 @@ fn an_image_has_its_own_fit_and_semantics_inside_a_container() {
             )
             .child(image(&picture).id("preview").size(40).role(Role::Button).label("Preview image").on_press(|| {}))
             .child(el().id("status").value("Ready"))
-            .into()
     });
     let tree = window.inspect();
     assert_eq!(tree.find("picture").unwrap().role, "image");

@@ -59,7 +59,7 @@ fn collapsed_elements_with_content_are_reported() {
 fn clamped_overlays_and_missing_tokens() {
     // A 500 px menu 280 px down a 600 px window fits neither above nor below.
     fn menu(placement: Placement) -> View {
-        el().child(text("open").id("t")).pt(280).overlay(|| true, placement, || el().id("menu").h(500).w(100).into()).into()
+        el().child(text("open").id("t")).pt(280).overlay(|| true, placement, || el().id("menu").h(500).w(100)).into()
     }
     // Without `fit` it is pushed into the window, over its anchor: reported.
     let v = issues(|| menu(Placement::BELOW.fit(false)));

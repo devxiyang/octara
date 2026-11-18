@@ -147,27 +147,22 @@ fn closing_unmounts_content_and_reopening_resets_its_local_state() {
     let mut window = Window::headless(move || {
         let open = state("open", || false);
         let cleanups = cleanups.clone();
-        col()
-            .size_full()
-            .p_4()
-            .child(button("Open").id("open").on_press(move || open.set(true)))
-            .child(dialog(
-                "local",
-                "Local state",
-                (move || open.get(), move |value| open.set(value)),
-                DialogOptions::default(),
-                move || {
-                    let count = state("count", || 0);
-                    let cleanups = cleanups.clone();
-                    on_cleanup(move || cleanups.set(cleanups.get() + 1));
-                    col()
-                        .gap_2()
-                        .child(text(move || count.get().to_string()).id("count"))
-                        .child(button("Increment").id("increment").on_press(move || count.update(|value| *value += 1)))
-                        .into()
-                },
-            ))
-            .into()
+        col().size_full().p_4().child(button("Open").id("open").on_press(move || open.set(true))).child(dialog(
+            "local",
+            "Local state",
+            (move || open.get(), move |value| open.set(value)),
+            DialogOptions::default(),
+            move || {
+                let count = state("count", || 0);
+                let cleanups = cleanups.clone();
+                on_cleanup(move || cleanups.set(cleanups.get() + 1));
+                col()
+                    .gap_2()
+                    .child(text(move || count.get().to_string()).id("count"))
+                    .child(button("Increment").id("increment").on_press(move || count.update(|value| *value += 1)))
+                    .into()
+            },
+        ))
     });
     window.tap("open").unwrap();
     assert_eq!(focus(&window).as_deref(), Some("local-close"), "a dialog without a field or autofocus uses its first Tab stop");
@@ -189,11 +184,12 @@ fn nested_popup_and_dialog_dismiss_only_the_top_modal_and_restore_each_opener() 
         let inner = state("inner", || false);
         let popup = state("popup", || false);
         let draft = state("draft", String::new);
-        col()
-            .size_full()
-            .p_4()
-            .child(button("Open outer").id("open").on_press(move || outer.set(true)))
-            .child(dialog("outer", "Outer dialog", outer, DialogOptions::default(), move || {
+        col().size_full().p_4().child(button("Open outer").id("open").on_press(move || outer.set(true))).child(dialog(
+            "outer",
+            "Outer dialog",
+            outer,
+            DialogOptions::default(),
+            move || {
                 col()
                     .gap_2()
                     .child(button("Open inner").id("open-inner").on_press(move || inner.set(true)).autofocus())
@@ -204,8 +200,8 @@ fn nested_popup_and_dialog_dismiss_only_the_top_modal_and_restore_each_opener() 
                         text_field(draft).id("inner-draft").label("Draft").w_full().into()
                     }))
                     .into()
-            }))
-            .into()
+            },
+        ))
     });
     window.tap("open").unwrap();
     assert_eq!(focus(&window).as_deref(), Some("open-inner"), "explicit autofocus overrides the built-in close button");
@@ -235,27 +231,19 @@ fn a_long_dialog_fits_the_window_scrolls_its_body_and_keeps_close_visible_in_bot
         for theme in [Theme::light(), Theme::dark()] {
             let mut window = Window::headless(|| {
                 let open = state("open", || false);
-                col()
-                    .size_full()
-                    .p_4()
-                    .child(button("Open").id("open").on_press(move || open.set(true)))
-                    .child(dialog(
-                        "long",
-                        "A dialog with a descriptive title",
-                        open,
-                        DialogOptions {
-                            description: "This content remains readable in a narrow window.".into(),
-                            ..DialogOptions::default()
-                        },
-                        || {
-                            col()
-                                .gap_2()
-                                .children((0..30).map(|index| text(format!("Detail {index}: content for this dialog.")).min_h(32.0)))
-                                .child(button("Last action").id("last-action"))
-                                .into()
-                        },
-                    ))
-                    .into()
+                col().size_full().p_4().child(button("Open").id("open").on_press(move || open.set(true))).child(dialog(
+                    "long",
+                    "A dialog with a descriptive title",
+                    open,
+                    DialogOptions { description: "This content remains readable in a narrow window.".into(), ..DialogOptions::default() },
+                    || {
+                        col()
+                            .gap_2()
+                            .children((0..30).map(|index| text(format!("Detail {index}: content for this dialog.")).min_h(32.0)))
+                            .child(button("Last action").id("last-action"))
+                            .into()
+                    },
+                ))
             });
             window.resize(width, height);
             window.app().set_theme(theme);

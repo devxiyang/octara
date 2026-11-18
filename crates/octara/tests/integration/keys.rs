@@ -197,7 +197,6 @@ fn enter_submits_a_field_and_presses_one_without_on_submit() {
                     .on_press(move || push("press")),
             )
             .child(text_input().id("plain").w(px(200.0)).value("").on_input(|_| {}).on_press(move || push("plain-press")))
-            .into()
     });
     // A click presses a field like any element; Enter submits it.
     app.tap("search").unwrap();

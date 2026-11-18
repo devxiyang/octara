@@ -17,7 +17,6 @@ fn behavior_layers_keep_order_and_replace_callbacks_only_within_their_own_layer(
             })
             .on_input(move |s| user.borrow_mut().push(format!("user:{s}")))
             .behavior(|b| b.on_input(move |s| second.borrow_mut().push(format!("second:{s}"))))
-            .into()
     });
     window.dispatch(Event::Input("field".into(), "text".into())).unwrap();
     assert_eq!(&*seen.borrow(), &["first:text", "second:text", "user:text"]);
@@ -55,7 +54,6 @@ fn component_keys_consume_or_fall_through_and_ime_runs_first() {
                         false
                     }),
             )
-            .into()
     });
     window.dispatch(Event::Focus("field".into())).unwrap();
     window.set_selection(1, 1);
@@ -85,15 +83,10 @@ fn close_current() {
 #[test]
 fn reloading_from_a_key_callback_does_not_continue_on_the_replacement_tree() {
     let mut window = Window::headless(|| {
-        text_input()
-            .id("field")
-            .value("abc")
-            .behavior(|b| b.on_key(|_| false))
-            .on_key(|_| {
-                App::current().hot_reload();
-                false
-            })
-            .into()
+        text_input().id("field").value("abc").behavior(|b| b.on_key(|_| false)).on_key(|_| {
+            App::current().hot_reload();
+            false
+        })
     });
     window.dispatch(Event::Focus("field".into())).unwrap();
     let before = window.inspect().find("field").unwrap().target.clone();
@@ -130,7 +123,7 @@ fn closing_from_component_behavior_skips_later_callbacks_and_key_defaults() {
                     .on_blur(|| panic!("late user blur")),
                 _ => unreachable!(),
             };
-            col().on_key(|_| panic!("late ancestor key")).child(input).child(text_input().id("other").value("other")).into()
+            col().on_key(|_| panic!("late ancestor key")).child(input).child(text_input().id("other").value("other"))
         });
         window.dispatch(Event::Focus("field".into())).unwrap();
         match kind {
@@ -169,7 +162,7 @@ fn every_behavior_signature_stops_when_a_component_closes_its_window() {
                 "focus" => el().behavior(|b| b.on_focus(close_current)).on_focus(|| panic!("late focus")),
                 _ => unreachable!(),
             };
-            element.id("target").focusable().w(200).h(50).into()
+            element.id("target").focusable().w(200).h(50)
         });
         match kind {
             "press" => {
@@ -220,7 +213,6 @@ fn borrowed_link_and_file_payloads_reach_component_then_application_handlers() {
                     .behavior(|b| b.on_drop(move |paths| files.borrow_mut().push(format!("component:{paths:?}"))))
                     .on_drop(move |paths| app_files.borrow_mut().push(format!("application:{paths:?}"))),
             )
-            .into()
     });
     window.tap("guide").unwrap();
     let (x, y, ..) = {

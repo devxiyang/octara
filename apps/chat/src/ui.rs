@@ -55,7 +55,6 @@ pub fn view(chat: &Chat) -> View {
                     .bg(Token::Surface)
                     .modal(false, move || listing.set(false))
                     .child(sidebar(&phone, listing))
-                    .into()
             },
         ))
         .into()
@@ -162,7 +161,7 @@ fn sidebar(chat: &Chat, listing: Signal<bool>) -> El {
             move || flat.clone(),
             |item| if item.header().is_some() { 36.0 } else { 34.0 },
             move |key, item| match key.clone() {
-                FlatKey::Header(age) => list_header(age.to_string()).id(format!("age-{age:?}")).into(),
+                FlatKey::Header(age) => list_header(age.to_string()).id(format!("age-{age:?}")),
                 FlatKey::Item(id) => thread_row(&rows, listing, id, move || item.with(|f| f.item().cloned())),
             },
         )))
@@ -188,21 +187,20 @@ fn brand_mark(size: f32) -> El {
         .a11y_hidden()
 }
 
-fn thread_row(chat: &Chat, listing: Signal<bool>, id: ThreadId, thread: impl Fn() -> Option<Thread> + Clone + 'static) -> View {
+fn thread_row(chat: &Chat, listing: Signal<bool>, id: ThreadId, thread: impl Fn() -> Option<Thread> + Clone + 'static) -> El {
     let title = move || thread().map(|t| t.title).unwrap_or_default();
     let renaming = chat.renaming;
-    let (open, menu, busy, selected) = (chat.clone(), chat.clone(), chat.clone(), chat.current);
+    let (open, menu, busy, rename, selected) = (chat.clone(), chat.clone(), chat.clone(), chat.clone(), chat.current);
     let (shown, named, menu_title) = (title.clone(), title.clone(), title.clone());
     // One element per row: while renaming, its title is a field.
-    list_item(show_else(
+    list_item(keyed(
         move || renaming.get() == Some(id),
-        {
-            let chat = chat.clone();
-            move || rename_field(&chat, id, &title())
-        },
-        move || {
-            let shown = shown.clone();
-            text(shown.clone()).id(format!("thread-title-{id}")).truncate().flex_1().into()
+        move |editing| {
+            if *editing {
+                rename_field(&rename, id, &title())
+            } else {
+                text(shown.clone()).id(format!("thread-title-{id}")).truncate().flex_1()
+            }
         },
     ))
     .id(format!("thread-{id}"))
@@ -213,11 +211,10 @@ fn thread_row(chat: &Chat, listing: Signal<bool>, id: ThreadId, thread: impl Fn(
         listing.set(false);
     })
     .on_secondary_press(move || thread_menu(&menu, id, menu_title()))
-    .child(show(move || busy.is_answering(id), || spinner().into()))
-    .into()
+    .child(show(move || busy.is_answering(id), spinner))
 }
 
-fn rename_field(chat: &Chat, id: ThreadId, title: &str) -> View {
+fn rename_field(chat: &Chat, id: ThreadId, title: &str) -> El {
     let draft = state("rename", || title.to_owned());
     let (submit, blur, cancel) = (chat.clone(), chat.clone(), chat.renaming);
     text_field(draft)
@@ -233,7 +230,6 @@ fn rename_field(chat: &Chat, id: ThreadId, title: &str) -> View {
             }
             false
         })
-        .into()
 }
 
 /// A conversation's context menu: rename it in place, or delete it once confirmed.
@@ -287,7 +283,7 @@ fn main_pane(chat: &Chat, listing: Signal<bool>) -> El {
                 .h(64.0)
                 .px_4()
                 .child(show(compact, move || {
-                    icon_button(icons::MENU, "Conversations").id("conversations").on_press(move || listing.set(true)).into()
+                    icon_button(icons::MENU, "Conversations").id("conversations").on_press(move || listing.set(true))
                 }))
                 .child(
                     text(move || {
@@ -506,35 +502,26 @@ fn transcript(chat: &Chat, thread: ThreadId) -> View {
                                         "Explore an idea",
                                         "Help me turn an idea into a small, practical project. Ask me about my idea first.",
                                     ))
-                                    .into()
                             },
                         ))
                         .select_none()
-                        .into()
                 },
             ))
             .into(),
         show(
             || !following_tail("transcript").get(),
             || {
-                el().absolute()
-                    .bottom(12.0)
-                    .left(0.0)
-                    .right(0.0)
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        icon_button(icons::ARROW_DOWN, "Jump to latest")
-                            .id("jump")
-                            .bg(Token::Surface)
-                            .border_color(Token::Border)
-                            .rounded_full()
-                            .shadow_md()
-                            .on_press(|| {
-                                scroll_to_end("transcript");
-                            }),
-                    )
-                    .into()
+                el().absolute().bottom(12.0).left(0.0).right(0.0).items_center().justify_center().child(
+                    icon_button(icons::ARROW_DOWN, "Jump to latest")
+                        .id("jump")
+                        .bg(Token::Surface)
+                        .border_color(Token::Border)
+                        .rounded_full()
+                        .shadow_md()
+                        .on_press(|| {
+                            scroll_to_end("transcript");
+                        }),
+                )
             },
         ),
     ])
@@ -568,13 +555,13 @@ fn starter(draft: Signal<String>, id: &str, symbol: icons::Icon, title: &str, ca
 }
 
 /// One message: the person's on the right; an answer's parts, its state and actions.
-fn message(chat: &Chat, id: u64, m: ReadSignal<Message>) -> View {
+fn message(chat: &Chat, id: u64, m: ReadSignal<Message>) -> El {
     let author = untrack(|| m.with(|m| m.author));
     let body = match author {
         Author::User => user_message(chat, id, m),
         Author::Assistant => answer(chat, id, m),
     };
-    col().id(format!("msg-{id}")).px_6().py_4().w_full().max_w(800.0).mx_auto().child(body).into()
+    col().id(format!("msg-{id}")).px_6().py_4().w_full().max_w(800.0).mx_auto().child(body)
 }
 
 fn user_message(chat: &Chat, id: u64, m: ReadSignal<Message>) -> El {
@@ -613,7 +600,7 @@ fn user_message(chat: &Chat, id: u64, m: ReadSignal<Message>) -> El {
         )
         .child(show(
             move || editing.get() == Some(id),
-            || text("Editing — send to replace this and what followed").text_xs().text_color(Token::Accent).select_none().into(),
+            || text("Editing — send to replace this and what followed").text_xs().text_color(Token::Accent).select_none(),
         ))
 }
 
@@ -624,7 +611,7 @@ fn answer(chat: &Chat, id: u64, m: ReadSignal<Message>) -> El {
         .group("msg")
         .gap_3()
         .child(row().items_center().gap_2().select_none().child(brand_mark(24.0)).child(text("Octara").text_sm().font_semibold()))
-        .child(each(move || m.with(|m| m.parts.clone()), move |part_id, p| part(id, *part_id, p).into()))
+        .child(each(move || m.with(|m| m.parts.clone()), move |part_id, p| part(id, *part_id, p)))
         .child(show(
             move || status() == Status::Streaming && m.with(|m| m.parts.is_empty()),
             move || {
@@ -635,7 +622,6 @@ fn answer(chat: &Chat, id: u64, m: ReadSignal<Message>) -> El {
                     .child(spinner())
                     .child(text("Waiting for response…").text_sm().text_color(Token::TextMuted))
                     .select_none()
-                    .into()
             },
         ))
         .child(show(move || matches!(status(), Status::Failed(_)), {
@@ -646,19 +632,15 @@ fn answer(chat: &Chat, id: u64, m: ReadSignal<Message>) -> El {
                     _ => String::new(),
                 };
                 let (retry, available) = (retry.clone(), retry.clone());
-                callout(PromptLevel::Critical, "The answer failed", Some(&why))
-                    .id(format!("failed-{id}"))
-                    .select_none()
-                    .child(
-                        button("Retry")
-                            .id(format!("retry-{id}"))
-                            .disabled(move || !available.has_model())
-                            .on_press(move || retry.regenerate(id)),
-                    )
-                    .into()
+                callout(PromptLevel::Critical, "The answer failed", Some(&why)).id(format!("failed-{id}")).select_none().child(
+                    button("Retry")
+                        .id(format!("retry-{id}"))
+                        .disabled(move || !available.has_model())
+                        .on_press(move || retry.regenerate(id)),
+                )
             }
         }))
-        .child(show(move || status() == Status::Stopped, || text("Stopped").text_xs().text_color(Token::TextMuted).select_none().into()))
+        .child(show(move || status() == Status::Stopped, || text("Stopped").text_xs().text_color(Token::TextMuted).select_none()))
         .child(show(
             move || status() != Status::Streaming,
             move || {
@@ -677,7 +659,6 @@ fn answer(chat: &Chat, id: u64, m: ReadSignal<Message>) -> El {
                             .disabled(move || !available.has_model())
                             .on_press(move || regenerate.regenerate(id)),
                     )
-                    .into()
             },
         ))
 }
@@ -740,7 +721,7 @@ fn part(id: u64, part_id: PartId, p: ReadSignal<Part>) -> El {
         move || p.with(PartKind::of),
         move |kind| match kind {
             PartKind::Text => {
-                keyed(move || text_resource(p), move |resource| markdown(paced(&resource.0)).id(format!("text-{id}-{part_id}")).into())
+                keyed(move || text_resource(p), move |resource| markdown(paced(&resource.0)).id(format!("text-{id}-{part_id}")))
             }
             PartKind::Reasoning => reasoning(id, part_id, p),
             PartKind::Tool => tool(id, part_id, p),
@@ -771,17 +752,16 @@ fn reasoning(id: u64, part_id: PartId, p: ReadSignal<Part>) -> View {
             }
         },
     );
-    let header = row().gap_1p5().items_center().child(show(move || ended().is_none(), || spinner().size_3p5().into())).child(text(
-        move || match ended() {
+    let header =
+        row().gap_1p5().items_center().child(show(move || ended().is_none(), || spinner().size_3p5())).child(text(move || match ended() {
             None => "Thinking…".to_owned(),
             Some(d) => format!("Thought for {}", seconds(d)),
-        },
-    ));
+        }));
     collapsible(&format!("reasoning-{id}-{part_id}"), open, header, move || {
         keyed(
             move || text_resource(p),
             move |resource| {
-                text(paced(&resource.0)).id(format!("reasoning-text-{id}-{part_id}")).text_sm().text_color(Token::TextMuted).pl_5().into()
+                text(paced(&resource.0)).id(format!("reasoning-text-{id}-{part_id}")).text_sm().text_color(Token::TextMuted).pl_5()
             },
         )
     })
@@ -815,7 +795,7 @@ fn tool(id: u64, part_id: PartId, p: ReadSignal<Part>) -> View {
         .items_center()
         .child(icon(icons::WRENCH).size_3p5().a11y_hidden())
         .child(text(name).font_medium())
-        .child(show(working, || spinner().size_3p5().into()))
+        .child(show(working, || spinner().size_3p5()))
         .child(text(state_label).text_xs());
     collapsible(&format!("tool-{id}-{part_id}"), open, header, move || {
         col()
@@ -826,29 +806,15 @@ fn tool(id: u64, part_id: PartId, p: ReadSignal<Part>) -> View {
             .child(keyed(
                 move || text_resource(p),
                 move |resource| {
-                    text(resource.0.clone())
-                        .id(format!("tool-input-{id}-{part_id}"))
-                        .font_mono()
-                        .p_2()
-                        .rounded_md()
-                        .bg(Token::Surface)
-                        .into()
+                    text(resource.0.clone()).id(format!("tool-input-{id}-{part_id}")).font_mono().p_2().rounded_md().bg(Token::Surface)
                 },
             ))
             .child(show(
                 move || tool().and_then(|t| t.output).is_some(),
                 move || {
-                    col()
-                        .gap_1()
-                        .child(text("Output").text_color(Token::TextMuted))
-                        .child(
-                            text(move || tool().and_then(|t| t.output).unwrap_or_default())
-                                .font_mono()
-                                .p_2()
-                                .rounded_md()
-                                .bg(Token::Surface),
-                        )
-                        .into()
+                    col().gap_1().child(text("Output").text_color(Token::TextMuted)).child(
+                        text(move || tool().and_then(|t| t.output).unwrap_or_default()).font_mono().p_2().rounded_md().bg(Token::Surface),
+                    )
                 },
             ))
             .into()
@@ -886,7 +852,6 @@ fn composer(chat: &Chat) -> El {
                     .live(Live::Polite)
                     .text_xs()
                     .text_color(Token::TextMuted)
-                    .into()
             }
         }))
         .child(
@@ -903,22 +868,15 @@ fn composer(chat: &Chat) -> El {
                     move || !files.is_empty(),
                     move || {
                         let file_actions = file_actions.clone();
-                        row()
-                            .gap_1()
-                            .flex_wrap()
-                            .child(each(
-                                move || files.read_only(),
-                                move |fid, f| {
-                                    let (fid, chat) = (*fid, file_actions.clone());
-                                    let name = untrack(|| f.with(|(_, file)| file.name.clone()));
-                                    removable_chip(&name, |remove| {
-                                        remove.id(format!("remove-file-{fid}")).on_press(move || chat.detach(fid))
-                                    })
+                        row().gap_1().flex_wrap().child(each(
+                            move || files.read_only(),
+                            move |fid, f| {
+                                let (fid, chat) = (*fid, file_actions.clone());
+                                let name = untrack(|| f.with(|(_, file)| file.name.clone()));
+                                removable_chip(&name, |remove| remove.id(format!("remove-file-{fid}")).on_press(move || chat.detach(fid)))
                                     .id(format!("file-{fid}"))
-                                    .into()
-                                },
-                            ))
-                            .into()
+                            },
+                        ))
                     },
                 ))
                 .child(
@@ -967,20 +925,15 @@ fn composer(chat: &Chat) -> El {
                         )
                         .child(text("Enter to send").text_xs().text_color(Token::TextMuted))
                         .child(spacer())
-                        .child(show_else(
-                            answering,
-                            move || {
+                        .child(keyed(answering, move |answering| {
+                            if *answering {
                                 let stop = stop.clone();
-                                icon_button(icons::SQUARE, "Stop")
-                                    .id("stop")
-                                    .on_press(move || {
-                                        if let Some(t) = untrack(|| stop.current.get()) {
-                                            stop.stop(t);
-                                        }
-                                    })
-                                    .into()
-                            },
-                            move || {
+                                icon_button(icons::SQUARE, "Stop").id("stop").on_press(move || {
+                                    if let Some(t) = untrack(|| stop.current.get()) {
+                                        stop.stop(t);
+                                    }
+                                })
+                            } else {
                                 let (send, available) = (busy2.clone(), busy2.clone());
                                 primary_icon(
                                     icon_button(icons::ARROW_UP, "Send")
@@ -988,9 +941,8 @@ fn composer(chat: &Chat) -> El {
                                         .disabled(move || !available.can_send())
                                         .on_press(move || send.send()),
                                 )
-                                .into()
-                            },
-                        )),
+                            }
+                        })),
                 ),
         )
         .child(text("A place to think. Double-check the details that matter.").text_xs().text_color(Token::TextMuted).self_center())
@@ -1028,7 +980,7 @@ fn composer_queue(chat: &Chat) -> View {
     )
 }
 
-fn queued_row(chat: &Chat, id: u64, q: ReadSignal<crate::chat::Queued>) -> View {
+fn queued_row(chat: &Chat, id: u64, q: ReadSignal<crate::chat::Queued>) -> El {
     let (now, edit, remove, available, label, hint) = (chat.clone(), chat.clone(), chat.clone(), chat.clone(), chat.clone(), chat.clone());
     row()
         .id(format!("queued-{id}"))
@@ -1067,7 +1019,6 @@ fn queued_row(chat: &Chat, id: u64, q: ReadSignal<crate::chat::Queued>) -> View 
         )
         .child(icon_button(icons::PENCIL, "Edit").id(format!("edit-queued-{id}")).on_press(move || edit.edit_queued(id)))
         .child(icon_button(icons::X, "Remove").id(format!("unqueue-{id}")).on_press(move || remove.unqueue(id)))
-        .into()
 }
 
 #[cfg(test)]
@@ -1131,7 +1082,7 @@ mod tests {
                         action(message);
                     }
                 });
-                col().size_full().child(answer(&chat, 1, current).id("answer")).into()
+                col().size_full().child(answer(&chat, 1, current).id("answer"))
             });
             Self { window, action, reads }
         }

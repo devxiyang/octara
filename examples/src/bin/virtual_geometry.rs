@@ -93,7 +93,7 @@ fn action(label: &'static str, id: &'static str, command: &'static str) -> View 
 }
 
 #[ui]
-fn geometry_row(key: u32, row: ReadSignal<GeometryRow>) -> View {
+fn geometry_row(key: u32, row: ReadSignal<GeometryRow>) -> El {
     text(move || row.with(|row| row.text.clone()))
         .id(format!("geometry-row-{key}"))
         .w_full()
@@ -101,7 +101,6 @@ fn geometry_row(key: u32, row: ReadSignal<GeometryRow>) -> View {
         .flex_shrink_0()
         .p_3()
         .bg(if key.is_multiple_of(2) { Token::Surface } else { Token::SurfaceHover })
-        .into()
 }
 
 #[ui]

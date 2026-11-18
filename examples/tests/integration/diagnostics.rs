@@ -43,7 +43,7 @@ fn panel(id: &'static str, keyed: bool) -> View {
         let open = state("open", || false);
         col()
             .child(button("t").id(format!("{id}-toggle")).on_press(move || open.update(|o| *o = !*o)))
-            .child(show(move || open.get(), move || text("body").id(format!("{id}-body")).into()))
+            .child(show(move || open.get(), move || text("body").id(format!("{id}-body"))))
             .into()
     };
     scope(if keyed { id } else { "panel" }, body)
@@ -77,7 +77,6 @@ fn variants() -> Vec<Variant> {
                     col()
                         .child(text(format!("Count: {}", count.get())).id("count"))
                         .child(button("+1").id("inc").on_press(move || count.update(|n| *n += 1)))
-                        .into()
                 })
             },
             check: |h| expect_count(h, 2, "Count: 2"),
@@ -94,7 +93,7 @@ fn variants() -> Vec<Variant> {
             build: || {
                 Window::headless(|| {
                     let items = state_list("items", || vec![1u32, 2, 3], |_| 0u32);
-                    col().child(each(move || items.read_only(), |k, _| text(format!("{k}")).into())).id("list").into()
+                    col().child(each(move || items.read_only(), |k, _| text(format!("{k}")))).id("list")
                 })
             },
             check: |h| {
@@ -133,7 +132,6 @@ fn variants() -> Vec<Variant> {
                     col()
                         .child(text(move || format!("Count: {}", a.get())).id("count"))
                         .child(button("+").id("inc").on_press(move || a.update(|n| *n += 1)))
-                        .into()
                 })
             },
             check: |h| {
@@ -154,7 +152,7 @@ fn variants() -> Vec<Variant> {
                             move || items.read_only(),
                             move |k, item| {
                                 k2.borrow_mut().push(item);
-                                text(format!("row {k}")).into()
+                                text(format!("row {k}"))
                             },
                         )))
                         .child(button("drop").id("drop").on_press(move || items.remove(&1)))
@@ -162,7 +160,6 @@ fn variants() -> Vec<Variant> {
                             let first = kept.borrow()[0];
                             let _ = untrack(|| first.get());
                         }))
-                        .into()
                 })
             },
             check: |h| {
@@ -180,7 +177,6 @@ fn variants() -> Vec<Variant> {
                     col()
                         .child(text(move || format!("Count: {}", count.get())).id("count"))
                         .child(button("+1").id("inc").on_press(move || count.set(n + 1)))
-                        .into()
                 })
             },
             check: |h| expect_count(h, 2, "Count: 2"),
@@ -217,7 +213,6 @@ fn variants() -> Vec<Variant> {
                         .child(text(move || format!("{} log lines", log.with(|l| l.len()))).id("log"))
                         .child(text(label).id("count"))
                         .child(button("+1").id("inc").on_press(move || count.update(|n| *n += 1)))
-                        .into()
                 })
             },
             check: |h| {
@@ -236,14 +231,8 @@ fn variants() -> Vec<Variant> {
                 Window::headless(|| {
                     let items = state_list("items", || vec![(1u32, false)], |t| t.0);
                     col()
-                        .child(
-                            col().child(each(
-                                move || items.read_only(),
-                                |_, t| el().role(Role::CheckBox).id("box").checked(t.get().1).into(),
-                            )),
-                        )
+                        .child(col().child(each(move || items.read_only(), |_, t| el().role(Role::CheckBox).id("box").checked(t.get().1))))
                         .child(button("t").id("inc").on_press(move || items.update(&1, |t| t.1 = !t.1)))
-                        .into()
                 })
             },
             check: |h| {
@@ -267,7 +256,6 @@ fn variants() -> Vec<Variant> {
                     col()
                         .child(text(move || format!("Count: {}", doubled.get() / 2)).id("count"))
                         .child(button("+").id("inc").on_press(move || count.update(|n| *n += 1)))
-                        .into()
                 })
             },
             check: |h| expect_count(h, 1, "Count: 1"),

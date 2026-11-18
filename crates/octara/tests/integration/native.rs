@@ -29,16 +29,11 @@ fn view() -> View {
                 .child(show(
                     move || shown.get(),
                     move || {
-                        web_view(move || url.get())
-                            .id("web")
-                            .label("Help page")
-                            .w(px(300.0))
-                            .on_native(move |e: &NativeEvent| {
-                                if e.name == "load" {
-                                    loaded.set(e.data["url"].as_str().unwrap_or_default().to_owned())
-                                }
-                            })
-                            .into()
+                        web_view(move || url.get()).id("web").label("Help page").w(px(300.0)).on_native(move |e: &NativeEvent| {
+                            if e.name == "load" {
+                                loaded.set(e.data["url"].as_str().unwrap_or_default().to_owned())
+                            }
+                        })
                     },
                 ))
                 .child(el().h(px(400.0))),
@@ -109,7 +104,6 @@ fn badge_over(slot: Slot, label: bool) -> Window {
             .h(px(200.0))
             .child(view)
             .child(text("3 new").id("badge").absolute().top(px(10.0)).left(px(10.0)).bg(Token::Accent).text_color(Token::AccentText))
-            .into()
     })
 }
 

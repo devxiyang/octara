@@ -12,13 +12,13 @@
 
 pub use crate::app::WindowId;
 pub use crate::platform::{WindowKind, WindowOptions};
-use crate::view::View;
+use crate::view::IntoView;
 
 /// Opens a window showing `root` (built at the end of the frame); `Err` when the platform
 /// or the current execution phase refuses.
 #[track_caller]
-pub fn open_window(options: WindowOptions, root: impl Fn() -> View + 'static) -> Result<WindowId, String> {
-    crate::app::app_state().request_open(options, std::rc::Rc::new(root), std::panic::Location::caller())
+pub fn open_window<V: IntoView>(options: WindowOptions, root: impl Fn() -> V + 'static) -> Result<WindowId, String> {
+    crate::app::app_state().request_open(options, root, std::panic::Location::caller())
 }
 
 /// Retires window `id` for input immediately and releases its scope at the next App update.

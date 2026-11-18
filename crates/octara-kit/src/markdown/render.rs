@@ -91,11 +91,11 @@ pub(super) fn blocks_view(get: impl Fn() -> Vec<Block> + 'static) -> El {
 
 /// One block's element: its kind is fixed (a block of another kind is a new entry); what it
 /// shows follows its signal.
-pub(super) fn block_view(b: ReadSignal<BlockRef>) -> View {
+pub(super) fn block_view(b: ReadSignal<BlockRef>) -> El {
     let b = memo(move || b.get());
     let kind = untrack(|| b.with(|b| b.kind.clone()));
     match kind {
-        Kind::Paragraph(_) => text(move || b.with(|b| inline_of(b))).role(Role::Paragraph).into(),
+        Kind::Paragraph(_) => text(move || b.with(|b| inline_of(b))).role(Role::Paragraph),
         Kind::Heading(level, _) => {
             let t = text(move || b.with(|b| inline_of(b))).role(Role::Heading).level(level).font_semibold();
             match level {
@@ -104,15 +104,11 @@ pub(super) fn block_view(b: ReadSignal<BlockRef>) -> View {
                 3 => t.text_lg(),
                 _ => t,
             }
-            .into()
         }
         Kind::Code { .. } => code_view(b),
         Kind::List { start, .. } => list_view(b, start),
-        Kind::Quote(_) => row()
-            .role(Role::Blockquote)
-            .gap_3()
-            .child(el().w(3.0).flex_shrink_0().rounded_full().bg(Token::Border).a11y_hidden())
-            .child(
+        Kind::Quote(_) => {
+            row().role(Role::Blockquote).gap_3().child(el().w(3.0).flex_shrink_0().rounded_full().bg(Token::Border).a11y_hidden()).child(
                 blocks_view(move || {
                     b.with(|b| match &b.kind {
                         Kind::Quote(q) => q.clone(),
@@ -122,8 +118,8 @@ pub(super) fn block_view(b: ReadSignal<BlockRef>) -> View {
                 .flex_1()
                 .text_color(Token::TextMuted),
             )
-            .into(),
-        Kind::Rule => el().h(1.0).w_full().bg(Token::Border).a11y_hidden().into(),
+        }
+        Kind::Rule => el().h(1.0).w_full().bg(Token::Border).a11y_hidden(),
         Kind::Table { .. } => table_view(b),
     }
 }
@@ -172,7 +168,7 @@ pub(super) fn rich_of(i: &Inline) -> Rich {
 
 /// A code block: its language and a copy button over its lines, one text per line (`l{n}`), so a
 /// stream into it re-lays out its last line.
-fn code_view(b: ReadSignal<BlockRef>) -> View {
+fn code_view(b: ReadSignal<BlockRef>) -> El {
     let code = move || {
         b.with(|b| match &b.kind {
             Kind::Code { text, .. } => text.clone(),
@@ -215,10 +211,9 @@ fn code_view(b: ReadSignal<BlockRef>) -> View {
             |_, l| {
                 let l = memo(move || l.get());
                 // An empty line keeps its height.
-                text(move || l.with(|s| if s.is_empty() { " ".to_owned() } else { s.to_string() })).font_mono().text_sm().into()
+                text(move || l.with(|s| if s.is_empty() { " ".to_owned() } else { s.to_string() })).font_mono().text_sm()
             },
         )))
-        .into()
 }
 
 /// Only a proven append retains earlier line allocations. A rewrite can change any line.
@@ -254,7 +249,7 @@ impl Lines {
 }
 
 /// A list: its items (`i{j}`), each a marker (not selected, not read) and the item's blocks.
-fn list_view(b: ReadSignal<BlockRef>, start: Option<u64>) -> View {
+fn list_view(b: ReadSignal<BlockRef>, start: Option<u64>) -> El {
     let items = memo(move || {
         b.with(|b| match &b.kind {
             Kind::List { items, .. } => items.clone(),
@@ -263,50 +258,38 @@ fn list_view(b: ReadSignal<BlockRef>, start: Option<u64>) -> View {
     });
     let ordered = start.is_some();
     let start = memo(move || b.with(|b| if let Kind::List { start, .. } = b.kind { start } else { None }));
-    col()
-        .role(Role::List)
-        .gap_1()
-        .child(each(
-            move || items.with(|items| keyed("i", items.clone())),
-            move |k, it| {
-                let it = memo(move || it.get());
-                let j: u64 = k[1..].parse().unwrap_or(0);
-                let marker = move || match start.get() {
-                    Some(n) => format!("{}.", n + j),
-                    None => "•".to_owned(),
-                };
-                row()
-                    .role(Role::ListItem)
-                    .gap_2()
-                    .items_start()
-                    // A task item shows its box, not a bullet.
-                    .child(show(
-                        move || ordered || it.with(|i| i.task.is_none()),
-                        move || {
-                            text(marker)
-                                .select_none()
-                                .a11y_hidden()
-                                .text_color(Token::TextMuted)
-                                .min_w(if ordered { 20.0 } else { 12.0 })
-                                .into()
-                        },
-                    ))
-                    .child(show(
-                        move || it.with(|i| i.task.is_some()),
-                        move || {
-                            let done = move || it.with(|i| i.task == Some(true));
-                            text(move || if done() { "☑" } else { "☐" }).select_none().role(Role::CheckBox).checked(done).into()
-                        },
-                    ))
-                    .child(blocks_view(move || it.with(|i| i.blocks.clone())).flex_1().gap_2())
-                    .into()
-            },
-        ))
-        .into()
+    col().role(Role::List).gap_1().child(each(
+        move || items.with(|items| keyed("i", items.clone())),
+        move |k, it| {
+            let it = memo(move || it.get());
+            let j: u64 = k[1..].parse().unwrap_or(0);
+            let marker = move || match start.get() {
+                Some(n) => format!("{}.", n + j),
+                None => "•".to_owned(),
+            };
+            row()
+                .role(Role::ListItem)
+                .gap_2()
+                .items_start()
+                // A task item shows its box, not a bullet.
+                .child(show(
+                    move || ordered || it.with(|i| i.task.is_none()),
+                    move || text(marker).select_none().a11y_hidden().text_color(Token::TextMuted).min_w(if ordered { 20.0 } else { 12.0 }),
+                ))
+                .child(show(
+                    move || it.with(|i| i.task.is_some()),
+                    move || {
+                        let done = move || it.with(|i| i.task == Some(true));
+                        text(move || if done() { "☑" } else { "☐" }).select_none().role(Role::CheckBox).checked(done)
+                    },
+                ))
+                .child(blocks_view(move || it.with(|i| i.blocks.clone())).flex_1().gap_2())
+        },
+    ))
 }
 
 /// A table: a head row and body rows (`h`, `r{k}`), cells (`c{j}`) sharing the width equally.
-fn table_view(b: ReadSignal<BlockRef>) -> View {
+fn table_view(b: ReadSignal<BlockRef>) -> El {
     let rows = memo(move || {
         b.with(|b| match &b.kind {
             Kind::Table { head, rows, align } => {
@@ -325,44 +308,33 @@ fn table_view(b: ReadSignal<BlockRef>) -> View {
         })
     });
     // Rules between rows: the table's border color through a 1 px gap.
-    col()
-        .role(Role::Table)
-        .rounded_md()
-        .border()
-        .border_color(Token::Border)
-        .bg(Token::Border)
-        .gap(1.0)
-        .overflow_hidden()
-        .child(each(
-            move || rows.with(|rows| keyed("r", rows.clone())),
-            |k, r| {
-                let r = memo(move || r.get());
-                let head = k == "r0";
-                let line = row().role(Role::Row);
-                let line = if head { line.bg(Token::Surface).font_semibold() } else { line.bg(Token::Background) };
-                line.child(each(
-                    move || r.with(|r| keyed("c", r.clone())),
-                    |_, c| {
-                        let c = memo(move || c.get());
-                        col()
-                            .role(Role::Cell)
-                            .flex_1()
-                            .flex_basis(0.0)
-                            .px_3()
-                            .py_2()
-                            .style_with(move |p| {
-                                c.with(|(_, align)| match align {
-                                    Align::Center => p.items_center(),
-                                    Align::Right => p.items_end(),
-                                    _ => p.items_start(),
-                                })
+    col().role(Role::Table).rounded_md().border().border_color(Token::Border).bg(Token::Border).gap(1.0).overflow_hidden().child(each(
+        move || rows.with(|rows| keyed("r", rows.clone())),
+        |k, r| {
+            let r = memo(move || r.get());
+            let head = k == "r0";
+            let line = row().role(Role::Row);
+            let line = if head { line.bg(Token::Surface).font_semibold() } else { line.bg(Token::Background) };
+            line.child(each(
+                move || r.with(|r| keyed("c", r.clone())),
+                |_, c| {
+                    let c = memo(move || c.get());
+                    col()
+                        .role(Role::Cell)
+                        .flex_1()
+                        .flex_basis(0.0)
+                        .px_3()
+                        .py_2()
+                        .style_with(move |p| {
+                            c.with(|(_, align)| match align {
+                                Align::Center => p.items_center(),
+                                Align::Right => p.items_end(),
+                                _ => p.items_start(),
                             })
-                            .child(text(move || c.with(|(i, _)| rich_of(i))))
-                            .into()
-                    },
-                ))
-                .into()
-            },
-        ))
-        .into()
+                        })
+                        .child(text(move || c.with(|(i, _)| rich_of(i))))
+                },
+            ))
+        },
+    ))
 }

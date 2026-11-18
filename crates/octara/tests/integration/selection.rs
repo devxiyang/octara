@@ -95,9 +95,8 @@ fn rows_join_with_blank_lines_and_appends_keep_the_selection() {
             col()
                 .id("chat")
                 .selectable()
-                .child(each(move || items.read_only(), |k, m| text(move || m.with(|m| m.1.clone())).id(format!("m{k}")).into()))
+                .child(each(move || items.read_only(), |k, m| text(move || m.with(|m| m.1.clone())).id(format!("m{k}"))))
                 .child(text(&stream).id("live"))
-                .into()
         })
         .unwrap();
     w.select(("m1", 6), ("live", 6)).unwrap();
@@ -111,14 +110,11 @@ fn rows_join_with_blank_lines_and_appends_keep_the_selection() {
 fn a_selection_through_a_virtual_list_survives_scrolling_and_copies_every_row() {
     let mut w = Window::headless(|| {
         let items = state_list("rows", || (0..1000u32).map(|i| (i, format!("Message {i}"))).collect::<Vec<_>>(), |m: &(u32, String)| m.0);
-        col()
-            .size_full()
-            .child(col().id("list").selectable().flex_1().overflow_y_scroll().child(virtual_each(
-                move || items.read_only(),
-                |_| 24.0,
-                |k, m| text(move || m.with(|m| m.1.clone())).id(format!("m{k}")).h(24.0).into(),
-            )))
-            .into()
+        col().size_full().child(col().id("list").selectable().flex_1().overflow_y_scroll().child(virtual_each(
+            move || items.read_only(),
+            |_| 24.0,
+            |k, m| text(move || m.with(|m| m.1.clone())).id(format!("m{k}")).h(24.0),
+        )))
     });
     // From row 3 …
     w.select(("m3", 0), ("m3", 0)).unwrap();

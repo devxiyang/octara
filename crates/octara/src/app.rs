@@ -35,7 +35,7 @@ use crate::diagnostics::{self as codes, Diagnostic};
 use crate::kernel::{Breakpoint, HandlerKind, Kernel, NodeId, State, Theme};
 use crate::reactive::graph::{Ctx, Owner, Runtime, ScopeId};
 use crate::reactive::graph::{Signal, untrack};
-use crate::view::{Handler, Parent, ScopedHandler, Slots, View, mount};
+use crate::view::{Handler, IntoView, Parent, ScopedHandler, Slots, View, build_content, mount};
 use std::cell::{Cell, Ref, RefCell};
 use std::rc::Rc;
 
@@ -664,10 +664,15 @@ impl App {
 
     /// Opens a window showing `root`. A host call mounts and lays it out before returning.
     /// Calls during an App update mount it when that update processes its window requests.
+    /// The factory runs in the window's scope and can return any [`IntoView`].
     #[track_caller]
-    pub fn open_window(&self, options: crate::platform::WindowOptions, root: impl Fn() -> View + 'static) -> Result<Window, String> {
+    pub fn open_window<V: IntoView>(
+        &self,
+        options: crate::platform::WindowOptions,
+        root: impl Fn() -> V + 'static,
+    ) -> Result<Window, String> {
         let at = std::panic::Location::caller();
-        let id = self.app.request_open(options, Rc::new(root), at)?;
+        let id = self.app.request_open(options, root, at)?;
         let w = self.app.handle(id).expect("just opened");
         if self.app.depth.get() == 0 {
             self.app.frame(Some(id), at);
@@ -883,10 +888,10 @@ impl AppState {
     }
 
     /// Allocates the host window now and queues its root for the App update.
-    pub(crate) fn request_open(
+    pub(crate) fn request_open<V: IntoView>(
         &self,
         options: crate::platform::WindowOptions,
-        root: Rc<dyn Fn() -> View>,
+        root: impl Fn() -> V + 'static,
         at: &'static std::panic::Location<'static>,
     ) -> Result<WindowId, String> {
         use crate::reactive::graph::Operation;
@@ -896,6 +901,7 @@ impl AppState {
         }
         let id = self.windows.borrow_mut().try_insert_with_key(|id| {
             let platform = self.system.borrow_mut().open_window(id, &options)?;
+            let root = Rc::new(move || build_content(at, &root));
             Ok::<_, String>(Rc::new(WindowState::new(self, id, options, root, platform)))
         })?;
         self.order.borrow_mut().push(id);
@@ -971,12 +977,14 @@ impl Window {
 
     /// `root` in an 800 × 600 window of a new headless app: what tests and agents drive. The
     /// app is [`app`](Self::app)'s (its clock, theme, fonts, other windows).
-    pub fn headless(root: impl Fn() -> View + 'static) -> Window {
+    #[track_caller]
+    pub fn headless<V: IntoView>(root: impl Fn() -> V + 'static) -> Window {
         Window::headless_on(crate::platform::HeadlessPlatform::default(), root)
     }
 
     /// [`headless`](Self::headless) on `platform` (a fake native host, a clipboard).
-    pub fn headless_on(platform: crate::platform::HeadlessPlatform, root: impl Fn() -> View + 'static) -> Window {
+    #[track_caller]
+    pub fn headless_on<V: IntoView>(platform: crate::platform::HeadlessPlatform, root: impl Fn() -> V + 'static) -> Window {
         let app = App::new(platform);
         app.open_window(crate::platform::WindowOptions::new("Headless"), root).expect("a headless window opens")
     }

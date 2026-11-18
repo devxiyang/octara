@@ -95,7 +95,6 @@ pub fn tabs(id: &str, label: impl Into<String>, value: impl Model<Option<String>
                         .focus_visible(|p| p.border_color(Token::Focus))
                         .style_when(State::DISABLED, |p| p.opacity(0.5))
                         .on_press(move || pick.set(Some(pick_key.clone())))
-                        .into()
                 },
             ))
             .into()
@@ -173,7 +172,6 @@ pub fn segmented(
                             .style_when(State::DISABLED, |p| p.opacity(0.5))
                             .child(text(move || item.with(|row| row.label.clone())).min_w(0.0).select_none().a11y_hidden())
                             .on_press(move || pick.set(Some(pick_key.clone())))
-                            .into()
                     },
                 ),
             ))

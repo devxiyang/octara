@@ -233,21 +233,23 @@ pub fn progress(value: impl Fn() -> Option<f64> + 'static, max: f64) -> El {
         .w(160.0)
         .min_h(16.0)
         .items_center()
-        .child(show_else(
+        .child(keyed(
             move || value.get().is_some(),
-            move || {
-                canvas(move |canvas| {
-                    let (width, height) = canvas.size();
-                    let bounds = Rect { x: 0.0, y: 0.0, w: width, h: height };
-                    canvas.fill(&Path::rounded_rect(bounds, height / 2.0), Token::Border);
-                    let fraction = (value.get().unwrap_or(0.0) / max) as f32;
-                    canvas.fill(&Path::rounded_rect(Rect { w: width * fraction, ..bounds }, height / 2.0), Token::Accent);
-                })
-                .w_full()
-                .h(6.0)
-                .a11y_hidden()
-                .into()
+            move |known| {
+                let indicator = if *known {
+                    canvas(move |canvas| {
+                        let (width, height) = canvas.size();
+                        let bounds = Rect { x: 0.0, y: 0.0, w: width, h: height };
+                        canvas.fill(&Path::rounded_rect(bounds, height / 2.0), Token::Border);
+                        let fraction = (value.get().unwrap_or(0.0) / max) as f32;
+                        canvas.fill(&Path::rounded_rect(Rect { w: width * fraction, ..bounds }, height / 2.0), Token::Accent);
+                    })
+                    .w_full()
+                    .h(6.0)
+                } else {
+                    spinner()
+                };
+                indicator.a11y_hidden()
             },
-            || spinner().a11y_hidden().into(),
         ))
 }

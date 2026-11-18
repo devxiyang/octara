@@ -360,18 +360,14 @@ mod tests {
             let presses = state("presses", || 0);
             let doubles = state("doubles", || 0);
             let longs = state("longs", || 0);
-            col()
-                .size_full()
-                .child(text(move || format!("{},{},{}", presses.get(), doubles.get(), longs.get())).id("log"))
-                .child(
-                    el().id("target")
-                        .w(120)
-                        .h(48)
-                        .on_press(move || presses.update(|n| *n += 1))
-                        .on_double_press(move || doubles.update(|n| *n += 1))
-                        .on_long_press(move || longs.update(|n| *n += 1)),
-                )
-                .into()
+            col().size_full().child(text(move || format!("{},{},{}", presses.get(), doubles.get(), longs.get())).id("log")).child(
+                el().id("target")
+                    .w(120)
+                    .h(48)
+                    .on_press(move || presses.update(|n| *n += 1))
+                    .on_double_press(move || doubles.update(|n| *n += 1))
+                    .on_long_press(move || longs.update(|n| *n += 1)),
+            )
         })
     }
 
@@ -409,14 +405,12 @@ mod tests {
                             DragPhase::Cancel => offset.set(0.0),
                         }
                     })
-                    .into()
             };
             col()
                 .size_full()
                 .child(text(move || format!("{:?};{};{}", moved.get(), ended.get(), replacement_moves.get())).id("log"))
-                .child(show_else(move || replaced.get(), move || target(true), move || target(false)))
-                .child(show(move || modal.get(), || el().role(Role::Dialog).modal(false, || {}).child(el().focusable().size_8()).into()))
-                .into()
+                .child(keyed(move || replaced.get(), move |replacement| target(*replacement)))
+                .child(show(move || modal.get(), || el().role(Role::Dialog).modal(false, || {}).child(el().focusable().size_8())))
         })
     }
 
@@ -515,7 +509,7 @@ mod tests {
         col()
             .size_full()
             .child(text(move || if shown.get() { "waiting" } else { "recognized" }).id("log"))
-            .child(show(move || shown.get(), move || el().id("target").w(120).h(48).on_long_press(move || shown.set(false)).into()))
+            .child(show(move || shown.get(), move || el().id("target").w(120).h(48).on_long_press(move || shown.set(false))))
             .into()
     }
 

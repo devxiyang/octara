@@ -21,25 +21,15 @@ fn target_view() -> View {
             count.update(|n| *n += 1);
             offset.update(|n| *n += 10.0);
         }))
-        .child(show_else(
+        .child(keyed(
             move || replaced.get(),
-            move || {
+            move |replacement| {
                 el().id("target")
-                    .label("Second")
+                    .label(if *replacement { "Second" } else { "First" })
                     .relative()
                     .style_with(move |p| p.left(offset.get()))
                     .size_12()
                     .on_press(move || count.update(|n| *n += 1))
-                    .into()
-            },
-            move || {
-                el().id("target")
-                    .label("First")
-                    .relative()
-                    .style_with(move |p| p.left(offset.get()))
-                    .size_12()
-                    .on_press(move || count.update(|n| *n += 1))
-                    .into()
             },
         ))
         .child(text(move || count.get().to_string()).id("count"))
@@ -204,45 +194,29 @@ fn replacing_field(on_focus: bool) -> (Window, Rc<Cell<usize>>) {
     let window = Window::headless(move || {
         let replaced = state("replaced", || false);
         let value = state("value", String::new);
-        let old_writes = observed.clone();
-        let new_writes = observed.clone();
-        col()
-            .size_full()
-            .child(show_else(
-                move || replaced.get(),
-                move || {
-                    let writes = new_writes.clone();
-                    text_input()
-                        .id("field")
-                        .w(240)
-                        .value(move || value.get())
-                        .on_input(move |text| {
-                            writes.set(writes.get() + 1);
-                            value.set(text);
-                        })
-                        .into()
-                },
-                move || {
-                    let writes = old_writes.clone();
-                    let field = text_input().id("field").w(240).value(move || value.get()).on_input(move |text| {
-                        writes.set(writes.get() + 1);
-                        value.set(text);
-                    });
-                    if on_focus {
-                        field.on_focus(move || replaced.set(true)).into()
-                    } else {
-                        field
-                            .on_key(move |key| {
-                                if key.key == Key::Char('x') {
-                                    replaced.set(true);
-                                }
-                                false
-                            })
-                            .into()
-                    }
-                },
-            ))
-            .into()
+        let writes = observed.clone();
+        col().size_full().child(keyed(
+            move || replaced.get(),
+            move |replacement| {
+                let writes = writes.clone();
+                let field = text_input().id("field").w(240).value(move || value.get()).on_input(move |text| {
+                    writes.set(writes.get() + 1);
+                    value.set(text);
+                });
+                if *replacement {
+                    field
+                } else if on_focus {
+                    field.on_focus(move || replaced.set(true))
+                } else {
+                    field.on_key(move |key| {
+                        if key.key == Key::Char('x') {
+                            replaced.set(true);
+                        }
+                        false
+                    })
+                }
+            },
+        ))
     });
     (window, writes)
 }

@@ -129,7 +129,7 @@ fn opacity_moves_and_reduce_motion_fades_it_briefly() {
 
 #[test]
 fn theme_changes_move_where_motion_is_set() {
-    let app = Window::headless(|| col().child(el().id("card").size_8().motion(Spring::SETTLE).bg(Token::Surface)).into());
+    let app = Window::headless(|| col().child(el().id("card").size_8().motion(Spring::SETTLE).bg(Token::Surface)));
     let light = fill(&app, "card").unwrap();
     app.app().set_theme(Theme::dark());
     let now = fill(&app, "card").unwrap();
@@ -148,7 +148,6 @@ fn motion_is_inherited_and_can_be_turned_off() {
             .child(el().id("inherits").size_8().bg(c))
             .child(el().id("off").size_8().motion_none().bg(c))
             .child(el().id("lit").size_4().on_press(move || lit.update(|l| *l = !*l)))
-            .into()
     });
     app.tap("lit").unwrap();
     assert_eq!(red(&app, "inherits"), 0.0);
@@ -161,7 +160,6 @@ fn shadows_move_between_steps() {
         col()
             .p_8()
             .child(el().id("card").size_16().bg(Token::Surface).motion(Spring::SNAP).shadow_sm().hover(|p| p.shadow_xl()).on_press(|| {}))
-            .into()
     });
     let blur = |app: &Window| -> f32 {
         let n = app.kernel().find("card").unwrap();
@@ -211,7 +209,7 @@ mod layout {
     }
     impl EachExt for El {
         fn children_each(self, items: StateList<u32, u32>) -> Self {
-            self.child(each(move || items.read_only(), |id, _| el().id(format!("row-{id}")).h(20).w(60).on_press(|| {}).into()))
+            self.child(each(move || items.read_only(), |id, _| el().id(format!("row-{id}")).h(20).w(60).on_press(|| {})))
         }
     }
 
@@ -231,7 +229,6 @@ mod layout {
                 .size_full()
                 .layout_motion(Spring::REFLOW)
                 .child(text("This help message wraps onto more than one line after the window becomes narrow.").id("help"))
-                .into()
         });
         let help = app.kernel().find("help").unwrap();
         let baselines = |list: &octara_primitives::paint::DisplayList| {
@@ -332,14 +329,15 @@ mod presence {
                 .child(el().id("drop").size_4().on_press(move || items.remove(&2)))
                 .child(show(
                     move || open.get(),
-                    || el().id("panel").w(80).h(30).bg(Token::Accent).focusable().child(text("inside").id("inside")).into(),
+                    || el().id("panel").w(80).h(30).bg(Token::Accent).focusable().child(text("inside").id("inside")),
                 ))
                 .child(el().id("after").w(80).h(10).bg(Token::Surface))
-                .child(col().children(vec![each(
-                    move || items.read_only(),
-                    |id, _| el().id(format!("row-{id}")).w(60).h(10).bg(Token::Surface).into(),
-                )]))
-                .into()
+                .child(
+                    col().children(vec![each(
+                        move || items.read_only(),
+                        |id, _| el().id(format!("row-{id}")).w(60).h(10).bg(Token::Surface),
+                    )]),
+                )
         })
     }
 
@@ -422,18 +420,30 @@ mod presence {
     }
 
     #[test]
+    fn a_virtual_list_keeps_following_siblings_quiet_during_reload() {
+        let window = Window::headless(|| {
+            View::fragment([
+                col().h(100).overflow_y_scroll().child(virtual_each(Vec::<(u32, ())>::new, |_| 20.0, |_, _| el().h(20))).into(),
+                el().id("after-list").size_8().bg(Token::Accent).motion(Spring::SNAP).into(),
+            ])
+        });
+
+        window.app().hot_reload();
+        let after = window.kernel().find("after-list").unwrap();
+        assert_eq!(drawn(&window, after), Some(1.0));
+        assert_eq!(window.app().next_deadline(), None);
+        window.app().shutdown();
+    }
+
+    #[test]
     fn a_virtual_list_scrolling_does_not_fade_rows() {
         let mut app = Window::headless(|| {
             let items = state_list("items", || (0..200u32).collect(), |i: &u32| *i);
-            col()
-                .size_full()
-                .motion(Spring::SNAP)
-                .child(col().id("list").h(200).overflow_y_scroll().child(virtual_each(
-                    move || items.read_only(),
-                    |_| 20.0,
-                    |id, _| el().id(format!("v{id}")).h(20).into(),
-                )))
-                .into()
+            col().size_full().motion(Spring::SNAP).child(col().id("list").h(200).overflow_y_scroll().child(virtual_each(
+                move || items.read_only(),
+                |_| 20.0,
+                |id, _| el().id(format!("v{id}")).h(20),
+            )))
         });
         app.dispatch(Event::Scroll("list".into(), 0.0, 600.0)).unwrap();
         assert_eq!(app.app().next_deadline(), None);
@@ -449,13 +459,9 @@ mod scrolling {
             let list =
                 col().id("list").h(100).overflow_y_scroll().children((0..50).map(|i| el().id(format!("r{i}")).h(20).flex_shrink_0()));
             let list = if with_motion { list.motion(Spring::GLIDE) } else { list };
-            col()
-                .size_full()
-                .child(list)
-                .child(el().id("jump").size_4().on_press(|| {
-                    scroll_to("list", 0.0, 400.0);
-                }))
-                .into()
+            col().size_full().child(list).child(el().id("jump").size_4().on_press(|| {
+                scroll_to("list", 0.0, 400.0);
+            }))
         })
     }
 
@@ -508,7 +514,7 @@ mod scrolling {
                         .overflow_y_scroll()
                         .follow_tail()
                         .motion(Spring::GLIDE)
-                        .child(each(move || rows.read_only(), |i, _| el().id(format!("r{i}")).h(20).flex_shrink_0().into())),
+                        .child(each(move || rows.read_only(), |i, _| el().id(format!("r{i}")).h(20).flex_shrink_0())),
                 )
                 .child(el().id("end").size_4().on_press(|| {
                     scroll_to_end("list");
@@ -518,7 +524,6 @@ mod scrolling {
                         rows.push(rows.len() as u32);
                     }
                 }))
-                .into()
         });
         assert_eq!(y(&app), 900.0, "starts at the end");
         app.dispatch(Event::ScrollTo("list".into(), 0.0, 0.0)).unwrap();

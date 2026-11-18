@@ -49,7 +49,7 @@ impl Harness {
                     action(&chat);
                 }
             });
-            col().size_full().into()
+            col().size_full()
         });
         let chat = exposed.borrow_mut().take().unwrap();
         Self { window, chat, action }
@@ -370,7 +370,7 @@ fn closing_the_chat_scope_cancels_an_inflight_socket_with_the_app_still_alive() 
     h.send("close the owner");
     h.until(&server, "an open HTTP request", || server.inspect(|s| s.requests.len() == 1));
     let app = h.window.app();
-    let survivor = app.open_window(octara::platform::WindowOptions::new("survivor"), || col().size_full().into()).unwrap();
+    let survivor = app.open_window(octara::platform::WindowOptions::new("survivor"), || col().size_full()).unwrap();
     app.close_window(h.window.id());
     h.until(&server, "scope cancellation to close HTTP", || server.inspect(|s| s.closed.contains(&0)));
     assert!(h.window.is_closed());
