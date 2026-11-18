@@ -16,8 +16,8 @@
 use serde::{Deserialize, Serialize};
 
 mod target;
-pub(crate) use target::window_target;
 pub use target::{ParsedRequest, handle_guarded, parse_guarded_request};
+pub(crate) use target::{node_target, window_target};
 mod tree;
 pub use tree::{pick, tree};
 pub(crate) use tree::{pick_for_window, tree_for_window};
@@ -50,6 +50,9 @@ pub struct Snapshot {
     /// object; their value remains redacted in the semantic tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_input: Option<TextInputState>,
+    /// The most recent completed coordinated touch displacement in this window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub touch_scroll: Option<TouchScrollState>,
     /// Tasks, subscriptions and background jobs still pending.
     pub pending: usize,
     /// This window's number (what a request's `window` names).
@@ -67,6 +70,21 @@ pub struct Snapshot {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub asks: Vec<AskInfo>,
     pub root: Node,
+}
+
+/// How a viewport and its handler used one coordinated touch delta. All vectors are
+/// `[dx, dy]` in scroll coordinates.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TouchScrollState {
+    /// The viewport allocation that handled this delta.
+    pub target: String,
+    pub input: [f32; 2],
+    pub before: [f32; 2],
+    /// The offset change when layout settled after the Before callback.
+    pub layout_correction: [f32; 2],
+    pub viewport: [f32; 2],
+    pub after: [f32; 2],
+    pub remaining: [f32; 2],
 }
 
 /// Read-only input-method feedback sampled from the focused field's actual editor owner.

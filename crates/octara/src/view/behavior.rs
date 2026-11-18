@@ -198,6 +198,6 @@ fn compose(handlers: Vec<Handler>, scope: Option<ScopeId>) -> Handler {
                 false
             });
         }),
-        Handler::Native(_) => unreachable!("native protocols do not use component event layers"),
+        Handler::Native(_) | Handler::TouchScroll(_) => unreachable!("single-owner handlers do not use component event layers"),
     }
 }

@@ -44,6 +44,7 @@ pub(crate) enum Handler {
     NumericInput(Rc<dyn Fn(f64)>),
     Toggle(Rc<dyn Fn()>),
     Drag(Rc<dyn Fn(&crate::app::Drag)>),
+    TouchScroll(Rc<dyn Fn(crate::app::TouchScrollStage, [f32; 2]) -> [f32; 2]>),
     Key(Rc<dyn Fn(&crate::app::KeyEvent) -> bool>),
     Native(Rc<dyn Fn(&crate::native::NativeEvent)>),
     Link(Rc<dyn Fn(&str)>),

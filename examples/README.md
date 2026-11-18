@@ -28,6 +28,32 @@ OCTARA_INSPECT=/tmp/octara-example.sock target/debug/window counter
 | 同名控件重建、热重载和重开窗口 | 额外构建 `cargo build -p octara-examples --bin targets`。用独立 `OCTARA_INSPECT` 路径启动 `target/debug/targets`，然后 `python3 examples/live_targets.py --socket /tmp/octara-targets.sock --output /tmp/octara-targets-result`；填入实际 socket 和尚未创建的输出目录。[脚本](live_targets.py) |
 | 字段、单选和组件键盘流程 | 运行 `python3 examples/live_forms.py` 或 `python3 examples/live_primitives.py --scene all`。[字段](live_forms.py) · [对话框与数值控件](live_primitives.py) |
 | macOS 拼音候选、重转换和屏幕位置 | 用系统键盘操作，分别记录应用快照与系统候选窗。[输入法验证](IME.md) |
+| 同一次触摸联动面板与列表 | 运行 `panel_scroll` 窗口并用 Inspector 驱动固定的触摸序列。[面板联动步骤](#面板联动) |
 | 大量行和布局的工作量 | 运行 `cargo run --release -p octara-examples --bin bench`。随结果记录编译配置、数据量与测量环境。[基准入口](src/bin/bench.rs) |
 
 区分三种证据：无窗口测试控制时间，真实窗口 Inspector 通过框架事件或语义操作驱动，系统键盘和触摸覆盖 OS 路由。一个场景可以同时使用三者，在报告里标明每一步走的路径。[捕获报告](../docs/design/capture.md)
+
+### 面板联动
+
+构建验收例程后，用未占用的 socket 路径启动窗口。
+
+```sh
+cargo build -p octara-examples --bin panel_scroll -p octara-cli --bin octara
+OCTARA_INSPECT=/tmp/octara-panel-scroll.sock target/debug/panel_scroll
+```
+
+在另一终端运行 `target/debug/octara run --connect /tmp/octara-panel-scroll.sock --json`。依次发送以下请求，查看两笔 `touch_scroll` 和取消后的列表位置与点击计数。
+
+```jsonl
+{"op":"invoke","command":"pan.down"}
+{"op":"invoke","command":"pan.forward"}
+{"op":"inspect"}
+{"op":"invoke","command":"pan.reverse"}
+{"op":"inspect"}
+{"op":"invoke","command":"pan.cancel"}
+{"op":"invoke","command":"pan.late-move"}
+{"op":"invoke","command":"pan.up"}
+{"op":"inspect"}
+```
+
+重开窗口后，先执行 `pan.bottom` 将偏移设为 95，再执行 `pan.down` 和 `pan.forward`，核对布局校正 `−7` 与余量 `+18`。也可在任一进行中的拖动后执行 `pan.replace`，检查同名列表的新目标与迟到位移。命令注入窗口的框架触摸事件。结束后关闭窗口并清理 socket。[无窗口断言](tests/integration/panel_scroll.rs)

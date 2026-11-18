@@ -3,7 +3,7 @@
 
 use super::style::{Patch, Styled};
 use super::{Behavior, Handler, IntoView, Parent, Slot, Slots, View, build_content, mount, show};
-use crate::app::{Drag, KeyEvent};
+use crate::app::{Drag, KeyEvent, TouchScrollStage};
 use crate::diagnostics as codes;
 use crate::kernel::rich::Rich;
 
@@ -926,6 +926,18 @@ impl<C> El<C> {
     /// mouse, 8 pt with touch), then `Move`, then `End` (or `Cancel`). A drag is not a press.
     pub fn on_drag(mut self, f: impl Fn(&Drag) + 'static) -> Self {
         self.props.handlers = self.props.handlers.on_drag(f);
+        self
+    }
+    /// Coordinates a direct touch scroll owned by this viewport. The handler receives the
+    /// available displacement as `[dx, dy]` in scroll coordinates (an upward swipe has
+    /// positive `dy`) and returns the signed amount it used, within the available amount.
+    ///
+    /// `Before` runs before scrolling the viewport. Geometry changes settle before the
+    /// viewport consumes the remainder. `After` receives any displacement still available.
+    /// The direct touch keeps the same viewport until lift or cancellation. Wheel and
+    /// trackpad input use their ordinary scroll routing.
+    pub fn on_touch_scroll(mut self, f: impl Fn(TouchScrollStage, [f32; 2]) -> [f32; 2] + 'static) -> Self {
+        self.props.handlers.set(HandlerKind::TouchScroll, Handler::TouchScroll(Rc::new(f)));
         self
     }
     /// A finite numeric value requested by assistive technology or an agent. The component's

@@ -22,7 +22,7 @@ pub(crate) fn window_target(kernel: &Kernel) -> String {
     token(kernel.identity(), None)
 }
 
-pub(super) fn node_target(kernel: &Kernel, node: NodeId) -> Option<String> {
+pub(crate) fn node_target(kernel: &Kernel, node: NodeId) -> Option<String> {
     kernel.is_alive(node).then(|| token(kernel.identity(), Some(node)))
 }
 

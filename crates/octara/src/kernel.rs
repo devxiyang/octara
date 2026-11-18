@@ -143,10 +143,12 @@ pub enum HandlerKind {
     Focus,
     /// It lost keyboard focus (`on_blur`).
     Blur,
+    /// A viewport coordinating the displacement of a held touch.
+    TouchScroll,
 }
 
 impl HandlerKind {
-    pub const COUNT: usize = 16;
+    pub const COUNT: usize = 17;
     /// Handlers that make an element a pointer target.
     pub const POINTER: [HandlerKind; 6] = [
         HandlerKind::Press,

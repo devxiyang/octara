@@ -1,7 +1,7 @@
 //! Pointer input: presses with capture, double presses, context menus, long presses, drags,
 //! touch scrolling with momentum, and the focus ring following the keyboard.
 
-use octara::app::{Button, InputEvent, Modifiers, Phase, PointerEvent, TargetPlatform};
+use octara::app::{Button, InputEvent, Modifiers, Phase, PointerEvent, TargetPlatform, TouchScrollStage};
 use octara::prelude::*;
 use std::time::Duration;
 
@@ -338,4 +338,41 @@ fn driving_gestures_by_element() {
     app.swipe("item-3", 0.0, -100.0, Duration::from_millis(100)).unwrap();
     assert!(offset(&app) >= 100.0);
     assert_eq!(log(&mut app), "");
+}
+
+#[test]
+fn replacement_during_the_before_stage_drops_the_delta_and_its_contact() {
+    let mut app = Window::headless(|| {
+        let revision = state("revision", || 0_u32);
+        let after_calls = state("after-calls", || 0_u32);
+        col()
+            .size_full()
+            .child(keyed(
+                move || revision.get(),
+                move |&generation| {
+                    col().id("list").h(100.0).overflow_y_scroll().child(el().h(200.0).child("Preview")).on_touch_scroll(move |stage, _| {
+                        match stage {
+                            TouchScrollStage::Before if generation == 0 => revision.set(1),
+                            TouchScrollStage::Before => {}
+                            TouchScrollStage::After => after_calls.update(|count| *count += 1),
+                        }
+                        [0.0; 2]
+                    })
+                },
+            ))
+            .child(text(move || after_calls.get().to_string()).id("after-calls"))
+    });
+
+    let (x, y) = center(&app, "list");
+    let old = app.inspect().find("list").unwrap().target.clone();
+    touch(&mut app, Phase::Down, (x, y));
+    touch(&mut app, Phase::Move, (x, y - 30.0));
+    assert_ne!(old, app.inspect().find("list").unwrap().target);
+    assert!(app.held_pointer().is_none());
+    assert!(app.inspect().touch_scroll.is_none());
+    touch(&mut app, Phase::Move, (x, y - 42.0));
+    touch(&mut app, Phase::Up, (x, y - 42.0));
+    assert_eq!(offset(&app), 0.0);
+    assert_eq!(app.kernel().text_of("after-calls").as_deref(), Some("0"));
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 }

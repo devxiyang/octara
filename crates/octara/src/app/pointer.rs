@@ -6,9 +6,11 @@
 //! the press on, that pointer belongs to the target until it lifts or is cancelled.
 
 use super::event::InputEvent;
-use super::{Handler, Modality, Window, WindowState};
+use super::frame::AfterUpdate;
+use super::{Handler, Modality, ScopedHandler, Window, WindowState};
 use crate::kernel::{HandlerKind, Kernel, Kind, NodeId, State};
 use bitflags::bitflags;
+use std::panic::Location;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -86,6 +88,20 @@ pub enum DragPhase {
     Move,
     End,
     Cancel,
+}
+
+/// When a coordinated touch delta is offered relative to the viewport's own scroll.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TouchScrollStage {
+    Before,
+    After,
+}
+
+/// A delta belongs to the captured allocation and contact that queued it.
+pub(super) struct TouchScrollDelta {
+    capture: Rc<()>,
+    node: NodeId,
+    available: [f32; 2],
 }
 
 /// A drag on an element (see `on_drag`).
@@ -231,6 +247,7 @@ pub(crate) struct PointerState {
     last_press: Option<LastPress>,
     click_sequence: u64,
     momentum: Option<Momentum>,
+    pub(super) last_touch_scroll: Option<crate::inspect::TouchScrollState>,
     /// Where the mouse (or pen) is, for hover after layout changes.
     pub hover_at: Option<(f32, f32)>,
 }
@@ -264,6 +281,18 @@ impl WindowState {
 
 fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
     ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
+}
+
+fn remaining(available: [f32; 2], used: [f32; 2]) -> [f32; 2] {
+    std::array::from_fn(|i| {
+        let delta = available[i];
+        let used = if used[i].is_finite() { used[i].clamp(delta.min(0.0), delta.max(0.0)) } else { 0.0 };
+        delta - used
+    })
+}
+
+fn difference(value: [f32; 2], subtrahend: [f32; 2]) -> [f32; 2] {
+    [value[0] - subtrahend[0], value[1] - subtrahend[1]]
 }
 
 impl Kernel {
@@ -553,13 +582,13 @@ impl Window {
                 hit.and_then(|h| k.region_of(h)).filter(|r| target.is_none_or(|t| k.is_within(*r, t)))
             })
             .flatten();
-        let mode = if selecting.is_some() {
-            Mode::Pending
-        } else if stopped || !enabled {
-            Mode::Spent
-        } else {
-            Mode::Pending
-        };
+        let can_pan = !enabled
+            && !stopped
+            && ev.kind == PointerKind::Touch
+            && button == Button::Primary
+            && self.w.kernel.borrow().scroller_above(hit, 1.0, 1.0).is_some();
+        let target = target.filter(|_| enabled || !can_pan);
+        let mode = if selecting.is_some() || can_pan || (!stopped && enabled) { Mode::Pending } else { Mode::Spent };
         // The run of presses (double click) counts from the press (AppKit, Rune).
         let clicks = match target.or(selecting) {
             Some(n) if mode == Mode::Pending && button == Button::Primary => self.count_press(n, ev.kind, (ev.x, ev.y)),
@@ -664,11 +693,10 @@ impl Window {
                 };
                 if let Some(c) = scroller {
                     h.mode = Mode::Panning(c);
-                    if let Some(n) = h.target {
-                        self.w.kernel.borrow_mut().set_state(n, State::PRESSED, false);
-                    }
+                    self.unpress(&h);
+                    self.w.interaction.borrow_mut().pointer.last_press = None;
                     // The pan starts from the press, so the slop is not lost.
-                    self.scroll_by(c, dx, dy);
+                    self.pan_by(&h, c, dx, dy);
                     self.update_held(h);
                     return;
                 }
@@ -694,7 +722,7 @@ impl Window {
                 Some(n) => self.drag_in_field(n, h.at),
                 None => self.send_drag(&h, DragPhase::Move),
             },
-            Mode::Panning(c) => self.scroll_by(c, prev.0 - h.at.0, prev.1 - h.at.1),
+            Mode::Panning(c) => self.pan_by(&h, c, prev.0 - h.at.0, prev.1 - h.at.1),
             Mode::Spent => {}
         }
         self.update_held(h);
@@ -733,8 +761,8 @@ impl Window {
                 Some(n) => self.drag_in_field(n, h.at),
                 None => self.send_drag(h, DragPhase::End),
             },
-            Mode::Panning(c) => self.start_momentum(c, h),
-            Mode::Spent => {}
+            Mode::Panning(c) if !self.coordinates_touch_scroll(c) => self.start_momentum(c, h),
+            Mode::Panning(_) | Mode::Spent => {}
         });
     }
 
@@ -801,13 +829,94 @@ impl Window {
         });
     }
 
-    fn scroll_by(&self, n: NodeId, dx: f32, dy: f32) {
+    fn coordinates_touch_scroll(&self, node: NodeId) -> bool {
+        self.w.kernel.borrow().handler(node, HandlerKind::TouchScroll).is_some()
+    }
+
+    fn pan_by(&self, held: &Held, node: NodeId, dx: f32, dy: f32) {
+        if self.coordinates_touch_scroll(node) {
+            if [dx, dy] != [0.0; 2] && dx.is_finite() && dy.is_finite() {
+                let pan = TouchScrollDelta { capture: held.capture.clone(), node, available: [dx, dy] };
+                self.w.interaction.borrow_mut().after_update.push_back(AfterUpdate::TouchScroll(pan));
+            }
+        } else {
+            self.scroll_by(node, dx, dy);
+        }
+    }
+
+    fn touch_scroll_handler(&self, pan: &TouchScrollDelta) -> Option<ScopedHandler> {
+        if self.is_closed() || self.app.shutdown.get() {
+            return None;
+        }
+        let pointer = {
+            let i = self.w.interaction.borrow();
+            let held = i.pointer.held.as_ref()?;
+            if !Rc::ptr_eq(&held.capture, &pan.capture) || held.mode != Mode::Panning(pan.node) {
+                return None;
+            }
+            held.pointer
+        };
+        let handler = {
+            let k = self.w.kernel.borrow();
+            // Binding updates can open a modal during the first stage of this delta.
+            k.check_activation(pan.node, k.modals().last().copied())
+                .ok()
+                .and_then(|()| k.handler(pan.node, HandlerKind::TouchScroll))
+                .and_then(|id| self.w.handlers.borrow().get(&id.0).cloned())
+                .filter(|handler| handler.is_live(&self.app.rt))
+        };
+        if handler.is_none() {
+            self.cancel(pointer);
+            self.w.interaction_changed();
+        }
+        handler
+    }
+
+    pub(super) fn apply_touch_scroll(&self, pan: TouchScrollDelta, at: &'static Location<'static>) -> Result<bool, ()> {
+        let Some(before) = self.touch_scroll_handler(&pan) else { return Ok(false) };
+        let (target, origin) = {
+            let mut k = self.w.kernel.borrow_mut();
+            k.set_instant(true);
+            k.stop_glide(pan.node);
+            (crate::inspect::node_target(&k, pan.node).expect("live touch viewport"), k.scroll_offset(pan.node))
+        };
+        let available = self.offer_touch_scroll(before, TouchScrollStage::Before, pan.available);
+        // Use the clamped offset from this layout as the baseline for content consumption.
+        self.settle_layout(at)?;
+        let Some(after) = self.touch_scroll_handler(&pan) else { return Ok(true) };
+        let baseline = self.w.kernel.borrow().scroll_offset(pan.node);
+        let viewport = if available == [0.0; 2] { [0.0; 2] } else { self.scroll_by(pan.node, available[0], available[1]) };
+        let unused = remaining(available, viewport);
+        let left = if unused == [0.0; 2] { unused } else { self.offer_touch_scroll(after, TouchScrollStage::After, unused) };
+        self.w.interaction.borrow_mut().pointer.last_touch_scroll = Some(crate::inspect::TouchScrollState {
+            target,
+            input: pan.available,
+            before: difference(pan.available, available),
+            layout_correction: [baseline.0 - origin.0, baseline.1 - origin.1],
+            viewport: difference(available, unused),
+            after: difference(unused, left),
+            remaining: left,
+        });
+        Ok(true)
+    }
+
+    fn offer_touch_scroll(&self, handler: ScopedHandler, stage: TouchScrollStage, available: [f32; 2]) -> [f32; 2] {
+        let used = handler.run(&self.app.rt, |handler| {
+            let Handler::TouchScroll(consume) = handler else { unreachable!("touch scroll handler") };
+            consume(stage, available)
+        });
+        remaining(available, used.unwrap_or_default())
+    }
+
+    fn scroll_by(&self, n: NodeId, dx: f32, dy: f32) -> [f32; 2] {
         let mut k = self.w.kernel.borrow_mut();
         // The user's own scrolling takes over from a glide.
         k.stop_glide(n);
         let (sx, sy) = k.scrollable(n);
         let (ox, oy) = k.scroll_offset(n);
         k.scroll_to(n, ox + if sx { dx } else { 0.0 }, oy + if sy { dy } else { 0.0 });
+        let (nx, ny) = k.scroll_offset(n);
+        [nx - ox, ny - oy]
     }
 
     /// Content moved under a held press: the press is cancelled (as in UIScrollView), unless it

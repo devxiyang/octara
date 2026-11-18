@@ -4,6 +4,11 @@ use super::*;
 
 pub(super) const WINDOW_ROUNDS: u8 = 16;
 
+pub(super) enum AfterUpdate {
+    Command(String, &'static std::panic::Location<'static>),
+    TouchScroll(pointer::TouchScrollDelta),
+}
+
 impl AppState {
     /// One App drain owns window requests and publication. Later windows can invalidate a
     /// completed window; an incomplete one waits for the next explicit preparation checkpoint.
@@ -144,6 +149,8 @@ impl Window {
         match result {
             Ok(generation) => WindowUpdate::Ready(generation),
             Err(()) => {
+                // Movement from an incomplete input frame must not be replayed later.
+                self.w.interaction.borrow_mut().after_update.retain(|work| matches!(work, AfterUpdate::Command(..)));
                 self.w.settled_generation.set(None);
                 WindowUpdate::Incomplete
             }
@@ -153,7 +160,7 @@ impl Window {
     fn prepare_window(&self, at: &'static std::panic::Location<'static>) -> Result<u64, ()> {
         // Tasks woken (or spawned) by what just happened run to their next wait first; what they
         // change is laid out with the rest. They may wake or spawn more, so repeat (bounded).
-        let mut command_ran = false;
+        let mut update_ran = false;
         let mut prepared = false;
         for _ in 0..16 {
             if self.app.shutdown.get() || self.w.closed.get() {
@@ -169,18 +176,18 @@ impl Window {
             if self.settle_requested_focus(at)? || self.reconcile_focus() {
                 // Focus callbacks can change visibility, open a modal or close the window.
                 // Let those changes land before any queued command sees its focus path.
-                command_ran = false;
+                update_ran = false;
                 continue;
             }
-            // Route one command, then let its updates and focus changes settle before the
-            // next. This uses the same round bound as tasks and never nests an input frame.
-            let command = self.w.interaction.borrow_mut().after_update.pop_front();
-            if let Some((command, source)) = command {
-                command_ran = self.run_after_update_command(&command, source);
-            } else {
-                command_ran = false;
-            }
-            if !command_ran
+            // Deliver one operation against this layout and focus path. Any resulting changes
+            // settle before the next operation or publication.
+            let work = self.w.interaction.borrow_mut().after_update.pop_front();
+            update_ran = match work {
+                Some(AfterUpdate::Command(command, source)) => self.run_after_update_command(&command, source),
+                Some(AfterUpdate::TouchScroll(delta)) => self.apply_touch_scroll(delta, at)?,
+                None => false,
+            };
+            if !update_ran
                 && (!self.app.sched.has_ready() || self.app.sched.yielded())
                 && self.w.interaction.borrow().after_update.is_empty()
             {
@@ -188,8 +195,8 @@ impl Window {
                 break;
             }
         }
-        // The last command may have changed state even when it queued no successor.
-        if command_ran {
+        // The last operation may have changed state even when it queued no successor.
+        if update_ran {
             self.settle_layout(at)?;
             if self.sync_modals() {
                 self.settle_layout(at)?;
@@ -199,15 +206,21 @@ impl Window {
             prepared = !(self.settle_requested_focus(at)? || self.reconcile_focus());
         }
         let pending = std::mem::take(&mut self.w.interaction.borrow_mut().after_update);
-        if let Some((command, source)) = pending.front() {
+        let mut commands = pending.iter().filter_map(|work| match work {
+            AfterUpdate::Command(command, source) => Some((command, source)),
+            AfterUpdate::TouchScroll(_) => None,
+        });
+        if let Some((command, source)) = commands.next() {
             self.app.rt.diag(
                 &codes::COMMAND_QUEUE_LIMIT,
                 format!(
                     "deferred commands did not settle in 16 rounds; discarded {} pending command(s), starting with `{command}`",
-                    pending.len()
+                    1 + commands.count()
                 ),
                 source,
             );
+        } else if !pending.is_empty() {
+            prepared = false;
         }
         if !prepared {
             self.app.rt.diag(
@@ -277,7 +290,7 @@ impl Window {
         Ok(false)
     }
 
-    fn settle_layout(&self, at: &'static std::panic::Location<'static>) -> Result<(), ()> {
+    pub(super) fn settle_layout(&self, at: &'static std::panic::Location<'static>) -> Result<(), ()> {
         for _ in 0..4 {
             if !self.feedback_active() {
                 return Err(());

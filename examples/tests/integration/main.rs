@@ -11,6 +11,7 @@ mod inbox;
 mod interaction;
 mod layout;
 mod list_render;
+mod panel_scroll;
 mod pointer;
 mod sort_group;
 mod text_stream;

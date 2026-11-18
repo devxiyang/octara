@@ -28,7 +28,7 @@ pub use event::{FileDrag, InputEvent, Recorded, Recording};
 pub use guard::TargetGuard;
 pub use keys::{BUILTIN_COMMANDS, Binding, Chord, Key, KeyEvent, Keymap};
 pub(crate) use octara_primitives::text::TextEdit;
-pub use pointer::{Button, Drag, DragPhase, Modifiers, Phase, PointerEvent, PointerKind, Tuning};
+pub use pointer::{Button, Drag, DragPhase, Modifiers, Phase, PointerEvent, PointerKind, TouchScrollStage, Tuning};
 pub(crate) use selection::ListOrder;
 pub use selection::TextPoint;
 
@@ -479,7 +479,7 @@ impl WindowState {
     }
 
     pub(crate) fn interaction_request_command(&self, command: &str, at: &'static std::panic::Location<'static>) {
-        self.interaction.borrow_mut().after_update.push_back((command.to_owned(), at));
+        self.interaction.borrow_mut().after_update.push_back(frame::AfterUpdate::Command(command.to_owned(), at));
     }
 
     pub(crate) fn interaction_request_focus(&self, id: &str) {
@@ -531,8 +531,8 @@ struct Interaction {
     tip: tooltip::Tip,
     /// The test id of an element the app asked to focus (`focus`), once the frame is built.
     focus_request: Option<String>,
-    /// Commands routed after updates, modal restoration and explicit focus requests settle.
-    after_update: std::collections::VecDeque<(String, &'static std::panic::Location<'static>)>,
+    /// Input work that needs settled geometry or focus before delivery.
+    after_update: std::collections::VecDeque<frame::AfterUpdate>,
 }
 
 impl WindowState {
@@ -1310,6 +1310,7 @@ impl Window {
             focus,
             commands: self.commands(),
             text_input,
+            touch_scroll: self.w.interaction.borrow().pointer.last_touch_scroll.clone(),
             pending: self.app().pending().len(),
             window: self.w.id.number(),
             target: crate::inspect::window_target(&k),
