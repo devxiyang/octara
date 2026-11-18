@@ -164,11 +164,19 @@ fn roles_names_states_actions_and_bounds() {
 }
 
 #[test]
-fn a_value_is_announced_for_any_control() {
-    // A combo box's choice is its value, as a text input's content is.
-    let app = Window::headless(|| {
+fn a_choice_and_an_editor_publish_their_own_values() {
+    let mut app = Window::headless(|| {
+        let choice = state("choice", || "Dark".to_owned());
         col()
-            .child(el().id("theme").role(Role::ComboBox).label("Theme").value("Dark").focusable().on_press(|| {}))
+            .child(
+                el().id("theme")
+                    .size_12()
+                    .role(Role::ComboBox)
+                    .label("Theme")
+                    .a11y_value(choice)
+                    .focusable()
+                    .on_press(move || choice.set("Light".to_owned())),
+            )
             .child(text_input().id("name").label("Name").value("Ada"))
     });
     let snap = app.inspect();
@@ -178,6 +186,15 @@ fn a_value_is_announced_for_any_control() {
     let theme = app.kernel().find("theme").unwrap();
     let node = tree.nodes.iter().find(|(i, _)| *i == a11y_id(theme)).unwrap();
     assert_eq!(node.1.value(), Some("Dark"));
+    app.tap("theme").unwrap();
+    let snapshot = app.inspect();
+    assert_eq!(snapshot.find("theme").unwrap().value.as_deref(), Some("Light"));
+    assert_eq!(snapshot.find("name").unwrap().value.as_deref(), Some("Ada"));
+    let tree = app.accessibility_tree();
+    let node = tree.nodes.iter().find(|(id, _)| *id == a11y_id(theme)).unwrap();
+    assert_eq!(node.1.value(), Some("Light"));
+    assert!(!node.1.supports_action(accesskit::Action::SetValue));
+    app.app().shutdown();
 }
 
 #[ui]

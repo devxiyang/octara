@@ -4,7 +4,7 @@
 
 ## Element content
 
-当前构造器在创建节点时确定内容类型。容器可用 `.child(..)` 和 `.children(..)` 挂载应用子节点。图片使用 `image(..)` 配合 `.object_fit(..)`；编辑设置用于 `text_input()`。文本内部的富文本链接由对应文字范围拥有。输入框的前缀、图片标题和悬浮按钮可放入外层容器。
+构造器在创建节点时确定内容类型。容器可用 `.child(..)` 和 `.children(..)` 挂载应用子节点。图片使用 `image(..)` 配合 `.object_fit(..)`。编辑器返回 `TextInput`，它提供行数、提示、密码和提交配置，也能使用通用元素修饰器。一个编辑器可直接作为列表的一行，也可以传给 `field` 和 `popup_list`。文本内部的富文本链接由对应文字范围拥有。输入框的前缀、图片标题和悬浮按钮放在外层容器。[编辑器组合回归](../../crates/octara/tests/integration/collection_rows.rs#L12)
 
 `ELEMENT_CONTENT` 表示操作与内容种类或所有权不符。先找出收到配置的实际节点，尤其注意组件返回的是包裹容器还是控件。富文本范围还须有序、互不重叠，并落在有效 UTF-8 边界。[内容约束测试](../../crates/octara/tests/integration/element_content.rs)
 

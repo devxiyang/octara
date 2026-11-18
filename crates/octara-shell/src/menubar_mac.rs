@@ -62,7 +62,7 @@ define_class!(
         #[unsafe(method(validateMenuItem:))]
         fn validate(&self, item: &NSMenuItem) -> bool {
             // While a key is matched, every item takes it, so a disabled one does not swallow it:
-            // the app decides (its keymap, else the command, which does nothing then).
+            // the app resolves it through the current keymap.
             by_key() || self.ivars().entries.borrow().get(item.tag() as usize).is_some_and(|e| e.enabled)
         }
     }

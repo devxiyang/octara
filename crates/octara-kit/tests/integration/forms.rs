@@ -383,7 +383,7 @@ fn radios_in_a_nested_modal_choose_inside_it_and_restore_focus_when_it_closes() 
                     .bg(Token::Surface)
                     .modal(true, move || dialog.set(false))
                     .child(popover("more", popup, Placement::BELOW, button("Choose plan"), move || {
-                        col().w(240.0).child(radio_group("plan", "Plan", value, radio_options)).into()
+                        col().w(240.0).child(radio_group("plan", "Plan", value, radio_options))
                     }))
                     .child(button("Close").id("close-dialog").on_press(move || dialog.set(false)))
             },

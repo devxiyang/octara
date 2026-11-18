@@ -16,7 +16,8 @@ pub use crate::kernel::rich::{Rich, Span, rich};
 pub use behavior::Behavior;
 pub(crate) use element::build_el;
 pub use element::{
-    El, IntoProp, IntoText, Prop, TextContent, canvas, col, el, icon, image, native_view, row, spacer, text, text_input, web_view,
+    El, IntoProp, IntoText, Prop, TextContent, TextInput, canvas, col, el, icon, image, native_view, row, spacer, text, text_input,
+    web_view,
 };
 pub use list::{IntoRows, each, virtual_each};
 pub use octara_macros::ui;
@@ -27,7 +28,7 @@ pub use style::{Length, Patch, Styled, px, relative, rems, sp};
 use crate::diagnostics as codes;
 use crate::identity::{RegionKind, RowKey, ScopeSegment};
 use crate::kernel::{Breakpoint, NodeId, Theme};
-use crate::reactive::graph::{self, Ctx, ReadSignal, ScopeId, Signal, rt};
+use crate::reactive::graph::{self, Ctx, ReadSignal, Runtime, ScopeId, Signal, rt};
 use std::cell::{Cell, RefCell};
 use std::fmt::Display;
 use std::hash::Hash;
@@ -61,8 +62,12 @@ impl ScopedHandler {
         rt(|rt| Self { handler, execution: rt.capture_owner() })
     }
 
+    pub(crate) fn is_live(&self, rt: &graph::Runtime) -> bool {
+        rt.admits(self.execution)
+    }
+
     pub(crate) fn run<R>(self, rt: &graph::Runtime, f: impl FnOnce(Handler) -> R) -> Option<R> {
-        if !rt.admits(self.execution) {
+        if !self.is_live(rt) {
             return None;
         }
         Some(rt.with_execution(self.execution, Ctx::Handler, None, || f(self.handler)))
@@ -120,9 +125,12 @@ impl View {
 pub trait IntoView {
     fn into_view(self, at: &'static Location<'static>) -> View;
 }
-impl IntoView for El {
+impl<C> IntoView for El<C>
+where
+    El<C>: Into<El>,
+{
     fn into_view(self, _: &'static Location<'static>) -> View {
-        self.into()
+        View::from(self)
     }
 }
 impl IntoView for View {
@@ -148,13 +156,14 @@ impl IntoView for ! {
     }
 }
 
-/// Converts a factory's result while the owner that started it is still live.
+/// Converts content outside an app or while the owner that started its factory is still live.
 pub(crate) fn build_content<V: IntoView>(at: &'static Location<'static>, factory: impl FnOnce() -> V) -> View {
-    rt(|rt| {
-        let owner = rt.capture_owner();
-        let content = factory();
-        if rt.admits(owner) { content.into_view(at) } else { View::empty() }
-    })
+    let owner = Runtime::try_current().map(|runtime| {
+        let owner = runtime.capture_owner();
+        (runtime, owner)
+    });
+    let content = factory();
+    if owner.is_none_or(|(runtime, owner)| runtime.admits(owner)) { content.into_view(at) } else { View::empty() }
 }
 
 // ---- mounting ----
@@ -568,28 +577,12 @@ pub fn clock(period: std::time::Duration) -> ReadSignal<std::time::Duration> {
     signal.read_only()
 }
 
-/// Adds the app's key bindings (GPUI's `bind_keys`): `(chord, command, context)`, a context
-/// naming a `key_context` the focus must be in (`None`: anywhere). A binding added again (a hot
-/// reload) replaces itself. Register during construction or from handlers and tasks. Pure
-/// computations, initializers and cleanup cannot register bindings. `Err` names a chord that
-/// does not parse or a rejected registration, which leaves the keymap unchanged.
+/// Adds key bindings to the current App as one batch, using
+/// [`crate::app::App::bind_keys`]. A context names a `key_context` on the focus path.
+/// Register during construction or from handlers and tasks.
 #[track_caller]
-pub fn bind_keys<'a>(bindings: impl IntoIterator<Item = (&'a str, &'a str, Option<&'a str>)>) -> Result<(), String> {
-    let at = Location::caller();
-    if !rt(|runtime| runtime.allows(graph::Operation::Register, at)) {
-        return Err("key binding registration is not allowed in this execution phase".into());
-    }
-    let app = crate::app::app_state();
-    app.keymap_changed();
-    let mut keymap = app.keymap.borrow_mut();
-    for (chord, command, context) in bindings {
-        let mut one = crate::app::Keymap::default();
-        one.bind(chord, Some(command), context)?;
-        let b = one.bindings.remove(0);
-        keymap.bindings.retain(|x| x != &b);
-        keymap.bindings.push(b);
-    }
-    Ok(())
+pub fn bind_keys<'a, C: Into<Option<&'a str>>>(bindings: impl IntoIterator<Item = (&'a str, C, Option<&'a str>)>) -> Result<(), String> {
+    crate::app::App::current().bind_keys(bindings)
 }
 
 /// Moves keyboard focus to the element with test id `id` once this frame is built (GPUI's

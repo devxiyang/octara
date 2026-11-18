@@ -135,18 +135,18 @@ use source::Input;
 
 /// Both renderers own exactly the same key -> scope/node mapping and live row input.
 /// Virtualization only decides which keys reside and how their nodes are placed.
-type RowFactory<K, T> = dyn Fn(&K, ReadSignal<T>) -> El;
+type RowFactory<K, T, R> = dyn Fn(&K, ReadSignal<T>) -> R;
 
-struct Rows<K: 'static, T: 'static> {
+struct Rows<K: 'static, T: 'static, R> {
     entries: RefCell<HashMap<RowKey, (ScopeId, NodeId)>>,
     input: ReadSignal<Input<K, T>>,
     owner: ScopeId,
     base: RegionId,
     at: &'static Location<'static>,
-    row: Box<RowFactory<K, T>>,
+    row: Box<RowFactory<K, T, R>>,
 }
 
-impl<K: Eq + Hash + Clone + Display + 'static, T: Clone + 'static> Rows<K, T> {
+impl<K: Eq + Hash + Clone + Display + 'static, T: Clone + 'static, R: Into<El>> Rows<K, T, R> {
     fn build(&self, identity: &RowKey, offscreen: bool) -> Option<(ScopeId, NodeId)> {
         let key = identity.value::<K>().expect("live list row key");
         let input = self.input;
@@ -169,7 +169,11 @@ impl<K: Eq + Hash + Clone + Display + 'static, T: Clone + 'static> Rows<K, T> {
                     |_, _| false,
                 );
                 let owner = rt.capture_owner();
-                let element = (self.row)(&key, item);
+                let content = (self.row)(&key, item);
+                if !rt.admits(owner) {
+                    return None;
+                }
+                let element = content.into();
                 if !rt.admits(owner) {
                     return None;
                 }
@@ -224,14 +228,17 @@ type Current<K, T> = Rc<RefCell<Option<(Input<K, T>, Option<Cursor>)>>>;
 /// Renders `list()`. While it stays the same stage, its log is applied row by row: one row
 /// created per insert, one disposed per remove, one moved per move. Switching to another stage
 /// reconciles by key once. The row factory receives its item's own signal and returns one
-/// [`El`]. Filter the source to omit a row.
+/// element, including a typed [`super::TextInput`]. Filter the source to omit a row.
 ///
 /// ```compile_fail
 /// use octara::prelude::*;
 /// each(|| Vec::from_iter(Some((1u32, "One"))), |_, _| View::empty());
 /// ```
 #[track_caller]
-pub fn each<K, T, S: IntoRows<K, T> + 'static>(list: impl Fn() -> S + 'static, row: impl Fn(&K, ReadSignal<T>) -> El + 'static) -> View
+pub fn each<K, T, S: IntoRows<K, T> + 'static, R: Into<El> + 'static>(
+    list: impl Fn() -> S + 'static,
+    row: impl Fn(&K, ReadSignal<T>) -> R + 'static,
+) -> View
 where
     K: Eq + Hash + Clone + Display + 'static,
     T: Clone + 'static,
@@ -412,10 +419,10 @@ const OVERSCAN: usize = 5;
 /// their rows resident; hidden gap spacers preserve their positions without mounting the
 /// intervening rows.
 #[track_caller]
-pub fn virtual_each<K, T, S: IntoRows<K, T> + 'static>(
+pub fn virtual_each<K, T, S: IntoRows<K, T> + 'static, R: Into<El> + 'static>(
     list: impl Fn() -> S + 'static,
     estimate: impl Fn(&T) -> f32 + 'static,
-    row: impl Fn(&K, ReadSignal<T>) -> El + 'static,
+    row: impl Fn(&K, ReadSignal<T>) -> R + 'static,
 ) -> View
 where
     K: Eq + Hash + Clone + Display + 'static,

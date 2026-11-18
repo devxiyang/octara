@@ -332,7 +332,7 @@ impl Kernel {
             }
             self.set_role(link, Role::Link);
             self.set_label(link, Some(&label));
-            self.set_value(link, &target);
+            self.set_a11y_value(link, &target);
             self.set_test_id(link, test_id.as_deref());
             links.push(link);
         }

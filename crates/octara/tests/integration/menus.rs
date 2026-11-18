@@ -149,7 +149,7 @@ fn a_menu_item_picked_by_its_keys_lets_the_keymap_decide() {
             )
             .child(text(move || what.get()).id("what"))
     });
-    w.bind("mod+w", Some("editor.close_tab"), Some("editor")).unwrap();
+    w.app().bind_keys([("mod+w", "editor.close_tab", Some("editor"))]).unwrap();
     w.tap("editor").unwrap();
     // The menu's item runs `app.close_window` on cmd+w, but in the editor the keymap binds it to
     // closing a tab: the keys win, as they would without the menu.
@@ -157,4 +157,77 @@ fn a_menu_item_picked_by_its_keys_lets_the_keymap_decide() {
     assert_eq!(w.kernel().text(w.kernel().find("what").unwrap()), "closed a tab");
     w.event(InputEvent::Command { name: "app.close_window".into(), chord: None });
     assert_eq!(w.kernel().text(w.kernel().find("what").unwrap()), "closed the window", "a click on the item runs its command");
+}
+
+#[test]
+fn undo_uses_the_window_history_for_menu_toolbar_and_inspector() {
+    use octara::inspect::{self, Delivery};
+    use octara::platform::HeadlessPlatform;
+
+    fn document() -> El {
+        let draft = state("draft", || "Draft".to_owned());
+        let window = App::current().window(current_window()).unwrap();
+        col().child(text_input().id("editor").label("Draft").value(draft).on_input(move |text| draft.set(text))).child(
+            el().id("undo")
+                .size_12()
+                .label("Undo")
+                .preserve_focus_on_press(true)
+                .disabled(move || !window.command_enabled("edit.undo"))
+                .on_press(|| invoke("edit.undo").unwrap()),
+        )
+    }
+    fn toolbar_enabled(window: &Window) -> bool {
+        !window.kernel().state_of("undo").unwrap().contains(State::DISABLED)
+    }
+    fn inspector_undo(window: &mut Window) -> inspect::Reply {
+        let request = octara::serde_json::json!({"op": "invoke", "command": "edit.undo", "target": window.target()});
+        inspect::handle_line(window, &request.to_string())
+    }
+
+    let app = App::new(HeadlessPlatform::default());
+    let mut a = app.open_window(WindowOptions::new("Document"), document).unwrap();
+    let mut b = app.open_window(WindowOptions::new("Document"), document).unwrap();
+    app.run(|| set_menus([Menu::edit()]));
+    for window in [&mut a, &mut b] {
+        window.dispatch(Event::Focus("editor".into())).unwrap();
+        assert!(!toolbar_enabled(window));
+    }
+    let refused = inspector_undo(&mut b);
+    assert!(!refused.ok);
+    assert_eq!(refused.delivery, Some(Delivery::Refused));
+    a.event(InputEvent::Active(true));
+    a.type_text("A");
+    let a_value = a.inspect().text_input.unwrap().text;
+    assert!(toolbar_enabled(&a));
+    assert!(!toolbar_enabled(&b));
+    assert!(enabled(&menus_shown(&a), "edit.undo"));
+    b.event(InputEvent::Active(true));
+    assert!(!enabled(&menus_shown(&b), "edit.undo"));
+    b.type_text("B");
+    let b_value = b.inspect().text_input.unwrap().text;
+    assert!(enabled(&menus_shown(&b), "edit.undo"));
+    assert!(toolbar_enabled(&b));
+
+    b.app().bind_keys([("mod+z", None, Some("text_input"))]).unwrap();
+    b.press_key("mod+z").unwrap();
+    assert!(matches!(item(&menus_shown(&b), "edit.undo"), MenuItem::Action { shortcut: None, .. }));
+    assert!(!b.event(InputEvent::Command { name: "edit.undo".into(), chord: Some("mod+z".into()) }));
+    assert_eq!(b.inspect().text_input.unwrap().text, b_value);
+    assert!(b.event(InputEvent::Command { name: "edit.undo".into(), chord: None }));
+    assert_eq!(b.inspect().text_input.unwrap().text, "Draft");
+    assert_eq!(a.inspect().text_input.unwrap().text, a_value);
+    assert!(!toolbar_enabled(&b));
+
+    a.tap("undo").unwrap();
+    assert_eq!(a.inspect().text_input.unwrap().text, "Draft");
+    assert!(!toolbar_enabled(&a));
+    b.type_text("B2");
+    a.event(InputEvent::Active(true));
+    let delivered = inspector_undo(&mut b);
+    assert!(delivered.ok);
+    assert_eq!(delivered.delivery, Some(Delivery::Delivered));
+    assert_eq!(b.inspect().text_input.unwrap().text, "Draft");
+    assert_eq!(a.inspect().text_input.unwrap().text, "Draft");
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    app.shutdown();
 }

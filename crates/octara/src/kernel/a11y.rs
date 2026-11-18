@@ -440,7 +440,7 @@ impl Kernel {
             node.set_description(d);
         }
         // A text input's content, or the value set for other controls (a combo box's choice).
-        if n.kind() == Kind::TextInput || n.value.is_some() {
+        if n.kind() == Kind::TextInput || n.a11y_value.is_some() {
             // A password is bullets to assistive technology (AccessKit's contract), unless shown.
             node.set_value(if n.input().is_some_and(|i| i.masked()) { self.reported_value(id) } else { self.value(id).to_owned() });
         }

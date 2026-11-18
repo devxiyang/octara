@@ -32,15 +32,15 @@ impl Default for DialogOptions {
 ///
 /// Closing unmounts `content`: its local state, tasks and editor history are disposed. Keep a
 /// draft in the application's state and pass its model into the content to preserve it across
-/// openings. A new opening creates new node targets. The component owns no draft or validation.
+/// openings. A new opening creates new node targets. The factory accepts any [`IntoView`].
 #[ui]
 #[track_caller]
-pub fn dialog(
+pub fn dialog<V: IntoView>(
     id: &str,
     title: impl Into<String>,
     open: impl Model<bool>,
     options: DialogOptions,
-    content: impl Fn() -> View + 'static,
+    content: impl Fn() -> V + 'static,
 ) -> View {
     let id = id.to_owned();
     let title = title.into();

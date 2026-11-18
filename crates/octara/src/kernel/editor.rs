@@ -138,6 +138,10 @@ impl Kernel {
         self.nodes.get(id).and_then(|n| n.input()).is_some_and(|i| i.editing.pending())
     }
 
+    pub(crate) fn edit_in_progress(&self, id: NodeId) -> bool {
+        self.nodes.get(id).and_then(|n| n.input()).is_some_and(|i| i.composition.is_some() || i.editing.pending())
+    }
+
     /// Returns whether a changed value needs to be proposed to the application's handler.
     pub(crate) fn begin_edit(&mut self, id: NodeId, value: &str, selection: (usize, usize), kind: EditKind) -> Option<bool> {
         let i = self.nodes.get_mut(id)?.input_mut()?;

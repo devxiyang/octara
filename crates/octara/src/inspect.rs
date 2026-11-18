@@ -20,6 +20,7 @@ pub(crate) use target::window_target;
 pub use target::{ParsedRequest, handle_guarded, parse_guarded_request};
 mod tree;
 pub use tree::{pick, tree};
+pub(crate) use tree::{pick_for_window, tree_for_window};
 
 /// The snapshot schema; bumped when a field changes meaning or goes away.
 pub const SCHEMA: &str = "octara.inspect/1";
@@ -42,6 +43,9 @@ pub struct Snapshot {
     /// The focused element's test id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub focus: Option<String>,
+    /// Available commands and their shortcuts in this window's current focus context.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<(String, Vec<String>)>,
     /// The focused non-secure field's current editing state. Secure fields omit this entire
     /// object; their value remains redacted in the semantic tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -541,8 +545,13 @@ impl Reply {
     }
 }
 
-use crate::app::Window;
+use crate::app::{App, AppConfig, TargetPlatform, Window};
+use crate::capture::Painter;
 use crate::diagnostics::{self as codes, Code, Severity};
+use crate::kernel::Theme;
+use crate::platform::{HeadlessPlatform, WindowOptions};
+use crate::view::IntoView;
+use std::rc::Rc;
 
 pub(crate) fn severity_name(s: Severity) -> &'static str {
     match s {
@@ -665,7 +674,10 @@ fn handle_inner(app: &mut Window, req: Request) -> Reply {
             app.type_text(&text);
             Reply::ok()
         }
-        Request::Invoke { command } => step(app.invoke(&command)),
+        Request::Invoke { command } => match app.invoke(&command) {
+            Ok(()) => Reply { delivery: Some(Delivery::Delivered), ..Reply::ok() },
+            Err(error) => Reply { delivery: Some(Delivery::Refused), ..Reply::fail(&codes::STEP_FAILED, error) },
+        },
         Request::Advance { ms } => {
             app.app().advance(Duration::from_millis(ms));
             Reply::ok()
@@ -939,21 +951,40 @@ impl CheckReport {
 /// How long `check` lets the app settle, in app time.
 pub const SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
+#[track_caller]
+fn start_headless<V: IntoView>(
+    view: impl Fn() -> V + 'static,
+    config: AppConfig,
+    options: WindowOptions,
+    painter: Option<fn() -> Box<dyn Painter>>,
+) -> Window {
+    let app = App::with_config(HeadlessPlatform::default(), config);
+    if let Some(painter) = painter {
+        app.set_painter(painter());
+    }
+    app.open_window(options, view).expect("a headless window opens")
+}
+
 /// Mounts `view` fresh at each theme and size, on the size's platform, lets it settle, and
 /// judges it: layout issues, diagnostics, work that does not settle, and accessibility (names,
 /// contrast, and targets under the platform's minimum).
-pub fn check(view: fn() -> crate::view::View, opts: &CheckOptions) -> CheckReport {
+/// Each cell sets its theme, platform and viewport before the root factory runs.
+#[track_caller]
+pub fn check<V: IntoView>(view: impl Fn() -> V + 'static, opts: &CheckOptions) -> CheckReport {
+    let view = Rc::new(view);
     let mut findings: Vec<Finding> = Vec::new();
     let mut cells = Vec::new();
     for theme in &opts.themes {
         for size in &opts.sizes {
             let cell = format!("{theme}/{}", size.name);
             cells.push(cell.clone());
-            let mut app = Window::headless(view);
-            let platform = platform(&size.platform).unwrap_or(crate::app::TargetPlatform::current());
-            app.app().set_target_platform(platform);
-            app.app().set_theme(if theme == "dark" { crate::kernel::Theme::dark() } else { crate::kernel::Theme::light() });
-            app.resize(size.width, size.height);
+            let config = AppConfig {
+                theme: if theme == "dark" { Theme::dark() } else { Theme::light() },
+                target_platform: platform(&size.platform).unwrap_or_else(TargetPlatform::current),
+                ..AppConfig::default()
+            };
+            let view = view.clone();
+            let app = start_headless(move || view(), config, WindowOptions::new("Headless").size(size.width, size.height), None);
             let mut found = issues(&app);
             if let Err(pending) = app.app().run_until_idle(SETTLE_LIMIT) {
                 found.push(Issue {
@@ -973,6 +1004,7 @@ pub fn check(view: fn() -> crate::view::View, opts: &CheckOptions) -> CheckRepor
                 id: i.test_id,
                 source: i.at,
             }));
+            app.app().shutdown();
             for i in found {
                 let same = |f: &&mut Finding| f.code == i.code && f.id == i.id && f.source == i.source;
                 if let Some(f) = findings.iter_mut().find(same) {
@@ -1042,17 +1074,17 @@ pub fn check(view: fn() -> crate::view::View, opts: &CheckOptions) -> CheckRepor
 ///   prints one reply line each (`{"line":n,"ok":..}`); `--stop` ends at the first failure.
 ///
 /// Exits 2 on bad arguments.
-pub fn main(view: fn() -> crate::view::View) {
+pub fn main<V: IntoView>(view: impl Fn() -> V + 'static) {
     run_main(view, None)
 }
 
 /// [`main`], with `painter` painting `capture` requests (the harness passes `octara-render`'s
 /// reference renderer).
-pub fn main_with(view: fn() -> crate::view::View, painter: fn() -> Box<dyn crate::capture::Painter>) {
+pub fn main_with<V: IntoView>(view: impl Fn() -> V + 'static, painter: fn() -> Box<dyn Painter>) {
     run_main(view, Some(painter))
 }
 
-fn run_main(view: fn() -> crate::view::View, painter: Option<fn() -> Box<dyn crate::capture::Painter>>) {
+fn run_main<V: IntoView>(view: impl Fn() -> V + 'static, painter: Option<fn() -> Box<dyn Painter>>) {
     use std::io::{BufRead, Write};
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
@@ -1060,20 +1092,19 @@ fn run_main(view: fn() -> crate::view::View, painter: Option<fn() -> Box<dyn cra
         eprintln!("octara harness: {msg}");
         std::process::exit(2)
     };
-    let setup = |app: &mut Window| {
-        if let Some(p) = painter {
-            app.app().set_painter(p());
-        }
+    let start = |view| {
+        let mut options = WindowOptions::new("Headless");
         if let Some(size) = flag("--size") {
             let parsed = size.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)));
             let Some((w, h)) = parsed else { fail(format!("--size takes <width>x<height>, not `{size}`")) };
-            app.resize(w, h);
+            options = options.size(w, h);
         }
-        match flag("--theme").as_deref() {
-            None | Some("light") => {}
-            Some("dark") => app.app().set_theme(crate::kernel::Theme::dark()),
+        let theme = match flag("--theme").as_deref() {
+            None | Some("light") => Theme::light(),
+            Some("dark") => Theme::dark(),
             Some(other) => fail(format!("unknown theme `{other}`")),
-        }
+        };
+        start_headless(view, AppConfig { theme, ..AppConfig::default() }, options, painter)
     };
     match args.first().map(String::as_str) {
         Some("check") => {
@@ -1087,14 +1118,13 @@ fn run_main(view: fn() -> crate::view::View, painter: Option<fn() -> Box<dyn cra
             println!("{}", check(view, &opts).to_json());
         }
         Some("inspect") => {
-            let mut app = Window::headless(view);
-            setup(&mut app);
+            let app = start(view);
             let _ = app.app().run_until_idle(SETTLE_LIMIT);
             println!("{}", serde_json::to_string_pretty(&app.inspect()).expect("serializes"));
+            app.app().shutdown();
         }
         Some("run") => {
-            let mut app = Window::headless(view);
-            setup(&mut app);
+            let mut app = start(view);
             let stop = args.iter().any(|a| a == "--stop");
             let stdout = std::io::stdout();
             for (i, line) in std::io::stdin().lock().lines().enumerate() {
@@ -1113,6 +1143,7 @@ fn run_main(view: fn() -> crate::view::View, painter: Option<fn() -> Box<dyn cra
                     break;
                 }
             }
+            app.app().shutdown();
         }
         _ => fail("usage: check [--options <json>] | inspect [--size WxH] [--theme T] | run [--size WxH] [--theme T] [--stop]".into()),
     }

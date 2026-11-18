@@ -156,39 +156,40 @@ impl Window {
         self.w.kernel.borrow_mut().keep_goal(n, goal);
     }
 
-    /// Whether text-editing `command` does something in the focused field now (`None`: no field
-    /// has focus), as a menu item for it shows: copy and cut a selection (not of a secure
-    /// field), undo and redo a history, select all some text.
-    pub(super) fn edit_enabled(&self, command: &str) -> Option<bool> {
-        let (n, v, a, c) = self.field()?;
+    /// Eligibility of an editor command on the resolved focus target.
+    pub(super) fn edit_enabled(&self, n: NodeId, command: &str) -> bool {
         let k = self.w.kernel.borrow();
-        let secure = k.is_secure(n);
-        Some(match command {
-            "edit.copy" | "edit.cut" => a != c && !secure,
+        if k.kind(n) != crate::kernel::Kind::TextInput {
+            return false;
+        }
+        match command {
+            "edit.copy" | "edit.cut" => {
+                let (anchor, caret) = k.selection(n);
+                anchor != caret && !k.is_secure(n)
+            }
             "edit.undo" | "edit.redo" => k.history_available(n, command == "edit.undo"),
-            "edit.select_all" => !v.is_empty(),
+            "edit.select_all" => !k.value(n).is_empty(),
             "edit.newline" => k.is_multiline(n),
-            _ => true,
-        })
+            "edit.copy_markdown" => false,
+            _ => super::BUILTIN_COMMANDS.iter().any(|(name, _)| *name == command),
+        }
     }
 
-    /// Runs a text-editing command on the focused field; `false` if there is none.
-    pub(super) fn edit_command(&self, command: &str) -> bool {
-        let Some((n, v, a, c)) = self.field() else { return false };
+    /// Runs an eligible editing command on its resolved field.
+    pub(super) fn edit_command(&self, n: NodeId, command: &str) -> bool {
+        let (v, a, c, multiline, secure, page) = {
+            let k = self.w.kernel.borrow();
+            let (anchor, caret) = k.selection(n);
+            (k.value(n).to_owned(), anchor, caret, k.is_multiline(n), k.is_secure(n), k.input_page_lines(n) as i32)
+        };
         let (s, e) = (a.min(c), a.max(c));
         let collapsed = s == e;
-        let multiline = self.w.kernel.borrow().is_multiline(n);
-        let secure = self.w.kernel.borrow().is_secure(n);
-        let page = self.w.kernel.borrow().input_page_lines(n) as i32;
         let edges = || self.w.kernel.borrow().input_line_edges(n).unwrap_or((0, v.len()));
         // A secure field: words are not revealed (word moves go to the ends), and nothing is
         // copied out or kept in a history.
         type Word = fn(&str, usize) -> usize;
         let (prev_word, next_word): (Word, Word) = if secure { (|_, _| 0, |s, _| s.len()) } else { (prev_word, next_word) };
-        if secure && matches!(command, "edit.copy" | "edit.cut" | "edit.undo" | "edit.redo") {
-            return true;
-        }
-        if secure && command.starts_with("edit.") {
+        if secure {
             self.w.kernel.borrow_mut().reveal_typed(n, None);
         }
         match command {
@@ -211,11 +212,8 @@ impl Window {
             "edit.select_to_line_start" => self.select_field(n, a, edges().0),
             "edit.select_to_line_end" => self.select_field(n, a, edges().1),
             "edit.newline" => {
-                if !multiline {
-                    return false;
-                }
                 let new = format!("{}\n{}", &v[..s], &v[e..]);
-                self.apply(n, new, s + 1, s + 1, Kind::Insert);
+                return self.apply(n, new, s + 1, s + 1, Kind::Insert);
             }
             "edit.move_left" => {
                 self.select_field(n, if collapsed { prev_grapheme(&v, c) } else { s }, if collapsed { prev_grapheme(&v, c) } else { s })
@@ -263,12 +261,9 @@ impl Window {
                 }
             }
             "edit.copy" | "edit.cut" => {
-                if collapsed {
-                    return true;
-                }
                 self.app.system.borrow_mut().write_text(&v[s..e]);
                 if command == "edit.cut" {
-                    self.apply(n, format!("{}{}", &v[..s], &v[e..]), s, s, Kind::Other);
+                    return self.apply(n, format!("{}{}", &v[..s], &v[e..]), s, s, Kind::Other);
                 }
             }
             "edit.paste" => {
@@ -287,9 +282,9 @@ impl Window {
             "edit.undo" | "edit.redo" => {
                 let undo = command == "edit.undo";
                 let proposal = self.w.kernel.borrow_mut().history_proposal(n, undo);
-                if let Some((value, (anchor, caret))) = proposal {
-                    self.apply(n, value, anchor, caret, if undo { Kind::Undo } else { Kind::Redo });
-                }
+                return proposal.is_some_and(|(value, (anchor, caret))| {
+                    self.apply(n, value, anchor, caret, if undo { Kind::Undo } else { Kind::Redo })
+                });
             }
             _ => return false,
         }

@@ -9,6 +9,54 @@ fn target(window: &Window, id: &str) -> String {
 }
 
 #[test]
+fn typed_editor_rows_keep_their_edit_session_when_files_reorder() {
+    for virtualized in [false, true] {
+        let app = App::new(HeadlessPlatform::default());
+        let files = app.run(|| state("files", || vec![(1u32, "A😀Z".to_owned()), (2, "A😀Z".to_owned())]));
+        let submissions = app.run(|| state("submissions", Vec::<(u32, String)>::new));
+        let mut window = app
+            .open_window(WindowOptions::new("File names"), move || {
+                let row = move |key: &u32, name: ReadSignal<String>| {
+                    let id = *key;
+                    let draft = state("draft", || name.get());
+                    text_input()
+                        .id(format!("name-{id}"))
+                        .label("File name")
+                        .value(draft)
+                        .h(32)
+                        .on_input(move |text| draft.set(text))
+                        .on_submit(move || submissions.update(|names| names.push((id, draft.get()))))
+                };
+                let rows = if virtualized { virtual_each(move || files.get(), |_| 32.0, row) } else { each(move || files.get(), row) };
+                col().size_full().overflow_y_scroll().child(rows)
+            })
+            .unwrap();
+        let identity = target(&window, "name-1");
+        window.dispatch(Event::Focus("name-1".into())).unwrap();
+        window.set_selection(1, 5);
+        window.event(InputEvent::Preedit { text: "nihao".into(), selection: Some((5, 5)) });
+
+        app.run(|| files.update(|files| files.reverse()));
+        let snapshot = window.inspect();
+        assert_eq!(snapshot.focus.as_deref(), Some("name-1"));
+        assert_eq!(snapshot.find("name-1").unwrap().target, identity);
+        let edit = snapshot.text_input.unwrap();
+        assert_eq!((edit.text.as_str(), edit.composition.as_str(), edit.selection), ("A😀Z", "nihao", [1, 5]));
+
+        window.press_key("enter").unwrap();
+        assert!(app.run(|| submissions.with(Vec::is_empty)));
+        window.event(InputEvent::Text("你好".into()));
+        assert_eq!(window.inspect().text_input.unwrap().text, "A你好Z");
+        window.press_key("enter").unwrap();
+        assert_eq!(app.run(|| submissions.get()), [(1, "A你好Z".to_owned())]);
+        window.press_key("mod+z").unwrap();
+        assert_eq!(window.inspect().text_input.unwrap().text, "A😀Z");
+        assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+        app.shutdown();
+    }
+}
+
+#[test]
 fn retiring_from_row_cleanup_skips_replacement_rows() {
     for virtualized in [false, true] {
         let app = App::new(HeadlessPlatform::default());

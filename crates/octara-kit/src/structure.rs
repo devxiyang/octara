@@ -10,11 +10,11 @@ use std::rc::Rc;
 
 /// A header that opens and closes its content below (SwiftUI's `DisclosureGroup`): a reasoning
 /// trace, a tool call's detail, a settings group. `open` holds whether it is open; `content`
-/// is built while it is (a scope: its state lives as long). `id` names it; its trigger is
+/// returns any [`IntoView`] and is built in the open section's scope. `id` names it; its trigger is
 /// `{id}-trigger` (a `Button` with `expanded`), its content `{id}-content`.
 #[ui]
 #[track_caller]
-pub fn collapsible(id: &str, open: impl Model<bool>, header: impl IntoView, content: impl Fn() -> View + 'static) -> El {
+pub fn collapsible<V: IntoView>(id: &str, open: impl Model<bool>, header: impl IntoView, content: impl Fn() -> V + 'static) -> El {
     let open = Rc::new(open);
     let (shown, flip, expanded, chevron) = (open.clone(), open.clone(), open.clone(), open.clone());
     let content_id = format!("{id}-content");
@@ -128,7 +128,7 @@ pub fn splitter(id: &str, width: impl Model<f32>) -> El {
     el().id(id.to_owned())
         .role(Role::Splitter)
         .label("Resize")
-        .value(move || format!("{}", value.get().round()))
+        .a11y_value(move || format!("{}", value.get().round()))
         .focusable()
         .w(7.0)
         .when_touch(|p| p.w(20.0))

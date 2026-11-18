@@ -9,11 +9,12 @@
 //! text, which the shell sends separately.
 
 use super::pointer::Modifiers;
-use super::{Handler, Modality, TargetPlatform, Window};
-use crate::diagnostics as codes;
-use crate::kernel::{Arrow, HandlerKind, NodeId, State};
+use super::{App, Handler, Modality, TargetPlatform, Window};
+use crate::kernel::{HandlerKind, NodeId, State};
 use crate::reactive::graph::{Operation, Runtime};
 use std::fmt;
+use std::panic::Location;
+use std::rc::Rc;
 
 /// A key, as the keyboard layout produces it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
@@ -187,22 +188,29 @@ pub struct Binding {
     pub context: Option<String>,
 }
 
-/// Bindings as data: what agents list, tests invoke and menus show. Later bindings win over
-/// earlier ones with the same context depth.
+impl Binding {
+    fn parse(chord: &str, command: Option<&str>, context: Option<&str>) -> Result<Self, String> {
+        Ok(Self { chord: Chord::parse(chord)?, command: command.map(str::to_owned), context: context.map(str::to_owned) })
+    }
+}
+
+/// Editable key bindings. Within a focus context, later bindings have priority.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct Keymap {
     pub bindings: Vec<Binding>,
 }
 
 impl Keymap {
-    /// Adds a binding; `command: None` unbinds.
-    pub fn bind(&mut self, chord: &str, command: Option<&str>, context: Option<&str>) -> Result<(), String> {
-        self.bindings.push(Binding {
-            chord: Chord::parse(chord)?,
-            command: command.map(str::to_owned),
-            context: context.map(str::to_owned),
-        });
+    /// Adds a binding to this configuration. `None` for the command unbinds the chord.
+    pub fn bind<'a>(&mut self, chord: &str, command: impl Into<Option<&'a str>>, context: Option<&str>) -> Result<(), String> {
+        let binding = Binding::parse(chord, command.into(), context)?;
+        self.add(binding);
         Ok(())
+    }
+
+    fn add(&mut self, binding: Binding) {
+        self.bindings.retain(|previous| previous != &binding);
+        self.bindings.push(binding);
     }
 
     /// The built-in bindings on `platform` (Rune's and the platforms' conventions).
@@ -360,26 +368,87 @@ pub const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("edit.redo", "redo what was undone"),
 ];
 
-impl Window {
-    /// The keymap in use: the platform's standard bindings, then the app's.
+impl App {
+    /// The app's configured bindings. The returned value can be edited and passed to
+    /// [`Self::set_keymap`].
     pub fn keymap(&self) -> Keymap {
-        (*self.app.full_keymap()).clone()
-    }
-    /// Replaces the app's bindings (the standard ones stay; unbind them with `None` commands).
-    pub fn set_keymap(&mut self, keymap: Keymap) {
-        *self.app.keymap.borrow_mut() = keymap;
-        self.app.keymap_changed();
-    }
-    /// Adds a binding (see [`Keymap::bind`]).
-    pub fn bind(&mut self, chord: &str, command: Option<&str>, context: Option<&str>) -> Result<(), String> {
-        let r = self.app.keymap.borrow_mut().bind(chord, command, context);
-        self.app.keymap_changed();
-        r
+        self.app.keymap.borrow().clone()
     }
 
+    /// A read-only snapshot of the platform defaults followed by the app's configuration.
+    /// Each window resolves these bindings against its own focus path and command availability.
+    ///
+    /// ```compile_fail
+    /// use octara::{app::App, platform::HeadlessPlatform};
+    /// let app = App::new(HeadlessPlatform::default());
+    /// app.set_keymap(app.effective_keymap()).unwrap();
+    /// ```
+    pub fn effective_keymap(&self) -> Rc<[Binding]> {
+        self.app.effective_keymap()
+    }
+
+    /// Replaces the app's configuration. All windows see the same new bindings.
+    /// The platform defaults can be overridden or unbound by entries in this configuration.
+    #[track_caller]
+    pub fn set_keymap(&self, keymap: Keymap) -> Result<(), String> {
+        self.update_keymap(Location::caller(), |_| keymap)
+    }
+
+    /// Adds a batch of `(chord, command, context)` bindings. All chords are parsed before the
+    /// batch is applied. Use a command name to bind, or `None` to unbind. Use `Some(name)` for
+    /// bindings in a batch that also unbinds keys. An absent context applies in every window.
+    /// Host calls, construction, handlers and tasks can configure bindings.
+    #[track_caller]
+    pub fn bind_keys<'a, C: Into<Option<&'a str>>>(
+        &self,
+        bindings: impl IntoIterator<Item = (&'a str, C, Option<&'a str>)>,
+    ) -> Result<(), String> {
+        let at = Location::caller();
+        self.check_keymap_registration(at)?;
+        let bindings = bindings
+            .into_iter()
+            .map(|(key, command, context)| Binding::parse(key, command.into(), context))
+            .collect::<Result<Vec<_>, _>>()?;
+        // The iterator can run app code. Recheck admission and apply to the latest configuration.
+        self.update_keymap(at, |current| {
+            let mut next = current.clone();
+            for binding in bindings {
+                next.add(binding);
+            }
+            next
+        })
+    }
+
+    fn check_keymap_registration(&self, at: &'static Location<'static>) -> Result<(), String> {
+        self.app.check_running()?;
+        if Runtime::caller_allows(Operation::Register, at) && self.app.rt.allows(Operation::Register, at) {
+            Ok(())
+        } else {
+            Err("key binding registration is not allowed in this execution phase".into())
+        }
+    }
+
+    fn update_keymap(&self, at: &'static Location<'static>, update: impl FnOnce(&Keymap) -> Keymap) -> Result<(), String> {
+        self.check_keymap_registration(at)?;
+        let mut current = self.app.keymap.borrow_mut();
+        let next = update(&current);
+        if *current == next {
+            return Ok(());
+        }
+        *current = next;
+        drop(current);
+        self.app.keymap_effective.borrow_mut().take();
+        if self.app.depth.get() == 0 {
+            self.app.frame(None, at);
+        }
+        Ok(())
+    }
+}
+
+impl Window {
     /// The focus path, innermost first: from the focused element (else the open modal, else
     /// the app's root element) up to the window.
-    fn focus_path(&self) -> Vec<NodeId> {
+    pub(super) fn focus_path(&self) -> Vec<NodeId> {
         let k = self.w.kernel.borrow();
         let modal = self.top_modal();
         let start = self
@@ -401,17 +470,16 @@ impl Window {
 
     /// The commands a key resolves to, best first: bindings whose context is on the focus path,
     /// deeper contexts first, later bindings first. `None` entries unbind.
-    fn resolve(&self, ev: &KeyEvent, path: &[NodeId]) -> Vec<Option<String>> {
+    pub(super) fn resolve(&self, ev: &KeyEvent, path: &[NodeId]) -> Vec<Option<String>> {
         let k = self.w.kernel.borrow();
         let platform = self.app.platform.get();
         // Depth of each context on the path (the window is depth 0).
         let depth_of = |ctx: &str| -> Option<usize> {
             path.iter().enumerate().find(|(_, id)| k.key_context(**id) == Some(ctx)).map(|(i, _)| path.len() - i)
         };
-        let keymap = self.app.full_keymap();
+        let keymap = self.app.effective_keymap();
         let found = |key: Key| -> Vec<(usize, usize, Option<String>)> {
             keymap
-                .bindings
                 .iter()
                 .enumerate()
                 .filter(|(_, b)| b.chord.matches(key, ev.modifiers, platform))
@@ -486,6 +554,10 @@ impl Window {
                 if ev.modifiers.intersects(Modifiers::CTRL | Modifiers::META) {
                     let text = self.w.kernel.borrow().preedit(n).to_owned();
                     self.insert_text(&text);
+                    self.settle_frame();
+                    if self.is_closed() || self.app.shutdown.get() || self.w.kernel.borrow().edit_pending(n) {
+                        return true;
+                    }
                 }
             }
         }
@@ -497,7 +569,7 @@ impl Window {
         for &n in &path {
             let handler = {
                 let k = self.w.kernel.borrow();
-                if k.state(n).contains(State::DISABLED) {
+                if !k.is_alive(n) || k.state(n).contains(State::DISABLED) {
                     continue;
                 }
                 k.handler(n, HandlerKind::Key).and_then(|h| self.w.handlers.borrow().get(&h.0).cloned())
@@ -517,6 +589,10 @@ impl Window {
                 }
             }
         }
+        if self.check_running().is_err() {
+            return false;
+        }
+        let path = self.focus_path();
         for command in self.resolve(ev, &path) {
             let Some(command) = command else { return false };
             if self.run_command(&command, &path) {
@@ -524,214 +600,6 @@ impl Window {
             }
         }
         false
-    }
-
-    /// Runs `command` for the focus path: an element's `on_command` (innermost first), else a
-    /// built-in, else the app's. Returns whether something handled it.
-    fn run_command(&self, command: &str, path: &[NodeId]) -> bool {
-        for &n in path {
-            let handler = {
-                let k = self.w.kernel.borrow();
-                if k.state(n).contains(State::DISABLED) {
-                    continue;
-                }
-                k.command_handler(n, command).and_then(|h| self.w.handlers.borrow().get(&h.0).cloned())
-            };
-            if let Some(handler) = handler {
-                let took = handler
-                    .run(&self.app.rt, |handler| match handler {
-                        Handler::Press(f) => {
-                            f();
-                            true
-                        }
-                        _ => false,
-                    })
-                    .unwrap_or(false);
-                if took {
-                    return true;
-                }
-            }
-        }
-        if self.builtin(command) {
-            return true;
-        }
-        let app_handler = {
-            let cmds = self.w.commands.borrow();
-            cmds.iter().rev().find(|(c, _)| c == command).and_then(|(_, h)| self.w.handlers.borrow().get(h).cloned())
-        };
-        if let Some(handler) = app_handler {
-            return handler
-                .run(&self.app.rt, |handler| match handler {
-                    Handler::Press(f) => {
-                        f();
-                        true
-                    }
-                    _ => false,
-                })
-                .unwrap_or(false);
-        }
-        false
-    }
-
-    /// A menu bar item picked: picked by its keys, they go through the keymap first (a binding in
-    /// a context here wins, as a key press's would); else, or unhandled, its command runs.
-    pub(super) fn on_menu_command(&mut self, command: &str, chord: Option<&str>) -> bool {
-        if let Some(ev) = chord.and_then(|c| Chord::parse(c).ok()).map(|c| c.event(self.app.platform.get()))
-            && self.on_key(ev)
-        {
-            return true;
-        }
-        self.invoke(command).is_ok()
-    }
-
-    /// Whether `command` would do something here now, found as running it finds its handler (the
-    /// focus path's elements, the built-ins, the app's): what a menu item for it shows.
-    pub fn command_enabled(&self, command: &str) -> bool {
-        let path = self.focus_path();
-        let handled = {
-            let k = self.w.kernel.borrow();
-            path.iter().any(|&n| !k.state(n).contains(State::DISABLED) && k.command_handler(n, command).is_some())
-        };
-        handled || self.builtin_enabled(command) || self.w.commands.borrow().iter().any(|(c, _)| c == command)
-    }
-
-    fn builtin_enabled(&self, command: &str) -> bool {
-        let focused = self.w.interaction.borrow().focused;
-        let handles = |kind: HandlerKind| focused.is_some_and(|f| self.w.kernel.borrow().handler_above(Some(f), kind).is_some());
-        match command {
-            "focus.next" | "focus.prev" | "focus.up" | "focus.down" | "focus.left" | "focus.right" | "focus.first" | "focus.last" => true,
-            "focus.dismiss" => self.top_modal().is_some() || focused.is_some() || self.w.selection.borrow().is_some(),
-            "press" => handles(HandlerKind::Press) || handles(HandlerKind::Toggle),
-            "submit" => handles(HandlerKind::Submit),
-            "menu" => handles(HandlerKind::SecondaryPress),
-            c if c.starts_with("edit.") => self.edit_enabled(c).unwrap_or_else(|| self.document_enabled(c)),
-            _ => false,
-        }
-    }
-
-    /// The keys the keymap binds to `command` here (everywhere, or in a context on the focus
-    /// path), as written (`"mod+c"`); the first such binding.
-    pub fn chord_for(&self, command: &str) -> Option<String> {
-        let path = self.focus_path();
-        let contexts: Vec<String> = {
-            let k = self.w.kernel.borrow();
-            path.iter().filter_map(|id| k.key_context(*id).map(str::to_owned)).collect()
-        };
-        self.app
-            .full_keymap()
-            .bindings
-            .iter()
-            .rev()
-            .filter(|b| b.command.as_deref() == Some(command))
-            .find(|b| b.context.as_ref().is_none_or(|ctx| contexts.contains(ctx)))
-            .map(|b| b.chord.to_string())
-    }
-
-    fn builtin(&self, command: &str) -> bool {
-        let focused = self.w.interaction.borrow().focused;
-        match command {
-            "focus.next" | "focus.prev" => {
-                self.tab(command == "focus.next");
-                true
-            }
-            "focus.up" => self.arrow(Arrow::Up),
-            "focus.down" => self.arrow(Arrow::Down),
-            "focus.left" => self.arrow(Arrow::Left),
-            "focus.right" => self.arrow(Arrow::Right),
-            "focus.first" => self.arrow(Arrow::Home),
-            "focus.last" => self.arrow(Arrow::End),
-            "focus.dismiss" => {
-                if self.top_modal().is_none() && focused.is_none() {
-                    // Escape with nothing else to dismiss clears a document selection.
-                    return self.clear_doc_selection();
-                }
-                self.escape();
-                true
-            }
-            "press" => focused.is_some_and(|n| self.run(n, &[HandlerKind::Press, HandlerKind::Toggle], None)),
-            // Without `on_submit` this is unhandled, and Enter falls through to `press`.
-            "submit" => focused.is_some_and(|n| self.run(n, &[HandlerKind::Submit], None)),
-            "menu" => {
-                let target = focused.and_then(|f| self.w.kernel.borrow().handler_above(Some(f), HandlerKind::SecondaryPress));
-                target.is_some_and(|n| self.run(n, &[HandlerKind::SecondaryPress], None))
-            }
-            c if c.starts_with("edit.") => self.edit_command(c) || (focused.is_none() && self.document_command(c)),
-            _ => false,
-        }
-    }
-
-    /// Runs a command as its key would, for the focused element (agents and menus call this).
-    /// Host calls, handlers and tasks may dispatch commands. Construction, initialization and
-    /// pure computations are rejected before dispatch, even through a captured window in
-    /// another App.
-    #[track_caller]
-    pub fn invoke(&mut self, command: &str) -> Result<(), String> {
-        let at = std::panic::Location::caller();
-        if !Runtime::caller_allows(Operation::Write, at) {
-            return Err("command invocation is not allowed in this execution phase".into());
-        }
-        self.check_running()?;
-        if !self.app.rt.allows(Operation::Write, at) {
-            return Err("command invocation is not allowed in this execution phase".into());
-        }
-        let mut done = false;
-        self.input_frame(|| {
-            let path = self.focus_path();
-            done = self.run_command(command, &path);
-        });
-        if done { Ok(()) } else { Err(format!("nothing handles `{command}` here (see `Window::commands`)")) }
-    }
-
-    pub(super) fn run_after_update_command(&self, command: &str, at: &'static std::panic::Location<'static>) -> bool {
-        if self.w.closed.get() {
-            self.w.interaction.borrow_mut().after_update.clear();
-            return false;
-        }
-        let path = self.focus_path();
-        if !self.run_command(command, &path) {
-            self.app.rt.diag(
-                &codes::COMMAND_UNHANDLED,
-                format!("nothing handles deferred command `{command}` on the restored focus path"),
-                at,
-            );
-        }
-        true
-    }
-
-    /// Commands available now: those the focus path's elements handle, the built-ins, and the
-    /// app's, each with the chords bound to it here.
-    pub fn commands(&self) -> Vec<(String, Vec<String>)> {
-        let path = self.focus_path();
-        let mut names = self.w.kernel.borrow().commands_on(&path);
-        for (c, _) in BUILTIN_COMMANDS {
-            if !names.iter().any(|n| n == c) {
-                names.push((*c).to_owned());
-            }
-        }
-        for (c, _) in self.w.commands.borrow().iter() {
-            if !names.contains(c) {
-                names.push(c.clone());
-            }
-        }
-        let keymap = self.app.full_keymap();
-        // Chords bound where focus is now: everywhere, or in a context on the focus path.
-        let contexts: Vec<String> = {
-            let k = self.w.kernel.borrow();
-            path.iter().filter_map(|id| k.key_context(*id).map(str::to_owned)).collect()
-        };
-        names
-            .into_iter()
-            .map(|c| {
-                let chords = keymap
-                    .bindings
-                    .iter()
-                    .filter(|b| b.command.as_deref() == Some(c.as_str()))
-                    .filter(|b| b.context.as_ref().is_none_or(|ctx| contexts.contains(ctx)))
-                    .map(|b| b.chord.to_string())
-                    .collect();
-                (c, chords)
-            })
-            .collect()
     }
 
     /// Presses the keys of `chord` (`"mod+s"`, `"tab"`, `"a"`), as a keyboard would: what the

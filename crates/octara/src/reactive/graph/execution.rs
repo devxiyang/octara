@@ -121,7 +121,6 @@ impl Runtime {
     /// Handle-based operations can run without an ambient App. If there is a caller,
     /// check its phase before switching owners, including cross-App cancellation.
     pub(crate) fn caller_allows(operation: Operation, at: &'static Location<'static>) -> bool {
-        let caller = CURRENT.with(|current| current.borrow().clone());
-        caller.is_none_or(|runtime| runtime.allows(operation, at))
+        Self::try_current().is_none_or(|runtime| runtime.allows(operation, at))
     }
 }

@@ -3,7 +3,7 @@
 //! when they close.
 
 use super::{Modality, Window};
-use crate::kernel::{Address, Arrow, HandlerKind, NodeId};
+use crate::kernel::{Address, HandlerKind, NodeId};
 
 /// An open modal and the element focused before it opened.
 #[derive(Clone, Copy, Debug)]
@@ -152,12 +152,11 @@ impl Window {
 
     /// Tab (`forward`) or Shift+Tab: the next stop in the Tab order of the open modal (else the
     /// window), wrapping.
-    pub(crate) fn tab(&self, forward: bool) {
-        self.set_modality(Modality::Keyboard);
+    pub(super) fn tab_target(&self, forward: bool) -> Option<NodeId> {
         let focused = self.w.interaction.borrow().focused;
         let order = self.w.kernel.borrow().focus_order(self.top_modal(), focused);
         if order.is_empty() {
-            return;
+            return None;
         }
         let at = focused.and_then(|f| order.iter().position(|n| *n == f));
         let next = match (at, forward) {
@@ -166,20 +165,12 @@ impl Window {
             (Some(i), true) => (i + 1) % order.len(),
             (Some(i), false) => (i + order.len() - 1) % order.len(),
         };
-        let _ = self.set_focus(Some(order[next]));
+        Some(order[next])
     }
 
-    /// An arrow (or Home / End) key: moves focus inside the focused element's focus group.
-    /// Returns whether it moved.
-    pub(crate) fn arrow(&self, arrow: Arrow) -> bool {
+    /// Moves focus to the resolved target and selects a radio when its group requests it.
+    pub(super) fn move_command_focus(&self, n: NodeId, group: Option<NodeId>) -> bool {
         self.set_modality(Modality::Keyboard);
-        let Some(f) = self.w.interaction.borrow().focused else { return false };
-        let (to, group) = {
-            let k = self.w.kernel.borrow();
-            let to = k.group_step(f, arrow);
-            (to, to.filter(|n| *n != f || k.checked(*n) != Some(true)).and_then(|n| k.radio_group(n)))
-        };
-        let Some(n) = to else { return false };
         if self.set_focus(Some(n)).is_err() {
             return false;
         }
@@ -199,17 +190,5 @@ impl Window {
             }
         }
         true
-    }
-
-    /// Escape: dismisses the open modal, else drops focus.
-    pub(crate) fn escape(&self) {
-        match self.top_modal() {
-            Some(m) => {
-                self.notify_lifecycle(m, HandlerKind::Dismiss);
-            }
-            None => {
-                let _ = self.set_focus(None);
-            }
-        }
     }
 }

@@ -270,10 +270,12 @@ fn popup_clicks_belong_to_their_nested_dialog_and_outside_clicks_close_the_right
             .p_4()
             .child(button("Open outer").id("open").on_press(move || outer.set(true)))
             .child(dialog("outer", "Outer", outer, DialogOptions::default(), move || {
-                col()
-                    .w_full()
-                    .child(button("Open inner").id("open-inner").on_press(move || inner.set(true)))
-                    .child(dialog("inner", "Inner", inner, DialogOptions::default(), move || {
+                col().w_full().child(button("Open inner").id("open-inner").on_press(move || inner.set(true))).child(dialog(
+                    "inner",
+                    "Inner",
+                    inner,
+                    DialogOptions::default(),
+                    move || {
                         row()
                             .w_full()
                             .gap_3()
@@ -287,9 +289,8 @@ fn popup_clicks_belong_to_their_nested_dialog_and_outside_clicks_close_the_right
                                 move |id| chosen.set(id),
                             ))
                             .child(button("Inside").id("inside"))
-                            .into()
-                    }))
-                    .into()
+                    },
+                ))
             }))
             .child(text(move || chosen.get()).id("chosen"))
     });

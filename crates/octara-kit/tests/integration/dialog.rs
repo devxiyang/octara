@@ -48,7 +48,6 @@ fn editor(click_outside: bool) -> View {
                         open.set(false);
                     }))
                     .child(button("Unavailable").id("disabled").disabled(true))
-                    .into()
             },
         )))
         .into()
@@ -160,7 +159,6 @@ fn closing_unmounts_content_and_reopening_resets_its_local_state() {
                     .gap_2()
                     .child(text(move || count.get().to_string()).id("count"))
                     .child(button("Increment").id("increment").on_press(move || count.update(|value| *value += 1)))
-                    .into()
             },
         ))
     });
@@ -194,12 +192,11 @@ fn nested_popup_and_dialog_dismiss_only_the_top_modal_and_restore_each_opener() 
                     .gap_2()
                     .child(button("Open inner").id("open-inner").on_press(move || inner.set(true)).autofocus())
                     .child(popover("details", popup, Placement::BELOW, button("Details"), move || {
-                        text_field(draft).id("popup-draft").label("Details").w(200.0).into()
+                        text_field(draft).id("popup-draft").label("Details").w(200.0)
                     }))
                     .child(dialog("inner", "Inner dialog", inner, DialogOptions::default(), move || {
-                        text_field(draft).id("inner-draft").label("Draft").w_full().into()
+                        text_field(draft).id("inner-draft").label("Draft").w_full()
                     }))
-                    .into()
             },
         ))
     });
@@ -241,7 +238,6 @@ fn a_long_dialog_fits_the_window_scrolls_its_body_and_keeps_close_visible_in_bot
                             .gap_2()
                             .children((0..30).map(|index| text(format!("Detail {index}: content for this dialog.")).min_h(32.0)))
                             .child(button("Last action").id("last-action"))
-                            .into()
                     },
                 ))
             });

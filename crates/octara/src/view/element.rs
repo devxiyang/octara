@@ -270,8 +270,13 @@ enum Content {
     Native(Native),
 }
 
+#[doc(hidden)]
+pub struct ElementContent(Content);
+
+#[doc(hidden)]
 #[derive(Default)]
-struct Input {
+pub struct Input {
+    value: Option<Prop<String>>,
     placeholder: Option<Prop<String>>,
     multiline: bool,
     rows: Option<(u16, u16)>,
@@ -309,14 +314,6 @@ impl Content {
     }
 
     #[track_caller]
-    fn input_mut(&mut self, method: &str) -> &mut Input {
-        match self {
-            Self::Input(input) => input,
-            _ => wrong_content(method, "text_input()"),
-        }
-    }
-
-    #[track_caller]
     fn native_mut(&mut self, method: &str) -> &mut Native {
         match self {
             Self::Native(native) => native,
@@ -336,22 +333,27 @@ fn wrong_content(method: &str, expected: &str) -> ! {
 /// An element with one content kind and shared styles, semantics and handlers.
 /// Only containers accept application children. Compose atomic content such as text, inputs
 /// and images inside a container built with [`el`], [`row`] or [`col`].
-/// Content-specific methods require the matching constructor, such as `text_input().rows(..)`
-/// and `image(..).object_fit(..)`. A mismatched kind panics with `ELEMENT_CONTENT`.
+/// Constructors that preserve a content type expose its own methods, such as
+/// [`TextInput::rows`]. After conversion to `El`, kind-specific operations such as
+/// `image(..).object_fit(..)` validate their content when called.
 ///
 /// ```compile_fail
 /// use octara::prelude::*;
 /// let picture = Image::rgba(1, 1, vec![255; 4]);
 /// el().img(&picture);
 /// ```
-pub struct El {
-    content: Content,
+pub struct El<C = ElementContent> {
+    content: C,
+    props: ElementProps,
+}
+
+struct ElementProps {
     role: Option<Role>,
     at: &'static Location<'static>,
     /// The `#[ui]` function building it, independent of its runtime owner.
     made: Option<crate::kernel::Component>,
     test_id: Option<Prop<String>>,
-    value: Option<Prop<String>>,
+    a11y_value: Option<Prop<String>>,
     numeric_range: Option<Prop<NumericRange>>,
     checked: Option<Prop<bool>>,
     required: Option<Prop<bool>>,
@@ -390,56 +392,80 @@ pub struct El {
     overlay_owner: Option<NodeId>,
 }
 
-impl From<El> for View {
-    fn from(e: El) -> View {
-        View::element(Box::new(e))
+/// An editable text input, with the shared element modifiers and its own editing options.
+/// It composes as an element or a view when passed to a parent.
+pub type TextInput = El<Input>;
+
+impl From<TextInput> for El {
+    fn from(input: TextInput) -> Self {
+        El { content: ElementContent(Content::Input(input.content)), props: input.props }
+    }
+}
+
+impl From<!> for El {
+    fn from(never: !) -> Self {
+        never
+    }
+}
+
+impl<C> From<El<C>> for View
+where
+    El<C>: Into<El>,
+{
+    fn from(element: El<C>) -> View {
+        View::element(Box::new(element.into()))
     }
 }
 
 fn new_el(content: Content, at: &'static Location<'static>) -> El {
-    El {
-        content,
-        role: None,
-        at,
-        made: super::building(),
-        test_id: None,
-        value: None,
-        numeric_range: None,
-        checked: None,
-        required: None,
-        invalid: None,
-        label: None,
-        description: None,
-        tooltip: None,
-        expanded: None,
-        active_descendant: None,
-        selected: None,
-        disabled: None,
-        hidden: false,
-        focusable: false,
-        styles: Vec::new(),
-        overrides: Vec::new(),
-        handlers: Behavior::default(),
-        behaviors: Vec::new(),
-        tab_index: 0,
-        focus_group: false,
-        preserve_focus_on_press: false,
-        autofocus: false,
-        modal: None,
-        key_context: None,
-        commands: Vec::new(),
-        group: None,
-        hover_alone: false,
-        region: false,
-        level: None,
-        live: None,
-        copy_markdown: None,
-        cursor: None,
-        follow_tail: false,
-        select_none: false,
-        overlays: Vec::new(),
-        anchor: None,
-        overlay_owner: None,
+    El { content: ElementContent(content), props: ElementProps::new(at) }
+}
+
+impl ElementProps {
+    fn new(at: &'static Location<'static>) -> Self {
+        Self {
+            role: None,
+            at,
+            made: super::building(),
+            test_id: None,
+            a11y_value: None,
+            numeric_range: None,
+            checked: None,
+            required: None,
+            invalid: None,
+            label: None,
+            description: None,
+            tooltip: None,
+            expanded: None,
+            active_descendant: None,
+            selected: None,
+            disabled: None,
+            hidden: false,
+            focusable: false,
+            styles: Vec::new(),
+            overrides: Vec::new(),
+            handlers: Behavior::default(),
+            behaviors: Vec::new(),
+            tab_index: 0,
+            focus_group: false,
+            preserve_focus_on_press: false,
+            autofocus: false,
+            modal: None,
+            key_context: None,
+            commands: Vec::new(),
+            group: None,
+            hover_alone: false,
+            region: false,
+            level: None,
+            live: None,
+            copy_markdown: None,
+            cursor: None,
+            follow_tail: false,
+            select_none: false,
+            overlays: Vec::new(),
+            anchor: None,
+            overlay_owner: None,
+        }
     }
 }
 
@@ -526,37 +552,41 @@ pub fn web_view(url: impl IntoProp<String>) -> El {
         Prop::Dyn(f) => Prop::Dyn(Box::new(move || serde_json::json!({ "url": f() }))),
     };
     let mut e = native_view("web");
-    e.content.native_mut("web_view").props = Some(props);
+    e.content.0.native_mut("web_view").props = Some(props);
     e
 }
 
-/// A text input. Text input needs the platform's input protocol (IME), so it is a core
-/// primitive; `octara-kit`'s `TextField` builds on it.
+/// A text input with an editing session and access to the platform's input method.
+///
+/// ```compile_fail
+/// use octara::prelude::*;
+/// text("Label").rows(2, 4);
+/// ```
 #[track_caller]
-pub fn text_input() -> El {
-    new_el(Content::Input(Input::default()), Location::caller()).focusable()
+pub fn text_input() -> TextInput {
+    El { content: Input::default(), props: ElementProps::new(Location::caller()) }.focusable()
 }
 
-impl Styled for El {
+impl<C> Styled for El<C> {
     fn style(mut self, p: StyleProp) -> Self {
-        self.styles.push(StyleValue::Static(p));
+        self.props.styles.push(StyleValue::Static(p));
         self
     }
 }
 
-impl El {
+impl<C> El<C> {
     /// Adds a component's event behavior before the application's `on_*` callbacks.
     /// Each call adds a layer in registration order; within a layer, setting the same event
     /// twice replaces it. Application callbacks remain replaceable independently of layers.
     /// A consumed key or retired mounted scope stops subsequent callbacks. IME routing runs
     /// first. Commands, modal dismissal and native protocols keep their dedicated owners.
     pub fn behavior(mut self, configure: impl FnOnce(Behavior) -> Behavior) -> Self {
-        self.behaviors.push(configure(Behavior::default()));
+        self.props.behaviors.push(configure(Behavior::default()));
         self
     }
 
     fn dyn_style<T: 'static>(mut self, prop: Prop<T>, make: fn(T) -> StyleProp) -> Self {
-        self.styles.push(match prop {
+        self.props.styles.push(match prop {
             Prop::Static(p) => StyleValue::Static(make(p)),
             Prop::Dyn(f) => StyleValue::Dyn(Box::new(move || make(f()))),
         });
@@ -574,7 +604,7 @@ impl El {
         self.dyn_style(p.into_prop(), StyleProp::BorderColor)
     }
     pub fn opacity(mut self, o: impl IntoProp<f32>) -> Self {
-        self.styles.push(match o.into_prop() {
+        self.props.styles.push(match o.into_prop() {
             Prop::Static(v) => StyleValue::Static(StyleProp::Opacity(v)),
             Prop::Dyn(f) => StyleValue::Dyn(Box::new(move || StyleProp::Opacity(f()))),
         });
@@ -587,7 +617,7 @@ impl El {
     /// properties fall back to earlier declarations or defaults. State overrides apply after
     /// base styles; use `style_when` for interaction states.
     pub fn style_with(mut self, f: impl Fn(Patch) -> Patch + 'static) -> Self {
-        self.styles.push(StyleValue::Patch(Box::new(f)));
+        self.props.styles.push(StyleValue::Patch(Box::new(f)));
         self
     }
 
@@ -601,18 +631,18 @@ impl El {
     /// Names this element a hover group: descendants style themselves on its hover with
     /// `group_hover` (GPUI's `group`): a row showing its delete button while hovered.
     pub fn group(mut self, name: &'static str) -> Self {
-        self.group = Some(name);
+        self.props.group = Some(name);
         self
     }
     /// Style while the nearest ancestor named `group` is hovered (GPUI's `group_hover`).
     pub fn group_hover(mut self, group: &'static str, f: impl FnOnce(Patch) -> Patch) -> Self {
-        self.overrides.push((When::GroupHover(group), f(Patch::default()).0));
+        self.props.overrides.push((When::GroupHover(group), f(Patch::default()).0));
         self
     }
     /// While hovered, the elements around this one are not (Rune's `hover_alone`): a card inside
     /// a hoverable card lights up alone.
     pub fn hover_alone(mut self) -> Self {
-        self.hover_alone = true;
+        self.props.hover_alone = true;
         self
     }
     /// Its texts can be selected as one document: press and drag across them, double press a
@@ -620,7 +650,7 @@ impl El {
     /// a message, Markdown). Rows of its lists keep their part of a selection while they scroll
     /// out and back.
     pub fn selectable(mut self) -> Self {
-        self.region = true;
+        self.props.region = true;
         self
     }
     /// A scroll container keeping the end of its content in view as the content grows (a
@@ -628,12 +658,12 @@ impl El {
     /// lets go of it; scrolling back to the end, or `scroll_to_end`, follows again. Read whether
     /// it follows with `following_tail` (to offer a way back to the end).
     pub fn follow_tail(mut self) -> Self {
-        self.follow_tail = true;
+        self.props.follow_tail = true;
         self
     }
     /// Its texts are not selected (list markers, labels of controls inside a selectable region).
     pub fn select_none(mut self) -> Self {
-        self.select_none = true;
+        self.props.select_none = true;
         self
     }
     /// Style while pressed (Tailwind's `active:`).
@@ -648,14 +678,14 @@ impl El {
     }
     /// Style while `state` is active (for `SELECTED` and `DISABLED`, set with `selected` / `disabled`).
     pub fn style_when(mut self, state: State, f: impl FnOnce(Patch) -> Patch) -> Self {
-        self.overrides.push((When::State(state), f(Patch::default()).0));
+        self.props.overrides.push((When::State(state), f(Patch::default()).0));
         self
     }
 
     /// Style while input is touch (iOS, Android): touch sizes for controls, as a coarse-pointer
     /// media query does. Resolved by the kernel when the platform changes: no closure reruns.
     pub fn when_touch(mut self, f: impl FnOnce(Patch) -> Patch) -> Self {
-        self.overrides.push((When::Touch, f(Patch::default()).0));
+        self.props.overrides.push((When::Touch, f(Patch::default()).0));
         self
     }
 
@@ -664,7 +694,7 @@ impl El {
     /// Style from size class `bp` up. Resolved by the kernel when the window crosses a class
     /// boundary: no closure reruns.
     pub fn screen(mut self, bp: Breakpoint, f: impl FnOnce(Patch) -> Patch) -> Self {
-        self.overrides.push((When::Screen(bp), f(Patch::default()).0));
+        self.props.overrides.push((When::Screen(bp), f(Patch::default()).0));
         self
     }
     /// From the medium size class up (600 dp: tablets in portrait, small windows).
@@ -688,15 +718,15 @@ impl El {
 
     /// The test id, which is also the node's semantic id.
     pub fn id(mut self, id: impl IntoProp<String>) -> Self {
-        self.test_id = Some(id.into_prop());
+        self.props.test_id = Some(id.into_prop());
         self
     }
     pub fn role(mut self, r: Role) -> Self {
-        self.role = Some(r);
+        self.props.role = Some(r);
         self
     }
     pub fn label(mut self, l: impl IntoProp<String>) -> Self {
-        self.label = Some(l.into_prop());
+        self.props.label = Some(l.into_prop());
         self
     }
     /// Text that shows when the mouse rests on it (GPUI's `tooltip`): the window's one tooltip,
@@ -704,52 +734,48 @@ impl El {
     /// description for assistive technology (unless it has one). An icon button names its action
     /// this way.
     pub fn tooltip(mut self, t: impl IntoProp<String>) -> Self {
-        self.tooltip = Some(t.into_prop());
+        self.props.tooltip = Some(t.into_prop());
         self
     }
     pub fn description(mut self, d: impl IntoProp<String>) -> Self {
-        self.description = Some(d.into_prop());
+        self.props.description = Some(d.into_prop());
         self
     }
     pub fn expanded(mut self, e: impl IntoProp<bool>) -> Self {
-        self.expanded = Some(e.into_prop());
+        self.props.expanded = Some(e.into_prop());
         self
     }
     /// The active option's test id, while keyboard focus stays on this element (a searchable
     /// combo box's input, for example). This does not select the option or move focus. Missing,
     /// detached and accessibility-hidden targets are omitted until they are shown again.
     pub fn active_descendant(mut self, id: impl IntoProp<Option<String>>) -> Self {
-        self.active_descendant = Some(id.into_prop());
+        self.props.active_descendant = Some(id.into_prop());
         self
     }
     pub fn checked(mut self, c: impl IntoProp<bool>) -> Self {
-        self.checked = Some(c.into_prop());
+        self.props.checked = Some(c.into_prop());
         self
     }
     /// Whether user input or selection is required, for assistive technology and inspection.
     pub fn required(mut self, required: impl IntoProp<bool>) -> Self {
-        self.required = Some(required.into_prop());
+        self.props.required = Some(required.into_prop());
         self
     }
     /// Whether the current value is invalid, for assistive technology and inspection.
     pub fn invalid(mut self, invalid: impl IntoProp<bool>) -> Self {
-        self.invalid = Some(invalid.into_prop());
-        self
-    }
-    pub fn value(mut self, v: impl IntoProp<String>) -> Self {
-        self.value = Some(v.into_prop());
+        self.props.invalid = Some(invalid.into_prop());
         self
     }
     /// Copies the selected texts in it as Markdown (`edit.copy_markdown`, `mod+alt+c`): `f` gets
     /// them in order (the keys of the list rows below this element, the selected part, whether
     /// it is the whole text) and gives the Markdown, or `None` to copy their text.
     pub fn copy_markdown(mut self, f: impl Fn(&[crate::kernel::select::Copied]) -> Option<String> + 'static) -> Self {
-        self.copy_markdown = Some(Rc::new(f));
+        self.props.copy_markdown = Some(Rc::new(f));
         self
     }
     /// How the pointer looks over it and its descendants (unless one sets its own).
     pub fn cursor(mut self, style: octara_primitives::input::CursorStyle) -> Self {
-        self.cursor = Some(style);
+        self.props.cursor = Some(style);
         self
     }
     /// The pointing hand (a link's look; native buttons keep the arrow).
@@ -774,31 +800,31 @@ impl El {
     }
     /// Its level for assistive technology: a heading's (1 to 6), a list item's nesting.
     pub fn level(mut self, level: u8) -> Self {
-        self.level = Some(level);
+        self.props.level = Some(level);
         self
     }
     /// A live region: assistive technology announces its changes, politely (after what it is
     /// saying) or assertively (at once).
     pub fn live(mut self, live: accesskit::Live) -> Self {
-        self.live = Some(live);
+        self.props.live = Some(live);
         self
     }
     /// Hidden from assistive technology (decorative parts, spacers).
     pub fn a11y_hidden(mut self) -> Self {
-        self.hidden = true;
+        self.props.hidden = true;
         self
     }
 
     // ---- interaction ----
 
     pub fn focusable(mut self) -> Self {
-        self.focusable = true;
+        self.props.focusable = true;
         self
     }
     /// Tab order: positive values come before the rest, in order; 0 (the default) follows the
     /// tree; a negative value keeps the element focusable but out of the Tab order.
     pub fn tab_index(mut self, i: i32) -> Self {
-        self.tab_index = i;
+        self.props.tab_index = i;
         self
     }
     /// Arrow keys move focus among the focusable elements inside, and Tab stops once (on the
@@ -806,74 +832,67 @@ impl El {
     /// move on Up and Down; other groups (tabs, toolbars, radio groups) on Left and Right too.
     /// Home and End go to the ends. Moving to a radio with these keys presses it to choose it.
     pub fn focus_group(mut self) -> Self {
-        self.focus_group = true;
+        self.props.focus_group = true;
         self
     }
     /// Keys while focus is on this element or inside it, before the keymap: return `true` to
     /// consume the key. Innermost handlers run first. Replaces the previous application
     /// callback; [`Self::behavior`] handlers remain and run first.
     pub fn on_key(mut self, f: impl Fn(&KeyEvent) -> bool + 'static) -> Self {
-        self.handlers = self.handlers.on_key(f);
+        self.props.handlers = self.props.handlers.on_key(f);
         self
     }
 
     /// Handles `command` (`"save"`, `"edit.copy"`) while focus is on this element or inside it:
     /// its chords in the keymap, `App::invoke` and menus run it.
     pub fn on_command(mut self, command: &str, f: impl Fn() + 'static) -> Self {
-        self.commands.push((command.to_owned(), Rc::new(f)));
+        self.props.commands.push((command.to_owned(), Rc::new(f)));
         self
     }
     /// Names a key context for this subtree: bindings with that context apply while focus is
     /// inside, over less specific ones (GPUI's `key_context`).
     pub fn key_context(mut self, name: &str) -> Self {
-        self.key_context = Some(name.to_owned());
+        self.props.key_context = Some(name.to_owned());
         self
     }
     /// Takes focus when the modal around it opens (else the modal's first text field, else its
     /// first Tab stop).
     pub fn autofocus(mut self) -> Self {
-        self.autofocus = true;
+        self.props.autofocus = true;
         self
     }
     /// While shown, the rest of the window is inert: presses outside reach nothing, and Tab
     /// stays inside. It takes focus when it opens and gives it back when it closes. Escape —
     /// and, with `click_outside`, a press outside — calls `dismiss`, which should close it.
     pub fn modal(mut self, click_outside: bool, dismiss: impl Fn() + 'static) -> Self {
-        self.modal = Some((click_outside, Rc::new(dismiss)));
+        self.props.modal = Some((click_outside, Rc::new(dismiss)));
         self
     }
     pub fn selected(mut self, s: impl IntoProp<bool>) -> Self {
-        self.selected = Some(s.into_prop());
+        self.props.selected = Some(s.into_prop());
         self
     }
     /// A disabled element refuses events and applies its `DISABLED` overrides.
     pub fn disabled(mut self, d: impl IntoProp<bool>) -> Self {
-        self.disabled = Some(d.into_prop());
+        self.props.disabled = Some(d.into_prop());
         self
     }
     /// A press: a click or tap that ends on the element, Enter or Space while it is focused, or
     /// assistive technology's activate.
     pub fn on_press(mut self, f: impl Fn() + 'static) -> Self {
-        self.handlers = self.handlers.on_press(f);
+        self.props.handlers = self.props.handlers.on_press(f);
         self
     }
     /// Pointer presses in this subtree keep the current keyboard focus. Useful for an
     /// editor's suggestions: choosing a row must not blur the editor or end its composition.
     /// Keyboard and semantic focus operations are unchanged. This does not make a popup modal.
     pub fn preserve_focus_on_press(mut self, preserve: bool) -> Self {
-        self.preserve_focus_on_press = preserve;
-        self
-    }
-    /// A text field's submission: Enter while it has focus (and no input method is composing).
-    /// Without one, Enter presses the field like any focused element. Replaces only the
-    /// application callback; component behavior still runs first.
-    pub fn on_submit(mut self, f: impl Fn() + 'static) -> Self {
-        self.handlers = self.handlers.on_submit(f);
+        self.props.preserve_focus_on_press = preserve;
         self
     }
     /// It got keyboard focus (GPUI's `on_focus`).
     pub fn on_focus(mut self, f: impl Fn() + 'static) -> Self {
-        self.handlers = self.handlers.on_focus(f);
+        self.props.handlers = self.props.handlers.on_focus(f);
         self
     }
     /// It lost keyboard focus (GPUI's `on_blur`): focus moved elsewhere or was cleared, not the
@@ -881,57 +900,49 @@ impl El {
     /// edited in place commits here. Replaces the previous application callback, after any
     /// [`Self::behavior`] handlers.
     pub fn on_blur(mut self, f: impl Fn() + 'static) -> Self {
-        self.handlers = self.handlers.on_blur(f);
+        self.props.handlers = self.props.handlers.on_blur(f);
         self
     }
 
     /// The second press of a double click or double tap (after its `on_press`).
     pub fn on_double_press(mut self, f: impl Fn() + 'static) -> Self {
-        self.handlers = self.handlers.on_double_press(f);
+        self.props.handlers = self.props.handlers.on_double_press(f);
         self
     }
     /// A context menu request: a right click (Control-click on macOS), a long press on touch
     /// (without `on_long_press`), or assistive technology's "show menu". The nearest element
     /// with one, from the pointer up, gets it.
     pub fn on_secondary_press(mut self, f: impl Fn() + 'static) -> Self {
-        self.handlers = self.handlers.on_secondary_press(f);
+        self.props.handlers = self.props.handlers.on_secondary_press(f);
         self
     }
     /// A touch held still for the long-press duration (500 ms by default); the release then
     /// presses nothing.
     pub fn on_long_press(mut self, f: impl Fn() + 'static) -> Self {
-        self.handlers = self.handlers.on_long_press(f);
+        self.props.handlers = self.props.handlers.on_long_press(f);
         self
     }
     /// A drag starting on the element: `Start` once the pointer moves past the slop (4 pt with a
     /// mouse, 8 pt with touch), then `Move`, then `End` (or `Cancel`). A drag is not a press.
     pub fn on_drag(mut self, f: impl Fn(&Drag) + 'static) -> Self {
-        self.handlers = self.handlers.on_drag(f);
+        self.props.handlers = self.props.handlers.on_drag(f);
         self
     }
     /// A finite numeric value requested by assistive technology or an agent. The component's
     /// behavior applies its own clamping and stepping before this callback. The argument remains
     /// the proposed value; read the model to observe its accepted value.
     pub fn on_numeric_input(mut self, f: impl Fn(f64) + 'static) -> Self {
-        self.handlers = self.handlers.on_numeric_input(f);
+        self.props.handlers = self.props.handlers.on_numeric_input(f);
         self
     }
     /// Numeric value, bounds and optional step for accessibility and Inspector. A missing
     /// value means indeterminate progress or a draft which does not currently parse.
     pub fn numeric_range(mut self, range: impl IntoProp<NumericRange>) -> Self {
-        self.numeric_range = Some(range.into_prop());
+        self.props.numeric_range = Some(range.into_prop());
         self
     }
-    /// Receives proposed input, after any [`Self::behavior`] handlers. Replaces the
-    /// previous application callback. A bare text input uses this callback to write its value;
-    /// a bound component writes its model in `behavior` before notifying this callback.
-    pub fn on_input(mut self, f: impl Fn(String) + 'static) -> Self {
-        self.handlers = self.handlers.on_input(f);
-        self
-    }
-
     pub fn on_toggle(mut self, f: impl Fn() + 'static) -> Self {
-        self.handlers = self.handlers.on_toggle(f);
+        self.props.handlers = self.props.handlers.on_toggle(f);
         self
     }
     /// While `open` holds, shows `content` above everything else, placed next to this element
@@ -943,7 +954,7 @@ impl El {
         placement: Placement,
         content: impl Fn() -> V + 'static,
     ) -> Self {
-        self.overlays.push(Overlay::new(open, Some(placement), content, None));
+        self.props.overlays.push(Overlay::new(open, Some(placement), content, None));
         self
     }
     /// While `open` holds, mounts `content` in the window's overlay layer, without an anchor.
@@ -951,22 +962,67 @@ impl El {
     /// while open and is disposed with this element; focus and dismissal come from `modal`.
     #[track_caller]
     pub fn overlay_window<V: IntoView>(mut self, open: impl Fn() -> bool + 'static, content: impl Fn() -> V + 'static) -> Self {
-        self.overlays.push(Overlay::new(open, None, content, None));
+        self.props.overlays.push(Overlay::new(open, None, content, None));
         self
     }
     /// An overlay placed by node `by` (not this element), open while this element is mounted.
     #[track_caller]
     pub(crate) fn overlay_by<V: IntoView>(mut self, by: NodeId, placement: Placement, content: impl Fn() -> V + 'static) -> Self {
-        self.overlays.push(Overlay::new(|| true, Some(placement), content, Some(by)));
+        self.props.overlays.push(Overlay::new(|| true, Some(placement), content, Some(by)));
         self
     }
 
+    /// A link in this element's rich text, or in its descendants', was pressed (a click, Enter
+    /// on it, assistive technology): `f` gets its target.
+    pub fn on_link(mut self, f: impl Fn(&str) + 'static) -> Self {
+        self.props.handlers = self.props.handlers.on_link(f);
+        self
+    }
+    /// Files dragged from the system (Finder, Explorer) were dropped on it or its descendants:
+    /// `f` gets their paths (GPUI's `on_drop::<ExternalPaths>`).
+    pub fn on_drop(mut self, f: impl Fn(&[std::path::PathBuf]) + 'static) -> Self {
+        self.props.handlers = self.props.handlers.on_drop(f);
+        self
+    }
+    /// Style while files dragged from the system are over it and it takes them (`on_drop`).
+    pub fn drag_over(self, f: impl FnOnce(Patch) -> Patch) -> Self {
+        self.style_when(State::DRAG_OVER, f)
+    }
+}
+
+impl TextInput {
+    /// Binds the text accepted by the application. Edits proposed by [`Self::on_input`]
+    /// become the editor's value when the application writes its model.
+    ///
+    /// ```compile_fail
+    /// use octara::prelude::*;
+    /// el().value("Choice");
+    /// ```
+    pub fn value(mut self, value: impl IntoProp<String>) -> Self {
+        self.content.value = Some(value.into_prop());
+        self
+    }
+
+    /// Receives proposed input, after any [`Self::behavior`] handlers. Replaces the
+    /// previous application callback. A bare text input uses this callback to write its value;
+    /// a bound component writes its model in `behavior` before notifying this callback.
+    pub fn on_input(mut self, f: impl Fn(String) + 'static) -> Self {
+        self.props.handlers = self.props.handlers.on_input(f);
+        self
+    }
+
+    /// A text field's submission: Enter while it has focus (and no input method is composing).
+    /// Without one, Enter presses the field like any focused element. Replaces only the
+    /// application callback; component behavior still runs first.
+    pub fn on_submit(mut self, f: impl Fn() + 'static) -> Self {
+        self.props.handlers = self.props.handlers.on_submit(f);
+        self
+    }
     /// Display-only hint for an empty input without composition. It never supplies the
     /// accessible name or editable value and does not affect automatic height. Single-line
     /// hints truncate; multiline hints wrap within the content box. Use `.label(..)` as well.
-    #[track_caller]
     pub fn placeholder(mut self, hint: impl IntoProp<String>) -> Self {
-        let input = self.content.input_mut("placeholder");
+        let input = &mut self.content;
         input.placeholder = Some(hint.into_prop());
         self
     }
@@ -974,43 +1030,46 @@ impl El {
     /// Makes a text input multi-line: the text wraps at its width and the field grows with it,
     /// Enter (and Shift+Enter) breaks the line, Cmd+Enter (Ctrl+Enter) submits; Up, Down, Page
     /// Up, Page Down, Home and End move by visual lines; a paste keeps its line breaks.
-    #[track_caller]
     pub fn multiline(mut self) -> Self {
-        self.content.input_mut("multiline").multiline = true;
+        self.content.multiline = true;
         self
     }
     /// A multi-line text input's height: it follows its text from `min` to `max` lines and
     /// scrolls inside beyond (the caret kept in view). Makes the input multi-line.
-    #[track_caller]
     pub fn rows(mut self, min: u16, max: u16) -> Self {
-        let input = self.content.input_mut("rows");
+        let input = &mut self.content;
         input.multiline = true;
         input.rows = Some((min, max));
         self
     }
     /// A multi-line text input as a chat composer: Enter submits, Shift+Enter (or Option+Enter)
     /// breaks the line. Makes the input multi-line.
-    #[track_caller]
     pub fn submit_on_enter(mut self) -> Self {
-        let input = self.content.input_mut("submit_on_enter");
+        let input = &mut self.content;
         input.multiline = true;
         input.submit_on_enter = true;
         self
     }
-    /// Makes a text input a secure field (a password): the value shows as bullets; copy, cut,
-    /// undo and the input method are off; assistive technology, `inspect`, `check`, logs and
-    /// `Debug` see bullets only. On touch platforms the last typed character shows for a moment.
-    #[track_caller]
+    /// Makes a text input a secure field. It disables copy, cut, undo and the input method.
+    /// The screen and assistive technology read bullets while the field is masked.
+    /// `inspect`, `check`, logs and `Debug` report bullets. Touch platforms briefly show the last typed character.
     pub fn secure(mut self) -> Self {
-        self.content.input_mut("secure").secure = true;
+        self.content.secure = true;
         self
     }
-    /// Shows a secure field's text (a "show password" toggle: `.revealed(move || show.get())`);
-    /// its other protections stay.
-    #[track_caller]
+    /// Shows a secure field's text on screen and to assistive technology.
+    /// Bind it to a "show password" toggle with `.revealed(move || show.get())`.
     pub fn revealed(mut self, on: impl IntoProp<bool>) -> Self {
-        let input = self.content.input_mut("revealed");
+        let input = &mut self.content;
         input.revealed = Some(on.into_prop());
+        self
+    }
+}
+
+impl El {
+    /// A value reported to assistive technology for a non-editor, such as a picker's selected item.
+    pub fn a11y_value(mut self, value: impl IntoProp<String>) -> Self {
+        self.props.a11y_value = Some(value.into_prop());
         self
     }
     /// Which side of Octara's surface a native view is on: `Slot::Overlay` (above it, the
@@ -1018,42 +1077,26 @@ impl El {
     /// can draw over it: maps, video).
     #[track_caller]
     pub fn slot(mut self, slot: crate::native::Slot) -> Self {
-        self.content.native_mut("slot").slot = slot;
+        self.content.0.native_mut("slot").slot = slot;
         self
     }
     /// A native view's props: one JSON value, handed to its host whole when it changes.
     #[track_caller]
     pub fn props(mut self, props: impl IntoProp<serde_json::Value>) -> Self {
-        let native = self.content.native_mut("props");
+        let native = self.content.0.native_mut("props");
         native.props = Some(props.into_prop());
         self
     }
     /// Events from a native view (a page loaded, a map moved).
     #[track_caller]
     pub fn on_native(mut self, f: impl Fn(&crate::native::NativeEvent) + 'static) -> Self {
-        self.content.native_mut("on_native").on_event = Some(Rc::new(f));
+        self.content.0.native_mut("on_native").on_event = Some(Rc::new(f));
         self
-    }
-    /// A link in this element's rich text, or in its descendants', was pressed (a click, Enter
-    /// on it, assistive technology): `f` gets its target.
-    pub fn on_link(mut self, f: impl Fn(&str) + 'static) -> Self {
-        self.handlers = self.handlers.on_link(f);
-        self
-    }
-    /// Files dragged from the system (Finder, Explorer) were dropped on it or its descendants:
-    /// `f` gets their paths (GPUI's `on_drop::<ExternalPaths>`).
-    pub fn on_drop(mut self, f: impl Fn(&[std::path::PathBuf]) + 'static) -> Self {
-        self.handlers = self.handlers.on_drop(f);
-        self
-    }
-    /// Style while files dragged from the system are over it and it takes them (`on_drop`).
-    pub fn drag_over(self, f: impl FnOnce(Patch) -> Patch) -> Self {
-        self.style_when(State::DRAG_OVER, f)
     }
     /// An icon's stroke width on its grid (2 for the bundled icons; 1.5 is lighter).
     #[track_caller]
     pub fn stroke_width(mut self, width: f32) -> Self {
-        match &mut self.content {
+        match &mut self.content.0 {
             Content::Icon { stroke_width, .. } => *stroke_width = Some(width),
             _ => wrong_content("stroke_width", "icon()"),
         }
@@ -1062,7 +1105,7 @@ impl El {
     /// How the image fits the element (GPUI's `object_fit`). Requires [`image`].
     #[track_caller]
     pub fn object_fit(mut self, fit: crate::image::ObjectFit) -> Self {
-        match &mut self.content {
+        match &mut self.content.0 {
             Content::Image { fit: current, .. } => *current = fit,
             _ => wrong_content("object_fit", "image()"),
         }
@@ -1073,7 +1116,7 @@ impl El {
     /// string shown as text. Atomic content rejects this call with `ELEMENT_CONTENT`.
     #[track_caller]
     pub fn child(mut self, view: impl IntoView) -> Self {
-        self.content.children_mut("child").push(view.into_view(Location::caller()));
+        self.content.0.children_mut("child").push(build_content(Location::caller(), || view));
         self
     }
     /// Adds children from any iterator: `.children(items.iter().map(|i| ..))`.
@@ -1081,7 +1124,7 @@ impl El {
     #[track_caller]
     pub fn children<V: IntoView>(mut self, views: impl IntoIterator<Item = V>) -> Self {
         let at = Location::caller();
-        self.content.children_mut("children").extend(views.into_iter().map(|view| view.into_view(at)));
+        self.content.0.children_mut("children").extend(views.into_iter().map(|view| build_content(at, || view)));
         self
     }
 }
@@ -1103,10 +1146,11 @@ fn bind<T: 'static>(at: &'static Location<'static>, node: NodeId, prop: Prop<T>,
 
 /// Builds a detached node for `e` with its bindings, handlers and children. The node is
 /// destroyed when the current scope is disposed.
-pub(crate) fn build_el(mut e: El) -> NodeId {
+pub(crate) fn build_el(element: El) -> NodeId {
+    let El { content: ElementContent(content), props: mut e } = element;
     let u = crate::app::window();
     let at = e.at;
-    let node = e.content.create_node(&mut u.kernel.borrow_mut());
+    let node = content.create_node(&mut u.kernel.borrow_mut());
     u.kernel.borrow_mut().set_origin(node, at);
     u.kernel.borrow_mut().set_component(node, e.made);
     {
@@ -1124,7 +1168,7 @@ pub(crate) fn build_el(mut e: El) -> NodeId {
         if let Some(r) = e.role {
             k.set_role(node, r);
         }
-        if let Content::Input(input) = &e.content {
+        if let Content::Input(input) = &content {
             k.set_multiline(node, input.multiline);
             if let Some((min, max)) = input.rows {
                 k.set_rows(node, min, max);
@@ -1132,7 +1176,7 @@ pub(crate) fn build_el(mut e: El) -> NodeId {
             k.set_submit_on_enter(node, input.submit_on_enter);
             k.set_secure(node, input.secure);
         }
-        let decorative_icon = matches!(e.content, Content::Icon { .. }) && e.label.is_none() && e.role.is_none();
+        let decorative_icon = matches!(content, Content::Icon { .. }) && e.label.is_none() && e.role.is_none();
         if e.hidden || decorative_icon {
             k.set_hidden(node, true);
         }
@@ -1181,7 +1225,7 @@ pub(crate) fn build_el(mut e: El) -> NodeId {
         bind(at, node, p, |k, n, v: &String| k.set_test_id(n, Some(v)));
     }
     let mut children = Vec::new();
-    match e.content {
+    match content {
         Content::Text(TextContent::Prop(p)) => bind(at, node, p, |k, n, v: &Rich| k.set_rich(n, v.as_str(), v.runs())),
         Content::Text(TextContent::Buffer(t)) => {
             let cursor = t.subscribe();
@@ -1225,6 +1269,9 @@ pub(crate) fn build_el(mut e: El) -> NodeId {
                     true
                 });
             }
+            if let Some(p) = input.value {
+                bind(at, node, p, |k, n, v: &String| k.set_value(n, v));
+            }
         }
         Content::Native(native) => {
             if let Some(p) = native.props {
@@ -1239,8 +1286,8 @@ pub(crate) fn build_el(mut e: El) -> NodeId {
         Content::Box(content) => children = content,
         Content::Image { .. } | Content::Icon { .. } => {}
     }
-    if let Some(p) = e.value {
-        bind(at, node, p, |k, n, v: &String| k.set_value(n, v));
+    if let Some(p) = e.a11y_value {
+        bind(at, node, p, |k, n, v: &String| k.set_a11y_value(n, v));
     }
     if let Some(p) = e.numeric_range {
         bind(at, node, p, |k, n, v: &NumericRange| k.set_numeric_range(n, Some(*v)));
@@ -1401,8 +1448,8 @@ fn mount_overlay(anchor: NodeId, o: Overlay) {
     let view = super::as_part_of(o.made, || {
         show(o.open, move || {
             let mut b = new_el(Content::Box(vec![content()]), at);
-            b.overlay_owner = Some(anchor);
-            b.anchor = placement.map(|placement| (by.unwrap_or(anchor), placement));
+            b.props.overlay_owner = Some(anchor);
+            b.props.anchor = placement.map(|placement| (by.unwrap_or(anchor), placement));
             if placement.is_none() {
                 b = b.absolute().inset_0().size_full();
             }

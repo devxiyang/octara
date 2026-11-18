@@ -65,6 +65,35 @@ fn open_from_keyboard(window: &mut Window) {
 }
 
 #[test]
+fn edit_menu_uses_the_context_it_will_restore_on_pick() {
+    let mut window = Window::headless(|| {
+        let draft = state("draft", || "Draft".to_owned());
+        let open = state("edit-menu", || false);
+        col().size_full().p_4().gap_4().child(text_field(draft).id("editor").label("Name")).child(menu_button(
+            "edit",
+            "Edit",
+            open,
+            Menu::edit,
+        ))
+    });
+    window.tap("editor").unwrap();
+    window.tap("edit").unwrap();
+    let undo = "edit-action-edit.undo";
+    assert!(window.kernel().state_of(undo).unwrap().contains(State::DISABLED));
+    window.press_key("escape").unwrap();
+    assert_eq!(focused(&window).as_deref(), Some("editor"));
+    window.type_text("!");
+    window.tap("edit").unwrap();
+    assert!(!window.kernel().state_of(undo).unwrap().contains(State::DISABLED));
+    window.tap(undo).unwrap();
+    assert_eq!(focused(&window).as_deref(), Some("editor"));
+    assert_eq!(window.inspect().text_input.unwrap().text, "Draft");
+    assert!(!window.command_enabled("edit.undo"));
+    clean(&window);
+    window.app().shutdown();
+}
+
+#[test]
 fn menu_navigation_skips_disabled_rows_and_submenus_follow_native_horizontal_keys() {
     let mut window = Window::headless(commands);
     open_from_keyboard(&mut window);
@@ -230,11 +259,12 @@ fn menu_inside_a_dialog_restores_the_editor_without_dismissing_its_enclosing_mod
             open,
             DialogOptions::default(),
             move || {
-                col()
-                    .gap_2()
-                    .child(text_field(value).id("editor").label("Editor").w_full())
-                    .child(menu_button("edit", "Edit", menu, || Menu::new("Edit").item(MenuItem::action("Copy", "edit.copy"))))
-                    .into()
+                col().gap_2().child(text_field(value).id("editor").label("Editor").w_full()).child(menu_button(
+                    "edit",
+                    "Edit",
+                    menu,
+                    || Menu::new("Edit").item(MenuItem::action("Copy", "edit.copy")),
+                ))
             },
         ))
     });
@@ -492,7 +522,7 @@ fn semantic_focus_cannot_leave_an_open_modal() {
             .p_4()
             .child(button("Outside").id("outside"))
             .child(button("Open").id("open").on_press(move || open.set(true)))
-            .child(dialog("modal", "Modal", open, DialogOptions::default(), || button("Inside").id("inside").into()))
+            .child(dialog("modal", "Modal", open, DialogOptions::default(), || button("Inside").id("inside")))
     });
     window.tap("open").unwrap();
     assert!(window.dispatch(Event::Focus("outside".into())).is_err());

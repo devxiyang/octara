@@ -6,7 +6,7 @@ use octara::reactive::list::{FlatItem, FlatKey};
 use octara_kit::{button, checkbox, ghost_button, primary_button, switch, text_field, toggle_button};
 
 #[ui]
-pub fn counter() -> View {
+pub fn counter() -> El {
     let count = state("count", || 0i64);
     let double = memo(move || count.get() * 2);
     col()
@@ -18,7 +18,6 @@ pub fn counter() -> View {
                 .child(button("Reset").id("reset").on_press(move || count.set(0))),
         )
         .size_full()
-        .into()
 }
 
 /// Declaration-order and patch replacement checks in a real retained window.

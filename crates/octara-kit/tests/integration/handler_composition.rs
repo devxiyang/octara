@@ -247,7 +247,8 @@ fn a_model_setter_closing_the_window_skips_application_notification() {
                     .on_numeric_input(|_| panic!("notification after setter retired scope")),
                 "submit" => octara_kit::number_field((|| "2.00".to_owned(), move |_| close()), 0.0, 10.0, 0.5)
                     .id("control")
-                    .on_submit(|| panic!("notification after setter retired scope")),
+                    .on_submit(|| panic!("notification after setter retired scope"))
+                    .into(),
                 _ => unreachable!(),
             }
         });
@@ -278,9 +279,8 @@ fn popover_preserves_trigger_callbacks_and_later_replacement_keeps_open_behavior
             let open = state("open", || false);
             let (original, replacement) = (saved.clone(), saved.clone());
             let trigger = octara_kit::button("Details").on_press(move || original.borrow_mut().push(format!("original:{}", open.get())));
-            let popup = octara_kit::popover("details", open, Placement::BELOW, trigger, || {
-                text_input().id("inside").value("draft").autofocus().into()
-            });
+            let popup =
+                octara_kit::popover("details", open, Placement::BELOW, trigger, || text_input().id("inside").value("draft").autofocus());
             let popup =
                 if replace { popup.on_press(move || replacement.borrow_mut().push(format!("replacement:{}", open.get()))) } else { popup };
             col().size_full().p_4().child(popup)
@@ -353,7 +353,7 @@ fn popup_trigger_notification_can_close_the_window_after_its_model_updates() {
             let trigger = if menu {
                 octara_kit::menu_button("trigger", "Actions", open, || Menu::new("Actions"))
             } else {
-                octara_kit::popover("trigger", open, Placement::BELOW, octara_kit::button("Details"), || text("Details").into())
+                octara_kit::popover("trigger", open, Placement::BELOW, octara_kit::button("Details"), || "Details")
             };
             trigger.on_press(move || {
                 assert!(open.get(), "the component updates before notifying");
@@ -363,5 +363,38 @@ fn popup_trigger_notification_can_close_the_window_after_its_model_updates() {
         window.tap("trigger").unwrap();
         assert!(window.is_closed());
         assert!(window.app().diagnostics().is_empty());
+    }
+}
+
+#[test]
+fn retiring_from_a_kit_content_factory_skips_its_conversion() {
+    use octara_kit::{DialogOptions, button, collapsible, dialog, popover};
+
+    struct Unconverted;
+
+    impl IntoView for Unconverted {
+        fn into_view(self, _: &'static std::panic::Location<'static>) -> View {
+            panic!("a retired content factory must not convert its result");
+        }
+    }
+
+    fn retire() -> Unconverted {
+        watch(|| (), |_, _| close_window(current_window()));
+        Unconverted
+    }
+
+    for name in ["collapsible", "dialog", "popover"] {
+        let window = Window::headless(move || {
+            let open = state("open", || true);
+            match name {
+                "collapsible" => collapsible(name, open, "Details", retire).into(),
+                "dialog" => dialog(name, "Details", open, DialogOptions::default(), retire),
+                "popover" => popover(name, open, Placement::BELOW, button("Details"), retire).into(),
+                _ => unreachable!(),
+            }
+        });
+        assert!(window.is_closed(), "{name}");
+        assert!(window.app().diagnostics().is_empty(), "{:?}", window.app().diagnostics());
+        window.app().shutdown();
     }
 }

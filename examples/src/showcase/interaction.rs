@@ -108,7 +108,6 @@ pub fn card() -> El {
                             .child(text("返回草稿后继续编辑。").text_sm().text_color(Token::TextMuted)),
                     )
                     .child(button("完成").id("editor-done").on_press(move || open.set(false)))
-                    .into()
             },
         ))
 }

@@ -100,7 +100,7 @@ pub fn bindings() -> View {
                     popup,
                     Placement::BELOW,
                     button("Details").on_press(move || seen.set(format!("popup:{}", popup.get()))),
-                    || text_input().id("details-input").label("Details").value("Popup draft").w(200).autofocus().into(),
+                    || text_input().id("details-input").label("Details").value("Popup draft").w(200).autofocus(),
                 ))
                 .child(
                     menu_button("actions", "Actions", menu, || Menu::new("Actions").item(MenuItem::action("Choose", "bindings.choose")))

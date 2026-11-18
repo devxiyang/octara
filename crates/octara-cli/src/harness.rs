@@ -5,10 +5,10 @@
 //!
 //! ```toml
 //! [package.metadata.octara]
-//! view = "my_app::app"          # a `fn() -> View`
+//! view = "my_app::app"          # a function returning El, View, or other IntoView content
 //! # optional, for `octara check`:
 //! themes = ["light", "dark"]
-//! sizes = [{ name = "phone", width = 390, height = 844, touch = true }]
+//! sizes = [{ name = "phone", width = 390, height = 844, platform = "ios" }]
 //! accept = [{ code = "SMALL_TARGET", id = "dot-*", why = "page dots; swiping works too" }]
 //! ```
 //!
@@ -85,7 +85,7 @@ pub fn find(manifest_path: Option<&Path>, package: Option<&str>) -> Result<Targe
         None => match with_view.as_slice() {
             [one] => one,
             [] => {
-                return Err("no package names its root view: add to the app's Cargo.toml\n\n[package.metadata.octara]\nview = \"my_app::app\"   # a `fn() -> View`".into());
+                return Err("no package names its root view: add to the app's Cargo.toml\n\n[package.metadata.octara]\nview = \"my_app::app\"   # a function returning IntoView content".into());
             }
             many => {
                 let names: Vec<&str> = many.iter().filter_map(|p| p["name"].as_str()).collect();

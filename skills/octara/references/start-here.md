@@ -135,17 +135,23 @@ assert!(!app.kernel().exists("todo-1"));
 ```rust
 use octara::prelude::*;
 
-let mut app = Window::headless(|| {
+let mut window = Window::headless(|| {
     let saved = state("saved", || 0);
     on_command("save", move || saved.update(|n| *n += 1));
     col().size_full().child(text(move || format!("saved {}", saved.get())).id("saved"))
 });
-app.bind("mod+s", Some("save"), None).unwrap(); // `mod` is cmd on Apple platforms, ctrl elsewhere
-app.press_key("mod+s").unwrap();
-assert_eq!(app.kernel().text_of("saved").as_deref(), Some("saved 1"));
+window.app().bind_keys([("mod+s", "save", None)]).unwrap(); // `mod` is Cmd on Apple platforms, Ctrl elsewhere
+window.press_key("mod+s").unwrap();
+assert_eq!(window.kernel().text_of("saved").as_deref(), Some("saved 1"));
 ```
 
+快捷键由 App 配置。`bind_keys` 整批解析后提交，解除绑定时将命令写为 `None`。`App::keymap()` 返回可编辑的应用配置，`App::set_keymap(...)` 接受同一类型。`App::effective_keymap()` 返回平台默认项和应用配置合成后的只读快照，窗口再按焦点选择生效的命令。
+
+在按钮的 `.disabled(move || !window.command_enabled("edit.undo"))` 绑定中，可用性会随焦点和编辑历史更新。Inspector 快照的 `commands` 也来自当前窗口。检查命令执行后的文本与业务状态，可以区分已投递的编辑请求和应用接受的结果。
+
 编辑回调收到当前提议。组件用 `behavior` 注册内部模型更新，应用追加回调仍然可以读到模型接受的值。测试直接注入框架编辑事件；要验收系统输入法，还需系统键盘与原生窗口。
+
+`text_input()` 和 Kit 的 `text_field(model)`、`number_field(...)` 都返回 `TextInput`。直接链式配置 `.id(...)`、`.rows(...)` 或 `.on_submit(...)`。建议列表 `popup_list` 接受这个编辑器类型，`field` 也可为复选框等其他单节点控件提供标签。`TextInput::value` 绑定应用接受的正文，普通选择器通过 `El::a11y_value` 报告选中项名称。
 
 ```rust
 use octara::prelude::*;
@@ -241,6 +247,8 @@ let window = app.open_window(WindowOptions::new("Configured"), || text("Ready"))
 assert_eq!(window.inspect().theme, "dark");
 app.shutdown();
 ```
+
+同一个根函数可以交给桌面宿主、`Window::headless` 和 `octara check`。根函数可直接返回 `El`、`View` 或其他 `IntoView` 内容。CLI 从应用的 `[package.metadata.octara]` 表读取 `view` 的函数路径。检查矩阵在每次执行根函数前设置平台、主题和尺寸。`octara inspect` 与 `octara run` 会在挂载前应用传入的 `--theme` 和 `--size`。
 
 ## 进入真实窗口
 

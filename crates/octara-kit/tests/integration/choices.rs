@@ -251,7 +251,7 @@ fn a_standalone_popover_is_controlled_modal_and_restores_previous_focus() {
             open,
             Placement::BELOW,
             button("Details"),
-            move || text_field(name).id("details-name").label("Name").autofocus().into(),
+            move || text_field(name).id("details-name").label("Name").autofocus(),
         ))
     });
     window.tap("outside").unwrap();

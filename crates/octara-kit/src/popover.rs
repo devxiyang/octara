@@ -8,8 +8,8 @@ use std::rc::Rc;
 ///
 /// `id` names the trigger; the popup is `{id}-popover`. Component behavior updates `open`
 /// before the trigger's application `on_press`, preserving callbacks supplied on the trigger
-/// or added afterwards. The component owns `expanded`. Chain styles and put ordinary elements in
-/// `content` to customize its contents. The surface supplies padding, border and shadow.
+/// or added afterwards. The component owns `expanded`. The content factory accepts any
+/// [`IntoView`]. The surface supplies padding, border and shadow.
 ///
 /// This is a modal popup: while open, focus stays inside and the rest of the window is inert.
 /// Escape or a press outside dismisses it, restoring the previous focus (the trigger when it
@@ -17,7 +17,7 @@ use std::rc::Rc;
 /// modal open.
 #[ui]
 #[track_caller]
-pub fn popover(id: &str, open: impl Model<bool>, placement: Placement, trigger: El, content: impl Fn() -> View + 'static) -> El {
+pub fn popover<V: IntoView>(id: &str, open: impl Model<bool>, placement: Placement, trigger: El, content: impl Fn() -> V + 'static) -> El {
     let open = Rc::new(open);
     let (expanded, press, shown, dismiss) = (open.clone(), open.clone(), open.clone(), open);
     let panel_id = format!("{id}-popover");

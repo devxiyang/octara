@@ -122,7 +122,7 @@ pub fn combobox(
                     .unwrap_or_else(|| label.clone())
             }
         };
-        let trigger = button(caption.clone()).label(label.clone()).value(caption).w_full().min_w(0.0).truncate();
+        let trigger = button(caption.clone()).label(label.clone()).a11y_value(caption).w_full().min_w(0.0).truncate();
         let popup_id = id.clone();
         let popup_label = label.clone();
         let popup_value = value.clone();
@@ -208,16 +208,10 @@ pub fn combobox(
                         },
                     ));
                 let empty_id = popup_id.clone();
-                col()
-                    .w(260.0)
-                    .gap_2()
-                    .child(search)
-                    .child(list)
-                    .child(show(
-                        move || matches.with(Vec::is_empty),
-                        move || text("No results").id(format!("{empty_id}-empty")).px_3().py_2().text_sm().text_color(Token::TextMuted),
-                    ))
-                    .into()
+                col().w(260.0).gap_2().child(search).child(list).child(show(
+                    move || matches.with(Vec::is_empty),
+                    move || text("No results").id(format!("{empty_id}-empty")).px_3().py_2().text_sm().text_color(Token::TextMuted),
+                ))
             },
         )
         .role(Role::ComboBox)

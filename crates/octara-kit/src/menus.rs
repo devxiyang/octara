@@ -6,6 +6,19 @@ use octara::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+fn command_menu(mut menu: Menu) -> Menu {
+    let Some(window) = App::current().window(current_window()) else { return menu };
+    for item in menu.actions_mut() {
+        if let MenuItem::Action { id, enabled, shortcut, .. } = item {
+            *enabled &= window.command_enabled(id);
+            if shortcut.is_none() {
+                *shortcut = window.chord_for(id);
+            }
+        }
+    }
+    menu
+}
+
 /// A button opening a finite command menu controlled by `open`.
 ///
 /// The trigger is `id`, the popup `{id}-menu`, actions `{id}-action-{command}`, and submenu
@@ -14,8 +27,9 @@ use std::rc::Rc;
 /// their indices identify only this opening; identical display names remain distinct.
 ///
 /// `menu` is sampled once per opening. Changes to labels, checked states, availability or order
-/// appear next time it opens. The open menu retains its snapshot and node identities. Supply
-/// current `enabled` states through the menu's items; unavailable commands should be disabled.
+/// appear next time it opens. The open menu retains its snapshot and node identities.
+/// Each item's enabled state is combined with the command's availability before the menu
+/// takes focus. Commands are resolved again after the menu closes and restores focus.
 ///
 /// Down opens on the first enabled item, Up on the last. Inside, Up/Down and Home/End navigate,
 /// Right opens a submenu, and Left or Escape closes the innermost submenu. Typing searches
@@ -48,7 +62,7 @@ pub fn menu_button(id: &str, label: impl Into<String>, open: impl Model<bool>, m
                 if !key.modifiers.is_empty() || !matches!(key.key, Key::Up | Key::Down) {
                     return false;
                 }
-                let snapshot = key_menu();
+                let snapshot = command_menu(key_menu());
                 let mut enabled = snapshot.items.iter().enumerate().filter_map(|(index, item)| match item {
                     MenuItem::Action { id, enabled: true, .. } => Some(format!("{key_id}-action-{id}")),
                     MenuItem::Submenu { enabled: true, .. } => Some(format!("{key_id}-submenu-{index}")),
@@ -67,7 +81,7 @@ pub fn menu_button(id: &str, label: impl Into<String>, open: impl Model<bool>, m
             move || shown.get(),
             Placement::BELOW,
             move || {
-                let snapshot = pending.borrow_mut().take().unwrap_or_else(|| untrack(|| menu()));
+                let snapshot = pending.borrow_mut().take().unwrap_or_else(|| untrack(|| command_menu(menu())));
                 let (pick, dismiss) = (pick.clone(), dismiss.clone());
                 menu_surface(
                     &id,

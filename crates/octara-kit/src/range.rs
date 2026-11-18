@@ -177,10 +177,10 @@ pub fn slider(id: &str, value: impl Model<f64>, min: f64, max: f64, step: f64) -
 /// Application input, numeric, submit and blur callbacks run after the component updates or
 /// commits its model. They preserve the binding and normalization; `on_key` receives unconsumed
 /// keys. Invalid drafts still notify submit/blur, so validate before saving.
-/// Add a label or wrap this `El` with [`crate::field`] for required state and explanatory errors.
+/// Add a label or wrap the input with [`crate::field`] for required state and explanatory errors.
 #[ui]
 #[track_caller]
-pub fn number_field(value: impl Model<String>, min: f64, max: f64, step: f64) -> El {
+pub fn number_field(value: impl Model<String>, min: f64, max: f64, step: f64) -> TextInput {
     let range = Range::new(min, max, step);
     let value: Rc<dyn Model<String>> = Rc::new(value);
     let (read, edit, parsed, submit, blur, keys, numeric) =

@@ -19,8 +19,8 @@ pub enum InputEvent {
     FileDrag(FileDrag),
     /// The window became the active one (key on macOS, foreground elsewhere) or stopped being.
     Active(bool),
-    /// A menu bar item was picked: its command runs in the window. Picked by its keys
-    /// (`chord`), those keys go through the keymap first, as a key press would.
+    /// A menu bar item was picked. A click invokes its name; a keyboard equivalent
+    /// (`chord`) goes through the window's keymap as a key press.
     Command { name: String, chord: Option<String> },
     /// A person answered a request (a menu, a prompt, a file dialog: [`crate::ask`]).
     Answer { id: crate::ask::AskId, answer: crate::ask::Answer },

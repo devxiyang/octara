@@ -200,7 +200,6 @@ impl App {
                         return;
                     }
                     res.touch.set(platform.is_touch());
-                    self.app.keymap_changed();
                     for w in self.each() {
                         w.w.kernel.borrow_mut().touch_changed();
                     }

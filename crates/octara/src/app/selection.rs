@@ -12,6 +12,12 @@ use crate::kernel::{Kernel, NodeId, Role};
 use std::cmp::Ordering;
 use std::rc::Rc;
 
+pub(super) enum DocumentCommand {
+    Copy,
+    CopyMarkdown,
+    SelectAll(NodeId),
+}
+
 /// A place in a selectable region's text: the path to the text and a byte offset in it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextPoint {
@@ -353,42 +359,38 @@ impl Window {
         true
     }
 
-    /// The commands a document selection handles when no field has focus.
-    /// Whether document `command` does something now: copying a selection, selecting all of a
-    /// region (the selection's, or the one under the pointer).
-    pub(super) fn document_enabled(&self, command: &str) -> bool {
+    pub(super) fn resolve_document_command(&self, command: &str) -> Option<DocumentCommand> {
         match command {
-            "edit.copy" | "edit.copy_markdown" => self.ordered().is_some(),
-            "edit.select_all" => {
-                self.w.selection.borrow().is_some() || {
-                    let at = self.w.interaction.borrow().pointer.hover_at;
-                    let k = self.w.kernel.borrow();
-                    at.and_then(|(x, y)| k.hit_test(x, y)).and_then(|h| k.region_of(h)).is_some()
-                }
+            "edit.copy" | "edit.copy_markdown" => {
+                let (region, start, end) = self.ordered()?;
+                self.w.kernel.borrow().check_activation(region, self.top_modal()).ok()?;
+                (start != end).then_some(if command == "edit.copy" { DocumentCommand::Copy } else { DocumentCommand::CopyMarkdown })
             }
-            _ => false,
+            "edit.select_all" => {
+                let selection = self.w.selection.borrow().as_ref().map(|selection| selection.region);
+                let k = self.w.kernel.borrow();
+                let region = selection.filter(|&node| k.is_alive(node)).or_else(|| {
+                    let at = self.w.interaction.borrow().pointer.hover_at;
+                    at.and_then(|(x, y)| k.hit_test(x, y)).and_then(|node| k.region_of(node))
+                })?;
+                k.check_activation(region, self.top_modal()).ok()?;
+                (!k.selectable_texts(region).is_empty()).then_some(DocumentCommand::SelectAll(region))
+            }
+            _ => None,
         }
     }
 
-    pub(super) fn document_command(&self, command: &str) -> bool {
+    pub(super) fn document_command(&self, command: DocumentCommand) -> bool {
         match command {
-            "edit.copy" => self.copy_doc_selection(),
-            "edit.copy_markdown" => match self.selected_markdown() {
+            DocumentCommand::Copy => self.copy_doc_selection(),
+            DocumentCommand::CopyMarkdown => match self.selected_markdown() {
                 Some(md) => {
                     self.app.system.borrow_mut().write_text(&md);
                     true
                 }
                 None => false,
             },
-            "edit.select_all" => {
-                let region = self.w.selection.borrow().as_ref().map(|s| s.region).or_else(|| {
-                    let at = self.w.interaction.borrow().pointer.hover_at;
-                    let k = self.w.kernel.borrow();
-                    at.and_then(|(x, y)| k.hit_test(x, y)).and_then(|h| k.region_of(h))
-                });
-                region.is_some_and(|r| self.select_region(r))
-            }
-            _ => false,
+            DocumentCommand::SelectAll(region) => self.select_region(region),
         }
     }
 

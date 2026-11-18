@@ -2,6 +2,8 @@
 
 use octara::inspect::{self, Request};
 use octara::prelude::*;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 fn view() -> View {
     let count = state("count", || 0);
@@ -178,20 +180,46 @@ fn a_script_runs_line_by_line_and_stops_at_the_first_failure() {
     assert_eq!(app.kernel().text_of("count").as_deref(), Some("Count: 2"), "the step after the failure did not run");
 }
 
-fn clean_view() -> View {
+fn clean_view() -> El {
     col()
         .size_full()
         .p_4()
         .child(text("Settings").id("title"))
         .child(el().id("save").min_w(44.0).min_h(44.0).p_2().child("Save").on_press(|| {}))
-        .into()
 }
 
 #[test]
 fn check_runs_every_theme_and_size() {
-    let report = inspect::check(clean_view, &inspect::CheckOptions::default());
+    use octara::app::TargetPlatform;
+
+    let builds = Rc::new(RefCell::new(Vec::new()));
+    let active = Rc::new(Cell::new(false));
+    let report = inspect::check(
+        {
+            let (builds, active) = (builds.clone(), active.clone());
+            move || {
+                assert!(!active.replace(true), "the previous cell released its app");
+                let active = active.clone();
+                on_cleanup(move || assert!(active.replace(false)));
+                let app = App::current();
+                builds.borrow_mut().push((app.theme().name, app.target_platform(), untrack(|| viewport().get())));
+                clean_view()
+            }
+        },
+        &inspect::CheckOptions::default(),
+    );
     assert_eq!(report.cells, ["light/phone", "light/desktop", "dark/phone", "dark/desktop"]);
     assert!(report.clean, "{}", report.to_json());
+    assert_eq!(
+        *builds.borrow(),
+        [
+            ("light", TargetPlatform::Ios, (390.0, 844.0)),
+            ("light", TargetPlatform::MacOs, (1280.0, 800.0)),
+            ("dark", TargetPlatform::Ios, (390.0, 844.0)),
+            ("dark", TargetPlatform::MacOs, (1280.0, 800.0)),
+        ]
+    );
+    assert!(!active.get(), "the last cell released its app");
 }
 
 fn findings(view: fn() -> View) -> inspect::CheckReport {
@@ -228,7 +256,7 @@ fn check_finds_accessibility_problems() {
 
 #[test]
 fn accepted_findings_need_a_reason_and_leave_the_report_clean() {
-    let view = || col().size_full().child(el().id("dot-1").size_4().label("Page 1").on_press(|| {})).into();
+    let view = || col().size_full().child(el().id("dot-1").size_4().label("Page 1").on_press(|| {}));
     let opts = inspect::CheckOptions {
         accept: vec![inspect::Accept {
             code: "SMALL_TARGET".into(),
@@ -262,7 +290,6 @@ fn targets_are_judged_by_the_platforms_minimum() {
             .child(el().id("plain").w(80).h(32).label("Plain").on_press(|| {}))
             .child(el().id("sized").w(80).h(32).when_touch(|p| p.h(44.0)).label("Sized").on_press(|| {}))
             .child(row().child(el().id("a").size_4().label("A").on_press(|| {})).child(el().id("b").size_4().label("B").on_press(|| {})))
-            .into()
     };
     let r = inspect::check(view, &inspect::CheckOptions::default());
     let cells = |id: &str| r.findings.iter().find(|f| f.code == "SMALL_TARGET" && f.id.as_deref() == Some(id)).map(|f| f.cells.clone());

@@ -23,7 +23,7 @@ fn atomic_content_rejects_application_children_before_conversion_or_iteration() 
     let atomic = || {
         vec![
             text("Text"),
-            text_input(),
+            text_input().into(),
             image(&picture),
             icon(Icon::stroked("empty", &[])),
             canvas(|_| panic!("rejected canvas must not draw")),
@@ -44,12 +44,6 @@ fn atomic_content_rejects_application_children_before_conversion_or_iteration() 
 
 #[test]
 fn specialized_configuration_requires_matching_content() {
-    rejected("placeholder", || el().placeholder(|| -> String { panic!("rejected hint must not run") }));
-    rejected("multiline", || el().multiline());
-    rejected("rows", || text("label").rows(1, 3));
-    rejected("submit_on_enter", || el().submit_on_enter());
-    rejected("secure", || el().secure());
-    rejected("revealed", || el().revealed(|| panic!("a rejected binding must not run")));
     rejected("props", || el().props(|| panic!("a rejected binding must not run")));
     rejected("slot", || el().slot(octara_primitives::native::Slot::Underlay));
     rejected("on_native", || el().on_native(|_| {}));
@@ -67,11 +61,13 @@ fn an_image_has_its_own_fit_and_semantics_inside_a_container() {
             .child(
                 col()
                     .id("figure")
-                    .child(image(&picture).id("picture").size(80).object_fit(ObjectFit::Contain).label("Picture").value("Image metadata"))
+                    .child(
+                        image(&picture).id("picture").size(80).object_fit(ObjectFit::Contain).label("Picture").a11y_value("Image metadata"),
+                    )
                     .child(text("Caption").id("caption")),
             )
             .child(image(&picture).id("preview").size(40).role(Role::Button).label("Preview image").on_press(|| {}))
-            .child(el().id("status").value("Ready"))
+            .child(el().id("status").a11y_value("Ready"))
     });
     let tree = window.inspect();
     assert_eq!(tree.find("picture").unwrap().role, "image");

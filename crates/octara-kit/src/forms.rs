@@ -43,7 +43,8 @@ impl FieldInfo {
 /// wrapper. For example, `field("name", "Name", text_field(name).disabled(busy), info)`.
 #[ui]
 #[track_caller]
-pub fn field(id: &str, label: impl Into<String>, control: El, info: impl Fn() -> FieldInfo + 'static) -> El {
+pub fn field(id: &str, label: impl Into<String>, control: impl Into<El>, info: impl Fn() -> FieldInfo + 'static) -> El {
+    let control = control.into();
     let label = label.into();
     let info = memo(info);
     let focus_id = id.to_owned();

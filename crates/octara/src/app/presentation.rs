@@ -171,7 +171,7 @@ impl Window {
     /// The topmost element at `(x, y)` (logical pixels), with its number, test id, source and
     /// the elements around it (the inspector's `pick`).
     pub fn pick(&self, x: f32, y: f32) -> Option<crate::inspect::Picked> {
-        crate::inspect::pick(&self.w.kernel.borrow(), x, y)
+        crate::inspect::pick_for_window(&self.w.kernel.borrow(), x, y, self.submit_target())
     }
 
     /// Starts a painted capture, replacing any previous one for this window. Requests a

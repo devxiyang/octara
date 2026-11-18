@@ -157,7 +157,7 @@ impl Window {
                 signal.dispose();
             }
         }
-        changed
+        changed | self.sync_command_availability()
     }
 }
 

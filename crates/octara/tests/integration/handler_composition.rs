@@ -152,7 +152,7 @@ fn every_behavior_signature_stops_when_a_component_closes_its_window() {
             let element = match kind {
                 "press" => el().behavior(|b| b.on_press(close_current)).on_press(|| panic!("late press")),
                 "toggle" => el().behavior(|b| b.on_toggle(close_current)).on_toggle(|| panic!("late toggle")),
-                "submit" => text_input().behavior(|b| b.on_submit(close_current)).on_submit(|| panic!("late submit")),
+                "submit" => text_input().behavior(|b| b.on_submit(close_current)).on_submit(|| panic!("late submit")).into(),
                 "numeric" => el()
                     .role(Role::Slider)
                     .numeric_range(NumericRange { value: Some(0.0), min: 0.0, max: 10.0, step: Some(1.0) })

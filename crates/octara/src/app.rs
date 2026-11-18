@@ -1,6 +1,7 @@
 //! The app runtime: mounts a root view, dispatches events, lays out, and rebuilds for hot reload.
 
 mod asks;
+mod command;
 mod config;
 mod drive;
 mod edit;
@@ -180,9 +181,9 @@ pub(crate) struct AppState {
     tuning: Cell<Tuning>,
     platform: Cell<TargetPlatform>,
     /// The app's own bindings (after the platform's standard ones).
-    pub(crate) keymap: RefCell<keys::Keymap>,
+    keymap: RefCell<keys::Keymap>,
     /// The platform's standard bindings then the app's, built once until either changes.
-    keymap_full: RefCell<Option<(TargetPlatform, Rc<keys::Keymap>)>>,
+    keymap_effective: RefCell<Option<(TargetPlatform, Rc<[Binding]>)>>,
     /// The system the app runs on (clipboard, waking the loop, windows).
     pub(crate) system: RefCell<Box<dyn crate::platform::Platform>>,
     /// The app's menus as declared (`set_menus`), as last presented to the platform (each
@@ -212,6 +213,8 @@ pub(crate) struct WindowState {
     pub(crate) handlers: RefCell<rustc_hash::FxHashMap<u64, ScopedHandler>>,
     /// The window's command handlers (`on_command`), in registration order.
     pub(crate) commands: RefCell<Vec<(String, u64)>>,
+    /// Settled command availability when a view binding observes it.
+    command_availability: Cell<Option<Signal<Vec<String>>>>,
     /// Regions of the kernel's overlay layer, one per `overlay` of a mounted element.
     pub(crate) overlay_slots: Slots,
     pub(crate) viewport: Signal<(f32, f32)>,
@@ -415,22 +418,18 @@ impl AppState {
     }
 
     /// The keymap in use: the platform's standard bindings, then the app's (cached).
-    pub(crate) fn full_keymap(&self) -> Rc<keys::Keymap> {
+    fn effective_keymap(&self) -> Rc<[Binding]> {
         let platform = self.platform.get();
-        if let Some((p, k)) = self.keymap_full.borrow().as_ref()
+        if let Some((p, k)) = self.keymap_effective.borrow().as_ref()
             && *p == platform
         {
             return k.clone();
         }
-        let mut k = keys::Keymap::standard(platform);
-        k.bindings.extend(self.keymap.borrow().bindings.iter().cloned());
-        let k = Rc::new(k);
-        *self.keymap_full.borrow_mut() = Some((platform, k.clone()));
+        let mut bindings = keys::Keymap::standard(platform).bindings;
+        bindings.extend(self.keymap.borrow().bindings.iter().cloned());
+        let k: Rc<[Binding]> = bindings.into();
+        *self.keymap_effective.borrow_mut() = Some((platform, k.clone()));
         k
-    }
-    /// The app's bindings changed: the keymap in use is built again when next read.
-    pub(crate) fn keymap_changed(&self) {
-        self.keymap_full.borrow_mut().take();
     }
 }
 
@@ -547,14 +546,16 @@ impl WindowState {
         let size = options.size;
         let mut kernel = Kernel::new(app.res.clone());
         kernel.bind_identity(app.namespace, id.number());
+        let breakpoint = kernel.theme().breakpoint_of(size.0);
         WindowState {
             id,
             kernel: RefCell::new(kernel),
             handlers: RefCell::default(),
             commands: RefCell::default(),
+            command_availability: Cell::new(None),
             overlay_slots: Slots::default(),
             viewport: app.rt.enter(|| Signal::detached(size)),
-            breakpoint: app.rt.enter(|| Signal::detached(Theme::default().breakpoint_of(size.0))),
+            breakpoint: app.rt.enter(|| Signal::detached(breakpoint)),
             scrolls: RefCell::default(),
             sizes: RefCell::default(),
             tails: RefCell::default(),
@@ -645,7 +646,7 @@ impl App {
             tuning: Cell::new(Tuning::default()),
             platform: Cell::new(target_platform),
             keymap: RefCell::new(keys::Keymap::default()),
-            keymap_full: RefCell::new(None),
+            keymap_effective: RefCell::new(None),
             system: RefCell::new(Box::new(platform)),
             menus: RefCell::new(vec![crate::menu::Menu::edit()]),
             menus_presented: RefCell::new(None),
@@ -819,9 +820,7 @@ impl AppState {
             for item in m.actions_mut() {
                 if let crate::menu::MenuItem::Action { id, enabled, shortcut, .. } = item {
                     *enabled = *enabled && w.command_enabled(id);
-                    if shortcut.is_none() {
-                        *shortcut = w.chord_for(id);
-                    }
+                    *shortcut = w.chord_for(id);
                 }
             }
         }
@@ -951,6 +950,9 @@ impl AppState {
             w.w.viewport.dispose();
             w.w.breakpoint.dispose();
             w.w.interaction_revision.dispose();
+            if let Some(signal) = w.w.command_availability.take() {
+                signal.dispose();
+            }
             w.w.release_feedback();
             for (_, c) in w.w.clocks.borrow_mut().drain() {
                 c.task.cancel_owned();
@@ -1306,6 +1308,7 @@ impl Window {
             breakpoint: crate::inspect::snake(&format!("{:?}", self.breakpoint())),
             time_ms: self.app().now().as_millis() as u64,
             focus,
+            commands: self.commands(),
             text_input,
             pending: self.app().pending().len(),
             window: self.w.id.number(),
@@ -1323,7 +1326,7 @@ impl Window {
                     size: [w.w.size.get().0, w.w.size.get().1],
                 })
                 .collect(),
-            root: crate::inspect::tree(&k),
+            root: crate::inspect::tree_for_window(&k, self.submit_target()),
         }
     }
     /// What the current frame draws, in order (see [`crate::paint`]).

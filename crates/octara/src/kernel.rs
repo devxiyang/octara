@@ -226,7 +226,7 @@ struct Node {
     parent: Option<NodeId>,
     /// The value assistive technology announces for a node that is not a text input (a
     /// combo box's choice, a slider's level); a text input's value is its content.
-    value: Option<String>,
+    a11y_value: Option<String>,
     numeric_range: Option<NumericRange>,
     checked: Option<bool>,
     required: Option<bool>,
@@ -985,7 +985,7 @@ impl Kernel {
         let n = self.node(id);
         match n.input() {
             Some(i) => &i.value,
-            None => n.value.as_deref().unwrap_or(""),
+            None => n.a11y_value.as_deref().unwrap_or(""),
         }
     }
     pub fn checked(&self, id: NodeId) -> Option<bool> {
@@ -993,7 +993,7 @@ impl Kernel {
     }
     pub(crate) fn has_value(&self, id: NodeId) -> bool {
         let n = self.node(id);
-        n.input().is_some() || n.value.is_some()
+        n.input().is_some() || n.a11y_value.is_some()
     }
 
     pub(crate) fn command_names(&self, id: NodeId) -> impl Iterator<Item = &str> {
@@ -1102,7 +1102,7 @@ impl Kernel {
             a11y_active_descendant_sent: Cell::new(None),
             role: None,
             parent: None,
-            value: None,
+            a11y_value: None,
             numeric_range: None,
             checked: None,
             required: None,
@@ -1495,50 +1495,57 @@ impl Kernel {
         true
     }
 
-    /// A text input's value; for other nodes, the value assistive technology announces.
+    /// Replaces a text input's accepted value. A change can reset its selection and editing session.
     pub fn set_value(&mut self, id: NodeId, value: &str) -> bool {
-        if self.value(id) == value && (self.node(id).input().is_some() || self.node(id).value.is_some()) {
+        let Some(input) = self.node_mut(id).input_mut() else { return false };
+        if input.value == value {
             self.counters.prop_noops += 1;
             return false;
         }
-        let n = self.node_mut(id);
-        match n.input_mut() {
-            Some(i) => {
-                if !i.editing.pending() {
-                    i.selection = editor::map_selection(&i.value, value, i.selection);
-                    i.editing = editor::Editing::default();
-                    i.goal.set(None);
-                }
-                // A draft contains the whole displayed document. A newer app value retires
-                // it, so a subsequent input-method commit cannot restore the old document.
-                if i.composition.take().is_some() {
-                    i.clean.set(0);
-                }
-                // What a text input shows is unchanged only up to the first byte that differs
-                // (and up to its composition, which follows the caret).
-                let same = i.value.bytes().zip(value.bytes()).take_while(|(a, b)| a == b).count();
-                i.clean.set(i.clean.get().min(same));
-                if i.secure {
-                    // A masked field's shown text changes with every edit (the bullets).
-                    i.clean.set(0);
-                    wipe(&mut i.value);
-                } else {
-                    i.value.clear();
-                }
-                i.value.push_str(value);
-                // A multi-line field's height follows its text.
-                let grows = i.multiline;
-                if grows {
-                    self.update_measure(id);
-                }
-                let d = if grows { Dirty::TEXT | Dirty::LAYOUT | Dirty::SEMANTICS } else { Dirty::TEXT | Dirty::SEMANTICS };
-                self.changed(id, d, "value", || value.to_owned());
-            }
-            None => {
-                n.value = Some(value.to_owned());
-                self.changed(id, Dirty::SEMANTICS, "value", || value.to_owned());
-            }
+        if !input.editing.pending() {
+            input.selection = editor::map_selection(&input.value, value, input.selection);
+            input.editing = editor::Editing::default();
+            input.goal.set(None);
         }
+        // A draft contains the whole displayed document. A newer app value retires
+        // it, so a subsequent input-method commit cannot restore the old document.
+        if input.composition.take().is_some() {
+            input.clean.set(0);
+        }
+        // What a text input shows is unchanged only up to the first byte that differs
+        // (and up to its composition, which follows the caret).
+        let same = input.value.bytes().zip(value.bytes()).take_while(|(a, b)| a == b).count();
+        input.clean.set(input.clean.get().min(same));
+        if input.secure {
+            // A masked field's shown text changes with every edit (the bullets).
+            input.clean.set(0);
+            wipe(&mut input.value);
+        } else {
+            input.value.clear();
+        }
+        input.value.push_str(value);
+        // A multi-line field's height follows its text.
+        let mut dirty = Dirty::TEXT | Dirty::SEMANTICS;
+        if input.multiline {
+            self.update_measure(id);
+            dirty |= Dirty::LAYOUT;
+        }
+        self.changed(id, dirty, "value", || value.to_owned());
+        true
+    }
+
+    /// Sets the value assistive technology reports for a non-editing control.
+    pub fn set_a11y_value(&mut self, id: NodeId, value: &str) -> bool {
+        let node = self.node_mut(id);
+        if node.kind() == Kind::TextInput {
+            return false;
+        }
+        if node.a11y_value.as_deref() == Some(value) {
+            self.counters.prop_noops += 1;
+            return false;
+        }
+        node.a11y_value = Some(value.to_owned());
+        self.changed(id, Dirty::SEMANTICS, "a11y_value", || value.to_owned());
         true
     }
 

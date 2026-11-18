@@ -51,12 +51,11 @@ fn log(app: &mut Window) -> String {
 }
 
 fn app() -> Window {
-    let mut app = Window::headless(view);
-    app.app().set_target_platform(TargetPlatform::MacOs);
-    app.bind("mod+s", Some("save"), None).unwrap();
-    app.bind("mod+o", Some("open"), None).unwrap();
-    app.bind("mod+shift+f", Some("format"), Some("editor")).unwrap();
-    app
+    let window = Window::headless(view);
+    let app = window.app();
+    app.set_target_platform(TargetPlatform::MacOs);
+    app.bind_keys([("mod+s", "save", None), ("mod+o", "open", None), ("mod+shift+f", "format", Some("editor"))]).unwrap();
+    window
 }
 
 #[test]
@@ -94,13 +93,13 @@ fn commands_resolve_along_the_focus_path() {
 fn later_and_deeper_bindings_win_and_none_unbinds() {
     let mut app = app();
     app.dispatch(Event::Focus("in-editor".into())).unwrap();
-    app.bind("mod+s", Some("open"), None).unwrap();
+    app.app().bind_keys([("mod+s", "open", None)]).unwrap();
     app.press_key("cmd+s").unwrap();
     assert_eq!(log(&mut app), "app-open", "a later binding at the same depth wins");
-    app.bind("mod+s", Some("save"), Some("editor")).unwrap();
+    app.app().bind_keys([("mod+s", "save", Some("editor"))]).unwrap();
     app.press_key("cmd+s").unwrap();
     assert_eq!(log(&mut app), "editor-save", "a deeper context wins over a later one");
-    app.bind("mod+s", None, Some("editor")).unwrap();
+    app.app().bind_keys([("mod+s", None, Some("editor"))]).unwrap();
     app.press_key("cmd+s").unwrap();
     assert_eq!(log(&mut app), "", "unbound inside the editor");
 }
@@ -116,7 +115,105 @@ fn invoke_and_list_commands() {
     let save = commands.iter().find(|(c, _)| c == "save").unwrap();
     assert_eq!(save.1, ["mod+s"]);
     assert!(commands.iter().any(|(c, chords)| c == "focus.next" && chords == &["tab"]));
-    assert!(app.keymap().bindings.iter().any(|b| b.command.as_deref() == Some("format") && b.context.as_deref() == Some("editor")));
+    assert!(app.app().keymap().bindings.iter().any(|b| b.command.as_deref() == Some("format") && b.context.as_deref() == Some("editor")));
+}
+
+#[test]
+fn app_keymap_round_trips_configuration_and_commits_whole_batches_in_both_windows() {
+    use octara::app::Keymap;
+    use octara::platform::HeadlessPlatform;
+    use std::rc::Rc;
+
+    fn document() -> El {
+        let ran = state("ran", || "none".to_owned());
+        on_command("save", move || ran.set("save".to_owned()));
+        on_command("preview", move || ran.set("preview".to_owned()));
+        on_command("invalid-batch", || {
+            let result = bind_keys([("mod+o", "preview", None), ("hyper+k", "save", None)]);
+            assert!(result.is_err());
+        });
+        text(ran).id("ran")
+    }
+
+    let app = App::with_config(HeadlessPlatform::default(), AppConfig { target_platform: TargetPlatform::MacOs, ..Default::default() });
+    let mut a = app.open_window(WindowOptions::new("Document"), document).unwrap();
+    let mut b = app.open_window(WindowOptions::new("Document"), document).unwrap();
+    app.run(|| set_menus([Menu::new("File").items([MenuItem::action("Save", "save"), MenuItem::action("Preview", "preview")])]));
+    app.bind_keys([("mod+s", "save", None)]).unwrap();
+
+    let configuration = app.keymap();
+    assert_eq!(configuration.bindings.len(), 1);
+    let before = app.effective_keymap();
+    let defaults = Keymap::standard(TargetPlatform::MacOs).bindings;
+    assert_eq!(&before[..defaults.len()], &defaults);
+    assert_eq!(&before[defaults.len()..], &configuration.bindings);
+    app.set_keymap(configuration.clone()).unwrap();
+    assert!(Rc::ptr_eq(&before, &app.effective_keymap()));
+
+    a.invoke("invalid-batch").unwrap();
+    assert_eq!(app.keymap(), configuration);
+    assert!(Rc::ptr_eq(&before, &app.effective_keymap()));
+    for window in [&mut a, &mut b] {
+        window.press_key("mod+o").unwrap();
+        assert_eq!(window.kernel().text_of("ran").as_deref(), Some("none"));
+        window.press_key("mod+s").unwrap();
+        assert_eq!(window.kernel().text_of("ran").as_deref(), Some("save"));
+    }
+
+    let batch = [("mod+o", Some("preview"), None), ("mod+s", None, None)];
+    app.bind_keys(batch).unwrap();
+    {
+        let platform = app.platform();
+        let menu = &platform.as_any().downcast_ref::<HeadlessPlatform>().unwrap().menus[0];
+        assert!(matches!(menu.find("save"), Some(MenuItem::Action { shortcut: None, .. })));
+        assert!(matches!(menu.find("preview"), Some(MenuItem::Action { shortcut: Some(chord), .. }) if chord == "mod+o"));
+    }
+    let applied = app.keymap();
+    let effective = app.effective_keymap();
+    assert_eq!(&before[defaults.len()..], &configuration.bindings, "a retained snapshot keeps its values");
+    app.bind_keys(batch).unwrap();
+    assert!(Rc::ptr_eq(&effective, &app.effective_keymap()), "identical registration reuses the snapshot");
+    for window in [&mut a, &mut b] {
+        window.press_key("mod+o").unwrap();
+        window.press_key("mod+s").unwrap();
+        assert_eq!(window.kernel().text_of("ran").as_deref(), Some("preview"));
+    }
+    app.set_target_platform(TargetPlatform::Linux);
+    let linux = Keymap::standard(TargetPlatform::Linux).bindings;
+    let effective = app.effective_keymap();
+    assert_eq!(&effective[..linux.len()], &linux);
+    assert_eq!(&effective[linux.len()..], &applied.bindings);
+    assert_eq!(app.keymap(), applied);
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    app.shutdown();
+}
+
+#[test]
+fn keymap_batches_recheck_app_lifetime_after_iterating_and_merge_the_latest_configuration() {
+    use octara::platform::HeadlessPlatform;
+    use std::rc::Rc;
+
+    let app = App::new(HeadlessPlatform::default());
+    app.bind_keys(std::iter::once_with(|| {
+        app.bind_keys([("mod+s", "save", None)]).unwrap();
+        ("mod+o", "preview", None)
+    }))
+    .unwrap();
+    let configuration = app.keymap();
+    assert_eq!(
+        configuration.bindings.iter().map(|binding| binding.command.as_deref()).collect::<Vec<_>>(),
+        [Some("save"), Some("preview")]
+    );
+    let effective = app.effective_keymap();
+    assert!(
+        app.bind_keys(std::iter::once_with(|| {
+            app.shutdown();
+            ("mod+z", "edit.undo", None)
+        }))
+        .is_err()
+    );
+    assert_eq!(app.keymap(), configuration);
+    assert!(Rc::ptr_eq(&effective, &app.effective_keymap()));
 }
 
 #[test]
@@ -186,6 +283,8 @@ fn enter_submits_a_field_and_presses_one_without_on_submit() {
         let log = state("log", Vec::<String>::new);
         let push = move |s: &'static str| log.update(|l| l.push(s.into()));
         col()
+            .id("field-wrapper")
+            .behavior(|behavior| behavior.on_submit(|| panic!("the wrapper is not a submit target")))
             .child(text(move || log.get().join(",")).id("log"))
             .child(
                 text_input()
@@ -202,9 +301,60 @@ fn enter_submits_a_field_and_presses_one_without_on_submit() {
     app.tap("search").unwrap();
     app.press_key("enter").unwrap();
     assert_eq!(app.kernel().text_of("log").unwrap(), "press,submit");
+    assert!(app.commands().iter().any(|(c, chords)| c == "submit" && chords == &["enter"]));
     // Without `on_submit`, Enter falls through to `press`.
     app.dispatch(Event::Focus("plain".into())).unwrap();
     app.press_key("enter").unwrap();
     assert_eq!(app.kernel().text_of("log").unwrap(), "press,submit,plain-press");
-    assert!(app.commands().iter().any(|(c, chords)| c == "submit" && chords == &["enter"]));
+    assert!(!app.commands().iter().any(|(c, _)| c == "submit"));
+    assert!(!app.inspect().find("field-wrapper").unwrap().actions.iter().any(|action| action == "submit"));
+}
+
+#[test]
+fn submission_waits_for_the_focused_edit_to_settle_across_input_routes() {
+    use octara::inspect::{self, Delivery};
+
+    let mut window = Window::headless(|| {
+        let draft = state("draft", String::new);
+        let saved = state("saved", String::new);
+        col()
+            .child(
+                text_input()
+                    .id("editor")
+                    .label("Name")
+                    .value(draft)
+                    .on_input(move |text| {
+                        assert!(invoke("submit").is_err(), "an active proposal cannot submit");
+                        draft.set(text);
+                    })
+                    .on_submit(move || saved.set(draft.get())),
+            )
+            .child(text(move || saved.get()).id("saved"))
+    });
+    window.dispatch(Event::Focus("editor".into())).unwrap();
+    let snapshot = window.inspect();
+    assert!(snapshot.find("editor").unwrap().actions.iter().any(|name| name == "submit"));
+    assert!(snapshot.commands.iter().any(|(name, _)| name == "submit"));
+    window.event(InputEvent::Preedit { text: "nihao".into(), selection: Some((5, 5)) });
+    assert!(!window.command_enabled("submit"));
+    let snapshot = window.inspect();
+    assert!(!snapshot.commands.iter().any(|(name, _)| name == "submit"));
+    assert!(!snapshot.find("editor").unwrap().actions.iter().any(|name| name == "submit"));
+
+    window.press_key("enter").unwrap();
+    assert!(!window.event(InputEvent::Command { name: "submit".into(), chord: None }));
+    let request = octara::serde_json::json!({"op": "invoke", "command": "submit", "target": window.target()});
+    let reply = inspect::handle_line(&mut window, &request.to_string());
+    assert!(!reply.ok);
+    assert_eq!(reply.delivery, Some(Delivery::Refused));
+    assert_eq!(window.inspect().text_input.unwrap().composition, "nihao");
+    assert_eq!(window.kernel().text_of("saved").as_deref(), Some(""));
+
+    // A keyboard equivalent first finishes the composition, then reads the accepted value.
+    window.app().bind_keys([("mod+s", "submit", Some("text_input"))]).unwrap();
+    assert!(window.event(InputEvent::Command { name: "submit".into(), chord: Some("mod+s".into()) }));
+    assert_eq!(window.kernel().text_of("saved").as_deref(), Some("nihao"));
+    assert!(window.command_enabled("submit"));
+    assert!(window.app().diagnostics().is_empty(), "{:?}", window.app().diagnostics());
+    window.app().shutdown();
 }

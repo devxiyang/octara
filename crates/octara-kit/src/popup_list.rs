@@ -44,13 +44,20 @@ impl PopupItem {
 /// During IME composition, keyboard navigation belongs to the IME and pointer choices do
 /// nothing. Rows are retained through option updates; closing disposes only the popup.
 /// `selected` denotes the pending suggestion, not a committed application value.
+///
+/// ```compile_fail
+/// use octara::prelude::*;
+/// use octara_kit::{button, popup_list};
+/// let open = state("open", || false);
+/// popup_list("name", "Name", open, button("Name"), Vec::new, |_| {});
+/// ```
 #[ui]
 #[track_caller]
 pub fn popup_list(
     id: &str,
     label: impl Into<String>,
     open: impl Model<bool>,
-    editor: El,
+    editor: TextInput,
     items: impl Fn() -> Vec<PopupItem> + 'static,
     on_choose: impl Fn(String) + 'static,
 ) -> View {

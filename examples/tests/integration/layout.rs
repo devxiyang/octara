@@ -7,7 +7,7 @@ use octara_examples::apps;
 fn example_apps_have_no_layout_issues_at_phone_and_desktop_sizes() {
     type Case = (&'static str, fn() -> View);
     let cases: Vec<Case> = vec![
-        ("counter", apps::counter),
+        ("counter", || apps::counter().into()),
         ("todo", || apps::todo(50)),
         ("chat", || apps::chat(50)),
         ("settings", apps::settings),

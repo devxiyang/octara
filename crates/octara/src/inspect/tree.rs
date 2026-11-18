@@ -6,10 +6,14 @@ use crate::kernel::{HandlerKind, Kernel, Kind, NodeId, Role, State};
 /// The semantic tree tools see: the nodes visible to accessibility, with presented bounds,
 /// actions and source locations. Reads the retained Kernel directly.
 pub fn tree(kernel: &Kernel) -> Node {
-    inspect_node(kernel, kernel.root())
+    tree_for_window(kernel, None)
 }
 
-fn node_actions(kernel: &Kernel, id: NodeId) -> Vec<String> {
+pub(crate) fn tree_for_window(kernel: &Kernel, submit: Option<NodeId>) -> Node {
+    inspect_node(kernel, kernel.root(), submit)
+}
+
+fn node_actions(kernel: &Kernel, id: NodeId, submit: Option<NodeId>) -> Vec<String> {
     let mut actions = Vec::new();
     if kernel.kind(id) == Kind::Link {
         actions.push("press".to_string());
@@ -23,11 +27,13 @@ fn node_actions(kernel: &Kernel, id: NodeId) -> Vec<String> {
         (HandlerKind::Drag, "drag"),
         (HandlerKind::Input, "input"),
         (HandlerKind::NumericInput, "set_value"),
-        (HandlerKind::Submit, "submit"),
     ] {
         if kernel.handler(id, kind).is_some() {
             actions.push(action.to_string());
         }
+    }
+    if submit == Some(id) {
+        actions.push("submit".into());
     }
     if kernel.handler(id, HandlerKind::NumericInput).is_some()
         && kernel.numeric_range(id).is_some_and(|range| range.step.is_some() && range.value.is_some())
@@ -46,7 +52,7 @@ fn node_actions(kernel: &Kernel, id: NodeId) -> Vec<String> {
     actions
 }
 
-fn inspect_one(kernel: &Kernel, id: NodeId) -> Node {
+fn inspect_one(kernel: &Kernel, id: NodeId, submit: Option<NodeId>) -> Node {
     let role = if id == kernel.root() { Role::Window } else { kernel.role(id) };
     let name = kernel.semantic_name(id).map(str::to_owned);
     let mut states = Vec::new();
@@ -84,7 +90,7 @@ fn inspect_one(kernel: &Kernel, id: NodeId) -> Node {
         active_descendant: kernel.active_descendant(id).and_then(|target| kernel.test_id(target).map(str::to_owned)),
         states,
         bounds: [tenth(x), tenth(y), tenth(w), tenth(h)],
-        actions: node_actions(kernel, id),
+        actions: node_actions(kernel, id, submit),
         commands: kernel.command_names(id).map(str::to_owned).collect(),
         native: kernel.native(id).map(|v| crate::native::NativeInfo {
             kind: v.kind.clone(),
@@ -98,19 +104,24 @@ fn inspect_one(kernel: &Kernel, id: NodeId) -> Node {
     }
 }
 
-fn inspect_node(kernel: &Kernel, id: NodeId) -> Node {
-    let mut node = inspect_one(kernel, id);
+fn inspect_node(kernel: &Kernel, id: NodeId, submit: Option<NodeId>) -> Node {
+    let mut node = inspect_one(kernel, id, submit);
     if kernel.parent(id).is_some_and(|p| kernel.component(p) == kernel.component(id)) {
         node.component = None;
     }
-    node.children = kernel.children(id).iter().copied().filter(|c| kernel.shown_to_a11y(*c)).map(|c| inspect_node(kernel, c)).collect();
+    node.children =
+        kernel.children(id).iter().copied().filter(|c| kernel.shown_to_a11y(*c)).map(|c| inspect_node(kernel, c, submit)).collect();
     node
 }
 
 /// The topmost element at `(x, y)` (logical window pixels), with what surrounds it.
 pub fn pick(kernel: &Kernel, x: f32, y: f32) -> Option<Picked> {
+    pick_for_window(kernel, x, y, None)
+}
+
+pub(crate) fn pick_for_window(kernel: &Kernel, x: f32, y: f32, submit: Option<NodeId>) -> Option<Picked> {
     let hit = kernel.hit_test(x, y)?;
-    let node = inspect_one(kernel, hit);
+    let node = inspect_one(kernel, hit, submit);
     let mut ancestors = Vec::new();
     let mut p = kernel.parent(hit);
     while let Some(id) = p {
@@ -118,7 +129,7 @@ pub fn pick(kernel: &Kernel, x: f32, y: f32) -> Option<Picked> {
             break;
         }
         if id != kernel.overlay_layer() {
-            let one = inspect_one(kernel, id);
+            let one = inspect_one(kernel, id, submit);
             ancestors.push(Ancestor { role: one.role, id: one.id, source: one.source, component: one.component });
         }
         p = kernel.parent(id);

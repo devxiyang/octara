@@ -230,7 +230,7 @@ fn a_collapsible_opens_and_closes_its_content() {
     let mut app = Window::headless(|| {
         let open = state("open", || false);
         col()
-            .child(collapsible("thinking", open, text("Thought for 3 s"), || text("Step one.").id("step").into()))
+            .child(collapsible("thinking", open, text("Thought for 3 s"), || text("Step one.").id("step")))
             .child(button("Open").id("open").on_press(move || open.set(true)))
     });
     let k = app.kernel();

@@ -336,19 +336,28 @@ fn shutdown_refuses_reload_from_cleanup_and_the_host() {
 }
 
 #[test]
-fn app_owned_pure_computations_reject_commands_without_requiring_a_window() {
+fn app_owned_pure_computations_reject_command_dispatch_and_keymap_writes() {
     let app = App::new(HeadlessPlatform::default());
+    let target = App::new(HeadlessPlatform::default());
+    let foreign = target.clone();
     app.run(|| {
-        let result = memo(|| {
+        let result = memo(move || {
             assert!(invoke("unavailable").is_err());
             assert!(untrack(|| invoke("unavailable")).is_err());
+            let bindings = std::iter::once_with(|| -> (&'static str, &'static str, Option<&'static str>) {
+                panic!("an inadmissible batch must not enter its iterator")
+            });
+            assert!(foreign.bind_keys(bindings).is_err());
+            assert!(foreign.set_keymap(foreign.keymap()).is_err());
             7
         });
         assert_eq!(result.get(), 7);
     });
     assert!(!app.is_failed());
     let diagnostics = app.diagnostics();
-    assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
+    assert_eq!(diagnostics.len(), 4, "{diagnostics:?}");
     assert!(diagnostics.iter().all(|diagnostic| diagnostic.code.id == "WRITE_IN_DERIVE"), "{diagnostics:?}");
+    assert!(target.keymap().bindings.is_empty());
+    target.shutdown();
     app.shutdown();
 }

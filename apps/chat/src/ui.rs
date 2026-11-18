@@ -88,11 +88,11 @@ fn commands(chat: &Chat, listing: Signal<bool>) {
     });
     bind_keys([("mod+n", "chat.new", None), ("mod+l", "chat.focus_composer", None), ("mod+.", "chat.stop", None)]).expect("chords");
     set_menus([
-        Menu::new("File").item(MenuItem::action("New Chat", "chat.new").shortcut("mod+n")),
+        Menu::new("File").item(MenuItem::action("New Chat", "chat.new")),
         Menu::edit(),
         Menu::new("Chat")
-            .item(MenuItem::action("Focus Composer", "chat.focus_composer").shortcut("mod+l"))
-            .item(MenuItem::action("Stop Answering", "chat.stop").shortcut("mod+.")),
+            .item(MenuItem::action("Focus Composer", "chat.focus_composer"))
+            .item(MenuItem::action("Stop Answering", "chat.stop")),
     ]);
 }
 
@@ -197,7 +197,7 @@ fn thread_row(chat: &Chat, listing: Signal<bool>, id: ThreadId, thread: impl Fn(
         move || renaming.get() == Some(id),
         move |editing| {
             if *editing {
-                rename_field(&rename, id, &title())
+                rename_field(&rename, id, &title()).into()
             } else {
                 text(shown.clone()).id(format!("thread-title-{id}")).truncate().flex_1()
             }
@@ -214,7 +214,7 @@ fn thread_row(chat: &Chat, listing: Signal<bool>, id: ThreadId, thread: impl Fn(
     .child(show(move || busy.is_answering(id), spinner))
 }
 
-fn rename_field(chat: &Chat, id: ThreadId, title: &str) -> El {
+fn rename_field(chat: &Chat, id: ThreadId, title: &str) -> TextInput {
     let draft = state("rename", || title.to_owned());
     let (submit, blur, cancel) = (chat.clone(), chat.clone(), chat.renaming);
     text_field(draft)
@@ -386,7 +386,6 @@ fn settings_dialog(chat: Chat, open: Signal<bool>) -> View {
                             }
                         })),
                 )
-                .into()
         },
     )
 }
@@ -397,7 +396,15 @@ fn model_picker(chat: &Chat) -> El {
     let options: Vec<_> = chat.models().iter().map(|entry| ComboboxOption::new(&entry.id, entry.model.name())).collect();
     let hint = chat.clone();
     let picker = if options.is_empty() {
-        button("No models").id("model").role(Role::ComboBox).label("Model").value("No models").w_full().truncate().disabled(true).into()
+        button("No models")
+            .id("model")
+            .role(Role::ComboBox)
+            .label("Model")
+            .a11y_value("No models")
+            .w_full()
+            .truncate()
+            .disabled(true)
+            .into()
     } else {
         combobox("model", "Model", chat.model, move || options.clone())
     };
@@ -817,7 +824,6 @@ fn tool(id: u64, part_id: PartId, p: ReadSignal<Part>) -> View {
                     )
                 },
             ))
-            .into()
     })
     .into()
 }

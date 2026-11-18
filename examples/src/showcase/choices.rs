@@ -69,7 +69,6 @@ pub fn card() -> El {
                 .child(text("备注 / Note").font_medium())
                 .child(text_field(note).id("choice-note").label("备注 / Note").w_full())
                 .child(button("完成").id("close-details").on_press(move || details.set(false)))
-                .into()
         }))
         .child(button("在对话框中选择").id("open-choices-dialog").on_press(move || dialog.set(true)).overlay(
             move || dialog.get(),

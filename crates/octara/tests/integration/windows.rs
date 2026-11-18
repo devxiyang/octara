@@ -675,7 +675,11 @@ fn configured_resources_are_visible_during_build_and_first_frame() {
     use octara::app::TargetPlatform;
 
     let builds = Rc::new(Cell::new(0));
-    let config = AppConfig { theme: Theme::dark(), text_engine: Box::new(octara_text::MonoEngine), target_platform: TargetPlatform::Ios };
+    let config = AppConfig {
+        theme: Theme::dark().breakpoint(Breakpoint::Medium, 900.0),
+        text_engine: Box::new(octara_text::MonoEngine),
+        target_platform: TargetPlatform::Ios,
+    };
     let app = App::with_config(HeadlessPlatform::default(), config);
     for name in ["First", "Second"] {
         let builds = builds.clone();
@@ -684,6 +688,7 @@ fn configured_resources_are_visible_during_build_and_first_frame() {
                 builds.set(builds.get() + 1);
                 assert_eq!(App::current().theme().name, "dark", "configuration is visible before any view exists");
                 assert_eq!(App::current().target_platform(), TargetPlatform::Ios);
+                assert_eq!(untrack(|| breakpoint().get()), Breakpoint::Compact, "the initial breakpoint uses the configured theme");
                 col()
                     .size_full()
                     .items_start()

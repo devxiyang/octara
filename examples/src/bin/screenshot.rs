@@ -22,7 +22,7 @@ fn main() {
     type Case = (&'static str, fn() -> View);
     let cases: [Case; 7] = [
         ("showcase", octara_examples::showcase::showcase),
-        ("counter", apps::counter),
+        ("counter", || apps::counter().into()),
         ("todo", || apps::todo(8)),
         ("chat", || apps::chat(12)),
         ("settings", apps::settings),

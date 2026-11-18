@@ -223,8 +223,16 @@ fn loc(at: &Location<'_>) -> String {
 }
 
 impl Runtime {
+    pub(crate) fn try_current() -> Option<Rc<Self>> {
+        CURRENT.with(|c| c.borrow().clone())
+    }
+
+    pub(crate) fn collecting_dependencies(&self) -> bool {
+        !self.sampling.get() && self.observer.get().is_some()
+    }
+
     pub(crate) fn current() -> Rc<Self> {
-        CURRENT.with(|c| c.borrow().clone()).expect("no reactive runtime: call inside Runtime::enter")
+        Self::try_current().expect("no reactive runtime: call inside Runtime::enter")
     }
 
     pub fn new() -> Rc<Self> {

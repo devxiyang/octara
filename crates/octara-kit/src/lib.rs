@@ -72,7 +72,7 @@ where
 const TOUCH_TARGET: f32 = 44.0;
 
 /// Focus ring and disabled look shared by every interactive component.
-fn interactive(e: El) -> El {
+fn interactive<C>(e: El<C>) -> El<C> {
     // Hover, press and focus shades ease in (Rune's kit: colors on a quick spring).
     e.color_motion(Spring::SNAP)
         .focusable()
@@ -238,7 +238,7 @@ pub fn switch(on: impl Model<bool>) -> El {
 /// `on_input` application callback; adding that callback preserves the binding.
 #[ui]
 #[track_caller]
-pub fn text_field(value: impl Model<String>) -> El {
+pub fn text_field(value: impl Model<String>) -> TextInput {
     let m = Rc::new(value);
     let r = m.clone();
     interactive(text_input())
@@ -323,7 +323,7 @@ pub fn select<T: Clone + PartialEq + 'static>(
         button(label.clone())
             .id(id.clone())
             .role(Role::ComboBox)
-            .value(label)
+            .a11y_value(label)
             .expanded(move || open.get())
             .on_press(move || open.update(|o| *o = !*o))
             .overlay(move || open.get(), Placement::BELOW, list)

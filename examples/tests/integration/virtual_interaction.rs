@@ -526,7 +526,7 @@ fn nested_virtual_row(outer: u32, editors: bool) -> El {
             |_| 32.0,
             move |inner, _| {
                 let content = if editors {
-                    text_input().id(format!("nested-editor-{outer}-{inner}")).label("Nested editor").h(32.0)
+                    text_input().id(format!("nested-editor-{outer}-{inner}")).label("Nested editor").h(32.0).into()
                 } else {
                     text(format!("Nested row {outer}:{inner}"))
                 };
