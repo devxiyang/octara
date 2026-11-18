@@ -3,6 +3,7 @@
 use crate::{Model, button};
 use octara::menu::menu_surface;
 use octara::prelude::*;
+use octara::reactive::untrack;
 use std::cell::RefCell;
 use std::rc::Rc;
 

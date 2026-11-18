@@ -1,5 +1,6 @@
 //! Text styles set on a container apply to the text inside (as in GPUI).
 
+use octara::app::Event;
 use octara::prelude::*;
 
 fn tok(t: Token) -> Color {

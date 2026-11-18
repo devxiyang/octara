@@ -3,7 +3,7 @@
 //! text; rows of a virtual list keep their part while they scroll out and back, and copy reads
 //! the rows that are not mounted.
 
-use octara::app::{Modifiers, Phase, PointerEvent};
+use octara::app::{Event, InputEvent, Modifiers, Phase, PointerEvent};
 use octara::inspect::{Request, handle};
 use octara::prelude::*;
 use octara_primitives::paint::Item;

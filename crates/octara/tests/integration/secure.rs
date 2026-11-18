@@ -4,7 +4,7 @@
 //! for a moment.
 
 use octara::accesskit::Role as AkRole;
-use octara::app::TargetPlatform;
+use octara::app::{Event, InputEvent, TargetPlatform};
 use octara::kernel::a11y::a11y_id;
 use octara::prelude::*;
 

@@ -1,5 +1,6 @@
 //! How the pointer looks: set on an element and its descendants, else by what is under it.
 
+use octara::app::InputEvent;
 use octara::prelude::*;
 
 #[test]

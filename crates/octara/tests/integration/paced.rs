@@ -2,7 +2,9 @@
 
 use octara::platform::{HeadlessPlatform, WindowOptions};
 use octara::prelude::*;
+use octara::reactive::untrack;
 use octara::task::WorkKind;
+use octara::view::paced;
 use std::time::Duration;
 
 const FRAME: Duration = Duration::from_micros(16_667);

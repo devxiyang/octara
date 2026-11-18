@@ -1,5 +1,6 @@
 //! Typed keys identify owners and selection paths; labels never merge them.
 
+use octara::app::Event;
 use octara::inspect::{self, Delivery, Request};
 use octara::platform::HeadlessPlatform;
 use octara::prelude::*;
@@ -175,7 +176,7 @@ fn colliding_incremental_keys_keep_their_owner_through_insert_move_and_remove() 
         let app = App::new(HeadlessPlatform::default());
         let (items, sorted) = app.run(|| {
             let items = state_list("items", || vec![(Key(1), 1u32), (Key(2), 2)], |item| item.0);
-            (items, items.sort_by(|item| item.1))
+            (items, items.read_only().sort_by(|item| item.1))
         });
         let mut window = app
             .open_window(WindowOptions::default(), move || {

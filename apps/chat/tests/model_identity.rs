@@ -5,6 +5,7 @@ mod controlled;
 
 use controlled::Controlled;
 use octara::prelude::*;
+use octara::reactive::untrack;
 use octara_chat::engine::{Cancel, Model, Purpose, Request};
 use octara_chat::model::{Event as ModelEvent, Status};
 use octara_chat::{Chat, ModelEntry, Options};

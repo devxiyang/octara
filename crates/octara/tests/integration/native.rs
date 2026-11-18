@@ -2,6 +2,7 @@
 //! and scrolling) and removal; events and sizes come back from it; inspect shows the view; check
 //! finds content an overlay view would hide, and views without a label.
 
+use octara::app::{Event, InputEvent};
 use octara::platform::{HeadlessPlatform, HeadlessWindow};
 use octara::prelude::*;
 use octara::view::{native_view, web_view};

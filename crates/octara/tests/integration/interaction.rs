@@ -1,5 +1,6 @@
 //! Interaction states: hover, focus, pressed (forced), disabled, selected, theme.
 
+use octara::app::Event;
 use octara::prelude::*;
 
 fn tok(t: Token) -> Color {

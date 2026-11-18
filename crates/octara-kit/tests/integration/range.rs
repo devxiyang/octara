@@ -1,7 +1,7 @@
 //! Numeric controls keep their model, editor and accessible range consistent.
 
 use octara::accesskit::{Action, ActionData};
-use octara::app::{Phase, PointerEvent};
+use octara::app::{Event, InputEvent, Phase, PointerEvent};
 use octara::inspect;
 use octara::kernel::a11y::a11y_id;
 use octara::prelude::*;

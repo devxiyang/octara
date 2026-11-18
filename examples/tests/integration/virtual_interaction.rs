@@ -1,6 +1,6 @@
 //! Virtual rows keep active editors and pointer deliveries resident, without retaining the gap.
 
-use octara::app::{Phase, PointerEvent};
+use octara::app::{Event, InputEvent, Phase, PointerEvent};
 use octara::inspect::{self, Delivery};
 use octara::platform::HeadlessPlatform;
 use octara::prelude::*;

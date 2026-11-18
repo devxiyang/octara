@@ -15,3 +15,5 @@
 ## 5 Overlays
 
 锚点由触发控件的几何位置给出。弹层还要决定可用空间、焦点进入与关闭后的恢复。`OVERLAY_CLAMPED` 表示锚点两侧都容纳不下内容，窗口已调整弹层位置。应检查文本放大、较小窗口和锚点临近边缘时的实际可操作区域。[弹层测试](../../crates/octara/tests/integration/overlay.rs)
+
+Kit 的 `select` 和 `combobox` 用 `Choice` 的稳定 ID 挂载选项。当前活动项由列表或独立搜索框报告，已选项来自应用模型。提交时读取当前可用项，先关闭弹层，再调用应用 setter。选择回调可以关闭窗口，框架随后按窗口和作用域结算焦点恢复。[选择器实现](../../crates/octara-kit/src/choices.rs) · [选择器回归](../../crates/octara-kit/tests/integration/option_snapshots.rs)

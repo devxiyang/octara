@@ -1,5 +1,6 @@
 //! Input method composition and the caret, headless.
 
+use octara::app::InputEvent;
 use octara::prelude::*;
 use octara_examples::apps;
 

@@ -2,6 +2,7 @@
 //! own drawing is kept until what it is drawn from changes, and accessibility compares the
 //! places of what a layout or a motion may have moved, not the whole tree.
 
+use octara::app::Event;
 use octara::platform::{HeadlessPlatform, WindowOptions};
 use octara::prelude::*;
 use std::time::Duration;

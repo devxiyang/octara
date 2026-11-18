@@ -1,5 +1,6 @@
 //! Inspector targets bind an observed allocation, including every phase of a delivered input.
 
+use octara::app::Event;
 use octara::inspect::{self, Delivery, Reply};
 use octara::platform::{HeadlessPlatform, WindowOptions};
 use octara::prelude::*;

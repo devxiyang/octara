@@ -11,6 +11,7 @@ mod tests;
 pub use parse::{Align, Block, Inline, Item, Kind, Style};
 pub use stream::Doc;
 
+use octara::kernel::select::Copied;
 use octara::prelude::*;
 use render::{BlockCache, BlockKey, BlockRef};
 use std::cell::RefCell;

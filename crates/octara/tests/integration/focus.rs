@@ -1,6 +1,7 @@
 //! Focus: Tab order with `tab_index`, focus groups and arrow keys, and modals that trap focus,
 //! make the window inert, and give focus back when they close.
 
+use octara::app::{Event, InputEvent};
 use octara::prelude::*;
 use std::cell::Cell;
 use std::rc::Rc;

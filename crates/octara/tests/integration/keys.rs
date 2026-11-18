@@ -1,7 +1,7 @@
 //! The keyboard: chords as data, the keymap resolved along the focus path, commands, `on_key`,
 //! other keyboard layouts, and input methods.
 
-use octara::app::{Chord, TargetPlatform};
+use octara::app::{AppConfig, Chord, Event, InputEvent, TargetPlatform};
 use octara::prelude::*;
 
 fn view() -> View {

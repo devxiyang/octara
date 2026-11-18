@@ -1,6 +1,7 @@
 //! Captures: the `capture` request settles, asks the platform window for snapshots, paints, and
 //! reports what each native view shows. Native images belong to the capture that requested them.
 
+use octara::app::InputEvent;
 use octara::capture::{Pixels, Shown};
 use octara::inspect::{Request, handle};
 use octara::platform::{HeadlessPlatform, HeadlessWindow, NativeSnapshotRequest};

@@ -1,5 +1,6 @@
 //! The composed dialog, tab panels and suggestions used by the real-window runner.
 
+use octara::app::{Event, InputEvent};
 use octara::prelude::*;
 use std::time::Duration;
 

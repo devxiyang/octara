@@ -1,14 +1,15 @@
 //! Modal popovers and searchable choices, driven through the public framework events.
 
+use octara::app::{Event, InputEvent};
 use octara::prelude::*;
 use octara_kit::*;
 
-fn options() -> Vec<ComboboxOption> {
+fn options() -> Vec<Choice> {
     vec![
-        ComboboxOption::new("amber", "Amber"),
-        ComboboxOption::new("berry", "Berry"),
-        ComboboxOption::new("blue", "Blue").disabled(true),
-        ComboboxOption::new("coral", "Coral"),
+        Choice::new("amber", "Amber"),
+        Choice::new("berry", "Berry"),
+        Choice::new("blue", "Blue").disabled(true),
+        Choice::new("coral", "Coral"),
     ]
 }
 
@@ -24,7 +25,7 @@ fn choices() -> View {
     on_command("choices.remove-coral", move || options.update(|options| options.retain(|option| option.id != "coral")));
     on_command("choices.disable-all", move || options.update(|options| options.iter_mut().for_each(|option| option.disabled = true)));
     on_command("choices.empty", move || options.set(vec![]));
-    on_command("choices.insert", move || options.update(|options| options.insert(0, ComboboxOption::new("apple", "Apple"))));
+    on_command("choices.insert", move || options.update(|options| options.insert(0, Choice::new("apple", "Apple"))));
     on_command("choices.select-coral", move || value.set(Some("coral".to_owned())));
     on_command("choices.clear", move || value.set(None));
     col()
@@ -88,6 +89,7 @@ fn search_handles_case_disabled_only_and_empty_results_then_resets_on_reopen() {
     let mut window = Window::headless(choices);
     window.tap("color").unwrap();
     let search_target = window.inspect().find("color-search").unwrap().target.clone();
+    let row_target = window.inspect().find("color-option-berry").unwrap().target.clone();
     window.type_text("BE");
     assert!(window.kernel().exists("color-option-amber"));
     assert!(window.kernel().exists("color-option-berry"));
@@ -111,6 +113,15 @@ fn search_handles_case_disabled_only_and_empty_results_then_resets_on_reopen() {
     assert_eq!(active(&window), None);
     window.press_key("up").unwrap();
     window.press_key("enter").unwrap();
+    window.dispatch(Event::Input("color-search".into(), String::new())).unwrap();
+    let restored = window.inspect();
+    assert_eq!(restored.find("color-search").unwrap().target, search_target);
+    assert_ne!(restored.find("color-option-berry").unwrap().target, row_target);
+    let request = octara::serde_json::json!({"op": "tap", "id": "color-option-berry", "target": row_target});
+    let reply = octara::inspect::handle_line(&mut window, &request.to_string());
+    assert_eq!(reply.code.as_deref(), Some("STALE_TARGET"));
+    assert_eq!(window.kernel().text_of("chosen").as_deref(), Some("berry"));
+    window.dispatch(Event::Input("color-search".into(), "missing".into())).unwrap();
     window.press_key("escape").unwrap();
     assert!(!window.kernel().exists("color-popover"));
     window.press_key("enter").unwrap();
@@ -217,7 +228,7 @@ fn active_rows_scroll_into_view_without_moving_search_focus() {
     let mut window = Window::headless(|| {
         let value = state("value", || Some("item-75".to_owned()));
         col().size_full().p_4().child(combobox("color", "Item", value, || {
-            (0..120).map(|index| ComboboxOption::new(format!("item-{index}"), format!("Item {index}"))).collect()
+            (0..120).map(|index| Choice::new(format!("item-{index}"), format!("Item {index}"))).collect()
         }))
     });
     window.tap("color").unwrap();

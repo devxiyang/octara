@@ -9,7 +9,7 @@ use std::rc::Rc;
 fn app(probe: Rc<Cell<usize>>) -> Window {
     Window::headless(move || {
         let items = state_list("items", || (0..10u32).collect::<Vec<_>>(), |x| *x);
-        let evens = items.filter(|x| x % 2 == 0);
+        let evens = items.read_only().filter(|x| x % 2 == 0);
         let shown = state("shown", || true);
         let next = state("next", || 10u32);
         let probe = probe.clone();

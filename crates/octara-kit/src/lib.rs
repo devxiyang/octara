@@ -12,7 +12,6 @@ use octara::prelude::*;
 use std::rc::Rc;
 
 mod choices;
-mod combobox;
 mod dialog;
 mod forms;
 pub mod markdown;
@@ -24,7 +23,7 @@ mod range;
 mod status;
 mod structure;
 
-pub use combobox::{ComboboxOption, combobox};
+pub use choices::{Choice, combobox, select};
 pub use dialog::{DialogOptions, dialog};
 pub use forms::{FieldInfo, RadioOption, field, radio_group};
 pub use menus::menu_button;
@@ -251,82 +250,4 @@ pub fn text_field(value: impl Model<String>) -> TextInput {
         .text_color(Token::Text)
         .value(move || r.get())
         .behavior(|b| b.on_input(move |v| m.set(v)))
-}
-
-// ---- select ----
-
-/// A dropdown choosing one of `options` (value, label), bound to `value`.
-///
-/// `id` names the trigger and keys the component, so its open state survives hot reload. The
-/// trigger has role `ComboBox` and `expanded`; pressing it opens a `ListBox` below it (flipped
-/// above when there is no room) with options `{id}-option-{index}`, the current one `selected`.
-#[ui]
-#[track_caller]
-pub fn select<T: Clone + PartialEq + 'static>(
-    id: &str,
-    value: impl Model<T>,
-    options: impl IntoIterator<Item = (T, impl Into<String>)>,
-) -> View {
-    let id = id.to_owned();
-    let options: Rc<Vec<(T, String)>> = Rc::new(options.into_iter().map(|(v, l)| (v, l.into())).collect());
-    let value: Rc<dyn Model<T>> = Rc::new(value);
-    scope(format!("Select[{id}]"), move || -> View {
-        let open = state("open", || false);
-        let label = {
-            let (value, options) = (value.clone(), options.clone());
-            move || {
-                let v = value.get();
-                options.iter().find(|(o, _)| *o == v).map(|(_, l)| l.clone()).unwrap_or_default()
-            }
-        };
-        let list = {
-            let id = id.clone();
-            move || {
-                let items: Vec<View> = options
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (v, l))| {
-                        let (value, pick, current) = (value.clone(), v.clone(), v.clone());
-                        let probe = value.clone();
-                        ghost_button(l.as_str())
-                            .id(format!("{id}-option-{i}"))
-                            .role(Role::ListBoxOption)
-                            .w_full()
-                            .rounded_sm()
-                            .selected(move || probe.get() == current)
-                            .style_when(State::SELECTED, |p| p.text_color(Token::Accent))
-                            .on_press(move || {
-                                value.set(pick.clone());
-                                open.set(false);
-                            })
-                            .into()
-                    })
-                    .collect();
-                col()
-                    .children(items)
-                    .role(Role::ListBox)
-                    .id(format!("{id}-list"))
-                    .min_w(160.0)
-                    .p_1()
-                    .gap_0p5()
-                    .rounded_md()
-                    .border()
-                    .border_color(Token::Border)
-                    .bg(Token::Surface)
-                    .shadow_lg()
-                    // Arrow keys move between options; Escape or a press outside closes the list
-                    // and focus goes back to the select.
-                    .focus_group()
-                    .modal(true, move || open.set(false))
-            }
-        };
-        button(label.clone())
-            .id(id.clone())
-            .role(Role::ComboBox)
-            .a11y_value(label)
-            .expanded(move || open.get())
-            .on_press(move || open.update(|o| *o = !*o))
-            .overlay(move || open.get(), Placement::BELOW, list)
-            .into()
-    })
 }

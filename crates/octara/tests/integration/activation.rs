@@ -1,5 +1,6 @@
 //! Activation is shared by semantic and accessibility input; retiring focus is a notification.
 use octara::accesskit::{Action, ActionData};
+use octara::app::{Event, InputEvent};
 use octara::kernel::{NumericRange, a11y::a11y_id};
 use octara::platform::{HeadlessPlatform, WindowOptions};
 use octara::prelude::*;

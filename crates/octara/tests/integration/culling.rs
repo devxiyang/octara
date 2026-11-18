@@ -1,6 +1,7 @@
 //! Skipping subtrees that cannot show changes nothing: the display list and hit testing are the
 //! same with and without it, for content that reaches past its box in every way.
 
+use octara::app::Event;
 use octara::prelude::*;
 use octara_primitives::paint::Item;
 

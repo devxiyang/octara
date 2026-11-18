@@ -8,6 +8,8 @@ use crate::chat::{Chat, Options};
 use crate::model::{Author, Message, Part, PartId, Status, Thread, ThreadId, ToolState};
 use octara::prelude::*;
 use octara::reactive::list::FlatKey;
+use octara::reactive::untrack;
+use octara::view::paced;
 use octara_icons as icons;
 use octara_kit::markdown::markdown;
 use octara_kit::*;
@@ -131,7 +133,7 @@ fn age(updated: u64, now: u64) -> Age {
 
 fn sidebar(chat: &Chat, listing: Signal<bool>) -> El {
     let now = chat.now();
-    let flat = chat.threads.sort_by(|t| Reverse(t.updated)).group_by(move |t| age(t.updated, now)).flatten();
+    let flat = chat.threads.read_only().sort_by(|t| Reverse(t.updated)).group_by(move |t| age(t.updated, now)).flatten();
     let new = chat.clone();
     let rows = chat.clone();
     col()
@@ -323,7 +325,7 @@ fn settings_dialog(chat: Chat, open: Signal<bool>) -> View {
             let temperature = state("temperature", || initial.temperature.map_or_else(String::new, |n| n.to_string()));
             let tokens = state("tokens", || initial.max_completion_tokens.map_or_else(String::new, |n| n.to_string()));
             let error = state("save-error", String::new);
-            let options: Vec<_> = chat.models().iter().map(|entry| ComboboxOption::new(&entry.id, entry.model.name())).collect();
+            let options: Vec<_> = chat.models().iter().map(|entry| Choice::new(&entry.id, entry.model.name())).collect();
             let available: Vec<_> = chat.models().iter().map(|entry| entry.id.clone()).collect();
             let valid = memo(move || {
                 model.get().is_some_and(|id| available.contains(&id))
@@ -393,7 +395,7 @@ fn settings_dialog(chat: Chat, open: Signal<bool>) -> View {
 /// Labels belong to people; the selection and retained option rows use the model's stable ID.
 #[ui]
 fn model_picker(chat: &Chat) -> El {
-    let options: Vec<_> = chat.models().iter().map(|entry| ComboboxOption::new(&entry.id, entry.model.name())).collect();
+    let options: Vec<_> = chat.models().iter().map(|entry| Choice::new(&entry.id, entry.model.name())).collect();
     let hint = chat.clone();
     let picker = if options.is_empty() {
         button("No models")
@@ -424,7 +426,7 @@ fn model_picker(chat: &Chat) -> El {
 /// The open conversation's messages: one document to select across, following its end as the
 /// answer streams, with a way back to the end when scrolled away.
 fn transcript(chat: &Chat, thread: ThreadId) -> View {
-    let messages = chat.messages.filter(move |m| m.thread == thread);
+    let messages = chat.messages.read_only().filter(move |m| m.thread == thread);
     let empty = messages.clone();
     let rows = chat.clone();
     let draft = chat.draft;
@@ -979,7 +981,7 @@ fn composer_queue(chat: &Chat) -> View {
         move || QueueThread(current.get()),
         move |key| {
             let Some(thread) = key.0 else { return View::empty() };
-            let queued = chat.queue.filter(move |q| q.thread == thread);
+            let queued = chat.queue.read_only().filter(move |q| q.thread == thread);
             let chat = chat.clone();
             each(move || queued.clone(), move |id, q| queued_row(&chat, *id, q))
         },

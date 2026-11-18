@@ -1,6 +1,6 @@
 //! Overlays: shown above everything, placed next to their anchor, flipped and clamped.
 
-use octara::app::DEFAULT_VIEWPORT;
+use octara::app::{DEFAULT_VIEWPORT, Event};
 use octara::prelude::*;
 use octara_primitives::layout::Placed;
 

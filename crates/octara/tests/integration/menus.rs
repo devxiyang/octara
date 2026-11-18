@@ -1,6 +1,7 @@
 //! Menus and prompts a window draws itself (where its platform shows none): a menu at its point,
 //! a prompt over a scrim; a pick answers the task that asked, Escape dismisses.
 
+use octara::app::{Event, InputEvent};
 use octara::ask::{Answer, Ask};
 use octara::prelude::*;
 

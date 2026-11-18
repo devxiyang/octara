@@ -2,6 +2,8 @@
 
 对于大目录，可以先按文件属性筛选、排序，再把负责人等关联数据投影到行。为集合提供准确的行变更，可以避免把整个目录的更新当作所有行都发生变化。
 
+用 `StateList` 更新集合。通过 `read_only()` 取得实时的 `ReadList`，在它上面建立变换链，并将派生视图交给 `each` 或 `virtual_each`。例如 `files.read_only().filter(visible).sort_by(name)`。[只读列表入口](../../crates/octara/src/reactive/list.rs#L645) · [可执行示例](../start-here.md#集合的-key-和行的内容)
+
 ## View closures
 
 增量 `filter`、`sort_by`、`group_by`、`map`、`join` 的行变换由集合事件驱动。在这些闭包里额外读取 Signal 会触发 `VIEW_READS_STATE`；后续该 Signal 改变时，行变换缺少重算的触发源。将所需值放进行数据、用关联集合连接，或选用会追踪这些依赖的快照来源。[集合实现](../../crates/octara/src/reactive/list.rs)

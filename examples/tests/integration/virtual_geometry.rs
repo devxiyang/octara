@@ -1,5 +1,6 @@
 //! A virtual list keeps the reading position by business key while its geometry changes.
 
+use octara::app::Event;
 use octara::platform::HeadlessPlatform;
 use octara::prelude::*;
 use std::cell::Cell;
@@ -42,7 +43,7 @@ fn geometry_row(key: u32, item: ReadSignal<Item>) -> El {
 
 #[ui]
 fn geometry_list(model: Model, snapshots: bool, follow: bool, gap: f32) -> View {
-    let sorted = model.items.sort_by(|item| item.order);
+    let sorted = model.items.read_only().sort_by(|item| item.order);
     let render = |key: &u32, item| geometry_row(*key, item);
     let list = col().id("list").size_full().gap_y(gap).overflow_y_scroll().child(if snapshots {
         virtual_each(move || model.snapshot.get(), |item| item.estimate, render)

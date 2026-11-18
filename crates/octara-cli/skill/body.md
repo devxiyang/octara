@@ -1,12 +1,12 @@
 # 用 Octara 构建和验证应用
 
-先读随此版本发布的[入门指南](references/start-here.md)。`octara vocab <name>` 从应用实际依赖的源码给出签名、导入路径和定义；`octara explain <code>` 给出诊断原因。`octara skill install` 还会生成按模块组织的 `references/api/index.md`。
+先读随此版本发布的[入门指南](references/start-here.md)。`octara vocab` 列出默认导入，`octara vocab <name>` 从应用实际依赖的源码给出签名、导入路径和定义。`octara explain <code>` 给出诊断原因。`octara skill install` 还会生成按模块组织的 `references/api/index.md`。
 
 ## 组合与归属
 
 - 用普通 Rust 函数构造视图。`#[ui]` 让 Inspector 记录构造位置。容器挂载子视图，字段、图片和文字通过各自的构造器配置。标签与动作放在实际可操作的节点上。
-- `state` 表达所有者拥有的值，`memo` 推导值，Signal 或闭包把属性绑定到来源。构造过程读取会采样一次。显式快照使用 `untrack`。在处理器或任务内修改状态。
-- 为独立寿命建立 `scope`。兄弟结构 key 须稳定且唯一。可变化的列表用业务 key；文字标签、列表下标和 Inspector 查找名各有不同用途。
+- `state` 表达所有者拥有的值，`memo` 推导值，Signal 或闭包把属性绑定到来源。构造过程读取会采样一次。显式快照从 `octara::reactive` 导入 `untrack`。在处理器或任务内修改状态。
+- 为独立寿命建立 `scope`。兄弟结构 key 须稳定且唯一。可变化的列表用业务 key，集合变换从 `items.read_only()` 开始。文字标签、列表下标和 Inspector 查找名各有不同用途。
 - 受控输入的回调接收提议；先读取模型接受的值再保存。组件内部回调用 `behavior` 安装，让应用回调仍可追加。任务和外部订阅绑定到使用它们的 owner，共享任务可放入 `App::run`。
 - 平台约定、字体、主题在打开窗口前配置。移动宿主、原生输入法和屏幕呈现的可用范围按实际平台验证。
 

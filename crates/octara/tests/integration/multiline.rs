@@ -3,7 +3,7 @@
 //! lines, pointer placement on a line, paste keeping line breaks, and the caret's real line.
 //! The monospace engine makes every position exact: 8 px a character, 24 px a line.
 
-use octara::app::{Phase, PointerEvent, TargetPlatform};
+use octara::app::{AppConfig, InputEvent, Phase, PointerEvent, TargetPlatform};
 use octara::prelude::*;
 use octara_text::MonoEngine;
 

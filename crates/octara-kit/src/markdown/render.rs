@@ -3,6 +3,7 @@
 
 use super::parse::{Align, Block, Inline, Kind, Style};
 use octara::prelude::*;
+use octara::reactive::untrack;
 use std::cell::RefCell;
 use std::fmt;
 use std::mem::{Discriminant, discriminant};

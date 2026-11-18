@@ -8,6 +8,7 @@ use crate::model::{Attachment, Author, Event, Message, MessageId, Status, Thread
 use crate::settings::{Generation, Preferences};
 use crate::store::Store;
 use octara::prelude::*;
+use octara::reactive::untrack;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;

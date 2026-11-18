@@ -183,6 +183,7 @@ fn shadows_move_between_steps() {
 
 mod layout {
     use super::ms;
+    use octara::app::Event;
     use octara::prelude::*;
 
     fn rows() -> View {
@@ -317,6 +318,7 @@ mod layout {
 
 mod presence {
     use super::ms;
+    use octara::app::Event;
     use octara::prelude::*;
 
     fn app(with_motion: bool) -> Window {
@@ -452,6 +454,7 @@ mod presence {
 
 mod scrolling {
     use super::ms;
+    use octara::app::Event;
     use octara::prelude::*;
 
     fn app(with_motion: bool) -> Window {

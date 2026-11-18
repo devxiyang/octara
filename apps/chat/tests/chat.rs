@@ -6,7 +6,7 @@ mod controlled;
 use controlled::Controlled;
 
 use octara::accesskit::{Action, NodeId};
-use octara::app::{Event, Window};
+use octara::app::{Event, InputEvent, Window};
 use octara::ask::{Answer, Ask};
 use octara::inspect::{self, Delivery};
 use octara::platform::{HeadlessPlatform, WindowOptions};

@@ -11,7 +11,7 @@ fn caught_row_mutation_blocks_reads_and_publication_but_keeps_cleanup() {
     let cleaned = Rc::new(Cell::new(false));
     let (items, selected) = app.run(|| {
         let items = state_list("rows", || vec![(1u32, false)], |row| row.0);
-        let selected = items.filter(|row| row.1);
+        let selected = items.read_only().filter(|row| row.1);
         let item = items.item(&1).unwrap();
         let cleaned = cleaned.clone();
         let cleanup_view = selected.clone();
@@ -59,11 +59,11 @@ fn projection_panic_abandons_siblings_and_invalidates_composed_reads() {
     let app = App::new(HeadlessPlatform::default());
     let (items, mapped, sibling, composed) = app.run(|| {
         let items = state_list("rows", || vec![(1u32, 0u32)], |row| row.0);
-        let mapped = items.map(|row| {
+        let mapped = items.read_only().map(|row| {
             assert_ne!(row.1, 1, "projection failed");
             row.1
         });
-        let sibling = items.filter(|row| row.1 > 0);
+        let sibling = items.read_only().filter(|row| row.1 > 0);
         let composed = sibling.map(|row| row.1 * 2);
         (items, mapped, sibling, composed)
     });

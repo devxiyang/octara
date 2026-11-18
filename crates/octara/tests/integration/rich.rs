@@ -2,6 +2,7 @@
 //! in their styles; links as elements of their own, pressed by name, by point, by key and by
 //! assistive technology; restyling reshapes only what changes shape; kept glyphs.
 
+use octara::app::{Event, InputEvent};
 use octara::prelude::*;
 use octara_primitives::paint::Item;
 use std::time::Duration;

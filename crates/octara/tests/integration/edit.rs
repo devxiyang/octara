@@ -2,7 +2,7 @@
 //! undo, composition at the caret, pointer selection, and the platform text protocol.
 
 use octara::accesskit;
-use octara::app::{Phase, PointerEvent, PointerKind, TargetPlatform, byte_offset, utf16_offset};
+use octara::app::{Event, InputEvent, Phase, PointerEvent, PointerKind, TargetPlatform, byte_offset, utf16_offset};
 use octara::prelude::*;
 use octara_primitives::text::TextEdit;
 

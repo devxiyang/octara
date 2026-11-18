@@ -1,4 +1,5 @@
 //! Public-core composition proof: this integration binary has no octara-kit dependency.
+use octara::app::{Event, InputEvent};
 use octara::prelude::*;
 use octara_primitives::text::TextEdit;
 

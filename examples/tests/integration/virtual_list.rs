@@ -1,3 +1,4 @@
+use octara::app::Event;
 use octara::prelude::*;
 use octara_examples::apps::{MSG_ROW_HEIGHT, chat_virtual};
 use octara_examples::scenarios::external;

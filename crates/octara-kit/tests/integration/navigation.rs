@@ -1,6 +1,7 @@
 //! Tabs activate manually; compact segments use ordinary radio keyboard semantics.
 
 use octara::accesskit::{Action, Toggled};
+use octara::app::{Event, InputEvent};
 use octara::kernel::a11y::a11y_id;
 use octara::prelude::*;
 use octara_kit::*;

@@ -217,7 +217,7 @@ fn window_menu(mtm: MainThreadMarker) -> Retained<NSMenu> {
 #[cfg(test)]
 mod tests {
     use super::PendingCommands;
-    use octara::app::InputEvent;
+    use octara::app::{Event, InputEvent};
     use octara::platform::{HeadlessWindow, TextInput};
     use octara::prelude::*;
     use octara_primitives::text::TextEdit;

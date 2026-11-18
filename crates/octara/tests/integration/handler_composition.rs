@@ -1,3 +1,4 @@
+use octara::app::{Event, InputEvent};
 use octara::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;

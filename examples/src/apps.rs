@@ -3,6 +3,7 @@
 use octara::app::Window;
 use octara::prelude::*;
 use octara::reactive::list::{FlatItem, FlatKey};
+use octara::reactive::untrack;
 use octara_kit::{button, checkbox, ghost_button, primary_button, switch, text_field, toggle_button};
 
 #[ui]
@@ -136,8 +137,9 @@ enum Show {
 pub fn todo(n: usize) -> View {
     let todos =
         state_list("todos", || (1..=n as u32).map(|i| Todo { id: i, title: format!("Item {i}"), done: false }).collect(), |t: &Todo| t.id);
-    let active = todos.filter(|t| !t.done);
-    let done = todos.filter(|t| t.done);
+    let rows = todos.read_only();
+    let active = rows.filter(|t| !t.done);
+    let done = rows.filter(|t| t.done);
     let next_id = state("next_id", || n as u32 + 1);
     let draft = state("draft", String::new);
     let showing = state("showing", || Show::All);
@@ -416,7 +418,7 @@ pub fn contacts(n: usize) -> View {
         |c: &Contact| c.id,
     );
     let next_id = state("next_id", || n as u32 + 1);
-    let groups = people.sort_by(|c| c.name.clone()).group_by(|c| c.team);
+    let groups = people.read_only().sort_by(|c| c.name.clone()).group_by(|c| c.team);
     let split = |s: &str| s.split_once(':').map(|(a, b)| (a.to_owned(), b.to_owned())).unwrap_or_default();
     listen("rename", move |p| {
         let (id, name) = split(&p);
@@ -500,7 +502,7 @@ pub fn contacts_virtual(n: usize) -> View {
         |c: &Contact| c.id,
     );
     let next_id = state("next_id", || n as u32 + 1);
-    let groups = people.sort_by(|c| c.name.clone()).group_by(|c| c.team);
+    let groups = people.read_only().sort_by(|c| c.name.clone()).group_by(|c| c.team);
     let flat = groups.flatten();
     let split = |s: &str| s.split_once(':').map(|(a, b)| (a.to_owned(), b.to_owned())).unwrap_or_default();
     listen("rename", move |p| {
@@ -690,7 +692,8 @@ pub fn inbox(n: usize) -> View {
         || (1..=n as u32).map(|id| Message { id, from: id % 20 + 1, body: format!("Message {id}") }).collect(),
         |m: &Message| m.id,
     );
-    let rows = messages.join(people, |m| m.from, |m, p| (p.map_or_else(|| "unknown".to_string(), |p| p.name.clone()), m.body.clone()));
+    let rows =
+        messages.read_only().join(people, |m| m.from, |m, p| (p.map_or_else(|| "unknown".to_string(), |p| p.name.clone()), m.body.clone()));
     let split = |s: &str| s.split_once(':').map(|(a, b)| (a.to_owned(), b.to_owned())).unwrap_or_default();
     listen("rename", move |p| {
         let (id, name) = split(&p);

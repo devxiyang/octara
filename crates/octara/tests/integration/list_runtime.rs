@@ -128,7 +128,7 @@ fn list_changes_update_the_stage_without_rebuilding_the_composing_memo() {
         let right = state_list("right", Vec::<u32>::new, |n| *n);
         let selected = memo(move || {
             counted.set(counted.get() + 1);
-            left.filter(|n| n % 2 == 1).join(right, |n| *n, |n, r| if r.is_some() { n * 10 } else { *n })
+            left.read_only().filter(|n| n % 2 == 1).join(right, |n| *n, |n, r| if r.is_some() { n * 10 } else { *n })
         });
         (left, right, selected)
     });
@@ -213,8 +213,8 @@ fn derived_item_reads_respect_filter_and_group_membership() {
     let app = App::new(HeadlessPlatform::default());
     let source = app.run(|| state_list("items", || vec![(1u32, true), (2, false)], |item| item.0));
     let (selected, members) = app.run(|| {
-        let selected = source.filter(|item| item.1);
-        let groups = source.group_by(|item| item.1);
+        let selected = source.read_only().filter(|item| item.1);
+        let groups = source.read_only().group_by(|item| item.1);
         (selected, groups.members(&true).unwrap())
     });
     app.run(|| {

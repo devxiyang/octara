@@ -5,6 +5,7 @@
 //! `--bundled` uses only the fonts that ship with Octara plus the CJK test subset: the same
 //! pixels on every machine.
 
+use octara::app::AppConfig;
 use octara::prelude::*;
 use octara_examples::apps;
 

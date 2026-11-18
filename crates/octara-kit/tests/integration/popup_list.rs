@@ -1,6 +1,6 @@
 //! Existing editors own suggestion focus, text, selection and input-method state.
 
-use octara::app::PointerKind;
+use octara::app::{Event, InputEvent, PointerKind};
 use octara::kernel::a11y::a11y_id;
 use octara::prelude::*;
 use octara::serde_json::json;

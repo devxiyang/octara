@@ -1,5 +1,6 @@
 //! Real-window fixture for retained activation and focus-retirement rules.
 use octara::accesskit::Action;
+use octara::app::{Event, InputEvent};
 use octara::kernel::a11y::a11y_id;
 use octara::prelude::*;
 use octara_kit::button;

@@ -5,10 +5,21 @@ use octara_cli::api::{self, Kind};
 use octara_cli::catalog::Catalog;
 
 #[test]
-fn specialized_drawing_native_and_json_apis_require_explicit_imports() {
+fn host_and_extension_apis_require_explicit_imports() {
     let api = api::load();
     let catalog = Catalog::build(api);
     for (name, owner) in [
+        ("AppConfig", "octara::app::AppConfig"),
+        ("Event", "octara::app::Event"),
+        ("InputEvent", "octara::app::InputEvent"),
+        ("Copied", "octara::kernel::select::Copied"),
+        ("NumericRange", "octara::kernel::NumericRange"),
+        ("ClipboardItem", "octara::platform::ClipboardItem"),
+        ("Behavior", "octara::view::Behavior"),
+        ("IntoRows", "octara::view::IntoRows"),
+        ("untrack", "octara::reactive::untrack"),
+        ("settle_motion", "octara::view::settle_motion"),
+        ("paced", "octara::view::paced"),
         ("Canvas", "octara_primitives::canvas::Canvas"),
         ("FillRule", "octara_primitives::path::FillRule"),
         ("LineCap", "octara_primitives::path::LineCap"),
@@ -43,9 +54,26 @@ fn specialized_drawing_native_and_json_apis_require_explicit_imports() {
         "state_list",
         "TextBuffer",
         "text_buffer",
+        "El",
+        "View",
+        "TextInput",
+        "text_input",
+        "IntoView",
+        "each",
+        "focus",
     ] {
         assert!(api.get(&format!("octara::prelude::{name}")).is_some(), "the common prelude keeps {name}");
     }
+}
+
+#[test]
+fn vocab_prefers_a_bare_constructor_and_resolves_the_qualified_host_method() {
+    let catalog = Catalog::build(api::load());
+    let bare = catalog.lookup("text_field");
+    assert_eq!(bare.matches.first().map(|entry| entry.path.as_str()), Some("octara_kit::text_field"));
+    assert!(bare.matches.iter().any(|entry| entry.path == "octara::app::Window::text_field"));
+    let host = catalog.lookup("Window::text_field");
+    assert_eq!(host.matches.first().map(|entry| entry.path.as_str()), Some("octara::app::Window::text_field"));
 }
 
 #[test]
@@ -88,6 +116,12 @@ fn items_are_found_by_canonical_path_and_alias() {
         assert!(api.get(&format!("octara::view::El::{method}")).is_none());
     }
     assert!(api.get("octara::view::El::behavior").is_some());
+    assert!(api.get("octara_kit::Choice").is_some());
+    assert!(api.get("octara_kit::ComboboxOption").is_none());
+    for name in ["select", "combobox"] {
+        let constructor = api.get(&format!("octara_kit::{name}")).unwrap();
+        assert!(constructor.sig.contains("Model<Option<String>>") && constructor.sig.contains("Vec<Choice>"), "{}", constructor.sig);
+    }
     for method in ["on_input", "on_key", "on_blur", "on_submit", "on_toggle", "on_numeric_input", "on_press", "on_drag"] {
         assert!(api.get(&format!("octara::view::Behavior::{method}")).is_some());
     }
@@ -101,10 +135,11 @@ fn items_are_found_by_canonical_path_and_alias() {
     }
     assert!(api.get("octara::reactive::list::Derived").is_none());
     assert!(api.get("octara::prelude::Derived").is_none());
-    for method in ["filter", "map", "join", "sort_by"] {
-        for ty in ["StateList", "ReadList"] {
-            assert!(api.get(&format!("octara::reactive::list::{ty}::{method}")).unwrap().sig.contains("ReadList<"));
-        }
+    for (method, result) in
+        [("filter", "ReadList<"), ("map", "ReadList<"), ("join", "ReadList<"), ("sort_by", "ReadList<"), ("group_by", "Groups<")]
+    {
+        assert!(api.get(&format!("octara::reactive::list::StateList::{method}")).is_none());
+        assert!(api.get(&format!("octara::reactive::list::ReadList::{method}")).unwrap().sig.contains(result));
     }
     assert!(api.get("octara::reactive::list::Groups::flatten").unwrap().sig.contains("ReadList<"));
     assert!(api.get("octara::task::Task::detach").is_none());
@@ -132,8 +167,7 @@ fn items_are_found_by_canonical_path_and_alias() {
     assert!(api.get("octara::kernel::Kernel::set_text_engine").is_none());
     assert!(api.get("octara::app::App::set_text_engine").is_none());
     assert!(api.get("octara::app::App::use_system_fonts").is_none());
-    assert!(api.get("octara::app::App::with_config").is_some());
-    assert_eq!(api.get("octara::prelude::AppConfig").unwrap().path, "octara::app::AppConfig");
+    assert!(api.get("octara::app::App::with_config").unwrap().sig.contains("config: AppConfig"));
     for method in ["kernel", "reset_counters", "set_layout_enabled", "set_culling"] {
         assert!(api.get(&format!("octara::app::Window::{method}")).is_some());
     }

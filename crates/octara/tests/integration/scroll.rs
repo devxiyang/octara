@@ -1,5 +1,6 @@
 //! Scroll containers (Tailwind `overflow-*`) and virtual lists inside them.
 
+use octara::app::Event;
 use octara::prelude::*;
 
 fn rows(n: usize) -> Vec<View> {

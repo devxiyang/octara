@@ -1,5 +1,6 @@
 //! Dialog composition on the runtime's modal stack and window overlay layer.
 
+use octara::app::InputEvent;
 use octara::prelude::*;
 use octara_kit::*;
 use std::cell::Cell;

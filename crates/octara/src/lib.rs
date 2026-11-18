@@ -40,24 +40,22 @@ pub mod task;
 pub mod view;
 pub mod window;
 
+/// Common imports for composing views, binding state, and handling UI actions.
 pub mod prelude {
-    pub use crate::app::{App, AppConfig, Drag, DragPhase, Event, InputEvent, Key, KeyEvent, Modifiers, Window};
+    pub use crate::app::{App, Drag, DragPhase, Key, KeyEvent, Modifiers, Window};
     pub use crate::ask::{PathPromptOptions, PromptLevel, popup_menu, prompt, prompt_for_new_path, prompt_for_paths};
-    pub use crate::kernel::select::Copied;
-    pub use crate::kernel::{NumericRange, Role, State};
+    pub use crate::kernel::{Role, State};
     pub use crate::menu::{Menu, MenuItem, set_menus};
-    pub use crate::platform::ClipboardItem;
     pub use crate::reactive::list::{ReadList, StateList, state_list};
     pub use crate::reactive::on_cleanup;
     pub use crate::reactive::text::{TextBuffer, text_buffer};
-    pub use crate::reactive::{ReadSignal, Signal, Watch, memo, provide, state, untrack, use_context, watch};
+    pub use crate::reactive::{ReadSignal, Signal, Watch, memo, provide, state, use_context, watch};
     pub use crate::task::{AsyncMemo, AsyncState, Receiver, Sender, Task, async_memo, background, channel, interval, sleep, spawn};
     pub use crate::view::{
-        Behavior, El, IntoProp, IntoRows, IntoText, IntoView, Length, Patch, Rich, Span, Styled, TextInput, View, bind_keys, breakpoint,
-        clock, col, each, el, focus, following_tail, icon, image, instant, invoke, invoke_after_update, is_composing, keyed, on_command,
-        open_url, paced, pointer_position_in, px, read_from_clipboard, relative, rems, rich, row, scope, scroll_into_view, scroll_to,
-        scroll_to_end, set_theme, settle_motion, show, size_of, sp, spacer, text, text_input, ui, viewport, virtual_each,
-        write_to_clipboard,
+        El, IntoProp, IntoText, IntoView, Length, Patch, Rich, Span, Styled, TextInput, View, bind_keys, breakpoint, clock, col, each, el,
+        focus, following_tail, icon, image, instant, invoke, invoke_after_update, is_composing, keyed, on_command, open_url,
+        pointer_position_in, px, read_from_clipboard, relative, rems, rich, row, scope, scroll_into_view, scroll_to, scroll_to_end,
+        set_theme, show, size_of, sp, spacer, text, text_input, ui, viewport, virtual_each, write_to_clipboard,
     };
     pub use crate::window::{WindowId, WindowKind, WindowOptions, close_window, current_window, open_window, windows};
     pub use accesskit::Live;

@@ -1,5 +1,6 @@
 //! Focus callbacks share the bounded window-preparation budget with deferred commands.
 
+use octara::app::Event;
 use octara::prelude::*;
 use octara::task::WorkKind;
 use std::cell::Cell;

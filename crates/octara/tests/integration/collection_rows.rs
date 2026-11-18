@@ -1,6 +1,8 @@
 //! One row identity and current-input contract for snapshots and incremental sources.
+use octara::app::{Event, InputEvent};
 use octara::platform::HeadlessPlatform;
 use octara::prelude::*;
+use octara::reactive::untrack;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -407,7 +409,7 @@ fn overflowing_incremental_history_reconciles_final_membership_and_preserves_sur
     for virtualized in [false, true] {
         let app = App::new(HeadlessPlatform::default());
         let items = app.run(|| state_list("items", || vec![(1u32, "old"), (2, "kept")], |item| item.0));
-        let source = app.run(|| items.filter(|_| true));
+        let source = app.run(|| items.read_only().filter(|_| true));
         let builds = Rc::new(Cell::new(0));
         let built = builds.clone();
         let window = app

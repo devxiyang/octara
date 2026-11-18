@@ -2,6 +2,7 @@
 //! style members on an ancestor's hover; `hover_alone` keeps the elements around it unlit; hover
 //! holds still while layout moves under a still pointer.
 
+use octara::app::Event;
 use octara::prelude::*;
 use std::time::Duration;
 

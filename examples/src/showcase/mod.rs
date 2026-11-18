@@ -3,6 +3,7 @@
 //! map, and motion. One file per card; [`page`] shows one card alone (`window -- showcase web`).
 
 use octara::prelude::*;
+use octara::reactive::untrack;
 
 mod choices;
 mod controls;

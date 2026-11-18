@@ -1,4 +1,6 @@
+use octara::app::Event;
 use octara::prelude::*;
+use octara::reactive::untrack;
 use octara_examples::apps::chat_stream;
 use octara_examples::scenarios::{external, press};
 use octara_kit::button;

@@ -5,6 +5,7 @@ use super::Window;
 use crate::ask::{Answer, Ask, AskId};
 use crate::platform::Reply;
 use crate::reactive::graph::{Ctx, ScopeId, rt};
+use crate::reactive::untrack;
 use std::rc::{Rc, Weak};
 
 /// The lists of the requests a window draws: menus, prompts.

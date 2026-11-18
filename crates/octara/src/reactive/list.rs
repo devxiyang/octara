@@ -596,7 +596,7 @@ where
 }
 
 /// A keyed list as named component state (like [`state`]): survives hot reload; its items are
-/// disposed when it is.
+/// disposed when it is. Use [`Self::read_only`] to build derived lists.
 pub struct StateList<K, T> {
     holder: Signal<Rc<ListInner<K, T>>>,
 }
@@ -642,7 +642,7 @@ where
         untrack(|| self.holder.get())
     }
 
-    /// Shares this live list for reading, without copying its items.
+    /// Shares this live list as a [`ReadList`] for rendering and collection transforms.
     pub fn read_only(&self) -> ReadList<K, T> {
         ReadList(self.inner())
     }
@@ -670,39 +670,6 @@ where
     pub fn index_of(&self, k: &K) -> Option<usize> {
         self.inner().index_of(k)
     }
-    #[track_caller]
-    pub fn filter(&self, pred: impl Fn(&T) -> bool + 'static) -> ReadList<K, T> {
-        self.read_only().filter(pred)
-    }
-    /// The items transformed by `f`, same keys and order ([`ReadList::map`]).
-    #[track_caller]
-    pub fn map<U: Clone + PartialEq + 'static>(&self, f: impl Fn(&T) -> U + 'static) -> ReadList<K, U> {
-        self.read_only().map(f)
-    }
-    /// Each item with the item of `right` it points at ([`ReadList::join`]).
-    #[track_caller]
-    pub fn join<RK, R, U>(
-        &self,
-        right: impl Into<ReadList<RK, R>>,
-        key: impl Fn(&T) -> RK + 'static,
-        f: impl Fn(&T, Option<&R>) -> U + 'static,
-    ) -> ReadList<K, U>
-    where
-        RK: Eq + Hash + Clone + 'static,
-        R: Clone + 'static,
-        U: Clone + PartialEq + 'static,
-    {
-        self.read_only().join(right, key, f)
-    }
-    #[track_caller]
-    pub fn sort_by<S: Ord + Clone + 'static>(&self, key: impl Fn(&T) -> S + 'static) -> ReadList<K, T> {
-        self.read_only().sort_by(key)
-    }
-    #[track_caller]
-    pub fn group_by<G: Ord + Hash + Clone + Display + 'static>(&self, key: impl Fn(&T) -> G + 'static) -> Groups<G, K, T> {
-        self.read_only().group_by(key)
-    }
-
     #[track_caller]
     pub fn push(&self, t: T) {
         let n = self.inner().len();
@@ -1705,13 +1672,13 @@ mod tests {
             // Idle, not Build: the checks below read views outside any binding on purpose.
             rt.with_frame(Ctx::Idle, None, Some(Some(scope)), || {
                 let l = state_list("rows", Vec::<Row>::new, |r| r.id);
-                let f = l.filter(|r| r.a % 2 == 0);
+                let f = l.read_only().filter(|r| r.a % 2 == 0);
                 let s = f.sort_by(|r| (r.b, r.id));
-                let g = l.group_by(|r| r.a % 3);
-                let flat = l.sort_by(|r| (r.b, r.id)).group_by(|r| r.a % 3).flatten();
+                let g = l.read_only().group_by(|r| r.a % 3);
+                let flat = l.read_only().sort_by(|r| (r.b, r.id)).group_by(|r| r.a % 3).flatten();
                 // map after a sort (moves pass through it) and a filter after a map.
                 let m = s.map(|r| r.a as u32 * 10 + r.b as u32);
-                let mf = l.map(|r| r.b).filter(|b| *b >= 2);
+                let mf = l.read_only().map(|r| r.b).filter(|b| *b >= 2);
                 let m_cursor = m.0.emitter().log.borrow_mut().subscribe();
                 let mut m_replay: Vec<u32> = Vec::new();
                 let flat_cursor = flat.0.emitter().log.borrow_mut().subscribe();
@@ -1841,7 +1808,7 @@ mod tests {
                 let l = state_list("rows", || (0..100u32).map(|id| Row { id, a: 0, b: 0 }).collect(), |r| r.id);
                 let calls = Rc::new(Cell::new(0));
                 let c = calls.clone();
-                let m = l.map(move |r| {
+                let m = l.read_only().map(move |r| {
                     c.set(c.get() + 1);
                     r.a
                 });
@@ -1866,7 +1833,7 @@ mod tests {
 
                 // A view closure reading state: reported once, at the read.
                 let limit = state("limit", || 5u8);
-                let _stale = l.filter(move |r| r.a < limit.get());
+                let _stale = l.read_only().filter(move |r| r.a < limit.get());
                 rt.with_frame(Ctx::Handler, None, None, || l.update(&8, |r| r.a = 1));
             });
         });
@@ -1897,7 +1864,7 @@ mod tests {
             rt.with_frame(Ctx::Idle, None, Some(Some(scope)), || {
                 let users = state_list("users", Vec::<User>::new, |u| u.id);
                 let msgs = state_list("msgs", Vec::<Msg>::new, |m| m.id);
-                let j = msgs.join(users, |m| m.user, |m, u| (m.body, u.map(|u| u.name)));
+                let j = msgs.read_only().join(users, |m| m.user, |m, u| (m.body, u.map(|u| u.name)));
                 let named = j.filter(|(_, n)| n.is_some()).sort_by(|(b, n)| (*n, *b));
                 let cursor = j.0.emitter().log.borrow_mut().subscribe();
                 let mut replay: Vec<u32> = Vec::new();
@@ -1981,7 +1948,7 @@ mod tests {
                 let n = super::JOIN_FANOUT_ROWS as u32 + 5;
                 let msgs =
                     state_list("msgs", move || (0..n).map(|id| Msg { id, user: if id < 3 { 2 } else { 1 }, body: 0 }).collect(), |m| m.id);
-                let j = msgs.join(users, |m| m.user, |_, u| u.map(|u| u.name));
+                let j = msgs.read_only().join(users, |m| m.user, |_, u| u.map(|u| u.name));
                 let seen = Rc::new(Cell::new(0));
                 let s2 = seen.clone();
                 let _after = j.filter(move |_| {

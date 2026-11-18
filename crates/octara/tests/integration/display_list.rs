@@ -155,6 +155,7 @@ mod shadows {
 }
 
 mod gradients {
+    use octara::app::Event;
     use octara::prelude::*;
 
     #[test]

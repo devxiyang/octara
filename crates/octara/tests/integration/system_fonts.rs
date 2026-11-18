@@ -1,6 +1,7 @@
 //! The platform's fonts and fallback (feature `system-fonts`): CJK text gets real glyphs.
 #![cfg(all(feature = "system-fonts", target_os = "macos"))]
 
+use octara::app::AppConfig;
 use octara::platform::{HeadlessPlatform, WindowOptions};
 use octara::prelude::*;
 

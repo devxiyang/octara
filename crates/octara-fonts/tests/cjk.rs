@@ -3,6 +3,7 @@
 
 #![cfg(feature = "cjk")]
 
+use octara::app::AppConfig;
 use octara::prelude::*;
 use octara_primitives::paint::{GlyphRun, Item};
 

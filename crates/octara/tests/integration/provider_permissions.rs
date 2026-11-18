@@ -1,6 +1,7 @@
 //! Every text-provider callback has the same permissions, including cached layouts and native
 //! queries outside an App operation.
 
+use octara::app::{AppConfig, Event};
 use octara::kernel::{TextDocument, TextInputLayout};
 use octara::platform::{HeadlessPlatform, HeadlessWindow};
 use octara::prelude::*;

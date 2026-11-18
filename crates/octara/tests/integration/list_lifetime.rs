@@ -44,16 +44,16 @@ fn check_release<K: 'static, T: 'static>(name: &str, foreign: bool, make: impl F
 
 fn check_all_stages(foreign: bool) {
     check_release("state", foreign, || items().read_only());
-    check_release("filter", foreign, || items().filter(|n| n % 2 == 1));
-    check_release("sort", foreign, || items().sort_by(|n| std::cmp::Reverse(*n)));
-    check_release("map", foreign, || items().map(|n| n * 2));
+    check_release("filter", foreign, || items().read_only().filter(|n| n % 2 == 1));
+    check_release("sort", foreign, || items().read_only().sort_by(|n| std::cmp::Reverse(*n)));
+    check_release("map", foreign, || items().read_only().map(|n| n * 2));
     check_release("join", foreign, || {
         let right = state_list("right", || vec![1u32, 3], |n| *n);
-        items().join(right, |n| *n, |left, right| left + right.copied().unwrap_or_default())
+        items().read_only().join(right, |n| *n, |left, right| left + right.copied().unwrap_or_default())
     });
-    check_release("groups", foreign, || items().group_by(|n| n % 2).read_only());
-    check_release("members", foreign, || items().group_by(|n| n % 2).members(&1).unwrap());
-    check_release("flatten", foreign, || items().group_by(|n| n % 2).flatten());
+    check_release("groups", foreign, || items().read_only().group_by(|n| n % 2).read_only());
+    check_release("members", foreign, || items().read_only().group_by(|n| n % 2).members(&1).unwrap());
+    check_release("flatten", foreign, || items().read_only().group_by(|n| n % 2).flatten());
     check_release("text items", foreign, || state_list("items", || vec![(1u32, TextBuffer::new("message"))], |item| item.0).read_only());
 }
 
@@ -139,13 +139,15 @@ fn retained_producers_retire_while_their_app_sources_remain_live() {
             *n
         }
     };
-    check_retirement(move |left, _, calls| left.filter(move |n| counted(calls.clone())(n) % 2 == 1));
-    check_retirement(move |left, _, calls| left.sort_by(counted(calls)));
-    check_retirement(move |left, _, calls| left.map(counted(calls)));
-    check_retirement(move |left, right, calls| left.join(right, counted(calls), |left, right| left + right.copied().unwrap_or_default()));
-    check_retirement(move |left, _, calls| left.group_by(move |n| counted(calls.clone())(n) % 2).read_only());
-    check_retirement(move |left, _, calls| left.group_by(move |n| counted(calls.clone())(n) % 2).members(&1).unwrap());
-    check_retirement(move |left, _, calls| left.group_by(move |n| counted(calls.clone())(n) % 2).flatten());
+    check_retirement(move |left, _, calls| left.read_only().filter(move |n| counted(calls.clone())(n) % 2 == 1));
+    check_retirement(move |left, _, calls| left.read_only().sort_by(counted(calls)));
+    check_retirement(move |left, _, calls| left.read_only().map(counted(calls)));
+    check_retirement(move |left, right, calls| {
+        left.read_only().join(right, counted(calls), |left, right| left + right.copied().unwrap_or_default())
+    });
+    check_retirement(move |left, _, calls| left.read_only().group_by(move |n| counted(calls.clone())(n) % 2).read_only());
+    check_retirement(move |left, _, calls| left.read_only().group_by(move |n| counted(calls.clone())(n) % 2).members(&1).unwrap());
+    check_retirement(move |left, _, calls| left.read_only().group_by(move |n| counted(calls.clone())(n) % 2).flatten());
 }
 
 #[test]
@@ -157,7 +159,7 @@ fn dropping_the_last_read_handle_keeps_a_producer_until_its_scope_retires() {
     let window = app
         .open_window(WindowOptions::default(), move || {
             let observed = observed.clone();
-            drop(left.map(move |n| {
+            drop(left.read_only().map(move |n| {
                 observed.set(observed.get() + 1);
                 *n
             }));
@@ -182,7 +184,7 @@ fn a_join_cannot_reenter_a_retired_upstream_from_its_live_right_side() {
     let saved = held.clone();
     let window = app
         .open_window(WindowOptions::default(), move || {
-            *saved.borrow_mut() = Some(left.filter(|_| true));
+            *saved.borrow_mut() = Some(left.read_only().filter(|_| true));
             text("upstream")
         })
         .unwrap();
@@ -217,7 +219,7 @@ fn retiring_a_producer_invalidates_cached_item_reads_in_another_scope() {
     let saved = held.clone();
     let window = app
         .open_window(WindowOptions::default(), move || {
-            *saved.borrow_mut() = Some(source.filter(|_| true));
+            *saved.borrow_mut() = Some(source.read_only().filter(|_| true));
             text("producer")
         })
         .unwrap();

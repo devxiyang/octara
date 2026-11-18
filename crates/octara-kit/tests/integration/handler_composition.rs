@@ -1,3 +1,4 @@
+use octara::app::{Event, InputEvent};
 use octara::prelude::*;
 use octara_kit::{PopupItem, popup_list, text_field};
 use std::cell::RefCell;

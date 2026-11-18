@@ -1,5 +1,6 @@
 //! Drawn command menus: native keyboard rules, snapshot identity and restored command context.
 
+use octara::app::{Event, InputEvent};
 use octara::prelude::*;
 use octara_kit::*;
 use std::time::Duration;

@@ -1,6 +1,7 @@
 //! The accessibility tree from the kernel's semantics, and actions from assistive technology.
 
 use octara::accesskit::{Action, Role as AkRole, Toggled};
+use octara::app::{Event, InputEvent};
 use octara::kernel::a11y::a11y_id;
 use octara::prelude::*;
 

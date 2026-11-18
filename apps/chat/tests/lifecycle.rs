@@ -6,9 +6,10 @@ mod controlled;
 
 use controlled::Controlled;
 use octara::accesskit::Action as AccessibilityAction;
-use octara::app::Window;
+use octara::app::{InputEvent, Window};
 use octara::kernel::a11y::a11y_id;
 use octara::prelude::*;
+use octara::reactive::untrack;
 use octara_chat::engine::Purpose;
 use octara_chat::model::{Event, Message, MessageId, SavedMessage, Status, ThreadId};
 use octara_chat::settings::Generation;

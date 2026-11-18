@@ -347,7 +347,8 @@ impl Catalog {
     }
 
     /// Entries matching `query`: a full path or alias, a path suffix on `::` boundaries
-    /// (`Styled::bg`, `bg`), a code (any case) or a command. Prelude entries and types come first.
+    /// (`Styled::bg`, `bg`), a code (any case) or a command. A bare name prefers standalone items
+    /// over type members. Within each group, prelude entries come first.
     pub fn lookup(&self, query: &str) -> Found<'_> {
         let q = query.trim().trim_start_matches('.').trim_end_matches("()");
         let suffix = format!("::{q}");
@@ -361,7 +362,11 @@ impl Catalog {
                     || (e.kind == "diagnostic" && e.path.eq_ignore_ascii_case(q))
             })
             .collect();
-        matches.sort_by_key(|e| (!e.prelude, e.path.matches("::").count(), e.path.clone()));
+        let bare = !q.contains("::");
+        matches.sort_by_key(|e| {
+            let member = matches!(e.kind.as_str(), "method" | "assoc_fn" | "assoc_const" | "assoc_type" | "field" | "variant");
+            (bare && member, !e.prelude, e.path.matches("::").count(), e.path.clone())
+        });
         // Names containing the query (three letters or more), those starting with it first.
         let lower = q.to_lowercase();
         let mut similar: Vec<(bool, &str)> = if lower.len() < 3 {

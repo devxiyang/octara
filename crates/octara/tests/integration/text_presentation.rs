@@ -1,5 +1,6 @@
 //! Document drawing, interaction and positional accessibility use the same visible text.
 use octara::accesskit::{Action, Node, NodeId as AkId, Role as AkRole};
+use octara::app::{Event, InputEvent};
 use octara::inspect::{self, Delivery};
 use octara::kernel::a11y::a11y_id;
 use octara::platform::{HeadlessPlatform, WindowOptions};

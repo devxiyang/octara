@@ -4,7 +4,7 @@ Signal 可以保存结构体、向量或其他 Rust 数据。用 `with` 读取�
 
 ## 2 Layers
 
-挂载时执行视图构造函数。属性接收 Signal 或读取 Signal 的闭包时建立依赖。构造函数内的一次 `get` 只取快照，意外的静态读取会报告 `STRICT_READ_UNTRACKED`。`untrack` 只改变依赖收集；构造、初始化和派生计算的写入限制仍生效。请在输入处理、watch 回调或任务中写状态。
+挂载时执行视图构造函数。属性接收 Signal 或读取 Signal 的闭包时建立依赖。构造函数内的一次 `get` 只取快照，意外的静态读取会报告 `STRICT_READ_UNTRACKED`。用 `octara::reactive::untrack` 显式采样，构造、初始化和派生计算按各自的权限执行。请在输入处理、watch 回调或任务中写状态。
 
 `with` 的共享借用与 `update` 的独占借用持续到同步闭包返回。借用期间对同一值做冲突的访问会产生 `SIGNAL_BORROW`。先提取所需值，再调用可能重入的代码。
 

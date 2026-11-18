@@ -2,6 +2,8 @@
 
 在工作区中，`octara` 提供视图、状态和窗口，`octara-kit` 提供可选的标准控件，`octara-shell` 将视图放进桌面系统窗口。入门所用的接口在本版本中可运行。下面的 Rust 片段由 `cargo test -p octara-cli --doc` 检查，桌面启动示例只编译。
 
+`octara::prelude::*` 提供组装界面、绑定状态和处理事件的常用接口。需要宿主配置、注入输入或显式采样时，从定义模块导入。运行 `octara vocab` 查看默认导入，用 `octara vocab InputEvent` 查到 `octara::app::InputEvent`，用 `octara vocab untrack` 查到 `octara::reactive::untrack`。
+
 ## 组合视图并观察一次点击
 
 用 `#[ui]` 标记组装界面的函数，以便 Inspector 定位源代码。计数属于当前所有者，文字通过闭包读取它。给按钮一个稳定的操作名称和一个可读标签。
@@ -56,7 +58,7 @@ let app = Window::headless(|| {
     text(format!("{}", n.get())) // read once: this text never updates
 });
 assert!(app.app().diagnostics().iter().any(|d| d.code == "STRICT_READ_UNTRACKED"));
-// Fix: text(move || format!("{}", n.get())), or untrack(|| n.get()) for an intentional snapshot.
+// Bind a closure for updates. Use octara::reactive::untrack(|| n.get()) to sample deliberately.
 ```
 
 业务状态可以是普通结构体。`with` 借用字段，`update` 修改草稿，`memo` 根据草稿推导显示值。不要在同一值的借用回调中再次获取冲突的借用。
@@ -97,7 +99,7 @@ assert_eq!(window.kernel().text_of("item-1").as_deref(), Some("Renamed"));
 assert!(window.app().diagnostics().is_empty());
 ```
 
-频繁增删时可让 `state_list` 维护增量变更。`read_only()` 提供实时只读视图。行工厂返回一个根元素，增删操作使用相应实体的 key。
+频繁增删时可让 `state_list` 维护增量变更。用 `read_only()` 取得实时的 `ReadList`，在构建时建立筛选、映射、排序、分组或关联，再把派生结果交给行工厂。增删操作使用相应实体的 key。
 
 ```rust
 use octara::prelude::*;
@@ -109,7 +111,11 @@ struct Todo {
 }
 
 fn todos() -> El {
-    let items = state_list("todos", || vec![Todo { id: 1, title: "Write docs".into() }], |t: &Todo| t.id);
+    let items = state_list("todos", || vec![
+        Todo { id: 1, title: "Write docs".into() },
+        Todo { id: 0, title: String::new() },
+    ], |t: &Todo| t.id);
+    let visible = items.read_only().filter(|todo| !todo.title.is_empty());
     let next = state("next", || 2u32);
     col()
         .size_full()
@@ -119,7 +125,7 @@ fn todos() -> El {
             items.push(Todo { id, title: format!("Item {id}") });
         }))
         .child(col().id("list").flex_1().overflow_y_scroll().child(each(
-            move || items.read_only(),
+            move || visible.clone(),
             move |id, todo| {
                 let id = *id;
                 row()
@@ -132,6 +138,7 @@ fn todos() -> El {
 }
 
 let mut app = Window::headless(todos);
+assert!(!app.kernel().exists("todo-0"));
 app.tap("add").unwrap();
 assert!(app.kernel().exists("todo-2"));
 app.tap("remove-1").unwrap();
@@ -159,21 +166,31 @@ assert_eq!(window.kernel().text_of("saved").as_deref(), Some("saved 1"));
 
 在按钮的 `.disabled(move || !window.command_enabled("edit.undo"))` 绑定中，可用性会随焦点和编辑历史更新。Inspector 快照的 `commands` 也来自当前窗口。检查命令执行后的文本与业务状态，可以区分已投递的编辑请求和应用接受的结果。
 
-编辑回调收到当前提议。组件用 `behavior` 注册内部模型更新，应用追加回调仍然可以读到模型接受的值。测试直接注入框架编辑事件；要验收系统输入法，还需系统键盘与原生窗口。
+编辑回调收到当前提议。下面的行内重命名用 `.on_input(...)` 更新草稿，用 `.on_submit(...)` 保存。Kit 的 `text_field(model)` 已绑定模型，应用可以在同一节点追加回调。系统输入法验收使用原生窗口和系统键盘。
 
 `text_input()` 和 Kit 的 `text_field(model)`、`number_field(...)` 都返回 `TextInput`。直接链式配置 `.id(...)`、`.rows(...)` 或 `.on_submit(...)`。建议列表 `popup_list` 接受这个编辑器类型，`field` 也可为复选框等其他单节点控件提供标签。`TextInput::value` 绑定应用接受的正文，普通选择器通过 `El::a11y_value` 报告选中项名称。
+
+用 `octara vocab text_field` 查 Kit 构造器，查宿主读取聚焦字段的接口时用 `octara vocab Window::text_field`。
+
+`select(id, label, value, options)` 和 `combobox(id, label, value, options)` 共用 `Choice`。例如 `Choice::new("dark", "Dark theme")` 将稳定的选项 ID 和显示文案分开。用 `Option<String>` 保存选中 ID，选项闭包可以随着应用数据更新。直接选择器让列表持有焦点，搜索选择器让搜索框持有焦点。
 
 ```rust
 use octara::prelude::*;
 
 let mut window = Window::headless(|| {
-    let value = state("value", String::new);
-    text_input().id("name").value(value)
-        .behavior(|b| b.on_input(move |text| value.set(text)))
-        .on_input(move |proposed| assert_eq!(value.get(), proposed))
+    let draft = state("draft", || "Untitled".to_owned());
+    let saved = state("saved", String::new);
+    col()
+        .child(text_input().id("name").label("File name").w(200).value(draft)
+            .on_input(move |text| draft.set(text))
+            .on_submit(move || saved.set(draft.get())))
+        .child(text(saved).id("saved-name"))
 });
-window.dispatch(Event::Input("name".into(), "Ada".into())).unwrap();
-assert_eq!(window.kernel().value_of("name").as_deref(), Some("Ada"));
+window.tap("name").unwrap();
+window.press_key("mod+a").unwrap();
+window.type_text("Notes");
+window.press_key("enter").unwrap();
+assert_eq!(window.inspect().find("saved-name").unwrap().name.as_deref(), Some("Notes"));
 ```
 
 ## 时间和所有者
@@ -246,6 +263,7 @@ assert!(app.is_shutdown());
 要保证第一次呈现就使用正确的字体或主题，在创建窗口前配置 App。桌面宿主在 `octara_shell::Options::app` 中接受相应设置。
 
 ```rust
+use octara::app::AppConfig;
 use octara::prelude::*;
 use octara::platform::HeadlessPlatform;
 

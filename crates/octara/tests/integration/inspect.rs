@@ -1,7 +1,9 @@
 //! The Inspector protocol: snapshots of the semantic tree, requests, and scripts of them.
 
+use octara::app::InputEvent;
 use octara::inspect::{self, Request};
 use octara::prelude::*;
+use octara::reactive::untrack;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 

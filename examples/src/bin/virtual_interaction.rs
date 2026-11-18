@@ -1,7 +1,7 @@
 //! A real-window fixture for editor and pointer residency in a sparse virtual list.
 //! Inspector commands inject framework events; `virtual.compose` does not exercise an OS IME.
 
-use octara::app::{Phase, PointerEvent};
+use octara::app::{Event, InputEvent, Phase, PointerEvent};
 use octara::prelude::*;
 use octara_kit::button;
 

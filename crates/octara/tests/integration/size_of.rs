@@ -1,5 +1,6 @@
 //! Element sizes as a reactive source (Rune's `layout_with`).
 
+use octara::app::Event;
 use octara::platform::{HeadlessPlatform, WindowOptions};
 use octara::prelude::*;
 

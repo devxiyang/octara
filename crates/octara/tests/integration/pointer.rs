@@ -1,7 +1,7 @@
 //! Pointer input: presses with capture, double presses, context menus, long presses, drags,
 //! touch scrolling with momentum, and the focus ring following the keyboard.
 
-use octara::app::{Button, Modifiers, Phase, PointerEvent, TargetPlatform};
+use octara::app::{Button, InputEvent, Modifiers, Phase, PointerEvent, TargetPlatform};
 use octara::prelude::*;
 use std::time::Duration;
 

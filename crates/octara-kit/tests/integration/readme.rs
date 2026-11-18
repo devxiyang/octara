@@ -1,5 +1,6 @@
 //! The README's example compiles and works.
 
+use octara::app::Event;
 use octara::prelude::*;
 use octara_kit::{button, switch};
 

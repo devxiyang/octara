@@ -69,6 +69,7 @@ fn sorted_groups_follow_renames_moves_and_adds() {
 
 mod virtualized {
     use super::consistent;
+    use octara::app::Event;
     use octara::prelude::*;
     use octara_examples::apps::{CONTACT_HEIGHT, HEADER_HEIGHT, contacts_virtual};
     use octara_examples::scenarios::{external, press};

@@ -1,7 +1,7 @@
 //! Files dragged from the system: the element under them that takes them shows it, and gets
 //! their paths when they are dropped.
 
-use octara::app::FileDrag;
+use octara::app::{FileDrag, InputEvent};
 use octara::prelude::*;
 use std::path::PathBuf;
 

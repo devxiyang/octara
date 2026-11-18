@@ -5,6 +5,7 @@
 //! ```
 //! # #[cfg(feature = "cjk")]
 //! # {
+//! use octara::app::AppConfig;
 //! use octara::prelude::*;
 //! use octara_fonts::cjk;
 //! let mut config = AppConfig::default();

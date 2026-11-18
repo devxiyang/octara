@@ -2,7 +2,7 @@
 //! (`-- --frames`, `-- --stream` or `-- --joins` for one section).
 //! Counts (closures, property changes, allocations) are exact; times are the minimum of 3 runs.
 
-use octara::app::Window;
+use octara::app::{Event, Window};
 use octara::prelude::*;
 use octara_examples::apps::{self, Apps};
 use octara_examples::scenarios::{Factory, bench_steps, press, toggle};

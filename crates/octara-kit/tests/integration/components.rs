@@ -1,5 +1,6 @@
 //! Components: semantics, controlled values, interaction looks, select with its overlay.
 
+use octara::app::Event;
 use octara::prelude::*;
 use octara_kit::*;
 
@@ -12,7 +13,7 @@ fn view() -> View {
     let locked = state("locked", || false);
     let wifi = state("wifi", || false);
     let name = state("name", || "Ada".to_string());
-    let size = state("size", || 2u8);
+    let size = state("size", || Some("2".to_owned()));
     let starred = state("starred", || false);
     col()
         .child(primary_button("Save").id("save").disabled(move || locked.get()).on_press(move || count.update(|n| *n += 1)))
@@ -25,8 +26,8 @@ fn view() -> View {
         )
         .child(text_field(name).id("name").label("Name"))
         .child(text(move || format!("hello {}", name.get())).id("greeting"))
-        .child(select("size", size, [(1u8, "Small"), (2, "Medium"), (3, "Large")]))
-        .child(text(move || format!("size {}", size.get())).id("size-out"))
+        .child(select("size", "Size", size, || vec![Choice::new("1", "Small"), Choice::new("2", "Medium"), Choice::new("3", "Large")]))
+        .child(text(move || format!("size {}", size.get().unwrap_or_default())).id("size-out"))
         .into()
 }
 
@@ -89,16 +90,16 @@ fn select_opens_a_listbox_and_picks() {
     drop(k);
     app.dispatch(Event::Press("size".into())).unwrap();
     let k = app.kernel();
-    assert!(k.tree_dump().contains("ComboBox#size \"Medium\" value=\"Medium\" expanded=true"));
+    assert_eq!(k.expanded_of("size"), Some(true));
     assert_eq!(k.role_of("size-list"), Some(Role::ListBox));
-    assert!(k.state_of("size-option-1").unwrap().contains(State::SELECTED));
+    assert!(k.state_of("size-option-2").unwrap().contains(State::SELECTED));
     let (_, ty, _, th) = k.rect(k.find("size").unwrap());
-    let (_, ly, _, _) = k.rect(k.find("size-list").unwrap());
+    let (_, ly, _, _) = k.rect(k.find("size-popover").unwrap());
     assert_eq!(ly, ty + th + 4.0, "opens below the trigger");
     drop(k);
     app.app().hot_reload();
     assert!(app.kernel().exists("size-list"), "open state survives hot reload");
-    app.dispatch(Event::Press("size-option-2".into())).unwrap();
+    app.dispatch(Event::Press("size-option-3".into())).unwrap();
     let k = app.kernel();
     assert_eq!(k.text_of("size-out").unwrap(), "size 3");
     assert_eq!(k.value_of("size").unwrap(), "Large");
@@ -122,9 +123,12 @@ fn select_works_from_the_keyboard() {
     app.press_key("enter").unwrap();
     assert!(app.kernel().exists("size-list"));
     let focused = |app: &Window, id: &str| app.kernel().state_of(id).unwrap().contains(State::FOCUSED);
-    assert!(focused(&app, "size-option-1"), "the list opens on the selected option");
+    let active = |app: &Window| app.inspect().find("size-list").unwrap().active_descendant.clone();
+    assert!(focused(&app, "size-list"));
+    assert_eq!(active(&app).as_deref(), Some("size-option-2"));
     app.press_key("down").unwrap();
-    assert!(focused(&app, "size-option-2"));
+    assert!(focused(&app, "size-list"));
+    assert_eq!(active(&app).as_deref(), Some("size-option-3"));
     app.press_key("enter").unwrap();
     assert_eq!(app.kernel().text_of("size-out").unwrap(), "size 3");
     assert!(!app.kernel().exists("size-list"));
@@ -140,8 +144,8 @@ fn select_works_from_the_keyboard() {
     assert!(!app.kernel().exists("size-list"));
     // The list floats on a shadow.
     app.press_key("enter").unwrap();
-    let list = app.kernel().find("size-list").unwrap();
-    assert!(app.display_list().items().iter().any(|i| matches!(i, octara_primitives::paint::Item::Shadow(s) if s.source == list)));
+    let popup = app.kernel().find("size-popover").unwrap();
+    assert!(app.display_list().items().iter().any(|i| matches!(i, octara_primitives::paint::Item::Shadow(s) if s.source == popup)));
 }
 
 /// A kit component is a leaf: its elements' source is where the app called it, and the

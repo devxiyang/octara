@@ -25,7 +25,7 @@ fn same_source_map_branches_rejoin_without_mixed_item_versions() {
         let (source, joined, cached) = app.run(|| {
             let source = state_list("rows", || (0..128).map(|id| Row { id, revision: 0, selected: true }).collect(), |row| row.id);
             let map = |calls: Rc<Cell<usize>>| {
-                source.map(move |row| {
+                source.read_only().map(move |row| {
                     calls.set(calls.get() + 1);
                     (row.id, row.revision)
                 })
@@ -89,6 +89,7 @@ fn filtered_diamonds_do_not_project_transient_membership_or_versions() {
                 let counted_filter = calls.clone();
                 let counted_map = calls.clone();
                 source
+                    .read_only()
                     .filter(move |row| {
                         counted_filter[0].set(counted_filter[0].get() + 1);
                         row.selected
@@ -102,6 +103,7 @@ fn filtered_diamonds_do_not_project_transient_membership_or_versions() {
                 let counted_map = calls.clone();
                 let counted_filter = calls.clone();
                 source
+                    .read_only()
                     .map(move |row| {
                         counted_map[2].set(counted_map[2].get() + 1);
                         row.clone()
@@ -193,8 +195,8 @@ fn a_filtered_right_branch_projects_final_missing_and_restored_matches() {
         let observations = Rc::new(RefCell::new(Vec::new()));
         let (source, joined, cached) = app.run(|| {
             let source = state_list("rows", || vec![Row { id: 7, revision: 0, selected: true }], |row| row.id);
-            let make_left = || source.map(Clone::clone);
-            let make_right = || source.filter(|row| row.selected).map(|row| row.revision);
+            let make_left = || source.read_only().map(Clone::clone);
+            let make_right = || source.read_only().filter(|row| row.selected).map(|row| row.revision);
             let (left, right) = if right_first {
                 let right = make_right();
                 (make_left(), right)
@@ -250,14 +252,14 @@ fn a_lookup_key_change_cannot_pair_the_new_left_item_with_its_old_right_key() {
             let source = state_list("rows", || (0..128).map(|id| Row { id, revision: 0, selected: true }).collect(), |row| row.id);
             let make_left = || {
                 let counted = calls.clone();
-                source.map(move |row| {
+                source.read_only().map(move |row| {
                     counted[0].set(counted[0].get() + 1);
                     (row.id, if row.selected { row.id } else { row.id + 1 }, row.revision)
                 })
             };
             let make_right = || {
                 let counted = calls.clone();
-                source.map(move |row| {
+                source.read_only().map(move |row| {
                     counted[1].set(counted[1].get() + 1);
                     (row.id, row.revision)
                 })
@@ -317,7 +319,7 @@ fn chained_joins_wait_for_deeper_inputs_before_delivering_a_direct_source_change
         let final_observations = Rc::new(RefCell::new(Vec::new()));
         let (source, joined, cached) = app.run(|| {
             let source = state_list("rows", || (0..128).map(|id| Row { id, revision: 0, selected: true }).collect(), |row| row.id);
-            let branch = || source.map(|row| (row.id, row.revision));
+            let branch = || source.read_only().map(|row| (row.id, row.revision));
             let (left, right) = if right_first {
                 let right = branch();
                 (branch(), right)
@@ -381,7 +383,7 @@ fn creating_a_group_joins_current_counts_instead_of_intermediate_insert_payloads
         let calls = Rc::new([const { Cell::new(0usize) }; 2]);
         let (source, joined, cached) = app.run(|| {
             let source = state_list("rows", Vec::<u32>::new, |id| *id);
-            let groups = source.group_by(|_| 0u32).read_only();
+            let groups = source.read_only().group_by(|_| 0u32).read_only();
             let branch = |index: usize| {
                 let counted = calls.clone();
                 groups.map(move |group| {

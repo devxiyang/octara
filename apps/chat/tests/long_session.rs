@@ -4,6 +4,7 @@
 mod long_session;
 
 use long_session::{LongSession, seed};
+use octara::app::Event;
 use octara::prelude::*;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -3,7 +3,8 @@
 //! `TextBuffer`s, so a delta appends to its part without touching the message; anything else
 //! (a new part, a status) changes the message.
 
-use octara::prelude::{TextBuffer, untrack};
+use octara::prelude::TextBuffer;
+use octara::reactive::untrack;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;

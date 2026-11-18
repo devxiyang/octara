@@ -2,18 +2,18 @@
 
 use super::section;
 use octara::prelude::*;
-use octara_kit::{ComboboxOption, button, combobox, popover, text_field};
+use octara_kit::{Choice, button, combobox, popover, text_field};
 
-fn cities() -> Vec<ComboboxOption> {
+fn cities() -> Vec<Choice> {
     let mut options = vec![
-        ComboboxOption::new("beijing", "北京"),
-        ComboboxOption::new("shanghai", "上海（暂不可选）").disabled(true),
-        ComboboxOption::new("hangzhou", "杭州"),
-        ComboboxOption::new("shenzhen", "深圳"),
-        ComboboxOption::new("guangzhou", "广州"),
-        ComboboxOption::new("chengdu", "成都"),
+        Choice::new("beijing", "北京"),
+        Choice::new("shanghai", "上海（暂不可选）").disabled(true),
+        Choice::new("hangzhou", "杭州"),
+        Choice::new("shenzhen", "深圳"),
+        Choice::new("guangzhou", "广州"),
+        Choice::new("chengdu", "成都"),
     ];
-    options.extend((1..=24).map(|n| ComboboxOption::new(format!("city-{n}"), format!("示例城市 {n:02}"))));
+    options.extend((1..=24).map(|n| Choice::new(format!("city-{n}"), format!("示例城市 {n:02}"))));
     options
 }
 

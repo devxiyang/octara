@@ -1,5 +1,6 @@
 //! The actual Showcase form, including validation changes while its editor is composing.
 
+use octara::app::InputEvent;
 use octara::prelude::*;
 use std::time::Duration;
 

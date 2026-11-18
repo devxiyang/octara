@@ -5,6 +5,7 @@ mod peer;
 
 use octara::app::Window;
 use octara::prelude::*;
+use octara::reactive::untrack;
 use octara_chat::model::{Message, Status, ThreadId};
 use octara_chat::network::{NetworkConfig, NetworkModel};
 use octara_chat::{Chat, ModelEntry, Options};

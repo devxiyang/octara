@@ -3,6 +3,7 @@
 //! The [reactive guide](../../../docs/design/reactive-core.md) explains the reported causes.
 
 use octara::prelude::*;
+use octara::reactive::untrack;
 use octara_examples::scenarios::{Check, press};
 use octara_kit::button;
 use std::cell::{Cell, RefCell};

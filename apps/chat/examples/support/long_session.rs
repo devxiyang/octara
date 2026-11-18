@@ -1,6 +1,7 @@
 //! Deterministic history and a real Model channel for long-session UI qualification.
 
 use octara::prelude::*;
+use octara::reactive::untrack;
 use octara_chat::engine::{Cancel, Model, Purpose, Request};
 use octara_chat::model::{Author, Event, SavedMessage, SavedPart, Status, Thread, ToolState};
 use octara_chat::store::Store;

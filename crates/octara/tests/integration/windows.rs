@@ -2,8 +2,10 @@
 //! signals, theme and fonts; each has its own tree; code runs as the window it belongs to;
 //! closing one disposes its scope and frees it.
 
+use octara::app::{AppConfig, Event};
 use octara::platform::{Frame, HeadlessPlatform, Platform, PlatformWindow, WindowOptions};
 use octara::prelude::*;
+use octara::reactive::untrack;
 use octara::task::WorkKind;
 use octara::view::native_view;
 use octara_primitives::native::NativeChange;

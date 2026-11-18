@@ -1,7 +1,9 @@
 //! App ownership is explicit and survives its windows until shutdown.
 
+use octara::app::Event;
 use octara::platform::HeadlessPlatform;
 use octara::prelude::*;
+use octara::reactive::untrack;
 use std::cell::{Cell, RefCell};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
