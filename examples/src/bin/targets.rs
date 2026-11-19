@@ -9,6 +9,7 @@ struct Targets {
     hits: Signal<u32>,
     generation: Signal<u32>,
     updates: Signal<u32>,
+    duplicate: Signal<u8>,
     child: Signal<Option<WindowId>>,
     child_openings: Signal<u32>,
     error: Signal<String>,
@@ -34,7 +35,16 @@ fn stage(model: Targets) -> View {
         .border()
         .border_color(Token::Border)
         .rounded_md()
-        .child(keyed(move || model.generation.get().is_multiple_of(2), move |_| target(model)))
+        .child(row().gap_3().child(keyed(move || model.generation.get().is_multiple_of(2), move |_| target(model))).child(show(
+            move || model.duplicate.get() > 0,
+            move || {
+                button("Alternate target")
+                    .id("target-action")
+                    .min_h(44.0)
+                    .style_with(move |s| if model.duplicate.get() == 2 { s.hidden() } else { s })
+                    .on_press(|| {})
+            },
+        )))
         .into()
 }
 
@@ -78,6 +88,7 @@ fn targets() -> El {
         hits: state("hits", || 0),
         generation: state("generation", || 0),
         updates: state("updates", || 0),
+        duplicate: state("duplicate", || 0),
         child: state("child", || None),
         child_openings: state("child_openings", || 0),
         error: state("error", String::new),
@@ -98,8 +109,12 @@ fn targets() -> El {
             row()
                 .gap_3()
                 .child(button("Replace target").id("targets-replace").min_h(44.0).on_press(move || model.generation.update(|n| *n += 1)))
+                .child(button("Update value and move").id("targets-update").min_h(44.0).on_press(move || model.updates.update(|n| *n += 1)))
                 .child(
-                    button("Update value and move").id("targets-update").min_h(44.0).on_press(move || model.updates.update(|n| *n += 1)),
+                    button("Cycle duplicate")
+                        .id("targets-duplicate")
+                        .min_h(44.0)
+                        .on_press(move || model.duplicate.update(|mode| *mode = (*mode + 1) % 3)),
                 ),
         )
         .child(text("Replace creates a new node. Update keeps the node and changes its text and position.").text_sm())

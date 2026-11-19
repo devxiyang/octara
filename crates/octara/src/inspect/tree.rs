@@ -71,6 +71,8 @@ fn inspect_one(kernel: &Kernel, id: NodeId, submit: Option<NodeId>) -> Node {
     }
     let (x, y, w, h) = kernel.shown_rect(id);
     let range = kernel.numeric_range(id);
+    let relations = kernel.resolved_relations(id);
+    let reference = |target: Option<NodeId>| target.and_then(|id| kernel.test_id(id)).map(str::to_owned);
     Node {
         target: super::target::node_target(kernel, id).expect("an inspected node is alive"),
         id: kernel.test_id(id).map(str::to_owned),
@@ -87,7 +89,9 @@ fn inspect_one(kernel: &Kernel, id: NodeId, submit: Option<NodeId>) -> Node {
         required: kernel.required(id),
         invalid: kernel.invalid(id),
         expanded: kernel.expanded(id),
-        active_descendant: kernel.active_descendant(id).and_then(|target| kernel.test_id(target).map(str::to_owned)),
+        active_descendant: reference(relations.active_descendant),
+        labelled_by: reference(relations.labelled_by),
+        controls: reference(relations.controls),
         states,
         bounds: [tenth(x), tenth(y), tenth(w), tenth(h)],
         actions: node_actions(kernel, id, submit),

@@ -24,7 +24,7 @@ def require(condition, message):
         raise Failure(message)
 
 
-def find(snapshot, identifier):
+def matching_nodes(snapshot, identifier):
     pending = [snapshot["root"]]
     found = []
     while pending:
@@ -32,6 +32,11 @@ def find(snapshot, identifier):
         if node.get("id") == identifier:
             found.append(node)
         pending.extend(node.get("children", []))
+    return found
+
+
+def find(snapshot, identifier):
+    found = matching_nodes(snapshot, identifier)
     require(len(found) == 1, f"expected one {identifier!r} node, found {len(found)}")
     return found[0]
 
@@ -53,7 +58,7 @@ class Scenario:
         self.updates = 0
         self.openings = 0
 
-    def request(self, name, request, route="query", delivery=None, stale=False):
+    def request(self, name, request, route="query", delivery=None, code=None):
         self.step += 1
         prefix = f"{self.step:03d}-{name}"
         entry = {"step": self.step, "name": name, "request": request}
@@ -73,10 +78,10 @@ class Scenario:
             raise Failure(f"{prefix}: no usable reply; input was not retried: {error}") from error
         self.record(prefix, entry)
         require(result.returncode == 0, f"{prefix}: CLI exited {result.returncode}: {result.stderr}")
-        require(reply.get("ok") is (not stale), f"{prefix}: unexpected reply: {reply}")
+        require(reply.get("ok") is (code is None), f"{prefix}: unexpected reply: {reply}")
         require(reply.get("live", {}).get("route") == route, f"{prefix}: expected live.route={route!r}: {reply}")
-        if stale:
-            require(reply.get("code") == "STALE_TARGET", f"{prefix}: wrong refusal code: {reply}")
+        if code is not None:
+            require(reply.get("code") == code, f"{prefix}: wrong refusal code: {reply}")
             delivery = "refused"
         if delivery:
             require(reply.get("delivery") == delivery, f"{prefix}: wrong Reply.delivery: {reply}")
@@ -115,7 +120,7 @@ class Scenario:
             require(actual == wanted, f"{identifier}: expected {wanted!r}, got {actual!r}")
 
     def tap(self, name, snapshot, identifier="target-action", target=None):
-        self.request(name, {"op": "tap", "window": snapshot["window"], "id": identifier,
+        self.request(name, {"op": "tap", "window": snapshot["window"],
                             "target": target if target is not None else token(find(snapshot, identifier))},
                      route="framework", delivery="delivered")
 
@@ -129,7 +134,7 @@ class Scenario:
         return self.inspect(f"{name}-after", snapshot["window"])
 
     def refuse(self, name, request, route):
-        self.request(name, request, route=route, stale=True)
+        self.request(name, request, route=route, code="STALE_TARGET")
         return self.inspect(f"{name}-unchanged", self.main)
 
     def capture(self, name, snapshot):
@@ -165,6 +170,25 @@ def run(app):
     app.capture("initial-gpu", first)
     first_hit = app.hit("fresh-a", first, a)
     old_node = find(first_hit, "target-action")
+
+    app.control("show-duplicate", "targets-duplicate")
+    duplicated = app.inspect("two-named-instances", app.main)
+    candidates = matching_nodes(duplicated, "target-action")
+    require(len(candidates) == 2, "the fixture must expose two mounted instances")
+    alternate = next(token(node) for node in candidates if token(node) != a)
+    name_only = {"op": "tap", "window": app.main, "id": "target-action"}
+    alternate_focus = {"op": "focus", "window": app.main, "target": alternate}
+    app.request("ambiguous-name", name_only, route="framework", code="AMBIGUOUS_TARGET")
+    app.request("focus-observed-alternate", alternate_focus, route="semantic", delivery="delivered")
+    app.request("observed-alternate-focused", {"op": "expect", "window": app.main, "target": alternate, "state": "focused"})
+    app.hit("tap-observed-original", duplicated, a)
+    app.control("hide-duplicate", "targets-duplicate")
+    hidden = app.inspect("hidden-duplicate", app.main)
+    require(token(find(hidden, "target-action")) == a, "only the original instance should be shown")
+    app.request("hidden-duplicate-still-ambiguous", name_only, route="framework", code="AMBIGUOUS_TARGET")
+    app.request("hidden-instance-ineligible", alternate_focus, route="semantic", code="STEP_FAILED")
+    app.control("remove-duplicate", "targets-duplicate")
+    app.refuse("removed-instance-stale", alternate_focus, "semantic")
 
     app.control("update", "targets-update")
     app.updates += 1

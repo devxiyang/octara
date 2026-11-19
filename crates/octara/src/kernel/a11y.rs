@@ -1,11 +1,17 @@
 //! The accessibility tree (AccessKit) from the kernel's semantics: what assistive technology
 //! (VoiceOver, Narrator, Orca, TalkBack) reads, and what agents can read too.
 
-use super::{HandlerKind, Kernel, Kind, NodeId, Role, State};
+use super::{HandlerKind, Kernel, Kind, NodeId, Relations, Role, State};
 use accesskit as ak;
 use slotmap::{Key, KeyData};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
+
+#[derive(Default)]
+pub(super) struct PublishedRelations {
+    targets: Relations<NodeId>,
+    referenced_name: Option<String>,
+}
 
 /// The AccessKit id of a node.
 pub fn a11y_id(id: NodeId) -> ak::NodeId {
@@ -192,10 +198,11 @@ impl Kernel {
             return ak::TreeUpdate { nodes, tree: Some(ak::TreeInfo::new(a11y_id(self.root))), tree_id: ak::TreeId::ROOT, focus };
         }
         let mut dirty: Vec<NodeId> = self.a11y_dirty.borrow_mut().drain().collect();
-        // A target can disappear, become hidden, or be rebuilt under the same logical id
-        // without changing its owner's binding. Recheck only the owners of these relations.
-        for &id in &self.active_descendant_owners {
-            if self.node(id).a11y_active_descendant_sent.get() != self.active_descendant(id) {
+        // A relation can change without an owner property changing. Compare both the current
+        // instances and the text the owner borrows from its label.
+        for (&id, published) in self.a11y_relation_owners.borrow().iter() {
+            let targets = self.resolved_relations(id);
+            if targets != published.targets || self.referenced_name(targets.labelled_by) != published.referenced_name.as_deref() {
                 dirty.push(id);
             }
         }
@@ -271,16 +278,11 @@ impl Kernel {
     }
 
     fn a11y_note_sent(&self, id: NodeId, geometry: [f32; 6]) {
-        let n = self.node(id);
-        n.a11y_sent.set(Some(geometry));
-        n.a11y_active_descendant_sent.set(self.active_descendant(id));
-    }
-
-    /// The live, shown option named by this node's active-descendant test id. Resolving the
-    /// relation never changes actual keyboard focus or selection.
-    pub fn active_descendant(&self, id: NodeId) -> Option<NodeId> {
-        let target = self.find(self.node(id).active_descendant.as_deref()?)?;
-        self.a11y_reachable(target).then_some(target)
+        self.node(id).a11y_sent.set(Some(geometry));
+        if let Some(published) = self.a11y_relation_owners.borrow_mut().get_mut(&id) {
+            let targets = self.resolved_relations(id);
+            *published = PublishedRelations { targets, referenced_name: self.referenced_name(targets.labelled_by).map(str::to_owned) };
+        }
     }
 
     /// Nodes already sent whose place may have changed with the layout of `relaid`: each one's
@@ -342,7 +344,7 @@ impl Kernel {
     }
 
     /// Whether `id` is in the tree assistive technology sees (shown, and its ancestors too).
-    fn a11y_reachable(&self, id: NodeId) -> bool {
+    pub(super) fn a11y_reachable(&self, id: NodeId) -> bool {
         let mut at = id;
         loop {
             if at != self.root && !self.shown_to_a11y(at) {
@@ -405,6 +407,7 @@ impl Kernel {
     fn a11y_build(&self, id: NodeId, scale: f64) -> (ak::Node, [f32; 6], Vec<NodeId>, Vec<AkNode>) {
         let n = self.node(id);
         let role = if id == self.root { Role::Window } else { self.role(id) };
+        let relations = self.resolved_relations(id);
         let mut node = ak::Node::new(role);
         // Placed in the parent's space; a scroll container's space moves with its offset, so its
         // children keep their transforms while it scrolls.
@@ -413,13 +416,19 @@ impl Kernel {
         let place = ak::Affine::translate((x - sx, y - sy));
         node.set_transform(if id == self.root { ak::Affine::scale(scale) * place } else { place });
         node.set_bounds(ak::Rect { x0: sx, y0: sy, x1: sx + w, y1: sy + h });
-        if let Some(name) = self.semantic_name(id) {
-            if n.label.is_none() && role == Role::Label {
+        if let Some(name) = self.name_with_label(id, relations.labelled_by) {
+            if n.label.is_none() && relations.labelled_by.is_none() && role == Role::Label {
                 // AccessKit encodes static text as a value, not a label.
                 node.set_value(name);
             } else {
                 node.set_label(name);
             }
+        }
+        if let Some(label) = relations.labelled_by {
+            node.push_labelled_by(a11y_id(label));
+        }
+        if let Some(controlled) = relations.controls {
+            node.push_controlled(a11y_id(controlled));
         }
         if let Some(placeholder) = self.placeholder(id) {
             node.set_placeholder(placeholder);
@@ -473,7 +482,7 @@ impl Kernel {
         if let Some(e) = n.expanded {
             node.set_expanded(e);
         }
-        if let Some(target) = self.active_descendant(id) {
+        if let Some(target) = relations.active_descendant {
             node.set_active_descendant(a11y_id(target));
         }
         if n.state.contains(State::SELECTED) {
@@ -508,7 +517,57 @@ impl Kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::{Display, StyleProp};
+    use crate::kernel::{Display, Relation, StyleProp};
+
+    #[test]
+    fn label_references_follow_text_names_and_presented_instances() {
+        let mut k = Kernel::default();
+        let field = k.create_input();
+        k.set_label(field, Some("Fallback"));
+        k.set_relation(field, Relation::LabelledBy, Some("caption"));
+        k.append_child(k.root(), field);
+        let group = k.create_box();
+        k.append_child(k.root(), group);
+        let label = k.create_text();
+        k.set_test_id(label, Some("caption"));
+        k.set_text(label, "Visible");
+        k.append_child(group, label);
+        let check = |k: &mut Kernel, name: &str, source: Option<NodeId>| {
+            k.layout(320.0, 200.0);
+            let update = k.accessibility_update(Some(field), 1.0);
+            let node = &update.nodes.iter().find(|(id, _)| *id == a11y_id(field)).expect("the field is sent").1;
+            assert_eq!(node.label(), Some(name));
+            assert_eq!(node.labelled_by(), &source.map(a11y_id).into_iter().collect::<Vec<_>>());
+            assert_eq!(k.semantic_name(field), Some(name));
+        };
+        check(&mut k, "Visible", Some(label));
+        k.set_text(label, "Edited");
+        check(&mut k, "Edited", Some(label));
+        k.set_style(group, StyleProp::Display(Display::None));
+        check(&mut k, "Fallback", None);
+        k.set_style(group, StyleProp::Display(Display::Flex));
+        check(&mut k, "Edited", Some(label));
+        k.set_test_id(label, Some("reassigned"));
+        check(&mut k, "Fallback", None);
+        k.set_test_id(label, Some("caption"));
+        check(&mut k, "Edited", Some(label));
+        let duplicate = k.create_text();
+        k.set_test_id(duplicate, Some("caption"));
+        k.append_child(group, duplicate);
+        check(&mut k, "Fallback", None);
+        k.destroy(duplicate);
+        check(&mut k, "Edited", Some(label));
+        k.destroy(label);
+        let replacement = k.create_text();
+        k.set_test_id(replacement, Some("caption"));
+        k.set_text(replacement, "Edited");
+        k.append_child(group, replacement);
+        assert_ne!(replacement, label);
+        check(&mut k, "Edited", Some(replacement));
+        k.set_text(replacement, "  ");
+        check(&mut k, "Fallback", None);
+        assert!(k.accessibility_update(Some(field), 1.0).nodes.is_empty());
+    }
 
     #[test]
     fn active_relations_follow_target_visibility_attachment_and_replacement() {
@@ -547,6 +606,13 @@ mod tests {
             assert!(k.state(owner).contains(State::FOCUSED));
             assert!(k.state(selected).contains(State::SELECTED));
         };
+        check(&k, Some(option));
+        let duplicate = k.create_box();
+        k.set_test_id(duplicate, Some("option-b"));
+        k.set_hidden(duplicate, true);
+        k.append_child(list, duplicate);
+        check(&k, None);
+        k.destroy(duplicate);
         check(&k, Some(option));
         k.set_hidden(option, true);
         check(&k, None);

@@ -5,8 +5,9 @@ use octara::prelude::*;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-/// An option in a [`select`] or [`combobox`]. IDs are unique within the control and stay
-/// stable across label, order and availability changes. The model stores the ID.
+/// An option for [`select`], [`combobox`], or [`tabs`](crate::tabs).
+/// IDs are unique within the control and stay stable across label, order and
+/// availability changes. The model stores the ID.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Choice {
     pub id: String,

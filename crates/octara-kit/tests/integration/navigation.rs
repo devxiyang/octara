@@ -16,12 +16,12 @@ fn expect_focus(window: &Window, id: &str) {
     assert_eq!(window.inspect().focus.as_deref(), Some(id));
 }
 
-fn tab_options() -> Vec<TabOption> {
+fn tab_options() -> Vec<Choice> {
     vec![
-        TabOption::new("one", "First"),
-        TabOption::new("two", "Second"),
-        TabOption::new("blocked", "Unavailable").disabled(true),
-        TabOption::new("three", "Third"),
+        Choice::new("one", "First"),
+        Choice::new("two", "Second"),
+        Choice::new("blocked", "Unavailable").disabled(true),
+        Choice::new("three", "Third"),
     ]
 }
 
@@ -62,7 +62,68 @@ fn tab_scene() -> View {
         .child(button("After").id("after"))
         .child(text(move || value.get().unwrap_or_else(|| "none".into())).id("chosen"))
         .child(text(move || writes.get().to_string()).id("writes"))
+        .child(
+            col()
+                .id("views-panel-two")
+                .role(Role::TabPanel)
+                .labelled_by("views-tab-two")
+                .style_with(move |p| if value.get().as_deref() == Some("two") { p } else { p.hidden() })
+                .child(text("Retained panel")),
+        )
+        .child(show(
+            move || value.get().as_deref() == Some("three"),
+            || col().id("views-panel-three").role(Role::TabPanel).labelled_by("views-tab-three").child(text("Mounted panel")),
+        ))
         .into()
+}
+
+#[test]
+fn tab_links_follow_panel_visibility_label_changes_and_rebuilds() {
+    let mut window = Window::headless(tab_scene);
+    let first = window.inspect();
+    let panel = first.find("views-panel-two").unwrap();
+    assert_eq!(panel.labelled_by.as_deref(), Some("views-tab-two"));
+    assert_eq!(panel.name.as_deref(), Some("Second"));
+    assert_eq!(first.find("views-tab-two").unwrap().controls.as_deref(), Some("views-panel-two"));
+    assert!(first.find("views-tab-three").unwrap().controls.is_none());
+    let a11y = |window: &Window, name| a11y_id(window.kernel().find(name).unwrap());
+    let panel_id = a11y(&window, "views-panel-two");
+    let two_id = a11y(&window, "views-tab-two");
+    let three_id = a11y(&window, "views-tab-three");
+    let tree = window.accessibility_update();
+    assert_eq!(tree.nodes.iter().find(|(id, _)| *id == two_id).unwrap().1.controls(), &[panel_id]);
+
+    window.invoke("tabs.rename").unwrap();
+    let delta = window.accessibility_update();
+    let updated = &delta.nodes.iter().find(|(id, _)| *id == panel_id).expect("the label change republishes its owner").1;
+    assert_eq!(updated.label(), Some("Renamed"));
+    assert_eq!(updated.labelled_by(), &[two_id]);
+    assert_eq!(window.inspect().find("views-panel-two").unwrap().name.as_deref(), Some("Renamed"));
+
+    window.invoke("tabs.third").unwrap();
+    let third = window.inspect();
+    assert!(third.find("views-panel-two").is_none());
+    assert!(third.find("views-tab-two").unwrap().controls.is_none());
+    assert_eq!(third.find("views-tab-three").unwrap().controls.as_deref(), Some("views-panel-three"));
+    let third_panel = a11y(&window, "views-panel-three");
+    let delta = window.accessibility_update();
+    assert!(delta.nodes.iter().find(|(id, _)| *id == two_id).unwrap().1.controls().is_empty());
+    assert_eq!(delta.nodes.iter().find(|(id, _)| *id == three_id).unwrap().1.controls(), &[third_panel]);
+
+    window.tap("views-tab-two").unwrap();
+    let restored = window.inspect();
+    assert_eq!(restored.find("views-tab-two").unwrap().controls.as_deref(), Some("views-panel-two"));
+    assert_eq!(restored.find("views-panel-two").unwrap().target, panel.target);
+    assert!(restored.find("views-tab-three").unwrap().controls.is_none());
+    let delta = window.accessibility_update();
+    assert!(delta.nodes.iter().find(|(id, _)| *id == three_id).unwrap().1.controls().is_empty());
+
+    window.invoke("tabs.third").unwrap();
+    let replacement = a11y(&window, "views-panel-three");
+    assert_ne!(replacement, third_panel);
+    let update = window.accessibility_update();
+    assert_eq!(update.nodes.iter().find(|(id, _)| *id == three_id).unwrap().1.controls(), &[replacement]);
+    clean(&window);
 }
 
 #[test]
@@ -293,7 +354,7 @@ fn retained_panels_keep_editor_identity_composition_and_undo_during_option_chang
     let mut window = Window::headless(|| {
         let selected = state("selected", || Some("notes".to_owned()));
         let draft = state("draft", || "Draft".to_owned());
-        let options = state("options", || vec![TabOption::new("notes", "Notes"), TabOption::new("preview", "Preview")]);
+        let options = state("options", || vec![Choice::new("notes", "Notes"), Choice::new("preview", "Preview")]);
         on_command("tabs.change-options", move || {
             options.update(|options| {
                 options.reverse();
@@ -309,7 +370,7 @@ fn retained_panels_keep_editor_identity_composition_and_undo_during_option_chang
                 col()
                     .id("editor-panel-notes")
                     .role(Role::TabPanel)
-                    .label("Notes")
+                    .labelled_by("editor-tab-notes")
                     .style_with(move |p| if selected.get().as_deref() == Some("notes") { p.flex() } else { p.hidden() })
                     .child(text_field(draft).id("draft").label("Draft").w_full()),
             )
@@ -317,7 +378,7 @@ fn retained_panels_keep_editor_identity_composition_and_undo_during_option_chang
                 col()
                     .id("editor-panel-preview")
                     .role(Role::TabPanel)
-                    .label("Preview")
+                    .labelled_by("editor-tab-preview")
                     .style_with(move |p| if selected.get().as_deref() == Some("preview") { p.flex() } else { p.hidden() })
                     .child(text(move || draft.get())),
             )
@@ -359,7 +420,7 @@ fn navigation_wraps_narrow_labels_in_both_themes_and_touch_targets() {
                     .p_4()
                     .gap_3()
                     .child(tabs("views", "Views", tab, || {
-                        vec![TabOption::new("one", "A longer tab label"), TabOption::new("two", "Another view")]
+                        vec![Choice::new("one", "A longer tab label"), Choice::new("two", "Another view")]
                     }))
                     .child(segmented("mode", "Mode", segment, || {
                         vec![RadioOption::new("one", "A longer segment label"), RadioOption::new("two", "Another choice")]
@@ -412,7 +473,7 @@ fn controlled_choice_scopes_keep_handler_state_with_component_ids_across_reload(
                     },
                 );
                 match kind {
-                    "tabs" => tabs(id, id, model, || vec![TabOption::new("shared", "Choice")]),
+                    "tabs" => tabs(id, id, model, || vec![Choice::new("shared", "Choice")]),
                     "segmented" => segmented(id, id, model, || vec![RadioOption::new("shared", "Choice")]),
                     _ => radio_group(id, id, model, || vec![RadioOption::new("shared", "Choice")]),
                 }

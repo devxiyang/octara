@@ -11,7 +11,8 @@ type Draw = Rc<dyn Fn(&mut crate::canvas::Canvas)>;
 type OnNative = Rc<dyn Fn(&crate::native::NativeEvent)>;
 
 use crate::kernel::{
-    Breakpoint, Color, Fill, HandlerId, HandlerKind, Kernel, NodeId, NumericRange, Paint, Placement, Role, State, StyleProp, Token, When,
+    Breakpoint, Color, Fill, HandlerId, HandlerKind, Kernel, NodeId, NumericRange, Paint, Placement, Relation, Relations, Role, State,
+    StyleProp, Token, When,
 };
 use crate::reactive::graph::{self, rt};
 use crate::reactive::log::Changes;
@@ -48,6 +49,16 @@ impl IntoProp<String> for String {
 impl<F: Fn() -> String + 'static> IntoProp<String> for F {
     fn into_prop(self) -> Prop<String> {
         Prop::Dyn(Box::new(self))
+    }
+}
+impl IntoProp<Option<String>> for &str {
+    fn into_prop(self) -> Prop<Option<String>> {
+        Prop::Static(Some(self.to_owned()))
+    }
+}
+impl IntoProp<Option<String>> for String {
+    fn into_prop(self) -> Prop<Option<String>> {
+        Prop::Static(Some(self))
     }
 }
 impl IntoProp<Option<String>> for Option<String> {
@@ -362,7 +373,7 @@ struct ElementProps {
     description: Option<Prop<String>>,
     tooltip: Option<Prop<String>>,
     expanded: Option<Prop<bool>>,
-    active_descendant: Option<Prop<Option<String>>>,
+    relations: Relations<Prop<Option<String>>>,
     selected: Option<Prop<bool>>,
     disabled: Option<Prop<bool>>,
     hidden: bool,
@@ -437,7 +448,7 @@ impl ElementProps {
             description: None,
             tooltip: None,
             expanded: None,
-            active_descendant: None,
+            relations: Relations::default(),
             selected: None,
             disabled: None,
             hidden: false,
@@ -729,6 +740,20 @@ impl<C> El<C> {
         self.props.label = Some(l.into_prop());
         self
     }
+    /// Takes the accessible name from a uniquely named label in this window. If the source
+    /// is absent, hidden from accessibility or blank, the element uses its authored name.
+    pub fn labelled_by(mut self, id: impl IntoProp<Option<String>>) -> Self {
+        self.props.relations.labelled_by = Some(id.into_prop());
+        self
+    }
+
+    /// Identifies the element this control operates, by test id in this window. The relation
+    /// is published while the target is unique and in the accessibility tree.
+    pub fn controls(mut self, id: impl IntoProp<Option<String>>) -> Self {
+        self.props.relations.controls = Some(id.into_prop());
+        self
+    }
+
     /// Text that shows when the mouse rests on it (GPUI's `tooltip`): the window's one tooltip,
     /// below it, gone when hover leaves or on a press, a scroll or a key. It is also its
     /// description for assistive technology (unless it has one). An icon button names its action
@@ -749,7 +774,7 @@ impl<C> El<C> {
     /// combo box's input, for example). This does not select the option or move focus. Missing,
     /// detached and accessibility-hidden targets are omitted until they are shown again.
     pub fn active_descendant(mut self, id: impl IntoProp<Option<String>>) -> Self {
-        self.props.active_descendant = Some(id.into_prop());
+        self.props.relations.active_descendant = Some(id.into_prop());
         self
     }
     pub fn checked(mut self, c: impl IntoProp<bool>) -> Self {
@@ -1325,8 +1350,14 @@ pub(crate) fn build_el(element: El) -> NodeId {
     if let Some(p) = e.expanded {
         bind(at, node, p, |k, n, v: &bool| k.set_expanded(n, Some(*v)));
     }
-    if let Some(p) = e.active_descendant {
-        bind(at, node, p, |k, n, v: &Option<String>| k.set_active_descendant(n, v.as_deref()));
+    for (relation, prop) in [
+        (Relation::ActiveDescendant, e.relations.active_descendant),
+        (Relation::LabelledBy, e.relations.labelled_by),
+        (Relation::Controls, e.relations.controls),
+    ] {
+        if let Some(prop) = prop {
+            bind(at, node, prop, move |k, n, v: &Option<String>| k.set_relation(n, relation, v.as_deref()));
+        }
     }
     if let Some(p) = e.selected {
         bind(at, node, p, |k, n, v: &bool| k.set_state(n, State::SELECTED, *v));

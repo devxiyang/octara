@@ -228,6 +228,12 @@ pub struct Node {
     /// Omitted when the target is missing, detached or hidden from accessibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_descendant: Option<String>,
+    /// The resolved test id of the node supplying this element's accessible name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labelled_by: Option<String>,
+    /// The resolved test id of the element this control operates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controls: Option<String>,
     /// `hovered`, `focused`, `focus_visible`, `pressed`, `selected`, `disabled`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub states: Vec<String>,

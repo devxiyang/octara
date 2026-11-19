@@ -26,7 +26,7 @@ OCTARA_INSPECT=/tmp/octara-example.sock target/debug/window counter
 | 问题 | 如何重现 |
 | --- | --- |
 | 单击、双击、长按、窗口尺寸与绘制结果 | 构建上面的两个二进制后，运行 `python3 examples/live_inspect.py`。[脚本](live_inspect.py) |
-| 同名控件重建、热重载和重开窗口 | 额外构建 `cargo build -p octara-examples --bin targets`。用独立 `OCTARA_INSPECT` 路径启动 `target/debug/targets`，然后 `python3 examples/live_targets.py --socket /tmp/octara-targets.sock --output /tmp/octara-targets-result`；填入实际 socket 和尚未创建的输出目录。[脚本](live_targets.py) |
+| 重复名称、隐藏控件、同名重建、热重载和重开窗口 | 额外构建 `cargo build -p octara-examples --bin targets`。用独立 `OCTARA_INSPECT` 路径启动 `target/debug/targets`，再运行 `python3 examples/live_targets.py --socket /tmp/octara-targets.sock --output /tmp/octara-targets-result`。填入实际 socket 和尚未创建的输出目录。[脚本](live_targets.py) |
 | 字段、单选和组件键盘流程 | 运行 `python3 examples/live_forms.py` 或 `python3 examples/live_primitives.py --scene all`。[字段](live_forms.py) · [对话框与数值控件](live_primitives.py) |
 | macOS 拼音候选、重转换和屏幕位置 | 用系统键盘操作，分别记录应用快照与系统候选窗。[输入法验证](IME.md) |
 | 同一次触摸联动面板与列表 | 运行 `panel_scroll` 窗口并用 Inspector 驱动固定的触摸序列。[面板联动步骤](#面板联动) |

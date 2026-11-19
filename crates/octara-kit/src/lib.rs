@@ -27,7 +27,7 @@ pub use choices::{Choice, combobox, select};
 pub use dialog::{DialogOptions, dialog};
 pub use forms::{FieldInfo, RadioOption, field, radio_group};
 pub use menus::menu_button;
-pub use navigation::{TabOption, segmented, tabs};
+pub use navigation::{segmented, tabs};
 pub use popover::popover;
 pub use popup_list::{PopupItem, popup_list};
 pub use range::{normalize_number, number_field, parse_number, progress, slider};

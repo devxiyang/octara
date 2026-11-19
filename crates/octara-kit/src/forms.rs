@@ -31,8 +31,9 @@ impl FieldInfo {
 /// A label, retained `control`, helper text and current validation.
 ///
 /// `id` names the actual control. The wrapper is `{id}-field`, its visible label `{id}-label`,
-/// helper `{id}-help`, and error `{id}-error`. Pressing the label focuses the control. Its
-/// accessible name is `label`; its description combines the helper and any nonblank error.
+/// helper `{id}-help`, and error `{id}-error`. Pressing the label focuses the control. The
+/// control takes its accessible name from that label. Its description combines the helper
+/// and any nonblank error.
 /// `required` and `invalid` are applied to the control itself. The error is a polite live region.
 ///
 /// `info` is tracked and evaluated coherently through a memo. Changes only update properties
@@ -48,6 +49,7 @@ pub fn field(id: &str, label: impl Into<String>, control: impl Into<El>, info: i
     let label = label.into();
     let info = memo(info);
     let focus_id = id.to_owned();
+    let label_id = format!("{id}-label");
     let help_id = format!("{id}-help");
     let error_id = format!("{id}-error");
     col()
@@ -56,8 +58,8 @@ pub fn field(id: &str, label: impl Into<String>, control: impl Into<El>, info: i
         .min_w(0.0)
         .gap_1p5()
         .child(
-            text(label.clone())
-                .id(format!("{id}-label"))
+            text(label)
+                .id(label_id.clone())
                 .text_sm()
                 .font_medium()
                 .text_color(Token::Text)
@@ -69,7 +71,7 @@ pub fn field(id: &str, label: impl Into<String>, control: impl Into<El>, info: i
         .child(
             control
                 .id(id.to_owned())
-                .label(label)
+                .labelled_by(label_id)
                 .description(move || info.get().description())
                 .required(move || info.get().required)
                 .invalid(move || info.get().error().is_some()),

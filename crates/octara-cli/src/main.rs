@@ -439,6 +439,11 @@ fn snapshot_text(snap: &serde_json::Value) -> String {
                 let _ = write!(s, " {property}={value}");
             }
         }
+        for property in ["labelled_by", "controls", "active_descendant"] {
+            if let Some(target) = n[property].as_str() {
+                let _ = write!(s, " {property}={target:?}");
+            }
+        }
         for property in ["numeric_value", "min_numeric_value", "max_numeric_value", "numeric_value_step"] {
             if let Some(value) = n[property].as_f64() {
                 let _ = write!(s, " {property}={value}");

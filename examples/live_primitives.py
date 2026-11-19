@@ -32,6 +32,8 @@ from live_inspect import SmokeFailure, find, nodes, require
 EDITOR = "suggest-editor"
 DRAFT_TAB = "editor-tabs-tab-draft"
 PREVIEW_TAB = "editor-tabs-tab-preview"
+DRAFT_PANEL = "editor-tabs-panel-draft"
+PREVIEW_PANEL = "editor-tabs-panel-preview"
 REVIEW_TEXT = "请审阅当前改动。"
 SUMMARY_TEXT = "请概括当前内容。"
 
@@ -42,6 +44,13 @@ def present(snapshot, identifier):
 
 def selected(snapshot, identifier):
     return "selected" in find(snapshot, identifier).get("states", [])
+
+
+def tab_link(snapshot, tab, panel):
+    control, page = find(snapshot, tab), find(snapshot, panel)
+    require(control.get("controls") == panel, f"{tab} has no relation to its active panel")
+    require(page.get("role") == "tab_panel" and page.get("labelled_by") == tab and page.get("name") == control.get("name"),
+            f"{panel} did not take its name from its tab")
 
 
 def editor_state(snapshot):
@@ -131,6 +140,8 @@ def interaction(args, output, sockets):
         old_editor = token(find(opened, EDITOR))
         old_dialog = token(dialog)
         require(selected(opened, DRAFT_TAB) and not selected(opened, PREVIEW_TAB), "initial tab selection differs")
+        tab_link(opened, DRAFT_TAB, DRAFT_PANEL)
+        require(find(opened, PREVIEW_TAB).get("controls") is None, "hidden Preview was published as a relation target")
         app.observe("dialog-open", evidence=True)
         app.picture("dialog-gpu")
         inert, _ = app.reject("outside-is-inert", "tap", "STEP_FAILED", id="interaction-open")
@@ -169,12 +180,14 @@ def interaction(args, output, sockets):
         app.action("return-preview-focus", "key", chord="right")
         preview, _ = app.action("activate-preview", "key", chord="enter")
         require(selected(preview, PREVIEW_TAB) and not selected(preview, DRAFT_TAB), "Enter did not select Preview")
-        require(present(preview, EDITOR) is None and find(preview, "editor-panel-preview").get("role") == "tab_panel",
-                "hidden retained draft stayed in the semantic tree")
+        require(present(preview, EDITOR) is None and find(preview, DRAFT_TAB).get("controls") is None,
+                "hidden retained draft or its relation remained exposed")
+        tab_link(preview, PREVIEW_TAB, PREVIEW_PANEL)
         require(find(preview, "editor-preview-text").get("name") == f"预览：{SUMMARY_TEXT}", "preview lost the draft")
         app.action("focus-draft-without-activation", "key", chord="left")
         draft, _ = app.action("activate-draft", "key", chord="space")
         require(selected(draft, DRAFT_TAB) and token(find(draft, EDITOR)) == old_editor, "panel switching replaced the retained editor")
+        tab_link(draft, DRAFT_TAB, DRAFT_PANEL)
         restored, _ = app.action("restore-editor-focus", "focus", id=EDITOR)
         require(editor_state(restored)["selection"] == retained_selection, "retained panel lost the editor selection")
 

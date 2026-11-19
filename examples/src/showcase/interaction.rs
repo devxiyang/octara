@@ -2,7 +2,7 @@
 
 use super::section;
 use octara::prelude::*;
-use octara_kit::{DialogOptions, PopupItem, RadioOption, TabOption, button, dialog, popup_list, segmented, tabs, text_field};
+use octara_kit::{Choice, DialogOptions, PopupItem, RadioOption, button, dialog, popup_list, segmented, tabs, text_field};
 
 #[ui]
 pub fn card() -> El {
@@ -35,17 +35,13 @@ pub fn card() -> El {
                     .min_w(0.0)
                     .gap_3()
                     .child(tabs("editor-tabs", "编辑器页面", tab, || {
-                        vec![
-                            TabOption::new("draft", "草稿"),
-                            TabOption::new("preview", "预览"),
-                            TabOption::new("advanced", "高级").disabled(true),
-                        ]
+                        vec![Choice::new("draft", "草稿"), Choice::new("preview", "预览"), Choice::new("advanced", "高级").disabled(true)]
                     }))
                     .child(
                         col()
-                            .id("editor-panel-draft")
+                            .id("editor-tabs-panel-draft")
                             .role(Role::TabPanel)
-                            .label("草稿")
+                            .labelled_by("editor-tabs-tab-draft")
                             .w_full()
                             .min_w(0.0)
                             .gap_3()
@@ -97,9 +93,9 @@ pub fn card() -> El {
                     )
                     .child(
                         col()
-                            .id("editor-panel-preview")
+                            .id("editor-tabs-panel-preview")
                             .role(Role::TabPanel)
-                            .label("预览")
+                            .labelled_by("editor-tabs-tab-preview")
                             .w_full()
                             .min_w(0.0)
                             .gap_2()

@@ -1,30 +1,10 @@
 //! Controlled tab bars and compact radio choices, composed from retained focus groups.
 
-use crate::{Model, RadioOption};
+use crate::{Choice, Model, RadioOption};
 use octara::prelude::*;
 use std::rc::Rc;
 
-/// One tab. IDs must be unique and stay stable when tabs move or their labels change.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TabOption {
-    pub id: String,
-    pub label: String,
-    pub disabled: bool,
-}
-
-impl TabOption {
-    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { id: id.into(), label: label.into(), disabled: false }
-    }
-
-    /// Unavailable tabs remain visible; keyboard navigation and activation skip them.
-    pub fn disabled(mut self, disabled: bool) -> Self {
-        self.disabled = disabled;
-        self
-    }
-}
-
-/// A tab bar with manual activation, bound to a stable option ID in `value`.
+/// A tab bar with manual activation, bound to a stable [`Choice`] ID in `value`.
 ///
 /// `id` names the `TabList`; each `Tab` is `{id}-tab-{option.id}`. `label` is the bar's
 /// accessible name. The tracked options retain their targets when reordered, renamed or
@@ -37,21 +17,21 @@ impl TabOption {
 /// wrapping past disabled tabs. Press, Enter and Space activate the focused tab. Focus alone
 /// does not activate it; no automatic activation mode is implied.
 ///
-/// The bar owns no panels. Give application panels stable IDs such as `{id}-panel-{option.id}`
-/// and `Role::TabPanel` with an accessible label. Use `show` to mount/unmount a panel with its
-/// selection; use a display binding to keep a panel's editor, undo and scroll state mounted:
+/// Each tab points to the panel with id `{id}-panel-{option.id}` while it is accessible.
+/// The application owns its panels. Give each `Role::TabPanel` and label it from its tab.
+/// Use `show` to mount a panel on selection or bind its display to retain its editor, undo
+/// and scroll state.
 ///
 /// ```rust,ignore
-/// col().id("views-panel-notes").role(Role::TabPanel).label("Notes")
+/// col().id("views-panel-notes").role(Role::TabPanel).labelled_by("views-tab-notes")
 ///     .style_with(move |p| if selected.get().as_deref() == Some("notes") { p.flex() } else { p.hidden() })
 ///     .child(text_field(draft))
 /// ```
-/// The application controls panel focus and background work, including when selection changes
-/// externally. Panel IDs are a naming convention; this bar does not create accessibility
-/// relations or manage navigation stacks.
+/// The application controls panel focus, background work and navigation stacks, including
+/// when selection changes externally.
 #[ui]
 #[track_caller]
-pub fn tabs(id: &str, label: impl Into<String>, value: impl Model<Option<String>>, options: impl Fn() -> Vec<TabOption> + 'static) -> View {
+pub fn tabs(id: &str, label: impl Into<String>, value: impl Model<Option<String>>, options: impl Fn() -> Vec<Choice> + 'static) -> View {
     let id = id.to_owned();
     let label = label.into();
     let value: Rc<dyn Model<Option<String>>> = Rc::new(value);
@@ -73,6 +53,7 @@ pub fn tabs(id: &str, label: impl Into<String>, value: impl Model<Option<String>
                     text(move || item.with(|row| row.label.clone()))
                         .id(format!("{id}-tab-{key}"))
                         .role(Role::Tab)
+                        .controls(format!("{id}-panel-{key}"))
                         .selected(move || selected.get().as_ref() == Some(&selected_key))
                         .disabled(move || item.with(|row| row.disabled))
                         .focusable()

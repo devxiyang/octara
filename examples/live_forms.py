@@ -143,6 +143,9 @@ class FormsWindow(LiveWindow):
 def field_state(snapshot, value, error=None, help_text=FULL_HELP):
     control, save = find(snapshot, "profile-name"), find(snapshot, "forms-save")
     require(control.get("role") == "text_input" and control.get("name") == "显示名称", "field lost its label/role")
+    label = find(snapshot, "profile-name-label")
+    require(control.get("labelled_by") == label["id"] and control.get("name") == label.get("name"),
+            "field name did not come from its visible label")
     require(control.get("value") == value, f"field value differs: {control}")
     require(control.get("required") is True and control.get("invalid") is bool(error), "field required/invalid semantics differ")
     require(control.get("description") == help_text + (f"\n{error}" if error else ""), "field description differs")

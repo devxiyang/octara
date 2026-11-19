@@ -42,6 +42,11 @@ fn field_semantics_are_on_the_control_and_validation_is_live() {
     let snapshot = window.inspect();
     let control = snapshot.find("name").unwrap();
     assert_eq!(control.name.as_deref(), Some("Name"));
+    assert_eq!(control.labelled_by.as_deref(), Some("name-label"));
+    {
+        let k = window.kernel();
+        assert_eq!(k.label(k.find("name").unwrap()), None, "the control's name comes from the visible label");
+    }
     assert_eq!(control.description.as_deref(), Some("Use your full name."));
     assert_eq!(control.required, Some(true));
     assert_eq!(control.invalid, Some(false));
@@ -61,8 +66,10 @@ fn field_semantics_are_on_the_control_and_validation_is_live() {
     assert_eq!(window.kernel().text_of("name-error").as_deref(), Some("Enter a full name."));
     let tree = window.accessibility_tree();
     let control_id = octara::kernel::a11y::a11y_id(window.kernel().find("name").unwrap());
+    let label_id = octara::kernel::a11y::a11y_id(window.kernel().find("name-label").unwrap());
     let control = &tree.nodes.iter().find(|(id, _)| *id == control_id).unwrap().1;
     assert_eq!(control.label(), Some("Name"));
+    assert_eq!(control.labelled_by(), &[label_id]);
     assert_eq!(control.description(), Some("Use your full name.\nEnter a full name."));
     assert!(control.is_required());
     assert_eq!(control.invalid(), Some(Invalid::True));

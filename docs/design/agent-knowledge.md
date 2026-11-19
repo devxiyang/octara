@@ -8,6 +8,8 @@
 
 `octara.inspect/2` 的 `selection` 提供文档选区预览。`preview` 从当前帧已挂载的选区按文档顺序读取，最多 2,000 个 Unicode 标量值。`complete` 为 `false` 表示预览截断或选区包含未挂载行。选区全部位于未挂载行时，`preview` 为空且 `complete` 为 `false`。显式 `copy` 请求按复制规则提取选区，可以临时挂载屏外行。旧版 `octara.inspect/1` 的 `selection` 是字符串。[预览与复制测试](../../crates/octara/tests/integration/selection.rs)
 
+节点上的 `labelled_by`、`controls` 和 `active_descendant` 都是当前语义树中目标的 `id`。关系未能解析时，该字段省略。根据关系找到实际节点后，操作时使用它的 `target`。控件的 `name` 已反映当前可用的标签。[关系与名称](ui-primitives.md#语义关系)
+
 | 返回结果 | 下一步 |
 | --- | --- |
 | `AMBIGUOUS_TARGET` | 查找名匹配了多个挂载实例。用树中的角色、标签和位置确定对象，再传入该对象的 `target` |
