@@ -15,7 +15,7 @@ accesskit_winit = "0.34.2"
 arboard = { version = "3.7.0", default-features = false }
 bitflags = { version = "2.13.2", features = ["serde"] }
 bytemuck = { version = "1.25.2", features = ["derive"] }
-clap = { version = "4.6.7", features = ["derive"] }
+clap = { version = "4.6.8", features = ["derive"] }
 color = "0.3.3"
 rustc-hash = "2.1.3"
 prettyplease = "0.3.0"
@@ -49,7 +49,7 @@ linebender_resource_handle = "0.1.1"
 parley = { version = "0.13.0", default-features = false, features = ["std", "complex-scripts"] }
 png = "0.18.1"
 roxmltree = "0.21.2"
-pollster = "1.0.1"
+pollster = "1.0.3"
 unicode-segmentation = "1.13.3"
 taffy = { version = "0.15.1", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "content_size"] }
 wgpu = "30.0.2"
