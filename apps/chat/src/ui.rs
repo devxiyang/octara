@@ -337,7 +337,13 @@ fn settings_dialog(chat: Chat, open: Signal<bool>) -> View {
             col()
                 .gap_3()
                 .child(text("Model").font_medium())
-                .child(combobox("settings-model", "Model", model, move || options.clone()))
+                .child(combobox(
+                    "settings-model",
+                    "Model",
+                    model,
+                    move || options.clone(),
+                    |caption| button(caption).w_full().min_w(0.0).truncate(),
+                ))
                 .child(text("Temperature (0–2)").font_medium())
                 .child(
                     number_field(temperature, 0.0, 2.0, 0.1)
@@ -395,33 +401,26 @@ fn settings_dialog(chat: Chat, open: Signal<bool>) -> View {
 
 /// Labels belong to people; the selection and retained option rows use the model's stable ID.
 #[ui]
-fn model_picker(chat: &Chat) -> El {
+fn model_picker(chat: &Chat) -> View {
     let options: Vec<_> = chat.models().iter().map(|entry| Choice::new(&entry.id, entry.model.name())).collect();
-    let hint = chat.clone();
-    let picker = if options.is_empty() {
-        button("No models")
-            .id("model")
-            .role(Role::ComboBox)
-            .label("Model")
-            .a11y_value("No models")
-            .w_full()
-            .truncate()
-            .disabled(true)
-            .into()
-    } else {
-        combobox("model", "Model", chat.model, move || options.clone())
-    };
-    el().id("model-picker")
-        .min_w(0.0)
-        .max_w(relative(0.55))
-        .flex_shrink_0()
-        .style_with(|style| style.w(if compact() { 128.0 } else { 220.0 }))
-        .tooltip(move || {
-            let selected = hint.model.get();
-            let name = selected.as_deref().and_then(|id| hint.model_name(id)).unwrap_or("Model");
-            format!("{name}\nApplies to the next message or regenerated answer.")
-        })
-        .child(picker)
+    let empty = options.is_empty();
+    combobox(
+        "model",
+        "Model",
+        chat.model,
+        move || options.clone(),
+        move |caption| {
+            let caption = move || if empty { "No models".into() } else { caption.get() };
+            button(caption)
+                .min_w(0.0)
+                .max_w(relative(0.55))
+                .flex_shrink_0()
+                .truncate()
+                .style_with(|style| style.w(if compact() { 128.0 } else { 220.0 }))
+                .tooltip(move || format!("{}\nApplies to the next message or regenerated answer.", caption()))
+                .disabled(empty)
+        },
+    )
 }
 
 /// The open conversation's messages: one document to select across, following its end as the

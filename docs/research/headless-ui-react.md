@@ -67,7 +67,7 @@ Headless UI React 把完整控件行为装进可组合的部件，同时复用�
 
 按压也有自己的生命周期。React 实现跟踪指针离开、移动、抬起和取消。菜单类触发器根据设备类型选择开始时刻，鼠标可在焦点变化前打开，触摸和笔走 click 路径。从触发器按下、拖到选项再抬起也有独立判定。这些路径能共用命中与取消信号，最终是否打开、选择或执行由控件决定。[按压状态](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/hooks/use-active-press.tsx#L38-L97) · [设备与开关时机](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/hooks/use-handle-toggle.tsx#L6-L53) · [拖动释放](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/hooks/use-quick-release.ts#L22-L113)
 
-Octara 已用 `El::behavior` 把组件行为与应用回调放在同一挂载节点上，顺序为 IME 路由、组件行为、应用回调。真实触发器的配置应沿用这套类型化协议。样式、禁用、名称和可追加的回调应有明确的作用对象，Kit 继续负责维持控件依赖的角色、关联和输入行为。[Octara `El::behavior`](../../crates/octara/src/view/element.rs) · [行为层](../../crates/octara/src/view/behavior.rs)
+Octara 用 `El::behavior` 把组件行为与应用回调放在同一挂载节点上，顺序为 IME 路由、组件行为、应用回调。Kit 的 `select` 与 `combobox` 把控件的角色、名称、展开状态和输入行为安装到应用提供的触发元素上。应用可在同一个元素上设置样式、禁用和提示，并追加按压回调。[Octara `El::behavior`](../../crates/octara/src/view/element.rs) · [行为层](../../crates/octara/src/view/behavior.rs) · [Kit 选择器](../../crates/octara-kit/src/choices.rs)
 
 ### 集合身份、焦点、活动项和提交
 
@@ -103,7 +103,7 @@ Transition 让正在退出的内容保留绘制，等待参与过渡的后代完
 
 保留三条责任边界。**应用**拥有业务 ID、数据来源和提交策略。**Kit** 组合可直接使用的行为，并允许调用者配置实际部件，多个组件可以共享内部实现。**Core 与宿主**拥有挂载身份、真实焦点、输入路由、窗口级协调和系统编辑。只有当实际调用方必须复制窗口状态、争抢同一次输入或绕过系统协议时，才评审更通用的 Core 入口。[Octara 原语准入与身份](../ARCHITECTURE.md)
 
-Chat 模型选择器是首个具体调用点。有模型时用 `combobox(...) -> View`，模型为空时另造禁用按钮并手动补角色和名称，提示挂在外层元素。将禁用、空状态文案、提示和样式配置到实际触发器，可以让两种状态沿用同一个选择器，并直接检查应用代码、窗口和 Agent 是否在同一个对象上观察和操作。模型 ID 继续表示业务选择。触发器和选项由框架分配各自的挂载身份。[Chat 模型选择器](../../apps/chat/src/ui.rs) · [Kit 选择器](../../crates/octara-kit/src/choices.rs)
+Chat 的工具栏模型选择器在 `combobox` 的触发工厂里设置样式、提示、空状态文案与禁用条件。模型列表为空或有内容时都使用同一个选择器，窗口和 Agent 从实际触发器读取语义与可用动作。模型 ID 表示业务选择，触发器和选项由框架分配各自的挂载身份。[Chat 模型选择器](../../apps/chat/src/ui.rs) · [Kit 选择器](../../crates/octara-kit/src/choices.rs)
 
 | 场景 | 验收条件 |
 | --- | --- |

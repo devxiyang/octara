@@ -43,7 +43,12 @@ pub fn card() -> El {
     section("Popovers and searchable choices")
         .w_full()
         .child(text("城市 / City").font_medium())
-        .child(show(move || visible.get(), move || combobox("city", "城市 / City", selected, move || options.get())))
+        .child(show(
+            move || visible.get(),
+            move || {
+                combobox("city", "城市 / City", selected, move || options.get(), |caption| button(caption).w_full().min_w(0.0).truncate())
+            },
+        ))
         .child(
             text(move || {
                 let current = selected.get();
@@ -88,7 +93,13 @@ pub fn card() -> El {
                     .shadow_lg()
                     .modal(false, move || dialog.set(false))
                     .child(text("选择目的地").font_semibold())
-                    .child(combobox("dialog-city", "目的地 / Destination", selected, move || options.get()))
+                    .child(combobox(
+                        "dialog-city",
+                        "目的地 / Destination",
+                        selected,
+                        move || options.get(),
+                        |caption| button(caption).w_full().min_w(0.0).truncate(),
+                    ))
                     .child(button("完成").id("close-choices-dialog").on_press(move || dialog.set(false)))
             },
         ))

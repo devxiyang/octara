@@ -162,7 +162,25 @@ Kit 的 `text_field(model)` 和 `text_area(model)` 分别创建绑定模型的�
 
 用 `octara vocab text_field` 或 `octara vocab text_area` 查 Kit 构造器，查宿主读取聚焦字段的接口时用 `octara vocab Window::text_field`。
 
-`select(id, label, value, options)` 和 `combobox(id, label, value, options)` 共用 `Choice`。例如 `Choice::new("dark", "Dark theme")` 将稳定的选项 ID 和显示文案分开。用 `Option<String>` 保存选中 ID，选项闭包可以随着应用数据更新。直接选择器让列表持有焦点，搜索选择器让搜索框持有焦点。
+`select(id, label, value, options, trigger)` 和 `combobox(id, label, value, options, trigger)` 共用 `Choice`。例如 `Choice::new("dark", "Dark theme")` 将稳定的选项 ID 和显示文案分开。用 `Option<String>` 保存选中 ID，选项闭包可以随着应用数据更新。直接选择器让列表持有焦点，搜索选择器让搜索框持有焦点。
+
+最后一个参数传 `button` 即可使用 Kit 按钮。自定义工厂收到 `ReadSignal<String>`，其中是模型接受的选项标签，无对应选项时使用 `label`。可以将它直接绑定到触发元素的文字，并在同一个元素上设置宽度、提示或禁用条件。Kit 为返回的 `El` 设置触发器的 ID、角色、名称、可访问值与展开状态，并安装打开弹层的行为。
+
+```rust
+use octara::prelude::*;
+use octara_kit::{Choice, button, combobox};
+
+let _window = Window::headless(|| {
+    let selected = state("theme", || Some("dark".to_owned()));
+    combobox(
+        "theme",
+        "Theme",
+        selected,
+        || vec![Choice::new("light", "Light theme"), Choice::new("dark", "Dark theme")],
+        |caption| button(caption).w(220.0).max_w_full().truncate().tooltip("Search themes"),
+    )
+});
+```
 
 编辑回调收到当前提议。下面的行内重命名用 `.on_input(...)` 更新草稿，用 `.on_submit(...)` 保存。系统输入法验收使用原生窗口和系统键盘。
 

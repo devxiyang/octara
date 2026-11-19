@@ -26,7 +26,13 @@ fn view() -> View {
         )
         .child(text_field(name).id("name").label("Name"))
         .child(text(move || format!("hello {}", name.get())).id("greeting"))
-        .child(select("size", "Size", size, || vec![Choice::new("1", "Small"), Choice::new("2", "Medium"), Choice::new("3", "Large")]))
+        .child(select(
+            "size",
+            "Size",
+            size,
+            || vec![Choice::new("1", "Small"), Choice::new("2", "Medium"), Choice::new("3", "Large")],
+            button,
+        ))
         .child(text(move || format!("size {}", size.get().unwrap_or_default())).id("size-out"))
         .into()
 }

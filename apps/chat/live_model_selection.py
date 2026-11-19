@@ -79,7 +79,7 @@ def saved_history(store, count, timeout):
 
     saved = wait(timeout, read, lambda s: len(s.get("messages", [])) == count
                  and all(m["status"] == "Done" for m in s["messages"]), "the isolated conversation save")
-    return [history_fact(m["author"].lower(), "\n\n".join(p["Text"] for p in m["parts"] if "Text" in p))
+    return [history_fact(m["author"].lower(), "\n\n".join(p["Text"] for _, p in m["parts"] if "Text" in p))
             for m in saved["messages"]]
 
 

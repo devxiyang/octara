@@ -89,7 +89,7 @@ fn chinese_search_selects_same_named_models_by_id_without_consuming_the_draft() 
     let other = Probe::streaming("Writer");
     let mut window = open(vec![first.entry("first"), other.entry("writer"), second.entry("second")]);
     assert_eq!(
-        window.inspect().find("model-picker").unwrap().description.as_deref(),
+        window.inspect().find("model").unwrap().description.as_deref(),
         Some("聊天模型\nApplies to the next message or regenerated answer."),
         "the Agent reads the same model context as assistive technology"
     );
@@ -170,7 +170,7 @@ fn long_model_and_conversation_names_fit_phone_and_desktop_in_both_themes() {
             assert_eq!(window.kernel().value_of("model").as_deref(), Some(name));
             {
                 let kernel = window.kernel();
-                assert!(kernel.tooltip(kernel.find("model-picker").unwrap()).unwrap().contains(name));
+                assert!(kernel.tooltip(kernel.find("model").unwrap()).unwrap().contains(name));
             }
             let snapshot = window.inspect();
             let mut closed_truncation = vec!["model", "title"];
@@ -218,6 +218,9 @@ fn no_models_keeps_a_usable_composer_and_preserves_unsent_text() {
             window.resize(width, height);
             window.app().set_theme(theme);
             assert!(window.kernel().state_of("model").unwrap().contains(State::DISABLED));
+            assert_eq!(window.kernel().text_of("model").as_deref(), Some("No models"));
+            window.tap("model").unwrap();
+            assert!(!window.kernel().exists("model-popover"));
             assert!(window.kernel().exists("model-status"));
             window.invoke("chat.focus_composer").unwrap();
             window.type_text("A draft without a configured model");

@@ -1,6 +1,6 @@
 //! Controlled choices with shared identity and submission.
 
-use crate::{Model, TOUCH_TARGET, button, popover, text_field};
+use crate::{Model, TOUCH_TARGET, popover, text_field};
 use octara::prelude::*;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -30,22 +30,32 @@ impl Choice {
 /// A choice from a tracked list of options. `value` holds the accepted option ID.
 ///
 /// The trigger uses `id`, the popup is `{id}-popover`, the list is `{id}-list`, and rows use
-/// `{id}-option-{choice.id}`. `label` names the control and appears when the selected ID is absent.
+/// `{id}-option-{choice.id}`. `label` names the control and supplies the fallback caption.
+/// `trigger` builds the actual control once per mount from a tracked caption. Pass [`crate::button`]
+/// for a standard trigger or return an element configured with styles, a tooltip, or a disabled state.
 /// The list keeps focus as choices reorder or disappear. Arrow keys, Home and End move the
 /// active option. Enter, Space or pressing an enabled row commits the choice.
 #[ui]
 #[track_caller]
-pub fn select(id: &str, label: impl Into<String>, value: impl Model<Option<String>>, options: impl Fn() -> Vec<Choice> + 'static) -> View {
-    picker(id.to_owned(), label.into(), value, options, false)
+pub fn select(
+    id: &str,
+    label: impl Into<String>,
+    value: impl Model<Option<String>>,
+    options: impl Fn() -> Vec<Choice> + 'static,
+    trigger: impl FnOnce(ReadSignal<String>) -> El + 'static,
+) -> View {
+    picker(id.to_owned(), label.into(), value, options, trigger, false)
 }
 
 /// A searchable choice, with its selected option ID in `value`.
 ///
-/// `label` names the control and appears when the selected ID is absent. The tracked option
+/// `label` names the control and supplies the fallback caption. The tracked option
 /// source may change while open. Removing a selected option leaves the caller's model intact.
 ///
 /// The trigger uses `id`, the popup is `{id}-popover`, the search field is `{id}-search`,
 /// the list is `{id}-list`, and rows use `{id}-option-{choice.id}`.
+/// `trigger` builds the actual control once per mount from a tracked caption. The picker supplies
+/// its name, role, value, expanded state and open behavior on the returned element.
 /// Search uses case-insensitive substring matching. Up and Down skip disabled choices.
 /// The search field keeps focus and reports the active option separately from the selection.
 /// Enter or pressing an enabled row commits a choice. Reopening clears the search and starts
@@ -57,8 +67,9 @@ pub fn combobox(
     label: impl Into<String>,
     value: impl Model<Option<String>>,
     options: impl Fn() -> Vec<Choice> + 'static,
+    trigger: impl FnOnce(ReadSignal<String>) -> El + 'static,
 ) -> View {
-    picker(id.to_owned(), label.into(), value, options, true)
+    picker(id.to_owned(), label.into(), value, options, trigger, true)
 }
 
 #[track_caller]
@@ -67,6 +78,7 @@ fn picker(
     label: String,
     value: impl Model<Option<String>>,
     options: impl Fn() -> Vec<Choice> + 'static,
+    trigger: impl FnOnce(ReadSignal<String>) -> El + 'static,
     searchable: bool,
 ) -> View {
     let value = Rc::new(value);
@@ -158,7 +170,7 @@ fn picker(
 
         let caption = {
             let (value, label) = (value.clone(), label.clone());
-            move || {
+            memo(move || {
                 if !valid.get() {
                     return label.clone();
                 }
@@ -169,10 +181,9 @@ fn picker(
                         .find(|option| Some(&option.id) == selected.as_ref())
                         .map_or_else(|| label.clone(), |option| option.label.clone())
                 })
-            }
+            })
         };
-        let trigger = button(caption.clone()).label(label.clone()).a11y_value(caption);
-        let trigger = if searchable { trigger.w_full().min_w(0.0).truncate() } else { trigger };
+        let trigger = trigger(caption).label(label.clone()).a11y_value(caption).controls(format!("{id}-list"));
         let popup_id = id.clone();
         popover(
             &id,

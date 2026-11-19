@@ -4,6 +4,8 @@ use octara::inspect::{self, Delivery};
 use octara::prelude::*;
 use octara::serde_json::json;
 use octara_kit::*;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 #[derive(Clone, Copy)]
 enum Chooser {
@@ -34,8 +36,8 @@ fn scene(kind: Chooser, reject: bool) -> View {
         }
     };
     let control = match kind {
-        Chooser::Select => select("pick", "Choices", (move || selected.get(), pick), move || source.get()),
-        Chooser::Combo => combobox("pick", "Choices", (move || selected.get(), pick), move || source.get()),
+        Chooser::Select => select("pick", "Choices", (move || selected.get(), pick), move || source.get(), button),
+        Chooser::Combo => combobox("pick", "Choices", (move || selected.get(), pick), move || source.get(), button),
         Chooser::Popup => popup_list(
             "pick",
             "Choices",
@@ -81,6 +83,104 @@ fn stale(window: &mut Window, token: &str) {
     let reply = inspect::handle_line(window, &json!({"op":"tap", "id":"pick-option-b", "target":token}).to_string());
     assert_eq!(reply.code.as_deref(), Some("STALE_TARGET"), "{reply:?}");
     assert_eq!(reply.delivery, Some(Delivery::Refused));
+}
+
+#[test]
+fn custom_triggers_keep_their_identity_and_callbacks_as_options_become_available() {
+    for kind in [Chooser::Select, Chooser::Combo] {
+        let builds = Rc::new(Cell::new(0));
+        let trigger_builds = builds.clone();
+        let mut window = Window::headless(move || {
+            let source = state("source", Vec::<Choice>::new);
+            let selected = state("selected", || None::<String>);
+            let events = state("events", Vec::<&'static str>::new);
+            on_command("load", move || source.set(vec![Choice::new("a", "First choice")]));
+            on_command("clear", move || source.set(Vec::new()));
+            let model = (
+                move || selected.get(),
+                move |id| {
+                    events.update(|events| events.push("pick"));
+                    selected.set(id);
+                },
+            );
+            let trigger_builds = trigger_builds.clone();
+            let trigger = move |caption| {
+                trigger_builds.set(trigger_builds.get() + 1);
+                button(caption)
+                    .w(176.0)
+                    .tooltip("Choose an item")
+                    .disabled(move || source.with(Vec::is_empty))
+                    .on_press(move || events.update(|events| events.push("press")))
+                    .on_key(move |_| {
+                        events.update(|events| events.push("key"));
+                        false
+                    })
+            };
+            let options = move || source.get();
+            let control = match kind {
+                Chooser::Select => select("pick", "Choices", model, options, trigger),
+                Chooser::Combo => combobox("pick", "Choices", model, options, trigger),
+                Chooser::Popup => unreachable!(),
+            };
+            col()
+                .size_full()
+                .p_4()
+                .gap_2()
+                .child(control)
+                .child(text(move || events.with(|events| events.join(","))).id("events"))
+                .child(text(move || selected.get().unwrap_or_default()).id("chosen"))
+        });
+
+        let original = target(&window, "pick");
+        let tap = json!({"op":"tap", "id":"pick", "target":original}).to_string();
+        let assert_trigger = |window: &Window, caption: &str, disabled| {
+            let snapshot = window.inspect();
+            let control = snapshot.find("pick").unwrap();
+            assert_eq!(control.target, original);
+            assert_eq!(control.name.as_deref(), Some("Choices"));
+            assert_eq!(control.value.as_deref(), Some(caption));
+            assert_eq!(control.expanded, Some(false));
+            let kernel = window.kernel();
+            let node = kernel.find("pick").unwrap();
+            assert_eq!(kernel.role(node), Role::ComboBox);
+            assert_eq!(kernel.text(node), caption);
+            assert_eq!(kernel.tooltip(node), Some("Choose an item"));
+            assert_eq!(kernel.rect(node).2, 176.0);
+            assert_eq!(kernel.state(node).contains(State::DISABLED), disabled);
+            assert_eq!(builds.get(), 1);
+        };
+        let assert_disabled = |window: &mut Window| {
+            assert_trigger(window, "Choices", true);
+            let reply = inspect::handle_line(window, &tap);
+            assert!(!reply.ok, "{reply:?}");
+            assert_eq!(reply.code.as_deref(), Some("STEP_FAILED"), "{reply:?}");
+            assert_eq!(reply.delivery, Some(Delivery::Refused));
+            assert!(!window.kernel().exists("pick-popover"));
+        };
+
+        assert_disabled(&mut window);
+        assert_eq!(window.kernel().text_of("events").as_deref(), Some(""));
+        window.invoke("load").unwrap();
+        assert_trigger(&window, "Choices", false);
+        let reply = inspect::handle_line(&mut window, &tap);
+        assert!(reply.ok, "{reply:?}");
+        assert_eq!(reply.delivery, Some(Delivery::Delivered));
+        assert_eq!(window.kernel().expanded_of("pick"), Some(true));
+        assert_eq!(window.inspect().focus.as_deref(), Some(kind.focus_target()));
+        assert_eq!(window.kernel().text_of("events").as_deref(), Some("press"));
+        window.press_key("enter").unwrap();
+        assert_trigger(&window, "First choice", false);
+        assert_eq!(window.inspect().focus.as_deref(), Some("pick"));
+        window.press_key("x").unwrap();
+        assert_eq!(window.kernel().text_of("events").as_deref(), Some("press,pick,key"));
+
+        window.invoke("clear").unwrap();
+        assert_disabled(&mut window);
+        assert_eq!(window.kernel().text_of("events").as_deref(), Some("press,pick,key"));
+        assert_eq!(window.kernel().text_of("chosen").as_deref(), Some("a"));
+        assert!(window.app().diagnostics().is_empty(), "{:?}", window.app().diagnostics());
+        assert!(window.layout_issues().is_empty(), "{:?}", window.layout_issues());
+    }
 }
 
 #[test]
@@ -159,9 +259,6 @@ fn a_rejected_choice_does_not_become_the_selected_value() {
 
 #[test]
 fn a_choice_setter_can_close_the_window_from_every_input_route() {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
     for kind in [Chooser::Select, Chooser::Combo] {
         for route in ["keyboard", "pointer", "semantic"] {
             let picks = Rc::new(RefCell::new(Vec::<Option<String>>::new()));
@@ -176,8 +273,8 @@ fn a_choice_setter_can_close_the_window_from_every_input_route() {
                     },
                 );
                 match kind {
-                    Chooser::Select => select("pick", "Choices", model, options),
-                    Chooser::Combo => combobox("pick", "Choices", model, options),
+                    Chooser::Select => select("pick", "Choices", model, options, button),
+                    Chooser::Combo => combobox("pick", "Choices", model, options, button),
                     Chooser::Popup => unreachable!(),
                 }
             });

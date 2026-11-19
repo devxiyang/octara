@@ -257,7 +257,7 @@ def chat(args, output, sockets):
     chat_args = SimpleNamespace(**{**vars(args), "window": args.chat})
     with offline_chat_environment(store), FormsWindow("chat", chat_args, output, sockets, []) as app:
         snapshot = app.observe("offline-model-context", evidence=True)
-        description = find(snapshot, "model-picker").get("description", "")
+        description = find(snapshot, "model").get("description", "")
         require("Scripted" in description and "Applies to the next" in description, "Chat omitted its current model/next-message context")
         app.picture("offline-model-context-gpu")
         return {"noNetwork": True, "network_configuration": "all inherited OCTARA_* settings cleared; only isolated OCTARA_CHAT_DIR and Inspector set",

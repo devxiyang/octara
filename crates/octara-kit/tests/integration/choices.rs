@@ -32,7 +32,7 @@ fn choices() -> View {
         .size_full()
         .p_4()
         .gap_3()
-        .child(combobox("color", "Color", value, move || options.get()))
+        .child(combobox("color", "Color", value, move || options.get(), button))
         .child(text(move || value.get().unwrap_or_else(|| "none".into())).id("chosen"))
         .child(button("Outside").id("outside"))
         .into()
@@ -227,9 +227,13 @@ fn modified_navigation_and_text_editing_keys_leave_the_active_option_alone() {
 fn active_rows_scroll_into_view_without_moving_search_focus() {
     let mut window = Window::headless(|| {
         let value = state("value", || Some("item-75".to_owned()));
-        col().size_full().p_4().child(combobox("color", "Item", value, || {
-            (0..120).map(|index| Choice::new(format!("item-{index}"), format!("Item {index}"))).collect()
-        }))
+        col().size_full().p_4().child(combobox(
+            "color",
+            "Item",
+            value,
+            || (0..120).map(|index| Choice::new(format!("item-{index}"), format!("Item {index}"))).collect(),
+            button,
+        ))
     });
     window.tap("color").unwrap();
     assert_eq!(active(&window).as_deref(), Some("color-option-item-75"));
@@ -301,7 +305,7 @@ fn a_combobox_inside_a_dialog_dismisses_only_the_inner_modal() {
                     .gap_3()
                     .bg(Token::Surface)
                     .modal(true, move || dialog.set(false))
-                    .child(combobox("color", "Color", value, options))
+                    .child(combobox("color", "Color", value, options, button))
                     .child(button("Close").id("close-dialog").on_press(move || dialog.set(false)))
             },
         ))
