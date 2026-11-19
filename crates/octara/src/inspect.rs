@@ -507,6 +507,9 @@ pub struct Reply {
     /// Whether any part of a guarded operation was dispatched, even if a later phase failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<Delivery>,
+    /// The routed window's state when an inspection or delivered operation is answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion: Option<Completion>,
     /// What an `expect` found instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actual: Option<serde_json::Value>,
@@ -551,6 +554,53 @@ pub struct ComponentInfo {
 pub enum Delivery {
     Refused,
     Delivered,
+}
+
+/// Separate observations of the routed window's layout and its host surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Completion {
+    pub window: u64,
+    pub layout: LayoutState,
+    pub surface: SurfaceState,
+}
+
+impl Completion {
+    /// Samples Core's layout and interaction state. A host can add its own submission evidence.
+    pub fn observe(window: &Window) -> Self {
+        let app = window.app();
+        let layout = if window.is_closed() || app.is_failed() || app.is_shutdown() {
+            LayoutState::Unavailable
+        } else if window.frame_is_settled() {
+            LayoutState::Settled
+        } else {
+            LayoutState::Unsettled
+        };
+        Self { window: window.id().number(), layout, surface: SurfaceState::Unavailable }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutState {
+    Unavailable,
+    Unsettled,
+    /// Current layout and focus are ready to read. Future tasks can still be pending.
+    Settled,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SurfaceState {
+    Unavailable,
+    Pending {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_submission: Option<u32>,
+    },
+    /// The current window surface was submitted to the host's presentation queue. An unchanged
+    /// surface may reuse an earlier submission. Displayed pixels are measured separately.
+    Submitted {
+        frame: u32,
+    },
 }
 
 impl ComponentInfo {
@@ -610,6 +660,7 @@ impl Reply {
             code: None,
             message: None,
             delivery: None,
+            completion: None,
             actual: None,
             snapshot: None,
             issues: None,
@@ -1181,7 +1232,9 @@ fn run_main<V: IntoView>(view: impl Fn() -> V + 'static, painter: Option<fn() ->
         Some("inspect") => {
             let app = start(view);
             let _ = app.app().run_until_idle(SETTLE_LIMIT);
-            println!("{}", serde_json::to_string_pretty(&app.inspect()).expect("serializes"));
+            let mut snapshot = serde_json::to_value(app.inspect()).expect("a snapshot serializes");
+            snapshot["completion"] = serde_json::to_value(Completion::observe(&app)).expect("completion serializes");
+            println!("{}", serde_json::to_string_pretty(&snapshot).expect("serializes"));
             app.app().shutdown();
         }
         Some("run") => {

@@ -1,11 +1,12 @@
 //! The Inspector protocol: snapshots of the semantic tree, requests, and scripts of them.
 
 use octara::app::InputEvent;
-use octara::inspect::{self, Request, SelectionPreview};
+use octara::inspect::{self, Completion, Delivery, LayoutState, Request, SelectionPreview, SurfaceState};
 use octara::prelude::*;
 use octara::reactive::untrack;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Duration;
 
 fn view() -> View {
     let count = state("count", || 0);
@@ -101,6 +102,81 @@ fn requests_drive_the_app() {
     assert_eq!(app.kernel().text_of("greeting").as_deref(), Some("Hello Ada"));
     let r = inspect::handle_line(&mut app, r#"{"op":"inspect"}"#);
     assert_eq!(r.snapshot.unwrap().focus.as_deref(), Some("name"));
+}
+
+#[test]
+fn invoke_reports_settled_layout_after_revealing_and_focusing_a_row() {
+    const FAR_ROW: u32 = 240;
+    const TIMER: Duration = Duration::from_secs(5);
+    let row_id = format!("file-{FAR_ROW}");
+    let mut window = Window::headless(|| {
+        on_command("reveal-and-focus", || {
+            assert!(reveal_row("files", FAR_ROW));
+            focus(&format!("file-{FAR_ROW}"));
+            spawn(async { sleep(TIMER).await });
+        });
+        col().id("files").w(220).h(160).overflow_y_scroll().child(virtual_each(
+            || (0..512u32).map(|key| (key, ())).collect::<Vec<_>>(),
+            |_| 24.0,
+            |key, _| el().id(format!("file-{key}")).role(Role::ListItem).label(format!("File {key}")).focusable().flex_shrink_0().h(24),
+        ))
+    });
+    let initial = inspect::handle(&mut window, Request::Inspect).snapshot.unwrap();
+    assert!(initial.find(&row_id).is_none(), "the far row starts unmounted");
+
+    let action = inspect::handle_line(&mut window, r#"{"op":"invoke","command":"reveal-and-focus"}"#);
+    assert!(action.ok, "{action:?}");
+    assert_eq!(action.delivery, Some(Delivery::Delivered));
+    let completion = Completion { window: window.id().number(), layout: LayoutState::Settled, surface: SurfaceState::Unavailable };
+    assert_eq!(action.completion, Some(completion));
+    assert_eq!(serde_json::from_str::<inspect::Reply>(&action.to_json()).unwrap(), action);
+    assert!(window.app().pending().iter().any(|work| work.due == Some(TIMER)), "the action left a timer pending");
+
+    let observation = inspect::handle(&mut window, Request::Inspect);
+    assert_eq!(observation.completion, Some(completion));
+    let snapshot = observation.snapshot.unwrap();
+    assert_eq!(snapshot.focus.as_deref(), Some(row_id.as_str()));
+    let [_, y, _, height] = snapshot.find(&row_id).unwrap().bounds;
+    let [_, top, _, viewport_height] = snapshot.find("files").unwrap().bounds;
+    assert!(y >= top && y + height <= top + viewport_height, "the focused row is within the scrolled viewport");
+    window.app().shutdown();
+}
+
+#[test]
+fn delivered_invoke_reports_unsettled_focus_without_retrying_it() {
+    let mut window = Window::headless(|| {
+        on_command("redirect-focus", || focus("first"));
+        col()
+            .child(el().id("first").size_8().focusable().on_focus(|| focus("second")))
+            .child(el().id("second").size_8().focusable().on_focus(|| focus("first")))
+    });
+
+    let action = inspect::handle_line(&mut window, r#"{"op":"invoke","command":"redirect-focus"}"#);
+    assert!(action.ok, "{action:?}");
+    assert_eq!(action.delivery, Some(Delivery::Delivered));
+    let completion = Completion { window: window.id().number(), layout: LayoutState::Unsettled, surface: SurfaceState::Unavailable };
+    assert_eq!(action.completion, Some(completion));
+
+    let diagnostics = window.app().diagnostic_counts();
+    let observation = inspect::handle(&mut window, Request::Inspect);
+    assert_eq!(observation.code.as_deref(), Some("NOT_SETTLED"));
+    assert_eq!(observation.completion, Some(completion));
+    assert!(observation.snapshot.is_none());
+    assert_eq!(window.app().diagnostic_counts(), diagnostics);
+    window.app().shutdown();
+}
+
+#[test]
+fn a_window_action_without_a_target_token_reports_completion() {
+    let mut window = Window::headless(el);
+    let reply = inspect::handle_line(&mut window, r#"{"op":"size","width":420,"height":320}"#);
+    assert!(reply.ok);
+    assert_eq!(reply.delivery, Some(Delivery::Delivered));
+    assert_eq!(
+        reply.completion,
+        Some(Completion { window: window.id().number(), layout: LayoutState::Settled, surface: SurfaceState::Unavailable })
+    );
+    assert_eq!(window.size(), (420.0, 320.0));
 }
 
 #[test]

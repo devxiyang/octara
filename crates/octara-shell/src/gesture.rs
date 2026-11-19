@@ -135,7 +135,11 @@ impl Job {
     }
 
     fn reply(&self, mut reply: Reply) -> Reply {
-        reply.delivery = Some(if self.delivered { Delivery::Delivered } else { Delivery::Refused });
+        if self.delivered {
+            reply.delivery = Some(Delivery::Delivered);
+        } else if reply.code.as_deref() != Some(codes::APP_FAILED.id) {
+            reply.delivery = Some(Delivery::Refused);
+        }
         reply
     }
 

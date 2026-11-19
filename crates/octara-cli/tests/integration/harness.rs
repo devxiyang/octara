@@ -38,6 +38,7 @@ fn check_inspect_and_run_drive_the_app() {
     assert_eq!(code, 0, "{err}");
     let snap: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!((snap["schema"].as_str(), snap["theme"].as_str()), (Some("octara.inspect/2"), Some("dark")));
+    assert_eq!(snap["completion"], serde_json::json!({"window": snap["window"], "layout": "settled", "surface": {"state": "unavailable"}}));
     assert!(json.contains("\"id\": \"inc\""));
     let source = json.lines().find(|l| l.contains("\"source\""));
     assert!(json.contains("\"source\": \"examples/src/apps.rs:"), "sources are relative to the workspace: {source:?}");
@@ -63,6 +64,7 @@ fn check_inspect_and_run_drive_the_app() {
     assert_eq!(code, 0, "{err}");
     let replies: Vec<serde_json::Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(replies[0]["ok"], true);
+    assert_eq!(replies[0]["completion"]["surface"]["state"], "unavailable");
     assert_eq!(replies[1]["code"], "NO_SUCH_ELEMENT");
 
     // capture: the harness paints with the reference renderer.

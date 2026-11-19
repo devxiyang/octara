@@ -1,10 +1,9 @@
 //! The opt-in live Inspector: one local connection, ordered requests, UI-thread execution.
 
 use super::{Shell, ShellEvent, ww};
-use octara::app::TargetGuard;
-use octara::app::WindowId;
+use octara::app::{TargetGuard, Window, WindowId};
 use octara::diagnostics as codes;
-use octara::inspect::{Delivery, Reply, Request};
+use octara::inspect::{Completion, Delivery, LayoutState, Reply, Request, SurfaceState};
 use octara::serde_json::{self, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -80,8 +79,7 @@ pub(crate) struct Responder {
     route: &'static str,
     input: bool,
     build: Option<Arc<str>>,
-    target: Option<(octara::app::Window, TargetGuard)>,
-    app: Option<octara::app::App>,
+    target: Option<(Window, Option<TargetGuard>)>,
     sent: std::cell::Cell<bool>,
     delivery: std::cell::Cell<Option<Delivery>>,
 }
@@ -95,15 +93,13 @@ impl Responder {
             input,
             build: None,
             target: None,
-            app: None,
             sent: std::cell::Cell::new(false),
             delivery: std::cell::Cell::new(Some(Delivery::Refused)),
         }
     }
 
-    fn with_target(mut self, window: &octara::app::Window, guard: Option<&TargetGuard>) -> Self {
-        self.app = Some(window.app());
-        self.target = guard.map(|guard| (window.clone(), guard.clone()));
+    fn with_target(mut self, window: &Window, guard: Option<&TargetGuard>) -> Self {
+        self.target = Some((window.clone(), guard.cloned()));
         self
     }
 
@@ -112,7 +108,7 @@ impl Responder {
     }
 
     pub(crate) fn target_current(&self) -> bool {
-        self.target.as_ref().is_none_or(|(window, guard)| guard.is_current(window))
+        self.target.as_ref().is_none_or(|(window, guard)| guard.as_ref().is_none_or(|guard| guard.is_current(window)))
     }
 
     fn with_current_resize_target(self, resize: impl FnOnce(Self)) {
@@ -137,9 +133,17 @@ impl Responder {
         self.send_with(reply, extra);
     }
 
-    fn send_gesture(self, reply: Reply, delivered: bool) {
-        let delivered = reply.delivery.as_ref().map_or(delivered, |delivery| *delivery == Delivery::Delivered);
-        self.send_with(reply, json!({ "delivery": if delivered { "delivered" } else { "refused" } }));
+    fn send_gesture(self, mut reply: Reply, delivered: bool) {
+        if reply.delivery.is_none() {
+            reply.delivery = if delivered {
+                Some(Delivery::Delivered)
+            } else if reply.code.as_deref() == Some(codes::APP_FAILED.id) {
+                None
+            } else {
+                Some(Delivery::Refused)
+            };
+        }
+        self.send(reply);
     }
 
     fn send_with(self, mut reply: Reply, extra: serde_json::Value) {
@@ -170,6 +174,10 @@ impl Responder {
             };
             live["delivery"] = delivery.into();
         }
+        // A delivered phase can replace its target. Sample the original window without
+        // resolving or validating the target again.
+        let reports_completion = if self.input { reply.delivery == Some(Delivery::Delivered) } else { reply.completion.is_some() };
+        reply.completion = self.target.as_ref().filter(|_| reports_completion).map(|(window, _)| observe_completion(window));
         if let Some(snapshot) = &reply.snapshot {
             live["operations"] = if snapshot.failed { json!(["inspect", "issues"]) } else { json!(OPERATIONS) };
             live["transport"] = "unix".into();
@@ -180,6 +188,20 @@ impl Responder {
         value["live"] = live;
         let _ = self.tx.send(value.to_string());
     }
+}
+
+fn observe_completion(window: &Window) -> Completion {
+    let mut completion = Completion::observe(window);
+    if completion.layout != LayoutState::Unavailable
+        && let Some((frames, pending)) = ww(window, |host| (host.frames, host.pending))
+    {
+        let last_submission = (frames > 0).then_some(frames);
+        completion.surface = match last_submission {
+            Some(frame) if completion.layout == LayoutState::Settled && !pending => SurfaceState::Submitted { frame },
+            _ => SurfaceState::Pending { last_submission },
+        };
+    }
+    completion
 }
 
 pub(crate) struct Waiting {
@@ -383,6 +405,7 @@ impl Shell {
             request => {
                 let reply = octara::inspect::handle_guarded(&mut target, request, guard.as_ref());
                 if input {
+                    response.delivery.set(reply.delivery);
                     self.show();
                 }
                 if reply.snapshot.is_some() {
@@ -512,6 +535,7 @@ mod target_feedback {
         assert_eq!(reply["delivery"], "refused");
         assert_eq!(reply["live"]["route"], "native-window");
         assert_eq!(reply["live"]["delivery"], "refused");
+        assert!(reply.get("completion").is_none());
         app.shutdown();
     }
 
@@ -538,6 +562,9 @@ mod target_feedback {
         assert_eq!(reply["delivery"], "delivered");
         assert_eq!(reply["live"]["route"], "native-window");
         assert_eq!(reply["live"]["delivery"], "delivered");
+        assert_eq!(reply["completion"]["window"], window.id().number());
+        assert_eq!(reply["completion"]["layout"], "settled");
+        assert_eq!(reply["completion"]["surface"]["state"], "unavailable");
         app.shutdown();
     }
 
@@ -555,6 +582,28 @@ mod target_feedback {
         assert!(reply["ok"].as_bool().unwrap());
         assert_eq!(reply["live"]["delivery"], "delivered");
         app.shutdown();
+    }
+
+    #[test]
+    fn a_panic_on_the_first_click_keeps_gesture_delivery_unknown() {
+        use octara::prelude::*;
+
+        let mut window = Window::headless(|| el().id("target").size_12().on_press(|| panic!("failed inside the click")));
+        let parsed = octara::inspect::parse_guarded_request(&window, r#"{"op":"double_tap","id":"target"}"#).unwrap();
+        let guard = parsed.guard.unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        let response = Responder::new(send, Arc::new(AtomicBool::new(true)), "framework", true).with_target(&window, Some(&guard));
+        response.begin();
+        let reply = super::super::gesture::Job::start_guarded(&mut window, super::super::gesture::Kind::DoubleTap, Instant::now(), guard)
+            .err()
+            .expect("the first click panicked");
+        response.send_gesture(*reply, false);
+
+        let reply: serde_json::Value = serde_json::from_str(&receive.recv().unwrap()).unwrap();
+        assert_eq!(reply["code"], "APP_FAILED");
+        assert_eq!(reply["live"]["delivery"], "unknown");
+        assert!(reply.get("delivery").is_none() && reply.get("completion").is_none());
+        window.app().shutdown();
     }
 
     fn response(line: &str, reply: Reply, gesture: bool) -> serde_json::Value {
@@ -581,6 +630,7 @@ mod target_feedback {
         let reply: serde_json::Value = serde_json::from_str(&receive.recv().unwrap()).unwrap();
         assert_eq!(reply["code"], "APP_FAILED");
         assert_eq!(reply["live"]["delivery"], "unknown");
+        assert!(reply.get("completion").is_none());
         assert!(receive.try_recv().is_err());
 
         for (delivery, label) in [(Delivery::Refused, "refused"), (Delivery::Delivered, "delivered")] {
@@ -591,6 +641,12 @@ mod target_feedback {
             let reply: serde_json::Value = serde_json::from_str(&receive.recv().unwrap()).unwrap();
             assert_eq!(reply["delivery"], label);
             assert_eq!(reply["live"]["delivery"], label);
+            if delivery == Delivery::Delivered {
+                assert_eq!(reply["completion"]["layout"], "unavailable");
+                assert_eq!(reply["completion"]["surface"]["state"], "unavailable");
+            } else {
+                assert!(reply.get("completion").is_none());
+            }
         }
 
         let (send, receive) = std::sync::mpsc::channel();
@@ -1024,9 +1080,16 @@ mod wire {
 
 impl Drop for Responder {
     fn drop(&mut self) {
-        if !self.sent.get() && self.app.as_ref().is_some_and(octara::app::App::is_failed) && self.connected.load(Ordering::Relaxed) {
+        if !self.sent.get()
+            && self.connected.load(Ordering::Relaxed)
+            && let Some((window, _)) = &self.target
+            && window.app().is_failed()
+        {
             let mut reply = Reply::fail(&codes::APP_FAILED, "App failed while the request was pending; do not retry");
             reply.delivery = self.delivery.get();
+            if self.input && reply.delivery == Some(Delivery::Delivered) {
+                reply.completion = Some(Completion::observe(window));
+            }
             let mut value = serde_json::to_value(reply).expect("failure reply serializes");
             value["live"] = json!({
                 "clock": "realtime", "route": self.route, "pid": std::process::id(),

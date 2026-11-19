@@ -1,7 +1,7 @@
 //! Opaque wire targets and request validation. A request binds one mounted allocation at
 //! admission and keeps it through host waits. Operation-specific checks run before delivery.
 
-use super::{Delivery, Reply, Request, ScrollResult, Window, codes};
+use super::{Completion, Delivery, Reply, Request, ScrollResult, Window, codes};
 use crate::app::{Button, Chord, Event, GuardTarget, InputEvent, Key, Modifiers, Phase, PointerEvent, PointerKind, TargetGuard};
 use crate::identity::TreeIdentity;
 use crate::kernel::{Kernel, NameError, NodeId};
@@ -214,12 +214,21 @@ pub fn handle_guarded(window: &mut Window, request: Request, guard: Option<&Targ
                 bound.as_ref()
             }
         };
+        let inspection = matches!(request, Request::Inspect);
         let input =
             !matches!(request, Request::Inspect | Request::Issues | Request::Pick { .. } | Request::Expect(_) | Request::Capture { .. });
+        let action = input && !matches!(request, Request::Settle { .. });
         let mut reply = super::handle_inner(window, request, guard);
-        if input && guard.is_some() && reply.delivery.is_none() && reply.code.as_deref() != Some(codes::APP_FAILED.id) {
+        if input
+            && (guard.is_some() || action && reply.ok)
+            && reply.delivery.is_none()
+            && reply.code.as_deref() != Some(codes::APP_FAILED.id)
+        {
             reply.delivery =
                 Some(if reply.code.as_deref() == Some(codes::BAD_REQUEST.id) { Delivery::Refused } else { Delivery::Delivered });
+        }
+        if inspection || reply.delivery == Some(Delivery::Delivered) {
+            reply.completion = Some(Completion::observe(window));
         }
         reply
     })

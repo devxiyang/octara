@@ -6,6 +6,10 @@
 
 可见标签和它命名的输入框可能有同一个名称。结合 `actions` 的 `input` 选择单行或多行编辑器。实时 `run --json` 从标准输入读取时，每一行的 `ok` 与 `delivery` 报告该步结果，退出码报告整段会话。带 `--script` 的运行会在首个失败步骤停止。动作已送达后，从控件值、校验说明或状态节点确认应用接受了什么。[资料审阅实测](interaction-scenarios.md#资料审阅队列)
 
+已送达的动作和 `inspect` 回传目标窗口在应答时的 `completion`。`layout: settled` 表示当前布局与焦点可以读回，后续任务仍可能在等待。`surface.state: submitted` 表示当前窗口画面已有宿主队列提交，画面相同时可沿用已有的 `frame`。`pending` 表示当前画面尚未提交，可再次 `inspect` 读取进度。无窗口运行的宿主状态为 `unavailable`。屏幕像素用 `capture` 的 `display` 来源核对。[回执定义](../../crates/octara/src/inspect.rs) · [截图来源](capture.md)
+
+在 iOS 27.2 模拟器，城市搜索选择器用 Inspector 的 `Up` 跳到尚未挂载的末项。该步回传 `delivered`、`settled` 和 `pending`，最后一次宿主提交为第 15 帧。随后只请求 `inspect`，回传 `submitted` 第 18 帧，搜索框保持原焦点，末项已在视口内并成为 `active_descendant`，选中的城市仍为杭州。[虚拟选项实测](../research/headless-ui-react.md#虚拟选项与退出时序)
+
 屏外控件需要先滚动。在 `actions` 含 `scroll` 的视口上发送 `{"op":"scroll","target":"<viewport target>","dx":0,"dy":120}`。位移以逻辑像素计，正值增大偏移。回执中 `scroll.offset` 是当前偏移 `[x,y]`，`scroll.delta` 是本次实际变化，包含布局校正。到达边界后继续向外滚动可返回 `[0,0]`。滚动后重新读取树，再操作进入视口的控件。[待办实窗验收](../../examples/live_inspect.py)
 
 `octara.inspect/2` 的 `selection` 提供文档选区预览。`preview` 从当前帧已挂载的选区按文档顺序读取，最多 2,000 个 Unicode 标量值。`complete` 为 `false` 表示预览截断或选区包含未挂载行。选区全部位于未挂载行时，`preview` 为空且 `complete` 为 `false`。显式 `copy` 请求按复制规则提取选区，可以临时挂载屏外行。旧版 `octara.inspect/1` 的 `selection` 是字符串。[预览与复制测试](../../crates/octara/tests/integration/selection.rs)

@@ -114,16 +114,20 @@ fn inspect_connect_reads_the_window_without_a_harness() {
 }
 
 #[test]
-fn inspect_connect_reports_the_running_build_without_a_receipt() {
+fn inspect_connect_includes_completion_and_the_running_build() {
     let build = "a".repeat(64);
     let mut snapshot = json!({
         "schema": "octara.inspect/1", "viewport": [640, 480],
         "root": {"role": "button", "id": "save", "target": "observed-target"}
     });
-    let server = Server::new(vec![Some(json!({"ok": true, "snapshot": snapshot, "live": {"route": "read", "build": build}}))]);
+    let completion = json!({"window": 17, "layout": "settled", "surface": {"state": "submitted", "frame": 12}});
+    let server = Server::new(vec![Some(json!({
+        "ok": true, "snapshot": snapshot, "completion": completion, "live": {"route": "read", "build": build}
+    }))]);
     let output = cli(&["inspect", "--connect", server.path(), "--json"], "");
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     snapshot["provenance"] = json!({"build": build, "expected_build": null, "source": "unknown"});
+    snapshot["completion"] = completion;
     assert_eq!(serde_json::from_slice::<Value>(&output.stdout).unwrap(), snapshot);
     assert_eq!(server.finish(), [json!({"op": "inspect"})]);
 }
@@ -182,7 +186,11 @@ fn required_build_preflights_then_delivers_input_once_on_the_same_connection() {
     let build = "a".repeat(64);
     let input = json!({"op": "tap", "window": 17, "id": "save", "target": "observed-target"});
     let text = format!("{input}\n");
-    let response = json!({"ok": true, "live": {"route": "framework", "delivery": "delivered"}});
+    let response = json!({
+        "ok": true,
+        "live": {"route": "framework", "delivery": "delivered"},
+        "completion": {"window": 17, "layout": "settled", "surface": {"state": "pending", "last_submission": 12}}
+    });
     for scripted in [false, true] {
         let server = Server::new(vec![
             Some(json!({"ok": true, "snapshot": {"schema": "octara.inspect/1", "root": null}, "live": {"route": "read", "build": build}})),
@@ -198,6 +206,7 @@ fn required_build_preflights_then_delivers_input_once_on_the_same_connection() {
         assert_eq!(reply["ok"], true);
         assert_eq!(reply["line"], 1);
         assert_eq!(reply["live"], response["live"]);
+        assert_eq!(reply["completion"], response["completion"]);
         assert_eq!(server.finish(), [json!({"op": "inspect"}), input.clone()]);
     }
 }
