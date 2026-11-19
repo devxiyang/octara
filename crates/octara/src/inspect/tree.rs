@@ -3,14 +3,14 @@
 use super::{Ancestor, ComponentInfo, Node, Picked, snake, tenth};
 use crate::kernel::{HandlerKind, Kernel, Kind, NodeId, Role, State};
 
-/// The semantic tree tools see: the nodes visible to accessibility, with presented bounds,
-/// actions and source locations. Reads the retained Kernel directly.
+/// The diagnostic semantic tree, with presented bounds, actions within the current modal
+/// scope and source locations. Reads the retained Kernel directly.
 pub fn tree(kernel: &Kernel) -> Node {
     tree_for_window(kernel, None)
 }
 
 pub(crate) fn tree_for_window(kernel: &Kernel, submit: Option<NodeId>) -> Node {
-    inspect_node(kernel, kernel.root(), submit)
+    inspect_node(kernel, kernel.root(), submit, kernel.front_modal())
 }
 
 fn node_actions(kernel: &Kernel, id: NodeId, submit: Option<NodeId>) -> Vec<String> {
@@ -52,7 +52,7 @@ fn node_actions(kernel: &Kernel, id: NodeId, submit: Option<NodeId>) -> Vec<Stri
     actions
 }
 
-fn inspect_one(kernel: &Kernel, id: NodeId, submit: Option<NodeId>) -> Node {
+fn inspect_one(kernel: &Kernel, id: NodeId, submit: Option<NodeId>, modal: Option<NodeId>) -> Node {
     let role = if id == kernel.root() { Role::Window } else { kernel.role(id) };
     let name = kernel.semantic_name(id).map(str::to_owned);
     let mut states = Vec::new();
@@ -71,8 +71,13 @@ fn inspect_one(kernel: &Kernel, id: NodeId, submit: Option<NodeId>) -> Node {
     }
     let (x, y, w, h) = kernel.shown_rect(id);
     let range = kernel.numeric_range(id);
-    let relations = kernel.resolved_relations(id);
+    let relations = kernel.scoped_relations(id, modal);
     let reference = |target: Option<NodeId>| target.and_then(|id| kernel.test_id(id)).map(str::to_owned);
+    let (actions, commands) = if modal.is_none() || kernel.check_interaction_scope(id, modal).is_ok() {
+        (node_actions(kernel, id, submit), kernel.command_names(id).map(str::to_owned).collect())
+    } else {
+        (Vec::new(), Vec::new())
+    };
     Node {
         target: super::target::node_target(kernel, id).expect("an inspected node is alive"),
         id: kernel.test_id(id).map(str::to_owned),
@@ -94,8 +99,8 @@ fn inspect_one(kernel: &Kernel, id: NodeId, submit: Option<NodeId>) -> Node {
         controls: reference(relations.controls),
         states,
         bounds: [tenth(x), tenth(y), tenth(w), tenth(h)],
-        actions: node_actions(kernel, id, submit),
-        commands: kernel.command_names(id).map(str::to_owned).collect(),
+        actions,
+        commands,
         native: kernel.native(id).map(|v| crate::native::NativeInfo {
             kind: v.kind.clone(),
             slot: snake(&format!("{:?}", v.slot)),
@@ -108,13 +113,13 @@ fn inspect_one(kernel: &Kernel, id: NodeId, submit: Option<NodeId>) -> Node {
     }
 }
 
-fn inspect_node(kernel: &Kernel, id: NodeId, submit: Option<NodeId>) -> Node {
-    let mut node = inspect_one(kernel, id, submit);
+fn inspect_node(kernel: &Kernel, id: NodeId, submit: Option<NodeId>, modal: Option<NodeId>) -> Node {
+    let mut node = inspect_one(kernel, id, submit, modal);
     if kernel.parent(id).is_some_and(|p| kernel.component(p) == kernel.component(id)) {
         node.component = None;
     }
     node.children =
-        kernel.children(id).iter().copied().filter(|c| kernel.shown_to_a11y(*c)).map(|c| inspect_node(kernel, c, submit)).collect();
+        kernel.children(id).iter().copied().filter(|c| kernel.shown_to_a11y(*c)).map(|c| inspect_node(kernel, c, submit, modal)).collect();
     node
 }
 
@@ -125,7 +130,8 @@ pub fn pick(kernel: &Kernel, x: f32, y: f32) -> Option<Picked> {
 
 pub(crate) fn pick_for_window(kernel: &Kernel, x: f32, y: f32, submit: Option<NodeId>) -> Option<Picked> {
     let hit = kernel.hit_test(x, y)?;
-    let node = inspect_one(kernel, hit, submit);
+    let modal = kernel.front_modal();
+    let node = inspect_one(kernel, hit, submit, modal);
     let mut ancestors = Vec::new();
     let mut p = kernel.parent(hit);
     while let Some(id) = p {
@@ -133,7 +139,7 @@ pub(crate) fn pick_for_window(kernel: &Kernel, x: f32, y: f32, submit: Option<No
             break;
         }
         if id != kernel.overlay_layer() {
-            let one = inspect_one(kernel, id, submit);
+            let one = inspect_one(kernel, id, submit, modal);
             ancestors.push(Ancestor { role: one.role, id: one.id, source: one.source, component: one.component });
         }
         p = kernel.parent(id);

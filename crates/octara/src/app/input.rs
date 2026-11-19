@@ -167,7 +167,13 @@ impl Window {
         action: accesskit::Action,
         data: Option<accesskit::ActionData>,
     ) -> bool {
-        let Some(n) = self.w.kernel.borrow().node_of_a11y(target) else { return false };
+        let modal = self.top_modal();
+        let Some(n) = ({
+            let kernel = self.w.kernel.borrow();
+            kernel.node_of_a11y(target).filter(|&id| kernel.accepts_accessibility_input(id, modal))
+        }) else {
+            return false;
+        };
         let mut done = false;
         match action {
             accesskit::Action::Click => self.input_frame(|| done = self.run(n, &[HandlerKind::Press, HandlerKind::Toggle], None)),
@@ -201,7 +207,7 @@ impl Window {
             accesskit::Action::ShowContextMenu => self.input_frame(|| done = self.run(n, &[HandlerKind::SecondaryPress], None)),
             accesskit::Action::SetTextSelection => {
                 if let Some(accesskit::ActionData::SetTextSelection(sel)) = data {
-                    self.input_frame(|| done = self.select_a11y(sel));
+                    self.input_frame(|| done = self.select_a11y(n, sel, modal));
                 }
             }
             _ => {}

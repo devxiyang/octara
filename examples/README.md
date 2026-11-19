@@ -99,6 +99,17 @@ python3 -B examples/ios_panel.py --scene album --device "$ios_panel_device" \
 
 滚动相册，选中一张照片，再滚动详情。用 Inspector 记下两处视口的位置及详情目标。从屏幕边缘向右滑，在同一次接触中越过半屏后反向收回并抬手。核对详情目标和阅读位置，以及 `Back 0 · Released 0`。再次从边缘向右滑并完成，核对列表位置、`Back 1 · Released 1` 和旧详情操作目标的 `STALE_TARGET` 回执。`console.log` 中的 `octara.back_trace/1` 记录 UIKit 的交互阶段及 Core 是否接收。结束后终止测试应用并清理本次临时目录。[无窗口回归](tests/integration/album_back.rs)
 
+### iOS 模拟器嵌套弹层
+
+用同样的构建收据和 Inspector 流程运行 `showcase interaction`。打开「编辑消息」，输入 `/` 以显示非模态建议列表。核对编辑器持有焦点、建议可以操作、Dialog 后方按钮的 Inspector 动作已省略。用模拟器原生辅助功能树核对平台所见的控件，再关闭 Dialog，核对原打开按钮可操作且 `target` 保持原值。
+
+```sh
+IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build --locked -p octara-examples --bin window --target aarch64-apple-ios-sim
+ios_interaction_run=$(mktemp -d /tmp/octara-interaction.XXXXXX)
+python3 -B examples/ios_panel.py --scene interaction --device "$ios_panel_device" \
+  --binary target/aarch64-apple-ios-sim/debug/window --output "$ios_interaction_run/app"
+```
+
 ### macOS 触控板
 
 构建 `trackpad`，在单独的临时目录中保留这次运行的日志和 socket。

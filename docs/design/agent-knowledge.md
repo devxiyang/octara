@@ -12,6 +12,8 @@
 
 节点上的 `labelled_by`、`controls` 和 `active_descendant` 都是当前语义树中目标的 `id`。关系未能解析时，该字段省略。根据关系找到实际节点后，操作时使用它的 `target`。控件的 `name` 已反映当前可用的标签。[关系与名称](ui-primitives.md#语义关系)
 
+模态打开时，Inspector 仍会报告已显示的背景节点、位置和 `target`。这些节点的 `actions`、局部 `commands` 与关系会省略，使用旧快照操作仍挂载的背景节点会收到当前模态范围的拒绝。关闭模态后，同一挂载实例恢复可操作，期间重建的实例按原有规则获得新 `target`。[模态范围](ui-primitives.md#5-overlays)
+
 | 返回结果 | 下一步 |
 | --- | --- |
 | `AMBIGUOUS_TARGET` | 查找名匹配了多个挂载实例。用树中的角色、标签和位置确定对象，再传入该对象的 `target` |

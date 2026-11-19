@@ -3,6 +3,7 @@
 
 use super::{HandlerKind, Kernel, Kind, NodeId, Relations, Role, State};
 use accesskit as ak;
+use rustc_hash::FxHashSet;
 use slotmap::{Key, KeyData};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -10,7 +11,26 @@ use unicode_segmentation::UnicodeSegmentation;
 #[derive(Default)]
 pub(super) struct PublishedRelations {
     targets: Relations<NodeId>,
-    referenced_name: Option<String>,
+    name: Option<String>,
+}
+
+/// During a modal, physical ancestors carry geometry for reachable descendants. Their own
+/// semantics stay outside the modal, including when a popup lives in the shared overlay layer.
+#[derive(Default, PartialEq, Eq)]
+pub(super) struct AccessibilityProjection {
+    modal: Option<NodeId>,
+    members: FxHashSet<NodeId>,
+    ancestors: FxHashSet<NodeId>,
+}
+
+impl AccessibilityProjection {
+    fn exposes(&self, id: NodeId) -> bool {
+        self.modal.is_none() || self.members.contains(&id)
+    }
+
+    fn includes(&self, id: NodeId) -> bool {
+        self.exposes(id) || self.ancestors.contains(&id)
+    }
 }
 
 /// The AccessKit id of a node.
@@ -162,10 +182,46 @@ impl Kernel {
     }
 
     /// A region's selection among its texts' runs.
-    fn a11y_selection(&self, region: NodeId) -> Option<ak::TextSelection> {
+    fn a11y_selection(&self, region: NodeId, projection: &AccessibilityProjection) -> Option<ak::TextSelection> {
         let [(a, ao), (f, fo)] = self.node(region).doc_selection?;
-        let at = |t: NodeId, o: usize| self.is_alive(t).then(|| self.run_position(t, &self.text_runs(t), o)).flatten();
+        let at = |t: NodeId, o: usize| {
+            (projection.exposes(t) && self.is_alive(t) && self.a11y_reachable(t))
+                .then(|| self.run_position(t, &self.text_runs(t), o))
+                .flatten()
+        };
         Some(ak::TextSelection { anchor: at(a, ao)?, focus: at(f, fo)? })
+    }
+
+    fn accessibility_projection(&self) -> AccessibilityProjection {
+        let Some(modal) = self.front_modal() else { return AccessibilityProjection::default() };
+        let mut members = FxHashSet::default();
+        let mut pending = vec![self.root];
+        while let Some(id) = pending.pop() {
+            if id != self.root && !self.shown_to_a11y(id) {
+                continue;
+            }
+            if self.check_interaction_scope(id, Some(modal)).is_ok() {
+                members.insert(id);
+            }
+            pending.extend(self.node(id).children());
+        }
+        let mut ancestors = FxHashSet::default();
+        ancestors.insert(self.root);
+        for &id in &members {
+            let mut parent = self.node(id).parent;
+            while let Some(id) = parent {
+                if members.contains(&id) || !ancestors.insert(id) {
+                    break;
+                }
+                parent = self.node(id).parent;
+            }
+        }
+        AccessibilityProjection { modal: Some(modal), members, ancestors }
+    }
+
+    fn a11y_focus(&self, focus: Option<NodeId>, projection: &AccessibilityProjection) -> ak::NodeId {
+        let exposed = |&id: &NodeId| projection.exposes(id) && self.is_alive(id) && self.a11y_reachable(id);
+        a11y_id(focus.filter(exposed).or_else(|| projection.modal.filter(exposed)).unwrap_or(self.root))
     }
 
     /// The whole tree as an AccessKit update (a snapshot: it does not change what
@@ -174,23 +230,30 @@ impl Kernel {
     /// transform places it in its parent (a scroll container's offset is its own), and its bounds
     /// are in its own space.
     pub fn accessibility_tree(&self, focus: Option<NodeId>, scale: f64) -> ak::TreeUpdate {
+        let projection = self.accessibility_projection();
         let mut nodes = Vec::new();
-        self.a11y_subtree(self.root, scale, &mut nodes, &mut |_, _| {});
-        let focus = focus.filter(|n| self.is_alive(*n) && self.a11y_reachable(*n)).unwrap_or(self.root);
-        ak::TreeUpdate { nodes, tree: Some(ak::TreeInfo::new(a11y_id(self.root))), tree_id: ak::TreeId::ROOT, focus: a11y_id(focus) }
+        self.a11y_subtree(self.root, scale, &projection, &mut nodes, &mut |_, _| {});
+        ak::TreeUpdate {
+            nodes,
+            tree: Some(ak::TreeInfo::new(a11y_id(self.root))),
+            tree_id: ak::TreeId::ROOT,
+            focus: self.a11y_focus(focus, &projection),
+        }
     }
 
     /// What changed for assistive technology since the last update: the nodes whose semantics,
     /// children or place changed, and subtrees new to it. The first update (and the first after
     /// [`restart_accessibility`](Self::restart_accessibility)) is the whole tree.
     pub fn accessibility_update(&self, focus: Option<NodeId>, scale: f64) -> ak::TreeUpdate {
-        let focus = a11y_id(focus.filter(|n| self.is_alive(*n) && self.a11y_reachable(*n)).unwrap_or(self.root));
-        if !self.a11y_live.get() || self.a11y_scale.get() != scale {
+        let projection = self.accessibility_projection();
+        let focus = self.a11y_focus(focus, &projection);
+        if !self.a11y_live.get() || self.a11y_scale.get() != scale || *self.a11y_projection.borrow() != projection {
             self.a11y_live.set(true);
             self.a11y_scale.set(scale);
             self.a11y_dirty.borrow_mut().clear();
             let mut nodes = Vec::new();
-            self.a11y_subtree(self.root, scale, &mut nodes, &mut |id, g| self.a11y_note_sent(id, g));
+            self.a11y_subtree(self.root, scale, &projection, &mut nodes, &mut |id, g| self.a11y_note_sent(id, g, &projection));
+            self.a11y_projection.replace(projection);
             #[cfg(debug_assertions)]
             {
                 *self.a11y_mirror.borrow_mut() = nodes.iter().cloned().collect();
@@ -201,8 +264,9 @@ impl Kernel {
         // A relation can change without an owner property changing. Compare both the current
         // instances and the text the owner borrows from its label.
         for (&id, published) in self.a11y_relation_owners.borrow().iter() {
-            let targets = self.resolved_relations(id);
-            if targets != published.targets || self.referenced_name(targets.labelled_by) != published.referenced_name.as_deref() {
+            if projection.exposes(id)
+                && (self.scoped_relations(id, projection.modal) != published.targets || self.semantic_name(id) != published.name.as_deref())
+            {
                 dirty.push(id);
             }
         }
@@ -233,12 +297,12 @@ impl Kernel {
         let mut nodes = Vec::new();
         let mut sent = rustc_hash::FxHashSet::default();
         for id in dirty {
-            if self.is_alive(id) && self.a11y_reachable(id) && !sent.contains(&id) {
-                self.a11y_emit(id, scale, &mut nodes, &mut sent);
+            if projection.includes(id) && self.is_alive(id) && self.a11y_reachable(id) && !sent.contains(&id) {
+                self.a11y_emit(id, scale, &projection, &mut nodes, &mut sent);
             }
         }
         #[cfg(debug_assertions)]
-        self.a11y_verify(&nodes, scale);
+        self.a11y_verify(&nodes, scale, &projection);
         ak::TreeUpdate { nodes, tree: None, tree_id: ak::TreeId::ROOT, focus }
     }
 
@@ -254,34 +318,38 @@ impl Kernel {
     }
 
     /// Sends `id` and the subtrees of its children assistive technology has not seen.
-    fn a11y_emit(&self, id: NodeId, scale: f64, out: &mut Vec<AkNode>, sent: &mut rustc_hash::FxHashSet<NodeId>) {
-        let (node, g, children, runs) = self.a11y_build(id, scale);
-        self.a11y_note_sent(id, g);
+    fn a11y_emit(&self, id: NodeId, scale: f64, projection: &AccessibilityProjection, out: &mut Vec<AkNode>, sent: &mut FxHashSet<NodeId>) {
+        let (node, g, children, runs) = self.a11y_build(id, scale, projection);
+        self.a11y_note_sent(id, g, projection);
         sent.insert(id);
         out.push((a11y_id(id), node));
         // A text's runs place its region's selection: send that again too.
         if !runs.is_empty()
             && let Some(r) = self.region_of(id).filter(|r| self.node(*r).doc_selection.is_some_and(|s| s.iter().any(|e| e.0 == id)))
+            && projection.exposes(r)
+            && self.a11y_reachable(r)
             && !sent.contains(&r)
         {
-            let (node, g, ..) = self.a11y_build(r, scale);
-            self.a11y_note_sent(r, g);
+            let (node, g, ..) = self.a11y_build(r, scale, projection);
+            self.a11y_note_sent(r, g, projection);
             sent.insert(r);
             out.push((a11y_id(r), node));
         }
         out.extend(runs);
         for c in children {
             if self.node(c).a11y_sent.get().is_none() && !sent.contains(&c) {
-                self.a11y_emit(c, scale, out, sent);
+                self.a11y_emit(c, scale, projection, out, sent);
             }
         }
     }
 
-    fn a11y_note_sent(&self, id: NodeId, geometry: [f32; 6]) {
+    fn a11y_note_sent(&self, id: NodeId, geometry: [f32; 6], projection: &AccessibilityProjection) {
         self.node(id).a11y_sent.set(Some(geometry));
         if let Some(published) = self.a11y_relation_owners.borrow_mut().get_mut(&id) {
-            let targets = self.resolved_relations(id);
-            *published = PublishedRelations { targets, referenced_name: self.referenced_name(targets.labelled_by).map(str::to_owned) };
+            *published = PublishedRelations {
+                targets: self.scoped_relations(id, projection.modal),
+                name: self.semantic_name(id).map(str::to_owned),
+            };
         }
     }
 
@@ -357,6 +425,10 @@ impl Kernel {
         }
     }
 
+    pub(crate) fn accepts_accessibility_input(&self, id: NodeId, modal: Option<NodeId>) -> bool {
+        self.check_interaction_scope(id, modal).is_ok() && self.a11y_reachable(id)
+    }
+
     /// A node's place in its parent's space and its scroll: what its transform and bounds come
     /// from.
     fn a11y_geometry_of(&self, id: NodeId) -> [f32; 6] {
@@ -366,25 +438,32 @@ impl Kernel {
     }
 
     /// `id` and its shown descendants, with `seen` called for each node and its geometry.
-    fn a11y_subtree(&self, id: NodeId, scale: f64, out: &mut Vec<AkNode>, seen: &mut dyn FnMut(NodeId, [f32; 6])) {
-        let (node, g, children, runs) = self.a11y_build(id, scale);
+    fn a11y_subtree(
+        &self,
+        id: NodeId,
+        scale: f64,
+        projection: &AccessibilityProjection,
+        out: &mut Vec<AkNode>,
+        seen: &mut dyn FnMut(NodeId, [f32; 6]),
+    ) {
+        let (node, g, children, runs) = self.a11y_build(id, scale, projection);
         seen(id, g);
         out.push((a11y_id(id), node));
         out.extend(runs);
         for c in children {
-            self.a11y_subtree(c, scale, out, seen);
+            self.a11y_subtree(c, scale, projection, out, seen);
         }
     }
 
     /// Debug builds: what was sent so far, applied in order, is the whole tree now.
     #[cfg(debug_assertions)]
-    fn a11y_verify(&self, update: &[(ak::NodeId, ak::Node)], scale: f64) {
+    fn a11y_verify(&self, update: &[(ak::NodeId, ak::Node)], scale: f64, projection: &AccessibilityProjection) {
         let mut mirror = self.a11y_mirror.borrow_mut();
         for (id, n) in update {
             mirror.insert(*id, n.clone());
         }
         let mut full = Vec::new();
-        self.a11y_subtree(self.root, scale, &mut full, &mut |_, _| {});
+        self.a11y_subtree(self.root, scale, projection, &mut full, &mut |_, _| {});
         for (id, n) in &full {
             debug_assert_eq!(
                 mirror.get(id),
@@ -404,11 +483,18 @@ impl Kernel {
     }
 
     /// One node for AccessKit, its geometry, and its shown children.
-    fn a11y_build(&self, id: NodeId, scale: f64) -> (ak::Node, [f32; 6], Vec<NodeId>, Vec<AkNode>) {
+    fn a11y_build(&self, id: NodeId, scale: f64, projection: &AccessibilityProjection) -> (ak::Node, [f32; 6], Vec<NodeId>, Vec<AkNode>) {
         let n = self.node(id);
-        let role = if id == self.root { Role::Window } else { self.role(id) };
-        let relations = self.resolved_relations(id);
+        let exposed = projection.exposes(id);
+        let role = if id == self.root {
+            Role::Window
+        } else if exposed {
+            self.role(id)
+        } else {
+            Role::GenericContainer
+        };
         let mut node = ak::Node::new(role);
+        let children: Vec<NodeId> = n.children().iter().copied().filter(|&c| projection.includes(c) && self.shown_to_a11y(c)).collect();
         // Placed in the parent's space; a scroll container's space moves with its offset, so its
         // children keep their transforms while it scrolls.
         let g = self.a11y_geometry_of(id);
@@ -416,7 +502,12 @@ impl Kernel {
         let place = ak::Affine::translate((x - sx, y - sy));
         node.set_transform(if id == self.root { ak::Affine::scale(scale) * place } else { place });
         node.set_bounds(ak::Rect { x0: sx, y0: sy, x1: sx + w, y1: sy + h });
-        if let Some(name) = self.name_with_label(id, relations.labelled_by) {
+        if !exposed {
+            node.set_children(children.iter().copied().map(a11y_id).collect::<Vec<_>>());
+            return (node, g, children, Vec::new());
+        }
+        let relations = self.scoped_relations(id, projection.modal);
+        if let Some(name) = self.semantic_name(id) {
             if n.label.is_none() && relations.labelled_by.is_none() && role == Role::Label {
                 // AccessKit encodes static text as a value, not a label.
                 node.set_value(name);
@@ -441,7 +532,7 @@ impl Kernel {
         }
         if n.region {
             node.add_action(ak::Action::SetTextSelection);
-            if let Some(sel) = self.a11y_selection(id) {
+            if let Some(sel) = self.a11y_selection(id, projection) {
                 node.set_text_selection(sel);
             }
         }
@@ -506,7 +597,6 @@ impl Kernel {
         if let Some(t) = &n.test_id {
             node.set_author_id(t.as_str());
         }
-        let children: Vec<NodeId> = n.children().iter().copied().filter(|c| self.shown_to_a11y(*c)).collect();
         // A selectable text's runs come first, its links after.
         let runs = if n.kind() == Kind::Text { self.a11y_runs(id, &self.text_runs(id)) } else { Vec::new() };
         node.set_children(runs.iter().map(|(r, _)| *r).chain(children.iter().map(|c| a11y_id(*c))).collect::<Vec<_>>());

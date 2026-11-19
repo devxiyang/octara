@@ -14,9 +14,10 @@ from uuid import uuid4
 
 def main():
     scenes = {
-        "panel": ("panel", "Octara Panel", "panel_scroll"),
-        "controlled": ("ime", "Octara Controlled IME", "ime"),
-        "album": ("album", "Octara Album Back", "album_back"),
+        "panel": ("panel", "Octara Panel", "panel_scroll", ()),
+        "controlled": ("ime", "Octara Controlled IME", "ime", ()),
+        "album": ("album", "Octara Album Back", "album_back", ()),
+        "interaction": ("interaction", "Octara Interaction", "window", ("showcase", "interaction")),
     }
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", required=True, help="UDID of the booted simulator")
@@ -26,7 +27,7 @@ def main():
     args = parser.parse_args()
     if not args.binary.is_file():
         parser.error(f"executable was not found: {args.binary}")
-    fixture, name, executable_name = scenes[args.scene]
+    fixture, name, executable_name, launch_args = scenes[args.scene]
     output = args.output.resolve()
     endpoint = output / f"{fixture}.sock"
     if len(os.fsencode(endpoint)) >= 104:
@@ -93,7 +94,7 @@ def main():
         print(report, flush=True)
         with trace.open("w") as log:
             subprocess.run(
-                [*simctl, "launch", "--console", args.device, bundle],
+                [*simctl, "launch", "--console", args.device, bundle, *launch_args],
                 env=env, stdout=log, stderr=subprocess.STDOUT, check=True,
             )
     finally:

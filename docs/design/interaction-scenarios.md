@@ -119,6 +119,18 @@ iPhone 17e、iOS 27.2，视口为 390×844 点，设备截图为 1170×2532 像�
 - 同一次侧滑先向右推进，设备截图中详情向右移动 690 像素，露出约 59% 宽度的列表预览。随后反向收回并抬手。UIKit 报告交互式取消，详情、滚动视口和 Back 目标保留原挂载，焦点仍是 Photo notes，Location 的纵坐标保持 224 点，关闭和释放计数均为 0。取消前后的应用内容像素一致，头部只显示应用的 Back 按钮。
 - 再次侧滑，UIKit 报告交互式完成并投递一次 Back。列表与 Breakwater 行保持原目标及滚动位置，Breakwater 的纵坐标仍为 221.7 点，焦点回到该行。关闭和释放计数各为 1，尝试操作旧的详情 Back 目标收到 `STALE_TARGET`。回到列表后，计数栏以外的应用内容像素与打开详情前一致。
 
+### 模态辅助功能范围
+
+在同一型号和系统版本的模拟器，用原生触摸打开 Breakwater，分别读取 Inspector 和 iOS 原生辅助功能树。详情打开前，系统树有 12 个照片按钮。打开后，系统树保留详情、Back 和 Photo notes，照片按钮退出可达范围。点击 Back 后 12 个照片按钮重新出现，Inspector 恢复到 `album-photo-6` 的焦点、原列表和行的 `target`，旧详情 Back 请求返回 `STALE_TARGET`。除状态栏和计数栏外，列表回到打开前的像素。[模态规则](ui-primitives.md#5-overlays)
+
+在 iOS 27.2 模拟器用 Xcode 的设备控制启用 VoiceOver。设备截图中，系统焦点框位于 Back。发出单指右扫后，焦点框移至 Photo notes。再右扫两次，焦点框仍停在详情内，原生辅助功能树也保持同一范围。[Xcode 27 发行说明](https://developer.apple.com/documentation/xcode-release-notes/xcode-27-release-notes)
+
+macOS 的 `showcase interaction` 用 Inspector 驱动 Dialog 和编辑器的非模态建议列表。验证建议的键盘选择、关闭顺序和焦点恢复，并核对原生窗口缩放及 GPU 绘制帧。[实窗脚本](../../examples/live_primitives.py)
+
+iOS 27.2 运行同一个 `showcase interaction`。原生触摸打开 Dialog 后，原打开按钮退出原生辅助功能树，编辑器取得焦点。点击系统键盘上的 `/` 后，原生树能读到建议列表、`/review`、禁用的 `/deploy` 和 `/summary`。点按 `/review` 后，应用回报 `已选择：review`，建议列表关闭，编辑器保持焦点。[模拟器复现](../../examples/README.md#ios-模拟器嵌套弹层)
+
+键盘仍显示时，第一次点「完成」让它获得焦点，键盘收起，Dialog 移到新位置。再点新位置的「完成」后 Dialog 关闭，原打开按钮回到系统树，并恢复原 `target`、操作资格和焦点。刚退出的建议项 `target` 返回 `STALE_TARGET`。
+
 ## 两个同标题文档的撤销
 
 启动 `target/debug/window undo` 时设置独立的 `OCTARA_INSPECT` socket。文档 A 的「Open Document B」按钮打开第二个同标题窗口。两个编辑器都用 `editor` 作为查找名，分别持有文档值和撤销历史。`edits` 统计应用收到的文本写入，工具栏的可用性读本窗的 `command_enabled("edit.undo")`。Inspector 用窗口编号和从快照获得的窗口 `target` 调用 `edit.undo`。[示例实现](../../examples/src/apps.rs) · [命令回归](../../crates/octara/tests/integration/menus.rs)

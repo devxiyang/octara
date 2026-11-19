@@ -121,17 +121,23 @@ impl Window {
 
     /// Selects what assistive technology asked for: anchor and focus at run positions of one
     /// region's texts.
-    pub(super) fn select_a11y(&self, sel: accesskit::TextSelection) -> bool {
-        let points = {
+    pub(super) fn select_a11y(&self, target: NodeId, sel: accesskit::TextSelection, modal: Option<NodeId>) -> bool {
+        let (region, points) = {
             let k = self.w.kernel.borrow();
+            let Some(region) = k.region_of(target).filter(|&region| k.is_region(target) && k.accepts_accessibility_input(region, modal))
+            else {
+                return false;
+            };
             let point = |p| {
                 let (text, offset) = k.text_at_a11y(p)?;
-                let region = k.region_of(text)?;
-                Some((region, TextPoint { path: k.path_to(region, text)?, offset }))
+                if k.region_of(text) != Some(region) || !k.accepts_accessibility_input(text, modal) {
+                    return None;
+                }
+                Some(TextPoint { path: k.path_to(region, text)?, offset })
             };
-            point(sel.anchor).zip(point(sel.focus)).filter(|((a, _), (f, _))| a == f)
+            (region, point(sel.anchor).zip(point(sel.focus)))
         };
-        let Some(((region, anchor), (_, focus))) = points else { return false };
+        let Some((anchor, focus)) = points else { return false };
         self.set_doc_selection(region, anchor, focus);
         true
     }

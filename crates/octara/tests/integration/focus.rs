@@ -1,11 +1,14 @@
 //! Focus: Tab order with `tab_index`, focus groups and arrow keys, and modals that trap focus,
 //! make the window inert, and give focus back when they close.
 
-use octara::accesskit::Toggled;
+use octara::accesskit::{self as ak, Toggled};
 use octara::app::{Event, InputEvent};
+use octara::inspect::{self, Delivery};
 use octara::kernel::a11y::a11y_id;
 use octara::prelude::*;
+use serde_json::json;
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 fn focused(app: &Window) -> Option<String> {
@@ -428,19 +431,28 @@ fn the_window_behind_a_modal_is_inert() {
     assert!(tree.nodes.iter().find(|(n, _)| *n == id).unwrap().1.is_modal());
 }
 
-#[test]
-fn an_anchored_overlay_shares_its_dialogs_keyboard_scope() {
-    let mut app = Window::headless(|| {
+fn anchored_dialog_app() -> Window {
+    Window::headless(|| {
         let dialog_open = state("dialog-open", || false);
         let saves = state("saves", || 0);
         let clicks = state("clicks", || 0);
-        col()
+        let workspace = col()
+            .id("workspace")
             .size_full()
-            .child(button("open-dialog").on_press(move || dialog_open.set(true)).overlay(
+            .role(Role::Group)
+            .label("Workspace")
+            .on_command("workspace.save", || {})
+            .child(button("open-dialog").role(Role::Button).label("Open dialog").on_press(move || dialog_open.set(true)).overlay(
                 || true,
                 Placement::RIGHT,
-                || button("outside-overlay-action"),
+                || button("outside-overlay-action").role(Role::Button).label("Outside action"),
             ))
+            .child(
+                col()
+                    .id("background-doc")
+                    .selectable()
+                    .child(text(move || if saves.get() == 0 { "Save changes" } else { "Changes saved" }).id("background-label")),
+            )
             .child(text(move || saves.get().to_string()).id("saves"))
             .child(text(move || clicks.get().to_string()).id("clicks"))
             .child(show(
@@ -450,6 +462,10 @@ fn an_anchored_overlay_shares_its_dialogs_keyboard_scope() {
                     col()
                         .id("dialog")
                         .role(Role::Dialog)
+                        .label("Fallback title")
+                        .labelled_by("background-label")
+                        .controls("outside-overlay-action")
+                        .active_descendant("outside-overlay-action")
                         .absolute()
                         .left(160.0)
                         .top(120.0)
@@ -458,6 +474,7 @@ fn an_anchored_overlay_shares_its_dialogs_keyboard_scope() {
                         .modal(false, move || dialog_open.set(false))
                         .key_context("dialog")
                         .on_command("dialog.save", move || saves.update(|n| *n += 1))
+                        .child(col().id("dialog-doc").selectable().child(text("Dialog options").id("dialog-label")))
                         .child(
                             row()
                                 .gap_8()
@@ -465,16 +482,25 @@ fn an_anchored_overlay_shares_its_dialogs_keyboard_scope() {
                                     move || overlay_open.get(),
                                     Placement::BELOW,
                                     move || {
-                                        col()
-                                            .dismissible(true, move || overlay_open.set(false))
-                                            .child(button("overlay-action").role(Role::Button))
+                                        col().dismissible(true, move || overlay_open.set(false)).child(
+                                            button("overlay-action")
+                                                .role(Role::Button)
+                                                .labelled_by("dialog-label")
+                                                .controls("dialog-action"),
+                                        )
                                     },
                                 ))
                                 .child(button("dialog-action").tab_index(-1).on_press(move || clicks.update(|n| *n += 1))),
                         )
                 },
-            ))
-    });
+            ));
+        col().size_full().p_4().child(workspace)
+    })
+}
+
+#[test]
+fn an_anchored_overlay_shares_its_dialogs_keyboard_scope() {
+    let mut app = anchored_dialog_app();
     app.app().bind_keys([("mod+s", "dialog.save", Some("dialog"))]).unwrap();
     app.tap("open-dialog").unwrap();
     app.press_key("enter").unwrap();
@@ -505,6 +531,183 @@ fn an_anchored_overlay_shares_its_dialogs_keyboard_scope() {
     app.press_key("escape").unwrap();
     assert!(!app.kernel().exists("dialog"));
     assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+/// Apply changes to the last tree. Reachability through child lists determines what the adapter retains.
+fn apply_accessibility_update(
+    nodes: &mut HashMap<ak::NodeId, ak::Node>,
+    root: ak::NodeId,
+    update: ak::TreeUpdate,
+) -> HashMap<ak::NodeId, Option<ak::Rect>> {
+    assert!(update.tree.as_ref().is_none_or(|tree| tree.root == root));
+    nodes.extend(update.nodes);
+    let mut bounds = HashMap::new();
+    let mut pending = vec![(root, ak::Affine::IDENTITY)];
+    while let Some((id, parent_transform)) = pending.pop() {
+        let node = nodes.get(&id).expect("a child must already exist or arrive in this update");
+        let transform = parent_transform * node.transform().copied().unwrap_or_default();
+        assert!(bounds.insert(id, node.bounds().map(|rect| transform.transform_rect_bbox(rect))).is_none(), "duplicate AX child {id:?}");
+        pending.extend(node.children().iter().map(|&child| (child, transform)));
+    }
+    nodes.retain(|id, _| bounds.contains_key(id));
+    assert!(nodes.contains_key(&update.focus), "the focus must be in the applied accessibility tree");
+    for node in nodes.values() {
+        for target in node.labelled_by().iter().chain(node.controls()).copied().chain(node.active_descendant()) {
+            assert!(nodes.contains_key(&target), "the applied accessibility tree has a dangling relation to {target:?}");
+        }
+    }
+    bounds
+}
+
+fn assert_accessibility_bounds(actual: ak::Rect, expected: [f32; 4]) {
+    let actual = [actual.x0, actual.y0, actual.width(), actual.height()];
+    for (actual, expected) in actual.into_iter().zip(expected) {
+        assert!((actual - f64::from(expected)).abs() < 0.051, "AX bounds {actual} differ from Inspector bounds {expected}");
+    }
+}
+
+#[test]
+fn modal_scope_is_applied_to_inspector_and_accessibility() {
+    let mut app = anchored_dialog_app();
+    let ax_id = |app: &Window, name| a11y_id(app.kernel().find(name).unwrap());
+    app.press_key("tab").unwrap();
+    let before = app.inspect();
+    let opener = before.find("open-dialog").unwrap();
+    let opener_id = ax_id(&app, "open-dialog");
+    let background =
+        ["workspace", "open-dialog", "background-doc", "background-label", "outside-overlay-action"].map(|name| (name, ax_id(&app, name)));
+    let opener_request = json!({"op":"tap", "target":opener.target}).to_string();
+    assert_eq!(before.focus.as_deref(), Some("open-dialog"));
+    assert!(before.commands.iter().any(|(command, _)| command == "workspace.save"));
+    assert!(opener.actions.iter().any(|action| action == "press"));
+
+    let first = app.accessibility_update();
+    let root = first.tree.as_ref().unwrap().root;
+    assert_eq!(first.focus, opener_id);
+    let mut ax = HashMap::new();
+    let before_bounds = apply_accessibility_update(&mut ax, root, first);
+    assert!(ax[&opener_id].supports_action(ak::Action::Click));
+
+    let reply = inspect::handle_line(&mut app, &opener_request);
+    assert!(reply.ok, "{reply:?}");
+    let modal = app.inspect();
+    let dialog = modal.find("dialog").unwrap();
+    let dialog_id = ax_id(&app, "dialog");
+    let dialog_action_id = ax_id(&app, "dialog-action");
+    let dialog_action_request = json!({"op":"tap", "target":modal.find("dialog-action").unwrap().target}).to_string();
+    assert_eq!(modal.focus.as_deref(), Some("open-overlay"));
+    assert!(modal.commands.iter().any(|(command, _)| command == "dialog.save"));
+    assert!(!modal.commands.iter().any(|(command, _)| command == "workspace.save"));
+    assert_eq!(dialog.name.as_deref(), Some("Save changes"));
+    assert!(dialog.labelled_by.is_none() && dialog.controls.is_none() && dialog.active_descendant.is_none());
+
+    let opened = app.accessibility_update();
+    assert_eq!(opened.focus, ax_id(&app, "open-overlay"));
+    let open_bounds = apply_accessibility_update(&mut ax, root, opened);
+    assert!(ax[&dialog_id].is_modal());
+    assert_eq!(ax[&dialog_id].label(), dialog.name.as_deref());
+    assert!(
+        ax[&dialog_id].labelled_by().is_empty() && ax[&dialog_id].controls().is_empty() && ax[&dialog_id].active_descendant().is_none()
+    );
+    assert!(before.find("workspace").unwrap().bounds[0] > 0.0);
+    assert_accessibility_bounds(open_bounds[&dialog_id].unwrap(), dialog.bounds);
+    for (name, id) in background {
+        let original = before.find(name).unwrap();
+        let covered = modal.find(name).unwrap();
+        assert_eq!((&covered.target, &covered.name, covered.bounds), (&original.target, &original.name, original.bounds), "{name}");
+        assert!(covered.actions.is_empty() && covered.commands.is_empty(), "{covered:?}");
+        if let Some(carrier) = ax.get(&id) {
+            assert_eq!(carrier.role(), Role::GenericContainer, "{name}");
+            assert!(carrier.label().is_none() && carrier.value().is_none(), "{name}");
+            for action in [ak::Action::Click, ak::Action::Focus, ak::Action::SetTextSelection] {
+                assert!(!carrier.supports_action(action), "{name} supports {action:?}");
+            }
+        }
+    }
+    let covered = inspect::handle_line(&mut app, &opener_request);
+    assert_eq!(covered.delivery, Some(Delivery::Refused), "{covered:?}");
+    assert!(covered.message.unwrap().contains("behind the open modal `dialog`"));
+    assert!(!app.event(InputEvent::Accessibility { target: opener_id, action: ak::Action::Click, data: None }));
+
+    let overlay_opener_id = ax_id(&app, "open-overlay");
+    assert!(ax[&overlay_opener_id].supports_action(ak::Action::Click));
+    assert!(app.event(InputEvent::Accessibility { target: overlay_opener_id, action: ak::Action::Click, data: None }));
+    app.press_key("tab").unwrap();
+    let portal = app.inspect();
+    let action = portal.find("overlay-action").unwrap();
+    assert_eq!(portal.focus.as_deref(), Some("overlay-action"));
+    assert!(action.actions.iter().any(|action| action == "press"));
+    assert_eq!(action.labelled_by.as_deref(), Some("dialog-label"));
+    assert_eq!(action.controls.as_deref(), Some("dialog-action"));
+    let portal_id = ax_id(&app, "overlay-action");
+    let expanded = app.accessibility_update();
+    assert_eq!(expanded.focus, portal_id);
+    let expanded_bounds = apply_accessibility_update(&mut ax, root, expanded);
+    assert_accessibility_bounds(expanded_bounds[&portal_id].unwrap(), action.bounds);
+    assert!(ax[&portal_id].supports_action(ak::Action::Click));
+    assert_eq!(ax[&portal_id].labelled_by(), &[ax_id(&app, "dialog-label")]);
+    assert_eq!(ax[&portal_id].controls(), &[dialog_action_id]);
+    assert!(app.event(InputEvent::Accessibility { target: portal_id, action: ak::Action::Click, data: None }));
+
+    app.invoke("dialog.save").unwrap();
+    let relabelled = app.accessibility_update();
+    apply_accessibility_update(&mut ax, root, relabelled);
+    assert_eq!(ax[&dialog_id].label(), Some("Changes saved"));
+    assert!(ax[&dialog_id].labelled_by().is_empty());
+
+    app.press_key("escape").unwrap();
+    app.press_key("escape").unwrap();
+    let restored = app.inspect();
+    assert_eq!(restored.focus.as_deref(), Some("open-dialog"));
+    let restored_opener = restored.find("open-dialog").unwrap();
+    assert_eq!(restored_opener.target, opener.target);
+    assert_eq!(restored_opener.actions, opener.actions);
+    assert!(restored.commands.iter().any(|(command, _)| command == "workspace.save"));
+    let closed = app.accessibility_update();
+    assert_eq!(closed.focus, opener_id);
+    let closed_bounds = apply_accessibility_update(&mut ax, root, closed);
+    assert_eq!(closed_bounds[&opener_id], before_bounds[&opener_id]);
+    assert!(ax[&opener_id].supports_action(ak::Action::Click));
+    assert!(!ax.contains_key(&dialog_id) && !ax.contains_key(&portal_id));
+    let stale = inspect::handle_line(&mut app, &dialog_action_request);
+    assert_eq!(stale.code.as_deref(), Some("STALE_TARGET"));
+    assert_eq!(stale.delivery, Some(Delivery::Refused));
+    assert!(!app.event(InputEvent::Accessibility { target: dialog_action_id, action: ak::Action::Click, data: None }));
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
+fn accessibility_selection_rejects_cached_background_runs_while_a_modal_is_open() {
+    let mut app = anchored_dialog_app();
+    let ax_id = |app: &Window, name| a11y_id(app.kernel().find(name).unwrap());
+    let run_of = |app: &Window, text| {
+        let text = ax_id(app, text);
+        let tree = app.accessibility_tree();
+        tree.nodes.iter().find(|(id, _)| *id == text).unwrap().1.children()[0]
+    };
+    let selection = |target, run| InputEvent::Accessibility {
+        target,
+        action: ak::Action::SetTextSelection,
+        data: Some(ak::ActionData::SetTextSelection(ak::TextSelection {
+            anchor: ak::TextPosition { node: run, character_index: 0 },
+            focus: ak::TextPosition { node: run, character_index: 4 },
+        })),
+    };
+    let background_doc = ax_id(&app, "background-doc");
+    let background_run = run_of(&app, "background-label");
+    assert!(app.event(selection(background_doc, background_run)));
+    assert_eq!(app.selected_text().as_deref(), Some("Save"));
+    app.clear_selection();
+
+    app.tap("open-dialog").unwrap();
+    let modal_doc = ax_id(&app, "dialog-doc");
+    assert!(!app.event(selection(background_doc, background_run)));
+    assert!(!app.event(selection(modal_doc, background_run)));
+    assert!(app.selected_text().is_none());
+
+    let modal_run = run_of(&app, "dialog-label");
+    assert!(app.event(selection(modal_doc, modal_run)));
+    assert_eq!(app.selected_text().as_deref(), Some("Dial"));
 }
 
 #[test]

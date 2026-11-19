@@ -715,6 +715,7 @@ pub struct Kernel {
     /// Assistive technology has the tree (updates can be incremental), at this scale.
     a11y_live: Cell<bool>,
     a11y_scale: Cell<f64>,
+    a11y_projection: RefCell<a11y::AccessibilityProjection>,
     /// Debug builds: what assistive technology was sent, to check updates against the tree.
     #[cfg(debug_assertions)]
     a11y_mirror: RefCell<rustc_hash::FxHashMap<accesskit::NodeId, accesskit::Node>>,
@@ -785,6 +786,7 @@ impl Kernel {
             a11y_viewport: Cell::new((0.0, 0.0)),
             a11y_compared: Cell::new(0),
             a11y_live: Cell::new(false),
+            a11y_projection: RefCell::default(),
             a11y_scale: Cell::new(1.0),
             #[cfg(debug_assertions)]
             a11y_mirror: RefCell::default(),

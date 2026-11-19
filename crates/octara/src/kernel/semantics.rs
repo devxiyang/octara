@@ -32,15 +32,7 @@ impl<T> Relations<T> {
 impl Kernel {
     /// A node's name from its referenced label, authored label, or document text.
     pub(crate) fn semantic_name(&self, id: NodeId) -> Option<&str> {
-        self.name_with_label(id, self.labelled_by(id))
-    }
-
-    pub(super) fn name_with_label(&self, id: NodeId, label: Option<NodeId>) -> Option<&str> {
-        self.referenced_name(label).or_else(|| self.own_semantic_name(id))
-    }
-
-    pub(super) fn referenced_name(&self, label: Option<NodeId>) -> Option<&str> {
-        self.own_semantic_name(label?)
+        self.labelled_by(id).and_then(|label| self.own_semantic_name(label)).or_else(|| self.own_semantic_name(id))
     }
 
     /// Read authored content directly. A reference does not follow another label link.
@@ -65,11 +57,27 @@ impl Kernel {
         self.relation_target(id, self.node(id).relations.active_descendant.as_deref())
     }
 
-    pub(crate) fn resolved_relations(&self, id: NodeId) -> Relations<NodeId> {
+    fn resolved_relations(&self, id: NodeId) -> Relations<NodeId> {
         Relations {
             active_descendant: self.active_descendant(id),
             labelled_by: self.labelled_by(id),
             controls: self.relation_target(id, self.node(id).relations.controls.as_deref()),
+        }
+    }
+
+    /// References published to observers of the current interaction scope. A label can still
+    /// supply the authored name even if the label itself is outside that scope.
+    pub(crate) fn scoped_relations(&self, id: NodeId, modal: Option<NodeId>) -> Relations<NodeId> {
+        let Some(modal) = modal else { return self.resolved_relations(id) };
+        let in_scope = |id| self.check_interaction_scope(id, Some(modal)).is_ok();
+        if !in_scope(id) {
+            return Relations::default();
+        }
+        let Relations { active_descendant, labelled_by, controls } = self.resolved_relations(id);
+        Relations {
+            active_descendant: active_descendant.filter(|&target| in_scope(target)),
+            labelled_by: labelled_by.filter(|&target| in_scope(target)),
+            controls: controls.filter(|&target| in_scope(target)),
         }
     }
 
