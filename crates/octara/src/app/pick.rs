@@ -93,6 +93,19 @@ impl Window {
 
     /// What picking draws over the frame: the hovered element's outline, tinted inside.
     pub(super) fn picking_overlay(&self) -> Option<Vec<crate::paint::Item>> {
+        let (source, rect) = self.picking_outline()?;
+        Some(vec![crate::paint::Item::Quad(crate::paint::Quad {
+            source,
+            rect,
+            radius: 2.0,
+            fill: Some(PICKING.with_alpha(0.12)),
+            gradient: None,
+            border: [1.5; 4],
+            border_color: PICKING,
+        })])
+    }
+
+    pub(super) fn picking_outline(&self) -> Option<(NodeId, crate::paint::Rect)> {
         let p = self.w.picking.borrow();
         let hover = p.hover.filter(|_| p.on)?;
         let k = self.w.kernel.borrow();
@@ -100,15 +113,7 @@ impl Window {
             return None;
         }
         let (x, y, w, h) = k.shown_rect(hover);
-        Some(vec![crate::paint::Item::Quad(crate::paint::Quad {
-            source: hover,
-            rect: crate::paint::Rect::new(x, y, w, h),
-            radius: 2.0,
-            fill: Some(PICKING.with_alpha(0.12)),
-            gradient: None,
-            border: [1.5; 4],
-            border_color: PICKING,
-        })])
+        Some((hover, crate::paint::Rect::new(x, y, w, h)))
     }
 
     /// What picking adds to the next frame: whether to draw again, and what was picked.

@@ -1,14 +1,17 @@
 //! Input as data ([core](https://github.com/octoii-works/octara/blob/main/docs/design/core.md)):
-//! every input a window gets is an [`InputEvent`], through one entry, [`Window::event`]. A
-//! backend sends what its windows report; tests and agents drive by test id with helpers
+//! inputs enter through [`Window::event`] or the native editor's document-checked entry.
+//! A backend sends what its windows report; tests and agents drive by test id with helpers
 //! (`tap`, `press_key`, `type_text`, …) that send events too. An app can record the events it
 //! gets, with the time and the window, and replay them on another app built the same way: the
 //! same snapshots and display lists on the virtual clock.
 
 use super::{App, Event, KeyEvent, Phase, PointerEvent, Window, WindowId};
+use crate::kernel::{NodeId, TextDocument};
 use crate::native::{NativeEvent, NativeId};
 use crate::platform::NativeSnapshotRequest;
+use octara_primitives::text::TextEdit;
 use serde::{Deserialize, Serialize};
+use std::ops::Range;
 use std::time::Duration;
 
 /// One input to a window.
@@ -47,6 +50,12 @@ pub enum InputEvent {
     /// Input-method preedit and its UTF-8 byte selection relative to `text`. A missing
     /// selection hides its cursor; empty text cancels composition without changing the value.
     Preedit { text: String, selection: Option<(usize, usize)> },
+    /// An admitted native edit, tied to the local editor and its full preceding document.
+    #[doc(hidden)]
+    NativeTextEdit { owner: NodeId, expected: Box<TextDocument>, edit: TextEdit },
+    /// An admitted native selection in UTF-8 bytes of the displayed document.
+    #[doc(hidden)]
+    NativeTextSelection { owner: NodeId, expected: Box<TextDocument>, selection: Range<usize> },
     /// The window's content size (logical pixels) and its scale (device pixels per logical one).
     Resize { width: f32, height: f32, scale: f32 },
     /// An assistive technology's request.
@@ -72,6 +81,12 @@ pub enum InputEvent {
     Picking(bool),
 }
 
+impl InputEvent {
+    fn is_native_text(&self) -> bool {
+        matches!(self, Self::NativeTextEdit { .. } | Self::NativeTextSelection { .. })
+    }
+}
+
 impl Window {
     /// Delivers one input to this window and runs its frame. Returns whether something handled
     /// it (a key nothing took types nothing until the backend sends its text; a native event
@@ -84,11 +99,14 @@ impl Window {
         if self.app.shutdown.get() || self.w.closed.get() {
             return false;
         }
-        self.app.record(self.w.id, &event);
-        if self.picks(&event) {
-            return true;
+        // Native edit entry points admit and record the event against the actual editor.
+        if !event.is_native_text() {
+            self.app.record(self.w.id, || event.clone());
+            if self.picks(&event) {
+                return true;
+            }
+            self.tip_dismissed_by(&event);
         }
-        self.tip_dismissed_by(&event);
         match event {
             InputEvent::FileDrag(ev) => self.on_file_drag(ev),
             InputEvent::Answer { id, answer } => self.on_answer(id, answer),
@@ -127,6 +145,8 @@ impl Window {
                 self.on_preedit(&text, selection);
                 true
             }
+            InputEvent::NativeTextEdit { owner, expected, edit } => self.apply_text_edit(owner, &expected, &edit),
+            InputEvent::NativeTextSelection { owner, expected, selection } => self.apply_text_selection(owner, &expected, selection),
             InputEvent::Resize { width, height, scale } => {
                 self.on_resize(width, height, scale);
                 true
@@ -188,8 +208,8 @@ pub struct Recording {
 }
 
 impl App {
-    /// Starts recording every input the app's windows get (a recording in progress starts
-    /// over).
+    /// Starts recording the app's window inputs (a recording in progress starts over).
+    /// Native edits and selections are included once their editor and document are verified.
     pub fn start_recording(&self) {
         *self.app.recording.borrow_mut() = Some(Recording::default());
     }
@@ -200,8 +220,8 @@ impl App {
     }
 
     /// Replays `recording` on this app: the clock moves to each input's time, then the input
-    /// reaches its window. Built the same way (the same view, windows opened in the same order),
-    /// the app ends where the recorded one did.
+    /// reaches its window. Use the same starting state and mount order. A native edit whose
+    /// editor or preceding document differs stops replay with an error.
     pub fn replay(&self, recording: &Recording) -> Result<(), String> {
         self.app.check_running()?;
         for r in &recording.events {
@@ -215,7 +235,12 @@ impl App {
             }
             let mut w =
                 self.window(r.window).ok_or_else(|| format!("no window {:?} to replay into (open it as the recording did)", r.window))?;
-            w.event(r.event.clone());
+            if !w.event(r.event.clone()) && r.event.is_native_text() {
+                return Err(format!(
+                    "native text input at {} ms in window {:?} did not match the current editor and document",
+                    r.at, r.window
+                ));
+            }
         }
         Ok(())
     }
@@ -223,11 +248,11 @@ impl App {
 
 impl super::AppState {
     /// Records `event` for window `window` when a recording is on.
-    pub(crate) fn record(&self, window: WindowId, event: &InputEvent) {
+    pub(crate) fn record(&self, window: WindowId, event: impl FnOnce() -> InputEvent) {
         if let Some(r) = self.recording.borrow_mut().as_mut() {
-            let event = match event {
-                InputEvent::NativeSnapshot { request, .. } => InputEvent::NativeSnapshot { request: *request, image: None },
-                _ => event.clone(),
+            let event = match event() {
+                InputEvent::NativeSnapshot { request, .. } => InputEvent::NativeSnapshot { request, image: None },
+                event => event,
             };
             r.events.push(Recorded { at: self.sched.now_ms(), window, event });
         }

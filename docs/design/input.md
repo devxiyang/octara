@@ -12,6 +12,12 @@
 
 Exact 的 Apple 宿主把带组合区的显示文本也发给应用，因此以显示文本判断回写是否相同，并把不同值延后到组词结束。Octara 的重命名场景通过独立草稿保留组词，应用可以在 `on_input` 接受候选词时做格式转换。[Exact 的组词与回写规则](https://github.com/expo/exact/blob/db89b50bb2037afc217b4b4f8a341338a4a5adf1/host/apple/Sources/ExactKit/FieldComposition.swift#L6-L29) · [系统输入法步骤](../../examples/IME.md)
 
+### 原生编辑录制
+
+开启 `App::start_recording()` 后，窗口会把通过校验的原生编辑或选区请求按交付顺序写入 `Recording`。记录在应用回调之前取样，包含窗口、当前编辑器的挂载身份、编辑前的非密文文档和请求。原文档包含选区方向以及可能正在显示的组合区。宿主已过期的请求、窗口拒绝的文档和密码编辑器不会产生原生编辑记录。
+
+回放在同样构建的应用里核对当前焦点、编辑器和原文档，再用正常编辑路径处理请求。原文档不匹配时，该次回放返回错误。应用接受、转换或拒绝文本仍由自己的绑定决定，候选确认之后的业务提交仍来自对应命令。 [录制与回放回归](../../crates/octara/tests/integration/replay.rs)
+
 ### 受控文本框实测
 
 macOS 27.2 上使用系统简体拼音、反向 emoji 选区和两个受控字段。应用值操作和旧提交重放由验收窗口的 Inspector 命令触发。[复现步骤](../../examples/IME.md#受控文本值)
@@ -24,6 +30,12 @@ macOS 27.2 上使用系统简体拼音、反向 emoji 选区和两个受控字�
 | 组词期间改焦，随后重放旧提交 | 旧候选窗关闭，交付入口返回 `Refused`。第二框从 `B😀Y` 独立组词并提交为 `B你好Y` |
 
 从第一框到第二框，Inspector 光标、AppKit 字符范围锚点、候选窗和 AX 字段边界均向下移动 52 点。候选窗屏幕 `y` 从 `362` 到 `414`，AX 字段边界从 `335` 到 `387`。两字段都能读取 AX 值和边界，`AXSelectedTextRange` 与显式首字符的 `AXBoundsForRange` 查询均返回 `kAXErrorNoValue`。文字范围的辅助技术反馈单独列入清单。[AccessKit 投影](../../crates/octara/src/kernel/a11y.rs#L451) · [AX 查询脚本](../../examples/ime_candidates.swift)
+
+## Pointer sessions
+
+窗口把轨迹的设备类型、指针 ID 和按下时的原始按钮与本次接触绑定。Move 和 Cancel 校验设备与 ID，Up 也校验原始按钮。经过平台映射的操作另行记录。例如 macOS 的 Ctrl+主键派发右键动作，仍以主键抬起结束。
+
+窗口失去活动状态、活动模态层收窄范围或后续阶段发现所有者已失效时，清理当前捕获及其后续工作。已开始的可达拖动可以收到一次取消，后来的 Move 或 Up 不会继续这次捕获。 [指针回归](../../crates/octara/tests/integration/pointer.rs)
 
 ## Scroll routing
 

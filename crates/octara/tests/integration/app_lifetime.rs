@@ -167,6 +167,7 @@ fn an_escaped_panic_blocks_all_windows_but_allows_teardown_and_other_apps() {
         })
         .unwrap();
     let frames = (first.frames_presented(), second.frames_presented());
+    let display = second.capture_display_begin().unwrap();
     assert!(catch_unwind(AssertUnwindSafe(|| first.tap("fail"))).is_err());
     assert!(app.is_failed());
     assert!(second.tap("other").unwrap_err().contains("APP_FAILED"));
@@ -185,7 +186,7 @@ fn an_escaped_panic_blocks_all_windows_but_allows_teardown_and_other_apps() {
     assert!(!second.unsettled().is_empty());
     let picture = octara_primitives::capture::Picture { width: 1, height: 1, rgba: vec![0, 0, 0, 255] };
     let path = std::env::temp_dir().join(format!("octara-failed-app-{}.png", std::process::id()));
-    assert!(second.capture_display(&picture, path.to_str().unwrap(), 1.0, vec![]).unwrap_err().contains("APP_FAILED"));
+    assert!(second.capture_display(display, &picture, path.to_str().unwrap(), 1.0, vec![]).unwrap_err().contains("APP_FAILED"));
     assert!(!path.exists(), "failure is refused even if the caller supplied an empty pending list");
     assert!(app.diagnostics().iter().any(|d| d.code == "APP_FAILED"));
     let independent = App::new(HeadlessPlatform::default());

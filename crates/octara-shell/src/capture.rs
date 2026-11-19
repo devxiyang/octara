@@ -9,7 +9,7 @@
 
 use super::{Shell, ShellEvent};
 use octara::app::{Window, WindowId};
-use octara::capture::{CaptureId, Pixels};
+use octara::capture::{CaptureId, DisplayCapture, Pixels};
 use octara_primitives::capture::{Painter, Picture};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,10 +19,10 @@ use std::time::{Duration, Instant};
 const SNAPSHOT_LIMIT: Duration = Duration::from_secs(5);
 /// How often a capture in progress looks again.
 const POLL: Duration = Duration::from_millis(50);
-/// After the last frame is presented, how long until the window server shows it (two refreshes
-/// at 60 Hz, and a margin).
+/// Give the submitted frame time to reach the window server (two 60 Hz refreshes and a margin).
 const SHOWN: Duration = Duration::from_millis(40);
 const MAX_PIXELS: f64 = 32.0 * 1024.0 * 1024.0;
+const DISPLAY_CHANGED: &str = "the window changed while sampling the submitted frame";
 
 /// Bound a live capture's actual device-pixel allocation, including rounding each side up.
 pub(crate) fn validate_size(size: (f32, f32), scale: f32) -> Result<(), String> {
@@ -80,19 +80,45 @@ enum Stage {
     Start,
     Settling {
         until: Instant,
+        display_failure: Option<String>,
     },
-    /// Waiting for the presented frame to reach the window server.
+    /// Waiting to sample the window server after submitting an Octara frame.
     Display {
         at: Instant,
         until: Instant,
+        frame: DisplayCapture,
+        geometry: DisplayGeometry,
         pending: Vec<String>,
     },
     Snapshots {
         window: Window,
         id: CaptureId,
+        scale: f32,
         pending: Vec<String>,
         fallback: Option<String>,
     },
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct DisplayGeometry {
+    size: (u32, u32),
+    scale: f32,
+}
+
+impl DisplayGeometry {
+    fn current(window: &Window) -> Option<Self> {
+        super::ww(window, |host| {
+            let size = (host.config.width, host.config.height);
+            let drawable = host.drawable_size();
+            let scale = host.scale();
+            (size == (drawable.width, drawable.height) && scale == window.scale()).then_some(Self { size, scale })
+        })
+        .flatten()
+    }
+
+    fn is_current(self, window: &Window, frame: &DisplayCapture) -> bool {
+        frame.is_current(window) && Self::current(window) == Some(self)
+    }
 }
 
 fn env<T: std::str::FromStr>(name: &str) -> Option<T> {
@@ -137,12 +163,6 @@ impl Job {
             reply: Some(reply),
             waking: wake(proxy, Duration::ZERO),
         }
-    }
-
-    fn begin_snapshots(&mut self, window: &mut Window, pending: Vec<String>, fallback: Option<String>) -> Result<(), String> {
-        let id = window.capture_begin(Instant::now() + SNAPSHOT_LIMIT)?;
-        self.stage = Stage::Snapshots { window: window.clone(), id, pending, fallback };
-        Ok(())
     }
 }
 
@@ -214,14 +234,9 @@ impl Shell {
                 // Drawn, so the views are placed where the page now is.
                 self.draw(&w);
             }
-            job.stage = Stage::Settling { until: now + job.settle };
+            job.stage = Stage::Settling { until: now + job.settle, display_failure: None };
         }
-        if let Stage::Display { until, .. } = job.stage
-            && !w.frame_is_settled()
-        {
-            job.stage = Stage::Settling { until };
-        }
-        if let Stage::Settling { until } = job.stage {
+        if let Stage::Settling { until, ref display_failure } = job.stage {
             let pending = w.unsettled();
             if (!w.frame_is_settled() || !pending.is_empty()) && now < until {
                 self.capture = Some(job);
@@ -229,69 +244,83 @@ impl Shell {
                 return;
             }
             if job.reply.is_some()
-                && let Err(why) = validate_size(w.size(), job.scale.unwrap_or_else(|| super::ww(&w, |x| x.scale()).unwrap_or(1.0)))
+                && let Err(why) = validate_size(w.size(), job.scale.unwrap_or(w.scale()))
             {
                 self.report(&w, Err(why), job);
                 return;
             }
-            let fallback = if job.pixels == Pixels::Display {
-                if self.draw(&w) {
-                    job.stage = Stage::Display { at: Instant::now() + SHOWN, until, pending };
-                    self.capture = Some(job);
-                    return;
+            let fallback = if job.pixels == Pixels::Display && (display_failure.is_none() || Instant::now() < until) {
+                match self.present_for_capture(&w) {
+                    Ok((frame, geometry)) => {
+                        job.stage = Stage::Display { at: Instant::now() + SHOWN, until, frame, geometry, pending };
+                        self.capture = Some(job);
+                        return;
+                    }
+                    Err(why) if Instant::now() < until => {
+                        job.stage = Stage::Settling { until, display_failure: Some(why) };
+                        self.capture = Some(job);
+                        return;
+                    }
+                    Err(why) => Some(why),
                 }
-                if Instant::now() < until {
-                    self.capture = Some(job);
-                    return;
-                }
-                Some("the window's current frame could not be presented".into())
             } else {
-                None
+                display_failure.clone()
             };
-            if let Err(why) = job.begin_snapshots(&mut w, pending, fallback) {
+            if let Err(why) = self.begin_capture_snapshots(&mut w, &mut job, fallback) {
                 self.report(&w, Err(why), job);
                 return;
             }
         }
-        if let Stage::Display { at, ref pending, .. } = job.stage {
+        if let Stage::Display { at, until, ref frame, geometry, .. } = job.stage {
             if now < at {
                 self.capture = Some(job);
                 return;
             }
-            let pending = pending.clone();
-            let scale = super::ww(&w, |x| x.scale()).unwrap_or(1.0);
-            if job.reply.is_some()
-                && let Err(why) = validate_size(w.size(), scale)
-            {
-                self.report(&w, Err(why), job);
-                return;
-            }
-            match window_picture(&w) {
-                Ok(picture) => {
-                    let result = if job.reply.is_some() && f64::from(picture.width) * f64::from(picture.height) > MAX_PIXELS {
-                        Err("the display picture exceeds 32 megapixels".into())
-                    } else {
-                        w.capture_display(&picture, &job.path, scale, pending)
-                    };
+            let picture = if geometry.is_current(&w, frame) {
+                let picture = window_picture(&w);
+                geometry.is_current(&w, frame).then_some(picture)
+            } else {
+                None
+            };
+            let fallback = match picture {
+                None if Instant::now() < until => {
+                    job.stage = Stage::Settling { until, display_failure: Some(DISPLAY_CHANGED.into()) };
+                    self.capture = Some(job);
+                    self.show();
+                    return;
+                }
+                None => DISPLAY_CHANGED.into(),
+                Some(Err(why)) => why,
+                Some(Ok(picture)) if job.reply.is_some() && f64::from(picture.width) * f64::from(picture.height) > MAX_PIXELS => {
+                    self.report(&w, Err("the display picture exceeds 32 megapixels".into()), job);
+                    return;
+                }
+                Some(Ok(picture)) if (picture.width, picture.height) != geometry.size => {
+                    let (width, height) = geometry.size;
+                    format!(
+                        "the display picture dimensions {}×{} differ from the submitted surface dimensions {width}×{height}",
+                        picture.width, picture.height
+                    )
+                }
+                Some(Ok(picture)) => {
+                    let Stage::Display { frame, pending, .. } = std::mem::replace(&mut job.stage, Stage::Start) else { unreachable!() };
+                    let result = w.capture_display(frame, &picture, &job.path, geometry.scale, pending);
                     self.report(&w, result, job);
                     return;
                 }
-                Err(why) => {
-                    if let Err(error) = job.begin_snapshots(&mut w, pending, Some(why)) {
-                        self.report(&w, Err(error), job);
-                        return;
-                    }
-                }
+            };
+            if let Err(why) = self.begin_capture_snapshots(&mut w, &mut job, Some(fallback)) {
+                self.report(&w, Err(why), job);
+                return;
             }
         }
-        if let Stage::Snapshots { id, ref pending, ref fallback, .. } = job.stage {
+        if let Stage::Snapshots { id, scale, ref pending, ref fallback, .. } = job.stage {
             if !w.capture_awaiting(id).is_empty() {
                 self.capture = Some(job);
                 return;
             }
             let (pending, fallback) = (pending.clone(), fallback.clone());
             // Painted with the window's renderer offscreen.
-            let scale = job.scale.unwrap_or_else(|| super::ww(&w, |x| x.scale()).unwrap_or(1.0));
             let result = {
                 let mut gpu = self.shared.gpu.borrow_mut();
                 let renderer = gpu.as_mut().map(|g| &mut g.renderer as &mut dyn Painter);
@@ -300,6 +329,31 @@ impl Shell {
             };
             self.report(&w, result, job);
         }
+    }
+
+    fn present_for_capture(&mut self, window: &Window) -> Result<(DisplayCapture, DisplayGeometry), String> {
+        let frame = window.capture_display_begin()?;
+        let geometry = DisplayGeometry::current(window).ok_or("the window and its drawing surface disagree on size or scale")?;
+        if !self.draw(window) {
+            return Err("the window's current frame could not be presented".into());
+        }
+        if !geometry.is_current(window, &frame) {
+            return Err("the window changed while submitting the frame to display".into());
+        }
+        Ok((frame, geometry))
+    }
+
+    fn begin_capture_snapshots(&mut self, window: &mut Window, job: &mut Job, fallback: Option<String>) -> Result<(), String> {
+        // Apply pending AppKit placements before requesting native snapshots.
+        #[cfg(target_os = "macos")]
+        if super::ww(window, |host| host.native.as_ref().is_some_and(|native| native.has_pending_placements())).unwrap_or(false) {
+            self.draw(window);
+        }
+        let scale = job.scale.unwrap_or(window.scale());
+        let pending = window.unsettled();
+        let id = window.capture_begin(Instant::now() + SNAPSHOT_LIMIT)?;
+        job.stage = Stage::Snapshots { window: window.clone(), id, scale, pending, fallback };
+        Ok(())
     }
 
     /// Prints the report (stdout) and each native view's AppKit frame (stderr), and exits.

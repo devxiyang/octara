@@ -8,6 +8,7 @@ use octara::platform::{HeadlessPlatform, HeadlessWindow, NativeSnapshotRequest};
 use octara::prelude::*;
 use octara::view::{native_view, web_view};
 use octara_primitives::capture::{Painter, Picture};
+use octara_primitives::identity::NodeId;
 use octara_primitives::native::Slot;
 use octara_primitives::paint::{DisplayList, Item};
 use std::cell::RefCell;
@@ -29,6 +30,33 @@ impl Painter for Counting {
     }
 }
 
+/// Records the boxes drawn and writes the pixels of a test's only image.
+#[derive(Default)]
+struct ImagePixels {
+    quads: Vec<(NodeId, [f32; 4])>,
+}
+
+impl Painter for ImagePixels {
+    fn renderer(&self) -> &'static str {
+        "test"
+    }
+
+    fn paint(&mut self, list: &DisplayList, _: f32) -> Result<Picture, String> {
+        self.quads = list
+            .items()
+            .iter()
+            .filter_map(|item| {
+                if let Item::Quad(quad) = item { Some((quad.source, [quad.rect.x, quad.rect.y, quad.rect.w, quad.rect.h])) } else { None }
+            })
+            .collect();
+        let items = list.items();
+        let mut images = items.iter().filter_map(|item| if let Item::Image(image) = item { Some(&image.image) } else { None });
+        let frame = images.next().expect("one image to sample").frame();
+        assert!(images.next().is_none(), "only one image should be painted");
+        Ok(Picture { width: frame.width, height: frame.height, rgba: frame.rgba.to_vec() })
+    }
+}
+
 /// A platform that shows native views, takes snapshots (handed back by the test) and can be busy.
 fn snapping(busy: Rc<RefCell<Option<String>>>) -> HeadlessPlatform {
     HeadlessPlatform::with_window(HeadlessWindow {
@@ -44,6 +72,20 @@ fn view() -> View {
     col().size_full().child(web_view("https://example.com").id("web").label("Page").w(px(200.0)).h(px(100.0))).into()
 }
 
+#[ui]
+fn changing_view() -> View {
+    let url = state("url", || "https://example.com".to_owned());
+    let moved = state("moved", || false);
+    col()
+        .size_full()
+        .child(el().id("navigate").role(Role::Button).label("Navigate").size_8().on_press(move || url.set("https://example.org".into())))
+        .child(el().id("move").role(Role::Button).label("Move").size_8().on_press(move || moved.update(|moved| *moved = !*moved)))
+        .child(show(move || moved.get(), || el().h(40)))
+        .child(web_view(move || url.get()).id("web").label("Page").w(200).h(100))
+        .child(web_view("https://example.net").id("peer").label("Other page").absolute().left(px(250.0)).top(px(20.0)).w(200).h(100))
+        .into()
+}
+
 fn path(name: &str) -> String {
     std::env::temp_dir().join(format!("octara-capture-{}-{name}.png", std::process::id())).to_string_lossy().into_owned()
 }
@@ -56,12 +98,27 @@ fn requests(window: &Window) -> Vec<NativeSnapshotRequest> {
     window.platform_window().as_any().downcast_ref::<HeadlessWindow>().unwrap().snapshot_requests.clone()
 }
 
+fn request_for(window: &Window, test_id: &str) -> NativeSnapshotRequest {
+    let kernel = window.kernel();
+    let node = kernel.find(test_id).unwrap();
+    let (_, placement) = kernel.native_placements().into_iter().find(|(id, _)| *id == node).unwrap();
+    requests(window).into_iter().find(|request| request.id == placement.id).unwrap()
+}
+
 fn reply(window: &mut Window, request: NativeSnapshotRequest, image: Option<Image>) -> bool {
     window.event(InputEvent::NativeSnapshot { request, image })
 }
 
 fn red_pixel() -> Image {
     Image::rgba(1, 1, vec![255, 0, 0, 255])
+}
+
+fn read_and_remove_pixel(path: &str) -> [u8; 4] {
+    let bytes = std::fs::read(path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    let frame = Image::decode(&bytes).unwrap().frame();
+    assert_eq!((frame.width, frame.height), (1, 1));
+    frame.rgba.as_ref().try_into().unwrap()
 }
 
 #[test]
@@ -165,6 +222,71 @@ fn a_timed_out_reply_cannot_complete_the_next_capture_of_the_same_view() {
 }
 
 #[test]
+fn a_committed_native_change_retires_its_snapshot_and_preserves_the_original_frame() {
+    let cases = [("navigate", false, false), ("navigate", true, false), ("move", false, false), ("move", true, true)];
+    for (action, replied_before_change, restore_placement) in cases {
+        let mut app = Window::headless_on(snapping(Rc::default()), changing_view);
+        let initial = app.inspect();
+        let original = initial.find("web").unwrap();
+        let web = app.kernel().find("web").unwrap();
+        let capture = app.capture_begin(deadline()).unwrap();
+        let request = request_for(&app, "web");
+        let peer = request_for(&app, "peer");
+        if replied_before_change {
+            assert!(reply(&mut app, request, Some(red_pixel())));
+        }
+
+        app.tap(action).unwrap();
+        let current = app.inspect();
+        let changed = current.find("web").unwrap();
+        assert_eq!(changed.target, original.target, "the same mounted native view changed");
+        assert_eq!(changed.native != original.native, action == "navigate");
+        assert_eq!(changed.bounds != original.bounds, action == "move");
+        if restore_placement {
+            app.tap(action).unwrap();
+            assert_eq!(app.inspect().find("web").unwrap().bounds, original.bounds);
+        }
+
+        assert_eq!(app.capture_awaiting(capture), [peer.id]);
+        assert!(!reply(&mut app, request, Some(red_pixel())), "a committed change retires the old request");
+        let blue = [0, 0, 255, 255];
+        let peer_image = Image::rgba(1, 1, blue);
+        assert!(reply(&mut app, peer, Some(peer_image.clone())));
+        peer_image.set(1, 1, [0, 255, 0, 255]);
+        let shot = path("changed-native");
+        let mut painter = ImagePixels::default();
+        let report = app.capture_finish(capture, &mut painter, &shot, 1.0, vec![], None).unwrap();
+        assert_eq!(read_and_remove_pixel(&shot), blue, "only the unchanged native view contributed pixels");
+        assert!(painter.quads.contains(&(web, original.bounds)), "the placeholder was painted at its original position");
+        let changed = report.native.iter().find(|view| view.id.as_deref() == Some("web")).unwrap();
+        assert_eq!((changed.shown, changed.rect), (Shown::Failed, original.bounds));
+        assert!(changed.reason.as_deref().is_some_and(|reason| reason.contains("changed")), "{changed:?}");
+        let peer = report.native.iter().find(|view| view.id.as_deref() == Some("peer")).unwrap();
+        assert_eq!(peer.shown, Shown::Snapshot);
+    }
+}
+
+#[test]
+fn a_painted_capture_keeps_the_pixels_of_a_mutable_image_at_begin() {
+    let picture = red_pixel();
+    let shown = picture.clone();
+    let mut app = Window::headless(move || image(&shown).size_8().label("Sample"));
+    let capture = app.capture_begin(deadline()).unwrap();
+    let display = app.capture_display_begin().unwrap();
+    picture.set(1, 1, [0, 255, 0, 255]);
+    assert!(!display.is_current(&app), "a shared image can change without changing the tree");
+
+    let shot = path("mutable-image");
+    let mut painter = ImagePixels::default();
+    app.capture_finish(capture, &mut painter, &shot, 1.0, vec![], None).unwrap();
+    assert_eq!(read_and_remove_pixel(&shot), [255, 0, 0, 255]);
+
+    let capture = app.capture_begin(deadline()).unwrap();
+    app.capture_finish(capture, &mut painter, &shot, 1.0, vec![], None).unwrap();
+    assert_eq!(read_and_remove_pixel(&shot), [0, 255, 0, 255]);
+}
+
+#[test]
 fn a_resize_retires_pending_and_received_snapshots_of_the_previous_size() {
     #[ui]
     fn two_views() -> View {
@@ -196,7 +318,7 @@ fn a_resize_retires_pending_and_received_snapshots_of_the_previous_size() {
     let shot = path("after-resize");
     let capture = app.capture_finish(active, &mut painter, &shot, 1.0, vec![], None).unwrap();
     std::fs::remove_file(&shot).unwrap();
-    assert_eq!((capture.width, capture.height), (420, 400));
+    assert_eq!((capture.width, capture.height), (width as u32, height as u32));
     assert_eq!(capture.native.len(), 2);
     assert!(capture.native.iter().all(|view| view.shown == Shown::Failed), "{:?}", capture.native);
 
@@ -209,6 +331,7 @@ fn a_resize_retires_pending_and_received_snapshots_of_the_previous_size() {
     let shot = path("resized-snapshots");
     let capture = app.capture_finish(active, &mut painter, &shot, 1.0, vec![], None).unwrap();
     std::fs::remove_file(&shot).unwrap();
+    assert_eq!((capture.width, capture.height), (420, 400));
     assert_eq!(capture.native.iter().filter(|view| view.shown == Shown::Snapshot).count(), 1);
     assert_eq!(capture.native.iter().filter(|view| view.shown == Shown::Failed).count(), 1);
     assert_eq!(*painted.borrow(), [0, 1]);
@@ -249,11 +372,33 @@ fn a_display_capture_shows_views_live() {
     let mut app = Window::headless(view);
     let shot = path("display");
     let picture = Picture { width: 2, height: 1, rgba: vec![22, 44, 88, 0, 240, 128, 32, 96] };
-    let c = app.capture_display(&picture, &shot, 2.0, vec![]).unwrap();
+    let source = app.capture_display_begin().unwrap();
+    app.app().advance(Duration::from_millis(16));
+    let c = app.capture_display(source, &picture, &shot, 2.0, vec![]).unwrap();
     let frame = Image::decode(&std::fs::read(&shot).unwrap()).unwrap().frame();
     assert_eq!((frame.width, frame.height), (picture.width, picture.height));
     assert_eq!(frame.rgba.as_ref(), picture.rgba);
     std::fs::remove_file(&shot).unwrap();
     assert_eq!((c.pixels, c.renderer.as_str(), c.width, c.settled), (Pixels::Display, "display", 2, true));
     assert_eq!((c.native[0].id.as_deref(), c.native[0].shown), (Some("web"), Shown::Live));
+}
+
+#[test]
+fn a_display_capture_refuses_pixels_taken_across_a_committed_change() {
+    let mut app = Window::headless(|| {
+        let changed = state("changed", || false);
+        el().id("change")
+            .role(Role::Button)
+            .label("Change fill")
+            .size_8()
+            .bg(move || if changed.get() { Token::Accent } else { Token::Surface })
+            .on_press(move || changed.set(true))
+    });
+    let source = app.capture_display_begin().unwrap();
+    app.tap("change").unwrap();
+    let shot = path("stale-display");
+    let picture = Picture { width: 1, height: 1, rgba: vec![255; 4] };
+    let result = app.capture_display(source, &picture, &shot, 1.0, vec![]);
+    assert_eq!(std::fs::remove_file(&shot).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    assert!(result.is_err(), "display pixels must match the committed state");
 }

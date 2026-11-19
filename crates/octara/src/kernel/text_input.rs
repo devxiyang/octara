@@ -3,11 +3,12 @@
 
 use octara_primitives::paint::Rect;
 use octara_primitives::text::TextEdit;
+use serde::{Deserialize, Deserializer, Serialize};
 use std::ops::Range;
 
 /// An owned platform editing document, suitable for synchronous native queries. The
 /// committed value stays unchanged while a composition edits its displayed draft.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 pub struct TextDocument {
     pub(crate) value: String,
     pub(crate) anchor: usize,
@@ -15,11 +16,35 @@ pub struct TextDocument {
     pub(crate) composition: Option<Composition>,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub(crate) struct Composition {
     pub text: String,
     pub marked: Range<usize>,
     pub selection: Option<Range<usize>>,
+}
+
+impl<'de> Deserialize<'de> for TextDocument {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Document {
+            value: String,
+            anchor: usize,
+            caret: usize,
+            composition: Option<Composition>,
+        }
+
+        let Document { value, anchor, caret, composition } = Document::deserialize(deserializer)?;
+        let valid_range = |text: &str, range: &Range<usize>| {
+            range.start <= range.end && text.is_char_boundary(range.start) && text.is_char_boundary(range.end)
+        };
+        let valid_composition = composition.as_ref().is_none_or(|c| {
+            valid_range(&c.text, &c.marked) && c.selection.as_ref().is_none_or(|selection| valid_range(&c.text, selection))
+        });
+        if !value.is_char_boundary(anchor) || !value.is_char_boundary(caret) || !valid_composition {
+            return Err(serde::de::Error::custom("invalid UTF-8 ranges in a text document"));
+        }
+        Ok(Self { value, anchor, caret, composition })
+    }
 }
 
 fn range(text: &str, range: Range<usize>) -> Range<usize> {
@@ -183,6 +208,22 @@ impl TextGeometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serialized_documents_validate_unicode_boundaries() {
+        let mut document = TextDocument::new("😀Z".into(), 4, 0);
+        document.apply(&TextEdit::Mark { text: "你".into(), selection: Some(3..3), replacement: None });
+        let serialized = serde_json::to_value(&document).unwrap();
+        assert_eq!(serde_json::from_value::<TextDocument>(serialized.clone()).unwrap(), document);
+
+        let mut invalid_base = serialized.clone();
+        invalid_base["anchor"] = 1.into();
+        assert!(serde_json::from_value::<TextDocument>(invalid_base).is_err());
+
+        let mut invalid_composition = serialized;
+        invalid_composition["composition"]["marked"]["end"] = 1.into();
+        assert!(serde_json::from_value::<TextDocument>(invalid_composition).is_err());
+    }
 
     #[test]
     fn reconversion_uses_displayed_ranges_and_preserves_the_original_until_commit() {

@@ -1,12 +1,28 @@
 //! Native view synchronization, capture and platform presentation.
 
 use super::*;
-use crate::capture::{Capture, CaptureId, Capturing, NativeShot, NativeShotRequest, Painter, Pixels, Shown, SnapshotStatus};
+use crate::capture::{
+    Capture, CaptureId, Capturing, DisplayCapture, NativeShot, NativeShotRequest, Painter, Pixels, Shown, SnapshotStatus, freeze_image,
+    paint_native_snapshots,
+};
 use crate::image::Image;
 use crate::native::NativeId;
 use crate::platform::NativeSnapshotRequest;
 use rustc_hash::FxHashMap;
 use std::time::Instant;
+
+fn native_report(kernel: &Kernel, node: NodeId, placement: &crate::native::Placement, shown: Shown) -> Option<NativeShot> {
+    let view = kernel.native(node)?;
+    let r = placement.rect;
+    Some(NativeShot {
+        id: kernel.test_id(node).map(str::to_owned),
+        kind: view.kind.clone(),
+        rect: [r.x, r.y, r.w, r.h],
+        shown,
+        reason: None,
+        misses: Vec::new(),
+    })
+}
 
 // ---- native views ----
 
@@ -174,8 +190,8 @@ impl Window {
         crate::inspect::pick_for_window(&self.w.kernel.borrow(), x, y, self.submit_target())
     }
 
-    /// Starts a painted capture, replacing any previous one for this window. Requests a
-    /// snapshot of each visible native view and accepts its response until `deadline`.
+    /// Pins the current painted frame, replacing any previous capture for this window.
+    /// Requests a snapshot of each visible native view and accepts replies until `deadline`.
     pub fn capture_begin(&mut self, deadline: Instant) -> Result<CaptureId, String> {
         self.check_running()?;
         if !self.frame_is_settled() {
@@ -183,21 +199,36 @@ impl Window {
         }
         self.w.capturing.borrow_mut().take();
         let id = CaptureId::new();
-        let placements = self.w.kernel.borrow().native_placements();
+        let (list, views) = {
+            let k = self.w.kernel.borrow();
+            let list = k.capture_display_list();
+            let views: Vec<_> = k
+                .native_placements()
+                .into_iter()
+                .filter(|(_, placement)| placement.visible)
+                .filter_map(|(node, placement)| {
+                    native_report(&k, node, &placement, Shown::Failed).map(|report| (node, placement.id, report))
+                })
+                .collect();
+            (list, views)
+        };
+        let list = Rc::unwrap_or_clone(self.with_picking_overlay(Rc::new(list)));
         let mut window = self.w.platform.borrow_mut();
-        let shots = placements
+        let shots = views
             .into_iter()
-            .filter(|(_, p)| p.visible)
-            .map(|(_, p)| {
-                let request = NativeSnapshotRequest::new(p.id);
-                let (status, misses) = match window.snapshot_native(request) {
-                    Ok(misses) => (SnapshotStatus::Waiting, misses),
-                    Err(reason) => (SnapshotStatus::Placeholder(reason), Vec::new()),
+            .map(|(node, native, mut report)| {
+                let request = NativeSnapshotRequest::new(native);
+                let status = match window.snapshot_native(request) {
+                    Ok(misses) => {
+                        report.misses = misses;
+                        SnapshotStatus::Waiting
+                    }
+                    Err(reason) => SnapshotStatus::Placeholder(reason),
                 };
-                (p.id, NativeShotRequest { request, status, misses })
+                NativeShotRequest { node, request, status, report }
             })
             .collect();
-        *self.w.capturing.borrow_mut() = Some(Capturing { id, deadline, shots });
+        *self.w.capturing.borrow_mut() = Some(Capturing { id, deadline, list, shots });
         Ok(id)
     }
 
@@ -205,11 +236,8 @@ impl Window {
     pub fn capture_awaiting(&self, id: CaptureId) -> Vec<NativeId> {
         let capturing = self.w.capturing.borrow();
         let Some(capture) = capturing.as_ref().filter(|c| c.id == id && Instant::now() < c.deadline) else { return Vec::new() };
-        let mut awaiting: Vec<_> = capture
-            .shots
-            .iter()
-            .filter_map(|(&id, shot)| (matches!(shot.status, SnapshotStatus::Waiting) && self.native_node(id).is_some()).then_some(id))
-            .collect();
+        let mut awaiting: Vec<_> =
+            capture.shots.iter().filter_map(|shot| matches!(shot.status, SnapshotStatus::Waiting).then_some(shot.request.id)).collect();
         awaiting.sort_unstable();
         awaiting
     }
@@ -221,10 +249,8 @@ impl Window {
 
     pub(super) fn capture_resized(&self) {
         if let Some(capture) = self.w.capturing.borrow_mut().as_mut() {
-            for shot in capture.shots.values_mut() {
-                if matches!(shot.status, SnapshotStatus::Waiting | SnapshotStatus::Captured(_)) {
-                    shot.status = SnapshotStatus::Failed("the window resized or changed scale while taking its snapshot");
-                }
+            for shot in &mut capture.shots {
+                shot.invalidate("the window resized or changed scale while taking its snapshot");
             }
         }
     }
@@ -243,45 +269,37 @@ impl Window {
     ) -> Result<Capture, String> {
         let capture = self.w.capturing.borrow_mut().take_if(|capture| capture.id == id);
         self.check_running()?;
-        if !self.frame_is_settled() {
-            return Err(format!("[{}] window preparation is incomplete", codes::NOT_SETTLED));
-        }
-        let mut shots = capture.ok_or_else(|| "the painted capture is no longer active".to_owned())?.shots;
-        let k = self.w.kernel.borrow();
+        let Capturing { mut list, shots, .. } = capture.ok_or_else(|| "the painted capture is no longer active".to_owned())?;
         let mut snapshots = FxHashMap::default();
-        let native = k
-            .native_placements()
+        let reports: Vec<_> = shots
             .into_iter()
-            .filter(|(_, p)| p.visible)
-            .filter_map(|(n, p)| {
-                let v = k.native(n)?;
-                let (status, misses) = shots.remove(&p.id).map_or_else(
-                    || (SnapshotStatus::Failed("the view became visible after snapshots were requested"), Vec::new()),
-                    |shot| (shot.status, shot.misses),
-                );
-                let (shown, reason) = match status {
-                    SnapshotStatus::Waiting => (Shown::Failed, Some("its snapshot did not come in time".to_owned())),
-                    SnapshotStatus::Failed(why) => (Shown::Failed, Some(why.to_owned())),
-                    SnapshotStatus::Placeholder(why) => (Shown::Placeholder, Some(why)),
-                    SnapshotStatus::Captured(image) => {
-                        snapshots.insert(n, image);
-                        (Shown::Snapshot, None)
+            .map(|NativeShotRequest { node, status, mut report, .. }| {
+                match status {
+                    SnapshotStatus::Waiting => report.reason = Some("its snapshot did not come in time".into()),
+                    SnapshotStatus::Failed(why) => report.reason = Some(why.into()),
+                    SnapshotStatus::Placeholder(why) => {
+                        report.shown = Shown::Placeholder;
+                        report.reason = Some(why);
                     }
-                };
-                let r = p.rect;
-                Some(NativeShot {
-                    id: k.test_id(n).map(str::to_owned),
-                    kind: v.kind.clone(),
-                    rect: [r.x, r.y, r.w, r.h],
-                    shown,
-                    reason,
-                    misses,
-                })
+                    SnapshotStatus::Captured(image) => {
+                        snapshots.insert(node, image);
+                        report.shown = Shown::Snapshot;
+                    }
+                }
+                (node, report)
             })
             .collect();
-        let list = k.capture_display_list(&snapshots);
-        drop(k);
-        let list = self.with_picking_overlay(Rc::new(list));
+        paint_native_snapshots(&mut list, &mut snapshots);
+        let native = reports
+            .into_iter()
+            .map(|(node, mut report)| {
+                if snapshots.contains_key(&node) {
+                    report.shown = Shown::Failed;
+                    report.reason = Some("the native view has no visible paint slot in the captured frame".into());
+                }
+                report
+            })
+            .collect();
         let picture = painter.paint(&list, scale)?;
         picture.save_png(path).map_err(|e| format!("{path}: {e}"))?;
         Ok(Capture {
@@ -298,10 +316,53 @@ impl Window {
         })
     }
 
-    /// A `display` capture: the window server's `picture` of the window, written to `path` as a
-    /// PNG, with the native views reported live.
+    fn display_revision(&self) -> WindowRevision {
+        let mut revision = self.revision();
+        // An idle clock tick does not change the drawing. Moving elements still need the
+        // exact time sample, and changes like a caret blink advance the paint generation.
+        if self.w.kernel.borrow().at_rest() {
+            revision.time = None;
+        }
+        revision
+    }
+
+    /// Captures the app-side evidence for an imminent display draw.
+    pub fn capture_display_begin(&self) -> Result<DisplayCapture, String> {
+        self.check_running()?;
+        if !self.frame_is_settled() {
+            return Err(format!("[{}] window preparation is incomplete", codes::NOT_SETTLED));
+        }
+        let list = self.display_list();
+        let mut images = FxHashMap::default();
+        for item in list.parts.iter().flat_map(|part| match part {
+            crate::paint::Part::Drawing { items, .. } => items.as_ref(),
+            crate::paint::Part::Item(item) => std::slice::from_ref(item),
+        }) {
+            if let crate::paint::Item::Image(paint) = item {
+                let image = &paint.image;
+                images.entry(image.id()).or_insert_with(|| (image.clone(), image.frame().version));
+            }
+        }
+        let k = self.w.kernel.borrow();
+        let native = k
+            .native_placements()
+            .into_iter()
+            .filter(|(_, placement)| placement.visible)
+            .filter_map(|(node, placement)| native_report(&k, node, &placement, Shown::Live))
+            .collect();
+        Ok(DisplayCapture {
+            identity: k.identity(),
+            revision: self.display_revision(),
+            outline: self.picking_outline(),
+            images: images.into_values().collect(),
+            native,
+        })
+    }
+
+    /// Writes a window server picture with native metadata from its submitted app frame.
     pub fn capture_display(
         &mut self,
+        frame: DisplayCapture,
         picture: &crate::capture::Picture,
         path: &str,
         scale: f32,
@@ -310,28 +371,10 @@ impl Window {
         if self.app.failed.get() {
             return Err(format!("[{}] cannot capture a failed App", codes::APP_FAILED));
         }
-        if !self.frame_is_settled() {
-            return Err(format!("[{}] window preparation is incomplete", codes::NOT_SETTLED));
+        if !frame.is_current(self) {
+            return Err("the submitted app frame changed while taking the display picture".into());
         }
         picture.save_png(path).map_err(|e| format!("{path}: {e}"))?;
-        let placements = self.w.kernel.borrow().native_placements();
-        let k = self.w.kernel.borrow();
-        let native = placements
-            .into_iter()
-            .filter(|(_, p)| p.visible)
-            .filter_map(|(n, p)| {
-                let v = k.native(n)?;
-                let r = p.rect;
-                Some(NativeShot {
-                    id: k.test_id(n).map(str::to_owned),
-                    kind: v.kind.clone(),
-                    rect: [r.x, r.y, r.w, r.h],
-                    shown: Shown::Live,
-                    reason: None,
-                    misses: Vec::new(),
-                })
-            })
-            .collect();
         Ok(Capture {
             path: path.to_owned(),
             width: picture.width,
@@ -342,7 +385,7 @@ impl Window {
             renderer: "display".to_owned(),
             settled: pending.is_empty(),
             pending,
-            native,
+            native: frame.native,
         })
     }
 
@@ -353,11 +396,12 @@ impl Window {
         }
         let mut capturing = self.w.capturing.borrow_mut();
         let Some(capture) = capturing.as_mut().filter(|c| Instant::now() < c.deadline) else { return false };
-        let Some(shot) = capture.shots.get_mut(&request.id) else { return false };
-        if shot.request != request || !matches!(shot.status, SnapshotStatus::Waiting) || self.native_node(request.id).is_none() {
+        let Some(shot) = capture.shots.iter_mut().find(|shot| shot.request == request) else { return false };
+        if !matches!(shot.status, SnapshotStatus::Waiting) {
             return false;
         }
-        shot.status = image.map_or(SnapshotStatus::Failed("the platform returned no snapshot"), SnapshotStatus::Captured);
+        shot.status = image
+            .map_or(SnapshotStatus::Failed("the platform returned no snapshot"), |image| SnapshotStatus::Captured(freeze_image(&image)));
         true
     }
 
@@ -424,6 +468,11 @@ impl Window {
             return;
         }
         let published_input = text_input.clone();
+        if !native.is_empty()
+            && let Some(capture) = self.w.capturing.borrow_mut().as_mut()
+        {
+            capture.native_changed(&native);
+        }
         self.w.platform.borrow_mut().present(crate::platform::Frame { native, text_input, redraw, cursor, picked, asks, withdrawn });
         // Only a successful host handoff advances the publication record. A host panic
         // fails the App; it must not make a partially submitted frame look completed.
@@ -431,6 +480,17 @@ impl Window {
         self.w.cursor.set(cursor);
         self.w.presented.set(generation);
         self.w.frames.set(self.w.frames.get() + 1);
+    }
+}
+
+impl DisplayCapture {
+    /// Checks whether the window still agrees with the app frame before screen sampling.
+    pub fn is_current(&self, window: &Window) -> bool {
+        window.frame_is_settled()
+            && window.w.kernel.borrow().identity() == self.identity
+            && window.display_revision() == self.revision
+            && window.picking_outline() == self.outline
+            && self.images.iter().all(|(image, version)| image.frame().version == *version)
     }
 }
 

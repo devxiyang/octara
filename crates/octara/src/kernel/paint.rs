@@ -8,6 +8,7 @@ use crate::image::Image;
 use crate::paint::{DisplayList, GlyphRun, Item, Part, PathPaint, Quad, Rect};
 use crate::path::Transform;
 use rustc_hash::FxHashMap;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 /// What a node's own drawing was built from: while it stays the same, the drawing is kept.
@@ -33,12 +34,19 @@ pub(crate) type Drawn = (DrawKey, Rc<[Item]>);
 #[derive(Clone, Copy)]
 enum PaintMode<'a> {
     Live { keep: bool },
-    Capture(&'a FxHashMap<NodeId, Image>),
+    Capture(&'a RefCell<FxHashMap<u64, Image>>),
 }
 
 impl PaintMode<'_> {
     fn keeps_drawings(self) -> bool {
-        !matches!(self, Self::Live { keep: false })
+        matches!(self, Self::Live { keep: true })
+    }
+
+    fn image(self, image: &Image) -> Image {
+        match self {
+            Self::Live { .. } => image.clone(),
+            Self::Capture(images) => images.borrow_mut().entry(image.id()).or_insert_with(|| crate::capture::freeze_image(image)).clone(),
+        }
     }
 }
 
@@ -78,9 +86,9 @@ impl Kernel {
         dl
     }
 
-    /// Builds an offscreen frame with the native snapshots belonging to this capture.
-    pub(crate) fn capture_display_list(&self, snapshots: &FxHashMap<NodeId, Image>) -> DisplayList {
-        self.build_display_list(PaintMode::Capture(snapshots))
+    /// Samples an offscreen frame with frozen images and native placeholders.
+    pub(crate) fn capture_display_list(&self) -> DisplayList {
+        self.build_display_list(PaintMode::Capture(&RefCell::default()))
     }
 
     /// Display lists built rather than reused.
@@ -305,7 +313,7 @@ impl Kernel {
             // Fields, canvases and native views draw where they are (what they show moves with
             // more than their own changes); the others in their own coordinates, kept.
             let local = n.kind() != Kind::TextInput && !matches!(n.content, super::Content::Canvas(_) | super::Content::Native(_));
-            let items = if local { self.own_drawing(id, rect, mode.keeps_drawings()) } else { self.draw_own(id, rect, mode).into() };
+            let items = if local { self.own_drawing(id, rect, mode) } else { self.draw_own(id, rect, mode).into() };
             if !items.is_empty() {
                 let offset = if local { (rect.x, rect.y) } else { (0.0, 0.0) };
                 out.push(Part::Drawing { offset, fade: opacity, items });
@@ -347,7 +355,11 @@ impl Kernel {
 
     /// `id`'s own drawing in its own coordinates: the kept one while what it is drawn from is the
     /// same, else built (and kept, with `keep`).
-    fn own_drawing(&self, id: NodeId, rect: Rect, keep: bool) -> Rc<[Item]> {
+    fn own_drawing(&self, id: NodeId, rect: Rect, mode: PaintMode<'_>) -> Rc<[Item]> {
+        let local = Rect { x: 0.0, y: 0.0, ..rect };
+        if !mode.keeps_drawings() {
+            return self.draw_own(id, local, mode).into();
+        }
         let n = self.node(id);
         let layout = self.taffy.layout(n.taffy).expect("taffy");
         let mut visual = self.presented(id);
@@ -367,18 +379,15 @@ impl Kernel {
             theme: self.theme_gen,
             fonts: self.fonts_generation,
         };
-        if keep
-            && let Some((k, items)) = &*n.drawn.borrow()
+        if let Some((k, items)) = &*n.drawn.borrow()
             && *k == key
         {
             self.drawings_reused.set(self.drawings_reused.get() + 1);
             return items.clone();
         }
-        let items: Rc<[Item]> = self.draw_own(id, Rect { x: 0.0, y: 0.0, ..rect }, PaintMode::Live { keep }).into();
-        if keep {
-            self.drawings_built.set(self.drawings_built.get() + 1);
-            *n.drawn.borrow_mut() = Some((key, items.clone()));
-        }
+        let items: Rc<[Item]> = self.draw_own(id, local, mode).into();
+        self.drawings_built.set(self.drawings_built.get() + 1);
+        *n.drawn.borrow_mut() = Some((key, items.clone()));
         items
     }
 
@@ -437,6 +446,7 @@ impl Kernel {
         if let super::Content::Image(img, fit) = &n.content
             && visible
         {
+            let img = mode.image(img);
             let (iw, ih) = img.size();
             let inner = Rect {
                 x: rect.x + l.border.left,
@@ -448,7 +458,7 @@ impl Kernel {
             if w > 0.0 && h > 0.0 {
                 out.push(Item::Image(crate::paint::ImagePaint {
                     source: id,
-                    image: img.clone(),
+                    image: img,
                     rect: Rect { x, y, w, h },
                     bounds: inner,
                     radius: (v.radius - l.border.left).max(0.0).min(inner.w / 2.0).min(inner.h / 2.0),
@@ -491,13 +501,8 @@ impl Kernel {
         if let super::Content::Native(nv) = &n.content
             && visible
         {
-            let (snapshot, live) = match mode {
-                PaintMode::Live { .. } => (None, nv.live),
-                PaintMode::Capture(snapshots) => (snapshots.get(&id), false),
-            };
-            if let Some(image) = snapshot {
-                out.push(Item::Image(crate::paint::ImagePaint { source: id, image: image.clone(), rect, bounds: rect, radius, opacity }));
-            } else if !live {
+            let live = matches!(mode, PaintMode::Live { .. }) && nv.live;
+            if !live {
                 out.push(Item::Quad(Quad {
                     source: id,
                     rect,
@@ -509,6 +514,8 @@ impl Kernel {
                 }));
             }
             let cut = live && nv.slot == crate::native::Slot::Underlay;
+            // Capture replaces the placeholder immediately before this marker, without changing
+            // the part's offset, fade or surrounding clips and opacity layers.
             out.push(Item::Native { source: id, rect, radius, slot: nv.slot, cut });
         }
 
@@ -522,7 +529,7 @@ impl Kernel {
                 w: (rect.w - l.border.left - l.border.right - l.padding.left - l.padding.right).max(0.0),
                 h: (rect.h - l.border.top - l.border.bottom - l.padding.top - l.padding.bottom).max(0.0),
             };
-            self.paint_canvas(id, ops, content, (v.text_style(), v.text), opacity, out);
+            self.paint_canvas(id, ops, content, (v.text_style(), v.text), mode, out);
         }
 
         // A text input: its line, selection, composition and caret.
@@ -578,11 +585,12 @@ impl Kernel {
         ops: &[crate::canvas::CanvasOp],
         content: Rect,
         (base, text_color): (text::TextStyle, Color),
-        opacity: f32,
+        mode: PaintMode<'_>,
         out: &mut Vec<Item>,
     ) {
         use crate::canvas::CanvasOp;
         use crate::kernel::Fill;
+        let opacity = 1.0;
         let origin = Transform::translate(content.x, content.y);
         let at = |r: Rect| Rect { x: r.x + content.x, y: r.y + content.y, ..r };
         let color = |p: crate::kernel::Paint| fade(p.resolve(&self.res.theme.borrow()).0, opacity);
@@ -626,7 +634,7 @@ impl Kernel {
                     let r = at(*rect);
                     out.push(Item::Image(crate::paint::ImagePaint {
                         source: id,
-                        image: image.clone(),
+                        image: mode.image(image),
                         rect: r,
                         bounds: r,
                         radius: 0.0,

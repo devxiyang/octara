@@ -552,8 +552,9 @@ impl Views {
     /// Requests a snapshot and echoes the request when the platform answers.
     fn snapshot(&self, request: NativeSnapshotRequest) -> Result<Vec<String>, String> {
         let Some(h) = self.hosted.get(&request.id) else { return Err("no platform view of this kind on macOS yet".into()) };
-        if h.placed.is_none() {
-            return Err("not placed yet".into());
+        let Some(placed) = &h.placed else { return Err("not placed yet".into()) };
+        if self.pending.iter().any(|placement| placement.id == request.id && placement != placed) {
+            return Err("the native view's current placement has not been applied".into());
         }
         let scale = self.parent.window().map_or(2.0, |w| w.backingScaleFactor());
         let inbox = self.inbox.clone();
@@ -767,6 +768,10 @@ impl Native {
     /// shell configures the surface with a non-opaque alpha mode.
     pub(crate) fn transparent(&self) -> bool {
         self.views.borrow().transparent()
+    }
+
+    pub(crate) fn has_pending_placements(&self) -> bool {
+        !self.views.borrow().pending.is_empty()
     }
 
     /// Before the frame's surface texture is taken: opens the transaction the placements and

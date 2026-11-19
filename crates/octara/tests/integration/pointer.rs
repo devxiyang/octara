@@ -1,7 +1,7 @@
 //! Pointer input: presses with capture, double presses, context menus, long presses, drags,
 //! touch scrolling with momentum, and the focus ring following the keyboard.
 
-use octara::app::{Button, InputEvent, Modifiers, Phase, PointerEvent, TargetPlatform, TouchScrollStage};
+use octara::app::{Button, InputEvent, Modifiers, Phase, PointerEvent, PointerKind, TargetPlatform, TouchScrollStage};
 use octara::prelude::*;
 use std::time::Duration;
 
@@ -82,6 +82,25 @@ fn press_follows_the_pointer_out_and_back() {
 }
 
 #[test]
+fn a_mouse_release_must_match_the_button_held_down() {
+    let mut app = app();
+    let (x, y) = center(&app, "button");
+    let mouse = |phase, button| InputEvent::Pointer(PointerEvent::mouse(phase, x, y).button(button));
+    app.event(mouse(Phase::Down, Button::Primary));
+    for button in [Button::Secondary, Button::Middle] {
+        app.event(mouse(Phase::Down, button));
+        app.event(mouse(Phase::Up, button));
+        assert_eq!(app.held_pointer(), Some((0, PointerKind::Mouse)));
+        assert!(app.kernel().state_of("button").unwrap().contains(State::PRESSED));
+        assert_eq!(log(&mut app), "");
+    }
+    app.event(mouse(Phase::Up, Button::Primary));
+    assert_eq!(app.held_pointer(), None);
+    assert!(!app.kernel().state_of("button").unwrap().contains(State::PRESSED));
+    assert_eq!(log(&mut app), "press");
+}
+
+#[test]
 fn double_press_within_the_interval() {
     let mut app = app();
     let (x, y) = center(&app, "button");
@@ -105,7 +124,13 @@ fn right_click_and_control_click_ask_for_a_context_menu() {
     app.app().set_target_platform(TargetPlatform::MacOs);
     let ctrl = |phase| PointerEvent::mouse(phase, x, y).modifiers(Modifiers::CTRL);
     app.event(InputEvent::Pointer(ctrl(Phase::Down)));
-    app.event(InputEvent::Pointer(ctrl(Phase::Up)));
+    app.event(InputEvent::Pointer(right(Phase::Down)));
+    app.event(InputEvent::Pointer(right(Phase::Up)));
+    assert_eq!(app.held_pointer(), Some((0, PointerKind::Mouse)));
+    assert_eq!(log(&mut app), "");
+    // The primary release completes the context click even if Control has already lifted.
+    app.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Up, x, y)));
+    assert_eq!(app.held_pointer(), None);
     assert_eq!(log(&mut app), "menu");
     app.app().set_target_platform(TargetPlatform::Windows);
     app.event(InputEvent::Pointer(ctrl(Phase::Down)));
@@ -152,7 +177,7 @@ fn a_long_press_timer_does_not_use_a_target_removed_in_the_same_clock_step() {
     });
     let at = center(&app, "hold");
     touch(&mut app, Phase::Down, at);
-    assert_eq!(app.held_pointer(), Some((1, octara::app::PointerKind::Touch)));
+    assert_eq!(app.held_pointer(), Some((1, PointerKind::Touch)));
     app.app().advance(Duration::from_millis(600));
     assert!(!app.kernel().exists("hold"));
     assert_eq!(app.kernel().text_of("count").as_deref(), Some("0"));
@@ -198,6 +223,44 @@ fn drag_starts_past_the_slop_and_is_not_a_press() {
     app.pointer_down(x, y);
     app.pointer_move(x + 10.0, y);
     app.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Cancel, x + 10.0, y)));
+    assert_eq!(log(&mut app), "Start 10 0,Cancel 10 0");
+}
+
+#[test]
+fn a_drag_only_follows_the_captured_device_and_pointer_id() {
+    let mut app = app();
+    let (x, y) = center(&app, "knob");
+    app.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Down, x, y)));
+    app.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Move, x + 10.0, y)));
+    assert_eq!(log(&mut app), "Start 10 0");
+
+    for phase in [Phase::Move, Phase::Up, Phase::Cancel] {
+        let mouse = PointerEvent::mouse(phase, x + 20.0, y);
+        for foreign in [
+            PointerEvent { kind: PointerKind::Touch, ..mouse },
+            PointerEvent { kind: PointerKind::Pen, ..mouse },
+            PointerEvent { id: 1, ..mouse },
+        ] {
+            app.event(InputEvent::Pointer(foreign));
+            assert_eq!(app.held_pointer(), Some((0, PointerKind::Mouse)), "{foreign:?}");
+            assert_eq!(log(&mut app), "", "{foreign:?}");
+        }
+    }
+
+    app.event(InputEvent::Pointer(PointerEvent::mouse(Phase::Up, x + 30.0, y)));
+    assert_eq!(app.held_pointer(), None);
+    assert_eq!(log(&mut app), "End 30 0");
+}
+
+#[test]
+fn deactivating_the_window_cancels_its_held_touch_drag() {
+    let mut app = app();
+    let (x, y) = center(&app, "knob");
+    touch(&mut app, Phase::Down, (x, y));
+    touch(&mut app, Phase::Move, (x + 10.0, y));
+    app.event(InputEvent::Active(false));
+    assert_eq!(app.held_pointer(), None);
+    touch(&mut app, Phase::Up, (x + 10.0, y));
     assert_eq!(log(&mut app), "Start 10 0,Cancel 10 0");
 }
 

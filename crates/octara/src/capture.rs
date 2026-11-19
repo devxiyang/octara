@@ -8,11 +8,13 @@
 //! [`Capture`] report.
 
 use crate::image::Image;
-use crate::native::NativeId;
+use crate::kernel::NodeId;
+use crate::native::NativeChange;
+use crate::paint::{DisplayList, ImagePaint, Item, Part, Rect};
 use crate::platform::NativeSnapshotRequest;
 pub(crate) use octara_primitives::capture::{Painter, Picture};
-use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+use std::rc::Rc;
 use std::time::Instant;
 
 /// The identity of one painted capture started by the platform host.
@@ -80,7 +82,7 @@ pub struct Capture {
     pub fallback: Option<String>,
     /// `gpu`, `reference` or `display`.
     pub renderer: String,
-    /// Nothing was running when the picture was taken.
+    /// No work was pending when the app frame was sampled.
     pub settled: bool,
     /// What was still running when the wait ended: tasks, motion, native views loading.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -99,13 +101,37 @@ impl Capture {
 pub(crate) struct Capturing {
     pub id: CaptureId,
     pub deadline: Instant,
-    pub shots: FxHashMap<NativeId, NativeShotRequest>,
+    pub list: DisplayList,
+    pub shots: Vec<NativeShotRequest>,
+}
+
+impl Capturing {
+    pub(crate) fn native_changed(&mut self, changes: &[NativeChange]) {
+        for shot in &mut self.shots {
+            let target = shot.request.id;
+            if changes.iter().any(|change| match change {
+                NativeChange::Create { id, .. } | NativeChange::Update { id, .. } | NativeChange::Destroy { id } => *id == target,
+                NativeChange::Place { placements } => placements.iter().any(|placement| placement.id == target),
+            }) {
+                shot.invalidate("the native view's committed content or placement changed while capturing");
+            }
+        }
+    }
 }
 
 pub(crate) struct NativeShotRequest {
+    pub node: NodeId,
     pub request: NativeSnapshotRequest,
     pub status: SnapshotStatus,
-    pub misses: Vec<String>,
+    pub report: NativeShot,
+}
+
+impl NativeShotRequest {
+    pub(crate) fn invalidate(&mut self, reason: &'static str) {
+        if matches!(&self.status, SnapshotStatus::Waiting | SnapshotStatus::Captured(_)) {
+            self.status = SnapshotStatus::Failed(reason);
+        }
+    }
 }
 
 pub(crate) enum SnapshotStatus {
@@ -113,4 +139,35 @@ pub(crate) enum SnapshotStatus {
     Captured(Image),
     Failed(&'static str),
     Placeholder(String),
+}
+
+/// The app frame associated with a host's display capture attempt.
+///
+/// The window server supplies the pixels independently of the app's submission.
+pub struct DisplayCapture {
+    pub(crate) identity: crate::identity::TreeIdentity,
+    pub(crate) revision: crate::app::WindowRevision,
+    pub(crate) outline: Option<(NodeId, Rect)>,
+    pub(crate) images: Vec<(Image, u64)>,
+    pub(crate) native: Vec<NativeShot>,
+}
+
+pub(crate) fn freeze_image(image: &Image) -> Image {
+    let frame = image.frame();
+    Image::rgba(frame.width, frame.height, frame.rgba)
+}
+
+pub(crate) fn paint_native_snapshots(list: &mut DisplayList, snapshots: &mut rustc_hash::FxHashMap<NodeId, Image>) {
+    for part in &mut list.parts {
+        let Part::Drawing { items, .. } = part else { continue };
+        let [.., Item::Quad(placeholder), Item::Native { source, rect, radius, cut: false, .. }] = items.as_ref() else { continue };
+        if placeholder.source != *source {
+            continue;
+        }
+        if let Some(image) = snapshots.remove(source) {
+            let painted = Item::Image(ImagePaint { source: *source, image, rect: *rect, bounds: *rect, radius: *radius, opacity: 1.0 });
+            let index = items.len() - 2;
+            Rc::make_mut(items)[index] = painted;
+        }
+    }
 }

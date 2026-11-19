@@ -411,10 +411,10 @@ enum WindowUpdate {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct WindowRevision {
+pub(crate) struct WindowRevision {
     mutation: u64,
     paint: u64,
-    time: u64,
+    time: Option<u64>,
     viewport: [u32; 3],
 }
 
@@ -1382,11 +1382,10 @@ impl Window {
 
     fn dispatch_semantic(&mut self, ev: Event, node: Option<NodeId>) -> Result<(), String> {
         self.check_running()?;
-        let input = match node {
+        self.app.record(self.w.id, || match node {
             Some(node) => InputEvent::SemanticAt { node, event: ev.clone() },
             None => InputEvent::Semantic(ev.clone()),
-        };
-        self.app.record(self.w.id, &input);
+        });
         self.on_semantic(ev, node)
     }
 

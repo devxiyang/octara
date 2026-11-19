@@ -370,6 +370,11 @@ impl Window {
         let mut accepted = false;
         self.input_frame(|| {
             let Some(mut document) = self.platform_document(owner, expected) else { return };
+            self.app.record(self.w.id, || super::InputEvent::NativeTextEdit {
+                owner,
+                expected: Box::new(expected.clone()),
+                edit: edit.clone(),
+            });
             let composing = document.composition.is_some();
             document.apply(edit);
             accepted = true;
@@ -400,6 +405,11 @@ impl Window {
             let start = crate::kernel::floor_boundary(document.text(), selection.start);
             let end = crate::kernel::floor_boundary(document.text(), selection.end);
             let selection = start.min(end)..start.max(end);
+            self.app.record(self.w.id, || super::InputEvent::NativeTextSelection {
+                owner,
+                expected: Box::new(expected.clone()),
+                selection: selection.clone(),
+            });
             if document.selection().as_ref() != Some(&selection) {
                 if let Some(mut composition) = document.composition {
                     composition.selection = Some(selection);

@@ -117,13 +117,13 @@ impl Window {
         !self.is_closed() && self.w.root_scope.get().is_some()
     }
 
-    fn revision(&self) -> WindowRevision {
+    pub(super) fn revision(&self) -> WindowRevision {
         let k = self.w.kernel.borrow();
         let (width, height) = self.size();
         WindowRevision {
             mutation: k.mutation_generation(),
             paint: k.paint_generation(),
-            time: k.time().to_bits(),
+            time: Some(k.time().to_bits()),
             viewport: [width.to_bits(), height.to_bits(), self.w.scale.get().to_bits()],
         }
     }

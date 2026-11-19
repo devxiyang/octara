@@ -9,8 +9,8 @@
 ## 内核重构
 
 - [x] 统一弹层的绘制顺序、交互范围和关闭仲裁。分别验证逻辑焦点路径、逆序打开的同级弹层、外点关闭的原目标校验，以及窗口内绘制提示框的焦点恢复。[弹层契约](design/ui-primitives.md#5-overlays) · [弹层回归](../crates/octara/tests/integration/overlay.rs)
-- [ ] 统一输入会话与录制。先校验指针后续事件的设备、ID 和原始按键，再让原生编辑意图进入框架录制与回放。[手势与编辑协议](design/input.md)
-- [ ] 让异步截图使用可核对的提交版本。核对绘制数据、原生视图内容和位置，以及迟到原生快照的处理。[截图协议](design/capture.md)
+- [x] 统一输入会话与录制。指针续段校验设备、ID 和原始按键，已校验的原生编辑和选区请求进入录制与回放。无窗口回归覆盖设备与按键碰撞、组词和选区的 JSON 回放，以及过期编辑的拒绝。[手势与编辑协议](design/input.md) · [录制回归](../crates/octara/tests/integration/replay.rs)
+- [x] 让异步截图使用可核对的提交版本。绘制捕获固定起始帧与像素，视图内容或位置变化会退役旧快照。显示捕获复核提交帧和宿主尺寸。回归覆盖迟到快照、尺寸变化、位置往返与共享图片换帧。[截图协议](design/capture.md) · [捕获回归](../crates/octara/tests/integration/capture.rs)
 
 ## 平台验收
 
@@ -19,6 +19,7 @@
 - [x] 在 macOS 同窗复核行内重命名的拼音候选、目录重排、选区和编辑器退休，并与标准 NSTextView 对照候选位置。[实测记录](design/interaction-scenarios.md#macos-实窗记录)
 - [x] 在两个同标题的 macOS 实窗核对系统菜单、快捷键、工具栏和 Inspector 的撤销归属与可用性。[实测记录](design/interaction-scenarios.md#两个同标题文档的撤销)
 - [ ] 移动端系统返回分别取消和完成，核验页面身份、阅读位置和释放次数；记录使用的宿主和设备。
+- [x] 在已解锁、可见的 macOS 窗口验证 `display` 像素来源，核对原生视图报告和实际屏幕尺寸。覆盖 WKWebView 页面切换、窗口缩放、绘制帧版本和锁屏回退。[截图实测记录](design/capture.md#macos-实窗记录)
 
 ## 从上轮接续的工程问题
 

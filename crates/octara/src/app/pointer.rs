@@ -63,6 +63,7 @@ pub struct PointerEvent {
     pub phase: Phase,
     pub x: f32,
     pub y: f32,
+    /// The changed button for `Down` and `Up`.
     pub button: Button,
     pub modifiers: Modifiers,
 }
@@ -175,7 +176,9 @@ pub(crate) struct Held {
     capture: Rc<()>,
     pointer: u64,
     kind: PointerKind,
-    button: Button,
+    down_button: Button,
+    /// The action chosen on down, including the Apple Control-click mapping.
+    action_button: Button,
     /// The topmost node under the press.
     hit: Option<NodeId>,
     /// The element the press acts on.
@@ -198,6 +201,10 @@ pub(crate) struct Held {
 }
 
 impl Held {
+    fn matches_pointer(&self, ev: PointerEvent) -> bool {
+        self.pointer == ev.id && self.kind == ev.kind
+    }
+
     fn resident_nodes(&self, nodes: &mut Vec<NodeId>) {
         match self.mode {
             Mode::Pending | Mode::Dragging => nodes.extend(self.hit.into_iter().chain(self.target).chain(self.selecting)),
@@ -441,7 +448,7 @@ impl Window {
                 Phase::Down => self.down(ev),
                 Phase::Move => self.moved(ev),
                 Phase::Up => self.up(ev),
-                Phase::Cancel => self.cancel(ev.id),
+                Phase::Cancel => self.cancel(ev),
             }
             if before != self.w.interaction_nodes() {
                 self.w.interaction_changed();
@@ -450,9 +457,9 @@ impl Window {
     }
 
     pub(super) fn cancel_pointer(&self) {
-        let pointer = self.w.interaction.borrow().pointer.held.as_ref().map(|held| held.pointer);
-        if let Some(pointer) = pointer {
-            self.cancel(pointer);
+        let held = self.w.interaction.borrow_mut().pointer.held.take();
+        if let Some(held) = held {
+            self.cancel_held(held);
         }
         let mut interaction = self.w.interaction.borrow_mut();
         interaction.pointer.momentum = None;
@@ -460,7 +467,7 @@ impl Window {
     }
 
     pub(super) fn restrict_pointer_to_modal(&self, modal: NodeId) {
-        let cancel = {
+        let held = {
             let k = self.w.kernel.borrow();
             let outside = |node| k.check_interaction_scope(node, Some(modal)).is_err();
             let mut i = self.w.interaction.borrow_mut();
@@ -470,20 +477,16 @@ impl Window {
             if i.pointer.momentum.is_some_and(|momentum| outside(momentum.node)) {
                 i.pointer.momentum = None;
             }
-            i.pointer
-                .held
-                .as_ref()
-                .filter(|held| {
-                    let panning = match held.mode {
-                        Mode::Panning(node) => Some(node),
-                        _ => None,
-                    };
-                    [held.hit, held.target, held.selecting, panning].into_iter().flatten().any(outside)
-                })
-                .map(|held| held.pointer)
+            i.pointer.held.take_if(|held| {
+                let panning = match held.mode {
+                    Mode::Panning(node) => Some(node),
+                    _ => None,
+                };
+                [held.hit, held.target, held.selecting, panning].into_iter().flatten().any(outside)
+            })
         };
-        if let Some(pointer) = cancel {
-            self.cancel(pointer);
+        if let Some(held) = held {
+            self.cancel_held(held);
             self.w.interaction_changed();
         }
     }
@@ -632,7 +635,7 @@ impl Window {
     pub(super) fn long_press_due(&self) -> Option<f64> {
         let i = self.w.interaction.borrow();
         let h = i.pointer.held.as_ref()?;
-        (h.kind == PointerKind::Touch && h.mode == Mode::Pending && h.button == Button::Primary)
+        (h.kind == PointerKind::Touch && h.mode == Mode::Pending && h.action_button == Button::Primary)
             .then(|| crate::task::whole_ns(h.down_at + self.app.tuning.get().long_press.as_secs_f64() * 1000.0))
     }
 
@@ -655,24 +658,21 @@ impl Window {
             return;
         }
         let modal = self.top_modal();
-        let (hit, target, secondary) = {
+        let (hit, target, button) = {
             let k = self.w.kernel.borrow();
             let hit = raw.filter(|&node| !outside && k.check_interaction_scope(node, modal).is_ok());
-            let secondary = ev.button == Button::Secondary
-                || (ev.button == Button::Primary
-                    && self.app.platform.get().is_apple()
-                    && ev.modifiers.contains(Modifiers::CTRL)
-                    && ev.kind == PointerKind::Mouse);
-            let target = k
-                .press_target(hit, if secondary { Button::Secondary } else { ev.button })
-                .filter(|&node| k.check_interaction_scope(node, modal).is_ok());
-            (hit, target, secondary)
+            let control_click = ev.button == Button::Primary
+                && ev.kind == PointerKind::Mouse
+                && ev.modifiers.contains(Modifiers::CTRL)
+                && self.app.platform.get().is_apple();
+            let button = if control_click { Button::Secondary } else { ev.button };
+            let target = k.press_target(hit, button).filter(|&node| k.check_interaction_scope(node, modal).is_ok());
+            (hit, target, button)
         };
         if ev.kind == PointerKind::Touch {
             self.w.interaction.borrow_mut().pointer.hover_at = None;
             self.set_hover(None);
         }
-        let button = if secondary { Button::Secondary } else { ev.button };
         let preserve_focus = {
             let k = self.w.kernel.borrow();
             k.up_from(hit, |n| k.preserves_focus_on_press(n)).is_some()
@@ -732,7 +732,8 @@ impl Window {
             capture: Rc::new(()),
             pointer: ev.id,
             kind: ev.kind,
-            button,
+            down_button: ev.button,
+            action_button: button,
             hit,
             target,
             start: (ev.x, ev.y),
@@ -761,7 +762,7 @@ impl Window {
             self.w.interaction.borrow_mut().hover_held = false;
             self.set_hover(hit);
         }
-        let Some(mut h) = self.w.interaction.borrow().pointer.held.clone().filter(|h| h.pointer == ev.id) else { return };
+        let Some(mut h) = self.w.interaction.borrow().pointer.held.as_ref().filter(|h| h.matches_pointer(ev)).cloned() else { return };
         // Selecting: the focus follows the pointer.
         if let Some(region) = h.selecting
             && matches!(h.mode, Mode::Pending | Mode::Dragging)
@@ -790,7 +791,7 @@ impl Window {
         if h.mode == Mode::Pending && distance(h.start, h.at) > slop {
             // Field selection takes a mouse/pen drag before the application's `on_drag`.
             let field = self.field_drag_target(&h);
-            let drags = h.button == Button::Primary
+            let drags = h.action_button == Button::Primary
                 && (field.is_some() || h.target.is_some_and(|n| self.w.kernel.borrow().handler(n, HandlerKind::Drag).is_some()));
             if drags {
                 h.mode = Mode::Dragging;
@@ -823,12 +824,12 @@ impl Window {
                 // Leaving the element un-presses it; coming back presses it again (AppKit).
                 let inside = {
                     let k = self.w.kernel.borrow();
-                    h.target.is_some() && k.press_target(self.hit_at(ev.x, ev.y), h.button) == h.target
+                    h.target.is_some() && k.press_target(self.hit_at(ev.x, ev.y), h.action_button) == h.target
                 };
                 if inside != h.inside {
                     h.inside = inside;
                     if let Some(n) = h.target
-                        && h.button == Button::Primary
+                        && h.action_button == Button::Primary
                     {
                         self.w.kernel.borrow_mut().set_state(n, State::PRESSED, inside);
                     }
@@ -845,13 +846,7 @@ impl Window {
     }
 
     fn up(&self, ev: PointerEvent) {
-        let held = {
-            let mut i = self.w.interaction.borrow_mut();
-            if i.pointer.held.as_ref().is_none_or(|h| h.pointer != ev.id) {
-                return;
-            }
-            i.pointer.held.take()
-        };
+        let held = self.w.interaction.borrow_mut().pointer.held.take_if(|h| h.matches_pointer(ev) && h.down_button == ev.button);
         let Some(mut h) = held else { return };
         h.at = (ev.x, ev.y);
         self.unpress(&h);
@@ -859,12 +854,12 @@ impl Window {
             Mode::Pending => {
                 let inside = {
                     let k = self.w.kernel.borrow();
-                    k.press_target(self.hit_at(ev.x, ev.y), h.button) == h.target
+                    k.press_target(self.hit_at(ev.x, ev.y), h.action_button) == h.target
                 };
                 let Some(n) = h.target.filter(|_| inside) else { return };
-                if h.button == Button::Secondary {
+                if h.action_button == Button::Secondary {
                     self.run(n, &[HandlerKind::SecondaryPress], None);
-                } else if h.button == Button::Primary {
+                } else if h.action_button == Button::Primary {
                     self.w.interaction.borrow_mut().pointer.press_at = Some(h.at);
                     self.run(n, &[HandlerKind::Press, HandlerKind::Toggle], None);
                     self.w.interaction.borrow_mut().pointer.press_at = None;
@@ -882,17 +877,16 @@ impl Window {
         });
     }
 
-    fn cancel(&self, pointer: u64) {
-        let held = {
-            let mut i = self.w.interaction.borrow_mut();
-            if i.pointer.held.as_ref().is_none_or(|h| h.pointer != pointer) {
-                return;
-            }
-            i.pointer.held.take()
-        };
-        let Some(h) = held else { return };
-        self.unpress(&h);
-        self.finishing_pointer(h, |h| {
+    fn cancel(&self, ev: PointerEvent) {
+        let held = self.w.interaction.borrow_mut().pointer.held.take_if(|h| h.matches_pointer(ev));
+        if let Some(held) = held {
+            self.cancel_held(held);
+        }
+    }
+
+    fn cancel_held(&self, held: Held) {
+        self.unpress(&held);
+        self.finishing_pointer(held, |h| {
             if h.mode == Mode::Dragging && self.field_drag_target(h).is_none() {
                 self.send_drag(h, DragPhase::Cancel);
             }
@@ -964,14 +958,10 @@ impl Window {
         if self.is_closed() || self.app.shutdown.get() {
             return None;
         }
-        let pointer = {
-            let i = self.w.interaction.borrow();
-            let held = i.pointer.held.as_ref()?;
-            if !Rc::ptr_eq(&held.capture, &pan.capture) || held.mode != Mode::Panning(pan.node) {
-                return None;
-            }
-            held.pointer
-        };
+        let owns_pan = |held: &Held| Rc::ptr_eq(&held.capture, &pan.capture) && held.mode == Mode::Panning(pan.node);
+        if !self.w.interaction.borrow().pointer.held.as_ref().is_some_and(owns_pan) {
+            return None;
+        }
         let handler = {
             let k = self.w.kernel.borrow();
             // Binding updates can open a modal during the first stage of this delta.
@@ -982,8 +972,11 @@ impl Window {
                 .filter(|handler| handler.is_live(&self.app.rt))
         };
         if handler.is_none() {
-            self.cancel(pointer);
-            self.w.interaction_changed();
+            let held = self.w.interaction.borrow_mut().pointer.held.take_if(|held| owns_pan(held));
+            if let Some(held) = held {
+                self.cancel_held(held);
+                self.w.interaction_changed();
+            }
         }
         handler
     }

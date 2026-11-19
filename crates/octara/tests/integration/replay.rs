@@ -2,11 +2,13 @@
 //! an `InputEvent`, recorded with its time and window and replayed to the same state; each
 //! operation presents a `Frame` to the window's platform; the protocol names windows.
 
-use octara::app::Recording;
+use octara::app::{Event, InputEvent, Recording};
 use octara::inspect::handle_line;
-use octara::platform::{HeadlessWindow, WindowOptions};
+use octara::kernel::TextDocument;
+use octara::platform::{HeadlessWindow, TextInput, WindowOptions};
 use octara::prelude::*;
 use octara::view::web_view;
+use octara_primitives::text::TextEdit;
 use std::time::Duration;
 
 /// A list with a field, an add button and a delayed counter.
@@ -77,6 +79,133 @@ fn a_recorded_session_replays_to_the_same_state() {
     let b = Window::headless(todos);
     b.app().replay(&back).unwrap();
     assert_eq!(shown(&b), shown(&a), "the replay ends where the session did");
+}
+
+fn native_input(w: &Window) -> TextInput {
+    w.platform_window().as_any().downcast_ref::<HeadlessWindow>().unwrap().text_input.clone().unwrap()
+}
+
+fn native_editor() -> View {
+    let value = state("value", || "A😀Z".to_owned());
+    let proposals = state("proposals", Vec::<String>::new);
+    let submitted = state("submitted", String::new);
+    col()
+        .child(
+            input()
+                .id("field")
+                .w(240)
+                .value(value)
+                .on_input(move |proposal| {
+                    value.set(proposal.replace('!', ""));
+                    proposals.update(|values| values.push(proposal));
+                })
+                .on_submit(move || submitted.set(value.get())),
+        )
+        .child(text(move || proposals.with(|values| values.join(" | "))).id("proposals"))
+        .child(text(submitted).id("submitted"))
+        .into()
+}
+
+#[test]
+fn native_text_recording_replays_selection_composition_and_submit() {
+    let mut w = Window::headless(native_editor);
+    w.app().start_recording();
+    w.dispatch(Event::Focus("field".into())).unwrap();
+    let input = native_input(&w);
+    let owner = input.id;
+    assert!(w.apply_text_selection(owner, &input.document.unwrap(), 1..5));
+    let selected = native_input(&w).document.unwrap();
+    assert_eq!(selected.selection(), Some(1..5));
+
+    let mark = TextEdit::Mark { text: "ni😀".into(), selection: Some(6..6), replacement: None };
+    assert!(w.apply_text_edit(owner, &selected, &mark));
+    let composing = native_input(&w).document.unwrap();
+    assert_eq!(composing.text(), "Ani😀Z");
+    assert_eq!(composing.marked(), Some(1..7));
+    assert!(w.apply_text_selection(owner, &composing, 3..7));
+    let composing = native_input(&w).document.unwrap();
+    assert_eq!(composing.selection(), Some(3..7));
+    assert_eq!(w.text_field().unwrap().text, "A😀Z");
+
+    let insert = TextEdit::Insert { text: "你!".into(), replacement: None };
+    assert!(w.apply_text_edit(owner, &composing, &insert));
+    let confirmed = native_input(&w).document.unwrap();
+    let mut proposed = composing;
+    proposed.apply(&insert);
+    assert_eq!(proposed.text(), "A你!Z");
+    assert_eq!(confirmed.text(), "A你Z");
+    let stale = TextEdit::Insert { text: "late".into(), replacement: None };
+    assert!(!w.apply_text_edit(owner, &proposed, &stale));
+    assert!(!w.apply_text_selection(owner, &proposed, 0..0));
+
+    let mark = TextEdit::Mark { text: "好".into(), selection: None, replacement: Some(5..5) };
+    assert!(w.apply_text_edit(owner, &confirmed, &mark));
+    let composing = native_input(&w).document.unwrap();
+    assert!(w.apply_text_edit(owner, &composing, &TextEdit::Unmark));
+    w.press_key("enter").unwrap();
+    assert_eq!(w.kernel().text_of("proposals").as_deref(), Some("A你!Z | A你Z好"));
+    assert_eq!(w.kernel().text_of("submitted").as_deref(), Some("A你Z好"));
+    let final_document = native_input(&w).document.unwrap();
+    assert_eq!(final_document.selection(), Some(8..8));
+    assert_eq!(final_document.marked(), None);
+
+    let recording = w.app().stop_recording();
+    let native_events =
+        recording.events.iter().filter(|r| matches!(r.event, InputEvent::NativeTextEdit { .. } | InputEvent::NativeTextSelection { .. }));
+    assert_eq!(native_events.count(), 6, "each admitted native operation is recorded once");
+    let json = serde_json::to_string(&recording).unwrap();
+    let round_trip: Recording = serde_json::from_str(&json).unwrap();
+    assert_eq!(round_trip, recording);
+
+    let replayed = Window::headless(native_editor);
+    replayed.app().replay(&round_trip).unwrap();
+    assert_eq!(native_input(&replayed).document, Some(final_document));
+    assert_eq!(shown(&replayed), shown(&w));
+}
+
+#[test]
+fn native_text_replay_requires_the_recorded_owner_and_document() {
+    let fields = || col().child(input().id("first").w(240).value("A😀Z")).child(input().id("second").w(240).value("A😀Z"));
+    let mut w = Window::headless(fields);
+    w.dispatch(Event::Focus("first".into())).unwrap();
+    w.set_selection(0, 0);
+    let input = native_input(&w);
+    let original = input.document.unwrap();
+    w.app().start_recording();
+    assert!(w.apply_text_selection(input.id, &original, 1..5));
+    let recording = w.app().stop_recording();
+
+    let mut replayed = Window::headless(fields);
+    replayed.dispatch(Event::Focus("second".into())).unwrap();
+    replayed.set_selection(0, 0);
+    let other = native_input(&replayed);
+    assert_ne!(other.id, input.id);
+    assert_eq!(other.document.as_ref(), Some(&original));
+    assert!(replayed.app().replay(&recording).is_err());
+    assert_eq!(native_input(&replayed).document, other.document);
+
+    replayed.dispatch(Event::Focus("first".into())).unwrap();
+    replayed.set_selection(6, 6);
+    let diverged = native_input(&replayed);
+    assert_eq!(diverged.id, input.id);
+    assert!(replayed.app().replay(&recording).is_err());
+    assert_eq!(native_input(&replayed).document, diverged.document);
+}
+
+#[test]
+fn rejected_native_operations_on_secure_fields_are_omitted() {
+    let mut w = Window::headless(|| input().id("password").secure().w(240).value("test secret"));
+    w.dispatch(Event::Focus("password".into())).unwrap();
+    let input = native_input(&w);
+    assert!(input.secure);
+    assert!(input.document.is_none());
+    let selection = w.text_field().unwrap().selection;
+    let expected = TextDocument::new("test secret".into(), selection.start, selection.end);
+    let insert = TextEdit::Insert { text: "more secret".into(), replacement: None };
+    w.app().start_recording();
+    assert!(!w.apply_text_edit(input.id, &expected, &insert));
+    assert!(!w.apply_text_selection(input.id, &expected, 0..0));
+    assert!(w.app().stop_recording().events.is_empty());
 }
 
 #[test]
