@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a built panel or IME fixture on a booted iOS simulator."""
+"""Run a built Octara fixture on a booted iOS simulator."""
 
 import argparse
 import hashlib
@@ -13,17 +13,20 @@ from uuid import uuid4
 
 
 def main():
+    scenes = {
+        "panel": ("panel", "Octara Panel", "panel_scroll"),
+        "controlled": ("ime", "Octara Controlled IME", "ime"),
+        "album": ("album", "Octara Album Back", "album_back"),
+    }
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", required=True, help="UDID of the booted simulator")
-    parser.add_argument("--scene", choices=("panel", "controlled"), default="panel", help="panel_scroll (default) or controlled IME")
+    parser.add_argument("--scene", choices=scenes, default="panel", help="fixture to launch (default: panel)")
     parser.add_argument("--binary", type=Path, required=True, help="fixture executable built for aarch64-apple-ios-sim")
     parser.add_argument("--output", type=Path, required=True, help="new directory for the app, socket, receipt and logs")
     args = parser.parse_args()
     if not args.binary.is_file():
         parser.error(f"executable was not found: {args.binary}")
-    controlled = args.scene == "controlled"
-    fixture = "ime" if controlled else "panel"
-    name = "Octara Controlled IME" if controlled else "Octara Panel"
+    fixture, name, executable_name = scenes[args.scene]
     output = args.output.resolve()
     endpoint = output / f"{fixture}.sock"
     if len(os.fsencode(endpoint)) >= 104:
@@ -32,7 +35,7 @@ def main():
 
     app = output / f"{name}.app"
     app.mkdir()
-    executable = app / ("ime" if controlled else "panel_scroll")
+    executable = app / executable_name
     shutil.copy2(args.binary, executable)
     digest = hashlib.sha256()
     with executable.open("rb") as stream:
@@ -73,7 +76,7 @@ def main():
         "SIMCTL_CHILD_OCTARA_INSPECT_BUILD": build,
         "SIMCTL_CHILD_OCTARA_TRACE_INPUT": "1",
     }
-    if controlled:
+    if args.scene == "controlled":
         env["SIMCTL_CHILD_OCTARA_IME_SCENE"] = args.scene
     trace = output / "console.log"
     run = {

@@ -4,7 +4,7 @@ use crate::ShellEvent;
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol};
 use objc2::{ClassType, MainThreadOnly, Message, define_class};
-use objc2_ui_kit::{UIScene, UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIView, UIWindow, UIWindowScene};
+use objc2_ui_kit::{UIScene, UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIView, UIViewController, UIWindow, UIWindowScene};
 use std::cell::RefCell;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event_loop::EventLoopProxy;
@@ -86,4 +86,12 @@ pub(crate) fn ui_view(window: &Window) -> Result<Retained<UIView>, String> {
     let RawWindowHandle::UiKit(handle) = handle.as_raw() else { return Err("the window has no UIKit view".into()) };
     // SAFETY: Called on the UI thread. The winit window keeps its UIKit view alive.
     unsafe { Retained::retain(handle.ui_view.cast().as_ptr()) }.ok_or_else(|| "the UIKit view is missing".into())
+}
+
+pub(crate) fn ui_view_controller(window: &Window) -> Result<Retained<UIViewController>, String> {
+    let handle = window.window_handle().map_err(|why| why.to_string())?;
+    let RawWindowHandle::UiKit(handle) = handle.as_raw() else { return Err("the window has no UIKit controller".into()) };
+    let controller = handle.ui_view_controller.ok_or("the UIKit controller is missing")?;
+    // SAFETY: Called on the UI thread. The winit window keeps its UIKit controller alive.
+    unsafe { Retained::retain(controller.cast().as_ptr()) }.ok_or_else(|| "the UIKit controller is missing".into())
 }

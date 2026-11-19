@@ -55,6 +55,9 @@ pub struct Snapshot {
     /// The most recent completed coordinated touch displacement in this window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub touch_scroll: Option<TouchScrollState>,
+    /// The latest phase of the platform's interactive return.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back_gesture: Option<BackGestureState>,
     /// Tasks, subscriptions and background jobs still pending.
     pub pending: usize,
     /// This window's number (what a request's `window` names).
@@ -72,6 +75,14 @@ pub struct Snapshot {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub asks: Vec<AskInfo>,
     pub root: Node,
+}
+
+/// The platform phase and whether its completion reached the captured Back command.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BackGestureState {
+    pub id: u64,
+    pub phase: crate::app::BackPhase,
+    pub delivered: bool,
 }
 
 /// How a viewport and its handler used one coordinated touch delta. All vectors are

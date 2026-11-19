@@ -20,7 +20,11 @@
 //! # fn octara_examples_counter() -> octara::view::El { octara::view::text("Counter") }
 //! ```
 
+#[cfg(target_os = "ios")]
+use octara::app::BackPhase;
 use octara::app::{App, Button, FileDrag, InputEvent, Key, KeyEvent, Modifiers, Phase, PointerEvent, Window as AppWindow};
+#[cfg(target_os = "ios")]
+use octara::kernel::HandlerId;
 use octara::platform::WindowOptions;
 use octara::view::{IntoView, View};
 use platform::WinitWindow;
@@ -37,6 +41,8 @@ use winit::window::WindowId;
 
 #[cfg(target_os = "macos")]
 mod ask_mac;
+#[cfg(target_os = "ios")]
+mod back_ios;
 mod capture;
 mod gesture;
 #[cfg(any(test, target_os = "ios"))]
@@ -68,6 +74,14 @@ pub enum ShellEvent {
     Wake,
     #[cfg(target_os = "ios")]
     IosSceneConnected,
+    #[cfg(target_os = "ios")]
+    IosBack {
+        window: WindowId,
+        id: u64,
+        owner: Option<HandlerId>,
+        phase: BackPhase,
+        interactive: bool,
+    },
     /// A capture in progress looks again (`OCTARA_CAPTURE`).
     Capture,
     /// A local Inspector request, returned only to the connection that submitted it.
@@ -412,6 +426,49 @@ impl Shell {
         }
     }
 
+    #[cfg(target_os = "ios")]
+    fn ios_back(&mut self, window: WindowId, id: u64, owner: Option<HandlerId>, phase: BackPhase, interactive: bool) {
+        let Some(mut window) = self.window_of(window) else { return };
+        if !ww(&window, |host| host.ios_back.as_ref().is_some_and(|back| back.owns(id))).unwrap_or_default() {
+            return;
+        }
+        self.tick();
+        // The recognizer saw the frame that was drawn before this proxy event. A timer,
+        // native edit or other input can move the current command before dispatch.
+        let current = phase != BackPhase::Started || owner.is_some() && owner == window.back_gesture_target();
+        let accepted = current && window.event(InputEvent::BackGesture { id, phase });
+        if matches!(phase, BackPhase::Completed | BackPhase::Cancelled) {
+            let eligible = window.back_gesture_target().is_some();
+            ww(&window, |host| {
+                if let Some(back) = &mut host.ios_back {
+                    host.pending |= back.settle(id, accepted, eligible);
+                }
+            });
+        }
+        if self.shared.trace {
+            let (phase, progress) = match phase {
+                BackPhase::Started => ("started", None),
+                BackPhase::Progress(progress) => ("progress", Some(progress)),
+                BackPhase::Cancelled => ("cancelled", None),
+                BackPhase::Completed => ("completed", None),
+            };
+            eprintln!(
+                "{}",
+                octara::serde_json::json!({
+                    "schema": "octara.back_trace/1",
+                    "source": "uikit_navigation_controller",
+                    "window": window.id().number(),
+                    "id": id,
+                    "phase": phase,
+                    "progress": progress,
+                    "interactive": interactive,
+                    "accepted": accepted,
+                })
+            );
+        }
+        self.show();
+    }
+
     /// The app window winit window `id` shows.
     fn window_of(&self, id: WindowId) -> Option<AppWindow> {
         let w = *self.shared.windows.borrow().get(&id)?;
@@ -513,6 +570,11 @@ impl Shell {
                 ww(&w, |x| x.pause_frame_clock());
                 continue;
             }
+            #[cfg(target_os = "ios")]
+            {
+                let back_eligible = w.back_gesture_target().is_some();
+                ww(&w, |x| x.sync_ios_back(back_eligible));
+            }
             match ww(&w, |x| (x.pending, x.rested())) {
                 Some((true, true)) => {
                     self.draw(&w);
@@ -538,6 +600,10 @@ impl Shell {
             });
             return false;
         }
+        #[cfg(target_os = "ios")]
+        let back_owner = w.back_gesture_target();
+        #[cfg(target_os = "ios")]
+        ww(w, |x| x.sync_ios_back(back_owner.is_some()));
         let started = self.shared.trace.then(Instant::now);
         let list = w.display_list();
         let trace = started.map(|at| trace::Frame::new(at, w.app().now().as_millis() as u64));
@@ -546,6 +612,10 @@ impl Shell {
             let Some(g) = gpu.as_mut() else { return false };
             ww(w, |x| x.draw(&list, &mut g.renderer, trace)).unwrap_or(false)
         };
+        #[cfg(target_os = "ios")]
+        if shown {
+            ww(w, |x| x.did_draw_ios_back(back_owner));
+        }
         if shown
             && Some(w.id()) == self.main
             && let Some(n) = self.exit_after_frames
@@ -736,6 +806,11 @@ impl Shell {
                     eprintln!("octara-shell: {error}");
                 }
                 self.show();
+                return;
+            }
+            #[cfg(target_os = "ios")]
+            ShellEvent::IosBack { window, id, owner, phase, interactive } => {
+                self.ios_back(window, id, owner, phase, interactive);
                 return;
             }
             ShellEvent::Wake => {

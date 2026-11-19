@@ -1,6 +1,7 @@
 //! The app runtime: mounts a root view, dispatches events, lays out, and rebuilds for hot reload.
 
 mod asks;
+mod back;
 mod command;
 mod config;
 mod drive;
@@ -22,6 +23,7 @@ mod tooltip;
 
 pub(crate) use crate::kernel::TextDocument;
 pub use asks::menu_surface;
+pub use back::BackPhase;
 pub use config::AppConfig;
 pub use edit::{TextField, byte_offset, utf16_offset};
 pub use event::{FileDrag, InputEvent, Recorded, Recording, WheelPhase};
@@ -530,6 +532,7 @@ struct Interaction {
     focused: Option<NodeId>,
     modality: Modality,
     pointer: pointer::PointerState,
+    back: back::BackInteraction,
     /// Open modals, outermost first.
     modals: Vec<focus::OpenModal>,
     /// Test ids of the hovered and focused elements across a hot reload.
@@ -1322,6 +1325,7 @@ impl Window {
             commands: self.commands(),
             text_input,
             touch_scroll: self.w.interaction.borrow().pointer.last_touch_scroll.clone(),
+            back_gesture: self.w.interaction.borrow().back.last,
             pending: self.app().pending().len(),
             window: self.w.id.number(),
             target: crate::inspect::window_target(&k),

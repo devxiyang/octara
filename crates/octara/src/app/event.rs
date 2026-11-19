@@ -5,7 +5,7 @@
 //! gets, with the time and the window, and replay them on another app built the same way: the
 //! same snapshots and display lists on the virtual clock.
 
-use super::{App, Event, KeyEvent, Phase, PointerEvent, Window, WindowId};
+use super::{App, BackPhase, Event, KeyEvent, Phase, PointerEvent, Window, WindowId};
 use crate::kernel::{NodeId, TextDocument};
 use crate::native::{NativeEvent, NativeId};
 use crate::platform::NativeSnapshotRequest;
@@ -22,6 +22,8 @@ pub enum InputEvent {
     FileDrag(FileDrag),
     /// The window became the active one (key on macOS, foreground elsewhere) or stopped being.
     Active(bool),
+    /// An interactive return reported by the platform's navigation controller.
+    BackGesture { id: u64, phase: BackPhase },
     /// A menu bar item was picked. A click invokes its name; a keyboard equivalent
     /// (`chord`) goes through the window's keymap as a key press.
     Command { name: String, chord: Option<String> },
@@ -118,10 +120,12 @@ impl Window {
                     self.w.kernel.borrow_mut().set_window_active(on);
                     if !on {
                         self.cancel_pointer();
+                        self.cancel_back_gesture();
                     }
                 });
                 true
             }
+            InputEvent::BackGesture { id, phase } => self.on_back_gesture(id, phase),
             InputEvent::Command { name, chord } => self.on_menu_command(&name, chord.as_deref()),
             InputEvent::Pointer(ev) => {
                 self.on_pointer(ev);

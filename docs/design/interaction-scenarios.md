@@ -106,6 +106,19 @@ macOS 实窗通过 `octara launch` 生成构建收据，再用 Inspector 检查�
 
 先在确定性宿主断言状态与顺序，再用真实窗口或模拟器核对系统参与的环节。无窗口测试、窗口 Inspector 注入和系统输入分别记结果。待实现的移动宿主不能产生模拟器验收结果。[路线图](../ROADMAP.md) · [现有验证入口](../../examples/README.md)
 
+## 手机相册的交互式返回
+
+两页相册使用 Rust 状态选择详情。列表保持挂载，详情的 Back 按钮和视图局部的 `navigation.back` 命令调用同一个关闭回调。iOS 宿主在已有列表帧的基础上装配 UIKit 返回转场，原来的 Metal 视图继续绘制详情，列表帧只作为转场预览。UIKit 的终止结果进入同一个 Core 输入会话。Exact 同样把侧滑结果交给 UIKit 的转场协调器，并带着原页面身份处理完成。[相册实现](../../examples/src/album_back.rs) · [返回会话](input.md#interactive-back) · [Exact 转场协调](https://github.com/expo/exact/blob/08c889a9de21a30b7c3b308422fc588cf1a480d3/host/apple/Sources/ExactKit/IOS/NavigationIOS.swift#L1210-L1248)
+
+无窗口回归把返回进度推进到 `0.65` 后反向取消，详情、滚动视口、Back 操作目标和焦点仍对应原挂载，列表与详情的滚动偏移保持原值。下一次返回完成，关闭回调和详情清理各一次，焦点回到列表原行，旧 Back 操作目标返回 `STALE_TARGET`。另一条回归在侧滑开始后关闭并重开同一详情，核对原手势无法关闭新实例。[相册回归](../../examples/tests/integration/album_back.rs) · [模拟器复现](../../examples/README.md#ios-模拟器相册返回)
+
+### iOS 相册实测
+
+iPhone 17e、iOS 27.2，视口为 390×844 点，设备截图为 1170×2532 像素。用构建收据确认被测实例，使用 AXe 及其 Simulator HID 驱动发出系统触摸，使用 Inspector 读取挂载目标和状态。先滚动列表并打开 Breakwater，再滚动详情。
+
+- 同一次侧滑先向右推进，设备截图中详情向右移动 690 像素，露出约 59% 宽度的列表预览。随后反向收回并抬手。UIKit 报告交互式取消，详情、滚动视口和 Back 目标保留原挂载，焦点仍是 Photo notes，Location 的纵坐标保持 224 点，关闭和释放计数均为 0。取消前后的应用内容像素一致，头部只显示应用的 Back 按钮。
+- 再次侧滑，UIKit 报告交互式完成并投递一次 Back。列表与 Breakwater 行保持原目标及滚动位置，Breakwater 的纵坐标仍为 221.7 点，焦点回到该行。关闭和释放计数各为 1，尝试操作旧的详情 Back 目标收到 `STALE_TARGET`。回到列表后，计数栏以外的应用内容像素与打开详情前一致。
+
 ## 两个同标题文档的撤销
 
 启动 `target/debug/window undo` 时设置独立的 `OCTARA_INSPECT` socket。文档 A 的「Open Document B」按钮打开第二个同标题窗口。两个编辑器都用 `editor` 作为查找名，分别持有文档值和撤销历史。`edits` 统计应用收到的文本写入，工具栏的可用性读本窗的 `command_enabled("edit.undo")`。Inspector 用窗口编号和从快照获得的窗口 `target` 调用 `edit.undo`。[示例实现](../../examples/src/apps.rs) · [命令回归](../../crates/octara/tests/integration/menus.rs)

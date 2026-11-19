@@ -86,6 +86,19 @@ python3 -B examples/ios_panel.py --device "$ios_panel_device" \
 
 启动器输出 `run.json` 的 socket、构建收据和控制台日志路径。从另一终端用 `octara inspect --connect SOCKET --receipt RECEIPT --json` 校验运行构建。需要窗口的原生呈现计数或进程号时，用 `octara run --connect SOCKET --require-build RECEIPT --json` 执行 `inspect`，读取回执的 `live`。用系统触摸在列表上向上拖动，并从 `pan-list` 高度、行相对视口的位置和 `touch_scroll` 读回两处消费。用 `xcrun simctl io DEVICE screenshot PATH` 对照设备像素。切换应用时，`console.log` 记录原生接触阶段和活动状态。结束后终止测试应用并清理本次临时目录。
 
+### iOS 模拟器相册返回
+
+在同一模拟器中运行两页相册。相册列表保持挂载，详情声明视图局部的 `navigation.back` 命令。「Back」按钮和系统返回共享关闭详情的回调。
+
+```sh
+IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build --locked -p octara-examples --bin album_back --target aarch64-apple-ios-sim
+ios_album_run=$(mktemp -d /tmp/octara-album.XXXXXX)
+python3 -B examples/ios_panel.py --scene album --device "$ios_panel_device" \
+  --binary target/aarch64-apple-ios-sim/debug/album_back --output "$ios_album_run/app"
+```
+
+滚动相册，选中一张照片，再滚动详情。用 Inspector 记下两处视口的位置及详情目标。从屏幕边缘向右滑，在同一次接触中越过半屏后反向收回并抬手。核对详情目标和阅读位置，以及 `Back 0 · Released 0`。再次从边缘向右滑并完成，核对列表位置、`Back 1 · Released 1` 和旧详情操作目标的 `STALE_TARGET` 回执。`console.log` 中的 `octara.back_trace/1` 记录 UIKit 的交互阶段及 Core 是否接收。结束后终止测试应用并清理本次临时目录。[无窗口回归](tests/integration/album_back.rs)
+
 ### macOS 触控板
 
 构建 `trackpad`，在单独的临时目录中保留这次运行的日志和 socket。

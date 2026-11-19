@@ -18,7 +18,7 @@
 - [x] 在 iOS 模拟器核对普通单行字段的系统拼音、候选确认、取消、焦点退休和键盘边界。[实测记录](../examples/IME.md#ios-拼音实测)
 - [x] 在 macOS 同窗复核行内重命名的拼音候选、目录重排、选区和编辑器退休，并与标准 NSTextView 对照候选位置。[实测记录](design/interaction-scenarios.md#macos-实窗记录)
 - [x] 在两个同标题的 macOS 实窗核对系统菜单、快捷键、工具栏和 Inspector 的撤销归属与可用性。[实测记录](design/interaction-scenarios.md#两个同标题文档的撤销)
-- [ ] 移动端系统返回分别取消和完成，核验页面身份、阅读位置和释放次数；记录使用的宿主和设备。
+- [x] 在 iOS 模拟器核对相册侧滑返回过半后取消及再次完成，验证页面身份、阅读位置和释放次数。[相册实测](design/interaction-scenarios.md#ios-相册实测)
 - [x] 在已解锁、可见的 macOS 窗口验证 `display` 像素来源，核对原生视图报告和实际屏幕尺寸。覆盖 WKWebView 页面切换、窗口缩放、绘制帧版本和锁屏回退。[截图实测记录](design/capture.md#macos-实窗记录)
 
 ## 从上轮接续的工程问题

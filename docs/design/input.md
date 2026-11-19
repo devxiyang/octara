@@ -37,6 +37,12 @@ macOS 27.2 上使用系统简体拼音、反向 emoji 选区和两个受控字�
 
 窗口失去活动状态、活动模态层收窄范围或后续阶段发现所有者已失效时，清理当前捕获及其后续工作。已开始的可达拖动可以收到一次取消，后来的 Move 或 Up 不会继续这次捕获。 [指针回归](../../crates/octara/tests/integration/pointer.rs)
 
+## Interactive back
+
+平台手势开始时，窗口从当前焦点路径捕获视图自己的 `navigation.back` 命令。iOS 宿主还会校验 UIKit 开始侧滑时显示的详情命令，避免排队期间的页面替换改变接收者。开始和进度阶段只更新手势报告。窗口失去活动状态会取消会话。完成时，只有仍挂载、未被模态遮挡且命令身份一致的原视图能收到一次回调。
+
+`InputEvent::BackGesture` 可以进入录制与回放。Inspector 的 `back_gesture` 给出宿主最新阶段及完成是否送达原命令。UIKit 负责手指移动期间的动画，并在交互转为自动收尾时提供进度。业务结果来自应用自己接受的页面状态。[返回会话](../../crates/octara/src/app/back.rs) · [替换回归](../../crates/octara/tests/integration/keys.rs) · [UIKit 交互变化回调](https://developer.apple.com/documentation/uikit/uiviewcontrollertransitioncoordinator/notifywheninteractionchanges(_:))
+
 ## Scroll routing
 
 应用的 `scroll_to` 和 `scroll_to_end` 与窗口的定址滚动共用目标查找和滚动轴校验。按名称请求需要唯一的已挂载视口。各非零坐标分量都需要对应的滚动轴。返回值报告请求是否被接受，包括到达边界时。回到末端需要纵向滚动能力，并保留横向偏移。`scroll_into_view` 按元素位置交给其外层视口执行揭示。[轴校验](../../crates/octara/src/kernel.rs#L2309) · [定址滚动回归](../../crates/octara/tests/integration/scroll.rs#L48)

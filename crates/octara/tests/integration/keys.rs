@@ -1,8 +1,46 @@
 //! The keyboard: chords as data, the keymap resolved along the focus path, commands, `on_key`,
 //! other keyboard layouts, and input methods.
 
-use octara::app::{AppConfig, Chord, Event, InputEvent, TargetPlatform};
+use octara::app::{AppConfig, BackPhase, Chord, Event, InputEvent, TargetPlatform};
 use octara::prelude::*;
+
+#[test]
+fn interactive_back_cannot_complete_on_a_replacement_command() {
+    let mut window = Window::headless(|| {
+        let revision = state("revision", || 0u32);
+        let calls = state("calls", || 0u32);
+        on_command("replace", move || revision.update(|n| *n += 1));
+        col().child(text(move || calls.get().to_string()).id("calls")).child(keyed(
+            move || revision.get(),
+            move |_| el().id("page").size_12().focusable().on_command("navigation.back", move || calls.update(|n| *n += 1)),
+        ))
+    });
+    window.dispatch(Event::Focus("page".into())).unwrap();
+    let original = window.inspect().find("page").unwrap().target.clone();
+    let original_command = window.back_gesture_target().unwrap();
+    assert!(window.event(InputEvent::BackGesture { id: 1, phase: BackPhase::Started }));
+    window.invoke("replace").unwrap();
+    window.dispatch(Event::Focus("page".into())).unwrap();
+    assert_ne!(window.inspect().find("page").unwrap().target, original);
+    assert_ne!(window.back_gesture_target(), Some(original_command));
+    assert!(!window.event(InputEvent::BackGesture { id: 1, phase: BackPhase::Completed }));
+    assert_eq!(window.kernel().text_of("calls").as_deref(), Some("0"));
+    assert!(!window.inspect().back_gesture.unwrap().delivered);
+
+    assert!(window.event(InputEvent::BackGesture { id: 2, phase: BackPhase::Started }));
+    assert!(!window.event(InputEvent::BackGesture { id: 1, phase: BackPhase::Cancelled }));
+    assert!(window.event(InputEvent::BackGesture { id: 2, phase: BackPhase::Completed }));
+    assert!(!window.event(InputEvent::BackGesture { id: 2, phase: BackPhase::Completed }));
+    assert_eq!(window.kernel().text_of("calls").as_deref(), Some("1"));
+    assert!(window.inspect().back_gesture.unwrap().delivered);
+
+    assert!(window.event(InputEvent::BackGesture { id: 3, phase: BackPhase::Started }));
+    assert!(window.event(InputEvent::Active(false)));
+    assert!(!window.event(InputEvent::BackGesture { id: 3, phase: BackPhase::Completed }));
+    assert!(!window.event(InputEvent::BackGesture { id: 4, phase: BackPhase::Started }));
+    assert_eq!(window.inspect().back_gesture.unwrap().phase, BackPhase::Cancelled);
+    assert_eq!(window.kernel().text_of("calls").as_deref(), Some("1"));
+}
 
 fn view() -> View {
     let log = state("log", Vec::<String>::new);

@@ -21,7 +21,7 @@ enum Action<'a> {
 }
 
 impl Window {
-    fn live_handler(&self, id: HandlerId) -> Option<ScopedHandler> {
+    pub(super) fn live_handler(&self, id: HandlerId) -> Option<ScopedHandler> {
         let handler = self.w.handlers.borrow().get(&id.0).cloned()?;
         handler.is_live(&self.app.rt).then_some(handler)
     }

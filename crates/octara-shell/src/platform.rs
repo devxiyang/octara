@@ -4,6 +4,8 @@
 //! its frame clock.
 
 use super::{Shared, ShellEvent};
+#[cfg(target_os = "ios")]
+use octara::kernel::HandlerId;
 use octara::platform::{Frame, NativeSnapshotRequest, Platform, PlatformWindow, TextInput};
 use octara::serde_json::{Value, json};
 use octara_primitives::input::CursorStyle;
@@ -190,6 +192,10 @@ impl Platform for WinitPlatform {
             config,
             a11y,
             #[cfg(target_os = "ios")]
+            ios_back: None,
+            #[cfg(target_os = "ios")]
+            ios_back_preview: false,
+            #[cfg(target_os = "ios")]
             ios_input,
             #[cfg(target_os = "macos")]
             text_input,
@@ -300,6 +306,11 @@ pub(crate) struct WinitWindow {
     pub(crate) config: wgpu::SurfaceConfiguration,
     pub(crate) a11y: accesskit_winit::Adapter,
     #[cfg(target_os = "ios")]
+    pub(crate) ios_back: Option<super::back_ios::BackNavigation>,
+    /// A frame without a back command can serve as the preview when a detail page opens.
+    #[cfg(target_os = "ios")]
+    ios_back_preview: bool,
+    #[cfg(target_os = "ios")]
     pub(crate) ios_input: Option<super::text_input_ios::TextInputIos>,
     #[cfg(target_os = "macos")]
     pub(crate) text_input: Option<super::text_input_mac::TextInputMac>,
@@ -347,6 +358,37 @@ pub(crate) struct WinitWindow {
 }
 
 impl WinitWindow {
+    #[cfg(target_os = "ios")]
+    pub(crate) fn sync_ios_back(&mut self, eligible: bool) {
+        if !eligible {
+            if let Some(back) = &mut self.ios_back {
+                back.disarm();
+            }
+            return;
+        }
+        if !self.ios_back_preview || self.ios_back.as_ref().is_some_and(super::back_ios::BackNavigation::armed) {
+            return;
+        }
+        self.ios_back_preview = false;
+        let result = (|| {
+            if self.ios_back.is_none() {
+                self.ios_back = Some(super::back_ios::BackNavigation::new(&self.window, self.shared.proxy.clone())?);
+            }
+            self.ios_back.as_mut().expect("iOS back bridge initialized").arm()
+        })();
+        if let Err(error) = result {
+            eprintln!("octara-shell: {error}");
+        }
+    }
+
+    #[cfg(target_os = "ios")]
+    pub(crate) fn did_draw_ios_back(&mut self, owner: Option<HandlerId>) {
+        self.ios_back_preview = owner.is_none();
+        if let Some(back) = &mut self.ios_back {
+            back.did_draw(owner);
+        }
+    }
+
     pub(crate) fn drawable_size(&self) -> PhysicalSize<u32> {
         drawable_size(&self.window)
     }
