@@ -132,10 +132,7 @@ fn age(updated: u64, now: u64) -> Age {
 }
 
 fn sidebar(chat: &Chat, listing: Signal<bool>) -> El {
-    let now = chat.now();
-    let flat = chat.threads.read_only().sort_by(|t| Reverse(t.updated)).group_by(move |t| age(t.updated, now)).flatten();
     let new = chat.clone();
-    let rows = chat.clone();
     col()
         .id("sidebar")
         .size_full()
@@ -159,14 +156,7 @@ fn sidebar(chat: &Chat, listing: Signal<bool>) -> El {
             ),
         )
         .child(text("YOUR CONVERSATIONS").text_xs().text_color(Token::TextMuted).px_5().pb_2())
-        .child(list().id("threads").label("Conversations").flex_1().min_h(0.0).px_2().pb_2().overflow_y_scroll().child(virtual_each(
-            move || flat.clone(),
-            |item| if item.header().is_some() { 36.0 } else { 34.0 },
-            move |key, item| match key.clone() {
-                FlatKey::Header(age) => list_header(age.to_string()).id(format!("age-{age:?}")),
-                FlatKey::Item(id) => thread_row(&rows, listing, id, move || item.with(|f| f.item().cloned())),
-            },
-        )))
+        .child(thread_list(chat, listing))
         .child(el().h(1.0).w_full().bg(Token::Border).a11y_hidden())
         .child(
             row().items_center().gap_3().p_4().child(icon(icons::HARD_DRIVE).size_4().text_color(Token::TextMuted)).child(
@@ -176,6 +166,51 @@ fn sidebar(chat: &Chat, listing: Signal<bool>) -> El {
                     .child(text("History saved on this device").text_xs().text_color(Token::TextMuted)),
             ),
         )
+}
+
+fn thread_list(chat: &Chat, listing: Signal<bool>) -> El {
+    const VIEWPORT: &str = "threads";
+    let now = chat.now();
+    let flat = chat.threads.read_only().sort_by(|t| Reverse(t.updated)).group_by(move |t| age(t.updated, now)).flatten();
+    let endpoints = flat.clone();
+    let renaming = chat.renaming;
+    let rows = chat.clone();
+    list()
+        .id(VIEWPORT)
+        .label("Conversations")
+        .flex_1()
+        .min_h(0.0)
+        .px_2()
+        .pb_2()
+        .overflow_y_scroll()
+        .on_key(move |event| {
+            let first = match event.key {
+                Key::Home => true,
+                Key::End => false,
+                _ => return false,
+            };
+            // The inline rename field uses these keys to move its caret.
+            if !event.modifiers.is_empty() || untrack(|| renaming.get()).is_some() {
+                return false;
+            }
+            let mut keys = untrack(|| endpoints.keys()).into_iter();
+            let is_thread = |key: &FlatKey<Age, ThreadId>| matches!(key, FlatKey::Item(_));
+            let target = if first { keys.find(is_thread) } else { keys.rfind(is_thread) };
+            let Some(key @ FlatKey::Item(id)) = target else { return false };
+            if !reveal_row(VIEWPORT, key) {
+                return false;
+            }
+            focus(&format!("thread-{id}"));
+            true
+        })
+        .child(virtual_each(
+            move || flat.clone(),
+            |item| if item.header().is_some() { 36.0 } else { 34.0 },
+            move |key, item| match key.clone() {
+                FlatKey::Header(age) => list_header(age.to_string()).id(format!("age-{age:?}")),
+                FlatKey::Item(id) => thread_row(&rows, listing, id, move || item.with(|f| f.item().cloned())),
+            },
+        ))
 }
 
 fn brand_mark(size: f32) -> El {

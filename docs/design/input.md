@@ -47,6 +47,8 @@ macOS 27.2 上使用系统简体拼音、反向 emoji 选区和两个受控字�
 
 应用的 `scroll_to` 和 `scroll_to_end` 与窗口的定址滚动共用目标查找和滚动轴校验。按名称请求需要唯一的已挂载视口。各非零坐标分量都需要对应的滚动轴。返回值报告请求是否被接受，包括到达边界时。回到末端需要纵向滚动能力，并保留横向偏移。`scroll_into_view` 按元素位置交给其外层视口执行揭示。[轴校验](../../crates/octara/src/kernel.rs#L2309) · [定址滚动回归](../../crates/octara/tests/integration/scroll.rs#L48)
 
+`reveal_row` 为已挂载的单个虚拟区登记业务 key，并绑定该虚拟区实例与请求所有者。窗口先结算行来源和布局，再保留并测量目标行。滚动后用同一行作锚点校正邻近行的测量误差。key 消失、所有者退休或列表实例被替换时，丢弃原请求。同一处理器里的 `focus` 请求随后按当前挂载树结算。保留输入焦点的选择器可以通过现有的 `active_descendant` 关系发布挂载后的目标。[虚拟行实现](../../crates/octara/src/view/list.rs) · [窗口时序](../../crates/octara/src/app/frame.rs) · [揭示回归](../../crates/octara/tests/integration/virtual_reveal.rs)
+
 普通触摸平移越过阈值时捕获一个视口，后续位移和惯性由同一个视口处理。无阶段的 `wheel` 每笔重新命中，选择允许沿相应轴滚动的最近视口。无窗口的嵌套视口对照中，内层剩余 `12` 时输入 `+30`，内层实际滚动 `12`，外层偏移保持 `0`。[滚动与平移入口](../../crates/octara/src/app/pointer.rs) · [偏移写入](../../crates/octara/src/kernel.rs)
 
 在滚动视口上设置 `on_touch_scroll` 可以联动面板。回调在 `Before` 和 `After` 阶段接收有符号的 `[dx, dy]`，返回面板实际消费的部分。窗口先执行 `Before`，运行布局并夹紧偏移，再从新偏移开始滚动视口。若还有余量，则交给 `After`。每轴的消费都限制在输入的方向和幅度内。各处位置通过同一帧发布。窗口持有初始视口的身份，取消或卸载终止这次接触。联动直接触摸在抬手时结束。[面板验收时序](interaction-scenarios.md#移动地图的面板与列表联动) · [Compose 的嵌套滚动](https://developer.android.com/develop/ui/compose/touch-input/scroll/nested-scroll-modifiers#nested-scrolling-cycle)

@@ -6,14 +6,11 @@
 //! list's order, then tree order), not by geometry. After each operation the window marks the
 //! range each mounted text covers; the kernel draws it.
 
-use super::Window;
+use super::{ListOrder, VirtualLists, Window};
 use crate::inspect::SelectionPreview;
 use crate::kernel::select::{Copied, CopyMarkdown, RowKey, Seg};
 use crate::kernel::{Kernel, NodeId, Role};
-use crate::reactive::seq::Seq;
-use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -46,15 +43,6 @@ pub(super) struct MarkedSelection {
     texts: Vec<NodeId>,
     /// Whether the selection crosses virtual rows absent from the marked tree.
     missing_rows: bool,
-}
-
-/// Builds a row off screen: its root node, and what disposes it.
-type BuildRow = Rc<dyn Fn(&RowKey) -> Option<(NodeId, Box<dyn FnOnce()>)>>;
-
-/// A virtual list's settled order, and how copying builds a row that is not mounted.
-pub(crate) struct ListOrder {
-    pub keys: Rc<RefCell<Seq<RowKey>>>,
-    pub build: BuildRow,
 }
 
 impl Window {
@@ -548,7 +536,7 @@ fn step(k: &Kernel, parent: NodeId, seg: &Seg) -> Option<NodeId> {
 }
 
 /// Where a step stands among its siblings: a list row by its list's order, else by index.
-fn rank(k: &Kernel, lists: &HashMap<NodeId, ListOrder>, parent: Option<NodeId>, seg: &Seg) -> (u64, u64) {
+fn rank(k: &Kernel, lists: &VirtualLists, parent: Option<NodeId>, seg: &Seg) -> (u64, u64) {
     match seg {
         Seg::Row { key, index } => {
             let order = parent.and_then(|p| lists.get(&p));
@@ -571,7 +559,7 @@ fn rank(k: &Kernel, lists: &HashMap<NodeId, ListOrder>, parent: Option<NodeId>, 
 }
 
 /// Two paths in document order.
-fn cmp_paths(k: &Kernel, lists: &HashMap<NodeId, ListOrder>, region: NodeId, a: &[Seg], b: &[Seg]) -> Ordering {
+fn cmp_paths(k: &Kernel, lists: &VirtualLists, region: NodeId, a: &[Seg], b: &[Seg]) -> Ordering {
     let mut node = Some(region);
     for (sa, sb) in a.iter().zip(b) {
         if sa == sb {
@@ -589,7 +577,7 @@ fn cmp_paths(k: &Kernel, lists: &HashMap<NodeId, ListOrder>, region: NodeId, a: 
     a.len().cmp(&b.len())
 }
 
-fn cmp_points(k: &Kernel, lists: &HashMap<NodeId, ListOrder>, region: NodeId, a: &TextPoint, b: &TextPoint) -> Ordering {
+fn cmp_points(k: &Kernel, lists: &VirtualLists, region: NodeId, a: &TextPoint, b: &TextPoint) -> Ordering {
     match cmp_paths(k, lists, region, &a.path, &b.path) {
         Ordering::Equal => a.offset.cmp(&b.offset),
         o => o,
@@ -599,7 +587,7 @@ fn cmp_points(k: &Kernel, lists: &HashMap<NodeId, ListOrder>, region: NodeId, a:
 /// The range of a text at `path` (of `len` bytes) the selection from `start` to `end` covers.
 fn covered(
     k: &Kernel,
-    lists: &HashMap<NodeId, ListOrder>,
+    lists: &VirtualLists,
     region: NodeId,
     path: &[Seg],
     text: &str,
@@ -620,7 +608,7 @@ fn covered(
 /// The list's path and the range of row indices a document selection crosses.
 fn selected_rows(
     k: &Kernel,
-    lists: &HashMap<NodeId, ListOrder>,
+    lists: &VirtualLists,
     region: NodeId,
     container: NodeId,
     order: &ListOrder,

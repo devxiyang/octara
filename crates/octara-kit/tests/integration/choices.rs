@@ -55,6 +55,21 @@ fn clean(window: &Window) {
     assert!(window.app().diagnostics().is_empty(), "{:?}", window.app().diagnostics());
 }
 
+fn many_choices() -> Vec<Choice> {
+    (0..120).map(|index| Choice::new(format!("item-{index}"), format!("Item {index:03}")).disabled(index == 119)).collect()
+}
+
+fn assert_active_row_visible(window: &Window, focus: &str, id: &str) {
+    assert!(window.frame_is_settled(), "revealing {id} did not settle: {:?}", window.app().diagnostics());
+    let snapshot = window.inspect();
+    assert_eq!(snapshot.focus.as_deref(), Some(focus));
+    assert_eq!(snapshot.find(focus).unwrap().active_descendant.as_deref(), Some(id));
+    let kernel = window.kernel();
+    let (_, list_y, _, list_h) = kernel.shown_rect(kernel.find("color-list").unwrap());
+    let (_, row_y, _, row_h) = kernel.shown_rect(kernel.find(id).unwrap());
+    assert!(row_y >= list_y - 0.1 && row_y + row_h <= list_y + list_h + 0.1, "the active row {id} must be visible");
+}
+
 #[test]
 fn combobox_keeps_search_focused_and_selection_separate_from_keyboard_highlight() {
     let mut window = Window::headless(choices);
@@ -224,34 +239,66 @@ fn modified_navigation_and_text_editing_keys_leave_the_active_option_alone() {
 }
 
 #[test]
-fn active_rows_scroll_into_view_without_moving_search_focus() {
+fn combobox_reveals_virtual_rows_on_open_navigation_and_filter_updates() {
     let mut window = Window::headless(|| {
         let value = state("value", || Some("item-75".to_owned()));
+        let leading_index = state("leading-index", || 0);
+        on_command("choices.move-match", move || leading_index.set(118));
         col().size_full().p_4().child(combobox(
             "color",
             "Item",
             value,
-            || (0..120).map(|index| Choice::new(format!("item-{index}"), format!("Item {index}"))).collect(),
+            move || {
+                let mut choices = many_choices();
+                let leading = choices.remove(leading_index.get());
+                choices.insert(0, leading);
+                choices
+            },
             button,
         ))
     });
     window.tap("color").unwrap();
-    assert_eq!(active(&window).as_deref(), Some("color-option-item-75"));
-    assert!(focused(&window, "color-search"));
-    {
-        let kernel = window.kernel();
-        let list = kernel.find("color-list").unwrap();
-        let row = kernel.find("color-option-item-75").unwrap();
-        let (_, list_y, _, list_h) = kernel.shown_rect(list);
-        let (_, row_y, _, row_h) = kernel.shown_rect(row);
-        assert!(kernel.scroll_offset(list).1 > 0.0);
-        assert!(row_y >= list_y && row_y + row_h <= list_y + list_h + 0.1, "the active row must be visible");
-    }
+    assert_active_row_visible(&window, "color-search", "color-option-item-75");
+    assert!(selected(&window, "color-option-item-75"));
+    assert!(!window.kernel().exists("color-option-item-0"));
     for _ in 0..12 {
         window.press_key("down").unwrap();
     }
-    assert_eq!(active(&window).as_deref(), Some("color-option-item-87"));
-    assert!(focused(&window, "color-search"));
+    assert_active_row_visible(&window, "color-search", "color-option-item-87");
+    window.type_text("Item 1");
+    assert_active_row_visible(&window, "color-search", "color-option-item-100");
+    assert!(!window.kernel().exists("color-option-item-118"));
+    window.press_key("up").unwrap();
+    assert_active_row_visible(&window, "color-search", "color-option-item-118");
+    window.invoke("choices.move-match").unwrap();
+    assert_active_row_visible(&window, "color-search", "color-option-item-118");
+    assert!(!window.kernel().exists("color-option-item-119"));
+    assert_eq!(window.kernel().value_of("color").as_deref(), Some("Item 075"));
+    window.resize(390.0, 844.0);
+    assert_active_row_visible(&window, "color-search", "color-option-item-118");
+    window.press_key("enter").unwrap();
+    assert_eq!(window.kernel().value_of("color").as_deref(), Some("Item 118"));
+    assert!(focused(&window, "color"));
+    clean(&window);
+}
+
+#[test]
+fn select_home_and_end_reveal_virtual_rows_without_moving_list_focus() {
+    let mut window = Window::headless(|| {
+        let value = state("value", || None::<String>);
+        col().size_full().p_4().child(select("color", "Item", value, many_choices, button))
+    });
+    window.tap("color").unwrap();
+    assert_active_row_visible(&window, "color-list", "color-option-item-0");
+    assert!(!window.kernel().exists("color-option-item-118"));
+    window.press_key("end").unwrap();
+    assert_active_row_visible(&window, "color-list", "color-option-item-118");
+    assert!(!window.kernel().exists("color-option-item-0"));
+    window.press_key("home").unwrap();
+    assert_active_row_visible(&window, "color-list", "color-option-item-0");
+    window.press_key("space").unwrap();
+    assert_eq!(window.kernel().value_of("color").as_deref(), Some("Item 000"));
+    assert!(focused(&window, "color"));
     clean(&window);
 }
 

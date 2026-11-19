@@ -1,6 +1,7 @@
 //! Keyed rows from ordinary snapshots or incremental collections, with shared row ownership.
 
 use super::{El, Parent, Slot, Slots, View, build_el, count_offset, structure};
+use crate::app::{ListOrder, RowReveal};
 use crate::diagnostics as codes;
 use crate::identity::{RegionId, RegionKind, RowKey, RowNamespace, ScopeSegment};
 use crate::kernel::NodeId;
@@ -8,6 +9,7 @@ use crate::reactive::graph::{Ctx, ReadSignal, ScopeId, Signal, memo, memo_with, 
 use crate::reactive::list::{Change, Observer, ReadList};
 use crate::reactive::log::{Changes, Cursor};
 use crate::reactive::seq::Seq;
+use std::any::TypeId;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
@@ -405,6 +407,34 @@ impl<K: Eq + Hash + Clone, T> Observer<K, T> for ItemChanges<K> {
 
 const OVERSCAN: usize = 5;
 
+/// Requests that a mounted [`virtual_each`] reveal a row by its business key after layout.
+/// `viewport` names the unique scroll container of one virtual region. The current source order
+/// and measured row bounds determine the scroll. Returns whether that region accepted the
+/// request. A missing key, retired owner or replaced region cancels it before scrolling.
+/// The last request for each region wins. Call from a handler or task. Focus stays where it is.
+#[track_caller]
+pub fn reveal_row<K: Eq + Hash + Display + 'static>(viewport: &str, key: K) -> bool {
+    if !super::allows_ui_write(Location::caller()) {
+        return false;
+    }
+    let window = crate::app::window();
+    let container = {
+        let kernel = window.kernel.borrow();
+        kernel.find(viewport).filter(|&id| kernel.check_interaction_scope(id, kernel.front_modal()).is_ok())
+    };
+    let Some(container) = container else { return false };
+    let registration = window
+        .lists
+        .borrow()
+        .unique(container)
+        .filter(|list| list.key_type == TypeId::of::<K>())
+        .map(|list| (list.region, list.namespace.clone()));
+    let Some((region, namespace)) = registration else { return false };
+    let owner = rt(|rt| rt.capture_owner());
+    let key = row_key(key, &namespace);
+    rt(|rt| rt.admits(owner)) && window.lists.borrow_mut().request_reveal(container, region, key, owner)
+}
+
 /// Like [`each`], for long lists: only rows near the visible area exist. Put it directly in a
 /// scroll container (`v_flex().overflow_y_scroll().flex_1()`); it follows that container's
 /// scroll offset and height.
@@ -468,6 +498,7 @@ where
         let gaps: Rc<RefCell<Vec<NodeId>>> = Rc::default();
         let scroll = u.scroll_state(container);
         let revision = Signal::scoped(0u64);
+        let reveal: Rc<RefCell<Option<RowReveal>>> = Rc::default();
         let row_gap = Rc::new(Cell::new(u.kernel.borrow().row_gap(container) as f64));
         let list_top: Rc<Cell<f32>> = Rc::default();
         let mirror: Rc<RefCell<Seq<RowKey>>> = Rc::default();
@@ -499,11 +530,23 @@ where
                 let (scope, node) = rows.build(identity, true)?;
                 Some((node, Box::new(move || rt(|rt| rt.dispose_scope(scope)))))
             });
-            u.lists.borrow_mut().insert(container, crate::app::ListOrder { keys: mirror, build });
+            u.lists.borrow_mut().register(
+                container,
+                ListOrder {
+                    region: top,
+                    key_type: TypeId::of::<K>(),
+                    namespace: namespace.clone(),
+                    keys: mirror,
+                    build,
+                    reveal: reveal.clone(),
+                    revision,
+                },
+            );
             let u = u.clone();
             rt(|rt| {
                 rt.on_cleanup(Box::new(move || {
-                    u.lists.borrow_mut().remove(&container);
+                    let retired = u.lists.borrow_mut().remove(container, top);
+                    drop(retired);
                 }))
             });
         }
@@ -514,6 +557,7 @@ where
                 (u.clone(), list_top.clone(), mirror.clone(), rows.clone(), measured.clone(), row_gap.clone(), estimates.clone());
             let pending_anchor = pending_anchor.clone();
             let anchor_request = anchor_request.clone();
+            let reveal = reveal.clone();
             let constraints = RefCell::new(None);
             u.clone().after_layout(Rc::new(move || {
                 let mut k = u.kernel.borrow_mut();
@@ -590,6 +634,24 @@ where
                     changed = true;
                 }
                 measured.extend(rows.iter().filter(|(_, (_, node))| k.is_alive(*node)).map(|(key, _)| key.clone()));
+                let request = reveal.borrow_mut().take_if(|request| request.active);
+                // Reconcile the resident set after releasing the temporary request pin.
+                changed |= request.is_some();
+                if let Some(request) = request
+                    && rt(|rt| rt.admits(request.owner))
+                    && u.lists.borrow().unique(container).is_some_and(|list| list.region == top)
+                    && let Some(&(_, node)) = rows.get(&request.key)
+                    && k.check_interaction_scope(node, k.front_modal()).is_ok()
+                {
+                    let (x, y, w, h) = k.shown_rect(node);
+                    if k.reveal(node, crate::paint::Rect { x, y, w, h }) {
+                        // The revealed row stays put while its new neighbors get measured.
+                        let index = m.index_of(&request.key).expect("a resident row belongs to the settled order");
+                        let offset = f64::from(k.scroll_offset(container).1 - start) - m.prefix_weight(index);
+                        *pending_anchor.borrow_mut() = Some(RowAnchor { key: request.key, offset });
+                        anchor_request.set(k.scroll_request(container));
+                    }
+                }
                 if changed {
                     revision.update(|r| *r += 1);
                 }
@@ -723,6 +785,17 @@ where
                     let start = first.saturating_sub(OVERSCAN);
                     let end = if len == 0 { 0 } else { (last + 1 + OVERSCAN).min(len) };
                     let mut indices: Vec<_> = (start..end).collect();
+                    if let Some(request) = reveal.borrow().as_ref()
+                        && (request.active || rows.entries.borrow().contains_key(&request.key))
+                        && rt.admits(request.owner)
+                        && let Some(index) = m.index_of(&request.key)
+                        && u.lists.borrow().unique(container).is_some_and(|list| list.region == top)
+                    {
+                        let kernel = u.kernel.borrow();
+                        if kernel.check_interaction_scope(container, kernel.front_modal()).is_ok() {
+                            indices.push(index);
+                        }
+                    }
                     if let Some(anchor) = pending_anchor.borrow().as_ref()
                         && let Some(index) = m.index_of(&anchor.key)
                     {

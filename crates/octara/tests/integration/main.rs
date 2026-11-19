@@ -60,6 +60,7 @@ mod text_buffer;
 mod text_presentation;
 mod theme;
 mod theme_contrast;
+mod virtual_reveal;
 mod windows;
 
 mod action_permissions;

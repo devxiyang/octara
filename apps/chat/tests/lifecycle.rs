@@ -6,12 +6,12 @@ mod controlled;
 
 use controlled::Controlled;
 use octara::accesskit::Action as AccessibilityAction;
-use octara::app::{InputEvent, Window};
+use octara::app::{Event as WindowEvent, InputEvent, Window};
 use octara::kernel::a11y::a11y_id;
 use octara::prelude::*;
 use octara::reactive::untrack;
 use octara_chat::engine::Purpose;
-use octara_chat::model::{Event, Message, MessageId, SavedMessage, Status, ThreadId};
+use octara_chat::model::{Event, Message, MessageId, SavedMessage, Status, Thread, ThreadId};
 use octara_chat::settings::Generation;
 use octara_chat::store::Store;
 use octara_chat::{Chat, Options};
@@ -109,6 +109,38 @@ impl Harness {
     fn queued(&self) -> usize {
         self.read(|chat| chat.queue.keys().len())
     }
+}
+
+#[test]
+fn home_and_end_focus_the_logical_conversation_ends() {
+    let mut h = Harness::with_view(None, octara_chat::view);
+    h.window.resize(1000.0, 720.0);
+    h.run(|chat| {
+        let now = chat.now();
+        for id in 1..=64 {
+            chat.threads.push(Thread { id, title: format!("Conversation {id}"), updated: now - (64 - id) * 86_400 });
+        }
+        chat.open(63);
+    });
+
+    h.window.dispatch(WindowEvent::Focus("thread-63".into())).unwrap();
+    h.window.press_key("shift+end").unwrap();
+    assert_eq!(h.window.inspect().focus.as_deref(), Some("thread-63"));
+    for (key, id, arrow, neighbor) in [("end", "thread-1", "up", "thread-2"), ("home", "thread-64", "down", "thread-63")] {
+        assert!(!h.window.kernel().exists(id), "{id} starts outside the virtual window");
+        h.window.press_key(key).unwrap();
+        let snapshot = h.window.inspect();
+        assert_eq!(snapshot.focus.as_deref(), Some(id));
+        let [_, top, _, viewport] = snapshot.find("threads").unwrap().bounds;
+        let [_, y, _, height] = snapshot.find(id).unwrap().bounds;
+        assert!(y >= top - 0.5 && y + height <= top + viewport + 0.5, "focused row {id} must be fully visible in the list");
+        assert_eq!(h.window.kernel().text_of("title").as_deref(), Some("Conversation 63"));
+
+        h.window.press_key(arrow).unwrap();
+        assert_eq!(h.window.inspect().focus.as_deref(), Some(neighbor));
+        assert_eq!(h.read(|chat| untrack(|| chat.current.get())), Some(63));
+    }
+    assert!(h.window.app().diagnostics().is_empty(), "{:?}", h.window.app().diagnostics());
 }
 
 #[test]

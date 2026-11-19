@@ -74,6 +74,8 @@ assert!(app.app().diagnostics().is_empty());
 
 快照来源适合小型或重算成本低的集合。`each` 和 `virtual_each` 的行工厂直接返回一个 `El`。通过数据源过滤应省略的行。下例修改文字后，行继续由相同的业务 key 标识。`.id(..)` 供测试和 Inspector 查找当前挂载的控件。
 
+在处理器里用 `reveal_row(viewport_id, key)` 揭示虚拟行。视口须已挂载并包含一个 `virtual_each`，传入的 key 类型与数据源一致。窗口按更新后的行顺序和实际测量结果滚动。需要把焦点移到该行时，同一处理器可以追加 `focus(row_id)`，窗口会在揭示完成后处理焦点请求。
+
 ```rust
 use octara::prelude::*;
 

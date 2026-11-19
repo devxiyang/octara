@@ -316,6 +316,12 @@ fn conversations_are_renamed_and_deleted_from_their_menu() {
     let field = format!("rename-{id}");
     assert!(w.kernel().state_of(&field).is_some_and(|s| s.contains(State::FOCUSED)), "the field took focus");
     w.dispatch(Event::Input(field.clone(), "Greetings".into())).unwrap();
+    w.set_selection(4, 4);
+    for (key, selection) in [("home", 0..0), ("end", 9..9), ("shift+home", 0..9)] {
+        w.press_key(key).unwrap();
+        assert_eq!(w.inspect().focus.as_deref(), Some(field.as_str()));
+        assert_eq!(w.text_field().unwrap().selection, selection);
+    }
     w.press_key("enter").unwrap();
     assert_eq!(text_of(&w, "title"), "Greetings");
 

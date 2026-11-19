@@ -93,12 +93,14 @@ fn picker(
             let query = query.map_or_else(String::new, |query| query.with(|text| text.to_lowercase()));
             let valid = valid.get();
             options.with(|options| {
-                options
-                    .iter()
-                    // Give the keyed region the complete invalid snapshot so it reports duplicates.
-                    .filter(|option| !valid || query.is_empty() || option.label.to_lowercase().contains(&query))
-                    .map(|option| (option.id.clone(), option.clone()))
-                    .collect::<Vec<_>>()
+                Rc::new(
+                    options
+                        .iter()
+                        // Give the keyed region the complete invalid snapshot so it reports duplicates.
+                        .filter(|option| !valid || query.is_empty() || option.label.to_lowercase().contains(&query))
+                        .map(|option| (option.id.clone(), option.clone()))
+                        .collect::<Vec<_>>(),
+                )
             })
         });
         let enabled = memo(move || {
@@ -124,12 +126,18 @@ fn picker(
                 }
             },
         );
-        let reveal_id = id.clone();
+        let list_id = format!("{id}-list");
+        let reveal_list = list_id.clone();
+        let list_size = size_of(&list_id);
         watch(
-            move || (open.get(), active.get(), visible.get()),
-            move |(shown, active, _), _| {
-                if *shown && let Some(active) = active {
-                    scroll_into_view(&format!("{reveal_id}-option-{active}"));
+            move || (open.get(), active.get(), visible.get(), list_size.get().1),
+            move |(shown, active, _, height), _| {
+                // Opening can assign the active key before the viewport's first layout.
+                if *shown
+                    && *height > 0.0
+                    && let Some(active) = active
+                {
+                    reveal_row(&reveal_list, active.clone());
                 }
             },
         );
@@ -183,7 +191,7 @@ fn picker(
                 })
             })
         };
-        let trigger = trigger(caption).label(label.clone()).a11y_value(caption).controls(format!("{id}-list"));
+        let trigger = trigger(caption).label(label.clone()).a11y_value(caption).controls(list_id.clone());
         let popup_id = id.clone();
         popover(
             &id,
@@ -205,43 +213,45 @@ fn picker(
                 let (row_id, value, submit) = (popup_id.clone(), value.clone(), submit.clone());
                 let active_id = popup_id.clone();
                 let active_descendant = move || active.get().map(|id| format!("{active_id}-option-{id}"));
-                let list = col()
-                    .id(format!("{popup_id}-list"))
-                    .role(Role::ListBox)
-                    .label(label.clone())
-                    .gap_0p5()
-                    .max_h(240.0)
-                    .overflow_y_scroll()
-                    .child(each(
-                        move || visible.get(),
-                        move |id, row| {
-                            let (selected, submit) = (value.clone(), submit.clone());
-                            let (selected_id, active_id, submitted_id) = (id.clone(), id.clone(), id.clone());
-                            text(move || row.with(|option| option.label.clone()))
-                                .id(format!("{row_id}-option-{id}"))
-                                .role(Role::ListBoxOption)
-                                .preserve_focus_on_press(true)
-                                .w_full()
-                                .min_w(0.0)
-                                .truncate()
-                                .px_3()
-                                .py_1p5()
-                                .when_touch(|p| p.min_h(TOUCH_TARGET))
-                                .rounded_sm()
-                                .text_sm()
-                                .font_medium()
-                                .text_color(Token::Text)
-                                .disabled(move || row.with(|option| option.disabled))
-                                .selected(move || selected.get().as_deref() == Some(selected_id.as_str()))
-                                .style_when(State::SELECTED, |p| p.text_color(Token::Accent))
-                                .style_when(State::DISABLED, |p| p.opacity(0.5))
-                                .hover(|p| p.bg(Token::SurfaceHover))
-                                .style_with(move |p| {
-                                    p.bg(if active.get().as_ref() == Some(&active_id) { Token::SurfacePressed } else { Token::Surface })
-                                })
-                                .on_press(move || submit(submitted_id.clone()))
-                        },
-                    ));
+                let app = App::current();
+                let theme = app.theme();
+                let estimated_height = (theme.text_of(TextStep::Sm) * theme.line_height).ceil() + 3.0 * theme.spacing;
+                let estimated_height = if app.target_platform().is_touch() { estimated_height.max(TOUCH_TARGET) } else { estimated_height };
+                let list =
+                    col().id(list_id.clone()).role(Role::ListBox).label(label.clone()).gap_0p5().max_h(240.0).overflow_y_scroll().child(
+                        virtual_each(
+                            move || visible.with(|rows| rows.as_ref().clone()),
+                            move |_| estimated_height,
+                            move |id, row| {
+                                let (selected, submit) = (value.clone(), submit.clone());
+                                let (selected_id, active_id, submitted_id) = (id.clone(), id.clone(), id.clone());
+                                text(move || row.with(|option| option.label.clone()))
+                                    .id(format!("{row_id}-option-{id}"))
+                                    .role(Role::ListBoxOption)
+                                    .preserve_focus_on_press(true)
+                                    .w_full()
+                                    .min_w(0.0)
+                                    .text_ellipsis()
+                                    .flex_shrink_0()
+                                    .px_3()
+                                    .py_1p5()
+                                    .when_touch(|p| p.min_h(TOUCH_TARGET))
+                                    .rounded_sm()
+                                    .text_sm()
+                                    .font_medium()
+                                    .text_color(Token::Text)
+                                    .disabled(move || row.with(|option| option.disabled))
+                                    .selected(move || selected.get().as_deref() == Some(selected_id.as_str()))
+                                    .style_when(State::SELECTED, |p| p.text_color(Token::Accent))
+                                    .style_when(State::DISABLED, |p| p.opacity(0.5))
+                                    .hover(|p| p.bg(Token::SurfaceHover))
+                                    .style_with(move |p| {
+                                        p.bg(if active.get().as_ref() == Some(&active_id) { Token::SurfacePressed } else { Token::Surface })
+                                    })
+                                    .on_press(move || submit(submitted_id.clone()))
+                            },
+                        ),
+                    );
                 let panel = if let Some(query) = query {
                     let search = text_field(query)
                         .id(format!("{popup_id}-search"))
@@ -256,7 +266,7 @@ fn picker(
                 };
                 let empty_id = format!("{popup_id}-empty");
                 panel.child(show(
-                    move || visible.with(Vec::is_empty),
+                    move || visible.with(|rows| rows.is_empty()),
                     move || {
                         text(if searchable { "No results" } else { "No options" })
                             .id(empty_id.clone())

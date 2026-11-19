@@ -10,7 +10,7 @@
 
 - [x] 统一弹层的绘制顺序、交互范围和关闭仲裁。分别验证逻辑焦点路径、逆序打开的同级弹层、外点关闭的原目标校验，以及窗口内绘制提示框的焦点恢复。[弹层契约](design/ui-primitives.md#5-overlays) · [弹层回归](../crates/octara/tests/integration/overlay.rs)
 - [x] 将模态范围应用到 Inspector 动作、系统辅助功能树与辅助技术输入。回归覆盖独立挂载的弹层、标签关系、坐标、迟到选区和恢复焦点。[模态语义](design/ui-primitives.md#5-overlays) · [语义回归](../crates/octara/tests/integration/focus.rs)
-- [ ] 让虚拟列表按业务 key 揭示一行。用 Chat 风格的长会话列表和编辑器持有焦点的选择器验证，分别核对真实焦点与 `active_descendant`。[无窗口探针](research/headless-ui-react.md#虚拟选项与退出时序)
+- [x] 让虚拟列表按业务 key 揭示一行。用 Chat 长会话列表和持有编辑器焦点的搜索选择器验证，分别核对真实焦点与 `active_descendant`。[复现、实现与实测](research/headless-ui-react.md#虚拟选项与退出时序)
 - [x] 统一输入会话与录制。指针续段校验设备、ID 和原始按键，已校验的原生编辑和选区请求进入录制与回放。无窗口回归覆盖设备与按键碰撞、组词和选区的 JSON 回放，以及过期编辑的拒绝。[手势与编辑协议](design/input.md) · [录制回归](../crates/octara/tests/integration/replay.rs)
 - [x] 让异步截图使用可核对的提交版本。绘制捕获固定起始帧与像素，视图内容或位置变化会退役旧快照。显示捕获复核提交帧和宿主尺寸。回归覆盖迟到快照、尺寸变化、位置往返与共享图片换帧。[截图协议](design/capture.md) · [捕获回归](../crates/octara/tests/integration/capture.rs)
 

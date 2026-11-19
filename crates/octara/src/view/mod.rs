@@ -20,7 +20,7 @@ pub use element::{
     El, IntoProp, IntoText, Prop, TextContent, TextInput, canvas, col, el, icon, image, input, native_view, row, spacer, text, textarea,
     web_view,
 };
-pub use list::{IntoRows, each, virtual_each};
+pub use list::{IntoRows, each, reveal_row, virtual_each};
 pub use octara_macros::ui;
 pub(crate) use pace::Paced;
 pub use pace::paced;

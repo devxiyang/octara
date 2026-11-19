@@ -20,6 +20,7 @@ mod resources;
 mod selection;
 mod time;
 mod tooltip;
+mod virtual_list;
 
 pub(crate) use crate::kernel::TextDocument;
 pub use asks::menu_surface;
@@ -32,8 +33,9 @@ pub use guard::TargetGuard;
 pub use keys::{BUILTIN_COMMANDS, Binding, Chord, Key, KeyEvent, Keymap};
 pub(crate) use octara_primitives::text::TextEdit;
 pub use pointer::{Button, Drag, DragPhase, Modifiers, Phase, PointerEvent, PointerKind, TouchScrollStage, Tuning};
-pub(crate) use selection::ListOrder;
 pub use selection::TextPoint;
+use virtual_list::VirtualLists;
+pub(crate) use virtual_list::{ListOrder, RowReveal};
 
 use crate::diagnostics::{self as codes, Diagnostic};
 use crate::kernel::{Breakpoint, HandlerKind, Kernel, NodeId, State, Theme};
@@ -298,7 +300,7 @@ pub(crate) struct WindowState {
     /// The tooltip the window draws (one at most).
     tip: RefCell<Option<crate::reactive::list::StateList<u64, tooltip::Shown>>>,
     /// How lists order their rows, by container (for selections through them).
-    pub(crate) lists: RefCell<std::collections::HashMap<NodeId, selection::ListOrder>>,
+    pub(crate) lists: RefCell<VirtualLists>,
 }
 
 thread_local! {

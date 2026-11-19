@@ -213,6 +213,7 @@ impl Window {
             Err(()) => {
                 // Continuations of an incomplete input frame must not be replayed later.
                 self.w.interaction.borrow_mut().after_update.retain(|work| matches!(work, AfterUpdate::Command(..)));
+                self.w.lists.borrow_mut().clear_reveals();
                 self.w.settled_revision.set(None);
                 WindowUpdate::Incomplete
             }
@@ -297,6 +298,13 @@ impl Window {
             if !i.modals.iter().map(|modal| modal.node).eq(shown) {
                 return Ok(true);
             }
+        }
+        let reveals = self.w.lists.borrow_mut().activate_reveals();
+        if !reveals.is_empty() {
+            for revision in reveals {
+                revision.set_internal(untrack(|| revision.get()).wrapping_add(1));
+            }
+            return Ok(true);
         }
         Ok(self.settle_requested_focus() || self.reconcile_focus())
     }
