@@ -42,6 +42,14 @@ Exact 的桌面测试在过边界、抬手、惯性和所有者卸载时核对�
 
 无窗口测试达到上述分配并检查每笔位移只发布一次。前置回调内重建视口时，旧接触在布局后已经失效，后续消费也停止。macOS 的 420×460 窗口用 Inspector 注入相同的触摸序列，配对检查了分配报告、GPU 帧和命中。接近底部时，新视口上缘命中第 3 项，下缘命中第 5 项。取消及同名重建后的迟到事件保持点击计数为 0。移动宿主的系统触摸与系统中断仍待验收。[实窗复现步骤](../../examples/README.md#面板联动) · [分配回归测试](../../examples/tests/integration/panel_scroll.rs) · [回调内重建测试](../../crates/octara/tests/integration/pointer.rs)
 
+## 资料审阅队列
+
+用公开视图接口和普通 Rust 状态组装审阅队列。决定列表保存已通过的意见，Signals 派生待审和已通过列表。详情以文档 ID 挂载，编辑草稿属于当前详情。申请通过时由应用检查意见，控件的 `invalid`、说明和状态文本从同一校验结果派生。[实现](../../examples/src/bin/review_queue.rs)
+
+macOS 实窗通过 `octara launch` 生成构建收据，再用 Inspector 检查并操作该实例。选择「导航说明」后空提交，回执为 `delivered`，应用显示「请填写审阅意见。」，仍有三份待审。在实际窗口缩到 390×600 后，补齐意见并再次提交。列表变成两份待审、一份已通过，原详情的操作目标返回 `STALE_TARGET`。切到已通过列表，从详情读回已保存的意见。GPU 抓帧和窗口诊断检查通过。[运行方式](../../examples/README.md#资料审阅)
+
+试跑时依据单行角色查找编辑器，漏掉了实际的 `multiline_text_input`。用名称和 `input` 动作可以直接定位。重试旧目标时，标准输入模式给出了 `ok: false` 和 `delivery: refused`，会话退出码为 0。两处用法已补入 Agent 指引。[反馈契约](agent-knowledge.md#inspector-protocol-and-checks)
+
 ## 用另外三个场景找遗漏
 
 | 场景 | 观察值 | 能排除的错误设计 |

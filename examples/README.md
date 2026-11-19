@@ -28,12 +28,23 @@ OCTARA_INSPECT=/tmp/octara-example.sock target/debug/window counter
 | 单击、双击、长按、窗口尺寸与绘制结果 | 构建上面的两个二进制后，运行 `python3 examples/live_inspect.py`。[脚本](live_inspect.py) |
 | 重复名称、隐藏控件、同名重建、热重载和重开窗口 | 额外构建 `cargo build -p octara-examples --bin targets`。用独立 `OCTARA_INSPECT` 路径启动 `target/debug/targets`，再运行 `python3 examples/live_targets.py --socket /tmp/octara-targets.sock --output /tmp/octara-targets-result`。填入实际 socket 和尚未创建的输出目录。[脚本](live_targets.py) |
 | 字段、单选和组件键盘流程 | 运行 `python3 examples/live_forms.py` 或 `python3 examples/live_primitives.py --scene all`。[字段](live_forms.py) · [对话框与数值控件](live_primitives.py) |
+| 复合界面的组装、操作与审批反馈 | 启动 `review_queue`，按语义树操作资料审阅队列。[资料审阅](#资料审阅) |
 | macOS 拼音候选、重转换和屏幕位置 | 用系统键盘操作，分别记录应用快照与系统候选窗。[输入法验证](IME.md) |
 | 同一次触摸联动面板与列表 | 运行 `panel_scroll` 窗口并用 Inspector 驱动固定的触摸序列。[面板联动步骤](#面板联动) |
 | macOS 触控板的直接阶段、惯性与嵌套视口 | 运行 `trackpad` 并记录 AppKit 事件与框架前后的偏移。[触控板采样](#macos-触控板) |
 | 大量行和布局的工作量 | 运行 `cargo run --release -p octara-examples --bin bench`。随结果记录编译配置、数据量与测量环境。[基准入口](src/bin/bench.rs) |
 
 区分三种证据：无窗口测试控制时间，真实窗口 Inspector 通过框架事件或语义操作驱动，系统键盘和触摸覆盖 OS 路由。一个场景可以同时使用三者，在报告里标明每一步走的路径。[捕获报告](../docs/design/capture.md)
+
+### 资料审阅
+
+```sh
+cargo build -p octara-cli --bin octara
+review_run=$(mktemp -d /tmp/octara-review.XXXXXX)
+target/debug/octara launch -p octara-examples --bin review_queue --socket "$review_run/review.sock" --receipt "$review_run/receipt.json"
+```
+
+从另一终端用 `octara inspect --connect SOCKET --receipt FILE --json` 读取当前窗口，再用 `octara run --connect SOCKET --require-build FILE --json` 输入逐行请求。选择「导航说明」，点击「通过」，读回校验说明。找到具有 `input` 动作的「审阅意见」，填入意见后再次提交。在「已通过」列表打开同一文档，核对保存的意见。结束后关闭窗口，清理临时目录。[实测记录](../docs/design/interaction-scenarios.md#资料审阅队列)
 
 ### 面板联动
 

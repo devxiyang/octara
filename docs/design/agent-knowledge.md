@@ -4,6 +4,8 @@
 
 在 macOS 或 Linux 连接桌面 Inspector 后，先读语义树中的窗口、角色、名称、状态、边界和动作。使用窗口编号选定窗口，再用不透明的 `target` 操作观察到的节点，例如 `{"op":"tap","target":"<observed target>"}`。同时提供 `id` 时，窗口会核对该实例的名称。只提供 `id` 的脚本要求名称在该窗口的挂载树内唯一，隐藏但保留挂载的节点也参与匹配。窗口操作使用窗口目标。无 `id` 的 `type` 和 `key` 把节点目标用作当前焦点的断言。需要向其他观察到的字段输入时，先用 `focus` 操作该字段。
 
+可见标签和它命名的输入框可能有同一个名称。结合 `actions` 的 `input` 选择单行或多行编辑器。实时 `run --json` 从标准输入读取时，每一行的 `ok` 与 `delivery` 报告该步结果，退出码报告整段会话。带 `--script` 的运行会在首个失败步骤停止。动作已送达后，从控件值、校验说明或状态节点确认应用接受了什么。[资料审阅实测](interaction-scenarios.md#资料审阅队列)
+
 屏外控件需要先滚动。在 `actions` 含 `scroll` 的视口上发送 `{"op":"scroll","target":"<viewport target>","dx":0,"dy":120}`。位移以逻辑像素计，正值增大偏移。回执中 `scroll.offset` 是当前偏移 `[x,y]`，`scroll.delta` 是本次实际变化，包含布局校正。到达边界后继续向外滚动可返回 `[0,0]`。滚动后重新读取树，再操作进入视口的控件。[待办实窗验收](../../examples/live_inspect.py)
 
 `octara.inspect/2` 的 `selection` 提供文档选区预览。`preview` 从当前帧已挂载的选区按文档顺序读取，最多 2,000 个 Unicode 标量值。`complete` 为 `false` 表示预览截断或选区包含未挂载行。选区全部位于未挂载行时，`preview` 为空且 `complete` 为 `false`。显式 `copy` 请求按复制规则提取选区，可以临时挂载屏外行。旧版 `octara.inspect/1` 的 `selection` 是字符串。[预览与复制测试](../../crates/octara/tests/integration/selection.rs)
