@@ -5,6 +5,7 @@
 // Usage: swift examples/ime_candidates.swift --pid CANDIDATE_HOST_PID --output /new/evidence/dir
 // IMKit may host the visible remote candidate panel in the client app, not the IME service.
 // Optional: --include-offscreen-metadata (metadata only; offscreen windows are never captured).
+// Optional: --field AX_IDENTIFIER (read selection and range geometry of one nonsecure field).
 
 import AppKit
 import ApplicationServices
@@ -22,16 +23,18 @@ struct Options {
     let pid: pid_t
     let output: URL
     let includeOffscreenMetadata: Bool
+    let field: String?
 
     static func parse() throws -> Options {
         var args = Array(CommandLine.arguments.dropFirst())
         if args == ["--help"] {
-            print("Usage: ime_candidates.swift --pid CANDIDATE_HOST_PID --output /new/evidence/dir [--include-offscreen-metadata]")
+            print("Usage: ime_candidates.swift --pid CANDIDATE_HOST_PID --output /new/evidence/dir [--include-offscreen-metadata] [--field AX_IDENTIFIER]")
             exit(0)
         }
         var pid: pid_t?
         var output: URL?
         var includeOffscreenMetadata = false
+        var field: String?
         while !args.isEmpty {
             let flag = args.removeFirst()
             if flag == "--include-offscreen-metadata" {
@@ -52,6 +55,9 @@ struct Options {
                     throw ObservationError("--output must occur once and be an absolute local path")
                 }
                 output = URL(fileURLWithPath: value, isDirectory: true).standardizedFileURL
+            case "--field":
+                guard field == nil, !value.isEmpty else { throw ObservationError("--field must name one AX identifier") }
+                field = value
             default:
                 throw ObservationError("Unknown option: \(flag)")
             }
@@ -62,7 +68,7 @@ struct Options {
         guard kill(pid, 0) == 0 || errno == EPERM else {
             throw ObservationError("The requested PID is not running")
         }
-        return Options(pid: pid, output: output, includeOffscreenMetadata: includeOffscreenMetadata)
+        return Options(pid: pid, output: output, includeOffscreenMetadata: includeOffscreenMetadata, field: field)
     }
 }
 
@@ -130,12 +136,16 @@ func targetWindows(pid: pid_t, only id: CGWindowID? = nil, includeOffscreen: Boo
 
 final class AXReader {
     let pid: pid_t
+    let field: String?
     let deadline = Date().addingTimeInterval(5)
     var visited: [AXUIElement] = []
     var truncated = false
     var errors: [String] = []
 
-    init(pid: pid_t) { self.pid = pid }
+    init(pid: pid_t, field: String?) {
+        self.pid = pid
+        self.field = field
+    }
 
     func value(_ node: AXUIElement, _ attribute: String) -> CFTypeRef? {
         guard Date() < deadline else { truncated = true; return nil }
@@ -166,6 +176,32 @@ final class AXReader {
             return []
         }
         return values as? [AXUIElement] ?? []
+    }
+
+    func selectionGeometry(_ node: AXUIElement) -> [String: Any] {
+        var raw: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(node, kAXSelectedTextRangeAttribute as CFString, &raw)
+        var result: [String: Any] = ["selection_status": status.rawValue]
+        var range = CFRange(location: 0, length: 0)
+        if status == .success, let raw, CFGetTypeID(raw) == AXValueGetTypeID(),
+           AXValueGetValue(unsafeBitCast(raw, to: AXValue.self), .cfRange, &range), range.location >= 0, range.length >= 0 {
+            result["selection_utf16"] = [range.location, range.length]
+        } else {
+            // Probe range geometry independently of whether a selection is exposed.
+            range = CFRange(location: 0, length: 1)
+        }
+        guard let parameter = AXValueCreate(.cfRange, &range) else { return result }
+        result["bounds_query_utf16"] = [range.location, range.length]
+        var bounds: CFTypeRef?
+        let geometry = AXUIElementCopyParameterizedAttributeValue(node, kAXBoundsForRangeParameterizedAttribute as CFString, parameter, &bounds)
+        result["bounds_status"] = geometry.rawValue
+        var rect = CGRect.zero
+        if geometry == .success, let bounds, CFGetTypeID(bounds) == AXValueGetTypeID(),
+           AXValueGetValue(unsafeBitCast(bounds, to: AXValue.self), .cgRect, &rect),
+           [rect.minX, rect.minY, rect.width, rect.height].allSatisfy(\.isFinite) {
+            result["bounds"] = rectJSON(rect)
+        }
+        return result
     }
 
     func walk(_ node: AXUIElement, depth: Int = 0) -> [String: Any]? {
@@ -201,6 +237,11 @@ final class AXReader {
         }
         for attribute in ["AXSelected", "AXEnabled"] {
             if let number = value(node, attribute) as? NSNumber { result[attribute] = number.boolValue }
+        }
+        if let field, !secure, let role = result["AXRole"] as? String, ["AXTextField", "AXTextArea"].contains(role),
+           value(node, "AXIdentifier") as? String == field {
+            result["identifier"] = field
+            result["selection_geometry"] = selectionGeometry(node)
         }
         if let raw = value(node, "AXPosition"), CFGetTypeID(raw) == AXValueGetTypeID() {
             let ax = unsafeBitCast(raw, to: AXValue.self)
@@ -320,10 +361,13 @@ func main() throws {
     }
     report["windows"] = observed
     if axAllowed {
-        let reader = AXReader(pid: options.pid)
+        let reader = AXReader(pid: options.pid, field: options.field)
         report["accessibility"] = reader.snapshot()
         if !reader.errors.isEmpty || reader.truncated { errors.append("AX observation is incomplete; see accessibility errors/truncated") }
     } else { errors.append("Existing Accessibility permission is unavailable; no request was made") }
+    if options.field != nil {
+        report["main_display_bounds"] = rectJSON(CGDisplayBounds(CGMainDisplayID()))
+    }
     if !captureAllowed { errors.append("Existing Screen Recording permission is unavailable; no request was made") }
     if windows.isEmpty { errors.append("This PID has no eligible on-screen windows; no image was captured") }
     report["errors"] = errors

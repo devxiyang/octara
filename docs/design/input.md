@@ -12,6 +12,19 @@
 
 Exact 的 Apple 宿主把带组合区的显示文本也发给应用，因此以显示文本判断回写是否相同，并把不同值延后到组词结束。Octara 的重命名场景通过独立草稿保留组词，应用可以在 `on_input` 接受候选词时做格式转换。[Exact 的组词与回写规则](https://github.com/expo/exact/blob/db89b50bb2037afc217b4b4f8a341338a4a5adf1/host/apple/Sources/ExactKit/FieldComposition.swift#L6-L29) · [系统输入法步骤](../../examples/IME.md)
 
+### 受控文本框实测
+
+macOS 27.2 上使用系统简体拼音、反向 emoji 选区和两个受控字段。应用值操作和旧提交重放由验收窗口的 Inspector 命令触发。[复现步骤](../../examples/IME.md#受控文本值)
+
+| 操作 | 观察结果 |
+| --- | --- |
+| `A😀Z` 组词中刷新同值 | `ni hao`、原反向选区和组合光标保持。候选窗实例、首项「你好」、画面与屏幕范围 `[950,362,397,28]` 一致 |
+| 应用将值改为 `R😀S` | 同一编辑器显示替换后的文本。组合清空，候选窗消失，光标落在 UTF-16 偏移 `4` |
+| 系统选择「你好」，应用拒绝 | 收到一次 `A你好Z` 提议，接受次数为零。正文为 `A😀Z`，恢复 UTF-8 `[1,5]`、UTF-16 `[1,3]` 的原反向选区 |
+| 组词期间改焦，随后重放旧提交 | 旧候选窗关闭，交付入口返回 `Refused`。第二框从 `B😀Y` 独立组词并提交为 `B你好Y` |
+
+从第一框到第二框，Inspector 光标、AppKit 字符范围锚点、候选窗和 AX 字段边界均向下移动 52 点。候选窗屏幕 `y` 从 `362` 到 `414`，AX 字段边界从 `335` 到 `387`。两字段都能读取 AX 值和边界，`AXSelectedTextRange` 与显式首字符的 `AXBoundsForRange` 查询均返回 `kAXErrorNoValue`。文字范围的辅助技术反馈单独列入清单。[AccessKit 投影](../../crates/octara/src/kernel/a11y.rs#L451) · [AX 查询脚本](../../examples/ime_candidates.swift)
+
 ## Scroll routing
 
 普通触摸平移越过阈值时捕获一个视口，后续位移和惯性由同一个视口处理。框架的 `wheel` 对每笔输入重新命中，选择允许沿相应轴滚动的最近视口。无窗口的嵌套视口对照中，内层剩余 `12` 时输入 `+30`，内层实际滚动 `12`，外层偏移保持 `0`。[滚动与平移入口](../../crates/octara/src/app/pointer.rs) · [偏移写入](../../crates/octara/src/kernel.rs)

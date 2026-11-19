@@ -17,6 +17,11 @@ import tempfile
 
 REPO = Path(__file__).resolve().parent.parent
 BUNDLE_ID = "dev.octara.ime-validation"
+SCENES = {
+    "input": ("Octara IME.app", BUNDLE_ID, "Octara IME Validation", ["ime-single", "ime-multi", "ime-password"]),
+    "controlled": ("Octara Controlled IME.app", "dev.octara.controlled-ime-validation", "Octara Controlled IME Validation",
+                   ["ime-controlled", "ime-controlled-other"]),
+}
 
 
 def main():
@@ -24,6 +29,7 @@ def main():
     parser.add_argument("--binary", type=Path, default=REPO / "target/debug/ime", help="built IME fixture executable")
     parser.add_argument("--output", type=Path, help="empty directory; default: a new /tmp/octara-ime-* directory")
     parser.add_argument("--socket", type=Path, help="unused absolute Inspector socket; default: OUTPUT/ime.sock")
+    parser.add_argument("--scene", choices=SCENES, default="input", help="validation scene to package")
     args = parser.parse_args()
     binary = args.binary.resolve()
     if not binary.is_file() or not os.access(binary, os.X_OK):
@@ -42,36 +48,41 @@ def main():
     if not socket.parent.is_dir():
         parser.error(f"socket directory does not exist: {socket.parent}")
 
-    bundle = output / "Octara IME.app"
+    name, bundle_id, title, fields = SCENES[args.scene]
+    bundle = output / name
     contents = bundle / "Contents"
     executable = contents / "MacOS/ime"
     executable.parent.mkdir(parents=True)
     shutil.copy2(binary, executable)
     info = {
         "CFBundleExecutable": "ime",
-        "CFBundleIdentifier": BUNDLE_ID,
-        "CFBundleName": "Octara IME Validation",
-        "CFBundleDisplayName": "Octara IME Validation",
+        "CFBundleIdentifier": bundle_id,
+        "CFBundleName": title,
+        "CFBundleDisplayName": title,
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": "1.0",
         "CFBundleVersion": "1",
         "NSHighResolutionCapable": True,
-        "LSEnvironment": {"OCTARA_INSPECT": str(socket)},
+        "LSEnvironment": {"OCTARA_INSPECT": str(socket), "OCTARA_IME_SCENE": args.scene},
     }
     with (contents / "Info.plist").open("wb") as stream:
         plistlib.dump(info, stream)
     manifest = {
         "bundle": str(bundle),
-        "bundle_identifier": BUNDLE_ID,
+        "bundle_identifier": bundle_id,
         "executable": str(executable),
         "source_executable": str(binary),
         "socket": str(socket),
-        "window_title": "Octara IME Validation",
+        "window_title": title,
+        "scene": args.scene,
         "input_sources": {"latin": "com.apple.keylayout.ABC", "pinyin": "com.apple.inputmethod.SCIM.ITABC"},
-        "fields": ["ime-single", "ime-multi", "ime-password"],
+        "fields": fields,
         "single_seed": "A😀Z",
-        "multi_seed": "alpha\nbeta",
     }
+    if args.scene == "input":
+        manifest["multi_seed"] = "alpha\nbeta"
+    else:
+        manifest["other_seed"] = "B😀Y"
     encoded = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
     (output / "manifest.json").write_text(encoded, encoding="utf-8")
     print(encoded, end="")

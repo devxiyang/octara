@@ -3,7 +3,7 @@
 
 use super::trace::NativeInput;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObjectProtocol, Sel};
+use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{NSEvent, NSTextInputClient, NSTextInputContext, NSView};
 use objc2_foundation::{
@@ -181,6 +181,7 @@ fn increment(count: &Cell<u64>) {
 
 struct InputIvars {
     state: RefCell<State>,
+    context: RefCell<Option<Retained<NSTextInputContext>>>,
     wake: Box<dyn Fn()>,
     queries: Queries,
     handled: Cell<bool>,
@@ -212,6 +213,11 @@ define_class!(
 
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool { true }
+
+        #[unsafe(method_id(inputContext))]
+        fn input_context(&self) -> Option<Retained<NSTextInputContext>> {
+            self.ivars().context.borrow().clone()
+        }
 
         #[unsafe(method_id(hitTest:))]
         fn hit_test(&self, _point: NSPoint) -> Option<Retained<NSView>> { None }
@@ -440,6 +446,7 @@ impl TextInputMac {
         let parent: Retained<NSView> = unsafe { Retained::retain(handle.ns_view.as_ptr().cast()) }?;
         let this = InputView::alloc(mtm).set_ivars(InputIvars {
             state: RefCell::new(State::default()),
+            context: RefCell::default(),
             wake: Box::new(wake),
             queries: Queries::default(),
             handled: Cell::new(false),
@@ -472,7 +479,7 @@ impl TextInputMac {
         };
         if changed {
             self.retire();
-            self.view.ivars().state.borrow_mut().synchronize();
+            self.install_session();
             self.focus();
         } else {
             let mut state = self.view.ivars().state.borrow_mut();
@@ -573,28 +580,37 @@ impl TextInputMac {
     pub(crate) fn reject(&self) {
         let focused = self.is_focused();
         self.retire();
-        self.view.ivars().state.borrow_mut().synchronize();
+        self.install_session();
         if focused {
             self.focus();
         }
         self.invalidate_coordinates();
     }
 
+    fn install_session(&self) {
+        let ivars = self.view.ivars();
+        ivars.state.borrow_mut().synchronize();
+        if ivars.state.borrow().session.is_some() {
+            let context =
+                NSTextInputContext::initWithClient(NSTextInputContext::alloc(self.view.mtm()), ProtocolObject::from_ref(&*self.view));
+            *ivars.context.borrow_mut() = Some(context);
+        }
+    }
+
     fn retire(&self) {
+        let focused = self.is_focused();
         self.view.ivars().state.borrow_mut().retire();
         self.view.ivars().anchor.set(None);
         self.view.ivars().first_rect_request.set(None);
         self.view.ivars().first_rect_failure.set(None);
-        // No session is exposed while IMKit synchronously retires its composer. This is a
-        // cancellation, not a request to commit the previous field into the next one.
         self.view.discard_composer();
-        if let Some(window) = self.view.window() {
-            let is_ours =
-                window.firstResponder().is_some_and(|r| std::ptr::eq(&*r as *const _, &*self.view as *const InputView as *const _));
-            if is_ours {
-                window.makeFirstResponder(Some(&self.parent));
-            }
+        // Keep returning the old context while AppKit moves focus back to the parent.
+        // The next editor gets a distinct context even when it reuses this NSView.
+        if focused && let Some(window) = self.view.window() {
+            window.makeFirstResponder(Some(&self.parent));
         }
+        let context = self.view.ivars().context.borrow_mut().take();
+        drop(context);
     }
 
     fn invalidate_coordinates(&self) {
