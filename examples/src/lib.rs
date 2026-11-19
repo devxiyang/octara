@@ -4,6 +4,7 @@ pub mod activation;
 pub mod apps;
 pub mod handlers;
 pub mod panel_scroll;
+pub mod rename;
 pub mod scenarios;
 pub mod showcase;
 

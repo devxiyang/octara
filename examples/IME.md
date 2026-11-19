@@ -28,6 +28,37 @@ python3 examples/ime_observe.py --socket /absolute/path/ime.sock --output /tmp/o
 
 历史 macOS 复验曾观察到 `A😀nihaoZ` 中仅 `nihao` 被替换成 `👋`，撤销恢复原选区。原记录的一步把清空后的 composition 误预期为 JSON null，实际为一个空字符串。复验以当前快照和实际候选文字为准。
 
+## 文件重命名
+
+同一个验收应用也能运行行内重命名场景。A 和 B 位于不同目录，初始名称都是 `A😀Z`。目录操作只更新内存中的测试记录。
+
+```sh
+cargo build -p octara-examples --bin ime -p octara-cli --bin octara
+python3 examples/ime_window.py --scene rename
+```
+
+打开 manifest 指向的应用包。点击 `Select A and B`、`Rename B`。用系统键盘反向选中 emoji，切到已配置的简体拼音并输入 `nihao`。在每一步读取 `rename-editor` 的目标令牌、`text_input`、`rename-counts` 和 `rename-records`。`live.ime.screen_anchor` 是上一次系统几何查询的回答，候选窗的实际位置从屏幕采样读取。[原生文本桥](../crates/octara-shell/src/text_input_mac.rs) · [系统候选窗采样](ime_candidates.swift)
+
+将 manifest 的 socket 传给 `target/debug/octara run --connect SOCKET --json`。以下 `invoke` 命令只提供可重复的目录事件。用 OS 键盘确认候选、提交和取消。
+
+| 目录事件 | 核对内容 |
+| --- | --- |
+| `rename.reorder`、`rename.refresh` | B 移到首行。编辑器目标、选区方向和组合保持。分别记录新的光标位置和候选窗实测坐标 |
+| `rename.scroll-away`、`rename.scroll-back` | 聚焦行离开视口再返回时保留编辑会话 |
+| `rename.external` | B 在组词期间从外部改名。确认候选后按 Return，提交报告冲突并保留草稿 |
+| `rename.replace` | 在 B 组词时用同名 C 替换它。旧候选窗关闭，旧 `target` 被拒绝，C 能开始自己的拼音会话 |
+| `rename.reset` | 恢复初始目录、编辑状态和计数，便于重复用例 |
+
+候选确认先产生一次草稿编辑。下一次 Return 才提交名称。用两次 Escape 分别验证取消组合与取消重命名。当前实窗记录和候选位置差异见[桌面重命名验收](../docs/design/interaction-scenarios.md#macos-实窗记录)。
+
+### 同窗 AppKit 对照
+
+先在 B 的行内编辑器里输入 `nihao`，保持系统候选窗开启，记录 `rename.reorder` 前后的插入点和候选窗位置。再重排一次，把 B 放回原位。
+
+向同一 socket 发送 `{"op":"invoke","command":"rename.native-control"}`。验收程序结束 Octara 编辑会话，在原编辑器位置放置标准 `NSTextView`，选中 `A😀Z` 中的 emoji。保持简体拼音，在新控件中输入 `nihao`。查看 manifest 的 `native_control` 指向的报告。有效对照要求 `native_focus`、`input_context_current`、`has_marked` 都为 `true`，且屏幕上有实际候选窗。
+
+记录候选窗后发送 `{"op":"invoke","command":"rename.move-native-control"}`。该命令在简体拼音正在组词时将同一个视图向上移 44 点。比较 `movement.first_rect_before`、`movement.first_rect_after`、标记范围、选区及候选窗的实际位置。AppKit 屏幕坐标向上为正，候选采样坐标向下为正。结束后关闭验收窗口。[同窗验收实现](src/bin/ime/native_control.rs)
+
 ## 受控文本值
 
 构建后运行 `python3 examples/ime_window.py --scene controlled`，打开生成的应用包。第一框初值为 `A😀Z`，第二框为 `B😀Y`。第一框反向选中 emoji，用系统简体拼音输入 `nihao`。应用值的变化经下列 Inspector `invoke` 命令触发。

@@ -7,6 +7,16 @@ use octara_kit::{button, text_field};
 #[path = "ime/controlled.rs"]
 mod controlled;
 
+#[cfg(target_os = "macos")]
+#[path = "ime/native_control.rs"]
+mod native_control;
+
+fn rename_fixture() -> El {
+    #[cfg(target_os = "macos")]
+    native_control::install();
+    octara_examples::rename::view()
+}
+
 #[ui]
 fn ime() -> View {
     let single = state("single", || "A😀Z".to_owned());
@@ -86,6 +96,10 @@ fn ime() -> View {
 
 fn main() {
     match std::env::var("OCTARA_IME_SCENE").as_deref() {
+        Ok("rename") => octara_shell::run_with(
+            octara_shell::Options { title: "Octara Rename Validation".into(), size: (800.0, 600.0), ..Default::default() },
+            rename_fixture,
+        ),
         Ok("controlled") => octara_shell::run_with(
             octara_shell::Options { title: "Octara Controlled IME Validation".into(), size: (720.0, 480.0), ..Default::default() },
             controlled::view,

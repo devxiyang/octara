@@ -19,6 +19,7 @@ REPO = Path(__file__).resolve().parent.parent
 BUNDLE_ID = "dev.octara.ime-validation"
 SCENES = {
     "input": ("Octara IME.app", BUNDLE_ID, "Octara IME Validation", ["ime-single", "ime-multi", "ime-password"]),
+    "rename": ("Octara Rename.app", "dev.octara.rename-validation", "Octara Rename Validation", ["rename-editor"]),
     "controlled": ("Octara Controlled IME.app", "dev.octara.controlled-ime-validation", "Octara Controlled IME Validation",
                    ["ime-controlled", "ime-controlled-other"]),
 }
@@ -81,6 +82,8 @@ def main():
     }
     if args.scene == "input":
         manifest["multi_seed"] = "alpha\nbeta"
+    elif args.scene == "rename":
+        manifest["native_control"] = str(socket.with_suffix(".native-control.json"))
     else:
         manifest["other_seed"] = "B😀Y"
     encoded = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"

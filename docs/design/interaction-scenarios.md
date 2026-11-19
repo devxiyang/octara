@@ -20,7 +20,45 @@
 
 临时无窗口验证在 `each` 和 `virtual_each` 上各走通三条路径。重排保留目标和文档，候选词确认后只有应用的提交键修改 B。外部改名冲突保留草稿，删除重建后旧原生编辑和旧 Agent 操作均未修改 C。取消保留进入组合前的选区，退出后保存次数为 0。用虚拟列表回归测试另外核对编辑器离开视口后的身份与选区。[虚拟列表回归测试](../../examples/tests/integration/virtual_interaction.rs) · [原生编辑回归测试](../../crates/octara/tests/integration/edit.rs)
 
-macOS 窗口验收使用真实拼音输入，记录候选词确认键和应用提交键各自的结果。在重排前后配对记录 Inspector 的焦点、`target`、文本范围和窗口光标，以及系统候选窗的文字和屏幕位置。[系统输入法采样](../../examples/IME.md)
+### macOS 实窗记录
+
+在 macOS 27.2 上用系统简体拼音按键驱动编辑器。目录事件由验收应用的 Inspector 命令触发。候选文字和窗口范围来自按 PID 采集的系统窗口图像。[重命名验收入口](../../examples/IME.md#文件重命名)
+
+| 场景 | 实测结果 |
+| --- | --- |
+| 组词、重排和滚动 | B 的焦点、令牌与反向选区保留。选区为 UTF‑8 `[1,5]`、UTF‑16 `[1,3]`。系统标记的文本为 `ni hao`。重排把光标从窗口内 `y=162` 移到 `118`。编辑器滚出视口并返回时仍使用同一会话 |
+| 系统候选位置 | 旧候选窗首项是「你好」。重排前后范围都为 `[1032,432,397,28]`，单位是屏幕逻辑点，原点在左上。下一次组词键触发 AppKit 重新查询，收到向上 44 点的新坐标。既有候选窗仍停在原位。重新开始组词时，候选窗出现在 `[1032,388,397,28]` |
+| 候选确认与提交 | 数字键 `1` 得到 `A你好Z`，草稿编辑 1 次，业务提交 0 次。下一次 Return 保存 B 一次，A 保持原名 |
+| 外部改名与取消 | B 在组词时变为 `External B.txt`。确认候选后的 Return 报冲突，保留 `A你好Z` 草稿，保存数为 0。单独的取消用例中，第一次 Escape 恢复反向 emoji 选区，第二次退出重命名 |
+| 删除 B 并打开 C | 修复前 C 已获得新编辑器，B 的候选窗仍可见。每个原生编辑会话使用独立 AppKit 输入上下文后，B 的候选窗在退役时消失。旧 `target` 返回 `STALE_TARGET` 和 `refused`。C 从初值开启新的组合，确认候选只更新 C 的草稿 |
+
+真实窗口确认了系统候选窗在换主时的清理。向旧编辑器提交迟到原生编辑的拒绝由确定性测试覆盖。组词期间的候选窗位置另有同窗 AppKit 对照。[迟到编辑验证](../../examples/tests/integration/ime.rs) · [标准 NSTextView 对照](#标准-nstextview-对照)
+
+#### 候选定位复测
+
+这次复测保持同一个编辑器，使用系统简体拼音组词，再在内存目录中移动 B。各次重排都保持 `ni hao`、原反向选区和编辑器目标。应用内插入点从 `y=162` 到 `118`。候选窗在左上原点的屏幕逻辑坐标中保持 `[1032,432,397,28]`。
+
+| 对照动作 | 实测结果 |
+| --- | --- |
+| 坐标失效后发送 `textInputClientDidScroll` | `firstRectForCharacterRange` 查询次数仍为 5，候选窗停在原处 |
+| 在坐标失效前后发送 `textInputClientWillStartScrollingOrZooming` / `textInputClientDidEndScrollingOrZooming` | 通知对发送一次，查询次数仍为 5，候选窗停在原处 |
+| 移动 AppKit 的代理 `NSView` | 原生视图原点也向上移动 44 点，系统仍沿用现有候选窗位置 |
+| 重排后退格再补回 `o` | 系统查询次数从 5 到 7，收到向上 44 点的新坐标。原候选窗实例仍在 `y=432` |
+| 在同一编辑器取消组合后重新输入 `nihao` | 新候选窗实例出现在 `[1032,388,397,28]`，首项为「你好」，编辑器令牌保持一致 |
+
+重排后，AppKit 的下一次字符范围查询得到了正确的新位置。既有候选窗停在原处，重新组词时采用新位置。[AppKit 坐标失效通知](https://developer.apple.com/documentation/appkit/nstextinputcontext/invalidatecharactercoordinates()) · [字符范围坐标查询](https://developer.apple.com/documentation/appkit/nstextinputclient/firstrect%28forcharacterrange%3Aactualrange%3A%29)
+
+#### 标准 NSTextView 对照
+
+在 macOS 27.2 上，同一进程的同一个窗口先后使用 Octara 编辑器和标准 `NSTextView`。两者都以 `A😀Z` 为初值，选中 emoji 后用系统简体拼音输入 `nihao`，确认组合文本为 `ni hao` 且实际候选窗首项为「你好」。两次位移都保持组合和选区。候选坐标以屏幕左上为原点，单位为逻辑点。[同窗验收步骤](../../examples/IME.md#同窗-appkit-对照)
+
+| 编辑器与动作 | 插入点位置 | 实际候选窗 |
+| --- | --- | --- |
+| Octara 编辑器随目录行向上移动 44 点 | 窗口内 `y=162 → 118` | 同一个窗口，`y=432 → 432` |
+| 标准 `NSTextView` 向上移动 44 点 | AppKit 屏幕字符范围坐标 `y=1015 → 1059` | 同一个窗口，`y=431 → 431` |
+| 标准 `NSTextView` 在新位置取消并重新组词 | 仍在移动后的位置 | 新窗口，`y=387`，比原位置向上 44 点 |
+
+系统简体拼音在标准 AppKit 控件上复现了候选停留。Octara 在布局后继续发布最新几何，并保留当前编辑会话。这个对照覆盖 macOS 27.2 系统简体拼音的同窗位移场景。
 
 ## 移动地图的面板与列表联动
 

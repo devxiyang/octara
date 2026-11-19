@@ -30,6 +30,7 @@ OCTARA_INSPECT=/tmp/octara-example.sock target/debug/window counter
 | 字段、单选和组件键盘流程 | 运行 `python3 examples/live_forms.py` 或 `python3 examples/live_primitives.py --scene all`。[字段](live_forms.py) · [对话框与数值控件](live_primitives.py) |
 | 复合界面的组装、操作与审批反馈 | 启动 `review_queue`，按语义树操作资料审阅队列。[资料审阅](#资料审阅) |
 | macOS 拼音候选、重转换和屏幕位置 | 用系统键盘操作，分别记录应用快照与系统候选窗。[输入法验证](IME.md) |
+| macOS 行内文件重命名 | 运行 `python3 examples/ime_window.py --scene rename` 准备目录验收窗口，配合原生拼音和 Inspector 目录事件验证。[重命名步骤](IME.md#文件重命名) |
 | 同一次触摸联动面板与列表 | 运行 `panel_scroll` 窗口并用 Inspector 驱动固定的触摸序列。[面板联动步骤](#面板联动) |
 | macOS 触控板的直接阶段、惯性与嵌套视口 | 运行 `trackpad` 并记录 AppKit 事件与框架前后的偏移。[触控板采样](#macos-触控板) |
 | 大量行和布局的工作量 | 运行 `cargo run --release -p octara-examples --bin bench`。随结果记录编译配置、数据量与测量环境。[基准入口](src/bin/bench.rs) |
