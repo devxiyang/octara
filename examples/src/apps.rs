@@ -776,3 +776,53 @@ fn note(n: u32) -> View {
         .child(button("Close").id("close").self_start().on_press(|| close_window(current_window())))
         .into()
 }
+
+pub const UNDO_DOCUMENT_TITLE: &str = "Octara Undo Document";
+pub const UNDO_DOCUMENT_SIZE: (f32, f32) = (420.0, 232.0);
+
+/// Two identically titled windows with local editor history and an observable edit count.
+#[ui]
+pub fn undo_document(label: &'static str) -> El {
+    let draft = state("draft", || label.to_owned());
+    let edits = state("edits", || 0u32);
+    let window = App::current().window(current_window()).expect("the document has a window");
+    let mut page = col()
+        .size_full()
+        .p_4()
+        .gap_3()
+        .child(text(format!("Document {label}")).id("document").font_semibold())
+        .child(
+            text_field((
+                move || draft.get(),
+                move |value| {
+                    draft.set(value);
+                    edits.update(|count| *count += 1);
+                },
+            ))
+            .id("editor")
+            .label("Draft")
+            .w_full(),
+        )
+        .child(
+            row()
+                .gap_3()
+                .items_center()
+                .child(
+                    button("Undo")
+                        .id("undo")
+                        .preserve_focus_on_press(true)
+                        .disabled(move || !window.command_enabled("edit.undo"))
+                        .on_press(|| {
+                            let _ = invoke("edit.undo");
+                        }),
+                )
+                .child(text(move || format!("Edits: {}", edits.get())).id("edits")),
+        );
+    if label == "A" {
+        page = page.child(button("Open Document B").id("open-b").self_start().on_press(|| {
+            let (width, height) = UNDO_DOCUMENT_SIZE;
+            open_window(WindowOptions::new(UNDO_DOCUMENT_TITLE).size(width, height), || undo_document("B")).expect("open document B");
+        }));
+    }
+    page
+}

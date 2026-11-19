@@ -51,3 +51,16 @@ Exact 的桌面测试在过边界、抬手、惯性和所有者卸载时核对�
 | 手机相册交互式返回，进度过半后取消，再次返回并完成 | 原页面、阅读位置、可操作目标和资源释放次数 | 只要开始返回就释放页面，或取消时重新挂载同名页面 |
 
 先在确定性宿主断言状态与顺序，再用真实窗口或模拟器核对系统参与的环节。无窗口测试、窗口 Inspector 注入和系统输入分别记结果。待实现的移动宿主不能产生模拟器验收结果。[路线图](../ROADMAP.md) · [现有验证入口](../../examples/README.md)
+
+## 两个同标题文档的撤销
+
+启动 `target/debug/window undo` 时设置独立的 `OCTARA_INSPECT` socket。文档 A 的「Open Document B」按钮打开第二个同标题窗口。两个编辑器都用 `editor` 作为查找名，分别持有文档值和撤销历史。`edits` 统计应用收到的文本写入，工具栏的可用性读本窗的 `command_enabled("edit.undo")`。Inspector 用窗口编号和从快照获得的窗口 `target` 调用 `edit.undo`。[示例实现](../../examples/src/apps.rs) · [命令回归](../../crates/octara/tests/integration/menus.rs)
+
+macOS 27.2 实测先在 A 输入 `A1`，再打开 B。B 的空历史使系统 Edit 菜单禁用 Undo，即使 A 有可撤销的编辑。依次检查以下路径。
+
+| 操作 | 实窗回读 |
+| --- | --- |
+| B 输入 `B1` 后按 `⌘Z` | B 恢复为 `B`，编辑计数从 1 到 2 |
+| B 输入 `B2` 后点系统 Edit → Undo | B 恢复为 `B`，编辑计数从 3 到 4。此时 A 为 `A1`，编辑计数为 1 |
+| 切回 A，观察系统菜单，再点窗口内的 Undo | 系统 Undo 随 A 启用。点击后 A 恢复为 `A`，编辑计数从 1 到 2，焦点仍在原编辑器，系统 Undo 再次禁用 |
+| A 保持原生焦点，通过 Inspector 向 B 写入 `B3` 再撤销 | B 恢复为 `B`，编辑计数从 5 到 6。第一次撤销回执为 `delivered`，空历史上的第二次为 `STEP_FAILED/refused`。A 保持原生焦点与两次文本写入的状态 |

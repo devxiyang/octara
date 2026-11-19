@@ -10,6 +10,7 @@
 | 弹层里的可搜索选项、键盘导航 | `showcase choices` |
 | 对话框、分段选择与数值控件 | `showcase interaction`、`showcase controls` |
 | 多个窗口的创建和关闭 | `windows` |
+| [同标题窗口的撤销归属](../docs/design/interaction-scenarios.md#两个同标题文档的撤销) | `undo` |
 
 ## 框架输入到真实窗口
 
