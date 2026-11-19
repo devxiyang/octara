@@ -16,12 +16,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 #[cfg(not(target_os = "macos"))]
 use winit::dpi::LogicalPosition;
-use winit::dpi::LogicalSize;
+use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::window::Window;
 
 /// The desktop the app runs on: arboard's clipboard, the event loop's proxy as the waker, and
 /// windows made in the loop's callback the app runs in.
 pub(crate) struct WinitPlatform {
+    #[cfg(not(target_os = "ios"))]
     clipboard: Option<arboard::Clipboard>,
     shared: Rc<Shared>,
     /// The menu bar (macOS), made with the first menus.
@@ -32,6 +33,7 @@ pub(crate) struct WinitPlatform {
 impl WinitPlatform {
     pub(crate) fn new(shared: Rc<Shared>) -> Self {
         WinitPlatform {
+            #[cfg(not(target_os = "ios"))]
             clipboard: arboard::Clipboard::new().ok(),
             shared,
             #[cfg(target_os = "macos")]
@@ -49,18 +51,28 @@ pub(crate) struct Gpu {
 }
 
 impl Platform for WinitPlatform {
+    #[cfg(target_os = "ios")]
+    fn read_text(&mut self) -> Option<String> {
+        None
+    }
+    #[cfg(target_os = "ios")]
+    fn write_text(&mut self, _: &str) {}
+    #[cfg(not(target_os = "ios"))]
     fn read_text(&mut self) -> Option<String> {
         self.clipboard.as_mut()?.get_text().ok()
     }
+    #[cfg(not(target_os = "ios"))]
     fn write_text(&mut self, text: &str) {
         if let Some(c) = &mut self.clipboard {
             let _ = c.set_text(text);
         }
     }
+    #[cfg(not(target_os = "ios"))]
     fn read_image(&mut self) -> Option<octara_primitives::image::Image> {
         let i = self.clipboard.as_mut()?.get_image().ok()?;
         Some(octara_primitives::image::Image::rgba(i.width as u32, i.height as u32, i.bytes.into_owned()))
     }
+    #[cfg(not(target_os = "ios"))]
     fn write_image(&mut self, image: &octara_primitives::image::Image) {
         let f = image.frame();
         let data = arboard::ImageData { width: f.width as usize, height: f.height as usize, bytes: std::borrow::Cow::Borrowed(&f.rgba) };
@@ -84,6 +96,7 @@ impl Platform for WinitPlatform {
         }
         let _ = menus;
     }
+    #[cfg(not(target_os = "ios"))]
     fn open_url(&mut self, url: &str) {
         if let Err(e) = open::that_detached(url) {
             eprintln!("octara-shell: cannot open {url}: {e}");
@@ -96,18 +109,26 @@ impl Platform for WinitPlatform {
     ) -> Result<Box<dyn PlatformWindow>, String> {
         let shared = &self.shared;
         let event_loop = shared.event_loop().ok_or("windows open while the event loop runs")?;
-        let (w, h) = options.size;
         // Hidden until the accessibility adapter is attached (AccessKit requires it).
-        let attrs = Window::default_attributes().with_title(&options.title).with_inner_size(LogicalSize::new(w, h)).with_visible(false);
+        let attrs = Window::default_attributes().with_title(&options.title).with_visible(false);
+        #[cfg(not(target_os = "ios"))]
+        let attrs = attrs.with_inner_size(LogicalSize::new(options.size.0, options.size.1));
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
+        #[cfg(target_os = "ios")]
+        let native_window = super::scene_ios::attach(&window)?;
         // AccessKit subclasses the content view and restores its parent class at teardown.
         // Install the scroll receiver first so the accessibility adapter owns the outer layer.
         #[cfg(target_os = "macos")]
         let scroll = super::scroll_mac::Bridge::attach(&window);
         let a11y = accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, shared.proxy.clone());
-        window.set_visible(true);
-        // An app started from a terminal comes to the front.
-        window.focus_window();
+        #[cfg(target_os = "ios")]
+        native_window.makeKeyAndVisible();
+        #[cfg(not(target_os = "ios"))]
+        {
+            window.set_visible(true);
+            // An app started from a terminal comes to the front.
+            window.focus_window();
+        }
         let mut gpu = shared.gpu.borrow_mut();
         let instance = match &*gpu {
             Some(g) => g.instance.clone(),
@@ -119,7 +140,7 @@ impl Platform for WinitPlatform {
         }
         let g = gpu.as_ref().expect("the GPU");
         let caps = surface.get_capabilities(&g.adapter);
-        let size = window.inner_size();
+        let size = drawable_size(&window);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: g.format,
@@ -201,13 +222,28 @@ impl Platform for WinitPlatform {
     }
 }
 
+fn drawable_size(window: &Window) -> PhysicalSize<u32> {
+    #[cfg(target_os = "ios")]
+    {
+        super::scene_ios::drawable_size(window)
+    }
+    #[cfg(not(target_os = "ios"))]
+    {
+        window.inner_size()
+    }
+}
+
 /// The adapter for the first window's surface, and the renderer.
 fn new_gpu(instance: wgpu::Instance, surface: &wgpu::Surface<'static>) -> Result<Gpu, String> {
     let adapter = pollster::block_on(
         instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(surface), ..Default::default() }),
     )
     .map_err(|e| format!("no GPU adapter for the window: {e}"))?;
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).map_err(|e| e.to_string())?;
+    let mut descriptor = wgpu::DeviceDescriptor::default();
+    // The renderer uses nine varyings. The iOS simulator can expose fifteen instead of the default sixteen.
+    let varyings = &mut descriptor.required_limits.max_inter_stage_shader_variables;
+    *varyings = (*varyings).min(adapter.limits().max_inter_stage_shader_variables);
+    let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).map_err(|e| e.to_string())?;
     let caps = surface.get_capabilities(&adapter);
     // Colors are blended in sRGB-encoded space: present a non-sRGB format.
     let format = caps
@@ -229,6 +265,7 @@ impl PlatformWindow for WindowHost {
     fn present(&mut self, frame: Frame) {
         self.0.get_mut().present(frame);
     }
+    #[cfg(not(target_os = "ios"))]
     fn shows_ask(&self, ask: &octara::ask::Ask) -> bool {
         self.0.borrow().shows_ask(ask)
     }
@@ -299,6 +336,10 @@ pub(crate) struct WinitWindow {
 }
 
 impl WinitWindow {
+    pub(crate) fn drawable_size(&self) -> PhysicalSize<u32> {
+        drawable_size(&self.window)
+    }
+
     pub(crate) fn scale(&self) -> f32 {
         self.window.scale_factor() as f32
     }
@@ -451,6 +492,7 @@ impl WinitWindow {
 
     /// Shows a request the platform takes (file dialogs: rfd's, made here on the main thread so
     /// the panel shows now, awaited on a thread of their own); its answer comes back as input.
+    #[cfg(not(target_os = "ios"))]
     fn show_ask(&self, id: octara::ask::AskId, ask: octara::ask::Ask) {
         use octara::ask::{Answer, Ask};
         use std::future::Future;
@@ -643,10 +685,12 @@ impl WinitWindow {
             super::ask_mac::withdraw(&self.shown, id);
             let _ = id;
         }
+        #[cfg(not(target_os = "ios"))]
         for (id, ask) in frame.asks {
             self.show_ask(id, ask);
         }
     }
+    #[cfg(not(target_os = "ios"))]
     fn shows_ask(&self, ask: &octara::ask::Ask) -> bool {
         #[cfg(target_os = "macos")]
         if self.host.is_some() && super::ask_mac::shows(ask) {

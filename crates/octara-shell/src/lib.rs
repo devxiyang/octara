@@ -1,4 +1,4 @@
-//! Desktop windows for Octara apps (winit): window events become [`App`] input by position and
+//! Winit windows for Octara apps: window events become [`App`] input by position and
 //! key, and frames are each window's display list drawn by the GPU renderer into it. The app
 //! opens and closes windows (`open_window`, `close_window`); each one has its own surface,
 //! accessibility adapter, native views and frame clock (macOS: its view's display link), and the
@@ -12,8 +12,8 @@
 //! `OCTARA_PICK=1` starts the window picking. Click an element: its line (number, role, test id,
 //! source, the component that made it) goes to the clipboard and to stderr, its JSON to stdout.
 //!
-//! Live inspection: `OCTARA_INSPECT=/absolute/path.sock` enables a local Unix socket on macOS
-//! and Linux. Requests use the existing Inspector JSON-lines protocol and run on the UI thread.
+//! Live inspection: `OCTARA_INSPECT=/absolute/path.sock` enables a local Unix socket on macOS,
+//! Linux and the iOS simulator. Requests use the Inspector JSON-lines protocol on the UI thread.
 //!
 //! ```no_run
 //! octara_shell::run("Counter", octara_examples_counter);
@@ -48,6 +48,8 @@ mod native_mac;
 mod pace_mac;
 mod platform;
 mod resize;
+#[cfg(target_os = "ios")]
+mod scene_ios;
 #[cfg(target_os = "macos")]
 mod scroll_mac;
 #[cfg(target_os = "macos")]
@@ -60,6 +62,8 @@ mod trace;
 pub enum ShellEvent {
     Accessibility(accesskit_winit::Event),
     Wake,
+    #[cfg(target_os = "ios")]
+    IosSceneConnected,
     /// A capture in progress looks again (`OCTARA_CAPTURE`).
     Capture,
     /// A local Inspector request, returned only to the connection that submitted it.
@@ -126,6 +130,8 @@ pub fn run<V: IntoView>(title: &str, root: impl Fn() -> V + 'static) {
 #[track_caller]
 pub fn run_with<V: IntoView>(options: Options, root: impl Fn() -> V + 'static) {
     let event_loop = EventLoop::<ShellEvent>::with_user_event().build().expect("event loop");
+    #[cfg(target_os = "ios")]
+    scene_ios::register(event_loop.create_proxy());
     let shared = Rc::new(Shared {
         proxy: event_loop.create_proxy(),
         active: Cell::new(std::ptr::null()),
@@ -444,7 +450,7 @@ impl Shell {
         let Some(app) = self.app.clone() else { return };
         for id in app.windows() {
             let Some(mut w) = app.window(id) else { continue };
-            if let Some((size, scale)) = ww(&w, |x| (!x.sized).then(|| (x.window.inner_size(), x.scale()))).flatten() {
+            if let Some((size, scale)) = ww(&w, |x| (!x.sized).then(|| (x.drawable_size(), x.scale()))).flatten() {
                 ww(&w, |x| x.sized = true);
                 w.event(InputEvent::Resize { width: size.width as f32 / scale, height: size.height as f32 / scale, scale });
             }
@@ -641,6 +647,26 @@ impl Shell {
             self.menu_commands();
         }
         let e = match event {
+            #[cfg(target_os = "ios")]
+            ShellEvent::IosSceneConnected => {
+                if !scene_ios::connected() {
+                    return;
+                }
+                if self.app.is_none() {
+                    self.start_app();
+                } else if let Some(window) = self.main_window()
+                    && let Some(Err(error)) = ww(&window, |host| {
+                        scene_ios::attach(&host.window).map(|native| {
+                            native.makeKeyAndVisible();
+                            host.pending = true;
+                        })
+                    })
+                {
+                    eprintln!("octara-shell: {error}");
+                }
+                self.show();
+                return;
+            }
             ShellEvent::Wake => {
                 self.tick();
                 if let Some(app) = self.app.clone() {
@@ -731,9 +757,19 @@ impl Shell {
 
     fn on_resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.app.is_some() {
+            #[cfg(target_os = "ios")]
+            self.ios_active(event_loop, true);
+            return;
+        }
+        #[cfg(target_os = "ios")]
+        if !scene_ios::connected() {
             return;
         }
         let _in = InLoop::enter(&self.shared, event_loop);
+        self.start_app();
+    }
+
+    fn start_app(&mut self) {
         let open = self.open_initial_window.take().expect("initial window factory");
         let app = App::with_config(platform::WinitPlatform::new(self.shared.clone()), self.config.take().expect("initial App config"));
         let mut w = open(&app, self.window_options.clone()).expect("the window");
@@ -767,6 +803,32 @@ impl Shell {
         }
     }
 
+    #[cfg(target_os = "ios")]
+    fn ios_active(&mut self, event_loop: &ActiveEventLoop, active: bool) {
+        let Some(mut window) = self.main_window().filter(|_| !self.app_failed()) else { return };
+        let _in = InLoop::enter(&self.shared, event_loop);
+        // End the contact before the next clock tick can run a held gesture's deadline.
+        let held = window.held_pointer();
+        window.event(InputEvent::Active(active));
+        if self.shared.trace {
+            eprintln!(
+                "{}",
+                octara::serde_json::json!({
+                    "schema": "octara.lifecycle_trace/1",
+                    "window": window.id().number(),
+                    "active": active,
+                    "held_before": held.map(|(id, _)| id),
+                    "held_after": window.held_pointer().map(|(id, _)| id),
+                })
+            );
+        }
+        if active {
+            // A foreground-bound frame may have been submitted before UIKit made the scene active.
+            ww(&window, |host| host.pending = true);
+            self.show();
+        }
+    }
+
     fn on_window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let _in = InLoop::enter(&self.shared, event_loop);
         if self.app_failed() {
@@ -796,7 +858,7 @@ impl Shell {
             WindowEvent::Resized(size) => {
                 // A queued event can describe an older request; configure what the native
                 // window actually has now, just as Inspector feedback observes it.
-                let size = ww(&w, |x| x.window.inner_size()).unwrap_or(size);
+                let size = ww(&w, |host| host.drawable_size()).unwrap_or(size);
                 self.resize_window(&mut w, size);
             }
             // The system asks (exposure), or the clock does where it is winit's.
@@ -845,6 +907,19 @@ impl Shell {
                 };
                 let (x, y) = (location.x as f32 / scale, location.y as f32 / scale);
                 self.pointer(&mut w, PointerEvent::touch(id, phase, x, y));
+                if self.shared.trace {
+                    eprintln!(
+                        "{}",
+                        octara::serde_json::json!({
+                            "schema": "octara.touch_trace/1",
+                            "window": w.id().number(),
+                            "contact": id,
+                            "phase": phase,
+                            "position": [x, y],
+                            "held": w.held_pointer().map(|(id, _)| id),
+                        })
+                    );
+                }
             }
             WindowEvent::Focused(on) => {
                 if on {
@@ -998,6 +1073,10 @@ impl ApplicationHandler<ShellEvent> for Shell {
     }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.host_entry(|shell| shell.on_resumed(event_loop));
+    }
+    #[cfg(target_os = "ios")]
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        self.host_entry(|shell| shell.ios_active(event_loop, false));
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         self.host_entry(|shell| shell.on_window_event(event_loop, id, event));

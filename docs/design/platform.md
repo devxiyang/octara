@@ -8,4 +8,6 @@
 | 桌面窗口 | 系统实际采用了什么窗口尺寸、原生视图是否正确放置、窗口关闭时如何退场 |
 | OS 输入或移动模拟器 | 系统快捷键、输入法、软键盘和系统返回是否经过正确的宿主路由 |
 
-桌面实现和 macOS 的专用桥接位于同一宿主包。移动宿主尚待实现。报告平台覆盖时分别记录系统、输入方式和实际观察结果。[桌面宿主](../../crates/octara-shell/src/) · [平台进度](../ROADMAP.md)
+桌面和 iOS 模拟器使用同一个 winit 宿主。iOS 的场景代理将 UIKit 窗口接到系统提供的 `UIWindowScene`。窗口的触摸、布局、辅助技术和 Metal 表面使用同一内容视图坐标。应用退出活动状态时，宿主用 `InputEvent::Active(false)` 结束窗口的接触。恢复活动状态后，提交当前帧。[iOS 场景接入](../../crates/octara-shell/src/scene_ios.rs) · [Apple 场景指南](https://developer.apple.com/documentation/uikit/transitioning-to-the-uikit-scene-based-life-cycle)
+
+模拟器通过本机 Unix socket 使用同一 Inspector。构建收据校验当前二进制，系统截图用于核对实际呈现。iOS 场景拥有窗口尺寸，Inspector 的 `size` 请求会被拒绝。[模拟器复现](../../examples/README.md#ios-模拟器面板联动) · [平台进度](../ROADMAP.md)

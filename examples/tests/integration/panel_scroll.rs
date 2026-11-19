@@ -97,3 +97,21 @@ fn a_rebuilt_viewport_cannot_adopt_the_old_touch() {
     assert_eq!(report(&window), [30.0, 12.0, 0.0, 18.0, 0.0, 0.0]);
     assert_eq!(window.kernel().text_of("pan-activations").as_deref(), Some("Activations 0"));
 }
+
+#[test]
+fn losing_app_activity_retires_a_scroll_contact_before_resume() {
+    let mut window = Window::headless(panel_scroll::view);
+    let (_, at) = window.pointer_target("pan-place-0").unwrap();
+    contact(&mut window, Phase::Down, at, 0.0);
+    contact(&mut window, Phase::Move, at, 30.0);
+    assert_eq!(geometry(&window), (112.0, 18.0, 88.0));
+
+    window.event(InputEvent::Active(false));
+    assert!(window.held_pointer().is_none());
+    window.event(InputEvent::Active(true));
+    contact(&mut window, Phase::Move, at, 58.0);
+    contact(&mut window, Phase::Up, at, 58.0);
+    window.app().advance(Duration::from_millis(200));
+    assert_eq!(geometry(&window), (112.0, 18.0, 88.0));
+    assert_eq!(window.kernel().text_of("pan-activations").as_deref(), Some("Activations 0"));
+}

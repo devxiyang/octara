@@ -28,6 +28,7 @@ const OPERATIONS: &[&str] = &[
     "scroll",
     "invoke",
     "settle",
+    #[cfg(not(target_os = "ios"))]
     "size",
     "theme",
     "reduced_motion",
@@ -67,7 +68,7 @@ impl Server {
         #[cfg(not(unix))]
         {
             let _ = (path, proxy);
-            Err("OCTARA_INSPECT currently supports Unix sockets on macOS and Linux only".into())
+            Err("OCTARA_INSPECT requires a host with Unix sockets".into())
         }
     }
 }

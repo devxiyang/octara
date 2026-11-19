@@ -27,6 +27,9 @@ pub(crate) struct Completion {
 
 impl Job {
     pub(crate) fn start(shell: &mut Shell, target: &mut AppWindow, width: f32, height: f32) -> Result<Self, Box<Reply>> {
+        if cfg!(target_os = "ios") {
+            return Err(Box::new(Reply::fail(&codes::BAD_REQUEST, "the iOS scene owns the window size")));
+        }
         let scale = ww(target, |w| w.window.scale_factor())
             .ok_or_else(|| Box::new(Reply::fail(&codes::BAD_REQUEST, "the target has no native window")))?;
         let dimension_limit = shell
@@ -63,7 +66,7 @@ impl Job {
             });
         };
         let Some((actual, configured, scale)) =
-            ww(&window, |w| (w.window.inner_size(), PhysicalSize::new(w.config.width, w.config.height), w.window.scale_factor()))
+            ww(&window, |w| (w.drawable_size(), PhysicalSize::new(w.config.width, w.config.height), w.window.scale_factor()))
         else {
             return Some(Completion {
                 reply: Reply::fail(&codes::STEP_FAILED, "the target lost its native window while resizing"),

@@ -71,6 +71,20 @@ OCTARA_INSPECT=/tmp/octara-panel-scroll.sock target/debug/panel_scroll
 
 重开窗口后，先执行 `pan.bottom` 将偏移设为 95，再执行 `pan.down` 和 `pan.forward`，核对布局校正 `−7` 与余量 `+18`。也可在任一进行中的拖动后执行 `pan.replace`，检查同名列表的新目标与迟到位移。命令注入窗口的框架触摸事件。结束后关闭窗口并清理 socket。[无窗口断言](tests/integration/panel_scroll.rs)
 
+### iOS 模拟器面板联动
+
+使用 Apple Silicon Mac 上的 Xcode 和已启动的 iPhone 模拟器。为当前 Rust 工具链安装 `aarch64-apple-ios-sim`，把 `ios_panel_device` 设为 `xcrun simctl list devices booted` 中的设备 UDID。先构建宿主 CLI，再交叉构建同一个面板例程。[运行目标](https://doc.rust-lang.org/rustc/platform-support/apple-ios.html)
+
+```sh
+cargo build --locked -p octara-cli --bin octara
+IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build --locked -p octara-examples --bin panel_scroll --target aarch64-apple-ios-sim
+ios_panel_run=$(mktemp -d /tmp/octara-ios.XXXXXX)
+python3 -B examples/ios_panel.py --device "$ios_panel_device" \
+  --binary target/aarch64-apple-ios-sim/debug/panel_scroll --output "$ios_panel_run/app"
+```
+
+启动器输出 `run.json` 的 socket、构建收据和控制台日志路径。从另一终端用 `octara inspect --connect SOCKET --receipt RECEIPT --json` 校验运行构建。需要窗口的原生呈现计数或进程号时，用 `octara run --connect SOCKET --require-build RECEIPT --json` 执行 `inspect`，读取回执的 `live`。用系统触摸在列表上向上拖动，并从 `pan-list` 高度、行相对视口的位置和 `touch_scroll` 读回两处消费。用 `xcrun simctl io DEVICE screenshot PATH` 对照设备像素。切换应用时，`console.log` 记录原生接触阶段和活动状态。结束后终止测试应用并清理本次临时目录。
+
 ### macOS 触控板
 
 构建 `trackpad`，在单独的临时目录中保留这次运行的日志和 socket。

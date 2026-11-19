@@ -1,6 +1,6 @@
 [package]
 name = "octara-shell"
-description = "Desktop windows for Octara apps: winit events in, the GPU renderer out."
+description = "Winit windows and GPU presentation for Octara apps."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,13 +10,22 @@ publish.workspace = true
 [dependencies]
 octara-primitives.workspace = true
 accesskit_winit.workspace = true
-arboard = { workspace = true, features = ["image-data"] }
-open.workspace = true
-rfd.workspace = true
 octara = { workspace = true, features = ["system-fonts"] }
 octara-render.workspace = true
 pollster.workspace = true
 winit.workspace = true
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+arboard = { workspace = true, features = ["image-data"] }
+open.workspace = true
+rfd.workspace = true
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2.workspace = true
+objc2-ui-kit = { workspace = true, features = [
+    "std", "objc2-core-foundation",
+    "UIResponder", "UIScene", "UISceneOptions", "UISceneSession", "UIView", "UIWindow", "UIWindowScene",
+] }
 
 # Native views (AppKit, WebKit) and the frame's Core Animation transaction.
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -1,9 +1,12 @@
-//! Desktop evidence for the panel fixture through framework touch injection.
+//! The same panel view on iOS, and a deterministic touch driver on desktop.
 
+#[cfg(not(target_os = "ios"))]
 use octara::app::{InputEvent, Phase, PointerEvent};
+#[cfg(not(target_os = "ios"))]
 use octara::prelude::*;
 use octara_examples::panel_scroll;
 
+#[cfg(not(target_os = "ios"))]
 fn fixture() -> El {
     let id = current_window();
     let origin = state("sample-origin", || (0.0, 0.0));
@@ -34,9 +37,15 @@ fn fixture() -> El {
     panel_scroll::view()
 }
 
+#[cfg(not(target_os = "ios"))]
 fn main() {
     octara_shell::run_with(
         octara_shell::Options { title: "Octara panel scroll".into(), size: (420.0, 460.0), ..Default::default() },
         fixture,
     );
+}
+
+#[cfg(target_os = "ios")]
+fn main() {
+    octara_shell::run("Octara panel scroll", panel_scroll::view);
 }

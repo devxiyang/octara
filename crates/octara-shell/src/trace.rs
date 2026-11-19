@@ -4,10 +4,11 @@
 //! start before DisplayList preparation; event-loop work before that is not in the frame total.
 //! Input times start at shell dispatch (or an owned native text callback), not at the hardware
 //! event. Coalesced counts are dispatches, including nested key/native edits, not keystrokes.
-//! No input content, sample history, GPU timestamps or physical display times are collected.
+//! Frame timing samples omit input contents, GPU timestamps and physical display times.
 //! `octara.update_trace/1` separately times shell `advance_to` and wake `poll`, including their
 //! timers/tasks, reactive work and layout. Input handlers can contain these intervals; don't add
 //! them to handler times. The logical app clock labels a sample; elapsed CPU/wait time is real.
+//! `octara.touch_trace/1` reports native touch phases and the held contact after each delivery.
 
 use octara::serde_json::{Value, json};
 use std::time::Instant;
