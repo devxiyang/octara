@@ -100,6 +100,10 @@ impl Platform for WinitPlatform {
         // Hidden until the accessibility adapter is attached (AccessKit requires it).
         let attrs = Window::default_attributes().with_title(&options.title).with_inner_size(LogicalSize::new(w, h)).with_visible(false);
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
+        // AccessKit subclasses the content view and restores its parent class at teardown.
+        // Install the scroll receiver first so the accessibility adapter owns the outer layer.
+        #[cfg(target_os = "macos")]
+        let scroll = super::scroll_mac::Bridge::attach(&window);
         let a11y = accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, shared.proxy.clone());
         window.set_visible(true);
         // An app started from a terminal comes to the front.
@@ -159,6 +163,8 @@ impl Platform for WinitPlatform {
             a11y,
             #[cfg(target_os = "macos")]
             text_input,
+            #[cfg(target_os = "macos")]
+            scroll,
             #[cfg(target_os = "macos")]
             native,
             #[cfg(target_os = "macos")]
@@ -249,6 +255,8 @@ pub(crate) struct WinitWindow {
     pub(crate) a11y: accesskit_winit::Adapter,
     #[cfg(target_os = "macos")]
     pub(crate) text_input: Option<super::text_input_mac::TextInputMac>,
+    #[cfg(target_os = "macos")]
+    pub(crate) scroll: Option<super::scroll_mac::Bridge>,
     /// Its native views (macOS: AppKit's; elsewhere none, so they draw as placeholders).
     #[cfg(target_os = "macos")]
     pub(crate) native: Option<super::native_mac::Native>,
@@ -691,6 +699,8 @@ fn cursor_icon(c: CursorStyle) -> winit::window::CursorIcon {
 
 impl Drop for WinitWindow {
     fn drop(&mut self) {
+        #[cfg(target_os = "macos")]
+        drop(self.scroll.take());
         if self.secure {
             secure_input::set(false);
         }

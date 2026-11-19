@@ -1,6 +1,6 @@
 //! Scroll containers (Tailwind `overflow-*`) and virtual lists inside them.
 
-use octara::app::Event;
+use octara::app::{Event, InputEvent, Phase, WheelPhase};
 use octara::inspect::{self, Delivery, ScrollResult};
 use octara::prelude::*;
 use serde_json::json;
@@ -404,6 +404,102 @@ fn end(app: &Window, id: &str) -> f32 {
 fn following(app: &Window, id: &str) -> bool {
     let k = app.kernel();
     k.is_following_tail(k.find(id).unwrap())
+}
+
+fn nested_wheel_window() -> Window {
+    Window::headless(|| {
+        let inner = state("inner-visible", || true);
+        on_command("wheel.toggle-inner", move || inner.update(|shown| shown.toggle()));
+        col()
+            .id("outer")
+            .h(250)
+            .overflow_y_scroll()
+            .child(show(move || inner.get(), || col().id("inner").h(100).overflow_y_scroll().child(el().h(300).child("Inner content"))))
+            .child(el().h(500).child("Outer content"))
+    })
+}
+
+fn wheel(app: &mut Window, phase: WheelPhase, y: f32, dy: f32) {
+    app.event(InputEvent::Wheel { x: 40.0, y, dx: 0.0, dy, phase });
+}
+
+#[test]
+fn a_phased_wheel_keeps_the_first_moving_target_past_the_edge_and_during_momentum() {
+    use Phase::{Down, Move, Up};
+    use WheelPhase::{Direct, Momentum};
+    let mut app = nested_wheel_window();
+    app.dispatch(Event::ScrollTo("inner".into(), 0.0, 188.0)).unwrap();
+
+    wheel(&mut app, Direct(Down), 150.0, 0.0);
+    wheel(&mut app, Direct(Move), 50.0, 30.0);
+    assert_eq!(offset(&app, "inner"), 200.0);
+    wheel(&mut app, Direct(Move), 150.0, 25.0);
+    wheel(&mut app, Direct(Move), 150.0, -8.0);
+    assert_eq!(offset(&app, "inner"), 192.0, "moving the pointer kept the same scroller");
+    wheel(&mut app, Direct(Up), 150.0, 0.0);
+    wheel(&mut app, Momentum(Down), 150.0, 210.0);
+    wheel(&mut app, Momentum(Move), 150.0, 40.0);
+    wheel(&mut app, Momentum(Up), 150.0, 0.0);
+
+    assert_eq!(offset(&app, "inner"), 200.0);
+    assert_eq!(offset(&app, "outer"), 0.0);
+    app.wheel(40.0, 150.0, 0.0, 20.0);
+    assert_eq!(offset(&app, "outer"), 20.0, "the next discrete input hit-tests independently");
+}
+
+#[test]
+fn momentum_of_a_retired_viewport_cannot_scroll_the_parent_or_a_same_name_replacement() {
+    use Phase::{Down, Move, Up};
+    use WheelPhase::{Direct, Momentum};
+    let mut app = nested_wheel_window();
+    let original = app.inspect().find("inner").unwrap().target.clone();
+    wheel(&mut app, Direct(Down), 50.0, 30.0);
+    wheel(&mut app, Direct(Up), 50.0, 0.0);
+    wheel(&mut app, Momentum(Down), 50.0, 15.0);
+    assert_eq!(offset(&app, "inner"), 45.0);
+
+    app.invoke("wheel.toggle-inner").unwrap();
+    assert!(app.inspect().find("inner").is_none());
+    wheel(&mut app, Momentum(Move), 50.0, 132.0);
+    assert_eq!(offset(&app, "outer"), 0.0);
+
+    app.invoke("wheel.toggle-inner").unwrap();
+    assert_ne!(app.inspect().find("inner").unwrap().target, original);
+    wheel(&mut app, Momentum(Move), 50.0, 80.0);
+    wheel(&mut app, Momentum(Up), 50.0, 0.0);
+    assert_eq!(offset(&app, "inner"), 0.0);
+    assert_eq!(offset(&app, "outer"), 0.0);
+    wheel(&mut app, Direct(Down), 50.0, 11.0);
+    assert_eq!(offset(&app, "inner"), 11.0);
+}
+
+#[test]
+fn cancellation_closes_one_wheel_sequence_without_reviving_it_or_cancelling_a_new_direct_contact() {
+    use Phase::{Cancel, Down, Move, Up};
+    use WheelPhase::{Direct, Momentum};
+    let mut app = nested_wheel_window();
+    wheel(&mut app, Direct(Down), 50.0, 20.0);
+    wheel(&mut app, Direct(Up), 50.0, 0.0);
+    app.event(InputEvent::Active(false));
+    app.event(InputEvent::Active(true));
+    wheel(&mut app, Direct(Move), 50.0, 40.0);
+    wheel(&mut app, Momentum(Down), 50.0, 50.0);
+    assert_eq!(offset(&app, "inner"), 20.0);
+
+    wheel(&mut app, Direct(Down), 50.0, 5.0);
+    wheel(&mut app, Momentum(Cancel), 50.0, 0.0);
+    wheel(&mut app, Direct(Move), 50.0, 5.0);
+    wheel(&mut app, Direct(Cancel), 50.0, 0.0);
+    wheel(&mut app, Direct(Move), 50.0, 40.0);
+    assert_eq!(offset(&app, "inner"), 30.0);
+}
+
+#[test]
+fn a_wheel_recording_without_a_phase_replays_as_a_discrete_delta() {
+    let event: InputEvent = octara::serde_json::from_str(r#"{"wheel":{"x":40,"y":150,"dx":0,"dy":12}}"#).unwrap();
+    let mut app = nested_wheel_window();
+    assert!(app.event(event));
+    assert_eq!(offset(&app, "outer"), 12.0);
 }
 
 #[test]

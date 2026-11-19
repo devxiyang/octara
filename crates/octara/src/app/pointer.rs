@@ -5,7 +5,7 @@
 //! One target per pointer (Rune): the topmost element under it that handles the pointer. From
 //! the press on, that pointer belongs to the target until it lifts or is cancelled.
 
-use super::event::InputEvent;
+use super::event::{InputEvent, WheelPhase};
 use super::frame::AfterUpdate;
 use super::{Handler, Modality, ScopedHandler, Window, WindowState};
 use crate::kernel::{HandlerKind, Kernel, Kind, NodeId, State};
@@ -236,6 +236,68 @@ struct Momentum {
     speed: f32,
 }
 
+/// One platform wheel gesture. A release remembers the same allocation so the
+/// subsequent momentum can use it. Idle drops all events until a new direct beginning.
+#[derive(Clone, Copy, Default)]
+enum WheelSequence {
+    #[default]
+    Idle,
+    Waiting,
+    Direct(NodeId),
+    Released(NodeId),
+    Momentum(NodeId),
+}
+
+impl WheelSequence {
+    fn owner(self) -> Option<NodeId> {
+        match self {
+            Self::Direct(node) | Self::Released(node) | Self::Momentum(node) => Some(node),
+            Self::Idle | Self::Waiting => None,
+        }
+    }
+
+    fn advance(&mut self, phase: WheelPhase, moving: bool, pick: impl FnOnce() -> Option<NodeId>) -> Option<NodeId> {
+        use Phase::{Cancel, Down, Move, Up};
+        match (phase, *self) {
+            (WheelPhase::Discrete, _) => return moving.then(pick).flatten(),
+            (WheelPhase::Direct(Down), _) => *self = Self::Waiting,
+            (WheelPhase::Direct(Move), Self::Waiting | Self::Direct(_)) => {}
+            (WheelPhase::Direct(Up), Self::Direct(node)) => {
+                *self = Self::Released(node);
+                return moving.then_some(node);
+            }
+            (WheelPhase::Momentum(Down), Self::Released(node)) => {
+                *self = Self::Momentum(node);
+                return moving.then_some(node);
+            }
+            (WheelPhase::Momentum(Move), Self::Momentum(node)) => return moving.then_some(node),
+            (WheelPhase::Momentum(Up), Self::Momentum(node)) => {
+                *self = Self::Idle;
+                return moving.then_some(node);
+            }
+            (WheelPhase::Direct(Cancel), Self::Waiting | Self::Direct(_))
+            | (WheelPhase::Momentum(Cancel), Self::Released(_) | Self::Momentum(_))
+            | (WheelPhase::Direct(Up), Self::Waiting) => {
+                *self = Self::Idle;
+                return None;
+            }
+            _ => return None,
+        }
+        if !moving {
+            return None;
+        }
+        match *self {
+            Self::Waiting => {
+                let owner = pick();
+                *self = owner.map_or(Self::Idle, Self::Direct);
+                owner
+            }
+            Self::Direct(node) => Some(node),
+            _ => unreachable!("a direct wheel update"),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct PointerState {
     pub held: Option<Held>,
@@ -247,6 +309,7 @@ pub(crate) struct PointerState {
     last_press: Option<LastPress>,
     click_sequence: u64,
     momentum: Option<Momentum>,
+    wheel: WheelSequence,
     pub(super) last_touch_scroll: Option<crate::inspect::TouchScrollState>,
     /// Where the mouse (or pen) is, for hover after layout changes.
     pub hover_at: Option<(f32, f32)>,
@@ -262,6 +325,9 @@ impl PointerState {
     pub(super) fn retire(&mut self, within: &impl Fn(NodeId) -> bool) -> Option<Held> {
         if self.momentum.is_some_and(|momentum| within(momentum.node)) {
             self.momentum = None;
+        }
+        if self.wheel.owner().is_some_and(within) {
+            self.wheel = WheelSequence::Idle;
         }
         let mut nodes = Vec::new();
         self.held.as_ref()?.resident_nodes(&mut nodes);
@@ -382,7 +448,9 @@ impl Window {
         if let Some(pointer) = pointer {
             self.cancel(pointer);
         }
-        self.w.interaction.borrow_mut().pointer.momentum = None;
+        let mut interaction = self.w.interaction.borrow_mut();
+        interaction.pointer.momentum = None;
+        interaction.pointer.wheel = WheelSequence::Idle;
     }
 
     fn finishing_pointer<R>(&self, held: Held, callback: impl FnOnce(&Held) -> R) -> R {
@@ -432,19 +500,33 @@ impl Window {
         self.pointer_up(x, y);
     }
 
-    /// A wheel or trackpad scroll of `(dx, dy)` at `(x, y)`: the innermost scroll container
-    /// there that scrolls on that axis takes it (no hand-off to outer ones at the edge, as in
-    /// Rune). A press being held is cancelled, unless it is dragging.
+    /// One independently routed wheel delta. The nearest viewport supporting its axis takes it.
     pub fn wheel(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
-        self.event(InputEvent::Wheel { x, y, dx, dy });
+        self.event(InputEvent::Wheel { x, y, dx, dy, phase: WheelPhase::Discrete });
     }
-    pub(super) fn on_wheel(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
+    pub(super) fn on_wheel(&mut self, x: f32, y: f32, dx: f32, dy: f32, phase: WheelPhase) {
         self.input_frame(|| {
-            self.w.interaction.borrow_mut().pointer.momentum = None;
-            let target = {
-                let k = self.w.kernel.borrow();
-                k.scroller_above(self.hit_at(x, y), dx, dy)
+            let mut sequence = {
+                let mut interaction = self.w.interaction.borrow_mut();
+                interaction.pointer.momentum = None;
+                interaction.pointer.wheel
             };
+            let moving = [dx, dy] != [0.0; 2] && dx.is_finite() && dy.is_finite();
+            let target = sequence.advance(phase, moving, || {
+                let hit = self.hit_at(x, y);
+                self.w.kernel.borrow().scroller_above(hit, dx, dy)
+            });
+            let target = if phase == WheelPhase::Discrete {
+                target
+            } else {
+                let modal = self.top_modal();
+                let valid = target.filter(|node| self.w.kernel.borrow().check_interaction_scope(*node, modal).is_ok());
+                if target != valid {
+                    sequence = WheelSequence::Idle;
+                }
+                valid
+            };
+            self.w.interaction.borrow_mut().pointer.wheel = sequence;
             if let Some(n) = target {
                 self.scroll_by(n, dx, dy);
                 self.scrolled_under_press();

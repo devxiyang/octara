@@ -29,13 +29,27 @@ macOS 27.2 上使用系统简体拼音、反向 emoji 选区和两个受控字�
 
 应用的 `scroll_to` 和 `scroll_to_end` 与窗口的定址滚动共用目标查找和滚动轴校验。按名称请求需要唯一的已挂载视口。各非零坐标分量都需要对应的滚动轴。返回值报告请求是否被接受，包括到达边界时。回到末端需要纵向滚动能力，并保留横向偏移。`scroll_into_view` 按元素位置交给其外层视口执行揭示。[轴校验](../../crates/octara/src/kernel.rs#L2309) · [定址滚动回归](../../crates/octara/tests/integration/scroll.rs#L48)
 
-普通触摸平移越过阈值时捕获一个视口，后续位移和惯性由同一个视口处理。框架的 `wheel` 对每笔输入重新命中，选择允许沿相应轴滚动的最近视口。无窗口的嵌套视口对照中，内层剩余 `12` 时输入 `+30`，内层实际滚动 `12`，外层偏移保持 `0`。[滚动与平移入口](../../crates/octara/src/app/pointer.rs) · [偏移写入](../../crates/octara/src/kernel.rs)
+普通触摸平移越过阈值时捕获一个视口，后续位移和惯性由同一个视口处理。无阶段的 `wheel` 每笔重新命中，选择允许沿相应轴滚动的最近视口。无窗口的嵌套视口对照中，内层剩余 `12` 时输入 `+30`，内层实际滚动 `12`，外层偏移保持 `0`。[滚动与平移入口](../../crates/octara/src/app/pointer.rs) · [偏移写入](../../crates/octara/src/kernel.rs)
 
 在滚动视口上设置 `on_touch_scroll` 可以联动面板。回调在 `Before` 和 `After` 阶段接收有符号的 `[dx, dy]`，返回面板实际消费的部分。窗口先执行 `Before`，运行布局并夹紧偏移，再从新偏移开始滚动视口。若还有余量，则交给 `After`。每轴的消费都限制在输入的方向和幅度内。各处位置通过同一帧发布。窗口持有初始视口的身份，取消或卸载终止这次接触。联动直接触摸在抬手时结束。[面板验收时序](interaction-scenarios.md#移动地图的面板与列表联动) · [Compose 的嵌套滚动](https://developer.android.com/develop/ui/compose/touch-input/scroll/nested-scroll-modifiers#nested-scrolling-cycle)
 
 Inspector 的 `touch_scroll` 记录最近一次完成的联动位移，包含视口目标、输入、前置消费、列表消费、后置消费与余量。`layout_correction` 记录前置回调后布局造成的偏移变化。消费与余量相加等于输入，几何位移另计布局校正。[Inspector 快照](../../crates/octara/src/inspect.rs) · [面板示例](../../examples/src/panel_scroll.rs)
 
-桌面宿主需要保留平台可靠提供的手势阶段。Octara 当前在 `MouseWheel` 入口只保留位置和位移。macOS 上 winit 0.30.13 还把 AppKit 的直接阶段与惯性阶段折叠成同一个 `TouchPhase`。要验证触控板抬手后惯性是否归原视口，先在宿主采样可区分的两个阶段。无分段信息的离散滚轮仍可按单笔输入命中。[当前桌面入口](../../crates/octara-shell/src/lib.rs#L833) · [winit 的事件转换](https://github.com/rust-windowing/winit/blob/e9809ef54b18499bb4f2cac945719ecc2a61061b/src/platform_impl/macos/view.rs#L678-L700) · [AppKit 惯性阶段](https://developer.apple.com/documentation/appkit/nsevent/momentumphase)
+macOS 宿主在内容视图收到 `scrollWheel:` 时，从同一 AppKit 事件保存位置、位移和阶段。继承的处理器继续让 winit 派发指针位置和滚动回调。滚动回调按捕获顺序取出该视图的原始样本。AppKit 直接交给原生子视图的事件由该视图处理。窗口接收带 `phase` 的 `InputEvent::Wheel`，旧录制省略阶段时按无阶段输入回放。[AppKit 接收处](../../crates/octara-shell/src/scroll_mac.rs) · [输入事件](../../crates/octara/src/app/event.rs) · [winit 的事件转换](https://github.com/rust-windowing/winit/blob/e9809ef54b18499bb4f2cac945719ecc2a61061b/src/platform_impl/macos/view.rs#L662-L700)
+
+窗口从第一个有效的直接位移选定视口。后续位移沿用其挂载身份，直至惯性结束。指针移动或到达滚动边界都保留这次选择。视口退休、手势取消或窗口失焦结束投递，迟到尾段被丢弃。AppKit 的 `MayBegin` 只表示可能开始，首次实际序列从 `Began` 发起。[窗口滚动测试](../../crates/octara/tests/integration/scroll.rs) · [Exact 的惯性归属测试](https://github.com/expo/exact/blob/08c889a9de21a30b7c3b308422fc588cf1a480d3/host/apple/tests/ExactKitTests/ScrollRoutingTests.swift#L374-L413)
+
+`OCTARA_TRACE_SCROLL=1` 配对记录实际交给内容视图的 AppKit 阶段和框架前后的偏移。AppKit 样本保留 `direct_phase`、`momentum_phase`。winit 样本同时列出折叠后的 `phase` 与窗口采用的 `routing_phase`。Apple 指出惯性事件的位置会随指针移动，原生视图归属沿用抛动时的接收者。[AppKit 惯性阶段](https://developer.apple.com/documentation/appkit/nsevent/momentumphase) · [实窗采样步骤](../../examples/README.md#macos-触控板)
+
+### macOS 实窗采样
+
+macOS 27.2 实窗的无阶段滚动样本中，AppKit 报告精确位移，两个阶段值均为 `0`。winit 报告 `Moved` 和纵向 `+100`。内层偏移从 `336` 到 `348`，外层保持 `0`。精确位移和 `Moved` 本身只表明收到滚动，实际触控板的抬手与惯性需配对原始阶段。[验收窗口](../../examples/src/bin/trackpad.rs)
+
+同一窗口用真实触控板从内层距底部 12 点的地方开始滚动。内层从 `336` 到 `348`。抬手时 AppKit 给出零位移的 `phase=Ended`，约 14 毫秒后发出 `momentumPhase=Began`，带来纵向 `+211` 点的位移。直接阶段的 `Began` 和惯性的 `Began` 在 winit 都是 `Started`。指针留在内层时，惯性结束后外层偏移仍为 `0`。
+
+修复前的卸载实验在检测到真实惯性开始后通过 Inspector 移除内层视口。惯性的首笔纵向 `+152` 在内层边界被夹紧。卸载后，指针在同一坐标，后续惯性将外层从 `0` 推到 `132`，直至惯性结束时达到 `456`。
+
+修复后的 macOS 27.2 实窗仍从内层偏移 `336` 开始，直接阶段到达 `348`。抬手和惯性开始分别进入 `direct: up` 与 `momentum: down`。通过 Inspector 卸载内层后，第一笔迟到惯性仍有纵向 `+164` 点。之后的 53 个样本（含惯性结束）中外层偏移均为 `0`。下一笔独立滚轮使外层从 `0` 到 `100`，AppKit 和窗口各记录一次。[实窗复现步骤](../../examples/README.md#macos-触控板)
 
 ## Shortcut configuration
 

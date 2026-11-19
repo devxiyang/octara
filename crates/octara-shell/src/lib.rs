@@ -49,6 +49,8 @@ mod pace_mac;
 mod platform;
 mod resize;
 #[cfg(target_os = "macos")]
+mod scroll_mac;
+#[cfg(target_os = "macos")]
 mod text_input_mac;
 mod trace;
 
@@ -855,7 +857,7 @@ impl Shell {
                 }
                 w.event(InputEvent::Active(on));
             }
-            WindowEvent::MouseWheel { delta, .. } => {
+            WindowEvent::MouseWheel { delta, phase, .. } => {
                 let at = self.shared.trace.then(Instant::now);
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (-x * LINE, -y * LINE),
@@ -863,7 +865,17 @@ impl Shell {
                 };
                 let (x, y) = cursor;
                 self.tick();
-                w.wheel(x, y, dx, dy);
+                #[cfg(target_os = "macos")]
+                match ww(&w, |host| host.scroll.as_ref().map(scroll_mac::Bridge::next)).flatten() {
+                    Some(Some(delivery)) => delivery.deliver(&mut w, phase),
+                    Some(None) => {}
+                    None => w.wheel(x, y, dx, dy),
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = phase;
+                    w.wheel(x, y, dx, dy);
+                }
                 ww(&w, |x| x.traced(at, "wheel"));
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {

@@ -30,6 +30,7 @@ OCTARA_INSPECT=/tmp/octara-example.sock target/debug/window counter
 | 字段、单选和组件键盘流程 | 运行 `python3 examples/live_forms.py` 或 `python3 examples/live_primitives.py --scene all`。[字段](live_forms.py) · [对话框与数值控件](live_primitives.py) |
 | macOS 拼音候选、重转换和屏幕位置 | 用系统键盘操作，分别记录应用快照与系统候选窗。[输入法验证](IME.md) |
 | 同一次触摸联动面板与列表 | 运行 `panel_scroll` 窗口并用 Inspector 驱动固定的触摸序列。[面板联动步骤](#面板联动) |
+| macOS 触控板的直接阶段、惯性与嵌套视口 | 运行 `trackpad` 并记录 AppKit 事件与框架前后的偏移。[触控板采样](#macos-触控板) |
 | 大量行和布局的工作量 | 运行 `cargo run --release -p octara-examples --bin bench`。随结果记录编译配置、数据量与测量环境。[基准入口](src/bin/bench.rs) |
 
 区分三种证据：无窗口测试控制时间，真实窗口 Inspector 通过框架事件或语义操作驱动，系统键盘和触摸覆盖 OS 路由。一个场景可以同时使用三者，在报告里标明每一步走的路径。[捕获报告](../docs/design/capture.md)
@@ -58,3 +59,15 @@ OCTARA_INSPECT=/tmp/octara-panel-scroll.sock target/debug/panel_scroll
 ```
 
 重开窗口后，先执行 `pan.bottom` 将偏移设为 95，再执行 `pan.down` 和 `pan.forward`，核对布局校正 `−7` 与余量 `+18`。也可在任一进行中的拖动后执行 `pan.replace`，检查同名列表的新目标与迟到位移。命令注入窗口的框架触摸事件。结束后关闭窗口并清理 socket。[无窗口断言](tests/integration/panel_scroll.rs)
+
+### macOS 触控板
+
+构建 `trackpad`，在单独的临时目录中保留这次运行的日志和 socket。
+
+```sh
+cargo build -p octara-examples --bin trackpad -p octara-cli --bin octara
+trackpad_run=$(mktemp -d /tmp/octara-trackpad.XXXXXX)
+OCTARA_TRACE_SCROLL=1 OCTARA_INSPECT="$trackpad_run/trackpad.sock" target/debug/trackpad 2>"$trackpad_run/trace.log"
+```
+
+点击 **Near inner edge**，将内层列表置于距底部 12 点的位置。把指针放在内层列表，快速朝底部滚动后抬手。读取 `octara.scroll_trace/1` 的同一窗口记录，配对查看 AppKit 的直接阶段和惯性阶段、窗口选择的 `routing_phase` 以及 `trackpad-inner`、`trackpad-outer` 的偏移。偏移为零的视口会省略。用 **Reset** 从列表顶部重复。可以在惯性开始后从 Inspector 调用 `trackpad.remove`，检查后续事件抵达时外层偏移是否为零。结束后关闭窗口并清理本次运行的临时目录。[窗口样本](src/bin/trackpad.rs) · [采样实现](../crates/octara-shell/src/scroll_mac.rs)

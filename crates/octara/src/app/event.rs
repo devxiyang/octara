@@ -5,7 +5,7 @@
 //! gets, with the time and the window, and replay them on another app built the same way: the
 //! same snapshots and display lists on the virtual clock.
 
-use super::{App, Event, KeyEvent, PointerEvent, Window, WindowId};
+use super::{App, Event, KeyEvent, Phase, PointerEvent, Window, WindowId};
 use crate::native::{NativeEvent, NativeId};
 use crate::platform::NativeSnapshotRequest;
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,14 @@ pub enum InputEvent {
     /// The pointer left the window: nothing is hovered.
     PointerLeave,
     /// A wheel or trackpad scroll of `(dx, dy)` at `(x, y)`.
-    Wheel { x: f32, y: f32, dx: f32, dy: f32 },
+    Wheel {
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+        #[serde(default, skip_serializing_if = "WheelPhase::is_discrete")]
+        phase: WheelPhase,
+    },
     /// A key press. What nothing handles types its text only when the backend sends `Text`.
     Key(KeyEvent),
     /// Text typed, or committed by an input method, into the focused field (it ends any
@@ -106,8 +113,8 @@ impl Window {
                 self.on_pointer_leave();
                 true
             }
-            InputEvent::Wheel { x, y, dx, dy } => {
-                self.on_wheel(x, y, dx, dy);
+            InputEvent::Wheel { x, y, dx, dy, phase } => {
+                self.on_wheel(x, y, dx, dy, phase);
                 true
             }
             InputEvent::Key(ev) => self.on_key_guarded(ev, guard),
@@ -135,6 +142,24 @@ impl Window {
                 true
             }
         }
+    }
+}
+
+/// The phase the host observed for a wheel event. A direct sequence begins at
+/// `Down` and releases at `Up`. Its momentum has a separate beginning and end.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WheelPhase {
+    /// One independently routed delta, including a platform that reports no phases.
+    #[default]
+    Discrete,
+    Direct(Phase),
+    Momentum(Phase),
+}
+
+impl WheelPhase {
+    fn is_discrete(&self) -> bool {
+        *self == Self::Discrete
     }
 }
 

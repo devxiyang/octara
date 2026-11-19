@@ -24,7 +24,7 @@ pub(crate) use crate::kernel::TextDocument;
 pub use asks::menu_surface;
 pub use config::AppConfig;
 pub use edit::{TextField, byte_offset, utf16_offset};
-pub use event::{FileDrag, InputEvent, Recorded, Recording};
+pub use event::{FileDrag, InputEvent, Recorded, Recording, WheelPhase};
 pub(crate) use guard::GuardTarget;
 pub use guard::TargetGuard;
 pub use keys::{BUILTIN_COMMANDS, Binding, Chord, Key, KeyEvent, Keymap};
