@@ -275,27 +275,49 @@ fn a_model_setter_closing_the_window_skips_application_notification() {
 }
 
 #[test]
-fn popover_preserves_trigger_callbacks_and_later_replacement_keeps_open_behavior() {
+fn popover_preserves_trigger_semantics_and_application_callbacks() {
     for replace in [false, true] {
         let seen = Rc::new(RefCell::new(Vec::new()));
         let saved = seen.clone();
         let mut window = Window::headless(move || {
             let open = state("open", || false);
             let (original, replacement) = (saved.clone(), saved.clone());
-            let trigger = octara_kit::button("Details").on_press(move || original.borrow_mut().push(format!("original:{}", open.get())));
+            let trigger = text("Details")
+                .role(Role::DisclosureTriangle)
+                .label("More details")
+                .on_press(move || original.borrow_mut().push(format!("original:{}", open.get())));
             let popup = octara_kit::popover("details", open, Placement::BELOW, trigger, || input().id("inside").value("draft").autofocus());
             let popup =
                 if replace { popup.on_press(move || replacement.borrow_mut().push(format!("replacement:{}", open.get()))) } else { popup };
             col().size_full().p_4().child(popup)
         });
+        let target = window.inspect().find("details").unwrap().target.clone();
+        let assert_trigger = |window: &Window, expanded| {
+            let snapshot = window.inspect();
+            let trigger = snapshot.find("details").unwrap();
+            assert_eq!(trigger.target, target);
+            assert_eq!(trigger.role, "disclosure_triangle");
+            assert_eq!(trigger.name.as_deref(), Some("More details"));
+            assert_eq!(trigger.expanded, Some(expanded));
+        };
+        assert_trigger(&window, false);
         window.tap("details").unwrap();
+        assert_trigger(&window, true);
         assert!(window.kernel().exists("details-popover"));
         assert_eq!(window.inspect().focus.as_deref(), Some("inside"));
         assert_eq!(&*seen.borrow(), &[if replace { "replacement:true" } else { "original:true" }]);
         window.press_key("escape").unwrap();
+        assert_trigger(&window, false);
         assert!(!window.kernel().exists("details-popover"));
         assert_eq!(window.inspect().focus.as_deref(), Some("details"));
+        let trigger_id = octara::kernel::a11y::a11y_id(window.kernel().find("details").unwrap());
+        let tree = window.accessibility_tree();
+        let (_, trigger) = tree.nodes.iter().find(|(id, _)| *id == trigger_id).unwrap();
+        assert_eq!(trigger.role(), Role::DisclosureTriangle);
+        assert_eq!(trigger.label(), Some("More details"));
+        assert!(trigger.supports_action(octara::accesskit::Action::Click));
         window.press_key("enter").unwrap();
+        assert_trigger(&window, true);
         assert_eq!(seen.borrow().len(), 2);
         assert!(window.kernel().exists("details-popover"));
         assert!(window.app().diagnostics().is_empty());

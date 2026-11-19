@@ -6,10 +6,11 @@ use std::rc::Rc;
 
 /// A themed popup anchored to `trigger`, controlled by `open`.
 ///
-/// `id` names the trigger; the popup is `{id}-popover`. Component behavior updates `open`
-/// before the trigger's application `on_press`, preserving callbacks supplied on the trigger
-/// or added afterwards. The component owns `expanded`. The content factory accepts any
-/// [`IntoView`]. The surface supplies padding, border and shadow.
+/// `id` names the trigger; the popup is `{id}-popover`. The supplied element defines its
+/// accessible role, name, and control relationships. Use [`crate::button`] for a standard trigger.
+/// The popover makes the trigger focusable and binds `expanded` to `open`. Its behavior updates
+/// `open` before the trigger's application `on_press`, including callbacks added afterwards.
+/// The content factory accepts any [`IntoView`]. The surface supplies padding, border and shadow.
 ///
 /// This is a modal popup: while open, focus stays inside and the rest of the window is inert.
 /// Escape or a press outside dismisses it, restoring the previous focus (the trigger when it
@@ -23,7 +24,6 @@ pub fn popover<V: IntoView>(id: &str, open: impl Model<bool>, placement: Placeme
     let panel_id = format!("{id}-popover");
     trigger
         .id(id.to_owned())
-        .role(Role::Button)
         .focusable()
         .expanded(move || expanded.get())
         .behavior(|b| b.on_press(move || press.set(!press.get())))

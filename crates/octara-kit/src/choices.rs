@@ -191,7 +191,7 @@ fn picker(
                 })
             })
         };
-        let trigger = trigger(caption).label(label.clone()).a11y_value(caption).controls(list_id.clone());
+        let trigger = trigger(caption).role(Role::ComboBox).label(label.clone()).a11y_value(caption).controls(list_id.clone());
         let popup_id = id.clone();
         popover(
             &id,
@@ -278,7 +278,6 @@ fn picker(
                 ))
             },
         )
-        .role(Role::ComboBox)
     })
 }
 

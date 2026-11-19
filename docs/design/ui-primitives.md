@@ -40,6 +40,8 @@ Kit Tabs 的方向键只移焦，Enter 或 Space 激活。RadioGroup 用 `activa
 
 同一个模态范围约束输入与语义发布。辅助技术可遍历当前模态及其逻辑拥有的面板。窗口和必要的物理祖先提供坐标与结构。范围外的标签文字仍可为范围内的控件命名，语义关系只发布范围内的引用。模态范围变化时，辅助功能树重新发布当前范围，仍挂载的控件使用原来的节点身份。[辅助功能投影](../../crates/octara/src/kernel/a11y.rs) · [树更新与焦点回归](../../crates/octara/tests/integration/focus.rs)
 
-`select` 和 `combobox` 的触发工厂接收文案的 `ReadSignal<String>`，返回实际承担交互的 `El`。应用可在这个元素上设置样式、禁用条件和提示，并追加按压回调。Kit 在该元素上设置 ID、角色、名称、可访问值和展开状态，并安装打开弹层的行为。列表挂载后，触发器的 `controls` 指向该列表。[触发器示例](../../examples/src/showcase/choices.rs)
+`popover` 把打开行为、焦点资格和 `expanded` 绑定到传入的触发元素。该元素提供自己的角色、可访问名称和 `controls` 关系。标准触发器可传 `button(..)`，自定义触发器在实际交互节点声明语义。[Popover 实现](../../crates/octara-kit/src/popover.rs)
+
+`select` 和 `combobox` 的触发工厂接收文案的 `ReadSignal<String>`，返回实际承担交互的 `El`。应用可在该元素上设置样式、禁用条件和提示，并追加按压回调。Kit 给该元素设置 `ComboBox` 角色、名称、可访问值，并将 `controls` 绑定到选项列表，关系按当前模态范围发布。[触发器示例](../../examples/src/showcase/choices.rs) · [选择器实现](../../crates/octara-kit/src/choices.rs)
 
 在 `select` 和 `combobox` 中，当前活动项由列表或独立搜索框报告，已选项来自应用模型。提交时读取当前可用项，先关闭弹层，再调用应用 setter。选择回调可以关闭窗口，框架随后按窗口和作用域结算焦点恢复。[选择器实现](../../crates/octara-kit/src/choices.rs) · [选择器回归](../../crates/octara-kit/tests/integration/option_snapshots.rs)
