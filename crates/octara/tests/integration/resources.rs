@@ -219,8 +219,7 @@ fn provider_reads_do_not_subscribe_the_caller_and_provider_writes_are_rejected()
 #[test]
 fn native_text_queries_decline_during_font_registration_and_resume_afterwards() {
     let (app, _, callback) = app();
-    let mut window =
-        app.open_window(WindowOptions::new("Input"), || text_input().id("field").label("Text").value("Hello".to_owned())).unwrap();
+    let mut window = app.open_window(WindowOptions::new("Input"), || input().id("field").label("Text").value("Hello".to_owned())).unwrap();
     window.dispatch(Event::Focus("field".into())).unwrap();
     let layout = {
         let host = window.platform_window();

@@ -9,7 +9,7 @@ fn behavior_layers_keep_order_and_replace_callbacks_only_within_their_own_layer(
     let saved = seen.clone();
     let mut window = Window::headless(move || {
         let (first, second, user) = (saved.clone(), saved.clone(), saved.clone());
-        text_input()
+        input()
             .id("field")
             .value("initial")
             .on_input(|_| panic!("replaced callback"))
@@ -35,7 +35,7 @@ fn component_keys_consume_or_fall_through_and_ime_runs_first() {
                 false
             })
             .child(
-                text_input()
+                input()
                     .id("field")
                     .value("abc")
                     .behavior(|b| {
@@ -84,7 +84,7 @@ fn close_current() {
 #[test]
 fn reloading_from_a_key_callback_does_not_continue_on_the_replacement_tree() {
     let mut window = Window::headless(|| {
-        text_input().id("field").value("abc").behavior(|b| b.on_key(|_| false)).on_key(|_| {
+        input().id("field").value("abc").behavior(|b| b.on_key(|_| false)).on_key(|_| {
             App::current().hot_reload();
             false
         })
@@ -103,13 +103,13 @@ fn reloading_from_a_key_callback_does_not_continue_on_the_replacement_tree() {
 fn closing_from_component_behavior_skips_later_callbacks_and_key_defaults() {
     for kind in ["input", "key", "blur"] {
         let mut window = Window::headless(move || {
-            let input = text_input().id("field").value("abc");
-            let input = match kind {
-                "input" => input
+            let field = input().id("field").value("abc");
+            let field = match kind {
+                "input" => field
                     .behavior(|b| b.on_input(|_| close_current()))
                     .behavior(|b| b.on_input(|_| panic!("late component input")))
                     .on_input(|_| panic!("late user input")),
-                "key" => input
+                "key" => field
                     .behavior(|b| {
                         b.on_key(|_| {
                             close_current();
@@ -118,13 +118,13 @@ fn closing_from_component_behavior_skips_later_callbacks_and_key_defaults() {
                     })
                     .behavior(|b| b.on_key(|_| panic!("late component key")))
                     .on_key(|_| panic!("late user key")),
-                "blur" => input
+                "blur" => field
                     .behavior(|b| b.on_blur(close_current))
                     .behavior(|b| b.on_blur(|| panic!("late component blur")))
                     .on_blur(|| panic!("late user blur")),
                 _ => unreachable!(),
             };
-            col().on_key(|_| panic!("late ancestor key")).child(input).child(text_input().id("other").value("other"))
+            col().on_key(|_| panic!("late ancestor key")).child(field).child(input().id("other").value("other"))
         });
         window.dispatch(Event::Focus("field".into())).unwrap();
         match kind {
@@ -153,7 +153,7 @@ fn every_behavior_signature_stops_when_a_component_closes_its_window() {
             let element = match kind {
                 "press" => el().behavior(|b| b.on_press(close_current)).on_press(|| panic!("late press")),
                 "toggle" => el().behavior(|b| b.on_toggle(close_current)).on_toggle(|| panic!("late toggle")),
-                "submit" => text_input().behavior(|b| b.on_submit(close_current)).on_submit(|| panic!("late submit")).into(),
+                "submit" => input().behavior(|b| b.on_submit(close_current)).on_submit(|| panic!("late submit")).into(),
                 "numeric" => el()
                     .role(Role::Slider)
                     .numeric_range(NumericRange { value: Some(0.0), min: 0.0, max: 10.0, step: Some(1.0) })

@@ -17,7 +17,7 @@
 | `AMBIGUOUS_TARGET` | 查找名匹配了多个挂载实例。用树中的角色、标签和位置确定对象，再传入该对象的 `target` |
 | `STALE_TARGET` 或 `NO_SUCH_ELEMENT` | 重新观察，确定控件是否已退出、替换或换焦点。对同名新控件重新作出操作决定 |
 | `STEP_FAILED`、`EXPECTATION_FAILED` 或 `BAD_REQUEST` | 比对实际值、支持的动作和请求字段。若已送达部分输入，先核对效果，避免重复执行 |
-| `NOT_SETTLED` | 检查仍在运行的任务、定时器和动画，再决定事件应该推进到哪个时刻 |
+| `NOT_SETTLED` | 窗口更新未结算时，`inspect`、`expect`、`pick` 和坐标手势暂不可用。用 `issues` 查看原因，必要时执行已知的恢复命令。遇到安静等待超时时检查剩余任务和动画 |
 | `UNNAMED_CONTROL` 或 `UNLABELED_CANVAS` | 给交互对象或有含义的画布提供名称；装饰内容可在语义层隐藏 |
 | `SMALL_TARGET` 或 `LOW_CONTRAST` | 核对实际命中区域及前景与背景颜色，在窄窗、触摸条件和不同主题中再次检查 |
 

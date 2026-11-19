@@ -2,7 +2,7 @@
 
 use super::section;
 use octara::prelude::*;
-use octara_kit::{primary_button, switch, text_field};
+use octara_kit::{primary_button, switch, text_area, text_field};
 
 #[ui]
 pub fn card() -> El {
@@ -21,13 +21,13 @@ pub fn card() -> El {
     };
     section("Text input")
         .child(text("Multi-line: wraps, grows from 3 to 6 lines, then scrolls inside").text_xs().text_color(Token::TextMuted))
-        .child(text_field(notes_text).id("notes").label("Notes").rows(3, 6).w(320).flex_shrink())
+        .child(text_area(notes_text).id("notes").label("Notes").rows(3, 6).w(320).flex_shrink())
         .child(text("Chat composer: Enter sends, Shift+Enter breaks the line").text_xs().text_color(Token::TextMuted))
         .child(
             row()
                 .gap_2()
                 .items_end()
-                .child(text_field(message).id("message").label("Message").submit_on_enter().rows(1, 4).w(260).flex_shrink().on_submit(send))
+                .child(text_area(message).id("message").label("Message").submit_on_enter().rows(1, 4).w(260).flex_shrink().on_submit(send))
                 .child(primary_button("Send").id("send").on_press(send)),
         )
         .child(

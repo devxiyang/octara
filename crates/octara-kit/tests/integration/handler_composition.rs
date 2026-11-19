@@ -1,33 +1,36 @@
 use octara::app::{Event, InputEvent};
 use octara::prelude::*;
-use octara_kit::{PopupItem, popup_list, text_field};
+use octara_kit::{PopupItem, popup_list, text_area, text_field};
 use std::cell::RefCell;
 use std::rc::Rc;
 
 #[test]
-fn text_field_updates_its_model_before_the_user_input_callback() {
-    let seen = Rc::new(RefCell::new(Vec::new()));
-    let saved = seen.clone();
-    let mut window = Window::headless(move || {
-        let value = state("value", || "initial".to_owned());
-        let saved = saved.clone();
-        text_field(value)
-            .id("field")
-            .on_input(|_| panic!("replaced user callback"))
-            .on_input(move |text| saved.borrow_mut().push((value.get(), text)))
-    });
-    window.dispatch(Event::Input("field".into(), "你好".into())).unwrap();
-    assert_eq!(&*seen.borrow(), &[("你好".to_owned(), "你好".to_owned())]);
-    assert_eq!(window.inspect().find("field").unwrap().value.as_deref(), Some("你好"));
-    let field = window.kernel().find("field").unwrap();
-    assert!(window.event(InputEvent::Accessibility {
-        target: octara::kernel::a11y::a11y_id(field),
-        action: octara::accesskit::Action::SetValue,
-        data: Some(octara::accesskit::ActionData::Value("accessible".into())),
-    }));
-    assert_eq!(seen.borrow().last(), Some(&("accessible".to_owned(), "accessible".to_owned())));
-    assert_eq!(window.kernel().value(field), "accessible");
-    assert!(window.app().diagnostics().is_empty());
+fn text_editors_update_their_models_before_the_user_input_callback() {
+    let editors: [fn(Signal<String>) -> TextInput; 2] = [text_field, text_area];
+    for editor in editors {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let saved = seen.clone();
+        let mut window = Window::headless(move || {
+            let value = state("value", || "initial".to_owned());
+            let saved = saved.clone();
+            editor(value)
+                .id("field")
+                .on_input(|_| panic!("replaced user callback"))
+                .on_input(move |text| saved.borrow_mut().push((value.get(), text)))
+        });
+        window.dispatch(Event::Input("field".into(), "你好".into())).unwrap();
+        assert_eq!(&*seen.borrow(), &[("你好".to_owned(), "你好".to_owned())]);
+        assert_eq!(window.inspect().find("field").unwrap().value.as_deref(), Some("你好"));
+        let field = window.kernel().find("field").unwrap();
+        assert!(window.event(InputEvent::Accessibility {
+            target: octara::kernel::a11y::a11y_id(field),
+            action: octara::accesskit::Action::SetValue,
+            data: Some(octara::accesskit::ActionData::Value("accessible".into())),
+        }));
+        assert_eq!(seen.borrow().last(), Some(&("accessible".to_owned(), "accessible".to_owned())));
+        assert_eq!(window.kernel().value(field), "accessible");
+        assert!(window.app().diagnostics().is_empty());
+    }
 }
 
 #[test]
@@ -53,7 +56,7 @@ fn popup_preserves_editor_callbacks_and_consumes_only_its_keys() {
                 || vec![PopupItem::new("one", "One"), PopupItem::new("two", "Two")],
                 move |id| picks.borrow_mut().push(format!("pick:{id}")),
             ))
-            .child(text_input().id("other").value("other"))
+            .child(input().id("other").value("other"))
     });
     window.dispatch(Event::Focus("field".into())).unwrap();
     window.set_selection(3, 3);
@@ -153,13 +156,13 @@ fn number_callbacks_observe_commits_without_rewriting_drafts_or_intercepting_ime
     let saved = seen.clone();
     let mut window = Window::headless(move || {
         let value = state("value", || "2.00".to_owned());
-        let (input, submit, blur, numeric, keys) = (saved.clone(), saved.clone(), saved.clone(), saved.clone(), saved.clone());
+        let (inputs, submit, blur, numeric, keys) = (saved.clone(), saved.clone(), saved.clone(), saved.clone(), saved.clone());
         col()
             .size_full()
             .child(
                 octara_kit::number_field(value, 0.0, 10.0, 0.5)
                     .id("number")
-                    .on_input(move |_| input.borrow_mut().push(format!("input:{}", value.get())))
+                    .on_input(move |_| inputs.borrow_mut().push(format!("input:{}", value.get())))
                     .on_submit(|| panic!("replaced callback"))
                     .on_submit(move || submit.borrow_mut().push(format!("submit:{}", value.get())))
                     .on_blur(move || blur.borrow_mut().push(format!("blur:{}", value.get())))
@@ -169,7 +172,7 @@ fn number_callbacks_observe_commits_without_rewriting_drafts_or_intercepting_ime
                         false
                     }),
             )
-            .child(text_input().id("other"))
+            .child(input().id("other"))
     });
     window.dispatch(Event::Focus("number".into())).unwrap();
     window.dispatch(Event::Input("number".into(), " 6.30 ".into())).unwrap();
@@ -280,8 +283,7 @@ fn popover_preserves_trigger_callbacks_and_later_replacement_keeps_open_behavior
             let open = state("open", || false);
             let (original, replacement) = (saved.clone(), saved.clone());
             let trigger = octara_kit::button("Details").on_press(move || original.borrow_mut().push(format!("original:{}", open.get())));
-            let popup =
-                octara_kit::popover("details", open, Placement::BELOW, trigger, || text_input().id("inside").value("draft").autofocus());
+            let popup = octara_kit::popover("details", open, Placement::BELOW, trigger, || input().id("inside").value("draft").autofocus());
             let popup =
                 if replace { popup.on_press(move || replacement.borrow_mut().push(format!("replacement:{}", open.get()))) } else { popup };
             col().size_full().p_4().child(popup)
@@ -320,7 +322,7 @@ fn menu_button_keeps_opening_navigation_and_deferred_commands_with_application_c
                         false
                     }),
             )
-            .child(text_input().id("editor").value("draft"))
+            .child(input().id("editor").value("draft"))
     });
     window.dispatch(Event::Focus("editor".into())).unwrap();
     window.set_selection(1, 4);

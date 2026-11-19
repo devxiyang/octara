@@ -24,7 +24,7 @@ fn todos() -> View {
         }
     };
     col()
-        .child(text_input().id("draft").label("New").value(move || draft.get()).on_input(move |v| draft.set(v)).on_submit(add))
+        .child(input().id("draft").label("New").value(move || draft.get()).on_input(move |v| draft.set(v)).on_submit(add))
         .child(el().id("add").role(Role::Button).label("Add").size_8().on_press(add))
         .child(el().id("later").role(Role::Button).label("Later").size_8().on_press(move || {
             spawn(async move {
@@ -83,7 +83,7 @@ fn a_recorded_session_replays_to_the_same_state() {
 fn each_operation_presents_a_frame() {
     let mut w = Window::headless(|| {
         col()
-            .child(text_input().id("name").label("Name").secure().value("").on_input(|_| {}))
+            .child(input().id("name").label("Name").secure().value("").on_input(|_| {}))
             .child(web_view("https://example.com").id("web").label("Page"))
     });
     let window = |w: &Window| {

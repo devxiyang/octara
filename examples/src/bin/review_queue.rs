@@ -53,7 +53,7 @@ fn approval_form(id: &'static str, decisions: Decisions) -> El {
         .gap_2()
         .child(text("审阅意见").id("review-note-label").font_semibold())
         .child(
-            text_input()
+            textarea()
                 .id("review-note")
                 .labelled_by("review-note-label")
                 .required(true)
@@ -62,7 +62,6 @@ fn approval_form(id: &'static str, decisions: Decisions) -> El {
                 .value(draft)
                 .on_input(move |text| draft.set(text))
                 .on_submit(approve)
-                .multiline()
                 .rows(3, 4)
                 .w_full()
                 .p_3()

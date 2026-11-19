@@ -236,7 +236,7 @@ impl App {
                 continue;
             }
             out.extend(w.motion_work());
-            if w.w.settled_generation.get() != Some(w.w.kernel.borrow().mutation_generation()) {
+            if !w.frame_is_settled() {
                 out.push(PendingWork {
                     kind: WorkKind::Update,
                     label: "window updates are still pending".into(),

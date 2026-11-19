@@ -41,7 +41,8 @@ use text::{TextEngine, TextMetrics, TextStyle, Wrap};
 
 pub use accesskit::Role;
 pub use edit::floor_boundary;
-pub use focus::Arrow;
+pub(crate) use focus::LayerPolicy;
+pub use focus::{Arrow, FocusGroup};
 pub use issues::LayoutIssue;
 pub(crate) use octara_primitives::theme::BoxShadow;
 pub use select::Address;
@@ -260,14 +261,14 @@ struct Node {
     /// Tab order: positive values come first (in order), 0 in tree order, negative not at all.
     tab_index: i32,
     /// Arrow keys move focus among the focusable elements inside; Tab stops once.
-    focus_group: bool,
+    focus_group: Option<FocusGroup>,
+    focus_preferred: bool,
     preserve_focus_on_press: bool,
     /// A focus group's member focused last (where Tab comes back to).
     group_current: Option<NodeId>,
     /// Focused when the modal around it opens.
     autofocus: bool,
-    /// A modal: `Some(click_outside)` (a press outside dismisses it).
-    modal: Option<bool>,
+    layer: Option<LayerPolicy>,
     /// The key context this element adds for the bindings of its subtree (`key_context`).
     key_context: Option<String>,
     /// Command handlers (`on_command`), by command id.
@@ -676,7 +677,7 @@ pub struct Kernel {
     /// The window is the active one (key on macOS): its focused field shows a caret.
     window_active: bool,
     /// Nodes made modals (shown or not, attached or not): `modals` filters them.
-    modal_nodes: rustc_hash::FxHashSet<NodeId>,
+    layer_nodes: rustc_hash::FxHashSet<NodeId>,
     /// Native views (mounted or not): placements and the host follow them.
     native_nodes: rustc_hash::FxHashSet<NodeId>,
     /// Bumped by every change that can alter the display list (paint, layout and text changes,
@@ -765,7 +766,7 @@ impl Kernel {
             revealing: None,
             caret: None,
             window_active: true,
-            modal_nodes: rustc_hash::FxHashSet::default(),
+            layer_nodes: rustc_hash::FxHashSet::default(),
             native_nodes: rustc_hash::FxHashSet::default(),
             paint_gen: 0,
             mutation_gen: 0,
@@ -1134,11 +1135,12 @@ impl Kernel {
             hidden: false,
             focusable: false,
             tab_index: 0,
-            focus_group: false,
+            focus_group: None,
+            focus_preferred: false,
             preserve_focus_on_press: false,
             group_current: None,
             autofocus: false,
-            modal: None,
+            layer: None,
             key_context: None,
             commands: Vec::new(),
             anim: None,
@@ -1335,7 +1337,7 @@ impl Kernel {
         self.record(id, OpKind::Destroy);
         let n = self.nodes.remove(id).expect("node");
         self.missing_tokens.remove(&id);
-        self.modal_nodes.remove(&id);
+        self.layer_nodes.remove(&id);
         self.native_nodes.remove(&id);
         self.a11y_relation_owners.get_mut().remove(&id);
         if n.anchor.is_some() {
@@ -1838,6 +1840,11 @@ impl Kernel {
         self.node_mut(node).overlay_owner = Some(owner);
     }
 
+    pub(crate) fn interaction_parent(&self, node: NodeId) -> Option<NodeId> {
+        let n = &self.nodes[node];
+        n.overlay_owner.or_else(|| n.anchor.map(|(owner, _)| owner)).or(n.parent)
+    }
+
     /// Logical ownership includes overlays, whose physical parent is the window's layer.
     /// Physical containment stays separate for layout, selection and pointer release targets.
     pub(crate) fn is_in_interaction_scope(&self, mut node: NodeId, owner: NodeId) -> bool {
@@ -1846,8 +1853,7 @@ impl Kernel {
             if node == owner {
                 return true;
             }
-            let n = self.node(node);
-            match n.overlay_owner.or_else(|| n.anchor.map(|(owner, _)| owner)).or(n.parent) {
+            match self.interaction_parent(node) {
                 Some(parent) => node = parent,
                 None => break,
             }

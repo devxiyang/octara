@@ -1,7 +1,7 @@
 //! Focus structure: Tab order (with `tab_index` and focus groups), focus groups' arrow-key
 //! movement, and modals (Rune's model).
 
-use super::{Kernel, NodeId, Role, State};
+use super::{Kernel, NodeId, State};
 
 /// How arrow keys move focus inside a focus group.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -14,10 +14,69 @@ pub enum Arrow {
     End,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum Axis {
+    Horizontal,
+    Vertical,
+    Both,
+}
+
+/// Keyboard navigation for a container with a single Tab stop.
+///
+/// The group skips hidden and disabled members. Home and End move to the first and last
+/// member. Tab enters at the preferred member, then the remembered member, then the first
+/// eligible stop. An already focused member remains the group's stop.
+#[derive(Clone, Copy, Debug)]
+pub struct FocusGroup {
+    axis: Axis,
+    wraps: bool,
+    activates: bool,
+}
+
+impl FocusGroup {
+    const fn new(axis: Axis) -> Self {
+        Self { axis, wraps: false, activates: false }
+    }
+
+    /// Move with Left and Right.
+    pub const fn horizontal() -> Self {
+        Self::new(Axis::Horizontal)
+    }
+
+    /// Move with Up and Down.
+    pub const fn vertical() -> Self {
+        Self::new(Axis::Vertical)
+    }
+
+    /// Move with either pair of arrow keys.
+    pub const fn both() -> Self {
+        Self::new(Axis::Both)
+    }
+
+    /// Continue at the opposite edge when an arrow reaches the end.
+    pub const fn wrap(mut self) -> Self {
+        self.wraps = true;
+        self
+    }
+
+    /// After group navigation settles focus, press the reached item if it is still eligible.
+    /// Reaching the already focused, preferred item leaves it as is. Tab only moves focus.
+    pub const fn activate_on_navigation(mut self) -> Self {
+        self.activates = true;
+        self
+    }
+}
+
 pub(crate) enum InteractionError {
     Hidden,
     BehindModal(NodeId),
     Disabled,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LayerPolicy {
+    pub modal: bool,
+    pub click_outside: bool,
 }
 
 impl InteractionError {
@@ -34,28 +93,31 @@ impl Kernel {
     pub fn set_tab_index(&mut self, id: NodeId, i: i32) {
         self.node_mut(id).tab_index = i;
     }
-    pub fn set_focus_group(&mut self, id: NodeId, on: bool) {
-        self.node_mut(id).focus_group = on;
+    pub fn set_focus_group(&mut self, id: NodeId, group: FocusGroup) {
+        self.node_mut(id).focus_group = Some(group);
+    }
+    pub(crate) fn set_focus_preferred(&mut self, id: NodeId, preferred: bool) -> bool {
+        let n = self.node_mut(id);
+        if n.focus_preferred == preferred {
+            return false;
+        }
+        n.focus_preferred = preferred;
+        self.mark(super::Dirty::empty());
+        true
     }
     pub fn set_autofocus(&mut self, id: NodeId, on: bool) {
         self.node_mut(id).autofocus = on;
     }
-    /// Makes `id` a modal (`Some(click_outside)`) or not; changes what assistive technology
-    /// reads (the rest of the window is inert).
-    pub fn set_modal(&mut self, id: NodeId, modal: Option<bool>) {
-        if self.node(id).modal != modal {
-            self.node_mut(id).modal = modal;
-            if modal.is_some() {
-                self.modal_nodes.insert(id);
-            } else {
-                self.modal_nodes.remove(&id);
-            }
+    pub(crate) fn set_interaction_layer(&mut self, id: NodeId, layer: LayerPolicy) {
+        if self.node(id).layer != Some(layer) {
+            self.node_mut(id).layer = Some(layer);
+            self.layer_nodes.insert(id);
             self.a11y_touch(id);
             self.mark(super::Dirty::SEMANTICS);
         }
     }
-    pub fn modal_click_outside(&self, id: NodeId) -> bool {
-        self.node(id).modal == Some(true)
+    pub(crate) fn dismiss_on_outside(&self, id: NodeId) -> bool {
+        self.node(id).layer.is_some_and(|layer| layer.click_outside)
     }
 
     fn shown(&self, id: NodeId) -> bool {
@@ -105,11 +167,28 @@ impl Kernel {
     /// Shown modals, outermost first (tree order: overlays come after the page, a modal inside
     /// another after it).
     pub fn modals(&self) -> Vec<NodeId> {
-        // The modal nodes are known: keep those shown in the window, in tree order (each one's
-        // path of child indices from the root).
-        let mut out: Vec<(Vec<usize>, NodeId)> = self.modal_nodes.iter().filter_map(|&id| self.shown_path(id).map(|p| (p, id))).collect();
-        out.sort();
-        out.into_iter().map(|(_, id)| id).collect()
+        let mut modals: Vec<_> = self.layer_paths().filter(|&(_, id)| self.is_modal_layer(id)).collect();
+        modals.sort_unstable();
+        modals.into_iter().map(|(_, id)| id).collect()
+    }
+
+    pub(crate) fn front_modal(&self) -> Option<NodeId> {
+        self.layer_paths().filter(|&(_, id)| self.is_modal_layer(id)).max().map(|(_, id)| id)
+    }
+
+    /// The highest dismissible layer allowed by the current modal barrier.
+    pub(crate) fn dismissal_layer(&self, modal: Option<NodeId>) -> Option<NodeId> {
+        self.layer_paths().filter(|&(_, layer)| modal.is_none_or(|modal| self.is_in_modal_scope(layer, modal))).max().map(|(_, id)| id)
+    }
+
+    fn is_modal_layer(&self, id: NodeId) -> bool {
+        self.node(id).layer.is_some_and(|layer| layer.modal)
+    }
+
+    fn layer_paths(&self) -> impl Iterator<Item = (Vec<usize>, NodeId)> + '_ {
+        // Paint and hit testing walk siblings in this same physical order. Overlay ownership
+        // participates in eligibility, independently of where a layer is drawn.
+        self.layer_nodes.iter().filter(|&&id| !self.is_exiting(id)).filter_map(|&id| self.shown_path(id).map(|p| (p, id)))
     }
 
     /// The child indices from the root to `id`, if it and every ancestor are shown and it is in
@@ -146,11 +225,23 @@ impl Kernel {
         n.focusable && !n.state.contains(State::DISABLED)
     }
 
+    /// Visit eligible controls in physical tree order, including separately mounted overlays.
+    fn walk_focusable(&self, scope: Option<NodeId>, f: &mut impl FnMut(NodeId)) {
+        if scope.is_some_and(|id| !self.is_shown(id)) {
+            return;
+        }
+        self.walk_shown(self.root, &mut |id| {
+            if self.takes_focus(id) && scope.is_none_or(|scope| self.is_in_interaction_scope(id, scope)) {
+                f(id);
+            }
+        });
+    }
+
     /// The nearest focus group around `id` (not `id` itself).
     fn group_of(&self, id: NodeId) -> Option<NodeId> {
         let mut p = self.parent(id);
         while let Some(g) = p {
-            if self.node(g).focus_group {
+            if self.node(g).focus_group.is_some() {
                 return Some(g);
             }
             p = self.parent(g);
@@ -158,23 +249,19 @@ impl Kernel {
         None
     }
 
-    /// Focus moved to `id`: the focus groups around it remember it (Tab comes back to it).
+    /// Focus moved to `id`: its group remembers it (Tab comes back to it).
     pub fn focused_in_group(&mut self, id: NodeId) {
-        let mut p = self.parent(id);
-        while let Some(g) = p {
-            if self.node(g).focus_group {
-                self.node_mut(g).group_current = Some(id);
-            }
-            p = self.parent(g);
+        if let Some(group) = self.group_of(id) {
+            self.node_mut(group).group_current = Some(id);
         }
     }
 
-    /// The focusable members of a focus group, in tree order (nested groups' members included).
+    /// The focusable members owned by this group, in tree order.
     fn group_members(&self, group: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
         for &c in self.node(group).children() {
             self.walk_shown(c, &mut |id| {
-                if self.takes_focus(id) {
+                if self.takes_focus(id) && self.group_of(id) == Some(group) {
                     out.push(id);
                 }
             });
@@ -184,13 +271,11 @@ impl Kernel {
 
     /// The Tab order inside `scope` (the open modal, else the window): focusable, enabled, shown
     /// nodes; positive `tab_index` first, then the rest in tree order; negative ones skipped.
-    /// A focus group is one stop: its focused member, else its remembered or selected one,
-    /// else its first. A radio group's checked radio and a tab list's selected tab precede
-    /// their remembered members when entering from outside.
+    /// A group stops at its focused member, preferred stop, remembered stop, or first stop.
     pub fn focus_order(&self, scope: Option<NodeId>, focused: Option<NodeId>) -> Vec<NodeId> {
         let mut all = Vec::new();
-        self.walk_shown(scope.unwrap_or(self.root), &mut |id| {
-            if self.takes_focus(id) && self.node(id).tab_index >= 0 {
+        self.walk_focusable(scope, &mut |id| {
+            if self.node(id).tab_index >= 0 {
                 all.push(id);
             }
         });
@@ -198,23 +283,20 @@ impl Kernel {
         let mut stops: Vec<NodeId> = Vec::new();
         let mut groups_seen: Vec<NodeId> = Vec::new();
         for id in all {
-            match self.group_of(id).filter(|g| scope.is_none_or(|s| self.is_within(*g, s))) {
+            match self.group_of(id).filter(|&group| scope.is_none_or(|scope| self.is_in_interaction_scope(group, scope))) {
                 None => stops.push(id),
                 Some(g) if groups_seen.contains(&g) => {}
                 Some(g) => {
                     groups_seen.push(g);
-                    let members = self.group_members(g);
+                    let mut members = self.group_members(g);
+                    if let Some(scope) = scope {
+                        members.retain(|&member| self.is_in_interaction_scope(member, scope));
+                    }
+                    let is_stop = |m| self.node(m).tab_index >= 0;
                     let pick = focused
                         .filter(|f| members.contains(f))
-                        .or_else(|| {
-                            members.iter().copied().find(|m| match self.role(g) {
-                                Role::RadioGroup => self.role(*m) == Role::RadioButton && self.checked(*m) == Some(true),
-                                Role::TabList => self.role(*m) == Role::Tab && self.node(*m).state.contains(State::SELECTED),
-                                _ => false,
-                            })
-                        })
-                        .or_else(|| self.node(g).group_current.filter(|c| members.contains(c)))
-                        .or_else(|| members.iter().copied().find(|m| self.node(*m).state.contains(State::SELECTED)))
+                        .or_else(|| members.iter().copied().find(|&m| is_stop(m) && self.node(m).focus_preferred))
+                        .or_else(|| self.node(g).group_current.filter(|&c| members.contains(&c) && is_stop(c)))
                         .unwrap_or(id);
                     stops.push(pick);
                 }
@@ -229,40 +311,42 @@ impl Kernel {
     }
 
     /// Where an arrow key moves focus from `focused` inside its focus group, if it does.
-    /// Menus, lists and trees move on Up and Down only; other groups (tabs, toolbars, radio
-    /// groups, segments) on Left and Right as well. Lists, trees and grids stop at their ends;
-    /// the others wrap.
     pub fn group_step(&self, focused: NodeId, arrow: Arrow) -> Option<NodeId> {
         let g = self.group_of(focused)?;
+        let policy = self.node(g).focus_group?;
         let members = self.group_members(g);
         let at = members.iter().position(|m| *m == focused)?;
-        let role = self.role(g);
-        let vertical = matches!(role, Role::Menu | Role::ListBox | Role::List | Role::Tree | Role::TreeGrid | Role::Grid);
-        let stops = matches!(role, Role::ListBox | Role::List | Role::Tree | Role::TreeGrid | Role::Grid);
         let last = members.len() - 1;
         let step = |forward: bool| -> Option<usize> {
             match (forward, at) {
-                (true, i) if i == last => (!stops).then_some(0),
+                (true, i) if i == last => policy.wraps.then_some(0),
                 (true, i) => Some(i + 1),
-                (false, 0) => (!stops).then_some(last),
+                (false, 0) => policy.wraps.then_some(last),
                 (false, i) => Some(i - 1),
             }
         };
         let to = match arrow {
             Arrow::Home => Some(0),
             Arrow::End => Some(last),
-            Arrow::Down => step(true),
-            Arrow::Up => step(false),
-            Arrow::Right if !vertical => step(true),
-            Arrow::Left if !vertical => step(false),
-            Arrow::Left | Arrow::Right => None,
+            Arrow::Down if !matches!(policy.axis, Axis::Horizontal) => step(true),
+            Arrow::Up if !matches!(policy.axis, Axis::Horizontal) => step(false),
+            Arrow::Right if !matches!(policy.axis, Axis::Vertical) => step(true),
+            Arrow::Left if !matches!(policy.axis, Axis::Vertical) => step(false),
+            Arrow::Down | Arrow::Up | Arrow::Left | Arrow::Right => None,
         }?;
         Some(members[to])
     }
 
-    /// The radio group whose navigation chooses this radio, if it belongs to one.
-    pub(crate) fn radio_group(&self, id: NodeId) -> Option<NodeId> {
-        (self.role(id) == Role::RadioButton).then(|| self.group_of(id)).flatten().filter(|g| self.role(*g) == Role::RadioGroup)
+    pub(crate) fn group_activation(&self, from: NodeId, to: NodeId) -> Option<NodeId> {
+        if from == to && self.node(to).focus_preferred {
+            return None;
+        }
+        let group = self.group_of(from)?;
+        self.activating_focus_group(to).filter(|&owner| owner == group)
+    }
+
+    pub(crate) fn activating_focus_group(&self, id: NodeId) -> Option<NodeId> {
+        self.group_of(id).filter(|&group| self.node(group).focus_group.is_some_and(|policy| policy.activates))
     }
 
     /// What a modal focuses when it opens: its `autofocus` element, else its first text field,
@@ -270,14 +354,12 @@ impl Kernel {
     pub fn initial_focus(&self, modal: NodeId) -> Option<NodeId> {
         let mut auto = None;
         let mut field = None;
-        self.walk_shown(modal, &mut |id| {
-            if self.takes_focus(id) {
-                if auto.is_none() && self.node(id).autofocus {
-                    auto = Some(id);
-                }
-                if field.is_none() && self.node(id).input().is_some() {
-                    field = Some(id);
-                }
+        self.walk_focusable(Some(modal), &mut |id| {
+            if auto.is_none() && self.node(id).autofocus {
+                auto = Some(id);
+            }
+            if field.is_none() && self.node(id).input().is_some() {
+                field = Some(id);
             }
         });
         auto.or(field).or_else(|| self.focus_order(Some(modal), None).first().copied())

@@ -225,7 +225,7 @@ mod tests {
     #[ui]
     fn editor() -> View {
         let value = state("value", || "杭州".to_owned());
-        text_input().id("field").value(move || value.get()).on_input(move |text| value.set(text)).into()
+        input().id("field").value(move || value.get()).on_input(move |text| value.set(text)).into()
     }
 
     fn native_input(app: &Window) -> TextInput {

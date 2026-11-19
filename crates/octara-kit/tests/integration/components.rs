@@ -274,6 +274,11 @@ fn a_list_selects_and_moves_by_arrow_keys() {
     let k = app.kernel();
     assert!(k.state_of("chat-2").unwrap().contains(State::FOCUSED), "the arrow moved focus down");
     assert!(k.state_of("chat-2").unwrap().contains(State::SELECTED), "and selection followed it");
+    drop(k);
+    for key in ["down", "left"] {
+        app.press_key(key).unwrap();
+        assert_eq!(app.inspect().focus.as_deref(), Some("chat-2"), "{key} keeps focus at the last list item");
+    }
 }
 
 #[test]

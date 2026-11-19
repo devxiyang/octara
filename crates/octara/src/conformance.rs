@@ -94,7 +94,7 @@ fn operations_present_frames(app: &App) -> Result<(), String> {
 }
 
 fn activation(app: &App) -> Result<(), String> {
-    let mut w = app.open_window(WindowOptions::new("Conformance activation").size(240.0, 160.0), || text_input().id("f"))?;
+    let mut w = app.open_window(WindowOptions::new("Conformance activation").size(240.0, 160.0), || input().id("f"))?;
     let result = (|| {
         w.tap("f")?;
         w.event(InputEvent::Active(false));

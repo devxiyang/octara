@@ -155,8 +155,8 @@ fn measurement_paint_and_font_providers_cannot_write_or_reenter_resources() {
             col()
                 .size_full()
                 .child(text(label).id("label").w(40.0).truncate())
-                .child(text_input().id("field").label("Field").value("one two three".to_owned()).multiline().rows(1, 4).w(40.0))
-                .child(text_input().id("hint").label("Hint").placeholder("A long hint").w(40.0))
+                .child(textarea().id("field").label("Field").value("one two three".to_owned()).rows(1, 4).w(40.0))
+                .child(input().id("hint").label("Hint").placeholder("A long hint").w(40.0))
                 .child(
                     canvas(|canvas| {
                         canvas.text("Canvas text", point(0.0, 0.0));
@@ -186,9 +186,7 @@ fn native_multiline_queries_are_read_only_without_an_app_entry_and_restore_forei
     let (app, probe) = app();
     let protected = app.run(|| state("protected", || 0));
     let mut window = app
-        .open_window(WindowOptions::new("Native"), || {
-            text_input().id("field").label("Field").value("Initial".to_owned()).multiline().rows(1, 4).w(40.0)
-        })
+        .open_window(WindowOptions::new("Native"), || textarea().id("field").label("Field").value("Initial".to_owned()).rows(1, 4).w(40.0))
         .unwrap();
     window.dispatch(Event::Focus("field".into())).unwrap();
     let layout = input_layout(&window);
@@ -253,8 +251,7 @@ fn provider_panics_fail_the_owner_before_publication_or_during_native_prediction
     for native in [false, true] {
         let (app, probe) = app();
         let value = app.run(|| state("value", || "Original".to_owned()));
-        let mut window =
-            app.open_window(WindowOptions::new("Failure"), move || text_input().id("field").label("Field").value(value)).unwrap();
+        let mut window = app.open_window(WindowOptions::new("Failure"), move || input().id("field").label("Field").value(value)).unwrap();
         window.dispatch(Event::Focus("field".into())).unwrap();
         let layout = input_layout(&window);
         let frames = window.frames_presented();
@@ -288,7 +285,7 @@ fn provider_panics_fail_the_owner_before_publication_or_during_native_prediction
 fn retained_native_layout_declines_after_shutdown_while_its_app_handle_is_alive() {
     let (app, probe) = app();
     let mut window =
-        app.open_window(WindowOptions::new("Retired"), || text_input().id("field").label("Field").value("Original".to_owned())).unwrap();
+        app.open_window(WindowOptions::new("Retired"), || input().id("field").label("Field").value("Original".to_owned())).unwrap();
     window.dispatch(Event::Focus("field".into())).unwrap();
     let layout = input_layout(&window);
     app.shutdown();
@@ -308,7 +305,7 @@ fn retained_native_layout_declines_after_shutdown_while_its_app_handle_is_alive(
 fn retained_native_layout_declines_after_its_owner_drops_without_retaining_a_runtime_cycle() {
     let (app, probe) = app();
     let mut window =
-        app.open_window(WindowOptions::new("Retained"), || text_input().id("field").label("Field").value("Original".to_owned())).unwrap();
+        app.open_window(WindowOptions::new("Retained"), || input().id("field").label("Field").value("Original".to_owned())).unwrap();
     window.dispatch(Event::Focus("field".into())).unwrap();
     let layout = input_layout(&window);
     drop(window);

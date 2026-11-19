@@ -36,7 +36,7 @@ fn ranges() -> View {
             step: None,
         }))
         .child(text(move || value.get().to_string()).id("current"))
-        .child(text_input().id("plain").label("Ordinary text").w(200.0))
+        .child(input().id("plain").label("Ordinary text").w(200.0))
         .into()
 }
 
@@ -135,7 +135,7 @@ fn numeric_requests_do_not_replace_a_text_fields_active_composition() {
     let mut window = Window::headless(|| {
         let text = state("text", || "2".to_owned());
         col().size_full().child(
-            text_input()
+            input()
                 .id("number")
                 .label("Number")
                 .w(200.0)

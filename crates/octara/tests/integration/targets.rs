@@ -34,8 +34,8 @@ fn target_view() -> View {
             },
         ))
         .child(text(move || count.get().to_string()).id("count"))
-        .child(text_input().id("field").w(240).value(move || value.get()).on_input(move |v| value.set(v)))
-        .child(text_input().id("other").w(240))
+        .child(input().id("field").w(240).value(move || value.get()).on_input(move |v| value.set(v)))
+        .child(input().id("other").w(240))
         .into()
 }
 
@@ -200,7 +200,7 @@ fn replacing_field(on_focus: bool) -> (Window, Rc<Cell<usize>>) {
             move || replaced.get(),
             move |replacement| {
                 let writes = writes.clone();
-                let field = text_input().id("field").w(240).value(move || value.get()).on_input(move |text| {
+                let field = input().id("field").w(240).value(move || value.get()).on_input(move |text| {
                     writes.set(writes.get() + 1);
                     value.set(text);
                 });
@@ -331,8 +331,8 @@ fn unnamed_instances_can_receive_and_replay_observed_focus_and_text() {
         let one = state("one", String::new);
         let two = state("two", String::new);
         col()
-            .child(text_input().label("One").w(200).value(one).on_input(move |value| one.set(value)))
-            .child(text_input().label("Two").w(200).value(two).on_input(move |value| two.set(value)))
+            .child(input().label("One").w(200).value(one).on_input(move |value| one.set(value)))
+            .child(input().label("Two").w(200).value(two).on_input(move |value| two.set(value)))
     }
     let mut live = Window::headless(view);
     let snapshot = live.inspect();

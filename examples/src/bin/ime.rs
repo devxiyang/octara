@@ -2,7 +2,7 @@
 //! Build this binary, then prepare its app bundle with `python3 examples/ime_window.py`.
 
 use octara::prelude::*;
-use octara_kit::{button, text_field};
+use octara_kit::{button, text_area, text_field};
 
 #[path = "ime/controlled.rs"]
 mod controlled;
@@ -71,14 +71,7 @@ fn ime() -> View {
             col()
                 .gap_2()
                 .child(text("Multiple lines — Enter breaks a line, Command+Enter submits").font_semibold())
-                .child(
-                    text_field(multi)
-                        .id("ime-multi")
-                        .label("Multiple lines")
-                        .multiline()
-                        .rows(3, 5)
-                        .on_submit(move || submits.update(|n| *n += 1)),
-                )
+                .child(text_area(multi).id("ime-multi").label("Multiple lines").rows(3, 5).on_submit(move || submits.update(|n| *n += 1)))
                 .child(text(move || format!("Multi value: {:?}", multi.get())).id("ime-multi-value").text_sm())
                 .child(text(move || format!("Multi edits: {}", multi_edits.get())).id("ime-multi-edits").text_sm()),
         )

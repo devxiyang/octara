@@ -275,8 +275,8 @@ pub(crate) struct WindowState {
     native_changes: RefCell<Vec<crate::native::NativeChange>>,
     /// The paint generation last presented.
     presented: Cell<u64>,
-    /// The kernel generation last laid out and presented, before final focus and hover cleanup.
-    settled_generation: Cell<Option<u64>>,
+    /// The revision accepted at the App's final publication boundary.
+    settled_revision: Cell<Option<WindowRevision>>,
     /// Frames presented to the platform window.
     frames: Cell<u64>,
     /// The active painted capture and its native responses.
@@ -339,7 +339,7 @@ fn enter_app_context<R>(app: &Rc<AppState>, f: impl FnOnce() -> R) -> R {
         }
         if app.failed.get() {
             for window in app.windows.borrow().values() {
-                window.settled_generation.set(None);
+                window.settled_revision.set(None);
                 if let Ok(mut capture) = window.capturing.try_borrow_mut() {
                     capture.take();
                 }
@@ -406,14 +406,16 @@ pub struct Window {
 /// inside this same App frame merely because another window changed.
 #[derive(Clone, Copy)]
 enum WindowUpdate {
-    Ready(u64),
+    Ready(WindowRevision),
     Incomplete,
 }
 
-impl WindowUpdate {
-    fn invalidated(self, generation: u64) -> bool {
-        matches!(self, Self::Ready(previous) if previous != generation)
-    }
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct WindowRevision {
+    mutation: u64,
+    paint: u64,
+    time: u64,
+    viewport: [u32; 3],
 }
 
 impl AppState {
@@ -523,6 +525,8 @@ struct Interaction {
     hover_chain: Vec<NodeId>,
     /// Hover held still while layout moved under a still pointer (Rune).
     hover_held: bool,
+    /// Refresh stationary hover after this input's layout and focus changes.
+    refresh_hover: bool,
     focused: Option<NodeId>,
     modality: Modality,
     pointer: pointer::PointerState,
@@ -594,7 +598,7 @@ impl WindowState {
             native_sent: RefCell::default(),
             native_changes: RefCell::default(),
             presented: Cell::new(u64::MAX),
-            settled_generation: Cell::new(None),
+            settled_revision: Cell::new(None),
             frames: Cell::new(0),
             capturing: RefCell::default(),
             picking: RefCell::default(),
@@ -868,11 +872,7 @@ impl AppState {
         // incremental baseline to compare until a later operation completes that work.
         let unfinished = self.has_window_requests()
             || self.rt.has_pending()
-            || self
-                .windows
-                .borrow()
-                .values()
-                .any(|w| !w.closed.get() && w.settled_generation.get() != Some(w.kernel.borrow().mutation_generation()));
+            || self.order.borrow().iter().any(|&id| self.handle(id).is_some_and(|w| !w.frame_is_settled()));
         if unfinished {
             return;
         }
@@ -882,7 +882,7 @@ impl AppState {
             let Some(w) = self.handle(id).filter(Window::can_prepare) else { continue };
             let incremental = w.w.kernel.borrow().tree_dump();
             w.reload();
-            w.enter(|| w.settle_window(std::panic::Location::caller()));
+            self.frame(Some(id), std::panic::Location::caller());
             let scratch = w.w.kernel.borrow().tree_dump();
             if incremental != scratch {
                 self.checking.set(false);

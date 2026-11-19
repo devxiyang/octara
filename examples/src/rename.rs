@@ -110,7 +110,7 @@ fn file_row(id: u32, file: ReadSignal<File>, model: Directory) -> El {
             move |editing| -> View {
                 if *editing {
                     let draft = state("draft", || file.get());
-                    text_input()
+                    input()
                         .id(EDITOR)
                         .label(format!("File name in {}", caption(id)))
                         .h(32)

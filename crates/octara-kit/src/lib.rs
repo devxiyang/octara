@@ -1,8 +1,8 @@
 //! Themable components for Octara, built only on octara's public primitives.
 //!
-//! Every component returns an [`El`] (or a [`View`]), so callers keep chaining `id`, styles,
-//! `disabled` and handlers. Controlled components take a [`Model`]: a [`Signal`], or a
-//! `(getter, setter)` pair when the value lives elsewhere (for example in a list entry).
+//! Components return [`El`], [`TextInput`], or [`View`]. Element builders support chaining
+//! `id`, styles, `disabled` and handlers. Controlled components take a [`Model`], either a
+//! [`Signal`] or a `(getter, setter)` pair when the value lives elsewhere.
 //! Structural wrappers such as [`field`] return their container; configure the supplied
 //! control's handlers and disabled state before wrapping it.
 //! Colors come from theme [`Token`]s; semantics (role, checked, expanded, selected) are set for
@@ -231,16 +231,28 @@ pub fn switch(on: impl Model<bool>) -> El {
     target(Role::Switch, track).checked(move || get()).behavior(|b| b.on_toggle(flip))
 }
 
-// ---- text field ----
+// ---- text editors ----
 
 /// A single-line text field bound to `value`. The model is updated before the replaceable
 /// `on_input` application callback; adding that callback preserves the binding.
 #[ui]
 #[track_caller]
 pub fn text_field(value: impl Model<String>) -> TextInput {
-    let m = Rc::new(value);
-    let r = m.clone();
-    interactive(text_input())
+    text_editor(input(), value)
+}
+
+/// A multiline text area bound to `value`, with the same model binding and style as [`text_field`].
+/// Use `.rows(...)` to set its height limits and `.submit_on_enter()` to make Enter submit.
+#[ui]
+#[track_caller]
+pub fn text_area(value: impl Model<String>) -> TextInput {
+    text_editor(textarea(), value)
+}
+
+fn text_editor(editor: TextInput, value: impl Model<String>) -> TextInput {
+    let model = Rc::new(value);
+    let read = model.clone();
+    interactive(editor)
         .px_3()
         .py_1p5()
         .when_touch(|p| p.py_3().min_h(TOUCH_TARGET))
@@ -248,6 +260,6 @@ pub fn text_field(value: impl Model<String>) -> TextInput {
         .text_sm()
         .bg(Token::Background)
         .text_color(Token::Text)
-        .value(move || r.get())
-        .behavior(|b| b.on_input(move |v| m.set(v)))
+        .value(move || read.get())
+        .behavior(|b| b.on_input(move |text| model.set(text)))
 }

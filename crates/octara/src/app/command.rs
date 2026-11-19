@@ -64,8 +64,7 @@ impl Window {
             let from = focused?;
             let to = k.group_step(from, arrow)?;
             k.check_activation(to, modal).ok()?;
-            let radio = (from != to || k.checked(to) != Some(true)).then(|| k.radio_group(to)).flatten();
-            Some(Action::MoveFocus(to, radio))
+            Some(Action::MoveFocus(to, k.group_activation(from, to)))
         };
         match command {
             "focus.next" | "focus.prev" => self.tab_target(command == "focus.next").map(|node| Action::MoveFocus(node, None)),
@@ -75,8 +74,8 @@ impl Window {
             "focus.right" => group(Arrow::Right),
             "focus.first" => group(Arrow::Home),
             "focus.last" => group(Arrow::End),
-            "focus.dismiss" => match (modal, focused) {
-                (Some(node), _) if k.is_alive(node) && !k.is_exiting(node) => handler(node, HandlerKind::Dismiss).map(Action::Handler),
+            "focus.dismiss" => match (k.dismissal_layer(modal), focused) {
+                (Some(node), _) => handler(node, HandlerKind::Dismiss).map(Action::Handler),
                 (None, Some(_)) => Some(Action::ClearFocus),
                 (None, None) if self.w.selection.borrow().is_some() => Some(Action::ClearSelection),
                 _ => None,
@@ -125,7 +124,7 @@ impl Window {
                 })
                 .unwrap_or(false),
             Action::FollowLink(node) => self.run(node, &[HandlerKind::Press, HandlerKind::Toggle], None),
-            Action::MoveFocus(node, radio) => self.move_command_focus(node, radio),
+            Action::MoveFocus(node, activate_in) => self.move_command_focus(node, activate_in),
             Action::ClearFocus => self.set_focus(None).is_ok(),
             Action::ClearSelection => self.clear_doc_selection(),
             Action::Edit(node, command) => self.edit_command(node, command),

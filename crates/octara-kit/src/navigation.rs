@@ -13,9 +13,9 @@ use std::rc::Rc;
 /// to its tab row, and named row state follows the component across reordered hot reloads.
 ///
 /// Tab enters at the selected enabled tab, otherwise its remembered enabled tab, otherwise
-/// its first enabled tab. The next Tab leaves the bar. Arrows and Home/End only move focus,
-/// wrapping past disabled tabs. Press, Enter and Space activate the focused tab. Focus alone
-/// does not activate it; no automatic activation mode is implied.
+/// its first enabled tab. The next Tab leaves the bar. Left and Right move focus past disabled
+/// tabs and wrap at the ends. Home and End focus the first and last enabled tabs. Press, Enter
+/// and Space activate the focused tab.
 ///
 /// Each tab points to the panel with id `{id}-panel-{option.id}` while it is accessible.
 /// The application owns its panels. Give each `Role::TabPanel` and label it from its tab.
@@ -40,7 +40,7 @@ pub fn tabs(id: &str, label: impl Into<String>, value: impl Model<Option<String>
             .id(id.clone())
             .role(Role::TabList)
             .label(label)
-            .focus_group()
+            .focus_group(FocusGroup::horizontal().wrap())
             .w_full()
             .min_w(0.0)
             .flex_wrap()
@@ -48,13 +48,15 @@ pub fn tabs(id: &str, label: impl Into<String>, value: impl Model<Option<String>
             .child(each(
                 move || options().into_iter().map(|option| (option.id.clone(), option)).collect::<Vec<_>>(),
                 move |key, item| {
-                    let (selected, pick) = (value.clone(), value.clone());
+                    let (read, pick) = (value.clone(), value.clone());
                     let (selected_key, pick_key) = (key.clone(), key.clone());
+                    let selected = memo(move || read.get().as_ref() == Some(&selected_key));
                     text(move || item.with(|row| row.label.clone()))
                         .id(format!("{id}-tab-{key}"))
                         .role(Role::Tab)
                         .controls(format!("{id}-panel-{key}"))
-                        .selected(move || selected.get().as_ref() == Some(&selected_key))
+                        .selected(selected)
+                        .focus_preferred(selected)
                         .disabled(move || item.with(|row| row.disabled))
                         .focusable()
                         .min_w(0.0)
@@ -111,7 +113,7 @@ pub fn segmented(
             .id(id.clone())
             .role(Role::RadioGroup)
             .label(label.clone())
-            .focus_group()
+            .focus_group(FocusGroup::both().wrap().activate_on_navigation())
             .w_full()
             .min_w(0.0)
             .gap_1p5()
@@ -120,14 +122,16 @@ pub fn segmented(
                 each(
                     move || options().into_iter().map(|option| (option.id.clone(), option)).collect::<Vec<_>>(),
                     move |key, item| {
-                        let (checked, pick) = (value.clone(), value.clone());
+                        let (read, pick) = (value.clone(), value.clone());
                         let (checked_key, pick_key) = (key.clone(), key.clone());
+                        let checked = memo(move || read.get().as_ref() == Some(&checked_key));
                         row()
                             .id(format!("{id}-option-{key}"))
                             .role(Role::RadioButton)
                             .label(move || item.with(|row| row.label.clone()))
                             .description(move || item.with(|row| row.description.clone()))
-                            .checked(move || checked.get().as_ref() == Some(&checked_key))
+                            .checked(checked)
+                            .focus_preferred(checked)
                             .disabled(move || item.with(|row| row.disabled))
                             .focusable()
                             .flex_1()

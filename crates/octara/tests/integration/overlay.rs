@@ -99,6 +99,140 @@ fn overlay_state_survives_hot_reload_and_leaves_no_residue() {
     assert!(k.children(k.overlay_layer()).is_empty());
 }
 
+fn overlapping_modal_overlays() -> Window {
+    Window::headless(|| {
+        let a = state("dialog-a-open", || false);
+        let b = state("dialog-b-open", || false);
+        on_command("open-a", move || a.set(true));
+        on_command("open-b", move || b.set(true));
+        on_command("close-a", move || a.set(false));
+        col().size_full().child(el().id("page-opener").size_8().focusable()).children([("a", a), ("b", b)].map(|(id, open)| {
+            el().absolute().size(0.0).overlay_window(
+                move || open.get(),
+                move || {
+                    col()
+                        .id(format!("dialog-{id}"))
+                        .role(Role::Dialog)
+                        .absolute()
+                        .left(160.0)
+                        .top(120.0)
+                        .w(160.0)
+                        .h(100.0)
+                        .modal(false, move || open.set(false))
+                        .children(
+                            ["first", "second"]
+                                .map(|name| el().id(format!("{id}-{name}")).role(Role::Button).size_8().focusable().on_press(|| {})),
+                        )
+                },
+            )
+        }))
+    })
+}
+
+#[test]
+fn overlapping_modals_follow_paint_order_when_opened_in_reverse() {
+    let mut app = overlapping_modal_overlays();
+    app.invoke("open-b").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("b-first"));
+    app.invoke("open-a").unwrap();
+    assert_eq!(rect(&app, "dialog-a"), rect(&app, "dialog-b"));
+    assert_eq!(app.inspect().focus.as_deref(), Some("b-first"));
+
+    app.tap("b-second").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("b-second"));
+    app.press_key("escape").unwrap();
+    assert!(!app.kernel().exists("dialog-b"));
+    assert!(app.kernel().exists("dialog-a"));
+    assert_eq!(app.inspect().focus.as_deref(), Some("a-first"));
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
+fn closing_the_lower_modal_keeps_focus_in_the_front_modal() {
+    let mut app = overlapping_modal_overlays();
+    app.press_key("tab").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("page-opener"));
+    app.invoke("open-a").unwrap();
+    app.invoke("open-b").unwrap();
+    app.press_key("tab").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("b-second"));
+
+    app.invoke("close-a").unwrap();
+    assert!(!app.kernel().exists("dialog-a"));
+    assert!(app.kernel().exists("dialog-b"));
+    assert_eq!(app.inspect().focus.as_deref(), Some("b-second"));
+    app.press_key("escape").unwrap();
+    assert!(!app.kernel().exists("dialog-b"));
+    assert_eq!(app.inspect().focus.as_deref(), Some("page-opener"));
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
+fn outside_dismissal_does_not_retarget_after_reload() {
+    let mut app = Window::headless(|| {
+        let open = state("open", || true);
+        let presses = state("presses", || 0);
+        row()
+            .child(el().size_12().overlay(
+                move || open.get(),
+                Placement::BELOW,
+                move || {
+                    el().id("panel").size_12().dismissible(true, move || {
+                        open.set(false);
+                        App::current().hot_reload();
+                    })
+                },
+            ))
+            .child(el().id("outside").size_12().on_press(move || presses.update(|n| *n += 1)))
+            .child(text(move || presses.get().to_string()).id("presses"))
+    });
+    let before = app.inspect().find("outside").unwrap().target.clone();
+    let (x, y, w, h) = rect(&app, "outside");
+    app.click_at(x + w / 2.0, y + h / 2.0);
+    assert!(!app.kernel().exists("panel"));
+    assert_ne!(app.inspect().find("outside").unwrap().target, before);
+    assert_eq!(app.kernel().text_of("presses").as_deref(), Some("0"));
+    app.tap("outside").unwrap();
+    assert_eq!(app.kernel().text_of("presses").as_deref(), Some("1"));
+}
+
+#[test]
+fn wheel_inside_an_inline_modal_leaves_its_inert_scroll_ancestor_alone() {
+    let mut app = Window::headless(|| {
+        col()
+            .id("scroll")
+            .w(240)
+            .h(100)
+            .overflow_y_scroll()
+            .child(el().id("modal").h(40).w_full().flex_shrink_0().modal(false, || {}))
+            .child(el().h(240).flex_shrink_0())
+    });
+    let (x, y, w, h) = rect(&app, "modal");
+    app.wheel(x + w / 2.0, y + h / 2.0, 0.0, 50.0);
+    let k = app.kernel();
+    assert_eq!(k.scroll_offset(k.find("scroll").unwrap()), (0.0, 0.0));
+}
+
+#[test]
+fn an_opening_modal_cancels_a_background_drag() {
+    let phases = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let recorded = phases.clone();
+    let mut app = Window::headless(move || {
+        let open = state("open", || false);
+        let recorded = recorded.clone();
+        on_command("open", move || open.set(true));
+        col()
+            .child(el().id("drag").w(100).h(60).on_drag(move |drag| recorded.borrow_mut().push(drag.phase)))
+            .child(show(move || open.get(), || el().size_8().modal(false, || {})))
+    });
+    app.pointer_down(10.0, 10.0);
+    app.pointer_move(30.0, 10.0);
+    app.invoke("open").unwrap();
+    app.pointer_move(50.0, 10.0);
+    app.pointer_up(50.0, 10.0);
+    assert_eq!(*phases.borrow(), [DragPhase::Start, DragPhase::Cancel]);
+}
+
 fn nested_overlays() -> Window {
     Window::headless(|| {
         let outer = state("outer", || false);

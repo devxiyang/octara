@@ -11,8 +11,8 @@ fn app(initial: &'static str) -> Window {
         let v = state("v", move || initial.to_owned());
         col()
             .size_full()
-            .child(text_input().id("field").w(px(200.0)).value(move || v.get()).on_input(move |s| v.set(s)))
-            .child(text_input().id("narrow").w(px(60.0)).value("").on_input(|_| {}))
+            .child(input().id("field").w(px(200.0)).value(move || v.get()).on_input(move |s| v.set(s)))
+            .child(input().id("narrow").w(px(60.0)).value("").on_input(|_| {}))
     });
     app.app().set_target_platform(TargetPlatform::MacOs);
     app.tap("field").unwrap();
@@ -46,7 +46,7 @@ fn native_reconversion_edits_the_displayed_document_and_commits_once() {
     let mut app = Window::headless(move || {
         let value = state("value", || "A😀LatinZ".to_owned());
         let edits = edits.clone();
-        text_input().id("field").w(240).value(move || value.get()).on_input(move |text| {
+        input().id("field").w(240).value(move || value.get()).on_input(move |text| {
             edits.set(edits.get() + 1);
             value.set(text);
         })
@@ -114,8 +114,8 @@ fn queued_native_edits_reject_a_changed_owner_or_asynchronously_changed_value() 
             value.set("async update".into());
         });
         col()
-            .child(text_input().id("field").w(240).value(move || value.get()).on_input(move |text| value.set(text)))
-            .child(text_input().id("other").w(240))
+            .child(input().id("field").w(240).value(move || value.get()).on_input(move |text| value.set(text)))
+            .child(input().id("other").w(240))
     });
     app.tap("field").unwrap();
     let input = native_input(&app);
@@ -143,7 +143,7 @@ fn queued_native_edits_reject_a_changed_owner_or_asynchronously_changed_value() 
 
 #[test]
 fn native_geometry_reports_marked_offsets_and_the_actual_first_line_fragment() {
-    let mut app = Window::headless(|| text_input().id("field").w(80).multiline().value("A😀Z"));
+    let mut app = Window::headless(|| textarea().id("field").w(80).value("A😀Z"));
     app.tap("field").unwrap();
     app.set_selection(1, 5);
     app.event(InputEvent::Preedit { text: "中文中文中文中文".into(), selection: Some((3, 3)) });
@@ -171,8 +171,8 @@ fn native_layout_predicts_fresh_preedit_geometry_before_the_core_receives_its_ed
     for multiline in [false, true] {
         let mut app = Window::headless(move || {
             let value = state("value", || "A😀Z".to_owned());
-            let field = text_input().id("field").w(80).h(48).value(move || value.get()).on_input(move |text| value.set(text));
-            if multiline { field.multiline() } else { field }
+            let field = if multiline { textarea() } else { input() };
+            field.id("field").w(80).h(48).value(move || value.get()).on_input(move |text| value.set(text))
         });
         app.tap("field").unwrap();
         app.set_selection(6, 6);
@@ -218,8 +218,8 @@ fn native_and_committed_fields_agree_after_resize_scroll_and_composition_transit
     for multiline in [false, true] {
         let mut app = Window::headless(move || {
             let value = state("value", || "中文😀 one two\n三四 five six\n七八 nine ten".to_owned());
-            let field = text_input().id("field").w_full().h(64).p_2().value(value).on_input(move |s| value.set(s));
-            if multiline { field.multiline() } else { field }
+            let field = if multiline { textarea() } else { input() };
+            field.id("field").w_full().h(64).p_2().value(value).on_input(move |s| value.set(s))
         });
         app.tap("field").unwrap();
         app.set_selection(value(&app).len(), value(&app).len());
@@ -357,7 +357,7 @@ fn undo_takes_back_a_run_of_typing_at_once() {
 
 #[test]
 fn a_value_the_app_refuses_keeps_the_caret_in_range() {
-    let mut app = Window::headless(|| col().child(text_input().id("fixed").w(px(200.0)).value("abc").on_input(|_| {})));
+    let mut app = Window::headless(|| col().child(input().id("fixed").w(px(200.0)).value("abc").on_input(|_| {})));
     app.tap("fixed").unwrap();
     app.press_key("end").unwrap();
     app.type_text("zzzz");
@@ -518,7 +518,7 @@ fn mouse_and_pen_select_fields_before_drag_handlers_and_ignore_late_releases() {
         for terminal in [Phase::Up, Phase::Cancel] {
             let mut app = Window::headless(|| {
                 col().size_full().child(
-                    text_input()
+                    input()
                         .id("field")
                         .w(240)
                         .h(40)
@@ -563,7 +563,7 @@ fn touch_on_a_field_scrolls_its_container_instead_of_selecting() {
                 .h(160)
                 .overflow_y_scroll()
                 .child(el().h(80))
-                .child(text_input().id("field").h(40).value("alpha beta gamma").on_press(|| panic!("a touch scroll is not a press")))
+                .child(input().id("field").h(40).value("alpha beta gamma").on_press(|| panic!("a touch scroll is not a press")))
                 .child(el().h(400)),
         )
     });
@@ -598,7 +598,7 @@ fn replacing_a_held_field_retires_its_selection_capture() {
             root.child(keyed(
                 move || replaced.get(),
                 |replacement| {
-                    let field = text_input().id("field").w(240).h(40);
+                    let field = input().id("field").w(240).h(40);
                     if *replacement {
                         field
                             .value("replacement")
@@ -694,8 +694,8 @@ fn placeholder_is_presentation_not_an_editing_document_or_name() {
             let hint = state("hint", || "Write here".to_owned());
             on_command("hint", move || hint.set("中文提示很长但不改变输入高度\n第二行".into()));
             on_command("clear-hint", move || hint.set(String::new()));
-            let field = text_input().id("field").w(100).placeholder(hint).value(value).on_input(move |v| value.set(v));
-            if multiline { field.rows(1, 3) } else { field }
+            let field = if multiline { textarea().rows(1, 3) } else { input() };
+            field.id("field").w(100).placeholder(hint).value(value).on_input(move |v| value.set(v))
         });
         app.tap("field").unwrap();
         let id = app.kernel().find("field").unwrap();
@@ -751,7 +751,7 @@ fn placeholder_is_presentation_not_an_editing_document_or_name() {
 fn secure_placeholder_remains_a_hint_and_never_exposes_the_value() {
     let mut app = Window::headless(|| {
         let value = state("value", String::new);
-        text_input().id("field").w(180).secure().label("Password").placeholder("Test password").value(value).on_input(move |s| value.set(s))
+        input().id("field").w(180).secure().label("Password").placeholder("Test password").value(value).on_input(move |s| value.set(s))
     });
     app.tap("field").unwrap();
     assert!(drawn_glyphs(&app, "field") > 0);
@@ -793,7 +793,7 @@ fn the_caret_blinks_and_shows_while_typing() {
     use std::time::Duration;
     let mut app = Window::headless(|| {
         let v = state("v", String::new);
-        col().child(text_input().id("f").value(move || v.get()).on_input(move |s| v.set(s))).child(el().id("other").size_8().focusable())
+        col().child(input().id("f").value(move || v.get()).on_input(move |s| v.set(s))).child(el().id("other").size_8().focusable())
     });
     app.tap("f").unwrap();
     let caret = |app: &Window| {
@@ -819,7 +819,7 @@ fn the_caret_blinks_and_shows_while_typing() {
 #[test]
 fn the_platform_is_told_when_the_caret_blinks() {
     use std::time::Duration;
-    let mut app = Window::headless(|| text_input().id("f"));
+    let mut app = Window::headless(|| input().id("f"));
     app.tap("f").unwrap();
     let frames = |app: &Window| app.platform_window().as_any().downcast_ref::<octara::platform::HeadlessWindow>().unwrap().frames;
     let before = frames(&app);
@@ -830,7 +830,7 @@ fn the_platform_is_told_when_the_caret_blinks() {
 #[test]
 fn an_inactive_window_shows_no_caret() {
     use std::time::Duration;
-    let mut app = Window::headless(|| text_input().id("f"));
+    let mut app = Window::headless(|| input().id("f"));
     app.tap("f").unwrap();
     let caret = |app: &Window| {
         let f = app.kernel().find("f").unwrap();
@@ -852,7 +852,7 @@ fn rejected_proposal_restores_selection_and_preserves_redo() {
         let reject = state("reject", || false);
         on_command("reject", move || reject.set(true));
         on_command("accept", move || reject.set(false));
-        text_input().id("field").value(v).on_input(move |s| {
+        input().id("field").value(v).on_input(move |s| {
             if !reject.get() {
                 v.set(s);
             }
@@ -878,7 +878,7 @@ fn rejected_proposal_restores_selection_and_preserves_redo() {
 fn normalized_proposal_maps_unicode_selection_and_retires_history() {
     let mut app = Window::headless(|| {
         let v = state("value", || "ab".to_owned());
-        text_input().id("field").value(v).on_input(move |s| v.set(s.replace('!', "")))
+        input().id("field").value(v).on_input(move |s| v.set(s.replace('!', "")))
     });
     app.tap("field").unwrap();
     app.set_selection(1, 1);
@@ -894,7 +894,7 @@ fn external_value_after_caret_move_retires_history() {
     let mut app = Window::headless(|| {
         let v = state("value", || "a".to_owned());
         on_command("external", move || v.set("😀".into()));
-        text_input().id("field").value(v).on_input(move |s| v.set(s))
+        input().id("field").value(v).on_input(move |s| v.set(s))
     });
     app.tap("field").unwrap();
     app.press_key("end").unwrap();
@@ -910,7 +910,7 @@ fn external_value_after_caret_move_retires_history() {
 fn rejected_edits_share_selection_and_history_rules_across_input_routes() {
     for route in ["typing", "paste", "native", "accessibility", "semantic", "replace", "no-handler"] {
         let mut app = Window::headless(move || {
-            let input = text_input().id("field").value("abcd");
+            let input = input().id("field").value("abcd");
             if route == "no-handler" { input } else { input.on_input(|_| {}) }
         });
         app.tap("field").unwrap();
@@ -958,7 +958,7 @@ fn rejected_undo_and_redo_leave_their_stacks_intact() {
         let reject = state("reject", || false);
         on_command("reject", move || reject.set(true));
         on_command("accept", move || reject.set(false));
-        text_input().id("field").value(v).on_input(move |s| {
+        input().id("field").value(v).on_input(move |s| {
             if !reject.get() {
                 v.set(s);
             }
@@ -985,7 +985,7 @@ fn rejected_undo_and_redo_leave_their_stacks_intact() {
 
 #[test]
 fn edit_callback_may_close_or_replace_its_editor_without_finishing_on_a_new_owner() {
-    let mut closed = Window::headless(|| text_input().id("field").on_input(|_| App::current().close_window(current_window())));
+    let mut closed = Window::headless(|| input().id("field").on_input(|_| App::current().close_window(current_window())));
     closed.tap("field").unwrap();
     closed.type_text("X");
     assert!(closed.is_closed());
@@ -995,7 +995,7 @@ fn edit_callback_may_close_or_replace_its_editor_without_finishing_on_a_new_owne
         keyed(
             move || replaced.get(),
             move |replacement| {
-                let field = text_input().id("field");
+                let field = input().id("field");
                 if *replacement { field.value("replacement") } else { field.value("original").on_input(move |_| replaced.set(true)) }
             },
         )
@@ -1020,7 +1020,7 @@ fn reentered_input_is_refused_without_overwriting_the_outer_proposal() {
     let mut app = Window::headless(move || {
         let v = state("value", String::new);
         let captured = captured.clone();
-        text_input().id("field").value(v).on_input(move |s| {
+        input().id("field").value(v).on_input(move |s| {
             let mut nested = captured.borrow().as_ref().unwrap().clone();
             let frames = nested.frames_presented();
             nested.type_text("nested");
@@ -1048,7 +1048,7 @@ fn native_batch_continuations_require_the_accepted_document() {
         let mut app = Window::headless(move || {
             let value = state("value", || "ab".to_owned());
             let counted = counted.clone();
-            text_input().id("field").value(value).on_input(move |s| {
+            input().id("field").value(value).on_input(move |s| {
                 counted.set(counted.get() + 1);
                 if !reject {
                     value.set(s.replace('!', ""));
@@ -1088,7 +1088,7 @@ fn same_value_binding_refresh_preserves_composition_and_cancel_preserves_redo() 
         let value = state("value", || "A😀Z".to_owned());
         let refresh = state("refresh", || 0);
         on_command("refresh", move || refresh.update(|v| *v += 1));
-        text_input()
+        input()
             .id("field")
             .value(move || {
                 let _ = refresh.get();
@@ -1147,7 +1147,7 @@ fn explicit_selection_in_an_input_callback_takes_precedence_over_its_proposal() 
     let mut app = Window::headless(move || {
         let value = state("value", || "abc".to_owned());
         let captured = captured.clone();
-        text_input().id("field").value(value).on_input(move |text| {
+        input().id("field").value(value).on_input(move |text| {
             captured.borrow().as_ref().unwrap().clone().set_selection(0, 0);
             value.set(text);
         })

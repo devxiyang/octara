@@ -695,6 +695,9 @@ fn handle_inner(app: &mut Window, req: Request, guard: Option<&crate::app::Targe
         Ok(()) => Reply::ok(),
         Err(e) => Reply::fail(&codes::STEP_FAILED, e),
     };
+    if matches!(req, Request::Inspect | Request::Pick { .. } | Request::Expect(_)) && !app.app().is_failed() && !app.frame_is_settled() {
+        return Reply::fail(&codes::NOT_SETTLED, "the window has no current settled frame");
+    }
     match req {
         Request::Inspect => Reply { snapshot: Some(Box::new(app.inspect())), ..Reply::ok() },
         Request::Issues => Reply { issues: Some(issues(app)), ..Reply::ok() },

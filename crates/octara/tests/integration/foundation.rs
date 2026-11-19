@@ -37,7 +37,7 @@ fn foundation_view() -> View {
                 .gap_1()
                 .child(text("搜索").id("query-label").min_h(32).on_press(|| focus("query")))
                 .child(
-                    text_input()
+                    input()
                         .id("query")
                         .label("搜索")
                         .placeholder("输入中文城市")

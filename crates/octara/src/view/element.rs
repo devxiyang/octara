@@ -11,8 +11,8 @@ type Draw = Rc<dyn Fn(&mut crate::canvas::Canvas)>;
 type OnNative = Rc<dyn Fn(&crate::native::NativeEvent)>;
 
 use crate::kernel::{
-    Breakpoint, Color, Fill, HandlerId, HandlerKind, Kernel, NodeId, NumericRange, Paint, Placement, Relation, Relations, Role, State,
-    StyleProp, Token, When,
+    Breakpoint, Color, Fill, FocusGroup, HandlerId, HandlerKind, Kernel, NodeId, NumericRange, Paint, Placement, Relation, Relations, Role,
+    State, StyleProp, Token, When,
 };
 use crate::reactive::graph::{self, rt};
 use crate::reactive::log::Changes;
@@ -289,11 +289,19 @@ pub struct ElementContent(Content);
 pub struct Input {
     value: Option<Prop<String>>,
     placeholder: Option<Prop<String>>,
-    multiline: bool,
-    rows: Option<(u16, u16)>,
-    submit_on_enter: bool,
+    mode: InputMode,
     secure: bool,
     revealed: Option<Prop<bool>>,
+}
+
+#[derive(Default)]
+enum InputMode {
+    #[default]
+    SingleLine,
+    Multiline {
+        rows: Option<(u16, u16)>,
+        submit_on_enter: bool,
+    },
 }
 
 struct Native {
@@ -383,10 +391,11 @@ struct ElementProps {
     handlers: Behavior,
     behaviors: Vec<Behavior>,
     tab_index: i32,
-    focus_group: bool,
+    focus_group: Option<FocusGroup>,
+    focus_preferred: Option<Prop<bool>>,
     preserve_focus_on_press: bool,
     autofocus: bool,
-    modal: Option<(bool, Rc<dyn Fn()>)>,
+    layer: Option<(crate::kernel::LayerPolicy, Rc<dyn Fn()>)>,
     key_context: Option<String>,
     commands: Vec<(String, Rc<dyn Fn()>)>,
     group: Option<&'static str>,
@@ -458,10 +467,11 @@ impl ElementProps {
             handlers: Behavior::default(),
             behaviors: Vec::new(),
             tab_index: 0,
-            focus_group: false,
+            focus_group: None,
+            focus_preferred: None,
             preserve_focus_on_press: false,
             autofocus: false,
-            modal: None,
+            layer: None,
             key_context: None,
             commands: Vec::new(),
             group: None,
@@ -567,15 +577,28 @@ pub fn web_view(url: impl IntoProp<String>) -> El {
     e
 }
 
-/// A text input with an editing session and access to the platform's input method.
+/// A single-line editor with access to the platform's input method.
 ///
 /// ```compile_fail
 /// use octara::prelude::*;
 /// text("Label").rows(2, 4);
 /// ```
 #[track_caller]
-pub fn text_input() -> TextInput {
-    El { content: Input::default(), props: ElementProps::new(Location::caller()) }.focusable()
+pub fn input() -> TextInput {
+    new_input(InputMode::SingleLine)
+}
+
+/// A multiline editor that wraps at its width and retains pasted line breaks.
+/// Enter inserts a line break. Cmd+Enter (Ctrl+Enter) submits.
+/// Use [`TextInput::rows`] to set a height range.
+#[track_caller]
+pub fn textarea() -> TextInput {
+    new_input(InputMode::Multiline { rows: None, submit_on_enter: false })
+}
+
+#[track_caller]
+fn new_input(mode: InputMode) -> TextInput {
+    El { content: Input { mode, ..Input::default() }, props: ElementProps::new(Location::caller()) }.focusable()
 }
 
 impl<C> Styled for El<C> {
@@ -852,12 +875,14 @@ impl<C> El<C> {
         self.props.tab_index = i;
         self
     }
-    /// Arrow keys move focus among the focusable elements inside, and Tab stops once (on the
-    /// focused or selected one; radio groups use their checked radio). Menus, lists and trees
-    /// move on Up and Down; other groups (tabs, toolbars, radio groups) on Left and Right too.
-    /// Home and End go to the ends. Moving to a radio with these keys presses it to choose it.
-    pub fn focus_group(mut self) -> Self {
-        self.props.focus_group = true;
+    /// Gives the focusable descendants one Tab stop and the specified keyboard navigation.
+    pub fn focus_group(mut self, group: FocusGroup) -> Self {
+        self.props.focus_group = Some(group);
+        self
+    }
+    /// Prefers this member when Tab enters its focus group.
+    pub fn focus_preferred(mut self, preferred: impl IntoProp<bool>) -> Self {
+        self.props.focus_preferred = Some(preferred.into_prop());
         self
     }
     /// Keys while focus is on this element or inside it, before the keymap: return `true` to
@@ -890,7 +915,14 @@ impl<C> El<C> {
     /// stays inside. It takes focus when it opens and gives it back when it closes. Escape —
     /// and, with `click_outside`, a press outside — calls `dismiss`, which should close it.
     pub fn modal(mut self, click_outside: bool, dismiss: impl Fn() + 'static) -> Self {
-        self.props.modal = Some((click_outside, Rc::new(dismiss)));
+        self.props.layer = Some((crate::kernel::LayerPolicy { modal: true, click_outside }, Rc::new(dismiss)));
+        self
+    }
+    /// Takes part in window dismissal while shown. Escape requests dismissal of the top layer.
+    /// With `click_outside`, an outside press also requests dismissal and continues to its
+    /// original eligible target. Focus and the containing window's scope stay active.
+    pub fn dismissible(mut self, click_outside: bool, dismiss: impl Fn() + 'static) -> Self {
+        self.props.layer = Some((crate::kernel::LayerPolicy { modal: false, click_outside }, Rc::new(dismiss)));
         self
     }
     pub fn selected(mut self, s: impl IntoProp<bool>) -> Self {
@@ -1048,9 +1080,10 @@ impl TextInput {
         self
     }
 
-    /// A text field's submission: Enter while it has focus (and no input method is composing).
-    /// Without one, Enter presses the field like any focused element. Replaces only the
-    /// application callback; component behavior still runs first.
+    /// Runs on submission while the editor has focus and the input method is not composing.
+    /// The key is Enter for [`input`] and Cmd+Enter (Ctrl+Enter) for [`textarea`]. With no
+    /// submit handler, a submission key can fall through to the normal press command.
+    /// Replaces only the application callback; component behavior still runs first.
     pub fn on_submit(mut self, f: impl Fn() + 'static) -> Self {
         self.props.handlers = self.props.handlers.on_submit(f);
         self
@@ -1064,27 +1097,24 @@ impl TextInput {
         self
     }
 
-    /// Makes a text input multi-line: the text wraps at its width and the field grows with it,
-    /// Enter (and Shift+Enter) breaks the line, Cmd+Enter (Ctrl+Enter) submits; Up, Down, Page
-    /// Up, Page Down, Home and End move by visual lines; a paste keeps its line breaks.
-    pub fn multiline(mut self) -> Self {
-        self.content.multiline = true;
-        self
-    }
-    /// A multi-line text input's height: it follows its text from `min` to `max` lines and
-    /// scrolls inside beyond (the caret kept in view). Makes the input multi-line.
+    /// Follows the text from `min` to `max` lines, scrolling inside beyond that range.
+    /// Requires an editor created with [`textarea`].
+    #[track_caller]
     pub fn rows(mut self, min: u16, max: u16) -> Self {
-        let input = &mut self.content;
-        input.multiline = true;
-        input.rows = Some((min, max));
+        let InputMode::Multiline { rows, .. } = &mut self.content.mode else {
+            wrong_content("rows", "textarea()");
+        };
+        *rows = Some((min, max));
         self
     }
-    /// A multi-line text input as a chat composer: Enter submits, Shift+Enter (or Option+Enter)
-    /// breaks the line. Makes the input multi-line.
+    /// Changes the submission key of a [`textarea`] to Enter. Shift+Enter (or Option+Enter)
+    /// inserts a line break, as in a chat composer.
+    #[track_caller]
     pub fn submit_on_enter(mut self) -> Self {
-        let input = &mut self.content;
-        input.multiline = true;
-        input.submit_on_enter = true;
+        let InputMode::Multiline { submit_on_enter, .. } = &mut self.content.mode else {
+            wrong_content("submit_on_enter", "textarea()");
+        };
+        *submit_on_enter = true;
         self
     }
     /// Makes a text input a secure field. It disables copy, cut, undo and the input method.
@@ -1206,11 +1236,13 @@ pub(crate) fn build_el(element: El) -> NodeId {
             k.set_role(node, r);
         }
         if let Content::Input(input) = &content {
-            k.set_multiline(node, input.multiline);
-            if let Some((min, max)) = input.rows {
-                k.set_rows(node, min, max);
+            if let InputMode::Multiline { rows, submit_on_enter } = input.mode {
+                k.set_multiline(node, true);
+                if let Some((min, max)) = rows {
+                    k.set_rows(node, min, max);
+                }
+                k.set_submit_on_enter(node, submit_on_enter);
             }
-            k.set_submit_on_enter(node, input.submit_on_enter);
             k.set_secure(node, input.secure);
         }
         let decorative_icon = matches!(content, Content::Icon { .. }) && e.label.is_none() && e.role.is_none();
@@ -1362,6 +1394,9 @@ pub(crate) fn build_el(element: El) -> NodeId {
     if let Some(p) = e.selected {
         bind(at, node, p, |k, n, v: &bool| k.set_state(n, State::SELECTED, *v));
     }
+    if let Some(p) = e.focus_preferred {
+        bind(at, node, p, |k, n, v: &bool| k.set_focus_preferred(n, *v));
+    }
     if let Some(p) = e.disabled {
         bind(at, node, p, |k, n, v: &bool| k.set_state(n, State::DISABLED, *v));
     }
@@ -1373,8 +1408,8 @@ pub(crate) fn build_el(element: El) -> NodeId {
         if e.tab_index != 0 {
             k.set_tab_index(node, e.tab_index);
         }
-        if e.focus_group {
-            k.set_focus_group(node, true);
+        if let Some(group) = e.focus_group {
+            k.set_focus_group(node, group);
         }
         if e.preserve_focus_on_press {
             k.set_preserve_focus_on_press(node, true);
@@ -1382,8 +1417,8 @@ pub(crate) fn build_el(element: El) -> NodeId {
         if e.autofocus {
             k.set_autofocus(node, true);
         }
-        if let Some((outside, _)) = &e.modal {
-            k.set_modal(node, Some(*outside));
+        if let Some((policy, _)) = &e.layer {
+            k.set_interaction_layer(node, *policy);
         }
         if let Some(c) = &e.key_context {
             k.set_key_context(node, Some(c));
@@ -1420,7 +1455,7 @@ pub(crate) fn build_el(element: El) -> NodeId {
         let id = u.register(Handler::Press(f));
         u.kernel.borrow_mut().add_command(node, &command, HandlerId(id));
     }
-    if let Some((_, dismiss)) = e.modal {
+    if let Some((_, dismiss)) = e.layer {
         e.handlers.set(HandlerKind::Dismiss, Handler::Press(dismiss));
     }
     for (kind, handler) in e.handlers.compose(e.behaviors) {

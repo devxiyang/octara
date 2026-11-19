@@ -509,8 +509,14 @@ impl Shell {
                 ww(&w, |x| x.sized = true);
                 w.event(InputEvent::Resize { width: size.width as f32 / scale, height: size.height as f32 / scale, scale });
             }
+            if !w.frame_is_settled() {
+                ww(&w, |x| x.pause_frame_clock());
+                continue;
+            }
             match ww(&w, |x| (x.pending, x.rested())) {
-                Some((true, true)) => self.draw(&w),
+                Some((true, true)) => {
+                    self.draw(&w);
+                }
                 Some((true, false)) => {
                     ww(&w, |x| x.want_frame());
                 }
@@ -520,17 +526,24 @@ impl Shell {
         }
     }
 
-    /// Draws window `w` now.
-    fn draw(&mut self, w: &AppWindow) {
+    /// Draws window `w` now and returns whether a frame was presented.
+    fn draw(&mut self, w: &AppWindow) -> bool {
         if self.app_failed() {
-            return;
+            return false;
+        }
+        if !w.frame_is_settled() {
+            ww(w, |x| {
+                x.pending = true;
+                x.pause_frame_clock();
+            });
+            return false;
         }
         let started = self.shared.trace.then(Instant::now);
         let list = w.display_list();
         let trace = started.map(|at| trace::Frame::new(at, w.app().now().as_millis() as u64));
         let shown = {
             let mut gpu = self.shared.gpu.borrow_mut();
-            let Some(g) = gpu.as_mut() else { return };
+            let Some(g) = gpu.as_mut() else { return false };
             ww(w, |x| x.draw(&list, &mut g.renderer, trace)).unwrap_or(false)
         };
         if shown
@@ -548,6 +561,7 @@ impl Shell {
                 });
             }
         }
+        shown
     }
 
     /// A key press: the app's key routing first (focus, keymap, commands); if nothing took it,
@@ -801,8 +815,11 @@ impl Shell {
         let Some(mut w) = self.window_of(e.window_id) else { return };
         match e.window_event {
             accesskit_winit::WindowEvent::InitialTreeRequested => {
+                // AccessKit waits for a full tree. An unsettled window sends it on the next eligible update.
                 w.restart_accessibility();
-                ww(&w, |x| x.a11y.update_if_active(|| w.accessibility_update()));
+                if w.frame_is_settled() {
+                    ww(&w, |x| x.a11y.update_if_active(|| w.accessibility_update()));
+                }
             }
             accesskit_winit::WindowEvent::ActionRequested(req) => {
                 w.event(InputEvent::Accessibility { target: req.target_node, action: req.action, data: req.data });
@@ -1111,7 +1128,7 @@ impl Shell {
                     if let Some(window) = app.window(id) {
                         ww(&window, |host| {
                             host.pending = false;
-                            host.on_tick();
+                            host.pause_frame_clock();
                         });
                     }
                 }

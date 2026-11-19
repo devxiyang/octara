@@ -1,8 +1,8 @@
 //! The chat's views, composed from the kit: conversations (`list`) beside the
 //! open one; its transcript a selectable scroll container following its tail over a virtual
-//! list of messages; parts as Markdown (paced), `collapsible` reasoning and tool calls, a
-//! `callout` for a failure; a composer (`text_field`, `removable_chip`s, `icon_button`s) with
-//! the queue above it.
+//! list of messages. Message parts use paced Markdown, `collapsible` reasoning and tool calls,
+//! and a `callout` for failures. The queue sits above the composer (`text_area`, `removable_chip`s,
+//! `icon_button`s).
 
 use crate::chat::{Chat, Options};
 use crate::model::{Author, Message, Part, PartId, Status, Thread, ThreadId, ToolState};
@@ -208,6 +208,7 @@ fn thread_row(chat: &Chat, listing: Signal<bool>, id: ThreadId, thread: impl Fn(
     .id(format!("thread-{id}"))
     .label(named)
     .selected(move || selected.get() == Some(id))
+    .focus_preferred(move || selected.get() == Some(id))
     .on_press(move || {
         open.open(id);
         listing.set(false);
@@ -888,12 +889,11 @@ fn composer(chat: &Chat) -> El {
                     },
                 ))
                 .child(
-                    text_field(chat.draft)
+                    text_area(chat.draft)
                         .id("composer")
                         .label("Message")
                         .placeholder("Ask anything…")
                         .text_base()
-                        .multiline()
                         .rows(1, 8)
                         .submit_on_enter()
                         .border_color(Paint::Color(Color::TRANSPARENT))

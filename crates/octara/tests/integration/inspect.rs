@@ -16,7 +16,7 @@ fn view() -> View {
         .gap_2()
         .child(text(move || format!("Count: {}", count.get())).id("count"))
         .child(el().id("inc").label("Increment").p_2().child("+1").on_press(move || count.update(|n| *n += 1)))
-        .child(text_input().id("name").label("Name").on_input(move |v| name.set(v)))
+        .child(input().id("name").label("Name").on_input(move |v| name.set(v)))
         .child(text(move || format!("Hello {}", name.get())).id("greeting"))
         .into()
 }
@@ -107,7 +107,7 @@ fn requests_drive_the_app() {
 fn a_snapshot_reads_committed_and_preedit_state_with_explicit_units() {
     let mut app = Window::headless(|| {
         let value = state("value", || "A🙂你B".to_owned());
-        col().size_full().child(text_input().id("field").w(240).value(move || value.get()).on_input(move |text| value.set(text)))
+        col().size_full().child(input().id("field").w(240).value(move || value.get()).on_input(move |text| value.set(text)))
     });
     assert!(app.inspect().text_input.is_none());
     app.tap("field").unwrap();

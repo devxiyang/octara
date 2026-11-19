@@ -7,7 +7,7 @@ use octara::prelude::*;
 
 #[test]
 fn accessibility_value_without_an_input_handler_preserves_selection() {
-    let mut window = Window::headless(|| text_input().id("field").value("initial"));
+    let mut window = Window::headless(|| input().id("field").value("initial"));
     window.dispatch(Event::Focus("field".into())).unwrap();
     window.set_selection(1, 3);
     let node = window.kernel().find("field").unwrap();
@@ -25,7 +25,7 @@ fn accessibility_value_without_an_input_handler_preserves_selection() {
 fn accessibility_value_runs_the_input_handler_and_updates_selection() {
     let mut window = Window::headless(|| {
         let value = state("value", || "initial".to_owned());
-        text_input().id("field").value(value).on_input(move |text| value.set(text))
+        input().id("field").value(value).on_input(move |text| value.set(text))
     });
     window.dispatch(Event::Focus("field".into())).unwrap();
     window.set_selection(1, 3);
@@ -62,7 +62,7 @@ fn fixture() -> (App, Window, Signal<u8>, Signal<u32>) {
                                 .on_secondary_press(move || hits.update(|n| *n += 1)),
                         )
                         .child(
-                            text_input()
+                            input()
                                 .id("field")
                                 .value("initial")
                                 .disabled(move || mode.get() == 1)
@@ -139,7 +139,7 @@ fn retiring_focus_notifies_even_after_disable_hide_or_modal_open() {
             .open_window(WindowOptions::default(), move || {
                 col()
                     .child(
-                        text_input()
+                        input()
                             .id("field")
                             .value("unchanged")
                             .disabled(move || mode.get() == 1)

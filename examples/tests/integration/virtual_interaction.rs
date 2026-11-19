@@ -34,15 +34,7 @@ fn interaction_row(key: u32, item: ReadSignal<u32>, model: Model, drags: Drags, 
         .flex_shrink_0()
         .items_center()
         .gap_2()
-        .child(
-            text_input()
-                .id(format!("editor-{key}"))
-                .label(format!("Editor {key}"))
-                .w(240)
-                .h(40)
-                .value(draft)
-                .on_input(move |v| draft.set(v)),
-        )
+        .child(input().id(format!("editor-{key}")).label(format!("Editor {key}")).w(240).h(40).value(draft).on_input(move |v| draft.set(v)))
         .child(
             el().id(format!("drag-{key}"))
                 .label(format!("Drag {key}"))
@@ -465,7 +457,7 @@ fn an_input_callback_can_remove_its_row_before_the_queued_caret_reveal() {
             move |key, _| {
                 let key = *key;
                 let seen = seen.clone();
-                text_input().id(format!("editor-{key}")).label(format!("Editor {key}")).h(ROW_HEIGHT).flex_shrink_0().on_input(move |_| {
+                input().id(format!("editor-{key}")).label(format!("Editor {key}")).h(ROW_HEIGHT).flex_shrink_0().on_input(move |_| {
                     items.remove(&key);
                     seen.set(true);
                 })
@@ -526,7 +518,7 @@ fn nested_virtual_row(outer: u32, editors: bool) -> El {
             |_| 32.0,
             move |inner, _| {
                 let content = if editors {
-                    text_input().id(format!("nested-editor-{outer}-{inner}")).label("Nested editor").h(32.0).into()
+                    input().id(format!("nested-editor-{outer}-{inner}")).label("Nested editor").h(32.0).into()
                 } else {
                     text(format!("Nested row {outer}:{inner}"))
                 };
@@ -696,7 +688,7 @@ fn resetting_bounded_collection_history_preserves_surviving_pins_and_retires_abs
                         .id(format!("row-{key}"))
                         .h(ROW_HEIGHT)
                         .flex_shrink_0()
-                        .child(text_input().id(format!("editor-{key}")).w(240).value(draft).on_input(move |value| draft.set(value)))
+                        .child(input().id(format!("editor-{key}")).w(240).value(draft).on_input(move |value| draft.set(value)))
                         .child(
                             el().id(format!("drag-{key}"))
                                 .w(120)
@@ -802,7 +794,7 @@ fn row_owned_overlay_editors_pin_their_owner_until_close_or_data_removal() {
                                 .w(300)
                                 .h(80)
                                 .modal(false, move || opened.set(None))
-                                .child(text_input().id("overlay-editor").w(240).value(draft).on_input(move |value| draft.set(value)))
+                                .child(input().id("overlay-editor").w(240).value(draft).on_input(move |value| draft.set(value)))
                         };
                         let row = el().id(format!("row-{key}")).h(ROW_HEIGHT).flex_shrink_0().child(format!("Row {key}"));
                         if window_overlay {

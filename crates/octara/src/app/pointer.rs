@@ -407,6 +407,12 @@ impl Window {
         self.live(self.w.kernel.borrow().hit_test(x, y))
     }
 
+    fn scroll_target(&self, hit: Option<NodeId>, dx: f32, dy: f32) -> Option<NodeId> {
+        let k = self.w.kernel.borrow();
+        let modal = self.top_modal();
+        k.scroller_above(hit, dx, dy).filter(|&id| k.check_interaction_scope(id, modal).is_ok())
+    }
+
     /// A captured field that still owns a live, non-exiting input node.
     fn pointer_field(&self, n: Option<NodeId>) -> Option<NodeId> {
         let n = n?;
@@ -451,6 +457,35 @@ impl Window {
         let mut interaction = self.w.interaction.borrow_mut();
         interaction.pointer.momentum = None;
         interaction.pointer.wheel = WheelSequence::Idle;
+    }
+
+    pub(super) fn restrict_pointer_to_modal(&self, modal: NodeId) {
+        let cancel = {
+            let k = self.w.kernel.borrow();
+            let outside = |node| k.check_interaction_scope(node, Some(modal)).is_err();
+            let mut i = self.w.interaction.borrow_mut();
+            if i.pointer.wheel.owner().is_some_and(outside) {
+                i.pointer.wheel = WheelSequence::Idle;
+            }
+            if i.pointer.momentum.is_some_and(|momentum| outside(momentum.node)) {
+                i.pointer.momentum = None;
+            }
+            i.pointer
+                .held
+                .as_ref()
+                .filter(|held| {
+                    let panning = match held.mode {
+                        Mode::Panning(node) => Some(node),
+                        _ => None,
+                    };
+                    [held.hit, held.target, held.selecting, panning].into_iter().flatten().any(outside)
+                })
+                .map(|held| held.pointer)
+        };
+        if let Some(pointer) = cancel {
+            self.cancel(pointer);
+            self.w.interaction_changed();
+        }
     }
 
     fn finishing_pointer<R>(&self, held: Held, callback: impl FnOnce(&Held) -> R) -> R {
@@ -512,22 +547,14 @@ impl Window {
                 interaction.pointer.wheel
             };
             let moving = [dx, dy] != [0.0; 2] && dx.is_finite() && dy.is_finite();
-            let target = sequence.advance(phase, moving, || {
-                let hit = self.hit_at(x, y);
-                self.w.kernel.borrow().scroller_above(hit, dx, dy)
-            });
-            let target = if phase == WheelPhase::Discrete {
-                target
-            } else {
-                let modal = self.top_modal();
-                let valid = target.filter(|node| self.w.kernel.borrow().check_interaction_scope(*node, modal).is_ok());
-                if target != valid {
-                    sequence = WheelSequence::Idle;
-                }
-                valid
-            };
+            let target = sequence.advance(phase, moving, || self.scroll_target(self.hit_at(x, y), dx, dy));
+            let modal = self.top_modal();
+            let valid = target.filter(|node| self.w.kernel.borrow().check_interaction_scope(*node, modal).is_ok());
+            if target != valid {
+                sequence = WheelSequence::Idle;
+            }
             self.w.interaction.borrow_mut().pointer.wheel = sequence;
-            if let Some(n) = target {
+            if let Some(n) = valid {
                 self.scroll_by(n, dx, dy);
                 self.scrolled_under_press();
             }
@@ -620,18 +647,25 @@ impl Window {
             i.pointer.momentum.take().is_some()
         };
         self.set_modality(Modality::Pointer);
-        // Outside an open modal a press reaches nothing (and may dismiss the modal).
+        // Dismiss at most one layer. A nonmodal dismissal can keep the original hit, but its
+        // callback can also retire the hit or the entire window.
         let raw = self.w.kernel.borrow().hit_test(ev.x, ev.y);
         let outside = self.pressed_outside(raw);
+        if self.is_closed() || self.app.shutdown.get() {
+            return;
+        }
+        let modal = self.top_modal();
         let (hit, target, secondary) = {
             let k = self.w.kernel.borrow();
-            let hit = if outside { None } else { raw };
+            let hit = raw.filter(|&node| !outside && k.check_interaction_scope(node, modal).is_ok());
             let secondary = ev.button == Button::Secondary
                 || (ev.button == Button::Primary
                     && self.app.platform.get().is_apple()
                     && ev.modifiers.contains(Modifiers::CTRL)
                     && ev.kind == PointerKind::Mouse);
-            let target = k.press_target(hit, if secondary { Button::Secondary } else { ev.button });
+            let target = k
+                .press_target(hit, if secondary { Button::Secondary } else { ev.button })
+                .filter(|&node| k.check_interaction_scope(node, modal).is_ok());
             (hit, target, secondary)
         };
         if ev.kind == PointerKind::Touch {
@@ -661,14 +695,17 @@ impl Window {
         let selecting = (button == Button::Primary && !outside && !stopped)
             .then(|| {
                 let k = self.w.kernel.borrow();
-                hit.and_then(|h| k.region_of(h)).filter(|r| target.is_none_or(|t| k.is_within(*r, t)))
+                let modal = self.top_modal();
+                hit.and_then(|h| k.region_of(h))
+                    .filter(|&r| k.check_interaction_scope(r, modal).is_ok())
+                    .filter(|r| target.is_none_or(|t| k.is_within(*r, t)))
             })
             .flatten();
         let can_pan = !enabled
             && !stopped
             && ev.kind == PointerKind::Touch
             && button == Button::Primary
-            && self.w.kernel.borrow().scroller_above(hit, 1.0, 1.0).is_some();
+            && self.scroll_target(hit, 1.0, 1.0).is_some();
         let target = target.filter(|_| enabled || !can_pan);
         let mode = if selecting.is_some() || can_pan || (!stopped && enabled) { Mode::Pending } else { Mode::Spent };
         // The run of presses (double click) counts from the press (AppKit, Rune).
@@ -769,10 +806,7 @@ impl Window {
                 let (dx, dy) = (h.start.0 - h.at.0, h.start.1 - h.at.1);
                 // The finger's main direction picks the container (a carousel inside a list).
                 let (ax, ay) = if dx.abs() > dy.abs() { (dx, 0.0) } else { (0.0, dy) };
-                let scroller = {
-                    let k = self.w.kernel.borrow();
-                    k.scroller_above(h.hit, ax, ay).or_else(|| k.scroller_above(h.hit, dx, dy))
-                };
+                let scroller = self.scroll_target(h.hit, ax, ay).or_else(|| self.scroll_target(h.hit, dx, dy));
                 if let Some(c) = scroller {
                     h.mode = Mode::Panning(c);
                     self.unpress(&h);
@@ -941,7 +975,7 @@ impl Window {
         let handler = {
             let k = self.w.kernel.borrow();
             // Binding updates can open a modal during the first stage of this delta.
-            k.check_activation(pan.node, k.modals().last().copied())
+            k.check_activation(pan.node, self.top_modal())
                 .ok()
                 .and_then(|()| k.handler(pan.node, HandlerKind::TouchScroll))
                 .and_then(|id| self.w.handlers.borrow().get(&id.0).cloned())
@@ -991,7 +1025,11 @@ impl Window {
     }
 
     fn scroll_by(&self, n: NodeId, dx: f32, dy: f32) -> [f32; 2] {
+        let modal = self.top_modal();
         let mut k = self.w.kernel.borrow_mut();
+        if k.check_interaction_scope(n, modal).is_err() {
+            return [0.0; 2];
+        }
         // The user's own scrolling takes over from a glide.
         k.stop_glide(n);
         let (sx, sy) = k.scrollable(n);
@@ -1056,6 +1094,9 @@ impl Window {
     }
 
     fn start_momentum(&self, node: NodeId, h: &Held) {
+        if self.w.kernel.borrow().check_interaction_scope(node, self.top_modal()).is_err() {
+            return;
+        }
         let now = self.now_ms();
         let samples: Vec<_> = h.samples.iter().filter(|s| now - s.0 <= VELOCITY_WINDOW_MS).collect();
         let (Some(first), Some(last)) = (samples.first(), samples.last()) else { return };
@@ -1083,8 +1124,9 @@ impl Window {
         let t_end = (stop / m.speed as f64).ln() / d.ln();
         let t = (self.now_ms() - m.start).min(t_end);
         let travel = (m.speed as f64 * (d.powf(t) - 1.0) / d.ln()) as f32;
+        let modal = self.top_modal();
         let mut k = self.w.kernel.borrow_mut();
-        if !k.is_alive(m.node) {
+        if k.check_interaction_scope(m.node, modal).is_err() {
             drop(k);
             self.w.interaction.borrow_mut().pointer.momentum = None;
             return;

@@ -151,7 +151,7 @@ pub fn radio_group(
             .id(id.clone())
             .role(Role::RadioGroup)
             .label(label.clone())
-            .focus_group()
+            .focus_group(FocusGroup::both().wrap().activate_on_navigation())
             .w_full()
             .min_w(0.0)
             .gap_1()
@@ -159,8 +159,9 @@ pub fn radio_group(
             .child(each(
                 move || options().into_iter().map(|option| (option.id.clone(), option)).collect::<Vec<_>>(),
                 move |key, item| {
-                    let (checked, shown, dot, pick) = (value.clone(), value.clone(), value.clone(), value.clone());
-                    let (checked_key, shown_key, dot_key, pick_key) = (key.clone(), key.clone(), key.clone(), key.clone());
+                    let (read, pick) = (value.clone(), value.clone());
+                    let (checked_key, pick_key) = (key.clone(), key.clone());
+                    let checked = memo(move || read.get().as_ref() == Some(&checked_key));
                     let mark = el()
                         .size_4()
                         .flex_shrink_0()
@@ -171,21 +172,17 @@ pub fn radio_group(
                         .border_color(Token::Border)
                         .bg(Token::Background)
                         .color_motion(Spring::SNAP)
-                        .checked(move || shown.get().as_ref() == Some(&shown_key))
+                        .checked(checked)
                         .style_when(State::CHECKED, |p| p.bg(Token::Accent).border_color(Token::Accent))
-                        .child(
-                            el().size(6.0)
-                                .rounded_full()
-                                .bg(Token::AccentText)
-                                .opacity(move || if dot.get().as_ref() == Some(&dot_key) { 1.0 } else { 0.0 }),
-                        )
+                        .child(el().size(6.0).rounded_full().bg(Token::AccentText).opacity(move || if checked.get() { 1.0 } else { 0.0 }))
                         .a11y_hidden();
                     row()
                         .id(format!("{id}-option-{key}"))
                         .role(Role::RadioButton)
                         .label(move || item.with(|row| row.label.clone()))
                         .description(move || item.with(|row| row.description.clone()))
-                        .checked(move || checked.get().as_ref() == Some(&checked_key))
+                        .checked(checked)
+                        .focus_preferred(checked)
                         .disabled(move || item.with(|row| row.disabled))
                         .focusable()
                         .w_full()

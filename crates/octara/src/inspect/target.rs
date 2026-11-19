@@ -238,6 +238,9 @@ pub(super) fn scroll(window: &mut Window, guard: &TargetGuard, dx: f32, dy: f32)
     if !dx.is_finite() || !dy.is_finite() {
         return failure(&codes::BAD_REQUEST, "scroll requires finite deltas", Delivery::Refused);
     }
+    if !window.frame_is_settled() {
+        return failure(&codes::NOT_SETTLED, "the window has no current settled geometry", Delivery::Refused);
+    }
     let node = guard.node().expect("scroll was bound to a viewport");
     let (before_x, before_y) = {
         let kernel = window.kernel();
@@ -251,6 +254,9 @@ pub(super) fn scroll(window: &mut Window, guard: &TargetGuard, dx: f32, dy: f32)
         // Layout can retire the viewport. Only sample the allocation we scrolled.
         if !guard.is_current(window) {
             return stale(Delivery::Delivered);
+        }
+        if !window.frame_is_settled() {
+            return failure(&codes::NOT_SETTLED, "the scroll was delivered but layout has not settled", Delivery::Delivered);
         }
         let (x, y) = window.kernel().scroll_offset(node);
         reply.scroll = Some(ScrollResult { offset: [x, y], delta: [x - before_x, y - before_y] });
@@ -306,6 +312,9 @@ pub(super) fn key(window: &mut Window, guard: &TargetGuard, chord: &str) -> Repl
 pub fn guarded_point(window: &Window, guard: &TargetGuard, delivery: Delivery) -> Result<(f32, f32), Box<Reply>> {
     if !guard.is_current(window) {
         return Err(Box::new(stale(delivery)));
+    }
+    if !window.frame_is_settled() {
+        return Err(Box::new(failure(&codes::NOT_SETTLED, "the window has no current settled geometry", delivery)));
     }
     let node = guard.node().ok_or_else(|| bad("a pointer gesture requires a node target"))?;
     window.activation_point(node).map_err(|why| Box::new(failure(&codes::STEP_FAILED, why, delivery)))

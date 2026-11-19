@@ -500,7 +500,7 @@ impl Kernel {
         if n.focusable {
             node.add_action(ak::Action::Focus);
         }
-        if n.modal.is_some() {
+        if n.layer.is_some_and(|layer| layer.modal) {
             node.set_modal();
         }
         if let Some(t) = &n.test_id {

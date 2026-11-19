@@ -84,6 +84,7 @@ enum Stage {
     /// Waiting for the presented frame to reach the window server.
     Display {
         at: Instant,
+        until: Instant,
         pending: Vec<String>,
     },
     Snapshots {
@@ -215,9 +216,14 @@ impl Shell {
             }
             job.stage = Stage::Settling { until: now + job.settle };
         }
+        if let Stage::Display { until, .. } = job.stage
+            && !w.frame_is_settled()
+        {
+            job.stage = Stage::Settling { until };
+        }
         if let Stage::Settling { until } = job.stage {
             let pending = w.unsettled();
-            if !pending.is_empty() && now < until {
+            if (!w.frame_is_settled() || !pending.is_empty()) && now < until {
                 self.capture = Some(job);
                 self.show();
                 return;
@@ -228,19 +234,26 @@ impl Shell {
                 self.report(&w, Err(why), job);
                 return;
             }
-            if job.pixels == Pixels::Display {
-                // The latest frame, presented; the window server shows it a little later.
-                self.draw(&w);
-                job.stage = Stage::Display { at: now + SHOWN, pending };
-                self.capture = Some(job);
-                return;
-            }
-            if let Err(why) = job.begin_snapshots(&mut w, pending, None) {
+            let fallback = if job.pixels == Pixels::Display {
+                if self.draw(&w) {
+                    job.stage = Stage::Display { at: Instant::now() + SHOWN, until, pending };
+                    self.capture = Some(job);
+                    return;
+                }
+                if Instant::now() < until {
+                    self.capture = Some(job);
+                    return;
+                }
+                Some("the window's current frame could not be presented".into())
+            } else {
+                None
+            };
+            if let Err(why) = job.begin_snapshots(&mut w, pending, fallback) {
                 self.report(&w, Err(why), job);
                 return;
             }
         }
-        if let Stage::Display { at, ref pending } = job.stage {
+        if let Stage::Display { at, ref pending, .. } = job.stage {
             if now < at {
                 self.capture = Some(job);
                 return;

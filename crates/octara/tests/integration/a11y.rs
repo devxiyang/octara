@@ -15,7 +15,7 @@ fn semantic_names_agree_across_inspector_ax_lookup_and_diagnostics() {
             .child(text(caption).id("caption").tooltip("中文标题"))
             .child(text("fallback").id("override").label("Explicit"))
             .child(text("suppressed").id("empty").label("").on_press(|| {}))
-            .child(text_input().id("input").w(200).value("not a name"))
+            .child(input().id("input").w(200).value("not a name"))
             .child(text("concealed").id("concealed").a11y_hidden())
             .child(el().hidden().child(text("offscreen").id("offscreen")))
     });
@@ -59,7 +59,7 @@ fn form_semantics_update_without_replacing_the_editor_or_its_target() {
         col()
             .size_full()
             .child(
-                text_input()
+                input()
                     .id("field")
                     .w(240)
                     .label("Name")
@@ -128,7 +128,7 @@ fn view() -> View {
                 .checked(move || on.get())
                 .on_toggle(move || on.update(|v| *v = !*v)),
         )
-        .child(text_input().id("name").label("Name").value("Ada"))
+        .child(input().id("name").label("Name").value("Ada"))
         .child(spacer())
         .into()
 }
@@ -178,7 +178,7 @@ fn a_choice_and_an_editor_publish_their_own_values() {
                     .focusable()
                     .on_press(move || choice.set("Light".to_owned())),
             )
-            .child(text_input().id("name").label("Name").value("Ada"))
+            .child(input().id("name").label("Name").value("Ada"))
     });
     let snap = app.inspect();
     assert_eq!(snap.find("theme").unwrap().value.as_deref(), Some("Dark"));
@@ -204,7 +204,7 @@ fn active_option_view() -> View {
     col()
         .size_full()
         .child(
-            text_input()
+            input()
                 .id("search")
                 .label("Choose an option")
                 .role(Role::ComboBox)

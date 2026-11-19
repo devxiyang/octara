@@ -387,17 +387,24 @@ impl WinitWindow {
         self.window.request_redraw();
     }
 
-    /// A tick of the clock: whether to draw now (else the clock pauses while nothing waits).
-    pub(crate) fn on_tick(&self) -> bool {
+    pub(crate) fn pause_frame_clock(&self) {
         #[cfg(target_os = "macos")]
         if let Some(link) = &self.link {
-            if !self.pending {
-                link.stop();
-                return false;
-            }
+            link.stop();
+        }
+    }
+
+    /// A tick of the clock: whether to draw now (else the clock pauses while nothing waits).
+    pub(crate) fn on_tick(&self) -> bool {
+        if !self.pending {
+            self.pause_frame_clock();
+            return false;
+        }
+        #[cfg(target_os = "macos")]
+        if self.link.is_some() {
             return super::pace_mac::tick_draws(self.presented);
         }
-        self.pending
+        true
     }
 
     pub(crate) fn resize(&mut self, width: u32, height: u32, renderer: &GpuRenderer) {

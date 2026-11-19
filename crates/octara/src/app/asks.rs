@@ -216,9 +216,9 @@ impl Window {
     }
 }
 
-/// The requests a window draws itself (menus and prompts its platform does not show), above
-/// everything: each menu at its point (an overlay, placed as the window's room allows); prompts
-/// in a layer over the window, there only while one is open (it takes the pointer then).
+/// The requests a window draws itself when its platform cannot show them. Menus are anchored
+/// at their requested point. Each prompt mounts over the window when requested, in front of
+/// overlays that are already open.
 pub(crate) fn layer() -> crate::view::View {
     use crate::prelude::*;
     let menus = state_list("menus", Vec::new, |e: &(AskId, Ask)| e.0);
@@ -249,19 +249,18 @@ pub(crate) fn layer() -> crate::view::View {
                 },
             ))
             .into(),
-        show(
-            move || !prompts.is_empty(),
-            move || {
-                col().absolute().top(0.0).left(0.0).size_full().child(each(
-                    move || prompts.read_only(),
-                    |id, ask| {
-                        let id = *id;
-                        match untrack(|| ask.get()).1 {
-                            Ask::Prompt { level, message, detail, answers } => prompt_view(id, level, message, detail, answers),
-                            _ => el(),
-                        }
-                    },
-                ))
+        each(
+            move || prompts.read_only(),
+            |id, ask| {
+                let id = *id;
+                match untrack(|| ask.get()).1 {
+                    Ask::Prompt { level, message, detail, answers } => el()
+                        .absolute()
+                        .size(0.0)
+                        .a11y_hidden()
+                        .overlay_window(|| true, move || prompt_view(id, level, &message, detail.as_deref(), &answers)),
+                    _ => el(),
+                }
             },
         ),
     ])
@@ -401,7 +400,7 @@ fn menu_surface_inner(
         .shadow_lg()
         .text_sm()
         .text_color(Token::Text)
-        .focus_group()
+        .focus_group(FocusGroup::vertical().wrap())
         .when(empty, |menu| menu.focusable().tab_index(-1).autofocus().min_h(28.0).when_touch(|p| p.min_h(44.0)))
         .modal(true, move || outside())
         .on_key(move |key| {
@@ -477,13 +476,7 @@ fn menu_row(label: &str, checked: Option<bool>, trail: Option<String>, enabled: 
 
 /// A prompt drawn in the window: its message and detail over a scrim, its answers as buttons (the
 /// last the default, focused); Escape dismisses it.
-fn prompt_view(
-    id: AskId,
-    level: crate::ask::PromptLevel,
-    message: String,
-    detail: Option<String>,
-    answers: Vec<String>,
-) -> crate::view::El {
+fn prompt_view(id: AskId, level: crate::ask::PromptLevel, message: &str, detail: Option<&str>, answers: &[String]) -> crate::view::El {
     use crate::prelude::*;
     let last = answers.len().saturating_sub(1);
     let buttons: Vec<View> = answers
@@ -519,7 +512,7 @@ fn prompt_view(
     col().absolute().top(0.0).left(0.0).size_full().items_center().justify_center().bg(Color::BLACK.multiply_alpha(0.3)).child(
         col()
             .role(Role::AlertDialog)
-            .label(message.as_str())
+            .label(message)
             .w(360.0)
             .p_5()
             .gap_3()
@@ -528,11 +521,11 @@ fn prompt_view(
             .border()
             .border_color(Token::Border)
             .shadow_xl()
-            .focus_group()
+            .focus_group(FocusGroup::both().wrap())
             .modal(false, move || crate::app::current().resolve_ask(id, Answer::Prompt(None)))
             .children(mark.map(|(m, t)| text(m).font_bold().text_color(t).text_xl()))
-            .child(text(message.as_str()).font_semibold())
-            .children(detail.map(|d| text(d).text_sm().text_color(Token::TextMuted)))
+            .child(text(message).font_semibold())
+            .children(detail.map(|detail| text(detail).text_sm().text_color(Token::TextMuted)))
             .child(row().justify_end().gap_2().children(buttons)),
     )
 }

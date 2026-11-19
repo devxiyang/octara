@@ -231,10 +231,7 @@ fn hovering_a_link_redraws_its_text() {
 fn a_field_losing_focus_redraws_without_its_caret() {
     let mut w = Window::headless(|| {
         let v = state("v", String::new);
-        col()
-            .selectable()
-            .child(text_input().id("f").label("F").value(move || v.get()).on_input(move |s| v.set(s)))
-            .child(text("words").id("t"))
+        col().selectable().child(input().id("f").label("F").value(move || v.get()).on_input(move |s| v.set(s))).child(text("words").id("t"))
     });
     w.tap("f").unwrap();
     let caret = |w: &Window| {

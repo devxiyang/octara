@@ -134,7 +134,9 @@ fn tabs_rove_without_activation_and_are_one_tab_stop() {
     expect_focus(&window, "before");
     window.press_key("tab").unwrap();
     expect_focus(&window, "views-tab-two");
-    for (key, expected) in [("right", "three"), ("right", "one"), ("end", "three"), ("home", "one"), ("left", "three")] {
+    for (key, expected) in
+        [("up", "two"), ("down", "two"), ("right", "three"), ("right", "one"), ("end", "three"), ("home", "one"), ("left", "three")]
+    {
         window.press_key(key).unwrap();
         expect_focus(&window, &format!("views-tab-{expected}"));
         assert_eq!(window.kernel().text_of("chosen").as_deref(), Some("two"));
@@ -247,7 +249,9 @@ fn segmented_choices_use_ids_radio_semantics_and_one_press_per_navigation() {
     window.press_key("tab").unwrap();
     expect_focus(&window, "mode-option-one");
     assert_eq!(window.kernel().text_of("chosen").as_deref(), Some("none"));
-    for (key, expected, count) in [("home", "one", "1"), ("right", "two", "2"), ("right", "one", "3"), ("end", "two", "4")] {
+    for (key, expected, count) in
+        [("home", "one", "1"), ("right", "two", "2"), ("right", "one", "3"), ("down", "two", "4"), ("up", "one", "5"), ("end", "two", "6")]
+    {
         window.press_key(key).unwrap();
         expect_focus(&window, &format!("mode-option-{expected}"));
         assert_eq!(window.kernel().text_of("chosen").as_deref(), Some(expected));
@@ -269,6 +273,9 @@ fn segmented_choices_use_ids_radio_semantics_and_one_press_per_navigation() {
     assert_eq!(choice.is_selected(), None);
     window.press_key("tab").unwrap();
     expect_focus(&window, "after");
+    window.press_key("shift+tab").unwrap();
+    expect_focus(&window, "mode-option-two");
+    assert_eq!(window.kernel().text_of("writes").as_deref(), Some("6"));
     clean(&window);
 }
 

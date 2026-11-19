@@ -1,7 +1,9 @@
 //! Focus: Tab order with `tab_index`, focus groups and arrow keys, and modals that trap focus,
 //! make the window inert, and give focus back when they close.
 
+use octara::accesskit::Toggled;
 use octara::app::{Event, InputEvent};
+use octara::kernel::a11y::a11y_id;
 use octara::prelude::*;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -41,20 +43,25 @@ fn tab_index_orders_and_skips() {
 
 #[test]
 fn focus_groups_move_on_arrows_and_stop_once_for_tab() {
-    let mut app =
-        Window::headless(|| {
-            let tab = state("tab", || 2);
-            col()
-                .child(button("a"))
-                .child(row().role(Role::TabList).focus_group().children((1..=3).map(move |i| {
-                    button(&format!("tab-{i}")).role(Role::Tab).selected(move || tab.get() == i).on_press(move || tab.set(i))
-                })))
-                .child(col().role(Role::List).focus_group().children((1..=3).map(|i| button(&format!("row-{i}")).role(Role::ListItem))))
-                .child(button("c"))
-        });
+    let mut app = Window::headless(|| {
+        let tab = state("tab", || 2);
+        col()
+            .child(button("a"))
+            .child(row().role(Role::TabList).focus_group(FocusGroup::both().wrap()).children((1..=3).map(move |i| {
+                let selected = move || tab.get() == i;
+                button(&format!("tab-{i}")).role(Role::Tab).selected(selected).focus_preferred(selected).on_press(move || tab.set(i))
+            })))
+            .child(
+                col()
+                    .role(Role::List)
+                    .focus_group(FocusGroup::vertical())
+                    .children((1..=3).map(|i| button(&format!("row-{i}")).role(Role::ListItem))),
+            )
+            .child(button("c"))
+    });
     app.press_key("tab").unwrap();
     app.press_key("tab").unwrap();
-    assert_eq!(focused(&app).as_deref(), Some("tab-2"), "Tab enters a group at its selected member");
+    assert_eq!(focused(&app).as_deref(), Some("tab-2"), "Tab enters a group at its preferred member");
     app.press_key("right").unwrap();
     assert_eq!(focused(&app).as_deref(), Some("tab-3"));
     app.press_key("right").unwrap();
@@ -78,6 +85,95 @@ fn focus_groups_move_on_arrows_and_stop_once_for_tab() {
 }
 
 #[test]
+fn focus_group_policy_is_independent_of_accessibility_roles() {
+    let mut app = Window::headless(|| {
+        let presses = state("presses", Vec::new);
+        col()
+            .size_full()
+            .child(
+                col()
+                    .id("radios")
+                    .role(Role::RadioGroup)
+                    .focus_group(FocusGroup::vertical())
+                    .child(button("radio-a").role(Role::RadioButton).checked(false).on_press(move || presses.update(|p| p.push("radio-a"))))
+                    .child(button("radio-b").role(Role::RadioButton).checked(true).on_press(move || presses.update(|p| p.push("radio-b")))),
+            )
+            .child(
+                row()
+                    .id("options")
+                    .role(Role::ListBox)
+                    .focus_group(FocusGroup::horizontal().wrap().activate_on_navigation())
+                    .child(
+                        button("option-a")
+                            .role(Role::ListBoxOption)
+                            .selected(true)
+                            .on_press(move || presses.update(|p| p.push("option-a"))),
+                    )
+                    .child(
+                        button("option-b")
+                            .role(Role::ListBoxOption)
+                            .focus_preferred(true)
+                            .on_press(move || presses.update(|p| p.push("option-b"))),
+                    ),
+            )
+            .child(text(move || presses.with(|p| p.join(", "))).id("presses"))
+    });
+    for (key, target, presses) in [
+        ("tab", "radio-a", ""),
+        ("right", "radio-a", ""),
+        ("down", "radio-b", ""),
+        ("down", "radio-b", ""),
+        ("tab", "option-b", ""),
+        ("down", "option-b", ""),
+        ("right", "option-a", "option-a"),
+        ("right", "option-b", "option-a, option-b"),
+    ] {
+        app.press_key(key).unwrap();
+        assert_eq!(app.inspect().focus.as_deref(), Some(target), "{key}");
+        assert_eq!(app.kernel().text_of("presses").as_deref(), Some(presses), "{key}");
+    }
+
+    let tree = app.accessibility_tree();
+    let node = |id: &str| {
+        let id = a11y_id(app.kernel().find(id).unwrap());
+        &tree.nodes.iter().find(|(n, _)| *n == id).unwrap().1
+    };
+    assert_eq!(node("radios").role(), Role::RadioGroup);
+    assert_eq!(node("radio-b").toggled(), Some(Toggled::True));
+    assert_eq!(node("options").role(), Role::ListBox);
+    assert_eq!(node("option-a").is_selected(), Some(true));
+    assert_eq!(node("option-b").is_selected(), None);
+    assert!(app.layout_issues().is_empty(), "{:?}", app.layout_issues());
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
+fn nested_focus_groups_keep_distinct_tab_stops() {
+    let mut app = Window::headless(|| {
+        col()
+            .child(
+                row()
+                    .focus_group(FocusGroup::horizontal())
+                    .child(button("outer"))
+                    .child(col().focus_group(FocusGroup::vertical()).child(button("inner-first")).child(button("inner-last"))),
+            )
+            .child(button("after"))
+    });
+    for (key, expected) in [
+        ("tab", "outer"),
+        ("right", "outer"),
+        ("tab", "inner-first"),
+        ("down", "inner-last"),
+        ("tab", "after"),
+        ("shift+tab", "inner-last"),
+        ("shift+tab", "outer"),
+    ] {
+        app.press_key(key).unwrap();
+        assert_eq!(app.inspect().focus.as_deref(), Some(expected), "{key}");
+    }
+}
+
+#[test]
 fn tab_lists_enter_at_the_current_selection_after_outside_changes() {
     let mut app = Window::headless(|| {
         let selected = state("selected", || 1);
@@ -85,8 +181,13 @@ fn tab_lists_enter_at_the_current_selection_after_outside_changes() {
         col()
             .size_full()
             .child(button("a"))
-            .child(row().role(Role::TabList).focus_group().children((1..=3).map(move |i| {
-                button(&format!("tab-{i}")).role(Role::Tab).selected(move || selected.get() == i).on_press(move || selected.set(i))
+            .child(row().role(Role::TabList).focus_group(FocusGroup::both().wrap()).children((1..=3).map(move |i| {
+                let is_selected = move || selected.get() == i;
+                button(&format!("tab-{i}"))
+                    .role(Role::Tab)
+                    .selected(is_selected)
+                    .focus_preferred(is_selected)
+                    .on_press(move || selected.set(i))
             })))
             .child(button("c"))
     });
@@ -112,14 +213,20 @@ fn radio_groups_enter_at_the_checked_radio_and_navigation_chooses_once() {
         col()
             .size_full()
             .child(button("before"))
-            .child(row().role(Role::RadioGroup).focus_group().children((1..=4).map(move |i| {
-                button(&format!("radio-{i}")).role(Role::RadioButton).disabled(i == 2).checked(move || choice.get() == i).on_press(
-                    move || {
-                        choice.set(i);
-                        presses.update(|n| *n += 1);
-                    },
-                )
-            })))
+            .child(row().role(Role::RadioGroup).focus_group(FocusGroup::both().wrap().activate_on_navigation()).children((1..=4).map(
+                move |i| {
+                    let checked = move || choice.get() == i;
+                    button(&format!("radio-{i}"))
+                        .role(Role::RadioButton)
+                        .disabled(i == 2)
+                        .checked(checked)
+                        .focus_preferred(checked)
+                        .on_press(move || {
+                            choice.set(i);
+                            presses.update(|n| *n += 1);
+                        })
+                },
+            )))
             .child(button("after"))
             .child(text(move || presses.get().to_string()).id("presses"))
     });
@@ -150,7 +257,7 @@ fn radio_groups_enter_at_the_checked_radio_and_navigation_chooses_once() {
     let tree = app.accessibility_tree();
     for node in app.inspect().root.walk().into_iter().filter(|n| n.role == "radio_button") {
         assert!(!node.states.iter().any(|s| s == "selected"));
-        let id = octara::kernel::a11y::a11y_id(app.kernel().find(node.id.as_deref().unwrap()).unwrap());
+        let id = a11y_id(app.kernel().find(node.id.as_deref().unwrap()).unwrap());
         assert_eq!(tree.nodes.iter().find(|(n, _)| *n == id).unwrap().1.is_selected(), None);
     }
     assert!(app.layout_issues().is_empty(), "{:?}", app.layout_issues());
@@ -162,14 +269,15 @@ fn radio_navigation_chooses_an_unchecked_current_radio() {
     let mut app = Window::headless(|| {
         let checked = state("checked", || false);
         let presses = state("presses", || 0);
+        let is_checked = move || checked.get();
         on_command("clear", move || checked.set(false));
         col()
             .size_full()
             .child(
                 row()
                     .role(Role::RadioGroup)
-                    .focus_group()
-                    .child(button("a").role(Role::RadioButton).checked(move || checked.get()).on_press(move || {
+                    .focus_group(FocusGroup::both().wrap().activate_on_navigation())
+                    .child(button("a").role(Role::RadioButton).checked(is_checked).focus_preferred(is_checked).on_press(move || {
                         checked.set(true);
                         presses.update(|n| *n += 1);
                     }))
@@ -194,7 +302,7 @@ fn radio_navigation_chooses_an_unchecked_current_radio() {
 
 #[test]
 fn radio_navigation_rechecks_focus_handlers_before_pressing() {
-    for change in ["remove", "disable", "redirect", "modal"] {
+    for (change, deferred) in ["remove", "disable", "redirect", "modal"].into_iter().flat_map(|change| [(change, false), (change, true)]) {
         let presses = Rc::new(Cell::new(0));
         let recorded = presses.clone();
         let mut app = Window::headless(move || {
@@ -204,30 +312,41 @@ fn radio_navigation_rechecks_focus_handlers_before_pressing() {
             let recorded = recorded.clone();
             col()
                 .size_full()
-                .child(row().role(Role::RadioGroup).focus_group().child(button("a").role(Role::RadioButton).checked(true)).child(show(
-                    move || shown.get(),
-                    move || {
-                        let recorded = recorded.clone();
-                        button("b")
-                            .role(Role::RadioButton)
-                            .checked(false)
-                            .disabled(move || disabled.get())
-                            .on_focus(move || match change {
-                                "remove" => shown.set(false),
-                                "disable" => disabled.set(true),
-                                "redirect" => focus("outside"),
-                                "modal" => modal.set(true),
-                                _ => unreachable!(),
-                            })
-                            .on_press(move || recorded.set(recorded.get() + 1))
-                    },
-                )))
+                .child(
+                    row()
+                        .role(Role::RadioGroup)
+                        .focus_group(FocusGroup::both().wrap().activate_on_navigation())
+                        .child(button("a").role(Role::RadioButton).checked(true).focus_preferred(true))
+                        .child(show(
+                            move || shown.get(),
+                            move || {
+                                let recorded = recorded.clone();
+                                button("b")
+                                    .role(Role::RadioButton)
+                                    .checked(false)
+                                    .disabled(move || disabled.get())
+                                    .on_focus(move || match change {
+                                        "remove" => shown.set(false),
+                                        "disable" => disabled.set(true),
+                                        "redirect" => focus("outside"),
+                                        "modal" => modal.set(true),
+                                        _ => unreachable!(),
+                                    })
+                                    .on_press(move || recorded.set(recorded.get() + 1))
+                            },
+                        )),
+                )
                 .child(button("outside"))
+                .child(button("move").on_press(|| invoke_after_update("focus.right")))
                 .child(show(move || modal.get(), || col().modal(false, || {}).child(button("modal-first"))))
         });
         app.press_key("tab").unwrap();
-        app.press_key("right").unwrap();
-        assert_eq!(presses.get(), 0, "{change}: focus handlers retire the pending choice");
+        if deferred {
+            app.dispatch(Event::Press("move".into())).unwrap();
+        } else {
+            app.press_key("right").unwrap();
+        }
+        assert_eq!(presses.get(), 0, "{change} deferred={deferred}: focus handlers retire the pending choice");
         if change == "redirect" {
             assert_eq!(app.inspect().focus.as_deref(), Some("outside"));
         } else if change == "modal" {
@@ -260,7 +379,7 @@ fn dialog_app(click_outside: bool) -> Window {
                             closes.update(|n| *n += 1);
                             open.set(false)
                         })
-                        .child(text_input().id("name").value("").on_input(|_| {}))
+                        .child(input().id("name").value("").on_input(|_| {}))
                         .child(button("ok").on_press(move || open.set(false)))
                         .child(button("cancel").autofocus().on_press(move || open.set(false)))
                 },
@@ -305,8 +424,87 @@ fn the_window_behind_a_modal_is_inert() {
     assert_eq!(focused(&app).as_deref(), Some("cancel"));
     // The accessibility tree marks the dialog modal.
     let tree = app.accessibility_tree();
-    let id = octara::kernel::a11y::a11y_id(app.kernel().find("dialog").unwrap());
+    let id = a11y_id(app.kernel().find("dialog").unwrap());
     assert!(tree.nodes.iter().find(|(n, _)| *n == id).unwrap().1.is_modal());
+}
+
+#[test]
+fn an_anchored_overlay_shares_its_dialogs_keyboard_scope() {
+    let mut app = Window::headless(|| {
+        let dialog_open = state("dialog-open", || false);
+        let saves = state("saves", || 0);
+        let clicks = state("clicks", || 0);
+        col()
+            .size_full()
+            .child(button("open-dialog").on_press(move || dialog_open.set(true)).overlay(
+                || true,
+                Placement::RIGHT,
+                || button("outside-overlay-action"),
+            ))
+            .child(text(move || saves.get().to_string()).id("saves"))
+            .child(text(move || clicks.get().to_string()).id("clicks"))
+            .child(show(
+                move || dialog_open.get(),
+                move || {
+                    let overlay_open = state("overlay-open", || false);
+                    col()
+                        .id("dialog")
+                        .role(Role::Dialog)
+                        .absolute()
+                        .left(160.0)
+                        .top(120.0)
+                        .w(200.0)
+                        .h(120.0)
+                        .modal(false, move || dialog_open.set(false))
+                        .key_context("dialog")
+                        .on_command("dialog.save", move || saves.update(|n| *n += 1))
+                        .child(
+                            row()
+                                .gap_8()
+                                .child(button("open-overlay").autofocus().on_press(move || overlay_open.set(true)).overlay(
+                                    move || overlay_open.get(),
+                                    Placement::BELOW,
+                                    move || {
+                                        col()
+                                            .dismissible(true, move || overlay_open.set(false))
+                                            .child(button("overlay-action").role(Role::Button))
+                                    },
+                                ))
+                                .child(button("dialog-action").tab_index(-1).on_press(move || clicks.update(|n| *n += 1))),
+                        )
+                },
+            ))
+    });
+    app.app().bind_keys([("mod+s", "dialog.save", Some("dialog"))]).unwrap();
+    app.tap("open-dialog").unwrap();
+    app.press_key("enter").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("open-overlay"));
+
+    for (key, expected) in [("tab", "overlay-action"), ("tab", "open-overlay"), ("shift+tab", "overlay-action")] {
+        app.press_key(key).unwrap();
+        assert_eq!(app.inspect().focus.as_deref(), Some(expected), "{key}");
+    }
+    assert!(app.tap("outside-overlay-action").unwrap_err().contains("behind the open modal `dialog`"));
+    app.press_key("mod+s").unwrap();
+    assert_eq!(app.kernel().text_of("saves").as_deref(), Some("1"));
+    app.invoke("dialog.save").unwrap();
+    assert_eq!(app.kernel().text_of("saves").as_deref(), Some("2"));
+
+    app.press_key("escape").unwrap();
+    assert!(!app.kernel().exists("overlay-action"));
+    assert!(app.kernel().exists("dialog"));
+
+    app.tap("open-overlay").unwrap();
+    app.press_key("tab").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("overlay-action"));
+    app.tap("dialog-action").unwrap();
+    assert!(!app.kernel().exists("overlay-action"));
+    assert!(app.kernel().exists("dialog"));
+    assert_eq!(app.kernel().text_of("clicks").as_deref(), Some("1"));
+
+    app.press_key("escape").unwrap();
+    assert!(!app.kernel().exists("dialog"));
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
 }
 
 #[test]
@@ -333,7 +531,7 @@ fn focus_and_blur_are_heard() {
             .child(show(move || shown.get(), {
                 let l = l.clone();
                 move || {
-                    text_input().id("name").on_focus(ev(&l, "focus name")).on_blur(ev(&l, "blur name")).on_key(move |k| {
+                    input().id("name").on_focus(ev(&l, "focus name")).on_blur(ev(&l, "blur name")).on_key(move |k| {
                         if k.key == Key::Escape {
                             shown.set(false);
                         }
@@ -365,7 +563,7 @@ fn focus_and_blur_are_heard() {
 fn the_app_moves_focus_to_an_element_built_in_the_same_frame() {
     let mut app = Window::headless(|| {
         let editing = state("editing", || false);
-        col().child(show(move || editing.get(), || text_input().id("name"))).child(button("open").on_press(move || {
+        col().child(show(move || editing.get(), || input().id("name"))).child(button("open").on_press(move || {
             editing.set(true);
             focus("name");
         }))
@@ -415,7 +613,7 @@ fn reload_modal_view(changes: Rc<ReloadModalChanges>) -> View {
                     .top(100.0)
                     .w(240.0)
                     .modal(true, move || outer_open.set(false))
-                    .child(text_input().id("outer-name"))
+                    .child(input().id("outer-name"))
                     .child(show(
                         move || !opener.hide_inner_opener.get(),
                         move || button("open-inner").on_press(move || inner_open.set(true)),
@@ -431,7 +629,7 @@ fn reload_modal_view(changes: Rc<ReloadModalChanges>) -> View {
                                 .id("inner-dialog")
                                 .w(180.0)
                                 .modal(true, move || inner_open.set(false))
-                                .child(show(move || !field.remove_inner_field.get(), || text_input().id("inner-name")))
+                                .child(show(move || !field.remove_inner_field.get(), || input().id("inner-name")))
                                 .child(button("inner-fallback"))
                         },
                     ))

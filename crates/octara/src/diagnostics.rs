@@ -185,7 +185,7 @@ codes! {
         cause: "An input callback reentered the same editor. Update its bound value in the callback; schedule a separate edit after this operation settles.";
     ELEMENT_CONTENT: Error, View, "docs/design/ui-primitives.md#element-content",
         "An operation is incompatible with an element's content or ownership (this panics).",
-        cause: "Only containers accept application children. Put atomic content and its surrounding UI in an external container. Input, icon, image and native settings require the matching content constructor. Kernel structural writes enforce the same ownership. Text owns its internal links, which cannot be independently created, moved or destroyed. Rich runs must be ordered, non-overlapping UTF-8 ranges. Invalid calls are rejected before mutating structure or content. Builder misuse is rejected before mounting.";
+        cause: "Only containers accept application children. Put atomic content and its surrounding UI in an external container. Input, icon, image and native settings require the matching content constructor. Use textarea() for rows() or submit_on_enter(). Kernel structural writes enforce the same ownership. Text owns its internal links, which cannot be independently created, moved or destroyed. Rich runs must be ordered, non-overlapping UTF-8 ranges. Invalid calls are rejected before mutating structure or content. Builder misuse is rejected before mounting.";
     COMMAND_UNHANDLED: Error, View, "docs/design/input.md#deferred-commands",
         "A deferred command has no handler on the restored focus path.",
         cause: "The command ran after pending updates and focus restoration, but neither the focused control, its ancestors, built-ins nor app-level handlers handled it. Disable unavailable menu actions or register the command where it is used.";
@@ -234,8 +234,8 @@ codes! {
         "Text does not stand out enough from its background.",
         cause: "WCAG asks a contrast of 4.5:1 for text and 3:1 for large text (24 px, or 18.66 px bold). The text tokens are made for their surfaces (`Token::AccentText` on accent fills); muted text on a tinted surface often falls short.";
     NOT_SETTLED: Warning, Inspect, "docs/design/agent-knowledge.md#inspector-protocol-and-checks",
-        "Work was still running after the app was left alone for 10 s of app time.",
-        cause: "A task, timer or animation keeps going without input (a loop that never ends, a resource that keeps refetching); `pending` lists what runs and where it started.";
+        "The window has an incomplete update, or the App still has work after the settle deadline.",
+        cause: "Layout, focus or reactive feedback can exceed the update budget. Use issues or an explicit recovery command before observing new geometry. For a settle deadline, pending work describes the remaining tasks and animations.";
     // ---- inspector (scripts and tools) ----
     BAD_REQUEST: Error, Inspect, "docs/design/agent-knowledge.md#inspector-protocol-and-checks",
         "An Inspector request or script line could not be read.",

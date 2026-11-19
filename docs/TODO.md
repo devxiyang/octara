@@ -6,6 +6,12 @@
 
 用复合应用中遇到的实际问题决定公开 API 和 Agent 反馈的调整。资料审阅队列已完成首轮实窗闭环，定位编辑器与读取回执的用法已更新。[本轮证据](design/interaction-scenarios.md#资料审阅队列)
 
+## 内核重构
+
+- [x] 统一弹层的绘制顺序、交互范围和关闭仲裁。分别验证逻辑焦点路径、逆序打开的同级弹层、外点关闭的原目标校验，以及窗口内绘制提示框的焦点恢复。[弹层契约](design/ui-primitives.md#5-overlays) · [弹层回归](../crates/octara/tests/integration/overlay.rs)
+- [ ] 统一输入会话与录制。先校验指针后续事件的设备、ID 和原始按键，再让原生编辑意图进入框架录制与回放。[手势与编辑协议](design/input.md)
+- [ ] 让异步截图使用可核对的提交版本。核对绘制数据、原生视图内容和位置，以及迟到原生快照的处理。[截图协议](design/capture.md)
+
 ## 平台验收
 
 - [x] 在 iOS 模拟器核对联动面板的原生触摸、系统中断、迟到位移和恢复呈现。[实测记录](design/interaction-scenarios.md#ios-模拟器实测)

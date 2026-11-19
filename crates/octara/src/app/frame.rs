@@ -6,6 +6,7 @@ pub(super) const WINDOW_ROUNDS: u8 = 16;
 
 pub(super) enum AfterUpdate {
     Command(String, &'static std::panic::Location<'static>),
+    FocusActivation { node: NodeId, group: NodeId },
     TouchScroll(pointer::TouchScrollDelta),
 }
 
@@ -34,15 +35,9 @@ impl AppState {
                 }
                 let windows = self.order.borrow().clone();
                 for id in first.into_iter().chain(windows.into_iter().filter(|id| Some(*id) != first)) {
-                    if let Some(w) = self.handle(id).filter(Window::can_prepare) {
-                        if generations
-                            .get(&id)
-                            .is_some_and(|outcome: &WindowUpdate| !outcome.invalidated(w.w.kernel.borrow().mutation_generation()))
-                        {
-                            continue;
-                        }
-                        let generation = w.enter(|| w.settle_window(at));
-                        generations.insert(id, generation);
+                    if let Some(w) = self.handle(id).filter(|w| w.needs_preparation(generations.get(&id))) {
+                        let result = w.enter(|| w.settle_window(at));
+                        generations.insert(id, result);
                     }
                 }
                 // The last window's focus or hover cleanup can queue reactive work too.
@@ -50,13 +45,11 @@ impl AppState {
                 if self.shutdown.get() {
                     return;
                 }
-                let invalidated = self.order.borrow().iter().any(|id| {
-                    self.handle(*id).filter(Window::can_prepare).is_some_and(|w| {
-                        generations.get(id).is_none_or(|outcome| outcome.invalidated(w.w.kernel.borrow().mutation_generation()))
-                    })
-                });
+                let invalidated =
+                    self.order.borrow().iter().any(|id| self.handle(*id).is_some_and(|w| w.needs_preparation(generations.get(id))));
                 let work = self.poll_requested.get() || (poll && self.sched.has_ready() && !self.sched.yielded() && !self.rt.has_pending());
                 if !invalidated && !work && !self.has_window_requests() {
+                    self.commit_frames(&generations);
                     self.present_menus();
                     return;
                 }
@@ -71,8 +64,26 @@ impl AppState {
                 "App update did not settle in 16 rounds; window lifecycle, layout feedback or ready work is still pending".into(),
                 at,
             );
+            self.commit_frames(&generations);
             self.present_menus();
         });
+    }
+
+    fn commit_frames(self: &Rc<Self>, prepared: &rustc_hash::FxHashMap<WindowId, WindowUpdate>) {
+        let windows = self.order.borrow().clone();
+        for id in windows {
+            let Some(w) = self.handle(id).filter(Window::can_prepare) else { continue };
+            if let Some(WindowUpdate::Ready(revision)) = prepared.get(&id)
+                && !self.rt.has_pending()
+                && !self.has_window_requests()
+                && w.preparation_is_current(*revision)
+            {
+                w.enter(|| w.commit_frame());
+            } else {
+                w.w.settled_revision.set(None);
+            }
+            w.w.kernel.borrow_mut().set_instant(false);
+        }
     }
 
     pub(super) fn has_window_requests(&self) -> bool {
@@ -104,6 +115,55 @@ impl AppState {
 impl Window {
     pub(super) fn can_prepare(&self) -> bool {
         !self.is_closed() && self.w.root_scope.get().is_some()
+    }
+
+    fn revision(&self) -> WindowRevision {
+        let k = self.w.kernel.borrow();
+        let (width, height) = self.size();
+        WindowRevision {
+            mutation: k.mutation_generation(),
+            paint: k.paint_generation(),
+            time: k.time().to_bits(),
+            viewport: [width.to_bits(), height.to_bits(), self.w.scale.get().to_bits()],
+        }
+    }
+
+    fn preparation_is_current(&self, revision: WindowRevision) -> bool {
+        let i = self.w.interaction.borrow();
+        !self.w.rebuild_pending.get()
+            && i.after_update.is_empty()
+            && i.focus_request.is_none()
+            && i.reveal.is_none()
+            && i.reveal_request.is_none()
+            && !i.refresh_hover
+            && self.revision() == revision
+    }
+
+    fn needs_preparation(&self, prepared: Option<&WindowUpdate>) -> bool {
+        self.can_prepare()
+            && match prepared {
+                None => true,
+                Some(WindowUpdate::Ready(revision)) => !self.preparation_is_current(*revision),
+                Some(WindowUpdate::Incomplete) => false,
+            }
+    }
+
+    /// Whether this window can be observed using its current, fully prepared state.
+    /// Waiting for a timer or external result does not invalidate a committed view.
+    pub fn frame_is_settled(&self) -> bool {
+        self.can_prepare()
+            && !self.app.shutdown.get()
+            && !self.app.failed.get()
+            && !self.app.rt.has_pending()
+            && self.w.settled_revision.get().is_some_and(|revision| self.preparation_is_current(revision))
+    }
+
+    fn commit_frame(&self) {
+        self.sync_native();
+        let revision = self.revision();
+        self.present();
+        // Only mark the sampled revision. A host callback may itself invalidate it.
+        self.w.settled_revision.set(Some(revision));
     }
 
     pub(super) fn mount_root(&self) {
@@ -139,25 +199,27 @@ impl Window {
         self.app.frame(Some(self.w.id), std::panic::Location::caller());
     }
 
-    /// One window's part of a frame: tasks, layout, native views, text input, focus and hover.
+    /// Prepares layout and interaction before the App may publish the window.
     pub(super) fn settle_window(&self, at: &'static std::panic::Location<'static>) -> WindowUpdate {
-        let result = self.prepare_window(at);
+        let result = self.prepare_window(at).map(|()| self.revision());
         if self.w.rebuild_pending.replace(false) {
             self.w.kernel.borrow_mut().set_quiet(false);
+            // Retiring a value can reenter and rebuild the window again. The App compares
+            // the sampled revision with the resulting tree before it uses this candidate.
             self.app.rt.settle_named_state(Owner(self.w.id.number()));
         }
         match result {
-            Ok(generation) => WindowUpdate::Ready(generation),
+            Ok(revision) => WindowUpdate::Ready(revision),
             Err(()) => {
-                // Movement from an incomplete input frame must not be replayed later.
+                // Continuations of an incomplete input frame must not be replayed later.
                 self.w.interaction.borrow_mut().after_update.retain(|work| matches!(work, AfterUpdate::Command(..)));
-                self.w.settled_generation.set(None);
+                self.w.settled_revision.set(None);
                 WindowUpdate::Incomplete
             }
         }
     }
 
-    fn prepare_window(&self, at: &'static std::panic::Location<'static>) -> Result<u64, ()> {
+    fn prepare_window(&self, at: &'static std::panic::Location<'static>) -> Result<(), ()> {
         // Tasks woken (or spawned) by what just happened run to their next wait first; what they
         // change is laid out with the rest. They may wake or spawn more, so repeat (bounded).
         let mut update_ran = false;
@@ -165,15 +227,10 @@ impl Window {
         for _ in 0..16 {
             if self.app.shutdown.get() || self.w.closed.get() {
                 self.w.interaction.borrow_mut().after_update.clear();
-                return Ok(self.w.kernel.borrow().mutation_generation());
+                return Err(());
             }
             self.app.sched.run_ready();
-            self.settle_layout(at)?;
-            // Modals that opened or closed move focus (which restyles).
-            if self.sync_modals() {
-                self.settle_layout(at)?;
-            }
-            if self.settle_requested_focus(at)? || self.reconcile_focus() {
+            if self.prepare_interaction(at)? {
                 // Focus callbacks can change visibility, open a modal or close the window.
                 // Let those changes land before any queued command sees its focus path.
                 update_ran = false;
@@ -184,31 +241,26 @@ impl Window {
             let work = self.w.interaction.borrow_mut().after_update.pop_front();
             update_ran = match work {
                 Some(AfterUpdate::Command(command, source)) => self.run_after_update_command(&command, source),
+                Some(AfterUpdate::FocusActivation { node, group }) => self.activate_focused_member(node, group),
                 Some(AfterUpdate::TouchScroll(delta)) => self.apply_touch_scroll(delta, at)?,
                 None => false,
             };
-            if !update_ran
-                && (!self.app.sched.has_ready() || self.app.sched.yielded())
-                && self.w.interaction.borrow().after_update.is_empty()
-            {
+            let queue_empty = self.w.interaction.borrow().after_update.is_empty();
+            if !update_ran && (!self.app.sched.has_ready() || self.app.sched.yielded()) && queue_empty && !self.prepare_observation() {
                 prepared = true;
                 break;
             }
         }
         // The last operation may have changed state even when it queued no successor.
         if update_ran {
-            self.settle_layout(at)?;
-            if self.sync_modals() {
-                self.settle_layout(at)?;
-            }
             // Focus callbacks need another full preparation pass before their changes can be
             // published. The exhausted budget cannot prove that work settled here.
-            prepared = !(self.settle_requested_focus(at)? || self.reconcile_focus());
+            prepared = !self.prepare_interaction(at)? && !self.prepare_observation();
         }
         let pending = std::mem::take(&mut self.w.interaction.borrow_mut().after_update);
         let mut commands = pending.iter().filter_map(|work| match work {
             AfterUpdate::Command(command, source) => Some((command, source)),
-            AfterUpdate::TouchScroll(_) => None,
+            AfterUpdate::FocusActivation { .. } | AfterUpdate::TouchScroll(_) => None,
         });
         if let Some((command, source)) = commands.next() {
             self.app.rt.diag(
@@ -230,6 +282,32 @@ impl Window {
             );
             return Err(());
         }
+        self.app.assert_usable();
+        self.mark_selection();
+        if self.app.sched.yielded() { Err(()) } else { Ok(()) }
+    }
+
+    fn prepare_interaction(&self, at: &'static std::panic::Location<'static>) -> Result<bool, ()> {
+        self.settle_layout(at)?;
+        if self.sync_modals() {
+            self.settle_layout(at)?;
+            // The new focus can open another modal from its focus callback.
+            let shown = self.w.kernel.borrow().modals();
+            let i = self.w.interaction.borrow();
+            if !i.modals.iter().map(|modal| modal.node).eq(shown) {
+                return Ok(true);
+            }
+        }
+        Ok(self.settle_requested_focus() || self.reconcile_focus())
+    }
+
+    /// Updates that can affect layout need another preparation round before publication.
+    fn prepare_observation(&self) -> bool {
+        let before_motion = self.revision();
+        self.w.kernel.borrow_mut().in_motion();
+        if self.revision() != before_motion {
+            return true;
+        }
         // A caret that moved shows: the scroll containers around its field follow it.
         let reveal = self.w.interaction.borrow_mut().reveal.take();
         if let Some(n) = reveal {
@@ -237,7 +315,7 @@ impl Window {
             if let Some(r) = caret
                 && self.w.kernel.borrow_mut().reveal(n, r)
             {
-                self.settle_layout(at)?;
+                return true;
             }
         }
         // Highlighting an option can reveal it without moving keyboard focus from its field.
@@ -250,44 +328,29 @@ impl Window {
             });
             drop(k);
             if moved {
-                self.settle_layout(at)?;
+                return true;
             }
         }
-        self.app.assert_usable();
-        self.sync_native();
-        self.present();
-        let generation = self.w.kernel.borrow().mutation_generation();
-        self.w.settled_generation.set(Some(generation));
-        // An `instant` transaction covers the frame it was made in.
-        self.w.kernel.borrow_mut().set_instant(false);
-        // What is on its way out can no longer be focused or hovered.
-        let (focused, hovered) = {
-            let i = self.w.interaction.borrow();
-            (i.focused, i.hovered)
-        };
-        let gone = |n: Option<NodeId>| n.is_some_and(|n| !self.w.kernel.borrow().is_shown(n));
-        if gone(focused) {
-            self.reconcile_focus();
-        }
         // What leaves the tree lets go of hover at once (even while hover holds still).
-        if gone(hovered) {
+        let hovered = self.w.interaction.borrow().hovered;
+        if hovered.is_some_and(|n| !self.w.kernel.borrow().is_shown(n)) {
             self.set_hover(None);
+            return true;
         }
-        if self.app.sched.yielded() { Err(()) } else { Ok(generation) }
+        let refresh_hover = std::mem::take(&mut self.w.interaction.borrow_mut().refresh_hover);
+        refresh_hover && self.refresh_hover()
     }
 
-    fn settle_requested_focus(&self, at: &'static std::panic::Location<'static>) -> Result<bool, ()> {
+    fn settle_requested_focus(&self) -> bool {
         let request = self.w.interaction.borrow_mut().focus_request.take();
         if let Some(id) = request {
             let node = self.w.kernel.borrow().find(&id);
-            if let Some(node) = node
-                && self.set_focus(Some(node)).is_ok()
-            {
-                self.settle_layout(at)?;
+            if let Some(node) = node {
+                let _ = self.set_focus(Some(node));
             }
-            return Ok(true);
+            return true;
         }
-        Ok(false)
+        false
     }
 
     pub(super) fn settle_layout(&self, at: &'static std::panic::Location<'static>) -> Result<(), ()> {

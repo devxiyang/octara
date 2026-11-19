@@ -12,11 +12,12 @@ mod structure;
 mod style;
 
 pub use crate::kernel::Component;
+pub use crate::kernel::FocusGroup;
 pub use crate::kernel::rich::{Rich, Span, rich};
 pub use behavior::Behavior;
 pub(crate) use element::build_el;
 pub use element::{
-    El, IntoProp, IntoText, Prop, TextContent, TextInput, canvas, col, el, icon, image, native_view, row, spacer, text, text_input,
+    El, IntoProp, IntoText, Prop, TextContent, TextInput, canvas, col, el, icon, image, input, native_view, row, spacer, text, textarea,
     web_view,
 };
 pub use list::{IntoRows, each, virtual_each};

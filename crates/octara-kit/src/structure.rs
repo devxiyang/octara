@@ -51,17 +51,19 @@ pub fn collapsible<V: IntoView>(id: &str, open: impl Model<bool>, header: impl I
         .child(show(move || shown.get(), move || col().id(content_id.clone()).child(content())))
 }
 
-/// A list of rows (`list_item`s, `list_header`s between groups): a `ListBox` whose arrow keys
-/// move between its items. Make it scroll with `overflow_y_scroll`, give it `each` or
-/// `virtual_each` children.
+/// A `ListBox` of `list_item`s with optional `list_header`s between groups. Up and Down move
+/// focus between enabled items and stop at the ends. Home and End focus the first and last
+/// enabled items. Make it scroll with `overflow_y_scroll`, and give it `each` or `virtual_each`
+/// children.
 #[ui]
 #[track_caller]
 pub fn list() -> El {
-    col().role(Role::ListBox).focus_group().gap_0p5()
+    col().role(Role::ListBox).focus_group(FocusGroup::vertical()).gap_0p5()
 }
 
 /// A row of a `list` showing `content`: hovered, focused and selected looks. Chain
 /// `.selected(..)`, `.on_press(..)` (select it), `.on_secondary_press(..)` (its context menu).
+/// Use `.focus_preferred(..)` to mark a preferred Tab entry for the list.
 #[ui]
 #[track_caller]
 pub fn list_item(content: impl IntoView) -> El {

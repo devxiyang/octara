@@ -139,7 +139,7 @@ fn scrolling_an_option_into_view_waits_for_mount_and_preserves_input_focus() {
         let open = state("open", || false);
         col()
             .size_full()
-            .child(text_input().id("search").on_key(move |key| {
+            .child(input().id("search").on_key(move |key| {
                 if key.key != Key::Down {
                     return false;
                 }

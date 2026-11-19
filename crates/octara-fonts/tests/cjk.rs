@@ -25,7 +25,7 @@ fn view() -> View {
     col()
         .child(text("Hello 你好，世界。ひらがな カタカナ").id("mixed"))
         .child(text("加粗的标题").id("bold").font_semibold())
-        .child(text_input().id("field").w(px(240.0)).value("输入框").on_input(|_| {}))
+        .child(input().id("field").w(px(240.0)).value("输入框").on_input(|_| {}))
         .into()
 }
 

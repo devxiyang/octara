@@ -156,13 +156,15 @@ assert_eq!(window.kernel().text_of("saved").as_deref(), Some("saved 1"));
 
 在按钮的 `.disabled(move || !window.command_enabled("edit.undo"))` 绑定中，可用性会随焦点和编辑历史更新。Inspector 快照的 `commands` 也来自当前窗口。检查命令执行后的文本与业务状态，可以区分已投递的编辑请求和应用接受的结果。
 
-编辑回调收到当前提议。下面的行内重命名用 `.on_input(...)` 更新草稿，用 `.on_submit(...)` 保存。Kit 的 `text_field(model)` 已绑定模型，应用可以在同一节点追加回调。系统输入法验收使用原生窗口和系统键盘。
+`input()` 创建单行编辑器，`textarea()` 创建多行编辑器。两者都返回 `TextInput`，可以链式设置名称、提示和回调。单行编辑器用 Enter 提交。多行编辑器默认用 Enter 换行，用 `mod+enter` 提交。可以用 `.rows(min, max)` 设置多行编辑器自动增长的范围，超出后在内部滚动。调用 `.submit_on_enter()` 后，Enter 提交，Shift+Enter 换行。
 
-`text_input()` 和 Kit 的 `text_field(model)`、`number_field(...)` 都返回 `TextInput`。直接链式配置 `.id(...)`、`.rows(...)` 或 `.on_submit(...)`。建议列表 `popup_list` 接受这个编辑器类型，`field` 也可为复选框等其他单节点控件提供标签。`TextInput::value` 绑定应用接受的正文，普通选择器通过 `El::a11y_value` 报告选中项名称。
+Kit 的 `text_field(model)` 和 `text_area(model)` 分别创建绑定模型的单行和多行编辑器，应用可以在同一节点追加回调。`number_field(...)` 也返回 `TextInput`。建议列表 `popup_list` 接受这个编辑器类型，`field` 也可为复选框等其他单节点控件提供标签。`TextInput::value` 绑定应用接受的正文，普通选择器通过 `El::a11y_value` 报告选中项名称。
 
-用 `octara vocab text_field` 查 Kit 构造器，查宿主读取聚焦字段的接口时用 `octara vocab Window::text_field`。
+用 `octara vocab text_field` 或 `octara vocab text_area` 查 Kit 构造器，查宿主读取聚焦字段的接口时用 `octara vocab Window::text_field`。
 
 `select(id, label, value, options)` 和 `combobox(id, label, value, options)` 共用 `Choice`。例如 `Choice::new("dark", "Dark theme")` 将稳定的选项 ID 和显示文案分开。用 `Option<String>` 保存选中 ID，选项闭包可以随着应用数据更新。直接选择器让列表持有焦点，搜索选择器让搜索框持有焦点。
+
+编辑回调收到当前提议。下面的行内重命名用 `.on_input(...)` 更新草稿，用 `.on_submit(...)` 保存。系统输入法验收使用原生窗口和系统键盘。
 
 ```rust
 use octara::prelude::*;
@@ -171,7 +173,7 @@ let mut window = Window::headless(|| {
     let draft = state("draft", || "Untitled".to_owned());
     let saved = state("saved", String::new);
     col()
-        .child(text_input().id("name").label("File name").w(200).value(draft)
+        .child(input().id("name").label("File name").w(200).value(draft)
             .on_input(move |text| draft.set(text))
             .on_submit(move || saved.set(draft.get())))
         .child(text(saved).id("saved-name"))

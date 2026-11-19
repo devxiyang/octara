@@ -72,7 +72,7 @@ fn virtual_row(key: u32, model: Model) -> El {
         .px_3()
         .child(text(format!("Row {key}")).w(100.0))
         .child(
-            text_input()
+            input()
                 .id(format!("virtual-editor-{key}"))
                 .label(format!("Virtual editor {key}"))
                 .w(300.0)

@@ -474,7 +474,7 @@ mod tests {
 
         let mut window = Window::headless(|| {
             let value = state("value", || "a".to_owned());
-            text_input().id("field").value(value).on_input(move |text| value.set(text))
+            input().id("field").value(value).on_input(move |text| value.set(text))
         });
         window.tap("field").unwrap();
         window.set_selection(1, 1);
@@ -506,7 +506,7 @@ mod tests {
         for fail_in_binding in [false, true] {
             let mut window = Window::headless(move || {
                 let value = state("value", || "before".to_owned());
-                text_input()
+                input()
                     .id("field")
                     .value(move || {
                         let value = value.get();

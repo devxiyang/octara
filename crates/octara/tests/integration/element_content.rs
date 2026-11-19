@@ -23,7 +23,8 @@ fn atomic_content_rejects_application_children_before_conversion_or_iteration() 
     let atomic = || {
         vec![
             text("Text"),
-            text_input().into(),
+            input().into(),
+            textarea().into(),
             image(&picture),
             icon(Icon::stroked("empty", &[])),
             canvas(|_| panic!("rejected canvas must not draw")),
@@ -49,6 +50,12 @@ fn specialized_configuration_requires_matching_content() {
     rejected("on_native", || el().on_native(|_| {}));
     rejected("stroke_width", || el().stroke_width(1.0));
     rejected("object_fit", || el().object_fit(ObjectFit::Cover));
+}
+
+#[test]
+fn single_line_input_rejects_multiline_configuration() {
+    rejected("rows", || input().rows(2, 4).into());
+    rejected("submit_on_enter", || input().submit_on_enter().into());
 }
 
 #[test]

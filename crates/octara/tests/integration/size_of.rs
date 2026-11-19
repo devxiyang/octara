@@ -1,6 +1,7 @@
 //! Element sizes as a reactive source (Rune's `layout_with`).
 
 use octara::app::Event;
+use octara::inspect::{self, Request};
 use octara::platform::{HeadlessPlatform, WindowOptions};
 use octara::prelude::*;
 
@@ -51,12 +52,23 @@ fn a_size_that_feeds_back_into_itself_stays_pending_until_input_stops_it() {
     for _ in 0..3 {
         assert!(!window.unsettled().is_empty());
         assert_eq!(app.next_deadline(), None, "suspended feedback must not schedule an immediate retry");
+        let reply = inspect::handle(&mut window, Request::Inspect);
+        assert!(!reply.ok, "{reply:?}");
+        assert_eq!(reply.code.as_deref(), Some("NOT_SETTLED"));
+        assert!(reply.snapshot.is_none(), "{reply:?}");
+        let diagnostic = window.inspect();
+        assert!(diagnostic.pending > 0);
+        assert!(diagnostic.find("stop").is_some());
     }
     assert_eq!(app.work().closures_run, 0, "pending queries must not retry suspended layout");
     assert_eq!(app.diagnostic_counts(), diagnostics);
     assert_eq!(window.frames_presented(), frames);
 
-    let reply = octara::inspect::handle(&mut window, octara::inspect::Request::Settle { limit_ms: Some(0) });
+    let reply = inspect::handle(&mut window, Request::Tap { id: Some("stop".into()) });
+    assert_eq!(reply.code.as_deref(), Some("NOT_SETTLED"));
+    assert_eq!(reply.delivery, Some(inspect::Delivery::Refused));
+
+    let reply = inspect::handle(&mut window, Request::Settle { limit_ms: Some(0) });
     assert!(!reply.ok, "Inspector settlement must fail while layout feedback is unfinished");
     assert_eq!(reply.code.as_deref(), Some("STEP_FAILED"));
     assert_eq!(window.frames_presented(), frames, "a settlement attempt must not present unfinished layout");
@@ -68,7 +80,11 @@ fn a_size_that_feeds_back_into_itself_stays_pending_until_input_stops_it() {
     assert_eq!(window.kernel().text_of("measured").as_deref(), Some("40"));
     assert!(window.layout_issues().is_empty(), "{:?}", window.layout_issues());
     assert!(window.frames_presented() > frames);
-    let reply = octara::inspect::handle(&mut window, octara::inspect::Request::Settle { limit_ms: Some(0) });
+    let reply = inspect::handle(&mut window, Request::Inspect);
+    assert!(reply.ok, "{reply:?}");
+    let snapshot = reply.snapshot.unwrap();
+    assert_eq!(snapshot.find("measured").unwrap().name.as_deref(), Some("40"));
+    let reply = inspect::handle(&mut window, Request::Settle { limit_ms: Some(0) });
     assert!(reply.ok, "{:?}", reply.message);
     app.shutdown();
 }

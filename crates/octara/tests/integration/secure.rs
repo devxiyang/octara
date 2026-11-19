@@ -16,7 +16,7 @@ fn app(platform: TargetPlatform) -> Window {
         let show = state("show", || false);
         col()
             .child(
-                text_input()
+                input()
                     .id("pw")
                     .label("Password")
                     .secure()

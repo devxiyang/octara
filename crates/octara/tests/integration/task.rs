@@ -275,7 +275,7 @@ fn search_app() -> Window {
             .child(text(move || if found.with(AsyncState::is_pending) { "loading" } else { "idle" }.to_string()).id("loading"))
             .child(text(move || found.with(|s| s.error().cloned()).unwrap_or_default()).id("error"))
             .child(el().id("refresh").w(px(10.0)).h(px(10.0)).on_press(move || found.refresh()))
-            .child(text_input().id("q").w(px(100.0)).value(move || query.get()).on_input(move |v| query.set(v)))
+            .child(input().id("q").w(px(100.0)).value(move || query.get()).on_input(move |v| query.set(v)))
     })
 }
 

@@ -204,3 +204,46 @@ fn a_command_only_cutoff_still_discards_the_queue_and_finishes_its_frame() {
     assert!(window.unsettled().is_empty());
     window.app().shutdown();
 }
+#[test]
+fn a_modal_opened_by_a_focus_callback_precedes_deferred_commands() {
+    let handled = Rc::new(Cell::new(""));
+    let recorded = handled.clone();
+    let mut window = Window::headless(move || {
+        let outer = state("outer", || false);
+        let inner = state("inner", || false);
+        let recorded = recorded.clone();
+        col()
+            .child(el().id("open").size_8().on_press(move || {
+                outer.set(true);
+                invoke_after_update("probe");
+            }))
+            .child(show(
+                move || outer.get(),
+                move || {
+                    let outer_handler = recorded.clone();
+                    let inner_handler = recorded.clone();
+                    col()
+                        .modal(false, || {})
+                        .on_command("probe", move || outer_handler.set("outer"))
+                        .child(el().id("outer-first").size_8().focusable().on_focus(move || inner.set(true)))
+                        .child(show(
+                            move || inner.get(),
+                            move || {
+                                let inner_handler = inner_handler.clone();
+                                col()
+                                    .modal(false, || {})
+                                    .on_command("probe", move || inner_handler.set("inner"))
+                                    .child(el().id("inner-first").size_8().focusable())
+                            },
+                        ))
+                },
+            ))
+    });
+
+    let frames = window.frames_presented();
+    window.dispatch(Event::Press("open".into())).unwrap();
+    assert_eq!(handled.get(), "inner");
+    assert_eq!(window.inspect().focus.as_deref(), Some("inner-first"));
+    assert_eq!(window.frames_presented(), frames + 1);
+    assert!(window.frame_is_settled());
+}

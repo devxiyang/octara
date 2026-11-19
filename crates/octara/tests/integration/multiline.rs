@@ -22,10 +22,9 @@ fn app(initial: &'static str, width: f32) -> Window {
             .size_full()
             .items_start()
             .child(
-                text_input()
+                textarea()
                     .id("area")
                     .label("Notes")
-                    .multiline()
                     .text_size(px(16.0))
                     .line_height(px(24.0))
                     .w(px(width))
@@ -145,7 +144,7 @@ fn rows_app(chat: bool) -> Window {
     let mut app = mono_window(move || {
         let v = state("v", String::new);
         let sent = state("sent", || 0u32);
-        let field = text_input()
+        let field = textarea()
             .id("area")
             .label("Notes")
             .text_size(px(16.0))
@@ -198,14 +197,7 @@ fn a_growing_field_keeps_its_caret_in_view_in_a_scroll_container() {
             .overflow_y_scroll()
             .child(el().h(px(60.0)))
             .child(
-                text_input()
-                    .id("area")
-                    .label("Notes")
-                    .multiline()
-                    .line_height(px(24.0))
-                    .w(px(200.0))
-                    .value(move || v.get())
-                    .on_input(move |s| v.set(s)),
+                textarea().id("area").label("Notes").line_height(px(24.0)).w(px(200.0)).value(move || v.get()).on_input(move |s| v.set(s)),
             )
             .into()
     });

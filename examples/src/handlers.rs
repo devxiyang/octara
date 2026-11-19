@@ -36,7 +36,7 @@ pub fn view() -> View {
             || vec![PopupItem::new("one", "One"), PopupItem::new("two", "Two")],
             move |id| chosen.set(id),
         ))
-        .child(text_input().id("other").label("Other field").h(44).value("Move focus here"))
+        .child(input().id("other").label("Other field").h(44).value("Move focus here"))
         .into()
 }
 
@@ -91,7 +91,7 @@ pub fn bindings() -> View {
         )
         .child(text(move || format!("Raw: {}", raw.get())).id("raw"))
         .child(text(move || seen.get()).id("observed"))
-        .child(text_input().id("outside").label("Other field").h(44).value("Move focus here"))
+        .child(input().id("outside").label("Other field").h(44).value("Move focus here"))
         .child(
             row()
                 .gap_4()
@@ -100,7 +100,7 @@ pub fn bindings() -> View {
                     popup,
                     Placement::BELOW,
                     button("Details").on_press(move || seen.set(format!("popup:{}", popup.get()))),
-                    || text_input().id("details-input").label("Details").value("Popup draft").w(200).autofocus(),
+                    || input().id("details-input").label("Details").value("Popup draft").w(200).autofocus(),
                 ))
                 .child(
                     menu_button("actions", "Actions", menu, || Menu::new("Actions").item(MenuItem::action("Choose", "bindings.choose")))

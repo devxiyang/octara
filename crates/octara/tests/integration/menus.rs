@@ -98,6 +98,59 @@ fn a_prompt_answers_and_escape_dismisses_it() {
     assert_eq!(got(&w), "prompt None");
 }
 
+#[test]
+fn a_drawn_prompt_opens_in_front_of_an_application_overlay() {
+    let mut w = Window::headless(|| {
+        let open = state("open", || false);
+        let got = state("got", String::new);
+        col()
+            .size_full()
+            .child(el().id("open").size_8().focusable().label("Open dialog").on_press(move || open.set(true)))
+            .child(show(
+                move || open.get(),
+                move || {
+                    el().absolute().size(0.0).a11y_hidden().overlay_window(
+                        || true,
+                        move || {
+                            col()
+                                .id("app-dialog")
+                                .size_full()
+                                .role(Role::Dialog)
+                                .label("Application dialog")
+                                .bg(Token::Surface)
+                                .modal(true, move || open.set(false))
+                                .child(el().id("ask-in-dialog").size_8().focusable().label("Ask").on_press(move || {
+                                    spawn(async move {
+                                        let picked = prompt(PromptLevel::Warning, "Discard changes?", None, &["Cancel", "Discard"]).await;
+                                        got.set(format!("prompt {picked:?}"));
+                                    });
+                                }))
+                        },
+                    )
+                },
+            ))
+            .child(text(got).id("got"))
+    });
+
+    w.tap("open").unwrap();
+    w.tap("ask-in-dialog").unwrap();
+    assert_eq!(w.inspect().focus.as_deref(), Some("prompt:1"));
+    assert!(w.tap("ask-in-dialog").is_err());
+    w.tap("prompt:1").unwrap();
+    assert_eq!(got(&w), "prompt Some(1)");
+    assert!(w.asks().is_empty());
+    assert_eq!(w.inspect().focus.as_deref(), Some("ask-in-dialog"));
+
+    w.tap("ask-in-dialog").unwrap();
+    w.press_key("escape").unwrap();
+    assert_eq!(got(&w), "prompt None");
+    assert!(w.kernel().exists("app-dialog"));
+    assert_eq!(w.inspect().focus.as_deref(), Some("ask-in-dialog"));
+    w.press_key("escape").unwrap();
+    assert!(!w.kernel().exists("app-dialog"));
+    assert_eq!(w.inspect().focus.as_deref(), Some("open"));
+}
+
 fn menus_shown(w: &Window) -> Vec<Menu> {
     let app = w.app();
     let p = app.platform();
@@ -118,7 +171,7 @@ fn the_menu_bar_follows_what_the_active_window_handles() {
         let saved = state("saved", || 0);
         col()
             .on_command("file.save", move || saved.update(|n| *n += 1))
-            .child(text_input().id("f").value("hello"))
+            .child(input().id("f").value("hello"))
             .child(text(move || saved.get().to_string()).id("saved"))
     });
     w.app().run(|| set_menus([Menu::new("File").item(MenuItem::action("Save", "file.save")), Menu::edit()]));
@@ -168,7 +221,7 @@ fn undo_uses_the_window_history_for_menu_toolbar_and_inspector() {
     fn document() -> El {
         let draft = state("draft", || "Draft".to_owned());
         let window = App::current().window(current_window()).unwrap();
-        col().child(text_input().id("editor").label("Draft").value(draft).on_input(move |text| draft.set(text))).child(
+        col().child(input().id("editor").label("Draft").value(draft).on_input(move |text| draft.set(text))).child(
             el().id("undo")
                 .size_12()
                 .label("Undo")

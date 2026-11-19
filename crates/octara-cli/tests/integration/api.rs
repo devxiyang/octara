@@ -57,7 +57,8 @@ fn host_and_extension_apis_require_explicit_imports() {
         "El",
         "View",
         "TextInput",
-        "text_input",
+        "input",
+        "textarea",
         "IntoView",
         "each",
         "focus",
@@ -67,13 +68,24 @@ fn host_and_extension_apis_require_explicit_imports() {
 }
 
 #[test]
-fn vocab_prefers_a_bare_constructor_and_resolves_the_qualified_host_method() {
+fn vocab_finds_editor_constructors_and_resolves_the_qualified_host_method() {
     let catalog = Catalog::build(api::load());
-    let bare = catalog.lookup("text_field");
-    assert_eq!(bare.matches.first().map(|entry| entry.path.as_str()), Some("octara_kit::text_field"));
-    assert!(bare.matches.iter().any(|entry| entry.path == "octara::app::Window::text_field"));
+    for (name, path) in [
+        ("input", "octara::view::input"),
+        ("textarea", "octara::view::textarea"),
+        ("text_field", "octara_kit::text_field"),
+        ("text_area", "octara_kit::text_area"),
+    ] {
+        let found = catalog.lookup(name);
+        let constructor = found.matches.first().unwrap_or_else(|| panic!("vocab finds {name}"));
+        assert_eq!(constructor.path, path);
+        assert!(constructor.sig.ends_with("-> TextInput"), "{}", constructor.sig);
+    }
+    assert!(catalog.lookup("text_field").matches.iter().any(|entry| entry.path == "octara::app::Window::text_field"));
     let host = catalog.lookup("Window::text_field");
     assert_eq!(host.matches.first().map(|entry| entry.path.as_str()), Some("octara::app::Window::text_field"));
+    assert!(catalog.get("octara::view::text_input").is_none());
+    assert!(catalog.get("octara::view::TextInput::multiline").is_none());
 }
 
 #[test]

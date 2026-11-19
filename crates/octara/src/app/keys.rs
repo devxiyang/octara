@@ -10,7 +10,7 @@
 
 use super::pointer::Modifiers;
 use super::{App, Handler, Modality, TargetPlatform, Window};
-use crate::kernel::{HandlerKind, NodeId, State};
+use crate::kernel::{HandlerKind, NodeId};
 use crate::reactive::graph::{Operation, Runtime};
 use std::fmt;
 use std::panic::Location;
@@ -446,24 +446,23 @@ impl App {
 }
 
 impl Window {
-    /// The focus path, innermost first: from the focused element (else the open modal, else
-    /// the app's root element) up to the window.
+    /// The logical focus path, innermost first, ending at the active modal or the window.
     pub(super) fn focus_path(&self) -> Vec<NodeId> {
         let k = self.w.kernel.borrow();
         let modal = self.top_modal();
-        let start = self
-            .w
-            .interaction
-            .borrow()
-            .focused
-            .filter(|n| k.check_activation(*n, modal).is_ok())
-            .or(modal)
-            .or_else(|| k.children(k.root()).first().copied());
+        let focused = self.w.interaction.borrow().focused.filter(|&n| k.check_activation(n, modal).is_ok());
+        let fallback = || modal.or_else(|| k.children(k.root()).first().copied()).filter(|&n| k.is_shown(n));
         let mut path = Vec::new();
-        let mut n = start;
+        let mut n = focused.or_else(fallback);
         while let Some(id) = n {
+            if !k.is_mounted(id) || path.contains(&id) {
+                break;
+            }
             path.push(id);
-            n = k.parent(id);
+            if Some(id) == modal {
+                break;
+            }
+            n = k.interaction_parent(id);
         }
         path
     }
@@ -475,7 +474,7 @@ impl Window {
         let platform = self.app.platform.get();
         // Depth of each context on the path (the window is depth 0).
         let depth_of = |ctx: &str| -> Option<usize> {
-            path.iter().enumerate().find(|(_, id)| k.key_context(**id) == Some(ctx)).map(|(i, _)| path.len() - i)
+            path.iter().enumerate().find(|(_, id)| k.key_context(**id) == Some(ctx) && k.is_shown(**id)).map(|(i, _)| path.len() - i)
         };
         let keymap = self.app.effective_keymap();
         let found = |key: Key| -> Vec<(usize, usize, Option<String>)> {
@@ -569,10 +568,12 @@ impl Window {
         for &n in &path {
             let handler = {
                 let k = self.w.kernel.borrow();
-                if !k.is_alive(n) || k.state(n).contains(State::DISABLED) {
+                if !k.is_alive(n) {
                     continue;
                 }
-                k.handler(n, HandlerKind::Key).and_then(|h| self.w.handlers.borrow().get(&h.0).cloned())
+                k.handler(n, HandlerKind::Key)
+                    .filter(|_| k.check_activation(n, self.top_modal()).is_ok())
+                    .and_then(|h| self.w.handlers.borrow().get(&h.0).cloned())
             };
             if let Some(handler) = handler {
                 let took = handler

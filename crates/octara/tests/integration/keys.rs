@@ -29,9 +29,7 @@ fn view() -> View {
                         .on_press(move || push("press"))
                         .on_secondary_press(move || push("menu")),
                 )
-                .child(
-                    text_input().id("field").value(move || field.get()).on_input(move |v| field.set(v)).on_submit(move || push("submit")),
-                ),
+                .child(input().id("field").value(move || field.get()).on_input(move |v| field.set(v)).on_submit(move || push("submit"))),
         )
         .child(el().id("outside").w(px(80.0)).h(px(24.0)).focusable().on_key(move |k| {
             if k.key == Key::Char('x') {
@@ -287,7 +285,7 @@ fn enter_submits_a_field_and_presses_one_without_on_submit() {
             .behavior(|behavior| behavior.on_submit(|| panic!("the wrapper is not a submit target")))
             .child(text(move || log.get().join(",")).id("log"))
             .child(
-                text_input()
+                input()
                     .id("search")
                     .w(px(200.0))
                     .value("")
@@ -295,7 +293,7 @@ fn enter_submits_a_field_and_presses_one_without_on_submit() {
                     .on_submit(move || push("submit"))
                     .on_press(move || push("press")),
             )
-            .child(text_input().id("plain").w(px(200.0)).value("").on_input(|_| {}).on_press(move || push("plain-press")))
+            .child(input().id("plain").w(px(200.0)).value("").on_input(|_| {}).on_press(move || push("plain-press")))
     });
     // A click presses a field like any element; Enter submits it.
     app.tap("search").unwrap();
@@ -319,7 +317,7 @@ fn submission_waits_for_the_focused_edit_to_settle_across_input_routes() {
         let saved = state("saved", String::new);
         col()
             .child(
-                text_input()
+                input()
                     .id("editor")
                     .label("Name")
                     .value(draft)

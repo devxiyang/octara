@@ -178,6 +178,9 @@ impl Window {
     /// snapshot of each visible native view and accepts its response until `deadline`.
     pub fn capture_begin(&mut self, deadline: Instant) -> Result<CaptureId, String> {
         self.check_running()?;
+        if !self.frame_is_settled() {
+            return Err(format!("[{}] window preparation is incomplete", codes::NOT_SETTLED));
+        }
         self.w.capturing.borrow_mut().take();
         let id = CaptureId::new();
         let placements = self.w.kernel.borrow().native_placements();
@@ -240,6 +243,9 @@ impl Window {
     ) -> Result<Capture, String> {
         let capture = self.w.capturing.borrow_mut().take_if(|capture| capture.id == id);
         self.check_running()?;
+        if !self.frame_is_settled() {
+            return Err(format!("[{}] window preparation is incomplete", codes::NOT_SETTLED));
+        }
         let mut shots = capture.ok_or_else(|| "the painted capture is no longer active".to_owned())?.shots;
         let k = self.w.kernel.borrow();
         let mut snapshots = FxHashMap::default();
@@ -303,6 +309,9 @@ impl Window {
     ) -> Result<Capture, String> {
         if self.app.failed.get() {
             return Err(format!("[{}] cannot capture a failed App", codes::APP_FAILED));
+        }
+        if !self.frame_is_settled() {
+            return Err(format!("[{}] window preparation is incomplete", codes::NOT_SETTLED));
         }
         picture.save_png(path).map_err(|e| format!("{path}: {e}"))?;
         let placements = self.w.kernel.borrow().native_placements();
@@ -383,7 +392,6 @@ impl Window {
     /// Presents what changed to the window's platform: native view changes, the text input,
     /// whether to draw again (after every settle; nothing when nothing changed).
     pub(super) fn present(&self) {
-        self.mark_selection();
         let text_input = self.focused_input().and_then(|(n, _)| {
             let k = self.w.kernel.borrow();
             let caret = k.caret(n)?;
@@ -400,7 +408,7 @@ impl Window {
         });
         let generation = self.w.kernel.borrow().paint_generation();
         let (picking, picked) = self.picking_frame();
-        let redraw = picking || generation != self.w.presented.get() || self.w.kernel.borrow_mut().in_motion();
+        let redraw = picking || generation != self.w.presented.get() || !self.w.kernel.borrow().at_rest();
         let native = std::mem::take(&mut *self.w.native_changes.borrow_mut());
         let cursor = self.cursor();
         let asks = std::mem::take(&mut *self.w.asks_new.borrow_mut());

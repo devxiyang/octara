@@ -49,7 +49,7 @@ pub fn view() -> View {
                         .on_press(move || hits.update(|n| *n += 1)),
                 )
                 .child(
-                    text_input()
+                    input()
                         .id("field")
                         .label("Input")
                         .h(44)

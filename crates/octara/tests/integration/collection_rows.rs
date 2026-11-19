@@ -21,7 +21,7 @@ fn typed_editor_rows_keep_their_edit_session_when_files_reorder() {
                 let row = move |key: &u32, name: ReadSignal<String>| {
                     let id = *key;
                     let draft = state("draft", || name.get());
-                    text_input()
+                    input()
                         .id(format!("name-{id}"))
                         .label("File name")
                         .value(draft)

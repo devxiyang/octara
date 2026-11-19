@@ -102,15 +102,24 @@ fn later_window_measurements_relayout_an_earlier_window() {
 
 #[test]
 fn later_window_measurements_present_native_props_in_an_earlier_window() {
-    use octara::platform::HeadlessWindow;
-
-    let app = App::new(HeadlessPlatform::default());
+    let (app, host) = recording_app();
     let (width, measured) = app.run(|| (state("width", || 100.0f32), state("measured", || 100.0f32)));
-    let a = app
+    let mut a = app
         .open_window(WindowOptions::new("A"), move || {
-            col().size_full().child(
-                native_view("measurement").id("native").label("Measurement").props(move || serde_json::json!({ "width": measured.get() })),
-            )
+            let caption = state("caption", || "Initial");
+            col()
+                .size_full()
+                .child(
+                    native_view("measurement")
+                        .id("native")
+                        .label("Measurement")
+                        .size_8()
+                        .props(move || serde_json::json!({ "caption": caption.get(), "width": measured.get() })),
+                )
+                .child(el().id("resize").role(Role::Button).label("Resize").size_8().on_press(move || {
+                    caption.set("Updated");
+                    width.set(220.0);
+                }))
         })
         .unwrap();
     let _b = app
@@ -120,11 +129,20 @@ fn later_window_measurements_present_native_props_in_an_earlier_window() {
         })
         .unwrap();
 
-    app.run(|| width.set(220.0));
+    let first_frame = host.borrow().frames.len();
+    a.dispatch(Event::Press("resize".into())).unwrap();
 
-    let host = a.platform_window();
-    let native = &host.as_any().downcast_ref::<HeadlessWindow>().unwrap().native;
-    assert!(matches!(native.last(), Some(NativeChange::Update { props, .. }) if props["width"] == 220.0), "{native:?}");
+    let host = host.borrow();
+    let props: Vec<_> = host.frames[first_frame..]
+        .iter()
+        .filter(|(id, _)| *id == a.id())
+        .flat_map(|(_, frame)| &frame.native)
+        .filter_map(|change| match change {
+            NativeChange::Create { props, .. } | NativeChange::Update { props, .. } => Some(props),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(props, [&serde_json::json!({ "caption": "Updated", "width": 220.0 })]);
     assert!(a.layout_issues().is_empty(), "{:?}", a.layout_issues());
     assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
 }

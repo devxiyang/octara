@@ -110,7 +110,7 @@ pub(super) fn view() -> El {
     let body = body.pt_16();
     body.child(text("Controlled Chinese input").text_xl().font_semibold())
         .child(
-            text_input()
+            input()
                 .id(PRIMARY)
                 .label("Controlled value")
                 .w(320)
@@ -133,7 +133,7 @@ pub(super) fn view() -> El {
                     }
                 }),
         )
-        .child(text_input().id(OTHER).label("Other value").w(320).h(40).px_3().border().value(other).on_input(move |text| other.set(text)))
+        .child(input().id(OTHER).label("Other value").w(320).h(40).px_3().border().value(other).on_input(move |text| other.set(text)))
         .child(text(move || format!("Refreshes {}", refresh.get())).id("ime-control-refreshes"))
         .child(
             text(move || edits.with(|log| format!("Proposals {} · Accepted {} · Last {:?}", log.proposals, log.accepted, log.last)))

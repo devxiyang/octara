@@ -78,8 +78,8 @@ fn scene(caller: Caller, sampled: bool) -> View {
     col()
         .size_full()
         .child(probe)
-        .child(text_input().id("editor").label("Editor").w(160))
-        .child(text_input().id("other").label("Other editor").w(160))
+        .child(input().id("editor").label("Editor").w(160))
+        .child(input().id("other").label("Other editor").w(160))
         .child(
             col()
                 .id("list")
@@ -146,8 +146,8 @@ fn construction_and_initializers_cannot_enqueue_focus_commands_or_instant_motion
             }
             col()
                 .size_full()
-                .child(text_input().id("editor").label("Editor").w(160))
-                .child(text_input().id("other").label("Other editor").w(160))
+                .child(input().id("editor").label("Editor").w(160))
+                .child(input().id("other").label("Other editor").w(160))
                 .child(text(move || calls.get().to_string()).id("calls"))
         });
         assert_eq!(window.inspect().focus, None);

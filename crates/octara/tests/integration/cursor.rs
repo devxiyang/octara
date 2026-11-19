@@ -9,7 +9,7 @@ fn the_pointer_takes_the_look_of_what_it_is_over() {
         col()
             .p_4()
             .gap_4()
-            .child(text_input().id("field").w(200.0).h(30.0))
+            .child(input().id("field").w(200.0).h(30.0))
             .child(col().id("doc").selectable().child(text(rich().text("Read ").link("the docs", "https://x.dev")).id("para")))
             .child(text("Not selectable").id("plain"))
             .child(el().id("handle").size_8().cursor_grab().child(text("grip").id("grip")))
