@@ -483,8 +483,9 @@ pub fn instant<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
-/// Scrolls the scroll container with test id `id` to `(x, y)`: it glides there where its layout
-/// moves (`layout_motion` / `motion`), else jumps. Returns whether there is such a container.
+/// Scrolls the unique viewport with test id `id` to `(x, y)`, gliding where its layout moves
+/// (`layout_motion` / `motion`). The viewport must support each requested nonzero axis.
+/// Returns whether the request was accepted, including when it clamps to the current offset.
 /// Callable from handlers and tasks; construction, initialization and pure computations are
 /// rejected and return `false` without scrolling.
 #[track_caller]
@@ -494,7 +495,7 @@ pub fn scroll_to(id: &str, x: f32, y: f32) -> bool {
     }
     let u = crate::app::window();
     let mut k = u.kernel.borrow_mut();
-    let Some(n) = k.find(id) else { return false };
+    let Some(n) = k.find(id).filter(|&node| k.accepts_scroll(node, x, y)) else { return false };
     k.glide_scroll(n, x, y);
     true
 }
@@ -512,9 +513,9 @@ pub fn scroll_into_view(id: &str) {
     crate::app::window().interaction_request_scroll_into_view(id)
 }
 
-/// Scrolls the scroll container with test id `id` to the end of its content, gliding where its
-/// layout moves, and follows its tail from there if it is set to (`follow_tail`). Returns whether
-/// there is such a container.
+/// Scrolls the unique vertical viewport with test id `id` to its end, keeping its horizontal
+/// position. It glides where its layout moves and follows its tail if set to (`follow_tail`).
+/// Returns whether the request was accepted, including when already at the end.
 /// Callable from handlers and tasks; construction, initialization and pure computations are
 /// rejected and return `false` without scrolling.
 #[track_caller]
@@ -524,9 +525,10 @@ pub fn scroll_to_end(id: &str) -> bool {
     }
     let u = crate::app::window();
     let mut k = u.kernel.borrow_mut();
-    let Some(n) = k.find(id) else { return false };
+    let end = f32::MAX;
+    let Some(n) = k.find(id).filter(|&node| k.accepts_scroll(node, 0.0, end)) else { return false };
     let x = k.scroll_offset(n).0;
-    k.glide_scroll(n, x, f32::MAX);
+    k.glide_scroll(n, x, end);
     true
 }
 
@@ -588,7 +590,7 @@ pub fn bind_keys<'a, C: Into<Option<&'a str>>>(bindings: impl IntoIterator<Item 
 
 /// Moves keyboard focus to the element with test id `id` once this frame is built (GPUI's
 /// `window.focus`): a field after the view that holds it was rebuilt, the composer after "New
-/// chat". It must be focusable and enabled then; otherwise focus stays where it is. Callable
+/// chat". The id must identify one mounted element that is focusable and enabled then. Callable
 /// from handlers and tasks; construction, initialization and pure computations cannot request
 /// focus. Use an element's `autofocus` property for initial focus.
 #[track_caller]

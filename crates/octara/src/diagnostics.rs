@@ -249,6 +249,9 @@ codes! {
     NO_SUCH_ELEMENT: Error, Inspect, "docs/design/agent-knowledge.md#inspector-protocol-and-checks",
         "No element has the test id a request named.",
         cause: "The element is not in the tree now: never given that `.id(..)`, not shown yet, or already removed.";
+    AMBIGUOUS_TARGET: Error, Inspect, "docs/design/agent-knowledge.md#inspector-protocol-and-checks",
+        "More than one mounted element has the requested test id.",
+        cause: "A name must resolve to one mounted element in the requested window. Inspect the tree and pass the chosen node's `target`.";
     STEP_FAILED: Error, Inspect, "docs/design/agent-knowledge.md#inspector-protocol-and-checks",
         "A script step could not be carried out.",
         cause: "The element cannot take that action (nothing handles it, it is disabled), or work did not settle in time.";

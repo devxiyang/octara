@@ -57,6 +57,9 @@ pub enum InputEvent {
     },
     /// A step by test id or by name (press, input, toggle, hover, focus, scroll, send).
     Semantic(Event),
+    /// An already resolved semantic input, recorded against its local allocation.
+    #[doc(hidden)]
+    SemanticAt { node: crate::kernel::NodeId, event: Event },
     /// Starts or ends picking: a person pointing at an element to hand it to an agent (see
     /// [`Window::set_picking`]).
     Picking(bool),
@@ -125,7 +128,8 @@ impl Window {
             InputEvent::Native { id, event } => self.on_native_event(id, event),
             InputEvent::NativeSize { id, width, height } => self.on_native_size(id, width, height),
             InputEvent::NativeSnapshot { request, image } => self.on_native_snapshot(request, image),
-            InputEvent::Semantic(ev) => self.on_semantic(ev).is_ok(),
+            InputEvent::Semantic(ev) => self.on_semantic(ev, None).is_ok(),
+            InputEvent::SemanticAt { node, event } => self.on_semantic(event, Some(node)).is_ok(),
             InputEvent::Picking(on) => {
                 self.on_picking(on);
                 true

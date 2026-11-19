@@ -5,7 +5,6 @@ use octara::app::TargetGuard;
 use octara::app::{InputEvent, Phase, PointerEvent, PointerKind, Window, WindowId};
 use octara::diagnostics as codes;
 use octara::inspect::{Delivery, Reply, Request};
-use octara_primitives::identity::NodeId;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -44,13 +43,11 @@ enum Stage {
 
 pub(crate) struct Job {
     window: WindowId,
-    node: NodeId,
-    target: String,
     point: (f32, f32),
     stage: Stage,
     deadline: Instant,
     delivered: bool,
-    guard: Option<TargetGuard>,
+    guard: TargetGuard,
 }
 
 fn failed(why: impl Into<String>) -> Reply {
@@ -62,28 +59,13 @@ impl Job {
     /// waiting for an earlier click run, so callers must use `delivered` for feedback.
     #[cfg(test)]
     pub(crate) fn start(window: &mut Window, target: &str, kind: Kind, now: Instant) -> Result<Self, Box<Reply>> {
-        Self::start_guarded(window, target, kind, now, None)
+        let line = octara::serde_json::json!({"op": "tap", "id": target}).to_string();
+        let parsed = octara::inspect::parse_guarded_request(window, &line)?;
+        Self::start_guarded(window, kind, now, parsed.guard.expect("a tap has a node target"))
     }
 
-    pub(crate) fn start_guarded(
-        window: &mut Window,
-        target: &str,
-        kind: Kind,
-        now: Instant,
-        guard: Option<TargetGuard>,
-    ) -> Result<Self, Box<Reply>> {
-        if guard.as_ref().is_some_and(|guard| !guard.is_current(window)) {
-            let mut reply = Reply::fail(&codes::STALE_TARGET, "the observed gesture target is no longer current");
-            reply.delivery = Some(Delivery::Refused);
-            return Err(Box::new(reply));
-        }
-        if !window.kernel().exists(target) {
-            return Err(Box::new(Reply::fail(&codes::NO_SUCH_ELEMENT, format!("no element with test id `{target}`"))));
-        }
-        let (node, point) = window.pointer_target(target).map_err(|why| Box::new(failed(why)))?;
-        if window.kernel().state(node).contains(octara::kernel::State::DISABLED) {
-            return Err(Box::new(Reply { delivery: Some(Delivery::Refused), ..failed("the gesture target is disabled") }));
-        }
+    pub(crate) fn start_guarded(window: &mut Window, kind: Kind, now: Instant, guard: TargetGuard) -> Result<Self, Box<Reply>> {
+        let point = octara::inspect::guarded_point(window, &guard, Delivery::Refused)?;
         if let Kind::Drag { dx, dy } = kind
             && (!dx.is_finite() || !dy.is_finite() || !(point.0 + dx).is_finite() || !(point.1 + dy).is_finite())
         {
@@ -91,11 +73,6 @@ impl Job {
                 delivery: Some(Delivery::Refused),
                 ..Reply::fail(&codes::BAD_REQUEST, "drag requires finite dx, dy and endpoint coordinates")
             }));
-        }
-        if guard.as_ref().is_some_and(|guard| guard.node() != Some(node)) {
-            let mut reply = Reply::fail(&codes::STALE_TARGET, "the gesture target differs from the observed node");
-            reply.delivery = Some(Delivery::Refused);
-            return Err(Box::new(reply));
         }
         if window.held_pointer().is_some() {
             return Err(Box::new(failed("the window already has a pointer down")));
@@ -115,16 +92,7 @@ impl Job {
                 "live gesture timing must fit within 30 seconds; double-click timing must be positive and its distance finite and non-negative",
             )));
         }
-        let mut job = Self {
-            window: window.id(),
-            node,
-            target: target.into(),
-            point,
-            stage: Stage::First,
-            deadline: now + MAX_WAIT,
-            delivered: false,
-            guard,
-        };
+        let mut job = Self { window: window.id(), point, stage: Stage::First, deadline: now + MAX_WAIT, delivered: false, guard };
         match kind {
             Kind::DoubleTap => {
                 if window.pointer_click_cooldown().is_zero() {
@@ -144,13 +112,14 @@ impl Job {
                 job.stage = Stage::Drag { pointer, delta: (dx, dy), step: 1, last_wall: now, last_clock: window.app().now() };
                 window.event(InputEvent::Pointer(PointerEvent { id: pointer, ..PointerEvent::mouse(Phase::Move, point.0, point.1) }));
                 job.delivered = true;
-                if let Err(reply) = job.current_point(window) {
-                    job.cancel(window);
-                    return Err(reply);
+                let point = job.current_point(window)?;
+                if !(point.0 + dx).is_finite() || !(point.1 + dy).is_finite() {
+                    return Err(Box::new(job.reply(Reply::fail(&codes::BAD_REQUEST, "drag endpoint must be finite"))));
                 }
                 if window.held_pointer().is_some() {
                     return Err(Box::new(job.reply(failed("another pointer went down before the drag started"))));
                 }
+                job.point = point;
                 window.event(InputEvent::Pointer(PointerEvent { id: pointer, ..PointerEvent::mouse(Phase::Down, point.0, point.1) }));
             }
         }
@@ -193,41 +162,20 @@ impl Job {
     }
 
     fn current_point(&self, window: &Window) -> Result<(f32, f32), Box<Reply>> {
-        if self.guard.as_ref().is_some_and(|guard| !guard.is_current(window)) {
-            return Err(Box::new(self.reply(Reply::fail(&codes::STALE_TARGET, "the observed gesture target is no longer current"))));
-        }
-        if window.id() != self.window || window.is_closed() {
-            return Err(Box::new(self.reply(failed("the target window closed during the gesture"))));
-        }
-        let (node, point) = window.pointer_target(&self.target).map_err(|why| Box::new(self.reply(failed(why))))?;
-        if node != self.node {
-            let code = if self.guard.is_some() { &codes::STALE_TARGET } else { &codes::STEP_FAILED };
-            return Err(Box::new(self.reply(Reply::fail(code, "the gesture target was replaced while waiting"))));
-        }
-        if window.kernel().state(node).contains(octara::kernel::State::DISABLED) {
-            return Err(Box::new(self.reply(failed("the gesture target became disabled"))));
-        }
-        Ok(point)
+        let delivery = if self.delivered { Delivery::Delivered } else { Delivery::Refused };
+        octara::inspect::guarded_point(window, &self.guard, delivery)
     }
 
-    fn click(&mut self, window: &mut Window, point: (f32, f32)) -> Reply {
-        if let Some(guard) = &self.guard {
-            let reply = octara::inspect::handle_guarded(window, Request::Tap { id: self.target.clone() }, Some(guard));
-            self.delivered |= reply.delivery == Some(Delivery::Delivered);
-            self.reply(reply)
-        } else {
-            for phase in [Phase::Move, Phase::Down, Phase::Up] {
-                window.event(InputEvent::Pointer(PointerEvent::mouse(phase, point.0, point.1)));
-            }
-            self.delivered = true;
-            self.reply(Reply::ok())
-        }
+    fn click(&mut self, window: &mut Window) -> Reply {
+        let reply = octara::inspect::handle_guarded(window, Request::Tap { id: None }, Some(&self.guard));
+        self.delivered |= reply.delivery == Some(Delivery::Delivered);
+        self.reply(reply)
     }
 
     fn first_click(&mut self, window: &mut Window, now: Instant) -> Result<(), Box<Reply>> {
         let first_clock = window.app().now();
         let click_sequence = window.pointer_click_sequence().wrapping_add(1);
-        let reply = self.click(window, self.point);
+        let reply = self.click(window);
         if !reply.ok {
             return Err(Box::new(reply));
         }
@@ -297,7 +245,7 @@ impl Job {
                 if distance > tuning.mouse_slop {
                     return Some(self.reply(failed("the target moved beyond the double-click distance after the first click")));
                 }
-                Some(self.click(window, point))
+                Some(self.click(window))
             }
             Stage::Hold { pointer, until } => {
                 if window.held_pointer() != Some((pointer, PointerKind::Touch)) {
@@ -305,7 +253,8 @@ impl Job {
                 }
                 let k = window.kernel();
                 let at = self.point;
-                let inside = k.hit_test(at.0, at.1).is_some_and(|hit| k.is_within(hit, self.node));
+                let node = self.guard.node().expect("the hold is bound to a node");
+                let inside = k.hit_test(at.0, at.1).is_some_and(|hit| k.is_within(hit, node));
                 drop(k);
                 if !inside {
                     self.cancel(window);
@@ -419,7 +368,7 @@ mod tests {
         let mut window = drag_window(false);
         let start = Instant::now();
         let observed = guard(&window);
-        let mut job = Job::start_guarded(&mut window, "target", Kind::Drag { dx: 80.0, dy: 0.0 }, start, Some(observed)).unwrap();
+        let mut job = Job::start_guarded(&mut window, Kind::Drag { dx: 80.0, dy: 0.0 }, start, observed).unwrap();
         let owned = window.held_pointer().unwrap();
         assert_eq!(owned.1, PointerKind::Mouse);
         assert_ne!(owned.0, 0, "synthetic mouse ownership differs from the native mouse");
@@ -453,7 +402,7 @@ mod tests {
         let mut window = drag_window(true);
         let start = Instant::now();
         let observed = guard(&window);
-        let mut job = Job::start_guarded(&mut window, "target", Kind::Drag { dx: 80.0, dy: 0.0 }, start, Some(observed)).unwrap();
+        let mut job = Job::start_guarded(&mut window, Kind::Drag { dx: 80.0, dy: 0.0 }, start, observed).unwrap();
         window.app().advance(DRAG_STEP);
         assert!(job.poll(&mut window, start + DRAG_STEP).is_none());
         window.app().advance(DRAG_STEP);
@@ -570,8 +519,33 @@ mod tests {
         window.app().advance(Duration::from_millis(50));
         let reply = job.poll(&mut window, start + Duration::from_millis(50)).unwrap();
         assert!(!reply.ok);
-        assert_eq!(reply.code.as_deref(), Some(codes::STEP_FAILED.id));
+        assert_eq!(reply.code.as_deref(), Some(codes::STALE_TARGET.id));
         assert_eq!(window.kernel().text_of("log").as_deref(), Some("1,0,0"));
+    }
+
+    #[test]
+    fn a_name_based_double_click_keeps_the_original_instance_after_rename() {
+        let mut window = Window::headless(|| {
+            let renamed = state("renamed", || false);
+            let hit = state("hit", || "none");
+            on_command("rename", move || renamed.set(true));
+            col()
+                .child(
+                    el().id(move || if renamed.get() { "renamed".to_owned() } else { "target".to_owned() })
+                        .size_12()
+                        .on_double_press(move || hit.set("original")),
+                )
+                .child(show(move || renamed.get(), move || el().id("target").size_12().on_double_press(move || hit.set("new"))))
+                .child(text(move || hit.get().to_owned()).id("hit"))
+        });
+        let now = Instant::now();
+        let mut job = Job::start(&mut window, "target", Kind::DoubleTap, now).unwrap();
+        window.invoke("rename").unwrap();
+        let gap = Duration::from_millis(50);
+        window.app().advance(gap);
+        let reply = job.poll(&mut window, now + gap).unwrap();
+        assert!(reply.ok, "{reply:?}");
+        assert_eq!(window.kernel().text_of("hit").as_deref(), Some("original"));
     }
 
     #[test]
@@ -579,7 +553,7 @@ mod tests {
         let mut window = window();
         let start = Instant::now();
         let guard = guard(&window);
-        let mut job = Job::start_guarded(&mut window, "target", Kind::DoubleTap, start, Some(guard)).unwrap();
+        let mut job = Job::start_guarded(&mut window, Kind::DoubleTap, start, guard).unwrap();
         assert_eq!(window.kernel().text_of("log").as_deref(), Some("1,0,0"));
         window.app().advance(Duration::from_millis(50));
         let reply = job.poll(&mut window, start + Duration::from_millis(50)).unwrap();
@@ -595,7 +569,7 @@ mod tests {
         window.tap("target").unwrap();
         let start = Instant::now();
         let guard = guard(&window);
-        let mut job = Job::start_guarded(&mut window, "target", Kind::DoubleTap, start, Some(guard)).unwrap();
+        let mut job = Job::start_guarded(&mut window, Kind::DoubleTap, start, guard).unwrap();
         assert!(!job.delivered(), "the previous click run still has to expire");
         window.app().hot_reload();
         window.app().advance(Duration::from_millis(501));
@@ -611,7 +585,7 @@ mod tests {
         let mut window = window();
         let start = Instant::now();
         let guard = guard(&window);
-        let mut job = Job::start_guarded(&mut window, "target", Kind::DoubleTap, start, Some(guard)).unwrap();
+        let mut job = Job::start_guarded(&mut window, Kind::DoubleTap, start, guard).unwrap();
         assert!(job.delivered());
         window.app().hot_reload();
         window.app().advance(Duration::from_millis(50));
@@ -627,7 +601,7 @@ mod tests {
         let mut window = Window::headless(removing_long_target);
         let start = Instant::now();
         let guard = guard(&window);
-        let mut job = Job::start_guarded(&mut window, "target", Kind::LongPress, start, Some(guard)).unwrap();
+        let mut job = Job::start_guarded(&mut window, Kind::LongPress, start, guard).unwrap();
         let hold = window.tuning().long_press;
         window.app().advance(hold);
         assert!(!window.kernel().exists("target"));

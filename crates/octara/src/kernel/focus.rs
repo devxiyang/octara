@@ -14,6 +14,22 @@ pub enum Arrow {
     End,
 }
 
+pub(crate) enum InteractionError {
+    Hidden,
+    BehindModal(NodeId),
+    Disabled,
+}
+
+impl InteractionError {
+    pub(crate) fn message(self, kernel: &Kernel) -> String {
+        match self {
+            Self::Hidden => "is hidden or leaving the tree".into(),
+            Self::BehindModal(modal) => format!("is behind the open modal {}", kernel.describe(modal)),
+            Self::Disabled => "is disabled".into(),
+        }
+    }
+}
+
 impl Kernel {
     pub fn set_tab_index(&mut self, id: NodeId, i: i32) {
         self.node_mut(id).tab_index = i;
@@ -51,17 +67,24 @@ impl Kernel {
         self.is_alive(id) && !self.is_exiting(id) && self.shown_path(id).is_some()
     }
 
-    /// Eligibility for direct activation, shared by input adapters. This deliberately does
-    /// not test pointer geometry or focusability, and does not apply to lifecycle notifications.
-    pub(crate) fn check_activation(&self, id: NodeId, modal: Option<NodeId>) -> Result<(), &'static str> {
+    /// Whether a node belongs to the displayed, interactive part of the window.
+    pub(crate) fn check_interaction_scope(&self, id: NodeId, modal: Option<NodeId>) -> Result<(), InteractionError> {
         if !self.is_shown(id) {
-            return Err("is hidden or leaving the tree");
+            return Err(InteractionError::Hidden);
         }
+        if let Some(modal) = modal
+            && !self.is_in_modal_scope(id, modal)
+        {
+            return Err(InteractionError::BehindModal(modal));
+        }
+        Ok(())
+    }
+
+    /// Eligibility for direct activation, before operation-specific geometry or focus checks.
+    pub(crate) fn check_activation(&self, id: NodeId, modal: Option<NodeId>) -> Result<(), InteractionError> {
+        self.check_interaction_scope(id, modal)?;
         if self.state(id).contains(State::DISABLED) {
-            return Err("is disabled");
-        }
-        if modal.is_some_and(|modal| !self.is_in_modal_scope(id, modal)) {
-            return Err("is behind the open modal");
+            return Err(InteractionError::Disabled);
         }
         Ok(())
     }

@@ -253,3 +253,117 @@ fn a_final_handled_tab_may_move_focus_without_becoming_stale() {
     assert_eq!(reply.delivery, Some(Delivery::Delivered));
     assert_eq!(window.inspect().focus.as_deref(), Some("other"));
 }
+
+#[test]
+fn duplicate_names_refuse_lookup_and_tokens_select_one_mounted_instance() {
+    let mut window = Window::headless(|| {
+        let hidden = state("hidden", || false);
+        let removed = state("removed", || false);
+        let pressed = state("pressed", || "none");
+        on_command("hide-choice", move || hidden.set(true));
+        on_command("remove-choice", move || removed.set(true));
+        on_command("focus-choice", || focus("choice"));
+        col()
+            .id("choices")
+            .role(Role::ListBox)
+            .active_descendant(Some("choice".to_owned()))
+            .child(el().id("choice").label("First").role(Role::ListBoxOption).focusable().size_12().on_press(move || pressed.set("first")))
+            .child(show(
+                move || !removed.get(),
+                move || {
+                    el().id("choice")
+                        .label("Second")
+                        .role(Role::ListBoxOption)
+                        .focusable()
+                        .style_with(move |p| if hidden.get() { p.hidden() } else { p })
+                        .size_12()
+                        .on_press(move || pressed.set("second"))
+                },
+            ))
+            .child(text(move || pressed.get().to_owned()).id("pressed"))
+    });
+    let snapshot = window.inspect();
+    assert!(snapshot.find("choice").is_none());
+    assert!(snapshot.find("choices").unwrap().active_descendant.is_none());
+    let token = |name| snapshot.root.walk().into_iter().find(|n| n.name.as_deref() == Some(name)).unwrap().target.clone();
+    let first = token("First");
+    let second = token("Second");
+    assert!(window.kernel().find("choice").is_none());
+    assert_eq!(window.kernel().find_all("choice").len(), 2);
+    assert!(window.dispatch(Event::Focus("choice".into())).unwrap_err().contains("2 elements"));
+    window.invoke("focus-choice").unwrap();
+    assert!(window.inspect().focus.is_none());
+    for step in [
+        json!({"op":"focus","id":"choice"}),
+        json!({"op":"tap","id":"choice"}),
+        json!({"op":"expect","id":"choice","text":"First"}),
+        json!({"op":"select","region":"choice"}),
+    ] {
+        let reply = request(&mut window, step);
+        assert_eq!(reply.code.as_deref(), Some("AMBIGUOUS_TARGET"), "{reply:?}");
+        assert_eq!(reply.delivery, Some(Delivery::Refused));
+    }
+    let reply = request(&mut window, json!({"op":"tap","target":second}));
+    assert!(reply.ok, "{reply:?}");
+    assert_eq!(window.kernel().text_of("pressed").as_deref(), Some("second"));
+    assert!(request(&mut window, json!({"op":"expect","target":second,"text":"Second"})).ok);
+    assert!(request(&mut window, json!({"op":"focus","target":first,"id":"choice"})).ok);
+    assert!(request(&mut window, json!({"op":"expect","target":first,"state":"focused"})).ok);
+
+    window.invoke("hide-choice").unwrap();
+    let hidden = request(&mut window, json!({"op":"focus","target":second}));
+    assert_eq!(hidden.code.as_deref(), Some("STEP_FAILED"), "{hidden:?}");
+    assert_eq!(hidden.delivery, Some(Delivery::Refused));
+    let ambiguous = request(&mut window, json!({"op":"focus","id":"choice"}));
+    assert_eq!(ambiguous.code.as_deref(), Some("AMBIGUOUS_TARGET"));
+    assert!(window.inspect().find("choices").unwrap().active_descendant.is_none());
+
+    window.invoke("remove-choice").unwrap();
+    stale(&request(&mut window, json!({"op":"focus","target":second})), Delivery::Refused);
+    assert!(request(&mut window, json!({"op":"tap","id":"choice"})).ok);
+    assert_eq!(window.kernel().text_of("pressed").as_deref(), Some("first"));
+    assert_eq!(window.inspect().find("choices").unwrap().active_descendant.as_deref(), Some("choice"));
+}
+
+#[test]
+fn unnamed_instances_can_receive_and_replay_observed_focus_and_text() {
+    fn view() -> El {
+        let one = state("one", String::new);
+        let two = state("two", String::new);
+        col()
+            .child(text_input().label("One").w(200).value(one).on_input(move |value| one.set(value)))
+            .child(text_input().label("Two").w(200).value(two).on_input(move |value| two.set(value)))
+    }
+    let mut live = Window::headless(view);
+    let snapshot = live.inspect();
+    let field = snapshot.root.walk().into_iter().find(|n| n.name.as_deref() == Some("Two")).unwrap();
+    assert!(field.id.is_none());
+    let token = &field.target;
+    live.app().start_recording();
+    assert!(request(&mut live, json!({"op":"focus","target":token})).ok);
+    assert!(request(&mut live, json!({"op":"type","target":token,"text":"中文"})).ok);
+    let recording = live.app().stop_recording();
+    let encoded = serde_json::to_string(&recording).unwrap();
+    let replay = Window::headless(view);
+    replay.app().replay(&serde_json::from_str(&encoded).unwrap()).unwrap();
+    for w in [&live, &replay] {
+        let snapshot = w.inspect();
+        let nodes = snapshot.root.walk();
+        let field = |name| nodes.iter().find(|n| n.name.as_deref() == Some(name)).unwrap();
+        assert_eq!(field("One").value.as_deref(), Some(""));
+        assert_eq!(field("Two").value.as_deref(), Some("中文"));
+    }
+}
+
+#[test]
+fn observed_nodes_are_routed_to_the_named_window_only() {
+    let app = App::new(HeadlessPlatform::default());
+    let mut left = app.open_window(WindowOptions::new("Left"), target_view).unwrap();
+    let right = app.open_window(WindowOptions::new("Right"), target_view).unwrap();
+    let token = node_target(&right, "target");
+    stale(&request(&mut left, json!({"op":"tap","target":token})), Delivery::Refused);
+    let reply = request(&mut left, json!({"op":"tap","window":right.id().number(),"target":token}));
+    assert!(reply.ok, "{reply:?}");
+    assert_eq!(left.kernel().text_of("count").as_deref(), Some("0"));
+    assert_eq!(right.kernel().text_of("count").as_deref(), Some("1"));
+}

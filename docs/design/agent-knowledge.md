@@ -2,10 +2,13 @@
 
 ## Inspector protocol and checks
 
-在 macOS 或 Linux 连接桌面 Inspector 后，先读语义树中的窗口、角色、名称、状态、边界和动作，再选择操作对象。`.id(..)` 提供查找名；不透明 `target` 标识实际观察到的对象。节点操作使用节点目标，窗口操作使用窗口目标。焦点发生变化后，重新确认接收键盘输入的对象。
+在 macOS 或 Linux 连接桌面 Inspector 后，先读语义树中的窗口、角色、名称、状态、边界和动作。使用窗口编号选定窗口，再用不透明的 `target` 操作观察到的节点，例如 `{"op":"tap","target":"<observed target>"}`。同时提供 `id` 时，窗口会核对该实例的名称。只提供 `id` 的脚本要求名称在该窗口的挂载树内唯一，隐藏但保留挂载的节点也参与匹配。窗口操作使用窗口目标。无 `id` 的 `type` 和 `key` 把节点目标用作当前焦点的断言。需要向其他观察到的字段输入时，先用 `focus` 操作该字段。
+
+屏外控件需要先滚动。在 `actions` 含 `scroll` 的视口上发送 `{"op":"scroll","target":"<viewport target>","dx":0,"dy":120}`。位移以逻辑像素计，正值增大偏移。回执中 `scroll.offset` 是当前偏移 `[x,y]`，`scroll.delta` 是本次实际变化，包含布局校正。到达边界后继续向外滚动可返回 `[0,0]`。滚动后重新读取树，再操作进入视口的控件。[待办实窗验收](../../examples/live_inspect.py)
 
 | 返回结果 | 下一步 |
 | --- | --- |
+| `AMBIGUOUS_TARGET` | 查找名匹配了多个挂载实例。用树中的角色、标签和位置确定对象，再传入该对象的 `target` |
 | `STALE_TARGET` 或 `NO_SUCH_ELEMENT` | 重新观察，确定控件是否已退出、替换或换焦点。对同名新控件重新作出操作决定 |
 | `STEP_FAILED`、`EXPECTATION_FAILED` 或 `BAD_REQUEST` | 比对实际值、支持的动作和请求字段。若已送达部分输入，先核对效果，避免重复执行 |
 | `NOT_SETTLED` | 检查仍在运行的任务、定时器和动画，再决定事件应该推进到哪个时刻 |

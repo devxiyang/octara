@@ -661,6 +661,9 @@ fn run_reply_text(out: &mut String, reply: &serde_json::Value) {
     if let Some(snap) = reply.get("snapshot") {
         *out += &snapshot_text(snap);
     }
+    if let Some(scroll) = reply.get("scroll") {
+        let _ = writeln!(out, "  scroll offset {}, delta {}", scroll["offset"], scroll["delta"]);
+    }
     for issue in reply["issues"].as_array().into_iter().flatten() {
         let _ = writeln!(
             out,

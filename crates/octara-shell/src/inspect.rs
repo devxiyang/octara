@@ -25,6 +25,7 @@ const OPERATIONS: &[&str] = &[
     "key",
     "type",
     "set_value",
+    "scroll",
     "invoke",
     "settle",
     "size",
@@ -233,6 +234,7 @@ fn route(request: &Request) -> (&'static str, bool) {
         | Request::Key { .. } => ("framework", true),
         Request::Focus { .. }
         | Request::SetValue { .. }
+        | Request::Scroll { .. }
         | Request::Hover { .. }
         | Request::Invoke { .. }
         | Request::Select { .. }
@@ -304,13 +306,14 @@ impl Shell {
                 &codes::BAD_REQUEST,
                 "this operation is not supported by the realtime live host; inspect live.operations for supported requests",
             )),
-            Request::DoubleTap { ref id } | Request::LongPress { ref id } | Request::Drag { ref id, .. } => {
+            Request::DoubleTap { .. } | Request::LongPress { .. } | Request::Drag { .. } => {
                 let kind = match &request {
                     Request::DoubleTap { .. } => super::gesture::Kind::DoubleTap,
                     Request::Drag { dx, dy, .. } => super::gesture::Kind::Drag { dx: *dx, dy: *dy },
                     _ => super::gesture::Kind::LongPress,
                 };
-                match super::gesture::Job::start_guarded(&mut target, id, kind, Instant::now(), guard) {
+                let guard = guard.expect("a gesture has a bound target");
+                match super::gesture::Job::start_guarded(&mut target, kind, Instant::now(), guard) {
                     Ok(job) => {
                         self.inspect_pending = Some(Pending::gesture(job, response));
                         self.show();

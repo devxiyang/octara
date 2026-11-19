@@ -427,10 +427,47 @@ def todo(args, output, sockets):
                      {"op": "expect", "id": "title-31", "text": "Live Agent"},
                      {"op": "expect", "id": "new-todo", "value": ""},
                      {"op": "expect", "id": "left", "text": "31 left"})
-        app.capture("todo-after.png")
-        # The appended row can be below the viewport; exercise the first reachable row instead.
         app.requests({"op": "tap", "id": "remove-1"}, {"op": "expect", "id": "todo-1", "exists": False},
                      {"op": "expect", "id": "left", "text": "30 left"})
+
+        observed = app.requests({"op": "inspect"})[0]
+        require("scroll" in observed["live"]["operations"], "todo: live host did not advertise scroll")
+        snapshot = observed["snapshot"]
+        offscreen = find(snapshot, "toggle-31")
+        require(offscreen["bounds"][1] >= snapshot["viewport"][1], "todo: expected last row below the window")
+        with app.wire() as stream:
+            refused = app.wire_request(stream, {"op": "tap", "target": offscreen["target"]})
+        require(not refused["ok"] and refused["code"] == "STEP_FAILED" and refused["delivery"] == "refused",
+                f"todo: offscreen tap was not refused: {refused}")
+
+        offset = 0
+        for _ in range(12):
+            viewport = find(snapshot, "todos")
+            require("scroll" in viewport["actions"], "todo: viewport did not advertise scroll")
+            reply = app.requests({"op": "scroll", "target": viewport["target"], "dx": 0, "dy": 120})[0]
+            require(reply["delivery"] == "delivered" and reply["live"]["route"] == "semantic",
+                    f"todo: wrong scroll delivery: {reply}")
+            dx, dy = reply["scroll"]["delta"]
+            x, y = reply["scroll"]["offset"]
+            require(dx == x == 0 and dy >= 0 and abs(y - offset - dy) < 0.01, f"todo: inconsistent scroll movement: {reply}")
+            offset = y
+            snapshot = app.inspect()
+            if dy == 0:
+                break
+        else:
+            raise SmokeFailure("todo: scrolling did not reach the end")
+
+        viewport = find(snapshot, "todos")
+        last = find(snapshot, "toggle-31")
+        _, viewport_y, _, viewport_height = viewport["bounds"]
+        _, row_y, _, row_height = last["bounds"]
+        require(offset > 0 and viewport_y <= row_y + row_height / 2 < viewport_y + viewport_height,
+                "todo: last item was not brought into the viewport")
+        app.requests({"op": "tap", "target": last["target"]},
+                     {"op": "expect", "target": last["target"], "checked": True},
+                     {"op": "expect", "id": "left", "text": "29 left"})
+        app.capture("todo-after.png")
+        print(f"todo: row y {offscreen['bounds'][1]:g} -> {row_y:g}, scroll offset {offset:g}, edge delta 0, checked", flush=True)
 
 
 def windows(args, output, sockets):

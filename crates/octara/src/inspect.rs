@@ -16,7 +16,9 @@
 use serde::{Deserialize, Serialize};
 
 mod target;
-pub use target::{ParsedRequest, handle_guarded, parse_guarded_request};
+#[doc(hidden)]
+pub use target::guarded_point;
+pub use target::{ParsedRequest, handle_guarded, parse_guarded_request, parse_request};
 pub(crate) use target::{node_target, window_target};
 mod tree;
 pub use tree::{pick, tree};
@@ -257,9 +259,11 @@ impl Node {
 }
 
 impl Snapshot {
-    /// The node with test id `id`.
+    /// The unique node with test id `id` in this snapshot.
     pub fn find(&self, id: &str) -> Option<&Node> {
-        self.root.walk().into_iter().find(|n| n.id.as_deref() == Some(id))
+        let mut matches = self.root.walk().into_iter().filter(|n| n.id.as_deref() == Some(id));
+        let node = matches.next()?;
+        matches.next().is_none().then_some(node)
     }
 
     pub fn to_json(&self) -> String {
@@ -290,7 +294,8 @@ pub(crate) fn tenth(v: f32) -> f32 {
 
 // ---- requests: the interactive protocol and scripts (JSON lines) ----
 
-/// One request, one JSON line: `{"op":"tap","id":"save"}`. Scripts are these, one per line.
+/// One request per JSON line. A node operation takes an `id` or an observed `target`.
+/// With a `target`, `id` is an optional assertion about the named instance.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
@@ -302,40 +307,56 @@ pub enum Request {
     Reload,
     /// A primary click or tap on the element.
     Tap {
-        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
     DoubleTap {
-        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
     LongPress {
-        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
     /// Drags from the element's current centre by a finite delta in logical pixels. Four
     /// pointer moves, 16 ms apart, retain the original allocation and fixed starting point.
     /// Movement below the recognizer's drag threshold remains a click, like native input.
     Drag {
-        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        dx: f32,
+        dy: f32,
+    },
+    /// Scrolls the viewport by finite deltas in logical pixels. Positive deltas increase
+    /// the offset. The reply reports the offset and its actual change after the frame settles.
+    Scroll {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
         dx: f32,
         dy: f32,
     },
     /// A right click / context press.
     SecondaryTap {
-        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
     /// Focuses the element (as Tab would).
     Focus {
-        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
     /// The pointer enters (`true`) or leaves the element.
     Hover {
-        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
         on: bool,
     },
     /// Presses a chord as a keyboard would: `"mod+s"`, `"tab"`, `"enter"`, `"a"`.
     Key {
         chord: String,
     },
-    /// Types text into the focused field, or into `id` after focusing it.
+    /// Types into the focused field, or focuses `id` first. Without `id`, an observed
+    /// target asserts the current focus. Focus a different observed field in its own step.
     Type {
         #[serde(default)]
         id: Option<String>,
@@ -344,7 +365,8 @@ pub enum Request {
     /// Sets a numeric control through its numeric handler, applying the same component
     /// clamping/stepping as its keys and pointer. This is a semantic operation.
     SetValue {
-        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
         value: f64,
     },
     /// Runs a command (`"save"`, `"edit.undo"`) as its chord or a menu would.
@@ -410,8 +432,7 @@ pub enum Request {
         id: crate::ask::AskId,
         answer: crate::ask::Answer,
     },
-    /// Fails unless every given property holds for the element `id` (or, with only `clean`, for
-    /// the app).
+    /// Checks the named or observed element, or checks the app with only `clean`.
     Expect(Expect),
 }
 
@@ -440,6 +461,12 @@ pub struct Expect {
     pub clean: Option<bool>,
 }
 
+impl Expect {
+    fn wants_node(&self) -> bool {
+        self.text.is_some() || self.value.is_some() || self.checked.is_some() || self.state.is_some()
+    }
+}
+
 /// The answer to one request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Reply {
@@ -465,9 +492,19 @@ pub struct Reply {
     /// What a `pick` found.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picked: Option<Box<Picked>>,
+    /// A `scroll`'s measured movement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll: Option<ScrollResult>,
     /// What a `copy` copied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+}
+
+/// The viewport's post-scroll position and net change in logical pixels, ordered as `[x, y]`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ScrollResult {
+    pub offset: [f32; 2],
+    pub delta: [f32; 2],
 }
 
 /// A `#[ui]` function, as the inspector names its provenance.
@@ -550,6 +587,7 @@ impl Reply {
             issues: None,
             capture: None,
             picked: None,
+            scroll: None,
             text: None,
         }
     }
@@ -566,7 +604,7 @@ impl Reply {
 use crate::app::{App, AppConfig, TargetPlatform, Window};
 use crate::capture::Painter;
 use crate::diagnostics::{self as codes, Code, Severity};
-use crate::kernel::Theme;
+use crate::kernel::{NodeId, Theme};
 use crate::platform::{HeadlessPlatform, WindowOptions};
 use crate::view::IntoView;
 use std::rc::Rc;
@@ -604,7 +642,7 @@ pub fn issues(app: &Window) -> Vec<Issue> {
 
 /// Runs one request against `app`.
 pub fn handle(app: &mut Window, req: Request) -> Reply {
-    request_boundary(app, req, handle_inner)
+    handle_guarded(app, req, None)
 }
 
 /// A failed App permits diagnostic reads, never input, rebuilding or capture.
@@ -632,24 +670,14 @@ pub(crate) fn request_boundary(app: &mut Window, req: Request, f: impl FnOnce(&m
     }
 }
 
-fn handle_inner(app: &mut Window, req: Request) -> Reply {
+fn handle_inner(app: &mut Window, req: Request, guard: Option<&crate::app::TargetGuard>) -> Reply {
+    use crate::app::{Button, Event, PointerKind};
     use std::time::Duration;
-    let exists = |app: &Window, id: &str| app.kernel().find(id).is_some();
-    let target = |app: &Window, id: &str| -> Result<(), Box<Reply>> {
-        if exists(app, id) { Ok(()) } else { Err(Box::new(Reply::fail(&codes::NO_SUCH_ELEMENT, format!("no element has test id `{id}`")))) }
-    };
+    let target = || guard.expect("the request bound its target");
     let step = |r: Result<(), String>| match r {
         Ok(()) => Reply::ok(),
         Err(e) => Reply::fail(&codes::STEP_FAILED, e),
     };
-    macro_rules! on {
-        ($id:expr, $e:expr) => {{
-            if let Err(r) = target(app, $id) {
-                return *r;
-            }
-            step($e)
-        }};
-    }
     match req {
         Request::Inspect => Reply { snapshot: Some(Box::new(app.inspect())), ..Reply::ok() },
         Request::Issues => Reply { issues: Some(issues(app)), ..Reply::ok() },
@@ -657,41 +685,25 @@ fn handle_inner(app: &mut Window, req: Request) -> Reply {
             app.app().hot_reload();
             Reply::ok()
         }
-        Request::Tap { id } => on!(&id, app.tap(&id)),
-        Request::DoubleTap { id } => on!(&id, app.double_tap(&id)),
-        Request::LongPress { id } => on!(&id, app.long_press(&id)),
-        Request::Drag { id, dx, dy } => target::drag(app, &id, dx, dy, None),
-        Request::SecondaryTap { id } => on!(&id, app.secondary_tap(&id)),
-        Request::Focus { id } => on!(&id, app.dispatch(crate::app::Event::Focus(id.clone()))),
-        Request::Hover { id, on } => on!(&id, app.dispatch(crate::app::Event::Hover(id.clone(), on))),
-        Request::SetValue { id, value } => {
+        Request::Tap { .. } => target::pointer(app, target(), PointerKind::Mouse, Button::Primary, false, false),
+        Request::DoubleTap { .. } => target::pointer(app, target(), PointerKind::Mouse, Button::Primary, true, false),
+        Request::LongPress { .. } => target::pointer(app, target(), PointerKind::Touch, Button::Primary, false, true),
+        Request::Drag { dx, dy, .. } => target::drag(app, target(), dx, dy),
+        Request::Scroll { dx, dy, .. } => target::scroll(app, target(), dx, dy),
+        Request::SecondaryTap { .. } => target::pointer(app, target(), PointerKind::Mouse, Button::Secondary, false, false),
+        Request::Focus { .. } => target::semantic(app, target(), Event::Focus),
+        Request::Hover { on, .. } => target::semantic(app, target(), |id| Event::Hover(id, on)),
+        Request::SetValue { value, .. } => {
             if !value.is_finite() {
-                return Reply::fail(&codes::BAD_REQUEST, "set_value requires a finite number");
+                return Reply {
+                    delivery: Some(Delivery::Refused),
+                    ..Reply::fail(&codes::BAD_REQUEST, "set_value requires a finite number")
+                };
             }
-            if let Err(reply) = target(app, &id) {
-                return *reply;
-            }
-            match app.dispatch(crate::app::Event::NumericInput(id, value)) {
-                Ok(()) => Reply { delivery: Some(Delivery::Delivered), ..Reply::ok() },
-                Err(error) => Reply { delivery: Some(Delivery::Refused), ..Reply::fail(&codes::STEP_FAILED, error) },
-            }
+            target::semantic(app, target(), |id| Event::NumericInput(id, value))
         }
-        Request::Key { chord } => step(app.press_key(&chord)),
-        Request::Type { id, text } => {
-            if let Some(id) = id {
-                if let Err(r) = target(app, &id) {
-                    return *r;
-                }
-                if let Err(e) = app.dispatch(crate::app::Event::Focus(id.clone())) {
-                    return Reply::fail(&codes::STEP_FAILED, e);
-                }
-            }
-            if app.text_field().is_none() {
-                return Reply::fail(&codes::STEP_FAILED, "no text field has focus");
-            }
-            app.type_text(&text);
-            Reply::ok()
-        }
+        Request::Key { chord } => target::key(app, target(), &chord),
+        Request::Type { text, .. } => target::type_text(app, target(), &text),
         Request::Invoke { command } => match app.invoke(&command) {
             Ok(()) => Reply { delivery: Some(Delivery::Delivered), ..Reply::ok() },
             Err(error) => Reply { delivery: Some(Delivery::Refused), ..Reply::fail(&codes::STEP_FAILED, error) },
@@ -723,12 +735,21 @@ fn handle_inner(app: &mut Window, req: Request) -> Reply {
             app.app().set_reduced_motion(on);
             Reply::ok()
         }
-        Request::Expect(e) => expect(app, &e),
-        Request::Select { from, to, region } => match (from, to, region) {
-            (Some(f), Some(t), _) => step(app.select((&f.0, f.1), (&t.0, t.1))),
-            (None, None, Some(r)) => step(app.select_all(&r)),
-            _ => Reply::fail(&codes::BAD_REQUEST, "`select` takes `from` and `to` ([id, offset] each), or a `region`"),
-        },
+        Request::Expect(e) => expect(app, &e, guard.and_then(crate::app::TargetGuard::node)),
+        Request::Select { from, to, region } => {
+            let find = |id: &str| app.kernel().named_node(id).map_err(|error| Box::new(target::name_failure(id, error)));
+            match (from, to, region) {
+                (Some((from, start)), Some((to, end)), _) => match (find(&from), find(&to)) {
+                    (Ok(a), Ok(b)) => step(app.select_nodes((a, start), (b, end))),
+                    (Err(reply), _) | (_, Err(reply)) => *reply,
+                },
+                (None, None, Some(region)) => match find(&region) {
+                    Ok(node) => step(app.select_all_in(node)),
+                    Err(reply) => *reply,
+                },
+                _ => Reply::fail(&codes::BAD_REQUEST, "`select` takes `from` and `to` ([id, offset] each), or a `region`"),
+            }
+        }
         Request::Answer { id, answer } => match app.answer(id, answer) {
             Ok(()) => Reply::ok(),
             Err(e) => Reply::fail(&codes::STEP_FAILED, &e),
@@ -767,7 +788,7 @@ fn handle_inner(app: &mut Window, req: Request) -> Reply {
     }
 }
 
-fn expect(app: &Window, e: &Expect) -> Reply {
+fn expect(app: &Window, e: &Expect, bound: Option<NodeId>) -> Reply {
     let mismatch = |what: &str, want: serde_json::Value, got: serde_json::Value| Reply {
         actual: Some(got.clone()),
         ..Reply::fail(&codes::EXPECTATION_FAILED, format!("expected {what} {want}, found {got}"))
@@ -779,23 +800,31 @@ fn expect(app: &Window, e: &Expect) -> Reply {
             return Reply { issues: Some(found.clone()), ..mismatch("no issues, ", "[]".into(), codes.into()) };
         }
     }
-    let Some(id) = &e.id else {
-        return if e.clean.is_some() { Reply::ok() } else { Reply::fail(&codes::BAD_REQUEST, "`expect` needs an `id` (or only `clean`)") };
-    };
+    if e.id.is_none() && bound.is_none() {
+        return if e.clean.is_some() { Reply::ok() } else { Reply::fail(&codes::BAD_REQUEST, "expect needs an id, a target, or clean") };
+    }
+    let id = e.id.as_deref().unwrap_or("observed element");
     let snap = app.inspect();
-    let node = snap.find(id);
+    let node = bound
+        .and_then(|node| target::node_target(&app.kernel(), node))
+        .and_then(|token| snap.root.walk().into_iter().find(|node| node.target == token));
     if let Some(want) = e.exists
         && want != node.is_some()
     {
         return mismatch(&format!("`{id}` to exist:"), want.into(), node.is_some().into());
     }
-    let wants_node = e.text.is_some() || e.value.is_some() || e.checked.is_some() || e.state.is_some();
     let Some(node) = node else {
-        return if wants_node { Reply::fail(&codes::NO_SUCH_ELEMENT, format!("no element has test id `{id}`")) } else { Reply::ok() };
+        return if e.wants_node() {
+            Reply::fail(&codes::NO_SUCH_ELEMENT, format!("`{id}` is absent from the semantic tree"))
+        } else {
+            Reply::ok()
+        };
     };
     if let Some(want) = &e.text {
-        let got = app.kernel().text_of(id).filter(|t| !t.is_empty()).or_else(|| node.name.clone()).unwrap_or_default();
-        if &got != want {
+        let k = app.kernel();
+        let text = k.text(bound.expect("the semantic node has a bound instance"));
+        let got = if text.is_empty() { node.name.as_deref().unwrap_or_default() } else { text };
+        if got != want {
             return mismatch(&format!("`{id}` text"), want.as_str().into(), got.into());
         }
     }
@@ -815,23 +844,6 @@ fn expect(app: &Window, e: &Expect) -> Reply {
         return mismatch(&format!("`{id}` in state"), want.as_str().into(), node.states.clone().into());
     }
     Reply::ok()
-}
-
-/// Parses a request and resolves its optional `"window"` field without executing it.
-///
-/// Compatibility parser for hosts using the original unguarded [`Request`] API. Guarded
-/// requests require [`parse_guarded_request`] and [`handle_guarded`], so their identity check
-/// cannot be lost between input phases. The returned window is a live handle; asynchronous
-/// host work must check its lifetime again before use.
-pub fn parse_request(window: &Window, line: &str) -> Result<(Window, Request), Box<Reply>> {
-    let parsed = parse_guarded_request(window, line)?;
-    if parsed.guard.is_some() {
-        return Err(Box::new(Reply {
-            delivery: Some(Delivery::Refused),
-            ..Reply::fail(&codes::BAD_REQUEST, "this host must retain target guards with parse_guarded_request and handle_guarded")
-        }));
-    }
-    Ok((parsed.window, parsed.request))
 }
 
 /// Runs one request line in `window`, or in the window its `"window"` field names (a number

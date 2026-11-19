@@ -397,24 +397,27 @@ impl Window {
     /// Selects from `from` to `to` (test ids of texts and byte offsets), as a drag would.
     pub fn select(&mut self, from: (&str, usize), to: (&str, usize)) -> Result<(), String> {
         self.check_running()?;
+        let (a, b) = {
+            let k = self.kernel();
+            let find = |id| k.named_node(id).map_err(|error| error.message(id));
+            (find(from.0)?, find(to.0)?)
+        };
+        self.select_nodes((a, from.1), (b, to.1))
+    }
+
+    pub(crate) fn select_nodes(&mut self, from: (NodeId, usize), to: (NodeId, usize)) -> Result<(), String> {
+        self.check_running()?;
         let mut result = Ok(());
         self.input_frame(|| {
             let k = self.w.kernel.borrow();
-            let find = |id: &str| k.find(id).ok_or(format!("no element has test id `{id}`"));
-            let (a, b) = match (find(from.0), find(to.0)) {
-                (Ok(a), Ok(b)) => (a, b),
-                (Err(e), _) | (_, Err(e)) => {
-                    result = Err(e);
-                    return;
-                }
-            };
-            let Some(region) = k.region_of(a).filter(|r| k.region_of(b) == Some(*r)) else {
-                result = Err(format!("`{}` and `{}` are not in one selectable region", from.0, to.0));
+            let (a, b) = (from.0, to.0);
+            let Some(region) = k.region_of(a).filter(|&region| k.selectable_in(region, a) && k.selectable_in(region, b)) else {
+                result = Err("selection endpoints must be shown text in one selectable region".into());
                 return;
             };
             let point = |t: NodeId, offset: usize| TextPoint {
                 path: k.path_to(region, t).unwrap_or_default(),
-                offset: offset.min(k.text_str(t).len()),
+                offset: k.text_str(t).floor_char_boundary(offset),
             };
             let (pa, pb) = (point(a, from.1), point(b, to.1));
             drop(k);
@@ -426,10 +429,15 @@ impl Window {
     /// Selects everything in the selectable region with test id `region`.
     pub fn select_all(&mut self, region: &str) -> Result<(), String> {
         self.check_running()?;
-        let n = self.w.kernel.borrow().find(region).ok_or(format!("no element has test id `{region}`"))?;
+        let n = self.w.kernel.borrow().named_node(region).map_err(|error| error.message(region))?;
+        self.select_all_in(n)
+    }
+
+    pub(crate) fn select_all_in(&mut self, region: NodeId) -> Result<(), String> {
+        self.check_running()?;
         let mut done = false;
-        self.input_frame(|| done = self.select_region(n));
-        if done { Ok(()) } else { Err(format!("`{region}` has no selectable text")) }
+        self.input_frame(|| done = self.select_region(region));
+        if done { Ok(()) } else { Err("the region has no selectable text".into()) }
     }
 
     /// Clears the document selection.

@@ -73,7 +73,7 @@ fn old_nodes_default_new_form_semantics_to_absent() {
 #[test]
 fn requests_drive_the_app() {
     let mut app = Window::headless(view);
-    assert!(inspect::handle(&mut app, Request::Tap { id: "inc".into() }).ok);
+    assert!(inspect::handle(&mut app, Request::Tap { id: Some("inc".into()) }).ok);
     assert_eq!(app.kernel().text_of("count").as_deref(), Some("Count: 1"));
     let r = inspect::handle_line(&mut app, r#"{"op":"type","id":"name","text":"Ada"}"#);
     assert!(r.ok, "{r:?}");

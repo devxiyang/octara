@@ -236,7 +236,7 @@ fn inspector_drag_keeps_its_target_and_uses_four_timed_framework_moves() {
     assert_eq!(window.app().now() - before, std::time::Duration::from_millis(64));
     assert_eq!(window.kernel().text_of("log").as_deref(), Some("[40.0, 60.0, 80.0];true"), "the first pointer move emits DragPhase::Start");
     assert!(window.held_pointer().is_none());
-    let invalid = inspect::handle(&mut window, inspect::Request::Drag { id: "target".into(), dx: f32::NAN, dy: 0.0 });
+    let invalid = inspect::handle(&mut window, inspect::Request::Drag { id: Some("target".into()), dx: f32::NAN, dy: 0.0 });
     assert_eq!(invalid.code.as_deref(), Some("BAD_REQUEST"));
     assert_eq!(invalid.delivery, Some(Delivery::Refused));
 }

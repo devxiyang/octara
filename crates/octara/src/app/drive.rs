@@ -8,16 +8,16 @@
 use super::Window;
 use super::event::InputEvent;
 use super::pointer::{Button, Phase, PointerEvent, PointerKind};
-use crate::kernel::{Kernel, NodeId};
+use crate::kernel::{Kernel, NameError, NodeId};
 
 impl Kernel {
     /// The element `target` names: a test id, else an accessible name (resolved to the element
     /// a press there acts on).
     pub fn resolve_target(&self, target: &str) -> Result<NodeId, String> {
-        match self.find_all(target).as_slice() {
-            [n] => return Ok(*n),
-            [] => {}
-            many => return Err(format!("{} elements have test id `{target}`", many.len())),
+        match self.named_node(target) {
+            Ok(node) => return Ok(node),
+            Err(NameError::Missing) => {}
+            Err(error) => return Err(error.message(target)),
         }
         let mut found: Vec<NodeId> = Vec::new();
         for n in self.find_by_name(target) {
@@ -76,18 +76,20 @@ impl Kernel {
 
 impl Window {
     /// Resolves a pointer target and its reachable centre, including the current modal boundary.
-    /// The node key identifies this allocation; hosts waiting between inputs must resolve again
-    /// and compare it before dispatching the next phase.
+    /// The node key identifies this allocation. Inspector hosts retain their parsed target.
     pub fn pointer_target(&self, target: &str) -> Result<(NodeId, (f32, f32)), String> {
         self.check_running()?;
         let k = self.w.kernel.borrow();
         let n = k.resolve_target(target)?;
-        if let Some(m) = self.top_modal()
-            && !k.is_in_modal_scope(n, m)
-        {
-            return Err(format!("{} is behind the open modal {}", k.describe(n), k.describe(m)));
-        }
+        k.check_interaction_scope(n, self.top_modal()).map_err(|why| format!("{} {}", k.describe(n), why.message(&k)))?;
         k.reachable_point(n).map(|point| (n, point))
+    }
+
+    pub(crate) fn activation_point(&self, node: NodeId) -> Result<(f32, f32), String> {
+        self.check_running()?;
+        let k = self.kernel();
+        k.check_activation(node, self.top_modal()).map_err(|why| format!("{} {}", k.describe(node), why.message(&k)))?;
+        k.reachable_point(node)
     }
 
     fn point_of(&self, target: &str) -> Result<(f32, f32), String> {

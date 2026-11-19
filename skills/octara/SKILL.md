@@ -22,5 +22,6 @@ metadata:
 
 1. 先用 `Window::headless` 驱动同一视图，断言可观察的值、焦点、可用动作、诊断和布局。`octara check` 可检查不同大小与主题。需要单个接口的操作名和参数时查 `octara vocab octara::inspect::Request`。
 2. 在 macOS 或 Linux 上通过 `OCTARA_INSPECT` 指定未占用的绝对 socket 路径，或用 `octara launch -p my-app --bin my-app --socket SOCKET --receipt FILE` 启动桌面程序。`octara inspect --connect SOCKET --receipt FILE --json` 可核对运行中的构建。
-3. 从当前语义树或 pick 结果读取不透明 `target`，在操作中原样传回。`octara run --connect SOCKET --require-build FILE --script STEPS --json` 按顺序执行 JSONL。例如 `{"op":"tap","id":"save","target":"<observed target>"}`。树重建、控件替换或换窗后重新观察。
-4. 记录动作后的状态、截图报告和实际输入途径。`STALE_TARGET` 或连接中断后要先检查送达情况，防止重复执行。原生候选窗、系统快捷键和系统手势用 OS 输入单独验证。
+3. 从当前语义树或 pick 结果读取不透明 `target`，在操作中原样传回。用名称配合 `actions` 识别对象，单行和多行编辑器都支持 `input`。`octara run --connect SOCKET --require-build FILE --script STEPS --json` 按顺序执行 JSONL。例如 `{"op":"tap","target":"<observed target>"}`。只按 `id` 查找时要求窗口内唯一。树重建、控件替换或换窗后重新观察。
+   对屏外控件，先向支持 `scroll` 的视口发送 `{"op":"scroll","target":"<viewport target>","dx":0,"dy":120}`。读取回执的实际偏移 `scroll.offset` 和实际位移 `scroll.delta`，重新观察后再操作控件。
+4. 从每步 JSON 回执读取 `ok` 和 `delivery`，再从界面确认应用接受的值或校验信息。记录截图报告和实际输入途径。`STALE_TARGET` 或连接中断后要先检查送达情况，防止重复执行。原生候选窗、系统快捷键和系统手势用 OS 输入单独验证。

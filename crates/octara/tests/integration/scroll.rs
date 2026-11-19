@@ -1,7 +1,9 @@
 //! Scroll containers (Tailwind `overflow-*`) and virtual lists inside them.
 
 use octara::app::Event;
+use octara::inspect::{self, Delivery, ScrollResult};
 use octara::prelude::*;
+use serde_json::json;
 
 fn rows(n: usize) -> Vec<View> {
     (0..n).map(|i| text(format!("row {i}")).id(format!("r{i}")).into()).collect()
@@ -42,6 +44,93 @@ fn a_scroll_container_bounds_its_content_and_scrolls() {
     drop(k);
     let err = app.dispatch(Event::Scroll("header".into(), 0.0, 10.0)).unwrap_err();
     assert!(err.contains("overflow_y_scroll"), "{err}");
+}
+
+#[test]
+fn inspector_scroll_reports_clamped_movement_for_the_bound_viewport() {
+    let mut app = Window::headless(|| col().id("viewport").w(100).h(80).overflow_y_scroll().child(el().h(220).flex_shrink_0()));
+    let target = app.inspect().find("viewport").unwrap().target.clone();
+    let scroll = |app: &mut Window, dx, dy| {
+        let request = json!({"op": "scroll", "target": target, "dx": dx, "dy": dy});
+        inspect::handle_line(app, &request.to_string())
+    };
+    let wrong_axis = scroll(&mut app, 10, 0);
+    assert_eq!(wrong_axis.code.as_deref(), Some("STEP_FAILED"));
+    assert_eq!(wrong_axis.delivery, Some(Delivery::Refused));
+    assert!(wrong_axis.scroll.is_none());
+    for (dy, y, moved) in [(70, 70.0, 70.0), (100, 140.0, 70.0), (120, 140.0, 0.0), (-40, 100.0, -40.0)] {
+        let reply = scroll(&mut app, 0, dy);
+        assert!(reply.ok, "{reply:?}");
+        assert_eq!(reply.delivery, Some(Delivery::Delivered));
+        assert_eq!(reply.scroll, Some(ScrollResult { offset: [0.0, y], delta: [0.0, moved] }));
+    }
+    let nonfinite = inspect::handle(&mut app, inspect::Request::Scroll { id: Some("viewport".into()), dx: 0.0, dy: f32::INFINITY });
+    assert_eq!(nonfinite.code.as_deref(), Some("BAD_REQUEST"));
+    assert_eq!(nonfinite.delivery, Some(Delivery::Refused));
+
+    app.app().hot_reload();
+    let stale = scroll(&mut app, 0, -120);
+    assert_eq!(stale.code.as_deref(), Some("STALE_TARGET"));
+    assert_eq!(stale.delivery, Some(Delivery::Refused));
+    assert!(stale.scroll.is_none());
+    let kernel = app.kernel();
+    assert_eq!(kernel.scroll_offset(kernel.find("viewport").unwrap()), (0.0, 100.0));
+}
+
+#[test]
+fn addressed_scrolls_share_target_and_axis_qualification() {
+    const REJECTED: [(&str, f32, f32); 5] =
+        [("plain", 0.0, 0.0), ("absent", 0.0, 10.0), ("repeated", 0.0, 10.0), ("vertical", 10.0, 25.0), ("horizontal", 0.0, 10.0)];
+    let mut app = Window::headless(|| {
+        on_command("scroll.invalid", || {
+            for (id, x, y) in REJECTED {
+                assert!(!scroll_to(id, x, y), "{id} cannot accept this request");
+            }
+            for id in ["plain", "absent", "repeated", "horizontal"] {
+                assert!(!scroll_to_end(id), "{id} cannot scroll to the vertical end");
+            }
+        });
+        on_command("scroll.valid", || {
+            assert!(scroll_to("horizontal", 15.0, 0.0));
+            assert!(scroll_to("both", 12.0, 20.0));
+            assert!(scroll_to_end("both"));
+            assert!(scroll_to_end("vertical"));
+        });
+        on_command("scroll.at-boundary", || {
+            assert!(scroll_to("vertical", 0.0, f32::MAX));
+            assert!(scroll_to_end("both"));
+        });
+
+        let vertical = |id| col().id(id).w(100).h(80).overflow_y_scroll().child(el().h(220).flex_shrink_0());
+        col()
+            .child(text("Plain text").id("plain"))
+            .child(vertical("vertical"))
+            .child(vertical("repeated"))
+            .child(vertical("repeated"))
+            .child(row().id("horizontal").w(100).h(40).overflow_x_scroll().child(el().w(240).flex_shrink_0()))
+            .child(col().id("both").w(100).h(80).overflow_x_scroll().overflow_y_scroll().child(el().w(240).h(220).flex_shrink_0()))
+    });
+
+    app.invoke("scroll.invalid").unwrap();
+    for (id, x, y) in REJECTED {
+        assert!(app.dispatch(Event::ScrollTo(id.into(), x, y)).is_err(), "{id}");
+        assert!(app.dispatch(Event::Scroll(id.into(), x, y)).is_err(), "{id}");
+    }
+    {
+        let k = app.kernel();
+        for node in k.find_all("repeated").into_iter().chain(k.find("vertical")).chain(k.find("horizontal")) {
+            assert_eq!(k.scroll_offset(node), (0.0, 0.0));
+        }
+    }
+
+    app.invoke("scroll.valid").unwrap();
+    app.invoke("scroll.at-boundary").unwrap();
+    app.dispatch(Event::Scroll("vertical".into(), 0.0, 25.0)).unwrap();
+    app.dispatch(Event::ScrollTo("vertical".into(), 0.0, f32::MAX)).unwrap();
+    let k = app.kernel();
+    assert_eq!(k.scroll_offset(k.find("horizontal").unwrap()), (15.0, 0.0));
+    assert_eq!(k.scroll_offset(k.find("vertical").unwrap()), (0.0, 140.0));
+    assert_eq!(k.scroll_offset(k.find("both").unwrap()), (12.0, 140.0), "scrolling to the end keeps the horizontal position");
 }
 
 #[test]

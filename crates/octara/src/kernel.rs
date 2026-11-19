@@ -57,6 +57,21 @@ fn hex(c: Color) -> String {
 
 pub(crate) use octara_primitives::layout::{Align, Placed, Placement, Side};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NameError {
+    Missing,
+    Ambiguous(usize),
+}
+
+impl NameError {
+    pub(crate) fn message(self, id: &str) -> String {
+        match self {
+            Self::Missing => format!("no element has test id `{id}`"),
+            Self::Ambiguous(count) => format!("{count} elements have test id `{id}`. Inspect to choose an instance."),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Nodes
 // ---------------------------------------------------------------------------------------------
@@ -958,6 +973,9 @@ impl Kernel {
 
     pub fn is_alive(&self, id: NodeId) -> bool {
         self.nodes.contains_key(id)
+    }
+    pub(crate) fn is_mounted(&self, id: NodeId) -> bool {
+        self.nodes.get(id).is_some_and(|node| node.attached)
     }
     /// The content kind chosen when the node was created.
     pub fn kind(&self, id: NodeId) -> Kind {
@@ -2300,6 +2318,14 @@ impl Kernel {
         let o = self.node(id).layout.overflow;
         (o.x == taffy::Overflow::Scroll, o.y == taffy::Overflow::Scroll)
     }
+
+    /// Whether an addressed scroll can use its requested axes. A zero request
+    /// still names a scrolling viewport, even when its offset is already at the destination.
+    pub(crate) fn accepts_scroll(&self, id: NodeId, x: f32, y: f32) -> bool {
+        let (scrolls_x, scrolls_y) = self.scrollable(id);
+        (scrolls_x || scrolls_y) && (scrolls_x || x == 0.0) && (scrolls_y || y == 0.0)
+    }
+
     /// Constraints shared by resident and currently unmounted virtual rows. The content box
     /// excludes padding; viewport changes can also select different responsive row styles.
     pub(crate) fn virtual_constraints(&self, id: NodeId) -> ((f32, f32), (f32, f32), TextStyle, u64, u64) {
@@ -2528,15 +2554,23 @@ impl Kernel {
 
     // ---- queries by test id ----
 
-    /// An attached node with this test id, O(1).
+    pub(crate) fn named_node(&self, id: &str) -> Result<NodeId, NameError> {
+        match self.index.get(id).map_or(&[][..], Vec::as_slice) {
+            [node] => Ok(*node),
+            [] => Err(NameError::Missing),
+            many => Err(NameError::Ambiguous(many.len())),
+        }
+    }
+
+    /// The unique mounted node with this test id, O(1). Use `find_all` for repeated IDs.
     pub fn find(&self, test_id: &str) -> Option<NodeId> {
-        self.index.get(test_id).and_then(|v| v.first().copied())
+        self.named_node(test_id).ok()
     }
     pub fn find_all(&self, test_id: &str) -> Vec<NodeId> {
         self.index.get(test_id).cloned().unwrap_or_default()
     }
     pub fn exists(&self, test_id: &str) -> bool {
-        self.find(test_id).is_some()
+        self.index.contains_key(test_id)
     }
     pub fn text_of(&self, test_id: &str) -> Option<String> {
         self.find(test_id).map(|id| self.text(id).to_owned())

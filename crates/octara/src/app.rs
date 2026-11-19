@@ -25,6 +25,7 @@ pub use asks::menu_surface;
 pub use config::AppConfig;
 pub use edit::{TextField, byte_offset, utf16_offset};
 pub use event::{FileDrag, InputEvent, Recorded, Recording};
+pub(crate) use guard::GuardTarget;
 pub use guard::TargetGuard;
 pub use keys::{BUILTIN_COMMANDS, Binding, Chord, Key, KeyEvent, Keymap};
 pub(crate) use octara_primitives::text::TextEdit;
@@ -65,6 +66,22 @@ pub enum Event {
     /// Text sent to the channel named by `Receiver::named` (as `App::send`): data arriving
     /// from outside.
     Send(String, String),
+}
+
+impl Event {
+    fn test_id(&self) -> Option<&str> {
+        match self {
+            Self::Press(id)
+            | Self::Input(id, _)
+            | Self::NumericInput(id, _)
+            | Self::Toggle(id)
+            | Self::Hover(id, _)
+            | Self::Focus(id)
+            | Self::Scroll(id, ..)
+            | Self::ScrollTo(id, ..) => Some(id),
+            Self::Blur | Self::Send(..) => None,
+        }
+    }
 }
 
 /// The platform an app runs on, for its conventions: the shortcut modifier (Command on Apple
@@ -597,11 +614,6 @@ impl WindowState {
     }
 }
 
-/// The offset a scroll event starts from: the current one for `Scroll`, the origin for `ScrollTo`.
-fn n_offset(k: &Kernel, n: crate::kernel::NodeId, relative: bool) -> (f32, f32) {
-    if relative { k.scroll_offset(n) } else { (0.0, 0.0) }
-}
-
 /// States the runtime drives; `SELECTED` and `DISABLED` come from element props.
 const RUNTIME_STATES: State = State::HOVER.union(State::FOCUSED).union(State::FOCUS_VISIBLE).union(State::PRESSED).union(State::DRAG_OVER);
 
@@ -1107,16 +1119,23 @@ impl Window {
     /// Moves keyboard focus to `n`, which must be focusable and enabled (`None` blurs). The
     /// ring shows if the last input was the keyboard.
     pub(crate) fn set_focus(&self, n: Option<NodeId>) -> Result<(), String> {
-        let modal = self.top_modal();
-        let mut i = self.w.interaction.borrow_mut();
-        let mut k = self.w.kernel.borrow_mut();
+        self.change_focus(n, None)
+    }
+
+    fn change_focus(&self, n: Option<NodeId>, modality: Option<Modality>) -> Result<(), String> {
         if let Some(n) = n {
-            let name = k.test_id(n).unwrap_or("element").to_owned();
-            k.check_activation(n, modal).map_err(|why| format!("`{name}` {why}"))?;
+            let k = self.kernel();
+            let name = if k.is_alive(n) { k.test_id(n).unwrap_or("element") } else { "element" };
+            k.check_activation(n, self.top_modal()).map_err(|why| format!("`{name}` {}", why.message(&k)))?;
             if !k.is_focusable(n) {
                 return Err(format!("`{name}` is not focusable"));
             }
         }
+        if let Some(modality) = modality {
+            self.set_modality(modality);
+        }
+        let mut i = self.w.interaction.borrow_mut();
+        let mut k = self.w.kernel.borrow_mut();
         if i.focused == n {
             return Ok(());
         }
@@ -1152,37 +1171,37 @@ impl Window {
     }
 
     /// Applies a runtime-driven state change; `Err` if the target cannot take it.
-    fn interact(&self, ev: &Event) -> Result<(), String> {
-        let find = |id: &str| self.w.kernel.borrow().find(id).ok_or(format!("no node with test id `{id}`"));
+    fn interact(&self, ev: &Event, node: Option<NodeId>) -> Result<(), String> {
+        let target = || node.expect("a node event was resolved");
         match ev {
             Event::Hover(id, on) => {
-                let n = find(id)?;
+                let n = target();
                 if *on {
+                    {
+                        let k = self.kernel();
+                        k.check_interaction_scope(n, self.top_modal()).map_err(|why| format!("`{id}` {}", why.message(&k)))?;
+                    }
                     self.set_hover(Some(n));
                 } else if self.w.interaction.borrow().hover_chain.contains(&n) {
                     self.set_hover(None);
                 }
             }
-            Event::Focus(id) => {
-                let n = find(id)?;
-                self.set_modality(Modality::Keyboard);
-                self.set_focus(Some(n))?
+            Event::Focus(_) => {
+                self.change_focus(Some(target()), Some(Modality::Keyboard))?;
             }
             Event::Blur => self.set_focus(None)?,
             Event::Scroll(id, dx, dy) | Event::ScrollTo(id, dx, dy) => {
                 let mut k = self.w.kernel.borrow_mut();
-                let n = k.find(id).ok_or(format!("no node with test id `{id}`"))?;
-                let (sx, sy) = k.scrollable(n);
-                let o = n_offset(&k, n, matches!(ev, Event::Scroll(..)));
-                if (*dx != 0.0 && !sx) || (*dy != 0.0 && !sy) || (!sx && !sy) {
+                let n = target();
+                if !k.accepts_scroll(n, *dx, *dy) {
                     return Err(format!("`{id}` does not scroll on that axis: give it `overflow_y_scroll()` (or `overflow_x_scroll()`)"));
                 }
                 if matches!(ev, Event::ScrollTo(..)) {
-                    // A program's request: it glides where layout moves.
-                    k.glide_scroll(n, o.0 + dx, o.1 + dy);
+                    k.glide_scroll(n, *dx, *dy);
                 } else {
+                    let (x, y) = k.scroll_offset(n);
                     k.stop_glide(n);
-                    k.scroll_to(n, o.0 + dx, o.1 + dy);
+                    k.scroll_to(n, x + dx, y + dy);
                 }
             }
             _ => unreachable!("only interaction events"),
@@ -1190,7 +1209,7 @@ impl Window {
         Ok(())
     }
 
-    fn handler_for(&self, ev: &Event) -> Result<ScopedHandler, String> {
+    fn handler_for(&self, ev: &Event, node: NodeId) -> Result<ScopedHandler, String> {
         let (id, kind) = match ev {
             Event::Press(id) => (id, HandlerKind::Press),
             Event::Input(id, _) => (id, HandlerKind::Input),
@@ -1202,8 +1221,7 @@ impl Window {
             Event::Send(..) => unreachable!("sends go to channels"),
         };
         let k = self.w.kernel.borrow();
-        let node = k.find(id).ok_or(format!("no node with test id `{id}`"))?;
-        k.check_activation(node, self.top_modal()).map_err(|why| format!("`{id}` {why}"))?;
+        k.check_activation(node, self.top_modal()).map_err(|why| format!("`{id}` {}", why.message(&k)))?;
         if kind == HandlerKind::NumericInput && !k.preedit(node).is_empty() {
             return Err(format!("`{id}` has an active input-method composition"));
         }
@@ -1362,11 +1380,24 @@ impl Window {
     }
     /// Runs the event's handler, applies every update and lays out, like one frame.
     pub fn dispatch(&mut self, ev: Event) -> Result<(), String> {
-        self.check_running()?;
-        self.app.record(self.w.id, &InputEvent::Semantic(ev.clone()));
-        self.on_semantic(ev)
+        self.dispatch_semantic(ev, None)
     }
-    pub(crate) fn on_semantic(&mut self, ev: Event) -> Result<(), String> {
+
+    pub(crate) fn dispatch_to(&mut self, ev: Event, node: NodeId) -> Result<(), String> {
+        self.dispatch_semantic(ev, Some(node))
+    }
+
+    fn dispatch_semantic(&mut self, ev: Event, node: Option<NodeId>) -> Result<(), String> {
+        self.check_running()?;
+        let input = match node {
+            Some(node) => InputEvent::SemanticAt { node, event: ev.clone() },
+            None => InputEvent::Semantic(ev.clone()),
+        };
+        self.app.record(self.w.id, &input);
+        self.on_semantic(ev, node)
+    }
+
+    fn on_semantic(&mut self, ev: Event, bound: Option<NodeId>) -> Result<(), String> {
         self.check_running()?;
         if let Event::NumericInput(_, value) = &ev
             && !value.is_finite()
@@ -1374,10 +1405,17 @@ impl Window {
             return Err("numeric input requires a finite value".into());
         }
         self.enter(|| {
+            let node = match (ev.test_id(), bound) {
+                (Some(_), Some(node)) if self.kernel().is_mounted(node) => Some(node),
+                (Some(_), Some(_)) => return Err("the semantic target is no longer mounted".into()),
+                (Some(id), None) => Some(self.kernel().named_node(id).map_err(|error| error.message(id))?),
+                (None, Some(_)) => return Err("the semantic event targets the window".into()),
+                (None, None) => None,
+            };
             let cause = self.app.next_cause.get() + 1;
             if matches!(ev, Event::Hover(..) | Event::Focus(_) | Event::Blur | Event::Scroll(..) | Event::ScrollTo(..)) {
                 self.w.kernel.borrow_mut().set_cause(Some(cause));
-                let r = self.interact(&ev);
+                let r = self.interact(&ev, node);
                 if r.is_err() {
                     self.w.kernel.borrow_mut().set_cause(None);
                     return r;
@@ -1397,11 +1435,11 @@ impl Window {
                 self.w.kernel.borrow_mut().set_cause(None);
                 return r;
             }
-            let h = self.handler_for(&ev)?;
+            let node = node.expect("a handler event resolved its target");
+            let h = self.handler_for(&ev, node)?;
             self.app.next_cause.set(cause);
             self.w.kernel.borrow_mut().set_cause(Some(cause));
-            if let Event::Input(id, value) = ev {
-                let node = self.w.kernel.borrow().find(&id).expect("handler target was validated");
+            if let Event::Input(_, value) = ev {
                 let delivered = self.set_value_of(node, value);
                 self.settle_frame();
                 self.w.kernel.borrow_mut().set_cause(None);
