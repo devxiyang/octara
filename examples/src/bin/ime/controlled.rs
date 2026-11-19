@@ -65,6 +65,15 @@ pub(super) fn view() -> El {
     let retired = state("retired", || None::<Retired>);
     let report = state("delivery", || "Ready");
 
+    on_command("ime-control.select-emoji", move || {
+        let Some(mut window) = App::current().window(id) else { return };
+        let snapshot = window.inspect();
+        if snapshot.focus.as_deref() == Some(PRIMARY)
+            && snapshot.text_input.is_some_and(|input| input.text == SEED && input.marked.is_none())
+        {
+            window.set_selection(5, 1);
+        }
+    });
     on_command("ime-control.refresh", move || refresh.update(|n| *n += 1));
     on_command("ime-control.replace", move || value.set("R😀S".to_owned()));
     on_command("ime-control.reject", move || reject.set(true));
@@ -96,12 +105,10 @@ pub(super) fn view() -> El {
         report.set(if delivered { "Delivered" } else { "Refused" });
     });
 
-    col()
-        .size_full()
-        .p_6()
-        .gap_3()
-        .bg(Token::Surface)
-        .child(text("Controlled Chinese input").text_xl().font_semibold())
+    let body = col().size_full().p_6().gap_3().bg(Token::Surface);
+    #[cfg(target_os = "ios")]
+    let body = body.pt_16();
+    body.child(text("Controlled Chinese input").text_xl().font_semibold())
         .child(
             text_input()
                 .id(PRIMARY)

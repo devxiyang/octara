@@ -71,3 +71,49 @@ python3 examples/ime_window.py --scene rename
 | 再次组词并执行 `ime-control.capture`，用指针切换到第二框，执行 `ime-control.deliver-retired` | 系统关闭旧候选窗。夹具用实测候选词和保存的旧文档在平台交付入口重放提交，结果为 `Refused`。第二框可以独立组词并提交 |
 
 用 manifest 的 socket 读取 `text_input` 和 `live.ime`。候选窗采样可指定 `--field ime-controlled` 或 `--field ime-controlled-other`，配对查看 AX 字段边界、选区和范围查询结果。选区不可读时采样器也会查询首字符的范围，记录实际状态码。结束后关闭验收窗口。 [验收实现](src/bin/ime/controlled.rs) · [macOS 实测记录](../docs/design/input.md#受控文本框实测)
+
+## iOS 模拟器
+
+在 Apple Silicon Mac 上启动 iPhone 模拟器，并将 `ios_ime_device` 设为 `xcrun simctl list devices booted` 输出的设备 UDID。
+
+```sh
+cargo build --locked -p octara-cli --bin octara
+IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build --locked -p octara-examples --bin ime --target aarch64-apple-ios-sim
+ios_ime_run=$(mktemp -d /tmp/octara-ios-ime.XXXXXX)
+python3 -B examples/ios_panel.py --scene controlled --device "$ios_ime_device" \
+  --binary target/aarch64-apple-ios-sim/debug/ime --output "$ios_ime_run/app"
+```
+
+在模拟器中点按 **Controlled value**。在另一终端将 `ios_ime_socket` 和 `ios_ime_receipt` 设为 `run.json` 中的 `socket` 和 `receipt`，然后反向选中 `A😀Z` 中的 emoji。
+
+```sh
+printf '%s\n' '{"op":"invoke","command":"ime-control.select-emoji"}' '{"op":"inspect"}' |
+  target/debug/octara run --connect "$ios_ime_socket" --require-build "$ios_ime_receipt" --json
+```
+
+切换到模拟器的系统简体拼音键盘并输入 `nihao`。每次操作后运行 `inspect`，读取 `text_input`、`live.ime` 和画面上的计数。用相同的 `invoke` 格式运行受控文本值一节的命令。
+
+```sh
+printf '%s\n' '{"op":"inspect"}' |
+  target/debug/octara run --connect "$ios_ime_socket" --require-build "$ios_ime_receipt" --json
+```
+
+结束时将 `ios_ime_bundle` 设为 `run.json` 中的 `bundle` 并终止测试应用。
+
+```sh
+xcrun simctl terminate "$ios_ime_device" "$ios_ime_bundle"
+```
+
+### iOS 拼音实测
+
+在 iOS 27.2 的 iPhone 17e 模拟器上，XCUITest 点按系统简体拼音键盘及候选。标准 `UITextField` 的候选替换回调先把「你好」写进标记区，随后 `unmarkText` 清除标记。UIKit 删除最后一个拼音字母后显示 `AZ`，失焦时也可尝试提交拼音草稿。[UIKit 文本输入协议](https://developer.apple.com/documentation/uikit/uitextinput)
+
+| Octara 操作 | Inspector 和设备回读 |
+| --- | --- |
+| 在反向选中的 emoji 上输入 `nihao` | 提交值为 `A😀Z`，标记 UTF‑16 范围为 `[1,7]`，提议数为 0 |
+| 点按系统候选「你好」 | `A你好Z`，标记清空，UTF‑16 光标为 `[3,3]`，提议数与接受数均为 1 |
+| 重新组词后用 Delete 删除最后一个字母 | 恢复 `A😀Z` 及反向 UTF‑16 选区 `[1,3]`，提议数与接受数均为 0 |
+| 模型拒绝候选，再组词后切换到第二框 | 拒绝只产生一笔提议，接受数为 0。第二框保持 `B😀Y`，重放已保存的旧会话编辑得到 `Refused` |
+| 点按字段外的状态区域 | 原生键盘消失，`live.ime.keyboard_top` 清空，视口恢复到 `390×844` |
+
+组词画面的光标位于约 `(84.5,102)` 点。在 3× 截图上，光标的深色像素位于 `x=254–255`、`y=306–365`，与 Inspector 几何吻合。Inspector 视口下沿和实际系统候选栏均位于 `y=515` 点。

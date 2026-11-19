@@ -22,9 +22,12 @@ rfd.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2.workspace = true
+objc2-foundation.workspace = true
 objc2-ui-kit = { workspace = true, features = [
     "std", "objc2-core-foundation",
-    "UIResponder", "UIScene", "UISceneOptions", "UISceneSession", "UIView", "UIWindow", "UIWindowScene",
+    "UIAccessibility", "UIColor", "UIControl", "UIEvent", "UIGeometry", "UIKeyboardLayoutGuide", "UILayoutGuide", "UITrackingLayoutGuide",
+    "UIResponder", "UIScene", "UISceneOptions", "UISceneSession", "UITextField", "UITextInput",
+    "UITextInputTraits", "UIView", "UIWindow", "UIWindowScene",
 ] }
 
 # Native views (AppKit, WebKit) and the frame's Core Animation transaction.

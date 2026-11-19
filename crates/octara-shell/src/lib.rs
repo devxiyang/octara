@@ -39,6 +39,8 @@ use winit::window::WindowId;
 mod ask_mac;
 mod capture;
 mod gesture;
+#[cfg(any(test, target_os = "ios"))]
+mod ime_draft;
 mod inspect;
 #[cfg(target_os = "macos")]
 mod menubar_mac;
@@ -52,6 +54,8 @@ mod resize;
 mod scene_ios;
 #[cfg(target_os = "macos")]
 mod scroll_mac;
+#[cfg(target_os = "ios")]
+mod text_input_ios;
 #[cfg(target_os = "macos")]
 mod text_input_mac;
 mod trace;
@@ -371,6 +375,43 @@ impl Shell {
         }
     }
 
+    #[cfg(target_os = "ios")]
+    fn native_text_ios(&mut self) {
+        use octara_primitives::text::TextEdit;
+        let Some(app) = self.app.clone() else { return };
+        for id in app.windows() {
+            let Some(mut window) = app.window(id) else { continue };
+            let Some(change) = ww(&window, |host| host.ios_input.as_mut()?.take()).flatten() else { continue };
+            let mut expected = change.expected.clone();
+            let accepted = if let Some(edit) = &change.edit {
+                expected.apply(edit);
+                window.apply_text_edit(change.owner, &change.expected, edit)
+            } else {
+                true
+            };
+            let current = ww(&window, |host| host.ios_input.as_ref().is_some_and(|input| input.is_current(&change))).unwrap_or(false);
+            if accepted && current {
+                if !matches!(change.edit, Some(TextEdit::Cancel))
+                    && let Some(range) = &change.selection
+                    && expected.selection().as_ref() != Some(range)
+                {
+                    window.apply_text_selection(change.owner, &expected, range.clone());
+                }
+                if change.submit
+                    && change.expected.marked().is_none()
+                    && ww(&window, |host| host.ios_input.as_ref().is_some_and(|input| input.is_current(&change))).unwrap_or(false)
+                {
+                    window.event(InputEvent::Key(KeyEvent::new(Key::Enter, Modifiers::empty())));
+                }
+            }
+            ww(&window, |host| {
+                if let Some(input) = &mut host.ios_input {
+                    input.reconcile(&change);
+                }
+            });
+        }
+    }
+
     /// The app window winit window `id` shows.
     fn window_of(&self, id: WindowId) -> Option<AppWindow> {
         let w = *self.shared.windows.borrow().get(&id)?;
@@ -450,6 +491,20 @@ impl Shell {
         let Some(app) = self.app.clone() else { return };
         for id in app.windows() {
             let Some(mut w) = app.window(id) else { continue };
+            #[cfg(target_os = "ios")]
+            if let Some((width, height, scale)) = ww(&w, |host| {
+                let size = host.drawable_size();
+                let scale = host.scale();
+                let width = size.width as f32 / scale;
+                let height = host.ios_input.as_ref().and_then(|input| input.keyboard_top()).unwrap_or(size.height as f32 / scale);
+                (!host.sized || w.size() != (width, height)).then_some((width, height, scale))
+            })
+            .flatten()
+            {
+                ww(&w, |host| host.sized = true);
+                w.event(InputEvent::Resize { width, height, scale });
+            }
+            #[cfg(not(target_os = "ios"))]
             if let Some((size, scale)) = ww(&w, |x| (!x.sized).then(|| (x.drawable_size(), x.scale()))).flatten() {
                 ww(&w, |x| x.sized = true);
                 w.event(InputEvent::Resize { width: size.width as f32 / scale, height: size.height as f32 / scale, scale });
@@ -641,6 +696,8 @@ impl Shell {
             return;
         }
         let _in = InLoop::enter(&self.shared, event_loop);
+        #[cfg(target_os = "ios")]
+        self.native_text_ios();
         #[cfg(target_os = "macos")]
         {
             self.native_text();
@@ -809,6 +866,9 @@ impl Shell {
         let _in = InLoop::enter(&self.shared, event_loop);
         // End the contact before the next clock tick can run a held gesture's deadline.
         let held = window.held_pointer();
+        if let Some((owner, expected)) = ww(&window, |host| host.ios_input.as_mut()?.set_active(active)).flatten() {
+            window.apply_text_edit(owner, &expected, &octara_primitives::text::TextEdit::Cancel);
+        }
         window.event(InputEvent::Active(active));
         if self.shared.trace {
             eprintln!(
@@ -839,6 +899,8 @@ impl Shell {
             }
             return;
         }
+        #[cfg(target_os = "ios")]
+        self.native_text_ios();
         #[cfg(target_os = "macos")]
         {
             self.native_text();

@@ -155,6 +155,13 @@ impl Platform for WinitPlatform {
         surface.configure(g.renderer.device(), &config);
         drop(gpu);
         let wid = window.id();
+        #[cfg(target_os = "ios")]
+        let ios_input = {
+            let proxy = shared.proxy.clone();
+            super::text_input_ios::TextInputIos::new(&window, move || {
+                let _ = proxy.send_event(ShellEvent::Wake);
+            })
+        };
         #[cfg(target_os = "macos")]
         let text_input = {
             let proxy = shared.proxy.clone();
@@ -182,6 +189,8 @@ impl Platform for WinitPlatform {
             surface,
             config,
             a11y,
+            #[cfg(target_os = "ios")]
+            ios_input,
             #[cfg(target_os = "macos")]
             text_input,
             #[cfg(target_os = "macos")]
@@ -290,6 +299,8 @@ pub(crate) struct WinitWindow {
     surface: wgpu::Surface<'static>,
     pub(crate) config: wgpu::SurfaceConfiguration,
     pub(crate) a11y: accesskit_winit::Adapter,
+    #[cfg(target_os = "ios")]
+    pub(crate) ios_input: Option<super::text_input_ios::TextInputIos>,
     #[cfg(target_os = "macos")]
     pub(crate) text_input: Option<super::text_input_mac::TextInputMac>,
     #[cfg(target_os = "macos")]
@@ -600,6 +611,12 @@ impl WinitWindow {
             }
             state
         }
+        #[cfg(target_os = "ios")]
+        if let Some(input) = &self.ios_input {
+            let mut state = state;
+            state["ime"] = input.inspect();
+            return state;
+        }
         #[cfg(not(target_os = "macos"))]
         {
             state
@@ -618,6 +635,17 @@ impl WinitWindow {
     /// The input method's candidate window follows the caret. Only a focused, non-secure field
     /// enables composition; secure fields also enable the platform's secure keyboard input.
     fn text_input(&mut self, input: Option<&TextInput>) {
+        #[cfg(target_os = "ios")]
+        if self.ios_input.is_some() {
+            let use_uikit = input.is_some_and(|input| !input.multiline && input.document.is_some());
+            if use_uikit {
+                self.set_ime_allowed(false);
+            }
+            self.ios_input.as_mut().expect("UIKit editor exists").update(input);
+            if use_uikit {
+                return;
+            }
+        }
         #[cfg(target_os = "macos")]
         {
             // The owned native client interprets text; winit only translates physical keys.

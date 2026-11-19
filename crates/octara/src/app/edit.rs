@@ -369,32 +369,57 @@ impl Window {
     pub fn apply_text_edit(&mut self, owner: NodeId, expected: &TextDocument, edit: &TextEdit) -> bool {
         let mut accepted = false;
         self.input_frame(|| {
-            let Some((id, ..)) = self.field() else { return };
-            let mut document = {
-                let k = self.w.kernel.borrow();
-                if id != owner || k.is_secure(id) || k.edit_pending(id) {
-                    return;
-                }
-                let Some(document) = k.text_document(id) else { return };
-                if &document != expected {
-                    return;
-                }
-                document
-            };
+            let Some(mut document) = self.platform_document(owner, expected) else { return };
             let composing = document.composition.is_some();
             document.apply(edit);
             accepted = true;
             match edit {
                 TextEdit::Insert { .. } | TextEdit::Unmark if composing || matches!(edit, TextEdit::Insert { .. }) => {
-                    accepted =
-                        self.apply(id, document.value, document.anchor, document.caret, if composing { Kind::Other } else { Kind::Insert });
+                    accepted = self.apply(
+                        owner,
+                        document.value,
+                        document.anchor,
+                        document.caret,
+                        if composing { Kind::Other } else { Kind::Insert },
+                    );
                 }
                 _ => {
-                    self.w.kernel.borrow_mut().set_composition(id, document.composition);
+                    self.w.kernel.borrow_mut().set_composition(owner, document.composition);
                 }
             }
         });
         accepted
+    }
+
+    /// Updates a native selection in displayed UTF-8 bytes using the same owner and
+    /// document checks as [`apply_text_edit`](Self::apply_text_edit).
+    pub fn apply_text_selection(&mut self, owner: NodeId, expected: &TextDocument, selection: Range<usize>) -> bool {
+        let mut accepted = false;
+        self.input_frame(|| {
+            let Some(document) = self.platform_document(owner, expected) else { return };
+            let start = crate::kernel::floor_boundary(document.text(), selection.start);
+            let end = crate::kernel::floor_boundary(document.text(), selection.end);
+            let selection = start.min(end)..start.max(end);
+            if document.selection().as_ref() != Some(&selection) {
+                if let Some(mut composition) = document.composition {
+                    composition.selection = Some(selection);
+                    self.w.kernel.borrow_mut().set_composition(owner, Some(composition));
+                } else {
+                    self.select_field(owner, selection.start, selection.end);
+                }
+            }
+            accepted = true;
+        });
+        accepted
+    }
+
+    fn platform_document(&self, owner: NodeId, expected: &TextDocument) -> Option<TextDocument> {
+        let (id, ..) = self.field()?;
+        let kernel = self.w.kernel.borrow();
+        if id != owner || kernel.is_secure(id) || kernel.edit_pending(id) {
+            return None;
+        }
+        kernel.text_document(id).filter(|document| document == expected)
     }
 
     /// What an input method is composing in the focused field (pinyin before it becomes 汉字):

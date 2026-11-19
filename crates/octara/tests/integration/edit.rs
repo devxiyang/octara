@@ -1072,6 +1072,7 @@ fn native_batch_continuations_require_the_accepted_document() {
         assert_ne!(accepted, native_result);
         let tail = TextEdit::Insert { text: "late".into(), replacement: None };
         assert!(!app.apply_text_edit(before.id, &native_result, &tail));
+        assert!(!app.apply_text_selection(before.id, &native_result, 0..0));
         assert_eq!(calls.get(), 1, "the stale tail never reaches application code");
         assert_eq!(value(&app), if reject { "ab" } else { "a😀b" });
         assert_eq!(selection(&app), if reject { 1..1 } else { 5..5 });

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a built panel_scroll executable on a booted iOS simulator."""
+"""Run a built panel or IME fixture on a booted iOS simulator."""
 
 import argparse
 import hashlib
@@ -15,32 +15,36 @@ from uuid import uuid4
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", required=True, help="UDID of the booted simulator")
-    parser.add_argument("--binary", type=Path, required=True, help="panel_scroll built for aarch64-apple-ios-sim")
+    parser.add_argument("--scene", choices=("panel", "controlled"), default="panel", help="panel_scroll (default) or controlled IME")
+    parser.add_argument("--binary", type=Path, required=True, help="fixture executable built for aarch64-apple-ios-sim")
     parser.add_argument("--output", type=Path, required=True, help="new directory for the app, socket, receipt and logs")
     args = parser.parse_args()
     if not args.binary.is_file():
         parser.error(f"executable was not found: {args.binary}")
+    controlled = args.scene == "controlled"
+    fixture = "ime" if controlled else "panel"
+    name = "Octara Controlled IME" if controlled else "Octara Panel"
     output = args.output.resolve()
-    endpoint = output / "panel.sock"
+    endpoint = output / f"{fixture}.sock"
     if len(os.fsencode(endpoint)) >= 104:
         parser.error("choose a shorter output path for the Unix socket")
     output.mkdir()
 
-    app = output / "Octara Panel.app"
+    app = output / f"{name}.app"
     app.mkdir()
-    executable = app / "panel_scroll"
+    executable = app / ("ime" if controlled else "panel_scroll")
     shutil.copy2(args.binary, executable)
     digest = hashlib.sha256()
     with executable.open("rb") as stream:
         for block in iter(lambda: stream.read(1_048_576), b""):
             digest.update(block)
     build = digest.hexdigest()
-    bundle = f"dev.octara.panel.{uuid4().hex}"
+    bundle = f"dev.octara.{fixture}.{uuid4().hex}"
     with (app / "Info.plist").open("wb") as stream:
         plistlib.dump({
             "CFBundleExecutable": executable.name,
             "CFBundleIdentifier": bundle,
-            "CFBundleName": "Octara Panel",
+            "CFBundleName": name,
             "CFBundlePackageType": "APPL",
             "CFBundleSupportedPlatforms": ["iPhoneSimulator"],
             "CFBundleShortVersionString": "1.0",
@@ -69,6 +73,8 @@ def main():
         "SIMCTL_CHILD_OCTARA_INSPECT_BUILD": build,
         "SIMCTL_CHILD_OCTARA_TRACE_INPUT": "1",
     }
+    if controlled:
+        env["SIMCTL_CHILD_OCTARA_IME_SCENE"] = args.scene
     trace = output / "console.log"
     run = {
         "device": args.device,

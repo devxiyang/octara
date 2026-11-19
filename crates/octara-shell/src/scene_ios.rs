@@ -81,7 +81,7 @@ pub(crate) fn drawable_size(window: &Window) -> PhysicalSize<u32> {
     LogicalSize::new(bounds.size.width, bounds.size.height).to_physical(view.contentScaleFactor())
 }
 
-fn ui_view(window: &Window) -> Result<Retained<UIView>, String> {
+pub(crate) fn ui_view(window: &Window) -> Result<Retained<UIView>, String> {
     let handle = window.window_handle().map_err(|why| why.to_string())?;
     let RawWindowHandle::UiKit(handle) = handle.as_raw() else { return Err("the window has no UIKit view".into()) };
     // SAFETY: Called on the UI thread. The winit window keeps its UIKit view alive.
