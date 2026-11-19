@@ -283,11 +283,9 @@ pub(crate) struct WindowState {
     capturing: RefCell<Option<crate::capture::Capturing>>,
     /// Picking an element to hand to an agent.
     picking: RefCell<pick::Picking>,
-    /// The document selection (a selectable region's), and the texts it marked last.
+    /// The document selection and its projection at the last presentation.
     selection: RefCell<Option<selection::DocSelection>>,
-    selected_texts: RefCell<Vec<NodeId>>,
-    /// The region whose selection assistive technology was given.
-    selection_region: Cell<Option<NodeId>>,
+    marked_selection: RefCell<selection::MarkedSelection>,
     /// Requests waiting for an answer, those to present, those withdrawn, the next number.
     asks: RefCell<Vec<asks::Pending>>,
     asks_new: RefCell<Vec<(crate::ask::AskId, crate::ask::Ask)>>,
@@ -601,8 +599,7 @@ impl WindowState {
             capturing: RefCell::default(),
             picking: RefCell::default(),
             selection: RefCell::default(),
-            selected_texts: RefCell::default(),
-            selection_region: Cell::new(None),
+            marked_selection: RefCell::default(),
             asks: RefCell::default(),
             asks_new: RefCell::default(),
             asks_withdrawn: RefCell::default(),
@@ -1303,13 +1300,9 @@ impl Window {
     pub fn layout_issues(&self) -> Vec<crate::kernel::LayoutIssue> {
         self.w.kernel.borrow().layout_issues()
     }
-    /// The semantic tree and app state as the Inspector protocol gives them (see
-    /// [`crate::inspect`]).
+    /// Reads the semantic tree and app state for the Inspector protocol without settling the
+    /// window or evaluating application callbacks. See [`crate::inspect`].
     pub fn inspect(&self) -> crate::inspect::Snapshot {
-        // Selection extraction may mount virtual rows and trigger a consistency rebuild.
-        // Complete that work before borrowing the tree or sampling any allocation targets.
-        // Failed apps must not execute selection extraction.
-        let selection = (!self.app.failed.get()).then(|| self.selected_text()).flatten().map(|t| t.chars().take(2000).collect());
         let (w, h) = self.size();
         let k = self.w.kernel.borrow();
         let focus = self.w.interaction.borrow().focused.filter(|n| k.is_alive(*n)).and_then(|n| k.test_id(n).map(str::to_owned));
@@ -1332,7 +1325,7 @@ impl Window {
             pending: self.app().pending().len(),
             window: self.w.id.number(),
             target: crate::inspect::window_target(&k),
-            selection,
+            selection: self.selection_preview(&k),
             asks: self.asks().into_iter().map(|(id, ask)| crate::inspect::AskInfo { id, ask }).collect(),
             windows: self
                 .app()

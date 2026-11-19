@@ -117,7 +117,7 @@ class Client:
         if self.window is not None:
             request["window"] = self.window
         snapshot = self.request(request)["snapshot"]
-        require(snapshot.get("schema") == "octara.inspect/1", "unexpected snapshot schema")
+        require(snapshot.get("schema") == "octara.inspect/2", "unexpected snapshot schema")
         target(snapshot)
         self.snapshot, self.window = snapshot, snapshot["window"]
         return snapshot

@@ -1,7 +1,7 @@
 //! The Inspector protocol: snapshots of the semantic tree, requests, and scripts of them.
 
 use octara::app::InputEvent;
-use octara::inspect::{self, Request};
+use octara::inspect::{self, Request, SelectionPreview};
 use octara::prelude::*;
 use octara::reactive::untrack;
 use std::cell::{Cell, RefCell};
@@ -25,7 +25,7 @@ fn view() -> View {
 fn a_snapshot_is_the_semantic_tree() {
     let app = Window::headless(view);
     let snap = app.inspect();
-    assert_eq!(snap.schema, "octara.inspect/1");
+    assert_eq!(snap.schema, "octara.inspect/2");
     assert_eq!(snap.theme, "light");
     let inc = snap.find("inc").unwrap();
     assert_eq!(inc.name.as_deref(), Some("Increment"));
@@ -41,23 +41,44 @@ fn a_snapshot_is_the_semantic_tree() {
 }
 
 #[test]
-fn consistency_inspection_samples_targets_after_selection_work() {
+fn inspection_does_not_trigger_a_consistency_rebuild() {
     let mut window = Window::headless(|| col().size_full().selectable().child(text("中文 hello").id("text")));
     window.select(("text", 0), ("text", 6)).unwrap();
-    assert_eq!(window.inspect().selection.as_deref(), Some("中文"));
+    let selected = window.inspect();
+    assert_eq!(selected.selection, Some(SelectionPreview { preview: "中文".into(), complete: true }));
+    assert_eq!(serde_json::from_str::<inspect::Snapshot>(&selected.to_json()).unwrap(), selected);
     window.app().set_check_consistency(true);
-    // Consistency rebuilds intentionally retire document selection.
-    let _ = window.selected_text();
     for _ in 0..2 {
-        let snapshot = window.inspect();
-        assert_eq!(snapshot.selection, None);
-        assert_eq!(snapshot.target, window.target());
-        assert_eq!(snapshot.windows.iter().find(|w| w.window == snapshot.window).unwrap().target, snapshot.target);
-        let text = snapshot.find("text").unwrap();
-        assert_eq!(text.name.as_deref(), Some("中文 hello"));
-        assert!(!text.target.is_empty());
+        let snapshot = inspect::handle(&mut window, Request::Inspect).snapshot.unwrap();
+        assert_eq!(*snapshot, selected);
     }
+    // Explicit extraction enters the app, so the consistency check can retire the selection.
+    let _ = window.selected_text();
+    let snapshot = window.inspect();
+    assert_eq!(snapshot.selection, None);
+    assert_eq!(snapshot.target, window.target());
+    assert_ne!(snapshot.target, selected.target);
     assert!(window.app().diagnostics().is_empty());
+}
+
+#[test]
+fn selection_preview_stops_at_unicode_boundaries_and_reports_truncation() {
+    let exact = "🙂".repeat(2_000);
+    let whole = format!("{exact}末");
+    let mut window = Window::headless({
+        let whole = whole.clone();
+        move || col().id("doc").selectable().child(text(whole.clone()).id("text"))
+    });
+    window.select(("text", 0), ("text", exact.len())).unwrap();
+    assert_eq!(window.inspect().selection, Some(SelectionPreview { preview: exact.clone(), complete: true }));
+
+    window.select_all("doc").unwrap();
+    assert_eq!(window.inspect().selection, Some(SelectionPreview { preview: exact, complete: false }));
+    assert_eq!(window.selected_text().as_deref(), Some(whole.as_str()));
+
+    window.select(("text", 1), ("text", 5)).unwrap();
+    assert_eq!(window.inspect().selection, Some(SelectionPreview { preview: "🙂".into(), complete: true }));
+    assert_eq!(window.selected_text().as_deref(), Some("🙂"));
 }
 
 #[test]
@@ -65,7 +86,7 @@ fn old_nodes_default_new_form_semantics_to_absent() {
     let node: inspect::Node = serde_json::from_str(r#"{"role":"text_input","bounds":[0,0,240,32]}"#).unwrap();
     assert_eq!((node.required, node.invalid, node.description.as_deref()), (None, None, None));
     let json = serde_json::to_value(node).unwrap();
-    for field in ["required", "invalid", "description"] {
+    for field in ["required", "invalid", "description", "labelled_by", "controls"] {
         assert!(json.get(field).is_none(), "absent {field} is omitted");
     }
 }

@@ -293,7 +293,7 @@ impl Shell {
             response.send(reply);
             return;
         }
-        if !self.app_failed() {
+        if route != "query" && !self.app_failed() {
             self.tick();
             if let Some(app) = &self.app {
                 app.poll();
@@ -381,7 +381,9 @@ impl Shell {
             }
             request => {
                 let reply = octara::inspect::handle_guarded(&mut target, request, guard.as_ref());
-                self.show();
+                if input {
+                    self.show();
+                }
                 if reply.snapshot.is_some() {
                     let host = ww(&target, |window| window.inspect_state()).unwrap_or_else(|| json!({}));
                     response.send_with(reply, host);

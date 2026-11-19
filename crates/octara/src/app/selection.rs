@@ -7,9 +7,14 @@
 //! range each mounted text covers; the kernel draws it.
 
 use super::Window;
+use crate::inspect::SelectionPreview;
 use crate::kernel::select::{Copied, CopyMarkdown, RowKey, Seg};
 use crate::kernel::{Kernel, NodeId, Role};
+use crate::reactive::seq::Seq;
+use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::HashMap;
+use std::ops::Range;
 use std::rc::Rc;
 
 pub(super) enum DocumentCommand {
@@ -33,21 +38,23 @@ pub(crate) struct DocSelection {
     pub focus: TextPoint,
 }
 
-/// A row's index by its key.
-pub(crate) type IndexOf = Rc<dyn Fn(&RowKey) -> Option<usize>>;
-/// Builds a row off screen: its root node, and what disposes it.
-pub(crate) type BuildRow = Rc<dyn Fn(&RowKey) -> Option<(NodeId, Box<dyn FnOnce()>)>>;
+/// The selection ranges marked in the kernel at the last presentation.
+#[derive(Default)]
+pub(super) struct MarkedSelection {
+    region: Option<NodeId>,
+    /// The mounted texts with a nonempty selected range, in tree order.
+    texts: Vec<NodeId>,
+    /// Whether the selection crosses virtual rows absent from the marked tree.
+    missing_rows: bool,
+}
 
-/// How a list orders its rows (registered by `each` and `virtual_each` on their container), and
-/// how it builds a row it has not mounted (a virtual list's).
-#[derive(Clone)]
+/// Builds a row off screen: its root node, and what disposes it.
+type BuildRow = Rc<dyn Fn(&RowKey) -> Option<(NodeId, Box<dyn FnOnce()>)>>;
+
+/// A virtual list's settled order, and how copying builds a row that is not mounted.
 pub(crate) struct ListOrder {
-    /// A row's index by its key (as the path writes it).
-    pub index_of: IndexOf,
-    /// The row keys from `start` to `end` (exclusive).
-    pub keys: Rc<dyn Fn(usize, usize) -> Vec<RowKey>>,
-    /// Builds a row off screen: its root node, until the returned closure disposes it.
-    pub build: Option<BuildRow>,
+    pub keys: Rc<RefCell<Seq<RowKey>>>,
+    pub build: BuildRow,
 }
 
 impl Window {
@@ -152,26 +159,31 @@ impl Window {
     /// operation, before the frame is presented).
     pub(super) fn mark_selection(&self) {
         let ordered = self.ordered();
-        if ordered.is_none() && self.w.selection.borrow().is_some() {
+        if ordered.is_none() {
             self.w.selection.borrow_mut().take();
         }
-        let mut now: Vec<NodeId> = Vec::new();
+        let mut now = Vec::new();
+        let mut missing_rows = false;
+        let mut k = self.w.kernel.borrow_mut();
         if let Some((region, start, end)) = &ordered {
-            let mut k = self.w.kernel.borrow_mut();
             let lists = self.w.lists.borrow();
             for t in k.selectable_texts(*region) {
                 let Some(path) = k.path_to(*region, t) else { continue };
-                let len = k.text_str(t).len();
-                let range = covered(&k, &lists, *region, &path, len, start, end);
+                let range = covered(&k, &lists, *region, &path, k.text_str(t), start, end);
                 if range.as_ref().is_some_and(|r| r.start < r.end) {
                     k.set_selected(t, range);
                     now.push(t);
                 }
             }
+            missing_rows = !lists.is_empty()
+                && cmp_points(&k, &lists, *region, start, end) != Ordering::Equal
+                && lists.iter().any(|(&container, order)| {
+                    selected_rows(&k, &lists, *region, container, order, start, end)
+                        .is_some_and(|(_, range)| has_unmounted_rows(&k, container, order, &range))
+                });
         }
-        let before = std::mem::replace(&mut *self.w.selected_texts.borrow_mut(), now.clone());
-        let mut k = self.w.kernel.borrow_mut();
-        for t in before {
+        let mut marked = self.w.marked_selection.borrow_mut();
+        for &t in &marked.texts {
             if !now.contains(&t) && k.is_alive(t) {
                 k.set_selected(t, None);
             }
@@ -179,7 +191,7 @@ impl Window {
         // Assistive technology gets anchor and focus where they are mounted, else where the
         // mounted part of the selection begins or ends.
         let region = ordered.as_ref().map(|o| o.0);
-        if let Some(old) = self.w.selection_region.replace(region)
+        if let Some(old) = marked.region
             && Some(old) != region
             && k.is_alive(old)
         {
@@ -189,11 +201,47 @@ impl Window {
             let mounted = |p: &TextPoint| k.resolve_path(*region, &p.path).filter(|t| now.contains(t) || k.selectable_in(*region, *t));
             let first = now.first().and_then(|t| Some((*t, k.selected(*t)?.start)));
             let last = now.last().and_then(|t| Some((*t, k.selected(*t)?.end)));
-            let s = mounted(start).map(|t| (t, start.offset)).or(first);
-            let e = mounted(end).map(|t| (t, end.offset)).or(last);
+            let point = |p: &TextPoint| mounted(p).map(|t| (t, k.text_str(t).floor_char_boundary(p.offset)));
+            let s = point(start).or(first);
+            let e = point(end).or(last);
             let ends = s.zip(e).map(|(s, e)| if sel.anchor == *start { [s, e] } else { [e, s] });
             k.set_doc_selection(*region, ends);
         }
+        *marked = MarkedSelection { region, texts: now, missing_rows };
+    }
+
+    /// Projects the ranges already marked in the tree. Only an explicit copy can build
+    /// rows or run application code to extract more text.
+    pub(super) fn selection_preview(&self, k: &Kernel) -> Option<SelectionPreview> {
+        const MAX_CHARS: usize = 2_000;
+        if self.app.failed.get() || self.w.closed.get() {
+            return None;
+        }
+        let marked = self.w.marked_selection.borrow();
+        let region = marked.region.filter(|&region| k.is_alive(region))?;
+        let mut preview = String::new();
+        let mut complete = !marked.missing_rows;
+        let mut previous: Option<Vec<Seg>> = None;
+        let mut chars_left = MAX_CHARS;
+        for &node in &marked.texts {
+            let Some((path, text)) = k.is_alive(node).then_some(node).and_then(|node| {
+                let text = k.text_str(node).get(k.selected(node)?)?;
+                Some((k.path_to(region, node)?, text))
+            }) else {
+                complete = false;
+                continue;
+            };
+            let between = previous.as_deref().map_or("", |prev| separator(prev, &path, &k.roles_down(region, node)));
+            for c in between.chars().chain(text.chars()) {
+                if chars_left == 0 {
+                    return Some(SelectionPreview { preview, complete: false });
+                }
+                chars_left -= 1;
+                preview.push(c);
+            }
+            previous = Some(path);
+        }
+        (!preview.is_empty() || !complete).then_some(SelectionPreview { preview, complete })
     }
 
     /// The selected text of the document selection, as copying takes it: texts joined by their
@@ -232,7 +280,7 @@ impl Window {
                     let copied: Vec<Copied> = group
                         .iter()
                         .map(|p| Copied {
-                            rows: rows_of(&p.path[*d..]).iter().map(|key| key.to_string().into()).collect(),
+                            rows: rows_of(&p.path[*d..]).map(|key| key.to_string().into()).collect(),
                             text: p.text.clone(),
                             whole: p.whole,
                         })
@@ -257,28 +305,15 @@ impl Window {
             k.selectable_texts(region).into_iter().filter_map(|t| k.path_to(region, t).map(|p| (t, p))).collect();
         // Rows of virtual lists between the ends that are not mounted are built to read them.
         let mut missing: Vec<(Vec<Seg>, RowKey)> = Vec::new();
-        for (container, order) in lists.iter() {
-            let (Some(cpath), true) = (k.path_to(region, *container), order.build.is_some()) else { continue };
-            let row_index = |p: &TextPoint| match p.path.get(cpath.len()) {
-                Some(Seg::Row { key, index }) if p.path.starts_with(&cpath) => Some((order.index_of)(key).unwrap_or(*index as usize)),
-                _ => None,
-            };
-            let from = row_index(start).unwrap_or(0);
-            let to = row_index(end).map_or(usize::MAX, |i| i + 1);
-            // Only lists the selection runs through.
-            let before = cmp_paths(&k, &lists, region, &cpath, &end.path) != Ordering::Greater;
-            let after = cmp_paths(&k, &lists, region, &cpath, &start.path) != Ordering::Less || start.path.starts_with(&cpath);
-            if !(before && after) {
-                continue;
-            }
-            let keys = (order.keys)(from, to.min(from + MAX_ROWS));
-            for (i, key) in keys.into_iter().enumerate() {
-                if k.resolve_path(region, &[cpath.clone(), vec![Seg::Row { key: key.clone(), index: (from + i) as u32 }]].concat())
-                    .is_none()
-                {
-                    let mut p = cpath.clone();
-                    p.push(Seg::Row { key: key.clone(), index: (from + i) as u32 });
-                    missing.push((p, key));
+        for (&container, order) in lists.iter() {
+            let Some((path, range)) = selected_rows(&k, &lists, region, container, order, start, end) else { continue };
+            let keys = order.keys.borrow();
+            for i in range.take(MAX_ROWS) {
+                let key = keys.nth(i).expect("range is within the list");
+                if !k.children(container).iter().any(|&child| k.row_key(child) == Some(key)) {
+                    let mut path = path.clone();
+                    path.push(Seg::Row { key: key.clone(), index: i as u32 });
+                    missing.push((path, key.clone()));
                 }
             }
         }
@@ -297,13 +332,13 @@ impl Window {
         }
         for (row_path, key) in missing {
             let container_path = &row_path[..row_path.len() - 1];
-            let (order, container) = {
+            let (build, container) = {
                 let k = self.w.kernel.borrow();
                 let lists = self.w.lists.borrow();
                 let c = k.resolve_path(region, container_path);
-                (c.and_then(|c| lists.get(&c).cloned()), c)
+                (c.and_then(|c| lists.get(&c).map(|order| order.build.clone())), c)
             };
-            let (Some(build), Some(container)) = (order.and_then(|o| o.build), container) else { continue };
+            let (Some(build), Some(container)) = (build, container) else { continue };
             let Some((root, dispose)) = build(&key) else { continue };
             {
                 let k = self.w.kernel.borrow();
@@ -327,7 +362,7 @@ impl Window {
         let lists = self.w.lists.borrow();
         all.sort_by(|a, b| cmp_paths(&k, &lists, region, &a.path, &b.path));
         for mut p in all {
-            if let Some(r) = covered(&k, &lists, region, &p.path, p.text.len(), start, end)
+            if let Some(r) = covered(&k, &lists, region, &p.path, &p.text, start, end)
                 && r.start < r.end
             {
                 p.whole = r.start == 0 && r.end == p.text.len();
@@ -463,28 +498,26 @@ struct Piece {
     copier: Option<(usize, CopyMarkdown)>,
 }
 
-fn rows_of(path: &[Seg]) -> Vec<RowKey> {
-    path.iter()
-        .filter_map(|s| match s {
-            Seg::Row { key, .. } => Some(key.clone()),
-            Seg::Child(_) => None,
-        })
-        .collect()
+fn rows_of(path: &[Seg]) -> impl Iterator<Item = &RowKey> {
+    path.iter().filter_map(|s| match s {
+        Seg::Row { key, .. } => Some(key),
+        Seg::Child(_) => None,
+    })
 }
 
 /// What goes between two selected texts: by the role of what holds the second below where their
 /// paths part (a cell a tab; a row or a list item a newline; a block a blank line), a newline
 /// between lines of code, else a newline, or a blank line between rows of a list.
-fn separator(a: &Piece, b: &Piece) -> &'static str {
-    let common = a.path.iter().zip(&b.path).take_while(|(x, y)| x == y).count();
-    if b.roles[..common.min(b.roles.len())].contains(&Role::Code) {
+fn separator(previous: &[Seg], path: &[Seg], roles: &[Role]) -> &'static str {
+    let common = previous.iter().zip(path).take_while(|(x, y)| x == y).count();
+    if roles[..common.min(roles.len())].contains(&Role::Code) {
         return "\n";
     }
-    match b.roles.get(common) {
+    match roles.get(common) {
         Some(Role::Cell) => "\t",
         Some(Role::Row | Role::ListItem) => "\n",
         Some(Role::Paragraph | Role::Heading | Role::List | Role::Table | Role::Blockquote | Role::Code) => "\n\n",
-        _ if rows_of(&a.path) == rows_of(&b.path) => "\n",
+        _ if rows_of(previous).eq(rows_of(path)) => "\n",
         _ => "\n\n",
     }
 }
@@ -493,7 +526,7 @@ fn join(pieces: &[Piece]) -> String {
     let mut out = String::new();
     for (i, p) in pieces.iter().enumerate() {
         if i > 0 {
-            out.push_str(separator(&pieces[i - 1], p));
+            out.push_str(separator(&pieces[i - 1].path, &p.path, &p.roles));
         }
         out.push_str(&p.text);
     }
@@ -509,13 +542,13 @@ fn step(k: &Kernel, parent: NodeId, seg: &Seg) -> Option<NodeId> {
 }
 
 /// Where a step stands among its siblings: a list row by its list's order, else by index.
-fn rank(k: &Kernel, lists: &std::collections::HashMap<NodeId, ListOrder>, parent: Option<NodeId>, seg: &Seg) -> (u64, u64) {
+fn rank(k: &Kernel, lists: &HashMap<NodeId, ListOrder>, parent: Option<NodeId>, seg: &Seg) -> (u64, u64) {
     match seg {
         Seg::Row { key, index } => {
             let order = parent.and_then(|p| lists.get(&p));
             // The list's order, else where the row is now among its siblings' rows, else where
             // it was.
-            let i = order.and_then(|o| (o.index_of)(key)).unwrap_or_else(|| {
+            let i = order.and_then(|o| o.keys.borrow().index_of(key)).unwrap_or_else(|| {
                 parent
                     .and_then(|p| {
                         let rows = k.children(p).iter().filter(|c| k.row_key(**c).is_some());
@@ -532,13 +565,7 @@ fn rank(k: &Kernel, lists: &std::collections::HashMap<NodeId, ListOrder>, parent
 }
 
 /// Two paths in document order.
-pub(crate) fn cmp_paths(
-    k: &Kernel,
-    lists: &std::collections::HashMap<NodeId, ListOrder>,
-    region: NodeId,
-    a: &[Seg],
-    b: &[Seg],
-) -> Ordering {
+fn cmp_paths(k: &Kernel, lists: &HashMap<NodeId, ListOrder>, region: NodeId, a: &[Seg], b: &[Seg]) -> Ordering {
     let mut node = Some(region);
     for (sa, sb) in a.iter().zip(b) {
         if sa == sb {
@@ -556,7 +583,7 @@ pub(crate) fn cmp_paths(
     a.len().cmp(&b.len())
 }
 
-fn cmp_points(k: &Kernel, lists: &std::collections::HashMap<NodeId, ListOrder>, region: NodeId, a: &TextPoint, b: &TextPoint) -> Ordering {
+fn cmp_points(k: &Kernel, lists: &HashMap<NodeId, ListOrder>, region: NodeId, a: &TextPoint, b: &TextPoint) -> Ordering {
     match cmp_paths(k, lists, region, &a.path, &b.path) {
         Ordering::Equal => a.offset.cmp(&b.offset),
         o => o,
@@ -566,20 +593,59 @@ fn cmp_points(k: &Kernel, lists: &std::collections::HashMap<NodeId, ListOrder>, 
 /// The range of a text at `path` (of `len` bytes) the selection from `start` to `end` covers.
 fn covered(
     k: &Kernel,
-    lists: &std::collections::HashMap<NodeId, ListOrder>,
+    lists: &HashMap<NodeId, ListOrder>,
     region: NodeId,
     path: &[Seg],
-    len: usize,
+    text: &str,
     start: &TextPoint,
     end: &TextPoint,
-) -> Option<std::ops::Range<usize>> {
+) -> Option<Range<usize>> {
     let same = |p: &TextPoint| cmp_paths(k, lists, region, path, &p.path) == Ordering::Equal;
     let after_start = cmp_paths(k, lists, region, path, &start.path) != Ordering::Less;
     let before_end = cmp_paths(k, lists, region, path, &end.path) != Ordering::Greater;
     if !(after_start && before_end) {
         return None;
     }
-    let s = if same(start) { start.offset.min(len) } else { 0 };
-    let e = if same(end) { end.offset.min(len) } else { len };
+    let s = if same(start) { text.floor_char_boundary(start.offset) } else { 0 };
+    let e = if same(end) { text.floor_char_boundary(end.offset) } else { text.len() };
     Some(s..e)
+}
+
+/// The list's path and the range of row indices a document selection crosses.
+fn selected_rows(
+    k: &Kernel,
+    lists: &HashMap<NodeId, ListOrder>,
+    region: NodeId,
+    container: NodeId,
+    order: &ListOrder,
+    start: &TextPoint,
+    end: &TextPoint,
+) -> Option<(Vec<Seg>, Range<usize>)> {
+    let path = k.path_to(region, container)?;
+    let inside = |point: &TextPoint| {
+        point.path.get(..path.len()).is_some_and(|prefix| cmp_paths(k, lists, region, &path, prefix) == Ordering::Equal)
+    };
+    if cmp_paths(k, lists, region, &path, &end.path) == Ordering::Greater
+        || cmp_paths(k, lists, region, &path, &start.path) == Ordering::Less && !inside(start)
+    {
+        return None;
+    }
+    let keys = order.keys.borrow();
+    let index = |point: &TextPoint| match point.path.get(path.len()) {
+        Some(Seg::Row { key, index }) if inside(point) => Some(keys.index_of(key).unwrap_or(*index as usize)),
+        _ => None,
+    };
+    let from = index(start).unwrap_or(0);
+    let to = index(end).map_or(keys.len(), |i| i.saturating_add(1).min(keys.len()));
+    (from < to).then_some((path, from..to))
+}
+
+fn has_unmounted_rows(k: &Kernel, container: NodeId, order: &ListOrder, range: &Range<usize>) -> bool {
+    let children = k.children(container);
+    if range.len() > children.len() {
+        return true;
+    }
+    let keys = order.keys.borrow();
+    let mounted = children.iter().filter_map(|&child| keys.index_of(k.row_key(child)?)).filter(|index| range.contains(index)).count();
+    mounted < range.len()
 }

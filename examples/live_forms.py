@@ -87,7 +87,7 @@ class FormsWindow(LiveWindow):
             request["window"] = self.window
         reply = self.request(name, request)
         snapshot = reply["snapshot"]
-        require(snapshot.get("schema") == "octara.inspect/1", "wrong Inspector schema")
+        require(snapshot.get("schema") == "octara.inspect/2", "wrong Inspector schema")
         require(reply["live"].get("target_validation") == "identity", "live host lacks identity validation")
         token(snapshot)
         if self.window is None:

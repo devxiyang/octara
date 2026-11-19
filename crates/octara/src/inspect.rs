@@ -1,6 +1,6 @@
 //! The Inspector protocol: what tools and agents read from a running app and how they drive it.
 //!
-//! - [`Snapshot`]: the semantic tree (`octara.inspect/1`) — roles, names, values, states,
+//! - [`Snapshot`]: the versioned semantic tree — roles, names, values, states,
 //!   presented bounds, actions, commands and source locations, addressed by test id.
 //! - [`Request`] / [`Reply`]: one JSON line each way (`{"op":"tap","id":"save"}` →
 //!   `{"ok":true}`); a failure names its registered code. A script is requests, one per line
@@ -25,7 +25,7 @@ pub use tree::{pick, tree};
 pub(crate) use tree::{pick_for_window, tree_for_window};
 
 /// The snapshot schema; bumped when a field changes meaning or goes away.
-pub const SCHEMA: &str = "octara.inspect/1";
+pub const SCHEMA: &str = "octara.inspect/2";
 
 /// The app as tools see it at one moment.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -62,9 +62,9 @@ pub struct Snapshot {
     /// Opaque window identity for guarding a later request. Changes after a tree reload.
     #[serde(default)]
     pub target: String,
-    /// The document selection's text, when there is one (cut after 2 000 characters).
+    /// The document selection sampled from the marked tree at the last presentation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub selection: Option<String>,
+    pub selection: Option<SelectionPreview>,
     /// The app's open windows.
     pub windows: Vec<WindowInfo>,
     /// What the window asks a person and waits for (a menu, a prompt, a file dialog): answer
@@ -87,6 +87,17 @@ pub struct TouchScrollState {
     pub viewport: [f32; 2],
     pub after: [f32; 2],
     pub remaining: [f32; 2],
+}
+
+/// Read-only document selection feedback. Use [`Request::Copy`] to extract the full text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectionPreview {
+    /// Up to 2 000 Unicode scalar values of selected text from mounted nodes, in document
+    /// order. Empty when the selection covers only unmounted rows.
+    pub preview: String,
+    /// Whether `preview` includes all selected text. False if the preview was truncated or
+    /// the selection crosses unmounted rows.
+    pub complete: bool,
 }
 
 /// Read-only input-method feedback sampled from the focused field's actual editor owner.

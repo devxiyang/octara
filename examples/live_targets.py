@@ -94,7 +94,7 @@ class Scenario:
         if window is not None:
             request["window"] = window
         snapshot = self.request(name, request)["snapshot"]
-        require(snapshot.get("schema") == "octara.inspect/1", "unexpected Inspector schema")
+        require(snapshot.get("schema") == "octara.inspect/2", "unexpected Inspector schema")
         token(snapshot)
         for info in snapshot["windows"]:
             token(info)

@@ -172,7 +172,7 @@ class LiveWindow:
 
     def inspect(self):
         snapshot = json.loads(self.cli("inspect"))
-        require(snapshot.get("schema") == "octara.inspect/1", f"{self.fixture}: wrong live snapshot schema")
+        require(snapshot.get("schema") == "octara.inspect/2", f"{self.fixture}: wrong live snapshot schema")
         return snapshot
 
     def requests(self, *requests):

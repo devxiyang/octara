@@ -103,6 +103,7 @@ fn cli(args: &[&str], stdin: &str) -> std::process::Output {
 fn inspect_connect_reads_the_window_without_a_harness() {
     let snapshot = json!({
         "schema": "octara.inspect/1", "viewport": [640, 480], "theme": "light", "pending": 0,
+        "selection": "A selection from an older host",
         "root": {"role": "button", "id": "inc", "name": "Increase", "source": "src/counter.rs:12:9", "bounds": [10,20,80,40]}
     });
     let server = Server::new(vec![Some(json!({"ok":true,"snapshot":snapshot,"live":{"route":"read"}}))]);

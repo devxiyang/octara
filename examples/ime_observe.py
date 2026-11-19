@@ -58,8 +58,8 @@ def inspect(path):
     if reply.get("ok") is not True:
         raise RuntimeError(f"Inspector refused observation: {reply.get('code')}: {reply.get('message')}")
     snapshot = reply.get("snapshot")
-    if not isinstance(snapshot, dict) or snapshot.get("schema") != "octara.inspect/1":
-        raise RuntimeError("Inspector returned no octara.inspect/1 snapshot")
+    if not isinstance(snapshot, dict) or snapshot.get("schema") != "octara.inspect/2":
+        raise RuntimeError("Inspector returned no octara.inspect/2 snapshot")
     return snapshot, reply.get("live")
 
 

@@ -4,9 +4,11 @@
 //! the rows that are not mounted.
 
 use octara::app::{Event, InputEvent, Modifiers, Phase, PointerEvent};
-use octara::inspect::{Request, handle};
+use octara::inspect::{Request, SelectionPreview, handle};
 use octara::prelude::*;
 use octara_primitives::paint::Item;
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::Duration;
 
 fn note() -> View {
@@ -38,6 +40,7 @@ fn texts_select_as_one_document() {
     let mut w = Window::headless(note);
     w.select(("a", 6), ("c", 5)).unwrap();
     assert_eq!(w.selected_text().as_deref(), Some("one\nbeta two\ngamma"), "the marker is not selected");
+    assert_eq!(w.inspect().selection, Some(SelectionPreview { preview: "one\nbeta two\ngamma".into(), complete: true }));
     assert!(highlighted(&w, "a") && highlighted(&w, "b") && highlighted(&w, "c"));
     assert!(!highlighted(&w, "marker"));
     // Backwards is the same selection.
@@ -45,6 +48,7 @@ fn texts_select_as_one_document() {
     assert_eq!(w.selected_text().as_deref(), Some("one\nbeta two\ngamma"));
     w.press_key("escape").unwrap();
     assert_eq!(w.selected_text(), None, "Escape clears it");
+    assert_eq!(w.inspect().selection, None);
     assert!(!highlighted(&w, "a"));
 }
 
@@ -143,4 +147,80 @@ fn a_selection_through_a_virtual_list_survives_scrolling_and_copies_every_row() 
     assert!(reply.ok, "{reply:?}");
     let reply = handle(&mut w, Request::Copy);
     assert_eq!(reply.text.as_deref().map(|t| t.split("\n\n").count()), Some(1000));
+}
+
+#[test]
+fn inspecting_a_virtual_selection_only_reads_mounted_rows() {
+    let app = App::new(octara::platform::HeadlessPlatform::default());
+    let builds = Rc::new(Cell::new(0));
+    let cleanups = app.run(|| state("cleanups", || 0));
+    let mut w = app
+        .open_window(octara::platform::WindowOptions::new("Document").size(320.0, 96.0), {
+            let builds = builds.clone();
+            move || {
+                let builds = builds.clone();
+                let rows = state_list("rows", || (0..128u32).collect::<Vec<_>>(), |id| *id);
+                col().size_full().child(text(move || cleanups.get().to_string()).id("cleanups")).child(
+                    col()
+                        .id("doc")
+                        .selectable()
+                        .flex_1()
+                        .overflow_y_scroll()
+                        .copy_markdown(|pieces| {
+                            Some(pieces.iter().map(|piece| format!("**{}**", piece.text)).collect::<Vec<_>>().join("\n"))
+                        })
+                        .child(virtual_each(
+                            move || rows.read_only(),
+                            |_| 24.0,
+                            move |id, _| {
+                                builds.set(builds.get() + 1);
+                                on_cleanup(move || cleanups.update(|count| *count += 1));
+                                text(format!("Row {id}")).id(format!("row-{id}")).h(24.0)
+                            },
+                        )),
+                )
+            }
+        })
+        .unwrap();
+
+    w.select(("row-0", 2), ("row-0", 2)).unwrap();
+    assert_eq!(w.inspect().selection, None);
+    w.select(("row-0", 0), ("row-1", 5)).unwrap();
+    assert_eq!(w.inspect().selection, Some(SelectionPreview { preview: "Row 0\n\nRow 1".into(), complete: true }));
+    w.dispatch(Event::ScrollTo("doc".into(), 0.0, 128.0 * 24.0)).unwrap();
+    assert!(w.kernel().find("row-0").is_none());
+    assert_eq!(w.inspect().selection, Some(SelectionPreview { preview: String::new(), complete: false }));
+
+    w.select_all("doc").unwrap();
+    let builds_before = builds.get();
+    let cleanups_before = w.kernel().text_of("cleanups");
+    let tree_before = w.kernel().paint_generation();
+    let frames_before = w.frames_presented();
+    let work_before = app.work();
+    let first = handle(&mut w, Request::Inspect).snapshot.unwrap();
+    let selection = first.selection.as_ref().unwrap();
+    assert!(!selection.complete);
+    assert!(selection.preview.ends_with("Row 127"));
+    assert!(!selection.preview.starts_with("Row 0"));
+    for _ in 0..2 {
+        assert_eq!(handle(&mut w, Request::Inspect).snapshot.unwrap(), first);
+    }
+    assert_eq!(builds.get(), builds_before);
+    assert_eq!(w.kernel().text_of("cleanups"), cleanups_before);
+    assert_eq!(w.kernel().paint_generation(), tree_before);
+    assert_eq!(w.frames_presented(), frames_before);
+    assert_eq!(app.work().closures_run, work_before.closures_run);
+    assert_eq!(app.work().reactive_nodes, work_before.reactive_nodes);
+
+    let expected = (0..128).map(|i| format!("Row {i}")).collect::<Vec<_>>().join("\n\n");
+    let copy = handle(&mut w, Request::Copy);
+    assert_eq!(copy.text.as_deref(), Some(expected.as_str()));
+    assert_eq!(w.clipboard_text().as_deref(), Some(expected.as_str()));
+    let md = (0..128).map(|i| format!("**Row {i}**")).collect::<Vec<_>>().join("\n");
+    w.invoke("edit.copy_markdown").unwrap();
+    assert_eq!(w.clipboard_text().as_deref(), Some(md.as_str()));
+    assert!(builds.get() > builds_before, "explicit copies can mount offscreen rows");
+    assert_ne!(w.inspect().find("cleanups").unwrap().name, first.find("cleanups").unwrap().name);
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+    app.shutdown();
 }

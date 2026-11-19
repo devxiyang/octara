@@ -490,17 +490,6 @@ where
         // Selection paths use the same canonical keys as the weighted order and mounted rows.
         {
             let (mirror, rows) = (mirror.clone(), rows.clone());
-            let index_of = {
-                let mirror = mirror.clone();
-                Rc::new(move |key: &RowKey| mirror.borrow().index_of(key))
-            };
-            let keys = {
-                let mirror = mirror.clone();
-                Rc::new(move |start: usize, end: usize| {
-                    let m = mirror.borrow();
-                    (start..end.min(m.len())).filter_map(|i| m.nth(i).cloned()).collect::<Vec<_>>()
-                })
-            };
             let build = Rc::new(move |identity: &RowKey| -> Option<(NodeId, Box<dyn FnOnce()>)> {
                 if !rt(|rt| rt.scope_alive(rows.owner)) {
                     return None;
@@ -510,7 +499,7 @@ where
                 let (scope, node) = rows.build(identity, true)?;
                 Some((node, Box::new(move || rt(|rt| rt.dispose_scope(scope)))))
             });
-            u.lists.borrow_mut().insert(container, crate::app::ListOrder { index_of, keys, build: Some(build) });
+            u.lists.borrow_mut().insert(container, crate::app::ListOrder { keys: mirror, build });
             let u = u.clone();
             rt(|rt| {
                 rt.on_cleanup(Box::new(move || {

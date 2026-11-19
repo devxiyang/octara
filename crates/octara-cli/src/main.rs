@@ -66,7 +66,7 @@ enum Command {
         /// Compare the connected window with a receipt from `octara launch`.
         #[arg(long, value_name = "FILE", requires = "connect")]
         receipt: Option<std::path::PathBuf>,
-        /// Print the snapshot as JSON (`octara.inspect/1`).
+        /// Print the versioned snapshot as JSON.
         #[arg(long)]
         json: bool,
     },
