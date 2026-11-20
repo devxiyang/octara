@@ -1,7 +1,8 @@
 //! The display list: quads, glyph runs and clips in drawing order, traced to their nodes.
 
 use octara::prelude::*;
-use octara_primitives::paint::{DisplayList, Item};
+use octara_primitives::paint::{DisplayList, Item, Part};
+use std::sync::Arc;
 
 fn source(app: &Window, id: &str) -> octara_primitives::identity::NodeId {
     app.kernel().find(id).unwrap()
@@ -26,7 +27,7 @@ fn view() -> View {
 #[test]
 fn quads_glyphs_and_clips_in_order() {
     let app = Window::headless(view);
-    let dl: std::rc::Rc<DisplayList> = app.display_list();
+    let dl: Arc<DisplayList> = app.display_list();
     assert_eq!(dl.size, (800.0, 600.0));
     assert_eq!(dl.background, Theme::light().get(Token::Background));
 
@@ -247,30 +248,44 @@ fn an_unchanged_frame_is_reused() {
                     .on_press(move || on.update(|v| *v = !*v)),
             )
             .child(el().id("moving").size_8().bg(move || if on.get() { Token::Danger } else { Token::Surface }).motion(Spring::SNAP))
+            .child(el().id("fixed").size_8().bg(Token::Surface))
     });
     let built = |app: &Window| app.kernel().frames_built();
     let first = app.display_list();
     let n = built(&app);
     let again = app.display_list();
-    assert!(std::rc::Rc::ptr_eq(&first, &again), "nothing changed: the same list");
+    assert!(Arc::ptr_eq(&first, &again), "nothing changed: the same list");
     assert_eq!(built(&app), n);
 
     // A press changes a color (and starts a motion): built again, and not reused while it moves.
     app.tap("box").unwrap();
     let pressed = app.display_list();
-    assert!(!std::rc::Rc::ptr_eq(&first, &pressed));
+    assert!(!Arc::ptr_eq(&first, &pressed));
+    let fixed = source(&app, "fixed");
+    let fixed_drawing = |list: &DisplayList| {
+        list.parts
+            .iter()
+            .find_map(|part| match part {
+                Part::Drawing { items, .. } if items.iter().any(|item| matches!(item, Item::Quad(quad) if quad.source == fixed)) => {
+                    Some(items.clone())
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert!(Arc::ptr_eq(&fixed_drawing(&first), &fixed_drawing(&pressed)), "a new frame shares unchanged drawing data");
     let _ = app.display_list();
     assert_eq!(built(&app), n + 2, "rebuilt while something moves");
     app.app().advance(std::time::Duration::from_secs(2));
     let rest = app.display_list();
-    assert!(std::rc::Rc::ptr_eq(&rest, &app.display_list()), "at rest: reused again");
+    assert!(Arc::ptr_eq(&rest, &app.display_list()), "at rest: reused again");
 
     // A resize and a theme change invalidate it.
     app.resize(400.0, 300.0);
-    assert!(!std::rc::Rc::ptr_eq(&rest, &app.display_list()));
+    assert!(!Arc::ptr_eq(&rest, &app.display_list()));
     let before = app.display_list();
     app.app().set_theme(Theme::dark());
-    assert!(!std::rc::Rc::ptr_eq(&before, &app.display_list()));
+    assert!(!Arc::ptr_eq(&before, &app.display_list()));
 }
 
 #[test]
@@ -292,4 +307,61 @@ fn closing_a_window_releases_its_cached_paint_program() {
     assert!(program.upgrade().is_some(), "the retained capture still owns its drawing");
     drop(frame);
     assert!(program.upgrade().is_none(), "a closed window handle must release cached drawings");
+}
+
+#[test]
+fn retiring_paint_keeps_its_mount_while_a_reopening_gets_a_new_one() {
+    use octara_primitives::motion::Curve;
+    use std::sync::Weak;
+    use std::time::Duration;
+
+    fn painted(window: &Window) -> Vec<octara_primitives::paint::CustomPaint> {
+        window
+            .published_frame()
+            .unwrap()
+            .list
+            .items()
+            .into_iter()
+            .filter_map(|item| match item {
+                Item::Custom(paint) => Some(paint),
+                _ => None,
+            })
+            .collect()
+    }
+
+    let mut window = Window::headless(|| {
+        let open = state("open", || true);
+        let program = PaintProgram::new(());
+        col().child(el().id("toggle").size_8().on_press(move || open.update(|value| *value = !*value))).child(show(
+            move || open.get(),
+            move || el().id("surface").size_8().opacity_motion(Curve::Fade(0.8)).paint(program.clone(), [0.0; 4]),
+        ))
+    });
+    let initial = painted(&window).pop().unwrap();
+    assert!(!initial.exiting);
+    let old = initial.mount.downgrade();
+    drop(initial);
+
+    window.tap("toggle").unwrap();
+    window.app().advance(Duration::from_millis(100));
+    assert!(window.kernel().find("surface").is_none());
+    let exit = painted(&window).pop().unwrap();
+    assert!(exit.exiting);
+    assert!(Weak::ptr_eq(&old, &exit.mount.downgrade()));
+    drop(exit);
+
+    window.tap("toggle").unwrap();
+    window.app().advance(Duration::from_millis(50));
+    let drawings = painted(&window);
+    assert_eq!(drawings.len(), 2);
+    let live = drawings.iter().find(|paint| !paint.exiting).unwrap();
+    assert!(!Weak::ptr_eq(&old, &live.mount.downgrade()));
+    assert!(drawings.iter().any(|paint| paint.exiting && Weak::ptr_eq(&old, &paint.mount.downgrade())));
+    drop(drawings);
+
+    window.app().advance(Duration::from_secs(1));
+    let drawings = painted(&window);
+    assert_eq!(drawings.len(), 1);
+    assert!(!drawings[0].exiting);
+    assert!(old.upgrade().is_none());
 }

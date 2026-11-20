@@ -3,7 +3,7 @@
 //! - [`CpuRenderer`]: the reference renderer. Deterministic (bundled fonts, plain float math), it
 //!   gives agents and tests screenshots without a GPU and is the oracle the GPU renderer is
 //!   compared with.
-//! - [`GpuRenderer`] (feature `gpu`): wgpu, batched instances, and author materials and canvases.
+//! - [`GpuRenderer`] (feature `gpu`): wgpu, batched instances, materials, canvases, and backdrop effects.
 //!   The built-in shader implements the formulas of [`shape`] and uses the same [`glyphs`] and
 //!   [`paths`] rasterization as the reference renderer.
 

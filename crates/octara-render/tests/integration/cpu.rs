@@ -81,6 +81,8 @@ fn deterministic_and_pixels_where_expected() {
 
 #[test]
 fn custom_paint_fallback_matches_a_clipped_quad_in_an_opacity_group() {
+    use octara_primitives::capture::{PaintFallback, PaintOutcome, Painter};
+
     let render = |custom| {
         let mut window = Window::headless(move || {
             let card = el()
@@ -96,12 +98,14 @@ fn custom_paint_fallback_matches_a_clipped_quad_in_an_opacity_group() {
             col().p_4().child(col().size_12().rounded_lg().overflow_clip().child(card))
         });
         window.resize(80.0, 80.0);
-        CpuRenderer::new().render(&window.display_list(), 1.0)
+        CpuRenderer::new().paint_with_receipts(&window.display_list(), 1.0, None).unwrap()
     };
     let fallback = render(true);
-    assert_ne!(fallback.pixel(40, 40), fallback.pixel(0, 0));
-    assert_eq!(fallback.pixel(66, 40), fallback.pixel(0, 0));
-    assert!(fallback == render(false));
+    let [effect] = fallback.effects.as_slice() else { panic!("expected a custom paint outcome") };
+    assert_eq!(effect.outcome, PaintOutcome::Fallback { reason: PaintFallback::ReferenceRenderer });
+    assert_ne!(fallback.picture.pixel(40, 40), fallback.picture.pixel(0, 0));
+    assert_eq!(fallback.picture.pixel(66, 40), fallback.picture.pixel(0, 0));
+    assert_eq!(fallback.picture, render(false).picture);
 }
 
 #[test]

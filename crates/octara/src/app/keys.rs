@@ -596,6 +596,9 @@ impl Window {
         let path = self.focus_path();
         for command in self.resolve(ev, &path) {
             let Some(command) = command else { return false };
+            if ev.repeat && command == "focus.dismiss" {
+                return true;
+            }
             if self.run_command(&command, &path) {
                 return true;
             }

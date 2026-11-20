@@ -1,6 +1,13 @@
 //! Benchmarks for the example apps. Run with `cargo run --release -p octara-examples --bin bench`
 //! (`-- --frames`, `-- --stream` or `-- --joins` for one section).
 //! Counts (closures, property changes, allocations) are exact; times are the minimum of 3 runs.
+//! Run with `-- --gpu` for the offscreen Metal Shader Lab benchmark on macOS.
+//! Run with `-- --gpu-replay` for the dynamic timeline at 60 and 120 Hz.
+//! Run with `-- --gpu-retention` for matched live and retained Flow during UI scrolling.
+
+#[cfg(target_os = "macos")]
+#[path = "bench/gpu.rs"]
+mod gpu;
 
 use octara::app::{Event, Window};
 use octara::prelude::*;
@@ -411,6 +418,25 @@ fn stream() {
 }
 
 fn main() {
+    let retention = std::env::args().any(|a| a == "--gpu-retention");
+    let replay = std::env::args().any(|a| a == "--gpu-replay");
+    if retention || replay || std::env::args().any(|a| a == "--gpu") {
+        #[cfg(target_os = "macos")]
+        let result = if retention {
+            gpu::run_retention()
+        } else if replay {
+            gpu::run_replay()
+        } else {
+            gpu::run()
+        };
+        #[cfg(not(target_os = "macos"))]
+        let result: Result<(), String> = Err("The offscreen Metal benchmark requires macOS.".into());
+        if let Err(error) = result {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if std::env::args().any(|a| a == "--frames") {
         return frames();
     }

@@ -36,6 +36,7 @@ use slotmap::SlotMap;
 use std::cell::{Cell, RefCell};
 use std::fmt::Write as _;
 use std::rc::Rc;
+use std::sync::Arc;
 use style::{Inherited, Unresolved};
 use text::{TextEngine, TextMetrics, TextStyle, Wrap};
 
@@ -226,6 +227,14 @@ enum Measure {
     Native(NodeId),
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct OverlayMount {
+    /// The control that owns the overlay, independent of its placement anchor.
+    pub owner: NodeId,
+    /// The overlay region's registration order, shared by successive openings.
+    pub order: u64,
+}
+
 struct Node {
     /// What the node shows inside its box; its `Kind` follows from it.
     content: Content,
@@ -238,7 +247,7 @@ struct Node {
     /// Counts changes to what it draws (its own drawing is built again after one).
     paint_ver: u64,
     /// The custom program and parameters for its background and border drawing.
-    custom_paint: Option<(crate::paint::PaintProgram, [f32; 4])>,
+    custom_paint: Option<paint::CustomPaintBinding>,
     /// The place last sent to assistive technology (`None`: not sent, or dropped since).
     a11y_sent: Cell<Option<a11y::AccessibilityGeometry>>,
     /// The resolved active option last sent; its allocation can change without its test id.
@@ -307,8 +316,7 @@ struct Node {
     live: Option<accesskit::Live>,
     /// An overlay's anchor node and placement; the node is positioned absolutely in the overlay layer.
     anchor: Option<(NodeId, Placement)>,
-    /// The control that owns an overlay, independent of its positioning anchor.
-    overlay_owner: Option<NodeId>,
+    overlay_mount: Option<OverlayMount>,
     /// Where the last layout put an anchored node.
     placed: Option<Placed>,
     /// Scroll offset of a scroll container.
@@ -347,7 +355,7 @@ pub struct Component {
 
 /// A text input's default width (CSS gives `<input>` about 20 characters).
 /// The last display list built at rest: the paint count and viewport it was built at.
-type LastFrame = (u64, (f32, f32), std::rc::Rc<crate::paint::DisplayList>);
+type LastFrame = (u64, (f32, f32), Arc<crate::paint::DisplayList>);
 
 /// What a node shows inside its box: at most one kind of content.
 #[derive(Debug)]
@@ -1206,7 +1214,7 @@ impl Kernel {
             level: None,
             live: None,
             anchor: None,
-            overlay_owner: None,
+            overlay_mount: None,
             placed: None,
             scroll: (0.0, 0.0),
             scroll_request: 0,
@@ -1902,13 +1910,13 @@ impl Kernel {
     pub(crate) fn preserves_focus_on_press(&self, id: NodeId) -> bool {
         self.node(id).preserve_focus_on_press
     }
-    pub(crate) fn set_overlay_owner(&mut self, node: NodeId, owner: NodeId) {
-        self.node_mut(node).overlay_owner = Some(owner);
+    pub(crate) fn set_overlay_mount(&mut self, node: NodeId, mount: OverlayMount) {
+        self.node_mut(node).overlay_mount = Some(mount);
     }
 
     pub(crate) fn interaction_parent(&self, node: NodeId) -> Option<NodeId> {
         let n = &self.nodes[node];
-        n.overlay_owner.or_else(|| n.anchor.map(|(owner, _)| owner)).or(n.parent)
+        n.overlay_mount.map(|mount| mount.owner).or_else(|| n.anchor.map(|(owner, _)| owner)).or(n.parent)
     }
 
     /// Logical ownership includes overlays, whose physical parent is the window's layer.

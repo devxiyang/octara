@@ -4,27 +4,11 @@
 
 use crate::glyphs::{GlyphCache, SUBPIXEL_STEPS};
 use crate::paths::{self, PathCache};
-use crate::shape::{blend, blend_premultiplied, coverage, image_color, inner_rect, sd_round_rect, shadow_alpha};
-use octara_primitives::capture::{Painter, Picture};
+use crate::shape::{ClipStack, blend, blend_premultiplied, coverage, image_color, inner_rect, sd_round_rect, shadow_alpha};
+use octara_primitives::capture::{PaintFallback, PaintOutcome, PaintReceipt, PaintSample, PaintedPicture, Painter, Picture};
 use octara_primitives::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, Quad, Rect, Shadow};
 use octara_primitives::theme::Color;
 use std::alloc::Layout;
-
-/// A clip in device pixels.
-#[derive(Clone, Copy)]
-struct Clip {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    r: f32,
-}
-
-impl Clip {
-    fn coverage(&self, px: f32, py: f32) -> f32 {
-        coverage(sd_round_rect(px, py, self.x, self.y, self.w, self.h, self.r))
-    }
-}
 
 /// Renders display lists to RGBA images; keeps rasterized glyphs and paths between frames.
 #[derive(Default)]
@@ -38,26 +22,26 @@ struct Target {
     height: u32,
     /// Premultiplied RGBA, sRGB-encoded (blending happens in that space, as browsers and Rune).
     pixels: Vec<[f32; 4]>,
-    clips: Vec<Clip>,
+    clips: ClipStack,
     /// Pixels under open layers, with each layer's opacity.
     layers: Vec<(Vec<[f32; 4]>, f32)>,
 }
 
 impl Target {
-    /// Clips nest by intersection; only the innermost one's corners are rounded (the GPU renderer
-    /// carries one clip per instance, and both renderers follow the same rule).
     fn clip_coverage(&self, px: f32, py: f32) -> f32 {
-        self.clips.last().map_or(1.0, |c| c.coverage(px, py))
+        self.clips.coverage(px, py)
     }
-    /// Device-pixel bounds of `x..x+w`, `y..y+h` grown by one pixel, limited to the target and the
-    /// innermost clip.
+    /// Device-pixel bounds grown by one pixel, limited to the target and clip bounds.
     fn bounds(&self, x: f32, y: f32, w: f32, h: f32) -> (u32, u32, u32, u32) {
         let (mut x0, mut y0, mut x1, mut y1) = (x - 1.0, y - 1.0, x + w + 1.0, y + h + 1.0);
-        if let Some(c) = self.clips.last() {
+        if let Some(c) = self.clips.current().bounds {
+            if c.is_empty() {
+                return (0, 0, 0, 0);
+            }
             x0 = x0.max(c.x - 1.0);
             y0 = y0.max(c.y - 1.0);
-            x1 = x1.min(c.x + c.w + 1.0);
-            y1 = y1.min(c.y + c.h + 1.0);
+            x1 = x1.min(c.right() + 1.0);
+            y1 = y1.min(c.bottom() + 1.0);
         }
         let clampx = |v: f32| v.clamp(0.0, self.width as f32) as u32;
         let clampy = |v: f32| v.clamp(0.0, self.height as f32) as u32;
@@ -86,20 +70,27 @@ impl CpuRenderer {
     /// If the scale or dimensions are invalid, or the target exceeds addressable memory.
     /// [`Painter::paint`] returns an error for these inputs instead.
     pub fn render(&mut self, dl: &DisplayList, scale: f32) -> Picture {
-        self.try_render(dl, scale).expect("CPU rendering failed")
+        self.try_render(dl, scale).expect("CPU rendering failed").picture
     }
 
-    fn try_render(&mut self, dl: &DisplayList, scale: f32) -> Result<Picture, String> {
+    fn try_render(&mut self, dl: &DisplayList, scale: f32) -> Result<PaintedPicture, String> {
         let (width, height) = crate::pixels::dimensions(dl.size, scale)?;
         let count = target_len(width, height).ok_or("CPU target exceeds addressable memory")?;
         let (bg, bga) = rgb(dl.background);
         let base = [bg[0] * bga, bg[1] * bga, bg[2] * bga, bga];
-        let mut t = Target { width, height, pixels: vec![base; count], clips: Vec::new(), layers: Vec::new() };
+        let mut t = Target { width, height, pixels: vec![base; count], clips: ClipStack::default(), layers: Vec::new() };
+        let mut effects = Vec::new();
         for item in &dl.items() {
             match item {
                 Item::Shadow(s) => shadow(&mut t, s, scale),
                 Item::Quad(q) => quad(&mut t, q, scale),
-                Item::Custom(p) => quad(&mut t, &p.fallback, scale),
+                Item::Custom(p) => {
+                    quad(&mut t, &p.fallback, scale);
+                    effects.push(PaintReceipt {
+                        source: p.fallback.source,
+                        outcome: PaintOutcome::Fallback { reason: PaintFallback::ReferenceRenderer },
+                    });
+                }
                 Item::Image(i) => image(&mut t, i, scale),
                 Item::Glyphs(g) => self.glyph_run(&mut t, g, scale),
                 Item::Path(p) => self.path(&mut t, p, scale),
@@ -107,13 +98,8 @@ impl CpuRenderer {
                 Item::Native { rect, radius, cut: true, .. } => cutout(&mut t, *rect, *radius, scale),
                 // Otherwise its placeholder or snapshot, painted before, shows.
                 Item::Native { .. } => {}
-                Item::PushClip { rect, radius, .. } => {
-                    let c = crate::shape::push_clip(t.clips.last().map(|c| (c.x, c.y, c.w, c.h)), *rect, *radius, scale);
-                    t.clips.push(Clip { x: c.0, y: c.1, w: c.2, h: c.3, r: c.4 });
-                }
-                Item::PopClip => {
-                    t.clips.pop();
-                }
+                Item::PushClip { rect, radius, .. } => t.clips.push(*rect, *radius, scale),
+                Item::PopClip => t.clips.pop(),
                 Item::PushLayer { opacity, .. } => {
                     let below = std::mem::replace(&mut t.pixels, vec![[0.0; 4]; count]);
                     t.layers.push((below, *opacity));
@@ -130,11 +116,11 @@ impl CpuRenderer {
             }
         }
         self.paths.end_frame();
-        Ok(from_premultiplied(width, height, &t.pixels))
+        Ok(PaintedPicture { picture: from_premultiplied(width, height, &t.pixels), effects })
     }
 
     fn path(&mut self, t: &mut Target, p: &PathPaint, scale: f32) {
-        let window = paths::window((t.width, t.height), t.clips.last().map(|c| (c.x, c.y, c.w, c.h)));
+        let window = paths::window((t.width, t.height), t.clips.current().bounds.map(|c| (c.x, c.y, c.w, c.h)));
         let Some(at) = paths::place(p, scale, window) else { return };
         let mask = self.paths.get(p, &at);
         let (color, alpha) = rgb(p.color);
@@ -325,6 +311,9 @@ impl Painter for CpuRenderer {
         "reference"
     }
     fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<Picture, String> {
+        self.try_render(list, scale).map(|painted| painted.picture)
+    }
+    fn paint_with_receipts(&mut self, list: &DisplayList, scale: f32, _sample: Option<PaintSample>) -> Result<PaintedPicture, String> {
         self.try_render(list, scale)
     }
 }

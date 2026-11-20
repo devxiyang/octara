@@ -27,18 +27,86 @@ pub fn inner_rect(x: f32, y: f32, w: f32, h: f32, r: f32, b: [f32; 4]) -> (f32, 
     (x + l, y + t, (w - l - rt).max(0.0), (h - t - bt).max(0.0), (r - widest).max(0.0))
 }
 
-/// The clip after pushing `rect` (logical, rounded by `radius`) inside `outer` (device pixels):
-/// their intersection, rounded by the inner clip's radius. Device pixels `(x, y, w, h, r)`.
-pub fn push_clip(outer: Option<(f32, f32, f32, f32)>, rect: Rect, radius: f32, scale: f32) -> (f32, f32, f32, f32, f32) {
-    let (mut x, mut y, mut w, mut h) = (rect.x * scale, rect.y * scale, rect.w * scale, rect.h * scale);
-    if let Some((ox, oy, ow, oh)) = outer {
-        let (r, b) = ((x + w).min(ox + ow), (y + h).min(oy + oh));
-        x = x.max(ox);
-        y = y.max(oy);
-        w = (r - x).max(0.0);
-        h = (b - y).max(0.0);
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ClipState {
+    pub(crate) bounds: Option<Rect>,
+    /// One-based index into the clip nodes. Zero uses only the rectangular bounds.
+    pub(crate) head: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[cfg_attr(feature = "gpu", derive(bytemuck::Pod, bytemuck::Zeroable))]
+pub(crate) struct ClipNode {
+    rect: [f32; 4],
+    radius: f32,
+    parent: u32,
+    _pad: [u32; 2],
+}
+
+#[derive(Default)]
+pub(crate) struct ClipStack {
+    stack: Vec<ClipState>,
+    nodes: Vec<ClipNode>,
+}
+
+impl ClipStack {
+    pub(crate) fn current(&self) -> ClipState {
+        self.stack.last().copied().unwrap_or_default()
     }
-    (x, y, w, h, radius * scale)
+
+    pub(crate) fn push(&mut self, rect: Rect, radius: f32, scale: f32) {
+        let previous = self.current();
+        let rect = Rect::new(rect.x * scale, rect.y * scale, rect.w * scale, rect.h * scale);
+        let radius = (radius * scale).max(0.0);
+        let bounds = previous.bounds.map_or(rect, |outer| outer.intersect(&rect));
+        let mut head = previous.head;
+        if !bounds.is_empty() && (head != 0 || radius > 0.0) {
+            if head == 0
+                && let Some(outer) = previous.bounds
+            {
+                head = self.add_node(outer, 0.0, 0);
+            }
+            head = self.add_node(rect, radius, head);
+        }
+        self.stack.push(ClipState { bounds: Some(bounds), head });
+    }
+
+    pub(crate) fn pop(&mut self) {
+        self.stack.pop();
+    }
+
+    fn add_node(&mut self, rect: Rect, radius: f32, parent: u32) -> u32 {
+        self.nodes.push(ClipNode { rect: [rect.x, rect.y, rect.w, rect.h], radius, parent, _pad: [0; 2] });
+        u32::try_from(self.nodes.len()).expect("clip node index")
+    }
+
+    #[cfg(feature = "gpu")]
+    pub(crate) fn nodes(&self) -> &[ClipNode] {
+        &self.nodes
+    }
+
+    pub(crate) fn coverage(&self, x: f32, y: f32) -> f32 {
+        let ClipState { bounds: Some(bounds), mut head } = self.current() else {
+            return 1.0;
+        };
+        if bounds.is_empty() {
+            return 0.0;
+        }
+        if head == 0 {
+            return coverage(sd_round_rect(x, y, bounds.x, bounds.y, bounds.w, bounds.h, 0.0));
+        }
+        // Intersect the original shapes. The most restrictive edge determines the coverage,
+        // including when two clips share the same antialiased edge.
+        let mut alpha = 1.0_f32;
+        while head != 0 && alpha > 0.0 {
+            let node = self.nodes[head as usize - 1];
+            let [left, top, width, height] = node.rect;
+            alpha = alpha.min(coverage(sd_round_rect(x, y, left, top, width, height, node.radius)));
+            head = node.parent;
+        }
+        alpha
+    }
 }
 
 fn gaussian(x: f32, sigma: f32) -> f32 {
@@ -143,6 +211,20 @@ pub fn blend(dst: &mut [f32; 4], rgb: [f32; 3], alpha: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rectangular_ancestor_preserves_the_round_clip_center() {
+        let mut clips = ClipStack::default();
+        clips.push(Rect::new(8.0, 0.0, 8.0, 16.0), 0.0, 1.0);
+        clips.push(Rect::new(0.0, 0.0, 16.0, 16.0), 8.0, 1.0);
+
+        assert_eq!(clips.coverage(8.5, 1.5), 1.0);
+        assert_eq!(clips.coverage(7.5, 1.5), 0.0);
+        assert_eq!(clips.coverage(15.5, 0.5), 0.0);
+
+        clips.pop();
+        assert_eq!(clips.coverage(15.5, 0.5), 1.0);
+    }
 
     #[test]
     fn distances() {

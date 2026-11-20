@@ -180,54 +180,107 @@ fn image_row_pixels(gpu: &mut GpuRenderer, row: &DisplayList) -> Vec<[u8; 4]> {
 
 #[test]
 fn gpu_submits_only_the_kept_frame_with_its_surrounding_commands() {
+    use octara::capture::{PaintOrigin, PaintOutcome};
+    use octara_render::gpu::{CanvasFrame, FrameInput, canvas};
+    use std::time::Duration;
+
     let Some(mut gpu) = GpuRenderer::new() else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
-    let color = IMAGE_COLORS[1];
-    let list = image_row(&[solid_image(8, 8, color)]);
-    let device = gpu.device().clone();
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: None,
-        size: wgpu::Extent3d { width: 8, height: 8, depth_or_array_layers: 1 },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
+    let [red, green, blue, ..] = IMAGE_COLORS;
+    let source_image = Image::rgba(8, 8, red.repeat(64));
+    let publisher = std::thread::current().id();
+    let sampled_at = Duration::from_millis(25);
+    let authored = canvas(move |_| {
+        move |frame: &mut CanvasFrame<'_>| {
+            assert_ne!(std::thread::current().id(), publisher);
+            assert_eq!(frame.sampled_at, Some(sampled_at));
+            drop(frame.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: frame.target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLUE), store: wgpu::StoreOp::Store },
+                })],
+                ..Default::default()
+            }));
+        }
     });
-    let view = target.create_view(&Default::default());
-    // Discard the draw while keeping the pending upload for the cached atlas slot.
-    let discarded = device.create_command_encoder(&Default::default());
-    drop(gpu.record(discarded, &list, 1.0, &view, (8, 8)));
+    let size = (16, 8);
+    let mut window = Window::headless({
+        let source_image = source_image.clone();
+        move || {
+            row()
+                .size_full()
+                .child(image(&source_image).size(8))
+                .child(el().id("author").size(8).bg(Color::BLACK).paint(authored.clone(), [0.0; 4]))
+        }
+    });
+    window.app().advance(sampled_at);
+    window.resize(size.0 as f32, size.1 as f32);
+    let frame = window.published_frame().expect("a settled drawing");
+    let sample = frame.paint_sample();
+    let origin = PaintOrigin::Submitted { frame: 1, surface_generation: 0, device_generation: 0 };
+    source_image.set(8, 8, green.repeat(64));
+    window.app().shutdown();
 
-    let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: 8,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
+    let (pixels, paint) = std::thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let device = gpu.device().clone();
+                let target = device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let view = target.create_view(&Default::default());
+                let input = FrameInput { list: &frame.list, scale: frame.scale, size, sample: Some(sample) };
+                // Discard the draw while keeping the pending upload for the cached atlas slot.
+                let discarded = device.create_command_encoder(&Default::default());
+                drop(gpu.record_sampled(discarded, &view, input, None).0);
+
+                let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size: 16,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                let copy_pixel = |encoder: &mut wgpu::CommandEncoder, x, offset| {
+                    encoder.copy_texture_to_buffer(
+                        wgpu::TexelCopyTextureInfo { origin: wgpu::Origin3d { x, y: 4, z: 0 }, ..target.as_image_copy() },
+                        wgpu::TexelCopyBufferInfo {
+                            buffer: &readback,
+                            layout: wgpu::TexelCopyBufferLayout { offset, bytes_per_row: None, rows_per_image: None },
+                        },
+                        wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                    );
+                };
+                let mut encoder = device.create_command_encoder(&Default::default());
+                copy_pixel(&mut encoder, 4, 0);
+                copy_pixel(&mut encoder, 12, 4);
+                let (mut draw, _) = gpu.record_sampled(encoder, &view, input, None);
+                copy_pixel(draw.encoder(), 4, 8);
+                copy_pixel(draw.encoder(), 12, 12);
+                let paint = frame.paint_frame(origin, draw.paint_receipts());
+                let submission = draw.submit();
+                readback.map_async(wgpu::MapMode::Read, .., |result| result.unwrap());
+                device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: None }).unwrap();
+                let pixels: [[u8; 4]; 4] = readback.get_mapped_range(..).unwrap().as_chunks::<4>().0.try_into().unwrap();
+                (pixels, paint)
+            })
+            .join()
+            .expect("the renderer worker finished")
     });
-    let copy_pixel = |encoder: &mut wgpu::CommandEncoder, offset| {
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo { origin: wgpu::Origin3d { x: 4, y: 4, z: 0 }, ..target.as_image_copy() },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback,
-                layout: wgpu::TexelCopyBufferLayout { offset, bytes_per_row: None, rows_per_image: None },
-            },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-        );
-    };
-    let mut encoder = device.create_command_encoder(&Default::default());
-    copy_pixel(&mut encoder, 0);
-    let mut draw = gpu.record(encoder, &list, 1.0, &view, (8, 8));
-    copy_pixel(draw.encoder(), 4);
-    let submission = draw.submit();
-    readback.map_async(wgpu::MapMode::Read, .., |result| result.unwrap());
-    device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: None }).unwrap();
-    let pixels = readback.get_mapped_range(..).unwrap();
-    assert_eq!(pixels[..4], [0; 4]);
-    assert_eq!(pixels[4..], color);
+    assert_eq!(pixels, [[0; 4], [0; 4], red, blue]);
+    assert_eq!((paint.sample, paint.origin), (sample, origin));
+    let [effect] = paint.effects.as_slice() else { panic!("the worker should return one author receipt") };
+    assert_eq!((effect.site.id.as_deref(), effect.outcome), (Some("author"), PaintOutcome::Rendered));
 }
 
 #[test]
@@ -390,16 +443,89 @@ fn capture_painter_rejects_invalid_sizes_without_losing_the_renderer() {
 }
 
 #[test]
-fn capture_painter_reports_device_loss() {
+fn a_published_frame_rebuilds_its_resources_on_a_replacement_device() {
     use octara_primitives::capture::Painter;
+    use octara_render::gpu::{CanvasFrame, canvas, material};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
 
-    let Some(mut gpu) = GpuRenderer::new() else {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())) else {
         eprintln!("no GPU adapter: skipped");
         return;
     };
-    let list = DisplayList { size: (8.0, 8.0), background: Color::WHITE, parts: Vec::new() };
+    let device = |adapter: &wgpu::Adapter| {
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("a GPU device");
+        GpuRenderer::with_device(device, queue, wgpu::TextureFormat::Rgba8Unorm)
+    };
+    let mut gpu = device(&adapter);
+    let preparations = Arc::new(AtomicU32::new(0));
+    let authored = canvas({
+        let preparations = preparations.clone();
+        move |device| {
+            preparations.fetch_add(1, Ordering::Relaxed);
+            let size = wgpu::Extent3d { width: 8, height: 8, depth_or_array_layers: 1 };
+            let scratch = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("loss regression author texture"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = scratch.create_view(&Default::default());
+            move |frame: &mut CanvasFrame<'_>| {
+                assert_eq!(frame.sampled_at, Some(Duration::from_millis(25)));
+                assert_eq!((frame.rect.w, frame.rect.h, frame.radius), (8.0, 8.0, 3.0));
+                drop(frame.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLUE), store: wgpu::StoreOp::Store },
+                    })],
+                    ..Default::default()
+                }));
+                frame.encoder.copy_texture_to_texture(scratch.as_image_copy(), frame.target.texture().as_image_copy(), size);
+            }
+        }
+    });
+    let mut window = Window::headless(move || {
+        let shader = material("fn material(uv: vec2f, params: vec4f) -> vec4f { return params; }");
+        col()
+            .size_full()
+            .bg(Color::WHITE)
+            .child(text("Restore glyph atlas"))
+            .child(image(&picture()))
+            .child(el().id("gpu-material").size(8).paint(shader, [1.0, 0.0, 0.0, 1.0]))
+            .child(el().id("gpu-canvas").size(8).rounded(3.0).bg(Color::BLACK).paint(authored.clone(), [0.0; 4]))
+    });
+    window.app().advance(Duration::from_millis(25));
+    window.resize(160.0, 96.0);
+    let frame = window.published_frame().expect("a settled drawing");
+    let original = gpu.paint_with_receipts(&frame.list, frame.scale, Some(frame.paint_sample())).unwrap().picture;
+    for (id, color) in [("gpu-material", [255, 0, 0, 255]), ("gpu-canvas", [0, 0, 255, 255])] {
+        let kernel = window.kernel();
+        let (x, y, _, _) = kernel.rect(kernel.find(id).unwrap());
+        assert_eq!(original.pixel(x as u32 + 4, y as u32 + 4), color);
+    }
+    assert_eq!(preparations.load(Ordering::Relaxed), 1);
+
+    let lost = gpu.device().clone();
     gpu.device().destroy();
-    assert!(gpu.paint(&list, 1.0).is_err());
+    assert!(gpu.paint_with_receipts(&frame.list, frame.scale, Some(frame.paint_sample())).is_err());
+    drop(gpu);
+
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("a live adapter");
+    let mut replacement = device(&adapter);
+    assert_ne!(replacement.device(), &lost);
+    assert_eq!(window.published_revision(), Some(frame.revision));
+    let restored = replacement.paint_with_receipts(&frame.list, frame.scale, Some(frame.paint_sample())).unwrap().picture;
+    assert_eq!(restored, original);
+    assert_eq!(preparations.load(Ordering::Relaxed), 2, "author resources were built once per device");
 }
 
 /// Paths of every kind, and one larger than an atlas tile.

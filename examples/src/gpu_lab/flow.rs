@@ -1,6 +1,6 @@
 use octara_primitives::paint::PaintProgram;
 use octara_render::{
-    gpu::{CanvasFrame, canvas},
+    gpu::{CanvasFrame, canvas, retained_canvas},
     wgpu,
 };
 use std::sync::Mutex;
@@ -9,8 +9,8 @@ use wgpu::util::DeviceExt;
 const SHADER: &str = concat!(include_str!("palette.wgsl"), include_str!("flow.wgsl"));
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-pub(super) fn program() -> PaintProgram {
-    canvas(|device| {
+pub(super) fn program(retained: bool) -> PaintProgram {
+    let prepare = |device: &wgpu::Device| {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shader lab flow field"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
@@ -83,19 +83,21 @@ pub(super) fn program() -> PaintProgram {
             let compute_inputs = inputs(frame.device, &compute_layout, &uniforms, 0, &field);
             let render_inputs = inputs(frame.device, &render_layout, &uniforms, 2, &field);
             {
-                let mut pass = frame
-                    .encoder
-                    .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("shader lab vector field"), timestamp_writes: None });
+                let mut pass = frame.begin_compute_pass(
+                    "shader_lab_flow_compute",
+                    &wgpu::ComputePassDescriptor { label: Some("shader lab vector field"), timestamp_writes: None },
+                );
                 pass.set_pipeline(&compute);
                 pass.set_bind_group(0, &compute_inputs, &[]);
                 pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
             }
-            draw(frame, &resolve, &render_inputs, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), "shader lab color resolve");
+            draw(frame, &resolve, &render_inputs, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), "shader_lab_color_resolve");
             if frame.params[2] > 0.5 {
-                draw(frame, &grid, &render_inputs, wgpu::LoadOp::Load, "shader lab grid composite");
+                draw(frame, &grid, &render_inputs, wgpu::LoadOp::Load, "shader_lab_grid_composite");
             }
         }
-    })
+    };
+    if retained { retained_canvas(prepare) } else { canvas(prepare) }
 }
 
 fn field_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
@@ -165,18 +167,21 @@ fn draw(
     pipeline: &wgpu::RenderPipeline,
     bind: &wgpu::BindGroup,
     load: wgpu::LoadOp<wgpu::Color>,
-    label: &str,
+    label: &'static str,
 ) {
-    let mut pass = frame.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some(label),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: frame.target,
-            depth_slice: None,
-            resolve_target: None,
-            ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
-        })],
-        ..Default::default()
-    });
+    let mut pass = frame.begin_render_pass(
+        label,
+        &wgpu::RenderPassDescriptor {
+            label: Some(label),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: frame.target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+            })],
+            ..Default::default()
+        },
+    );
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, bind, &[]);
     pass.draw(0..3, 0..1);

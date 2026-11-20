@@ -12,6 +12,7 @@ use octara_primitives::native::NativeChange;
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Default)]
@@ -122,7 +123,7 @@ fn display_ticks_publish_motion_only_in_the_window_that_needs_it() {
         let idle = moving.published_frame().unwrap();
         assert_eq!(idle.revision, final_frame.revision);
         assert_eq!(idle.sampled_at, final_frame.sampled_at);
-        assert!(Rc::ptr_eq(&idle.list, &final_frame.list));
+        assert!(Arc::ptr_eq(&idle.list, &final_frame.list));
 
         moving.event(octara::app::InputEvent::Resize { width: 320.0, height: 200.0, scale: 2.0, safe_area: None });
         let resized = moving.published_frame().unwrap();
@@ -134,6 +135,44 @@ fn display_ticks_publish_motion_only_in_the_window_that_needs_it() {
         samples
     });
     assert!(samples[1] >= 2 * samples[0], "{samples:?}");
+}
+
+#[test]
+fn display_target_samples_paint_without_advancing_the_app_or_its_other_windows() {
+    let (app, log) = recording_app();
+    let lit = app.run(|| state("lit", || false));
+    let view = move || el().id("color").size_8().bg(move || if lit.get() { rgb(0xff0000) } else { rgb(0) }).motion(Spring::SNAP);
+    let window = app.open_window(WindowOptions::new("First"), view).unwrap();
+    let other = app.open_window(WindowOptions::new("Second"), view).unwrap();
+    let timer_ran = Rc::new(Cell::new(false));
+    let ran = timer_ran.clone();
+    app.run(|| {
+        lit.set(true);
+        spawn(async move {
+            octara::task::sleep_until(Duration::from_millis(5)).await;
+            ran.set(true);
+        });
+    });
+    let prepared = window.published_frame().unwrap();
+    let other_prepared = other.published_frame().unwrap();
+    let handoffs = log.borrow().frames.len();
+    let now = app.now();
+    let target = now + Duration::from_micros(8_333);
+    let node = window.kernel().find("color").unwrap();
+    let sample = window.published_frame_for_display(target).unwrap();
+    let color = |frame: &octara::platform::PublishedFrame| frame.list.quads().find(|q| q.source == node).unwrap().fill.unwrap();
+    assert_eq!(sample.revision, prepared.revision);
+    assert_eq!(sample.sampled_at, target);
+    assert_eq!(sample.list.size, prepared.list.size);
+    assert!(color(&sample).components[0] > color(&prepared).components[0]);
+    assert_eq!(app.now(), now);
+    assert_eq!(window.kernel().time(), now.as_secs_f64());
+    assert!(!timer_ran.get());
+    assert_eq!(log.borrow().frames.len(), handoffs);
+    assert!(Arc::ptr_eq(&window.published_frame().unwrap().list, &prepared.list));
+    assert!(Arc::ptr_eq(&other.published_frame().unwrap().list, &other_prepared.list));
+    app.advance_to(target);
+    assert!(timer_ran.get());
 }
 
 #[test]

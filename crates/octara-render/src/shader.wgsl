@@ -18,7 +18,7 @@ fn image_texel(v: VsOut, x: f32, y: f32) -> vec4f {
 // image's edges, antialiased where it ends, clipped to its rounded box.
 fn image_color(p: vec2f, v: VsOut) -> vec4f {
     let edge = coverage(sd_round_rect(p, v.rect, 0.0));
-    let inside = coverage(sd_round_rect(p, v.border, v.params.x));
+    let inside = coverage(sd_round_rect(p, v.border, bitcast<f32>(v.params.x)));
     let cov = edge * inside;
     if cov <= 0.0 || v.rect.z <= 0.0 || v.rect.w <= 0.0 {
         return vec4f(0.0);
@@ -48,7 +48,7 @@ fn canvas_color(p: vec2f, v: VsOut) -> vec4f {
     let weight = fract(texel);
     let top = mix(textureLoad(layer, at, 0), textureLoad(layer, vec2i(hi.x, at.y), 0), weight.x);
     let bottom = mix(textureLoad(layer, vec2i(at.x, hi.y), 0), textureLoad(layer, hi, 0), weight.x);
-    let outer = coverage(sd_round_rect(p, v.rect, v.params.x));
+    let outer = coverage(sd_round_rect(p, v.rect, bitcast<f32>(v.params.x)));
     return mix(top, bottom, weight.y) * outer;
 }
 
@@ -121,15 +121,16 @@ fn shadow_alpha(p: vec2f, r: vec4f, radius: f32, sigma: f32) -> f32 {
 @fragment
 fn fs(v: VsOut) -> @location(0) vec4f {
     let p = v.pos.xy + globals.origin; // pixel center in window coordinates
-    let clip = coverage(sd_round_rect(p, v.clip, v.params.z));
     let kind = v.params.y;
-    if kind == KIND_SHADOW {
-        let a = v.fill.a * shadow_alpha(p, v.rect, v.params.x, v.border.x) * clip;
-        return vec4f(v.fill.rgb * a, a);
-    }
     if kind == KIND_LAYER {
         // A layer, pixel for pixel, at its opacity (premultiplied already).
         return textureLoad(layer, vec2i(p - v.rect.xy), 0) * v.fill.a;
+    }
+    let clip = clip_coverage(p, v);
+    let radius = bitcast<f32>(v.params.x);
+    if kind == KIND_SHADOW {
+        let a = v.fill.a * shadow_alpha(p, v.rect, radius, v.border.x) * clip;
+        return vec4f(v.fill.rgb * a, a);
     }
     if kind == KIND_CANVAS {
         return canvas_color(p, v) * v.fill.a * clip;
@@ -138,13 +139,13 @@ fn fs(v: VsOut) -> @location(0) vec4f {
         return image_color(p, v) * v.fill.a * clip;
     }
     if kind == KIND_QUAD {
-        let outer = coverage(sd_round_rect(p, v.rect, v.params.x));
+        let outer = coverage(sd_round_rect(p, v.rect, radius));
         var fill = v.fill;
         if v.grad.w > 0.5 {
             fill = gradient_at(p, v.rect, v.grad, v.fill, v.grad_color);
         }
         var fa = 0.0;
-        if v.params.w > 0.5 {
+        if v.params.w != 0u {
             fa = fill.a * outer * clip;
         }
         // Border: outer minus the inner rounded rect.
@@ -155,7 +156,7 @@ fn fs(v: VsOut) -> @location(0) vec4f {
             let inner = vec4f(v.rect.x + b.w, v.rect.y + b.x, max(v.rect.z - b.w - b.y, 0.0), max(v.rect.w - b.x - b.z, 0.0));
             var inside = 0.0;
             if inner.z > 0.0 && inner.w > 0.0 {
-                inside = coverage(sd_round_rect(p, inner, max(v.params.x - widest, 0.0)));
+                inside = coverage(sd_round_rect(p, inner, max(radius - widest, 0.0)));
             }
             ba = v.border_color.a * max(outer - inside, 0.0) * clip;
         }

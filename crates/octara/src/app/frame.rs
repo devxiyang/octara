@@ -179,19 +179,42 @@ impl Window {
     /// The latest settled drawing, assembled once per revision. A host can coalesce multiple
     /// prepared updates by fetching this on its presentation callback.
     pub fn published_frame(&self) -> Option<crate::platform::PublishedFrame> {
+        self.sample_publication(None)
+    }
+
+    /// Platform rendering entry for a display opportunity. Only the paint tracks of a moving
+    /// drawing sample the target time. Settled geometry, text and application time stay current.
+    #[doc(hidden)]
+    pub fn published_frame_for_display(&self, target: std::time::Duration) -> Option<crate::platform::PublishedFrame> {
+        self.sample_publication(Some(target))
+    }
+
+    fn sample_publication(&self, target: Option<std::time::Duration>) -> Option<crate::platform::PublishedFrame> {
         let drawing = self.published_drawing()?;
-        if let Some(frame) = self.w.published_frame.borrow().as_ref().filter(|frame| frame.revision == drawing.number) {
-            return Some(frame.clone());
-        }
         let seconds = f64::from_bits(drawing.prepared.time.expect("prepared frame has a sample time"));
+        let prepared = std::time::Duration::from_secs_f64(seconds);
+        let sampled_at = target.filter(|_| drawing.continuous).map_or(prepared, |target| target.max(prepared));
+        let animated_sample = sampled_at != prepared;
+        let list = if animated_sample {
+            self.with_picking_overlay(self.w.kernel.borrow().display_list_at(sampled_at.as_secs_f64()))
+        } else {
+            if let Some(frame) = self.w.published_frame.borrow().as_ref().filter(|frame| frame.revision == drawing.number) {
+                return Some(frame.clone());
+            }
+            self.display_list()
+        };
+        let paint_sites = Arc::new(crate::capture::paint_sites(&self.w.kernel.borrow(), &list));
         let frame = crate::platform::PublishedFrame {
             window: self.id(),
             revision: drawing.number,
-            sampled_at: std::time::Duration::from_secs_f64(seconds),
+            sampled_at,
             scale: f32::from_bits(drawing.prepared.viewport[2]),
-            list: self.display_list(),
+            list,
+            paint_sites,
         };
-        *self.w.published_frame.borrow_mut() = Some(frame.clone());
+        if !animated_sample {
+            *self.w.published_frame.borrow_mut() = Some(frame.clone());
+        }
         Some(frame)
     }
 

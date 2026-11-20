@@ -1,4 +1,4 @@
-//! A dialog containing retained tab panels and editor-owned suggestions.
+//! A dialog with retained tabs, editor-owned suggestions and a nonmodal form.
 
 use super::section;
 use octara::prelude::*;
@@ -101,9 +101,55 @@ pub fn card() -> El {
                             .gap_2()
                             .style_with(move |p| if tab.get().as_deref() == Some("preview") { p.flex() } else { p.hidden() })
                             .child(text(move || format!("预览：{}", draft.get())).id("editor-preview-text"))
-                            .child(text("返回草稿后继续编辑。").text_sm().text_color(Token::TextMuted)),
+                            .child(editor_tools()),
                     )
                     .child(button("完成").id("editor-done").on_press(move || open.set(false)))
             },
         ))
+}
+
+#[ui]
+fn editor_tools() -> El {
+    let open = state("editor-tools-open", || false);
+    let note = state("editor-tools-note", String::new);
+    let presses = state("editor-after-tools-presses", || 0);
+    col()
+        .w_full()
+        .gap_2()
+        .child(
+            row()
+                .gap_2()
+                .child(
+                    button("编辑设置")
+                        .id("editor-tools")
+                        .controls("editor-tools-panel")
+                        .expanded(open)
+                        .on_press(move || open.update(|value| *value = !*value))
+                        .overlay(
+                            move || open.get(),
+                            Placement::BELOW.fit(true),
+                            move || {
+                                col()
+                                    .id("editor-tools-panel")
+                                    .role(Role::Group)
+                                    .label("编辑设置")
+                                    .w(208)
+                                    .max_w_full()
+                                    .p_2()
+                                    .gap_2()
+                                    .bg(Token::Surface)
+                                    .rounded_md()
+                                    .border()
+                                    .border_color(Token::Border)
+                                    .shadow_lg()
+                                    .opacity_motion(Curve::Fade(0.3))
+                                    .dismissible(true, move || open.set(false))
+                                    .child(text_field(note).id("editor-tools-field").label("备注").placeholder("备注").w_full())
+                                    .child(button("关闭设置").id("editor-tools-close").on_press(move || open.set(false)))
+                            },
+                        ),
+                )
+                .child(button("后续操作").id("editor-after-tools").on_press(move || presses.update(|n| *n += 1))),
+        )
+        .child(text(move || format!("后续操作次数：{}", presses.get())).id("editor-tools-count").text_sm())
 }

@@ -1,8 +1,9 @@
 //! Overlays: shown above everything, placed next to their anchor, flipped and clamped.
 
-use octara::app::{DEFAULT_VIEWPORT, Event};
+use octara::app::{DEFAULT_VIEWPORT, Event, InputEvent, Phase, PointerEvent};
 use octara::prelude::*;
 use octara_primitives::layout::Placed;
+use std::time::Duration;
 
 /// A trigger at `(left, top)` opening a 100×40 panel.
 fn trigger_at(left: f32, top: f32, placement: Placement) -> impl Fn() -> View {
@@ -194,6 +195,220 @@ fn outside_dismissal_does_not_retarget_after_reload() {
     assert_eq!(app.kernel().text_of("presses").as_deref(), Some("0"));
     app.tap("outside").unwrap();
     assert_eq!(app.kernel().text_of("presses").as_deref(), Some("1"));
+}
+
+fn interactive_popover(motion: Curve) -> Window {
+    Window::headless(move || {
+        let open = state("open", || false);
+        let presses = state("presses", || 0);
+        let outside_presses = state("outside-presses", || 0);
+        let closes = state("closes", || 0);
+        let left = state("left", || 120.0);
+        on_command("popup.close", move || open.set(false));
+        on_command("popup.open", move || open.set(true));
+        on_command("popup.move", move || left.set(160.0));
+        col().size_full().overlay_window(
+            || true,
+            move || {
+                col()
+                    .id("dialog")
+                    .role(Role::Dialog)
+                    .label("Settings")
+                    .absolute()
+                    .style_with(move |p| p.left(left.get()))
+                    .top(100)
+                    .w(400)
+                    .h(300)
+                    .p_4()
+                    .gap_4()
+                    .items_start()
+                    .bg(Token::Surface)
+                    .modal(false, || {})
+                    .child(
+                        el().id("tools")
+                            .role(Role::Button)
+                            .label("Tools")
+                            .w(84)
+                            .h(32)
+                            .focusable()
+                            .autofocus()
+                            .expanded(open)
+                            .on_press(move || open.update(|value| *value = !*value))
+                            .overlay(
+                                move || open.get(),
+                                Placement::RIGHT,
+                                move || {
+                                    col()
+                                        .id("tools-panel")
+                                        .w(180)
+                                        .h(90)
+                                        .gap_2()
+                                        .bg(Token::Surface)
+                                        .opacity_motion(motion)
+                                        .dismissible(true, move || {
+                                            closes.update(|n| *n += 1);
+                                            open.set(false);
+                                        })
+                                        .child(input().id("notes").label("Notes").value("Draft").h(34).w_full())
+                                        .child(
+                                            el().id("apply")
+                                                .role(Role::Button)
+                                                .label("Apply")
+                                                .h(32)
+                                                .w_full()
+                                                .focusable()
+                                                .on_press(move || presses.update(|n| *n += 1)),
+                                        )
+                                },
+                            ),
+                    )
+                    .child(
+                        el().id("after-tools")
+                            .role(Role::Button)
+                            .label("After tools")
+                            .w(84)
+                            .h(32)
+                            .focusable()
+                            .on_press(move || outside_presses.update(|n| *n += 1)),
+                    )
+                    .child(text(move || presses.get().to_string()).id("presses"))
+                    .child(text(move || outside_presses.get().to_string()).id("outside-presses"))
+                    .child(text(move || closes.get().to_string()).id("closes"))
+            },
+        )
+    })
+}
+
+#[test]
+fn an_interactive_popover_tabs_after_its_trigger_and_dismisses_when_focus_leaves() {
+    let mut app = interactive_popover(Curve::Instant);
+    app.tap("tools").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("tools"));
+    for (key, expected) in [("tab", "notes"), ("shift+tab", "tools"), ("tab", "notes"), ("tab", "apply"), ("tab", "after-tools")] {
+        app.press_key(key).unwrap();
+        assert_eq!(app.inspect().focus.as_deref(), Some(expected), "{key}");
+    }
+    assert!(!app.kernel().exists("tools-panel"));
+    assert!(app.kernel().exists("dialog"));
+    assert_eq!(app.kernel().text_of("closes").as_deref(), Some("1"));
+}
+
+#[test]
+fn closing_an_interactive_popover_preserves_the_right_focus_and_press() {
+    let mut app = interactive_popover(Curve::Instant);
+    app.tap("tools").unwrap();
+    app.tap("tools").unwrap();
+    assert!(!app.kernel().exists("tools-panel"));
+    assert_eq!(app.kernel().text_of("closes").as_deref(), Some("0"), "the trigger handles its own toggle");
+
+    app.tap("tools").unwrap();
+    app.tap("notes").unwrap();
+    app.press_key("escape").unwrap();
+    assert!(!app.kernel().exists("tools-panel"));
+    assert_eq!(app.inspect().focus.as_deref(), Some("tools"));
+    assert!(app.kernel().exists("dialog"));
+
+    app.tap("tools").unwrap();
+    app.tap("notes").unwrap();
+    app.tap("after-tools").unwrap();
+    assert!(!app.kernel().exists("tools-panel"));
+    assert_eq!(app.inspect().focus.as_deref(), Some("after-tools"));
+    assert_eq!(app.kernel().text_of("outside-presses").as_deref(), Some("1"));
+    assert_eq!(app.kernel().text_of("closes").as_deref(), Some("2"));
+}
+
+#[test]
+fn a_touch_leaves_the_popovers_editor_in_place_until_the_outside_press_qualifies() {
+    let mut app = interactive_popover(Curve::Instant);
+    app.tap("tools").unwrap();
+    app.tap("notes").unwrap();
+    let (x, y, w, h) = rect(&app, "after-tools");
+    let (x, y) = (x + w / 2.0, y + h / 2.0);
+    app.event(InputEvent::Pointer(PointerEvent::touch(1, Phase::Down, x, y)));
+    assert!(app.kernel().exists("tools-panel"), "dismissing now could move the target as the keyboard hides");
+    assert_eq!(app.inspect().focus.as_deref(), Some("notes"));
+    app.event(InputEvent::Pointer(PointerEvent::touch(1, Phase::Up, 2.0, 2.0)));
+    assert!(app.kernel().exists("tools-panel"), "an outside contact that missed its target cannot close the panel");
+    assert_eq!(app.kernel().text_of("closes").as_deref(), Some("0"));
+    app.event(InputEvent::Pointer(PointerEvent::touch(2, Phase::Down, x, y)));
+    app.event(InputEvent::Pointer(PointerEvent::touch(2, Phase::Up, x, y)));
+    assert!(!app.kernel().exists("tools-panel"));
+    assert_eq!(app.inspect().focus.as_deref(), Some("after-tools"));
+    assert_eq!(app.kernel().text_of("outside-presses").as_deref(), Some("1"));
+    assert_eq!(app.kernel().text_of("closes").as_deref(), Some("1"));
+}
+
+#[test]
+fn an_exiting_popover_keeps_its_last_position_but_leaves_the_interactive_tree() {
+    let mut app = interactive_popover(Curve::Fade(0.24));
+    app.tap("tools").unwrap();
+    app.tap("notes").unwrap();
+    let panel = app.kernel().find("tools-panel").unwrap();
+    let dialog = app.kernel().find("dialog").unwrap();
+    let surface = app.kernel().parent(panel).unwrap();
+    let field = app.kernel().find("notes").unwrap();
+    let anchor_x = rect(&app, "tools").0;
+    let painted = |app: &Window| app.display_list().quads().find(|q| q.source == panel).map(|q| q.rect);
+    let before = painted(&app).unwrap();
+
+    app.press_key("escape").unwrap();
+    assert_eq!(app.inspect().focus.as_deref(), Some("tools"));
+    assert!(app.inspect().find("tools-panel").is_none());
+    let field_a11y = octara::kernel::a11y::a11y_id(field);
+    assert!(!app.accessibility_tree().nodes.iter().any(|(id, _)| *id == field_a11y));
+    assert_eq!(painted(&app), Some(before), "the first closed frame still draws the old panel");
+    let drawn: Vec<_> = app.display_list().quads().filter(|q| q.source == dialog || q.source == panel).map(|q| q.source).collect();
+    assert_eq!(drawn, [dialog, panel], "the exit keeps its place above the Dialog");
+    assert_eq!(app.kernel().hit_test(before.x + 4.0, before.y + 4.0), Some(dialog));
+
+    app.invoke("popup.move").unwrap();
+    assert_ne!(rect(&app, "tools").0, anchor_x);
+    app.app().advance(Duration::from_millis(60));
+    assert_eq!(painted(&app), Some(before), "the retired panel stays where it was shown");
+    let opacity = app.display_list().items().into_iter().find_map(|item| match item {
+        octara_primitives::paint::Item::PushLayer { source, opacity } if source == surface => Some(opacity),
+        _ => None,
+    });
+    assert!(opacity.is_some_and(|opacity| opacity > 0.0 && opacity < 1.0), "the old surface is fading: {opacity:?}");
+    app.app().advance(Duration::from_millis(300));
+    assert!(painted(&app).is_none());
+    assert!(!app.kernel().is_alive(panel));
+}
+
+#[test]
+fn reopening_an_interactive_popover_never_adopts_an_old_press_or_target() {
+    let mut app = interactive_popover(Curve::Fade(0.24));
+    app.tap("tools").unwrap();
+    let old = app.inspect().find("apply").unwrap().target.clone();
+    let old_panel = app.kernel().find("tools-panel").unwrap();
+    let dialog = app.kernel().find("dialog").unwrap();
+    let (x, y, w, h) = rect(&app, "apply");
+    let point = (x + w * 0.5, y + h * 0.5);
+    app.pointer_down(point.0, point.1);
+    app.invoke("popup.close").unwrap();
+    app.app().advance(Duration::from_millis(60));
+    app.invoke("popup.open").unwrap();
+    app.pointer_up(point.0, point.1);
+    let fresh = app.inspect().find("apply").unwrap().target.clone();
+    assert_ne!(fresh, old);
+    let request = octara::serde_json::json!({ "op": "tap", "id": "apply", "target": old });
+    let reply = octara::inspect::handle_line(&mut app, &request.to_string());
+    assert_eq!(reply.code.as_deref(), Some("STALE_TARGET"));
+    assert_eq!(app.kernel().text_of("presses").as_deref(), Some("0"));
+    let new_panel = app.kernel().find("tools-panel").unwrap();
+    let drawn: Vec<_> = app
+        .display_list()
+        .quads()
+        .filter(|q| q.source == dialog || q.source == old_panel || q.source == new_panel)
+        .map(|q| q.source)
+        .collect();
+    assert_eq!(drawn, [dialog, old_panel, new_panel], "the fresh panel draws over the old exit");
+    app.tap("apply").unwrap();
+    assert_eq!(app.kernel().text_of("presses").as_deref(), Some("1"));
+    app.app().advance(Duration::from_millis(240));
+    assert!(!app.kernel().is_alive(old_panel));
+    assert_eq!(app.kernel().find("tools-panel"), Some(new_panel));
+    assert_eq!(app.inspect().find("apply").unwrap().target, fresh);
 }
 
 #[test]

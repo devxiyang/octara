@@ -2,17 +2,18 @@
 //! reports what each native view shows. Native images belong to the capture that requested them.
 
 use octara::app::InputEvent;
-use octara::capture::{Pixels, Shown};
+use octara::capture::{PaintFallback, PaintFrame, PaintOrigin, PaintOutcome, PaintReceipt, PaintSample, Pixels, Shown};
 use octara::inspect::{Request, handle};
 use octara::platform::{HeadlessPlatform, HeadlessWindow, NativeSnapshotRequest};
 use octara::prelude::*;
 use octara::view::{native_view, web_view};
-use octara_primitives::capture::{Painter, Picture};
+use octara_primitives::capture::{PaintedPicture, Painter, Picture};
 use octara_primitives::identity::NodeId;
 use octara_primitives::native::Slot;
 use octara_primitives::paint::{DisplayList, Item};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Paints a blank picture and counts the images (snapshots) in the list it was given.
@@ -159,7 +160,7 @@ fn snapshots_draw_in_place_without_touching_the_live_frame() {
     assert_eq!(app.capture_awaiting(capture), [request.id]);
     assert!(reply(&mut app, request, Some(red_pixel())));
     assert!(app.capture_awaiting(capture).is_empty());
-    assert!(Rc::ptr_eq(&live, &app.display_list()), "a native image must not dirty the live display-list cache while capture is active");
+    assert!(Arc::ptr_eq(&live, &app.display_list()), "a native image must not dirty the live display-list cache while capture is active");
 
     let painted = Rc::new(RefCell::new(Vec::new()));
     let shot = path("snapshot");
@@ -167,7 +168,7 @@ fn snapshots_draw_in_place_without_touching_the_live_frame() {
     std::fs::remove_file(&shot).unwrap();
     assert_eq!(*painted.borrow(), [1], "the snapshot was painted in the view's place");
     assert_eq!((c.native[0].shown, c.native[0].misses.as_slice()), (Shown::Snapshot, ["video shows black".to_string()].as_slice()));
-    assert!(Rc::ptr_eq(&live, &app.display_list()));
+    assert!(Arc::ptr_eq(&live, &app.display_list()));
     assert_eq!(app.frames_presented(), frame);
 
     // A snapshot that does not come is reported, not waited for forever.
@@ -186,7 +187,7 @@ fn snapshots_draw_in_place_without_touching_the_live_frame() {
     assert!(error.starts_with(&format!("{shot}: ")), "{error}");
     assert!(app.capture_awaiting(capture).is_empty());
     assert!(!reply(&mut app, request, Some(red_pixel())));
-    assert!(Rc::ptr_eq(&live, &app.display_list()));
+    assert!(Arc::ptr_eq(&live, &app.display_list()));
 }
 
 #[test]
@@ -285,6 +286,87 @@ fn a_painted_capture_keeps_the_pixels_of_a_mutable_image_at_begin() {
     let capture = app.capture_begin(deadline()).unwrap();
     app.capture_finish(capture, &mut painter, &shot, 1.0, vec![], None).unwrap();
     assert_eq!(read_and_remove_pixel(&shot), [0, 255, 0, 255]);
+}
+
+#[test]
+fn a_painted_capture_attributes_fallback_to_the_sampled_mount() {
+    struct FallbackPainter(PaintSample);
+
+    impl Painter for FallbackPainter {
+        fn renderer(&self) -> &'static str {
+            "test"
+        }
+
+        fn paint(&mut self, _: &DisplayList, _: f32) -> Result<Picture, String> {
+            Ok(Picture { width: 1, height: 1, rgba: vec![255, 0, 0, 255] })
+        }
+
+        fn paint_with_receipts(&mut self, list: &DisplayList, scale: f32, sample: Option<PaintSample>) -> Result<PaintedPicture, String> {
+            assert_eq!(sample, Some(self.0));
+            let source = list
+                .items()
+                .into_iter()
+                .find_map(|item| match item {
+                    Item::Custom(paint) => Some(paint.fallback.source),
+                    _ => None,
+                })
+                .unwrap();
+            let effects = vec![PaintReceipt { source, outcome: PaintOutcome::Fallback { reason: PaintFallback::EncodingFailed } }];
+            Ok(PaintedPicture { picture: self.paint(list, scale)?, effects })
+        }
+    }
+
+    #[ui]
+    fn effect() -> El {
+        el().id("effect").size_8().paint(PaintProgram::new(()), [0.0; 4])
+    }
+
+    let mut window = Window::headless(|| {
+        let mount = state("mount", || 0);
+        col().child(el().id("replace").size_8().on_press(move || mount.update(|n| *n += 1))).child(keyed(move || mount.get(), |_| effect()))
+    });
+    let before = window.inspect().root.walk().into_iter().find(|node| node.id.as_deref() == Some("effect")).unwrap().clone();
+    let source = window.kernel().find("effect").unwrap();
+    let publication = window.published_frame().unwrap();
+    let sample = publication.paint_sample();
+    let id = window.capture_begin(deadline()).unwrap();
+    window.tap("replace").unwrap();
+    assert_ne!(window.published_revision(), Some(sample.revision));
+    let snapshot = window.inspect();
+    let replacement = snapshot.root.walk().into_iter().find(|node| node.id.as_deref() == Some("effect")).unwrap();
+    assert_ne!(before.target, replacement.target);
+
+    let shot = path("sampled-paint");
+    let capture = window.capture_finish(id, &mut FallbackPainter(sample), &shot, 1.0, vec![], None).unwrap();
+    assert_eq!(read_and_remove_pixel(&shot), [255, 0, 0, 255]);
+    let paint = capture.paint.unwrap();
+    assert_eq!(paint.sample, sample);
+    assert_eq!(paint.origin, PaintOrigin::Rerecorded { device_generation: None });
+    let [effect] = paint.effects.as_slice() else { panic!("expected a single paint outcome") };
+    assert_eq!(effect.site.target, before.target);
+    assert_eq!(effect.site.id, before.id);
+    assert_eq!(effect.site.source, before.source);
+    assert_eq!(effect.outcome, PaintOutcome::Fallback { reason: PaintFallback::EncodingFailed });
+    let json = octara::serde_json::to_value(&paint).unwrap();
+    assert_eq!(json["revision"], sample.revision);
+    assert_eq!(json["effects"][0]["reason"], "encoding_failed");
+    assert_eq!(octara::serde_json::from_value::<PaintFrame>(json).unwrap(), paint);
+
+    let origin = PaintOrigin::Submitted { frame: 1, surface_generation: 2, device_generation: 3 };
+    let receipts = [PaintReceipt { source, outcome: PaintOutcome::Rendered }];
+    let latest = window.published_frame().unwrap();
+    assert!(latest.paint_frame(origin, &receipts).effects.is_empty(), "a replacement drawing cannot claim the old receipt");
+    let window_id = window.id();
+    window.app().close_window(window_id);
+    drop(window);
+
+    let submission = publication.paint_frame(origin, &receipts);
+    assert_eq!(submission.window, window_id.number());
+    assert_eq!(submission.sample, sample);
+    assert_eq!(submission.origin, origin);
+    let [submitted_effect] = submission.effects.as_slice() else { panic!("expected the retired paint site") };
+    assert_eq!(submitted_effect.site, effect.site);
+    assert_eq!(submitted_effect.outcome, PaintOutcome::Rendered);
 }
 
 #[test]

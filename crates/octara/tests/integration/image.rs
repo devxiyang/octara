@@ -114,7 +114,7 @@ fn layout_and_kept_drawings_use_the_same_image_frame() {
 
     img.set(20, 40, [0, 255, 0, 255].repeat(800));
     empty.set(10, 12, [0, 0, 255, 255].repeat(120));
-    assert!(std::rc::Rc::ptr_eq(&old, &app.display_list()), "reads return the prepared frame until the next update");
+    assert!(std::sync::Arc::ptr_eq(&old, &app.display_list()), "reads return the prepared frame until the next update");
     app.app().settle();
     assert_eq!(size(&app, "natural"), (20.0, 40.0));
     assert_eq!(size(&app, "scaled"), (40.0, 80.0));

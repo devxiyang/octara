@@ -11,8 +11,8 @@ type Draw = Rc<dyn Fn(&mut crate::canvas::Canvas)>;
 type OnNative = Rc<dyn Fn(&crate::native::NativeEvent)>;
 
 use crate::kernel::{
-    Breakpoint, Color, Fill, FocusGroup, HandlerId, HandlerKind, Kernel, NodeId, NumericRange, Paint, Placement, Relation, Relations, Role,
-    State, StyleProp, Token, When,
+    Breakpoint, Color, Fill, FocusGroup, HandlerId, HandlerKind, Kernel, NodeId, NumericRange, OverlayMount, Paint, Placement, Relation,
+    Relations, Role, State, StyleProp, Token, When,
 };
 use crate::paint::PaintProgram;
 use crate::reactive::graph::{self, rt};
@@ -422,7 +422,7 @@ struct ElementProps {
     select_none: bool,
     overlays: Vec<Overlay>,
     anchor: Option<(NodeId, Placement)>,
-    overlay_owner: Option<NodeId>,
+    overlay_mount: Option<OverlayMount>,
 }
 
 /// An editable text input, with the shared element modifiers and its own editing options.
@@ -499,7 +499,7 @@ impl ElementProps {
             select_none: false,
             overlays: Vec::new(),
             anchor: None,
-            overlay_owner: None,
+            overlay_mount: None,
         }
     }
 }
@@ -944,6 +944,9 @@ impl<C> El<C> {
     /// Takes part in window dismissal while shown. Escape requests dismissal of the top layer.
     /// With `click_outside`, an outside press also requests dismissal and continues to its
     /// original eligible target. Focus and the containing window's scope stay active.
+    /// An anchored panel shares its dismissal scope with its trigger. Its Tab stops follow
+    /// the trigger, and keyboard or programmatic focus leaving the top panel's scope requests
+    /// dismissal. If the panel retires with focus inside, the window can restore its trigger.
     pub fn dismissible(mut self, click_outside: bool, dismiss: impl Fn() + 'static) -> Self {
         self.props.layer = Some((crate::kernel::LayerPolicy { modal: false, click_outside }, Rc::new(dismiss)));
         self
@@ -1275,8 +1278,8 @@ pub(crate) fn build_el(element: El) -> NodeId {
         if e.anchor.is_some() {
             k.set_anchor(node, e.anchor);
         }
-        if let Some(owner) = e.overlay_owner {
-            k.set_overlay_owner(node, owner);
+        if let Some(mount) = e.overlay_mount {
+            k.set_overlay_mount(node, mount);
         }
         // Static-only elements need no retained declaration slots. Dynamic elements below
         // replace this base in declaration order; state/screen overrides remain in the kernel.
@@ -1537,6 +1540,7 @@ fn mount_overlay(anchor: NodeId, o: Overlay) {
         return;
     }
     let u = crate::app::window();
+    let overlay_mount = OverlayMount { owner: anchor, order: u.next_registration() };
     let region = Slots::default();
     u.overlay_slots.borrow_mut().push(Slot::Region(region.clone()));
     {
@@ -1552,7 +1556,7 @@ fn mount_overlay(anchor: NodeId, o: Overlay) {
     let view = super::as_part_of(o.made, || {
         show(o.open, move || {
             let mut b = new_el(Content::Box(vec![content()]), at);
-            b.props.overlay_owner = Some(anchor);
+            b.props.overlay_mount = Some(overlay_mount);
             b.props.anchor = placement.map(|placement| (by.unwrap_or(anchor), placement));
             if placement.is_none() {
                 b = b.absolute().inset_0().size_full();

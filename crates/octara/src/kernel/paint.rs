@@ -5,15 +5,15 @@
 use super::text::{self, Wrap};
 use super::{Align, BoxShadow, Color, Dirty, Kernel, Kind, NodeId, Token};
 use crate::image::{Image, Sample};
-use crate::paint::{CustomPaint, DisplayList, GlyphRun, Item, PaintProgram, Part, PathPaint, Quad, Rect};
+use crate::paint::{CustomPaint, DisplayList, GlyphRun, Item, PaintMount, PaintProgram, Part, PathPaint, Quad, Rect};
 use crate::path::Transform;
-use std::rc::Rc;
-use std::sync::Weak;
+use std::sync::{Arc, Weak};
 
 /// What a node's own drawing was built from: while it stays the same, the drawing is kept.
 #[derive(PartialEq)]
 pub(crate) struct DrawKey {
     ver: u64,
+    exiting_paint: bool,
     size: (u32, u32),
     /// Text wrapping and content placement use target layout geometry, which can change
     /// before the animated size shown above starts moving.
@@ -28,17 +28,30 @@ pub(crate) struct DrawKey {
 }
 
 /// A node's kept drawing.
-pub(crate) type Drawn = (DrawKey, Rc<[Item]>);
+pub(crate) type Drawn = (DrawKey, Arc<[Item]>);
+
+pub(crate) struct CustomPaintBinding {
+    program: PaintProgram,
+    params: [f32; 4],
+    mount: PaintMount,
+}
 
 #[derive(Clone, Copy)]
 enum PaintMode {
-    Live { keep: bool },
+    Live { keep: bool, motion_at: f64 },
     Capture,
 }
 
 impl PaintMode {
     fn keeps_drawings(self) -> bool {
-        matches!(self, Self::Live { keep: true })
+        matches!(self, Self::Live { keep: true, .. })
+    }
+
+    fn motion_at(self, now: f64) -> f64 {
+        match self {
+            Self::Live { motion_at, .. } => motion_at,
+            Self::Capture => now,
+        }
     }
 }
 
@@ -49,7 +62,12 @@ fn fade(c: Color, opacity: f32) -> Color {
 impl Kernel {
     /// What the last layout looks like, in drawing order (children over parents, overlays last).
     /// While nothing moves and nothing changed since, the last list is returned again.
-    pub fn display_list(&self) -> Rc<DisplayList> {
+    pub fn display_list(&self) -> Arc<DisplayList> {
+        self.display_list_at(self.now)
+    }
+
+    /// Sample analytic paint tracks while keeping the settled geometry and text state.
+    pub(crate) fn display_list_at(&self, motion_at: f64) -> Arc<DisplayList> {
         let still = self.at_rest();
         if still
             && let Some((generation, viewport, dl)) = &*self.last_frame.borrow()
@@ -59,17 +77,17 @@ impl Kernel {
             // Debug builds check that reusing it is right: every change must bump the count.
             #[cfg(debug_assertions)]
             debug_assert_eq!(
-                format!("{:?}", self.build_display_list(PaintMode::Live { keep: false }).items()),
+                format!("{:?}", self.build_display_list(PaintMode::Live { keep: false, motion_at }).items()),
                 format!("{:?}", dl.items()),
                 "a change did not invalidate the last frame"
             );
             return dl.clone();
         }
-        let dl = Rc::new(self.build_display_list(PaintMode::Live { keep: true }));
+        let dl = Arc::new(self.build_display_list(PaintMode::Live { keep: true, motion_at }));
         // Debug builds check the kept drawings: the frame built without them is the same.
         #[cfg(debug_assertions)]
         debug_assert_eq!(
-            format!("{:?}", self.build_display_list(PaintMode::Live { keep: false }).items()),
+            format!("{:?}", self.build_display_list(PaintMode::Live { keep: false, motion_at }).items()),
             format!("{:?}", dl.items()),
             "a change did not reach a kept drawing"
         );
@@ -103,13 +121,16 @@ impl Kernel {
 
     pub(crate) fn set_custom_paint(&mut self, id: NodeId, program: &PaintProgram, params: [f32; 4]) -> bool {
         let n = self.node_mut(id);
-        if let Some((old_program, old_params)) = &n.custom_paint
-            && old_params.map(f32::to_bits) == params.map(f32::to_bits)
-            && Weak::ptr_eq(&old_program.downgrade(), &program.downgrade())
+        if let Some(binding) = &mut n.custom_paint
+            && Weak::ptr_eq(&binding.program.downgrade(), &program.downgrade())
         {
-            return false;
+            if binding.params.map(f32::to_bits) == params.map(f32::to_bits) {
+                return false;
+            }
+            binding.params = params;
+        } else {
+            n.custom_paint = Some(CustomPaintBinding { program: program.clone(), params, mount: PaintMount::default() });
         }
-        n.custom_paint = Some((program.clone(), params));
         self.changed(id, Dirty::PAINT, "paint", || format!("{params:?}"));
         true
     }
@@ -286,7 +307,7 @@ impl Kernel {
         if !self.ink_meets(id, rect, &clip) {
             return;
         }
-        let own = self.presented(id).opacity;
+        let own = self.presented_at(id, mode.motion_at(self.now)).opacity;
         if own >= 1.0 {
             return self.paint_node(id, rect, opacity, clip, out, mode);
         }
@@ -323,10 +344,11 @@ impl Kernel {
     fn paint_node(&self, id: NodeId, rect: Rect, opacity: f32, clip: Rect, out: &mut Vec<Part>, mode: PaintMode) {
         let n = self.node(id);
         let l = self.taffy.layout(n.taffy).expect("taffy");
+        let motion_at = mode.motion_at(self.now);
         // Its own drawing shows: the box, a line of text running past it, or a shadow.
         let shadows_show = || {
             (n.visual.shadow != super::style::Shadows::None || n.anim.is_some())
-                && self.presented_shadows(id).iter().any(|s| {
+                && self.presented_shadows_at(id, motion_at).iter().any(|s| {
                     let reach = 1.5 * s.blur_radius + s.spread_radius;
                     let r = Rect {
                         x: rect.x + s.offset.0 - reach,
@@ -350,13 +372,14 @@ impl Kernel {
         }
 
         // Children, clipped to the padding box when the node scrolls or clips.
-        if n.children().is_empty() && self.ghosts_of(id).is_empty() {
+        let mut ghosts = self.ghosts_of(id);
+        if n.children().is_empty() && ghosts.is_empty() {
             return;
         }
         let clips = n.layout.overflow.x != taffy::Overflow::Visible || n.layout.overflow.y != taffy::Overflow::Visible;
         let mut child_clip = clip;
         if clips {
-            let v = self.presented(id);
+            let v = self.presented_at(id, motion_at);
             let inner = self.padding_box(id, rect);
             child_clip = clip.intersect(&inner);
             if child_clip.is_empty() {
@@ -365,12 +388,27 @@ impl Kernel {
             out.push(Part::Item(Item::PushClip { source: id, rect: inner, radius: (v.radius - l.border.left).max(0.0) }));
         }
         let origin = self.content_origin(id, rect);
-        for &c in n.children() {
-            self.paint(c, origin, opacity, child_clip, out, mode);
+        if id == self.overlay_layer {
+            ghosts.sort_by_key(|&exit| {
+                let order = self.node(exit).overlay_mount.map(|mount| mount.order);
+                (order.is_none(), order)
+            });
         }
-        // Subtrees on their way out, where they were.
-        for g in self.ghosts_of(id) {
-            self.paint(g, origin, opacity, child_clip, out, mode);
+        let mut exits = ghosts.into_iter().peekable();
+        for &child in n.children() {
+            // Keep a retired overlay in its original region, below a reopening of that region.
+            if let Some(mount) = self.node(child).overlay_mount {
+                while let Some(&exit) = exits.peek()
+                    && self.node(exit).overlay_mount.is_some_and(|old| old.order <= mount.order)
+                {
+                    self.paint(exit, origin, opacity, child_clip, out, mode);
+                    exits.next();
+                }
+            }
+            self.paint(child, origin, opacity, child_clip, out, mode);
+        }
+        for exit in exits {
+            self.paint(exit, origin, opacity, child_clip, out, mode);
         }
         if clips {
             out.push(Part::Item(Item::PopClip));
@@ -379,17 +417,19 @@ impl Kernel {
 
     /// `id`'s own drawing in its own coordinates: the kept one while what it is drawn from is the
     /// same, else built (and kept, with `keep`).
-    fn own_drawing(&self, id: NodeId, rect: Rect, mode: PaintMode) -> Rc<[Item]> {
+    fn own_drawing(&self, id: NodeId, rect: Rect, mode: PaintMode) -> Arc<[Item]> {
         let local = Rect { x: 0.0, y: 0.0, ..rect };
         if !mode.keeps_drawings() {
             return self.draw_own(id, local, mode).into();
         }
         let n = self.node(id);
         let layout = self.taffy.layout(n.taffy).expect("taffy");
-        let mut visual = self.presented(id);
+        let motion_at = mode.motion_at(self.now);
+        let mut visual = self.presented_at(id, motion_at);
         visual.opacity = 1.0;
         let key = DrawKey {
             ver: n.paint_ver,
+            exiting_paint: n.custom_paint.is_some() && !n.attached,
             size: (rect.w.to_bits(), rect.h.to_bits()),
             layout_size: layout.size,
             padding: layout.padding,
@@ -398,7 +438,7 @@ impl Kernel {
             shadows: if n.visual.shadow == super::style::Shadows::None && n.anim.is_none() {
                 Vec::new()
             } else {
-                self.presented_shadows(id)
+                self.presented_shadows_at(id, motion_at)
             },
             theme: self.theme_gen,
             fonts: self.fonts_generation,
@@ -409,7 +449,7 @@ impl Kernel {
             self.drawings_reused.set(self.drawings_reused.get() + 1);
             return items.clone();
         }
-        let items: Rc<[Item]> = self.draw_own(id, local, mode).into();
+        let items: Arc<[Item]> = self.draw_own(id, local, mode).into();
         self.drawings_built.set(self.drawings_built.get() + 1);
         *n.drawn.borrow_mut() = Some((key, items.clone()));
         items
@@ -424,13 +464,13 @@ impl Kernel {
         let n = self.node(id);
         let l = self.taffy.layout(n.taffy).expect("taffy");
         let visible = true;
-        // What is shown now: moving properties sampled at the kernel's time.
-        let shown = self.presented(id);
+        let motion_at = mode.motion_at(self.now);
+        let shown = self.presented_at(id, motion_at);
         let v = &shown;
 
         // Shadows under the box, the first listed on top.
         let radius = v.radius.min(rect.w / 2.0).min(rect.h / 2.0).max(0.0);
-        for s in self.presented_shadows(id).iter().rev() {
+        for s in self.presented_shadows_at(id, motion_at).iter().rev() {
             let grow = s.spread_radius;
             let r = Rect { x: rect.x + s.offset.0 - grow, y: rect.y + s.offset.1 - grow, w: rect.w + 2.0 * grow, h: rect.h + 2.0 * grow };
             if r.w <= 0.0 || r.h <= 0.0 {
@@ -465,7 +505,14 @@ impl Kernel {
                 border_color: fade(v.border, opacity),
             };
             out.push(match &n.custom_paint {
-                Some((program, params)) => Item::Custom(CustomPaint { fallback: quad, program: program.clone(), params: *params, opacity }),
+                Some(binding) => Item::Custom(CustomPaint {
+                    fallback: quad,
+                    program: binding.program.clone(),
+                    mount: binding.mount.clone(),
+                    exiting: !n.attached,
+                    params: binding.params,
+                    opacity,
+                }),
                 None => Item::Quad(quad),
             });
         }

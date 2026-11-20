@@ -1,9 +1,12 @@
 //! Rendering protocol and pixels, independent of the App capture workflow.
 
+use crate::identity::NodeId;
 use crate::image::rgba_len;
 use crate::paint::DisplayList;
+use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 use std::path::Path;
+use std::time::Duration;
 
 /// A painted frame: RGBA8, straight alpha, sRGB, rows top to bottom.
 ///
@@ -71,12 +74,66 @@ fn png_error(error: png::EncodingError) -> io::Error {
     }
 }
 
+/// The immutable drawing revision and its sample time on the application clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaintSample {
+    pub revision: u64,
+    pub sampled_at: Duration,
+}
+
+/// The pixels actually used for an author paint site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum PaintOutcome {
+    Rendered,
+    Retained {
+        /// The drawing revision that produced this output, when supplied by the caller.
+        #[serde(default, rename = "source_revision", skip_serializing_if = "Option::is_none")]
+        revision: Option<u64>,
+    },
+    Fallback {
+        reason: PaintFallback,
+    },
+}
+
+/// Why the styled box supplied the pixels for a custom paint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaintFallback {
+    ReferenceRenderer,
+    UnsupportedProgram,
+    InvalidSize,
+    PreparationFailed,
+    EncodingFailed,
+    BackdropUnavailable,
+    HistoryUnavailable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaintReceipt {
+    pub source: NodeId,
+    pub outcome: PaintOutcome,
+}
+
+/// A picture with the author paint outcomes observed while composing it.
+pub struct PaintedPicture {
+    pub picture: Picture,
+    pub effects: Vec<PaintReceipt>,
+}
+
 /// What renders a capture's frame.
 pub trait Painter {
     /// `gpu` or `reference`, for the report.
     fn renderer(&self) -> &'static str;
     /// The display list at `scale` device pixels per logical pixel.
     fn paint(&mut self, list: &DisplayList, scale: f32) -> Result<Picture, String>;
+
+    /// The picture and, when supported, its author paint receipts. A host can supply the
+    /// settled drawing sample used for the capture.
+    fn paint_with_receipts(&mut self, list: &DisplayList, scale: f32, _sample: Option<PaintSample>) -> Result<PaintedPicture, String> {
+        let picture = self.paint(list, scale)?;
+        Ok(PaintedPicture { picture, effects: Vec::new() })
+    }
 }
 
 #[cfg(test)]

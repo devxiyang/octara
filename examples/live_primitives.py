@@ -126,6 +126,38 @@ def replace_editor(app, text):
     return app.action("replace-editor", "type", text=text)[0]
 
 
+def nonmodal_editor_tools(app):
+    trigger, panel, field = "editor-tools", "editor-tools-panel", "editor-tools-field"
+    opened, _ = app.action("open-editor-tools", "tap", id=trigger)
+    require(opened.get("focus") == trigger and find(opened, trigger).get("controls") == panel,
+            "opening tools lost focus or its panel relation")
+    field_target = token(find(opened, field))
+    inside, _ = app.action("tools-tab-enters", "key", chord="tab")
+    require(inside.get("focus") == field and inside.get("text_input"), "Tab did not enter the anchored editor")
+    escaped, _ = app.action("escape-editor-tools", "key", chord="escape")
+    require(present(escaped, panel) is None and escaped.get("focus") == trigger and present(escaped, "editor-dialog"),
+            "Escape did not return focus to the opener inside the same dialog")
+
+    reopened, _ = app.action("reopen-editor-tools", "tap", id=trigger)
+    require(token(find(reopened, field)) != field_target, "reopening editor tools reused its editor allocation")
+    app.reject("retired-tools-editor-refused", "tap", "STALE_TARGET", id=field, target=field_target)
+    for expected in (field, "editor-tools-close", "editor-after-tools"):
+        snapshot, _ = app.action(f"tools-tab-{expected}", "key", chord="tab")
+        require(snapshot.get("focus") == expected, f"Tab did not advance to {expected}")
+    require(present(snapshot, panel) is None, "Tab away left the panel open")
+
+    app.action("tools-open-for-outside-press", "tap", id=trigger)
+    app.action("tools-focus-before-outside-press", "tap", id=field)
+    outside, _ = app.action("tools-outside-press", "tap", id="editor-after-tools")
+    require(outside.get("focus") == "editor-after-tools" and present(outside, panel) is None and present(outside, "editor-dialog"),
+            "outside press failed to close tools while focusing the original target")
+    require(find(outside, "editor-tools-count").get("name") == "后续操作次数：1", "outside target did not activate exactly once")
+
+    app.action("tools-open-for-trigger-toggle", "tap", id=trigger)
+    toggled, _ = app.action("tools-trigger-closes-once", "tap", id=trigger)
+    require(find(toggled, trigger).get("expanded") is False and present(toggled, panel) is None, "the trigger toggled the tools back open")
+
+
 def interaction(args, output, sockets):
     with PrimitivesWindow("interaction", args, output, sockets, ["showcase", "interaction"]) as app:
         first = app.observe("initial", evidence=True)
@@ -184,6 +216,8 @@ def interaction(args, output, sockets):
                 "hidden retained draft or its relation remained exposed")
         tab_link(preview, PREVIEW_TAB, PREVIEW_PANEL)
         require(find(preview, "editor-preview-text").get("name") == f"预览：{SUMMARY_TEXT}", "preview lost the draft")
+        nonmodal_editor_tools(app)
+        app.action("focus-preview-tab-after-tools", "focus", id=PREVIEW_TAB)
         app.action("focus-draft-without-activation", "key", chord="left")
         draft, _ = app.action("activate-draft", "key", chord="space")
         require(selected(draft, DRAFT_TAB) and token(find(draft, EDITOR)) == old_editor, "panel switching replaced the retained editor")
@@ -232,7 +266,7 @@ def interaction(args, output, sockets):
         app.action("clean", "expect", clean=True)
         return {"checks": ["dialog-focus-and-inert-outside", "dialog-restore-and-retired-target-refusal",
                            "tabs-manual-activation-and-disabled-skip", "retained-panel-editor-selection",
-                           "popup-stable-ids-reorder", "popup-keyboard-and-pointer-owned-overlay",
+                           "popup-stable-ids-reorder", "popup-keyboard-and-pointer-owned-overlay", "nonmodal-tools-focus-and-stale-target",
                            "suggestion-enter-without-submit", "segmented-radio-semantics", "native-390x640", "clean"],
                 "requests": app.steps, "routes": app.routes, "captures": app.captures}
 

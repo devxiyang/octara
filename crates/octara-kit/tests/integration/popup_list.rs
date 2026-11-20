@@ -1,6 +1,6 @@
 //! Existing editors own suggestion focus, text, selection and input-method state.
 
-use octara::app::{Event, InputEvent, PointerKind};
+use octara::app::{Event, InputEvent, Phase, PointerEvent, PointerKind};
 use octara::kernel::a11y::a11y_id;
 use octara::prelude::*;
 use octara::serde_json::json;
@@ -264,6 +264,7 @@ fn popup_clicks_belong_to_their_nested_dialog_and_outside_clicks_close_the_right
         let suggestions = state("suggestions", || false);
         let draft = state("draft", String::new);
         let chosen = state("chosen", String::new);
+        let presses = state("presses", || 0);
         on_command("popup.open", move || suggestions.set(true));
         col()
             .size_full()
@@ -288,11 +289,12 @@ fn popup_clicks_belong_to_their_nested_dialog_and_outside_clicks_close_the_right
                                 choices,
                                 move |id| chosen.set(id),
                             ))
-                            .child(button("Inside").id("inside"))
+                            .child(button("Inside").id("inside").on_press(move || presses.update(|n| *n += 1)))
                     },
                 ))
             }))
             .child(text(move || chosen.get()).id("chosen"))
+            .child(text(move || presses.get().to_string()).id("presses"))
     });
     window.tap("open").unwrap();
     window.tap("open-inner").unwrap();
@@ -303,11 +305,26 @@ fn popup_clicks_belong_to_their_nested_dialog_and_outside_clicks_close_the_right
     assert_eq!(window.inspect().focus.as_deref(), Some("search"));
     assert!(window.kernel().exists("inner") && window.kernel().exists("outer"));
     window.invoke("popup.open").unwrap();
+    window.tap("search").unwrap();
+    assert!(window.kernel().exists("search-list"), "the editor is part of the suggestions' dismissal scope");
     window.tap("inside").unwrap();
     assert!(!window.kernel().exists("search-list"));
     assert!(window.kernel().exists("inner"));
+    assert_eq!(window.kernel().text_of("presses").as_deref(), Some("1"));
+    assert_eq!(window.inspect().focus.as_deref(), Some("inside"));
     window.tap("search").unwrap();
     window.invoke("popup.open").unwrap();
+    window.click_at(4.0, 4.0);
+    assert!(!window.kernel().exists("search-list"));
+    assert!(window.kernel().exists("inner"), "the first outside press closes only the suggestions");
+    assert_eq!(window.inspect().focus.as_deref(), Some("search"));
+    window.invoke("popup.open").unwrap();
+    window.press_key("escape").unwrap();
+    assert!(!window.kernel().exists("search-list"));
+    let mut repeat = KeyEvent::new(Key::Escape, Modifiers::empty());
+    repeat.repeat = true;
+    assert!(window.event(InputEvent::Key(repeat)));
+    assert!(window.kernel().exists("inner"), "holding Escape does not dismiss another layer");
     window.click_at(4.0, 4.0);
     assert!(!window.kernel().exists("inner"));
     assert!(window.kernel().exists("outer"));
@@ -317,6 +334,87 @@ fn popup_clicks_belong_to_their_nested_dialog_and_outside_clicks_close_the_right
     assert!(!window.kernel().exists("outer"));
     assert_eq!(window.inspect().focus.as_deref(), Some("open"));
     clean(&window);
+}
+
+#[test]
+fn a_layer_above_the_suggestions_gets_escape_first() {
+    let mut window = Window::headless(|| {
+        let suggestions = state("suggestions", || false);
+        let higher = state("higher", || false);
+        on_command("popup.show-both", move || {
+            suggestions.set(true);
+            higher.set(true);
+        });
+        col()
+            .size_full()
+            .p_4()
+            .gap_4()
+            .child(popup_list("editor", "Suggestions", suggestions, input().label("Editor"), choices, |_| {}))
+            .child(button("Other layer").id("other").overlay(
+                move || higher.get(),
+                Placement::RIGHT,
+                move || col().id("higher").w(100).child("Other").dismissible(true, move || higher.set(false)),
+            ))
+    });
+    window.tap("editor").unwrap();
+    window.invoke("popup.show-both").unwrap();
+    assert!(window.kernel().exists("higher") && window.kernel().exists("editor-list"));
+    window.press_key("escape").unwrap();
+    assert!(!window.kernel().exists("higher"));
+    assert!(window.kernel().exists("editor-list"));
+    assert_eq!(window.inspect().focus.as_deref(), Some("editor"));
+    window.press_key("escape").unwrap();
+    assert!(!window.kernel().exists("editor-list"));
+    clean(&window);
+}
+
+#[test]
+fn each_focus_departure_requests_dismissal_once_even_if_the_model_keeps_the_list_open() {
+    for route in ["mouse", "touch", "tab", "focus"] {
+        let mut window = Window::headless(|| {
+            let open = state("open", || false);
+            let dismissals = state("dismissals", || 0);
+            on_command("popup.open", move || open.set(true));
+            col()
+                .size_full()
+                .p_4()
+                .child(popup_list(
+                    "editor",
+                    "Suggestions",
+                    (
+                        move || open.get(),
+                        move |shown: bool| {
+                            if !shown {
+                                dismissals.update(|count| *count += 1);
+                            }
+                        },
+                    ),
+                    input().id("editor").label("Editor").w(200),
+                    choices,
+                    |_| {},
+                ))
+                .child(button("After").id("after").mt(250))
+                .child(text(move || dismissals.get().to_string()).id("dismissals"))
+        });
+        window.tap("editor").unwrap();
+        window.invoke("popup.open").unwrap();
+        match route {
+            "mouse" => window.tap("after").unwrap(),
+            "touch" => {
+                let [x, y, w, h] = window.inspect().find("after").unwrap().bounds;
+                let (x, y) = (x + w / 2.0, y + h / 2.0);
+                window.event(InputEvent::Pointer(PointerEvent::touch(1, Phase::Down, x, y)));
+                window.event(InputEvent::Pointer(PointerEvent::touch(1, Phase::Up, x, y)));
+            }
+            "tab" => window.press_key("tab").unwrap(),
+            "focus" => window.dispatch(Event::Focus("after".into())).unwrap(),
+            _ => unreachable!(),
+        }
+        assert_eq!(window.kernel().text_of("dismissals").as_deref(), Some("1"), "{route}");
+        assert_eq!(window.inspect().focus.as_deref(), Some("after"), "{route}");
+        assert!(window.kernel().exists("editor-list"));
+        clean(&window);
+    }
 }
 
 #[test]

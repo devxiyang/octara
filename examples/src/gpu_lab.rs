@@ -1,6 +1,9 @@
-//! A material library and an author-managed GPU canvas in a single Octara window.
+//! Materials, an author-managed GPU canvas, and a backdrop lens in a single Octara window.
 
 mod flow;
+mod glass;
+pub mod input_pressure;
+pub mod replay;
 
 use octara::prelude::*;
 use octara_icons as icons;
@@ -15,6 +18,7 @@ const MUTED: Color = rgb(0xaaa8bb);
 const ACCENT: Color = rgb(0xb9a4fa);
 const SELECTION: Color = rgb(0x2e2743);
 const DEFAULT_PHASE: f64 = 0.38;
+const GLASS_RADIUS: f32 = 18.0;
 
 #[derive(Clone, Copy)]
 struct Preset {
@@ -59,8 +63,23 @@ fn theme() -> Theme {
 
 #[ui]
 pub fn view() -> El {
-    let selected = state("material", || 0_usize);
     let phase = state("phase", || DEFAULT_PHASE);
+    scene(phase, flow::program(false))
+}
+
+/// The same scene with a local Flow output for the retention benchmark.
+#[ui]
+pub fn retained_view() -> El {
+    let phase = state("phase", || DEFAULT_PHASE);
+    scene(phase, flow::program(true))
+}
+
+fn scene(phase: Signal<f64>, flow: PaintProgram) -> El {
+    scene_with_materials_height(phase, flow, None)
+}
+
+fn scene_with_materials_height(phase: Signal<f64>, flow: PaintProgram, materials_max_height: Option<f32>) -> El {
+    let selected = state("material", || 0_usize);
     let grid = state("grid", || true);
     let passes = state("passes", || false);
 
@@ -80,8 +99,14 @@ pub fn view() -> El {
                 .p(16)
                 .gap(14)
                 .when_expanded(|p| p.p(22).gap(16))
-                .child(preview(selected, phase, grid, passes))
-                .child(materials(selected, phase)),
+                .child(preview(selected, phase, grid, passes, flow))
+                .child({
+                    let materials = materials(selected, phase);
+                    match materials_max_height {
+                        Some(height) => materials.max_h(height),
+                        None => materials,
+                    }
+                }),
         )
 }
 
@@ -115,7 +140,7 @@ fn header(reset: impl Fn() + 'static) -> El {
 }
 
 #[ui]
-fn preview(selected: Signal<usize>, phase: Signal<f64>, grid: Signal<bool>, passes: Signal<bool>) -> El {
+fn preview(selected: Signal<usize>, phase: Signal<f64>, grid: Signal<bool>, passes: Signal<bool>, flow: PaintProgram) -> El {
     let preview_size = size_of("gpu-preview");
     col()
         .flex_1()
@@ -154,11 +179,12 @@ fn preview(selected: Signal<usize>, phase: Signal<f64>, grid: Signal<bool>, pass
                         .text_color(move || if grid.get() { ACCENT } else { MUTED })
                         .on_toggle(move || grid.update(bool::toggle)),
                 )
+                .child(glass_control())
                 .child(pass_control(passes, grid)),
         )
         .child(rule())
         .child(el().id("gpu-preview").role(Role::Image).label("Flow field preview").flex_1().min_h(0.0).w_full().bg(rgb(0x0e101a)).paint(
-            flow::program(),
+            flow,
             move || {
                 let preset = PRESETS[selected.get()];
                 [preset.hue, phase.get() as f32, if grid.get() { 1.0 } else { 0.0 }, preset.spread]
@@ -274,6 +300,82 @@ fn swatch(index: usize, preset: Preset, selected: Signal<usize>, program: PaintP
         .child(text(preset.name).min_w(0.0).flex_1().truncate().text_size(13).font_medium())
         .child(
             icon(icons::CHECK).size(14).flex_shrink_0().a11y_hidden().text_color(ACCENT).opacity(move || if current() { 1.0 } else { 0.0 }),
+        )
+}
+
+#[ui]
+fn glass_control() -> El {
+    let open = state("open", || false);
+    let program = glass::program();
+    action("gpu-glass-open", "Glass", icons::BLEND)
+        .label("Open glass lens")
+        .controls("gpu-glass-dialog")
+        .expanded(open)
+        .bg(SELECTION)
+        .border_color(rgb(0x594a7a))
+        .text_color(ACCENT)
+        .on_press(move || open.set(true))
+        .overlay(move || open.get(), Placement::BELOW.align(Align::End).gap(60.0), move || glass_dialog(open, program.clone()))
+}
+
+#[ui]
+fn glass_dialog(open: Signal<bool>, program: PaintProgram) -> El {
+    let refraction = state("refraction", || 0.75);
+    col()
+        .id("gpu-glass-dialog")
+        .role(Role::Dialog)
+        .label("Glass lens")
+        .modal(true, move || open.set(false))
+        .w(360)
+        .max_w_full()
+        .min_h(192)
+        .justify_between()
+        .p(18)
+        .gap(13)
+        .rounded(GLASS_RADIUS)
+        .border()
+        .border_color(rgb(0x67587f))
+        .bg(rgb(0x28223b))
+        .paint(program, move || [refraction.get() as f32, 0.0, 0.0, 0.0])
+        .shadow([BoxShadow::new(0.0, 13.0, Color::BLACK.with_alpha(0.45)).blur_radius(30.0)])
+        .text_color(TEXT)
+        .opacity_motion(Curve::Fade(0.8))
+        .child(
+            row()
+                .items_center()
+                .gap(10)
+                .child(
+                    el().size(36)
+                        .flex_shrink_0()
+                        .rounded(9.0)
+                        .bg(rgb(0x302641))
+                        .text_color(ACCENT)
+                        .items_center()
+                        .justify_center()
+                        .a11y_hidden()
+                        .child(icon(icons::BLEND).size(19)),
+                )
+                .child(text("Glass lens").role(Role::Heading).level(2).flex_1().min_w(0.0).text_size(19).font_semibold())
+                .child(action("gpu-glass-cancel", "Close", icons::X).flex_shrink_0().autofocus().on_press(move || open.set(false))),
+        )
+        .child(text("Bend the grid and ribbons behind this panel.").text_size(13))
+        .child(
+            col()
+                .w_full()
+                .px(10)
+                .py(5)
+                .rounded(8.0)
+                .bg(rgb(0x171222).with_alpha(0.72))
+                .child(
+                    row().items_center().justify_between().child(text("Refraction").text_size(12).font_medium()).child(
+                        text(move || format!("{:.0}%", refraction.get() * 100.0))
+                            .id("gpu-glass-refraction-value")
+                            .text_size(12)
+                            .font_mono()
+                            .text_color(ACCENT),
+                    ),
+                )
+                .child(slider("gpu-glass-refraction", refraction, 0.0, 1.0, 0.05).label("Refraction").w_full()),
         )
 }
 

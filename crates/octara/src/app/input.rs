@@ -225,8 +225,7 @@ impl Window {
 
 impl WindowState {
     pub(crate) fn register(self: &Rc<Self>, h: Handler) -> u64 {
-        let id = self.next.get() + 1;
-        self.next.set(id);
+        let id = self.next_registration();
         self.handlers.borrow_mut().insert(id, ScopedHandler::capture(h));
         let me = self.clone();
         crate::reactive::graph::rt(|rt| {

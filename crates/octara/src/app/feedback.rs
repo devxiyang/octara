@@ -50,8 +50,7 @@ impl WindowState {
 
     /// Registered work belongs to the current execution owner and is removed with that scope.
     pub(crate) fn after_layout(self: &Rc<Self>, f: AfterLayout) -> u64 {
-        let id = self.next.get() + 1;
-        self.next.set(id);
+        let id = self.next_registration();
         let owner = rt(|rt| rt.capture_owner());
         let hook = Rc::new(move || rt(|rt| rt.admits(owner) && rt.with_execution(owner, Ctx::Handler, None, || f())));
         self.after_layout.borrow_mut().push((id, hook));

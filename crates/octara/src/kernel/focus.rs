@@ -2,6 +2,7 @@
 //! movement, and modals (Rune's model).
 
 use super::{Kernel, NodeId, State};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// How arrow keys move focus inside a focus group.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -118,6 +119,48 @@ impl Kernel {
     }
     pub(crate) fn dismiss_on_outside(&self, id: NodeId) -> bool {
         self.node(id).layer.is_some_and(|layer| layer.click_outside)
+    }
+
+    /// The authored owner of an anchored nonmodal layer. The separate placement anchor
+    /// may name a different element.
+    pub(crate) fn anchored_layer_owner(&self, id: NodeId) -> Option<NodeId> {
+        if self.node(id).layer.is_none_or(|layer| layer.modal) {
+            return None;
+        }
+        let mut at = id;
+        loop {
+            let node = self.node(at);
+            if at != id && node.layer.is_some() {
+                return None;
+            }
+            if let Some(mount) = node.overlay_mount {
+                return node.anchor.and(Some(mount.owner));
+            }
+            at = node.parent?;
+        }
+    }
+
+    /// A nonmodal layer treats its own panel and the authored trigger's physical
+    /// subtree as inside. Independently anchored sibling panels keep their own scope.
+    pub(crate) fn is_in_dismissal_scope(&self, node: NodeId, layer: NodeId) -> bool {
+        self.is_alive(node)
+            && (self.is_in_interaction_scope(node, layer)
+                || self.anchored_layer_owner(layer).is_some_and(|owner| self.is_shown(owner) && self.is_within(node, owner)))
+    }
+
+    /// Anchored nonmodal layers containing this focus, from the nearest panel outward.
+    /// Teardown can still read these allocations before their nodes are destroyed.
+    pub(crate) fn anchored_focus_layers(&self, focused: NodeId) -> Vec<(NodeId, NodeId)> {
+        let mut seen = FxHashSet::default();
+        let mut layers = Vec::new();
+        let mut node = Some(focused);
+        while let Some(id) = node.filter(|id| self.is_alive(*id) && seen.insert(*id)) {
+            if let Some(owner) = self.anchored_layer_owner(id) {
+                layers.push((id, owner));
+            }
+            node = self.interaction_parent(id);
+        }
+        layers
     }
 
     fn shown(&self, id: NodeId) -> bool {
@@ -237,6 +280,27 @@ impl Kernel {
         });
     }
 
+    fn walk_tab_tree(
+        &self,
+        id: NodeId,
+        following: &FxHashMap<NodeId, Vec<NodeId>>,
+        relocated: &FxHashSet<NodeId>,
+        f: &mut impl FnMut(NodeId),
+    ) {
+        if !self.shown(id) {
+            return;
+        }
+        f(id);
+        for &child in self.node(id).children() {
+            if !relocated.contains(&child) {
+                self.walk_tab_tree(child, following, relocated, f);
+            }
+        }
+        for &panel in following.get(&id).into_iter().flatten() {
+            self.walk_tab_tree(panel, following, relocated, f);
+        }
+    }
+
     /// The nearest focus group around `id` (not `id` itself).
     fn group_of(&self, id: NodeId) -> Option<NodeId> {
         let mut p = self.parent(id);
@@ -270,15 +334,44 @@ impl Kernel {
     }
 
     /// The Tab order inside `scope` (the open modal, else the window): focusable, enabled, shown
-    /// nodes; positive `tab_index` first, then the rest in tree order; negative ones skipped.
+    /// nodes; positive `tab_index` first, then tree order with nonmodal panels following their
+    /// trigger; negative ones skipped.
     /// A group stops at its focused member, preferred stop, remembered stop, or first stop.
     pub fn focus_order(&self, scope: Option<NodeId>, focused: Option<NodeId>) -> Vec<NodeId> {
+        if scope.is_some_and(|id| !self.is_shown(id)) {
+            return Vec::new();
+        }
         let mut all = Vec::new();
-        self.walk_focusable(scope, &mut |id| {
-            if self.node(id).tab_index >= 0 {
-                all.push(id);
+        let mut panels: Vec<_> = self
+            .layer_paths()
+            .filter_map(|(path, layer)| {
+                let owner = self.anchored_layer_owner(layer)?;
+                self.is_shown(owner).then_some((path, layer, owner))
+            })
+            .collect();
+        if panels.is_empty() {
+            self.walk_focusable(scope, &mut |id| {
+                if self.node(id).tab_index >= 0 {
+                    all.push(id);
+                }
+            });
+        } else {
+            panels.sort_unstable();
+            let mut following: FxHashMap<NodeId, Vec<NodeId>> = FxHashMap::default();
+            let mut relocated = FxHashSet::default();
+            for (_, layer, owner) in panels {
+                following.entry(owner).or_default().push(layer);
+                relocated.insert(layer);
             }
-        });
+            self.walk_tab_tree(self.root, &following, &relocated, &mut |id| {
+                if self.takes_focus(id)
+                    && self.node(id).tab_index >= 0
+                    && scope.is_none_or(|within| self.is_in_interaction_scope(id, within))
+                {
+                    all.push(id);
+                }
+            });
+        }
         // One stop per group.
         let mut stops: Vec<NodeId> = Vec::new();
         let mut groups_seen: Vec<NodeId> = Vec::new();

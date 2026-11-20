@@ -48,6 +48,7 @@ pub(crate) struct Job {
     deadline: Instant,
     delivered: bool,
     guard: TargetGuard,
+    pub(crate) trace_epoch: Option<Instant>,
 }
 
 fn failed(why: impl Into<String>) -> Reply {
@@ -92,7 +93,8 @@ impl Job {
                 "live gesture timing must fit within 30 seconds; double-click timing must be positive and its distance finite and non-negative",
             )));
         }
-        let mut job = Self { window: window.id(), point, stage: Stage::First, deadline: now + MAX_WAIT, delivered: false, guard };
+        let mut job =
+            Self { window: window.id(), point, stage: Stage::First, deadline: now + MAX_WAIT, delivered: false, guard, trace_epoch: None };
         match kind {
             Kind::DoubleTap => {
                 if window.pointer_click_cooldown().is_zero() {
@@ -283,7 +285,11 @@ impl Job {
                 // changing its identity; following its centre would incorrectly add motion.
                 let fraction = f32::from(step) / 4.0;
                 let at = (self.point.0 + delta.0 * fraction, self.point.1 + delta.1 * fraction);
+                let trace = self.trace_epoch.map(|epoch| (epoch, super::trace::InspectInput::start(window)));
                 window.event(InputEvent::Pointer(PointerEvent { id: pointer, ..PointerEvent::mouse(Phase::Move, at.0, at.1) }));
+                if let Some((epoch, trace)) = trace {
+                    trace.log(epoch, window, "framework", Some(step));
+                }
                 if step == 4 {
                     if let Err(reply) = self.current_point(window) {
                         self.cancel(window);

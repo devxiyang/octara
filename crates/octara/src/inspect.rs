@@ -19,7 +19,7 @@ mod target;
 #[doc(hidden)]
 pub use target::guarded_point;
 pub use target::{ParsedRequest, handle_guarded, parse_guarded_request, parse_request};
-pub(crate) use target::{node_target, window_target};
+pub(crate) use target::{node_target, paint_target, window_target};
 mod tree;
 pub use tree::{pick, tree};
 pub(crate) use tree::{pick_for_window, tree_for_window};
@@ -510,6 +510,9 @@ pub struct Reply {
     /// The routed window's state when an inspection or delivered operation is answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion: Option<Completion>,
+    /// The host's latest valid surface submission. Layout may already have advanced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paint: Option<Box<crate::capture::PaintFrame>>,
     /// What an `expect` found instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actual: Option<serde_json::Value>,
@@ -661,6 +664,7 @@ impl Reply {
             message: None,
             delivery: None,
             completion: None,
+            paint: None,
             actual: None,
             snapshot: None,
             issues: None,

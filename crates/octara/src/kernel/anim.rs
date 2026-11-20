@@ -358,9 +358,20 @@ impl Kernel {
         self.require_application_node(id);
         let n = self.node(id);
         let Some(parent) = n.parent else { return false };
-        let curve = self.curve(n.visual.motion.opacity, PropClass::Opacity);
-        if !n.attached || n.born == self.layouts || n.anim.is_none() || matches!(curve, Curve::Instant) {
+        // The overlay's placement box is the exiting root. A single authored surface
+        // inside it supplies the opacity policy for that group.
+        let surface = match (n.overlay_mount, n.children()) {
+            (Some(_), [surface]) => self.node(*surface),
+            _ => n,
+        };
+        let curve = self.curve(surface.visual.motion.opacity, PropClass::Opacity);
+        if !n.attached || n.born == self.layouts || matches!(curve, Curve::Instant) {
             return false;
+        }
+        let anim = n.anim.is_none().then(|| Box::new(Anim::at(&n.visual, n.visual.shadow.resolve(&self.res.theme.borrow()))));
+        if n.anchor.is_some() {
+            // The detached subtree keeps its last layout even if the anchor moves.
+            self.anchored.retain(|&anchored| anchored != id);
         }
         let pos = self.node(parent).children().iter().position(|c| *c == id).expect("child of parent");
         self.node_mut(parent).application_children_mut().remove(pos);
@@ -373,13 +384,14 @@ impl Kernel {
         let t = self.now;
         let n = self.node_mut(id);
         n.exiting = true;
-        if let Some(a) = n.anim.as_mut() {
-            a.opacity.retarget(0.0, t, curve, PropClass::Opacity);
+        if let Some(anim) = anim {
+            n.anim = Some(anim);
         }
+        n.anim.as_mut().expect("exiting node has an opacity track").opacity.retarget(0.0, t, curve, PropClass::Opacity);
         self.ghosts.push(id);
         self.moving.insert(id);
         self.counters.structural_ops += 1;
-        self.a11y_touch(parent);
+        self.a11y_children_changed(parent);
         self.a11y_forget(id);
         self.mark(super::Dirty::LAYOUT | super::Dirty::SEMANTICS);
         self.record(id, super::OpKind::Remove { parent });
@@ -435,7 +447,7 @@ impl Kernel {
         }
     }
 
-    /// Subtrees leaving `parent`, to be drawn after its children.
+    /// Subtrees leaving `parent`, in retirement order.
     pub(crate) fn ghosts_of(&self, parent: NodeId) -> Vec<NodeId> {
         self.ghosts.iter().copied().filter(|g| self.node(*g).parent == Some(parent)).collect()
     }
@@ -475,11 +487,14 @@ impl Kernel {
 
     /// What the node shows now: its visual with moving properties sampled at the kernel's time.
     pub(crate) fn presented(&self, id: NodeId) -> Visual {
+        self.presented_at(id, self.now)
+    }
+
+    pub(crate) fn presented_at(&self, id: NodeId, t: f64) -> Visual {
         let n = self.node(id);
         let mut v = n.visual;
         // At rest a property shows its resolved value exactly (no color round trip).
         if let Some(a) = &n.anim {
-            let t = self.now;
             if a.background.rest_at(t).is_some() {
                 v.background = a.background.sample(t);
             }
@@ -489,18 +504,18 @@ impl Kernel {
             if a.border.rest_at(t).is_some() {
                 v.border = a.border.sample(t).unwrap_or(v.border);
             }
-            if a.opacity.moving(t) {
+            if n.exiting || a.opacity.moving(t) {
                 v.opacity = a.opacity.value(t).clamp(0.0, 1.0) as f32;
             }
         }
         v
     }
 
-    /// The node's shadows as shown now.
-    pub(crate) fn presented_shadows(&self, id: NodeId) -> Vec<BoxShadow> {
+    /// The node's shadows at the given paint sample time.
+    pub(crate) fn presented_shadows_at(&self, id: NodeId, t: f64) -> Vec<BoxShadow> {
         let n = self.node(id);
         match &n.anim {
-            Some(a) => a.shadows(self.now),
+            Some(a) => a.shadows(t),
             None => n.visual.shadow.resolve(&self.res.theme.borrow()),
         }
     }

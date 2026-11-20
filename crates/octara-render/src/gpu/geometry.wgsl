@@ -5,13 +5,21 @@ struct Globals {
 
 @group(0) @binding(0) var<uniform> globals: Globals;
 
+struct ClipNode {
+    rect: vec4f,
+    radius: f32,
+    parent: u32,
+};
+
+@group(0) @binding(5) var<storage, read> clip_nodes: array<ClipNode>;
+
 struct Inst {
     @location(0) rect: vec4f,          // device px: x, y, w, h
     @location(1) fill: vec4f,          // straight RGBA (glyph color for masks)
     @location(2) border_color: vec4f,
     @location(3) border: vec4f,        // top, right, bottom, left
     @location(4) clip: vec4f,          // x, y, w, h
-    @location(5) params: vec4f,        // radius, kind, clip radius, has fill
+    @location(5) params: vec4u,        // radius bits, kind, clip head, has fill
     @location(6) uv: vec4f,            // atlas texel origin
     @location(7) grad_color: vec4f,    // a gradient's end color (fill is its start)
     @location(8) grad: vec4f,          // angle (degrees), start, end, has gradient
@@ -24,19 +32,19 @@ struct VsOut {
     @location(2) @interpolate(flat) border_color: vec4f,
     @location(3) @interpolate(flat) border: vec4f,
     @location(4) @interpolate(flat) clip: vec4f,
-    @location(5) @interpolate(flat) params: vec4f,
+    @location(5) @interpolate(flat) params: vec4u,
     @location(6) @interpolate(flat) uv: vec4f,
     @location(7) @interpolate(flat) grad_color: vec4f,
     @location(8) @interpolate(flat) grad: vec4f,
 };
 
-const KIND_QUAD: f32 = 0.0;
-const KIND_MASK: f32 = 1.0;
-const KIND_SHADOW: f32 = 3.0;
-const KIND_IMAGE: f32 = 4.0;
-const KIND_LAYER: f32 = 5.0;
-const KIND_PATH: f32 = 6.0;
-const KIND_CANVAS: f32 = 7.0;
+const KIND_QUAD: u32 = 0u;
+const KIND_MASK: u32 = 1u;
+const KIND_SHADOW: u32 = 3u;
+const KIND_IMAGE: u32 = 4u;
+const KIND_LAYER: u32 = 5u;
+const KIND_PATH: u32 = 6u;
+const KIND_CANVAS: u32 = 7u;
 
 @vertex
 fn vs(@builtin(vertex_index) vi: u32, inst: Inst) -> VsOut {
@@ -79,6 +87,26 @@ fn sd_round_rect(p: vec2f, r: vec4f, radius: f32) -> f32 {
 
 fn coverage(d: f32) -> f32 {
     return clamp(0.5 - d, 0.0, 1.0);
+}
+
+fn clip_coverage(p: vec2f, v: VsOut) -> f32 {
+    if any(v.clip.zw <= vec2f(0.0)) {
+        return 0.0;
+    }
+    var head = v.params.z;
+    if head == 0u {
+        return coverage(sd_round_rect(p, v.clip, 0.0));
+    }
+    if any(p < v.clip.xy - 0.5) || any(p > v.clip.xy + v.clip.zw + 0.5) {
+        return 0.0;
+    }
+    var alpha = 1.0;
+    while head != 0u && alpha > 0.0 {
+        let node = clip_nodes[head - 1u];
+        alpha = min(alpha, coverage(sd_round_rect(p, node.rect, node.radius)));
+        head = node.parent;
+    }
+    return alpha;
 }
 
 fn quad_uv(p: vec2f, rect: vec4f) -> vec2f {

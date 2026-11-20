@@ -127,12 +127,26 @@ impl PaintProgram {
     }
 }
 
+/// The lifetime of one mounted drawing, including snapshots that keep it alive after detach.
+#[derive(Clone, Debug, Default)]
+pub struct PaintMount(Arc<()>);
+
+impl PaintMount {
+    /// Lets a renderer retain resources without prolonging the mount's lifetime.
+    pub fn downgrade(&self) -> Weak<()> {
+        Arc::downgrade(&self.0)
+    }
+}
+
 /// A paint program occupying the same drawing position and geometry as its fallback quad.
 #[derive(Clone, Debug)]
 pub struct CustomPaint {
     /// The styled box to draw when the renderer cannot run the program.
     pub fallback: Quad,
     pub program: PaintProgram,
+    pub mount: PaintMount,
+    /// The drawing belongs to a detached subtree finishing its exit.
+    pub exiting: bool,
     /// Per-element inputs to the program.
     pub params: [f32; 4],
     /// Opacity to apply to the program's output. The fallback colors already include it.
@@ -327,7 +341,7 @@ impl Item {
 pub enum Part {
     /// A node's own drawing, in its own coordinates (kept while it does not change), shown at
     /// `offset` with its colors faded by `fade`.
-    Drawing { offset: (f32, f32), fade: f32, items: std::rc::Rc<[Item]> },
+    Drawing { offset: (f32, f32), fade: f32, items: Arc<[Item]> },
     /// One item in window coordinates: the clips and layers around children.
     Item(Item),
 }

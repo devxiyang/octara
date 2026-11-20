@@ -224,7 +224,7 @@ fn hovering_a_link_redraws_its_text() {
     let after = w.display_list();
     let accent = Theme::light().get(Token::AccentHover);
     assert!(after.glyph_runs().any(|g| g.color == accent), "the hovered link in its hover color");
-    assert!(!std::rc::Rc::ptr_eq(&before, &after), "a new frame, not the last one reused");
+    assert!(!std::sync::Arc::ptr_eq(&before, &after), "a new frame, not the last one reused");
 }
 
 #[test]

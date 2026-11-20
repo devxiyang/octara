@@ -45,19 +45,15 @@ impl Window {
         }
     }
 
-    /// Requests dismissal from the top layer and reports whether the modal barrier blocks the press.
-    pub(crate) fn pressed_outside(&self, hit: Option<NodeId>) -> bool {
+    /// Whether a modal blocks the press, and the one layer eligible to dismiss for it.
+    pub(super) fn outside_dismissal(&self, hit: Option<NodeId>) -> (bool, Option<NodeId>) {
         let modal = self.top_modal();
-        let (blocked, dismiss) = {
-            let k = self.w.kernel.borrow();
-            let outside = |layer| hit.is_none_or(|node| !k.is_in_interaction_scope(node, layer));
-            let dismiss = k.dismissal_layer(modal).filter(|&layer| outside(layer) && k.dismiss_on_outside(layer));
-            (modal.is_some_and(outside), dismiss)
-        };
-        if let Some(layer) = dismiss {
-            self.notify_lifecycle(layer, HandlerKind::Dismiss);
-        }
-        blocked
+        let k = self.w.kernel.borrow();
+        let dismiss = k
+            .dismissal_layer(modal)
+            .filter(|&layer| k.dismiss_on_outside(layer) && hit.is_none_or(|node| !k.is_in_dismissal_scope(node, layer)));
+        let blocked = modal.is_some_and(|modal| hit.is_none_or(|node| !k.is_in_modal_scope(node, modal)));
+        (blocked, dismiss)
     }
 
     /// Updates focus restoration history in the same order as the visible modal layers.
@@ -117,29 +113,29 @@ impl Window {
         true
     }
 
-    fn restore_modal_focus(&self, restore: Option<NodeId>) {
-        let modal = self.top_modal();
-        let k = self.w.kernel.borrow();
-        let target = restore
-            .filter(|n| k.check_activation(*n, modal).is_ok() && k.is_focusable(*n))
-            .or_else(|| modal.and_then(|m| k.initial_focus(m)));
-        drop(k);
-        let _ = self.set_focus(target);
-    }
-
-    /// A retained control can become hidden, disabled or inert without being unmounted.
-    /// Retire that focus before text or deferred commands can reach its old context.
+    /// Validate focus after layout and restore it if a panel containing it went away.
     pub(super) fn reconcile_focus(&self) -> bool {
-        let focused = self.w.interaction.borrow().focused;
-        let Some(focused) = focused else { return false };
-        let modal = self.top_modal();
-        let k = self.w.kernel.borrow();
-        let valid = k.check_activation(focused, modal).is_ok() && k.is_focusable(focused);
-        drop(k);
-        if valid {
+        let (focused, retired_layers) = {
+            let mut i = self.w.interaction.borrow_mut();
+            (i.focused, std::mem::take(&mut i.retired_focus_layers))
+        };
+        if focused.is_none() && retired_layers.is_empty() {
             return false;
         }
-        self.restore_modal_focus(None);
+        let modal = self.top_modal();
+        let k = self.w.kernel.borrow();
+        let eligible = |node| k.check_activation(node, modal).is_ok() && k.is_focusable(node);
+        if focused.is_some_and(eligible) {
+            return false;
+        }
+        let layers = focused.map_or(retired_layers, |node| k.anchored_focus_layers(node));
+        let restore = layers.into_iter().find_map(|(panel, owner)| (!k.is_shown(panel) && eligible(owner)).then_some(owner));
+        if restore.is_none() && focused.is_none() {
+            return false;
+        }
+        let target = restore.or_else(|| modal.and_then(|m| k.initial_focus(m)));
+        drop(k);
+        let _ = self.set_focus(target);
         true
     }
 

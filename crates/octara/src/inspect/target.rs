@@ -26,6 +26,10 @@ pub(crate) fn node_target(kernel: &Kernel, node: NodeId) -> Option<String> {
     kernel.is_mounted(node).then(|| token(kernel.identity(), Some(node)))
 }
 
+pub(crate) fn paint_target(kernel: &Kernel, node: NodeId) -> Option<String> {
+    kernel.is_alive(node).then(|| token(kernel.identity(), Some(node)))
+}
+
 /// A request bound to its routed window and, when applicable, an operation-local target.
 /// Hosts retain the guard through input phases and waits, including for name-only requests.
 pub struct ParsedRequest {

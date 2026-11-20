@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::capture::{
-    Capture, CaptureId, Capturing, DisplayCapture, NativeShot, NativeShotRequest, Painter, Pixels, Shown, SnapshotStatus,
-    paint_native_snapshots,
+    Capture, CaptureId, Capturing, DisplayCapture, NativeShot, NativeShotRequest, Painter, Pixels, PreparedCapture, Shown, SnapshotStatus,
+    paint_native_snapshots, paint_sites,
 };
 use crate::image::Image;
 use crate::native::NativeId;
@@ -194,9 +194,8 @@ impl Window {
     /// Requests a snapshot of each visible native view and accepts replies until `deadline`.
     pub fn capture_begin(&mut self, deadline: Instant) -> Result<CaptureId, String> {
         self.check_running()?;
-        if !self.frame_is_settled() {
-            return Err(format!("[{}] window preparation is incomplete", codes::NOT_SETTLED));
-        }
+        let publication = self.published_frame().ok_or_else(|| format!("[{}] window preparation is incomplete", codes::NOT_SETTLED))?;
+        let sample = publication.paint_sample();
         self.w.capturing.borrow_mut().take();
         let id = CaptureId::new();
         let (native_list, views) = {
@@ -214,9 +213,13 @@ impl Window {
                 .collect();
             (native_list, views)
         };
-        let list = match native_list {
-            Some(list) => self.with_picking_overlay(Rc::new(list)),
-            None => self.published_frame().ok_or_else(|| format!("[{}] window preparation is incomplete", codes::NOT_SETTLED))?.list,
+        let (list, paint_sites) = match native_list {
+            Some(list) => {
+                let list = self.with_picking_overlay(Arc::new(list));
+                let paint_sites = Arc::new(paint_sites(&self.w.kernel.borrow(), &list));
+                (list, paint_sites)
+            }
+            None => (publication.list, publication.paint_sites),
         };
         let mut window = self.w.platform.borrow_mut();
         let shots = views
@@ -233,7 +236,7 @@ impl Window {
                 NativeShotRequest { node, request, status, report }
             })
             .collect();
-        *self.w.capturing.borrow_mut() = Some(Capturing { id, deadline, list, shots });
+        *self.w.capturing.borrow_mut() = Some(Capturing { id, deadline, sample, list, paint_sites, shots });
         Ok(id)
     }
 
@@ -260,21 +263,12 @@ impl Window {
         }
     }
 
-    /// Consumes the active capture, paints its snapshots into the frame, and writes a PNG.
-    /// `pending` is what [`unsettled`](Self::unsettled) reported when settling ended. `fallback`
-    /// describes why a `display` request was painted.
-    pub fn capture_finish(
-        &mut self,
-        id: CaptureId,
-        painter: &mut dyn Painter,
-        path: &str,
-        scale: f32,
-        pending: Vec<String>,
-        fallback: Option<String>,
-    ) -> Result<Capture, String> {
-        let capture = self.w.capturing.borrow_mut().take_if(|capture| capture.id == id);
+    /// Consumes the active capture and freezes the drawing with its collected native snapshots.
+    pub fn capture_prepare(&self, id: CaptureId) -> Result<PreparedCapture, String> {
         self.check_running()?;
-        let Capturing { mut list, shots, .. } = capture.ok_or_else(|| "the painted capture is no longer active".to_owned())?;
+        let capture = self.w.capturing.borrow_mut().take_if(|capture| capture.id == id);
+        let Capturing { mut list, paint_sites, shots, sample, .. } =
+            capture.ok_or_else(|| "the painted capture is no longer active".to_owned())?;
         let mut snapshots = FxHashMap::default();
         let reports: Vec<_> = shots
             .into_iter()
@@ -295,7 +289,7 @@ impl Window {
             })
             .collect();
         if !snapshots.is_empty() {
-            paint_native_snapshots(Rc::make_mut(&mut list), &mut snapshots);
+            paint_native_snapshots(Arc::make_mut(&mut list), &mut snapshots);
         }
         let native = reports
             .into_iter()
@@ -307,20 +301,24 @@ impl Window {
                 report
             })
             .collect();
-        let picture = painter.paint(&list, scale)?;
-        picture.save_png(path).map_err(|e| format!("{path}: {e}"))?;
-        Ok(Capture {
-            path: path.to_owned(),
-            width: picture.width,
-            height: picture.height,
-            scale,
-            pixels: Pixels::Painted,
-            fallback,
-            renderer: painter.renderer().to_owned(),
-            settled: pending.is_empty(),
-            pending,
-            native,
-        })
+        Ok(PreparedCapture { window: self.id(), list, sample, paint_sites, native })
+    }
+
+    /// Consumes the active capture, paints its snapshots into the frame, and writes a PNG.
+    /// `pending` is what [`unsettled`](Self::unsettled) reported when settling ended. `fallback`
+    /// describes why a `display` request was painted.
+    pub fn capture_finish(
+        &mut self,
+        id: CaptureId,
+        painter: &mut dyn Painter,
+        path: &str,
+        scale: f32,
+        pending: Vec<String>,
+        fallback: Option<String>,
+    ) -> Result<Capture, String> {
+        let capture = self.capture_prepare(id)?;
+        let recording = painter.paint_with_receipts(&capture.list, scale, Some(capture.paint_sample()))?;
+        capture.finish(recording, painter.renderer(), path, scale, pending, fallback)
     }
 
     fn display_revision(&self) -> WindowRevision {
@@ -373,13 +371,28 @@ impl Window {
         scale: f32,
         pending: Vec<String>,
     ) -> Result<Capture, String> {
+        let report = self.capture_display_report(frame, picture, path, scale, pending)?;
+        picture.save_png(path).map_err(|e| format!("{path}: {e}"))?;
+        Ok(report)
+    }
+
+    /// Validates the window-server sample before the host hands its frozen report and pixels
+    /// to the screenshot output worker.
+    #[doc(hidden)]
+    pub fn capture_display_report(
+        &self,
+        frame: DisplayCapture,
+        picture: &crate::capture::Picture,
+        path: &str,
+        scale: f32,
+        pending: Vec<String>,
+    ) -> Result<Capture, String> {
         if self.app.failed.get() {
             return Err(format!("[{}] cannot capture a failed App", codes::APP_FAILED));
         }
         if !frame.is_current(self) {
             return Err("the submitted app frame changed while taking the display picture".into());
         }
-        picture.save_png(path).map_err(|e| format!("{path}: {e}"))?;
         Ok(Capture {
             path: path.to_owned(),
             width: picture.width,
@@ -391,6 +404,7 @@ impl Window {
             settled: pending.is_empty(),
             pending,
             native: frame.native,
+            paint: None,
         })
     }
 

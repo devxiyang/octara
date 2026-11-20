@@ -65,12 +65,8 @@ pub fn paced(source: &TextBuffer) -> TextBuffer {
     let shown = TextBuffer::new(untrack(|| source.get()));
     let u = crate::app::window();
     let p = Rc::new(Paced { source: source.clone(), shown: shown.clone(), at });
-    let id = {
-        let n = u.next.get() + 1;
-        u.next.set(n);
-        u.paced.borrow_mut().push((n, p.clone()));
-        n
-    };
+    let id = u.next_registration();
+    u.paced.borrow_mut().push((id, p.clone()));
     {
         let u = u.clone();
         rt(|rt| rt.on_cleanup(Box::new(move || u.paced.borrow_mut().retain(|(i, _)| *i != id))));

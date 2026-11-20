@@ -547,6 +547,9 @@ impl Views {
         }
         h.clip.removeFromSuperview();
         self.update_regions();
+        if self.hosted.is_empty() {
+            self.set_presents_with_transaction(false);
+        }
     }
 
     /// Requests a snapshot and echoes the request when the platform answers.
@@ -648,6 +651,14 @@ impl Views {
         self.hosted.values().any(|h| h.slot == Slot::Underlay)
     }
 
+    fn set_presents_with_transaction(&self, presenting: bool) {
+        if self.presenting.replace(presenting) != presenting
+            && let Some(metal) = &self.metal
+        {
+            metal.setPresentsWithTransaction(presenting);
+        }
+    }
+
     /// Placements waiting that visibly move or resize a view (or show or hide one): those the
     /// frame must present with. A view hidden before and after moves unseen.
     fn moving(&self) -> bool {
@@ -743,7 +754,9 @@ pub(crate) struct Native {
     pub(crate) inbox: Rc<Inbox>,
 }
 
-pub(crate) struct FrameTransaction(());
+pub(crate) struct FrameTransaction {
+    pub(crate) synchronizes_present: bool,
+}
 
 impl Drop for FrameTransaction {
     fn drop(&mut self) {
@@ -782,12 +795,22 @@ impl Native {
         !self.views.borrow().pending.is_empty()
     }
 
+    pub(crate) fn has_hosted_views(&self) -> bool {
+        !self.views.borrow().hosted.is_empty()
+    }
+
+    pub(crate) fn window_visible(&self) -> bool {
+        self.views
+            .borrow()
+            .parent
+            .window()
+            .is_some_and(|window| window.isVisible() && window.occlusionState().contains(objc2_app_kit::NSWindowOcclusionState::Visible))
+    }
+
     pub(crate) fn surface_replaced(&self) {
         let mut views = self.views.borrow_mut();
-        if let Some(layer) = views.metal.take() {
-            layer.setPresentsWithTransaction(false);
-        }
-        views.presenting.set(false);
+        views.set_presents_with_transaction(false);
+        views.metal = None;
     }
 
     /// Before the frame's surface texture is taken: opens the transaction the placements and
@@ -803,14 +826,9 @@ impl Native {
             v.metal = unsafe { surface.as_hal::<wgpu::hal::api::Metal>() }.map(|hal| hal.render_layer().lock().clone());
         }
         let presenting = resized || v.moving();
-        if presenting != v.presenting.get() {
-            v.presenting.set(presenting);
-            if let Some(metal) = &v.metal {
-                metal.setPresentsWithTransaction(presenting);
-            }
-        }
+        v.set_presents_with_transaction(presenting);
         CATransaction::begin();
-        let transaction = FrameTransaction(());
+        let transaction = FrameTransaction { synchronizes_present: presenting && v.metal.is_some() };
         CATransaction::setDisableActions(true);
         Some(transaction)
     }

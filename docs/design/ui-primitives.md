@@ -38,11 +38,17 @@ Kit Tabs 的方向键只移焦，Enter 或 Space 激活。RadioGroup 用 `activa
 
 `.modal(..)` 限制窗口的交互范围并记录恢复焦点的目标。`.dismissible(..)` 让非模态面板加入窗口的关闭顺序。默认 Escape 和外部按压只向当前最高的合格层发出一个关闭请求。允许外点关闭的非模态面板会让同一次按压继续交给原来命中的有效目标。关闭回调由应用或 Kit 改写控制显隐的值。
 
+锚定的非模态面板把实际触发器、面板及面板拥有的子浮层作为关闭判定范围。默认 Tab 顺序在触发器后安排面板内控件。键盘或程序改变焦点并离开当前最高层的范围时，窗口请求关闭该层。若面板退休时仍持有焦点，窗口可以把焦点归还仍有效的原触发器。应用指定的新焦点优先。[非模态面板回归](../../crates/octara/tests/integration/overlay.rs)
+
+触摸落在面板外的有效按钮上，且面板内的编辑器仍持有焦点时，窗口先在抬手时确认原按钮仍命中，再请求关闭面板与交接焦点。布局结算后复核原目标身份，再投递这次按压。一次实际 Escape 按下可以关闭一层，按键重复仍属于这一次按下。[指针交付](../../crates/octara/src/app/pointer.rs) · [建议列表回归](../../crates/octara-kit/tests/integration/popup_list.rs)
+
 窗口按绘制顺序确定有效层。焦点和局部命令沿逻辑所有权找到所在的模态范围，因此独立挂载的面板可以参加 Dialog 的 Tab 顺序。关闭底层模态时会保留仍有效的前层焦点。 [交互范围与焦点恢复](../../crates/octara/src/app/focus.rs) · [焦点回归](../../crates/octara/tests/integration/focus.rs)
 
 同一个模态范围约束输入与语义发布。辅助技术可遍历当前模态及其逻辑拥有的面板。窗口和必要的物理祖先提供坐标与结构。范围外的标签文字仍可为范围内的控件命名，语义关系只发布范围内的引用。模态范围变化时，辅助功能树重新发布当前范围，仍挂载的控件使用原来的节点身份。[辅助功能投影](../../crates/octara/src/kernel/a11y.rs) · [树更新与焦点回归](../../crates/octara/tests/integration/focus.rs)
 
 `popover` 把打开行为、焦点资格和 `expanded` 绑定到传入的触发元素。该元素提供自己的角色、可访问名称和 `controls` 关系。标准触发器可传 `button(..)`，自定义触发器在实际交互节点声明语义。[Popover 实现](../../crates/octara-kit/src/popover.rs)
+
+用 `.overlay(..)` 和 `.dismissible(..)` 可以直接组装包含输入框和按钮的非模态面板。Kit 的 `popup_list` 也接入同一个关闭顺序，并继续让编辑器持有真实焦点。[可编辑面板示例](../../examples/src/showcase/interaction.rs) · [建议列表实现](../../crates/octara-kit/src/popup_list.rs)
 
 `select` 和 `combobox` 的触发工厂接收文案的 `ReadSignal<String>`，返回实际承担交互的 `El`。应用可在该元素上设置样式、禁用条件和提示，并追加按压回调。Kit 给该元素设置 `ComboBox` 角色、名称、可访问值，并将 `controls` 绑定到选项列表，关系按当前模态范围发布。[触发器示例](../../examples/src/showcase/choices.rs) · [选择器实现](../../crates/octara-kit/src/choices.rs)
 

@@ -44,6 +44,7 @@ use crate::reactive::graph::{Signal, untrack};
 use crate::view::{Handler, IntoView, Parent, ScopedHandler, Slots, View, build_content, mount};
 use std::cell::{Cell, Ref, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// The window size an app starts with; change it with [`Window::resize`].
 pub const DEFAULT_VIEWPORT: (f32, f32) = (800.0, 600.0);
@@ -253,7 +254,7 @@ pub(crate) struct WindowState {
     pub(crate) paced: RefCell<Vec<(u64, Rc<crate::view::Paced>)>>,
     /// Run after each layout; return whether they changed anything (then the window lays out again).
     after_layout: RefCell<Vec<(u64, feedback::AfterLayout)>>,
-    pub(crate) next: Cell<u64>,
+    next: Cell<u64>,
     options: crate::platform::WindowOptions,
     /// Closed: its scope is disposed and it left the app.
     closed: Cell<bool>,
@@ -464,6 +465,12 @@ impl AppState {
 }
 
 impl WindowState {
+    pub(crate) fn next_registration(&self) -> u64 {
+        let id = self.next.get().checked_add(1).expect("window registrations exhausted");
+        self.next.set(id);
+        id
+    }
+
     pub(crate) fn interaction_changed(&self) {
         if self.closed.get() {
             return;
@@ -491,7 +498,8 @@ impl WindowState {
         let within = |target| kernel.is_in_interaction_scope(target, node);
         let mut interaction = self.interaction.borrow_mut();
         let focused = interaction.focused.filter(|&target| within(target));
-        if focused.is_some() {
+        if let Some(target) = focused {
+            interaction.retired_focus_layers = kernel.anchored_focus_layers(target);
             interaction.focused = None;
         }
         if interaction.reveal.is_some_and(within) {
@@ -546,6 +554,8 @@ struct Interaction {
     /// Refresh stationary hover after this input's layout and focus changes.
     refresh_hover: bool,
     focused: Option<NodeId>,
+    /// The panel and opener allocations of a focus that retired during this update.
+    retired_focus_layers: Vec<(NodeId, NodeId)>,
     modality: Modality,
     pointer: pointer::PointerState,
     back: back::BackInteraction,
@@ -1142,14 +1152,20 @@ impl Window {
     /// Moves keyboard focus to `n`, which must be focusable and enabled (`None` blurs). The
     /// ring shows if the last input was the keyboard.
     pub(crate) fn set_focus(&self, n: Option<NodeId>) -> Result<(), String> {
-        self.change_focus(n, None)
+        self.change_focus(n, None, true)
     }
 
-    fn change_focus(&self, n: Option<NodeId>, modality: Option<Modality>) -> Result<(), String> {
+    /// The pointer has already selected the dismissal recipient from its captured hit.
+    fn set_pointer_focus(&self, n: Option<NodeId>) -> Result<(), String> {
+        self.change_focus(n, None, false)
+    }
+
+    fn change_focus(&self, n: Option<NodeId>, modality: Option<Modality>, dismiss_on_leave: bool) -> Result<(), String> {
+        let modal = self.top_modal();
         if let Some(n) = n {
             let k = self.kernel();
             let name = if k.is_alive(n) { k.test_id(n).unwrap_or("element") } else { "element" };
-            k.check_activation(n, self.top_modal()).map_err(|why| format!("`{name}` {}", why.message(&k)))?;
+            k.check_activation(n, modal).map_err(|why| format!("`{name}` {}", why.message(&k)))?;
             if !k.is_focusable(n) {
                 return Err(format!("`{name}` is not focusable"));
             }
@@ -1159,9 +1175,19 @@ impl Window {
         }
         let mut i = self.w.interaction.borrow_mut();
         let mut k = self.w.kernel.borrow_mut();
+        i.retired_focus_layers.clear();
         if i.focused == n {
             return Ok(());
         }
+        let dismiss = if dismiss_on_leave && let Some(old) = i.focused {
+            k.dismissal_layer(modal).filter(|&layer| {
+                k.anchored_layer_owner(layer).is_some()
+                    && k.is_in_dismissal_scope(old, layer)
+                    && n.is_none_or(|next| !k.is_in_dismissal_scope(next, layer))
+            })
+        } else {
+            None
+        };
         let mut blurred = None;
         if let Some(p) = i.focused.take()
             && k.is_alive(p)
@@ -1181,6 +1207,9 @@ impl Window {
         i.focused = n;
         drop((i, k));
         self.w.interaction_changed();
+        if let Some(layer) = dismiss {
+            self.notify_lifecycle(layer, HandlerKind::Dismiss);
+        }
         // What lost focus hears it first, then what got it.
         if let Some(p) = blurred {
             self.notify_lifecycle(p, HandlerKind::Blur);
@@ -1210,7 +1239,7 @@ impl Window {
                 }
             }
             Event::Focus(_) => {
-                self.change_focus(Some(target()), Some(Modality::Keyboard))?;
+                self.change_focus(Some(target()), Some(Modality::Keyboard), true)?;
             }
             Event::Blur => self.set_focus(None)?,
             Event::Scroll(id, dx, dy) | Event::ScrollTo(id, dx, dy) => {
@@ -1371,13 +1400,13 @@ impl Window {
     }
     /// What the last prepared frame draws, in order (see [`crate::paint`]). Image updates
     /// are sampled when the window prepares another frame.
-    pub fn display_list(&self) -> Rc<crate::paint::DisplayList> {
+    pub fn display_list(&self) -> Arc<crate::paint::DisplayList> {
         self.with_picking_overlay(self.w.kernel.borrow().display_list())
     }
 
-    fn with_picking_overlay(&self, mut list: Rc<crate::paint::DisplayList>) -> Rc<crate::paint::DisplayList> {
+    fn with_picking_overlay(&self, mut list: Arc<crate::paint::DisplayList>) -> Arc<crate::paint::DisplayList> {
         if let Some(over) = self.picking_overlay() {
-            Rc::make_mut(&mut list).parts.extend(over.into_iter().map(crate::paint::Part::Item));
+            Arc::make_mut(&mut list).parts.extend(over.into_iter().map(crate::paint::Part::Item));
         }
         list
     }

@@ -7,14 +7,19 @@
 //! shell, the reference renderer headless (`octara-render` implements both). The reply is a
 //! [`Capture`] report.
 
+use crate::app::WindowId;
 use crate::image::{Image, Sample};
-use crate::kernel::NodeId;
+use crate::inspect::ComponentInfo;
+use crate::kernel::{Kernel, NodeId};
 use crate::native::NativeChange;
 use crate::paint::{DisplayList, ImagePaint, Item, Part, Rect};
 use crate::platform::NativeSnapshotRequest;
+use octara_primitives::capture::PaintedPicture;
+pub use octara_primitives::capture::{PaintFallback, PaintOutcome, PaintReceipt, PaintSample};
 pub(crate) use octara_primitives::capture::{Painter, Picture};
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
-use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Instant;
 
 /// The identity of one painted capture started by the platform host.
@@ -69,6 +74,96 @@ pub struct NativeShot {
     pub misses: Vec<String>,
 }
 
+/// Identifies the drawing and what produced its author paint receipts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaintFrame {
+    pub window: u64,
+    #[serde(flatten)]
+    pub sample: PaintSample,
+    #[serde(flatten)]
+    pub origin: PaintOrigin,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<EffectPaint>,
+}
+
+impl PaintFrame {
+    pub(crate) fn from_receipts(
+        window: crate::app::WindowId,
+        sample: PaintSample,
+        origin: PaintOrigin,
+        paint_sites: &FxHashMap<NodeId, PaintSite>,
+        receipts: &[PaintReceipt],
+    ) -> Self {
+        let effects = receipts
+            .iter()
+            .filter_map(|receipt| paint_sites.get(&receipt.source).cloned().map(|site| EffectPaint { site, outcome: receipt.outcome }))
+            .collect();
+        Self { window: window.number(), sample, origin, effects }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "origin", rename_all = "snake_case")]
+pub enum PaintOrigin {
+    /// The drawing was recorded again into an offscreen target.
+    Rerecorded {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_generation: Option<u64>,
+    },
+    /// The receipts came from a successful surface submission.
+    Submitted { frame: u32, surface_generation: u64, device_generation: u64 },
+}
+
+/// An observed author paint outcome at a mounted or outgoing drawing site.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectPaint {
+    #[serde(flatten)]
+    pub site: PaintSite,
+    #[serde(flatten)]
+    pub outcome: PaintOutcome,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaintSite {
+    /// The Inspector identity at sampling time. An outgoing site's target is already retired.
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component: Option<ComponentInfo>,
+    pub exiting: bool,
+}
+
+impl PaintSite {
+    pub(crate) fn of(kernel: &Kernel, node: NodeId) -> Option<Self> {
+        let target = crate::inspect::paint_target(kernel, node)?;
+        Some(Self {
+            target,
+            id: kernel.test_id(node).map(str::to_owned),
+            source: kernel.origin(node).map(|at| format!("{}:{}:{}", crate::diagnostics::source_file(at), at.line(), at.column())),
+            component: kernel.component(node).map(ComponentInfo::of),
+            exiting: !kernel.is_mounted(node),
+        })
+    }
+}
+
+pub(crate) fn paint_sites(kernel: &Kernel, list: &DisplayList) -> FxHashMap<NodeId, PaintSite> {
+    list.parts
+        .iter()
+        .flat_map(|part| match part {
+            Part::Drawing { items, .. } => items.as_ref(),
+            Part::Item(item) => std::slice::from_ref(item),
+        })
+        .filter_map(|item| {
+            let Item::Custom(paint) = item else { return None };
+            let node = paint.fallback.source;
+            PaintSite::of(kernel, node).map(|site| (node, site))
+        })
+        .collect()
+}
+
 /// A capture's report: the picture, and what it can be trusted for.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Capture {
@@ -89,6 +184,9 @@ pub struct Capture {
     pub pending: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub native: Vec<NativeShot>,
+    /// The paint receipts for the replay or the submission checked when sampling the display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paint: Option<PaintFrame>,
 }
 
 impl Capture {
@@ -97,11 +195,65 @@ impl Capture {
     }
 }
 
+/// A window's frozen offscreen capture, ready to paint without access to the window.
+pub struct PreparedCapture {
+    pub(crate) window: WindowId,
+    pub(crate) list: Arc<DisplayList>,
+    pub(crate) sample: PaintSample,
+    pub(crate) paint_sites: Arc<FxHashMap<NodeId, PaintSite>>,
+    pub(crate) native: Vec<NativeShot>,
+}
+
+impl PreparedCapture {
+    pub fn window(&self) -> WindowId {
+        self.window
+    }
+
+    pub fn display_list(&self) -> Arc<DisplayList> {
+        self.list.clone()
+    }
+
+    pub fn paint_sample(&self) -> PaintSample {
+        self.sample
+    }
+
+    /// Writes the painted picture and attributes its receipts to this capture's sampled sites.
+    pub fn finish(
+        self,
+        recording: PaintedPicture,
+        renderer: &str,
+        path: &str,
+        scale: f32,
+        pending: Vec<String>,
+        fallback: Option<String>,
+    ) -> Result<Capture, String> {
+        let PaintedPicture { picture, effects } = recording;
+        picture.save_png(path).map_err(|e| format!("{path}: {e}"))?;
+        let origin = PaintOrigin::Rerecorded { device_generation: None };
+        let paint = PaintFrame::from_receipts(self.window, self.sample, origin, &self.paint_sites, &effects);
+        Ok(Capture {
+            path: path.to_owned(),
+            width: picture.width,
+            height: picture.height,
+            scale,
+            pixels: Pixels::Painted,
+            fallback,
+            renderer: renderer.to_owned(),
+            settled: pending.is_empty(),
+            pending,
+            native: self.native,
+            paint: Some(paint),
+        })
+    }
+}
+
 /// A capture in progress and its collected native responses.
 pub(crate) struct Capturing {
     pub id: CaptureId,
     pub deadline: Instant,
-    pub list: Rc<DisplayList>,
+    pub sample: PaintSample,
+    pub list: Arc<DisplayList>,
+    pub paint_sites: Arc<FxHashMap<NodeId, PaintSite>>,
     pub shots: Vec<NativeShotRequest>,
 }
 
@@ -163,7 +315,7 @@ pub(crate) fn paint_native_snapshots(list: &mut DisplayList, snapshots: &mut rus
         if let Some(image) = snapshots.remove(source) {
             let painted = Item::Image(ImagePaint { source: *source, image, rect: *rect, bounds: *rect, radius: *radius, opacity: 1.0 });
             let index = items.len() - 2;
-            Rc::make_mut(items)[index] = painted;
+            Arc::make_mut(items)[index] = painted;
         }
     }
 }

@@ -2,6 +2,7 @@
 
 use super::{Shell, ShellEvent, ww};
 use octara::app::{TargetGuard, Window, WindowId};
+use octara::capture::PaintFrame;
 use octara::diagnostics as codes;
 use octara::inspect::{Completion, Delivery, LayoutState, Reply, Request, SurfaceState};
 use octara::serde_json::{self, json};
@@ -177,7 +178,13 @@ impl Responder {
         // A delivered phase can replace its target. Sample the original window without
         // resolving or validating the target again.
         let reports_completion = if self.input { reply.delivery == Some(Delivery::Delivered) } else { reply.completion.is_some() };
-        reply.completion = self.target.as_ref().filter(|_| reports_completion).map(|(window, _)| observe_completion(window));
+        if let Some((window, _)) = self.target.as_ref().filter(|_| reports_completion) {
+            let (completion, paint) = observe_completion(window);
+            reply.completion = Some(completion);
+            reply.paint = paint.map(Box::new);
+        } else {
+            reply.completion = None;
+        }
         if let Some(snapshot) = &reply.snapshot {
             live["operations"] = if snapshot.failed { json!(["inspect", "issues"]) } else { json!(OPERATIONS) };
             live["transport"] = "unix".into();
@@ -190,22 +197,22 @@ impl Responder {
     }
 }
 
-fn observe_completion(window: &Window) -> Completion {
+fn observe_completion(window: &Window) -> (Completion, Option<PaintFrame>) {
     let mut completion = Completion::observe(window);
     if completion.layout != LayoutState::Unavailable
-        && let Some((frames, submitted)) = ww(window, |host| {
+        && let Some((last_submission, submitted, paint)) = ww(window, |host| {
             let submitted =
                 window.published_revision().is_some_and(|revision| host.has_submitted(revision) && host.matches_drawable(window.scale()));
-            (host.frames, submitted)
+            (host.last_submission(), submitted, host.submitted_paint().cloned())
         })
     {
-        let last_submission = (frames > 0).then_some(frames);
         completion.surface = match last_submission {
             Some(frame) if completion.layout == LayoutState::Settled && submitted => SurfaceState::Submitted { frame },
             _ => SurfaceState::Pending { last_submission },
         };
+        return (completion, paint);
     }
-    completion
+    (completion, None)
 }
 
 pub(crate) struct Waiting {
@@ -341,7 +348,8 @@ impl Shell {
                 };
                 let guard = guard.expect("a gesture has a bound target");
                 match super::gesture::Job::start_guarded(&mut target, kind, Instant::now(), guard) {
-                    Ok(job) => {
+                    Ok(mut job) => {
+                        job.trace_epoch = self.shared.trace.then_some(self.shared.trace_epoch);
                         self.inspect_pending = Some(Pending::gesture(job, response));
                         self.show();
                         self.inspect_poll();
@@ -407,9 +415,15 @@ impl Shell {
                 self.inspect_poll();
             }
             request => {
+                let trace = (input && self.shared.trace).then(|| super::trace::InspectInput::start(&target));
                 let reply = octara::inspect::handle_guarded(&mut target, request, guard.as_ref());
                 if input {
                     response.delivery.set(reply.delivery);
+                    if let Some(trace) = trace
+                        && reply.delivery == Some(Delivery::Delivered)
+                    {
+                        trace.log(self.shared.trace_epoch, &target, route, None);
+                    }
                     self.show();
                 }
                 if reply.snapshot.is_some() {

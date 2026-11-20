@@ -13,6 +13,7 @@ accesskit_winit.workspace = true
 octara = { workspace = true, features = ["system-fonts"] }
 octara-render.workspace = true
 pollster.workspace = true
+tempfile.workspace = true
 winit.workspace = true
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
@@ -41,6 +42,10 @@ objc2-core-graphics.workspace = true
 objc2-core-location.workspace = true
 objc2-foundation.workspace = true
 objc2-map-kit.workspace = true
-objc2-quartz-core.workspace = true
+objc2-metal = { workspace = true, features = [
+    "std", "block2", "objc2-core-foundation", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice",
+    "MTLDrawable", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLResource", "MTLTexture",
+] }
+objc2-quartz-core = { workspace = true, features = ["CAMetalLayer", "objc2-metal"] }
 objc2-web-kit.workspace = true
 serde_json.workspace = true

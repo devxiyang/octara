@@ -111,7 +111,7 @@ def png_pixels(path, *, region=None):
 
 
 class LiveWindow:
-    def __init__(self, fixture, args, output, sockets, window_args=None):
+    def __init__(self, fixture, args, output, sockets, window_args=None, *, env=None):
         self.fixture = fixture
         self.args = args
         self.output = output
@@ -120,6 +120,7 @@ class LiveWindow:
         self.log = None
         self.transcript = None
         self.window_args = window_args
+        self.env = env or {}
 
     def __enter__(self):
         self.log = (self.output / f"{self.fixture}-window.log").open("w", encoding="utf-8")
@@ -127,6 +128,7 @@ class LiveWindow:
         env = os.environ.copy()
         for name in ("OCTARA_CAPTURE", "OCTARA_CONFORMANCE", "OCTARA_EXIT_AFTER_FRAMES", "OCTARA_PICK"):
             env.pop(name, None)
+        env.update(self.env)
         env["OCTARA_INSPECT"] = str(self.endpoint)
         fixture_args = self.window_args if self.window_args is not None else (["showcase", "search"] if self.fixture == "search" else [self.fixture])
         self.process = subprocess.Popen(
@@ -827,6 +829,153 @@ def gpu_lab(args, output, sockets, *, scale=1):
                      {"op": "expect", "id": "gpu-pass-popover", "exists": False}, {"op": "expect", "clean": True})
 
 
+def gpu_glass(args, output, sockets, *, scale=1, probe_fallback=False):
+    env = {"OCTARA_GPU_LAB_PROBE_FALLBACK": "1", "OCTARA_TRACE_GPU": "1"} if probe_fallback else None
+    with LiveWindow("gpu_glass", args, output, sockets, ["gpu_lab"], env=env) as app:
+        narrow = resize(app, 800, 620)
+        opener = find(narrow, "gpu-glass-open")["target"]
+        app.requests({"op": "tap", "target": opener})
+        opened = app.inspect()
+        dialog = find(opened, "gpu-glass-dialog")
+        slider = find(opened, "gpu-glass-refraction")["target"]
+        close = find(opened, "gpu-glass-cancel")["target"]
+        require(opened.get("focus") == "gpu-glass-cancel", "gpu_glass: dialog did not receive focus")
+        x, y, w, h = dialog["bounds"]
+        region = tuple(int(v * scale) for v in (x + w - 14, y + h / 4, 8, h / 3))
+
+        def capture(name, settle_ms):
+            return {"op": "capture", "target": opened["target"], "path": str(output / name),
+                    "scale": scale, "pixels": "painted", "settle_ms": settle_ms}
+
+        def lens(paint, target):
+            effects = [effect for effect in paint["effects"] if effect["target"] == target]
+            require(len(effects) == 1 and effects[0]["id"] == "gpu-glass-dialog",
+                    f"gpu_glass: expected one paint outcome for the dialog: {paint}")
+            return effects[0]
+
+        def sample(name, outcome="rendered"):
+            info = app.requests(capture(name, 2000))[0]["capture"]
+            require(info["renderer"] == "gpu" and info["settled"], f"gpu_glass: expected settled GPU pixels: {info}")
+            paint = info["paint"]
+            require(paint["origin"] == "rerecorded" and "frame" not in paint, f"gpu_glass: incorrect capture provenance: {paint}")
+            effect = lens(paint, dialog["target"])
+            require(effect["outcome"] == outcome and effect["source"] == dialog["source"],
+                    f"gpu_glass: expected {outcome} paint from the dialog site: {effect}")
+            width, height, digest = png_pixels(output / name, region=region)
+            require((width, height) == (800 * scale, 620 * scale), "gpu_glass: wrong capture dimensions")
+            return paint, effect, digest
+
+        def inspect_submission(paint, expected):
+            reply = app.requests({"op": "inspect"})[0]
+            surface = reply["completion"]["surface"]
+            if surface["state"] != "submitted":
+                return None
+            submitted = reply["paint"]
+            require(submitted["revision"] == paint["revision"] and submitted["frame"] == surface["frame"],
+                    f"gpu_glass: submitted paint and capture disagree on the settled revision: {submitted}")
+            require(lens(submitted, dialog["target"])["outcome"] == expected and submitted["origin"] == "submitted",
+                    f"gpu_glass: Inspector reported the wrong submitted paint: {submitted}")
+            cli = app.inspect()["paint"]
+            require(cli["revision"] == submitted["revision"] and lens(cli, dialog["target"])["outcome"] == expected,
+                    f"gpu_glass: CLI lost the live paint evidence: {cli}")
+            return submitted
+
+        _, _, initial = sample("gpu-glass.png")
+        app.requests({"op": "set_value", "target": slider, "value": 0.15})
+        require(find(app.inspect(), "gpu-glass-refraction-value")["name"] == "15%", "gpu_glass: refraction binding did not update")
+        adjusted, _, changed = sample("gpu-glass-adjusted.png")
+        require(changed != initial, "gpu_glass: refraction did not change the backdrop pixels")
+        last_good = failed_submission = None
+        if probe_fallback:
+            last_good = inspect_submission(adjusted, "rendered")
+            app.requests({"op": "set_value", "target": slider, "value": 1.0})
+            failed, effect, pixels = sample("gpu-glass-fallback.png", "fallback")
+            expected = hashlib.sha256(bytes((0x28, 0x22, 0x3b, 0xff)) * (region[2] * region[3])).hexdigest()
+            require(effect["reason"] == "encoding_failed" and pixels == expected,
+                    f"gpu_glass: validation failure did not render the styled fallback: {effect}")
+            failed_submission = inspect_submission(failed, "fallback")
+
+        with app.wire() as connection:
+            def request(step):
+                result = app.wire_request(connection, step)
+                require(result["ok"], f"gpu_glass: {step} failed: {result}")
+                return result
+
+            request({"op": "tap", "target": close})
+            retired = request({"op": "inspect"})["snapshot"]
+            require(retired.get("focus") == "gpu-glass-open", "gpu_glass: dismissal did not restore opener focus")
+            require(not any(node.get("id") == "gpu-glass-dialog" for node in nodes(retired)), "gpu_glass: retired dialog was still interactive")
+            exit_capture = request(capture("gpu-glass-exit.png", 0))["capture"]
+            require(bool(exit_capture.get("pending")), "gpu_glass: exit was not active when captured")
+            outgoing = lens(exit_capture["paint"], dialog["target"])
+            require(outgoing["exiting"], f"gpu_glass: exit still claims an actionable mount: {outgoing}")
+            if last_good:
+                require(outgoing["outcome"] == "retained" and outgoing["source_revision"] == last_good["revision"],
+                        f"gpu_glass: exit retained the wrong submission: {outgoing}")
+            elif probe_fallback:
+                require((outgoing["outcome"] == "fallback" and outgoing["reason"] == "history_unavailable")
+                        or (outgoing["outcome"] == "retained" and outgoing["source_revision"] <= adjusted["revision"]),
+                        f"gpu_glass: exit reported an unavailable source as rendered: {outgoing}")
+            request({"op": "tap", "target": opener})
+            reopened = request({"op": "inspect"})["snapshot"]
+            require(reopened["time_ms"] - retired["time_ms"] < 800, "gpu_glass: dialog reopened after the prior fade ended")
+            new_target = find(reopened, "gpu-glass-dialog")["target"]
+            require(new_target != dialog["target"], "gpu_glass: reopening reused the retired dialog")
+            require(find(reopened, "gpu-glass-refraction-value")["name"] == "75%", "gpu_glass: new dialog inherited retired control state")
+            if probe_fallback:
+                new_paint = request(capture("gpu-glass-reopened.png", 0))["capture"]["paint"]
+                new_effect = lens(new_paint, new_target)
+                require(new_effect["outcome"] == "rendered" and not new_effect["exiting"],
+                        f"gpu_glass: reopened mount used the previous effect's outcome: {new_effect}")
+            refused = app.wire_request(connection, {"op": "set_value", "target": slider, "value": 0.7})
+            require(refused.get("code") == "STALE_TARGET" and refused.get("delivery") == "refused",
+                    f"gpu_glass: retired slider accepted input: {refused}")
+        app.requests({"op": "expect", "clean": True})
+        if failed_submission:
+            log = (output / "gpu_glass-window.log").read_text(encoding="utf-8")
+            traces = [json.loads(line) for line in log.splitlines() if line.startswith('{"') and '"octara.frame_trace/1"' in line]
+            require(any(trace.get("paint") == failed_submission for trace in traces),
+                    "gpu_glass: frame trace and Inspector disagree on the failed submission")
+
+
+def gpu_paint_evidence(args, output, sockets):
+    gpu_glass(args, output, sockets, probe_fallback=True)
+
+
+def gpu_recovery(args, output, sockets):
+    with LiveWindow("gpu_recovery", args, output, sockets, ["gpu_lab"]) as app:
+        def observe():
+            reply = app.requests({"op": "inspect"})[0]
+            host = reply["live"]["window"]
+            return reply["snapshot"], host["device_generation"], host["surface_generation"]
+
+        viewport = resize(app, 800, 620)
+        app.requests({"op": "tap", "target": find(viewport, "gpu-glass-open")["target"]})
+        glass = find(app.inspect(), "gpu-glass-refraction")["target"]
+        app.requests({"op": "set_value", "target": glass, "value": 0.35})
+        before, generation, surface = observe()
+        # The debug host destroys its own device after delivering this first painted capture.
+        first = app.capture("device-before.png")
+        deadline = time.monotonic() + args.timeout
+        while True:
+            after, replacement, rebound = observe()
+            if replacement > generation:
+                break
+            require(time.monotonic() < deadline, "gpu_recovery: replacement device did not arrive")
+            threading.Event().wait(0.02)
+
+        require(replacement == generation + 1, "gpu_recovery: expected one recovery for the injected loss")
+        require(rebound > surface, "gpu_recovery: surface generation did not advance")
+        require(after["target"] == before["target"] and after["focus"] == before["focus"], "gpu_recovery: interaction ownership changed")
+        require(find(after, "gpu-glass-refraction")["target"] == glass, "gpu_recovery: the dialog was remounted")
+        require(find(after, "gpu-glass-refraction-value")["name"] == "35%", "gpu_recovery: refraction state was reset")
+        require(app.capture("device-after.png") == first, "gpu_recovery: pixels changed after replacement")
+        app.requests({"op": "set_value", "target": glass, "value": 0.6}, {"op": "expect", "clean": True})
+        require(find(app.inspect(), "gpu-glass-refraction-value")["name"] == "60%", "gpu_recovery: input failed after recovery")
+        print(f"gpu_recovery: device {generation} -> {replacement}, surface {surface} -> {rebound}, identical pixels and live dialog target",
+              flush=True)
+
+
 def main():
     repo = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -834,6 +983,9 @@ def main():
     parser.add_argument("--octara", type=Path, default=repo / "target/debug/octara", help="built CLI binary")
     parser.add_argument("--output", type=Path, help="empty directory for screenshots and logs; default: a new /tmp directory")
     parser.add_argument("--timeout", type=float, default=30, help="startup/command timeout in seconds, at most 30 (default: 30)")
+    probe = parser.add_mutually_exclusive_group()
+    probe.add_argument("--gpu-recovery", action="store_true", help="verify one injected device loss with a debug window build")
+    probe.add_argument("--gpu-paint-evidence", action="store_true", help="verify Shader Lab paint through a fallback, exit, and reopen")
     args = parser.parse_args()
     if os.name != "posix" or not hasattr(socket, "AF_UNIX"):
         print("SKIP: this live smoke check uses Unix-domain sockets")
@@ -849,12 +1001,23 @@ def main():
         output.mkdir(parents=True, exist_ok=True)
         require(not any(output.iterdir()), f"--output must be empty: {output}")
     print(f"Live smoke artifacts: {output}", flush=True)
+    scenarios = (counter, gestures, search, todo, windows, styles, activation, handlers, bindings, content, gpu_lab, gpu_glass)
+    if args.gpu_recovery:
+        os.environ["OCTARA_DESTROY_DEVICE_AFTER_CAPTURE"] = "1"
+        scenarios = (gpu_recovery,)
+    if args.gpu_paint_evidence:
+        scenarios = (gpu_paint_evidence,)
     with tempfile.TemporaryDirectory(prefix="octara-agent-", dir="/tmp") as temporary:
         sockets = Path(temporary)
-        for scenario in (counter, gestures, search, todo, windows, styles, activation, handlers, bindings, content, gpu_lab):
+        for scenario in scenarios:
             scenario(args, output, sockets)
             print(f"PASS {scenario.__name__}", flush=True)
-    print("Live Inspector: inspect, gestures, native resize, realtime settle, GPU capture, errors, window routing and reconnect passed.")
+    if args.gpu_recovery:
+        print("Live Inspector GPU recovery passed.")
+    elif args.gpu_paint_evidence:
+        print("Live Inspector author paint evidence passed.")
+    else:
+        print("Live Inspector: inspect, gestures, native resize, realtime settle, GPU capture, errors, window routing and reconnect passed.")
     return 0
 
 

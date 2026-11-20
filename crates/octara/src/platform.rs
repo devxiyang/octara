@@ -8,12 +8,13 @@
 //! presents a [`Frame`] to platform windows when their drawing, frame demand or native state
 //! changes, and asks the platform for the clipboard, waking the loop and new windows.
 
-use crate::kernel::{TextGeometry, TextInputLayout};
+use crate::capture::{PaintFrame, PaintOrigin, PaintReceipt, PaintSample, PaintSite};
+use crate::kernel::{NodeId, TextGeometry, TextInputLayout};
 use crate::native::{NativeChange, NativeId};
 use crate::paint::Rect;
 use octara_primitives::input::CursorStyle;
+use rustc_hash::FxHashMap;
 use std::any::Any;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -107,12 +108,12 @@ impl NativeSnapshotRequest {
     }
 }
 
-/// One window on that system. The app presents a [`Frame`] after each operation; the backend
-/// draws the window's display list ([`Window::display_list`](crate::app::Window::display_list))
-/// on its own pacing. Questions that need an answer are methods.
+/// One window on that system. The app hands over changes after settling an operation. The backend
+/// draws the [latest settled drawing](crate::app::Window::published_frame) at its own pace.
 pub trait PlatformWindow {
-    /// What changed since the last frame: apply native view changes (placements with the next
-    /// present), follow the text input, draw again when asked.
+    /// Consume each handoff in order. Apply native and input changes and record drawing demand.
+    /// Synchronize staged native placements with the corresponding drawing when presenting it.
+    /// A redraw can be coalesced with a newer drawing after the handoff returns.
     fn present(&mut self, frame: Frame);
     /// Whether the platform shows `ask` itself (a native menu, alert or file dialog); else the
     /// app draws menus and prompts in the window, and other requests wait for an answer.
@@ -190,7 +191,7 @@ impl From<crate::image::Image> for ClipboardItem {
     }
 }
 
-/// What a window's platform is told after an operation.
+/// Ordered window updates and drawing demand from a settled app operation.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Frame {
     /// Native views created, updated, placed and destroyed, in order.
@@ -199,7 +200,7 @@ pub struct Frame {
     /// method's window opens next to it, and whether it is secure (the input method off and, on
     /// macOS, secure keyboard input on) or multi-line.
     pub text_input: Option<TextInput>,
-    /// A new drawing is ready to submit at the next presentation opportunity.
+    /// A new drawing will be available once the handoff commits.
     pub redraw: bool,
     /// The window needs display callbacks while its motion or scrolling continues.
     pub continuous: bool,
@@ -217,19 +218,38 @@ pub struct Frame {
     pub picked: Option<crate::inspect::Picked>,
 }
 
-/// The drawing and target metadata for a settled window frame. Hosts can hold this while the
-/// app prepares another frame. The list owns the sampled versions of its image resources.
+/// A settled window drawing with its sampled resources and paint attribution. Hosts can retain
+/// it across later app operations and hand it to another thread to render.
 #[derive(Clone, Debug)]
 pub struct PublishedFrame {
     pub window: crate::app::WindowId,
     /// A drawing revision local to this window, increasing when it publishes changed content.
     pub revision: u64,
-    /// Time on the app clock at which this drawing was prepared.
+    /// Paint sample time in the app's time coordinates. Display hosts can sample analytic
+    /// paint motion at their target time while the app is still at its settled time.
     pub sampled_at: Duration,
     /// Device pixels per logical pixel at preparation.
     pub scale: f32,
     /// Drawing data in logical pixels, including the viewport size.
-    pub list: Rc<crate::paint::DisplayList>,
+    pub list: Arc<crate::paint::DisplayList>,
+    pub(crate) paint_sites: Arc<FxHashMap<NodeId, PaintSite>>,
+}
+
+const _: fn() = || {
+    fn require_owned_render_data<T: Send + Sync + 'static>() {}
+    require_owned_render_data::<PublishedFrame>();
+};
+
+impl PublishedFrame {
+    pub fn paint_sample(&self) -> PaintSample {
+        PaintSample { revision: self.revision, sampled_at: self.sampled_at }
+    }
+
+    /// Attributes receipts from this drawing using its sampled source metadata. A host can
+    /// retain this drawing through submission and publish the evidence once submission succeeds.
+    pub fn paint_frame(&self, origin: PaintOrigin, receipts: &[PaintReceipt]) -> PaintFrame {
+        PaintFrame::from_receipts(self.window, self.paint_sample(), origin, &self.paint_sites, receipts)
+    }
 }
 
 /// The focused text field, as the platform's text input sees it.

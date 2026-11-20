@@ -147,6 +147,22 @@ iOS 27.2 运行同一个 `showcase interaction`。原生触摸打开 Dialog 后�
 - Rune 将触摸先作为待判定的会话处理。系统取消或滚动接管会取消按压，抬手时检查捕获的路径仍然存活、会话仍为命中状态。Octara 同样保留拖离、取消和原目标的检查。[Rune 触摸会话](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune/src/runtime/input/touch.rs#L82-L128) · [Rune 释放目标](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune/src/runtime/input/pointer.rs#L314-L352)
 - Expo 的 React Native 示例在按钮的 `onPress` 中调用 `Keyboard.dismiss`。React Native 的 `Pressable` 区分按压反馈和抬手后的操作，`ScrollView` 则通过 `keyboardShouldPersistTaps` 决定容器是否拦下点击来收起键盘。Octara 在这个场景由 Core 确认点击并交接焦点，Dialog 可以继续用普通按钮关闭。[Expo 键盘处理](https://docs.expo.dev/guides/keyboard-handling/#keyboard-events) · [React Native Pressable](https://reactnative.dev/docs/pressable#how-it-works) · [React Native ScrollView](https://reactnative.dev/docs/scrollview#keyboardshouldpersisttaps)
 
+### 非模态浮层的关闭与焦点
+
+macOS 用 `live_primitives.py --scene interaction` 驱动真实窗口。在预览页打开「编辑设置」，Tab 从触发器进入备注框，再经过「关闭设置」到「后续操作」。焦点离开后只关闭面板。焦点在备注框时按 Escape 会关闭面板并归还原触发器。外点保留兄弟按钮的焦点，只增加一次操作计数。同名重开后，旧备注框目标返回 `STALE_TARGET`。[实窗脚本](../../examples/live_primitives.py) · [旧按压和同名目标回归](../../crates/octara/tests/integration/overlay.rs)
+
+iPhone 17e 模拟器上的同一面板复现了键盘收起导致的误点。一次 80 毫秒的系统触摸落在「后续操作」的 `(176,312)`。修复前面板在按下时关闭，可用高度从 515 增至 844 点，按钮上缘由 290 移到 455 点，抬手后计数仍为零。修复后同一触点在抬手时先确认原命中，随后关闭面板、收起键盘并增加一次计数。同一个 Dialog 保持打开，焦点落在「后续操作」，旧备注框和面板目标均被拒绝。[关闭与焦点规则](ui-primitives.md#5-overlays)
+
+在草稿页用系统键盘输入 `/` 打开建议。点预览标签会关闭建议并切换到预览，回到草稿后原文本仍在。重新打开建议后，连续两次独立触摸 Dialog 的外部遮罩。第一次只关闭建议列表，Dialog 和编辑器的目标、UIKit 焦点以及 515 点可用高度都保留。第二次关闭 Dialog，焦点归还原打开按钮，键盘收起后可用高度恢复为 844 点。
+
+### 浮层退出动画
+
+「编辑设置」面板声明 300 毫秒淡出。第一次实现将所有退出画面放在活动浮层后面，Dialog 遮住了正在淡出的面板。修复后，旧面板沿用原浮层区域的绘制顺序，同区域的新挂载在其上面绘制。无窗口回归固定时钟，检查按 Escape 后即时归还焦点、退出辅助功能与命中范围，检查锚点移动后旧画面仍留在原处，并验证旧抬手和旧目标无法操作新面板。[动画架构](motion.md) · [浮层回归](../../crates/octara/tests/integration/overlay.rs)
+
+macOS 在实际运行的 `showcase interaction` 窗口中，用 Inspector 按 Escape，立即读回关闭状态和恢复的触发器焦点。用 `capture` 的 `settle_ms: 0` 取得 GPU 中间帧。面板内部抽样区域的 9,530 个显著变化的 RGB 通道都观察到中间值。另一次用同一连接关闭并重开，两个操作在 182.5 毫秒内回执，采样时旧面板轨道仍在运行。旧编辑器目标返回 `STALE_TARGET`，退出结清后新编辑器和原 Dialog 的身份保持一致。[实窗示例](../../examples/src/showcase/interaction.rs) · [截图与回执](capture.md)
+
+iPhone 17e 的 iOS 27.2 模拟器用原生触摸关闭面板。系统录像显示备注框和关闭按钮仍在原位置随面板淡出，Dialog 保持可见。关闭时备注框退出 UIKit 焦点，旧面板与编辑器目标均被拒绝。连续两次原生触摸观察到 306.9 毫秒的关闭到重开间隔，覆盖新身份、键盘与兄弟按钮的交互。300 毫秒淡出中的重叠由 macOS 实窗和无窗口回归覆盖。
+
 ### iOS Dialog 内的中文虚拟选择器
 
 验收窗口在 Dialog 内打开 121 个选项的 Combobox。输入「你好」后剩 120 个匹配项，可以从首项按 Up 循环到尚未挂载的末项 `greeting-119`，再重排到首项。应用单独记录提交次数和业务 key。[复现步骤](../../examples/IME.md#dialog-内的中文虚拟选择器)

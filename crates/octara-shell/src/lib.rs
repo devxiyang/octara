@@ -15,6 +15,17 @@
 //! Live inspection: `OCTARA_INSPECT=/absolute/path.sock` enables a local Unix socket on macOS,
 //! Linux and the iOS simulator. Requests use the Inspector JSON-lines protocol on the UI thread.
 //!
+//! `OCTARA_TRACE_GPU=1` adds CPU phase and GPU timestamp samples on stderr when the device
+//! supports timestamp queries. `OCTARA_TRACE_INPUT=1` enables the CPU and input trace alone.
+//! On macOS, `OCTARA_ASYNC_METAL=1` enables experimental drawable acquisition on a worker.
+//! `OCTARA_METAL_ACQUIRE_DELAY_MS` injects an acquisition delay for live comparison.
+//! `OCTARA_METAL_FRAME_LATENCY=1` requests two drawables instead of three for that experiment.
+//! `OCTARA_RENDER_WORKER=1` also records and submits plain Metal frames and capture work on
+//! the render worker. Readback completion is asynchronous on all supported hosts.
+//! `OCTARA_TRACE_PRESENTED=1` reports hardware presentation timestamps for the Metal path.
+//! `OCTARA_TRACE_FRAME_CLOCK=1` reports macOS display-link transitions.
+//! `OCTARA_TRACE_NATIVE_INPUT=1` times macOS input dispatch and associates it with a drawing revision.
+//!
 //! ```no_run
 //! octara_shell::run("Counter", octara_examples_counter);
 //! # fn octara_examples_counter() -> octara::view::El { octara::view::text("Counter") }
@@ -28,6 +39,7 @@ use octara::kernel::HandlerId;
 use octara::platform::WindowOptions;
 use octara::view::{IntoView, View};
 use platform::WinitWindow;
+use presentation::Opportunity;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::panic::Location;
@@ -46,17 +58,25 @@ mod ask_mac;
 #[cfg(target_os = "ios")]
 mod back_ios;
 mod capture;
+mod capture_output;
 mod gesture;
+mod gpu;
 #[cfg(any(test, target_os = "ios"))]
 mod ime_draft;
 mod inspect;
 #[cfg(target_os = "macos")]
 mod menubar_mac;
 #[cfg(target_os = "macos")]
+mod metal_acquire;
+#[cfg(target_os = "macos")]
+mod metal_frame;
+#[cfg(target_os = "macos")]
 mod native_mac;
 #[cfg(target_os = "macos")]
 mod pace_mac;
 mod platform;
+mod presentation;
+mod render_worker;
 mod resize;
 #[cfg(target_os = "ios")]
 mod scene_ios;
@@ -74,6 +94,10 @@ mod trace;
 pub enum ShellEvent {
     Accessibility(accesskit_winit::Event),
     Wake,
+    #[doc(hidden)]
+    GpuLost(u64),
+    #[doc(hidden)]
+    RenderReady(u64),
     #[cfg(target_os = "ios")]
     IosSceneConnected,
     #[cfg(target_os = "ios")]
@@ -94,6 +118,9 @@ pub enum ShellEvent {
     },
     /// A window's frame clock ticked (a display refresh).
     Frame(WindowId),
+    #[cfg(target_os = "macos")]
+    #[doc(hidden)]
+    DrawableReady(WindowId),
     /// A menu bar item was picked (by its keys: the chord): its command for the active window.
     Command {
         name: String,
@@ -152,6 +179,8 @@ pub fn run_with<V: IntoView>(options: Options, root: impl Fn() -> V + 'static) {
     let event_loop = EventLoop::<ShellEvent>::with_user_event().build().expect("event loop");
     #[cfg(target_os = "ios")]
     scene_ios::register(event_loop.create_proxy());
+    let trace_gpu = std::env::var_os("OCTARA_TRACE_GPU").is_some_and(|v| v != "0");
+    let started = Instant::now();
     let shared = Rc::new(Shared {
         proxy: event_loop.create_proxy(),
         active: Cell::new(std::ptr::null()),
@@ -159,7 +188,22 @@ pub fn run_with<V: IntoView>(options: Options, root: impl Fn() -> V + 'static) {
         windows: RefCell::new(HashMap::new()),
         #[cfg(target_os = "macos")]
         menu_commands: menubar_mac::PendingCommands::default(),
-        trace: std::env::var_os("OCTARA_TRACE_INPUT").is_some_and(|v| v != "0"),
+        #[cfg(target_os = "macos")]
+        async_metal: std::env::var_os("OCTARA_ASYNC_METAL").is_some_and(|v| v == "1"),
+        #[cfg(target_os = "macos")]
+        metal_frame_latency: if std::env::var_os("OCTARA_METAL_FRAME_LATENCY").is_some_and(|v| v == "1") { 1 } else { 2 },
+        #[cfg(target_os = "macos")]
+        metal_acquire_delay: std::time::Duration::from_millis(
+            std::env::var("OCTARA_METAL_ACQUIRE_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(0).min(1000),
+        ),
+        trace: trace_gpu || std::env::var_os("OCTARA_TRACE_INPUT").is_some_and(|v| v != "0"),
+        trace_native_input: cfg!(target_os = "macos") && std::env::var_os("OCTARA_TRACE_NATIVE_INPUT").is_some_and(|v| v == "1"),
+        trace_gpu,
+        #[cfg(target_os = "macos")]
+        trace_presented: std::env::var_os("OCTARA_TRACE_PRESENTED").is_some_and(|v| v == "1"),
+        #[cfg(target_os = "macos")]
+        trace_frame_clock: std::env::var_os("OCTARA_TRACE_FRAME_CLOCK").is_some_and(|v| v == "1"),
+        trace_epoch: started,
     });
     let mut shell = Shell {
         window_options: WindowOptions::new(options.title).size(options.size.0, options.size.1),
@@ -171,10 +215,16 @@ pub fn run_with<V: IntoView>(options: Options, root: impl Fn() -> V + 'static) {
         main: None,
         active: None,
         modifiers: ModifiersState::empty(),
-        started: Instant::now(),
+        started,
+        gpu_poll_wake: None,
+        deferred_gpu_loss: None,
+        last_rendered: None,
+        #[cfg(debug_assertions)]
+        destroy_device_after_capture: std::env::var_os("OCTARA_DESTROY_DEVICE_AFTER_CAPTURE").is_some_and(|v| v == "1"),
         done: false,
         failed: false,
         capture: None,
+        capture_writer: None,
         inspector: None,
         inspect_pending: None,
     };
@@ -183,6 +233,10 @@ pub fn run_with<V: IntoView>(options: Options, root: impl Fn() -> V + 'static) {
         app.shutdown();
     }
     // `process::exit` below bypasses Drop, so shut down and clean the endpoint first.
+    drop(shell.capture.take());
+    if let Some(writer) = shell.capture_writer.take() {
+        writer.shutdown();
+    }
     drop(shell.inspector.take());
     result.expect("event loop");
     if shell.failed {
@@ -195,15 +249,37 @@ pub fn run_with<V: IntoView>(options: Options, root: impl Fn() -> V + 'static) {
 pub(crate) struct Shared {
     pub(crate) proxy: EventLoopProxy<ShellEvent>,
     active: Cell<*const ActiveEventLoop>,
-    pub(crate) gpu: RefCell<Option<platform::Gpu>>,
+    pub(crate) gpu: RefCell<Option<gpu::Gpu>>,
     pub(crate) windows: RefCell<HashMap<WindowId, octara::app::WindowId>>,
     #[cfg(target_os = "macos")]
     pub(crate) menu_commands: menubar_mac::PendingCommands,
-    /// `OCTARA_TRACE_INPUT=1`: optional CPU frame/input timings as JSON on stderr.
+    #[cfg(target_os = "macos")]
+    pub(crate) async_metal: bool,
+    #[cfg(target_os = "macos")]
+    pub(crate) metal_frame_latency: u32,
+    #[cfg(target_os = "macos")]
+    pub(crate) metal_acquire_delay: std::time::Duration,
+    /// Optional CPU frame/input timings as JSON on stderr.
     pub(crate) trace: bool,
+    trace_native_input: bool,
+    /// `OCTARA_TRACE_GPU=1`: add renderer counts and GPU timestamp queries when supported.
+    pub(crate) trace_gpu: bool,
+    #[cfg(target_os = "macos")]
+    pub(crate) trace_presented: bool,
+    #[cfg(target_os = "macos")]
+    pub(crate) trace_frame_clock: bool,
+    pub(crate) trace_epoch: Instant,
 }
 
 impl Shared {
+    pub(crate) fn gpu_available(&self) -> bool {
+        self.gpu.borrow().as_ref().is_some_and(gpu::Gpu::available)
+    }
+
+    pub(crate) fn renderer_idle(&self) -> bool {
+        self.gpu.borrow().as_ref().is_some_and(gpu::Gpu::idle)
+    }
+
     /// The loop whose callback runs now.
     pub(crate) fn event_loop(&self) -> Option<&ActiveEventLoop> {
         let p = self.active.get();
@@ -262,12 +338,19 @@ struct Shell {
     modifiers: ModifiersState,
     /// The app's clock starts at launch.
     started: Instant,
+    /// A wake scheduled solely for GPU polling, outside the App's clock.
+    gpu_poll_wake: Option<Instant>,
+    deferred_gpu_loss: Option<u64>,
+    last_rendered: Option<octara::app::WindowId>,
+    #[cfg(debug_assertions)]
+    destroy_device_after_capture: bool,
     /// `exit_after_frames` was reached, a capture or the conformance checks finished.
     done: bool,
-    /// A conformance check failed: the process exits with status 1.
+    /// A terminal failure exits the process with status 1.
     failed: bool,
     /// A capture in progress (`OCTARA_CAPTURE`, see [`capture`]).
     capture: Option<capture::Job>,
+    capture_writer: Option<capture_output::CaptureWriter>,
     inspector: Option<inspect::Server>,
     inspect_pending: Option<inspect::Pending>,
 }
@@ -276,6 +359,14 @@ struct Shell {
 fn ww<R>(w: &AppWindow, f: impl FnOnce(&mut WinitWindow) -> R) -> Option<R> {
     let pw = w.platform_window();
     pw.as_any().downcast_ref::<platform::WindowHost>().map(|host| f(&mut host.0.borrow_mut()))
+}
+
+#[cfg(target_os = "macos")]
+fn ready_drawable_position(app: &App, windows: &[octara::app::WindowId]) -> Option<usize> {
+    let now = Instant::now();
+    windows
+        .iter()
+        .position(|id| app.window(*id).is_some_and(|w| w.frame_is_settled() && ww(&w, |host| host.ready_to_draw(now)).unwrap_or(false)))
 }
 
 fn modifiers(m: ModifiersState) -> Modifiers {
@@ -364,6 +455,7 @@ impl Shell {
                 continue;
             }
             let started = self.shared.trace.then(Instant::now);
+            let publication = input.filter(|_| self.shared.trace_native_input).and_then(|input| input.publication(&w));
             for edit in edits {
                 let current = ww(&w, |x| x.text_input.as_ref().is_some_and(|i| i.is_current(&edit))).unwrap_or(false);
                 if !current {
@@ -379,6 +471,9 @@ impl Shell {
                     });
                     break;
                 }
+            }
+            if let Some((publication, kind)) = publication {
+                publication.log(self.shared.trace_epoch, &w, kind, None);
             }
             ww(&w, |x| {
                 if let Some(input) = &x.text_input {
@@ -421,8 +516,10 @@ impl Shell {
         if matches!(phase, BackPhase::Completed | BackPhase::Cancelled) {
             let eligible = window.back_gesture_target().is_some();
             ww(&window, |host| {
-                if let Some(back) = &mut host.ios_back {
-                    host.pending |= back.settle(id, accepted, eligible);
+                if let Some(back) = &mut host.ios_back
+                    && back.settle(id, accepted, eligible)
+                {
+                    host.request_draw();
                 }
             });
         }
@@ -488,9 +585,9 @@ impl Shell {
     /// Apply an actual native client-area size through the same path as a resize event.
     fn resize_window(&mut self, w: &mut AppWindow, size: winit::dpi::PhysicalSize<u32>) {
         if let Some(g) = &*self.shared.gpu.borrow() {
-            let limit = g.renderer.device().limits().max_texture_dimension_2d;
+            let limit = g.device().limits().max_texture_dimension_2d;
             if resize::validate_physical(size, limit).is_ok() {
-                ww(w, |x| x.resize(size.width, size.height, &g.renderer));
+                ww(w, |x| x.resize(size.width, size.height, g));
             }
         }
         self.sync_viewport(w, size);
@@ -516,10 +613,23 @@ impl Shell {
     }
 
     /// One pointer event at the window's pointer (mouse) or the touch's (finger).
-    fn pointer(&mut self, w: &mut AppWindow, ev: PointerEvent) {
+    fn pointer(&mut self, w: &mut AppWindow, ev: PointerEvent, received: Option<Instant>) {
         let at = self.shared.trace.then(Instant::now);
         self.tick();
+        let publication = trace::WindowInput::start(received, w).map(|publication| {
+            let kind = match ev.phase {
+                Phase::Down => "down",
+                Phase::Up => "up",
+                Phase::Move if w.held_pointer().is_some() => "drag",
+                Phase::Move => "move",
+                Phase::Cancel => "cancel",
+            };
+            (publication, kind)
+        });
         w.event(InputEvent::Pointer(ev));
+        if let Some((publication, kind)) = publication {
+            publication.log(self.shared.trace_epoch, w, kind, (kind == "drag").then_some((ev.x, ev.y)));
+        }
         #[cfg(target_os = "macos")]
         if ev.phase == Phase::Down {
             ww(w, |x| {
@@ -546,14 +656,56 @@ impl Shell {
         if self.app_failed() {
             return;
         }
+        if let Some(generation) = self.deferred_gpu_loss.take() {
+            self.on_gpu_lost(generation);
+            return;
+        }
         let Some(app) = self.app.clone() else { return };
-        for id in app.windows() {
+        let mut windows = app.windows();
+        #[cfg(target_os = "macos")]
+        {
+            // Publish all the opportunities the main run loop already delivered before any
+            // window can block in a synchronous acquire. Their wakes can arrive in either order.
+            let handled_at = Instant::now();
+            let ticks: Vec<_> = windows
+                .iter()
+                .filter_map(|id| {
+                    let w = app.window(*id)?;
+                    let opportunity = ww(&w, |host| host.take_display_tick(handled_at)).flatten()?;
+                    Some((w, opportunity))
+                })
+                .collect();
+            if !ticks.is_empty() && !clock_sampled && self.shared.renderer_idle() {
+                self.tick();
+                clock_sampled = true;
+            }
+            let now = Instant::now();
+            for (w, opportunity) in ticks {
+                ww(&w, |host| host.offer_display_tick(opportunity, now));
+            }
+        }
+        if let Some(position) = windows.iter().position(|id| Some(*id) == self.last_rendered) {
+            windows.rotate_left(position + 1);
+        }
+        // A ready drawable can use the device now. Prefer the first ready window in the
+        // same rotation, before work that would take a fresh surface acquisition.
+        #[cfg(target_os = "macos")]
+        if self.shared.renderer_idle()
+            && let Some(ready) = ready_drawable_position(&app, &windows)
+        {
+            windows[..=ready].rotate_right(1);
+        }
+        for id in windows {
             let Some(mut w) = app.window(id) else { continue };
             if let Some(size) = ww(&w, |host| (cfg!(target_os = "ios") || !host.sized).then(|| host.drawable_size())).flatten() {
                 self.sync_viewport(&mut w, size);
             }
             if !w.frame_is_settled() {
-                ww(&w, |x| x.pause_frame_clock());
+                ww(&w, |x| {
+                    x.pause_frame_clock();
+                    #[cfg(target_os = "macos")]
+                    x.discard_metal_drawable();
+                });
                 continue;
             }
             #[cfg(target_os = "ios")]
@@ -561,31 +713,55 @@ impl Shell {
                 let back_eligible = w.back_gesture_target().is_some();
                 ww(&w, |x| x.sync_ios_back(back_eligible));
             }
-            let draw = ww(&w, |x| x.schedule_frame(Instant::now()).then_some(x.continuous)).flatten();
-            if let Some(continuous) = draw {
+            let draw = ww(&w, |x| x.schedule_frame(Instant::now())).flatten();
+            if let Some((opportunity, continuous)) = draw {
                 // An event can wake the loop when a fallback frame is due. Sample that
                 // opportunity as well, so input bursts approaching a deadline keep drawing.
                 if continuous && !clock_sampled {
                     self.tick();
                     clock_sampled = true;
                 }
-                self.draw(&w);
+                self.draw_for(&w, opportunity);
             }
             ww(&w, |x| x.a11y.update_if_active(|| w.accessibility_update()));
         }
     }
 
-    /// Draws window `w` now and returns whether a frame was presented.
-    fn draw(&mut self, w: &AppWindow) -> bool {
-        if self.app_failed() || !ww(w, |x| x.can_present()).unwrap_or(false) {
+    /// Draws the latest publication and returns whether the submission and present calls returned.
+    fn draw_for(&mut self, w: &AppWindow, opportunity: Opportunity) -> bool {
+        if self.app_failed() || !self.shared.renderer_idle() || !ww(w, |x| x.can_present()).unwrap_or(false) {
             return false;
         }
         let attempted = Instant::now();
+        if !opportunity.valid(attempted) {
+            ww(w, |x| x.skip_opportunity(opportunity, "expired_display_opportunity"));
+            return false;
+        }
+        let prepared =
+            self.shared.gpu.borrow().as_ref().is_some_and(|g| ww(w, |x| x.prepare_draw(w.scale(), g, opportunity)).unwrap_or(false));
+        if !prepared {
+            return false;
+        }
+        let now = Instant::now();
+        if !opportunity.valid(now) {
+            ww(w, |x| x.skip_opportunity(opportunity, "expired_display_opportunity"));
+            return false;
+        }
         let started = self.shared.trace.then_some(attempted);
-        let Some(frame) = w.published_frame() else {
+        let target = ww(w, |x| x.visual_target(opportunity)).flatten();
+        let frame = match target {
+            Some(target) => w.published_frame_for_display(target.saturating_duration_since(self.started)),
+            None => w.published_frame(),
+        };
+        let Some(frame) = frame else {
             ww(w, |x| {
-                x.pending = true;
+                x.request_draw();
                 x.pause_frame_clock();
+                #[cfg(target_os = "macos")]
+                x.discard_metal_drawable();
+                if self.shared.trace {
+                    opportunity.skipped(x.window.id(), self.started, "no_settled_drawing");
+                }
             });
             return false;
         };
@@ -593,22 +769,23 @@ impl Shell {
         let back_owner = w.back_gesture_target();
         #[cfg(target_os = "ios")]
         ww(w, |x| x.sync_ios_back(back_owner.is_some()));
-        let trace = started.map(|at| trace::Frame::new(at, frame.sampled_at.as_millis() as u64));
-        let shown = {
+        let trace = started.map(|at| trace::Frame::new(at, w.app().now().as_millis() as u64, opportunity));
+        self.last_rendered = Some(w.id());
+        let submitted = {
             let mut gpu = self.shared.gpu.borrow_mut();
             let Some(g) = gpu.as_mut() else { return false };
-            ww(w, |x| {
-                let shown = x.draw(&frame, g, trace);
-                x.frame_attempted(attempted, shown);
-                shown
-            })
-            .unwrap_or(false)
+            ww(w, |x| x.draw(&frame, g, attempted, trace)).unwrap_or(false)
         };
         #[cfg(target_os = "ios")]
-        if shown {
+        if submitted {
             ww(w, |x| x.did_draw_ios_back(back_owner));
         }
-        if shown
+        self.finish_window_draw(w, submitted);
+        submitted
+    }
+
+    fn finish_window_draw(&mut self, w: &AppWindow, submitted: bool) {
+        if submitted
             && Some(w.id()) == self.main
             && let Some(n) = self.exit_after_frames
         {
@@ -617,11 +794,56 @@ impl Shell {
                 eprintln!("octara-shell: drew {frames} frames at {width}×{height} (scale {scale}), exiting");
                 self.done = true;
             } else {
-                ww(w, |x| x.pending = true);
+                ww(w, |x| x.request_draw());
             }
         }
         ww(w, |x| x.sync_frame_clock());
-        shown
+    }
+
+    #[cfg(target_os = "macos")]
+    fn drawable_ready(&mut self, id: WindowId) {
+        if let Some(w) = self.window_of(id) {
+            self.tick();
+            {
+                let gpu = self.shared.gpu.borrow();
+                if let Some(gpu) = gpu.as_ref() {
+                    ww(&w, |host| host.take_metal_drawable(gpu));
+                }
+            }
+            self.show_frames(true);
+        } else {
+            self.show();
+        }
+    }
+
+    fn render_ready(&mut self, generation: u64) {
+        let completed = {
+            let mut gpu = self.shared.gpu.borrow_mut();
+            let Some(gpu) = gpu.as_mut().filter(|gpu| gpu.generation.number == generation) else { return };
+            gpu.finish_work()
+        };
+        match completed {
+            Ok(Some(gpu::RenderCompletion::Window(frame))) => {
+                if let Some(w) = self.window_of(frame.window) {
+                    let latest = w.published_revision();
+                    let submitted = {
+                        let mut gpu = self.shared.gpu.borrow_mut();
+                        gpu.as_mut().is_some_and(|gpu| ww(&w, |host| host.rendered(gpu, *frame, latest)).unwrap_or(false))
+                    };
+                    self.finish_window_draw(&w, submitted);
+                }
+            }
+            Ok(Some(gpu::RenderCompletion::Capture)) => {}
+            Ok(None) => return,
+            Err(error) => {
+                self.gpu_failed(&error);
+                return;
+            }
+        }
+        if self.capture.as_ref().is_some_and(capture::Job::waiting_to_start_render) {
+            self.capture_step();
+        }
+        self.show();
     }
 
     /// A key press: the app's key routing first (focus, keymap, commands); if nothing took it,
@@ -700,12 +922,74 @@ impl Shell {
 }
 
 impl Shell {
+    fn on_gpu_lost(&mut self, generation: u64) {
+        if self.done {
+            return;
+        }
+        let Some(app) = self.app.clone() else { return };
+        let mut windows = app.windows().into_iter().filter_map(|id| app.window(id)).collect::<Vec<_>>();
+        let Some(first) = windows.first() else { return };
+        if self.shared.gpu.borrow().as_ref().is_some_and(|gpu| gpu.generation.loss_for(generation).is_some()) {
+            let waiting = !self.shared.renderer_idle();
+            #[cfg(target_os = "macos")]
+            let mut waiting = waiting;
+            #[cfg(target_os = "macos")]
+            for window in &windows {
+                waiting |= ww(window, WinitWindow::retire_metal_drawable).unwrap_or(false);
+            }
+            if waiting {
+                self.deferred_gpu_loss = Some(generation);
+                return;
+            }
+            self.deferred_gpu_loss = None;
+        }
+        let recover = || {
+            let mut shared_gpu = self.shared.gpu.borrow_mut();
+            let Some(gpu) = shared_gpu.as_ref() else { return Ok(false) };
+            let Some((reason, message)) = gpu.generation.loss_for(generation) else { return Ok(false) };
+            eprintln!("octara-shell: GPU device generation {generation} lost ({reason:?}) {message}");
+            let replacement =
+                ww(first, |host| gpu.replacement(&host.surface, &self.shared.proxy)).ok_or("the app has no GPU surface")??;
+            for window in &windows {
+                ww(window, |host| host.recover_surface(&replacement)).transpose()?;
+            }
+            if !replacement.available() {
+                return Err("the replacement GPU device was lost during surface recovery".into());
+            }
+            *shared_gpu = Some(replacement);
+            Ok::<_, String>(true)
+        };
+        match recover() {
+            Ok(true) => {
+                self.gpu_poll_wake = None;
+                for window in &mut windows {
+                    if let Some(size) = ww(window, |host| host.drawable_size()) {
+                        self.sync_viewport(window, size);
+                    }
+                }
+                self.show();
+            }
+            Ok(false) => {}
+            Err(why) => self.gpu_failed(&why),
+        }
+    }
+
+    fn gpu_failed(&mut self, why: &str) {
+        eprintln!("octara-shell: cannot recover the GPU device: {why}");
+        self.failed = true;
+        self.done = true;
+        self.inspect_pending.take();
+        self.capture.take();
+    }
+
     fn on_new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
         if self.app_failed() {
             return;
         }
         // A task or input deadline, or a frame for a window without display callbacks.
-        if let StartCause::ResumeTimeReached { .. } = cause {
+        if let StartCause::ResumeTimeReached { requested_resume, .. } = cause
+            && self.gpu_poll_wake.take() != Some(requested_resume)
+        {
             let _in = InLoop::enter(&self.shared, event_loop);
             self.tick();
             self.show_frames(true);
@@ -715,6 +999,9 @@ impl Shell {
     fn on_about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if self.app_failed() {
             self.failed = true;
+            if let Some(gpu) = self.shared.gpu.borrow_mut().as_mut() {
+                gpu.cancel_work();
+            }
             if self.app.as_ref().is_some_and(|app| app.is_shutdown()) {
                 event_loop.exit();
             } else {
@@ -767,7 +1054,22 @@ impl Shell {
                 .min()
         });
         let follow = dragging.then(|| now + std::time::Duration::from_millis(16));
-        event_loop.set_control_flow(match deadline.into_iter().chain(fallback).chain(follow).min() {
+        let deadline = deadline.into_iter().chain(fallback).chain(follow).min();
+        self.gpu_poll_wake = None;
+        let poll = self.shared.gpu.borrow_mut().as_mut().map_or(Ok(false), |gpu| gpu.poll(self.shared.trace_gpu));
+        match poll {
+            Ok(true) => {
+                let poll = Instant::now() + std::time::Duration::from_millis(2);
+                self.gpu_poll_wake = deadline.is_none_or(|app| poll < app).then_some(poll);
+            }
+            Ok(false) => {}
+            Err(why) => {
+                self.gpu_failed(&why);
+                event_loop.exit();
+                return;
+            }
+        }
+        event_loop.set_control_flow(match self.gpu_poll_wake.or(deadline) {
             Some(t) => ControlFlow::WaitUntil(t),
             None => ControlFlow::Wait,
         });
@@ -781,6 +1083,10 @@ impl Shell {
             return;
         }
         let _in = InLoop::enter(&self.shared, event_loop);
+        if let ShellEvent::GpuLost(generation) = event {
+            self.on_gpu_lost(generation);
+            return;
+        }
         #[cfg(target_os = "ios")]
         self.native_text_ios();
         #[cfg(target_os = "macos")]
@@ -789,6 +1095,11 @@ impl Shell {
             self.menu_commands();
         }
         let e = match event {
+            ShellEvent::GpuLost(_) => unreachable!("handled before app events"),
+            ShellEvent::RenderReady(generation) => {
+                self.render_ready(generation);
+                return;
+            }
             #[cfg(target_os = "ios")]
             ShellEvent::IosSceneConnected => {
                 if !scene_ios::connected() {
@@ -848,14 +1159,19 @@ impl Shell {
                 return;
             }
             ShellEvent::Frame(id) => {
+                #[cfg(target_os = "macos")]
                 if let Some(w) = self.window_of(id)
-                    && ww(&w, |x| x.take_display_tick()).unwrap_or(false)
+                    && ww(&w, |host| host.acknowledge_display_wake()) == Some(true)
                 {
-                    self.tick();
-                    if ww(&w, |x| x.pending).unwrap_or(false) {
-                        self.draw(&w);
-                    }
+                    self.show();
                 }
+                #[cfg(not(target_os = "macos"))]
+                let _ = id;
+                return;
+            }
+            #[cfg(target_os = "macos")]
+            ShellEvent::DrawableReady(id) => {
+                self.drawable_ready(id);
                 return;
             }
             ShellEvent::Capture => {
@@ -985,6 +1301,7 @@ impl Shell {
     }
 
     fn on_window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        let received = self.shared.trace_native_input.then(Instant::now);
         let _in = InLoop::enter(&self.shared, event_loop);
         if self.app_failed() {
             if matches!(event, WindowEvent::CloseRequested) {
@@ -1021,9 +1338,10 @@ impl Shell {
             }
             // The system asks for exposure. Retry a surface that was occluded.
             WindowEvent::RedrawRequested => {
-                ww(&w, |x| x.exposed());
+                ww(&w, |x| x.redraw());
                 self.tick();
-                self.draw(&w);
+                self.show_frames(true);
+                return;
             }
             // Hidden windows get no drawables; draw again once visible.
             WindowEvent::Occluded(occluded) => {
@@ -1033,7 +1351,10 @@ impl Shell {
             WindowEvent::CursorMoved { position, .. } => {
                 let at = (position.x as f32 / scale, position.y as f32 / scale);
                 ww(&w, |x| x.cursor = at);
-                self.pointer(&mut w, PointerEvent::mouse(Phase::Move, at.0, at.1).modifiers(modifiers(self.modifiers)));
+                // Winit also samples the cursor before button and wheel delivery. Those
+                // identity samples are part of those events, not extra drag movements.
+                let moved = received.filter(|_| ww(&w, |x| x.last_traced_motion.replace(at) != Some(at)) == Some(true));
+                self.pointer(&mut w, PointerEvent::mouse(Phase::Move, at.0, at.1).modifiers(modifiers(self.modifiers)), moved);
             }
             WindowEvent::CursorLeft { .. } => {
                 w.event(InputEvent::PointerLeave);
@@ -1050,7 +1371,7 @@ impl Shell {
                     ElementState::Released => Phase::Up,
                 };
                 let (x, y) = cursor;
-                self.pointer(&mut w, PointerEvent::mouse(phase, x, y).button(button).modifiers(modifiers(self.modifiers)));
+                self.pointer(&mut w, PointerEvent::mouse(phase, x, y).button(button).modifiers(modifiers(self.modifiers)), received);
             }
             WindowEvent::Touch(Touch { phase, location, id, .. }) => {
                 let phase = match phase {
@@ -1060,7 +1381,7 @@ impl Shell {
                     TouchPhase::Cancelled => Phase::Cancel,
                 };
                 let (x, y) = (location.x as f32 / scale, location.y as f32 / scale);
-                self.pointer(&mut w, PointerEvent::touch(id, phase, x, y));
+                self.pointer(&mut w, PointerEvent::touch(id, phase, x, y), received);
                 if self.shared.trace {
                     eprintln!(
                         "{}",
@@ -1082,7 +1403,7 @@ impl Shell {
                 if !on {
                     // The window lost the pointer: a held press or drag is cancelled.
                     let (x, y) = cursor;
-                    self.pointer(&mut w, PointerEvent::mouse(Phase::Cancel, x, y));
+                    self.pointer(&mut w, PointerEvent::mouse(Phase::Cancel, x, y), None);
                 }
                 w.event(InputEvent::Active(on));
             }
@@ -1094,6 +1415,7 @@ impl Shell {
                 };
                 let (x, y) = cursor;
                 self.tick();
+                let publication = trace::WindowInput::start(received, &w);
                 #[cfg(target_os = "macos")]
                 match ww(&w, |host| host.scroll.as_ref().map(scroll_mac::Bridge::next)).flatten() {
                     Some(Some(delivery)) => delivery.deliver(&mut w, phase),
@@ -1105,6 +1427,9 @@ impl Shell {
                     let _ = phase;
                     w.wheel(x, y, dx, dy);
                 }
+                if let Some(publication) = publication {
+                    publication.log(self.shared.trace_epoch, &w, "wheel", None);
+                }
                 ww(&w, |x| x.traced(at, "wheel"));
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
@@ -1114,6 +1439,7 @@ impl Shell {
                 }
                 let at = self.shared.trace.then(Instant::now);
                 self.tick();
+                let publication = trace::WindowInput::start(received, &w);
                 #[cfg(target_os = "macos")]
                 let native_key = ww(&w, |x| x.text_input.as_ref().and_then(|i| i.take_key(&event))).flatten();
                 #[cfg(target_os = "macos")]
@@ -1138,6 +1464,9 @@ impl Shell {
                 }
                 #[cfg(not(target_os = "macos"))]
                 self.key(&mut w, &event, !cfg!(target_os = "ios"));
+                if let Some(publication) = publication {
+                    publication.log(self.shared.trace_epoch, &w, "key", None);
+                }
                 ww(&w, |x| x.traced(at, if event.repeat { "key (repeat)" } else { "key" }));
             }
             #[cfg(not(target_os = "ios"))]
@@ -1209,10 +1538,7 @@ impl Shell {
             if let Some(app) = &self.app {
                 for id in app.windows() {
                     if let Some(window) = app.window(id) {
-                        ww(&window, |host| {
-                            host.pending = false;
-                            host.pause_frame_clock();
-                        });
+                        ww(&window, |host| host.cancel_frames());
                     }
                 }
             }
@@ -1248,6 +1574,11 @@ impl ApplicationHandler<ShellEvent> for Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use octara::capture::PaintOrigin;
+    use octara::inspect::{Completion, LayoutState};
+    use octara::platform::HeadlessPlatform;
+    use octara::prelude::{El, Role, Styled, col, el, state, text};
+    use presentation::{DrawableGeneration, Presentation};
 
     #[test]
     fn initial_window_factory_keeps_the_window_scope_and_launch_site() {
@@ -1260,7 +1591,7 @@ mod tests {
         });
         assert_eq!(owner.get(), None);
 
-        let app = App::new(octara::platform::HeadlessPlatform::default());
+        let app = App::new(HeadlessPlatform::default());
         let window = open(&app, WindowOptions::default()).unwrap();
         assert_eq!(owner.get(), Some(window.id()));
         let kernel = window.kernel();
@@ -1268,5 +1599,66 @@ mod tests {
         let source = kernel.origin(node).unwrap();
         assert_eq!(kernel.text(node), "Ready");
         assert_eq!((source.file(), source.line()), (file!(), line));
+    }
+
+    fn counter() -> El {
+        let count = state("count", || 0);
+        col()
+            .child(text(move || count.get().to_string()).id("value"))
+            .child(el().id("increment").role(Role::Button).label("Increment").size_8().on_press(move || count.update(|value| *value += 1)))
+    }
+
+    #[test]
+    fn a_waiting_surface_does_not_hold_app_updates_or_another_surface() {
+        let app = App::new(HeadlessPlatform::default());
+        let mut a = app.open_window(WindowOptions::new("A"), counter).unwrap();
+        let mut b = app.open_window(WindowOptions::new("B"), counter).unwrap();
+        let mut surface_a = Presentation::new(a.id());
+        let mut surface_b = Presentation::new(b.id());
+        let initial = DrawableGeneration { surface: 0, device: 0 };
+        let old_revision = a.published_revision().unwrap();
+        let waiting_a = surface_a.begin(initial).unwrap();
+
+        for _ in 0..3 {
+            a.tap("increment").unwrap();
+            b.tap("increment").unwrap();
+        }
+        for window in [&a, &b] {
+            assert_eq!(window.kernel().text_of("value").as_deref(), Some("3"));
+            assert_eq!(Completion::observe(window).layout, LayoutState::Settled);
+        }
+        assert!(surface_a.begin(initial).is_none(), "one request is outstanding for A");
+        assert!(surface_a.submitted_paint(initial).is_none());
+
+        let ready_b = surface_b.begin(initial).unwrap();
+        assert!(surface_b.finish(ready_b, initial));
+        let origin = PaintOrigin::Submitted { frame: 1, surface_generation: 0, device_generation: 0 };
+        assert!(surface_b.record_submission(b.published_frame().unwrap().paint_frame(origin, &[]), initial));
+        assert!(surface_a.waiting());
+
+        assert!(surface_a.finish(waiting_a, initial));
+        let latest = a.published_frame().unwrap();
+        assert!(latest.revision > old_revision);
+        assert!(surface_a.record_submission(latest.paint_frame(origin, &[]), initial));
+        assert_eq!(surface_a.submitted_paint(initial).unwrap().sample.revision, latest.revision);
+
+        let old_acquire = surface_a.begin(initial).unwrap();
+        a.event(InputEvent::Resize { width: 320.0, height: 240.0, scale: 2.0, safe_area: None });
+        surface_a.invalidate();
+        let resized = DrawableGeneration { surface: 1, device: 0 };
+        assert!(surface_a.begin(resized).is_none(), "the old acquisition still owns the surface");
+        assert!(!surface_a.finish(old_acquire, resized));
+        assert!(surface_a.submitted_paint(resized).is_none());
+        assert_eq!(a.published_frame().unwrap().list.size, (320.0, 240.0));
+
+        let closing_acquire = surface_a.begin(resized).unwrap();
+        app.close_window(a.id());
+        let reopened = app.open_window(WindowOptions::new("A"), counter).unwrap();
+        let mut reopened_surface = Presentation::new(reopened.id());
+        let reopened_acquire = reopened_surface.begin(initial).unwrap();
+        assert!(a.published_frame().is_none());
+        assert!(!reopened_surface.finish(closing_acquire, initial));
+        assert!(reopened_surface.finish(reopened_acquire, initial));
+        app.shutdown();
     }
 }

@@ -32,14 +32,14 @@ impl PopupItem {
 ///
 /// `id` names the editor, `{id}-list` the listbox and `{id}-option-{item.id}` each row.
 /// The caller controls `open` and supplies already filtered items. Up/Down wrap among enabled
-/// suggestions; Down also opens a closed list. Enter chooses, Escape closes, and Tab closes
-/// before continuing normal focus navigation. Modified keys and Home/End belong to the editor.
+/// suggestions; Down also opens a closed list. Enter chooses. Modified keys and Home/End
+/// belong to the editor.
 /// The component handles suggestion keys before the editor's `on_key`; unconsumed keys reach
 /// that callback. It closes before the editor's `on_blur`. Expanded and active-descendant props
 /// belong to the component. Existing input, key and blur application callbacks are preserved.
 ///
-/// The list is nonmodal. A press on a suggestion preserves the editor's focus and selection;
-/// a press elsewhere can focus that control and closes the list on blur. Choosing calls
+/// The list is nonmodal. Escape, outside presses and focus departure use the window's layer rules.
+/// A press on a suggestion preserves the editor's focus and selection. Choosing calls
 /// `on_choose` with the stable ID and closes; it never writes the editor's text itself.
 /// During IME composition, keyboard navigation belongs to the IME and pointer choices do
 /// nothing. Rows are retained through option updates; closing disposes only the popup.
@@ -106,7 +106,7 @@ pub fn popup_list(
                 }
             })
         };
-        let (expanded, related, blur, keys, shown) = (open.clone(), open.clone(), open.clone(), open.clone(), open);
+        let (expanded, related, keys, shown, dismiss) = (open.clone(), open.clone(), open.clone(), open.clone(), open);
         let (related_id, panel_id) = (id.clone(), id.clone());
         let key_pick = pick.clone();
         editor
@@ -114,11 +114,7 @@ pub fn popup_list(
             .expanded(move || expanded.get())
             .active_descendant(move || related.get().then(|| active.get()).flatten().map(|key| format!("{related_id}-option-{key}")))
             .behavior(|b| {
-                b.on_blur(move || blur.set(false)).on_key(move |event| {
-                    if event.key == Key::Tab && (event.modifiers.is_empty() || event.modifiers == Modifiers::SHIFT) {
-                        keys.set(false);
-                        return false;
-                    }
+                b.on_key(move |event| {
                     if !event.modifiers.is_empty() {
                         return false;
                     }
@@ -143,14 +139,6 @@ pub fn popup_list(
                             }
                             true
                         }
-                        Key::Escape => {
-                            keys.set(false);
-                            true
-                        }
-                        Key::Tab => {
-                            keys.set(false);
-                            false
-                        }
                         _ => false,
                     }
                 })
@@ -159,11 +147,12 @@ pub fn popup_list(
                 move || shown.get(),
                 Placement::BELOW.fit(true),
                 move || {
-                    let (row_id, pick) = (panel_id.clone(), pick.clone());
+                    let (row_id, pick, dismiss) = (panel_id.clone(), pick.clone(), dismiss.clone());
                     col()
                         .id(format!("{panel_id}-list"))
                         .role(Role::ListBox)
                         .label(label.clone())
+                        .dismissible(true, move || dismiss.set(false))
                         .preserve_focus_on_press(true)
                         .w(280.0)
                         .max_h(240.0)

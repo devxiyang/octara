@@ -8,11 +8,13 @@
 //! stated `fallback` where there is none.
 
 use super::{Shell, ShellEvent};
+use crate::capture_output::{CaptureOutput, CaptureWriter};
 use octara::app::{Window, WindowId};
-use octara::capture::{CaptureId, DisplayCapture, Pixels};
-use octara_primitives::capture::{Painter, Picture};
+use octara::capture::{CaptureId, DisplayCapture, PaintFrame, PaintOrigin, Pixels, PreparedCapture};
+use octara_primitives::capture::{PaintedPicture, Picture};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 /// How long a native view's snapshot may take.
@@ -23,6 +25,8 @@ const POLL: Duration = Duration::from_millis(50);
 const SHOWN: Duration = Duration::from_millis(40);
 const MAX_PIXELS: f64 = 32.0 * 1024.0 * 1024.0;
 const DISPLAY_CHANGED: &str = "the window changed while sampling the submitted frame";
+const DISPLAY_SUPERSEDED: &str = "the window changed before the requested drawing was submitted";
+const DISPLAY_NOT_SUBMITTED: &str = "the window's current frame was not submitted within the capture budget";
 
 /// Bound a live capture's actual device-pixel allocation, including rounding each side up.
 pub(crate) fn validate_size(size: (f32, f32), scale: f32) -> Result<(), String> {
@@ -44,25 +48,6 @@ pub(crate) fn validate_size(size: (f32, f32), scale: f32) -> Result<(), String> 
     Ok(())
 }
 
-/// Validate at paint time: the window can resize while native snapshots are pending.
-struct CapturePainter<'a> {
-    renderer: Option<&'a mut dyn Painter>,
-    bounded: bool,
-}
-
-impl Painter for CapturePainter<'_> {
-    fn renderer(&self) -> &'static str {
-        self.renderer.as_ref().map_or("gpu", |renderer| renderer.renderer())
-    }
-
-    fn paint(&mut self, list: &octara_primitives::paint::DisplayList, scale: f32) -> Result<Picture, String> {
-        if self.bounded {
-            validate_size(list.size, scale)?;
-        }
-        self.renderer.as_mut().ok_or_else(|| "the window has no GPU renderer".to_owned())?.paint(list, scale)
-    }
-}
-
 /// A capture in progress.
 pub(crate) struct Job {
     window: WindowId,
@@ -74,6 +59,7 @@ pub(crate) struct Job {
     scale: Option<f32>,
     reply: Option<super::inspect::Responder>,
     waking: Arc<AtomicBool>,
+    retried_gpu_paint: bool,
 }
 
 enum Stage {
@@ -82,19 +68,41 @@ enum Stage {
         until: Instant,
         display_failure: Option<String>,
     },
+    AwaitingSubmission {
+        until: Instant,
+        display: DisplayFrame,
+    },
     /// Waiting to sample the window server after submitting an Octara frame.
     Display {
         at: Instant,
         until: Instant,
-        frame: DisplayCapture,
-        geometry: DisplayGeometry,
-        pending: Vec<String>,
+        display: DisplayFrame,
+        paint: Box<PaintFrame>,
+    },
+    PreparingSnapshots {
+        until: Instant,
+        fallback: Option<String>,
+        placement_requested: bool,
     },
     Snapshots {
         window: Window,
         id: CaptureId,
         scale: f32,
         pending: Vec<String>,
+        fallback: Option<String>,
+    },
+    Readback {
+        prepared: PreparedCapture,
+        pixels: Receiver<Result<PaintedPicture, String>>,
+        generation: u64,
+        renderer: &'static str,
+        scale: f32,
+        pending: Vec<String>,
+        fallback: Option<String>,
+    },
+    Output {
+        output: CaptureOutput,
+        generation: u64,
         fallback: Option<String>,
     },
 }
@@ -109,20 +117,46 @@ struct DisplayGeometry {
 impl DisplayGeometry {
     fn current(window: &Window) -> Option<Self> {
         super::ww(window, |host| {
+            let size = host.configured_size()?;
             let scale = window.scale();
             host.matches_drawable(scale).then_some(Self {
-                size: (host.config.width, host.config.height),
+                size: (size.width, size.height),
                 scale,
                 surface_generation: host.surface_generation,
             })
         })
         .flatten()
     }
+}
 
-    fn is_current(self, window: &Window, frame: &DisplayCapture) -> bool {
-        frame.is_current(window)
-            && Self::current(window) == Some(self)
-            && super::ww(window, |host| host.has_submitted(frame.revision())).unwrap_or(false)
+struct DisplayFrame {
+    frame: DisplayCapture,
+    geometry: DisplayGeometry,
+    pending: Vec<String>,
+}
+
+impl DisplayFrame {
+    fn begin(window: &Window, pending: Vec<String>) -> Result<Self, String> {
+        let frame = window.capture_display_begin()?;
+        let geometry = DisplayGeometry::current(window).ok_or("the window and its drawing surface disagree on size or scale")?;
+        Ok(Self { frame, geometry, pending })
+    }
+
+    fn is_current(&self, window: &Window) -> bool {
+        self.frame.is_current(window) && DisplayGeometry::current(window) == Some(self.geometry)
+    }
+
+    fn submitted_paint(&self, window: &Window) -> Option<PaintFrame> {
+        super::ww(window, |host| host.submitted_paint().filter(|paint| paint.sample.revision == self.frame.revision()).cloned()).flatten()
+    }
+
+    fn has_submission(&self, window: &Window, paint: &PaintFrame) -> bool {
+        self.is_current(window)
+            && super::ww(window, |host| {
+                host.submitted_paint()
+                    .is_some_and(|submitted| submitted.sample.revision == self.frame.revision() && submitted.origin == paint.origin)
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -145,6 +179,7 @@ impl Job {
             scale: None,
             reply: None,
             waking: wake(proxy, after),
+            retried_gpu_paint: false,
         })
     }
 
@@ -167,6 +202,19 @@ impl Job {
             scale,
             reply: Some(reply),
             waking: wake(proxy, Duration::ZERO),
+            retried_gpu_paint: false,
+        }
+    }
+
+    fn prepare_snapshots(&mut self, until: Instant, fallback: Option<String>) {
+        self.stage = Stage::PreparingSnapshots { until, fallback, placement_requested: false };
+    }
+
+    fn retry_display(&mut self, until: Instant, reason: String) {
+        if Instant::now() < until {
+            self.stage = Stage::Settling { until, display_failure: Some(reason) };
+        } else {
+            self.prepare_snapshots(until, Some(reason));
         }
     }
 }
@@ -193,6 +241,30 @@ impl Drop for Job {
         if let Stage::Snapshots { window, id, .. } = &self.stage {
             window.capture_cancel(*id);
         }
+    }
+}
+
+impl Job {
+    pub(crate) fn waiting_to_start_render(&self) -> bool {
+        matches!(&self.stage, Stage::Snapshots { window, id, .. } if window.capture_awaiting(*id).is_empty())
+    }
+
+    fn output(
+        &mut self,
+        writer: &mut Option<CaptureWriter>,
+        generation: u64,
+        fallback: Option<String>,
+        proxy: winit::event_loop::EventLoopProxy<ShellEvent>,
+        write: impl FnOnce(&str) -> Result<octara::capture::Capture, String> + Send + 'static,
+    ) -> Result<(), String> {
+        if writer.is_none() {
+            *writer = Some(CaptureWriter::new().map_err(|error| format!("{}: {error}", self.path))?);
+        }
+        let output = writer.as_mut().expect("capture writer started").submit(self.path.clone(), write, move || {
+            let _ = proxy.send_event(ShellEvent::Capture);
+        });
+        self.stage = Stage::Output { output, generation, fallback };
+        Ok(())
     }
 }
 
@@ -231,13 +303,31 @@ impl Shell {
             }
             return;
         }
+        if !self.shared.gpu_available() {
+            self.capture = Some(job);
+            return;
+        }
         let now = Instant::now();
+        let output_generation = match &job.stage {
+            Stage::Readback { generation, fallback, .. } | Stage::Output { generation, fallback, .. } => Some((*generation, fallback)),
+            _ => None,
+        };
+        if let Some((generation, fallback)) = output_generation
+            && self.shared.gpu.borrow().as_ref().map(|gpu| gpu.generation.number) != Some(generation)
+        {
+            if !job.retried_gpu_paint {
+                job.retried_gpu_paint = true;
+                job.stage = Stage::Settling { until: now, display_failure: fallback.clone() };
+                self.capture = Some(job);
+            } else {
+                self.report(&w, Err("the GPU device changed again during capture".into()), job);
+            }
+            return;
+        }
         if let Stage::Start = job.stage {
             if let Some(dy) = job.scroll {
                 let (width, height) = self.window_options.size;
                 w.wheel(width / 2.0, height / 2.0, 0.0, dy);
-                // Drawn, so the views are placed where the page now is.
-                self.draw(&w);
             }
             job.stage = Stage::Settling { until: now + job.settle, display_failure: None };
         }
@@ -254,123 +344,233 @@ impl Shell {
                 self.report(&w, Err(why), job);
                 return;
             }
-            let fallback = if job.pixels == Pixels::Display && (display_failure.is_none() || Instant::now() < until) {
-                match self.present_for_capture(&w) {
-                    Ok((frame, geometry)) => {
-                        job.stage = Stage::Display { at: Instant::now() + SHOWN, until, frame, geometry, pending };
-                        self.capture = Some(job);
-                        return;
+            if job.pixels == Pixels::Display && (display_failure.is_none() || Instant::now() < until) {
+                match DisplayFrame::begin(&w, pending) {
+                    Ok(display) => {
+                        let needs_submission = super::ww(&w, |host| {
+                            if host.has_submitted(display.frame.revision()) {
+                                return false;
+                            }
+                            host.request_draw();
+                            true
+                        })
+                        .unwrap_or(false);
+                        job.stage = Stage::AwaitingSubmission { until, display };
+                        if needs_submission {
+                            self.capture = Some(job);
+                            self.show();
+                            return;
+                        }
                     }
-                    Err(why) if Instant::now() < until => {
-                        job.stage = Stage::Settling { until, display_failure: Some(why) };
-                        self.capture = Some(job);
-                        return;
+                    Err(why) => {
+                        job.retry_display(until, why);
+                        if matches!(job.stage, Stage::Settling { .. }) {
+                            // A surface requiring configuration may have no other draw demand.
+                            super::ww(&w, |host| host.request_draw());
+                        }
                     }
-                    Err(why) => Some(why),
                 }
             } else {
-                display_failure.clone()
-            };
-            if let Err(why) = self.begin_capture_snapshots(&mut w, &mut job, fallback) {
-                self.report(&w, Err(why), job);
-                return;
+                job.prepare_snapshots(until, display_failure.clone());
             }
         }
-        if let Stage::Display { at, until, ref frame, geometry, .. } = job.stage {
+        if let Stage::AwaitingSubmission { until, ref display } = job.stage {
+            if !display.is_current(&w) {
+                job.retry_display(until, DISPLAY_SUPERSEDED.into());
+            } else if let Some(paint) = display.submitted_paint(&w) {
+                let Stage::AwaitingSubmission { display, .. } = std::mem::replace(&mut job.stage, Stage::Start) else { unreachable!() };
+                job.stage = Stage::Display { at: Instant::now() + SHOWN, until, display, paint: Box::new(paint) };
+                self.capture = Some(job);
+                return;
+            } else if now < until {
+                self.capture = Some(job);
+                return;
+            } else {
+                job.prepare_snapshots(until, Some(DISPLAY_NOT_SUBMITTED.into()));
+            }
+        }
+        if let Stage::Display { at, until, ref display, ref paint } = job.stage {
             if now < at {
                 self.capture = Some(job);
                 return;
             }
-            let picture = if geometry.is_current(&w, frame) {
+            let geometry = display.geometry;
+            let picture = if display.has_submission(&w, paint) {
                 let picture = window_picture(&w);
-                geometry.is_current(&w, frame).then_some(picture)
+                display.has_submission(&w, paint).then_some(picture)
             } else {
                 None
             };
-            let fallback = match picture {
-                None if Instant::now() < until => {
-                    job.stage = Stage::Settling { until, display_failure: Some(DISPLAY_CHANGED.into()) };
-                    self.capture = Some(job);
-                    self.show();
-                    return;
-                }
-                None => DISPLAY_CHANGED.into(),
-                Some(Err(why)) => why,
+            match picture {
+                None => job.retry_display(until, DISPLAY_CHANGED.into()),
+                Some(Err(why)) => job.prepare_snapshots(until, Some(why)),
                 Some(Ok(picture)) if job.reply.is_some() && f64::from(picture.width) * f64::from(picture.height) > MAX_PIXELS => {
                     self.report(&w, Err("the display picture exceeds 32 megapixels".into()), job);
                     return;
                 }
                 Some(Ok(picture)) if (picture.width, picture.height) != geometry.size => {
                     let (width, height) = geometry.size;
-                    format!(
+                    let why = format!(
                         "the display picture dimensions {}×{} differ from the submitted surface dimensions {width}×{height}",
                         picture.width, picture.height
-                    )
+                    );
+                    job.prepare_snapshots(until, Some(why));
                 }
                 Some(Ok(picture)) => {
-                    let Stage::Display { frame, pending, .. } = std::mem::replace(&mut job.stage, Stage::Start) else { unreachable!() };
-                    let result = w.capture_display(frame, &picture, &job.path, geometry.scale, pending);
-                    self.report(&w, result, job);
+                    let Stage::Display { display, paint, .. } = std::mem::replace(&mut job.stage, Stage::Start) else { unreachable!() };
+                    let PaintOrigin::Submitted { device_generation, .. } = paint.origin else {
+                        unreachable!("display captures wait for a submitted frame");
+                    };
+                    let result = w.capture_display_report(display.frame, &picture, &job.path, geometry.scale, display.pending);
+                    let result = result.and_then(|mut report| {
+                        report.paint = Some(*paint);
+                        job.output(&mut self.capture_writer, device_generation, None, self.shared.proxy.clone(), move |temporary| {
+                            picture.save_png(temporary).map_err(|error| error.to_string())?;
+                            Ok(report)
+                        })
+                    });
+                    match result {
+                        Ok(()) => self.capture = Some(job),
+                        Err(error) => self.report(&w, Err(error), job),
+                    }
+                    return;
+                }
+            }
+        }
+        if matches!(job.stage, Stage::Settling { .. }) {
+            self.capture = Some(job);
+            self.show();
+            return;
+        }
+        if let Stage::PreparingSnapshots { until, ref fallback, ref mut placement_requested } = job.stage {
+            // Allow a first presentation opportunity even if the settling budget has expired.
+            if prepare_native_placements(&w, !*placement_requested || now < until) {
+                *placement_requested = true;
+                self.capture = Some(job);
+                self.show();
+                return;
+            }
+            let scale = job.scale.unwrap_or(w.scale());
+            let pending = w.unsettled();
+            let id = match w.capture_begin(Instant::now() + SNAPSHOT_LIMIT) {
+                Ok(id) => id,
+                Err(why) => {
+                    self.report(&w, Err(why), job);
                     return;
                 }
             };
-            if let Err(why) = self.begin_capture_snapshots(&mut w, &mut job, Some(fallback)) {
-                self.report(&w, Err(why), job);
-                return;
-            }
+            job.stage = Stage::Snapshots { window: w.clone(), id, scale, pending, fallback: fallback.clone() };
         }
         if let Stage::Snapshots { id, scale, ref pending, ref fallback, .. } = job.stage {
             if !w.capture_awaiting(id).is_empty() {
                 self.capture = Some(job);
                 return;
             }
-            let (pending, fallback) = (pending.clone(), fallback.clone());
-            // Painted with the window's renderer offscreen.
-            let result = {
-                let mut gpu = self.shared.gpu.borrow_mut();
-                let renderer = gpu.as_mut().map(|g| &mut g.renderer as &mut dyn Painter);
-                let mut painter = CapturePainter { renderer, bounded: job.reply.is_some() };
-                w.capture_finish(id, &mut painter, &job.path, scale, pending, fallback)
+            if !self.shared.gpu.borrow().as_ref().is_some_and(super::gpu::Gpu::idle) {
+                self.capture = Some(job);
+                return;
+            }
+            let prepared = match w.capture_prepare(id) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    self.report(&w, Err(error), job);
+                    return;
+                }
             };
+            let list = prepared.display_list();
+            if job.reply.is_some()
+                && let Err(error) = validate_size(list.size, scale)
+            {
+                self.report(&w, Err(error), job);
+                return;
+            }
+            let (generation, renderer, pixels) = {
+                let mut gpu = self.shared.gpu.borrow_mut();
+                let gpu = gpu.as_mut().expect("the window has a GPU renderer");
+                (
+                    gpu.generation.number,
+                    gpu.renderer_name(),
+                    gpu.start_capture(list, scale, prepared.paint_sample(), job.waking.clone(), self.shared.proxy.clone()),
+                )
+            };
+            let pixels = match pixels {
+                Ok(pixels) => pixels,
+                Err(error) => {
+                    self.report(&w, Err(error), job);
+                    return;
+                }
+            };
+            job.stage =
+                Stage::Readback { prepared, pixels, generation, renderer, scale, pending: pending.clone(), fallback: fallback.clone() };
+        }
+        if let Stage::Readback { generation, ref pixels, .. } = job.stage {
+            let recording = match pixels.try_recv() {
+                Ok(recording) => recording,
+                Err(TryRecvError::Empty) => {
+                    self.capture = Some(job);
+                    return;
+                }
+                Err(TryRecvError::Disconnected) => Err("the GPU readback worker disconnected".into()),
+            };
+            let Stage::Readback { prepared, renderer, scale, pending, fallback, .. } = std::mem::replace(&mut job.stage, Stage::Start)
+            else {
+                unreachable!()
+            };
+            let tracing = self.shared.trace;
+            let epoch = self.shared.trace_epoch;
+            let window = w.id();
+            let result = recording.and_then(|recording| {
+                job.output(&mut self.capture_writer, generation, fallback.clone(), self.shared.proxy.clone(), move |temporary| {
+                    let started = tracing.then(Instant::now);
+                    let size = [recording.picture.width, recording.picture.height];
+                    let result = prepared.finish(recording, renderer, temporary, scale, pending, fallback);
+                    if let Some(started) = started {
+                        super::trace::capture_output(epoch, window, size, started, result.is_ok());
+                    }
+                    result.map(|mut capture| {
+                        if let Some(paint) = &mut capture.paint {
+                            paint.origin = PaintOrigin::Rerecorded { device_generation: Some(generation) };
+                        }
+                        capture
+                    })
+                })
+            });
+            match result {
+                Ok(()) => self.capture = Some(job),
+                Err(error) => self.report(&w, Err(error), job),
+            }
+            return;
+        }
+        if let Stage::Output { ref mut output, .. } = job.stage {
+            let Some(staged) = output.try_take() else {
+                self.capture = Some(job);
+                return;
+            };
+            let result = staged.and_then(|capture| capture.publish());
+            if result.as_ref().is_ok_and(|capture| capture.pixels == Pixels::Painted)
+                && let Some(gpu) = self.shared.gpu.borrow_mut().as_mut()
+            {
+                gpu.submitted();
+            }
             self.report(&w, result, job);
         }
-    }
-
-    fn present_for_capture(&mut self, window: &Window) -> Result<(DisplayCapture, DisplayGeometry), String> {
-        let frame = window.capture_display_begin()?;
-        let geometry = DisplayGeometry::current(window).ok_or("the window and its drawing surface disagree on size or scale")?;
-        if !self.draw(window) {
-            return Err("the window's current frame could not be presented".into());
-        }
-        if !geometry.is_current(window, &frame) {
-            return Err("the window changed while submitting the frame to display".into());
-        }
-        Ok((frame, geometry))
-    }
-
-    fn begin_capture_snapshots(&mut self, window: &mut Window, job: &mut Job, fallback: Option<String>) -> Result<(), String> {
-        // Apply pending AppKit placements before requesting native snapshots.
-        #[cfg(target_os = "macos")]
-        if super::ww(window, |host| host.native.as_ref().is_some_and(|native| native.has_pending_placements())).unwrap_or(false)
-            && !self.draw(window)
-        {
-            super::ww(window, |host| host.place_occluded_native_views());
-        }
-        let scale = job.scale.unwrap_or(window.scale());
-        let pending = window.unsettled();
-        let id = window.capture_begin(Instant::now() + SNAPSHOT_LIMIT)?;
-        job.stage = Stage::Snapshots { window: window.clone(), id, scale, pending, fallback };
-        Ok(())
     }
 
     /// Prints the report (stdout) and each native view's AppKit frame (stderr), and exits.
     fn report(&mut self, w: &Window, result: Result<octara::capture::Capture, String>, mut job: Job) {
         if let Some(reply) = job.reply.take() {
+            #[cfg(debug_assertions)]
+            let destroy = self.destroy_device_after_capture && result.as_ref().is_ok_and(|report| report.pixels == Pixels::Painted);
             let response = match result {
                 Ok(report) => octara::inspect::Reply { capture: Some(Box::new(report)), ..octara::inspect::Reply::ok() },
                 Err(why) => octara::inspect::Reply::fail(&octara::diagnostics::CAPTURE_FAILED, why),
             };
             reply.send(response);
+            #[cfg(debug_assertions)]
+            if destroy && let Some(gpu) = self.shared.gpu.borrow_mut().as_mut() {
+                self.destroy_device_after_capture = false;
+                gpu.destroy_for_test();
+            }
             return;
         }
         match result {
@@ -383,6 +583,35 @@ impl Shell {
         }
         let _ = w;
         self.done = true;
+    }
+}
+
+/// Applies placements for an occluded window, or asks to wait for the next presentation.
+fn prepare_native_placements(window: &Window, may_wait: bool) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        super::ww(window, |host| {
+            if host.native.as_ref().is_none_or(|native| !native.has_pending_placements()) {
+                return false;
+            }
+            if host.waiting_for_drawable() {
+                return true;
+            }
+            if !host.can_present() {
+                host.place_occluded_native_views();
+                return false;
+            }
+            if may_wait {
+                host.request_draw();
+            }
+            may_wait
+        })
+        .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, may_wait);
+        false
     }
 }
 

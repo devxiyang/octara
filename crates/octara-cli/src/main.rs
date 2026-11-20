@@ -524,6 +524,7 @@ fn inspect_live(out: &mut String, path: &Path, receipt: Option<&Path>, json: boo
     }
     let build = reply["live"]["build"].as_str().map(str::to_owned);
     let completion = reply.as_object_mut().and_then(|reply| reply.remove("completion"));
+    let paint = reply.as_object_mut().and_then(|reply| reply.remove("paint"));
     let Some(snapshot) = reply.get_mut("snapshot").filter(|s| s.is_object()) else {
         eprintln!("error: live inspect returned no snapshot");
         return ExitCode::from(2);
@@ -551,6 +552,9 @@ fn inspect_live(out: &mut String, path: &Path, receipt: Option<&Path>, json: boo
     if json {
         if let Some(completion) = completion {
             snapshot["completion"] = completion;
+        }
+        if let Some(paint) = paint {
+            snapshot["paint"] = paint;
         }
         json_to(out, snapshot);
     } else {

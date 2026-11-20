@@ -183,6 +183,8 @@ pub(crate) struct Held {
     target: Option<NodeId>,
     /// The editor that still owns focus until this touch qualifies as a press.
     editing_owner: Option<NodeId>,
+    /// A touch that must qualify its original target before dismissing the editor's panel.
+    outside_layer: Option<NodeId>,
     start: (f32, f32),
     at: (f32, f32),
     /// Clock time of the press (ms).
@@ -658,7 +660,21 @@ impl Window {
         // Dismiss at most one layer. A nonmodal dismissal can keep the original hit, but its
         // callback can also retire the hit or the entire window.
         let raw = self.w.kernel.borrow().hit_test(ev.x, ev.y);
-        let outside = self.pressed_outside(raw);
+        let (outside, dismiss) = self.outside_dismissal(raw);
+        let outside_layer = dismiss.filter(|&layer| {
+            if ev.kind != PointerKind::Touch || ev.button != Button::Primary || outside || stopped {
+                return false;
+            }
+            let Some(editor) = self.pointer_field(self.focused_node()) else { return false };
+            let modal = self.top_modal();
+            let k = self.w.kernel.borrow();
+            k.is_in_interaction_scope(editor, layer)
+                && k.press_target(raw, ev.button)
+                    .is_some_and(|target| k.kind(target) != Kind::TextInput && k.check_activation(target, modal).is_ok())
+        });
+        if let Some(layer) = dismiss.filter(|&layer| outside_layer != Some(layer)) {
+            self.notify_lifecycle(layer, HandlerKind::Dismiss);
+        }
         if self.is_closed() || self.app.shutdown.get() {
             return;
         }
@@ -698,7 +714,7 @@ impl Window {
             }
             if editing_owner.is_none() {
                 // Fields take focus at contact so the caret can be placed immediately.
-                let _ = self.set_focus(focus);
+                let _ = self.set_pointer_focus(focus);
             }
         }
         // A focus/blur handler can synchronously rebuild the tree. The press still belongs
@@ -756,6 +772,7 @@ impl Window {
             hit,
             target,
             editing_owner,
+            outside_layer,
             start: (ev.x, ev.y),
             at: (ev.x, ev.y),
             down_at: now,
@@ -880,9 +897,9 @@ impl Window {
                 if h.action_button == Button::Secondary {
                     self.run(n, &[HandlerKind::SecondaryPress], None);
                 } else if h.action_button == Button::Primary {
-                    if let Some(editor) = h.editing_owner
-                        && self.focused_node() == Some(editor)
-                    {
+                    let focus_handoff = h.editing_owner.is_some_and(|editor| self.focused_node() == Some(editor));
+                    let dismiss = h.outside_layer.filter(|layer| self.outside_dismissal(h.hit) == (false, Some(*layer)));
+                    if focus_handoff || dismiss.is_some() {
                         let modal = self.top_modal();
                         let focus = {
                             let k = self.w.kernel.borrow();
@@ -892,9 +909,12 @@ impl Window {
                             k.is_focusable(n).then_some(n)
                         };
                         let target = TargetGuard::new(self, GuardTarget::Node(n));
-                        if self.set_focus(focus).is_ok() && !self.is_closed() {
-                            // The release already qualified. Let blur and focus callbacks settle
-                            // before running the original target's press.
+                        if let Some(layer) = dismiss {
+                            self.notify_lifecycle(layer, HandlerKind::Dismiss);
+                        }
+                        if !self.is_closed() && !self.app.shutdown.get() && (!focus_handoff || self.set_pointer_focus(focus).is_ok()) {
+                            // The release qualified before dismissal or focus changed the geometry.
+                            // Run the original target's press only after those changes settle.
                             self.w
                                 .interaction
                                 .borrow_mut()

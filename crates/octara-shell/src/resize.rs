@@ -37,7 +37,7 @@ impl Job {
             .gpu
             .borrow()
             .as_ref()
-            .map(|g| g.renderer.device().limits().max_texture_dimension_2d)
+            .map(|g| g.device().limits().max_texture_dimension_2d)
             .ok_or_else(|| Box::new(Reply::fail(&codes::BAD_REQUEST, "the window has no GPU renderer")))?;
         validate_size([width, height], scale, dimension_limit).map_err(|why| Box::new(Reply::fail(&codes::BAD_REQUEST, why)))?;
         let applied = ww(target, |w| w.window.request_inner_size(LogicalSize::new(f64::from(width), f64::from(height))))
@@ -65,9 +65,7 @@ impl Job {
                 resize: json!({ "window": self.window.number(), "requested": self.requested, "actual": null, "matched": false }),
             });
         };
-        let Some((actual, configured, scale)) =
-            ww(&window, |w| (w.drawable_size(), PhysicalSize::new(w.config.width, w.config.height), w.window.scale_factor()))
-        else {
+        let Some((actual, configured, scale)) = ww(&window, |w| (w.drawable_size(), w.configured_size(), w.window.scale_factor())) else {
             return Some(Completion {
                 reply: Reply::fail(&codes::STEP_FAILED, "the target lost its native window while resizing"),
                 resize: json!({ "window": self.window.number(), "requested": self.requested, "actual": null, "matched": false }),
@@ -76,7 +74,7 @@ impl Job {
         let viewport = window.size();
         let expected = logical_size(self.requested).to_physical::<u32>(scale);
         let matched = actual == expected;
-        let synchronized = synchronized(actual, configured, viewport, scale);
+        let synchronized = shell.shared.gpu_available() && configured.is_some_and(|size| synchronized(actual, size, viewport, scale));
         let metadata = json!({
             "window": self.window.number(), "requested": self.requested,
             "actual": [f64::from(actual.width) / scale, f64::from(actual.height) / scale],

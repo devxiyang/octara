@@ -87,7 +87,7 @@ Combobox 让 IME 优先处理组词期间的 Enter，同时仍可把编辑变化
 
 定位逻辑根据锚点和空间更新面板。Portal 管实际挂载位置并登记后代。弹层栈决定哪层有权处理 Escape 或外部按压。Dialog 还限制背景交互并恢复焦点。Popover 能把触发器、面板、嵌套 Portal 和同组弹层视作逻辑范围，若在外部点到可聚焦控件，可以保留焦点的新去向。焦点隔离、滚动锁和退出生命周期各有自己的释放时机。[锚点定位](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/internal/floating.tsx#L197-L248) · [弹层栈](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/hooks/use-is-top-layer.ts#L29-L65) · [Dialog](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/dialog/dialog.tsx#L191-L269) · [Popover](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/popover/popover.tsx#L175-L240)
 
-在 Octara，Kit 声明弹层的锚点和关闭条件，窗口依据挂载关系和输入会话确定谁响应。当前 Kit `popover` 使用模态行为，`popup_list` 通过失焦关闭。用非模态建议列表嵌套在 Dialog 内的场景，可以复核外部按压、焦点离开和恢复能否使用现有接口组合。[Octara `popover`](../../crates/octara-kit/src/popover.rs) · [Octara `popup_list`](../../crates/octara-kit/src/popup_list.rs)
+在 Octara，Kit 声明弹层的锚点和关闭条件，窗口依据挂载关系和输入会话确定谁响应。Kit 的 `popover` 使用模态行为，`popup_list` 让编辑器保持焦点并登记为可关闭的非模态层。Dialog 内的编辑工具面板用 `.overlay(..)` 和 `.dismissible(..)` 组合，验证触发器与面板的逻辑范围、焦点离开、外点关闭和旧目标失效。[Octara 弹层契约](../design/ui-primitives.md#5-overlays) · [非模态面板示例](../../examples/src/showcase/interaction.rs)
 
 ### 虚拟选项与退出时序
 
