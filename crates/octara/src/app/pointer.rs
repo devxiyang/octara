@@ -7,7 +7,7 @@
 
 use super::event::{InputEvent, WheelPhase};
 use super::frame::AfterUpdate;
-use super::{Handler, Modality, ScopedHandler, Window, WindowState};
+use super::{GuardTarget, Handler, Modality, ScopedHandler, TargetGuard, Window, WindowState};
 use crate::kernel::{HandlerKind, Kernel, Kind, NodeId, State};
 use bitflags::bitflags;
 use std::panic::Location;
@@ -183,6 +183,8 @@ pub(crate) struct Held {
     hit: Option<NodeId>,
     /// The element the press acts on.
     target: Option<NodeId>,
+    /// The editor that still owns focus until this touch qualifies as a press.
+    editing_owner: Option<NodeId>,
     start: (f32, f32),
     at: (f32, f32),
     /// Clock time of the press (ms).
@@ -198,6 +200,18 @@ pub(crate) struct Held {
     selecting: Option<NodeId>,
     /// A long/context handler ran for this held touch (not merely a spent press).
     long_pressed: bool,
+}
+
+/// An inside touch release whose focus handoff can change the layout before activation.
+pub(super) struct TouchPress {
+    held: Rc<Held>,
+    target: TargetGuard,
+}
+
+impl TouchPress {
+    pub(super) fn resident_nodes(&self, nodes: &mut Vec<NodeId>) {
+        self.held.resident_nodes(nodes);
+    }
 }
 
 impl Held {
@@ -491,7 +505,7 @@ impl Window {
         }
     }
 
-    fn finishing_pointer<R>(&self, held: Held, callback: impl FnOnce(&Held) -> R) -> R {
+    fn finishing_pointer<R>(&self, held: Rc<Held>, callback: impl FnOnce(&Rc<Held>) -> R) -> R {
         struct Delivery<'a>(&'a WindowState, Rc<Held>);
         impl Drop for Delivery<'_> {
             fn drop(&mut self) {
@@ -501,7 +515,7 @@ impl Window {
                 }
             }
         }
-        let delivery = Delivery(&self.w, Rc::new(held));
+        let delivery = Delivery(&self.w, held);
         self.w.interaction.borrow_mut().pointer.finishing.push(delivery.1.clone());
         callback(&delivery.1)
     }
@@ -677,10 +691,24 @@ impl Window {
             let k = self.w.kernel.borrow();
             k.up_from(hit, |n| k.preserves_focus_on_press(n)).is_some()
         };
+        let mut editing_owner = None;
         if button == Button::Primary && !outside && !preserve_focus {
-            // A press focuses what it lands on if that takes focus; anything else drops focus.
-            let focus = target.filter(|n| self.w.kernel.borrow().is_focusable(*n));
-            let _ = self.set_focus(focus);
+            let (focus, defer) = {
+                let k = self.w.kernel.borrow();
+                let focus = target.filter(|&n| k.is_focusable(n));
+                let defer = ev.kind == PointerKind::Touch
+                    && !stopped
+                    && target.is_some_and(|n| k.kind(n) != Kind::TextInput && k.check_activation(n, modal).is_ok());
+                (focus, defer)
+            };
+            if defer {
+                // Blurring an editor can move targets when the software keyboard changes size.
+                editing_owner = self.pointer_field(self.focused_node());
+            }
+            if editing_owner.is_none() {
+                // Fields take focus at contact so the caret can be placed immediately.
+                let _ = self.set_focus(focus);
+            }
         }
         // A focus/blur handler can synchronously rebuild the tree. The press still belongs
         // to the original hit; never dereference it or adopt a replacement allocation.
@@ -736,6 +764,7 @@ impl Window {
             action_button: button,
             hit,
             target,
+            editing_owner,
             start: (ev.x, ev.y),
             at: (ev.x, ev.y),
             down_at: now,
@@ -850,7 +879,7 @@ impl Window {
         let Some(mut h) = held else { return };
         h.at = (ev.x, ev.y);
         self.unpress(&h);
-        self.finishing_pointer(h, |h| match h.mode {
+        self.finishing_pointer(Rc::new(h), |h| match h.mode {
             Mode::Pending => {
                 let inside = {
                     let k = self.w.kernel.borrow();
@@ -860,11 +889,29 @@ impl Window {
                 if h.action_button == Button::Secondary {
                     self.run(n, &[HandlerKind::SecondaryPress], None);
                 } else if h.action_button == Button::Primary {
-                    self.w.interaction.borrow_mut().pointer.press_at = Some(h.at);
-                    self.run(n, &[HandlerKind::Press, HandlerKind::Toggle], None);
-                    self.w.interaction.borrow_mut().pointer.press_at = None;
-                    if h.clicks == 2 {
-                        self.run(n, &[HandlerKind::DoublePress], None);
+                    if let Some(editor) = h.editing_owner
+                        && self.focused_node() == Some(editor)
+                    {
+                        let modal = self.top_modal();
+                        let focus = {
+                            let k = self.w.kernel.borrow();
+                            if k.check_activation(n, modal).is_err() {
+                                return;
+                            }
+                            k.is_focusable(n).then_some(n)
+                        };
+                        let target = TargetGuard::new(self, GuardTarget::Node(n));
+                        if self.set_focus(focus).is_ok() && !self.is_closed() {
+                            // The release already qualified. Let blur and focus callbacks settle
+                            // before running the original target's press.
+                            self.w
+                                .interaction
+                                .borrow_mut()
+                                .after_update
+                                .push_back(AfterUpdate::TouchPress(TouchPress { held: h.clone(), target }));
+                        }
+                    } else {
+                        self.primary_press(n, h);
                     }
                 }
             }
@@ -877,6 +924,26 @@ impl Window {
         });
     }
 
+    pub(super) fn deliver_touch_press(&self, press: TouchPress) {
+        let TouchPress { held, target } = press;
+        self.finishing_pointer(held, |h| {
+            let Some(node) = target.node().filter(|_| target.is_current(self)) else { return };
+            let modal = self.top_modal();
+            if h.hit.is_none_or(|hit| self.w.kernel.borrow().check_interaction_scope(hit, modal).is_ok()) {
+                self.primary_press(node, h);
+            }
+        });
+    }
+
+    fn primary_press(&self, node: NodeId, held: &Held) {
+        self.w.interaction.borrow_mut().pointer.press_at = Some(held.at);
+        self.run(node, &[HandlerKind::Press, HandlerKind::Toggle], None);
+        self.w.interaction.borrow_mut().pointer.press_at = None;
+        if held.clicks == 2 {
+            self.run(node, &[HandlerKind::DoublePress], None);
+        }
+    }
+
     fn cancel(&self, ev: PointerEvent) {
         let held = self.w.interaction.borrow_mut().pointer.held.take_if(|h| h.matches_pointer(ev));
         if let Some(held) = held {
@@ -886,7 +953,7 @@ impl Window {
 
     fn cancel_held(&self, held: Held) {
         self.unpress(&held);
-        self.finishing_pointer(held, |h| {
+        self.finishing_pointer(Rc::new(held), |h| {
             if h.mode == Mode::Dragging && self.field_drag_target(h).is_none() {
                 self.send_drag(h, DragPhase::Cancel);
             }
@@ -1075,7 +1142,7 @@ impl Window {
         }
         if let Some((n, kind)) = found {
             self.unpress(&h);
-            self.finishing_pointer(h, |h| {
+            self.finishing_pointer(Rc::new(h), |h| {
                 if self.run(n, &[kind], None)
                     && let Some(held) = self.w.interaction.borrow_mut().pointer.held.as_mut()
                     && Rc::ptr_eq(&held.capture, &h.capture)

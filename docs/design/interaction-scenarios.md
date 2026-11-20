@@ -129,7 +129,17 @@ macOS 的 `showcase interaction` 用 Inspector 驱动 Dialog 和编辑器的非�
 
 iOS 27.2 运行同一个 `showcase interaction`。原生触摸打开 Dialog 后，原打开按钮退出原生辅助功能树，编辑器取得焦点。点击系统键盘上的 `/` 后，原生树能读到建议列表、`/review`、禁用的 `/deploy` 和 `/summary`。点按 `/review` 后，应用回报 `已选择：review`，建议列表关闭，编辑器保持焦点。[模拟器复现](../../examples/README.md#ios-模拟器嵌套弹层)
 
-键盘仍显示时，第一次点「完成」让它获得焦点，键盘收起，Dialog 移到新位置。再点新位置的「完成」后 Dialog 关闭，原打开按钮回到系统树，并恢复原 `target`、操作资格和焦点。刚退出的建议项 `target` 返回 `STALE_TARGET`。
+### iOS 键盘收起与点击资格
+
+修复前，在键盘展开时按住「完成」中心 `(195, 427)`。同一接触的 `Down` 和 `Up` 都在这个坐标。两者之间，焦点已转到「完成」，原生编辑器退出第一响应者，键盘收起使窗口可用高度从 515 增为 844 点。按钮的上缘从 405 移到 570 点，抬手时原坐标已落在编辑器上。再次点击新位置才关闭 Dialog 并恢复原打开按钮的焦点和 `target`。[模拟器复现](../../examples/README.md#ios-模拟器嵌套弹层)
+
+修复后，在相同的 iPhone 17e、iOS 27.2 模拟器上，确认键盘显示后在同一坐标发送一次 80 毫秒的原生触摸。轨迹只有同一接触的 `Down` 和 `Up`。抬手后 Dialog 关闭，键盘收起，原打开按钮恢复焦点、原 `target` 和操作资格，并重新出现在系统辅助功能树中。[触摸焦点时序](input.md#pointer-sessions)
+
+按住「完成」时，在 `Down` 与 `Up` 之间核对编辑器仍是第一响应者，可用高度保持 515 点，按钮坐标和目标保持原值，原处抬手关闭 Dialog。手指从 `(195, 427)` 拖到 `(195, 360)` 抬起时，Dialog、键盘和编辑器焦点都保留。读取已关闭的旧「完成」目标得到 `STALE_TARGET` 与 `refused`。
+
+- Exact 的 iOS 路径覆盖了键盘收起导致工具栏移位的同类问题。它先在抬手时确认命中，再交接焦点，最后复核触摸会话和目标的挂载实例。Octara 在 Core 沿用这个顺序，复用窗口的更新队列等待失焦回调和布局结算。[Exact 触摸结束](https://github.com/expo/exact/blob/08c889a9de21a30b7c3b308422fc588cf1a480d3/host/apple/Sources/ExactKit/IOS/PointerIOS.swift#L478-L510)
+- Rune 将触摸先作为待判定的会话处理。系统取消或滚动接管会取消按压，抬手时检查捕获的路径仍然存活、会话仍为命中状态。Octara 同样保留拖离、取消和原目标的检查。[Rune 触摸会话](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune/src/runtime/input/touch.rs#L82-L128) · [Rune 释放目标](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune/src/runtime/input/pointer.rs#L314-L352)
+- Expo 的 React Native 示例在按钮的 `onPress` 中调用 `Keyboard.dismiss`。React Native 的 `Pressable` 区分按压反馈和抬手后的操作，`ScrollView` 则通过 `keyboardShouldPersistTaps` 决定容器是否拦下点击来收起键盘。Octara 在这个场景由 Core 确认点击并交接焦点，Dialog 可以继续用普通按钮关闭。[Expo 键盘处理](https://docs.expo.dev/guides/keyboard-handling/#keyboard-events) · [React Native Pressable](https://reactnative.dev/docs/pressable#how-it-works) · [React Native ScrollView](https://reactnative.dev/docs/scrollview#keyboardshouldpersisttaps)
 
 ## 两个同标题文档的撤销
 

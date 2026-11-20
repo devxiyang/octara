@@ -82,6 +82,91 @@ fn press_follows_the_pointer_out_and_back() {
 }
 
 #[test]
+fn a_touch_press_survives_the_button_moving_when_the_editor_blurs() {
+    let mut app = Window::headless(|| {
+        let editing = state("editing", || true);
+        let calls = state("calls", Vec::<&str>::new);
+        col()
+            .size_full()
+            .child(input().id("editor").w(120).h(40).on_blur(move || {
+                calls.update(|calls| calls.push("blur"));
+                editing.set(false);
+            }))
+            .child(show(move || editing.get(), || el().h(100)))
+            .child(el().id("done").w(120).h(40).focusable().on_press(move || calls.update(|calls| calls.push("press"))))
+            .child(text(move || calls.get().join(",")).id("calls"))
+    });
+
+    let editor = center(&app, "editor");
+    touch(&mut app, Phase::Down, editor);
+    assert_eq!(app.inspect().focus.as_deref(), Some("editor"));
+    touch(&mut app, Phase::Up, editor);
+
+    let at = center(&app, "done");
+    touch(&mut app, Phase::Down, at);
+    assert_eq!(app.inspect().focus.as_deref(), Some("editor"));
+    assert_eq!(center(&app, "done"), at);
+    assert!(app.kernel().state_of("done").unwrap().contains(State::PRESSED));
+    assert_eq!(app.kernel().text_of("calls").as_deref(), Some(""));
+
+    touch(&mut app, Phase::Up, at);
+    assert_eq!(app.inspect().focus.as_deref(), Some("done"));
+    assert_eq!(center(&app, "done"), (at.0, at.1 - 100.0));
+    assert_eq!(app.kernel().text_of("calls").as_deref(), Some("blur,press"));
+}
+
+#[test]
+fn a_cancelled_touch_or_release_outside_keeps_the_editor_focused() {
+    let mut app = Window::headless(|| {
+        let presses = state("presses", || 0);
+        col()
+            .size_full()
+            .child(input().id("editor").w(120).h(40))
+            .child(el().id("done").w(120).h(40).focusable().on_press(move || presses.update(|n| *n += 1)))
+            .child(text(move || presses.get().to_string()).id("presses"))
+    });
+    app.tap("editor").unwrap();
+    let at = center(&app, "done");
+
+    touch(&mut app, Phase::Down, at);
+    touch(&mut app, Phase::Cancel, at);
+    touch(&mut app, Phase::Up, at);
+    assert_eq!(app.inspect().focus.as_deref(), Some("editor"));
+    assert_eq!(app.kernel().text_of("presses").as_deref(), Some("0"));
+
+    let outside = (at.0 + 200.0, at.1);
+    touch(&mut app, Phase::Down, at);
+    touch(&mut app, Phase::Move, outside);
+    touch(&mut app, Phase::Up, outside);
+    assert_eq!(app.inspect().focus.as_deref(), Some("editor"));
+    assert_eq!(app.kernel().text_of("presses").as_deref(), Some("0"));
+}
+
+#[test]
+fn a_touch_press_does_not_activate_a_button_replaced_when_the_editor_blurs() {
+    let mut app = Window::headless(|| {
+        let replaced = state("replaced", || false);
+        let presses = state("presses", || 0);
+        col()
+            .size_full()
+            .child(input().id("editor").w(120).h(40).on_blur(move || replaced.set(true)))
+            .child(keyed(move || replaced.get(), move |_| el().id("done").w(120).h(40).on_press(move || presses.update(|n| *n += 1))))
+            .child(text(move || presses.get().to_string()).id("presses"))
+    });
+    app.tap("editor").unwrap();
+    let at = center(&app, "done");
+    let original = app.inspect().find("done").unwrap().target.clone();
+
+    touch(&mut app, Phase::Down, at);
+    assert_eq!(app.inspect().find("done").unwrap().target, original);
+    touch(&mut app, Phase::Up, at);
+    assert!(app.inspect().focus.is_none());
+    assert_ne!(app.inspect().find("done").unwrap().target, original);
+    assert_eq!(center(&app, "done"), at);
+    assert_eq!(app.kernel().text_of("presses").as_deref(), Some("0"));
+}
+
+#[test]
 fn a_mouse_release_must_match_the_button_held_down() {
     let mut app = app();
     let (x, y) = center(&app, "button");

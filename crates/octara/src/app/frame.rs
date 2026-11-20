@@ -7,6 +7,7 @@ pub(super) const WINDOW_ROUNDS: u8 = 16;
 pub(super) enum AfterUpdate {
     Command(String, &'static std::panic::Location<'static>),
     FocusActivation { node: NodeId, group: NodeId },
+    TouchPress(pointer::TouchPress),
     TouchScroll(pointer::TouchScrollDelta),
 }
 
@@ -212,7 +213,15 @@ impl Window {
             Ok(revision) => WindowUpdate::Ready(revision),
             Err(()) => {
                 // Continuations of an incomplete input frame must not be replayed later.
-                self.w.interaction.borrow_mut().after_update.retain(|work| matches!(work, AfterUpdate::Command(..)));
+                let touch_press_discarded = {
+                    let mut interaction = self.w.interaction.borrow_mut();
+                    let discarded = interaction.after_update.iter().any(|work| matches!(work, AfterUpdate::TouchPress(_)));
+                    interaction.after_update.retain(|work| matches!(work, AfterUpdate::Command(..)));
+                    discarded
+                };
+                if touch_press_discarded {
+                    self.w.interaction_changed();
+                }
                 self.w.lists.borrow_mut().clear_reveals();
                 self.w.settled_revision.set(None);
                 WindowUpdate::Incomplete
@@ -243,6 +252,10 @@ impl Window {
             update_ran = match work {
                 Some(AfterUpdate::Command(command, source)) => self.run_after_update_command(&command, source),
                 Some(AfterUpdate::FocusActivation { node, group }) => self.activate_focused_member(node, group),
+                Some(AfterUpdate::TouchPress(press)) => {
+                    self.deliver_touch_press(press);
+                    true
+                }
                 Some(AfterUpdate::TouchScroll(delta)) => self.apply_touch_scroll(delta, at)?,
                 None => false,
             };
@@ -259,9 +272,12 @@ impl Window {
             prepared = !self.prepare_interaction(at)? && !self.prepare_observation();
         }
         let pending = std::mem::take(&mut self.w.interaction.borrow_mut().after_update);
+        if pending.iter().any(|work| matches!(work, AfterUpdate::TouchPress(_))) {
+            self.w.interaction_changed();
+        }
         let mut commands = pending.iter().filter_map(|work| match work {
             AfterUpdate::Command(command, source) => Some((command, source)),
-            AfterUpdate::FocusActivation { .. } | AfterUpdate::TouchScroll(_) => None,
+            AfterUpdate::FocusActivation { .. } | AfterUpdate::TouchPress(_) | AfterUpdate::TouchScroll(_) => None,
         });
         if let Some((command, source)) = commands.next() {
             self.app.rt.diag(

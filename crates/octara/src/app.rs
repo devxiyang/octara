@@ -468,6 +468,11 @@ impl WindowState {
         let interaction = self.interaction.borrow();
         let mut nodes: Vec<_> = interaction.focused.into_iter().collect();
         interaction.pointer.resident_nodes(&mut nodes);
+        for work in &interaction.after_update {
+            if let frame::AfterUpdate::TouchPress(press) = work {
+                press.resident_nodes(&mut nodes);
+            }
+        }
         nodes
     }
 
