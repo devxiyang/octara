@@ -1,6 +1,6 @@
 //! The accessibility tree from the kernel's semantics, and actions from assistive technology.
 
-use octara::accesskit::{Action, Role as AkRole, Toggled};
+use octara::accesskit::{Action, ActionData, Role as AkRole, TextPosition, TextSelection, Toggled};
 use octara::app::{Event, InputEvent};
 use octara::kernel::a11y::a11y_id;
 use octara::prelude::*;
@@ -153,7 +153,7 @@ fn roles_names_states_actions_and_bounds() {
     let b = inc.bounds().unwrap();
     assert!(b.x1 > b.x0 && b.y1 > b.y0);
     // Decorative parts (spacers) are left out.
-    assert_eq!(tree.nodes.len(), 1 + 1 + 4, "window, column, four elements");
+    assert_eq!(tree.nodes.iter().filter(|(_, node)| node.role() != AkRole::TextRun).count(), 1 + 1 + 4, "window, column, four elements");
 
     // Actions from assistive technology.
     let wifi = a11y_id(app.kernel().find("wifi").unwrap());
@@ -373,6 +373,108 @@ fn article() -> View {
 
 fn nodes(u: &octara::accesskit::TreeUpdate) -> std::collections::HashMap<octara::accesskit::NodeId, octara::accesskit::Node> {
     u.nodes.iter().cloned().collect()
+}
+
+#[test]
+fn editable_ranges_follow_unicode_selection_and_the_displayed_document() {
+    let mut app = Window::headless(|| {
+        let inset = state("inset", || 8.0);
+        let value = state("value", || "A😀Z".to_owned());
+        on_command("change-inset", move || inset.set(12.0));
+        on_command("replace-value", move || value.set("BA😀Z".to_owned()));
+        col()
+            .child(input().id("editor").value(value).w(150).h(44).style_with(move |p| p.px(inset.get())))
+            .child(input().id("other").value("other"))
+    });
+    app.tap("editor").unwrap();
+    let editor = a11y_id(app.kernel().find("editor").unwrap());
+    let other = a11y_id(app.kernel().find("other").unwrap());
+    let tree = nodes(&app.accessibility_update());
+    let run = tree[&editor].children()[0];
+    let foreign = tree[&other].children()[0];
+    let text = &tree[&run];
+    assert_eq!(text.value(), Some("A😀Z"));
+    assert_eq!(text.character_lengths(), &[1, 4, 1]);
+    assert!(text.character_widths().unwrap()[1] > 0.0);
+    app.invoke("change-inset").unwrap();
+    let relaid = nodes(&app.accessibility_update());
+    assert_eq!(relaid[&editor].bounds(), tree[&editor].bounds());
+    let run = relaid[&editor].children()[0];
+    assert_eq!(
+        relaid[&run].bounds().unwrap().x0 - text.bounds().unwrap().x0,
+        4.0,
+        "run geometry follows the inset even at fixed field size"
+    );
+
+    let at = |node, character_index| TextPosition { node, character_index };
+    let reversed = TextSelection { anchor: at(run, 2), focus: at(run, 1) };
+    app.set_selection(5, 1);
+    assert_eq!(nodes(&app.accessibility_update())[&editor].text_selection(), Some(&reversed));
+    let select = |app: &mut Window, sel| {
+        app.event(InputEvent::Accessibility {
+            target: editor,
+            action: Action::SetTextSelection,
+            data: Some(ActionData::SetTextSelection(sel)),
+        })
+    };
+    assert!(!select(&mut app, TextSelection { anchor: at(foreign, 0), focus: at(run, 1) }));
+    assert!(!select(&mut app, TextSelection { anchor: at(run, 4), focus: at(run, 1) }));
+    assert!(select(&mut app, TextSelection { anchor: at(run, 1), focus: at(run, 2) }));
+    assert_eq!(app.text_field().unwrap().selection, 1..5);
+    assert!(!app.text_field().unwrap().reversed);
+
+    app.event(InputEvent::Preedit { text: "你".into(), selection: Some((3, 3)) });
+    let composing = nodes(&app.accessibility_update());
+    assert_eq!(composing[&editor].value(), Some("A你Z"));
+    let draft_run = composing[&editor].children()[0];
+    assert_eq!(composing[&draft_run].value(), Some("A你Z"));
+    let caret = at(draft_run, 2);
+    assert_eq!(composing[&editor].text_selection(), Some(&TextSelection { anchor: caret, focus: caret }));
+    assert!(!select(&mut app, reversed));
+    assert_eq!(app.text_field().unwrap().composition, "你");
+    app.tap("other").unwrap();
+    assert!(!select(&mut app, reversed));
+    let committed = nodes(&app.accessibility_update());
+    assert_eq!(committed[&editor].value(), Some("A😀Z"));
+    app.tap("editor").unwrap();
+    let retired_run = committed[&editor].children()[0];
+    app.invoke("replace-value").unwrap();
+    assert!(!select(&mut app, TextSelection { anchor: at(retired_run, 1), focus: at(retired_run, 2) }));
+    let current = nodes(&app.accessibility_update())[&editor].children()[0];
+    assert_ne!(current, retired_run);
+    assert!(select(&mut app, TextSelection { anchor: at(current, 2), focus: at(current, 3) }));
+    assert_eq!(app.text_field().unwrap().selection, 2..6);
+}
+
+#[test]
+fn editable_runs_include_empty_lines_and_omit_secure_text_ranges() {
+    let app = Window::headless(|| {
+        col()
+            .child(input().id("empty").placeholder("Hint"))
+            .child(textarea().id("wrapped").w(85).h(100).value("中文 ABC def\n"))
+            .child(input().id("secret").value("A😀Z").secure())
+            .child(col().selectable().child(text("Article")).child(input().id("embedded").value("Draft")))
+    });
+    let tree = nodes(&app.accessibility_tree());
+    let by_id = |name| &tree[&a11y_id(app.kernel().find(name).unwrap())];
+    let empty = by_id("empty");
+    let insertion = empty.text_selection().unwrap();
+    assert_eq!(insertion.anchor, insertion.focus);
+    assert_eq!(tree[&insertion.anchor.node].value(), Some(""));
+    assert_ne!(tree[&insertion.anchor.node].value(), empty.placeholder());
+    let wrapped = by_id("wrapped");
+    let texts: Vec<_> = wrapped.children().iter().map(|id| tree[id].value().unwrap()).collect();
+    assert!(texts.len() >= 3, "a wrapped line plus the empty line: {texts:?}");
+    assert_eq!(texts.concat(), "中文 ABC def\n");
+    assert_eq!(texts.last(), Some(&""));
+    let secure = by_id("secret");
+    assert_eq!(secure.value(), Some("•••"));
+    assert!(secure.children().is_empty());
+    assert!(secure.text_selection().is_none());
+    assert!(!secure.supports_action(Action::SetTextSelection));
+    let embedded = by_id("embedded");
+    assert_eq!(embedded.value(), Some("Draft"));
+    assert!(embedded.children().is_empty());
 }
 
 /// A text's runs, checked: their values make up its text, their characters their values, and

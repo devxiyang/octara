@@ -40,18 +40,16 @@ pub fn a11y_id(id: NodeId) -> ak::NodeId {
 
 /// A text larger than this has no runs (its value only).
 const RUNS_LIMIT: usize = 64 * 1024;
-/// The most characters in one run (AccessKit's word starts are bytes): a longer line is split
-/// into runs on the same line.
+/// The most characters in one run (AccessKit's word-start indices are u8).
 const RUN_CHARS: usize = 255;
 /// The most runs a text has.
 const MAX_RUNS: usize = 1 << 12;
 /// A run's id: this bit, the run's number, and its text's slot (the version's low 19 bits).
 const RUN_BIT: u64 = 1 << 63;
-
-fn run_id(text: NodeId, run: usize) -> ak::NodeId {
-    let ffi = text.data().as_ffi();
-    ak::NodeId(RUN_BIT | ((run as u64) << 51) | (((ffi >> 32) & 0x7_FFFF) << 32) | (ffi & 0xFFFF_FFFF))
-}
+/// SlotMap live versions are odd. Editable runs use this bit clear so their lower 51
+/// bits can name a document revision, without sharing IDs with selectable document runs.
+const SLOT_VERSION_BIT: u64 = 1 << 32;
+const LOW_WORD: u64 = u32::MAX as u64;
 
 /// One AccessKit node with its id.
 type AkNode = (ak::NodeId, ak::Node);
@@ -60,14 +58,38 @@ type AkNode = (ak::NodeId, ak::Node);
 struct Run {
     bytes: Range<usize>,
     line: usize,
+    top: f32,
+    height: f32,
     chars: Vec<super::text::TextFragment>,
     rtl: bool,
 }
 
+struct TextRuns<'a> {
+    text: &'a str,
+    origin: (f32, f32),
+    clip: Option<crate::paint::Rect>,
+    runs: Vec<Run>,
+}
+
 impl Kernel {
+    fn run_id(&self, text: NodeId, run: usize) -> ak::NodeId {
+        let owner = if let Some(input) = self.node(text).input() {
+            let revision = input.a11y_run_revision;
+            (revision & LOW_WORD) | ((revision & !LOW_WORD) << 1)
+        } else {
+            text.data().as_ffi() & 0x7_FFFF_FFFF_FFFF
+        };
+        ak::NodeId(RUN_BIT | ((run as u64) << 51) | owner)
+    }
+
     /// The node an AccessKit id names, if it still exists (a text run names its text).
     pub fn node_of_a11y(&self, id: ak::NodeId) -> Option<NodeId> {
-        let ffi = if id.0 & RUN_BIT != 0 { id.0 & 0x7_FFFF_FFFF_FFFF } else { id.0 };
+        let run = id.0 & RUN_BIT != 0;
+        let ffi = if run { id.0 & 0x7_FFFF_FFFF_FFFF } else { id.0 };
+        if run && ffi & SLOT_VERSION_BIT == 0 {
+            let revision = (ffi & LOW_WORD) | ((ffi >> 1) & !LOW_WORD);
+            return self.editor_run_owners.get(&revision).copied();
+        }
         let n = NodeId::from(KeyData::from_ffi(ffi));
         self.is_alive(n).then_some(n)
     }
@@ -79,22 +101,65 @@ impl Kernel {
             && self.region_of(id).is_some_and(|r| self.selectable_in(r, id))
     }
 
-    /// Positional runs contain only visible source fragments, split at hidden gaps, direction
-    /// changes and AccessKit's character limit. The text node retains its full logical value.
-    fn text_runs(&self, id: NodeId) -> Vec<Run> {
-        let text = self.text_str(id);
-        if text.is_empty() || !self.has_runs(id) {
-            return Vec::new();
-        }
-        let presentation = self.text_presentation(id);
+    /// Fields expose their displayed document, using the same layout and scroll as painting.
+    /// Selectable labels keep the fragments of their visible presentation.
+    fn text_runs(&self, id: NodeId) -> Option<TextRuns<'_>> {
+        let (text, origin, clip, runs) = if let Some(input) = self.node(id).input() {
+            // AccessKit's document traversal would include these runs in the surrounding
+            // document's ranges. Keep embedded editors' values separate from its text.
+            if input.secure || self.region_of(id).is_some() || input.a11y_run_revision == 0 {
+                return None;
+            }
+            let text = input.composition.as_ref().map_or(input.value.as_str(), |c| c.text.as_str());
+            if text.len() > RUNS_LIMIT {
+                return None;
+            }
+            let layout = self.input_layout(id);
+            let (sx, sy) = if layout.multiline { (0.0, layout.scroll) } else { (layout.scroll, 0.0) };
+            let mut clip = self.input_content_box(id);
+            clip.h = clip.h.max(layout.style.line_height);
+            let origin = (clip.x - sx, clip.y - sy);
+            let presentation =
+                self.shown_layout(id, text, &layout.style).present(layout.multiline.then_some(layout.content.w), None, None, None);
+            (text, origin, Some(clip), Self::split_runs(&presentation.lines, true))
+        } else {
+            if !self.has_runs(id) {
+                return None;
+            }
+            let text = self.text_str(id);
+            if text.is_empty() {
+                return None;
+            }
+            let presentation = self.text_presentation(id);
+            (text, self.text_box(id).origin, None, Self::split_runs(&presentation.lines, false))
+        };
+        (!runs.is_empty()).then_some(TextRuns { text, origin, clip, runs })
+    }
+
+    /// Split at hidden gaps, direction changes and AccessKit's character limit. An empty
+    /// editor line still has an insertion point.
+    fn split_runs(lines: &[super::text::PresentedLine], include_empty: bool) -> Vec<Run> {
         let mut out = Vec::new();
-        for (i, l) in presentation.lines.iter().enumerate() {
+        for (i, l) in lines.iter().enumerate() {
             let mut visible = l.fragments.clone();
             visible.sort_by_key(|f| f.source.start);
             if let Some(b) = l.hard_break {
                 let rtl = visible.last().is_some_and(|f| f.rtl);
                 visible.push(super::text::TextFragment { source: b..b + 1, x: l.break_x(), width: 0.0, rtl });
             }
+            if visible.is_empty() && include_empty {
+                out.push(Run { bytes: l.start..l.start, line: i, top: l.top, height: l.height, chars: Vec::new(), rtl: false });
+            }
+            let push = |runs: &mut Vec<Run>, chars: Vec<super::text::TextFragment>, rtl| {
+                runs.push(Run {
+                    bytes: chars[0].source.start..chars[chars.len() - 1].source.end,
+                    line: i,
+                    top: l.top,
+                    height: l.height,
+                    chars,
+                    rtl,
+                });
+            };
             let mut chars: Vec<super::text::TextFragment> = Vec::new();
             let mut direction = false;
             for fragment in visible {
@@ -103,14 +168,13 @@ impl Kernel {
                     return Vec::new();
                 }
                 if !chars.is_empty() && (chars.len() == RUN_CHARS || chars.last().unwrap().source.end != range.start || direction != rtl) {
-                    let c = std::mem::take(&mut chars);
-                    out.push(Run { bytes: c[0].source.start..c[c.len() - 1].source.end, line: i, chars: c, rtl: direction });
+                    push(&mut out, std::mem::take(&mut chars), direction);
                 }
                 direction = rtl;
                 chars.push(fragment);
             }
             if !chars.is_empty() {
-                out.push(Run { bytes: chars[0].source.start..chars[chars.len() - 1].source.end, line: i, chars, rtl: direction });
+                push(&mut out, chars, direction);
             }
             if out.len() > MAX_RUNS {
                 return Vec::new();
@@ -120,10 +184,10 @@ impl Kernel {
     }
 
     /// The AccessKit nodes of a text's runs, in its node's space.
-    fn a11y_runs(&self, id: NodeId, runs: &[Run]) -> Vec<AkNode> {
-        let text = self.text_str(id);
-        let presentation = self.text_presentation(id);
-        let (ox, oy) = self.text_box(id).origin;
+    fn a11y_runs(&self, id: NodeId, projection: &TextRuns<'_>) -> Vec<AkNode> {
+        let TextRuns { text, origin: (ox, oy), clip, runs } = projection;
+        let x_at = |x: f32| clip.map_or(ox + x, |clip| (ox + x).clamp(clip.x, clip.right()));
+        let y_at = |y: f32| clip.map_or(oy + y, |clip| (oy + y).clamp(clip.y, clip.bottom()));
         // Where words start: the first character of each segment that is not blank.
         let starts: rustc_hash::FxHashSet<usize> =
             text.split_word_bound_indices().filter(|(_, w)| !w.trim().is_empty()).map(|(b, _)| b).collect();
@@ -136,24 +200,33 @@ impl Kernel {
                 node.set_word_starts(
                     r.chars.iter().enumerate().filter(|(_, c)| starts.contains(&c.source.start)).map(|(n, _)| n as u8).collect::<Vec<_>>(),
                 );
-                let line = &presentation.lines[r.line];
                 node.set_text_direction(if r.rtl { ak::TextDirection::RightToLeft } else { ak::TextDirection::LeftToRight });
-                let xs: Vec<(f32, f32)> = r.chars.iter().map(super::text::TextFragment::edges).collect();
-                let x0 = xs.iter().map(|(a, b)| a.min(*b)).fold(f32::INFINITY, f32::min);
-                let x1 = xs.iter().map(|(a, b)| a.max(*b)).fold(f32::NEG_INFINITY, f32::max);
-                let x0 = if x0.is_finite() { x0 } else { 0.0 };
-                node.set_character_positions(xs.iter().map(|(a, b)| a.min(*b) - x0).collect::<Vec<_>>());
-                node.set_character_widths(xs.iter().map(|(a, b)| (b - a).abs()).collect::<Vec<_>>());
-                let (x, y) = (f64::from(ox + x0), f64::from(oy + line.top));
-                node.set_bounds(ak::Rect { x0: x, y0: y, x1: x + f64::from((x1 - x0).max(0.0)), y1: y + f64::from(line.height) });
+                let xs: Vec<(f32, f32)> = r
+                    .chars
+                    .iter()
+                    .map(|c| {
+                        let (a, b) = c.edges();
+                        (x_at(a.min(b)), x_at(a.max(b)))
+                    })
+                    .collect();
+                let x0 = xs.iter().map(|(a, _)| *a).reduce(f32::min).unwrap_or_else(|| x_at(0.0));
+                let x1 = xs.iter().map(|(_, b)| *b).reduce(f32::max).unwrap_or(x0);
+                node.set_character_positions(xs.iter().map(|(a, b)| if r.rtl { x1 - b } else { a - x0 }).collect::<Vec<_>>());
+                node.set_character_widths(xs.iter().map(|(a, b)| b - a).collect::<Vec<_>>());
+                node.set_bounds(ak::Rect {
+                    x0: f64::from(x0),
+                    y0: f64::from(y_at(r.top)),
+                    x1: f64::from(x1),
+                    y1: f64::from(y_at(r.top + r.height)),
+                });
                 // Runs split from one line are on it together.
                 if i > 0 && runs[i - 1].line == r.line {
-                    node.set_previous_on_line(run_id(id, i - 1));
+                    node.set_previous_on_line(self.run_id(id, i - 1));
                 }
                 if runs.get(i + 1).is_some_and(|n| n.line == r.line) {
-                    node.set_next_on_line(run_id(id, i + 1));
+                    node.set_next_on_line(self.run_id(id, i + 1));
                 }
-                (run_id(id, i), node)
+                (self.run_id(id, i), node)
             })
             .collect()
     }
@@ -164,10 +237,11 @@ impl Kernel {
             .iter()
             .enumerate()
             .flat_map(|(i, r)| {
-                r.chars.iter().enumerate().flat_map(move |(index, c)| [(i, index, c.source.start, 0), (i, index + 1, c.source.end, 1)])
+                std::iter::once((i, 0, r.bytes.start, 0))
+                    .chain(r.chars.iter().enumerate().map(move |(index, c)| (i, index + 1, c.source.end, 1)))
             })
             .min_by_key(|(_, _, b, affinity)| (b.abs_diff(at), *affinity))?;
-        Some(ak::TextPosition { node: run_id(id, i), character_index: index })
+        Some(ak::TextPosition { node: self.run_id(id, i), character_index: index })
     }
 
     /// The text and byte a run position names (assistive technology setting a selection).
@@ -176,18 +250,24 @@ impl Kernel {
             return None;
         }
         let text = self.node_of_a11y(pos.node)?;
-        let runs = self.text_runs(text);
-        let run = runs.get(((pos.node.0 >> 51) & 0xFFF) as usize)?;
-        Some((text, run.chars.get(pos.character_index).map_or(run.bytes.end, |c| c.source.start)))
+        let runs = self.text_runs(text)?;
+        let ordinal = ((pos.node.0 >> 51) & 0xFFF) as usize;
+        if pos.node != self.run_id(text, ordinal) {
+            return None;
+        }
+        let run = runs.runs.get(ordinal)?;
+        (pos.character_index <= run.chars.len())
+            .then(|| (text, run.chars.get(pos.character_index).map_or(run.bytes.end, |c| c.source.start)))
     }
 
     /// A region's selection among its texts' runs.
     fn a11y_selection(&self, region: NodeId, projection: &AccessibilityProjection) -> Option<ak::TextSelection> {
         let [(a, ao), (f, fo)] = self.node(region).doc_selection?;
         let at = |t: NodeId, o: usize| {
-            (projection.exposes(t) && self.is_alive(t) && self.a11y_reachable(t))
-                .then(|| self.run_position(t, &self.text_runs(t), o))
-                .flatten()
+            if !projection.exposes(t) || !self.is_alive(t) || !self.a11y_reachable(t) {
+                return None;
+            }
+            self.run_position(t, &self.text_runs(t)?.runs, o)
         };
         Some(ak::TextSelection { anchor: at(a, ao)?, focus: at(f, fo)? })
     }
@@ -530,7 +610,7 @@ impl Kernel {
         if let Some(l) = n.live {
             node.set_live(l);
         }
-        if n.region {
+        if n.region && n.input().is_none() {
             node.add_action(ak::Action::SetTextSelection);
             if let Some(sel) = self.a11y_selection(id, projection) {
                 node.set_text_selection(sel);
@@ -539,10 +619,18 @@ impl Kernel {
         if let Some(d) = self.description(id) {
             node.set_description(d);
         }
+        let text_runs = self.text_runs(id);
         // A text input's content, or the value set for other controls (a combo box's choice).
         if n.kind() == Kind::TextInput || n.a11y_value.is_some() {
             // A password is bullets to assistive technology (AccessKit's contract), unless shown.
-            node.set_value(if n.input().is_some_and(|i| i.masked()) { self.reported_value(id) } else { self.value(id).to_owned() });
+            if n.input().is_some_and(|i| i.masked()) {
+                node.set_value(self.reported_value(id));
+            } else {
+                node.set_value(text_runs.as_ref().filter(|_| n.input().is_some()).map_or(self.value(id), |text| text.text));
+            }
+        }
+        if n.input().is_some() && self.handler(id, HandlerKind::Input).is_none() && self.handler(id, HandlerKind::NumericInput).is_none() {
+            node.set_read_only();
         }
         if let Some(range) = n.numeric_range {
             node.set_min_numeric_value(range.min);
@@ -597,8 +685,26 @@ impl Kernel {
         if let Some(t) = &n.test_id {
             node.set_author_id(t.as_str());
         }
-        // A selectable text's runs come first, its links after.
-        let runs = if n.kind() == Kind::Text { self.a11y_runs(id, &self.text_runs(id)) } else { Vec::new() };
+        // Text runs come first, links after. For an editor, text and selection must use
+        // the same displayed document during marked-text composition.
+        let runs = text_runs.map_or_else(Vec::new, |text| {
+            if let Some(input) = n.input() {
+                let selection = if let Some(c) = &input.composition {
+                    c.selection.as_ref().map(|r| (r.start, r.end))
+                } else {
+                    if !n.state.contains(State::DISABLED) {
+                        node.add_action(ak::Action::SetTextSelection);
+                    }
+                    Some(self.selection(id))
+                };
+                if let Some((anchor, caret)) = selection
+                    && let Some((anchor, focus)) = self.run_position(id, &text.runs, anchor).zip(self.run_position(id, &text.runs, caret))
+                {
+                    node.set_text_selection(ak::TextSelection { anchor, focus });
+                }
+            }
+            self.a11y_runs(id, &text)
+        });
         node.set_children(runs.iter().map(|(r, _)| *r).chain(children.iter().map(|c| a11y_id(*c))).collect::<Vec<_>>());
         (node, g, children, runs)
     }

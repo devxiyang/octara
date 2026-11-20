@@ -25,11 +25,11 @@
 - [x] 在 iOS 模拟器核对模态前后的原生辅助功能树，用 VoiceOver 手势核对详情内的遍历范围。[辅助功能实测](design/interaction-scenarios.md#模态辅助功能范围)
 - [x] 修复软键盘收起时按钮移出原触点导致的点击丢失，并在 iOS 模拟器核对一次触摸关闭和焦点恢复。[触摸实测](design/interaction-scenarios.md#ios-键盘收起与点击资格)
 - [x] 在 iOS Dialog 内核对系统拼音提交、虚拟 Combobox 的按 key 揭示与重排、焦点和操作回执。修复弹层避让状态栏、列表裁切及可用空间恢复后的尺寸。[实测记录](design/interaction-scenarios.md#ios-dialog-内的中文虚拟选择器)
+- [x] 在 macOS 同窗对照普通编辑器与标准 NSTextView 的辅助功能选区和范围坐标，核对写入回读、字段移动及过期端点拒绝。[实测与回归](design/input.md#辅助功能的文本选区与范围)
 - [x] 在已解锁、可见的 macOS 窗口验证 `display` 像素来源，核对原生视图报告和实际屏幕尺寸。覆盖 WKWebView 页面切换、窗口缩放、绘制帧版本和锁屏回退。[截图实测记录](design/capture.md#macos-实窗记录)
 
 ## 从上轮接续的工程问题
 
-- [ ] 核对可编辑文本框的辅助技术选区与文字范围坐标。macOS 实窗已获得 AX 字段边界，`AXSelectedTextRange` 和 `AXBoundsForRange` 返回 `kAXErrorNoValue`。[受控文本框实测](design/input.md#受控文本框实测)
 - [ ] 复核工作区已有的挂载中断改动。三个已知触发点是子作用域首次 watch 关窗、替换分支时 cleanup 关窗、移除列表行时 cleanup 关窗。核对后继工厂、绑定写入、释放计数和首帧提交；另行记录真实屏幕结果。[窗口](../crates/octara/tests/integration/windows.rs) · [分支](../crates/octara/tests/integration/scopes.rs) · [列表行](../crates/octara/tests/integration/collection_rows.rs)
 - [ ] 横图换竖图、空图变非空及旧绘制列表重画时，核对布局尺寸和像素版本。单张图片过大与多张图耗尽 GPU 容量分别复现。[图片测试](../crates/octara/tests/integration/image.rs)
 - [ ] 记录 Windows 实时检查通道和移动宿主的支持范围。没有平台输入或屏幕证据的项目继续保留待验收状态。

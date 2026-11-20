@@ -121,6 +121,24 @@ impl Window {
         self.w.interaction.borrow_mut().reveal = Some(n);
     }
 
+    /// Selects text in the focused editor from published accessibility run positions.
+    pub(super) fn select_field_a11y(&self, n: NodeId, selection: accesskit::TextSelection, modal: Option<NodeId>) -> bool {
+        if self.w.interaction.borrow().focused != Some(n) {
+            return false;
+        }
+        let offsets = {
+            let k = self.w.kernel.borrow();
+            if k.check_activation(n, modal).is_err() || k.is_secure(n) || k.edit_in_progress(n) {
+                return false;
+            }
+            let offset = |pos| k.text_at_a11y(pos).filter(|&(owner, _)| owner == n).map(|(_, byte)| byte);
+            offset(selection.anchor).zip(offset(selection.focus))
+        };
+        let Some((anchor, caret)) = offsets else { return false };
+        self.select_field(n, anchor, caret);
+        true
+    }
+
     /// Text typed or committed into the focused field: replaces the selection.
     pub(super) fn insert_text(&self, text: &str) {
         let Some((n, value, a, c)) = self.field() else { return };

@@ -242,10 +242,16 @@ impl Kernel {
         i.editing.selection_changed();
         if i.selection != sel {
             // A direct selection change ends the input method's draft without committing it.
-            if i.composition.take().is_some() {
+            let retired = i.composition.take().is_some();
+            if retired {
                 i.clean.set(0);
             }
             i.selection = sel;
+            if retired {
+                self.renew_editor_a11y_runs(id);
+            } else if !i.secure {
+                self.a11y_touch(id);
+            }
             self.mark(Dirty::PAINT);
         }
     }
@@ -264,6 +270,7 @@ impl Kernel {
             i.secure = on;
             i.clean.set(0);
             i.composition = None;
+            self.renew_editor_a11y_runs(id);
             self.changed(id, Dirty::PAINT | Dirty::TEXT | Dirty::SEMANTICS, "secure", || on.to_string());
         }
     }
@@ -370,6 +377,7 @@ impl Kernel {
         if i.multiline != on {
             i.multiline = on;
             i.clean.set(0);
+            self.renew_editor_a11y_runs(id);
             self.update_measure(id);
             self.changed(id, Dirty::LAYOUT | Dirty::SEMANTICS, "multiline", || on.to_string());
         }
@@ -443,20 +451,46 @@ impl Kernel {
 
     /// Settle internal editor scrolling after layout, including caret-only updates that did
     /// not need Taffy. Geometry reads never write these node-owned facts.
-    pub(super) fn settle_fields(&mut self) {
+    pub(super) fn settle_fields(&mut self, relaid: bool) {
         let ids: Vec<_> = self.nodes.iter().filter(|(_, n)| n.input().is_some()).map(|(id, _)| id).collect();
         for id in ids {
             let Some(mut field) = self.field(id) else { continue };
+            let a11y_layout = (relaid && !self.is_secure(id)).then(|| {
+                let style = input_style(self.node(id).visual.text_style(), self.is_multiline(id));
+                (self.input_content_box(id), style, self.fonts_generation)
+            });
             let input = self.node_mut(id).input_mut().expect("an input");
+            let (layout_changed, shape_changed) = a11y_layout.map_or((false, false), |(content, style, fonts)| {
+                let previous = input.a11y_layout.replace((content, style, fonts));
+                let shape_changed = previous.is_none_or(|(before, old_style, old_fonts)| {
+                    style != old_style || fonts != old_fonts || (input.multiline && content.w != before.w)
+                });
+                (previous != a11y_layout, shape_changed)
+            });
             let kept = field.reveal(input.multiline, input.scroll, input.kept);
             let scroll = if input.multiline { field.scroll.1 } else { field.scroll.0 };
-            if input.scroll == scroll && input.kept == kept {
-                continue;
+            let scrolled = input.scroll != scroll;
+            if scrolled || input.kept != kept {
+                input.scroll = scroll;
+                input.kept = kept;
+                self.mark(Dirty::PAINT);
             }
-            input.scroll = scroll;
-            input.kept = kept;
-            self.a11y_touch(id);
-            self.mark(Dirty::PAINT);
+            if shape_changed {
+                self.renew_editor_a11y_runs(id);
+            } else if layout_changed || scrolled {
+                self.a11y_touch(id);
+            }
+        }
+    }
+
+    /// The text input's content box, in its own coordinates.
+    pub(super) fn input_content_box(&self, id: NodeId) -> Rect {
+        let l = self.taffy.layout(self.node(id).taffy).expect("taffy");
+        Rect {
+            x: l.border.left + l.padding.left,
+            y: l.border.top + l.padding.top,
+            w: (l.size.width - l.border.left - l.border.right - l.padding.left - l.padding.right).max(0.0),
+            h: (l.size.height - l.border.top - l.border.bottom - l.padding.top - l.padding.bottom).max(0.0),
         }
     }
 
@@ -464,13 +498,9 @@ impl Kernel {
         let n = self.node(id);
         let input = n.input().expect("a text input");
         let (x, y, _, _) = self.shown_rect(id);
-        let l = self.taffy.layout(n.taffy).expect("taffy");
-        let content = Rect {
-            x: x + l.border.left + l.padding.left,
-            y: y + l.border.top + l.padding.top,
-            w: (l.size.width - l.border.left - l.border.right - l.padding.left - l.padding.right).max(0.0),
-            h: (l.size.height - l.border.top - l.border.bottom - l.padding.top - l.padding.bottom).max(0.0),
-        };
+        let mut content = self.input_content_box(id);
+        content.x += x;
+        content.y += y;
         TextInputLayout {
             resources: self.res.clone(),
             style: input_style(n.visual.text_style(), input.multiline),

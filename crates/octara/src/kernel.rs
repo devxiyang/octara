@@ -442,6 +442,10 @@ struct InputContent {
     /// The layout of what it shows last (its value, a composition spliced in), of what, in
     /// what, with which fonts.
     layout: RefCell<Option<(String, TextStyle, u64, text::TextLayout)>>,
+    /// The settled content box, text style and fonts for tracking AX geometry changes.
+    a11y_layout: Option<(crate::paint::Rect, TextStyle, u64)>,
+    /// The identity of this editor's current accessibility run positions.
+    a11y_run_revision: u64,
     /// Wraps at the field's width; Enter breaks lines.
     multiline: bool,
     /// The caret's x kept across moves by lines (Up, Down, Page Up, Page Down).
@@ -704,6 +708,9 @@ pub struct Kernel {
     a11y_dirty: RefCell<rustc_hash::FxHashSet<NodeId>>,
     /// Only nodes with semantic relations need their targets rechecked after mutations.
     a11y_relation_owners: RefCell<FxHashMap<NodeId, a11y::PublishedRelations>>,
+    /// Owners of the current editable text run revisions.
+    editor_run_owners: FxHashMap<u64, NodeId>,
+    next_editor_run_revision: u64,
     /// A layout ran since the last accessibility update (places may have changed).
     a11y_geometry: Cell<bool>,
     /// Nodes whose layout changed since the last accessibility update (what may have moved is
@@ -782,6 +789,8 @@ impl Kernel {
             in_motion: RefCell::new(rustc_hash::FxHashSet::default()),
             a11y_dirty: RefCell::default(),
             a11y_relation_owners: RefCell::default(),
+            editor_run_owners: FxHashMap::default(),
+            next_editor_run_revision: 0,
             a11y_geometry: Cell::new(true),
             a11y_relaid: RefCell::new(rustc_hash::FxHashSet::default()),
             a11y_moving: RefCell::new(Vec::new()),
@@ -918,6 +927,19 @@ impl Kernel {
             self.a11y_dirty.borrow_mut().insert(id);
         }
     }
+
+    /// Retires an editor's run positions when their document or layout changes.
+    fn renew_editor_a11y_runs(&mut self, id: NodeId) {
+        let revision = self.next_editor_run_revision + 1;
+        assert!(revision < 1 << 50, "editor accessibility run revisions exhausted");
+        self.next_editor_run_revision = revision;
+        let input = self.node_mut(id).input_mut().expect("an input");
+        let previous = std::mem::replace(&mut input.a11y_run_revision, revision);
+        self.editor_run_owners.remove(&previous);
+        self.editor_run_owners.insert(revision, id);
+        self.a11y_touch(id);
+    }
+
     /// `parent`'s shown children changed (the overlay layer, shown only with children, changes
     /// the root's).
     fn a11y_children_changed(&self, parent: NodeId) {
@@ -1094,7 +1116,9 @@ impl Kernel {
     pub fn create_input(&mut self) -> NodeId {
         let mut input = Box::<InputContent>::default();
         input.rows = (1, u16::MAX);
-        self.create_node(Content::Input(input))
+        let id = self.create_node(Content::Input(input));
+        self.renew_editor_a11y_runs(id);
+        id
     }
 
     /// Creates an image with its natural size and the requested fit.
@@ -1354,6 +1378,9 @@ impl Kernel {
         self.layer_nodes.remove(&id);
         self.native_nodes.remove(&id);
         self.a11y_relation_owners.get_mut().remove(&id);
+        if let Some(input) = n.input() {
+            self.editor_run_owners.remove(&input.a11y_run_revision);
+        }
         if n.anchor.is_some() {
             self.anchored.retain(|a| *a != id);
         }
@@ -1523,8 +1550,14 @@ impl Kernel {
         if i.composition == composition {
             return false;
         }
+        let text_changed = i.composition.as_ref().map(|c| c.text.as_str()) != composition.as_ref().map(|c| c.text.as_str());
         i.clean.set(0);
         i.composition = composition;
+        if text_changed {
+            self.renew_editor_a11y_runs(id);
+        } else {
+            self.a11y_touch(id);
+        }
         let text = self.preedit(id).to_owned();
         self.changed(id, Dirty::PAINT, "preedit", || text);
         true
@@ -1565,6 +1598,7 @@ impl Kernel {
             self.update_measure(id);
             dirty |= Dirty::LAYOUT;
         }
+        self.renew_editor_a11y_runs(id);
         self.changed(id, dirty, "value", || value.to_owned());
         true
     }
@@ -2169,7 +2203,7 @@ impl Kernel {
             return false;
         }
         if !self.needs_layout && self.viewport == (width, height) {
-            self.settle_fields();
+            self.settle_fields(false);
             return false;
         }
         self.viewport = (width, height);
@@ -2212,7 +2246,7 @@ impl Kernel {
         self.clamp_scrolls();
         self.track_frames();
         self.invalidate_text_presentations();
-        self.settle_fields();
+        self.settle_fields(true);
         self.counters.layout_runs += 1;
         true
     }

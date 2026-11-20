@@ -29,7 +29,17 @@ macOS 27.2 上使用系统简体拼音、反向 emoji 选区和两个受控字�
 | 系统选择「你好」，应用拒绝 | 收到一次 `A你好Z` 提议，接受次数为零。正文为 `A😀Z`，恢复 UTF-8 `[1,5]`、UTF-16 `[1,3]` 的原反向选区 |
 | 组词期间改焦，随后重放旧提交 | 旧候选窗关闭，交付入口返回 `Refused`。第二框从 `B😀Y` 独立组词并提交为 `B你好Y` |
 
-从第一框到第二框，Inspector 光标、AppKit 字符范围锚点、候选窗和 AX 字段边界均向下移动 52 点。候选窗屏幕 `y` 从 `362` 到 `414`，AX 字段边界从 `335` 到 `387`。两字段都能读取 AX 值和边界，`AXSelectedTextRange` 与显式首字符的 `AXBoundsForRange` 查询均返回 `kAXErrorNoValue`。文字范围的辅助技术反馈单独列入清单。[AccessKit 投影](../../crates/octara/src/kernel/a11y.rs#L451) · [AX 查询脚本](../../examples/ime_candidates.swift)
+从第一框到第二框，Inspector 光标、AppKit 字符范围锚点、候选窗和 AX 字段边界均向下移动 52 点。候选窗屏幕 `y` 从 `362` 到 `414`，AX 字段边界从 `335` 到 `387`。当时两个字段都能读取 AX 值和边界，`AXSelectedTextRange` 与首字符的 `AXBoundsForRange` 都返回了 `kAXErrorNoValue`。[AX 查询脚本](../../examples/ime_candidates.swift)
+
+### 辅助功能的文本选区与范围
+
+Rune 将输入显示文本、文字分段和选区投影给 AccessKit，再把辅助技术的选区操作交回编辑器。Exact 的 macOS 输入框由 AppKit 的 `NSTextView` 编辑器提供选区。Octara 使用已经结算的文字排版和滚动位置生成 AccessKit 分段，由 macOS 适配器转换 UTF-16 范围和屏幕坐标。[Rune 文字分段](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune/src/a11y/text.rs#L140-L187) · [Exact 选区归属](https://github.com/expo/exact/blob/08c889a9de21a30b7c3b308422fc588cf1a480d3/host/apple/Sources/ExactKit/FieldSelections.swift#L563-L596) · [AccessKit macOS 转换](https://github.com/AccessKit/accesskit/blob/f3026222559c7f5f46d8f25cb7404de68eb149f0/adapters/macos/src/util.rs#L13-L80)
+
+普通编辑器的 AX 文本、选区和字符坐标使用当前显示文档，包含组合区。业务绑定仍持有已接受的值。选区写入要求普通编辑器持有焦点，两个端点都属于该字段的当前文字分段，并且没有待结算编辑或正在进行的组合。文本替换和影响分段的重排会使旧端点失效。安全字段省略文字范围与选区。可选中文档里的嵌套编辑器只发布字段值，以隔开字段和外围文档的范围。[AccessKit 投影](../../crates/octara/src/kernel/a11y.rs) · [回归测试](../../crates/octara/tests/integration/a11y.rs)
+
+macOS 27.2 的同窗对照对实际 AccessKit 字段和标准 `NSTextView` 调用 AppKit 的辅助功能接口。两者从 `A😀Z` 都读出 `😀`，选区的 UTF-16 位置为 `1`、长度为 `2`。将各自字段向上移动 44 点后，emoji 矩形的 AppKit 屏幕 `y` 均增加 44 点，宽高各自保持一致。向 Octara 的 AX 字段写入位置 `3`、长度 `1` 后，真实编辑器读回 UTF-8 `[5,6]`，选中 `Z`，焦点与文本值保持。此次实测在验收应用进程内调用 AppKit 接口。
+
+换行字符目前投影为零宽。双向文字交界处，一个文本偏移可以对应两个视觉边缘，AccessKit 为折叠范围选取的边缘可能与编辑器绘制的光标位置不同。
 
 ## Pointer sessions
 

@@ -118,7 +118,7 @@ impl Window {
             };
             let point = |p| {
                 let (text, offset) = k.text_at_a11y(p)?;
-                if k.region_of(text) != Some(region) || !k.accepts_accessibility_input(text, modal) {
+                if !k.selectable_in(region, text) || !k.accepts_accessibility_input(text, modal) {
                     return None;
                 }
                 Some(TextPoint { path: k.path_to(region, text)?, offset })

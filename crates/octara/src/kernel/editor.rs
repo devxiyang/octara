@@ -151,10 +151,11 @@ impl Kernel {
         let before_selection = (super::floor_boundary(&i.value, i.selection.0), super::floor_boundary(&i.value, i.selection.1));
         i.editing.pending =
             Some(Proposal { before: i.value.clone(), value: value.to_owned(), before_selection, selection, kind, active: true });
+        let notify = i.value != value;
         if i.composition.take().is_some() {
             i.clean.set(0);
+            self.renew_editor_a11y_runs(id);
         }
-        let notify = i.value != value;
         self.mark(Dirty::PAINT);
         Some(notify)
     }
@@ -199,7 +200,8 @@ impl Kernel {
 
     pub(crate) fn reconcile_edits(&mut self) {
         let mut changed = false;
-        for (_, node) in &mut self.nodes {
+        let mut selection_changes = Vec::new();
+        for (id, node) in &mut self.nodes {
             let Some(i) = node.input_mut() else { continue };
             if i.editing.pending.as_ref().is_none_or(|p| p.active) {
                 continue;
@@ -243,12 +245,19 @@ impl Kernel {
                 i.editing = Editing::default();
                 map_selection(&p.value, &i.value, p.selection)
             };
-            i.selection = (super::floor_boundary(&i.value, selection.0), super::floor_boundary(&i.value, selection.1));
+            let selection = (super::floor_boundary(&i.value, selection.0), super::floor_boundary(&i.value, selection.1));
+            if i.selection != selection && !i.secure && self.a11y_live.get() {
+                selection_changes.push(id);
+            }
+            i.selection = selection;
             i.goal.set(None);
             changed = true;
         }
         if changed {
             self.mark(Dirty::PAINT);
+        }
+        for id in selection_changes {
+            self.a11y_touch(id);
         }
     }
 

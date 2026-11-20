@@ -207,7 +207,14 @@ impl Window {
             accesskit::Action::ShowContextMenu => self.input_frame(|| done = self.run(n, &[HandlerKind::SecondaryPress], None)),
             accesskit::Action::SetTextSelection => {
                 if let Some(accesskit::ActionData::SetTextSelection(sel)) = data {
-                    self.input_frame(|| done = self.select_a11y(n, sel, modal));
+                    let field = self.w.kernel.borrow().kind(n) == Kind::TextInput;
+                    self.input_frame(|| {
+                        done = if field {
+                            target == crate::kernel::a11y::a11y_id(n) && self.select_field_a11y(n, sel, modal)
+                        } else {
+                            self.select_a11y(n, sel, modal)
+                        };
+                    });
                 }
             }
             _ => {}
