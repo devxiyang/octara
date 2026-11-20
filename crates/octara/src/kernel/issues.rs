@@ -82,6 +82,7 @@ impl Kernel {
                     continue;
                 }
                 Item::Quad(q) => Some((q.source, q.rect)),
+                Item::Custom(p) => Some((p.fallback.source, p.fallback.rect)),
                 Item::Shadow(s) => Some((s.source, s.rect)),
                 Item::Image(i) => Some((i.source, i.rect.intersect(&i.bounds))),
                 Item::Path(p) => Some((p.source, p.bounds)),

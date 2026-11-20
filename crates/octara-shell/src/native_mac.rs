@@ -743,6 +743,14 @@ pub(crate) struct Native {
     pub(crate) inbox: Rc<Inbox>,
 }
 
+pub(crate) struct FrameTransaction(());
+
+impl Drop for FrameTransaction {
+    fn drop(&mut self) {
+        CATransaction::commit();
+    }
+}
+
 impl Native {
     /// The window's native views, and the host to give the app; `None` without an AppKit view.
     pub(crate) fn new(window: &Window, wake: impl Fn() + 'static) -> Option<(Self, Host)> {
@@ -774,13 +782,21 @@ impl Native {
         !self.views.borrow().pending.is_empty()
     }
 
+    pub(crate) fn surface_replaced(&self) {
+        let mut views = self.views.borrow_mut();
+        if let Some(layer) = views.metal.take() {
+            layer.setPresentsWithTransaction(false);
+        }
+        views.presenting.set(false);
+    }
+
     /// Before the frame's surface texture is taken: opens the transaction the placements and
     /// the present go in, and presents inside it while views move or the window resizes.
-    /// Returns whether a transaction is open (only while views exist).
-    pub(crate) fn begin_frame(&self, surface: &wgpu::Surface<'_>, resized: bool) -> bool {
+    /// Holds the transaction open while the frame is being changed.
+    pub(crate) fn begin_frame(&self, surface: &wgpu::Surface<'_>, resized: bool) -> Option<FrameTransaction> {
         let mut v = self.views.borrow_mut();
         if v.hosted.is_empty() {
-            return false;
+            return None;
         }
         if v.metal.is_none() {
             // SAFETY: the Metal surface's layer, read on the main thread.
@@ -794,8 +810,9 @@ impl Native {
             }
         }
         CATransaction::begin();
+        let transaction = FrameTransaction(());
         CATransaction::setDisableActions(true);
-        true
+        Some(transaction)
     }
 
     /// After the frame is drawn, before it is presented: places the views.
@@ -860,11 +877,6 @@ impl Native {
         let ns = NSImage::initWithCGImage_size(NSImage::alloc(), &image, screen.size);
         let (width, height, rgba) = pixels(&ns, scale).ok_or("the picture could not be read")?;
         Ok(octara_primitives::capture::Picture { width, height, rgba })
-    }
-
-    /// After the present: commits the transaction.
-    pub(crate) fn end_frame() {
-        CATransaction::commit();
     }
 }
 

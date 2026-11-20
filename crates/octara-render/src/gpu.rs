@@ -1,5 +1,5 @@
-//! The GPU renderer: wgpu, one WGSL shader (`shader.wgsl`), one instance per display-list item,
-//! one draw call per frame. Glyphs and paths are rasterized as by the reference renderer
+//! The GPU renderer: wgpu, instanced batches for each target, and author-defined paint programs.
+//! Glyphs and paths are rasterized as by the reference renderer
 //! ([`GlyphCache`], [`paths`]) and packed into an alpha atlas (masks; a path larger than a tile
 //! takes several) and an RGBA atlas (color glyphs). When an atlas fills up, every atlas starts
 //! over and the frame is built again with only what it draws.
@@ -9,10 +9,14 @@ use crate::paths::{self, MaskKey};
 use crate::shape::push_clip;
 use bytemuck::{Pod, Zeroable};
 use octara_primitives::capture::{Painter, Picture};
-use octara_primitives::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, Quad, Shadow};
+use octara_primitives::paint::{CustomPaint, DisplayList, GlyphRun, ImagePaint, Item, PaintProgram, PathPaint, Quad, Rect, Shadow};
 use octara_primitives::theme::Color;
 use rustc_hash::FxHashMap;
 use std::alloc::Layout;
+use std::ops::Range;
+
+mod custom;
+pub use custom::{CanvasFrame, canvas, material};
 
 const ATLAS: u32 = 2048;
 /// The mask atlas's size where the device allows it (paths can be window-sized).
@@ -22,6 +26,12 @@ const TILE: u32 = 1024;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// No clip: a rect far larger than any window.
 const NO_CLIP: [f32; 4] = [-1.0e6, -1.0e6, 2.0e6, 2.0e6];
+const KIND_QUAD: f32 = 0.0;
+const KIND_SHADOW: f32 = 3.0;
+const KIND_IMAGE: f32 = 4.0;
+const KIND_LAYER: f32 = 5.0;
+const KIND_CANVAS: f32 = 7.0;
+const GEOMETRY_SHADER: &str = include_str!("gpu/geometry.wgsl");
 
 struct ReadbackLayout {
     row: u32,
@@ -51,11 +61,13 @@ struct Inst {
     border_color: [f32; 4],
     border: [f32; 4],
     clip: [f32; 4],
-    /// radius, kind (0 quad, 1 mask glyph, 2 color glyph, 3 shadow, 4 image, 5 layer, 6 path),
+    /// radius, kind (0 quad, 1 mask glyph, 2 color glyph, 3 shadow, 4 image, 5 layer, 6 path,
+    /// 7 canvas),
     /// clip radius, has fill (a shadow's σ is `border[0]`; an image's clipping box is `border`, its
     /// radius `params[0]`, its opacity `fill[3]`, its atlas origin and size `uv`; a path's
     /// gradient box is `border`)
     params: [f32; 4],
+    /// Atlas coordinates, or the four author parameters for a material.
     uv: [f32; 4],
     /// A gradient's end color (straight); `fill` is its start.
     grad_color: [f32; 4],
@@ -63,22 +75,135 @@ struct Inst {
     grad: [f32; 4],
 }
 
+impl Inst {
+    fn visible_bounds(&self, window: &Rect) -> Rect {
+        // Match the vertex shader's expansion for antialiasing and shadows.
+        let grow = match self.params[1] {
+            KIND_QUAD | KIND_IMAGE | KIND_CANVAS => 1.0,
+            KIND_SHADOW => 3.0 * self.border[0] + 1.0,
+            _ => 0.0,
+        };
+        let [x, y, w, h] = self.rect;
+        let bounds = Rect::new(x - grow, y - grow, w + 2.0 * grow, h + 2.0 * grow);
+        let [x, y, w, h] = self.clip;
+        // Rounded clips antialias past their nominal edge.
+        let clip = Rect::new(x - 1.0, y - 1.0, w + 2.0, h + 2.0);
+        bounds.intersect(&clip).intersect(window)
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Globals {
     size: [f32; 2],
-    _pad: [f32; 2],
+    origin: [f32; 2],
+}
+
+/// A pass's pixel bounds in window coordinates, before rounding its allocation up.
+#[derive(Clone, Copy, Default)]
+struct PassBounds {
+    origin: [u32; 2],
+    size: [u32; 2],
+}
+
+impl PassBounds {
+    fn rect(self) -> [f32; 4] {
+        [self.origin[0] as f32, self.origin[1] as f32, self.size[0] as f32, self.size[1] as f32]
+    }
+
+    fn allocation(self, window: [u32; 2]) -> [u32; 2] {
+        std::array::from_fn(|axis| self.size[axis].max(1).next_multiple_of(64).min(window[axis].max(1)))
+    }
 }
 
 /// The instances drawn into one target: the window, or a layer composited at `opacity`.
 #[derive(Default)]
 struct Pass {
     insts: Vec<Inst>,
-    /// Instances that composite a layer: (index in `insts`, the layer's pass).
-    composites: Vec<(usize, usize)>,
-    /// Instances that cut an underlay view's hole (drawn with the cutout pipeline).
-    cutouts: Vec<usize>,
+    /// Batches in painter order. Gaps use the ordinary pipeline and atlas bindings.
+    special: Vec<Batch>,
     opacity: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Draw {
+    Cutout,
+    Layer(usize),
+    Material(custom::Material),
+    Canvas(usize),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Batch {
+    instances: Range<usize>,
+    draw: Draw,
+}
+
+impl Pass {
+    fn push_special(&mut self, instance: Inst, draw: Draw) {
+        let start = self.insts.len();
+        self.insts.push(instance);
+        if let Some(last) = self.special.last_mut()
+            && last.instances.end == start
+            && last.draw == draw
+        {
+            last.instances.end += 1;
+        } else {
+            self.special.push(Batch { instances: start..start + 1, draw });
+        }
+    }
+}
+
+struct CanvasRequest {
+    pass: usize,
+    instance: usize,
+    program: PaintProgram,
+    fallback: Inst,
+    source: octara_primitives::identity::NodeId,
+    size: [u32; 2],
+    params: [f32; 4],
+}
+
+struct PreparedFrame {
+    passes: Vec<Pass>,
+    instance_offsets: Vec<u32>,
+    background: wgpu::Color,
+    layer_views: Vec<wgpu::TextureView>,
+    bind: wgpu::BindGroup,
+    layer_binds: Vec<wgpu::BindGroup>,
+    canvas_binds: Vec<wgpu::BindGroup>,
+}
+
+/// Size the inner layers first, then use their bounds in the parent's composites.
+fn bound_passes(passes: &mut [Pass], size: [u32; 2]) -> Vec<PassBounds> {
+    let window = Rect::new(0.0, 0.0, size[0] as f32, size[1] as f32);
+    let mut bounds = vec![PassBounds::default(); passes.len()];
+    bounds[0].size = size;
+    for (index, pass) in passes.iter_mut().enumerate().rev() {
+        for batch in &pass.special {
+            if let Draw::Layer(layer) = batch.draw {
+                pass.insts[batch.instances.start].rect = bounds[layer].rect();
+            }
+        }
+        if index == 0 {
+            break;
+        }
+        let (mut left, mut top, mut right, mut bottom) = (window.w, window.h, 0.0_f32, 0.0_f32);
+        for inst in &pass.insts {
+            let r = inst.visible_bounds(&window);
+            if !r.is_empty() {
+                left = left.min(r.x);
+                top = top.min(r.y);
+                right = right.max(r.right());
+                bottom = bottom.max(r.bottom());
+            }
+        }
+        if right > left && bottom > top {
+            let (x, y) = (left.floor() as u32, top.floor() as u32);
+            bounds[index] = PassBounds { origin: [x, y], size: [right.ceil() as u32 - x, bottom.ceil() as u32 - y] };
+        }
+    }
+    bounds
 }
 
 /// A shelf packer for one atlas texture.
@@ -140,6 +265,71 @@ fn straight(c: Color) -> [f32; 4] {
     c.components
 }
 
+/// A frame's recorded commands and the exclusive renderer borrow protecting its staged data.
+///
+/// Submit or drop this frame before using the renderer again. Dropping it discards the encoder.
+/// Its uploads remain queued for the next submission, including atlas entries cached during
+/// preparation.
+#[must_use = "submit the recorded frame to execute its commands"]
+pub struct RecordedFrame<'renderer> {
+    before: Vec<wgpu::CommandBuffer>,
+    encoder: wgpu::CommandEncoder,
+    queue: &'renderer wgpu::Queue,
+}
+
+impl RecordedFrame<'_> {
+    /// Borrows the frame's encoder to append commands after the Octara draw, such as a readback
+    /// copy. Leave the encoder in the frame for submission.
+    pub fn encoder(&mut self) -> &mut wgpu::CommandEncoder {
+        &mut self.encoder
+    }
+
+    /// Finishes the encoder and submits the frame with its staged uploads.
+    pub fn submit(self) -> wgpu::SubmissionIndex {
+        self.queue.submit(self.before.into_iter().chain([self.encoder.finish()]))
+    }
+}
+
+fn render_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    shader: &wgpu::ShaderModule,
+    fragment: &str,
+    label: &str,
+    blend: wgpu::BlendState,
+) -> wgpu::RenderPipeline {
+    let attributes = wgpu::vertex_attr_array![
+        0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
+        7 => Float32x4, 8 => Float32x4
+    ];
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Inst>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &attributes,
+            })],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some(fragment),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
 /// Renders display lists with the GPU.
 pub struct GpuRenderer {
     device: wgpu::Device,
@@ -148,11 +338,13 @@ pub struct GpuRenderer {
     /// The same shader blending destination-out: clears toward transparent by coverage.
     cutout: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
+    pipeline_layout: wgpu::PipelineLayout,
     globals: wgpu::Buffer,
+    globals_stride: usize,
     mask: wgpu::Texture,
     color: wgpu::Texture,
     images: wgpu::Texture,
-    /// Layer targets, reused across frames (window-sized, the target's format).
+    /// Layer targets, reused while their allocation covers the same size bucket.
     layers: Vec<wgpu::Texture>,
     /// A 1×1 texture bound where no layer is.
     no_layer: wgpu::Texture,
@@ -165,6 +357,7 @@ pub struct GpuRenderer {
     overflow: bool,
     glyphs: GlyphCache,
     instances: Option<(wgpu::Buffer, u64)>,
+    programs: custom::Programs,
     format: wgpu::TextureFormat,
 }
 
@@ -182,7 +375,7 @@ impl GpuRenderer {
     pub fn with_device(device: wgpu::Device, queue: wgpu::Queue, format: wgpu::TextureFormat) -> GpuRenderer {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("octara"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(concat!(include_str!("gpu/geometry.wgsl"), include_str!("shader.wgsl")).into()),
         });
         let texture_entry = |binding| wgpu::BindGroupLayoutEntry {
             binding,
@@ -199,11 +392,11 @@ impl GpuRenderer {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<Globals>() as u64),
                     },
                     count: None,
                 },
@@ -218,54 +411,21 @@ impl GpuRenderer {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let attributes = wgpu::vertex_attr_array![
-            0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
-            7 => Float32x4, 8 => Float32x4
-        ];
-        let premultiplied = wgpu::BlendComponent {
-            src_factor: wgpu::BlendFactor::One,
+        let cutout_blend = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Zero,
             dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
             operation: wgpu::BlendOperation::Add,
         };
-        let make = |label: &'static str, blend: wgpu::BlendComponent| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<Inst>() as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &attributes,
-                    })],
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState { color: blend, alpha: blend }),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let pipeline = make("octara", premultiplied);
-        let cutout = make(
+        let pipeline =
+            render_pipeline(&device, &pipeline_layout, format, &shader, "fs", "octara", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+        let cutout = render_pipeline(
+            &device,
+            &pipeline_layout,
+            format,
+            &shader,
+            "fs",
             "octara cutout",
-            wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::Zero,
-                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                operation: wgpu::BlendOperation::Add,
-            },
+            wgpu::BlendState { color: cutout_blend, alpha: cutout_blend },
         );
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("octara globals"),
@@ -273,6 +433,7 @@ impl GpuRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let globals_stride = std::mem::size_of::<Globals>().next_multiple_of(device.limits().min_uniform_buffer_offset_alignment as usize);
         let mask_size = device.limits().max_texture_dimension_2d.min(MASK_ATLAS);
         let atlas = |format, label, size| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -305,7 +466,9 @@ impl GpuRenderer {
             pipeline,
             cutout,
             layout,
+            pipeline_layout,
             globals,
+            globals_stride,
             mask,
             color,
             images,
@@ -318,6 +481,7 @@ impl GpuRenderer {
             overflow: false,
             glyphs: GlyphCache::default(),
             instances: None,
+            programs: custom::Programs::default(),
             format,
         }
     }
@@ -421,7 +585,7 @@ impl GpuRenderer {
     /// come after it, so drawing the passes last to first draws every layer before its use). When
     /// an atlas fills up, every atlas starts over and the frame is built again (uploads land in
     /// order before the draw, so the second build's win); what still does not fit is not drawn.
-    fn passes(&mut self, dl: &DisplayList, scale: f32, size: (u32, u32)) -> Vec<Pass> {
+    fn passes(&mut self, dl: &DisplayList, scale: f32, size: (u32, u32)) -> (Vec<Pass>, Vec<CanvasRequest>) {
         self.overflow = false;
         let passes = self.build_passes(dl, scale, size);
         if !self.overflow {
@@ -433,10 +597,12 @@ impl GpuRenderer {
         passes
     }
 
-    fn build_passes(&mut self, dl: &DisplayList, scale: f32, size: (u32, u32)) -> Vec<Pass> {
+    fn build_passes(&mut self, dl: &DisplayList, scale: f32, size: (u32, u32)) -> (Vec<Pass>, Vec<CanvasRequest>) {
         let mut passes = vec![Pass::default()];
+        let mut canvases = Vec::new();
         let mut open: Vec<usize> = vec![0];
         let mut clips: Vec<(f32, f32, f32, f32, f32)> = Vec::new();
+        let window = Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32);
         for item in &dl.items() {
             let (clip, clip_r) = clips.last().map_or((NO_CLIP, 0.0), |c| ([c.0, c.1, c.2, c.3], c.4));
             let current = *open.last().expect("a pass");
@@ -444,6 +610,37 @@ impl GpuRenderer {
             match item {
                 Item::Shadow(s) => out.push(shadow(s, scale, clip, clip_r)),
                 Item::Quad(q) => out.push(quad(q, scale, clip, clip_r)),
+                Item::Custom(paint) => {
+                    let fallback = quad(&paint.fallback, scale, clip, clip_r);
+                    if fallback.visible_bounds(&window).is_empty() {
+                        continue;
+                    }
+                    let mut instance = custom_quad(paint, &fallback);
+                    if let Some(&material) = paint.program.downcast_ref::<custom::Material>() {
+                        if self.programs.prepare_material(&self.device, &self.pipeline_layout, self.format, material, paint.fallback.source)
+                        {
+                            passes[current].push_special(instance, Draw::Material(material));
+                            continue;
+                        }
+                    } else if paint.program.downcast_ref::<custom::Canvas>().is_some()
+                        && let Some(size) = custom::canvas_size(instance.rect, self.device.limits().max_texture_dimension_2d)
+                    {
+                        instance.params[1] = KIND_CANVAS;
+                        let index = canvases.len();
+                        canvases.push(CanvasRequest {
+                            pass: current,
+                            instance: out.len(),
+                            program: paint.program.clone(),
+                            fallback,
+                            source: paint.fallback.source,
+                            size,
+                            params: paint.params,
+                        });
+                        passes[current].push_special(instance, Draw::Canvas(index));
+                        continue;
+                    }
+                    out.push(fallback);
+                }
                 Item::Image(i) => {
                     if let Some(at) = self.image_slot(i) {
                         out.push(image(i, at, scale, clip, clip_r));
@@ -505,9 +702,7 @@ impl GpuRenderer {
                         border: [0.0; 4],
                         border_color: Color::TRANSPARENT,
                     };
-                    let at = out.len();
-                    out.push(quad(&hole, scale, clip, clip_r));
-                    passes[current].cutouts.push(at);
+                    passes[current].push_special(quad(&hole, scale, clip, clip_r), Draw::Cutout);
                 }
                 // Otherwise its placeholder or snapshot, drawn before, shows.
                 Item::Native { .. } => {}
@@ -528,36 +723,98 @@ impl GpuRenderer {
                     }
                     let layer = open.pop().expect("a layer");
                     let parent = *open.last().expect("a pass");
-                    let at = passes[parent].insts.len();
                     let opacity = passes[layer].opacity;
                     // The layer covers the target; what clips it was applied inside.
-                    passes[parent].insts.push(Inst {
-                        rect: [0.0, 0.0, size.0 as f32, size.1 as f32],
-                        fill: [0.0, 0.0, 0.0, opacity],
-                        border_color: [0.0; 4],
-                        border: [0.0; 4],
-                        clip: NO_CLIP,
-                        params: [0.0, 5.0, 0.0, 0.0],
-                        uv: [0.0; 4],
-                        grad_color: [0.0; 4],
-                        grad: [0.0; 4],
-                    });
-                    passes[parent].composites.push((at, layer));
+                    passes[parent].push_special(
+                        Inst { fill: [0.0, 0.0, 0.0, opacity], clip: NO_CLIP, params: [0.0, KIND_LAYER, 0.0, 0.0], ..Inst::zeroed() },
+                        Draw::Layer(layer),
+                    );
                 }
             }
         }
-        passes
+        (passes, canvases)
     }
 
-    /// Records the draw of `dl` into `view` (a window's surface texture or an offscreen target).
-    /// Layers draw first, each into a texture of its own, then composite into their parents.
-    pub fn draw(&mut self, dl: &DisplayList, scale: f32, view: &wgpu::TextureView, size: (u32, u32)) {
-        let passes = self.passes(dl, scale, size);
+    /// Records the display list into the given encoder, using `view` as a render attachment.
+    ///
+    /// The caller can record earlier commands into the encoder before passing it here. Preparation
+    /// stages queue writes into the renderer's reusable buffers and atlases. These writes execute
+    /// before all commands in the next queue submission, including any earlier encoder commands.
+    /// Coordinate access to the shared queue so the returned frame is submitted or dropped before
+    /// other work is staged or submitted. Finish any open debug groups first. Author canvases use
+    /// separate command buffers between earlier commands and the draw, in the same submission.
+    /// `size` is the view's extent in device pixels.
+    pub fn record(
+        &mut self,
+        mut encoder: wgpu::CommandEncoder,
+        dl: &DisplayList,
+        scale: f32,
+        view: &wgpu::TextureView,
+        size: (u32, u32),
+    ) -> RecordedFrame<'_> {
+        let (frame, mut before) = self.prepare_frame(dl, scale, size);
+        if !before.is_empty() {
+            before.insert(0, encoder.finish());
+            encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("octara drawing") });
+        }
+        self.encode_frame(&mut encoder, &frame, view);
+        RecordedFrame { before, encoder, queue: &self.queue }
+    }
+
+    fn prepare_canvases(
+        &mut self,
+        passes: &mut [Pass],
+        requests: Vec<CanvasRequest>,
+        scale: f32,
+    ) -> (Vec<wgpu::TextureView>, Vec<wgpu::CommandBuffer>) {
+        self.programs.prune_canvases();
+        if requests.is_empty() {
+            self.programs.finish_canvases(0);
+            return (Vec::new(), Vec::new());
+        }
+        let mut slots = Vec::with_capacity(requests.len());
+        let mut views = Vec::with_capacity(requests.len());
+        let mut commands = Vec::with_capacity(requests.len() + 1);
+        // Preparation follows display-list order, including canvases inside child layers.
+        for request in requests {
+            let index = views.len();
+            let product = self.programs.encode_canvas(&self.device, &request, scale, index);
+            let slot = product.map(|(view, command)| {
+                views.push(view);
+                commands.push(command);
+                index
+            });
+            if slot.is_none() {
+                passes[request.pass].insts[request.instance] = request.fallback;
+            }
+            slots.push(slot);
+        }
+        self.programs.finish_canvases(views.len());
+        for pass in passes {
+            pass.special.retain_mut(|batch| {
+                let Draw::Canvas(request) = batch.draw else {
+                    return true;
+                };
+                let Some(view) = slots[request] else {
+                    return false;
+                };
+                batch.draw = Draw::Canvas(view);
+                true
+            });
+        }
+        (views, commands)
+    }
+
+    fn prepare_frame(&mut self, dl: &DisplayList, scale: f32, size: (u32, u32)) -> (PreparedFrame, Vec<wgpu::CommandBuffer>) {
+        let (mut passes, canvases) = self.passes(dl, scale, size);
+        let (canvas_views, before) = self.prepare_canvases(&mut passes, canvases, scale);
+        let window = [size.0, size.1];
+        let bounds = bound_passes(&mut passes, window);
         // One buffer holds every pass's instances.
         let mut all: Vec<Inst> = Vec::new();
-        let mut offsets = Vec::with_capacity(passes.len());
+        let mut instance_offsets = Vec::with_capacity(passes.len());
         for p in &passes {
-            offsets.push(all.len() as u32);
+            instance_offsets.push(all.len() as u32);
             all.extend_from_slice(&p.insts);
         }
         let bytes: &[u8] = bytemuck::cast_slice(&all);
@@ -572,28 +829,53 @@ impl GpuRenderer {
             });
             self.instances = Some((buffer, cap));
         }
-        let (buffer, _) = self.instances.as_ref().expect("instance buffer");
         if !bytes.is_empty() {
+            let (buffer, _) = self.instances.as_ref().expect("instance buffer");
             self.queue.write_buffer(buffer, 0, bytes);
         }
-        let globals = Globals { size: [size.0 as f32, size.1 as f32], _pad: [0.0; 2] };
-        self.queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
-        // Layer targets, window-sized.
         let layer_count = passes.len() - 1;
-        self.layers.retain(|t| t.width() == size.0 && t.height() == size.1);
-        while self.layers.len() < layer_count {
-            self.layers.push(self.device.create_texture(&wgpu::TextureDescriptor {
+        self.layers.truncate(layer_count);
+        for (index, bounds) in bounds[1..].iter().enumerate() {
+            let [width, height] = bounds.allocation(window);
+            if self.layers.get(index).is_some_and(|t| t.width() == width && t.height() == height) {
+                continue;
+            }
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("octara layer"),
-                size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: self.format,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
-            }));
+            });
+            if let Some(slot) = self.layers.get_mut(index) {
+                *slot = texture;
+            } else {
+                self.layers.push(texture);
+            }
         }
-        let layer_views: Vec<wgpu::TextureView> = self.layers[..layer_count].iter().map(|t| t.create_view(&Default::default())).collect();
+        // Distinct projections in this submission, one aligned uniform range per target.
+        let uniform_size = std::mem::size_of::<Globals>();
+        let bytes_len = layer_count * self.globals_stride + uniform_size;
+        if self.globals.size() < bytes_len as u64 {
+            self.globals = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("octara globals"),
+                size: bytes_len.next_power_of_two() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        let mut uniforms = vec![0; bytes_len];
+        let sizes = std::iter::once(window).chain(self.layers.iter().map(|t| [t.width(), t.height()]));
+        for (index, (bounds, extent)) in bounds.iter().zip(sizes).enumerate() {
+            let globals = Globals { size: extent.map(|n| n as f32), origin: bounds.origin.map(|n| n as f32) };
+            let at = index * self.globals_stride;
+            uniforms[at..at + uniform_size].copy_from_slice(bytemuck::bytes_of(&globals));
+        }
+        self.queue.write_buffer(&self.globals, 0, &uniforms);
+        let layer_views: Vec<wgpu::TextureView> = self.layers.iter().map(|t| t.create_view(&Default::default())).collect();
         let mask_view = self.mask.create_view(&Default::default());
         let color_view = self.color.create_view(&Default::default());
         let image_view = self.images.create_view(&Default::default());
@@ -603,7 +885,14 @@ impl GpuRenderer {
                 label: Some("octara"),
                 layout: &self.layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: self.globals.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &self.globals,
+                            offset: 0,
+                            size: wgpu::BufferSize::new(uniform_size as u64),
+                        }),
+                    },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&mask_view) },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&color_view) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&image_view) },
@@ -613,11 +902,17 @@ impl GpuRenderer {
         };
         let bind = bind_with(&no_layer);
         let layer_binds: Vec<wgpu::BindGroup> = layer_views.iter().map(bind_with).collect();
+        let canvas_binds = canvas_views.iter().map(bind_with).collect();
         let [r, g, b, a] = dl.background.components;
         let background = wgpu::Color { r: (r * a) as f64, g: (g * a) as f64, b: (b * a) as f64, a: a as f64 };
-        let mut encoder = self.device.create_command_encoder(&Default::default());
-        for (i, p) in passes.iter().enumerate().rev() {
-            let (target, clear) = if i == 0 { (view, background) } else { (&layer_views[i - 1], wgpu::Color::TRANSPARENT) };
+        (PreparedFrame { passes, instance_offsets, background, layer_views, bind, layer_binds, canvas_binds }, before)
+    }
+
+    fn encode_frame(&self, encoder: &mut wgpu::CommandEncoder, frame: &PreparedFrame, view: &wgpu::TextureView) {
+        let (buffer, _) = self.instances.as_ref().expect("instance buffer");
+        // Layers draw before the passes that composite them.
+        for (i, p) in frame.passes.iter().enumerate().rev() {
+            let (target, clear) = if i == 0 { (view, frame.background) } else { (&frame.layer_views[i - 1], wgpu::Color::TRANSPARENT) };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("octara"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -631,40 +926,34 @@ impl GpuRenderer {
             if p.insts.is_empty() {
                 continue;
             }
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &bind, &[]);
+            let projection = [u32::try_from(i * self.globals_stride).expect("pass uniform offset")];
             pass.set_vertex_buffer(0, buffer.slice(..));
-            let base = offsets[i];
-            let mut from = 0u32;
-            // Instances drawn on their own, in order: layer composites and cutouts.
-            let mut special: Vec<(usize, Option<usize>)> = p.composites.iter().map(|&(at, layer)| (at, Some(layer))).collect();
-            special.extend(p.cutouts.iter().map(|&at| (at, None)));
-            special.sort_unstable_by_key(|s| s.0);
-            for (at, layer) in special {
-                let at = at as u32;
-                if at > from {
-                    pass.draw(0..6, base + from..base + at);
+            let base = frame.instance_offsets[i];
+            let mut draw = |range: Range<usize>, special: Option<Draw>| {
+                let (pipeline, bind) = match special {
+                    None => (&self.pipeline, &frame.bind),
+                    Some(Draw::Cutout) => (&self.cutout, &frame.bind),
+                    Some(Draw::Layer(layer)) => (&self.pipeline, &frame.layer_binds[layer - 1]),
+                    Some(Draw::Canvas(view)) => (&self.pipeline, &frame.canvas_binds[view]),
+                    Some(Draw::Material(material)) => (self.programs.material_pipeline(material), &frame.bind),
+                };
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, bind, &projection);
+                pass.draw(0..6, base + range.start as u32..base + range.end as u32);
+            };
+            let mut from = 0;
+            for batch in &p.special {
+                if batch.instances.start > from {
+                    draw(from..batch.instances.start, None);
                 }
-                match layer {
-                    Some(layer) => {
-                        pass.set_bind_group(0, &layer_binds[layer - 1], &[]);
-                        pass.draw(0..6, base + at..base + at + 1);
-                        pass.set_bind_group(0, &bind, &[]);
-                    }
-                    None => {
-                        pass.set_pipeline(&self.cutout);
-                        pass.draw(0..6, base + at..base + at + 1);
-                        pass.set_pipeline(&self.pipeline);
-                    }
-                }
-                from = at + 1;
+                draw(batch.instances.clone(), Some(batch.draw));
+                from = batch.instances.end;
             }
-            let end = p.insts.len() as u32;
+            let end = p.insts.len();
             if end > from {
-                pass.draw(0..6, base + from..base + end);
+                draw(from..end, None);
             }
         }
-        self.queue.submit([encoder.finish()]);
     }
 
     /// Renders offscreen and reads the pixels back (tests, screenshots, a window's captures), in
@@ -672,8 +961,8 @@ impl GpuRenderer {
     /// one-pixel minimum.
     ///
     /// # Panics
-    /// If the scale or dimensions are invalid, or the target exceeds the device or host limits.
-    /// [`Painter::paint`] returns an error for these inputs instead.
+    /// If the dimensions or scale are invalid, the capture format is unsupported, or GPU readback
+    /// fails. [`Painter::paint`] returns an error in these cases.
     pub fn render(&mut self, dl: &DisplayList, scale: f32) -> Picture {
         self.try_render(dl, scale).expect("GPU rendering failed")
     }
@@ -682,7 +971,7 @@ impl GpuRenderer {
         let bgra = match self.format {
             wgpu::TextureFormat::Rgba8Unorm => false,
             wgpu::TextureFormat::Bgra8Unorm => true,
-            f => panic!("offscreen rendering reads RGBA8 or BGRA8, not {f:?}"),
+            format => return Err(format!("capture requires RGBA8 or BGRA8 (renderer format is {format:?})")),
         };
         let (width, height) = crate::pixels::dimensions(dl.size, scale)?;
         let limits = self.device.limits();
@@ -693,6 +982,8 @@ impl GpuRenderer {
         if layout.bytes > limits.max_buffer_size {
             return Err(format!("capture readback exceeds the GPU buffer limit of {} bytes", limits.max_buffer_size));
         }
+        // A device lost during capture may leave an invalid buffer for the readback map.
+        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let target = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("octara offscreen"),
             size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -703,15 +994,16 @@ impl GpuRenderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        self.draw(dl, scale, &target.create_view(&Default::default()), (width, height));
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("octara readback"),
             size: layout.bytes,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let mut encoder = self.device.create_command_encoder(&Default::default());
-        encoder.copy_texture_to_buffer(
+        let view = target.create_view(&Default::default());
+        let encoder = self.device.create_command_encoder(&Default::default());
+        let mut frame = self.record(encoder, dl, scale, &view, (width, height));
+        frame.encoder().copy_texture_to_buffer(
             target.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
                 buffer: &readback,
@@ -719,10 +1011,22 @@ impl GpuRenderer {
             },
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
-        self.queue.submit([encoder.finish()]);
-        readback.map_async(wgpu::MapMode::Read, .., |r| r.expect("map readback"));
-        self.device.poll(wgpu::PollType::wait_indefinitely()).expect("gpu poll");
-        let data = readback.get_mapped_range(..).expect("mapped readback");
+        let (mapped, mapping) = std::sync::mpsc::channel();
+        frame.encoder().map_buffer_on_submit(&readback, wgpu::MapMode::Read, .., move |result| {
+            let _ = mapped.send(result);
+        });
+        let submission = frame.submit();
+        if let Some(error) = pollster::block_on(validation.pop()) {
+            return Err(format!("capture GPU validation failed: {error}"));
+        }
+        self.device
+            .poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: None })
+            .map_err(|e| format!("capture GPU poll failed: {e}"))?;
+        mapping
+            .try_recv()
+            .map_err(|e| format!("capture readback callback did not report completion: {e}"))?
+            .map_err(|e| format!("capture readback mapping failed: {e}"))?;
+        let data = readback.get_mapped_range(..).map_err(|e| format!("capture readback buffer access failed: {e}"))?;
         let mut rgba = Vec::with_capacity(layout.rgba_len);
         for line in data.chunks_exact(layout.row as usize) {
             let line = &line[..width as usize * 4];
@@ -748,6 +1052,17 @@ impl GpuRenderer {
     }
 }
 
+fn custom_quad(paint: &CustomPaint, fallback: &Inst) -> Inst {
+    Inst {
+        rect: fallback.rect,
+        fill: [0.0, 0.0, 0.0, paint.opacity],
+        clip: fallback.clip,
+        params: [fallback.params[0], KIND_QUAD, fallback.params[2], 0.0],
+        uv: paint.params,
+        ..Inst::zeroed()
+    }
+}
+
 fn image(i: &ImagePaint, (ax, ay, w, h): (u32, u32, u32, u32), scale: f32, clip: [f32; 4], clip_r: f32) -> Inst {
     let (r, b) = (i.rect, i.bounds);
     Inst {
@@ -756,7 +1071,7 @@ fn image(i: &ImagePaint, (ax, ay, w, h): (u32, u32, u32, u32), scale: f32, clip:
         border_color: [0.0; 4],
         border: [b.x * scale, b.y * scale, b.w * scale, b.h * scale],
         clip,
-        params: [i.radius * scale, 4.0, clip_r, 0.0],
+        params: [i.radius * scale, KIND_IMAGE, clip_r, 0.0],
         uv: [ax as f32, ay as f32, w as f32, h as f32],
         grad_color: [0.0; 4],
         grad: [0.0; 4],
@@ -771,7 +1086,7 @@ fn shadow(s: &Shadow, scale: f32, clip: [f32; 4], clip_r: f32) -> Inst {
         border_color: [0.0; 4],
         border: [s.blur * 0.5 * scale, 0.0, 0.0, 0.0],
         clip,
-        params: [s.radius * scale, 3.0, clip_r, 1.0],
+        params: [s.radius * scale, KIND_SHADOW, clip_r, 1.0],
         uv: [0.0; 4],
         grad_color: [0.0; 4],
         grad: [0.0; 4],
@@ -791,7 +1106,7 @@ fn quad(q: &Quad, scale: f32, clip: [f32; 4], clip_r: f32) -> Inst {
         border_color: straight(q.border_color),
         border: q.border.map(|b| b * scale),
         clip,
-        params: [q.radius * scale, 0.0, clip_r, if filled { 1.0 } else { 0.0 }],
+        params: [q.radius * scale, KIND_QUAD, clip_r, if filled { 1.0 } else { 0.0 }],
         uv: [0.0; 4],
         grad_color,
         grad,
@@ -810,6 +1125,176 @@ impl Painter for GpuRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use octara_primitives::identity::NodeId;
+    use octara_primitives::paint::Part;
+    use octara_primitives::theme::rgb;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn solid(rect: Rect, color: Color) -> Quad {
+        Quad {
+            source: NodeId::default(),
+            rect,
+            radius: 0.0,
+            fill: Some(color),
+            gradient: None,
+            border: [0.0; 4],
+            border_color: Color::TRANSPARENT,
+        }
+    }
+
+    fn picture(items: impl IntoIterator<Item = Item>) -> DisplayList {
+        DisplayList { size: (32.0, 24.0), background: Color::TRANSPARENT, parts: items.into_iter().map(Part::Item).collect() }
+    }
+
+    fn close(actual: [u8; 4], expected: [u8; 4]) {
+        assert!(actual.into_iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1), "pixel {actual:?}, expected {expected:?}");
+    }
+
+    #[test]
+    fn author_programs_preserve_renderer_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<GpuRenderer>();
+    }
+
+    #[test]
+    fn materials_batch_in_painter_order_with_per_instance_params() {
+        let Some(mut gpu) = GpuRenderer::new() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        const SHADER: &str = "fn material(uv: vec2f, params: vec4f) -> vec4f { return params; }";
+        let custom =
+            |rect: Rect, program, params| Item::Custom(CustomPaint { fallback: solid(rect, rgb(0xff00ff)), program, params, opacity: 1.0 });
+        let dl = picture([
+            Item::PushClip { source: NodeId::default(), rect: Rect::new(2.0, 2.0, 17.0, 13.0), radius: 5.0 },
+            custom(Rect::new(2.0, 2.0, 13.0, 12.0), material(SHADER), [1.0, 0.0, 0.0, 1.0]),
+            custom(Rect::new(8.0, 2.0, 9.0, 13.0), material(SHADER), [0.0, 1.0, 0.0, 0.5]),
+            Item::PopClip,
+            Item::Quad(solid(Rect::new(10.0, 6.0, 4.0, 8.0), rgb(0x0000ff))),
+            custom(Rect::new(20.0, 2.0, 8.0, 12.0), material(SHADER), [0.0, 0.5, 1.0, 1.0]),
+            custom(Rect::new(20.0, 15.0, 8.0, 6.0), material("invalid WGSL"), [1.0; 4]),
+            custom(Rect::new(2.0, 16.0, 8.0, 6.0), PaintProgram::new(()), [1.0; 4]),
+        ]);
+        let (passes, canvases) = gpu.passes(&dl, 1.0, (32, 24));
+        assert!(canvases.is_empty());
+        let material = *material(SHADER).downcast_ref::<custom::Material>().unwrap();
+        assert_eq!(
+            passes[0].special,
+            [Batch { instances: 0..2, draw: Draw::Material(material) }, Batch { instances: 3..4, draw: Draw::Material(material) }]
+        );
+        let frame = gpu.render(&dl, 1.0);
+        close(frame.pixel(2, 2), [0, 0, 0, 0]); // Rounded ancestor clip.
+        close(frame.pixel(6, 8), [255, 0, 0, 255]);
+        close(frame.pixel(8, 8), [127, 128, 0, 255]); // Blend in instance order.
+        close(frame.pixel(12, 8), [0, 0, 255, 255]); // Ordinary quad covers both materials.
+        close(frame.pixel(16, 8), [0, 255, 0, 128]); // Straight-alpha output.
+        close(frame.pixel(22, 8), [0, 128, 255, 255]);
+        close(frame.pixel(22, 18), [255, 0, 255, 255]); // Failed shader.
+        close(frame.pixel(5, 18), [255, 0, 255, 255]); // Unrecognized back end.
+    }
+
+    #[test]
+    fn canvas_uses_clip_group_opacity_frame_params_and_validation_fallback() {
+        let Some(mut gpu) = GpuRenderer::new() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let preparations = Arc::new(AtomicUsize::new(0));
+        let program = canvas({
+            let preparations = preparations.clone();
+            move |device| {
+                preparations.fetch_add(1, Ordering::Relaxed);
+                let copy_source = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("test canvas copy source"),
+                    size: 4,
+                    usage: wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                });
+                move |frame: &mut CanvasFrame<'_>| {
+                    assert_eq!(frame.size, [(21.0 * frame.scale) as u32; 2]);
+                    if frame.params[3] < 0.0 {
+                        frame.encoder.clear_buffer(&copy_source, 0, None);
+                        return;
+                    }
+                    if frame.params[3] > 0.0 {
+                        let [r, g, b, a] = frame.params.map(f64::from);
+                        drop(frame.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: frame.target,
+                                depth_slice: None,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a }),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            ..Default::default()
+                        }));
+                    }
+                }
+            }
+        });
+        let draw = |params: [f32; 4]| {
+            let mut dl = picture([
+                Item::PushClip { source: NodeId::default(), rect: Rect::new(3.0, 3.0, 16.0, 16.0), radius: 6.0 },
+                Item::PushLayer { source: NodeId::default(), opacity: 0.5 },
+                Item::Custom(CustomPaint {
+                    fallback: solid(Rect::new(1.0, 1.0, 21.0, 21.0), rgb(0x00ff00)),
+                    program: program.clone(),
+                    params,
+                    opacity: 1.0,
+                }),
+                Item::Quad(solid(Rect::new(10.0, 8.0, 4.0, 4.0), Color::BLACK)),
+                Item::PopLayer,
+                Item::PopClip,
+                Item::Quad(solid(Rect::new(14.0, 7.0, 4.0, 6.0), rgb(0x0000ff))),
+            ]);
+            dl.background = Color::WHITE;
+            dl
+        };
+        for scale in [1, 2] {
+            let frame = gpu.render(&draw([0.5, 0.0, 0.0, 0.5]), scale as f32);
+            let pixel = |x: u32, y: u32| frame.pixel(x * scale, y * scale);
+            close(pixel(3, 3), [255; 4]); // Rounded clip corner, inside the canvas's own box.
+            close(pixel(8, 10), [255, 191, 191, 255]); // Multiplication in premultiplied space.
+            close(pixel(11, 10), [128, 128, 128, 255]); // The group's black quad fully covers the canvas.
+            close(pixel(15, 10), [0, 0, 255, 255]); // Quad after the layer.
+            let empty = gpu.render(&draw([0.0; 4]), scale as f32); // Reuses a cleared allocation.
+            close(empty.pixel(8 * scale, 10 * scale), [255; 4]);
+        }
+        let failed = gpu.render(&draw([0.0, 0.0, 0.0, -1.0]), 2.0);
+        close(failed.pixel(16, 20), [127, 255, 127, 255]);
+        close(failed.pixel(30, 20), [0, 0, 255, 255]);
+        assert_eq!(preparations.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn nested_layers_bound_their_painted_pixels_instead_of_the_window() {
+        let window = [1600, 1200];
+        let composite = Inst { params: [0.0, KIND_LAYER, 0.0, 0.0], clip: NO_CLIP, ..Inst::zeroed() };
+        let quad = Inst { rect: [370.5, 460.25, 28.0, 18.0], clip: NO_CLIP, ..Inst::zeroed() };
+        let shadow = Inst {
+            rect: [400.25, 480.5, 21.0, 12.0],
+            clip: [404.0, 480.0, 10.0, 10.0],
+            border: [2.0, 0.0, 0.0, 0.0],
+            params: [0.0, KIND_SHADOW, 0.0, 0.0],
+            ..Inst::zeroed()
+        };
+        let mut passes = [
+            Pass { insts: vec![composite], special: vec![Batch { instances: 0..1, draw: Draw::Layer(1) }], ..Pass::default() },
+            Pass { insts: vec![quad, composite], special: vec![Batch { instances: 1..2, draw: Draw::Layer(2) }], ..Pass::default() },
+            Pass { insts: vec![shadow], ..Pass::default() },
+        ];
+        let bounds = bound_passes(&mut passes, window);
+        assert_eq!(bounds[0].size, window);
+        assert_eq!(bounds[1].rect(), [369.0, 459.0, 46.0, 32.0]);
+        assert_eq!(bounds[2].rect(), [403.0, 479.0, 12.0, 12.0]);
+        assert_eq!(passes[0].insts[0].rect, bounds[1].rect());
+        assert_eq!(passes[1].insts[1].rect, bounds[2].rect());
+        assert_eq!(bounds[1].allocation(window), [64, 64]);
+        assert_eq!(bounds[2].allocation(window), [64, 64]);
+    }
 
     #[test]
     fn readback_layout_aligns_rows_and_checks_allocation_without_allocating() {

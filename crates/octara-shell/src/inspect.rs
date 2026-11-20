@@ -193,11 +193,15 @@ impl Responder {
 fn observe_completion(window: &Window) -> Completion {
     let mut completion = Completion::observe(window);
     if completion.layout != LayoutState::Unavailable
-        && let Some((frames, pending)) = ww(window, |host| (host.frames, host.pending))
+        && let Some((frames, submitted)) = ww(window, |host| {
+            let submitted =
+                window.published_revision().is_some_and(|revision| host.has_submitted(revision) && host.matches_drawable(window.scale()));
+            (host.frames, submitted)
+        })
     {
         let last_submission = (frames > 0).then_some(frames);
         completion.surface = match last_submission {
-            Some(frame) if completion.layout == LayoutState::Settled && !pending => SurfaceState::Submitted { frame },
+            Some(frame) if completion.layout == LayoutState::Settled && submitted => SurfaceState::Submitted { frame },
             _ => SurfaceState::Pending { last_submission },
         };
     }

@@ -119,7 +119,7 @@ fn validate_size(requested: [f32; 2], scale: f64, dimension_limit: u32) -> Resul
     Ok(physical)
 }
 
-fn validate_physical(physical: PhysicalSize<u32>, dimension_limit: u32) -> Result<(), String> {
+pub(crate) fn validate_physical(physical: PhysicalSize<u32>, dimension_limit: u32) -> Result<(), String> {
     if physical.width == 0 || physical.height == 0 || physical.width > dimension_limit || physical.height > dimension_limit {
         return Err(format!("physical dimensions must be between 1 and {dimension_limit}"));
     }

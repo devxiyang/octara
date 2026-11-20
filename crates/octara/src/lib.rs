@@ -64,7 +64,7 @@ pub mod prelude {
     pub use octara_primitives::input::CursorStyle;
     pub use octara_primitives::layout::{Align, Placement, Side};
     pub use octara_primitives::motion::{Curve, Spring};
-    pub use octara_primitives::paint::Rect;
+    pub use octara_primitives::paint::{PaintProgram, Rect};
     pub use octara_primitives::theme::{
         BoxShadow, Breakpoint, Color, ContainerStep, Family, Fill, Paint, RadiusStep, ShadowStep, TextStep, Theme, Token,
         linear_color_stop, linear_gradient, rgb,

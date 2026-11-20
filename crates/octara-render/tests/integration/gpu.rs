@@ -7,7 +7,7 @@ use octara_primitives::capture::Picture;
 use octara_primitives::identity::NodeId;
 use octara_primitives::image::Sample;
 use octara_primitives::paint::{DisplayList, ImagePaint, Item, Part, Rect};
-use octara_render::{CpuRenderer, GpuRenderer};
+use octara_render::{CpuRenderer, GpuRenderer, wgpu};
 
 fn compare(name: &str, cpu: &Picture, gpu: &Picture) {
     assert_eq!((cpu.width, cpu.height), (gpu.width, gpu.height), "{name}: size");
@@ -179,6 +179,58 @@ fn image_row_pixels(gpu: &mut GpuRenderer, row: &DisplayList) -> Vec<[u8; 4]> {
 }
 
 #[test]
+fn gpu_submits_only_the_kept_frame_with_its_surrounding_commands() {
+    let Some(mut gpu) = GpuRenderer::new() else {
+        eprintln!("no GPU adapter: skipped");
+        return;
+    };
+    let color = IMAGE_COLORS[1];
+    let list = image_row(&[solid_image(8, 8, color)]);
+    let device = gpu.device().clone();
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: 8, height: 8, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&Default::default());
+    // Discard the draw while keeping the pending upload for the cached atlas slot.
+    let discarded = device.create_command_encoder(&Default::default());
+    drop(gpu.record(discarded, &list, 1.0, &view, (8, 8)));
+
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 8,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let copy_pixel = |encoder: &mut wgpu::CommandEncoder, offset| {
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { origin: wgpu::Origin3d { x: 4, y: 4, z: 0 }, ..target.as_image_copy() },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout { offset, bytes_per_row: None, rows_per_image: None },
+            },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+    };
+    let mut encoder = device.create_command_encoder(&Default::default());
+    copy_pixel(&mut encoder, 0);
+    let mut draw = gpu.record(encoder, &list, 1.0, &view, (8, 8));
+    copy_pixel(draw.encoder(), 4);
+    let submission = draw.submit();
+    readback.map_async(wgpu::MapMode::Read, .., |result| result.unwrap());
+    device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: None }).unwrap();
+    let pixels = readback.get_mapped_range(..).unwrap();
+    assert_eq!(pixels[..4], [0; 4]);
+    assert_eq!(pixels[4..], color);
+}
+
+#[test]
 fn gpu_skips_an_oversized_image_without_evicting_other_images() {
     let Some(mut gpu) = GpuRenderer::new() else {
         eprintln!("no GPU adapter: skipped");
@@ -256,7 +308,20 @@ fn layers() -> View {
         .flex_wrap()
         .bg(Token::Background)
         .child(overlap().opacity(0.5))
-        .child(overlap().opacity(0.8).child(el().absolute().top_2().left_2().size_6().bg(rgb(0x10b981)).opacity(0.5)))
+        .child(
+            overlap().opacity(0.8).child(
+                el().absolute()
+                    .top(7.25)
+                    .left(11.5)
+                    .w(36)
+                    .h(24)
+                    .rounded_md()
+                    .bg(rgb(0x10b981))
+                    .shadow_md()
+                    .opacity(0.5)
+                    .child(el().absolute().top_2().left_2().size_3().bg(Token::Accent)),
+            ),
+        )
         .child(el().w(80).h(50).rounded_lg().overflow_hidden().child(overlap().opacity(0.6)))
         .child(el().size_12().rounded_md().bg(Token::Accent).opacity(0.4))
         .into()
@@ -322,6 +387,19 @@ fn capture_painter_rejects_invalid_sizes_without_losing_the_renderer() {
         assert_eq!((frame.width, frame.height), (7, 5));
         assert_eq!(frame.rgba.as_ref(), picture.rgba);
     }
+}
+
+#[test]
+fn capture_painter_reports_device_loss() {
+    use octara_primitives::capture::Painter;
+
+    let Some(mut gpu) = GpuRenderer::new() else {
+        eprintln!("no GPU adapter: skipped");
+        return;
+    };
+    let list = DisplayList { size: (8.0, 8.0), background: Color::WHITE, parts: Vec::new() };
+    gpu.device().destroy();
+    assert!(gpu.paint(&list, 1.0).is_err());
 }
 
 /// Paths of every kind, and one larger than an atlas tile.

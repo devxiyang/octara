@@ -388,19 +388,36 @@ fn a_touch_that_scrolls_cancels_the_press_and_glides() {
 
 #[test]
 fn momentum_runs_out() {
-    let mut app = app();
-    let (x, y) = center(&app, "item-2");
-    touch(&mut app, Phase::Down, (x, y));
-    for i in 1..=4 {
-        app.app().advance(Duration::from_millis(10));
-        touch(&mut app, Phase::Move, (x, y - 5.0 * i as f32));
+    for hz in [60, 120] {
+        let mut window = app();
+        let clock = window.app();
+        let (x, y) = center(&window, "item-2");
+        touch(&mut window, Phase::Down, (x, y));
+        for i in 1..=4 {
+            clock.advance(Duration::from_millis(10));
+            touch(&mut window, Phase::Move, (x, y - 5.0 * i as f32));
+        }
+        touch(&mut window, Phase::Up, (x, y - 20.0));
+        assert_eq!(clock.next_timer_deadline(), None);
+        let start = clock.now();
+        let release = offset(&window);
+        for tick in 1..=3 * hz {
+            let time = start + Duration::from_secs_f64(f64::from(tick) / f64::from(hz));
+            clock.advance_to(time);
+            if tick == 1 {
+                assert!(offset(&window) > release);
+                clock.advance_to(time);
+                assert!(clock.next_deadline().is_some(), "a second observation at the same time keeps momentum");
+            }
+            if clock.next_deadline().is_none() {
+                break;
+            }
+        }
+        assert_eq!(clock.next_deadline(), None);
+        let settled = offset(&window);
+        clock.advance(Duration::from_secs(1));
+        assert_eq!(offset(&window), settled);
     }
-    touch(&mut app, Phase::Up, (x, y - 20.0));
-    app.app().advance(Duration::from_secs(10));
-    assert_eq!(app.app().next_deadline(), None);
-    let settled = offset(&app);
-    app.app().advance(Duration::from_secs(1));
-    assert_eq!(offset(&app), settled);
 }
 
 #[test]

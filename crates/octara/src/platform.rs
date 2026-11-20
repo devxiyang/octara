@@ -4,17 +4,19 @@
 //! traits with [`HeadlessPlatform`] and [`HeadlessWindow`].
 //!
 //! A backend sends its windows' input as [`InputEvent`](crate::app::InputEvent)s
-//! ([`Window::event`](crate::app::Window::event)) and draws each window's display list; the app
-//! presents a [`Frame`] to each platform window after every operation (native view changes, the
-//! text input) and asks the platform for the clipboard, waking the loop and new windows.
+//! ([`Window::event`](crate::app::Window::event)) and draws each window's published frame. The app
+//! presents a [`Frame`] to platform windows when their drawing, frame demand or native state
+//! changes, and asks the platform for the clipboard, waking the loop and new windows.
 
 use crate::kernel::{TextGeometry, TextInputLayout};
 use crate::native::{NativeChange, NativeId};
 use crate::paint::Rect;
 use octara_primitives::input::CursorStyle;
 use std::any::Any;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 /// The system an app runs on (one per app).
 pub trait Platform {
@@ -197,8 +199,10 @@ pub struct Frame {
     /// method's window opens next to it, and whether it is secure (the input method off and, on
     /// macOS, secure keyboard input on) or multi-line.
     pub text_input: Option<TextInput>,
-    /// What the window shows changed or moves: draw again.
+    /// A new drawing is ready to submit at the next presentation opportunity.
     pub redraw: bool,
+    /// The window needs display callbacks while its motion or scrolling continues.
+    pub continuous: bool,
     /// How the pointer looks now (over the element it is on).
     pub cursor: CursorStyle,
     /// Requests opened since the last frame that the platform shows ([`shows_ask`]).
@@ -211,6 +215,21 @@ pub struct Frame {
     /// The element a person picked ([`Window::set_picking`](crate::app::Window::set_picking)),
     /// its line already on the clipboard: a backend may print or show it.
     pub picked: Option<crate::inspect::Picked>,
+}
+
+/// The drawing and target metadata for a settled window frame. Hosts can hold this while the
+/// app prepares another frame. The list owns the sampled versions of its image resources.
+#[derive(Clone, Debug)]
+pub struct PublishedFrame {
+    pub window: crate::app::WindowId,
+    /// A drawing revision local to this window, increasing when it publishes changed content.
+    pub revision: u64,
+    /// Time on the app clock at which this drawing was prepared.
+    pub sampled_at: Duration,
+    /// Device pixels per logical pixel at preparation.
+    pub scale: f32,
+    /// Drawing data in logical pixels, including the viewport size.
+    pub list: Rc<crate::paint::DisplayList>,
 }
 
 /// The focused text field, as the platform's text input sees it.

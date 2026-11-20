@@ -13,6 +13,7 @@ import argparse
 import contextlib
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import socket
@@ -49,7 +50,7 @@ def find(snapshot, target):
     raise SmokeFailure(f"snapshot has no {target!r} node")
 
 
-def png_pixels(path):
+def png_pixels(path, *, region=None):
     """Decode the RGBA8, noninterlaced PNGs written by Octara's Picture::save_png."""
     data = path.read_bytes()
     require(data[:8] == b"\x89PNG\r\n\x1a\n", f"{path}: not a PNG")
@@ -98,7 +99,15 @@ def png_pixels(path):
             row[x] = (row[x] + prediction) & 255
         pixels.extend(row)
         previous = row
-    return width, height, hashlib.sha256(pixels).hexdigest()
+    if region is None:
+        return width, height, hashlib.sha256(pixels).hexdigest()
+    x, y, w, h = region
+    require(w > 0 and h > 0 and 0 <= x <= width - w and 0 <= y <= height - h, f"{path}: invalid pixel region {region}")
+    digest = hashlib.sha256()
+    for row in range(y, y + h):
+        start = row * stride + x * 4
+        digest.update(pixels[start : start + w * 4])
+    return width, height, digest.hexdigest()
 
 
 class LiveWindow:
@@ -760,6 +769,64 @@ def content(args, output, sockets):
         capture("web-reloaded.png")
 
 
+def gpu_lab(args, output, sockets, *, scale=1):
+    with LiveWindow("gpu_lab", args, output, sockets) as app:
+        def color_digest(color):
+            return hashlib.sha256(bytes(color) * 16).hexdigest()
+
+        def capture(name, snapshot, region=None):
+            path = output / name
+            report = app.requests({"op": "capture", "target": snapshot["target"], "path": str(path),
+                                   "scale": scale, "settle_ms": 2000, "pixels": "painted"})[0]["capture"]
+            require(report["renderer"] == "gpu" and report["pixels"] == "painted" and report["settled"],
+                    f"gpu_lab: wrong capture source or unsettled frame: {report}")
+            if region is None:
+                x, y, w, h = find(snapshot, "gpu-preview")["bounds"]
+                region = tuple(int(value * scale) for value in (x + w / 4, y + h / 4, w / 2, h / 2))
+            width, height, digest = png_pixels(path, region=region)
+            expected = tuple(math.ceil(side * scale) for side in snapshot["viewport"])
+            require((width, height) == expected, f"gpu_lab: wrong device pixels, expected {expected}, got {(width, height)}")
+            return digest
+
+        initial = app.inspect()
+        preview = find(initial, "gpu-preview")
+        require("Prism" in find(initial, "gpu-selected-material")["name"], "gpu_lab: wrong initial material")
+        original = capture("gpu-lab.png", initial)
+        sx, sy, sw, sh = find(initial, "gpu-swatch-prism")["bounds"]
+        swatch = {png_pixels(output / "gpu-lab.png", region=(int((sx + sw * fraction) * scale), int((sy + sh / 2) * scale), 4, 4))[2]
+                  for fraction in (0.25, 0.75)}
+        require(len(swatch) == 2 and color_digest((0x12, 0x12, 0x22, 0xff)) not in swatch, "gpu_lab: swatch shader pixels missing")
+
+        ember = find(initial, "gpu-material-ember")
+        app.requests({"op": "tap", "target": ember["target"]})
+        changed = app.inspect()
+        require(changed.get("focus") == "gpu-material-ember", "gpu_lab: material action lost keyboard focus")
+        require("Ember" in find(changed, "gpu-selected-material")["name"], "gpu_lab: selection did not change")
+        require(find(changed, "gpu-preview")["target"] == preview["target"], "gpu_lab: selecting a material remounted its preview")
+        require(capture("gpu-lab-ember.png", changed) != original, "gpu_lab: selection left the same canvas pixels")
+
+        resized = resize(app, 800, 620)
+        viewport = find(resized, "gpu-materials")
+        reply = app.requests({"op": "scroll", "target": viewport["target"], "dx": 0, "dy": 180})[0]
+        require(reply["scroll"]["delta"][1] > 0, "gpu_lab: shared material list did not scroll")
+        resized = app.inspect()
+        _, _, width, height = find(resized, "gpu-preview")["bounds"]
+        require(width < preview["bounds"][2] and height > 0, "gpu_lab: native resize left the same preview bounds")
+        app.requests({"op": "tap", "target": find(resized, "gpu-pass-open")["target"]})
+        opened = app.inspect()
+        popup = find(opened, "gpu-pass-popover")
+        x, y, w, h = find(opened, "gpu-preview")["bounds"]
+        px, py, pw, ph = popup["bounds"]
+        require(x < px + pw and px < x + w and y < py + ph and py < y + h, "gpu_lab: popup does not overlap the drawing")
+        sample_x, sample_y = px + 5, py + ph / 2
+        require(x <= sample_x and sample_x + 4 <= x + w and y <= sample_y and sample_y + 4 <= y + h,
+                "gpu_lab: popup sample did not cover canvas pixels")
+        popup_color = capture("gpu-lab-passes.png", opened, region=(int(sample_x * scale), int(sample_y * scale), 4, 4))
+        require(popup_color == color_digest((0x22, 0x23, 0x2e, 0xff)), "gpu_lab: popup did not draw over the canvas")
+        app.requests({"op": "tap", "target": find(opened, "gpu-pass-close")["target"]},
+                     {"op": "expect", "id": "gpu-pass-popover", "exists": False}, {"op": "expect", "clean": True})
+
+
 def main():
     repo = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -784,7 +851,7 @@ def main():
     print(f"Live smoke artifacts: {output}", flush=True)
     with tempfile.TemporaryDirectory(prefix="octara-agent-", dir="/tmp") as temporary:
         sockets = Path(temporary)
-        for scenario in (counter, gestures, search, todo, windows, styles, activation, handlers, bindings, content):
+        for scenario in (counter, gestures, search, todo, windows, styles, activation, handlers, bindings, content, gpu_lab):
             scenario(args, output, sockets)
             print(f"PASS {scenario.__name__}", flush=True)
     print("Live Inspector: inspect, gestures, native resize, realtime settle, GPU capture, errors, window routing and reconnect passed.")

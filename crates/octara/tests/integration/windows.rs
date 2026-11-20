@@ -63,6 +63,80 @@ fn recording_app() -> (App, Rc<RefCell<HostLog>>) {
 }
 
 #[test]
+fn display_ticks_publish_motion_only_in_the_window_that_needs_it() {
+    let samples = [60, 120].map(|hz| {
+        let (app, log) = recording_app();
+        let lit = app.run(|| state("lit", || false));
+        let color = move || if lit.get() { rgb(0xff0000) } else { rgb(0) };
+        let mut moving =
+            app.open_window(WindowOptions::new("Moving"), move || el().id("color").size_8().bg(color).motion(Spring::SNAP)).unwrap();
+        let still = app.open_window(WindowOptions::new("Still"), move || el().size_8().bg(color)).unwrap();
+        let node = moving.kernel().find("color").unwrap();
+        let red = |frame: &octara::platform::PublishedFrame| {
+            frame.list.quads().find(|quad| quad.source == node).unwrap().fill.unwrap().components[0]
+        };
+        let demand = |window: &Window| {
+            let log = log.borrow();
+            let (_, frame) = log.frames.iter().rfind(|(id, _)| *id == window.id()).unwrap();
+            (frame.redraw, frame.continuous)
+        };
+        let first = moving.published_frame().unwrap();
+        let still_before = still.published_revision().unwrap();
+        assert_eq!(first.window, moving.id());
+        assert_eq!(red(&first), 0.0);
+        assert_eq!(demand(&moving), (true, false));
+
+        app.run(|| lit.set(true));
+        assert_eq!(demand(&moving), (true, true));
+        assert_eq!(demand(&still), (true, false));
+        assert_eq!(app.next_timer_deadline(), None);
+        assert_eq!(app.next_deadline(), Some(Duration::from_secs_f64(1.0 / 60.0)));
+        let still_frame = still.published_frame().unwrap();
+        assert!(still_frame.revision > still_before);
+
+        let mut last = moving.published_revision().unwrap();
+        let mut samples = 0;
+        let mut intermediate = false;
+        for tick in 1..=3 * hz {
+            let sample = Duration::from_secs_f64(f64::from(tick) / f64::from(hz));
+            app.advance_to(sample);
+            let frame = moving.published_frame().unwrap();
+            assert!(frame.revision > last, "{hz} Hz sample {tick}");
+            assert_eq!(frame.sampled_at, sample);
+            assert_eq!(still.published_revision(), Some(still_frame.revision));
+            last = frame.revision;
+            if !demand(&moving).1 {
+                assert_eq!(demand(&moving), (true, false), "the terminal sample still needs a draw");
+                assert_eq!(red(&frame), 1.0);
+                break;
+            }
+            let value = red(&frame);
+            intermediate |= value > 0.0 && value < 1.0;
+            samples += 1;
+        }
+        assert!(intermediate);
+        assert_eq!(app.next_deadline(), None);
+        assert_eq!(red(&first), 0.0, "retaining a published frame pins its old drawing");
+        let final_frame = moving.published_frame().unwrap();
+        app.advance(Duration::from_secs(1));
+        let idle = moving.published_frame().unwrap();
+        assert_eq!(idle.revision, final_frame.revision);
+        assert_eq!(idle.sampled_at, final_frame.sampled_at);
+        assert!(Rc::ptr_eq(&idle.list, &final_frame.list));
+
+        moving.event(octara::app::InputEvent::Resize { width: 320.0, height: 200.0, scale: 2.0, safe_area: None });
+        let resized = moving.published_frame().unwrap();
+        assert!(resized.revision > idle.revision);
+        assert_eq!((resized.list.size, resized.scale), ((320.0, 200.0), 2.0));
+        app.close_window(moving.id());
+        assert!(moving.published_frame().is_none());
+        app.shutdown();
+        samples
+    });
+    assert!(samples[1] >= 2 * samples[0], "{samples:?}");
+}
+
+#[test]
 fn later_window_measurements_relayout_an_earlier_window() {
     for entry in ["app", "semantic", "pointer"] {
         let app = App::new(HeadlessPlatform::default());

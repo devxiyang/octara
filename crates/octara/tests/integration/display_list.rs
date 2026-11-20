@@ -72,6 +72,55 @@ fn opacity_and_theme_reach_the_colors() {
     assert_eq!(fill.components[..3], Theme::dark().get(Token::Accent).components[..3]);
 }
 
+#[test]
+fn custom_paint_params_update_only_its_drawing() {
+    let app = App::new(octara::platform::HeadlessPlatform::default());
+    let params = app.run(|| state("paint-params", || [0.25, 0.0, 0.0, 1.0]));
+    let window = app
+        .open_window(WindowOptions::new("Custom paint"), move || {
+            let program = PaintProgram::new("test program");
+            col().p_4().child(
+                el().id("box")
+                    .role(Role::Button)
+                    .label("Box")
+                    .focusable()
+                    .size_8()
+                    .rounded_md()
+                    .border()
+                    .bg(Token::Surface)
+                    .opacity(0.5)
+                    .paint(program, params),
+            )
+        })
+        .unwrap();
+    let paint = |list: &DisplayList| {
+        let items = list.items();
+        let [Item::Custom(paint)] = items.as_slice() else { panic!("expected one custom paint item, got {items:?}") };
+        paint.clone()
+    };
+    let first_frame = window.display_list();
+    let first = paint(&first_frame);
+    assert_eq!(first.fallback.rect, Rect::new(16.0, 16.0, 32.0, 32.0));
+    assert_eq!(first.fallback.border, [1.0; 4]);
+    assert_eq!(first.fallback.fill, Some(Theme::light().get(Token::Surface).multiply_alpha(0.5)));
+    assert_eq!(first.opacity, 0.5);
+    assert_eq!(first.program.downcast_ref::<&str>(), Some(&"test program"));
+    assert_eq!(first.params, [0.25, 0.0, 0.0, 1.0]);
+    let tree = window.inspect().root;
+
+    window.reset_counters();
+    app.run(|| params.set([0.75, 0.0, 0.0, 1.0]));
+    let next = paint(&window.display_list());
+    assert_eq!(next.params, [0.75, 0.0, 0.0, 1.0]);
+    assert_eq!(paint(&first_frame).params, first.params);
+    assert_eq!(next.fallback, first.fallback);
+    assert!(std::sync::Weak::ptr_eq(&next.program.downgrade(), &first.program.downgrade()));
+    assert_eq!(window.inspect().root, tree);
+    let work = window.kernel().counters();
+    assert_eq!(work.dirty_paint, 1);
+    assert_eq!((work.layout_runs, work.dirty_text, work.dirty_semantics, work.structural_ops), (0, 0, 0, 0));
+}
+
 mod ellipsis {
     use octara::prelude::*;
     use octara_primitives::paint::Item;
@@ -222,4 +271,25 @@ fn an_unchanged_frame_is_reused() {
     let before = app.display_list();
     app.app().set_theme(Theme::dark());
     assert!(!std::rc::Rc::ptr_eq(&before, &app.display_list()));
+}
+
+#[test]
+fn closing_a_window_releases_its_cached_paint_program() {
+    let window = Window::headless(|| el().size_8().paint(octara_primitives::paint::PaintProgram::new(()), [0.0; 4]));
+    let frame = window.published_frame().unwrap();
+    let program = frame
+        .list
+        .items()
+        .into_iter()
+        .find_map(|item| match item {
+            Item::Custom(paint) => Some(paint.program.downgrade()),
+            _ => None,
+        })
+        .unwrap();
+
+    window.app().close_window(window.id());
+    assert!(window.is_closed());
+    assert!(program.upgrade().is_some(), "the retained capture still owns its drawing");
+    drop(frame);
+    assert!(program.upgrade().is_none(), "a closed window handle must release cached drawings");
 }

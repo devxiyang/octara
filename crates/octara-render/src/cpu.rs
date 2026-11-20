@@ -99,6 +99,7 @@ impl CpuRenderer {
             match item {
                 Item::Shadow(s) => shadow(&mut t, s, scale),
                 Item::Quad(q) => quad(&mut t, q, scale),
+                Item::Custom(p) => quad(&mut t, &p.fallback, scale),
                 Item::Image(i) => image(&mut t, i, scale),
                 Item::Glyphs(g) => self.glyph_run(&mut t, g, scale),
                 Item::Path(p) => self.path(&mut t, p, scale),

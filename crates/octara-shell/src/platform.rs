@@ -6,10 +6,9 @@
 use super::{Shared, ShellEvent};
 #[cfg(target_os = "ios")]
 use octara::kernel::HandlerId;
-use octara::platform::{Frame, NativeSnapshotRequest, Platform, PlatformWindow, TextInput};
+use octara::platform::{Frame, NativeSnapshotRequest, Platform, PlatformWindow, PublishedFrame, TextInput};
 use octara::serde_json::{Value, json};
 use octara_primitives::input::CursorStyle;
-use octara_primitives::paint::DisplayList;
 use octara_render::{GpuRenderer, wgpu};
 use std::any::Any;
 use std::cell::RefCell;
@@ -182,9 +181,7 @@ impl Platform for WinitPlatform {
             })
             .map_or((None, None), |(n, h)| (Some(n), Some(h)));
             let proxy = shared.proxy.clone();
-            let link = super::pace_mac::DisplayLink::new(&window, move || {
-                let _ = proxy.send_event(ShellEvent::Frame(wid));
-            });
+            let link = super::pace_mac::DisplayLink::new(&window, move || proxy.send_event(ShellEvent::Frame(wid)).is_ok());
             (native, host, link)
         };
         shared.windows.borrow_mut().insert(wid, id);
@@ -193,6 +190,10 @@ impl Platform for WinitPlatform {
             shared: shared.clone(),
             surface,
             config,
+            surface_generation: 0,
+            submitted_frame: None,
+            surface_occluded: false,
+            surface_needs_configure: false,
             a11y,
             #[cfg(target_os = "ios")]
             ios_back: None,
@@ -227,6 +228,8 @@ impl Platform for WinitPlatform {
             hovering: Vec::new(),
             dropped: Vec::new(),
             pending: true,
+            continuous: false,
+            attempted: None,
             presented: None,
             resized: false,
             sized: false,
@@ -313,6 +316,12 @@ pub(crate) struct WinitWindow {
     shared: Rc<Shared>,
     surface: wgpu::Surface<'static>,
     pub(crate) config: wgpu::SurfaceConfiguration,
+    /// Invalidates evidence collected across surface recreation or reconfiguration.
+    pub(crate) surface_generation: u64,
+    /// The published drawing and surface generation used by the last successful submission.
+    submitted_frame: Option<(u64, u64)>,
+    surface_occluded: bool,
+    surface_needs_configure: bool,
     pub(crate) a11y: accesskit_winit::Adapter,
     #[cfg(target_os = "ios")]
     pub(crate) ios_back: Option<super::back_ios::BackNavigation>,
@@ -330,8 +339,7 @@ pub(crate) struct WinitWindow {
     pub(crate) native: Option<super::native_mac::Native>,
     #[cfg(target_os = "macos")]
     host: Option<super::native_mac::Host>,
-    /// Its frame clock (macOS); elsewhere winit's redraw requests, paced by the compositor
-    /// (Wayland) or the swap chain's blocking present.
+    /// Its native frame clock when available. Other windows use monitor-rate deadlines.
     #[cfg(target_os = "macos")]
     link: Option<super::pace_mac::DisplayLink>,
     /// The requests it shows natively now (macOS: menus and alerts).
@@ -361,6 +369,10 @@ pub(crate) struct WinitWindow {
     pub(crate) dropped: Vec<std::path::PathBuf>,
     /// The app has something new to show.
     pub(crate) pending: bool,
+    /// Keep requesting presentation opportunities while the app's visual clock is active.
+    pub(crate) continuous: bool,
+    /// Start of the last draw attempt, or its end if the surface did not yield a frame.
+    attempted: Option<Instant>,
     /// When the last frame was presented.
     pub(crate) presented: Option<Instant>,
     /// It resized since the last frame (native views present with the frame).
@@ -429,20 +441,77 @@ impl WinitWindow {
         self.cursor
     }
 
-    /// Nothing was shown for a refresh: a new frame is drawn at once, not at the next refresh
-    /// (which an idle ProMotion display slows to ~24 Hz).
-    pub(crate) fn rested(&self) -> bool {
-        self.presented.is_none_or(|t| t.elapsed() >= self.refresh())
+    pub(crate) fn can_present(&self) -> bool {
+        self.occluded != Some(true) && !self.surface_occluded
     }
 
-    /// Asks for the next frame on the clock.
-    pub(crate) fn want_frame(&self) {
+    fn wants_frame(&self) -> bool {
+        (self.pending || self.continuous) && self.can_present()
+    }
+
+    pub(crate) fn exposed(&mut self) {
+        self.surface_occluded = false;
+        self.pending = true;
+    }
+
+    pub(crate) fn set_occluded(&mut self, occluded: bool) {
+        self.occluded = Some(occluded);
+        if occluded {
+            self.pause_frame_clock();
+        } else {
+            self.exposed();
+        }
+    }
+
+    /// A timer-driven window keeps its deadline anchored to the last draw attempt. Events
+    /// between frames can replace pending content without shifting the next opportunity.
+    pub(crate) fn fallback_frame_deadline(&self, now: Instant) -> Option<Instant> {
+        #[cfg(target_os = "macos")]
+        if self.link.is_some() {
+            return None;
+        }
+        self.wants_frame().then(|| self.next_frame_at(now))
+    }
+
+    fn next_frame_at(&self, now: Instant) -> Instant {
+        self.attempted.map_or(now, |t| t + self.refresh())
+    }
+
+    /// Updates the display link after an app operation, returning whether to draw immediately.
+    pub(crate) fn schedule_frame(&self, now: Instant) -> bool {
+        if !self.wants_frame() {
+            self.pause_frame_clock();
+            return false;
+        }
+        if self.attempted.is_none() {
+            return self.pending;
+        }
         #[cfg(target_os = "macos")]
         if let Some(link) = &self.link {
+            // A one-shot after a quiet period can draw without waiting for the idle display
+            // to ramp up. Once a burst starts the display link owns its cadence.
+            if !self.continuous && !link.running() && self.next_frame_at(now) <= now {
+                return true;
+            }
             link.start();
-            return;
+            return false;
         }
-        self.window.request_redraw();
+        self.next_frame_at(now) <= now
+    }
+
+    pub(crate) fn frame_attempted(&mut self, started: Instant, shown: bool) {
+        self.attempted = Some(if shown { started } else { Instant::now() });
+    }
+
+    pub(crate) fn sync_frame_clock(&self) {
+        #[cfg(target_os = "macos")]
+        if let Some(link) = &self.link {
+            if self.wants_frame() {
+                link.start();
+            } else {
+                link.stop();
+            }
+        }
     }
 
     pub(crate) fn pause_frame_clock(&self) {
@@ -452,84 +521,155 @@ impl WinitWindow {
         }
     }
 
-    /// A tick of the clock: whether to draw now (else the clock pauses while nothing waits).
-    pub(crate) fn on_tick(&self) -> bool {
-        if !self.pending {
-            self.pause_frame_clock();
-            return false;
-        }
+    /// Accepts one queued display opportunity for this window.
+    pub(crate) fn take_display_tick(&self) -> bool {
         #[cfg(target_os = "macos")]
-        if self.link.is_some() {
-            return super::pace_mac::tick_draws(self.presented);
+        if let Some(link) = &self.link {
+            return link.take_tick() && self.wants_frame() && super::pace_mac::tick_draws(self.presented);
         }
-        true
+        false
     }
 
     pub(crate) fn resize(&mut self, width: u32, height: u32, renderer: &GpuRenderer) {
-        self.config.width = width.max(1);
-        self.config.height = height.max(1);
-        self.surface.configure(renderer.device(), &self.config);
+        if (width, height) == (self.config.width, self.config.height) {
+            return;
+        }
+        self.config.width = width;
+        self.config.height = height;
+        self.configure_surface(renderer.device());
+    }
+
+    fn configure_surface(&mut self, device: &wgpu::Device) {
+        self.surface.configure(device, &self.config);
+        self.surface_generation = self.surface_generation.checked_add(1).expect("surface generation exhausted");
+        self.surface_needs_configure = false;
         self.resized = true;
         self.pending = true;
     }
 
-    /// Draws `list` and presents it (native views placed with it, in one transaction): whether a
-    /// frame was shown.
-    pub(crate) fn draw(&mut self, list: &DisplayList, renderer: &mut GpuRenderer, mut trace: Option<super::trace::Frame>) -> bool {
-        let scale = self.scale();
+    fn recreate_surface(&mut self, gpu: &Gpu) -> Result<(), String> {
+        self.submitted_frame = None;
+        #[cfg(target_os = "macos")]
+        // SAFETY: retain the layer on the main thread without taking ownership of the HAL surface.
+        // The replacement keeps its existing position relative to hosted views.
+        let metal_layer = unsafe { self.surface.as_hal::<wgpu::hal::api::Metal>() }.map(|hal| hal.render_layer().lock().clone());
+        #[cfg(target_os = "macos")]
+        let surface = if let Some(layer) = &metal_layer {
+            let ptr = objc2::rc::Retained::as_ptr(layer).cast_mut().cast();
+            // SAFETY: the retained CAMetalLayer stays alive during this call and the Metal
+            // backend retains it for the lifetime of the replacement surface.
+            unsafe { gpu.instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(ptr)) }
+        } else {
+            gpu.instance.create_surface(self.window.clone())
+        };
+        #[cfg(not(target_os = "macos"))]
+        let surface = gpu.instance.create_surface(self.window.clone());
+        let surface = surface.map_err(|error| error.to_string())?;
+        let capabilities = surface.get_capabilities(&gpu.adapter);
+        if !capabilities.formats.contains(&self.config.format) || !capabilities.alpha_modes.contains(&self.config.alpha_mode) {
+            return Err("the replacement surface does not support the active format and alpha mode".into());
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(native) = &self.native {
+            native.surface_replaced();
+        }
+        self.surface = surface;
+        self.configure_surface(gpu.renderer.device());
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn place_occluded_native_views(&self) {
+        // A painted capture still needs native layout while display acquisition is paused.
+        if !self.can_present()
+            && let Some(native) = &self.native
+        {
+            let _transaction = native.begin_frame(&self.surface, self.resized);
+            native.place();
+        }
+    }
+
+    /// Submits and presents a published drawing, placing native views in the same transaction.
+    pub(crate) fn draw(&mut self, published: &PublishedFrame, gpu: &mut Gpu, mut trace: Option<super::trace::Frame>) -> bool {
+        let scale = published.scale;
+        if !self.matches_drawable(scale) {
+            self.pending = true;
+            return false;
+        }
         // An underlay view shows through the frame's cutouts: the layer becomes non-opaque
         // (premultiplied, as the renderer draws).
         #[cfg(target_os = "macos")]
         if self.native.as_ref().is_some_and(|n| n.transparent()) && self.config.alpha_mode != wgpu::CompositeAlphaMode::PostMultiplied {
             self.config.alpha_mode = wgpu::CompositeAlphaMode::PostMultiplied;
-            self.surface.configure(renderer.device(), &self.config);
+            self.surface_needs_configure = true;
+        }
+        if self.surface_needs_configure {
+            self.configure_surface(gpu.renderer.device());
         }
         #[cfg(target_os = "macos")]
-        let transaction = self.native.as_ref().is_some_and(|n| n.begin_frame(&self.surface, self.resized));
-        self.resized = false;
+        let transaction = self.native.as_ref().and_then(|n| n.begin_frame(&self.surface, self.resized));
         if let Some(t) = &mut trace {
             t.surface_start = Instant::now();
         }
         let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => Some(f),
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(renderer.device(), &self.config);
-                self.want_frame();
-                None
+            wgpu::CurrentSurfaceTexture::Success(f) => Ok(f),
+            wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
+                // This texture is still usable. Reconfigure before the next acquisition.
+                self.surface_needs_configure = true;
+                Ok(f)
             }
-            _ => None,
+            status => Err(status),
         };
         if let Some(t) = &mut trace {
             t.surface_ready = Instant::now();
         }
-        if let Some(frame) = &frame {
+        let renderer = &mut gpu.renderer;
+        if let Ok(frame) = &frame {
             let view = frame.texture.create_view(&Default::default());
-            renderer.draw(list, scale, &view, (self.config.width, self.config.height));
+            let encoder = renderer.device().create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Octara window frame") });
+            renderer.record(encoder, &published.list, scale, &view, (self.config.width, self.config.height)).submit();
         }
         if let Some(t) = &mut trace {
             t.encoded = Instant::now();
         }
         #[cfg(target_os = "macos")]
-        if let Some(n) = &self.native {
+        if frame.is_ok()
+            && let Some(n) = &self.native
+        {
             n.place();
         }
         if let Some(t) = &mut trace {
             t.native_placed = Instant::now();
         }
-        let shown = frame.is_some();
-        if let Some(frame) = frame {
-            self.window.pre_present_notify();
-            if let Some(t) = &mut trace {
-                t.present_start = Some(Instant::now());
+        let failure = match frame {
+            Ok(frame) => {
+                self.window.pre_present_notify();
+                if let Some(t) = &mut trace {
+                    t.present_start = Some(Instant::now());
+                }
+                renderer.queue().present(frame);
+                if let Some(t) = &mut trace {
+                    t.present_returned = Some(Instant::now());
+                }
+                None
             }
-            renderer.queue().present(frame);
-            if let Some(t) = &mut trace {
-                t.present_returned = Some(Instant::now());
-            }
-        }
+            Err(status) => Some(status),
+        };
         #[cfg(target_os = "macos")]
-        if transaction {
-            super::native_mac::Native::end_frame();
+        drop(transaction);
+        let shown = failure.is_none();
+        if let Some(status) = failure {
+            self.pending = true;
+            match status {
+                wgpu::CurrentSurfaceTexture::Outdated => self.configure_surface(gpu.renderer.device()),
+                wgpu::CurrentSurfaceTexture::Lost => {
+                    if let Err(error) = self.recreate_surface(gpu) {
+                        eprintln!("octara-shell: cannot recreate the window surface: {error}");
+                    }
+                }
+                wgpu::CurrentSurfaceTexture::Occluded => self.surface_occluded = true,
+                _ => {}
+            }
         }
         if !shown && trace.is_none() {
             return false;
@@ -537,6 +677,9 @@ impl WinitWindow {
         let finished = Instant::now();
         if shown {
             self.pending = false;
+            self.resized = false;
+            self.surface_occluded = false;
+            self.submitted_frame = Some((published.revision, self.surface_generation));
             self.presented = Some(finished);
             self.frames += 1;
         }
@@ -547,6 +690,8 @@ impl WinitWindow {
                     "schema": "octara.frame_trace/1",
                     "window": format!("{:?}", self.window.id()),
                     "frame": self.frames,
+                    "revision": published.revision,
+                    "surface_generation": self.surface_generation,
                     "app_clock_ms": t.app_clock_ms,
                     "visible": self.window.is_visible(),
                     "occluded": self.occluded,
@@ -564,6 +709,15 @@ impl WinitWindow {
             self.unshown = None;
         }
         shown
+    }
+
+    pub(crate) fn matches_drawable(&self, scale: f32) -> bool {
+        let drawable = self.drawable_size();
+        (drawable.width, drawable.height) == (self.config.width, self.config.height) && self.scale() == scale
+    }
+
+    pub(crate) fn has_submitted(&self, revision: u64) -> bool {
+        self.submitted_frame == Some((revision, self.surface_generation))
     }
 
     /// Shows a request the platform takes (file dialogs: rfd's, made here on the main thread so
@@ -770,6 +924,7 @@ impl WinitWindow {
         if frame.redraw || placed {
             self.pending = true;
         }
+        self.continuous = frame.continuous;
         for id in frame.withdrawn {
             #[cfg(target_os = "macos")]
             super::ask_mac::withdraw(&self.shown, id);
@@ -833,6 +988,7 @@ fn cursor_icon(c: CursorStyle) -> winit::window::CursorIcon {
 
 impl Drop for WinitWindow {
     fn drop(&mut self) {
+        self.pause_frame_clock();
         #[cfg(target_os = "macos")]
         drop(self.scroll.take());
         #[cfg(not(target_os = "ios"))]

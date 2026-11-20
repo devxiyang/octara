@@ -14,6 +14,7 @@ use crate::kernel::{
     Breakpoint, Color, Fill, FocusGroup, HandlerId, HandlerKind, Kernel, NodeId, NumericRange, Paint, Placement, Relation, Relations, Role,
     State, StyleProp, Token, When,
 };
+use crate::paint::PaintProgram;
 use crate::reactive::graph::{self, rt};
 use crate::reactive::log::Changes;
 use crate::reactive::text::{TextBuffer, TextChange};
@@ -88,6 +89,16 @@ impl IntoProp<f32> for f32 {
 }
 impl<F: Fn() -> f32 + 'static> IntoProp<f32> for F {
     fn into_prop(self) -> Prop<f32> {
+        Prop::Dyn(Box::new(self))
+    }
+}
+impl IntoProp<[f32; 4]> for [f32; 4] {
+    fn into_prop(self) -> Prop<[f32; 4]> {
+        Prop::Static(self)
+    }
+}
+impl<F: Fn() -> [f32; 4] + 'static> IntoProp<[f32; 4]> for F {
+    fn into_prop(self) -> Prop<[f32; 4]> {
         Prop::Dyn(Box::new(self))
     }
 }
@@ -202,6 +213,7 @@ macro_rules! signal_props {
         signal_prop!($handle, Option<String>);
         signal_prop!($handle, bool);
         signal_prop!($handle, f32);
+        signal_prop!($handle, [f32; 4]);
         signal_prop!($handle, NumericRange);
         signal_prop!($handle, serde_json::Value);
         signal_prop!($handle, Rich);
@@ -388,6 +400,7 @@ struct ElementProps {
     focusable: bool,
     styles: Vec<StyleValue>,
     overrides: Vec<(When, Vec<StyleProp>)>,
+    custom_paint: Option<(PaintProgram, Prop<[f32; 4]>)>,
     handlers: Behavior,
     behaviors: Vec<Behavior>,
     tab_index: i32,
@@ -464,6 +477,7 @@ impl ElementProps {
             focusable: false,
             styles: Vec::new(),
             overrides: Vec::new(),
+            custom_paint: None,
             handlers: Behavior::default(),
             behaviors: Vec::new(),
             tab_index: 0,
@@ -631,6 +645,15 @@ impl<C> El<C> {
     pub fn bg(self, p: impl IntoProp<Fill>) -> Self {
         self.dyn_style(p.into_prop(), |p| StyleProp::Background(Some(p)))
     }
+
+    /// Paints the element's box with a renderer-specific program in the background and border
+    /// drawing position. The styled background and border are the fallback. Changes to `params`
+    /// update the drawing.
+    pub fn paint(mut self, program: PaintProgram, params: impl IntoProp<[f32; 4]>) -> Self {
+        self.props.custom_paint = Some((program, params.into_prop()));
+        self
+    }
+
     pub fn text_color(self, p: impl IntoProp<Paint>) -> Self {
         self.dyn_style(p.into_prop(), StyleProp::TextColor)
     }
@@ -1292,6 +1315,9 @@ pub(crate) fn build_el(element: El) -> NodeId {
     }
     if let Some(p) = e.test_id {
         bind(at, node, p, |k, n, v: &String| k.set_test_id(n, Some(v)));
+    }
+    if let Some((program, params)) = e.custom_paint {
+        bind(at, node, params, move |k, n, v| k.set_custom_paint(n, &program, *v));
     }
     let mut children = Vec::new();
     match content {

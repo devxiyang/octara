@@ -9,6 +9,7 @@
 ## 内核重构
 
 - [x] 统一弹层的绘制顺序、交互范围和关闭仲裁。分别验证逻辑焦点路径、逆序打开的同级弹层、外点关闭的原目标校验，以及窗口内绘制提示框的焦点恢复。[弹层契约](design/ui-primitives.md#5-overlays) · [弹层回归](../crates/octara/tests/integration/overlay.rs)
+- [ ] 推进渲染与作者 wgpu 能力。共享材质与多 pass 画布已接入渲染和绘制捕获。接下来验证 Dialog 转场的背景采样、纹理版本与资源寿命，并核对实屏帧节奏和设备重建。[渲染架构](design/rendering.md)
 - [x] 将模态范围应用到 Inspector 动作、系统辅助功能树与辅助技术输入。回归覆盖独立挂载的弹层、标签关系、坐标、迟到选区和恢复焦点。[模态语义](design/ui-primitives.md#5-overlays) · [语义回归](../crates/octara/tests/integration/focus.rs)
 - [x] 让虚拟列表按业务 key 揭示一行。用 Chat 长会话列表和持有编辑器焦点的搜索选择器验证，分别核对真实焦点与 `active_descendant`。[复现、实现与实测](research/headless-ui-react.md#虚拟选项与退出时序)
 - [x] 分开报告 Inspector 动作投递、窗口布局结算与宿主队列提交。用虚拟行跳转核对布局已结算而宿主仍待提交、随后只读观察提交的过程。[操作回执](design/agent-knowledge.md)

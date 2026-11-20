@@ -80,6 +80,31 @@ fn deterministic_and_pixels_where_expected() {
 }
 
 #[test]
+fn custom_paint_fallback_matches_a_clipped_quad_in_an_opacity_group() {
+    let render = |custom| {
+        let mut window = Window::headless(move || {
+            let card = el()
+                .size_16()
+                .flex_shrink_0()
+                .rounded_lg()
+                .border_2()
+                .border_color(Token::Danger)
+                .bg(linear_gradient(90.0, linear_color_stop(Token::Accent, 0.0), linear_color_stop(Token::Surface, 1.0)))
+                .opacity(0.5)
+                .child(el().size_8().bg(Token::Accent));
+            let card = if custom { card.paint(PaintProgram::new(()), [0.0; 4]) } else { card };
+            col().p_4().child(col().size_12().rounded_lg().overflow_clip().child(card))
+        });
+        window.resize(80.0, 80.0);
+        CpuRenderer::new().render(&window.display_list(), 1.0)
+    };
+    let fallback = render(true);
+    assert_ne!(fallback.pixel(40, 40), fallback.pixel(0, 0));
+    assert_eq!(fallback.pixel(66, 40), fallback.pixel(0, 0));
+    assert!(fallback == render(false));
+}
+
+#[test]
 fn render_and_capture_preserve_straight_alpha_in_pngs() {
     use octara_primitives::capture::{Painter, Picture};
     use octara_primitives::paint::DisplayList;

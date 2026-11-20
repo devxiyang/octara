@@ -489,7 +489,7 @@ impl Shell {
     fn resize_window(&mut self, w: &mut AppWindow, size: winit::dpi::PhysicalSize<u32>) {
         if let Some(g) = &*self.shared.gpu.borrow() {
             let limit = g.renderer.device().limits().max_texture_dimension_2d;
-            if size.width <= limit && size.height <= limit && u64::from(size.width) * u64::from(size.height) <= 32 * 1024 * 1024 {
+            if resize::validate_physical(size, limit).is_ok() {
                 ww(w, |x| x.resize(size.width, size.height, &g.renderer));
             }
         }
@@ -537,10 +537,12 @@ impl Shell {
         ww(w, |x| x.traced(at, what));
     }
 
-    /// After anything: each window learns its size once, shows what the app has new (now after
-    /// a quiet spell, else on its clock's next tick), and tells assistive technology if it
-    /// listens.
     fn show(&mut self) {
+        self.show_frames(false);
+    }
+
+    /// Schedules each settled window on its own clock and updates assistive technology.
+    fn show_frames(&mut self, mut clock_sampled: bool) {
         if self.app_failed() {
             return;
         }
@@ -559,14 +561,15 @@ impl Shell {
                 let back_eligible = w.back_gesture_target().is_some();
                 ww(&w, |x| x.sync_ios_back(back_eligible));
             }
-            match ww(&w, |x| (x.pending, x.rested())) {
-                Some((true, true)) => {
-                    self.draw(&w);
+            let draw = ww(&w, |x| x.schedule_frame(Instant::now()).then_some(x.continuous)).flatten();
+            if let Some(continuous) = draw {
+                // An event can wake the loop when a fallback frame is due. Sample that
+                // opportunity as well, so input bursts approaching a deadline keep drawing.
+                if continuous && !clock_sampled {
+                    self.tick();
+                    clock_sampled = true;
                 }
-                Some((true, false)) => {
-                    ww(&w, |x| x.want_frame());
-                }
-                _ => {}
+                self.draw(&w);
             }
             ww(&w, |x| x.a11y.update_if_active(|| w.accessibility_update()));
         }
@@ -574,27 +577,32 @@ impl Shell {
 
     /// Draws window `w` now and returns whether a frame was presented.
     fn draw(&mut self, w: &AppWindow) -> bool {
-        if self.app_failed() {
+        if self.app_failed() || !ww(w, |x| x.can_present()).unwrap_or(false) {
             return false;
         }
-        if !w.frame_is_settled() {
+        let attempted = Instant::now();
+        let started = self.shared.trace.then_some(attempted);
+        let Some(frame) = w.published_frame() else {
             ww(w, |x| {
                 x.pending = true;
                 x.pause_frame_clock();
             });
             return false;
-        }
+        };
         #[cfg(target_os = "ios")]
         let back_owner = w.back_gesture_target();
         #[cfg(target_os = "ios")]
         ww(w, |x| x.sync_ios_back(back_owner.is_some()));
-        let started = self.shared.trace.then(Instant::now);
-        let list = w.display_list();
-        let trace = started.map(|at| trace::Frame::new(at, w.app().now().as_millis() as u64));
+        let trace = started.map(|at| trace::Frame::new(at, frame.sampled_at.as_millis() as u64));
         let shown = {
             let mut gpu = self.shared.gpu.borrow_mut();
             let Some(g) = gpu.as_mut() else { return false };
-            ww(w, |x| x.draw(&list, &mut g.renderer, trace)).unwrap_or(false)
+            ww(w, |x| {
+                let shown = x.draw(&frame, g, trace);
+                x.frame_attempted(attempted, shown);
+                shown
+            })
+            .unwrap_or(false)
         };
         #[cfg(target_os = "ios")]
         if shown {
@@ -609,12 +617,10 @@ impl Shell {
                 eprintln!("octara-shell: drew {frames} frames at {width}×{height} (scale {scale}), exiting");
                 self.done = true;
             } else {
-                ww(w, |x| {
-                    x.pending = true;
-                    x.want_frame();
-                });
+                ww(w, |x| x.pending = true);
             }
         }
+        ww(w, |x| x.sync_frame_clock());
         shown
     }
 
@@ -698,11 +704,11 @@ impl Shell {
         if self.app_failed() {
             return;
         }
-        // A deadline the app asked for (a long press coming due, momentum's next frame).
+        // A task or input deadline, or a frame for a window without display callbacks.
         if let StartCause::ResumeTimeReached { .. } = cause {
             let _in = InLoop::enter(&self.shared, event_loop);
             self.tick();
-            self.show();
+            self.show_frames(true);
         }
     }
 
@@ -748,9 +754,20 @@ impl Shell {
             }
             self.show();
         }
-        let deadline = self.app.as_ref().and_then(|a| a.next_deadline()).map(|d| self.started + d);
-        let follow = dragging.then(|| Instant::now() + std::time::Duration::from_millis(16));
-        event_loop.set_control_flow(match deadline.into_iter().chain(follow).min() {
+        let now = Instant::now();
+        let deadline = self.app.as_ref().and_then(|a| a.next_timer_deadline()).map(|d| self.started + d);
+        let fallback = self.app.as_ref().and_then(|app| {
+            app.windows()
+                .into_iter()
+                .filter_map(|id| {
+                    let w = app.window(id)?;
+                    let d = ww(&w, |x| x.fallback_frame_deadline(now)).flatten()?;
+                    w.frame_is_settled().then_some(d)
+                })
+                .min()
+        });
+        let follow = dragging.then(|| now + std::time::Duration::from_millis(16));
+        event_loop.set_control_flow(match deadline.into_iter().chain(fallback).chain(follow).min() {
             Some(t) => ControlFlow::WaitUntil(t),
             None => ControlFlow::Wait,
         });
@@ -783,7 +800,7 @@ impl Shell {
                     && let Some(Err(error)) = ww(&window, |host| {
                         scene_ios::attach(&host.window).map(|native| {
                             native.makeKeyAndVisible();
-                            host.pending = true;
+                            host.set_occluded(false);
                         })
                     })
                 {
@@ -831,11 +848,13 @@ impl Shell {
                 return;
             }
             ShellEvent::Frame(id) => {
-                self.tick();
                 if let Some(w) = self.window_of(id)
-                    && ww(&w, |x| x.on_tick()).unwrap_or(false)
+                    && ww(&w, |x| x.take_display_tick()).unwrap_or(false)
                 {
-                    self.draw(&w);
+                    self.tick();
+                    if ww(&w, |x| x.pending).unwrap_or(false) {
+                        self.draw(&w);
+                    }
                 }
                 return;
             }
@@ -946,6 +965,7 @@ impl Shell {
             window.apply_text_edit(owner, &expected, &octara_primitives::text::TextEdit::Cancel);
         }
         window.event(InputEvent::Active(active));
+        ww(&window, |host| host.set_occluded(!active));
         if self.shared.trace {
             eprintln!(
                 "{}",
@@ -959,8 +979,7 @@ impl Shell {
             );
         }
         if active {
-            // A foreground-bound frame may have been submitted before UIKit made the scene active.
-            ww(&window, |host| host.pending = true);
+            self.tick();
             self.show();
         }
     }
@@ -993,25 +1012,22 @@ impl Shell {
                 }
                 return;
             }
-            WindowEvent::Resized(size) => {
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                 // A queued event can describe an older request; configure what the native
                 // window actually has now, just as Inspector feedback observes it.
-                let size = ww(&w, |host| host.drawable_size()).unwrap_or(size);
-                self.resize_window(&mut w, size);
+                if let Some(size) = ww(&w, |host| host.drawable_size()) {
+                    self.resize_window(&mut w, size);
+                }
             }
-            // The system asks (exposure), or the clock does where it is winit's.
+            // The system asks for exposure. Retry a surface that was occluded.
             WindowEvent::RedrawRequested => {
+                ww(&w, |x| x.exposed());
                 self.tick();
                 self.draw(&w);
             }
             // Hidden windows get no drawables; draw again once visible.
             WindowEvent::Occluded(occluded) => {
-                ww(&w, |x| {
-                    x.occluded = Some(occluded);
-                    if !occluded {
-                        x.pending = true;
-                    }
-                });
+                ww(&w, |x| x.set_occluded(occluded));
             }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::CursorMoved { position, .. } => {

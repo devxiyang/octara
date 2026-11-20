@@ -1,89 +1,10 @@
-// One instanced shader for every display-list item. The formulas are those of `shape.rs` (the
-// CPU reference renderer), so the two agree within a level or two per channel.
+// The instanced shader for standard UI draws and canvas composites. The shape formulas also
+// apply to the CPU reference renderer.
 
-struct Globals {
-    size: vec2f,
-};
-
-@group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var mask_atlas: texture_2d<f32>;
 @group(0) @binding(2) var color_atlas: texture_2d<f32>;
 @group(0) @binding(3) var image_atlas: texture_2d<f32>;
 @group(0) @binding(4) var layer: texture_2d<f32>;
-
-struct Inst {
-    @location(0) rect: vec4f,          // device px: x, y, w, h
-    @location(1) fill: vec4f,          // straight RGBA (glyph color for masks)
-    @location(2) border_color: vec4f,
-    @location(3) border: vec4f,        // top, right, bottom, left
-    @location(4) clip: vec4f,          // x, y, w, h
-    @location(5) params: vec4f,        // radius, kind, clip radius, has fill
-    @location(6) uv: vec4f,            // atlas texel origin
-    @location(7) grad_color: vec4f,    // a gradient's end color (fill is its start)
-    @location(8) grad: vec4f,          // angle (degrees), start, end, has gradient
-};
-
-struct VsOut {
-    @builtin(position) pos: vec4f,
-    @location(0) @interpolate(flat) rect: vec4f,
-    @location(1) @interpolate(flat) fill: vec4f,
-    @location(2) @interpolate(flat) border_color: vec4f,
-    @location(3) @interpolate(flat) border: vec4f,
-    @location(4) @interpolate(flat) clip: vec4f,
-    @location(5) @interpolate(flat) params: vec4f,
-    @location(6) @interpolate(flat) uv: vec4f,
-    @location(7) @interpolate(flat) grad_color: vec4f,
-    @location(8) @interpolate(flat) grad: vec4f,
-};
-
-const KIND_QUAD: f32 = 0.0;
-const KIND_MASK: f32 = 1.0;
-const KIND_SHADOW: f32 = 3.0;
-const KIND_IMAGE: f32 = 4.0;
-const KIND_LAYER: f32 = 5.0;
-const KIND_PATH: f32 = 6.0;
-
-@vertex
-fn vs(@builtin(vertex_index) vi: u32, inst: Inst) -> VsOut {
-    // Two triangles; quads grow by a pixel for the antialiasing ramp.
-    var corners = array<vec2f, 6>(vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0), vec2f(0.0, 1.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0));
-    let c = corners[vi];
-    var grow = 0.0;
-    if inst.params.y == KIND_QUAD || inst.params.y == KIND_IMAGE {
-        grow = 1.0;
-    }
-    if inst.params.y == KIND_SHADOW {
-        grow = 3.0 * inst.border.x + 1.0;
-    }
-    let p = inst.rect.xy - vec2f(grow) + c * (inst.rect.zw + vec2f(2.0 * grow));
-    var out: VsOut;
-    out.pos = vec4f(p.x / globals.size.x * 2.0 - 1.0, 1.0 - p.y / globals.size.y * 2.0, 0.0, 1.0);
-    out.rect = inst.rect;
-    out.fill = inst.fill;
-    out.border_color = inst.border_color;
-    out.border = inst.border;
-    out.clip = inst.clip;
-    out.params = inst.params;
-    out.uv = inst.uv;
-    out.grad_color = inst.grad_color;
-    out.grad = inst.grad;
-    return out;
-}
-
-fn sd_round_rect(p: vec2f, r: vec4f, radius: f32) -> f32 {
-    let hw = r.z * 0.5;
-    let hh = r.w * 0.5;
-    let rr = max(min(min(radius, hw), hh), 0.0);
-    let qx = abs(p.x - (r.x + hw)) - (hw - rr);
-    let qy = abs(p.y - (r.y + hh)) - (hh - rr);
-    let ox = max(qx, 0.0);
-    let oy = max(qy, 0.0);
-    return sqrt(ox * ox + oy * oy) + min(max(qx, qy), 0.0) - rr;
-}
-
-fn coverage(d: f32) -> f32 {
-    return clamp(0.5 - d, 0.0, 1.0);
-}
 
 const PI: f32 = 3.14159265358979;
 
@@ -115,6 +36,20 @@ fn image_color(p: vec2f, v: VsOut) -> vec4f {
     let top = a + (b - a) * tx;
     let bottom = c + (d - c) * tx;
     return (top + (bottom - top) * ty) * cov;
+}
+
+// Canvas texels are already premultiplied. Interpolate when a canvas has a fractional position
+// or its logical extent rounds up to a whole pixel in the render attachment.
+fn canvas_color(p: vec2f, v: VsOut) -> vec4f {
+    let size = textureDimensions(layer);
+    let texel = clamp(quad_uv(p, v.rect) * vec2f(size) - 0.5, vec2f(0.0), vec2f(size) - 1.0);
+    let at = vec2i(floor(texel));
+    let hi = min(at + 1, vec2i(size) - 1);
+    let weight = fract(texel);
+    let top = mix(textureLoad(layer, at, 0), textureLoad(layer, vec2i(hi.x, at.y), 0), weight.x);
+    let bottom = mix(textureLoad(layer, vec2i(at.x, hi.y), 0), textureLoad(layer, hi, 0), weight.x);
+    let outer = coverage(sd_round_rect(p, v.rect, v.params.x));
+    return mix(top, bottom, weight.y) * outer;
 }
 
 // The formula of `octara_primitives::paint::Gradient::at`: the CSS gradient line through the box's center,
@@ -185,7 +120,7 @@ fn shadow_alpha(p: vec2f, r: vec4f, radius: f32, sigma: f32) -> f32 {
 
 @fragment
 fn fs(v: VsOut) -> @location(0) vec4f {
-    let p = v.pos.xy; // pixel center
+    let p = v.pos.xy + globals.origin; // pixel center in window coordinates
     let clip = coverage(sd_round_rect(p, v.clip, v.params.z));
     let kind = v.params.y;
     if kind == KIND_SHADOW {
@@ -194,7 +129,10 @@ fn fs(v: VsOut) -> @location(0) vec4f {
     }
     if kind == KIND_LAYER {
         // A layer, pixel for pixel, at its opacity (premultiplied already).
-        return textureLoad(layer, vec2i(p), 0) * v.fill.a;
+        return textureLoad(layer, vec2i(p - v.rect.xy), 0) * v.fill.a;
+    }
+    if kind == KIND_CANVAS {
+        return canvas_color(p, v) * v.fill.a * clip;
     }
     if kind == KIND_IMAGE {
         return image_color(p, v) * v.fill.a * clip;

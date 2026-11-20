@@ -162,9 +162,37 @@ impl Window {
     fn commit_frame(&self) {
         self.sync_native();
         let revision = self.revision();
-        self.present();
+        self.present(revision);
         // Only mark the sampled revision. A host callback may itself invalidate it.
         self.w.settled_revision.set(Some(revision));
+    }
+
+    fn published_drawing(&self) -> Option<DrawingPublication> {
+        self.w.drawing.get().filter(|_| self.frame_is_settled())
+    }
+
+    /// The latest settled drawing revision, without building its display list.
+    pub fn published_revision(&self) -> Option<u64> {
+        self.published_drawing().map(|drawing| drawing.number)
+    }
+
+    /// The latest settled drawing, assembled once per revision. A host can coalesce multiple
+    /// prepared updates by fetching this on its presentation callback.
+    pub fn published_frame(&self) -> Option<crate::platform::PublishedFrame> {
+        let drawing = self.published_drawing()?;
+        if let Some(frame) = self.w.published_frame.borrow().as_ref().filter(|frame| frame.revision == drawing.number) {
+            return Some(frame.clone());
+        }
+        let seconds = f64::from_bits(drawing.prepared.time.expect("prepared frame has a sample time"));
+        let frame = crate::platform::PublishedFrame {
+            window: self.id(),
+            revision: drawing.number,
+            sampled_at: std::time::Duration::from_secs_f64(seconds),
+            scale: f32::from_bits(drawing.prepared.viewport[2]),
+            list: self.display_list(),
+        };
+        *self.w.published_frame.borrow_mut() = Some(frame.clone());
+        Some(frame)
     }
 
     pub(super) fn mount_root(&self) {

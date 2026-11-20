@@ -3,9 +3,9 @@
 //! - [`CpuRenderer`]: the reference renderer. Deterministic (bundled fonts, plain float math), it
 //!   gives agents and tests screenshots without a GPU and is the oracle the GPU renderer is
 //!   compared with.
-//! - [`GpuRenderer`] (feature `gpu`): wgpu, one WGSL shader on every platform, one instance per
-//!   item and one draw call per frame. It implements the formulas of [`shape`] and uses the same
-//!   [`glyphs`] and [`paths`] rasterization, and is tested against the reference renderer.
+//! - [`GpuRenderer`] (feature `gpu`): wgpu, batched instances, and author materials and canvases.
+//!   The built-in shader implements the formulas of [`shape`] and uses the same [`glyphs`] and
+//!   [`paths`] rasterization as the reference renderer.
 
 pub mod cpu;
 pub mod glyphs;
@@ -17,7 +17,7 @@ pub mod shape;
 
 pub use cpu::CpuRenderer;
 #[cfg(feature = "gpu")]
-pub use gpu::GpuRenderer;
+pub use gpu::{GpuRenderer, RecordedFrame};
 #[cfg(feature = "gpu")]
 pub use wgpu;
 

@@ -3,11 +3,12 @@
 //! and places their drawings, with the clips and layers between them.
 
 use super::text::{self, Wrap};
-use super::{Align, BoxShadow, Color, Kernel, Kind, NodeId, Token};
+use super::{Align, BoxShadow, Color, Dirty, Kernel, Kind, NodeId, Token};
 use crate::image::{Image, Sample};
-use crate::paint::{DisplayList, GlyphRun, Item, Part, PathPaint, Quad, Rect};
+use crate::paint::{CustomPaint, DisplayList, GlyphRun, Item, PaintProgram, Part, PathPaint, Quad, Rect};
 use crate::path::Transform;
 use std::rc::Rc;
+use std::sync::Weak;
 
 /// What a node's own drawing was built from: while it stays the same, the drawing is kept.
 #[derive(PartialEq)]
@@ -77,6 +78,10 @@ impl Kernel {
         dl
     }
 
+    pub(crate) fn discard_cached_frame(&mut self) {
+        self.last_frame.get_mut().take();
+    }
+
     /// Samples the prepared frame with native placeholders.
     pub(crate) fn capture_display_list(&self) -> DisplayList {
         self.build_display_list(PaintMode::Capture)
@@ -94,6 +99,19 @@ impl Kernel {
     /// Own drawings built and kept ones used, and glyph runs built, since the kernel started.
     pub fn drawings(&self) -> (u64, u64, u64) {
         (self.drawings_built.get(), self.drawings_reused.get(), self.glyph_runs_built.get())
+    }
+
+    pub(crate) fn set_custom_paint(&mut self, id: NodeId, program: &PaintProgram, params: [f32; 4]) -> bool {
+        let n = self.node_mut(id);
+        if let Some((old_program, old_params)) = &n.custom_paint
+            && old_params.map(f32::to_bits) == params.map(f32::to_bits)
+            && Weak::ptr_eq(&old_program.downgrade(), &program.downgrade())
+        {
+            return false;
+        }
+        n.custom_paint = Some((program.clone(), params));
+        self.changed(id, Dirty::PAINT, "paint", || format!("{params:?}"));
+        true
     }
 
     /// The frame: kept drawings used where nothing they are drawn from changed (`keep`), else
@@ -431,21 +449,25 @@ impl Kernel {
         // Background and border.
         let border = [l.border.top, l.border.right, l.border.bottom, l.border.left];
         let has_border = border.iter().any(|b| *b > 0.0);
-        if visible && (v.background.is_some() || v.gradient.is_some() || has_border) {
+        if visible && (n.custom_paint.is_some() || v.background.is_some() || v.gradient.is_some() || has_border) {
             let gradient = v.gradient.map(|g| crate::paint::Gradient {
                 from: (fade(g.from.0, opacity), g.from.1),
                 to: (fade(g.to.0, opacity), g.to.1),
                 ..g
             });
-            out.push(Item::Quad(Quad {
+            let quad = Quad {
                 source: id,
                 rect,
-                radius: v.radius.min(rect.w / 2.0).min(rect.h / 2.0).max(0.0),
+                radius,
                 fill: v.background.map(|c| fade(c, opacity)),
                 gradient,
                 border,
                 border_color: fade(v.border, opacity),
-            }));
+            };
+            out.push(match &n.custom_paint {
+                Some((program, params)) => Item::Custom(CustomPaint { fallback: quad, program: program.clone(), params: *params, opacity }),
+                None => Item::Quad(quad),
+            });
         }
 
         // An image, fitted into the padding box and clipped to the box's corners.

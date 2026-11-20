@@ -13,6 +13,8 @@ pub use linebender_resource_handle::FontData;
 
 use crate::identity::NodeId;
 use crate::theme::Color;
+use std::any::Any;
+use std::sync::{Arc, Weak};
 
 /// An axis-aligned rectangle in logical pixels.
 #[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -89,6 +91,52 @@ pub struct Quad {
     /// Border widths: top, right, bottom, left.
     pub border: [f32; 4],
     pub border_color: Color,
+}
+
+impl Quad {
+    fn fade(&mut self, k: f32) {
+        if let Some(c) = &mut self.fill {
+            *c = c.multiply_alpha(k);
+        }
+        self.border_color = self.border_color.multiply_alpha(k);
+        if let Some(g) = &mut self.gradient {
+            g.from.0 = g.from.0.multiply_alpha(k);
+            g.to.0 = g.to.0.multiply_alpha(k);
+        }
+    }
+}
+
+/// A shared handle to a renderer-specific paint program.
+#[derive(Clone, Debug)]
+pub struct PaintProgram(Arc<dyn Any + Send + Sync>);
+
+impl PaintProgram {
+    /// Stores a program that a renderer can recognize by type.
+    pub fn new(program: impl Any + Send + Sync) -> Self {
+        Self(Arc::new(program))
+    }
+
+    /// Gets the renderer's program if its type matches.
+    pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
+        self.0.downcast_ref()
+    }
+
+    /// Tracks the program's identity and lifetime without keeping it alive.
+    pub fn downgrade(&self) -> Weak<dyn Any + Send + Sync> {
+        Arc::downgrade(&self.0)
+    }
+}
+
+/// A paint program occupying the same drawing position and geometry as its fallback quad.
+#[derive(Clone, Debug)]
+pub struct CustomPaint {
+    /// The styled box to draw when the renderer cannot run the program.
+    pub fallback: Quad,
+    pub program: PaintProgram,
+    /// Per-element inputs to the program.
+    pub params: [f32; 4],
+    /// Opacity to apply to the program's output. The fallback colors already include it.
+    pub opacity: f32,
 }
 
 /// A blurred rounded rectangle under an element (a box shadow), already offset and spread.
@@ -172,6 +220,7 @@ pub struct PathPaint {
 pub enum Item {
     Shadow(Shadow),
     Quad(Quad),
+    Custom(CustomPaint),
     Image(ImagePaint),
     Glyphs(GlyphRun),
     Path(PathPaint),
@@ -205,7 +254,7 @@ pub enum Item {
 impl Item {
     /// Whether the item draws something (rather than clipping or grouping).
     pub fn draws(&self) -> bool {
-        matches!(self, Item::Shadow(_) | Item::Quad(_) | Item::Image(_) | Item::Glyphs(_) | Item::Path(_))
+        matches!(self, Item::Shadow(_) | Item::Quad(_) | Item::Custom(_) | Item::Image(_) | Item::Glyphs(_) | Item::Path(_))
     }
 
     /// Moves the item by `(dx, dy)`.
@@ -220,6 +269,7 @@ impl Item {
         match self {
             Item::Shadow(s) => r(&mut s.rect),
             Item::Quad(q) => r(&mut q.rect),
+            Item::Custom(p) => r(&mut p.fallback.rect),
             Item::Image(i) => {
                 r(&mut i.rect);
                 r(&mut i.bounds);
@@ -252,15 +302,10 @@ impl Item {
         let f = |c: &mut Color| *c = c.multiply_alpha(k);
         match self {
             Item::Shadow(s) => f(&mut s.color),
-            Item::Quad(q) => {
-                if let Some(c) = &mut q.fill {
-                    f(c);
-                }
-                f(&mut q.border_color);
-                if let Some(g) = &mut q.gradient {
-                    f(&mut g.from.0);
-                    f(&mut g.to.0);
-                }
+            Item::Quad(q) => q.fade(k),
+            Item::Custom(p) => {
+                p.fallback.fade(k);
+                p.opacity *= k;
             }
             Item::Image(i) => i.opacity *= k,
             Item::Glyphs(g) => f(&mut g.color),

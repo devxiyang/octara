@@ -1,12 +1,16 @@
 //! Opens an example app in a window:
-//! `cargo run -p octara-examples --bin window -- [showcase [card]|counter|styles|activation|handlers|bindings|gestures|todo|chat|settings|contacts|chat_virtual|windows|undo]`
+//! `cargo run -p octara-examples --bin window -- [showcase [card]|counter|styles|activation|handlers|bindings|gestures|todo|chat|settings|contacts|chat_virtual|windows|undo|gpu_lab]`
 //! (`showcase web` shows the web view card alone; the cards are `showcase::CARDS`).
 
 use octara::view::View;
-use octara_examples::{apps, showcase};
+use octara_examples::{apps, gpu_lab, showcase};
 
 fn main() {
     let name = std::env::args().nth(1).unwrap_or_else(|| "showcase".into());
+    if name == "gpu_lab" {
+        octara_shell::run_with(gpu_lab::options(), gpu_lab::view);
+        return;
+    }
     if name == "undo" {
         let options =
             octara_shell::Options { title: apps::UNDO_DOCUMENT_TITLE.into(), size: apps::UNDO_DOCUMENT_SIZE, ..Default::default() };

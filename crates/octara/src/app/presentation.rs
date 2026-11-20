@@ -199,20 +199,25 @@ impl Window {
         }
         self.w.capturing.borrow_mut().take();
         let id = CaptureId::new();
-        let (list, views) = {
+        let (native_list, views) = {
             let k = self.w.kernel.borrow();
-            let list = k.capture_display_list();
-            let views: Vec<_> = k
-                .native_placements()
+            let placements = k.native_placements();
+            // Native slots require their capture drawing with placeholders inside the clips
+            // and opacity groups. Other captures can pin the published drawing directly.
+            let native_list = (!placements.is_empty()).then(|| k.capture_display_list());
+            let views: Vec<_> = placements
                 .into_iter()
                 .filter(|(_, placement)| placement.visible)
                 .filter_map(|(node, placement)| {
                     native_report(&k, node, &placement, Shown::Failed).map(|report| (node, placement.id, report))
                 })
                 .collect();
-            (list, views)
+            (native_list, views)
         };
-        let list = Rc::unwrap_or_clone(self.with_picking_overlay(Rc::new(list)));
+        let list = match native_list {
+            Some(list) => self.with_picking_overlay(Rc::new(list)),
+            None => self.published_frame().ok_or_else(|| format!("[{}] window preparation is incomplete", codes::NOT_SETTLED))?.list,
+        };
         let mut window = self.w.platform.borrow_mut();
         let shots = views
             .into_iter()
@@ -289,7 +294,9 @@ impl Window {
                 (node, report)
             })
             .collect();
-        paint_native_snapshots(&mut list, &mut snapshots);
+        if !snapshots.is_empty() {
+            paint_native_snapshots(Rc::make_mut(&mut list), &mut snapshots);
+        }
         let native = reports
             .into_iter()
             .map(|(node, mut report)| {
@@ -329,12 +336,9 @@ impl Window {
     /// Captures the app-side evidence for an imminent display draw.
     pub fn capture_display_begin(&self) -> Result<DisplayCapture, String> {
         self.check_running()?;
-        if !self.frame_is_settled() {
-            return Err(format!("[{}] window preparation is incomplete", codes::NOT_SETTLED));
-        }
-        let list = self.display_list();
+        let frame = self.published_frame().ok_or_else(|| format!("[{}] window preparation is incomplete", codes::NOT_SETTLED))?;
         let mut images = FxHashMap::default();
-        for item in list.parts.iter().flat_map(|part| match part {
+        for item in frame.list.parts.iter().flat_map(|part| match part {
             crate::paint::Part::Drawing { items, .. } => items.as_ref(),
             crate::paint::Part::Item(item) => std::slice::from_ref(item),
         }) {
@@ -353,6 +357,7 @@ impl Window {
         Ok(DisplayCapture {
             identity: k.identity(),
             revision: self.display_revision(),
+            drawing_revision: frame.revision,
             outline: self.picking_outline(),
             images: images.into_values().collect(),
             native,
@@ -435,7 +440,7 @@ impl Window {
 
     /// Presents what changed to the window's platform: native view changes, the text input,
     /// whether to draw again (after every settle; nothing when nothing changed).
-    pub(super) fn present(&self) {
+    pub(super) fn present(&self, revision: WindowRevision) {
         let text_input = self.focused_input().and_then(|(n, _)| {
             let k = self.w.kernel.borrow();
             let caret = k.caret(n)?;
@@ -450,10 +455,19 @@ impl Window {
             };
             Some(crate::platform::TextInput { id: n, caret, secure, multiline: k.is_multiline(n), document, geometry, layout })
         });
-        let generation = self.w.kernel.borrow().paint_generation();
+        let continuous = self.animation_frame_demand();
+        let previous = self.w.drawing.get();
         let (picking, picked) = self.picking_frame();
-        let redraw = picking || generation != self.w.presented.get() || !self.w.kernel.borrow().at_rest();
         let native = std::mem::take(&mut *self.w.native_changes.borrow_mut());
+        // The last animation sample must publish even when only its presentation values changed.
+        let redraw = picking
+            || !native.is_empty()
+            || previous.is_none_or(|drawing| {
+                drawing.prepared.paint != revision.paint
+                    || drawing.prepared.viewport != revision.viewport
+                    || drawing.continuous != continuous
+                    || (continuous && drawing.prepared.time != revision.time)
+            });
         let cursor = self.cursor();
         let asks = std::mem::take(&mut *self.w.asks_new.borrow_mut());
         let withdrawn = std::mem::take(&mut *self.w.asks_withdrawn.borrow_mut());
@@ -473,20 +487,37 @@ impl Window {
         {
             capture.native_changed(&native);
         }
-        self.w.platform.borrow_mut().present(crate::platform::Frame { native, text_input, redraw, cursor, picked, asks, withdrawn });
+        self.w.platform.borrow_mut().present(crate::platform::Frame {
+            native,
+            text_input,
+            redraw,
+            continuous,
+            cursor,
+            picked,
+            asks,
+            withdrawn,
+        });
         // Only a successful host handoff advances the publication record. A host panic
         // fails the App; it must not make a partially submitted frame look completed.
         *self.w.text_input.borrow_mut() = published_input;
         self.w.cursor.set(cursor);
-        self.w.presented.set(generation);
+        if redraw {
+            let number = previous.map_or(1, |drawing| drawing.number.checked_add(1).expect("drawing revision exhausted"));
+            self.w.drawing.set(Some(DrawingPublication { number, prepared: revision, continuous }));
+        }
         self.w.frames.set(self.w.frames.get() + 1);
     }
 }
 
 impl DisplayCapture {
+    /// The drawing revision that must be submitted for this capture.
+    pub fn revision(&self) -> u64 {
+        self.drawing_revision
+    }
+
     /// Checks whether the window still agrees with the app frame before screen sampling.
     pub fn is_current(&self, window: &Window) -> bool {
-        window.frame_is_settled()
+        window.published_revision() == Some(self.drawing_revision)
             && window.w.kernel.borrow().identity() == self.identity
             && window.display_revision() == self.revision
             && window.picking_outline() == self.outline

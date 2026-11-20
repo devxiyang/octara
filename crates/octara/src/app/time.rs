@@ -7,7 +7,7 @@ use super::{App, Window, WindowState};
 use crate::task::{PendingWork, WorkKind};
 use std::time::Duration;
 
-/// A frame while something moves (60 Hz; shells present on their display's own cadence).
+/// The default interval when a clock driver relies on deadlines for animation samples.
 const MOTION_FRAME_MS: f64 = 1000.0 / 60.0;
 
 /// How long `settle` waits for background jobs (real time) before reporting them pending.
@@ -90,18 +90,32 @@ impl App {
         self.app.frame(None, std::panic::Location::caller());
     }
 
-    /// When the app next needs the clock advanced (a timer, a long press coming due, the next
-    /// frame of momentum or of motion in any window), if anything is pending. Shells wake up then.
+    /// When the app next needs a timer, gesture deadline or animation sample. Clock drivers
+    /// using display callbacks should combine [`Self::next_timer_deadline`] with each window's
+    /// [`crate::platform::Frame::continuous`] demand instead.
     /// Always after now (by a nanosecond at least): a deadline reached means "as soon as
     /// possible", so moving the clock to it always moves it on.
     pub fn next_deadline(&self) -> Option<Duration> {
+        self.deadline(true)
+    }
+
+    /// The next deadline for tasks, gestures, carets and secure entry. Window drivers schedule
+    /// animation samples on their own frame clocks.
+    pub fn next_timer_deadline(&self) -> Option<Duration> {
+        self.deadline(false)
+    }
+
+    fn deadline(&self, include_animation: bool) -> Option<Duration> {
         if self.is_shutdown() {
             return None;
         }
         let windows = self.each();
-        let own = windows.iter().filter_map(|w| w.deadline());
+        let own = windows.iter().filter_map(Window::timer_deadline);
+        let animation = (include_animation && windows.iter().any(Window::animation_frame_demand))
+            .then(|| self.app.sched.now_ms() + MOTION_FRAME_MS)
+            .into_iter();
         let soonest = crate::task::whole_ns(self.app.sched.now_ms() + 1e-6);
-        self.app.sched.next_timer().into_iter().chain(own).min_by(f64::total_cmp).map(|d| due(d.max(soonest)))
+        self.app.sched.next_timer().into_iter().chain(own).chain(animation).min_by(f64::total_cmp).map(|d| due(d.max(soonest)))
     }
 
     /// Moves the clock: the scheduler's and the time each window's kernel shows.
@@ -260,13 +274,16 @@ impl App {
 }
 
 impl Window {
-    /// When this window next needs a frame: a long press coming due, momentum, motion, a
-    /// secure field's shown character hiding (ms on the app's clock).
-    fn deadline(&self) -> Option<f64> {
-        let frame = self.w.kernel.borrow_mut().in_motion().then(|| self.app.sched.now_ms() + MOTION_FRAME_MS);
-        let reveal = self.w.kernel.borrow().reveal_deadline().map(|t| t * 1000.0);
-        let caret = self.w.kernel.borrow().caret_deadline().map(|t| t * 1000.0);
-        [self.pointer_deadline(), frame, reveal, caret].into_iter().flatten().min_by(f64::total_cmp)
+    fn timer_deadline(&self) -> Option<f64> {
+        let k = self.w.kernel.borrow();
+        let reveal = k.reveal_deadline().map(|t| t * 1000.0);
+        let caret = k.caret_deadline().map(|t| t * 1000.0);
+        [self.pointer_due(), reveal, caret].into_iter().flatten().min_by(f64::total_cmp)
+    }
+
+    pub(super) fn animation_frame_demand(&self) -> bool {
+        let k = self.w.kernel.borrow();
+        self.gliding() || k.gliding_scrolls() || !k.at_rest()
     }
 
     /// This window's motion, as pending work.

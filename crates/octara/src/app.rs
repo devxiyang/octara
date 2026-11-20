@@ -277,8 +277,10 @@ pub(crate) struct WindowState {
     native_sent: RefCell<rustc_hash::FxHashMap<NodeId, (u64, Option<crate::native::Placement>)>>,
     /// Native changes not presented yet.
     native_changes: RefCell<Vec<crate::native::NativeChange>>,
-    /// The paint generation last presented.
-    presented: Cell<u64>,
+    /// The drawing revision and continuous frame demand last handed to the host.
+    drawing: Cell<Option<DrawingPublication>>,
+    /// Materialized on the host's first draw of the published revision.
+    published_frame: RefCell<Option<crate::platform::PublishedFrame>>,
     /// The revision accepted at the App's final publication boundary.
     settled_revision: Cell<Option<WindowRevision>>,
     /// Frames presented to the platform window.
@@ -420,6 +422,13 @@ pub(crate) struct WindowRevision {
     paint: u64,
     time: Option<u64>,
     viewport: [u32; 3],
+}
+
+#[derive(Clone, Copy)]
+struct DrawingPublication {
+    number: u64,
+    prepared: WindowRevision,
+    continuous: bool,
 }
 
 impl AppState {
@@ -607,7 +616,8 @@ impl WindowState {
             cursor: Cell::new(octara_primitives::input::CursorStyle::Arrow),
             native_sent: RefCell::default(),
             native_changes: RefCell::default(),
-            presented: Cell::new(u64::MAX),
+            drawing: Cell::new(None),
+            published_frame: RefCell::default(),
             settled_revision: Cell::new(None),
             frames: Cell::new(0),
             capturing: RefCell::default(),
@@ -959,12 +969,17 @@ impl AppState {
         let Some(w) = self.handle(id) else { return };
         w.w.closed.set(true);
         w.w.capturing.borrow_mut().take();
+        w.w.published_frame.borrow_mut().take();
         if let Some(s) = w.w.root_scope.get() {
             w.enter(|| self.rt.dispose_scope(s));
             w.w.root_scope.set(None);
         }
         w.enter(|| {
-            self.rt.with_frame(Ctx::Cleanup, None, Some(None), || w.w.kernel.borrow_mut().discard_exits());
+            self.rt.with_frame(Ctx::Cleanup, None, Some(None), || {
+                let mut kernel = w.w.kernel.borrow_mut();
+                kernel.discard_exits();
+                kernel.discard_cached_frame();
+            });
             // The signals the window itself holds (no scope owns them).
             self.rt.settle_named_state(Owner(w.w.id.number()));
             w.w.viewport.dispose();

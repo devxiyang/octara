@@ -1,6 +1,6 @@
-//! Renders a small card with both renderers: `cargo run -p octara-render --example card_png -- <dir>`.
+//! Renders a small card with the available renderers: `cargo run -p octara-render --example card_png -- <dir>`.
 use octara::prelude::*;
-use octara_render::{CpuRenderer, GpuRenderer};
+use octara_render::CpuRenderer;
 
 fn main() {
     let dir = std::env::args().nth(1).unwrap_or_else(|| ".".into());
@@ -25,7 +25,8 @@ fn main() {
     });
     let dl = app.display_list();
     CpuRenderer::new().render(&dl, 2.0).save_png(format!("{dir}/card_cpu.png")).unwrap();
-    if let Some(mut gpu) = GpuRenderer::new() {
+    #[cfg(feature = "gpu")]
+    if let Some(mut gpu) = octara_render::GpuRenderer::new() {
         gpu.render(&dl, 2.0).save_png(format!("{dir}/card_gpu.png")).unwrap();
     }
 }

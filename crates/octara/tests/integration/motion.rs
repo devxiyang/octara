@@ -490,6 +490,33 @@ mod scrolling {
     }
 
     #[test]
+    fn scroll_glides_sample_each_display_opportunity_and_stop_at_the_target() {
+        for hz in [60, 120] {
+            let mut window = app(true);
+            window.tap("jump").unwrap();
+            let app = window.app();
+            assert_eq!(app.next_timer_deadline(), None);
+            let mut offset = y(&window);
+            for tick in 1..=3 * hz {
+                assert!(app.next_deadline().is_some(), "{hz} Hz sample {tick}");
+                let before = window.published_revision().unwrap();
+                let time = std::time::Duration::from_secs_f64(f64::from(tick) / f64::from(hz));
+                app.advance_to(time);
+                let frame = window.published_frame().unwrap();
+                assert!(frame.revision > before);
+                assert_eq!(frame.sampled_at, time);
+                assert_ne!(y(&window), offset);
+                if app.next_deadline().is_none() {
+                    break;
+                }
+                offset = y(&window);
+            }
+            assert_eq!(y(&window), 400.0);
+            assert_eq!(app.next_deadline(), None);
+        }
+    }
+
+    #[test]
     fn the_users_own_scrolling_takes_over() {
         let mut app = app(true);
         app.tap("jump").unwrap();

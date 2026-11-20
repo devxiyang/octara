@@ -101,7 +101,7 @@ impl Capture {
 pub(crate) struct Capturing {
     pub id: CaptureId,
     pub deadline: Instant,
-    pub list: DisplayList,
+    pub list: Rc<DisplayList>,
     pub shots: Vec<NativeShotRequest>,
 }
 
@@ -147,6 +147,7 @@ pub(crate) enum SnapshotStatus {
 pub struct DisplayCapture {
     pub(crate) identity: crate::identity::TreeIdentity,
     pub(crate) revision: crate::app::WindowRevision,
+    pub(crate) drawing_revision: u64,
     pub(crate) outline: Option<(NodeId, Rect)>,
     pub(crate) images: Vec<(Image, u64)>,
     pub(crate) native: Vec<NativeShot>,

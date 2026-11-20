@@ -103,21 +103,26 @@ enum Stage {
 struct DisplayGeometry {
     size: (u32, u32),
     scale: f32,
+    surface_generation: u64,
 }
 
 impl DisplayGeometry {
     fn current(window: &Window) -> Option<Self> {
         super::ww(window, |host| {
-            let size = (host.config.width, host.config.height);
-            let drawable = host.drawable_size();
-            let scale = host.scale();
-            (size == (drawable.width, drawable.height) && scale == window.scale()).then_some(Self { size, scale })
+            let scale = window.scale();
+            host.matches_drawable(scale).then_some(Self {
+                size: (host.config.width, host.config.height),
+                scale,
+                surface_generation: host.surface_generation,
+            })
         })
         .flatten()
     }
 
     fn is_current(self, window: &Window, frame: &DisplayCapture) -> bool {
-        frame.is_current(window) && Self::current(window) == Some(self)
+        frame.is_current(window)
+            && Self::current(window) == Some(self)
+            && super::ww(window, |host| host.has_submitted(frame.revision())).unwrap_or(false)
     }
 }
 
@@ -346,8 +351,10 @@ impl Shell {
     fn begin_capture_snapshots(&mut self, window: &mut Window, job: &mut Job, fallback: Option<String>) -> Result<(), String> {
         // Apply pending AppKit placements before requesting native snapshots.
         #[cfg(target_os = "macos")]
-        if super::ww(window, |host| host.native.as_ref().is_some_and(|native| native.has_pending_placements())).unwrap_or(false) {
-            self.draw(window);
+        if super::ww(window, |host| host.native.as_ref().is_some_and(|native| native.has_pending_placements())).unwrap_or(false)
+            && !self.draw(window)
+        {
+            super::ww(window, |host| host.place_occluded_native_views());
         }
         let scale = job.scale.unwrap_or(window.scale());
         let pending = window.unsettled();

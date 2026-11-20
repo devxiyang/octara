@@ -153,8 +153,6 @@ impl Default for Tuning {
     }
 }
 
-/// How long a frame of momentum is, for shells waiting on [`App::next_deadline`].
-const FRAME_MS: f64 = 1000.0 / 60.0;
 /// Touch samples older than this do not count toward a release's velocity.
 const VELOCITY_WINDOW_MS: f64 = 100.0;
 
@@ -250,6 +248,7 @@ struct LastPress {
 struct Momentum {
     node: NodeId,
     start: f64,
+    sampled_at: f64,
     from: (f32, f32),
     /// Unit direction of the scroll offset's change.
     dir: (f32, f32),
@@ -615,14 +614,6 @@ impl Window {
     /// intervening click between phases of synthetic input. Reloading the tree resets it.
     pub fn pointer_click_sequence(&self) -> u64 {
         self.w.interaction.borrow().pointer.click_sequence
-    }
-
-    /// The pointer's next deadline (ms): a long press coming due, or momentum's next frame.
-    pub(super) fn pointer_deadline(&self) -> Option<f64> {
-        if self.w.interaction.borrow().pointer.momentum.is_some() {
-            return Some(self.now_ms() + FRAME_MS);
-        }
-        self.pointer_due()
     }
 
     /// When something the pointer started comes due: a long press, a tooltip.
@@ -1171,18 +1162,23 @@ impl Window {
             return;
         }
         let from = self.w.kernel.borrow().scroll_offset(node);
-        self.w.interaction.borrow_mut().pointer.momentum = Some(Momentum { node, start: now, from, dir: (vx / speed, vy / speed), speed });
+        self.w.interaction.borrow_mut().pointer.momentum =
+            Some(Momentum { node, start: now, sampled_at: now, from, dir: (vx / speed, vy / speed), speed });
     }
 
     /// Momentum at the current time: an exponential slowdown, stopping below the stop speed or
     /// at the content's edge.
     fn glide(&self) {
         let Some(m) = self.w.interaction.borrow().pointer.momentum else { return };
+        let now = self.now_ms();
+        if now <= m.sampled_at {
+            return;
+        }
         let tuning = self.app.tuning.get();
         let d = tuning.momentum_decay as f64;
         let stop = (tuning.momentum_stop / 1000.0) as f64;
         let t_end = (stop / m.speed as f64).ln() / d.ln();
-        let t = (self.now_ms() - m.start).min(t_end);
+        let t = (now - m.start).min(t_end);
         let travel = (m.speed as f64 * (d.powf(t) - 1.0) / d.ln()) as f32;
         let modal = self.top_modal();
         let mut k = self.w.kernel.borrow_mut();
@@ -1195,10 +1191,7 @@ impl Window {
         k.scroll_to(m.node, m.from.0 + m.dir.0 * travel, m.from.1 + m.dir.1 * travel);
         let after = k.scroll_offset(m.node);
         drop(k);
-        let at_edge = before == after && t > 0.0;
-        if t >= t_end || at_edge {
-            self.w.interaction.borrow_mut().pointer.momentum = None;
-        }
+        self.w.interaction.borrow_mut().pointer.momentum = (t < t_end && before != after).then_some(Momentum { sampled_at: now, ..m });
     }
 
     /// After a frame: the mouse hovers whatever is under it now (content moved, appeared or
