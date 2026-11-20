@@ -30,4 +30,4 @@ iPhone 17e 模拟器上的 iOS 27.2 已验证系统触摸、中断恢复、UIKit
 
 iOS 真机仍缺仓库内的打包签名、安装、Mac 到设备的实时检查通道及实机输入与画面证据。Android 已有触摸平台约定用于无窗口检查，Activity 宿主入口、APK 构建安装和系统输入与画面验收仍待完成。[平台约定](../../crates/octara/src/app.rs) · [宿主启动](../../crates/octara-shell/src/lib.rs) · [验收清单](../TODO.md)
 
-Android 与 Windows 现阶段以 CI 通过作为验收条件。Android 作业交叉类型检查内核和 Kit 的 `aarch64-linux-android` 库目标，工作区测试覆盖 Android 触摸约定和 Windows 指针约定。Windows 沿用桌面矩阵的构建、工作区测试及窗口一致性作业。设备输入和实屏验收另列待办。[CI 配置](../../.github/workflows/ci.yml) · [平台约定回归](../../crates/octara/tests/integration/inspect.rs) · [平台顺序](../ROADMAP.md#推进顺序)
+Android 与 Windows 现阶段以 CI 通过作为验收条件。CI 只在推送到 `main` 或 PR 以 `main` 为目标分支时触发。Android 作业交叉类型检查内核和 Kit 的 `aarch64-linux-android` 库目标，工作区测试覆盖 Android 触摸约定和 Windows 指针约定。Windows 沿用桌面矩阵的构建、工作区测试及窗口一致性作业。设备输入和实屏验收另列待办。[CI 配置](../../.github/workflows/ci.yml) · [平台约定回归](../../crates/octara/tests/integration/inspect.rs) · [平台顺序](../ROADMAP.md#推进顺序)
