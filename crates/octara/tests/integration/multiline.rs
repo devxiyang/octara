@@ -140,6 +140,158 @@ fn selection_rectangles_pointer_paste() {
     assert!(value(&app).starts_with("1\n2"), "{:?}", value(&app));
 }
 
+fn native_geometry(app: &Window) -> octara::kernel::TextGeometry {
+    let window = app.platform_window();
+    let platform = window.as_any().downcast_ref::<octara::platform::HeadlessWindow>().unwrap();
+    platform.text_input.as_ref().unwrap().geometry.clone().unwrap()
+}
+
+#[test]
+fn bidi_selection_uses_visual_fragments_and_the_downstream_caret() {
+    let mut app = Window::headless(|| textarea().id("area").label("Notes").w(200).value("aאבb"));
+    app.tap("area").unwrap();
+    app.set_selection(1, 5);
+    let id = app.kernel().find("area").unwrap();
+    let ax = app.accessibility_tree();
+    let editor = octara::kernel::a11y::a11y_id(id);
+    let run = |id| &ax.nodes.iter().find(|(node, _)| *node == id).unwrap().1;
+    let rtl = run(run(editor).children()[1]);
+    assert_eq!(rtl.value(), Some("אב"));
+    let rtl_bounds = rtl.bounds().unwrap();
+    let (x, y, ..) = app.kernel().rect(id);
+    let selection = |app: &Window| {
+        let field = app.text_field().unwrap();
+        app.display_list().quads().filter(|q| q.source == id && q.rect.h == field.caret.3).map(|q| q.rect).collect::<Vec<_>>()
+    };
+    let rects = selection(&app);
+    assert_eq!(rects.len(), 1, "the entire RTL run is selected");
+    let bounds = (x + rtl_bounds.x0 as f32, x + rtl_bounds.x1 as f32);
+    let near = |a: f32, b: f32| assert!((a - b).abs() < 0.01, "{a} != {b}");
+    near(rects[0].x, bounds.0);
+    near(rects[0].right(), bounds.1);
+    let geometry = native_geometry(&app);
+    let (range, native) = geometry.first_rect(1..5).unwrap();
+    assert_eq!(range, 1..5);
+    assert_eq!(native, rects[0]);
+    near(geometry.first_rect(1..1).unwrap().1.x, bounds.1);
+    place(&mut app, 1);
+    near(app.text_field().unwrap().caret.0, bounds.1);
+    let alef_mid = bounds.1 - rtl.character_widths().unwrap()[0] * 0.5;
+    assert_eq!(app.kernel().input_offset_at(id, alef_mid, y + 10.0, true), Some(1));
+    for (x, offset) in [(bounds.1 - 0.5, 1), (bounds.1 + 0.5, 5)] {
+        assert_eq!(app.kernel().input_offset_at(id, x, y + 10.0, false), Some(offset));
+        assert_eq!(geometry.index_at(x, y + 10.0), Some(offset));
+    }
+
+    app.set_selection(0, 3);
+    let rects = selection(&app);
+    assert_eq!(rects.len(), 2, "selecting a and א leaves ב unpainted between them");
+    near(rects[0].right(), bounds.0);
+    near(rects[1].right(), bounds.1);
+    let (_, native) = native_geometry(&app).first_rect(0..3).unwrap();
+    near(native.x, rects[0].x);
+    near(native.right(), rects[1].right());
+}
+
+#[test]
+fn hard_breaks_keep_their_bytes_and_share_selection_geometry() {
+    for (text, end) in [("A\nB", 2), ("A\r\nB", 3)] {
+        let mut app = Window::headless(move || textarea().id("area").label("Notes").w(200).value(text));
+        app.tap("area").unwrap();
+        app.set_selection(1, end);
+        let field = app.text_field().unwrap();
+        assert_eq!(field.text, text);
+        let id = app.kernel().find("area").unwrap();
+        let (x, y, _, h) = app.kernel().rect(id);
+        assert_eq!(h, field.caret.3 * 2.0);
+        let display = app.display_list();
+        let rects: Vec<_> = display.quads().filter(|q| q.source == id && q.rect.h == field.caret.3).collect();
+        assert_eq!(rects.len(), 1);
+        let marker = rects[0].rect;
+        assert_eq!(marker.y, y);
+        assert!(marker.w > 0.0);
+
+        let ax = app.accessibility_tree();
+        let editor = octara::kernel::a11y::a11y_id(id);
+        let node = |id| &ax.nodes.iter().find(|(node, _)| *node == id).unwrap().1;
+        let runs = node(editor).children();
+        assert_eq!(runs.len(), 2);
+        let first = node(runs[0]);
+        assert_eq!(first.value(), Some(&text[..end]));
+        assert_eq!(first.character_lengths(), &[1, (end - 1) as u8]);
+        let left = x + first.bounds().unwrap().x0 as f32 + first.character_positions().unwrap()[1];
+        assert!((left - marker.x).abs() < 0.01);
+        assert!((first.character_widths().unwrap()[1] - marker.w).abs() < 0.01);
+
+        let geometry = native_geometry(&app);
+        assert_eq!(geometry.first_rect(1..end).unwrap(), (1..end, marker));
+        assert_eq!(geometry.first_rect(1..2).unwrap(), (1..end, marker));
+        assert_eq!(geometry.first_rect(1..1).unwrap().1.w, 0.0);
+        if end == 3 {
+            assert_eq!(geometry.first_rect(2..2).unwrap().0, 1..1);
+            place(&mut app, 2);
+            let tree = app.accessibility_tree();
+            let field = &tree.nodes.iter().find(|(node, _)| *node == editor).unwrap().1;
+            assert_eq!(field.text_selection().unwrap().focus.character_index, 1);
+            assert_eq!(field.text_selection().unwrap().focus.node, runs[0]);
+
+            app.set_selection(2, 1);
+            let tree = app.accessibility_tree();
+            let field = &tree.nodes.iter().find(|(node, _)| *node == editor).unwrap().1;
+            let selection = field.text_selection().unwrap();
+            assert_eq!(selection.focus.character_index, 1);
+            assert_eq!(selection.anchor.node, runs[1], "the partial delimiter selection expands across CRLF");
+            assert_eq!(selection.anchor.character_index, 0);
+        }
+    }
+}
+
+#[test]
+fn the_break_after_an_rtl_line_stays_inside_the_editor() {
+    // An LRM gives the paragraph left alignment while the last logical run remains RTL.
+    let text = "\u{200e}אב\nB";
+    let end = text.find('\n').unwrap();
+    let mut app = Window::headless(move || textarea().id("area").label("Notes").w(200).value(text));
+    app.tap("area").unwrap();
+    app.set_selection(end, end + 1);
+    let id = app.kernel().find("area").unwrap();
+    let (x, ..) = app.kernel().rect(id);
+    let (actual, marker) = native_geometry(&app).first_rect(end..end + 1).unwrap();
+    assert_eq!(actual, end..end + 1);
+    assert_eq!(marker.x, x);
+    assert!(marker.w > 0.0);
+    assert!(app.display_list().quads().any(|quad| quad.source == id && quad.rect == marker));
+}
+
+#[test]
+fn a_break_and_caret_at_the_right_edge_stay_visible() {
+    let mut app = app("abcdefghij\nB", 80.0);
+    let id = app.kernel().find("area").unwrap();
+    let (x, y, w, _) = app.kernel().rect(id);
+    place(&mut app, 10);
+    let (_, caret) = native_geometry(&app).first_rect(10..10).unwrap();
+    assert_eq!(caret.x, x + w);
+    assert!(app.display_list().quads().any(|q| q.source == id && q.rect.x == x + w - 1.0 && q.rect.y == y && q.rect.w == 1.0));
+
+    app.set_selection(10, 11);
+    let (_, marker) = native_geometry(&app).first_rect(10..11).unwrap();
+    assert!(marker.x < x + w && marker.w > 0.0);
+    assert_eq!(marker.right(), x + w);
+    assert!(app.display_list().quads().any(|q| q.source == id && q.rect == marker));
+}
+
+#[test]
+fn a_soft_wrap_uses_the_next_line_for_the_shared_byte() {
+    let app = app("aaaa bbbb cccc dd", 80.0);
+    let id = app.kernel().find("area").unwrap();
+    let (x, y, ..) = app.kernel().rect(id);
+    let geometry = native_geometry(&app);
+    assert_eq!(geometry.first_rect(9..12).unwrap().0, 9..10, "the wrap adds no document bytes");
+    assert_eq!(geometry.first_rect(10..10).unwrap().1.y, y + 24.0);
+    assert_eq!(geometry.index_at(x + 79.0, y + 12.0), Some(9));
+    assert_eq!(app.kernel().input_offset_at(id, x + 79.0, y + 12.0, false), Some(9));
+}
+
 fn rows_app(chat: bool) -> Window {
     let mut app = mono_window(move || {
         let v = state("v", String::new);

@@ -7,7 +7,7 @@ use octara::platform::{HeadlessPlatform, HeadlessWindow};
 use octara::prelude::*;
 use octara::view::canvas;
 use octara_primitives::path::point;
-use octara_text::{LaidText, MonoEngine, ShapedRun, StyleRun, TextEngine, TextLayout, TextPresentation, TextStyle, VisualLine};
+use octara_text::{LaidText, MonoEngine, ShapedRun, StyleRun, TextEngine, TextLayout, TextPresentation, TextStyle};
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -90,11 +90,6 @@ impl LaidText for ProbeLayout {
         self.layout.present(max_width, max_lines, fit, ellipsis)
     }
 
-    fn visual_lines(&self, max_width: Option<f32>) -> Vec<VisualLine> {
-        self.probe.call("visual_lines");
-        self.layout.visual_lines(max_width)
-    }
-
     fn as_any(&self) -> &dyn Any {
         self.probe.call("as_any");
         self
@@ -173,7 +168,7 @@ fn measurement_paint_and_font_providers_cannot_write_or_reenter_resources() {
     app.register_fallback_font(&[], &[*b"Hani"]);
     assert_eq!(app.run(|| protected.get()), 0);
     assert!(probe.reused.get(), "previous layouts retain the provider's concrete downcast identity");
-    for entry in ["layout", "measure", "present", "visual_lines", "ellipsis", "font", "fallback", "shaped", "as_any"] {
+    for entry in ["layout", "measure", "present", "ellipsis", "font", "fallback", "shaped", "as_any"] {
         assert!(probe.entries.borrow().contains(&entry), "provider entry {entry} was exercised");
     }
     assert_denied(&app);
@@ -190,6 +185,7 @@ fn native_multiline_queries_are_read_only_without_an_app_entry_and_restore_forei
         .unwrap();
     window.dispatch(Event::Focus("field".into())).unwrap();
     let layout = input_layout(&window);
+    probe.entries.borrow_mut().clear();
     let owner = app.clone();
     probe.set(move |_| {
         protected.set(99);
@@ -198,6 +194,9 @@ fn native_multiline_queries_are_read_only_without_an_app_entry_and_restore_forei
     });
     let document = TextDocument::new("one two three\nnext".into(), 18, 18);
     assert!(layout.layout(&document).is_some(), "native prediction does not need an ambient App");
+    for entry in ["layout", "present"] {
+        assert!(probe.entries.borrow().contains(&entry), "native prediction called {entry}");
+    }
     assert_eq!(app.run(|| protected.get()), 0);
     assert_denied(&app);
 
@@ -248,15 +247,15 @@ fn provider_counter_reads_do_not_subscribe_the_calling_observer() {
 
 #[test]
 fn provider_panics_fail_the_owner_before_publication_or_during_native_prediction() {
-    for native in [false, true] {
+    for (native, callback) in [(false, "layout"), (true, "layout"), (true, "present")] {
         let (app, probe) = app();
         let value = app.run(|| state("value", || "Original".to_owned()));
         let mut window = app.open_window(WindowOptions::new("Failure"), move || input().id("field").label("Field").value(value)).unwrap();
         window.dispatch(Event::Focus("field".into())).unwrap();
         let layout = input_layout(&window);
         let frames = window.frames_presented();
-        probe.set(|entry| {
-            if entry == "layout" {
+        probe.set(move |entry| {
+            if entry == callback {
                 panic!("provider fault");
             }
         });

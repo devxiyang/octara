@@ -851,7 +851,8 @@ mod tests {
         let old = TextDocument::new("A😀Z".into(), 1, 5);
         let mut current = old.clone();
         current.apply(&TextEdit::Mark { text: "ni hao".into(), selection: Some(6..6), replacement: None });
-        let fresh = TextGeometry { origin: (32.0, 64.0), lines: Vec::new() };
+        let mut fresh = TextGeometry::default();
+        fresh.origin = (32.0, 64.0);
         let mut session = Session {
             owner: NodeId::default(),
             document: current.clone(),
@@ -884,7 +885,7 @@ mod tests {
         let mut session = Session {
             owner: NodeId::default(),
             document: before.clone(),
-            geometry: Some(TextGeometry { origin: (0.0, 0.0), lines: Vec::new() }),
+            geometry: Some(TextGeometry::default()),
             geometry_document: before,
             layout: None,
             geometry_status: "published",

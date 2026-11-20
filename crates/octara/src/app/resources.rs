@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::reactive::graph::{ExecutionOwner, Operation};
-use octara_text::{LaidText, ShapedRun, StyleRun, TextEngine, TextLayout, TextPresentation, TextStyle, VisualLine};
+use octara_text::{LaidText, ShapedRun, StyleRun, TextEngine, TextLayout, TextPresentation, TextStyle};
 use std::any::Any;
 use std::panic::Location;
 use std::rc::Weak;
@@ -99,10 +99,6 @@ impl LaidText for GuardedLayout {
         ellipsis: Option<&(Vec<ShapedRun>, f32)>,
     ) -> TextPresentation {
         self.provider.run(|| self.layout.present(max_width, max_lines, fit, ellipsis))
-    }
-
-    fn visual_lines(&self, max_width: Option<f32>) -> Vec<VisualLine> {
-        self.provider.run(|| self.layout.visual_lines(max_width))
     }
 
     fn as_any(&self) -> &dyn Any {

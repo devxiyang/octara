@@ -31,19 +31,24 @@
 - [x] 验收横图换竖图、空图变非空和旧绘制列表重画。用 WindowServer 像素复核布局切换，用真实 Metal 分别复现单图超尺寸和图集容量耗尽。[图片实测与回归](design/capture.md#图片尺寸像素与-gpu-图集)
 - [x] 记录 Windows 实时通道与移动宿主支持范围。交叉类型检查 Windows 目标，复验 iOS 模拟器的系统触摸、回执和设备画面。[宿主支持范围](design/platform.md)
 - [x] 在 iOS 模拟器核对列表行移出裁剪视口后的原生辅助功能命中。覆盖完全裁剪、部分裁剪和反向滚动。[裁剪实测](design/platform.md#ios-辅助功能命中与裁剪)
+- [x] 统一多行编辑器的绘制、指针、原生范围与辅助功能几何。覆盖双向选区、LF／CRLF、软折行和内容边缘。[编辑器几何与实测](design/input.md#编辑器的视觉范围)
+- [x] 修复 iOS 多行字段的软件键盘 Return 映射。用模拟器的系统键盘核对连续换行、聊天输入提交和原生单行字段回归。[模拟器实测](design/input.md#ios-多行软键盘-return)
+- [x] 将 iOS 多行文本会话交给 UIKit，收窄 winit 的宿主职责。在模拟器核对拼音组合、候选提交、取消、焦点交接和跨行范围坐标。[架构边界](ARCHITECTURE.md#平台宿主与-winit-的边界) · [模拟器实测](design/input.md#ios-原生多行编辑)
 
 ## 待验收的平台能力
 
-当前优先 macOS、iOS、Linux。Android 与 Windows 现阶段只要求对应 CI 作业通过。设备验收暂缓，接续顺序为 Android、Windows。[平台优先级](ROADMAP.md#推进顺序) · [CI 配置](../.github/workflows/ci.yml)
-
-- [ ] iOS 真机打包签名、安装和实时检查，以及实机系统输入和画面证据。[移动支持范围](design/platform.md#移动宿主)
-- [ ] 在 Linux 实窗核对实时 Inspector、系统输入和实屏像素。[桌面支持范围](design/platform.md#桌面实时检查)
+当前优先 macOS、iOS、Linux。可以独立执行的无窗口检查和 iOS 模拟器回归先行。Android 与 Windows 现阶段只要求对应 CI 作业通过。[平台优先级](ROADMAP.md#推进顺序) · [CI 配置](../.github/workflows/ci.yml)
 
 ### Android 与 Windows CI
 
 - [ ] 核对 Android 库目标检查与 Windows 桌面矩阵的新一轮 GitHub Actions 结果。[CI 配置](../.github/workflows/ci.yml)
 
-### 暂缓的设备验收
+### 等待验收环境
+
+- [ ] iOS 真机打包签名、安装和实时检查，以及实机系统输入和画面证据。[移动支持范围](design/platform.md#移动宿主)
+- [ ] 在 Linux 实窗核对实时 Inspector、系统输入和实屏像素。[桌面支持范围](design/platform.md#桌面实时检查)
+
+### 暂缓的 Android 与 Windows 设备验收
 
 - [ ] Android Activity 宿主、APK 构建安装和实际设备输入、画面验收。[移动支持范围](design/platform.md#移动宿主)
 - [ ] Windows 本机实时检查通道，以及 Windows 系统输入与实屏像素的验收。[桌面支持范围](design/platform.md#桌面实时检查)

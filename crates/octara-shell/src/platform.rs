@@ -16,9 +16,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "ios", target_os = "macos")))]
 use winit::dpi::LogicalPosition;
-use winit::dpi::{LogicalSize, PhysicalSize};
+#[cfg(not(target_os = "ios"))]
+use winit::dpi::LogicalSize;
+use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 /// The desktop the app runs on: arboard's clipboard, the event loop's proxy as the waker, and
@@ -118,6 +120,14 @@ impl Platform for WinitPlatform {
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         #[cfg(target_os = "ios")]
         let native_window = super::scene_ios::attach(&window)?;
+        #[cfg(target_os = "ios")]
+        let ios_input = {
+            let proxy = shared.proxy.clone();
+            let content = super::scene_ios::ui_view(&window)?;
+            super::text_input_ios::TextInputIos::new(content, move || {
+                let _ = proxy.send_event(ShellEvent::Wake);
+            })
+        };
         // AccessKit subclasses the content view and restores its parent class at teardown.
         // Install the scroll receiver first so the accessibility adapter owns the outer layer.
         #[cfg(target_os = "macos")]
@@ -157,13 +167,6 @@ impl Platform for WinitPlatform {
         surface.configure(g.renderer.device(), &config);
         drop(gpu);
         let wid = window.id();
-        #[cfg(target_os = "ios")]
-        let ios_input = {
-            let proxy = shared.proxy.clone();
-            super::text_input_ios::TextInputIos::new(&window, move || {
-                let _ = proxy.send_event(ShellEvent::Wake);
-            })
-        };
         #[cfg(target_os = "macos")]
         let text_input = {
             let proxy = shared.proxy.clone();
@@ -211,9 +214,13 @@ impl Platform for WinitPlatform {
             shown: Rc::default(),
             #[cfg(target_os = "macos")]
             show_on_first_commit: true,
+            #[cfg(not(target_os = "ios"))]
             secure: false,
+            #[cfg(not(target_os = "ios"))]
             ime_allowed: false,
+            #[cfg(not(target_os = "ios"))]
             input_owner: None,
+            #[cfg(not(target_os = "ios"))]
             ime_owner: None,
             cursor_style: CursorStyle::Arrow,
             cursor: (0.0, 0.0),
@@ -313,7 +320,7 @@ pub(crate) struct WinitWindow {
     #[cfg(target_os = "ios")]
     ios_back_preview: bool,
     #[cfg(target_os = "ios")]
-    pub(crate) ios_input: Option<super::text_input_ios::TextInputIos>,
+    pub(crate) ios_input: super::text_input_ios::TextInputIos,
     #[cfg(target_os = "macos")]
     pub(crate) text_input: Option<super::text_input_mac::TextInputMac>,
     #[cfg(target_os = "macos")]
@@ -334,11 +341,15 @@ pub(crate) struct WinitWindow {
     #[cfg(target_os = "macos")]
     show_on_first_commit: bool,
     /// A secure field has focus: the input method is off and (macOS) secure input on.
+    #[cfg(not(target_os = "ios"))]
     secure: bool,
     /// Whether the focused field currently accepts input-method composition.
+    #[cfg(not(target_os = "ios"))]
     ime_allowed: bool,
     /// Current logical field, and the field that enabled the native composition session.
+    #[cfg(not(target_os = "ios"))]
     input_owner: Option<octara_primitives::identity::NodeId>,
+    #[cfg(not(target_os = "ios"))]
     ime_owner: Option<octara_primitives::identity::NodeId>,
     /// How the pointer looks.
     cursor_style: CursorStyle,
@@ -618,14 +629,17 @@ impl WinitWindow {
         }
     }
 
+    #[cfg(not(target_os = "ios"))]
     pub(crate) fn ime_enabled(&mut self) {
         self.ime_owner = self.input_owner.filter(|_| self.ime_allowed);
     }
 
+    #[cfg(not(target_os = "ios"))]
     pub(crate) fn accepts_ime(&self) -> bool {
         self.ime_allowed && self.ime_owner.is_some() && self.ime_owner == self.input_owner
     }
 
+    #[cfg(not(target_os = "ios"))]
     pub(crate) fn ime_disabled(&mut self) -> bool {
         // A context retired on A can report Disabled after B already has focus. Its empty
         // preedit belongs to A; core focus cleanup has already cleared that field.
@@ -637,12 +651,16 @@ impl WinitWindow {
     /// Current UI-thread input and presentation facts. A submitted frame does not establish
     /// that the window server displayed it; visibility is reported separately.
     pub(crate) fn inspect_state(&self) -> Value {
+        #[cfg(target_os = "ios")]
+        let ime = self.ios_input.inspect();
+        #[cfg(not(target_os = "ios"))]
+        let ime = json!({
+            "allowed": self.ime_allowed,
+            "secure": self.secure,
+            "native_focus": self.window.has_focus(),
+        });
         let state = json!({
-            "ime": {
-                "allowed": self.ime_allowed,
-                "secure": self.secure,
-                "native_focus": self.window.has_focus(),
-            },
+            "ime": ime,
             "window": {
                 "frames": self.frames,
                 "pending": self.pending,
@@ -665,19 +683,13 @@ impl WinitWindow {
             }
             state
         }
-        #[cfg(target_os = "ios")]
-        if let Some(input) = &self.ios_input {
-            let mut state = state;
-            state["ime"] = input.inspect();
-            return state;
-        }
         #[cfg(not(target_os = "macos"))]
         {
             state
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "ios", target_os = "macos")))]
     fn set_ime_allowed(&mut self, allowed: bool) {
         if allowed == self.ime_allowed {
             return;
@@ -690,16 +702,7 @@ impl WinitWindow {
     /// enables composition; secure fields also enable the platform's secure keyboard input.
     fn text_input(&mut self, input: Option<&TextInput>) {
         #[cfg(target_os = "ios")]
-        if self.ios_input.is_some() {
-            let use_uikit = input.is_some_and(|input| !input.multiline && input.document.is_some());
-            if use_uikit {
-                self.set_ime_allowed(false);
-            }
-            self.ios_input.as_mut().expect("UIKit editor exists").update(input);
-            if use_uikit {
-                return;
-            }
-        }
+        self.ios_input.update(input);
         #[cfg(target_os = "macos")]
         {
             // The owned native client interprets text; winit only translates physical keys.
@@ -714,11 +717,11 @@ impl WinitWindow {
                 client.update(input);
             }
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "ios", target_os = "macos")))]
         self.winit_text_input(input);
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "ios", target_os = "macos")))]
     fn winit_text_input(&mut self, input: Option<&TextInput>) {
         let owner = input.map(|t| t.id);
         if owner != self.input_owner {
@@ -832,6 +835,7 @@ impl Drop for WinitWindow {
     fn drop(&mut self) {
         #[cfg(target_os = "macos")]
         drop(self.scroll.take());
+        #[cfg(not(target_os = "ios"))]
         if self.secure {
             secure_input::set(false);
         }
@@ -861,7 +865,7 @@ mod secure_input {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "ios", target_os = "macos")))]
 mod secure_input {
     pub fn set(_: bool) {}
 }

@@ -35,7 +35,8 @@ impl Draft {
             }
             let mut committed = document.clone();
             committed.apply(&TextEdit::Cancel);
-            if committed.text() == self.text {
+            // A candidate can reproduce the original text while advancing the caret.
+            if committed.text() == self.text && (self.selection.is_none() || self.selection == committed.selection()) {
                 return Some(TextEdit::Cancel);
             }
         }
@@ -90,5 +91,57 @@ mod tests {
         let cleared = Draft { text: "AZ".into(), marked: None, selection: Some(1..1) };
         document.apply(&cleared.edit(&document, true).unwrap());
         assert_eq!(document, original);
+    }
+
+    #[test]
+    fn multiline_candidate_preserves_the_surrounding_breaks() {
+        let original = TextDocument::new("A\n😀\r\nZ".into(), 6, 2);
+        let mut document = original.clone();
+        let draft = Draft { text: "A\nni hao\r\nZ".into(), marked: Some(2..8), selection: Some(5..8) };
+        let edit = draft.edit(&document, false).unwrap();
+        assert_eq!(edit, TextEdit::Mark { text: "ni hao".into(), selection: Some(3..6), replacement: Some(2..6) });
+        assert!(document.apply(&edit));
+        assert_eq!(document.text(), draft.text);
+        assert_eq!(document.marked(), draft.marked);
+        assert_eq!(document.selection(), draft.selection);
+
+        let cleared = Draft { text: "A\n\r\nZ".into(), marked: None, selection: Some(2..2) };
+        let mut cancelled = document.clone();
+        assert!(cancelled.apply(&cleared.edit(&cancelled, true).unwrap()));
+        assert_eq!(cancelled, original);
+
+        // The snapshot can include a later edit made after confirming the candidate.
+        let commit = Draft { text: "A\n你好\r\nZ!".into(), marked: None, selection: Some(12..12) };
+        assert!(document.apply(&commit.edit(&document, false).unwrap()));
+        assert_eq!(document, TextDocument::new(commit.text.clone(), 12, 12));
+        assert_eq!(commit.edit(&document, false), None);
+    }
+
+    #[test]
+    fn inserting_a_repeated_break_keeps_the_native_caret_for_the_next_edit() {
+        let mut document = TextDocument::new("😀\r\nline\nend".into(), 10, 10);
+        let split = Draft { text: "😀\r\nline\n\nend".into(), marked: None, selection: Some(11..11) };
+        let edit = split.edit(&document, false).unwrap();
+        assert_eq!(edit, TextEdit::Insert { text: "\n".into(), replacement: Some(10..10) });
+        assert!(document.apply(&edit));
+        assert_eq!(document.selection(), split.selection);
+
+        let pasted = Draft { text: "😀\r\nline\n語\r\n🙂\n\nend".into(), marked: None, selection: Some(21..21) };
+        assert!(document.apply(&pasted.edit(&document, false).unwrap()));
+        assert_eq!(document, TextDocument::new(pasted.text, 21, 21));
+    }
+
+    #[test]
+    fn committing_the_original_text_can_collapse_the_selection() {
+        let mut document = TextDocument::new("A\n你\r\nZ".into(), 5, 2);
+        let draft = Draft { text: "A\nni\r\nZ".into(), marked: Some(2..4), selection: Some(4..4) };
+        assert!(document.apply(&draft.edit(&document, false).unwrap()));
+
+        let restored = Draft { text: "A\n你\r\nZ".into(), marked: None, selection: Some(2..5) };
+        assert_eq!(restored.edit(&document, false), Some(TextEdit::Cancel));
+
+        let commit = Draft { selection: Some(5..5), ..restored };
+        assert!(document.apply(&commit.edit(&document, false).unwrap()));
+        assert_eq!(document, TextDocument::new(commit.text, 5, 5));
     }
 }

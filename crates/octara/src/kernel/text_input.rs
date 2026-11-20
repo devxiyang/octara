@@ -3,8 +3,10 @@
 
 use octara_primitives::paint::Rect;
 use octara_primitives::text::TextEdit;
+use octara_text::{PresentedLine, ShapedRun, TextFragment, TextPresentation};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::ops::Range;
+use std::sync::Arc;
 
 /// An owned platform editing document, suitable for synchronous native queries. The
 /// committed value stays unchanged while a composition edits its displayed draft.
@@ -166,42 +168,178 @@ impl std::fmt::Debug for TextInputLayout {
 
 /// An owned layout for platform text queries, with displayed UTF-8 byte offsets (including
 /// marked text). A host may use it only while its document text still matches this frame.
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Default, PartialEq, Debug)]
 pub struct TextGeometry {
     /// The text's origin in logical window coordinates, including its current scroll.
     pub origin: (f32, f32),
-    pub lines: Vec<octara_text::VisualLine>,
+    pub(crate) lines: Arc<[EditorLine]>,
+}
+
+/// An editor's unfitted presentation. Paint and platform queries share these visual lines.
+pub(crate) struct EditorLayout {
+    pub lines: Arc<[EditorLine]>,
+    pub glyphs: Vec<ShapedRun>,
+}
+
+impl EditorLayout {
+    pub fn new(mut presentation: TextPresentation, line_height: f32, width: Option<f32>) -> Self {
+        // Even an empty editor has a caret. Providers need not shape an empty document.
+        if presentation.lines.is_empty() {
+            presentation.lines.push(PresentedLine {
+                start: 0,
+                top: 0.0,
+                height: line_height,
+                fragments: Vec::new(),
+                hard_break: None,
+                break_at: None,
+                ellipsis: None,
+            });
+        }
+        Self { lines: presentation.lines.into_iter().map(|line| EditorLine::new(line, width)).collect(), glyphs: presentation.glyphs }
+    }
+}
+
+#[derive(PartialEq, Debug)]
+pub(crate) struct EditorLine {
+    pub text: PresentedLine,
+    pub newline: Option<TextFragment>,
+    stops: Vec<(usize, f32)>,
+}
+
+impl EditorLine {
+    fn new(text: PresentedLine, width: Option<f32>) -> Self {
+        let mut stops: Vec<_> = text
+            .fragments
+            .iter()
+            .flat_map(|f| {
+                let (leading, trailing) = f.edges();
+                [(f.source.start, false, leading), (f.source.end, true, trailing)]
+            })
+            .collect();
+        // At a shared bidi boundary, prefer the following logical fragment's leading edge.
+        stops.sort_unstable_by_key(|&(byte, trailing, _)| (byte, trailing));
+        stops.dedup_by_key(|s| s.0);
+        let mut stops: Vec<_> = stops.into_iter().map(|(byte, _, x)| (byte, x)).collect();
+        if stops.is_empty() {
+            stops.push((text.start, 0.0));
+        }
+        let newline = text.hard_break.clone().map(|source| {
+            let edge = text.break_x();
+            let marker_width = text.height * 0.25;
+            let rtl = text.fragments.iter().any(|f| f.source.end == source.start && f.rtl);
+            let left = edge.max(0.0);
+            let right = width.map_or(f32::INFINITY, |w| (w - edge).max(0.0));
+            let (outward, inward) = if rtl { (left, right) } else { (right, left) };
+            // At the content edge move the marker inward, keeping its leading edge
+            // on the insertion point before the break.
+            let rtl = rtl ^ (outward < marker_width && inward > outward);
+            let width = marker_width.min(if rtl { left } else { right });
+            let x = if rtl { edge - width } else { edge };
+            TextFragment { source, x, width, rtl }
+        });
+        Self { text, newline, stops }
+    }
+
+    pub fn end(&self) -> usize {
+        self.stops.last().unwrap().0
+    }
+
+    pub fn floor(&self, byte: usize) -> (usize, f32) {
+        self.stops[self.stops.partition_point(|s| s.0 <= byte).saturating_sub(1)]
+    }
+
+    fn ceil(&self, byte: usize) -> usize {
+        self.stops.get(self.stops.partition_point(|s| s.0 < byte)).map_or_else(|| self.end(), |s| s.0)
+    }
+
+    pub fn caret_stops(&self) -> &[(usize, f32)] {
+        // A shared wrap offset stands on the next line. Hit testing and Home/End use only
+        // positions that can subsequently draw a caret on this line.
+        if self.text.break_at == Some(self.end()) && self.newline.is_none() && self.stops.len() > 1 {
+            &self.stops[..self.stops.len() - 1]
+        } else {
+            &self.stops
+        }
+    }
+
+    pub fn index_at(&self, x: f32, under: bool) -> usize {
+        let fragments = &self.text.fragments;
+        let fragment = fragments.partition_point(|f| f.x <= x).checked_sub(1).and_then(|i| fragments.get(i)).filter(|f| x < f.x + f.width);
+        if under && let Some(fragment) = fragment {
+            return fragment.source.start;
+        }
+        // Two logical stops can share an x at a bidi boundary. Prefer the one touching
+        // the visual fragment at the pointer.
+        let adjacent = |byte| fragment.is_some_and(|f| byte == f.source.start || byte == f.source.end);
+        self.caret_stops()
+            .iter()
+            .min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs()).then_with(|| adjacent(b.0).cmp(&adjacent(a.0))))
+            .unwrap()
+            .0
+    }
+
+    pub fn range_rects(&self, range: Range<usize>) -> Vec<Rect> {
+        if range.is_empty() {
+            return Vec::new();
+        }
+        let mut rects = self.text.range_rects(range.clone());
+        if let Some(f) = &self.newline
+            && range.start < f.source.end
+            && range.end > f.source.start
+        {
+            let mut marker = Rect { x: f.x, y: self.text.top, w: f.width, h: self.text.height };
+            // A directional boundary can put the marker beside or within a visual interval.
+            let start = rects.partition_point(|r| r.right() < marker.x - 0.01);
+            let end = rects.partition_point(|r| r.x <= marker.right() + 0.01);
+            if start < end {
+                let right = marker.right().max(rects[end - 1].right());
+                marker.x = marker.x.min(rects[start].x);
+                marker.w = right - marker.x;
+            }
+            rects.splice(start..end, [marker]);
+        }
+        rects
+    }
+
+    pub fn line_at(lines: &[Self], y: f32) -> usize {
+        lines.partition_point(|l| l.text.top <= y).saturating_sub(1)
+    }
+
+    pub fn line_of(lines: &[Self], byte: usize) -> usize {
+        lines.partition_point(|l| l.text.start <= byte).saturating_sub(1)
+    }
 }
 
 impl TextGeometry {
     /// The first line fragment of a displayed range: its actual byte range and logical
     /// window rect. The actual range expands to available caret stops. An insertion point
     /// has zero width; the host converts the rect to screen coordinates.
-    pub fn first_rect(&self, range: std::ops::Range<usize>) -> Option<(std::ops::Range<usize>, Rect)> {
-        let last = self.lines.last()?.end;
+    pub fn first_rect(&self, range: Range<usize>) -> Option<(Range<usize>, Rect)> {
+        let last = self.lines.last()?.end();
         let start = range.start.min(range.end).min(last);
         let end = range.start.max(range.end).min(last);
-        let index = self.lines.iter().rposition(|l| l.start <= start).unwrap_or(0);
-        let line = &self.lines[index];
-        let (s, x) = line.stops.iter().rev().find(|(b, _)| *b <= start).or(line.stops.first()).copied()?;
-        let (e, right) =
-            if start == end { (s, x) } else { line.stops.iter().find(|(b, _)| *b >= end.min(line.end)).or(line.stops.last()).copied()? };
-        // Line ranges omit their newline. Include that gap in a nonempty actual range so
-        // a caller iterating line fragments advances even across an otherwise empty line.
-        let e = if start != end && end > line.end {
-            self.lines.get(index + 1).filter(|next| next.start > line.end).map_or(e, |next| e.max(end.min(next.start)))
+        let line = &self.lines[EditorLine::line_of(&self.lines, start)];
+        let (s, x) = line.floor(start);
+        let e = if start == end {
+            s
+        } else if let Some(newline) = &line.newline
+            && end > newline.source.start
+        {
+            newline.source.end
         } else {
-            e
+            line.ceil(end)
         };
-        Some((s..e, Rect { x: self.origin.0 + x.min(right), y: self.origin.1 + line.top, w: (right - x).abs(), h: line.height }))
+        let rects = line.range_rects(s..e);
+        let (left, right) = rects.first().zip(rects.last()).map_or((x, x), |(first, last)| (first.x, last.right()));
+        let rect = Rect { x: self.origin.0 + left, y: self.origin.1 + line.text.top, w: right - left, h: line.text.height };
+        Some((s..e, rect))
     }
 
     /// The displayed byte index nearest a point in logical window coordinates. Unlike an
     /// editing caret's value offset, indices inside marked text are kept distinct.
     pub fn index_at(&self, x: f32, y: f32) -> Option<usize> {
-        let line = self.lines.iter().rev().find(|l| l.top <= y - self.origin.1).or(self.lines.first())?;
-        let x = x - self.origin.0;
-        line.stops.iter().min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs())).map(|s| s.0)
+        let line = self.lines.get(EditorLine::line_at(&self.lines, y - self.origin.1))?;
+        Some(line.index_at(x - self.origin.0, false))
     }
 }
 

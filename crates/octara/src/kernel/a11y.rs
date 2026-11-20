@@ -6,6 +6,7 @@ use crate::paint::Rect;
 use accesskit as ak;
 use rustc_hash::FxHashSet;
 use slotmap::{Key, KeyData};
+use std::cmp::Ordering;
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -127,9 +128,9 @@ impl Kernel {
             let mut clip = self.input_content_box(id);
             clip.h = clip.h.max(layout.style.line_height);
             let origin = (clip.x - sx, clip.y - sy);
-            let presentation =
-                self.shown_layout(id, text, &layout.style).present(layout.multiline.then_some(layout.content.w), None, None, None);
-            (text, origin, Some(clip), Self::split_runs(&presentation.lines, true))
+            let presentation = self.editor_presentation(id, text, &layout);
+            let lines = presentation.lines.iter().map(|line| (&line.text, line.newline.clone()));
+            (text, origin, Some(clip), Self::split_runs(lines, true))
         } else {
             if !self.has_runs(id) {
                 return None;
@@ -139,22 +140,31 @@ impl Kernel {
                 return None;
             }
             let presentation = self.text_presentation(id);
-            (text, self.text_box(id).origin, None, Self::split_runs(&presentation.lines, false))
+            let lines = presentation.lines.iter().map(|line| {
+                let newline = line.hard_break.clone().map(|source| super::text::TextFragment {
+                    rtl: line.fragments.iter().any(|f| f.source.end == source.start && f.rtl),
+                    source,
+                    x: line.break_x(),
+                    width: 0.0,
+                });
+                (line, newline)
+            });
+            (text, self.text_box(id).origin, None, Self::split_runs(lines, false))
         };
         (!runs.is_empty()).then_some(TextRuns { text, origin, clip, runs })
     }
 
     /// Split at hidden gaps, direction changes and AccessKit's character limit. An empty
     /// editor line still has an insertion point.
-    fn split_runs(lines: &[super::text::PresentedLine], include_empty: bool) -> Vec<Run> {
+    fn split_runs<'a>(
+        lines: impl Iterator<Item = (&'a super::text::PresentedLine, Option<super::text::TextFragment>)>,
+        include_empty: bool,
+    ) -> Vec<Run> {
         let mut out = Vec::new();
-        for (i, l) in lines.iter().enumerate() {
+        for (i, (l, newline)) in lines.enumerate() {
             let mut visible = l.fragments.clone();
             visible.sort_by_key(|f| f.source.start);
-            if let Some(b) = l.hard_break {
-                let rtl = visible.last().is_some_and(|f| f.rtl);
-                visible.push(super::text::TextFragment { source: b..b + 1, x: l.break_x(), width: 0.0, rtl });
-            }
+            visible.extend(newline);
             if visible.is_empty() && include_empty {
                 out.push(Run { bytes: l.start..l.start, line: i, top: l.top, height: l.height, chars: Vec::new(), rtl: false });
             }
@@ -240,7 +250,7 @@ impl Kernel {
     }
 
     /// Where byte `at` of a text is among its runs.
-    fn run_position(&self, id: NodeId, runs: &[Run], at: usize) -> Option<ak::TextPosition> {
+    fn run_position(&self, id: NodeId, runs: &[Run], at: usize, bias: Ordering) -> Option<ak::TextPosition> {
         let (i, index, _, _) = runs
             .iter()
             .enumerate()
@@ -248,7 +258,7 @@ impl Kernel {
                 std::iter::once((i, 0, r.bytes.start, 0))
                     .chain(r.chars.iter().enumerate().map(move |(index, c)| (i, index + 1, c.source.end, 1)))
             })
-            .min_by_key(|(_, _, b, affinity)| (b.abs_diff(at), *affinity))?;
+            .min_by_key(|(_, _, b, affinity)| (bias != Ordering::Equal && at.cmp(b) == bias, b.abs_diff(at), *affinity))?;
         Some(ak::TextPosition { node: self.run_id(id, i), character_index: index })
     }
 
@@ -275,7 +285,7 @@ impl Kernel {
             if !projection.exposes(t) || !self.is_alive(t) || !self.a11y_reachable(t) {
                 return None;
             }
-            self.run_position(t, &self.text_runs(t)?.runs, o)
+            self.run_position(t, &self.text_runs(t)?.runs, o, Ordering::Equal)
         };
         Some(ak::TextSelection { anchor: at(a, ao)?, focus: at(f, fo)? })
     }
@@ -751,10 +761,16 @@ impl Kernel {
                     }
                     Some(self.selection(id))
                 };
-                if let Some((anchor, caret)) = selection
-                    && let Some((anchor, focus)) = self.run_position(id, &text.runs, anchor).zip(self.run_position(id, &text.runs, caret))
-                {
-                    node.set_text_selection(ak::TextSelection { anchor, focus });
+                if let Some((anchor, caret)) = selection {
+                    let endpoint = |at, other| {
+                        // A nonempty selection covers any grapheme it intersects. A caret
+                        // inside a grapheme stands at its leading byte.
+                        let bias = if at > other { Ordering::Greater } else { Ordering::Less };
+                        self.run_position(id, &text.runs, at, bias)
+                    };
+                    if let Some((anchor, focus)) = endpoint(anchor, caret).zip(endpoint(caret, anchor)) {
+                        node.set_text_selection(ak::TextSelection { anchor, focus });
+                    }
                 }
             }
             self.a11y_runs(id, &text)

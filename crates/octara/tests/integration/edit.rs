@@ -150,19 +150,15 @@ fn native_geometry_reports_marked_offsets_and_the_actual_first_line_fragment() {
     let input = native_input(&app);
     let document = input.document.unwrap();
     let geometry = input.geometry.unwrap();
-    assert!(geometry.lines.len() > 1);
     let marked = document.marked().unwrap();
     let (actual, rect) = geometry.first_rect(marked.clone()).unwrap();
     assert!(actual.start <= marked.start && actual.end < marked.end, "only the first line fragment is returned");
     assert!(rect.w > 0.0 && rect.h > 0.0);
-    let (line, stop) = geometry
-        .lines
-        .iter()
-        .find_map(|line| line.stops.iter().find(|(b, _)| *b > marked.start && *b < marked.end && *b < line.end).map(|stop| (line, stop)))
-        .unwrap();
-    assert_eq!(geometry.index_at(geometry.origin.0 + stop.1, geometry.origin.1 + line.top + line.height / 2.0), Some(stop.0));
-    let (actual, caret) = geometry.first_rect(stop.0..stop.0).unwrap();
-    assert_eq!(actual, stop.0..stop.0);
+    let stop = marked.start + "中".len();
+    assert!(stop < actual.end);
+    let (actual, caret) = geometry.first_rect(stop..stop).unwrap();
+    assert_eq!(actual, stop..stop);
+    assert_eq!(geometry.index_at(caret.x, caret.y + caret.h / 2.0), Some(stop));
     assert_eq!(caret.w, 0.0, "native insertion point geometry has zero width");
 }
 
@@ -194,7 +190,8 @@ fn native_layout_predicts_fresh_preedit_geometry_before_the_core_receives_its_ed
         assert_eq!(painted.geometry.as_ref(), Some(&predicted), "native layout and the field use the same shaping, wrapping and scroll");
         let (x, y) = predicted.origin;
         if multiline {
-            assert!(predicted.lines.len() > 2);
+            let first = predicted.first_rect(0..0).unwrap().1;
+            assert!(last_o.y >= first.y + 2.0 * first.h, "the draft spans at least three lines");
             assert!(y < painted.caret.y, "the multiline draft scrolls to reveal its end");
         } else {
             assert!(x < 0.0, "the single-line draft scrolls horizontally to reveal its end");
@@ -270,8 +267,9 @@ fn native_and_committed_fields_agree_after_resize_scroll_and_composition_transit
         let predicted = before.layout.unwrap().layout(&mirror).unwrap();
         assert!(app.apply_text_edit(before.id, &expected, &edit));
         assert_eq!(native_input(&app).geometry.as_ref(), Some(&predicted));
-        assert_eq!(predicted.lines.len(), 1, "empty fields retain one insertion line");
-        assert!(predicted.first_rect(0..0).is_some());
+        let (actual, caret) = predicted.first_rect(0..0).unwrap();
+        assert_eq!(actual, 0..0);
+        assert_eq!(predicted.index_at(caret.x, caret.y + 2.0 * caret.h), Some(0), "empty fields retain one insertion line");
         assert!(app.app().diagnostics().is_empty());
     }
 }
@@ -712,7 +710,7 @@ fn placeholder_is_presentation_not_an_editing_document_or_name() {
         assert!(drawn_glyphs(&app, "field") > 0);
         assert!(app.display_list().glyph_runs().filter(|r| r.source == id).all(|r| r.color == Theme::light().get(Token::TextMuted)));
         assert_eq!(native.document.as_ref().unwrap().text(), "");
-        assert_eq!(native.geometry.as_ref().unwrap().lines[0].end, 0);
+        assert_eq!(native.geometry.as_ref().unwrap().first_rect(0..1).unwrap().0, 0..0);
         assert_eq!(app.kernel().input_offset_at(id, frame.0 + 80.0, frame.1 + 8.0, false), Some(0));
         app.invoke("hint").unwrap();
         let changed = app.inspect();

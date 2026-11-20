@@ -441,7 +441,7 @@ struct InputContent {
     clean: Cell<usize>,
     /// The layout of what it shows last (its value, a composition spliced in), of what, in
     /// what, with which fonts.
-    layout: RefCell<Option<(String, TextStyle, u64, text::TextLayout)>>,
+    layout: RefCell<Option<edit::EditorLayoutCache>>,
     /// The settled content box, text style and fonts for tracking AX geometry changes.
     a11y_layout: Option<(crate::paint::Rect, TextStyle, u64)>,
     /// The identity of this editor's current accessibility run positions.

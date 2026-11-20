@@ -22,6 +22,8 @@ GitHub CI 的 Windows 作业曾在 `b117aee` 通过实窗一致性测试。该�
 
 iOS 的 winit 宿主通过场景代理将 UIKit 窗口接到系统提供的 `UIWindowScene`。触摸、布局、辅助功能和 Metal 使用同一个内容视图坐标。退出活动状态时结束接触，恢复活动状态时提交当前帧。当前示例入口使用 Apple Silicon 模拟器的 `aarch64-apple-ios-sim` 目标。[iOS 场景接入](../../crates/octara-shell/src/scene_ios.rs) · [模拟器复现](../../examples/README.md#ios-模拟器面板联动)
 
+iOS 的普通编辑字段由 UIKit 持有输入会话。单行使用 `UITextField`，多行使用 `UITextView`。两个原生控件都把编辑提议送回 Octara 当前文档。winit 在 iOS 负责窗口、事件循环和触摸。[文本会话与范围查询](input.md#ios-原生多行编辑)
+
 iPhone 17e 模拟器上的 iOS 27.2 已验证系统触摸、中断恢复、UIKit 侧滑返回的取消与完成、模态 VoiceOver 范围和普通单行输入框的系统拼音。嵌套 Dialog 里的虚拟选择器也验证了系统拼音与确认键，列表导航和重排从 Inspector 驱动。[触摸与恢复](interaction-scenarios.md#ios-模拟器实测) · [侧滑返回](interaction-scenarios.md#ios-相册实测) · [VoiceOver](interaction-scenarios.md#模态辅助功能范围) · [单行拼音](../../examples/IME.md#ios-拼音实测) · [虚拟选择器](interaction-scenarios.md#ios-dialog-内的中文虚拟选择器)
 
 模拟器通过 Mac 本机的 Unix socket 使用 Inspector，构建收据核对运行二进制。设备画面由 `simctl io … screenshot` 取得，Inspector 还可返回离屏 `painted` 捕获。Inspector 的 `display` 像素后端当前由 macOS 提供。iOS 场景拥有窗口尺寸，Inspector 的 `size` 会被拒绝。[模拟器打包脚本](../../examples/ios_panel.py) · [捕获实现](../../crates/octara-shell/src/capture.rs) · [尺寸入口](../../crates/octara-shell/src/resize.rs)

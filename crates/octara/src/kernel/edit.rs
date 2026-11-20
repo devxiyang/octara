@@ -2,9 +2,11 @@
 //! wrapped at the field's width for a multi-line one), its selection and composition, where each
 //! caret position is, the scroll that keeps the caret in view, and how it is painted.
 
-use super::text::{self, VisualLine, Wrap};
+use super::text::{self, Wrap};
+use super::text_input::{EditorLayout, EditorLine};
 use super::{Color, Dirty, Kernel, NodeId, State, TextDocument, TextGeometry, TextInputLayout, Token};
 use crate::paint::{GlyphRun, Item, Quad, Rect};
+use std::rc::Rc;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Half a caret blink, in seconds (shown this long, then hidden this long; AppKit's and GPUI's).
@@ -45,7 +47,7 @@ pub(crate) struct Field {
     pub width: f32,
     pub height: f32,
     pub line_height: f32,
-    pub lines: Vec<VisualLine>,
+    display: Rc<EditorLayout>,
     /// How far the text is scrolled (x for one line, y for several).
     pub scroll: (f32, f32),
     /// A masked field: `(value offset, shown offset)` at each grapheme boundary.
@@ -55,12 +57,9 @@ pub(crate) struct Field {
 impl Field {
     /// Read geometry at the already-settled offset. Reveal is an explicit operation on this
     /// owned geometry, used by settlement and native document prediction, never by readers.
-    fn new(shown: String, caret: usize, layout: &TextInputLayout, mut lines: Vec<VisualLine>) -> Self {
+    fn new(shown: String, caret: usize, layout: &TextInputLayout, display: Rc<EditorLayout>) -> Self {
         let content = layout.content;
         let line_height = layout.style.line_height;
-        if lines.is_empty() {
-            lines.push(VisualLine { start: 0, end: 0, top: 0.0, height: line_height, stops: vec![(0, 0.0)] });
-        }
         Self {
             shown,
             caret,
@@ -74,20 +73,20 @@ impl Field {
             width: content.w,
             height: content.h,
             line_height,
-            lines,
+            display,
             scroll: if layout.multiline { (0.0, layout.scroll) } else { (layout.scroll, 0.0) },
             masked: None,
         }
     }
 
     pub(crate) fn into_geometry(self) -> TextGeometry {
-        TextGeometry { origin: (self.x - self.scroll.0, self.y - self.scroll.1), lines: self.lines }
+        TextGeometry { origin: (self.x - self.scroll.0, self.y - self.scroll.1), lines: self.display.lines.clone() }
     }
 
     /// The same caret reveal for a painted field and a native document not yet committed to
     /// it. This changes only the owned layout, returning the multiline scroll's keep key.
     fn reveal(&mut self, multiline: bool, scroll: f32, kept: Option<(usize, usize)>) -> Option<(usize, usize)> {
-        let (caret_x, caret_y) = self.pos(self.caret);
+        let caret = self.caret_rect();
         let keep = |at: f32, size: f32, room: f32, extent: f32| {
             let mut s = scroll;
             if at + size - s > room {
@@ -103,13 +102,13 @@ impl Field {
             let sy = if kept == Some(now) {
                 scroll.min((self.text_height() - self.height).max(0.0)).max(0.0)
             } else {
-                keep(caret_y, self.line_height, self.height, self.text_height())
+                keep(caret.y, caret.h, self.height, self.text_height())
             };
             self.scroll = (0.0, sy);
             Some(now)
         } else {
-            let end_x = self.lines[0].stops.last().map_or(0.0, |s| s.1);
-            self.scroll = (keep(caret_x, 0.0, (self.width - 1.0).max(0.0), end_x), 0.0);
+            let extent = self.display.lines[0].text.fragments.last().map_or(0.0, |f| f.x + f.width);
+            self.scroll = (keep(caret.x, 0.0, (self.width - 1.0).max(0.0), extent), 0.0);
             kept
         }
     }
@@ -117,55 +116,19 @@ impl Field {
     /// The line byte `b` is shown on: where a wrapped line ends, the next line (which starts
     /// there).
     pub fn line_of(&self, b: usize) -> usize {
-        self.lines.iter().rposition(|l| l.start <= b).unwrap_or(0)
+        EditorLine::line_of(&self.display.lines, b)
     }
 
-    /// Where a caret can stand on line `li`: its stops, without its end when the next line
-    /// starts there (that position shows on the next line).
-    fn stops(&self, li: usize) -> &[(usize, f32)] {
-        let l = &self.lines[li];
-        let wraps = self.lines.get(li + 1).is_some_and(|n| n.start == l.end);
-        if wraps && l.stops.len() > 1 { &l.stops[..l.stops.len() - 1] } else { &l.stops }
-    }
-
-    /// The x of byte `b` on line `li` (from the line's start).
-    fn x_on(&self, li: usize, b: usize) -> f32 {
-        let stops = &self.lines[li].stops;
-        match stops.binary_search_by_key(&b, |s| s.0) {
-            Ok(i) => stops[i].1,
-            Err(i) => {
-                // Inside a ligature: interpolate between the stops around it.
-                let (a, z) = (stops[i.saturating_sub(1)], stops[i.min(stops.len() - 1)]);
-                if z.0 == a.0 { a.1 } else { a.1 + (z.1 - a.1) * (b - a.0) as f32 / (z.0 - a.0) as f32 }
-            }
-        }
-    }
-
-    /// Where byte `b` is, from the content's top-left, unscrolled.
-    pub fn pos(&self, b: usize) -> (f32, f32) {
-        let li = self.line_of(b);
-        (self.x_on(li, b), self.lines[li].top)
-    }
-
-    /// The line at `y` (from the content's top, unscrolled), clamped to the text.
-    fn line_at(&self, y: f32) -> usize {
-        self.lines.iter().rposition(|l| l.top <= y).unwrap_or(0)
-    }
-
-    /// The caret position nearest `x` on line `li`; with `under`, the one where the character
-    /// under `x` starts.
-    fn stop_on(&self, li: usize, x: f32, under: bool) -> usize {
-        let stops = self.stops(li);
-        if under {
-            stops.iter().rev().find(|s| s.1 <= x).map_or(stops[0].0, |s| s.0)
-        } else {
-            stops.iter().min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs())).map_or(0, |s| s.0)
-        }
+    /// Where the caret is, from the content's top-left, unscrolled.
+    fn caret_rect(&self) -> Rect {
+        let line = &self.display.lines[self.line_of(self.caret)];
+        Rect { x: line.floor(self.caret).1, y: line.text.top, w: 1.0, h: line.text.height }
     }
 
     /// The caret position at `(x, y)` (from the content's top-left, unscrolled).
     pub fn byte_at(&self, x: f32, y: f32, under: bool) -> usize {
-        self.stop_on(self.line_at(y), x, under)
+        let lines = &self.display.lines;
+        lines[EditorLine::line_at(lines, y)].index_at(x, under)
     }
 
     /// The position `delta` lines from `b`, as near as possible to `goal_x`; past the first or
@@ -175,42 +138,27 @@ impl Field {
         if to < 0 {
             return 0;
         }
-        if to >= self.lines.len() as i64 {
+        if to >= self.display.lines.len() as i64 {
             return self.shown.len();
         }
-        self.stop_on(to as usize, goal_x, false)
+        self.display.lines[to as usize].index_at(goal_x, false)
     }
 
     /// The first and last caret positions of the line `b` is on.
     pub fn line_edges(&self, b: usize) -> (usize, usize) {
-        let stops = self.stops(self.line_of(b));
+        let stops = self.display.lines[self.line_of(b)].caret_stops();
         (stops[0].0, stops[stops.len() - 1].0)
     }
 
-    /// Rectangles covering `s..e` (from the content's top-left, unscrolled), one per line it
-    /// touches; a line the selection continues past shows its line break.
+    /// Rectangles of selected visual fragments, from the content's unscrolled top-left.
     pub fn rects(&self, s: usize, e: usize) -> Vec<Rect> {
-        let mut out = Vec::new();
-        for (li, l) in self.lines.iter().enumerate() {
-            if l.end < s || l.start > e || (l.start == e && s != e) {
-                continue;
-            }
-            let (a, z) = (s.max(l.start), e.min(l.end));
-            let x0 = self.x_on(li, a);
-            let mut x1 = self.x_on(li, z);
-            if e > l.end && self.lines.get(li + 1).is_none_or(|n| n.start > l.end) {
-                x1 += self.line_height * 0.25;
-            }
-            if x1 > x0 {
-                out.push(Rect { x: x0, y: l.top, w: x1 - x0, h: self.line_height });
-            }
-        }
-        out
+        self.display.lines[self.line_of(s)..=self.line_of(e)].iter().flat_map(|l| l.range_rects(s..e)).collect()
     }
 
     /// The text's height (its lines).
     pub fn text_height(&self) -> f32 {
-        self.lines.len().max(1) as f32 * self.line_height
+        let last = &self.display.lines.last().unwrap().text;
+        last.top + last.height
     }
 }
 
@@ -434,12 +382,8 @@ impl Kernel {
             (caret..caret, caret..caret)
         };
         let layout = self.input_layout(id);
-        let lines = if shown.is_empty() {
-            Vec::new()
-        } else {
-            self.shown_layout(id, &shown, &layout.style).visual_lines(layout.multiline.then_some(layout.content.w))
-        };
-        let mut f = Field::new(shown, shown_caret, &layout, lines);
+        let display = self.editor_presentation(id, &shown, &layout);
+        let mut f = Field::new(shown, shown_caret, &layout, display);
         f.preedit = preedit;
         f.overlay = overlay;
         f.replaced = replaced;
@@ -540,7 +484,7 @@ impl Kernel {
     /// keep: the caret's x when the moves by lines began.
     pub fn input_offset_by_lines(&self, id: NodeId, lines: i32) -> Option<(usize, f32)> {
         let f = self.field(id)?;
-        let goal = self.goal(id).unwrap_or_else(|| f.pos(f.caret).0);
+        let goal = self.goal(id).unwrap_or_else(|| f.caret_rect().x);
         Some((Self::value_offset(&f, f.by_lines(f.caret, goal, lines)), goal))
     }
 
@@ -571,8 +515,8 @@ impl Kernel {
     /// candidate window next to it.
     pub fn caret(&self, id: NodeId) -> Option<Rect> {
         let f = self.field(id)?;
-        let (cx, cy) = f.pos(f.caret);
-        Some(Rect { x: f.x + cx - f.scroll.0, y: f.y + cy - f.scroll.1, w: 1.0, h: f.line_height })
+        let caret = f.caret_rect();
+        Some(Rect { x: f.x + caret.x - f.scroll.0, y: f.y + caret.y - f.scroll.1, ..caret })
     }
 
     /// Paints a text input: selection, text, composition underline and caret, clipped to its
@@ -608,46 +552,47 @@ impl Kernel {
         }
         let placeholder = n.input().filter(|i| i.value.is_empty() && i.composition.is_none()).and_then(|_| self.placeholder(id));
         if !f.shown.is_empty() || placeholder.is_some() {
-            let multiline = self.is_multiline(id);
-            let style = input_style(v.text_style(), multiline);
+            let hint;
             let (runs, color) = if let Some(placeholder) = placeholder {
                 // Shape hints separately: they must not displace the editable paragraph cache
                 // or change native query, hit-test, selection and caret geometry.
+                let multiline = self.is_multiline(id);
+                let style = input_style(v.text_style(), multiline);
                 let mut engine = self.res.text.borrow_mut();
                 let layout = engine.layout(placeholder, &style, &[], None, 0);
                 let ellipsis = (!multiline).then(|| engine.ellipsis(&style)).flatten();
-                let runs = layout
+                hint = layout
                     .present(multiline.then_some(f.width), (!multiline).then_some(1), (!multiline).then_some(f.width), ellipsis.as_ref())
                     .glyphs;
-                (runs, self.res.theme.borrow().get(Token::TextMuted))
+                (&hint, self.res.theme.borrow().get(Token::TextMuted))
             } else {
-                (self.shown_layout(id, &f.shown, &style).present(multiline.then_some(f.width), None, None, None).glyphs, v.text)
+                (&f.display.glyphs, v.text)
             };
             for r in runs {
-                let glyphs = r.glyphs.into_iter().map(|g| crate::paint::Glyph { id: g.id, x: g.x, y: g.y }).collect();
                 self.glyph_runs_built.set(self.glyph_runs_built.get() + 1);
                 out.push(Item::Glyphs(GlyphRun {
                     source: id,
-                    font: r.font,
+                    font: r.font.clone(),
                     size: r.size,
-                    coords: r.coords,
+                    coords: r.coords.clone(),
                     embolden: r.embolden,
                     color: fade(color),
                     origin: (ox, oy),
-                    glyphs,
+                    glyphs: r.glyphs.as_slice().into(),
                 }));
             }
         }
         if !f.preedit.is_empty() {
             for r in f.rects(f.preedit.start, f.preedit.end) {
-                out.push(quad(Rect { y: r.y + lh - 2.0, h: 1.0, ..r }, fade(v.text)));
+                out.push(quad(Rect { y: r.bottom() - 2.0, h: 1.0, ..r }, fade(v.text)));
             }
         }
         if focused && f.show_caret && f.sel.0 == f.sel.1 && self.caret_shown(id) {
-            let (cx, cy) = f.pos(f.caret);
-            // A single line's caret stays inside the box (its last position may be past it).
-            let x = if self.is_multiline(id) { cx } else { (cx - f.scroll.0).min(f.width - 1.0).max(0.0) + f.scroll.0 };
-            out.push(quad(Rect { x, y: cy, w: 1.0, h: lh }, fade(v.text)));
+            let caret = f.caret_rect();
+            // The zero-width insertion point may be on the content edge. Keep its
+            // one-pixel stroke inside the clip.
+            let x = (caret.x - f.scroll.0).clamp(0.0, (f.width - caret.w).max(0.0)) + f.scroll.0;
+            out.push(quad(Rect { x, ..caret }, fade(v.text)));
         }
         out.push(Item::PopClip);
     }
@@ -663,13 +608,15 @@ impl TextInputLayout {
         }
         let shown = document.text();
         let caret = document.composition.as_ref().map_or(document.caret, |c| c.selection.as_ref().map_or(c.marked.end, |s| s.end));
-        let lines = if shown.is_empty() {
-            Vec::new()
+        let width = self.multiline.then_some(self.content.w);
+        let presentation = if shown.is_empty() {
+            text::TextPresentation::default()
         } else {
             let mut engine = self.resources.text.try_borrow_mut()?;
-            engine.layout(shown, &self.style, &[], None, 0).visual_lines(self.multiline.then_some(self.content.w))
+            engine.layout(shown, &self.style, &[], None, 0).present(width, None, None, None)
         };
-        let mut field = Field::new(shown.to_owned(), caret, self, lines);
+        let display = Rc::new(EditorLayout::new(presentation, self.style.line_height, width));
+        let mut field = Field::new(shown.to_owned(), caret, self, display);
         field.reveal(self.multiline, self.scroll, self.kept);
         Some(field.into_geometry())
     }
@@ -681,23 +628,40 @@ pub(crate) fn input_style(base: super::TextStyle, multiline: bool) -> super::Tex
 }
 
 impl Kernel {
-    /// The layout of what field `id` shows (`shown`, in `style`): kept while they stay the same,
-    /// made from the last one otherwise (its unchanged paragraphs reused).
-    pub(crate) fn shown_layout(&self, id: NodeId, shown: &str, style: &text::TextStyle) -> text::TextLayout {
+    /// The displayed document and one presentation at its current width.
+    pub(crate) fn editor_presentation(&self, id: NodeId, shown: &str, frame: &TextInputLayout) -> Rc<EditorLayout> {
         let input = self.node(id).input().expect("a text input");
-        let mut kept = input.layout.borrow_mut();
-        if let Some((s, st, fonts, l)) = kept.as_ref()
-            && s == shown
-            && st == style
-            && *fonts == self.fonts_generation
-        {
-            return l.clone();
-        }
-        let clean = input.clean.replace(shown.len());
-        let layout = self.res.text.borrow_mut().layout(shown, style, &[], kept.as_ref().map(|k| &k.3), clean);
-        *kept = Some((shown.to_owned(), *style, self.fonts_generation, layout.clone()));
-        layout
+        let width = frame.multiline.then_some(frame.content.w);
+        let shaped = {
+            let mut kept = input.layout.borrow_mut();
+            let same_document = kept.as_ref().is_some_and(|k| k.text == shown && k.style == frame.style && k.fonts == frame.fonts);
+            if !same_document {
+                let clean = input.clean.replace(shown.len());
+                let previous = kept.as_ref().and_then(|k| k.shaped.as_ref());
+                let shaped = (!shown.is_empty()).then(|| self.res.text.borrow_mut().layout(shown, &frame.style, &[], previous, clean));
+                *kept = Some(EditorLayoutCache { text: shown.to_owned(), style: frame.style, fonts: frame.fonts, shaped, displayed: None });
+            }
+            let kept = kept.as_ref().unwrap();
+            if let Some((w, display)) = &kept.displayed
+                && *w == width
+            {
+                return display.clone();
+            }
+            kept.shaped.clone()
+        };
+        let presentation = shaped.map_or_else(text::TextPresentation::default, |l| l.present(width, None, None, None));
+        let display = Rc::new(EditorLayout::new(presentation, frame.style.line_height, width));
+        input.layout.borrow_mut().as_mut().unwrap().displayed = Some((width, display.clone()));
+        display
     }
+}
+
+pub(super) struct EditorLayoutCache {
+    text: String,
+    style: text::TextStyle,
+    fonts: u64,
+    shaped: Option<text::TextLayout>,
+    displayed: Option<(Option<f32>, Rc<EditorLayout>)>,
 }
 
 #[cfg(test)]

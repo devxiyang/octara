@@ -6,7 +6,7 @@
 | 桌面窗口与绘制 | winit 宿主、CPU 参考绘制和 GPU 绘制。macOS 实窗已验收截图与图片切换。Windows 有交叉类型检查和历史实窗一致性作业 | Windows 实时检查、系统输入与实屏像素。[宿主支持范围](design/platform.md#桌面实时检查) · [图片实测](design/capture.md#图片尺寸像素与-gpu-图集) |
 | 输入与语义 | 焦点、快捷键、语义操作和触摸位移分配。macOS 同窗验证了普通输入框的 AppKit AX 选区与范围坐标 | 跨进程读屏、换行和双向文字交界处的精细几何。[选区实测](design/input.md#辅助功能的文本选区与范围) |
 | 组件组合 | 组件库使用公开视图接口实现按钮、表单、弹层、Tabs 和可搜索选择器 | 按桌面、触摸和辅助操作复核哪些行为需要下沉。[组件库](../crates/octara-kit/src/) |
-| 移动端 | iPhone 17e 的 iOS 27.2 模拟器已核对系统触摸、中断恢复、侧滑返回、模态 VoiceOver 和普通单行字段的系统拼音 | iOS 真机签名、安装和实机验收。Android Activity 宿主与 APK 的系统输入和画面证据。[移动宿主支持范围](design/platform.md#移动宿主) |
+| 移动端 | iPhone 17e 的 iOS 27.2 模拟器已核对系统触摸、中断恢复、侧滑返回、模态 VoiceOver，以及 UIKit 单行和多行字段的系统拼音 | iOS 真机签名、安装和实机验收。Android Activity 宿主与 APK 的系统输入和画面证据。[移动宿主支持范围](design/platform.md#移动宿主) |
 | Agent 验证 | 构建收据核对进程，Inspector 读取语义和稳定目标；资料审阅实窗走通诊断、修正与结果回读 | 根据应用实作中反复出现的调用和观察成本决定接口收敛范围。[资料审阅实测](design/interaction-scenarios.md#资料审阅队列) |
 
 ## 推进顺序

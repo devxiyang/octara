@@ -34,7 +34,9 @@ use std::panic::Location;
 use std::rc::Rc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, StartCause, Touch, TouchPhase, WindowEvent};
+#[cfg(not(target_os = "ios"))]
+use winit::event::Ime;
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, StartCause, Touch, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key as WKey, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::WindowId;
@@ -395,7 +397,7 @@ impl Shell {
         let Some(app) = self.app.clone() else { return };
         for id in app.windows() {
             let Some(mut window) = app.window(id) else { continue };
-            let Some(change) = ww(&window, |host| host.ios_input.as_mut()?.take()).flatten() else { continue };
+            let Some(change) = ww(&window, |host| host.ios_input.take()).flatten() else { continue };
             let mut expected = change.expected.clone();
             let accepted = if let Some(edit) = &change.edit {
                 expected.apply(edit);
@@ -403,7 +405,7 @@ impl Shell {
             } else {
                 true
             };
-            let current = ww(&window, |host| host.ios_input.as_ref().is_some_and(|input| input.is_current(&change))).unwrap_or(false);
+            let current = ww(&window, |host| host.ios_input.is_current(&change)).unwrap_or(false);
             if accepted && current {
                 if !matches!(change.edit, Some(TextEdit::Cancel))
                     && let Some(range) = &change.selection
@@ -413,16 +415,12 @@ impl Shell {
                 }
                 if change.submit
                     && change.expected.marked().is_none()
-                    && ww(&window, |host| host.ios_input.as_ref().is_some_and(|input| input.is_current(&change))).unwrap_or(false)
+                    && ww(&window, |host| host.ios_input.is_current(&change)).unwrap_or(false)
                 {
                     window.event(InputEvent::Key(KeyEvent::new(Key::Enter, Modifiers::empty())));
                 }
             }
-            ww(&window, |host| {
-                if let Some(input) = &mut host.ios_input {
-                    input.reconcile(&change);
-                }
-            });
+            ww(&window, |host| host.ios_input.reconcile(&change));
         }
     }
 
@@ -521,8 +519,7 @@ impl Shell {
             let width = size.width as f32 / scale;
             let height = size.height as f32 / scale;
             #[cfg(target_os = "ios")]
-            let (height, safe_area) =
-                (host.ios_input.as_ref().and_then(|input| input.keyboard_top()).unwrap_or(height), scene_ios::safe_area(&host.window));
+            let (height, safe_area) = (host.ios_input.keyboard_top().unwrap_or(height), scene_ios::safe_area(&host.window));
             #[cfg(not(target_os = "ios"))]
             let safe_area = None;
             let changed = !host.sized || w.size() != (width, height) || w.scale() != scale || w.kernel().safe_area() != safe_area;
@@ -962,7 +959,7 @@ impl Shell {
         let _in = InLoop::enter(&self.shared, event_loop);
         // End the contact before the next clock tick can run a held gesture's deadline.
         let held = window.held_pointer();
-        if let Some((owner, expected)) = ww(&window, |host| host.ios_input.as_mut()?.set_active(active)).flatten() {
+        if let Some((owner, expected)) = ww(&window, |host| host.ios_input.set_active(active)).flatten() {
             window.apply_text_edit(owner, &expected, &octara_primitives::text::TextEdit::Cancel);
         }
         window.event(InputEvent::Active(active));
@@ -1112,6 +1109,10 @@ impl Shell {
                 ww(&w, |x| x.traced(at, "wheel"));
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                #[cfg(target_os = "ios")]
+                if matches!(event.physical_key, PhysicalKey::Unidentified(_)) {
+                    return;
+                }
                 let at = self.shared.trace.then(Instant::now);
                 self.tick();
                 #[cfg(target_os = "macos")]
@@ -1137,12 +1138,14 @@ impl Shell {
                     self.key(&mut w, &event, true);
                 }
                 #[cfg(not(target_os = "macos"))]
-                self.key(&mut w, &event, true);
+                self.key(&mut w, &event, !cfg!(target_os = "ios"));
                 ww(&w, |x| x.traced(at, if event.repeat { "key (repeat)" } else { "key" }));
             }
+            #[cfg(not(target_os = "ios"))]
             WindowEvent::Ime(Ime::Enabled) => {
                 ww(&w, |x| x.ime_enabled());
             }
+            #[cfg(not(target_os = "ios"))]
             WindowEvent::Ime(Ime::Preedit(text, selection)) => {
                 let at = self.shared.trace.then(Instant::now);
                 self.tick();
@@ -1151,6 +1154,7 @@ impl Shell {
                     ww(&w, |x| x.traced(at, "input method composition"));
                 }
             }
+            #[cfg(not(target_os = "ios"))]
             WindowEvent::Ime(Ime::Disabled) => {
                 self.tick();
                 if ww(&w, |x| x.ime_disabled()).unwrap_or(false) {
@@ -1173,6 +1177,7 @@ impl Shell {
                 ww(&w, |win| win.hovering.clear());
                 w.event(InputEvent::FileDrag(FileDrag::Leave));
             }
+            #[cfg(not(target_os = "ios"))]
             WindowEvent::Ime(Ime::Commit(text)) => {
                 let at = self.shared.trace.then(Instant::now);
                 self.tick();

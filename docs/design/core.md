@@ -17,5 +17,5 @@
 | 写状态、任务退休、回调发生 panic | [反应式依赖](reactive-core.md)和[生命周期](runtime-contract.md) |
 | 列表重排、行数据或目标过期 | [行的身份与数据](collection-regions.md)和[集合变换](map-join.md) |
 | 控件怎样组装、按键发给谁、文本如何测量 | [内容与布局](ui-primitives.md)、[输入](input.md)和[文本](text.md) |
-| 应用与系统怎样交换事件、窗口、像素 | [平台协议](platform.md)、[窗口](windows.md)和[原生嵌入](native-island.md) |
+| 应用与系统怎样交换事件、窗口、像素 | [winit 职责边界](../ARCHITECTURE.md#平台宿主与-winit-的边界)、[平台协议](platform.md)、[窗口](windows.md)和[原生嵌入](native-island.md) |
 | 怎样辨别 Agent 看到的运行进程 | [构建收据](agent-context.md)和[语义检查](agent-knowledge.md) |

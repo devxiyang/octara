@@ -39,7 +39,43 @@ Rune 将输入显示文本、文字分段和选区投影给 AccessKit，再把�
 
 macOS 27.2 的同窗对照对实际 AccessKit 字段和标准 `NSTextView` 调用 AppKit 的辅助功能接口。两者从 `A😀Z` 都读出 `😀`，选区的 UTF-16 位置为 `1`、长度为 `2`。将各自字段向上移动 44 点后，emoji 矩形的 AppKit 屏幕 `y` 均增加 44 点，宽高各自保持一致。向 Octara 的 AX 字段写入位置 `3`、长度 `1` 后，真实编辑器读回 UTF-8 `[5,6]`，选中 `Z`，焦点与文本值保持。此次实测在验收应用进程内调用 AppKit 接口。
 
-换行字符目前投影为零宽。双向文字交界处，一个文本偏移可以对应两个视觉边缘，AccessKit 为折叠范围选取的边缘可能与编辑器绘制的光标位置不同。
+### 编辑器的视觉范围
+
+编辑器按显示文本、字体和折行宽度保留一份完整排版结果。选区和组合下划线沿视觉片段绘制，指针命中、原生范围查询和 AccessKit 也使用这些片段。Rune 的选区按 Parley 视觉簇计算。Exact 曾记录仅用每行两个端点会把双向选区画错，例如只选中夹在拉丁字母之间的希伯来文时，高亮可能缩成一条线。[Rune 选区](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune/src/text/cursor.rs#L230-L309) · [Exact 双向选区问题](https://github.com/expo/exact/blob/08c889a9de21a30b7c3b308422fc588cf1a480d3/issues/20261110-paragraph-selection-wrong-on-mixed-direction-line.md)
+
+软折行共用相邻两行的字节边界，光标落在下一行。双向交界的光标采用下一个逻辑文字片段的前缘。LF 或 CRLF 都作为一个换行字符留在上一行，原始 UTF-8 偏移保持不变。选择换行时，绘制、原生范围和 AccessKit 共用该行末端的高亮标记。原生非空范围查询返回第一行上所选片段的外包矩形及实际字节范围，折叠范围保留零宽。[原生文字几何](../../crates/octara/src/kernel/text_input.rs) · [多行回归](../../crates/octara/tests/integration/multiline.rs) · [AppKit 范围契约](https://developer.apple.com/documentation/appkit/nstextinputclient/firstrect%28forcharacterrange%3Aactualrange%3A%29)
+
+### 多行编辑器模拟器实测
+
+在 iPhone 17e 模拟器（iOS 27.2）用 Inspector 指令定位精确字节选区，核对运行构建回执和 1170 × 2532 的系统截图。
+
+| 场景 | 复测结果 |
+| --- | --- |
+| `aאבb` 的 UTF-8 选区 `1..5` | 两个希伯来字母都被高亮。旧构建的同一选区没有高亮。 |
+| `aאבb` 的 UTF-8 选区 `0..3` | 正向和反向选区都画成两段，中间的 `ב` 留白。 |
+| 选择 `abc\nnext` 的 LF 或 `abc\r\nnext` 的 CRLF | 高亮都在第一行。CRLF 选区保留两个原始字节，之后的光标只下移一行（17.5 点）。 |
+| 跨软折行选择 | 高亮分布在两行，共用边界的光标出现在第二行。 |
+| 换行落在内容边缘 | 左侧 RTL 换行和右侧 LTR 换行的高亮都画在裁剪区域内。位于右缘的光标保留 1 点可见宽度。 |
+
+另用系统触摸点击 `abc\ndef` 的第二行。光标从字节 0 移到 7，截图中的落点和 Inspector 一致。
+
+### iOS 多行软键盘 Return
+
+winit 的 iOS `UIKeyInput` 会把软键盘 Return 交成没有物理键码的 LF 按下事件。这个问题最初通过宿主把 LF 映射成 Enter 修复。现在多行字段的 Return 由 UIKit 适配器直接交给同一个 Enter 入口。普通多行字段插入一个换行，配置了 `submit_on_enter()` 的字段由现有键位规则提交。[winit 事件转换](https://github.com/rust-windowing/winit/blob/v0.30.13/src/platform_impl/ios/view.rs#L543-L578) · [UIKit 路由](../../crates/octara-shell/src/text_input_ios.rs)
+
+在 iPhone 17e 模拟器（iOS 27.2）上，从系统键盘点两次「换行」。`alpha` 依次变为 `alpha\n` 和 `alpha\n\n`，字节光标从 5 到 6 再到 7，每次向下移动 17.5 点，各收到一次编辑提议。旧构建收到按键后仍停在 `alpha` 的字节 5。
+
+同一轮在聊天输入示例点一次系统 Return，表单提交并清空正文，焦点仍在输入框。普通单行字段由 UIKit 编辑器处理，系统删除键把 `A😀Z` 变为 `A😀`，随后 Return 只记录一次提交，正文保持 `A😀`。
+
+### iOS 原生多行编辑
+
+`UITextView` 接收软键盘和输入法的组词、选区及候选确认。窗口沿用 `TextDocument` 的已接受值、标记区和 UTF-8 选区。适配器在交付时校验原字段实例及文档，UIKit 回调只登记变化，业务回调在窗口事件循环中运行。类似 Exact 的 Apple 宿主，UIKit 负责原生输入会话。Octara 的画布绘制文本、选区和光标。[Exact 多行输入](https://github.com/expo/exact/blob/08c889a9de21a30b7c3b308422fc588cf1a480d3/host/apple/Sources/ExactKit/IOS/TextAreaIOS.swift) · [Octara UIKit 适配器](../../crates/octara-shell/src/text_input_ios.rs)
+
+UIKit 请求首行范围矩形或插入点时，多行适配器使用 Octara 的 `TextGeometry`，再转换到 UIKit 文本视图的坐标系。若系统先查新草稿的坐标，适配器用已发布的布局配置直接排版该草稿。Inspector 的 `live.ime.last_geometry_query` 记录最近一次成功回答的实际字节范围和窗口逻辑坐标。[UIKit 首行范围查询](https://developer.apple.com/documentation/uikit/uitextinput/firstrect%28for%3A%29) · [Octara 范围实现](../../crates/octara/src/kernel/text_input.rs)
+
+在 iPhone 17e（iOS 27.2）模拟器上，反向选中 `A😀\nZ` 里的 emoji 后，用系统拼音键盘输入 `nihao`。组词期间已接受值与编辑次数保持原样。候选条位于键盘顶部（`y = 515` 点）。点选「你好」后只产生一次编辑，得到 `A你好\nZ`，光标落在 UTF-8 字节 7。删除最后一个拼音字母会恢复原反向选区。切到另一个输入框会结束原字段的组合。
+
+在第一行组词时，UIKit 请求字节 `9..9` 的插入点，得到窗口 `y = 305` 点。点到第二行再组词时，UIKit 请求字节 `8..8`，得到 `y = 322.5` 点。两个位置均与 Octara 绘制的光标一致。聊天输入框的第一次 Return 确认组词，第二次 Return 才提交正文。
 
 ## Pointer sessions
 

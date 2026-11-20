@@ -92,9 +92,6 @@ pub trait LaidText {
         fit: Option<f32>,
         ellipsis: Option<&(Vec<ShapedRun>, f32)>,
     ) -> TextPresentation;
-    /// Full editable lines, before document clipping or ellipsis. Native queries can lay out
-    /// the platform's current document independently of the last committed presentation.
-    fn visual_lines(&self, max_width: Option<f32>) -> Vec<VisualLine>;
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
@@ -145,48 +142,6 @@ pub fn metrics(layout: &TextLayout, style: &TextStyle, limit: Option<f32>) -> Te
     }
 }
 
-/// One full editable line before document clipping: its byte range (a line break's `\n` is in neither
-/// line), its top (from the text's top) and height, and where a caret can stand on it, `(byte,
-/// x)` in byte order from `(start, ..)` to `(end, ..)`. A line that wraps ends where the next one
-/// starts.
-#[derive(Clone, PartialEq, Debug)]
-pub struct VisualLine {
-    pub start: usize,
-    pub end: usize,
-    pub top: f32,
-    pub height: f32,
-    pub stops: Vec<(usize, f32)>,
-}
-
-impl VisualLine {
-    /// Where on the line a caret at byte `at` stands (the nearest stop at or before it).
-    pub fn x_of(&self, at: usize) -> f32 {
-        self.stops.iter().rev().find(|(b, _)| *b <= at).or(self.stops.first()).map_or(0.0, |s| s.1)
-    }
-}
-
-/// The rects `range` covers in `lines`, line by line, relative to the text's top-left.
-pub fn range_rects(lines: &[VisualLine], range: std::ops::Range<usize>) -> Vec<octara_primitives::paint::Rect> {
-    let mut out = Vec::new();
-    for l in lines {
-        let (s, e) = (range.start.max(l.start), range.end.min(l.end));
-        if s >= e && !(range.is_empty() && s == e) {
-            continue;
-        }
-        let (x0, x1) = (l.x_of(s), l.x_of(e));
-        if x1 > x0 {
-            out.push(octara_primitives::paint::Rect { x: x0, y: l.top, w: x1 - x0, h: l.height });
-        }
-    }
-    out
-}
-
-/// The byte nearest `(x, y)` (relative to the text's top-left) in `lines`.
-pub fn offset_at(lines: &[VisualLine], x: f32, y: f32) -> usize {
-    let Some(line) = lines.iter().find(|l| y < l.top + l.height).or(lines.last()) else { return 0 };
-    line.stops.iter().min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs())).map_or(line.start, |s| s.0)
-}
-
 /// One visible grapheme's source bytes and advance. Logical edges run right-to-left when
 /// `rtl` is true. Several fragments may share a shaping ligature; fitting keeps it whole.
 #[derive(Clone, Debug, PartialEq)]
@@ -213,7 +168,7 @@ pub struct TextEllipsis {
 }
 
 /// A presented line. Fragments are in visual order and never include hidden source bytes.
-/// A hard newline is positional only when the following line is also presented. `break_at`
+/// A hard break owns the LF or CRLF bytes when the following line is presented. `break_at`
 /// also marks a visible soft wrap for document selection painting.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PresentedLine {
@@ -221,7 +176,7 @@ pub struct PresentedLine {
     pub top: f32,
     pub height: f32,
     pub fragments: Vec<TextFragment>,
-    pub hard_break: Option<usize>,
+    pub hard_break: Option<Range<usize>>,
     pub break_at: Option<usize>,
     pub ellipsis: Option<TextEllipsis>,
 }
@@ -247,7 +202,7 @@ impl PresentedLine {
 
     /// Both edges of a visible grapheme (a hard newline has zero advance).
     pub fn edges(&self, range: &Range<usize>) -> Option<(f32, f32)> {
-        if self.hard_break == Some(range.start) {
+        if self.hard_break.as_ref().is_some_and(|b| b.start <= range.start && b.end >= range.end) {
             let x = self.break_x();
             return Some((x, x));
         }
@@ -256,7 +211,7 @@ impl PresentedLine {
 
     /// The logical line-end edge used by a visible hard break or soft wrap.
     pub fn break_x(&self) -> f32 {
-        let Some(end) = self.break_at.or(self.hard_break) else { return self.right_boundary().1 };
+        let Some(end) = self.break_at.or_else(|| self.hard_break.as_ref().map(|b| b.start)) else { return self.right_boundary().1 };
         self.fragments.iter().find(|f| f.source.end == end).map_or(0.0, |f| f.edges().1)
     }
 
@@ -266,7 +221,7 @@ impl PresentedLine {
 }
 
 /// A single document presentation: glyphs, visible source fragments and synthetic ellipses.
-/// Measurement and full editable navigation remain separate from this projection.
+/// Editable navigation can derive its geometry from the full, unfitted presentation.
 #[derive(Clone, Debug, Default)]
 pub struct TextPresentation {
     pub glyphs: Vec<ShapedRun>,
@@ -385,12 +340,21 @@ fn present_lines(
     out
 }
 
-/// Monospace lines: `em` per character, broken at spaces to fit `max_width` (as
-/// [`MonoEngine::paragraph`] measures), a space that breaks a line staying at its end.
-fn even_lines(text: &str, em: f32, line_height: f32, max_width: Option<f32>) -> Vec<VisualLine> {
+/// Paragraph source offsets exclude their LF or CRLF while preserving the original bytes.
+fn paragraphs(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    text.split('\n').scan(0, move |base, raw| {
+        let start = *base;
+        let end = start + raw.len();
+        *base = end + 1;
+        let paragraph = if end < text.len() { raw.strip_suffix('\r').unwrap_or(raw) } else { raw };
+        Some((start, paragraph))
+    })
+}
+
+/// Monospace lines: a space that breaks a line stays at its end.
+fn even_lines(text: &str, em: f32, max_width: Option<f32>) -> Vec<Range<usize>> {
     let mut out = Vec::new();
-    let mut base = 0;
-    for para in text.split('\n') {
+    for (base, para) in paragraphs(text) {
         // Line starts: a word that does not fit after the previous one begins a line.
         let mut starts = vec![0usize];
         if let Some(max) = max_width {
@@ -409,12 +373,8 @@ fn even_lines(text: &str, em: f32, line_height: f32, max_width: Option<f32>) -> 
         }
         for (i, &s) in starts.iter().enumerate() {
             let e = starts.get(i + 1).copied().unwrap_or(para.len());
-            let mut stops: Vec<(usize, f32)> =
-                para[s..e].char_indices().enumerate().map(|(n, (b, _))| (base + s + b, n as f32 * em)).collect();
-            stops.push((base + e, para[s..e].chars().count() as f32 * em));
-            out.push(VisualLine { start: base + s, end: base + e, top: out.len() as f32 * line_height, height: line_height, stops });
+            out.push(base + s..base + e);
         }
-        base += para.len() + 1;
     }
     out
 }
@@ -473,7 +433,7 @@ impl MonoText {
 impl LaidText for MonoText {
     fn measure(&self, max_width: Option<f32>) -> (f32, u32, f32) {
         let (mut width, mut lines) = (0.0f32, 0u32);
-        for p in self.text.split('\n') {
+        for (_, p) in paragraphs(&self.text) {
             let (w, l) = self.paragraph(p, max_width);
             width = width.max(w);
             lines += l;
@@ -487,7 +447,7 @@ impl LaidText for MonoText {
         fit: Option<f32>,
         ellipsis: Option<&(Vec<ShapedRun>, f32)>,
     ) -> TextPresentation {
-        let lines = even_lines(&self.text, self.em, self.line_height, max_width);
+        let lines = even_lines(&self.text, self.em, max_width);
         let mut presented = Vec::new();
         for (i, l) in lines.iter().enumerate() {
             let mut x = 0.0;
@@ -505,26 +465,25 @@ impl LaidText for MonoText {
                     }
                 })
                 .collect();
-            let hard_break = (self.text.as_bytes().get(l.end) == Some(&b'\n')).then_some(l.end);
+            let next_start = lines.get(i + 1).map(|next| next.start);
+            let hard_break = next_start.filter(|&start| start > l.end).map(|start| l.end..start);
+            let top = i as f32 * self.line_height;
             presented.push(PresentationLine {
                 line: PresentedLine {
                     start: l.start,
-                    top: l.top,
-                    height: l.height,
+                    top,
+                    height: self.line_height,
                     fragments,
                     hard_break,
-                    break_at: lines.get(i + 1).map(|_| l.end),
+                    break_at: next_start.map(|_| l.end),
                     ellipsis: None,
                 },
                 atoms,
                 glyphs: Vec::new(),
-                baseline: l.top + self.line_height,
+                baseline: top + self.line_height,
             });
         }
         present_lines(presented, max_lines, fit, ellipsis)
-    }
-    fn visual_lines(&self, max_width: Option<f32>) -> Vec<VisualLine> {
-        even_lines(&self.text, self.em, self.line_height, max_width)
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -614,14 +573,14 @@ impl Shaped {
 
 /// A text laid out by Parley: its paragraphs.
 struct ParleyText {
-    paras: Vec<Rc<Shaped>>,
+    paras: Vec<(usize, Rc<Shaped>)>,
     line_height: f32,
 }
 
 impl LaidText for ParleyText {
     fn measure(&self, max_width: Option<f32>) -> (f32, u32, f32) {
         let (mut width, mut lines, mut height) = (0.0f32, 0u32, 0.0f32);
-        for p in &self.paras {
+        for (_, p) in &self.paras {
             let (w, l, h) = p.measure(max_width);
             width = width.max(w);
             lines += l.max(1);
@@ -637,10 +596,12 @@ impl LaidText for ParleyText {
         ellipsis: Option<&(Vec<ShapedRun>, f32)>,
     ) -> TextPresentation {
         let mut lines = Vec::new();
-        let (mut top, mut base) = (0.0, 0);
+        let mut top = 0.0;
         // One extra line establishes hidden content without extracting the entire hidden tail.
         let needed = max_lines.map_or(usize::MAX, |n| usize::from(n) + 1);
-        'paras: for (pi, p) in self.paras.iter().enumerate() {
+        'paras: for (pi, &(base, ref p)) in self.paras.iter().enumerate() {
+            let next = self.paras.get(pi + 1).map(|&(start, _)| start);
+            let break_range = || next.map(|start| base + p.text.len()..start);
             p.break_at(max_width);
             let layout = p.layout.borrow();
             let count = lines.len();
@@ -651,7 +612,7 @@ impl LaidText for ParleyText {
                 let m = line.metrics();
                 let range = line.text_range();
                 let end = base + range.end.min(p.text.len());
-                let hard_break = (li + 1 == layout.len() && pi + 1 < self.paras.len()).then_some(base + p.text.len());
+                let hard_break = if li + 1 == layout.len() { break_range() } else { None };
                 let baselines: Vec<_> = line
                     .items()
                     .filter_map(|item| match item {
@@ -666,7 +627,7 @@ impl LaidText for ParleyText {
                         height: m.block_max_coord - m.block_min_coord,
                         fragments: Vec::new(),
                         hard_break,
-                        break_at: (li + 1 < layout.len() || pi + 1 < self.paras.len()).then_some(end),
+                        break_at: (li + 1 < layout.len() || next.is_some()).then_some(end),
                         ellipsis: None,
                     },
                     atoms: Vec::new(),
@@ -695,15 +656,14 @@ impl LaidText for ParleyText {
                 if lines.len() == needed {
                     break;
                 }
-                let hard_break = (pi + 1 < self.paras.len()).then_some(base);
                 lines.push(PresentationLine {
                     line: PresentedLine {
                         start: base,
                         top,
                         height: self.line_height,
                         fragments: Vec::new(),
-                        hard_break,
-                        break_at: hard_break,
+                        hard_break: break_range(),
+                        break_at: next.map(|_| base),
                         ellipsis: None,
                     },
                     atoms: Vec::new(),
@@ -712,56 +672,8 @@ impl LaidText for ParleyText {
                 });
             }
             top += if layout.is_empty() { self.line_height } else { layout.height() };
-            base += p.text.len() + 1;
         }
         present_lines(lines, max_lines, fit, ellipsis)
-    }
-    fn visual_lines(&self, max_width: Option<f32>) -> Vec<VisualLine> {
-        let mut out = Vec::new();
-        let mut base = 0;
-        let mut top = 0.0f32;
-        for p in &self.paras {
-            p.break_at(max_width);
-            let layout = p.layout.borrow();
-            let para = p.text.as_str();
-            let count = out.len();
-            for line in layout.lines() {
-                let m = line.metrics();
-                let (line_top, line_height) = (top + m.block_min_coord, m.block_max_coord - m.block_min_coord);
-                let r = line.text_range();
-                let (s, e) = (base + r.start.min(para.len()), base + r.end.min(para.len()));
-                let mut stops: Vec<(usize, f32)> = Vec::new();
-                for item in line.items() {
-                    let parley::PositionedLayoutItem::GlyphRun(run) = item else { continue };
-                    let mut x = run.offset();
-                    for c in run.run().visual_clusters() {
-                        let cr = c.text_range();
-                        let (lead, trail) = if c.is_rtl() { (cr.end, cr.start) } else { (cr.start, cr.end) };
-                        stops.push((base + lead, x));
-                        x += c.advance();
-                        stops.push((base + trail, x));
-                    }
-                }
-                stops.retain(|(b, _)| *b >= s && *b <= e);
-                if !stops.iter().any(|st| st.0 == s) {
-                    stops.push((s, 0.0));
-                }
-                if !stops.iter().any(|st| st.0 == e) {
-                    let right = stops.iter().map(|st| st.1).fold(0.0f32, f32::max);
-                    stops.push((e, right));
-                }
-                stops.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
-                stops.dedup_by_key(|st| st.0);
-                out.push(VisualLine { start: s, end: e, top: line_top, height: line_height, stops });
-            }
-            // An empty paragraph is one empty line.
-            if out.len() == count {
-                out.push(VisualLine { start: base, end: base, top, height: self.line_height, stops: vec![(base, 0.0)] });
-            }
-            top += if layout.is_empty() { self.line_height } else { layout.height() };
-            base += para.len() + 1;
-        }
-        out
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -1052,26 +964,28 @@ impl TextEngine for ParleyEngine {
         let prev = previous.and_then(|p| p.as_any().downcast_ref::<ParleyText>());
         let mut paras = Vec::new();
         let mut local = Vec::new();
-        let mut start = 0usize;
-        for (i, p) in text.split('\n').enumerate() {
+        for (i, (start, p)) in paragraphs(text).enumerate() {
             let end = start + p.len();
             local.clear();
             for r in runs.iter().filter(|r| r.end > start && r.start < end) {
                 local.push(StyleRun { start: r.start.max(start) - start, end: r.end.min(end) - start, ..*r });
             }
             // Unchanged since the last layout: the same paragraph, without comparing it.
-            let kept = prev.and_then(|pt| pt.paras.get(i)).filter(|s| end < clean && s.style == shape && s.runs == local).cloned();
-            paras.push(match kept {
-                Some(s) => s,
-                None => self.find_or_shape(p, &shape, &local),
+            let kept = prev.and_then(|pt| pt.paras.get(i)).filter(|(old_start, s)| {
+                *old_start == start && end < clean && s.text.len() == p.len() && s.style == shape && s.runs == local
             });
-            start = end + 1;
+            let shaped = kept.map_or_else(|| self.find_or_shape(p, &shape, &local), |(_, shape)| shape.clone());
+            paras.push((start, shaped));
         }
         // Paragraphs this text replaced that nothing else shows leave the cache now (a stream's
         // tail, typing): they would only wait for the budget.
         if let Some(pt) = prev {
-            let replaced: Vec<Rc<Shaped>> =
-                pt.paras.iter().filter(|o| Rc::strong_count(o) == 2 && !paras.iter().any(|n| Rc::ptr_eq(n, o))).cloned().collect();
+            let replaced: Vec<_> = pt
+                .paras
+                .iter()
+                .filter(|(_, o)| Rc::strong_count(o) == 2 && !paras.iter().any(|(_, n)| Rc::ptr_eq(n, o)))
+                .map(|(_, old)| old.clone())
+                .collect();
             for o in &replaced {
                 self.evict(o);
             }
@@ -1177,6 +1091,25 @@ mod tests {
     }
 
     #[test]
+    fn parley_reuses_shapes_after_line_delimiter_edits() {
+        let mut engine = ParleyEngine::default();
+        let style = TextStyle::default();
+        let original = lay(&mut engine, "first\nsecond\r\nlast", &style);
+        let shaped = engine.shaped();
+        let edited = engine.layout("first\r\nsecond\nlast", &style, &[], Some(&original), "first".len());
+        assert_eq!(engine.shaped(), shaped);
+        let original = original.present(None, None, None, None);
+        let edited = edited.present(None, None, None, None);
+        assert_eq!(original.lines[0].hard_break, Some(5..6));
+        assert_eq!(edited.lines[0].hard_break, Some(5..7));
+        assert_eq!(original.lines[1].fragments[0].source, 6..7);
+        assert_eq!(edited.lines[1].fragments[0].source, 7..8);
+        assert_eq!(original.lines[1].hard_break, Some(12..14));
+        assert_eq!(edited.lines[1].hard_break, Some(13..14));
+        assert_eq!(original.lines[2], edited.lines[2]);
+    }
+
+    #[test]
     fn a_stream_keeps_the_kept_bytes_flat() {
         let mut e = ParleyEngine::default();
         let s = TextStyle::default();
@@ -1209,20 +1142,29 @@ mod tests {
     }
 
     #[test]
-    fn parley_visual_lines_wrap_with_caret_stops() {
-        let mut e = ParleyEngine::default();
-        let s = TextStyle::default();
-        let one = metrics(&lay(&mut e, "hello world", &s), &s, None);
-        let narrow = Some(one.width * 0.7);
-        let lines = lay(&mut e, "hello world\nsecond", &s).visual_lines(narrow);
-        assert_eq!(lines.len(), 3, "{lines:?}");
-        assert_eq!((lines[0].start, lines[1].start, lines[1].end, lines[2].start, lines[2].end), (0, 6, 11, 12, 18));
-        assert_eq!(lines.iter().map(|l| l.top).collect::<Vec<_>>(), [0.0, 24.0, 48.0]);
-        for l in &lines {
-            assert_eq!((l.stops[0].0, l.stops.last().unwrap().0), (l.start, l.end));
-            assert!(l.stops.windows(2).all(|w| w[0].0 < w[1].0 && w[0].1 <= w[1].1), "{:?}", l.stops);
+    fn full_presentations_wrap_with_caret_edges() {
+        for engine in [&mut MonoEngine as &mut dyn TextEngine, &mut ParleyEngine::default()] {
+            let style = TextStyle::default();
+            let layout = lay(engine, "hello world\nsecond", &style);
+            let narrow = Some(layout.measure(None).0 * 0.7);
+            let full = layout.present(narrow, None, None, None);
+            assert_eq!(full.lines.len(), 3, "{:?}", full.lines);
+            for (row, (line, source)) in full.lines.iter().zip([0..6, 6..11, 12..18]).enumerate() {
+                assert_eq!((line.start, line.top, line.height), (source.start, row as f32 * style.line_height, style.line_height));
+                let first = line.fragments.first().unwrap();
+                let last = line.fragments.last().unwrap();
+                assert_eq!(first.source.start..last.source.end, source);
+                assert!(line.fragments.array_windows::<2>().all(|[a, b]| a.source.end == b.source.start && a.edges().1 <= b.edges().0));
+                let y = line.top + line.height / 2.0;
+                assert_eq!(first.edges().0, 0.0);
+                assert_eq!(full.offset_at(0.0, y), source.start);
+                assert_eq!(full.offset_at(last.edges().1, y), source.end);
+            }
+            assert_eq!(full.lines[0].break_at, Some(6));
+            assert_eq!(full.lines[0].hard_break, None);
+            assert_eq!(full.lines[1].break_at, Some(11));
+            assert_eq!(full.lines[1].hard_break, Some(11..12));
         }
-        assert_eq!(lines[1].stops[0].1, 0.0, "a wrapped line starts at the left edge");
     }
 
     #[test]
@@ -1238,18 +1180,32 @@ mod tests {
     fn presentations_share_line_limits_breaks_and_unicode_boundaries() {
         for mut engine in [Box::new(MonoEngine) as Box<dyn TextEngine>, Box::new(ParleyEngine::default())] {
             let style = TextStyle::default();
-            let text = "中文😀\n\nhidden";
+            let text = "中文😀\r\n\nhidden\r\n";
             let layout = lay(&mut *engine, text, &style);
+            let lf = lay(&mut *engine, "中文😀\n\nhidden\n", &style);
+            assert_eq!(layout.measure(None), lf.measure(None));
             let full = layout.present(None, None, None, None);
-            assert_eq!(full.lines.len(), 3);
-            assert_eq!(full.lines[0].hard_break, Some("中文😀".len()));
+            assert_eq!(full.lines.len(), 4);
             assert!(full.lines[1].fragments.is_empty());
-            assert_eq!(full.lines[1].hard_break, Some("中文😀\n".len()));
+            assert!(full.lines[3].fragments.is_empty());
+            assert!(full.lines[3].hard_break.is_none());
+            let first_break = "中文😀".len();
+            let hidden_start = first_break + 3;
+            let breaks = [first_break..first_break + 2, first_break + 2..hidden_start, text.len() - 2..text.len()];
+            for (row, range) in breaks.into_iter().enumerate() {
+                let line = &full.lines[row];
+                let x = line.fragments.last().map_or(0.0, |f| f.edges().1);
+                assert_eq!(line.hard_break.as_ref(), Some(&range));
+                assert_eq!(line.edges(&range), Some((x, x)));
+                assert_eq!(full.offset_at(x + 1.0, line.top + 1.0), range.start);
+                assert_eq!(full.lines[row + 1].start, range.end);
+                assert!(full.range_rects(range).is_empty());
+            }
             let dots = engine.ellipsis(&style);
             let shown = layout.present(None, Some(1), Some(200.0), dots.as_ref());
             assert_eq!(shown.lines.len(), 1);
             assert_eq!(shown.lines[0].hard_break, None, "a hidden next line has no positional newline");
-            assert!(shown.range_rects("中文😀\n\n".len()..text.len()).is_empty());
+            assert!(shown.range_rects(hidden_start..text.len()).is_empty());
             assert!(shown.lines[0].ellipsis.is_some());
             for f in &shown.lines[0].fragments {
                 assert!(text.get(f.source.clone()).is_some(), "source bytes stay on UTF-8 boundaries");
@@ -1306,17 +1262,15 @@ mod tests {
         let mut shaped = builder.build(text);
         shaped.break_all_lines(None);
         assert!(shaped.lines().flat_map(|l| l.runs()).flat_map(|r| r.clusters()).any(|c| c.is_ligature_start()));
-        let layout = ParleyText {
-            paras: vec![Rc::new(Shaped {
-                text: text.into(),
-                style: ShapeStyle::of(&style),
-                runs: Vec::new(),
-                layout: RefCell::new(shaped),
-                broken: Cell::new(Some(None)),
-                results: RefCell::default(),
-            })],
-            line_height: style.line_height,
-        };
+        let shaped = Rc::new(Shaped {
+            text: text.into(),
+            style: ShapeStyle::of(&style),
+            runs: Vec::new(),
+            layout: RefCell::new(shaped),
+            broken: Cell::new(Some(None)),
+            results: RefCell::default(),
+        });
+        let layout = ParleyText { paras: vec![(0, shaped)], line_height: style.line_height };
         let full = layout.present(None, None, None, None);
         let arrow = full.range_rects(2..5)[0];
         let dots = engine.ellipsis(&style).unwrap();
@@ -1340,7 +1294,7 @@ mod tests {
             let shown = layout.present(width, None, None, None);
             let mut expected = Vec::new();
             let mut top = 0.0;
-            for p in &layout.as_any().downcast_ref::<ParleyText>().unwrap().paras {
+            for (_, p) in &layout.as_any().downcast_ref::<ParleyText>().unwrap().paras {
                 p.break_at(width);
                 let shaped = p.layout.borrow();
                 for line in shaped.lines() {

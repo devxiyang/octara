@@ -346,19 +346,24 @@ impl PlatformWindow for HeadlessWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use octara_text::VisualLine;
 
-    #[test]
-    fn native_layout_handles_a_busy_engine_and_an_empty_document() {
-        let layout = TextInputLayout {
-            resources: std::rc::Rc::new(crate::kernel::Resources::default()),
+    fn text_layout(multiline: bool) -> TextInputLayout {
+        let resources = std::rc::Rc::new(crate::kernel::Resources::default());
+        *resources.text.borrow_mut() = Box::new(octara_text::MonoEngine);
+        TextInputLayout {
+            resources,
             style: octara_text::TextStyle::default(),
             content: Rect { x: 10.0, y: 20.0, w: 80.0, h: 24.0 },
-            multiline: false,
+            multiline,
             scroll: 0.0,
             kept: None,
             fonts: 0,
-        };
+        }
+    }
+
+    #[test]
+    fn native_layout_handles_a_busy_engine_and_an_empty_document() {
+        let layout = text_layout(false);
         let document = crate::kernel::TextDocument::new("nihao".into(), 5, 5);
         let engine = layout.resources.text.borrow_mut();
         assert!(layout.layout(&document).is_none(), "a reentrant native query must not panic or enter the app");
@@ -370,14 +375,7 @@ mod tests {
 
     #[test]
     fn actual_text_rect_ranges_advance_across_newlines_and_empty_lines() {
-        let geometry = TextGeometry {
-            origin: (10.0, 20.0),
-            lines: vec![
-                VisualLine { start: 0, end: 1, top: 0.0, height: 10.0, stops: vec![(0, 0.0), (1, 8.0)] },
-                VisualLine { start: 2, end: 2, top: 10.0, height: 10.0, stops: vec![(2, 0.0)] },
-                VisualLine { start: 3, end: 4, top: 20.0, height: 10.0, stops: vec![(3, 0.0), (4, 8.0)] },
-            ],
-        };
+        let geometry = text_layout(true).layout(&crate::kernel::TextDocument::new("A\n\nB".into(), 0, 0)).unwrap();
         let mut ranges = Vec::new();
         let mut start = 0;
         while start < 4 {
@@ -389,27 +387,18 @@ mod tests {
         assert_eq!(ranges, [0..2, 2..3, 3..4]);
         let (actual, newline) = geometry.first_rect(1..2).unwrap();
         assert_eq!(actual, 1..2);
-        assert_eq!((newline.x, newline.y, newline.w), (18.0, 20.0, 0.0));
+        assert_eq!((newline.x, newline.y, newline.w), (18.0, 20.0, 6.0));
         assert_eq!(geometry.first_rect(1..1).unwrap().0, 1..1, "an insertion-point query remains empty");
     }
 
     #[test]
     fn actual_text_rect_ranges_expand_to_complete_surrogates_and_graphemes() {
         let text = "A😀e\u{301}B";
-        let geometry = TextGeometry {
-            origin: (0.0, 0.0),
-            lines: vec![VisualLine {
-                start: 0,
-                end: text.len(),
-                top: 0.0,
-                height: 10.0,
-                stops: vec![(0, 0.0), (1, 8.0), (5, 20.0), (8, 28.0), (9, 36.0)],
-            }],
-        };
+        let geometry = text_layout(false).layout(&crate::kernel::TextDocument::new(text.into(), 0, 0)).unwrap();
         let (actual, rect) = geometry.first_rect(2..3).unwrap();
         assert_eq!(actual, 1..5);
         assert_eq!(crate::app::utf16_offset(text, actual.start)..crate::app::utf16_offset(text, actual.end), 1..3);
-        assert_eq!(rect.w, 12.0);
+        assert_eq!(rect.w, 8.0);
         assert_eq!(geometry.first_rect(6..7).unwrap().0, 5..8, "a combining mark shares the base character's rect");
         assert_eq!(geometry.first_rect(2..2).unwrap().0, 1..1, "a split-surrogate insertion point floors to the previous caret stop");
     }
