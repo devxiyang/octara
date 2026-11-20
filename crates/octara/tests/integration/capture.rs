@@ -50,8 +50,8 @@ impl Painter for ImagePixels {
             })
             .collect();
         let items = list.items();
-        let mut images = items.iter().filter_map(|item| if let Item::Image(image) = item { Some(&image.image) } else { None });
-        let frame = images.next().expect("one image to sample").frame();
+        let mut images = items.iter().filter_map(|item| if let Item::Image(image) = item { Some(image.image.frame()) } else { None });
+        let frame = images.next().expect("one image to sample");
         assert!(images.next().is_none(), "only one image should be painted");
         Ok(Picture { width: frame.width, height: frame.height, rgba: frame.rgba.to_vec() })
     }
@@ -281,6 +281,7 @@ fn a_painted_capture_keeps_the_pixels_of_a_mutable_image_at_begin() {
     app.capture_finish(capture, &mut painter, &shot, 1.0, vec![], None).unwrap();
     assert_eq!(read_and_remove_pixel(&shot), [255, 0, 0, 255]);
 
+    app.app().settle();
     let capture = app.capture_begin(deadline()).unwrap();
     app.capture_finish(capture, &mut painter, &shot, 1.0, vec![], None).unwrap();
     assert_eq!(read_and_remove_pixel(&shot), [0, 255, 0, 255]);

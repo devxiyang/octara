@@ -4,6 +4,9 @@
 use octara::prelude::*;
 use octara::view::native_view;
 use octara_primitives::capture::Picture;
+use octara_primitives::identity::NodeId;
+use octara_primitives::image::Sample;
+use octara_primitives::paint::{DisplayList, ImagePaint, Item, Part, Rect};
 use octara_render::{CpuRenderer, GpuRenderer};
 
 fn compare(name: &str, cpu: &Picture, gpu: &Picture) {
@@ -145,6 +148,99 @@ fn images() -> View {
         .into()
 }
 
+const IMAGE_COLORS: [[u8; 4]; 5] = [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], [255, 192, 0, 255], [192, 0, 255, 255]];
+
+fn solid_image(width: u32, height: u32, rgba: [u8; 4]) -> Sample {
+    Image::rgba(width, height, rgba.repeat((width * height) as usize)).sample()
+}
+
+fn image_row(images: &[Sample]) -> DisplayList {
+    let parts = images
+        .iter()
+        .enumerate()
+        .map(|(column, image)| {
+            let rect = Rect { x: column as f32 * 8.0, y: 0.0, w: 8.0, h: 8.0 };
+            Part::Item(Item::Image(ImagePaint {
+                source: NodeId::default(),
+                image: image.clone(),
+                rect,
+                bounds: rect,
+                radius: 0.0,
+                opacity: 1.0,
+            }))
+        })
+        .collect();
+    DisplayList { size: (images.len() as f32 * 8.0, 8.0), background: Color::WHITE, parts }
+}
+
+fn image_row_pixels(gpu: &mut GpuRenderer, row: &DisplayList) -> Vec<[u8; 4]> {
+    let picture = gpu.render(row, 1.0);
+    (4..picture.width).step_by(8).map(|x| picture.pixel(x, 4)).collect()
+}
+
+#[test]
+fn gpu_skips_an_oversized_image_without_evicting_other_images() {
+    let Some(mut gpu) = GpuRenderer::new() else {
+        eprintln!("no GPU adapter: skipped");
+        return;
+    };
+    let [red, green, blue, amber, purple] = IMAGE_COLORS;
+    let boundary = image_row(&[solid_image(2048, 1, red)]);
+    assert_eq!(image_row_pixels(&mut gpu, &boundary), [red]);
+
+    let wide = solid_image(1535, 1023, red);
+    let narrow = solid_image(511, 1023, green);
+    let square_a = solid_image(1023, 1023, blue);
+    let square_b = solid_image(1023, 1023, amber);
+    let packed = image_row(&[wide.clone(), narrow.clone(), square_a.clone(), square_b.clone()]);
+    assert_eq!(image_row_pixels(&mut gpu, &packed), [red, green, blue, amber]);
+
+    // This order would leave a gap on an empty shelf. All four already have slots.
+    let oversized = solid_image(2049, 1, purple);
+    let reordered = image_row(&[wide, square_a, square_b, narrow, oversized]);
+    assert_eq!(image_row_pixels(&mut gpu, &reordered), [red, blue, amber, green, [255; 4]]);
+}
+
+#[test]
+fn gpu_image_atlas_recovers_after_a_frame_exceeds_its_capacity() {
+    let Some(mut gpu) = GpuRenderer::new() else {
+        eprintln!("no GPU adapter: skipped");
+        return;
+    };
+    // With the one-pixel gutter, exactly four of these fit in the 2048×2048 atlas.
+    let images = IMAGE_COLORS.map(|color| solid_image(1023, 1023, color));
+    let fitting = image_row(&images[..4]);
+    assert_eq!(image_row_pixels(&mut gpu, &fitting), IMAGE_COLORS[..4]);
+
+    let mut expected = IMAGE_COLORS;
+    expected[4] = [255; 4];
+    assert_eq!(image_row_pixels(&mut gpu, &image_row(&images)), expected);
+    assert_eq!(image_row_pixels(&mut gpu, &image_row(&images[4..])), IMAGE_COLORS[4..]);
+    assert_eq!(image_row_pixels(&mut gpu, &fitting), IMAGE_COLORS[..4]);
+}
+
+#[test]
+fn gpu_redraws_each_sampled_image_version() {
+    let Some(mut gpu) = GpuRenderer::new() else {
+        eprintln!("no GPU adapter: skipped");
+        return;
+    };
+    let [red, green, blue, ..] = IMAGE_COLORS;
+    let first = solid_image(2048, 1023, red);
+    let image = first.source().clone();
+    let old_list = image_row(std::slice::from_ref(&first));
+    image.set(2047, 1023, green.repeat(2047 * 1023));
+    let second = image.sample();
+    let new_list = image_row(std::slice::from_ref(&second));
+    // The two versions fill the atlas. Drawing the first one twice must reuse its slot.
+    let mixed_list = image_row(&[first.clone(), second, first]);
+    image.set(1, 1, blue);
+
+    assert_eq!(image_row_pixels(&mut gpu, &new_list), [green]);
+    assert_eq!(image_row_pixels(&mut gpu, &old_list), [red]);
+    assert_eq!(image_row_pixels(&mut gpu, &mixed_list), [red, green, red]);
+}
+
 fn layers() -> View {
     let overlap = || {
         el().w(120)
@@ -199,7 +295,6 @@ fn gpu_matches_the_reference_renderer() {
 #[test]
 fn capture_painter_rejects_invalid_sizes_without_losing_the_renderer() {
     use octara_primitives::capture::Painter;
-    use octara_primitives::paint::DisplayList;
 
     let Some(mut gpu) = GpuRenderer::new() else {
         eprintln!("no GPU adapter: skipped");
@@ -230,9 +325,8 @@ fn capture_painter_rejects_invalid_sizes_without_losing_the_renderer() {
 }
 
 /// Paths of every kind, and one larger than an atlas tile.
-fn paths_list() -> octara_primitives::paint::DisplayList {
-    use octara_primitives::identity::NodeId;
-    use octara_primitives::paint::{DisplayList, Gradient, Item, Part, PathPaint, Rect};
+fn paths_list() -> DisplayList {
+    use octara_primitives::paint::{Gradient, PathPaint};
     use octara_primitives::path::{FillRule, LineCap, LineJoin, Path, PathStyle, Stroke, Transform, point};
     let item = |path: Path, style: PathStyle, color: Color, transform: Transform| {
         let b = path.bounds().unwrap_or_default();

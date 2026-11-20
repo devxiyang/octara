@@ -156,8 +156,8 @@ pub struct GpuRenderer {
     layers: Vec<wgpu::Texture>,
     /// A 1×1 texture bound where no layer is.
     no_layer: wgpu::Texture,
-    /// Images in the image atlas: id → (version, x, y).
-    image_slots: FxHashMap<u64, (u64, u32, u32)>,
+    /// Atlas positions by image identity and sampled version.
+    image_slots: FxHashMap<(u64, u64), (u32, u32)>,
     shelves: [Shelf; 3],
     slots: FxHashMap<AtlasKey, Option<Slot>>,
     path_slots: FxHashMap<MaskKey, Vec<Tile>>,
@@ -373,24 +373,24 @@ impl GpuRenderer {
         Some(tiles)
     }
 
-    /// The image's place in the image atlas, uploading its current pixels when they are new; an
-    /// image larger than the atlas is not drawn.
+    /// The recorded image version's slot, uploading its pixels on the first use.
     fn image_slot(&mut self, i: &ImagePaint) -> Option<(u32, u32, u32, u32)> {
         let f = i.image.frame();
-        if f.width == 0 || f.height == 0 {
+        let shelf = &mut self.shelves[2];
+        // Repacking cannot make room for an image that exceeds the atlas dimensions.
+        if f.width == 0 || f.height == 0 || f.width > shelf.size || f.height > shelf.size {
             return None;
         }
-        if let Some((v, x, y)) = self.image_slots.get(&i.image.id())
-            && *v == f.version
-        {
-            return Some((*x, *y, f.width, f.height));
+        let key = (i.image.source().id(), f.version);
+        if let Some(&(x, y)) = self.image_slots.get(&key) {
+            return Some((x, y, f.width, f.height));
         }
-        let Some(at) = self.shelves[2].alloc(f.width, f.height) else {
+        let Some(at) = shelf.alloc(f.width, f.height) else {
             self.overflow = true;
             return None;
         };
         self.upload(&self.images, at, (f.width, f.height), 4, &f.rgba, f.width);
-        self.image_slots.insert(i.image.id(), (f.version, at.0, at.1));
+        self.image_slots.insert(key, at);
         Some((at.0, at.1, f.width, f.height))
     }
 

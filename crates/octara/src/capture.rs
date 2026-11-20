@@ -7,7 +7,7 @@
 //! shell, the reference renderer headless (`octara-render` implements both). The reply is a
 //! [`Capture`] report.
 
-use crate::image::Image;
+use crate::image::{Image, Sample};
 use crate::kernel::NodeId;
 use crate::native::NativeChange;
 use crate::paint::{DisplayList, ImagePaint, Item, Part, Rect};
@@ -136,7 +136,7 @@ impl NativeShotRequest {
 
 pub(crate) enum SnapshotStatus {
     Waiting,
-    Captured(Image),
+    Captured(Sample),
     Failed(&'static str),
     Placeholder(String),
 }
@@ -152,12 +152,7 @@ pub struct DisplayCapture {
     pub(crate) native: Vec<NativeShot>,
 }
 
-pub(crate) fn freeze_image(image: &Image) -> Image {
-    let frame = image.frame();
-    Image::rgba(frame.width, frame.height, frame.rgba)
-}
-
-pub(crate) fn paint_native_snapshots(list: &mut DisplayList, snapshots: &mut rustc_hash::FxHashMap<NodeId, Image>) {
+pub(crate) fn paint_native_snapshots(list: &mut DisplayList, snapshots: &mut rustc_hash::FxHashMap<NodeId, Sample>) {
     for part in &mut list.parts {
         let Part::Drawing { items, .. } = part else { continue };
         let [.., Item::Quad(placeholder), Item::Native { source, rect, radius, cut: false, .. }] = items.as_ref() else { continue };

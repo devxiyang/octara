@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::capture::{
-    Capture, CaptureId, Capturing, DisplayCapture, NativeShot, NativeShotRequest, Painter, Pixels, Shown, SnapshotStatus, freeze_image,
+    Capture, CaptureId, Capturing, DisplayCapture, NativeShot, NativeShotRequest, Painter, Pixels, Shown, SnapshotStatus,
     paint_native_snapshots,
 };
 use crate::image::Image;
@@ -339,8 +339,8 @@ impl Window {
             crate::paint::Part::Item(item) => std::slice::from_ref(item),
         }) {
             if let crate::paint::Item::Image(paint) = item {
-                let image = &paint.image;
-                images.entry(image.id()).or_insert_with(|| (image.clone(), image.frame().version));
+                let image = paint.image.source();
+                images.entry(image.id()).or_insert_with(|| (image.clone(), paint.image.frame().version));
             }
         }
         let k = self.w.kernel.borrow();
@@ -400,8 +400,8 @@ impl Window {
         if !matches!(shot.status, SnapshotStatus::Waiting) {
             return false;
         }
-        shot.status = image
-            .map_or(SnapshotStatus::Failed("the platform returned no snapshot"), |image| SnapshotStatus::Captured(freeze_image(&image)));
+        shot.status =
+            image.map_or(SnapshotStatus::Failed("the platform returned no snapshot"), |image| SnapshotStatus::Captured(image.sample()));
         true
     }
 

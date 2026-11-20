@@ -145,7 +145,7 @@ impl GlyphRun {
 #[derive(Clone, Debug)]
 pub struct ImagePaint {
     pub source: NodeId,
-    pub image: crate::image::Image,
+    pub image: crate::image::Sample,
     pub rect: Rect,
     pub bounds: Rect,
     pub radius: f32,

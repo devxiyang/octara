@@ -65,6 +65,32 @@ struct Inner {
 #[derive(Clone)]
 pub struct Image(Arc<Inner>);
 
+/// The pixels and source identity recorded together for a prepared frame.
+#[derive(Clone)]
+pub struct Sample {
+    source: Image,
+    frame: Frame,
+}
+
+impl Sample {
+    /// The shared source for identity and freshness checks.
+    pub fn source(&self) -> &Image {
+        &self.source
+    }
+
+    /// The sampled pixels, even after the source changes.
+    pub fn frame(&self) -> &Frame {
+        &self.frame
+    }
+}
+
+impl std::fmt::Debug for Sample {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Frame { width, height, version, .. } = self.frame;
+        write!(f, "Image#{}@{version}({width}×{height})", self.source.id())
+    }
+}
+
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// The byte length of a tightly packed RGBA8 frame, if it fits the address space.
@@ -118,6 +144,11 @@ impl Image {
         self.0.frame.lock().expect("image").clone()
     }
 
+    /// Pins the current pixels together with their source identity.
+    pub fn sample(&self) -> Sample {
+        Sample { source: self.clone(), frame: self.frame() }
+    }
+
     /// Width and height in pixels.
     pub fn size(&self) -> (u32, u32) {
         let f = self.0.frame.lock().expect("image");
@@ -125,7 +156,8 @@ impl Image {
     }
 
     /// Replaces the pixels (a video frame, a decoded download): every element showing the image
-    /// draws them on its next frame. Either dimension may be zero for an empty image.
+    /// samples them when its window next prepares a frame. Either dimension may be zero
+    /// for an empty image.
     ///
     /// # Panics
     /// If the byte length does not match the dimensions or the required length overflows.

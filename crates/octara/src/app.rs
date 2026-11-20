@@ -1354,7 +1354,8 @@ impl Window {
             root: crate::inspect::tree_for_window(&k, self.submit_target()),
         }
     }
-    /// What the current frame draws, in order (see [`crate::paint`]).
+    /// What the last prepared frame draws, in order (see [`crate::paint`]). Image updates
+    /// are sampled when the window prepares another frame.
     pub fn display_list(&self) -> Rc<crate::paint::DisplayList> {
         self.with_picking_overlay(self.w.kernel.borrow().display_list())
     }

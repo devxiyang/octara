@@ -1,7 +1,8 @@
 //! Images: sizing like a replaced element, fitting, PNG decoding, and live pixels.
 
 use octara::prelude::*;
-use octara_primitives::paint::Item;
+use octara::view::canvas;
+use octara_primitives::paint::{DisplayList, Item};
 
 fn solid(w: u32, h: u32, c: [u8; 4]) -> Image {
     Image::rgba(w, h, c.repeat((w * h) as usize))
@@ -82,14 +83,83 @@ fn new_pixels_draw_without_rerunning_the_view() {
     let app = Window::headless(move || col().child(image(&shown).id("pic").w(40)));
     app.app().reset_work();
     img.set(4, 4, [255u8, 255, 255, 255].repeat(16));
+    app.app().settle();
     let frame = app
         .display_list()
         .items()
-        .clone()
         .into_iter()
-        .find_map(|i| if let Item::Image(p) = i { Some(p.image.frame()) } else { None })
+        .find_map(|i| if let Item::Image(p) = i { Some(p.image.frame().clone()) } else { None })
         .unwrap();
     assert_eq!(frame.version, 1);
     assert_eq!(frame.rgba[0], 255);
     assert_eq!(app.app().work().closures_run, 0);
+}
+
+#[test]
+fn layout_and_kept_drawings_use_the_same_image_frame() {
+    let img = solid(40, 20, [255, 0, 0, 255]);
+    let empty = Image::rgba(0, 0, []);
+    let (shown, initially_empty) = (img.clone(), empty.clone());
+    let app = Window::headless(move || {
+        let painted = shown.clone();
+        col()
+            .items_start()
+            .child(image(&shown).id("natural"))
+            .child(image(&shown).id("scaled").w(40))
+            .child(canvas(move |c| c.image(&painted, Rect::new(0.0, 0.0, 30.0, 30.0))).size(30))
+            .child(image(&initially_empty).id("empty"))
+    });
+    assert_eq!(size(&app, "empty"), (0.0, 0.0));
+    let old = app.display_list();
+
+    img.set(20, 40, [0, 255, 0, 255].repeat(800));
+    empty.set(10, 12, [0, 0, 255, 255].repeat(120));
+    assert!(std::rc::Rc::ptr_eq(&old, &app.display_list()), "reads return the prepared frame until the next update");
+    app.app().settle();
+    assert_eq!(size(&app, "natural"), (20.0, 40.0));
+    assert_eq!(size(&app, "scaled"), (40.0, 80.0));
+    assert_eq!(size(&app, "empty"), (10.0, 12.0));
+
+    let samples = |list: &DisplayList| {
+        list.items()
+            .into_iter()
+            .filter_map(|item| {
+                if let Item::Image(paint) = item {
+                    let f = paint.image.frame();
+                    Some((paint.image.source().id(), f.version, f.width, f.height, <[u8; 4]>::try_from(&f.rgba[..4]).unwrap()))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut expected = vec![(img.id(), 1, 20, 40, [0, 255, 0, 255]); 3];
+    expected.push((empty.id(), 1, 10, 12, [0, 0, 255, 255]));
+    assert_eq!(samples(&app.display_list()), expected);
+    assert_eq!(samples(&old), vec![(img.id(), 0, 40, 20, [255, 0, 0, 255]); 3]);
+
+    img.set(10, 20, [0, 255, 0, 255].repeat(200));
+    app.app().settle();
+    assert_eq!(size(&app, "natural"), (10.0, 20.0), "intrinsic size can change without changing aspect ratio");
+    assert_eq!(size(&app, "scaled"), (40.0, 80.0));
+}
+
+#[test]
+fn hidden_images_release_invalidated_cached_pixels() {
+    let picture = solid(8, 8, [255, 0, 0, 255]);
+    let old_pixels = std::sync::Arc::downgrade(&picture.frame().rgba);
+    let shown = picture.clone();
+    let mut app = Window::headless(move || {
+        let visible = state("visible", || true);
+        on_command("hide-picture", move || visible.set(false));
+        image(&shown).id("picture").style_with(move |p| if visible.get() { p.flex() } else { p.hidden() })
+    });
+    let node = app.kernel().find("picture").unwrap();
+    assert!(app.display_list().items().iter().any(|item| matches!(item, Item::Image(_))));
+    app.invoke("hide-picture").unwrap();
+    picture.set(8, 8, [0, 255, 0, 255].repeat(64));
+    app.app().settle();
+    assert!(app.kernel().is_alive(node), "hiding preserves the mounted element");
+    assert!(!app.display_list().items().iter().any(|item| matches!(item, Item::Image(_))));
+    assert!(old_pixels.upgrade().is_none(), "an invisible node must not retain an invalid image drawing");
 }

@@ -685,6 +685,10 @@ pub struct Kernel {
     layer_nodes: rustc_hash::FxHashSet<NodeId>,
     /// Native views (mounted or not): placements and the host follow them.
     native_nodes: rustc_hash::FxHashSet<NodeId>,
+    /// Image elements and canvases that draw images.
+    image_nodes: rustc_hash::FxHashSet<NodeId>,
+    /// One frame per shared image for both layout and drawing.
+    image_frames: FxHashMap<u64, crate::image::Sample>,
     /// Bumped by every change that can alter the display list (paint, layout and text changes,
     /// layouts, theme): an unchanged count with nothing moving means the last frame still holds.
     paint_gen: u64,
@@ -778,6 +782,8 @@ impl Kernel {
             window_active: true,
             layer_nodes: rustc_hash::FxHashSet::default(),
             native_nodes: rustc_hash::FxHashSet::default(),
+            image_nodes: rustc_hash::FxHashSet::default(),
+            image_frames: FxHashMap::default(),
             paint_gen: 0,
             mutation_gen: 0,
             last_frame: RefCell::new(None),
@@ -1124,6 +1130,7 @@ impl Kernel {
     /// Creates an image with its natural size and the requested fit.
     pub fn create_image(&mut self, image: crate::image::Image, fit: crate::image::ObjectFit) -> NodeId {
         let id = self.create_node(Content::Image(image, fit));
+        self.image_nodes.insert(id);
         self.resolve(id, "image");
         id
     }
@@ -1377,6 +1384,7 @@ impl Kernel {
         self.missing_tokens.remove(&id);
         self.layer_nodes.remove(&id);
         self.native_nodes.remove(&id);
+        self.forget_images(id);
         self.a11y_relation_owners.get_mut().remove(&id);
         if let Some(input) = n.input() {
             self.editor_run_owners.remove(&input.a11y_run_revision);
@@ -1805,7 +1813,14 @@ impl Kernel {
             return;
         }
         let count = ops.len();
+        let has_images = ops.iter().any(|op| matches!(op, crate::canvas::CanvasOp::Image { .. }));
         *drawing = Rc::new(ops);
+        self.node_mut(id).drawn.get_mut().take();
+        if has_images {
+            self.image_nodes.insert(id);
+        } else {
+            self.forget_images(id);
+        }
         self.changed(id, Dirty::PAINT, "canvas", || format!("{count} ops"));
     }
     pub fn canvas(&self, id: NodeId) -> Option<&[crate::canvas::CanvasOp]> {
@@ -2122,7 +2137,8 @@ impl Kernel {
         // An image sizes its box like a replaced element: one side set, the other follows its
         // aspect ratio; neither set, its own size (one image pixel per logical pixel).
         if let Content::Image(img, _) = &n.content {
-            let (w, h) = img.size();
+            let (w, h) =
+                self.image_frames.get(&img.id()).map(crate::image::Sample::frame).map_or_else(|| img.size(), |f| (f.width, f.height));
             if w > 0 && h > 0 {
                 if layout.aspect_ratio.is_none() {
                     layout.aspect_ratio = Some(w as f32 / h as f32);
@@ -2191,6 +2207,54 @@ impl Kernel {
 
     // ---- layout ----
 
+    fn forget_images(&mut self, id: NodeId) {
+        if self.image_nodes.remove(&id) && self.image_nodes.is_empty() {
+            self.image_frames.clear();
+        }
+    }
+
+    /// Snapshot a source once, even if several elements and canvas operations use it.
+    fn sample_images(&mut self) {
+        if self.image_nodes.is_empty() {
+            return;
+        }
+        let mut sampled = FxHashMap::default();
+        let mut changed = Vec::new();
+        let mut sample = |image: &crate::image::Image| {
+            let key = image.id();
+            let frame = sampled.entry(key).or_insert_with(|| image.sample()).frame();
+            self.image_frames.get(&key).map(crate::image::Sample::frame).map_or((true, true), |previous| {
+                (previous.version != frame.version, (previous.width, previous.height) != (frame.width, frame.height))
+            })
+        };
+        for &id in &self.image_nodes {
+            let (pixels, size) = match &self.node(id).content {
+                Content::Image(image, _) => sample(image),
+                Content::Canvas(ops) => {
+                    let mut pixels = false;
+                    for op in ops.iter() {
+                        if let crate::canvas::CanvasOp::Image { image, .. } = op {
+                            pixels |= sample(image).0;
+                        }
+                    }
+                    (pixels, false)
+                }
+                _ => unreachable!("image owner"),
+            };
+            if pixels {
+                changed.push((id, size));
+            }
+        }
+        self.image_frames = sampled;
+        for (id, size) in changed {
+            // Hidden nodes may go a long time without rebuilding an invalid drawing.
+            self.node_mut(id).drawn.get_mut().take();
+            if !size || !self.resolve(id, "image-size") {
+                self.changed(id, Dirty::PAINT, "image", String::new);
+            }
+        }
+    }
+
     /// Benchmarks turn layout off to separate its cost from state updates.
     pub fn set_layout_enabled(&mut self, on: bool) {
         self.layout_enabled = on;
@@ -2202,6 +2266,7 @@ impl Kernel {
         if !self.layout_enabled {
             return false;
         }
+        self.sample_images();
         if !self.needs_layout && self.viewport == (width, height) {
             self.settle_fields(false);
             return false;

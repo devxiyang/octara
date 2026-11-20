@@ -21,3 +21,13 @@
 首次验收时系统处于锁屏状态，窗口报告 `occluded`，呈现计数为零。请求 `display` 时返回 `painted`，并报告当前帧无法呈现。
 
 解锁后重新启动同一示例。窗口可见、无遮挡且已呈现。First page、Second page 和缩放后三次捕获都返回 `pixels = display`、`renderer = display`、`native.shown = live`。窗口的背板缩放为 `2×`，前两张 PNG 为 `1600×1200`，窗口缩到逻辑尺寸 `700×590` 后得到 `1400×1180`，与宿主报告的像素尺寸一致。三张图的原生视图矩形都与 Inspector 的 `[53, 83, 360, 160]` 一致，采到的背景色依次为 `#6366f1`、`#ec4899` 和 `#ec4899`。 [平台验收清单](../TODO.md)
+
+## 图片尺寸、像素与 GPU 图集
+
+窗口每轮结算布局时按图片身份集中取样。固有尺寸、`object_fit`、画布和绘制列表都使用该样本。尺寸变化会重新计算依赖固有尺寸的布局。等尺寸换帧只更新绘制，布局和视图可以复用。隐藏节点会释放失效的绘制缓存。`display_list()` 读取已准备好的帧。在无窗口测试里，直接调用 `Image::set` 后可用 `App::settle()` 准备下一帧。保留的绘制列表和已开始的 `painted` 捕获随原帧保存像素，GPU 图集使用图片身份和取样版本查找像素。[图片回归](../../crates/octara/tests/integration/image.rs) · [截图回归](../../crates/octara/tests/integration/capture.rs)
+
+Rune 分开记录图像源和固有比例，并覆盖空图与横竖图切换。Exact 在接受同一张位图时一起发布像素与固有尺寸，旧场景在缓存回收后仍可用其快照绘制。[Rune 尺寸测试](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune/src/runtime/tests/picture_scale.rs#L280-L357) · [Exact 发布尺寸](https://github.com/expo/exact/blob/08c889a9de21a30b7c3b308422fc588cf1a480d3/host/linux/src/image.rs#L712-L729) · [Exact 保留像素测试](https://github.com/expo/exact/blob/08c889a9de21a30b7c3b308422fc588cf1a480d3/canvas/vello/src/image_tests.rs#L28-L84)
+
+macOS 27.2 的可见窗口用同一挂载目标依次切换图片。共享源从 `120×60` 变为 `60×120`，固有尺寸随之更新，固定宽 80 的图片从 `80×40` 变为 `80×160`。另一张图从 `0×0` 变为 `64×32`。WindowServer 的 `display` 捕获在 `2×` 输出中核对了新占用区域的像素以及旧横图区域露出的背景。无窗口回归核对普通节点和画布使用同版本，并复读保留的旧列表。
+
+图片图集目前为 `2048×2048`。Metal 验收中，`2048×1` 可绘制，`2049×1` 被略过。修复前，超尺寸图片触发图集重新布局，还可能使已经有位置的合法图片消失。修复后的读回显示合法图片的像素保留。另一个用例同时绘制五张 `1023×1023` 图片，当前图集能容纳四张。第五张在该帧被略过，单独绘制时恢复。旧版、新版和旧版再次进入同一绘制列表时，各自读回所属版本的像素。[Metal 回归](../../crates/octara-render/tests/integration/gpu.rs)
