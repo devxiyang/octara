@@ -21,7 +21,7 @@ cargo run -p octara-examples --bin window -- counter
 cargo run -q -p octara-cli -- vocab state
 ```
 
-桌面宿主使用 winit，macOS 另有系统文本输入、菜单和原生视图适配。移动交互用于推导设计，iOS 和 Android 宿主仍待实现。各层依赖由仓库脚本检查。[桌面宿主](crates/octara-shell/src/) · [分层检查](tools/check_layers.py)
+桌面宿主使用 winit，macOS 另有系统文本输入、菜单和原生视图适配。Apple Silicon Mac 上的 iOS 模拟器已经可以运行示例、接收系统输入并连接 Inspector。各平台的实时检查、实屏采样与真机验收范围见宿主文档。各层依赖由仓库脚本检查。[宿主支持范围](docs/design/platform.md) · [分层检查](tools/check_layers.py)
 
 ## 本地构建
 

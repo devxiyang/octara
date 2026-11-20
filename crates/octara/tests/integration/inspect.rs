@@ -390,12 +390,17 @@ fn targets_are_judged_by_the_platforms_minimum() {
             .child(el().id("sized").w(80).h(32).when_touch(|p| p.h(44.0)).label("Sized").on_press(|| {}))
             .child(row().child(el().id("a").size_4().label("A").on_press(|| {})).child(el().id("b").size_4().label("B").on_press(|| {})))
     };
-    let r = inspect::check(view, &inspect::CheckOptions::default());
-    let cells = |id: &str| r.findings.iter().find(|f| f.code == "SMALL_TARGET" && f.id.as_deref() == Some(id)).map(|f| f.cells.clone());
-    assert_eq!(cells("plain"), Some(vec!["light/phone".to_string(), "dark/phone".to_string()]));
-    assert_eq!(cells("sized"), None, "`when_touch` gives it its touch size on the phone");
-    // 16 px targets side by side are too close with a pointer too (WCAG 2.5.8's spacing).
-    assert_eq!(cells("a").map(|c| c.len()), Some(4));
+    for (phone, desktop) in [("ios", "macos"), ("android", "windows")] {
+        let mut options = inspect::CheckOptions::default();
+        options.sizes[0].platform = phone.into();
+        options.sizes[1].platform = desktop.into();
+        let r = inspect::check(view, &options);
+        let cells = |id: &str| r.findings.iter().find(|f| f.code == "SMALL_TARGET" && f.id.as_deref() == Some(id)).map(|f| f.cells.clone());
+        assert_eq!(cells("plain"), Some(vec!["light/phone".to_string(), "dark/phone".to_string()]), "{phone}/{desktop}");
+        assert_eq!(cells("sized"), None, "`when_touch` gives it its touch size on {phone}");
+        // 16 px targets side by side are too close with a pointer too (WCAG 2.5.8's spacing).
+        assert_eq!(cells("a").map(|c| c.len()), Some(4), "{phone}/{desktop}");
+    }
 }
 
 #[test]

@@ -29,9 +29,23 @@
 - [x] 验收首次 watch、替换分支 cleanup 和移除列表行 cleanup 中途关窗。核对后继工厂和绑定、释放次数、宿主帧及 macOS 原生窗口状态。[实测与回归](design/runtime-contract.md#macos-挂载中断实测)
 - [x] 在已解锁、可见的 macOS 窗口验证 `display` 像素来源，核对原生视图报告和实际屏幕尺寸。覆盖 WKWebView 页面切换、窗口缩放、绘制帧版本和锁屏回退。[截图实测记录](design/capture.md#macos-实窗记录)
 - [x] 验收横图换竖图、空图变非空和旧绘制列表重画。用 WindowServer 像素复核布局切换，用真实 Metal 分别复现单图超尺寸和图集容量耗尽。[图片实测与回归](design/capture.md#图片尺寸像素与-gpu-图集)
+- [x] 记录 Windows 实时通道与移动宿主支持范围。交叉类型检查 Windows 目标，复验 iOS 模拟器的系统触摸、回执和设备画面。[宿主支持范围](design/platform.md)
 
-## 从上轮接续的工程问题
+## 待验收的平台能力
 
-- [ ] 记录 Windows 实时检查通道和移动宿主的支持范围。没有平台输入或屏幕证据的项目继续保留待验收状态。
+当前优先 macOS、iOS、Linux。Android 与 Windows 现阶段只要求对应 CI 作业通过。设备验收暂缓，接续顺序为 Android、Windows。[平台优先级](ROADMAP.md#推进顺序) · [CI 配置](../.github/workflows/ci.yml)
+
+- [ ] 在 iOS 模拟器核对列表行移出裁剪视口后的原生辅助功能命中。[本轮观察](design/platform.md#移动宿主)
+- [ ] iOS 真机打包签名、安装和实时检查，以及实机系统输入和画面证据。[移动支持范围](design/platform.md#移动宿主)
+- [ ] 在 Linux 实窗核对实时 Inspector、系统输入和实屏像素。[桌面支持范围](design/platform.md#桌面实时检查)
+
+### Android 与 Windows CI
+
+- [ ] 核对 Android 库目标检查与 Windows 桌面矩阵的新一轮 GitHub Actions 结果。[CI 配置](../.github/workflows/ci.yml)
+
+### 暂缓的设备验收
+
+- [ ] Android Activity 宿主、APK 构建安装和实际设备输入、画面验收。[移动支持范围](design/platform.md#移动宿主)
+- [ ] Windows 本机实时检查通道，以及 Windows 系统输入与实屏像素的验收。[桌面支持范围](design/platform.md#桌面实时检查)
 
 过去的决策过程可从 Git 历史查询，例如 `git log --all -- docs/design`。当前设计、实现边界和待办各有一个入口。[架构](ARCHITECTURE.md) · [实现边界](ROADMAP.md)
