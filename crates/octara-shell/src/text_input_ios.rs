@@ -1,11 +1,11 @@
 //! UIKit owns the soft keyboard and marked draft. The Rust editor receives the
 //! resulting document at the next safe event-loop boundary.
 
-use super::ime_draft::Draft;
+use super::ime_draft::{Delivery, Draft, PendingInput, PendingInputs};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
-use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint, NSRange, NSRect, NSSize, NSString};
 use objc2_ui_kit::{
     NSObjectUIAccessibility, UIColor, UIControlEvents, UIEdgeInsets, UIEvent, UIKeyboardDidChangeFrameNotification,
     UIKeyboardDidHideNotification, UIScrollViewDelegate, UITextField, UITextFieldDelegate, UITextInput, UITextPosition, UITextRange,
@@ -16,30 +16,51 @@ use octara::kernel::{TextDocument, TextGeometry};
 use octara::platform::TextInput;
 use octara::serde_json::{Value, json};
 use octara_primitives::identity::NodeId;
-use octara_primitives::text::TextEdit;
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
 
 struct Signals {
     wake: Rc<dyn Fn()>,
-    changed: Cell<bool>,
-    submit: Cell<bool>,
+    pending: RefCell<PendingInputs>,
     muted: Cell<bool>,
+    mutating: Cell<bool>,
 }
 
 impl Signals {
-    fn changed(&self) {
-        if !self.muted.get() {
-            self.changed.set(true);
+    fn changed(&self, read: impl FnOnce() -> Draft) {
+        if !self.mutating.get() {
+            self.capture(read);
+        }
+    }
+
+    fn capture(&self, read: impl FnOnce() -> Draft) {
+        if self.muted.get() {
+            return;
+        }
+        let draft = read();
+        let wake = self.pending.borrow().is_empty();
+        self.pending.borrow_mut().record(draft);
+        if wake {
             (self.wake)();
         }
     }
 
+    /// A native mark can produce delegate calls before UIKit publishes its effective range.
+    fn composition_changed(&self, mutate: impl FnOnce(), read: impl FnOnce() -> Draft) {
+        let outer = self.mutating.replace(true);
+        mutate();
+        self.mutating.set(outer);
+        self.capture(read);
+    }
+
     fn return_pressed(&self) {
         if !self.muted.get() {
-            self.submit.set(true);
-            (self.wake)();
+            let wake = self.pending.borrow().is_empty();
+            self.pending.borrow_mut().record_return();
+            if wake {
+                (self.wake)();
+            }
         }
     }
 }
@@ -59,7 +80,25 @@ define_class!(
 
         #[unsafe(method(editingChanged))]
         fn editing_changed(&self) {
-            self.ivars().changed();
+            self.ivars().changed(|| self.draft());
+        }
+
+        #[unsafe(method(setMarkedText:selectedRange:))]
+        fn set_mark(&self, text: Option<&NSString>, selected: NSRange) {
+            self.ivars().composition_changed(
+                // SAFETY: Implementation of the inherited UITextInput selector.
+                || unsafe { msg_send![super(self), setMarkedText: text, selectedRange: selected] },
+                || self.draft(),
+            );
+        }
+
+        #[unsafe(method(unmarkText))]
+        fn unmark(&self) {
+            self.ivars().composition_changed(
+                // SAFETY: Implementation of the inherited UITextInput selector.
+                || unsafe { msg_send![super(self), unmarkText] },
+                || self.draft(),
+            );
         }
     }
 
@@ -68,7 +107,7 @@ define_class!(
     unsafe impl UITextFieldDelegate for Field {
         #[unsafe(method(textFieldDidChangeSelection:))]
         fn selection_changed(&self, _: &UITextField) {
-            self.ivars().changed();
+            self.ivars().changed(|| self.draft());
         }
 
         #[unsafe(method(textFieldShouldReturn:))]
@@ -80,6 +119,12 @@ define_class!(
         }
     }
 );
+
+impl Field {
+    fn draft(&self) -> Draft {
+        read_draft(&**self, self.text().map(|s| s.to_string()).unwrap_or_default())
+    }
+}
 
 struct AreaState {
     signals: Rc<Signals>,
@@ -127,17 +172,21 @@ define_class!(
         }
 
         #[unsafe(method(setMarkedText:selectedRange:))]
-        fn set_mark(&self, text: Option<&NSString>, selected: objc2_foundation::NSRange) {
-            // SAFETY: Implementation of the inherited UITextInput selector.
-            let _: () = unsafe { msg_send![super(self), setMarkedText: text, selectedRange: selected] };
-            self.ivars().signals.changed();
+        fn set_mark(&self, text: Option<&NSString>, selected: NSRange) {
+            self.ivars().signals.composition_changed(
+                // SAFETY: Implementation of the inherited UITextInput selector.
+                || unsafe { msg_send![super(self), setMarkedText: text, selectedRange: selected] },
+                || self.draft(),
+            );
         }
 
         #[unsafe(method(unmarkText))]
         fn unmark(&self) {
-            // SAFETY: Implementation of the inherited UITextInput selector.
-            let _: () = unsafe { msg_send![super(self), unmarkText] };
-            self.ivars().signals.changed();
+            self.ivars().signals.composition_changed(
+                // SAFETY: Implementation of the inherited UITextInput selector.
+                || unsafe { msg_send![super(self), unmarkText] },
+                || self.draft(),
+            );
         }
 
         #[unsafe(method(firstRectForRange:))]
@@ -167,17 +216,21 @@ define_class!(
     unsafe impl UITextViewDelegate for Area {
         #[unsafe(method(textViewDidChange:))]
         fn editing_changed(&self, _: &UITextView) {
-            self.ivars().signals.changed();
+            self.ivars().signals.changed(|| self.draft());
         }
 
         #[unsafe(method(textViewDidChangeSelection:))]
         fn selection_changed(&self, _: &UITextView) {
-            self.ivars().signals.changed();
+            self.ivars().signals.changed(|| self.draft());
         }
     }
 );
 
 impl Area {
+    fn draft(&self) -> Draft {
+        read_draft(&**self, self.text().to_string())
+    }
+
     fn geometry(&self, draft: &Draft) -> Option<TextGeometry> {
         let layout = {
             let frame = self.ivars().frame.borrow();
@@ -195,7 +248,7 @@ impl Area {
 
     fn octara_rect(&self, start: &UITextPosition, end: &UITextPosition) -> Option<NSRect> {
         let parent = self.superview()?;
-        let draft = read_draft(&**self, self.text().to_string());
+        let draft = self.draft();
         let range = position_byte(&**self, &draft.text, start)..position_byte(&**self, &draft.text, end);
         let (actual, rect) = self.geometry(&draft)?.first_rect(range)?;
         self.ivars().last_geometry.set(Some(GeometryQuery { range: [actual.start, actual.end], rect: [rect.x, rect.y, rect.w, rect.h] }));
@@ -267,11 +320,10 @@ impl Editor {
     }
 
     fn read(&self) -> Draft {
-        let text = match self {
-            Self::Field(field) => field.text().map(|s| s.to_string()).unwrap_or_default(),
-            Self::Area(area) => area.text().to_string(),
-        };
-        read_draft(self.input(), text)
+        match self {
+            Self::Field(field) => field.draft(),
+            Self::Area(area) => area.draft(),
+        }
     }
 
     fn synchronize(&self, document: &TextDocument, signals: &Signals) {
@@ -303,9 +355,7 @@ struct Session {
 pub(crate) struct Change {
     pub(crate) owner: NodeId,
     pub(crate) expected: TextDocument,
-    pub(crate) edit: Option<TextEdit>,
-    pub(crate) selection: Option<Range<usize>>,
-    pub(crate) submit: bool,
+    pub(crate) input: PendingInput,
     signals: Rc<Signals>,
 }
 
@@ -341,8 +391,7 @@ impl TextInputIos {
         let next = self.latest.as_ref().filter(|_| self.active);
         let replaced_draft = !self.inflight
             && self.session.as_ref().zip(next).is_some_and(|(session, input)| {
-                !session.signals.changed.get()
-                    && input.document.as_ref().is_some_and(|document| document != &session.expected && document.marked().is_none())
+                input.document.as_ref().is_some_and(|document| document != &session.expected && document.marked().is_none())
                     && session.editor.input().markedTextRange().is_some()
             });
         let current = self.session.as_ref().map(|s| (s.owner, matches!(s.editor, Editor::Area(_))));
@@ -354,7 +403,8 @@ impl TextInputIos {
         } else if let (Some(session), Some(input)) = (&mut self.session, next) {
             let document = input.document.as_ref().expect("eligible input has a document");
             session.editor.update_geometry(input);
-            if !self.inflight && !session.signals.changed.get() && document != &session.expected {
+            if !self.inflight && document != &session.expected {
+                session.signals.pending.borrow_mut().clear();
                 session.editor.synchronize(document, &session.signals);
                 session.expected = document.clone();
             }
@@ -389,7 +439,7 @@ impl TextInputIos {
         let Some(document) = &input.document else { return };
         let Some(mtm) = MainThreadMarker::new() else { return };
         let signals =
-            Rc::new(Signals { wake: self.wake.clone(), changed: Cell::new(false), submit: Cell::new(false), muted: Cell::new(false) });
+            Rc::new(Signals { wake: self.wake.clone(), pending: RefCell::default(), muted: Cell::new(true), mutating: Cell::new(false) });
         let frame = self.anchor(input);
         let clear = UIColor::clearColor();
         let editor = if input.multiline {
@@ -451,48 +501,45 @@ impl TextInputIos {
     }
 
     pub(crate) fn take(&mut self) -> Option<Change> {
-        let session = self.session.as_ref()?;
-        let signals = &session.signals;
-        let changed = signals.changed.replace(false);
-        let submit = signals.submit.replace(false);
-        if !changed && !submit {
+        if self.inflight {
             return None;
         }
-        let draft = session.editor.read();
-        let cancelled = session.expected.marked().is_some_and(|mark| {
-            draft.marked.is_none()
-                && draft.text.len() + mark.len() == session.expected.text().len()
-                && draft.text.starts_with(&session.expected.text()[..mark.start])
-                && draft.text.ends_with(&session.expected.text()[mark.end..])
-        });
-        let edit = draft.edit(&session.expected, cancelled);
+        let session = self.session.as_ref()?;
+        let input = session.signals.pending.borrow_mut().take()?;
         self.inflight = true;
-        Some(Change {
-            owner: session.owner,
-            expected: session.expected.clone(),
-            edit,
-            selection: draft.selection,
-            submit,
-            signals: signals.clone(),
-        })
+        Some(Change { owner: session.owner, expected: session.expected.clone(), input, signals: session.signals.clone() })
     }
 
-    pub(crate) fn is_current(&self, change: &Change) -> bool {
+    fn is_current(&self, change: &Change) -> bool {
         self.session.as_ref().is_some_and(|s| Rc::ptr_eq(&s.signals, &change.signals))
     }
 
-    pub(crate) fn reconcile(&mut self, change: &Change) {
-        if self.is_current(change) {
-            self.inflight = false;
-            let input = self.latest.clone();
-            self.update(input.as_ref());
-            if let Some(session) = &self.session
-                && self.is_current(change)
-                && !session.signals.changed.get()
-            {
-                session.editor.synchronize(&session.expected, &session.signals);
-            }
+    pub(crate) fn document(&self, change: &Change) -> Option<&TextDocument> {
+        self.latest.as_ref().filter(|input| input.id == change.owner && self.is_current(change))?.document.as_ref()
+    }
+
+    pub(crate) fn reconcile(&mut self, change: &Change, delivery: Delivery) -> bool {
+        let Some(document) = self.document(change).cloned() else { return false };
+        self.inflight = false;
+        let session = self.session.as_mut().unwrap();
+        let has_pending = {
+            let mut pending = session.signals.pending.borrow_mut();
+            pending.reconcile(delivery, document != change.expected);
+            !pending.is_empty()
+        };
+        session.expected = document;
+        if has_pending {
+            return true;
         }
+        if session.expected.marked().is_none() && session.editor.input().markedTextRange().is_some() {
+            // The remaining native mark was based on a rejected or superseded document.
+            let input = self.latest.clone();
+            self.retire();
+            self.update(input.as_ref());
+        } else {
+            session.editor.synchronize(&session.expected, &session.signals);
+        }
+        false
     }
 
     pub(crate) fn keyboard_top(&self) -> Option<f32> {

@@ -393,34 +393,17 @@ impl Shell {
 
     #[cfg(target_os = "ios")]
     fn native_text_ios(&mut self) {
-        use octara_primitives::text::TextEdit;
         let Some(app) = self.app.clone() else { return };
         for id in app.windows() {
             let Some(mut window) = app.window(id) else { continue };
-            let Some(change) = ww(&window, |host| host.ios_input.take()).flatten() else { continue };
-            let mut expected = change.expected.clone();
-            let accepted = if let Some(edit) = &change.edit {
-                expected.apply(edit);
-                window.apply_text_edit(change.owner, &change.expected, edit)
-            } else {
-                true
-            };
-            let current = ww(&window, |host| host.ios_input.is_current(&change)).unwrap_or(false);
-            if accepted && current {
-                if !matches!(change.edit, Some(TextEdit::Cancel))
-                    && let Some(range) = &change.selection
-                    && expected.selection().as_ref() != Some(range)
-                {
-                    window.apply_text_selection(change.owner, &expected, range.clone());
-                }
-                if change.submit
-                    && change.expected.marked().is_none()
-                    && ww(&window, |host| host.ios_input.is_current(&change)).unwrap_or(false)
-                {
-                    window.event(InputEvent::Key(KeyEvent::new(Key::Enter, Modifiers::empty())));
+            while let Some(change) = ww(&window, |host| host.ios_input.take()).flatten() {
+                let delivery = change.input.deliver(&mut window, change.owner, &change.expected, |window| {
+                    ww(window, |host| host.ios_input.document(&change).cloned()).flatten()
+                });
+                if !ww(&window, |host| host.ios_input.reconcile(&change, delivery)).unwrap_or(false) {
+                    break;
                 }
             }
-            ww(&window, |host| host.ios_input.reconcile(&change));
         }
     }
 

@@ -34,14 +34,19 @@
 - [x] 统一多行编辑器的绘制、指针、原生范围与辅助功能几何。覆盖双向选区、LF／CRLF、软折行和内容边缘。[编辑器几何与实测](design/input.md#编辑器的视觉范围)
 - [x] 修复 iOS 多行字段的软件键盘 Return 映射。用模拟器的系统键盘核对连续换行、聊天输入提交和原生单行字段回归。[模拟器实测](design/input.md#ios-多行软键盘-return)
 - [x] 将 iOS 多行文本会话交给 UIKit，收窄 winit 的宿主职责。在模拟器核对拼音组合、候选提交、取消、焦点交接和跨行范围坐标。[架构边界](ARCHITECTURE.md#平台宿主与-winit-的边界) · [模拟器实测](design/input.md#ios-原生多行编辑)
+- [x] 保留 UIKit 同一轮交付内的连续组词边界。覆盖候选提交、下一段取消、文档改写与焦点交接。[交付顺序](design/input.md#ios-连续组词的交付顺序)
+- [x] 在 iOS 模拟器用系统拼音和真实触摸完成资料审阅。核对两行意见回读、旧编辑目标退休和待审编辑器隔离。[资料审阅实测](design/interaction-scenarios.md#ios-资料审阅实测)
 
 ## 待验收的平台能力
 
 当前优先 macOS、iOS、Linux。可以独立执行的无窗口检查和 iOS 模拟器回归先行。Android 与 Windows 现阶段只要求对应 CI 作业通过。[平台优先级](ROADMAP.md#推进顺序) · [CI 配置](../.github/workflows/ci.yml)
 
-### Android 与 Windows CI
+- [ ] 核对资料审阅示例的 iOS 顶部安全区，避免标题与状态栏时钟重叠。[模拟器实测](design/interaction-scenarios.md#ios-资料审阅实测)
 
-- [ ] 核对 Android 库目标检查与 Windows 桌面矩阵的新一轮 GitHub Actions 结果。[CI 配置](../.github/workflows/ci.yml)
+### GitHub CI
+
+- [x] 核对 `main` 的 Android 库目标检查与 Windows 桌面矩阵。两者在 `ab8b159` 通过。[CI 结果](https://github.com/devxiyang/octara/actions/runs/44671492733)
+- [ ] 复核 macOS Live Inspector 双击的时钟采样。该次作业完成双击后，应用时钟差为 625 ms，脚本计时为 341 ms。[失败步骤](https://github.com/devxiyang/octara/actions/runs/44671492733/job/136073265673#step:9:1)
 
 ### 等待验收环境
 
