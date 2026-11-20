@@ -1262,18 +1262,19 @@ impl Window {
     /// again at the new size (text re-breaks; nothing else reruns).
     pub fn resize(&mut self, width: f32, height: f32) {
         let scale = self.w.scale.get();
-        self.event(InputEvent::Resize { width, height, scale });
+        self.event(InputEvent::Resize { width, height, scale, safe_area: None });
     }
     /// Its scale: device pixels per logical pixel (what the last resize said).
     pub fn scale(&self) -> f32 {
         self.w.scale.get()
     }
-    pub(crate) fn on_resize(&mut self, width: f32, height: f32, scale: f32) {
+    pub(crate) fn on_resize(&mut self, width: f32, height: f32, scale: f32, safe_area: Option<crate::paint::Rect>) {
         if self.size() != (width, height) || self.scale() != scale {
             self.capture_resized();
         }
         self.w.scale.set(scale);
         self.w.size.set((width, height));
+        self.w.kernel.borrow_mut().set_safe_area(safe_area);
         self.enter(|| {
             self.app.rt.with_frame(Ctx::Handler, None, Some(None), || {
                 self.w.viewport.set((width, height));

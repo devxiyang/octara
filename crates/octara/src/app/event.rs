@@ -8,6 +8,7 @@
 use super::{App, BackPhase, Event, KeyEvent, Phase, PointerEvent, Window, WindowId};
 use crate::kernel::{NodeId, TextDocument};
 use crate::native::{NativeEvent, NativeId};
+use crate::paint::Rect;
 use crate::platform::NativeSnapshotRequest;
 use octara_primitives::text::TextEdit;
 use serde::{Deserialize, Serialize};
@@ -59,7 +60,14 @@ pub enum InputEvent {
     #[doc(hidden)]
     NativeTextSelection { owner: NodeId, expected: Box<TextDocument>, selection: Range<usize> },
     /// The window's content size (logical pixels) and its scale (device pixels per logical one).
-    Resize { width: f32, height: f32, scale: f32 },
+    Resize {
+        width: f32,
+        height: f32,
+        scale: f32,
+        /// The host's safe area for anchored overlays, in logical window coordinates.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        safe_area: Option<Rect>,
+    },
     /// An assistive technology's request.
     Accessibility { target: accesskit::NodeId, action: accesskit::Action, data: Option<accesskit::ActionData> },
     /// What a native view reports.
@@ -151,8 +159,8 @@ impl Window {
             }
             InputEvent::NativeTextEdit { owner, expected, edit } => self.apply_text_edit(owner, &expected, &edit),
             InputEvent::NativeTextSelection { owner, expected, selection } => self.apply_text_selection(owner, &expected, selection),
-            InputEvent::Resize { width, height, scale } => {
-                self.on_resize(width, height, scale);
+            InputEvent::Resize { width, height, scale, safe_area } => {
+                self.on_resize(width, height, scale, safe_area);
                 true
             }
             InputEvent::Accessibility { target, action, data } => self.on_accessibility(target, action, data),

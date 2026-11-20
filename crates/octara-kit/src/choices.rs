@@ -217,41 +217,47 @@ fn picker(
                 let theme = app.theme();
                 let estimated_height = (theme.text_of(TextStep::Sm) * theme.line_height).ceil() + 3.0 * theme.spacing;
                 let estimated_height = if app.target_platform().is_touch() { estimated_height.max(TOUCH_TARGET) } else { estimated_height };
-                let list =
-                    col().id(list_id.clone()).role(Role::ListBox).label(label.clone()).gap_0p5().max_h(240.0).overflow_y_scroll().child(
-                        virtual_each(
-                            move || visible.with(|rows| rows.as_ref().clone()),
-                            move |_| estimated_height,
-                            move |id, row| {
-                                let (selected, submit) = (value.clone(), submit.clone());
-                                let (selected_id, active_id, submitted_id) = (id.clone(), id.clone(), id.clone());
-                                text(move || row.with(|option| option.label.clone()))
-                                    .id(format!("{row_id}-option-{id}"))
-                                    .role(Role::ListBoxOption)
-                                    .preserve_focus_on_press(true)
-                                    .w_full()
-                                    .min_w(0.0)
-                                    .text_ellipsis()
-                                    .flex_shrink_0()
-                                    .px_3()
-                                    .py_1p5()
-                                    .when_touch(|p| p.min_h(TOUCH_TARGET))
-                                    .rounded_sm()
-                                    .text_sm()
-                                    .font_medium()
-                                    .text_color(Token::Text)
-                                    .disabled(move || row.with(|option| option.disabled))
-                                    .selected(move || selected.get().as_deref() == Some(selected_id.as_str()))
-                                    .style_when(State::SELECTED, |p| p.text_color(Token::Accent))
-                                    .style_when(State::DISABLED, |p| p.opacity(0.5))
-                                    .hover(|p| p.bg(Token::SurfaceHover))
-                                    .style_with(move |p| {
-                                        p.bg(if active.get().as_ref() == Some(&active_id) { Token::SurfacePressed } else { Token::Surface })
-                                    })
-                                    .on_press(move || submit(submitted_id.clone()))
-                            },
-                        ),
-                    );
+                let list = col()
+                    .id(list_id.clone())
+                    .role(Role::ListBox)
+                    .label(label.clone())
+                    .gap_0p5()
+                    .max_h(240.0)
+                    .flex_shrink()
+                    .min_h(0.0)
+                    .overflow_y_scroll()
+                    .child(virtual_each(
+                        move || visible.with(|rows| rows.as_ref().clone()),
+                        move |_| estimated_height,
+                        move |id, row| {
+                            let (selected, submit) = (value.clone(), submit.clone());
+                            let (selected_id, active_id, submitted_id) = (id.clone(), id.clone(), id.clone());
+                            text(move || row.with(|option| option.label.clone()))
+                                .id(format!("{row_id}-option-{id}"))
+                                .role(Role::ListBoxOption)
+                                .preserve_focus_on_press(true)
+                                .w_full()
+                                .min_w(0.0)
+                                .text_ellipsis()
+                                .flex_shrink_0()
+                                .px_3()
+                                .py_1p5()
+                                .when_touch(|p| p.min_h(TOUCH_TARGET))
+                                .rounded_sm()
+                                .text_sm()
+                                .font_medium()
+                                .text_color(Token::Text)
+                                .disabled(move || row.with(|option| option.disabled))
+                                .selected(move || selected.get().as_deref() == Some(selected_id.as_str()))
+                                .style_when(State::SELECTED, |p| p.text_color(Token::Accent))
+                                .style_when(State::DISABLED, |p| p.opacity(0.5))
+                                .hover(|p| p.bg(Token::SurfaceHover))
+                                .style_with(move |p| {
+                                    p.bg(if active.get().as_ref() == Some(&active_id) { Token::SurfacePressed } else { Token::Surface })
+                                })
+                                .on_press(move || submit(submitted_id.clone()))
+                        },
+                    ));
                 let panel = if let Some(query) = query {
                     let search = text_field(query)
                         .id(format!("{popup_id}-search"))
@@ -260,7 +266,7 @@ fn picker(
                         .autofocus()
                         .active_descendant(active_descendant)
                         .on_key(key.clone());
-                    col().w(260.0).gap_2().child(search).child(list)
+                    col().w(260.0).flex_shrink().min_h(0.0).gap_2().child(search).child(list)
                 } else {
                     col().min_w(160.0).child(list.focusable().autofocus().active_descendant(active_descendant).on_key(key.clone()))
                 };

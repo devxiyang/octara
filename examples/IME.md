@@ -117,3 +117,17 @@ xcrun simctl terminate "$ios_ime_device" "$ios_ime_bundle"
 | 点按字段外的状态区域 | 原生键盘消失，`live.ime.keyboard_top` 清空，视口恢复到 `390×844` |
 
 组词画面的光标位于约 `(84.5,102)` 点。在 3× 截图上，光标的深色像素位于 `x=254–255`、`y=306–365`，与 Inspector 几何吻合。Inspector 视口下沿和实际系统候选栏均位于 `y=515` 点。
+
+### Dialog 内的中文虚拟选择器
+
+沿用 iOS 模拟器一节的构建命令，启动时用 `--scene choices` 和新的输出目录。点按「打开选择对话框」和「问候语」，用系统简体拼音输入 `nihao`。读取标记区、已提交的查询和 `ime-choice-result` 计数。先用键盘「确认」单独检查组词结束时的实际文本和计数。在这版拼音键盘上，「确认」提交 `nihao`，选择器保持打开，计数仍为零。清空搜索框，再次输入 `nihao` 并点按系统候选「你好」，读取已提交的中文查询。
+
+使用该次启动的 socket 和构建收据发送以下命令。第一步从首条匹配向上循环到原先未挂载的 `greeting-119`，第二步把它重排到第一条。两步之后搜索框应保持同一个 `target` 和焦点，`active_descendant` 指向已挂载且可见的 `ime-choice-option-greeting-119`。
+
+```sh
+printf '%s\n' '{"op":"key","chord":"up"}' \
+  '{"op":"invoke","command":"ime-choice.reorder"}' |
+  target/debug/octara run --connect "$ios_ime_socket" --require-build "$ios_ime_receipt" --json
+```
+
+分别核对回执中的 `delivery`、`completion.layout` 和 `completion.surface`。宿主呈现仍为 `pending` 时用 `inspect` 读回当前状态。再次按系统键盘的确认键，应只提交一次 `greeting-119`，关闭选择列表并恢复触发器焦点，Dialog 仍然打开。[场景实现](src/bin/ime/choices.rs)

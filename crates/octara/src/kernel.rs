@@ -646,6 +646,7 @@ pub struct Kernel {
     /// Anchored nodes in the order they were anchored (parents before nested overlays).
     anchored: Vec<NodeId>,
     viewport: (f32, f32),
+    safe_area: Option<crate::paint::Rect>,
     screen: Breakpoint,
     missing_tokens: FxHashMap<NodeId, Vec<&'static str>>,
     /// What every window's kernel shares: the theme, the text system, input conventions.
@@ -748,6 +749,7 @@ impl Kernel {
             overlay_layer: NodeId::default(),
             anchored: Vec::new(),
             viewport: (0.0, 0.0),
+            safe_area: None,
             screen: Breakpoint::Compact,
             missing_tokens: Default::default(),
             res,
@@ -1060,6 +1062,16 @@ impl Kernel {
     /// The window size of the last layout (logical pixels).
     pub fn viewport(&self) -> (f32, f32) {
         self.viewport
+    }
+    /// The safe area the host supplied for anchored overlays, in logical window coordinates.
+    pub fn safe_area(&self) -> Option<crate::paint::Rect> {
+        self.safe_area
+    }
+    pub(crate) fn set_safe_area(&mut self, area: Option<crate::paint::Rect>) {
+        if self.safe_area != area {
+            self.safe_area = area;
+            self.needs_layout = true;
+        }
     }
     /// The shared theme.
     pub fn theme(&self) -> std::cell::Ref<'_, Theme> {
@@ -2163,13 +2175,30 @@ impl Kernel {
         self.viewport = (width, height);
         let screen = self.res.theme.borrow().breakpoint_of(width);
         self.set_screen(screen);
+        // Measure each overlay at its authored size before applying that layout's fit limit.
+        for i in 0..self.anchored.len() {
+            let id = self.anchored[i];
+            if let Some(placed) = self.node(id).placed.filter(|p| p.limit.is_some()) {
+                self.node_mut(id).placed = Some(Placed { limit: None, ..placed });
+                self.resolve(id, "anchor");
+            }
+        }
         self.compute_layout(width, height);
+        let viewport = crate::paint::Rect::new(0.0, 0.0, width, height);
+        let bounds = self.safe_area.map_or(viewport, |area| viewport.intersect(&area));
+        let sizes: Vec<_> = self
+            .anchored
+            .iter()
+            .map(|&id| {
+                let (_, _, w, h) = self.rect(id);
+                (w, h)
+            })
+            .collect();
         // Each pass settles another level of anchors: after a rebuild, an overlay's trigger
         // may still be at its enclosing overlay's unplaced origin. Recompute between levels
-        // before reading those triggers again. Overlay count bounds the possible nesting;
-        // independent overlays still need only one additional, mostly cached layout pass.
-        for _ in 0..self.anchored.len() {
-            if !self.place_overlays() {
+        // before reading those triggers again, keeping the authored sizes across passes.
+        for _ in 0..sizes.len() {
+            if !self.place_overlays(bounds, &sizes) {
                 break;
             }
             self.compute_layout(width, height);
@@ -2251,28 +2280,22 @@ impl Kernel {
     }
 
     /// Positions anchored nodes from the current layout; true if any moved.
-    fn place_overlays(&mut self) -> bool {
+    fn place_overlays(&mut self, bounds: crate::paint::Rect, sizes: &[(f32, f32)]) -> bool {
         let mut moved = false;
-        for i in 0..self.anchored.len() {
+        for (i, &size) in sizes.iter().enumerate() {
             let id = self.anchored[i];
             let Some((anchor, placement)) = self.node(id).anchor else { continue };
             if !self.is_alive(anchor) || !self.node(anchor).attached {
                 continue;
             }
-            // The natural size: a limited overlay still reports its whole content.
-            let (_, _, w, h) = self.rect(id);
-            let (sw, sh) = self.scroll_size(id);
-            let a = self.rect(anchor);
-            let placed = placement.place(a, (w.max(sw), h.max(sh)), self.viewport);
-            let n = self.node_mut(id);
-            if n.placed == Some(placed) {
-                continue;
+            let (x, y, w, h) = self.rect(anchor);
+            let mut placed = placement.place((x - bounds.x, y - bounds.y, w, h), size, (bounds.w, bounds.h));
+            placed.x += bounds.x;
+            placed.y += bounds.y;
+            if self.node(id).placed != Some(placed) {
+                self.node_mut(id).placed = Some(placed);
+                moved |= self.resolve(id, "anchor");
             }
-            n.placed = Some(placed);
-            anchor_layout(&mut n.layout, n.placed);
-            let (t, l) = (n.taffy, n.layout.clone());
-            self.taffy.set_style(t, l).expect("taffy");
-            moved = true;
         }
         moved
     }

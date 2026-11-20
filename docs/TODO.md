@@ -24,6 +24,7 @@
 - [x] 在 iOS 模拟器核对相册侧滑返回过半后取消及再次完成，验证页面身份、阅读位置和释放次数。[相册实测](design/interaction-scenarios.md#ios-相册实测)
 - [x] 在 iOS 模拟器核对模态前后的原生辅助功能树，用 VoiceOver 手势核对详情内的遍历范围。[辅助功能实测](design/interaction-scenarios.md#模态辅助功能范围)
 - [x] 修复软键盘收起时按钮移出原触点导致的点击丢失，并在 iOS 模拟器核对一次触摸关闭和焦点恢复。[触摸实测](design/interaction-scenarios.md#ios-键盘收起与点击资格)
+- [x] 在 iOS Dialog 内核对系统拼音提交、虚拟 Combobox 的按 key 揭示与重排、焦点和操作回执。修复弹层避让状态栏、列表裁切及可用空间恢复后的尺寸。[实测记录](design/interaction-scenarios.md#ios-dialog-内的中文虚拟选择器)
 - [x] 在已解锁、可见的 macOS 窗口验证 `display` 像素来源，核对原生视图报告和实际屏幕尺寸。覆盖 WKWebView 页面切换、窗口缩放、绘制帧版本和锁屏回退。[截图实测记录](design/capture.md#macos-实窗记录)
 
 ## 从上轮接续的工程问题

@@ -16,6 +16,7 @@ def main():
     scenes = {
         "panel": ("panel", "Octara Panel", "panel_scroll", ()),
         "controlled": ("ime", "Octara Controlled IME", "ime", ()),
+        "choices": ("ime", "Octara IME Choices", "ime", ()),
         "album": ("album", "Octara Album Back", "album_back", ()),
         "interaction": ("interaction", "Octara Interaction", "window", ("showcase", "interaction")),
     }
@@ -77,7 +78,7 @@ def main():
         "SIMCTL_CHILD_OCTARA_INSPECT_BUILD": build,
         "SIMCTL_CHILD_OCTARA_TRACE_INPUT": "1",
     }
-    if args.scene == "controlled":
+    if args.scene in ("controlled", "choices"):
         env["SIMCTL_CHILD_OCTARA_IME_SCENE"] = args.scene
     trace = output / "console.log"
     run = {

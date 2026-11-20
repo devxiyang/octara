@@ -5,6 +5,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol};
 use objc2::{ClassType, MainThreadOnly, Message, define_class};
 use objc2_ui_kit::{UIScene, UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIView, UIViewController, UIWindow, UIWindowScene};
+use octara_primitives::paint::Rect;
 use std::cell::RefCell;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event_loop::EventLoopProxy;
@@ -79,6 +80,18 @@ pub(crate) fn drawable_size(window: &Window) -> PhysicalSize<u32> {
     let view = ui_view(window).expect("a live iOS window owns its UIKit view");
     let bounds = view.bounds();
     LogicalSize::new(bounds.size.width, bounds.size.height).to_physical(view.contentScaleFactor())
+}
+
+pub(crate) fn safe_area(window: &Window) -> Option<Rect> {
+    let view = ui_view(window).ok()?;
+    let frame = view.safeAreaLayoutGuide().layoutFrame();
+    let origin = view.bounds().origin;
+    Some(Rect::new(
+        (frame.origin.x - origin.x) as f32,
+        (frame.origin.y - origin.y) as f32,
+        frame.size.width as f32,
+        frame.size.height as f32,
+    ))
 }
 
 pub(crate) fn ui_view(window: &Window) -> Result<Retained<UIView>, String> {

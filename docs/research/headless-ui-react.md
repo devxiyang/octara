@@ -100,6 +100,8 @@ Core 的 `reveal_row` 在已挂载的虚拟列表内按稳定业务 key 揭示�
 
 macOS 实窗通过 Inspector 发送按键。96 条会话中，`End`、`Home` 分别挂载并聚焦逻辑末行、首行，当前会话在 `Enter` 确认前保持原值。城市搜索选择器从北京向上循环到未挂载的末项，挂载后才发布该项为活动后代，搜索框保持焦点，已选城市在确认前仍为杭州。[Core 回归](../../crates/octara/tests/integration/virtual_reveal.rs) · [Kit 回归](../../crates/octara-kit/tests/integration/choices.rs)
 
+Rune 用业务 key 表示当前活动选项，在编辑器持有真实焦点时按 key 揭示选项，组合期间跳过选择器按键处理。它给弹层主体与结果容器留出收缩能力，键盘撑小可用区域时由结果视口承担滚动。Exact 的 iOS 弹层按页面可用区域定位，把键盘上沿纳入计算，并把选定区域交给内容布局。Expo 的 SwiftUI TextField 区分 Return 按键标签和 `onSubmit` 回调，系统输入与业务选择的时序仍需用实际输入法验证。[Rune Combobox](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune-kit/src/combobox.rs#L216-L338) · [Exact iOS 弹层](https://github.com/expo/exact/blob/08c889a9de21a30b7c3b308422fc588cf1a480d3/host/apple/Sources/ExactKit/IOS/MenusIOS.swift#L749-L792) · [Expo TextField](https://docs.expo.dev/versions/latest/sdk/ui/swift-ui/textfield/#submit-handling)
+
 Transition 让正在退出的内容保留绘制，等待参与过渡的后代完成再卸载，重新打开会取消过时的退出完成。Combobox 在离开期间还可以保留退出内容的视觉快照。Octara 应按场景定义输入、可访问对象、绘制与卸载各自的生效时刻。弹层开始关闭后，旧 Agent 目标的有效性应由窗口根据当前交互权限判定，独立于旧像素的存在。[嵌套退出](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/transition/transition.tsx#L176-L274) · [取消过渡](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/hooks/use-transition.ts#L255-L284) · [退出快照](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/combobox/combobox.tsx#L1334-L1398)
 
 ### 字段语义与系统编辑

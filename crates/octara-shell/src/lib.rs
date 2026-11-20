@@ -506,14 +506,33 @@ impl Shell {
 
     /// Apply an actual native client-area size through the same path as a resize event.
     fn resize_window(&mut self, w: &mut AppWindow, size: winit::dpi::PhysicalSize<u32>) {
-        let scale = ww(w, |x| x.scale()).unwrap_or(1.0);
         if let Some(g) = &*self.shared.gpu.borrow() {
             let limit = g.renderer.device().limits().max_texture_dimension_2d;
             if size.width <= limit && size.height <= limit && u64::from(size.width) * u64::from(size.height) <= 32 * 1024 * 1024 {
                 ww(w, |x| x.resize(size.width, size.height, &g.renderer));
             }
         }
-        w.event(InputEvent::Resize { width: size.width as f32 / scale, height: size.height as f32 / scale, scale });
+        self.sync_viewport(w, size);
+    }
+
+    fn sync_viewport(&self, w: &mut AppWindow, size: winit::dpi::PhysicalSize<u32>) {
+        let event = ww(w, |host| {
+            let scale = host.scale();
+            let width = size.width as f32 / scale;
+            let height = size.height as f32 / scale;
+            #[cfg(target_os = "ios")]
+            let (height, safe_area) =
+                (host.ios_input.as_ref().and_then(|input| input.keyboard_top()).unwrap_or(height), scene_ios::safe_area(&host.window));
+            #[cfg(not(target_os = "ios"))]
+            let safe_area = None;
+            let changed = !host.sized || w.size() != (width, height) || w.scale() != scale || w.kernel().safe_area() != safe_area;
+            host.sized = true;
+            changed.then_some(InputEvent::Resize { width, height, scale, safe_area })
+        })
+        .flatten();
+        if let Some(event) = event {
+            w.event(event);
+        }
     }
 
     /// One pointer event at the window's pointer (mouse) or the touch's (finger).
@@ -548,23 +567,8 @@ impl Shell {
         let Some(app) = self.app.clone() else { return };
         for id in app.windows() {
             let Some(mut w) = app.window(id) else { continue };
-            #[cfg(target_os = "ios")]
-            if let Some((width, height, scale)) = ww(&w, |host| {
-                let size = host.drawable_size();
-                let scale = host.scale();
-                let width = size.width as f32 / scale;
-                let height = host.ios_input.as_ref().and_then(|input| input.keyboard_top()).unwrap_or(size.height as f32 / scale);
-                (!host.sized || w.size() != (width, height)).then_some((width, height, scale))
-            })
-            .flatten()
-            {
-                ww(&w, |host| host.sized = true);
-                w.event(InputEvent::Resize { width, height, scale });
-            }
-            #[cfg(not(target_os = "ios"))]
-            if let Some((size, scale)) = ww(&w, |x| (!x.sized).then(|| (x.drawable_size(), x.scale()))).flatten() {
-                ww(&w, |x| x.sized = true);
-                w.event(InputEvent::Resize { width: size.width as f32 / scale, height: size.height as f32 / scale, scale });
+            if let Some(size) = ww(&w, |host| (cfg!(target_os = "ios") || !host.sized).then(|| host.drawable_size())).flatten() {
+                self.sync_viewport(&mut w, size);
             }
             if !w.frame_is_settled() {
                 ww(&w, |x| x.pause_frame_clock());

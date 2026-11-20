@@ -141,6 +141,18 @@ iOS 27.2 运行同一个 `showcase interaction`。原生触摸打开 Dialog 后�
 - Rune 将触摸先作为待判定的会话处理。系统取消或滚动接管会取消按压，抬手时检查捕获的路径仍然存活、会话仍为命中状态。Octara 同样保留拖离、取消和原目标的检查。[Rune 触摸会话](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune/src/runtime/input/touch.rs#L82-L128) · [Rune 释放目标](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune/src/runtime/input/pointer.rs#L314-L352)
 - Expo 的 React Native 示例在按钮的 `onPress` 中调用 `Keyboard.dismiss`。React Native 的 `Pressable` 区分按压反馈和抬手后的操作，`ScrollView` 则通过 `keyboardShouldPersistTaps` 决定容器是否拦下点击来收起键盘。Octara 在这个场景由 Core 确认点击并交接焦点，Dialog 可以继续用普通按钮关闭。[Expo 键盘处理](https://docs.expo.dev/guides/keyboard-handling/#keyboard-events) · [React Native Pressable](https://reactnative.dev/docs/pressable#how-it-works) · [React Native ScrollView](https://reactnative.dev/docs/scrollview#keyboardshouldpersisttaps)
 
+### iOS Dialog 内的中文虚拟选择器
+
+验收窗口在 Dialog 内打开 121 个选项的 Combobox。输入「你好」后剩 120 个匹配项，可以从首项按 Up 循环到尚未挂载的末项 `greeting-119`，再重排到首项。应用单独记录提交次数和业务 key。[复现步骤](../../examples/IME.md#dialog-内的中文虚拟选择器)
+
+基线中，iPhone 17e 模拟器的拼音键盘把视口高度压到 515 点，弹层顶边到达 `y=8`，部分搜索框进入状态栏。揭示列表末项时外层弹层也滚动，搜索框从 `y=17` 移到 `y=-45`，焦点还在搜索框，但屏幕上已经看不到它。弹层定位应结合宿主报告的安全区域与键盘上沿，列表视口应使用搜索框以下实际可用的高度。[Exact 的定位区域](https://github.com/expo/exact/blob/08c889a9de21a30b7c3b308422fc588cf1a480d3/host/apple/Sources/ExactKit/IOS/MenusIOS.swift#L749-L792) · [Rune 的搜索与结果布局](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune-kit/src/combobox.rs#L333-L338)
+
+修复后的 iOS 27.2 模拟器上，拼音组词期间点按系统键盘的「确认」会提交 `nihao`，选择次数保持零。清空后重新组词，点按系统候选「你好」，得到查询 `你好` 和 UTF-16 光标 `[2,2]`，选择次数仍为零。系统键盘保持显示，弹层位于 `y=298`，搜索框和结果视口分别位于 `y=307` 和 `y=359`，列表高 139 点。
+
+通过 Inspector 发送 Up 和重排命令，两步均返回 `delivered`、`settled` 和 `submitted`。原先未挂载的 `greeting-119` 在向上循环后成为 `active_descendant`，行显示在 `y=454`。重排后活动项保持同一个业务 key，行显示在 `y=359`。搜索框的挂载身份、UIKit 第一响应者与位置保持一致。模拟器的硬件 Up 模拟未产生窗口按键，本次列表导航证据来自 Inspector。[回执契约](agent-knowledge.md#inspector-protocol-and-checks) · [组合回归](../../examples/tests/integration/ime.rs)
+
+最后点一次系统键盘的「换行」，选择次数从零变为一，提交 `greeting-119`。列表和搜索框卸载，焦点恢复到选择器触发器，Dialog 保持打开。键盘收起后窗口恢复为 `390×844` 点，读取 Inspector 确认宿主已提交画面。无窗口回归还覆盖选择器保持打开时的同一尺寸变化，结果列表恢复到声明的 240 点高度。[组合回归](../../examples/tests/integration/ime.rs)
+
 ## 两个同标题文档的撤销
 
 启动 `target/debug/window undo` 时设置独立的 `OCTARA_INSPECT` socket。文档 A 的「Open Document B」按钮打开第二个同标题窗口。两个编辑器都用 `editor` 作为查找名，分别持有文档值和撤销历史。`edits` 统计应用收到的文本写入，工具栏的可用性读本窗的 `command_enabled("edit.undo")`。Inspector 用窗口编号和从快照获得的窗口 `target` 调用 `edit.undo`。[示例实现](../../examples/src/apps.rs) · [命令回归](../../crates/octara/tests/integration/menus.rs)

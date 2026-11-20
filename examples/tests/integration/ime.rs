@@ -1,12 +1,15 @@
 //! Input method composition and the caret, headless.
 
-use octara::app::InputEvent;
-use octara::inspect::{self, Delivery};
+use octara::app::{InputEvent, TargetPlatform};
+use octara::inspect::{self, Delivery, LayoutState};
 use octara::platform::HeadlessWindow;
 use octara::prelude::*;
 use octara::serde_json::json;
 use octara_examples::{apps, rename};
 use octara_primitives::text::TextEdit;
+
+#[path = "../../src/bin/ime/choices.rs"]
+mod choices;
 
 #[test]
 fn composition_is_shown_underlined_and_committed_text_replaces_it() {
@@ -99,5 +102,80 @@ fn rename_fixture_keeps_a_file_edit_across_refresh_and_refuses_retired_delivery(
     assert_eq!((field.text.as_str(), field.composition.as_str()), ("A😀Z", ""));
     assert_eq!(window.kernel().text_of("rename-counts").as_deref(), Some("Edits: 0 · Attempts: 0 · Saves: 0"));
     assert!(window.layout_issues().is_empty(), "{:?}", window.layout_issues());
+    assert!(window.app().diagnostics().is_empty(), "{:?}", window.app().diagnostics());
+}
+
+#[test]
+fn chinese_search_in_a_dialog_commits_the_revealed_business_key_after_composition() {
+    let mut window = Window::headless(choices::view);
+    window.app().set_target_platform(TargetPlatform::Ios);
+    let safe_area = Rect::new(0.0, 50.0, 390.0, 760.0);
+    let resize = |window: &mut Window, height| {
+        assert!(window.event(InputEvent::Resize { width: 390.0, height, scale: 3.0, safe_area: Some(safe_area) }));
+    };
+    resize(&mut window, 844.0);
+    window.tap("ime-choice-open").unwrap();
+    window.tap("ime-choice").unwrap();
+    resize(&mut window, 515.0);
+    let search = "ime-choice-search";
+    let last = "ime-choice-option-greeting-119";
+    let list = "ime-choice-list";
+    let count = "ime-choice-result";
+    let search_target = window.inspect().find(search).unwrap().target.clone();
+    let assert_popup = |snapshot: &inspect::Snapshot| {
+        let [_, top, _, height] = snapshot.find("ime-choice-popover").unwrap().bounds;
+        assert!(top >= safe_area.y + Placement::BELOW.margin);
+        assert!(top + height <= snapshot.viewport[1].min(safe_area.bottom()) - Placement::BELOW.margin + 0.1);
+        for id in [search, list] {
+            let [_, y, _, child_height] = snapshot.find(id).unwrap().bounds;
+            assert!(y >= top && y + child_height <= top + height + 0.1, "{id} is clipped by the popup");
+        }
+    };
+    assert_popup(&window.inspect());
+    let editor = |window: &Window| window.platform_window().as_any().downcast_ref::<HeadlessWindow>().unwrap().text_input.clone().unwrap();
+
+    let initial = editor(&window);
+    let mark = TextEdit::Mark { text: "nihao".into(), selection: Some(5..5), replacement: None };
+    assert!(window.apply_text_edit(initial.id, &initial.document.unwrap(), &mark));
+    window.press_key("enter").unwrap();
+    assert_eq!(window.text_field().unwrap().composition, "nihao");
+    assert_eq!(window.kernel().text_of(count).as_deref(), Some("提交次数 0 · 未选择"));
+    let draft = editor(&window);
+    let commit = TextEdit::Insert { text: "你好".into(), replacement: None };
+    assert!(window.apply_text_edit(draft.id, &draft.document.unwrap(), &commit));
+    let filtered = window.inspect();
+    assert_eq!(filtered.text_input.as_ref().unwrap().text, "你好");
+    assert_eq!(filtered.find(search).unwrap().active_descendant.as_deref(), Some("ime-choice-option-greeting-000"));
+    assert!(filtered.find(last).is_none());
+
+    for request in [r#"{"op":"key","chord":"up"}"#, r#"{"op":"invoke","command":"ime-choice.reorder"}"#] {
+        let reply = inspect::handle_line(&mut window, request);
+        assert_eq!(reply.delivery, Some(Delivery::Delivered), "{reply:?}");
+        assert_eq!(reply.completion.unwrap().layout, LayoutState::Settled);
+        let snapshot = window.inspect();
+        assert_popup(&snapshot);
+        let field = snapshot.find(search).unwrap();
+        assert_eq!(snapshot.focus.as_deref(), Some(search));
+        assert_eq!(field.target, search_target);
+        assert_eq!(field.active_descendant.as_deref(), Some(last));
+        let [_, y, _, height] = snapshot.find(last).unwrap().bounds;
+        let [_, top, _, viewport_height] = snapshot.find(list).unwrap().bounds;
+        assert!(y >= top - 0.1 && y + height <= top + viewport_height + 0.1);
+        assert_eq!(window.kernel().text_of(count).as_deref(), Some("提交次数 0 · 未选择"));
+    }
+
+    // Removing the keyboard gives the open list its normal height again.
+    resize(&mut window, 844.0);
+    let expanded = window.inspect();
+    assert_popup(&expanded);
+    assert_eq!(expanded.find(list).unwrap().bounds[3], 240.0);
+    assert_eq!(expanded.find(search).unwrap().target, search_target);
+
+    window.press_key("enter").unwrap();
+    let selected = window.inspect();
+    assert_eq!(window.kernel().text_of(count).as_deref(), Some("提交次数 1 · greeting-119"));
+    assert_eq!(selected.focus.as_deref(), Some("ime-choice"));
+    assert!(selected.find(search).is_none());
+    assert!(selected.find("ime-choice-dialog").is_some());
     assert!(window.app().diagnostics().is_empty(), "{:?}", window.app().diagnostics());
 }
