@@ -356,6 +356,45 @@ fn updates_send_only_what_changed() {
     assert!(app.accessibility_update().tree.is_some());
 }
 
+#[test]
+fn touch_accessibility_bounds_follow_the_scroll_clip() {
+    let mut app = Window::headless(|| {
+        col().items_start().child(el().h(40).w(200).label("Header")).child(
+            col().id("list").w(200).h(90).border_2().overflow_y_scroll().child(col().id("rows").children(
+                (0..4).map(|index| el().id(format!("row-{index}")).role(Role::Button).label(format!("Row {index}")).h(40).on_press(|| {})),
+            )),
+        )
+    });
+    app.app().set_target_platform(octara::app::TargetPlatform::Ios);
+    let id = |name: &str| a11y_id(app.kernel().find(name).unwrap());
+    let (list, rows, first, second) = (id("list"), id("rows"), id("row-0"), id("row-1"));
+    let mut tree = nodes(&app.accessibility_update());
+    let children = tree[&rows].children().to_vec();
+    let bounds = |tree: &std::collections::HashMap<_, octara::accesskit::Node>, row| {
+        let node = &tree[&row];
+        let place = *tree[&list].transform().unwrap() * *tree[&rows].transform().unwrap() * *node.transform().unwrap();
+        place.transform_rect_bbox(node.bounds().unwrap())
+    };
+    assert_eq!(bounds(&tree, first).y0, 42.0);
+    assert_eq!(bounds(&tree, first).y1, 82.0);
+
+    app.dispatch(Event::ScrollTo("list".into(), 0.0, 50.0)).unwrap();
+    let delta = app.accessibility_update();
+    assert!(delta.tree.is_none(), "a scroll publishes an incremental update");
+    tree.extend(delta.nodes);
+    assert_eq!(tree[&rows].children(), children, "scrolling preserves the row identities");
+    assert!(bounds(&tree, first).is_empty());
+    let partial = bounds(&tree, second);
+    assert_eq!((partial.y0, partial.y1), (42.0, 72.0));
+    assert!(!partial.contains(octara::accesskit::Point::new(10.0, 41.0)), "the border clips the row");
+    assert!(partial.contains(octara::accesskit::Point::new(10.0, 42.0)));
+
+    app.dispatch(Event::ScrollTo("list".into(), 0.0, 0.0)).unwrap();
+    tree.extend(app.accessibility_update().nodes);
+    assert_eq!(tree[&rows].children(), children);
+    assert_eq!((bounds(&tree, first).y0, bounds(&tree, first).y1), (42.0, 82.0));
+}
+
 // ---- Text ([text layout and selection](../../../../docs/design/text.md)) ----
 
 fn article() -> View {

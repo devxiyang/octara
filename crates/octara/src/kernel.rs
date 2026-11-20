@@ -238,7 +238,7 @@ struct Node {
     /// Counts changes to what it draws (its own drawing is built again after one).
     paint_ver: u64,
     /// The place last sent to assistive technology (`None`: not sent, or dropped since).
-    a11y_sent: Cell<Option<[f32; 6]>>,
+    a11y_sent: Cell<Option<a11y::AccessibilityGeometry>>,
     /// The resolved active option last sent; its allocation can change without its test id.
     role: Option<Role>,
     parent: Option<NodeId>,
@@ -2507,15 +2507,21 @@ impl Kernel {
         let (cw, ch) = self.client_size(id);
         let (sw, sh) = self.scroll_size(id);
         let to = (x.clamp(0.0, (sw - cw).max(0.0)), y.clamp(0.0, (sh - ch).max(0.0)));
+        if !self.set_scroll_offset(id, to) {
+            return false;
+        }
+        // Overlays anchored inside may need to move.
+        self.needs_layout |= !self.anchored.is_empty();
+        true
+    }
+
+    fn set_scroll_offset(&mut self, id: NodeId, to: (f32, f32)) -> bool {
         if self.node(id).scroll == to {
             return false;
         }
         self.node_mut(id).scroll = to;
         self.a11y_touch(id);
-        if !self.anchored.is_empty() {
-            // Overlays anchored inside may need to move.
-            self.needs_layout = true;
-        }
+        self.a11y_geometry.set(true);
         self.changed(id, Dirty::PAINT, "scroll", || format!("{to:?}"));
         true
     }
@@ -2569,8 +2575,7 @@ impl Kernel {
     }
     /// Sets the scroll offset without clamping (when the content is about to change size).
     pub fn scroll_to_unclamped(&mut self, id: NodeId, x: f32, y: f32) {
-        if self.node(id).scroll != (x, y) {
-            self.node_mut(id).scroll = (x, y);
+        if self.set_scroll_offset(id, (x, y)) {
             // A caller can restore an anchor before the next content extent is published.
             // Even if its spacer styles end up unchanged, that future layout must clamp it.
             let (width, height) = self.scroll_size(id);
@@ -2578,8 +2583,6 @@ impl Kernel {
             if x < 0.0 || y < 0.0 || x > (width - client_width).max(0.0) || y > (height - client_height).max(0.0) {
                 self.needs_layout = true;
             }
-            self.a11y_touch(id);
-            self.changed(id, Dirty::PAINT, "scroll", || format!("{:?}", (x, y)));
         }
     }
     /// The absolute y of the top of the node's content box (inside border and padding).

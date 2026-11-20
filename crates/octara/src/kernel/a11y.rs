@@ -2,6 +2,7 @@
 //! (VoiceOver, Narrator, Orca, TalkBack) reads, and what agents can read too.
 
 use super::{HandlerKind, Kernel, Kind, NodeId, Relations, Role, State};
+use crate::paint::Rect;
 use accesskit as ak;
 use rustc_hash::FxHashSet;
 use slotmap::{Key, KeyData};
@@ -21,6 +22,13 @@ pub(super) struct AccessibilityProjection {
     modal: Option<NodeId>,
     members: FxHashSet<NodeId>,
     ancestors: FxHashSet<NodeId>,
+    clipped_bounds: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(super) struct AccessibilityGeometry {
+    frame: [f32; 6],
+    bounds: ak::Rect,
 }
 
 impl AccessibilityProjection {
@@ -273,7 +281,10 @@ impl Kernel {
     }
 
     fn accessibility_projection(&self) -> AccessibilityProjection {
-        let Some(modal) = self.front_modal() else { return AccessibilityProjection::default() };
+        let clipped_bounds = self.touch();
+        let Some(modal) = self.front_modal() else {
+            return AccessibilityProjection { clipped_bounds, ..AccessibilityProjection::default() };
+        };
         let mut members = FxHashSet::default();
         let mut pending = vec![self.root];
         while let Some(id) = pending.pop() {
@@ -296,7 +307,7 @@ impl Kernel {
                 parent = self.node(id).parent;
             }
         }
-        AccessibilityProjection { modal: Some(modal), members, ancestors }
+        AccessibilityProjection { modal: Some(modal), members, ancestors, clipped_bounds }
     }
 
     fn a11y_focus(&self, focus: Option<NodeId>, projection: &AccessibilityProjection) -> ak::NodeId {
@@ -350,22 +361,23 @@ impl Kernel {
                 dirty.push(id);
             }
         }
-        self.a11y_geometry.set(false);
+        let geometry_changed = self.a11y_geometry.replace(false);
         let relaid: Vec<NodeId> = self.a11y_relaid.borrow_mut().drain().collect();
-        if self.a11y_viewport.replace(self.viewport) != self.viewport {
-            // The window resized: anything may have moved.
+        // Include motion that just settled, so visible bounds reach their resting values.
+        let now: Vec<NodeId> = self
+            .moving
+            .iter()
+            .copied()
+            .filter(|id| self.is_alive(*id) && self.node(*id).anim.as_ref().is_some_and(|a| a.rest_at(self.now).is_some()))
+            .collect();
+        let was = std::mem::replace(&mut *self.a11y_moving.borrow_mut(), now.clone());
+        if self.a11y_viewport.replace(self.viewport) != self.viewport
+            || (projection.clipped_bounds && (geometry_changed || !now.is_empty() || !was.is_empty()))
+        {
+            // Relative transforms alone don't report a descendant crossing an inherited clip.
             self.a11y_moved(self.root, &mut dirty);
         } else {
             self.a11y_relaid_moved(&relaid, &mut dirty);
-            // Nodes moving now, and those that were (to send where they came to rest).
-            let t = self.now;
-            let now: Vec<NodeId> = self
-                .moving
-                .iter()
-                .copied()
-                .filter(|id| self.is_alive(*id) && self.node(*id).anim.as_ref().is_some_and(|a| a.rest_at(t).is_some()))
-                .collect();
-            let was = std::mem::replace(&mut *self.a11y_moving.borrow_mut(), now.clone());
             for id in now.into_iter().chain(was) {
                 if self.is_alive(id) {
                     self.a11y_place_check(id, &mut dirty);
@@ -423,7 +435,7 @@ impl Kernel {
         }
     }
 
-    fn a11y_note_sent(&self, id: NodeId, geometry: [f32; 6], projection: &AccessibilityProjection) {
+    fn a11y_note_sent(&self, id: NodeId, geometry: AccessibilityGeometry, projection: &AccessibilityProjection) {
         self.node(id).a11y_sent.set(Some(geometry));
         if let Some(published) = self.a11y_relation_owners.borrow_mut().get_mut(&id) {
             *published = PublishedRelations {
@@ -467,7 +479,7 @@ impl Kernel {
             return;
         }
         out.push(id);
-        if was[2..4] != now[2..4] {
+        if was.frame[2..4] != now.frame[2..4] {
             for &c in n.children() {
                 if self.shown_to_a11y(c) {
                     self.a11y_place_check(c, out);
@@ -511,10 +523,47 @@ impl Kernel {
 
     /// A node's place in its parent's space and its scroll: what its transform and bounds come
     /// from.
-    fn a11y_geometry_of(&self, id: NodeId) -> [f32; 6] {
+    fn a11y_geometry_of(&self, id: NodeId) -> AccessibilityGeometry {
         let (x, y, w, h) = if id == self.root { (0.0, 0.0, self.viewport.0, self.viewport.1) } else { self.shown_frame(id) };
         let (sx, sy) = self.node(id).scroll;
-        [x, y, w, h, sx, sy]
+        let frame = [x, y, w, h, sx, sy];
+        let (sx, sy) = (f64::from(sx), f64::from(sy));
+        let bounds = ak::Rect::new(sx, sy, sx + f64::from(w), sy + f64::from(h));
+        let bounds = if self.touch() { self.a11y_visible_bounds(id, bounds, (f64::from(x) - sx, f64::from(y) - sy)) } else { bounds };
+        AccessibilityGeometry { frame, bounds }
+    }
+
+    /// Touch exploration uses the visible rectangle. Keep the logical node and its transform
+    /// when its bounds become empty so scrolling back recovers the same target.
+    fn a11y_visible_bounds(&self, id: NodeId, mut bounds: ak::Rect, mut offset: (f64, f64)) -> ak::Rect {
+        let mut ancestor = self.node(id).parent;
+        while let Some(parent) = ancestor {
+            let (x, y, w, h) = self.shown_frame(parent);
+            let (sx, sy) = self.node(parent).scroll;
+            let clip = if parent == self.root {
+                Some(Rect::new(0.0, 0.0, self.viewport.0, self.viewport.1))
+            } else {
+                self.clips_children(parent).then(|| self.padding_box(parent, Rect::new(0.0, 0.0, w, h)))
+            };
+            if let Some(clip) = clip {
+                // `offset` maps the node's local space into this ancestor's content space.
+                let x = f64::from(sx) - offset.0;
+                let y = f64::from(sy) - offset.1;
+                bounds = bounds.intersect(ak::Rect::new(
+                    f64::from(clip.x) + x,
+                    f64::from(clip.y) + y,
+                    f64::from(clip.right()) + x,
+                    f64::from(clip.bottom()) + y,
+                ));
+                if bounds.is_empty() {
+                    return ak::Rect::ZERO;
+                }
+            }
+            offset.0 += f64::from(x) - f64::from(sx);
+            offset.1 += f64::from(y) - f64::from(sy);
+            ancestor = self.node(parent).parent;
+        }
+        bounds
     }
 
     /// `id` and its shown descendants, with `seen` called for each node and its geometry.
@@ -524,7 +573,7 @@ impl Kernel {
         scale: f64,
         projection: &AccessibilityProjection,
         out: &mut Vec<AkNode>,
-        seen: &mut dyn FnMut(NodeId, [f32; 6]),
+        seen: &mut dyn FnMut(NodeId, AccessibilityGeometry),
     ) {
         let (node, g, children, runs) = self.a11y_build(id, scale, projection);
         seen(id, g);
@@ -563,7 +612,12 @@ impl Kernel {
     }
 
     /// One node for AccessKit, its geometry, and its shown children.
-    fn a11y_build(&self, id: NodeId, scale: f64, projection: &AccessibilityProjection) -> (ak::Node, [f32; 6], Vec<NodeId>, Vec<AkNode>) {
+    fn a11y_build(
+        &self,
+        id: NodeId,
+        scale: f64,
+        projection: &AccessibilityProjection,
+    ) -> (ak::Node, AccessibilityGeometry, Vec<NodeId>, Vec<AkNode>) {
         let n = self.node(id);
         let exposed = projection.exposes(id);
         let role = if id == self.root {
@@ -578,10 +632,10 @@ impl Kernel {
         // Placed in the parent's space; a scroll container's space moves with its offset, so its
         // children keep their transforms while it scrolls.
         let g = self.a11y_geometry_of(id);
-        let [x, y, w, h, sx, sy] = g.map(f64::from);
+        let [x, y, _, _, sx, sy] = g.frame.map(f64::from);
         let place = ak::Affine::translate((x - sx, y - sy));
         node.set_transform(if id == self.root { ak::Affine::scale(scale) * place } else { place });
-        node.set_bounds(ak::Rect { x0: sx, y0: sy, x1: sx + w, y1: sy + h });
+        node.set_bounds(g.bounds);
         if !exposed {
             node.set_children(children.iter().copied().map(a11y_id).collect::<Vec<_>>());
             return (node, g, children, Vec::new());

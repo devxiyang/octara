@@ -26,7 +26,13 @@ iPhone 17e 模拟器上的 iOS 27.2 已验证系统触摸、中断恢复、UIKit
 
 模拟器通过 Mac 本机的 Unix socket 使用 Inspector，构建收据核对运行二进制。设备画面由 `simctl io … screenshot` 取得，Inspector 还可返回离屏 `painted` 捕获。Inspector 的 `display` 像素后端当前由 macOS 提供。iOS 场景拥有窗口尺寸，Inspector 的 `size` 会被拒绝。[模拟器打包脚本](../../examples/ios_panel.py) · [捕获实现](../../crates/octara-shell/src/capture.rs) · [尺寸入口](../../crates/octara-shell/src/resize.rs)
 
-在 `a3c10b2` 的 iPhone 17e 模拟器复验中，原生触摸拖动 96 点，面板扩展 12 点，列表滚动 84 点。列表 `target` 保持，宿主提交计数从 6 增至 9。构建收据匹配，设备截图为 `1170×2532` 像素。向 Inspector 请求 `display` 时读回 `pixels=painted`、`renderer=gpu` 及 macOS 专有的显示捕获回退原因。另一次采样中，辅助功能命中仍返回已滚到裁剪视口上方的列表行，设备画面该处显示地图，这个命中边界留待复核。[面板复现](../../examples/README.md#ios-模拟器面板联动) · [工作清单](../TODO.md)
+在 `a3c10b2` 的 iPhone 17e 模拟器复验中，原生触摸拖动 96 点，面板扩展 12 点，列表滚动 84 点。列表 `target` 保持，宿主提交计数从 6 增至 9。构建收据匹配，设备截图为 `1170×2532` 像素。向 Inspector 请求 `display` 时读回 `pixels=painted`、`renderer=gpu` 及 macOS 专有的显示捕获回退原因。[面板复现](../../examples/README.md#ios-模拟器面板联动)
+
+### iOS 辅助功能命中与裁剪
+
+触屏的辅助功能树使用元素在窗口和各级祖先裁剪中的可见矩形。滚动和几何变化重新核对受裁剪的范围，更新已变化的矩形。仍挂载的屏外行保留语义和挂载身份，命中矩形变为空。Apple 适配器的点查询直接使用节点矩形，因此裁剪范围和节点坐标一起发布。Rune 在语义树中记录滚动与裁剪，Exact 在 iOS 使用原生滚动视图承载列表。[Octara 投影](../../crates/octara/src/kernel/a11y.rs) · [AccessKit iOS 点查询](https://github.com/AccessKit/accesskit/blob/f3026222559c7f5f46d8f25cb7404de68eb149f0/adapters/ios/src/adapter.rs#L486-L502) · [Rune 裁剪](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune/src/a11y/node.rs#L189-L205) · [Exact iOS 滚动视图](https://github.com/expo/exact/blob/08c889a9de21a30b7c3b308422fc588cf1a480d3/host/apple/Sources/ExactKit/IOS/NodeViewIOS.swift#L1288-L1337)
+
+在同一型号和系统版本的模拟器上，原生拖动后视口顶边为 `y=208`。修复前，系统辅助功能点查在 `y=184` 返回完全移出视口的 Place 2，在 `y=205` 返回部分裁剪的 Place 3。Inspector 和设备画面在两点均指向地图区域。修复后，两点均交回窗口的辅助功能对象，`y=208` 和 `y=210` 命中 Place 3，读到的可见框为 `[0,208,390,36]`。反向滚动 40 点且视口高度不变时，`y=210` 可再次命中 Place 2。列表与行的 Inspector `target` 保持一致，设备图像和原生触摸消费保持一致。[无窗口回归](../../crates/octara/tests/integration/a11y.rs)
 
 iOS 真机仍缺仓库内的打包签名、安装、Mac 到设备的实时检查通道及实机输入与画面证据。Android 已有触摸平台约定用于无窗口检查，Activity 宿主入口、APK 构建安装和系统输入与画面验收仍待完成。[平台约定](../../crates/octara/src/app.rs) · [宿主启动](../../crates/octara-shell/src/lib.rs) · [验收清单](../TODO.md)
 

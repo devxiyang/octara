@@ -156,6 +156,22 @@ impl Kernel {
         (rect.x - sx, rect.y - sy)
     }
 
+    pub(super) fn clips_children(&self, id: NodeId) -> bool {
+        let overflow = self.node(id).layout.overflow;
+        overflow.x != taffy::Overflow::Visible || overflow.y != taffy::Overflow::Visible
+    }
+
+    /// The rectangular clip used for children of an overflow box, in the space of `rect`.
+    pub(super) fn padding_box(&self, id: NodeId, rect: Rect) -> Rect {
+        let border = self.taffy.layout(self.node(id).taffy).expect("taffy").border;
+        Rect {
+            x: rect.x + border.left,
+            y: rect.y + border.top,
+            w: (rect.w - border.left - border.right).max(0.0),
+            h: (rect.h - border.top - border.bottom).max(0.0),
+        }
+    }
+
     /// Whether `id`'s subtree can be skipped by its ink: not while something in it moves (its
     /// presented positions and shadows differ from the resting ones the reach is computed from).
     fn culls(&self, id: NodeId) -> bool {
@@ -223,7 +239,7 @@ impl Kernel {
             e[2] = e[2].max(o.right - l.size.width + Self::INK_MARGIN);
             e[3] = e[3].max(o.bottom - l.size.height + Self::INK_MARGIN);
         }
-        let clips = n.layout.overflow.x != taffy::Overflow::Visible || n.layout.overflow.y != taffy::Overflow::Visible;
+        let clips = self.clips_children(id);
         for &c in n.children() {
             let ce = self.ink_of(c);
             if clips {
@@ -323,12 +339,7 @@ impl Kernel {
         let mut child_clip = clip;
         if clips {
             let v = self.presented(id);
-            let inner = Rect {
-                x: rect.x + l.border.left,
-                y: rect.y + l.border.top,
-                w: (rect.w - l.border.left - l.border.right).max(0.0),
-                h: (rect.h - l.border.top - l.border.bottom).max(0.0),
-            };
+            let inner = self.padding_box(id, rect);
             child_clip = clip.intersect(&inner);
             if child_clip.is_empty() {
                 return;
@@ -784,15 +795,10 @@ impl Kernel {
                 shown &= an.layout.display != taffy::Display::None;
                 let v = self.presented(a);
                 opacity *= v.opacity;
-                if an.layout.overflow.x != taffy::Overflow::Visible || an.layout.overflow.y != taffy::Overflow::Visible {
+                if self.clips_children(a) {
                     let (ax, ay, aw, ah) = self.shown_rect(a);
                     let l = self.taffy.layout(an.taffy).expect("taffy");
-                    let pad = Rect {
-                        x: ax + l.border.left,
-                        y: ay + l.border.top,
-                        w: (aw - l.border.left - l.border.right).max(0.0),
-                        h: (ah - l.border.top - l.border.bottom).max(0.0),
-                    };
+                    let pad = self.padding_box(a, Rect::new(ax, ay, aw, ah));
                     clip = clip.intersect(&pad);
                     if inner {
                         clip_radius = (v.radius - l.border.left).max(0.0);
