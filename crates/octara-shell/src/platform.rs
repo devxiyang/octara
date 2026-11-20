@@ -125,7 +125,7 @@ impl Platform for WinitPlatform {
         let a11y = accesskit_winit::Adapter::with_event_loop_proxy(event_loop, &window, shared.proxy.clone());
         #[cfg(target_os = "ios")]
         native_window.makeKeyAndVisible();
-        #[cfg(not(target_os = "ios"))]
+        #[cfg(not(any(target_os = "ios", target_os = "macos")))]
         {
             window.set_visible(true);
             // An app started from a terminal comes to the front.
@@ -209,6 +209,8 @@ impl Platform for WinitPlatform {
             link,
             #[cfg(target_os = "macos")]
             shown: Rc::default(),
+            #[cfg(target_os = "macos")]
+            show_on_first_commit: true,
             secure: false,
             ime_allowed: false,
             input_owner: None,
@@ -328,6 +330,9 @@ pub(crate) struct WinitWindow {
     /// The requests it shows natively now (macOS: menus and alerts).
     #[cfg(target_os = "macos")]
     shown: Rc<super::ask_mac::Shown>,
+    /// A mount interrupted before its first committed frame leaves its native window hidden.
+    #[cfg(target_os = "macos")]
+    show_on_first_commit: bool,
     /// A secure field has focus: the input method is off and (macOS) secure input on.
     secure: bool,
     /// Whether the focused field currently accepts input-method composition.
@@ -744,6 +749,11 @@ impl WinitWindow {
             for change in frame.native {
                 host.apply(change);
             }
+        }
+        #[cfg(target_os = "macos")]
+        if std::mem::take(&mut self.show_on_first_commit) {
+            self.window.set_visible(true);
+            self.window.focus_window();
         }
         self.text_input(frame.text_input.as_ref());
         if frame.cursor != self.cursor_style {

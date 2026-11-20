@@ -90,13 +90,18 @@ fn retiring_from_row_cleanup_skips_replacement_rows() {
             })
             .unwrap();
 
-        assert!(window.kernel().exists("row-1"));
+        let row = window.kernel().find("row-1").expect("the original row is mounted");
+        let frames = window.frames_presented();
+        assert!(frames > 0, "the host received the original row");
         app.run(|| {
             items.remove(&1);
             items.push(2);
         });
         assert_eq!(*events.borrow(), [1, 0], "virtualized={virtualized}");
         assert!(window.is_closed());
+        assert_eq!(window.frames_presented(), frames, "retiring the list publishes no replacement frame");
+        assert!(!window.frame_is_settled());
+        assert!(!window.kernel().is_alive(row));
         assert!(!app.is_failed());
         assert_eq!(app.work().reactive_nodes, baseline);
         assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());

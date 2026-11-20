@@ -428,6 +428,13 @@ impl Kernel {
         }
     }
 
+    /// A closed window no longer advances the clock that would finish its exits.
+    pub(crate) fn discard_exits(&mut self) {
+        while let Some(ghost) = self.ghosts.last().copied() {
+            self.destroy_ghost(ghost);
+        }
+    }
+
     /// Subtrees leaving `parent`, to be drawn after its children.
     pub(crate) fn ghosts_of(&self, parent: NodeId) -> Vec<NodeId> {
         self.ghosts.iter().copied().filter(|g| self.node(*g).parent == Some(parent)).collect()

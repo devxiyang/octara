@@ -963,8 +963,9 @@ impl AppState {
             w.enter(|| self.rt.dispose_scope(s));
             w.w.root_scope.set(None);
         }
-        // The signals the window itself holds (no scope owns them).
         w.enter(|| {
+            self.rt.with_frame(Ctx::Cleanup, None, Some(None), || w.w.kernel.borrow_mut().discard_exits());
+            // The signals the window itself holds (no scope owns them).
             self.rt.settle_named_state(Owner(w.w.id.number()));
             w.w.viewport.dispose();
             w.w.breakpoint.dispose();

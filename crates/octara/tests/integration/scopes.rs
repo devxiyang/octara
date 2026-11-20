@@ -200,28 +200,42 @@ fn retiring_from_branch_cleanup_skips_the_replacement_factory() {
     let window = app
         .open_window(WindowOptions::default(), move || {
             let mounted = mounted.clone();
-            keyed(
-                move || key.get(),
-                move |replacement| {
-                    if *replacement {
-                        mounted.borrow_mut().push("replacement factory");
-                    } else {
-                        let cleaned = mounted.clone();
-                        on_cleanup(move || {
-                            cleaned.borrow_mut().push("cleanup");
-                            close_window(current_window());
-                        });
-                    }
-                    text("Branch").id("branch")
-                },
-            )
+            let bound = mounted.clone();
+            View::fragment([
+                keyed(
+                    move || key.get(),
+                    move |replacement| {
+                        if *replacement {
+                            mounted.borrow_mut().push("replacement factory");
+                        } else {
+                            let cleaned = mounted.clone();
+                            on_cleanup(move || {
+                                cleaned.borrow_mut().push("cleanup");
+                                close_window(current_window());
+                            });
+                        }
+                        text("Branch").id("branch").motion(Spring::SNAP)
+                    },
+                ),
+                text(move || {
+                    bound.borrow_mut().push("binding");
+                    key.get().to_string()
+                })
+                .into(),
+            ])
         })
         .unwrap();
 
-    assert!(window.kernel().exists("branch"));
+    let branch = window.kernel().find("branch").unwrap();
+    let frames = window.frames_presented();
+    assert!(frames > 0);
+    assert_eq!(*events.borrow(), ["binding"]);
     app.run(|| key.set(true));
-    assert_eq!(*events.borrow(), ["cleanup"]);
+    assert_eq!(*events.borrow(), ["binding", "cleanup"]);
     assert!(window.is_closed());
+    assert!(!window.frame_is_settled());
+    assert_eq!(window.frames_presented(), frames);
+    assert!(!window.kernel().is_alive(branch), "closing releases an exiting branch even while the window handle survives");
     assert!(!app.is_failed());
     assert_eq!(app.work().reactive_nodes, baseline);
     assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
