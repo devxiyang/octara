@@ -122,6 +122,205 @@ fn custom_paint_params_update_only_its_drawing() {
     assert_eq!((work.layout_runs, work.dirty_text, work.dirty_semantics, work.structural_ops), (0, 0, 0, 0));
 }
 
+mod paint_transition {
+    use octara::capture::{PaintOrigin, PaintOutcome, PaintReceipt};
+    use octara::platform::{HeadlessPlatform, HeadlessWindow};
+    use octara::prelude::*;
+    use octara::task::WorkKind;
+    use octara_primitives::paint::{DisplayList, Item, TransitionPaint};
+    use std::sync::Weak;
+    use std::time::{Duration, Instant};
+
+    fn transition(list: &DisplayList) -> TransitionPaint {
+        list.items().into_iter().find_map(|item| if let Item::PushTransition(paint) = item { Some(paint) } else { None }).unwrap()
+    }
+
+    #[test]
+    fn stable_region_samples_motion_and_pins_a_run_through_reversal() {
+        let app = App::new(HeadlessPlatform::default());
+        let selected = app.run(|| state("selected", || 0_u64));
+        let mut window = app
+            .open_window(WindowOptions::new("Transition"), move || {
+                el().opacity(0.5).child(
+                    el().id("region").opacity(0.75).paint_transition(PaintProgram::new("test program"), selected, Curve::Fade(0.2)).child(
+                        keyed(
+                            move || selected.get(),
+                            |key| {
+                                el().id("choice")
+                                    .role(Role::Button)
+                                    .label(if *key == 0 { "First" } else { "Second" })
+                                    .size_8()
+                                    .bg(if *key == 0 { Token::Surface } else { Token::Accent })
+                                    .on_press(|| {})
+                            },
+                        ),
+                    ),
+                )
+            })
+            .unwrap();
+        let first = window.published_frame().unwrap();
+        let items = first.list.items();
+        let [Item::PushLayer { opacity, .. }, Item::PushTransition(initial), Item::Quad(quad), Item::PopLayer, Item::PopLayer] =
+            items.as_slice()
+        else {
+            panic!("expected an outer opacity group and the region's unattenuated contents");
+        };
+        assert_eq!((*opacity, initial.opacity, quad.fill.unwrap().components[3]), (0.5, 0.75, 1.0));
+        assert_eq!((initial.revision, initial.progress), (0, 1.0));
+        assert_eq!(app.next_deadline(), None);
+        let old_target = window.inspect().find("choice").unwrap().target.clone();
+
+        app.run(|| selected.set(1));
+        let replaced = transition(&window.display_list());
+        assert_eq!((replaced.revision, replaced.progress), (1, 0.0));
+        assert!(Weak::ptr_eq(&initial.mount.downgrade(), &replaced.mount.downgrade()));
+        assert!(!Weak::ptr_eq(&initial.run.downgrade(), &replaced.run.downgrade()));
+        assert!(app.pending().iter().any(|work| work.kind == WorkKind::Motion && work.scope == "region"));
+        let tree = window.inspect();
+        let choice = tree.find("choice").unwrap();
+        assert_ne!(choice.target, old_target);
+        assert_eq!(choice.name.as_deref(), Some("Second"));
+        let stale = serde_json::json!({ "op": "tap", "id": "choice", "target": old_target });
+        assert_eq!(octara::inspect::handle_line(&mut window, &stale.to_string()).code.as_deref(), Some("STALE_TARGET"));
+
+        let halfway = Duration::from_millis(100);
+        let preview = window.published_frame_for_display(halfway).unwrap();
+        assert!((transition(&preview.list).progress - 0.5).abs() < 1e-6);
+        assert_eq!(transition(&window.display_list()).progress, 0.0);
+        app.advance(halfway);
+        let mid = window.published_frame().unwrap();
+        let outcome = PaintOutcome::Transition { old: first.paint_sample() };
+        let report =
+            mid.paint_frame(PaintOrigin::Rerecorded { device_generation: None }, &[PaintReceipt { source: replaced.source, outcome }]);
+        assert_eq!(report.effects[0].site.id.as_deref(), Some("region"));
+        assert_eq!(report.effects[0].outcome, outcome);
+        let capture = window.capture_begin(Instant::now() + Duration::from_secs(10)).unwrap();
+
+        app.run(|| selected.set(0));
+        let reversed = transition(&window.display_list());
+        assert_eq!((reversed.revision, reversed.progress), (2, 0.0));
+        assert!(Weak::ptr_eq(&reversed.mount.downgrade(), &replaced.mount.downgrade()));
+        assert!(!Weak::ptr_eq(&reversed.run.downgrade(), &replaced.run.downgrade()));
+        let prepared = window.capture_prepare(capture).unwrap();
+        assert_eq!(prepared.paint_sample(), mid.paint_sample());
+        let pinned = transition(&prepared.display_list());
+        assert_eq!(pinned.revision, 1);
+        assert!((pinned.progress - 0.5).abs() < 1e-6);
+        assert!(Weak::ptr_eq(&pinned.run.downgrade(), &replaced.run.downgrade()));
+
+        let old_run = pinned.run.downgrade();
+        drop((replaced, mid, preview, pinned, prepared));
+        assert!(old_run.upgrade().is_none());
+        let last = window.published_frame().unwrap();
+        let run = reversed.run.downgrade();
+        drop(reversed);
+        app.run_until_idle(Duration::from_secs(1)).unwrap();
+        assert_eq!(transition(&window.display_list()).progress, 1.0);
+        assert_eq!(app.next_deadline(), None);
+        assert!(run.upgrade().is_some());
+        drop(last);
+        assert!(run.upgrade().is_none());
+    }
+
+    #[test]
+    fn key_change_retires_exits_inside_the_region() {
+        let mut window = Window::headless(|| {
+            let shown = state("shown", || true);
+            col()
+                .child(el().id("toggle").size_8().on_press(move || shown.set(false)))
+                .child(
+                    el().id("region")
+                        .paint_transition(PaintProgram::new(()), move || u64::from(shown.get()), Spring::SNAP)
+                        .child(show(move || shown.get(), || el().id("inside").size_8().bg(Token::Accent).opacity_motion(Curve::Fade(1.0)))),
+                )
+                .child(show(move || shown.get(), || el().id("outside").size_8().bg(Token::Accent).opacity_motion(Curve::Fade(1.0))))
+        });
+        let inside = super::source(&window, "inside");
+        let outside = super::source(&window, "outside");
+        window.tap("toggle").unwrap();
+        assert_eq!(transition(&window.display_list()).progress, 0.0);
+        assert!(!window.kernel().is_alive(inside));
+        assert!(window.kernel().is_exiting(outside));
+        assert!(window.display_list().quads().any(|quad| quad.source == outside));
+    }
+
+    #[test]
+    fn native_region_keeps_ordinary_exit_and_the_capture_slot() {
+        let app = App::new(HeadlessPlatform::with_window(HeadlessWindow { shows_native: true, ..HeadlessWindow::default() }));
+        let mut window = app
+            .open_window(WindowOptions::new("Native fallback"), || {
+                let key = state("key", || 0_u64);
+                col().child(el().id("show-native").size_8().on_press(move || key.set(1))).child(el().opacity(0.5).child(
+                    el().id("region").opacity(0.5).paint_transition(PaintProgram::new(()), key, Spring::SNAP).child(keyed(
+                        move || key.get(),
+                        |key| {
+                            if *key == 0 {
+                                el().id("ordinary").size_8().bg(Token::Accent).opacity_motion(Spring::SNAP)
+                            } else {
+                                octara::view::native_view("map")
+                                    .slot(octara_primitives::native::Slot::Underlay)
+                                    .id("map")
+                                    .label("Map")
+                                    .size_16()
+                            }
+                        },
+                    )),
+                ))
+            })
+            .unwrap();
+        let ordinary = super::source(&window, "ordinary");
+        let initial = transition(&window.display_list());
+        window.tap("show-native").unwrap();
+        assert!(window.kernel().is_exiting(ordinary));
+        let native = super::source(&window, "map");
+        let items = window.display_list().items();
+        let [Item::SkipTransition { source, mount, revision: 1 }, Item::Native { source: cut, cut: true, .. }, Item::Quad(exit)] =
+            items.as_slice()
+        else {
+            panic!("the native region should keep ordinary drawing order and opacity: {items:?}");
+        };
+        assert_eq!((*source, *cut, exit.source), (initial.source, native, ordinary));
+        assert!(Weak::ptr_eq(&initial.mount.downgrade(), &mount.downgrade()));
+        assert_eq!(exit.fill.unwrap().components[3], 0.25);
+
+        let capture = window.capture_begin(Instant::now() + Duration::from_secs(10)).unwrap();
+        let prepared = window.capture_prepare(capture).unwrap();
+        let captured = prepared.display_list().items();
+        assert!(captured.iter().any(|item| matches!(item, Item::SkipTransition { source, .. } if *source == initial.source)));
+        assert!(captured.iter().any(|item| matches!(item, Item::Native { source, cut: false, .. } if *source == native)));
+    }
+
+    #[test]
+    fn reduce_motion_lands_an_active_run_and_later_keys_paint_without_motion() {
+        let app = App::new(HeadlessPlatform::default());
+        let key = app.run(|| state("key", || 0_u64));
+        let window = app
+            .open_window(WindowOptions::new("Transition"), move || {
+                el().id("region").size_8().bg(Token::Accent).paint_transition(PaintProgram::new(()), key, Spring::POP)
+            })
+            .unwrap();
+        let tree = window.inspect().root;
+        app.run(|| key.set(1));
+        app.advance(Duration::from_millis(100));
+        let active = transition(&window.display_list());
+        assert!(active.progress > 0.0 && active.progress < 1.0);
+        assert_eq!(window.inspect().root, tree);
+        let run = active.run.downgrade();
+        drop(active);
+
+        app.set_reduced_motion(true);
+        let landed = transition(&window.display_list());
+        assert_eq!((landed.revision, landed.progress), (1, 1.0));
+        assert!(run.upgrade().is_none());
+        assert_eq!(app.next_deadline(), None);
+
+        app.run(|| key.set(2));
+        let instant = transition(&window.display_list());
+        assert_eq!((instant.revision, instant.progress), (2, 1.0));
+        assert_eq!(app.next_deadline(), None);
+    }
+}
+
 mod ellipsis {
     use octara::prelude::*;
     use octara_primitives::paint::Item;

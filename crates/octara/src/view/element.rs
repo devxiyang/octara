@@ -14,6 +14,7 @@ use crate::kernel::{
     Breakpoint, Color, Fill, FocusGroup, HandlerId, HandlerKind, Kernel, NodeId, NumericRange, OverlayMount, Paint, Placement, Relation,
     Relations, Role, State, StyleProp, Token, When,
 };
+use crate::motion::Curve;
 use crate::paint::PaintProgram;
 use crate::reactive::graph::{self, rt};
 use crate::reactive::log::Changes;
@@ -89,6 +90,16 @@ impl IntoProp<f32> for f32 {
 }
 impl<F: Fn() -> f32 + 'static> IntoProp<f32> for F {
     fn into_prop(self) -> Prop<f32> {
+        Prop::Dyn(Box::new(self))
+    }
+}
+impl IntoProp<u64> for u64 {
+    fn into_prop(self) -> Prop<u64> {
+        Prop::Static(self)
+    }
+}
+impl<F: Fn() -> u64 + 'static> IntoProp<u64> for F {
+    fn into_prop(self) -> Prop<u64> {
         Prop::Dyn(Box::new(self))
     }
 }
@@ -213,6 +224,7 @@ macro_rules! signal_props {
         signal_prop!($handle, Option<String>);
         signal_prop!($handle, bool);
         signal_prop!($handle, f32);
+        signal_prop!($handle, u64);
         signal_prop!($handle, [f32; 4]);
         signal_prop!($handle, NumericRange);
         signal_prop!($handle, serde_json::Value);
@@ -401,6 +413,7 @@ struct ElementProps {
     styles: Vec<StyleValue>,
     overrides: Vec<(When, Vec<StyleProp>)>,
     custom_paint: Option<(PaintProgram, Prop<[f32; 4]>)>,
+    transition_paint: Option<(PaintProgram, Prop<u64>, Curve)>,
     handlers: Behavior,
     behaviors: Vec<Behavior>,
     tab_index: i32,
@@ -478,6 +491,7 @@ impl ElementProps {
             styles: Vec::new(),
             overrides: Vec::new(),
             custom_paint: None,
+            transition_paint: None,
             handlers: Behavior::default(),
             behaviors: Vec::new(),
             tab_index: 0,
@@ -651,6 +665,18 @@ impl<C> El<C> {
     /// update the drawing.
     pub fn paint(mut self, program: PaintProgram, params: impl IntoProp<[f32; 4]>) -> Self {
         self.props.custom_paint = Some((program, params.into_prop()));
+        self
+    }
+
+    /// Composites this mounted element's drawing and its descendants with the last accepted
+    /// drawing of the region when `key` changes. Bind the same value to [`super::keyed`] to
+    /// replace the region's content and give its new elements fresh interaction identities.
+    /// Let the region animate the replacement roots. A running transition takes over any
+    /// ordinary exit drawings that were inside the region. Spring progress has no overshoot.
+    /// The current content paints directly when the renderer cannot compose the transition or
+    /// motion is reduced.
+    pub fn paint_transition(mut self, program: PaintProgram, key: impl IntoProp<u64>, curve: impl Into<Curve>) -> Self {
+        self.props.transition_paint = Some((program, key.into_prop(), curve.into()));
         self
     }
 
@@ -1321,6 +1347,9 @@ pub(crate) fn build_el(element: El) -> NodeId {
     }
     if let Some((program, params)) = e.custom_paint {
         bind(at, node, params, move |k, n, v| k.set_custom_paint(n, &program, *v));
+    }
+    if let Some((program, key, curve)) = e.transition_paint {
+        bind(at, node, key, move |k, n, v| k.set_paint_transition(n, &program, *v, curve));
     }
     let mut children = Vec::new();
     match content {

@@ -86,6 +86,10 @@ pub struct PaintSample {
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum PaintOutcome {
     Rendered,
+    /// Composited the sampled drawing with an earlier, host-accepted region image.
+    Transition {
+        old: PaintSample,
+    },
     Retained {
         /// The drawing revision that produced this output, when supplied by the caller.
         #[serde(default, rename = "source_revision", skip_serializing_if = "Option::is_none")]
@@ -96,7 +100,7 @@ pub enum PaintOutcome {
     },
 }
 
-/// Why the styled box supplied the pixels for a custom paint.
+/// Why ordinary paint supplied the pixels for an author effect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PaintFallback {
@@ -107,6 +111,8 @@ pub enum PaintFallback {
     EncodingFailed,
     BackdropUnavailable,
     HistoryUnavailable,
+    /// The region's ordinary paint requires a surface the local effect cannot sample.
+    UnsupportedRegion,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

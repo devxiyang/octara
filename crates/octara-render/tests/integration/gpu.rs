@@ -9,6 +9,8 @@ use octara_primitives::image::Sample;
 use octara_primitives::paint::{DisplayList, ImagePaint, Item, Part, Rect};
 use octara_render::{CpuRenderer, GpuRenderer, wgpu};
 
+mod transition;
+
 fn compare(name: &str, cpu: &Picture, gpu: &Picture) {
     assert_eq!((cpu.width, cpu.height), (gpu.width, gpu.height), "{name}: size");
     let (mut worst, mut off, mut at) = (0u8, 0usize, (0, 0));

@@ -124,7 +124,12 @@ fn fs(v: VsOut) -> @location(0) vec4f {
     let kind = v.params.y;
     if kind == KIND_LAYER {
         // A layer, pixel for pixel, at its opacity (premultiplied already).
-        return textureLoad(layer, vec2i(p - v.rect.xy), 0) * v.fill.a;
+        var alpha = v.fill.a;
+        if v.params.w != 0u {
+            // A transition isolates its ancestor clips until the composite.
+            alpha *= clip_coverage(p, v);
+        }
+        return textureLoad(layer, vec2i(p - v.rect.xy), 0) * alpha;
     }
     let clip = clip_coverage(p, v);
     let radius = bitcast<f32>(v.params.x);

@@ -76,6 +76,18 @@ impl ClipStack {
         self.stack.pop();
     }
 
+    #[cfg(feature = "gpu")]
+    pub(crate) fn enter_scope(&mut self) -> usize {
+        let depth = self.stack.len();
+        self.stack.push(ClipState::default());
+        depth
+    }
+
+    #[cfg(feature = "gpu")]
+    pub(crate) fn leave_scope(&mut self, depth: usize) {
+        self.stack.truncate(depth);
+    }
+
     fn add_node(&mut self, rect: Rect, radius: f32, parent: u32) -> u32 {
         self.nodes.push(ClipNode { rect: [rect.x, rect.y, rect.w, rect.h], radius, parent, _pad: [0; 2] });
         u32::try_from(self.nodes.len()).expect("clip node index")

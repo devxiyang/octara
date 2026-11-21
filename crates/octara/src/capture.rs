@@ -157,8 +157,12 @@ pub(crate) fn paint_sites(kernel: &Kernel, list: &DisplayList) -> FxHashMap<Node
             Part::Item(item) => std::slice::from_ref(item),
         })
         .filter_map(|item| {
-            let Item::Custom(paint) = item else { return None };
-            let node = paint.fallback.source;
+            let node = match item {
+                Item::Custom(paint) => paint.fallback.source,
+                Item::PushTransition(paint) => paint.source,
+                Item::SkipTransition { source, .. } => *source,
+                _ => return None,
+            };
             PaintSite::of(kernel, node).map(|site| (node, site))
         })
         .collect()

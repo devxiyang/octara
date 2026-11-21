@@ -204,6 +204,11 @@ impl App {
                     if res.reduced_motion.replace(on) == on {
                         return;
                     }
+                    if on {
+                        for w in self.each() {
+                            w.w.kernel.borrow_mut().land_transition_motion();
+                        }
+                    }
                 }
             }
             // A nested handler/watch/cleanup belongs to its enclosing update. In particular,

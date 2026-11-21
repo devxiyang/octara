@@ -153,6 +153,22 @@ pub struct CustomPaint {
     pub opacity: f32,
 }
 
+/// An opt-in region whose contents can be composed with the last accepted image of the region.
+#[derive(Clone, Debug)]
+pub struct TransitionPaint {
+    pub source: NodeId,
+    /// The stable region, shared by its successive content revisions.
+    pub mount: PaintMount,
+    /// The current transition, kept alive by published drawings and captures. A settled region uses its mount.
+    pub run: PaintMount,
+    /// The region's content revision. A newly mounted region starts at zero.
+    pub revision: u64,
+    pub program: PaintProgram,
+    /// The window's sampled progress, with one denoting an ordinary, settled region.
+    pub progress: f32,
+    pub opacity: f32,
+}
+
 /// A blurred rounded rectangle under an element (a box shadow), already offset and spread.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Shadow {
@@ -262,6 +278,14 @@ pub enum Item {
         source: NodeId,
         opacity: f32,
     },
+    /// Draw this region through the transition compositor, ending at the matching `PopLayer`.
+    PushTransition(TransitionPaint),
+    /// This region paints normally. An accepted frame retires any previous image for it.
+    SkipTransition {
+        source: NodeId,
+        mount: PaintMount,
+        revision: u64,
+    },
     PopLayer,
 }
 
@@ -297,7 +321,7 @@ impl Item {
                 r(&mut p.bounds);
             }
             Item::Native { rect, .. } | Item::PushClip { rect, .. } => r(rect),
-            Item::PopClip | Item::PushLayer { .. } | Item::PopLayer => {}
+            Item::PopClip | Item::PushLayer { .. } | Item::PushTransition(_) | Item::SkipTransition { .. } | Item::PopLayer => {}
         }
     }
 
@@ -330,8 +354,9 @@ impl Item {
                     f(&mut g.to.0);
                 }
             }
-            Item::PushClip { .. } | Item::PopClip | Item::PopLayer | Item::Native { .. } => {}
+            Item::PushClip { .. } | Item::PopClip | Item::PopLayer | Item::Native { .. } | Item::SkipTransition { .. } => {}
             Item::PushLayer { opacity, .. } => *opacity *= k,
+            Item::PushTransition(paint) => paint.opacity *= k,
         }
     }
 }

@@ -967,6 +967,112 @@ def gpu_paint_evidence(args, output, sockets):
     gpu_glass(args, output, sockets, probe_fallback=True)
 
 
+def gpu_transition(args, output, sockets):
+    env = {"WGPU_BACKEND": "metal", "OCTARA_GPU_LAB_TRANSITION": "1"} if sys.platform == "darwin" else {"OCTARA_GPU_LAB_TRANSITION": "1"}
+    with LiveWindow("gpu_transition", args, output, sockets, ["gpu_lab"], env=env) as app:
+        layout = resize(app, 800, 680)
+        opener = find(layout, "gpu-glass-open")["target"]
+        with app.wire() as stream:
+            def send(op, **fields):
+                result = app.wire_request(stream, {"op": op, **fields})
+                require(result["ok"], f"gpu_transition: {op} failed: {result}")
+                return result
+
+            def submitted(*, current=False):
+                def read():
+                    reply = send("inspect")
+                    paint = reply.get("paint", {})
+                    surface = reply["completion"]["surface"]
+                    if surface["state"] != "submitted" or paint.get("frame") != surface.get("frame"):
+                        return None
+                    snapshot = reply["snapshot"]
+                    if not current or effect(paint, snapshot):
+                        return snapshot, paint
+                    return None
+                return app.wait_for(read, "the author transition to submit" if current else "the region's baseline to submit")
+
+            def effect(paint, snapshot):
+                target = find(snapshot, "gpu-transition-region")["target"]
+                effects = [e for e in paint.get("effects", []) if e["target"] == target]
+                require(len(effects) <= 1, f"gpu_transition: duplicate region in {paint}")
+                return effects[0] if effects and effects[0]["outcome"] == "transition" else None
+
+            def capture(name, snapshot, expected):
+                path = output / f"gpu-transition-{name}.png"
+                report = send("capture", path=str(path), scale=1, settle_ms=0, pixels="painted")["capture"]
+                paint = report["paint"]
+                source = effect(paint, snapshot)
+                require(report["renderer"] == "gpu" and paint["origin"] == "rerecorded" and source and source["old"] == expected,
+                        f"gpu_transition: capture lost the accepted old image: {report}")
+                return png_rgba(path)
+
+            def pixel(image, x, y):
+                width, height, rgba = image
+                px, py = round(x), round(y)
+                require(0 <= px < width and 0 <= py < height, "gpu_transition: sample fell outside window")
+                at = (py * width + px) * 4
+                return tuple(rgba[at:at + 4])
+
+            send("reduced_motion", on=False)
+            send("tap", target=opener)
+            send("settle", limit_ms=5000)
+            baseline, before = submitted()
+            old = find(baseline, "gpu-transition-content")
+            region = find(baseline, "gpu-transition-region")["target"]
+            switch = find(baseline, "gpu-transition-switch")["target"]
+            send("tap", target=switch)
+            changed, active = submitted(current=True)
+            incoming = find(changed, "gpu-transition-content")
+            require(incoming["target"] != old["target"] and find(changed, "gpu-transition-region")["target"] == region,
+                    "gpu_transition: the region or content had the wrong identity")
+            first_source = effect(active, changed)["old"]
+            require(first_source["revision"] == before["revision"], "gpu_transition: used a version other than the settled baseline")
+            refused = app.wire_request(stream, {"op": "tap", "target": old["target"]})
+            require(refused.get("code") == "STALE_TARGET", "gpu_transition: retired content remains actionable")
+
+            x_old, y, _, _ = old["bounds"]
+            x_new, _, w_new, _ = incoming["bounds"]
+            left, right = (x_old + 12, y + 11), (x_new + w_new - 12, y + 11)
+            time.sleep(0.95)
+            first = capture("mix", changed, first_source)
+            old_rgb, new_rgb = pixel(first, *left), pixel(first, *right)
+            require(old_rgb[0] > old_rgb[1] + 20 and new_rgb[2] > new_rgb[1] + 15,
+                    f"gpu_transition: did not paint both positions: {old_rgb}, {new_rgb}")
+
+            send("tap", target=find(changed, "gpu-transition-refresh")["target"])
+            refreshed, active = submitted(current=True)
+            require(effect(active, refreshed)["old"] == first_source, "gpu_transition: refresh replaced the frozen old source")
+            second = capture("refresh", refreshed, first_source)
+            old_rgb, new_rgb = pixel(second, *left), pixel(second, *right)
+            require(old_rgb[0] > old_rgb[1] + 12 and new_rgb[1] > new_rgb[2] + 10,
+                    f"gpu_transition: new paint did not refresh during the mix: {old_rgb}, {new_rgb}")
+
+            _, before_interrupt = submitted(current=True)
+            send("tap", target=switch)
+            returned, paint = submitted(current=True)
+            next_source = effect(paint, returned)["old"]
+            require(next_source["revision"] > first_source["revision"] and next_source["revision"] >= before_interrupt["revision"],
+                    "gpu_transition: interruption did not rebase from the recently accepted output")
+            capture("interrupted", returned, next_source)
+            send("settle", limit_ms=5000)
+            settled, paint = submitted()
+            require(not effect(paint, settled) and find(settled, "gpu-transition-content")["name"] == "Flow preview",
+                    "gpu_transition: final content or completion is incorrect")
+
+            send("tap", target=switch)
+            closing, _ = submitted(current=True)
+            closing_content = find(closing, "gpu-transition-content")["target"]
+            send("tap", target=find(closing, "gpu-glass-cancel")["target"])
+            require(send("inspect")["snapshot"].get("focus") == "gpu-glass-open", "gpu_transition: close did not restore focus")
+            send("tap", target=opener)
+            reopened = send("inspect")["snapshot"]
+            require(find(reopened, "gpu-transition-region")["target"] != region, "gpu_transition: reopened dialog reused the old region")
+            refused = app.wire_request(stream, {"op": "tap", "target": closing_content})
+            require(refused.get("code") == "STALE_TARGET", "gpu_transition: closing content addressed the new dialog")
+            send("expect", clean=True)
+            print(f"gpu_transition: baseline {first_source['revision']}, interruption {next_source['revision']}, retired target refused")
+
+
 def gpu_stale_paint(args, output, sockets):
     frame_schema = "octara.frame_trace/1"
     input_schema = "octara.inspect_delivery/1"
@@ -1403,6 +1509,7 @@ def main():
     probe = parser.add_mutually_exclusive_group()
     probe.add_argument("--gpu-recovery", action="store_true", help="verify one injected device loss with a debug window build")
     probe.add_argument("--gpu-paint-evidence", action="store_true", help="verify Shader Lab paint through a fallback, exit, and reopen")
+    probe.add_argument("--gpu-transition", action="store_true", help="verify two-source Dialog motion on the real GPU and inspect its provenance")
     probe.add_argument("--gpu-stale-paint", action="store_true", help="verify a resized macOS window discards an in-flight Glass drawing")
     probe.add_argument("--surface-drain", action="store_true", help="verify input during shared surface configuration with a macOS debug window build")
     probe.add_argument("--virtual-exit", action="store_true", help="check virtual row deletion and reinsertion with --window target/debug/virtual_interaction")
@@ -1434,6 +1541,8 @@ def main():
         scenarios = (gpu_recovery,)
     if args.gpu_paint_evidence:
         scenarios = (gpu_paint_evidence,)
+    if args.gpu_transition:
+        scenarios = (gpu_transition,)
     if args.gpu_stale_paint:
         scenarios = (gpu_stale_paint,)
     if args.surface_drain:
@@ -1451,6 +1560,8 @@ def main():
         print("Live Inspector GPU recovery passed.")
     elif args.gpu_paint_evidence:
         print("Live Inspector author paint evidence passed.")
+    elif args.gpu_transition:
+        print("Live Inspector Dialog transition passed.")
     elif args.gpu_stale_paint:
         print("Live Inspector stale GPU paint passed.")
     elif args.surface_drain:

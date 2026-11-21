@@ -6,12 +6,14 @@
 
 use crate::glyphs::{GlyphCache, SUBPIXEL_STEPS};
 use crate::paths::{self, MaskKey};
-use crate::shape::{ClipNode, ClipStack};
+use crate::shape::{ClipNode, ClipStack, ClipState};
 use bytemuck::{Pod, Zeroable};
 use octara_primitives::capture::{PaintFallback, PaintOutcome, PaintReceipt, PaintSample, PaintedPicture, Painter, Picture};
-use octara_primitives::paint::{CustomPaint, DisplayList, GlyphRun, ImagePaint, Item, PaintProgram, PathPaint, Quad, Rect, Shadow};
+use octara_primitives::paint::{
+    CustomPaint, DisplayList, GlyphRun, ImagePaint, Item, PaintProgram, PathPaint, Quad, Rect, Shadow, TransitionPaint,
+};
 use octara_primitives::theme::Color;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::alloc::Layout;
 use std::ops::Range;
 use std::sync::{Weak, mpsc};
@@ -20,10 +22,10 @@ use std::time::{Duration, Instant};
 mod custom;
 mod outputs;
 mod profile;
-pub use custom::{Backdrop, CanvasFrame, backdrop, canvas, material, retained_canvas};
+pub use custom::{Backdrop, CanvasFrame, Transition, TransitionImage, backdrop, canvas, material, retained_canvas, transition};
 use custom::{CanvasMode, CanvasTarget};
 pub use outputs::PendingPresentation;
-use outputs::{BackdropChange, BackdropHistory, CanvasCache, CanvasKey, OutputChanges};
+use outputs::{BackdropChange, CanvasCache, CanvasKey, OutputChanges, PresentationHistory, RegionImage};
 use profile::{FrameMeasurement, PendingTimestamps, TimestampPool};
 pub use profile::{FrameProfile, GpuPassKind, GpuPassTiming, GpuTimings};
 
@@ -103,13 +105,16 @@ impl Inst {
         let [x, y, w, h] = self.rect;
         let bounds = Rect::new(x - grow, y - grow, w + 2.0 * grow, h + 2.0 * grow);
         let [x, y, w, h] = self.clip;
-        if w <= 0.0 || h <= 0.0 {
-            return Rect::default();
-        }
-        // Rounded clips antialias past their nominal edge.
-        let clip = Rect::new(x - 1.0, y - 1.0, w + 2.0, h + 2.0);
-        bounds.intersect(&clip).intersect(window)
+        bounds.intersect(&clip_envelope(Rect::new(x, y, w, h))).intersect(window)
     }
+}
+
+fn clip_envelope(clip: Rect) -> Rect {
+    if clip.is_empty() {
+        return Rect::default();
+    }
+    // Rounded clips antialias past their nominal edge.
+    Rect::new(clip.x - 1.0, clip.y - 1.0, clip.w + 2.0, clip.h + 2.0)
 }
 
 #[repr(C)]
@@ -120,13 +125,21 @@ struct Globals {
 }
 
 /// A pass's pixel bounds in window coordinates, before rounding its allocation up.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct PassBounds {
     origin: [u32; 2],
     size: [u32; 2],
 }
 
 impl PassBounds {
+    fn from_rect(rect: Rect) -> Self {
+        if rect.is_empty() {
+            return Self::default();
+        }
+        let origin = [rect.x.floor() as u32, rect.y.floor() as u32];
+        Self { origin, size: [rect.right().ceil() as u32 - origin[0], rect.bottom().ceil() as u32 - origin[1]] }
+    }
+
     fn rect(self) -> [f32; 4] {
         [self.origin[0] as f32, self.origin[1] as f32, self.size[0] as f32, self.size[1] as f32]
     }
@@ -134,15 +147,22 @@ impl PassBounds {
     fn allocation(self, window: [u32; 2]) -> [u32; 2] {
         std::array::from_fn(|axis| self.size[axis].max(1).next_multiple_of(64).min(window[axis].max(1)))
     }
+
+    fn is_empty(self) -> bool {
+        self.size.contains(&0)
+    }
 }
 
-/// The instances drawn into one target: the window, or a layer composited at `opacity`.
+/// The instances drawn into one target: the window, an opacity layer or a transition region.
 #[derive(Default)]
 struct Pass {
     insts: Vec<Inst>,
     /// Batches in painter order. Gaps use the ordinary pipeline and atlas bindings.
     special: Vec<Batch>,
     opacity: f32,
+    /// Allocation limit inherited from enclosing transition regions' outer clips.
+    clip_limit: Option<Rect>,
+    transition: Option<TransitionRequest>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,6 +194,10 @@ impl Pass {
             self.special.push(Batch { instances: start..start + 1, draw });
         }
     }
+
+    fn visible_window(&self, window: &Rect) -> Rect {
+        self.clip_limit.map_or(*window, |limit| window.intersect(&limit))
+    }
 }
 
 struct CanvasRequest {
@@ -202,10 +226,18 @@ struct BackdropRequest {
     target: usize,
 }
 
+struct TransitionRequest {
+    paint: TransitionPaint,
+    receipt: Option<usize>,
+    clip: ClipState,
+    clip_scope: usize,
+}
+
 #[derive(Default)]
 struct PaintRequests {
     canvases: Vec<CanvasRequest>,
     backdrops: Vec<BackdropRequest>,
+    skipped_transitions: Vec<(Weak<()>, u64)>,
     receipts: Vec<PaintReceipt>,
 }
 
@@ -274,6 +306,19 @@ struct PlannedBackdrop {
     request: BackdropRequest,
     input: BackdropInput,
     fallback: u32,
+}
+
+struct PlannedTransition {
+    request: TransitionRequest,
+    composite: Option<TransitionComposite>,
+    /// The raw child bounds to draw when recording the author commands fails.
+    fallback: Option<u32>,
+}
+
+struct TransitionComposite {
+    old: RegionImage,
+    sample: PaintSample,
+    bounds: PassBounds,
 }
 
 struct EncodedBackdrop {
@@ -362,11 +407,13 @@ impl FramePlan {
 struct PreparedFrame {
     plan: FramePlan,
     background: wgpu::Color,
+    bounds: Vec<PassBounds>,
     layer_views: Vec<wgpu::TextureView>,
     atlases: [wgpu::TextureView; 3],
     bind: wgpu::BindGroup,
     layer_binds: Vec<wgpu::BindGroup>,
     canvas_binds: Vec<wgpu::BindGroup>,
+    transitions: FxHashMap<usize, PlannedTransition>,
 }
 
 #[derive(Default)]
@@ -391,23 +438,29 @@ fn measure_draws(frame: &PreparedFrame, profile: &mut FrameProfile) {
         frame.layer_views.iter().map(|view| u64::from(view.texture().width()) * u64::from(view.texture().height())).sum();
 }
 
-/// Size the inner layers first, then use their bounds in the parent's composites.
-fn bound_passes(passes: &mut [Pass], size: [u32; 2]) -> Vec<PassBounds> {
+/// Size the inner layers first, then use their composite bounds in the parent.
+fn bound_passes(
+    passes: &mut [Pass],
+    size: [u32; 2],
+    mut transition_bounds: impl FnMut(usize, TransitionRequest, PassBounds, Rect) -> PassBounds,
+) -> Vec<PassBounds> {
     let window = Rect::new(0.0, 0.0, size[0] as f32, size[1] as f32);
     let mut bounds = vec![PassBounds::default(); passes.len()];
+    let mut composites = FxHashMap::default();
     bounds[0].size = size;
     for (index, pass) in passes.iter_mut().enumerate().rev() {
         for batch in &pass.special {
             if let Draw::Layer(layer) = batch.draw {
-                pass.insts[batch.instances.start].rect = bounds[layer].rect();
+                pass.insts[batch.instances.start].rect = composites.get(&layer).copied().unwrap_or(bounds[layer]).rect();
             }
         }
         if index == 0 {
             break;
         }
-        let (mut left, mut top, mut right, mut bottom) = (window.w, window.h, 0.0_f32, 0.0_f32);
+        let visible = pass.visible_window(&window);
+        let (mut left, mut top, mut right, mut bottom) = (visible.right(), visible.bottom(), 0.0_f32, 0.0_f32);
         for inst in &pass.insts {
-            let r = inst.visible_bounds(&window);
+            let r = inst.visible_bounds(&visible);
             if !r.is_empty() {
                 left = left.min(r.x);
                 top = top.min(r.y);
@@ -415,12 +468,50 @@ fn bound_passes(passes: &mut [Pass], size: [u32; 2]) -> Vec<PassBounds> {
                 bottom = bottom.max(r.bottom());
             }
         }
-        if right > left && bottom > top {
-            let (x, y) = (left.floor() as u32, top.floor() as u32);
-            bounds[index] = PassBounds { origin: [x, y], size: [right.ceil() as u32 - x, bottom.ceil() as u32 - y] };
+        bounds[index] = PassBounds::from_rect(Rect::new(left, top, right - left, bottom - top));
+        if let Some(request) = pass.transition.take() {
+            let composite = transition_bounds(index, request, bounds[index], visible);
+            if composite != bounds[index] {
+                composites.insert(index, composite);
+            }
         }
     }
     bounds
+}
+
+fn union(a: Rect, b: Rect) -> Rect {
+    if a.is_empty() {
+        return b;
+    }
+    if b.is_empty() {
+        return a;
+    }
+    let x = a.x.min(b.x);
+    let y = a.y.min(b.y);
+    Rect::new(x, y, a.right().max(b.right()) - x, a.bottom().max(b.bottom()) - y)
+}
+
+/// An independent native surface cannot be drawn into an Octara layer.
+fn transitions_with_native(items: &[Item]) -> FxHashSet<usize> {
+    let mut blocked = FxHashSet::default();
+    let mut layers = Vec::new();
+    let mut native_count = 0;
+    for (index, item) in items.iter().enumerate() {
+        match item {
+            Item::PushLayer { .. } => layers.push(None),
+            Item::PushTransition(_) => layers.push(Some((index, native_count))),
+            Item::PopLayer => {
+                if let Some(Some((start, natives))) = layers.pop()
+                    && natives != native_count
+                {
+                    blocked.insert(start);
+                }
+            }
+            Item::Native { .. } => native_count += 1,
+            _ => {}
+        }
+    }
+    blocked
 }
 
 /// A shelf packer for one atlas texture.
@@ -566,9 +657,9 @@ pub struct RecordedFrame<'renderer> {
     device: &'renderer wgpu::Device,
     queue: &'renderer wgpu::Queue,
     canvas_cache: &'renderer mut CanvasCache,
-    backdrop_history: &'renderer BackdropHistory,
+    presentation_history: &'renderer PresentationHistory,
     changes: OutputChanges,
-    revision: Option<u64>,
+    sample: Option<PaintSample>,
     receipts: Vec<PaintReceipt>,
     timestamp_pool: &'renderer mut TimestampPool,
     timestamps: Option<PendingTimestamps>,
@@ -588,12 +679,12 @@ impl RecordedFrame<'_> {
 
     /// Finishes the encoder and submits the frame with its staged uploads. Retained canvases
     /// become reusable at submission. Use [`Self::submit_for_presentation`] to retain a frame's
-    /// backdrop outputs for host acceptance.
+    /// backdrop outputs and transition regions for host acceptance.
     pub fn submit(self) -> wgpu::SubmissionIndex {
         self.submit_for_presentation().0
     }
 
-    /// Submits the frame and returns its candidate backdrop outputs. Give the token to
+    /// Submits the frame and returns its candidate backdrop outputs and transition regions. Give the token to
     /// [`GpuRenderer::accept_presentation`] once the host accepts the frame.
     pub fn submit_for_presentation(self) -> (wgpu::SubmissionIndex, PendingPresentation) {
         let submit = || self.queue.submit(self.before.into_iter().chain([self.encoder.finish()]));
@@ -606,9 +697,9 @@ impl RecordedFrame<'_> {
             }
             submission
         };
-        let OutputChanges { canvases, backdrops } = self.changes;
-        self.canvas_cache.submit(canvases, self.revision);
-        let pending = self.backdrop_history.pending(backdrops, self.revision);
+        let OutputChanges { canvases, backdrops, transitions } = self.changes;
+        self.canvas_cache.submit(canvases, self.sample.map(|sample| sample.revision));
+        let pending = self.presentation_history.pending(backdrops, transitions, self.sample);
         if let Some(timestamps) = self.timestamps {
             timestamps.submitted(self.timestamp_pool, self.queue);
         }
@@ -675,6 +766,19 @@ fn color_pass<'encoder>(
     })
 }
 
+fn layer_texture(device: &wgpu::Device, format: wgpu::TextureFormat, [width, height]: [u32; 2]) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("octara layer"),
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    })
+}
+
 fn draw_batch(
     pass: &mut wgpu::RenderPass<'_>,
     pipeline: &wgpu::RenderPipeline,
@@ -703,7 +807,7 @@ pub struct GpuRenderer {
     color: wgpu::Texture,
     images: wgpu::Texture,
     /// Layer targets, reused while their allocation covers the same size bucket.
-    layers: Vec<wgpu::Texture>,
+    layers: Vec<Option<wgpu::Texture>>,
     /// A 1×1 texture bound where no layer is.
     no_layer: wgpu::Texture,
     /// Atlas positions by image identity and sampled version.
@@ -717,7 +821,7 @@ pub struct GpuRenderer {
     instances: Option<(wgpu::Buffer, u64)>,
     programs: custom::Programs,
     canvas_cache: CanvasCache,
-    backdrop_history: BackdropHistory,
+    presentation_history: PresentationHistory,
     timestamps: TimestampPool,
     format: wgpu::TextureFormat,
 }
@@ -861,7 +965,7 @@ impl GpuRenderer {
             instances: None,
             programs: custom::Programs::default(),
             canvas_cache: CanvasCache::default(),
-            backdrop_history: BackdropHistory::default(),
+            presentation_history: PresentationHistory::default(),
             timestamps: TimestampPool::default(),
             format,
         }
@@ -985,7 +1089,9 @@ impl GpuRenderer {
         let mut open: Vec<usize> = vec![0];
         let mut clips = ClipStack::default();
         let window = Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32);
-        for item in &list.items() {
+        let items = list.items();
+        let mut native_transitions = None;
+        for (index, item) in items.iter().enumerate() {
             let clip_state = clips.current();
             let clip = clip_state.bounds.map_or(NO_CLIP, |c| [c.x, c.y, c.w, c.h]);
             let clip_head = clip_state.head;
@@ -1012,7 +1118,9 @@ impl GpuRenderer {
                             continue;
                         }
                         requests.receipts[receipt].outcome = PaintOutcome::Fallback { reason: PaintFallback::PreparationFailed };
-                    } else if let Some(canvas) = paint.program.downcast_ref::<custom::Canvas>() {
+                    } else if let Some(canvas) = paint.program.downcast_ref::<custom::Canvas>()
+                        && canvas.mode != CanvasMode::Transition
+                    {
                         let Some(size) = custom::canvas_size(instance.rect, self.device.limits().max_texture_dimension_2d) else {
                             requests.receipts[receipt].outcome = PaintOutcome::Fallback { reason: PaintFallback::InvalidSize };
                             out.push(fallback);
@@ -1126,7 +1234,39 @@ impl GpuRenderer {
                 Item::PushClip { rect, radius, .. } => clips.push(*rect, *radius, scale),
                 Item::PopClip => clips.pop(),
                 Item::PushLayer { opacity, .. } => {
-                    passes.push(Pass { opacity: *opacity, ..Pass::default() });
+                    passes.push(Pass { opacity: *opacity, clip_limit: passes[current].clip_limit, ..Pass::default() });
+                    open.push(passes.len() - 1);
+                }
+                Item::SkipTransition { source, mount, revision } => {
+                    requests.skipped_transitions.push((mount.downgrade(), *revision));
+                    let outcome = PaintOutcome::Fallback { reason: PaintFallback::UnsupportedRegion };
+                    requests.receipts.push(PaintReceipt { source: *source, outcome });
+                }
+                Item::PushTransition(paint) => {
+                    let native = native_transitions.get_or_insert_with(|| transitions_with_native(&items)).contains(&index);
+                    let supported = !native && matches!(self.format, FORMAT | wgpu::TextureFormat::Bgra8Unorm);
+                    let receipt = (paint.progress < 1.0).then(|| {
+                        let receipt = requests.receipts.len();
+                        let reason = if supported { PaintFallback::HistoryUnavailable } else { PaintFallback::UnsupportedRegion };
+                        requests.receipts.push(PaintReceipt { source: paint.source, outcome: PaintOutcome::Fallback { reason } });
+                        receipt
+                    });
+                    let mut clip_limit = passes[current].clip_limit;
+                    let transition = if supported {
+                        if let Some(clip) = clip_state.bounds.map(clip_envelope) {
+                            clip_limit = Some(clip_limit.map_or(clip, |outer| outer.intersect(&clip)));
+                        }
+                        Some(TransitionRequest { paint: paint.clone(), receipt, clip: clip_state, clip_scope: clips.enter_scope() })
+                    } else {
+                        requests.skipped_transitions.push((paint.mount.downgrade(), paint.revision));
+                        if paint.opacity == 1.0 {
+                            // The native cutout must stay on the same target as ordinary painting.
+                            open.push(current);
+                            continue;
+                        }
+                        None
+                    };
+                    passes.push(Pass { opacity: paint.opacity, clip_limit, transition, ..Pass::default() });
                     open.push(passes.len() - 1);
                 }
                 Item::PopLayer => {
@@ -1135,19 +1275,35 @@ impl GpuRenderer {
                     }
                     let layer = open.pop().expect("a layer");
                     let parent = *open.last().expect("a pass");
+                    if layer == parent {
+                        continue;
+                    }
                     let opacity = passes[layer].opacity;
-                    // The layer covers the target; what clips it was applied inside.
+                    // Regular layers apply their clips inside. Transition regions apply their
+                    // outer clips here so snapshots can be composed through them exactly once.
+                    let outer = passes[layer].transition.as_ref().and_then(|request| {
+                        clips.leave_scope(request.clip_scope);
+                        request.clip.bounds.map(|bounds| ([bounds.x, bounds.y, bounds.w, bounds.h], request.clip.head))
+                    });
                     passes[parent].push_special(
                         Inst {
                             fill: [0.0, 0.0, 0.0, opacity],
-                            clip: NO_CLIP,
-                            params: InstParams { kind: KIND_LAYER, ..InstParams::default() },
+                            clip: outer.map_or(NO_CLIP, |(clip, _)| clip),
+                            params: InstParams {
+                                kind: KIND_LAYER,
+                                clip_head: outer.map_or(0, |(_, head)| head),
+                                filled: u32::from(outer.is_some()),
+                                ..InstParams::default()
+                            },
                             ..Inst::zeroed()
                         },
                         Draw::Layer(layer),
                     );
                 }
             }
+        }
+        for index in open.into_iter().skip(1) {
+            passes[index].transition = None;
         }
         (passes, requests, clips)
     }
@@ -1160,8 +1316,8 @@ impl GpuRenderer {
     /// Coordinate access to the shared queue so the returned frame is submitted or dropped before
     /// other work is staged or submitted. Finish any open debug groups first. Author canvases
     /// use separate command buffers in the same submission. A backdrop runs after its group's
-    /// preceding draws. Accept the frame's [`PendingPresentation`] to keep its backdrop outputs
-    /// for their mounts' exit animations.
+    /// preceding draws. Accept the frame's [`PendingPresentation`] to keep backdrop outputs
+    /// and rendered transition regions for their mounts.
     /// `size` is the view's extent in device pixels.
     pub fn record(
         &mut self,
@@ -1217,12 +1373,12 @@ impl GpuRenderer {
         }
     }
 
-    /// Keeps a submitted frame's backdrop outputs for exit animations once the host accepts it.
+    /// Keeps a submitted frame's backdrop outputs and transition regions once the host accepts it.
     ///
     /// # Panics
     /// Panics if the token contains outputs from a different renderer.
     pub fn accept_presentation(&mut self, pending: PendingPresentation) {
-        self.backdrop_history.accept(pending);
+        self.presentation_history.accept(pending);
     }
 
     fn record_profiled_input(
@@ -1269,8 +1425,8 @@ impl GpuRenderer {
         let preparing = recording.measurement.is_some().then(Instant::now);
         let attachment = CopyAttachment::from_texture(view.texture(), self.format);
         self.canvas_cache.prune();
-        self.backdrop_history.prune();
-        let frame = self.prepare_frame(input, attachment, &mut recording);
+        self.presentation_history.prune();
+        let mut frame = self.prepare_frame(input, attachment, &mut recording);
         let prepared = preparing.map(|start| {
             let end = Instant::now();
             (end, end.duration_since(start))
@@ -1279,7 +1435,7 @@ impl GpuRenderer {
             recording.before.insert(0, encoder.finish());
             encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("octara drawing") });
         }
-        encoder = self.encode_frame(encoder, &frame, view, input.scale, &mut recording);
+        encoder = self.encode_frame(encoder, &mut frame, view, input, &mut recording);
         if let Some((encoding, prepare)) = prepared
             && let Some(measurement) = recording.measurement
         {
@@ -1293,9 +1449,9 @@ impl GpuRenderer {
             device: &self.device,
             queue: &self.queue,
             canvas_cache: &mut self.canvas_cache,
-            backdrop_history: &self.backdrop_history,
+            presentation_history: &self.presentation_history,
             changes: recording.outputs.unwrap_or_default(),
-            revision: input.sample.map(|sample| sample.revision),
+            sample: input.sample,
             receipts: recording.receipts,
             timestamp_pool: &mut self.timestamps,
             timestamps: None,
@@ -1386,17 +1542,45 @@ impl GpuRenderer {
 
     fn prepare_frame(&mut self, input: FrameInput<'_>, output: CopyAttachment, recording: &mut FrameRecording<'_>) -> PreparedFrame {
         let (mut passes, requests, clips) = self.passes(input);
-        let PaintRequests { canvases, backdrops, receipts } = requests;
+        let PaintRequests { canvases, backdrops, skipped_transitions, receipts } = requests;
         recording.receipts = receipts;
+        if let Some(changes) = &mut recording.outputs {
+            for (mount, revision) in skipped_transitions {
+                changes.transitions.record(mount, revision, None);
+            }
+        }
         let canvas_views = self.prepare_canvases(&mut passes, canvases, input.scale, recording);
         let window = [input.size.0, input.size.1];
-        let bounds = bound_passes(&mut passes, window);
+        let mut transitions = FxHashMap::default();
+        let bounds = bound_passes(&mut passes, window, |index, request, bounds, visible| {
+            let mut composite = None;
+            if let Some(receipt) = request.receipt {
+                match self.plan_transition(&request.paint, bounds, visible, input.scale, recording) {
+                    Ok(plan) => composite = Some(plan),
+                    Err(reason) => recording.receipts[receipt].outcome = PaintOutcome::Fallback { reason },
+                }
+            }
+            let output = composite.as_ref().map_or(bounds, |plan| plan.bounds);
+            transitions.insert(index, PlannedTransition { request, composite, fallback: None });
+            output
+        });
         // One buffer holds every pass's instances.
         let mut all: Vec<Inst> = Vec::new();
         let mut instance_offsets = Vec::with_capacity(passes.len());
         for p in &passes {
             instance_offsets.push(all.len() as u32);
             all.extend_from_slice(&p.insts);
+            if !transitions.is_empty() {
+                for batch in &p.special {
+                    if let Draw::Layer(layer) = batch.draw
+                        && let Some(transition) = transitions.get_mut(&layer)
+                        && transition.composite.as_ref().is_some_and(|plan| plan.bounds != bounds[layer])
+                    {
+                        transition.fallback = Some(all.len() as u32);
+                        all.push(Inst { rect: bounds[layer].rect(), ..p.insts[batch.instances.start] });
+                    }
+                }
+            }
         }
         let backdrop_fallback_offset = all.len() as u32;
         all.extend(backdrops.iter().map(|request| request.paint.fallback));
@@ -1418,27 +1602,27 @@ impl GpuRenderer {
             self.queue.write_buffer(buffer, 0, bytes);
         }
         let layer_count = passes.len() - 1;
-        self.layers.truncate(layer_count);
-        for (index, bounds) in bounds[1..].iter().enumerate() {
-            let [width, height] = bounds.allocation(window);
-            if self.layers.get(index).is_some_and(|t| t.width() == width && t.height() == height) {
-                continue;
-            }
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("octara layer"),
-                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: self.format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
+        self.layers.resize_with(layer_count, || None);
+        let mut layer_views = Vec::with_capacity(layer_count);
+        let can_publish = input.sample.is_some() && recording.outputs.is_some();
+        for (index, (bounds, slot)) in bounds[1..].iter().zip(&mut self.layers).enumerate() {
+            let immutable = transitions.get(&(index + 1)).is_some_and(|transition| {
+                transition.composite.is_some()
+                    || (can_publish && transition.request.paint.opacity > 0.0 && !bounds.is_empty() && RegionImage::can_retain(bounds.size))
             });
-            if let Some(slot) = self.layers.get_mut(index) {
-                *slot = texture;
+            let texture = if immutable {
+                // This target can become accepted history. Its allocation is never used as a
+                // working target while an accepted frame or a run can still read from it.
+                *slot = None;
+                layer_texture(&self.device, self.format, bounds.size.map(|axis| axis.max(1)))
             } else {
-                self.layers.push(texture);
-            }
+                let [width, height] = bounds.allocation(window);
+                if slot.as_ref().is_none_or(|t| t.width() != width || t.height() != height) {
+                    *slot = Some(layer_texture(&self.device, self.format, [width, height]));
+                }
+                slot.as_ref().expect("a working layer").clone()
+            };
+            layer_views.push(texture.create_view(&Default::default()));
         }
         // Distinct projections in this submission, one aligned uniform range per target.
         let uniform_size = std::mem::size_of::<Globals>();
@@ -1452,7 +1636,7 @@ impl GpuRenderer {
             });
         }
         let mut uniforms = vec![0; bytes_len];
-        let sizes = std::iter::once(window).chain(self.layers.iter().map(|t| [t.width(), t.height()]));
+        let sizes = std::iter::once(window).chain(layer_views.iter().map(|view| [view.texture().width(), view.texture().height()]));
         for (index, (bounds, extent)) in bounds.iter().zip(sizes).enumerate() {
             let globals = Globals { size: extent.map(|n| n as f32), origin: bounds.origin.map(|n| n as f32) };
             let at = index * self.globals_stride;
@@ -1473,7 +1657,6 @@ impl GpuRenderer {
         if !nodes.is_empty() {
             self.queue.write_buffer(&self.clip_nodes, 0, nodes);
         }
-        let layer_views: Vec<wgpu::TextureView> = self.layers.iter().map(|t| t.create_view(&Default::default())).collect();
         let atlases = [&self.mask, &self.color, &self.images].map(|texture| texture.create_view(&Default::default()));
         let no_layer = self.no_layer.create_view(&Default::default());
         let bind_with = |view| self.bind_texture(&atlases, view);
@@ -1482,7 +1665,39 @@ impl GpuRenderer {
         let canvas_binds = canvas_views.iter().map(bind_with).collect();
         let [r, g, b, a] = input.list.background.components;
         let background = wgpu::Color { r: (r * a) as f64, g: (g * a) as f64, b: (b * a) as f64, a: a as f64 };
-        PreparedFrame { plan, background, layer_views, atlases, bind, layer_binds, canvas_binds }
+        PreparedFrame { plan, background, bounds, layer_views, atlases, bind, layer_binds, canvas_binds, transitions }
+    }
+
+    fn plan_transition(
+        &self,
+        paint: &TransitionPaint,
+        current: PassBounds,
+        visible: Rect,
+        scale: f32,
+        recording: &mut FrameRecording<'_>,
+    ) -> Result<TransitionComposite, PaintFallback> {
+        if paint.program.downcast_ref::<custom::Canvas>().is_none_or(|canvas| canvas.mode != CanvasMode::Transition) {
+            return Err(PaintFallback::UnsupportedProgram);
+        }
+        if !RegionImage::can_retain(current.size) || !scale.is_finite() || scale <= 0.0 {
+            return Err(PaintFallback::InvalidSize);
+        }
+        let old = self.presentation_history.transition(
+            &paint.mount.downgrade(),
+            &paint.run.downgrade(),
+            paint.revision,
+            recording.outputs.as_mut().map(|changes| &mut changes.transitions),
+        );
+        let (old, sample) = old.ok_or(PaintFallback::HistoryUnavailable)?;
+        let [x, y] = old.origin.map(|px| px as f32 / old.scale * scale);
+        let [w, h] = old.size().map(|px| px as f32 / old.scale * scale);
+        let [nx, ny, nw, nh] = current.rect();
+        let output = union(Rect::new(x, y, w, h), Rect::new(nx, ny, nw, nh)).intersect(&visible);
+        let bounds = PassBounds::from_rect(output);
+        if bounds.is_empty() || !RegionImage::can_retain(bounds.size) {
+            return Err(PaintFallback::InvalidSize);
+        }
+        Ok(TransitionComposite { old, sample, bounds })
     }
 
     fn bind_texture(&self, atlases: &[wgpu::TextureView; 3], layer: &wgpu::TextureView) -> wgpu::BindGroup {
@@ -1520,7 +1735,7 @@ impl GpuRenderer {
             BackdropInput::Prefix(region) => region,
             BackdropInput::Unavailable => return Err(PaintFallback::BackdropUnavailable),
             BackdropInput::Accepted => {
-                let image = self.backdrop_history.get(&request.mount).ok_or(PaintFallback::HistoryUnavailable)?;
+                let image = self.presentation_history.get(&request.mount).ok_or(PaintFallback::HistoryUnavailable)?;
                 if let Some(p) = recording.measurement.as_deref_mut() {
                     p.profile.retained_backdrops += 1;
                 }
@@ -1532,7 +1747,7 @@ impl GpuRenderer {
             }
         };
         let copy = custom::BackdropCopy::new(target.texture(), self.format, region);
-        let working = recording.outputs.as_ref().and_then(|_| self.backdrop_history.take_working(&request.mount));
+        let working = recording.outputs.as_ref().and_then(|_| self.presentation_history.take_working(&request.mount));
         let (view, command) = self.programs.encode_backdrop(
             &self.device,
             &request.paint,
@@ -1547,12 +1762,63 @@ impl GpuRenderer {
         Ok(EncodedBackdrop { view, prefix_commands: Some(command), outcome: PaintOutcome::Rendered })
     }
 
+    fn encode_transition(
+        &mut self,
+        transition: &mut PlannedTransition,
+        target: &wgpu::TextureView,
+        current: PassBounds,
+        input: FrameInput<'_>,
+        recording: &mut FrameRecording<'_>,
+    ) -> Option<(wgpu::TextureView, wgpu::CommandBuffer)> {
+        let TransitionRequest { paint, receipt, .. } = &transition.request;
+        let product = transition.composite.take().and_then(|composite| {
+            let scale = input.scale;
+            let [x, y, w, h] = composite.bounds.rect().map(|px| px / scale);
+            let receipt = receipt.expect("an active transition has a receipt");
+            let paint_inputs = CanvasPaint {
+                program: paint.program.clone(),
+                fallback: Inst::zeroed(),
+                fallback_source: paint.source,
+                size: composite.bounds.size,
+                params: [0.0; 4],
+                rect: Rect::new(x, y, w, h),
+                radius: 0.0,
+                sampled_at: input.sample.map(|sample| sample.sampled_at),
+                receipt,
+            };
+            let new = RegionImage::new(target, current.origin, scale);
+            let sources = Transition {
+                old: composite.old.input(),
+                new: TransitionImage { size: current.size, ..new.input() },
+                progress: paint.progress.max(0.0),
+            };
+            match self.programs.encode_transition(&self.device, &paint_inputs, scale, sources, recording.measurement.as_deref_mut()) {
+                Ok((view, command)) => {
+                    transition.fallback = None;
+                    recording.receipts[receipt].outcome = PaintOutcome::Transition { old: composite.sample };
+                    Some((view, command, composite.bounds))
+                }
+                Err(reason) => {
+                    recording.receipts[receipt].outcome = PaintOutcome::Fallback { reason };
+                    None
+                }
+            }
+        });
+        if let Some(changes) = &mut recording.outputs {
+            let (view, bounds) = product.as_ref().map_or((target, current), |(view, _, bounds)| (view, *bounds));
+            let retain = input.sample.is_some() && paint.opacity > 0.0 && !bounds.is_empty() && RegionImage::can_retain(bounds.size);
+            let image = retain.then(|| RegionImage::new(view, bounds.origin, input.scale));
+            changes.transitions.record(paint.mount.downgrade(), paint.revision, image);
+        }
+        product.map(|(view, command, _)| (view, command))
+    }
+
     fn encode_frame(
         &mut self,
         mut encoder: wgpu::CommandEncoder,
-        frame: &PreparedFrame,
+        frame: &mut PreparedFrame,
         view: &wgpu::TextureView,
-        scale: f32,
+        input: FrameInput<'_>,
         recording: &mut FrameRecording<'_>,
     ) -> wgpu::CommandEncoder {
         let (buffer, _) = self.instances.as_ref().expect("instance buffer");
@@ -1563,22 +1829,26 @@ impl GpuRenderer {
                 Attachment::Layer(index) => (&frame.layer_views[index - 1], wgpu::Color::TRANSPARENT, GpuPassKind::Layer, index),
             };
             let mut pass = color_pass(&mut encoder, target, wgpu::LoadOp::Clear(clear), recording.pass(kind));
-            if target_plan.batches.is_empty() {
-                continue;
+            if !target_plan.batches.is_empty() {
+                pass.set_vertex_buffer(0, buffer.slice(..));
             }
             let projection = [u32::try_from(index * self.globals_stride).expect("pass uniform offset")];
-            pass.set_vertex_buffer(0, buffer.slice(..));
             for batch in &frame.plan.batches[target_plan.batches.clone()] {
-                let instances = batch.instances.clone();
+                let mut instances = batch.instances.clone();
                 let (pipeline, bind) = match batch.draw {
                     Draw::Standard => (&self.pipeline, &frame.bind),
                     Draw::Cutout => (&self.cutout, &frame.bind),
-                    Draw::Layer(layer) => (&self.pipeline, &frame.layer_binds[layer - 1]),
+                    Draw::Layer(layer) => {
+                        if let Some(fallback) = frame.transitions.get(&layer).and_then(|transition| transition.fallback) {
+                            instances = fallback..fallback + 1;
+                        }
+                        (&self.pipeline, &frame.layer_binds[layer - 1])
+                    }
                     Draw::Canvas(view) => (&self.pipeline, &frame.canvas_binds[view]),
                     Draw::Material(material) => (self.programs.material_pipeline(material), &frame.bind),
                     Draw::Backdrop(index) => {
                         let backdrop = &frame.plan.backdrops[index];
-                        let outcome = match self.encode_backdrop(backdrop, target, scale, recording) {
+                        let outcome = match self.encode_backdrop(backdrop, target, input.scale, recording) {
                             Ok(EncodedBackdrop { view, prefix_commands, outcome }) => {
                                 if let Some(command) = prefix_commands {
                                     // The isolated copy and author commands run after the prefix is stored.
@@ -1605,6 +1875,16 @@ impl GpuRenderer {
                     }
                 };
                 draw_batch(&mut pass, pipeline, bind, &projection, instances);
+            }
+            drop(pass);
+            if let Some(transition) = frame.transitions.get_mut(&index)
+                && let Some((composite, command)) = self.encode_transition(transition, target, frame.bounds[index], input, recording)
+            {
+                // The new image is produced by this child pass. Its parent samples the output
+                // after the author commands, without splitting the parent's render pass.
+                recording.before.extend([encoder.finish(), command]);
+                encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("octara drawing") });
+                frame.layer_binds[index - 1] = self.bind_texture(&frame.atlases, &composite);
             }
         }
         encoder
@@ -2093,6 +2373,184 @@ mod tests {
         assert_corners(gpu.render(&dl(Item::Custom(program_box(rect, program, [1.0, 0.0, 0.0, 1.0]))), 1.0));
     }
 
+    fn crossfade() -> PaintProgram {
+        use wgpu::util::DeviceExt;
+
+        transition(|device| {
+            let source = "
+                struct Inputs {
+                    origins: vec4f,
+                    output: vec4f,
+                    source_scales: vec4f,
+                };
+                @group(0) @binding(0) var<uniform> inputs: Inputs;
+                @group(0) @binding(1) var old_image: texture_2d<f32>;
+                @group(0) @binding(2) var new_image: texture_2d<f32>;
+                @group(0) @binding(3) var output_image: texture_storage_2d<rgba8unorm, write>;
+
+                fn sample_at(image: texture_2d<f32>, xy: vec2f, origin: vec2f, scale: f32) -> vec4f {
+                    let at = vec2i(floor(xy * scale - origin));
+                    if any(at < vec2i(0)) || any(at >= vec2i(textureDimensions(image))) {
+                        return vec4f(0.0);
+                    }
+                    return textureLoad(image, at, 0);
+                }
+
+                @compute @workgroup_size(8, 8)
+                fn fade(@builtin(global_invocation_id) pixel: vec3u) {
+                    if any(pixel.xy >= textureDimensions(output_image)) { return; }
+                    let xy = inputs.output.xy + (vec2f(pixel.xy) + 0.5) / inputs.output.z;
+                    let old_pixel = sample_at(old_image, xy, inputs.origins.xy, inputs.source_scales.x);
+                    let new_pixel = sample_at(new_image, xy, inputs.origins.zw, inputs.source_scales.y);
+                    textureStore(output_image, vec2i(pixel.xy), mix(old_pixel, new_pixel, inputs.output.w));
+                }
+            ";
+            let shader =
+                device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(source.into()) });
+            let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: None,
+                layout: None,
+                module: &shader,
+                entry_point: Some("fade"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+            let layout = pipeline.get_bind_group_layout(0);
+            move |frame: &mut CanvasFrame<'_>, images: Transition<'_>| {
+                let [ox, oy] = images.old.origin.map(|n| n as f32);
+                let [nx, ny] = images.new.origin.map(|n| n as f32);
+                let data = [
+                    [ox, oy, nx, ny],
+                    [frame.rect.x, frame.rect.y, frame.scale, images.progress],
+                    [images.old.scale, images.new.scale, 0.0, 0.0],
+                ];
+                let uniforms = frame.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: None,
+                    contents: bytemuck::bytes_of(&data),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+                let [old, new, target] = [images.old.view, images.new.view, frame.target];
+                let bind = frame.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: &layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(old) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(new) },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(target) },
+                    ],
+                });
+                let [w, h] = frame.size;
+                let mut pass = frame.begin_compute_pass("crossfade", &Default::default());
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &bind, &[]);
+                pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+            }
+        })
+    }
+
+    #[test]
+    fn local_transition_composites_accepted_history_and_current_pixels_in_place() {
+        let Some(mut gpu) = GpuRenderer::new() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let source = NodeId::default();
+        let initial = TransitionPaint {
+            source,
+            mount: PaintMount::default(),
+            run: PaintMount::default(),
+            revision: 0,
+            program: crossfade(),
+            progress: 1.0,
+            opacity: 1.0,
+        };
+        let scene = |paint, rect, color| {
+            let mut list = picture([
+                Item::PushClip { source, rect: Rect::new(0.0, 0.0, 26.0, 20.0), radius: 8.0 },
+                Item::PushClip { source, rect: Rect::new(1.0, 1.0, 21.0, 16.0), radius: 0.0 },
+                Item::PushLayer { source, opacity: 0.5 },
+                Item::PushTransition(paint),
+                Item::Quad(solid(rect, color)),
+                Item::PopLayer,
+                Item::PopLayer,
+                Item::PopClip,
+                Item::PopClip,
+                Item::Quad(solid(Rect::new(12.0, 10.0, 2.0, 2.0), Color::WHITE)),
+            ]);
+            list.background = rgb(0x00ff00);
+            list
+        };
+        let target = device_target(gpu.device(), wgpu::TextureUsages::empty()).create_view(&Default::default());
+        let submit = |gpu: &mut GpuRenderer, list: &DisplayList, revision| {
+            let (recorded, profile) = profile_frame(gpu, &target, list, 1.0, revision);
+            let effects = recorded.paint_receipts().to_vec();
+            (recorded.submit_for_presentation().1, effects, profile)
+        };
+        let sample = |revision| Some(PaintSample { revision, sampled_at: Duration::from_millis(revision) });
+        let old_rect = Rect::new(2.0, 2.0, 13.0, 12.0);
+        let new_rect = Rect::new(10.0, 2.0, 14.0, 12.0);
+        let (pending, effects, _) = submit(&mut gpu, &scene(initial.clone(), old_rect, rgb(0xff0000)), 10);
+        assert!(effects.is_empty());
+        gpu.accept_presentation(pending);
+        // Submitting another settled output is insufficient to publish its pixels.
+        drop(submit(&mut gpu, &scene(initial.clone(), old_rect, rgb(0xff00ff)), 11).0);
+
+        let active = TransitionPaint { run: PaintMount::default(), revision: 1, progress: 0.5, ..initial };
+        let incoming = scene(active.clone(), new_rect, rgb(0x0000ff));
+        let midpoint = PaintOutcome::Transition { old: sample(10).unwrap() };
+        let before = gpu.paint_with_receipts(&incoming, 1.0, sample(20)).unwrap();
+        assert_eq!(
+            before.effects,
+            [PaintReceipt { source, outcome: PaintOutcome::Fallback { reason: PaintFallback::HistoryUnavailable } }]
+        );
+        close(before.picture.pixel(6, 8), [0, 255, 0, 255]);
+        let (pending, effects, timing) = submit(&mut gpu, &incoming, 20);
+        assert_eq!(effects, [PaintReceipt { source, outcome: midpoint }]);
+        assert_eq!(timing.render_passes, 3);
+        assert_eq!(timing.backdrop_copy_pixels, 0);
+        gpu.accept_presentation(pending);
+
+        let accepted = gpu.paint_with_receipts(&incoming, 1.0, sample(20)).unwrap();
+        assert_eq!(accepted.effects, [PaintReceipt { source, outcome: midpoint }]);
+        close(accepted.picture.pixel(6, 8), [64, 191, 0, 255]); // Old-only extent.
+        close(accepted.picture.pixel(12, 8), [64, 127, 64, 255]); // Both inputs.
+        close(accepted.picture.pixel(18, 8), [0, 191, 64, 255]); // New-only extent.
+        close(accepted.picture.pixel(2, 2), [46, 209, 0, 255]); // Rounded coverage applied once.
+        close(accepted.picture.pixel(22, 8), [0, 255, 0, 255]); // Inner rectangular clip.
+        close(accepted.picture.pixel(12, 10), [255; 4]); // Later foreground.
+
+        let revised = scene(active.clone(), new_rect, rgb(0xffff00));
+        let capture = gpu.paint_with_receipts(&revised, 2.0, sample(21)).unwrap();
+        assert_eq!(capture.effects, accepted.effects);
+        close(capture.picture.pixel(12, 16), [64, 191, 0, 255]);
+        close(capture.picture.pixel(24, 16), [128, 191, 0, 255]);
+
+        let interrupted = TransitionPaint { run: PaintMount::default(), revision: 2, progress: 0.0, ..active };
+        let final_rect = Rect::new(6.0, 4.0, 10.0, 8.0);
+        let final_scene = scene(interrupted.clone(), final_rect, rgb(0x0000ff));
+        let (pending, effects, _) = submit(&mut gpu, &final_scene, 30);
+        assert_eq!(effects, [PaintReceipt { source, outcome: PaintOutcome::Transition { old: sample(20).unwrap() } }]);
+        gpu.accept_presentation(pending);
+        let capture = gpu.paint_with_receipts(&final_scene, 1.0, sample(30)).unwrap();
+        close(capture.picture.pixel(12, 8), accepted.picture.pixel(12, 8));
+
+        let broken = transition(|device| {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 4,
+                usage: wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            move |frame: &mut CanvasFrame<'_>, _: Transition<'_>| frame.encoder.clear_buffer(&buffer, 0, None)
+        });
+        let broken_scene = scene(TransitionPaint { program: broken, ..interrupted }, final_rect, rgb(0x0000ff));
+        let fallback = gpu.paint_with_receipts(&broken_scene, 1.0, sample(30)).unwrap();
+        assert_eq!(fallback.effects, [PaintReceipt { source, outcome: PaintOutcome::Fallback { reason: PaintFallback::EncodingFailed } }]);
+        close(fallback.picture.pixel(3, 8), [0, 255, 0, 255]);
+        close(fallback.picture.pixel(12, 8), [0, 127, 128, 255]);
+    }
+
     #[test]
     fn author_programs_and_profiles_preserve_renderer_send_and_sync() {
         fn assert_send_and_sync<T: Send + Sync>() {}
@@ -2422,7 +2880,7 @@ mod tests {
         drop(failing);
         drop(mount);
         gpu.render(&picture([]), 1.0);
-        assert!(gpu.backdrop_history.is_empty());
+        assert!(gpu.presentation_history.is_empty());
     }
 
     #[test]
@@ -2599,7 +3057,7 @@ mod tests {
             Pass { insts: vec![quad, composite], special: vec![Batch { instances: 1..2, draw: Draw::Layer(2) }], ..Pass::default() },
             Pass { insts: vec![shadow], ..Pass::default() },
         ];
-        let bounds = bound_passes(&mut passes, window);
+        let bounds = bound_passes(&mut passes, window, |_, _, _, _| unreachable!("no transition regions"));
         assert_eq!(bounds[0].size, window);
         assert_eq!(bounds[1].rect(), [369.0, 459.0, 46.0, 32.0]);
         assert_eq!(bounds[2].rect(), [403.0, 479.0, 12.0, 12.0]);

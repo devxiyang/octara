@@ -17,7 +17,7 @@ pub struct FrameProfile {
     pub render_passes: u32,
     /// Area of the opacity layer attachments in device pixels, including allocation rounding.
     pub layer_pixels: u64,
-    /// Area of the author canvas and backdrop output targets recorded this frame, in device pixels.
+    /// Area of the author canvas, backdrop and transition output targets recorded this frame, in device pixels.
     pub canvas_pixels: u64,
     /// Area of backdrop inputs copied this frame, in device pixels.
     pub backdrop_copy_pixels: u64,
@@ -52,6 +52,10 @@ pub enum GpuPassKind {
     Backdrop,
     /// The target clear for a backdrop, measured with pass-level queries.
     BackdropClear,
+    /// The target clear and author commands for a transition.
+    Transition,
+    /// The target clear for a transition, measured with pass-level queries.
+    TransitionClear,
     /// A render or compute pass named by its author.
     Author(&'static str),
 }
@@ -67,6 +71,8 @@ impl GpuPassKind {
             Self::BackdropCopy => "backdrop_copy",
             Self::Backdrop => "backdrop",
             Self::BackdropClear => "backdrop_clear",
+            Self::Transition => "transition",
+            Self::TransitionClear => "transition_clear",
             Self::Author(name) => name,
         }
     }

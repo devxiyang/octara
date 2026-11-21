@@ -124,3 +124,37 @@ fn render_and_capture_preserve_straight_alpha_in_pngs() {
         assert_eq!(frame.rgba.as_ref(), picture.rgba);
     }
 }
+
+#[test]
+fn a_transition_fallback_keeps_an_underlay_cutout_in_the_parent() {
+    use octara_primitives::capture::{PaintFallback, PaintOutcome, Painter};
+    use octara_primitives::identity::NodeId;
+    use octara_primitives::native::Slot;
+    use octara_primitives::paint::{DisplayList, Item, Part, Rect, TransitionPaint};
+
+    let source = NodeId::default();
+    let list = DisplayList {
+        size: (32.0, 32.0),
+        background: Color::WHITE,
+        parts: [
+            Item::PushTransition(TransitionPaint {
+                source,
+                mount: Default::default(),
+                run: Default::default(),
+                revision: 1,
+                program: PaintProgram::new(()),
+                progress: 0.5,
+                opacity: 1.0,
+            }),
+            Item::Native { source, rect: Rect::new(10.0, 10.0, 12.0, 12.0), radius: 0.0, slot: Slot::Underlay, cut: true },
+            Item::PopLayer,
+        ]
+        .into_iter()
+        .map(Part::Item)
+        .collect(),
+    };
+    let painted = CpuRenderer::new().paint_with_receipts(&list, 1.0, None).unwrap();
+    assert_eq!(painted.picture.pixel(16, 16), [0; 4]);
+    assert_eq!(painted.picture.pixel(4, 4), [255; 4]);
+    assert_eq!(painted.effects[0].outcome, PaintOutcome::Fallback { reason: PaintFallback::ReferenceRenderer });
+}

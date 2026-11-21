@@ -5,9 +5,11 @@
 use super::text::{self, Wrap};
 use super::{Align, BoxShadow, Color, Dirty, Kernel, Kind, NodeId, Token};
 use crate::image::{Image, Sample};
-use crate::paint::{CustomPaint, DisplayList, GlyphRun, Item, PaintMount, PaintProgram, Part, PathPaint, Quad, Rect};
+use crate::motion::{Curve, PropClass, Spring, Track};
+use crate::paint::{CustomPaint, DisplayList, GlyphRun, Item, PaintMount, PaintProgram, Part, PathPaint, Quad, Rect, TransitionPaint};
 use crate::path::Transform;
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 /// What a node's own drawing was built from: while it stays the same, the drawing is kept.
 #[derive(PartialEq)]
@@ -34,6 +36,35 @@ pub(crate) struct CustomPaintBinding {
     program: PaintProgram,
     params: [f32; 4],
     mount: PaintMount,
+}
+
+pub(crate) struct TransitionBinding {
+    key: u64,
+    mount: PaintMount,
+    run: Option<PaintMount>,
+    revision: u64,
+    program: PaintProgram,
+    pub(super) progress: Track,
+}
+
+impl TransitionBinding {
+    pub(super) fn land(&mut self) -> bool {
+        if self.run.take().is_none() {
+            return false;
+        }
+        self.progress.set(1.0);
+        true
+    }
+}
+
+fn transition_curve(curve: Curve) -> Curve {
+    match curve {
+        Curve::Fade(duration) if duration > 0.0 && Duration::try_from_secs_f32(duration).is_ok() => curve,
+        Curve::Spring(spring) if spring.duration.is_finite() && spring.duration > 0.0 && spring.bounce > -1.0 && spring.bounce < 1.0 => {
+            Curve::Spring(Spring { bounce: spring.bounce.min(0.0), ..spring })
+        }
+        _ => Curve::Instant,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -135,6 +166,47 @@ impl Kernel {
         true
     }
 
+    pub(crate) fn set_paint_transition(&mut self, id: NodeId, program: &PaintProgram, key: u64, curve: Curve) -> bool {
+        let node = self.node(id);
+        if let Some(binding) = &node.transition_paint {
+            if binding.key == key {
+                return false;
+            }
+            let curve = if self.quiet || self.instant || self.reduced_motion() || node.born == self.layouts || self.contains_native(id) {
+                Curve::Instant
+            } else {
+                transition_curve(curve)
+            };
+            let mut progress = Track::new(0.0);
+            progress.retarget(1.0, self.now, curve, PropClass::Opacity);
+            let moving = progress.moving(self.now);
+            let binding = self.node_mut(id).transition_paint.as_mut().expect("mounted paint transition");
+            binding.key = key;
+            binding.revision = binding.revision.checked_add(1).expect("paint transition revisions exhausted");
+            binding.run = moving.then(PaintMount::default);
+            binding.progress = progress;
+            if moving {
+                self.moving.insert(id);
+                self.retire_transition_exits(id);
+            }
+        } else {
+            self.node_mut(id).transition_paint = Some(Box::new(TransitionBinding {
+                key,
+                mount: PaintMount::default(),
+                run: None,
+                revision: 0,
+                program: program.clone(),
+                progress: Track::new(1.0),
+            }));
+        }
+        self.mark(Dirty::PAINT);
+        true
+    }
+
+    fn contains_native(&self, id: NodeId) -> bool {
+        self.native_nodes.iter().any(|&native| self.is_within(native, id))
+    }
+
     /// The frame: kept drawings used where nothing they are drawn from changed (`keep`), else
     /// every drawing built again (without keeping it, and without counting it: a check).
     fn build_display_list(&self, mode: PaintMode) -> DisplayList {
@@ -160,7 +232,6 @@ impl Kernel {
     pub(crate) fn update_motion(&self) {
         let mut set = self.in_motion.borrow_mut();
         set.clear();
-        let t = self.now;
         let mut mark = |mut n: Option<NodeId>| {
             while let Some(id) = n {
                 if !set.insert(id) {
@@ -170,7 +241,7 @@ impl Kernel {
             }
         };
         for id in &self.moving {
-            if self.is_alive(*id) && self.node(*id).anim.as_ref().is_some_and(|a| a.rest_at(t).is_some()) {
+            if self.motion_rest_at(*id).is_some() {
                 mark(Some(*id));
             }
         }
@@ -334,13 +405,35 @@ impl Kernel {
         if !self.ink_meets(id, rect, &clip) {
             return;
         }
-        let own = self.presented_at(id, mode.motion_at(self.now)).opacity;
-        if own >= 1.0 {
-            return self.paint_node(id, rect, opacity, clip, out, mode);
-        }
+        let motion_at = mode.motion_at(self.now);
+        let own = self.presented_at(id, motion_at).opacity;
         let k = opacity * own;
         if k <= 0.0 {
             return;
+        }
+        if let Some(binding) = &self.node(id).transition_paint {
+            if self.contains_native(id) {
+                // Preserve the native surface's ordinary paint target and invalidate its history.
+                out.push(Part::Item(Item::SkipTransition { source: id, mount: binding.mount.clone(), revision: binding.revision }));
+            } else {
+                let run = binding.run.as_ref().filter(|_| binding.progress.moving(motion_at));
+                let progress = if run.is_some() { (binding.progress.value(motion_at) as f32).clamp(0.0, 1.0_f32.next_down()) } else { 1.0 };
+                out.push(Part::Item(Item::PushTransition(TransitionPaint {
+                    source: id,
+                    mount: binding.mount.clone(),
+                    run: run.unwrap_or(&binding.mount).clone(),
+                    revision: binding.revision,
+                    program: binding.program.clone(),
+                    progress,
+                    opacity: k,
+                })));
+                self.paint_node(id, rect, 1.0, clip, out, mode);
+                out.push(Part::Item(Item::PopLayer));
+                return;
+            }
+        }
+        if own >= 1.0 {
+            return self.paint_node(id, rect, opacity, clip, out, mode);
         }
         let mut inner = Vec::new();
         self.paint_node(id, rect, 1.0, clip, &mut inner, mode);
@@ -348,6 +441,9 @@ impl Kernel {
             .iter()
             .map(|p| match p {
                 Part::Drawing { items, .. } => items.iter().filter(|i| i.draws()).count(),
+                // A transition has its own composite and may draw from history even if its
+                // current contents are empty. Fade the enclosing group as a unit.
+                Part::Item(Item::PushTransition(_)) => 2,
                 Part::Item(i) => usize::from(i.draws()),
             })
             .sum();

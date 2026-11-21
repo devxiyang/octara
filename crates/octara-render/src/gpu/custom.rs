@@ -101,10 +101,61 @@ where
     PaintProgram::new(Canvas {
         prepare: Box::new(move |device| {
             let draw = prepare(device);
-            Box::new(move |frame, backdrop| draw(frame, backdrop.expect("backdrop input")))
+            Box::new(move |frame, input| {
+                let CanvasInput::Backdrop(sample) = input else { unreachable!("backdrop input") };
+                draw(frame, sample);
+            })
         }),
         mode: CanvasMode::Backdrop,
     })
+}
+
+/// Composes the host-accepted old image of a local region with its current image.
+/// Preparation, encoding and the transparent target follow [`canvas`]. The target is
+/// a separate `Rgba8Unorm` texture over the output bounds in `frame.rect`. Write
+/// premultiplied sRGB-encoded RGBA to it. The renderer shows the current region when the
+/// old image is unavailable, the transition has settled, or the callback fails validation.
+pub fn transition<C>(prepare: impl Fn(&wgpu::Device) -> C + Send + Sync + 'static) -> PaintProgram
+where
+    C: for<'a> Fn(&mut CanvasFrame<'a>, Transition<'a>) + Send + Sync + 'static,
+{
+    PaintProgram::new(Canvas {
+        prepare: Box::new(move |device| {
+            let draw = prepare(device);
+            Box::new(move |frame, input| {
+                let CanvasInput::Transition(images) = input else { unreachable!("transition inputs") };
+                draw(frame, images);
+            })
+        }),
+        mode: CanvasMode::Transition,
+    })
+}
+
+/// The old and current region images and sampled progress of a [`transition`] draw.
+#[derive(Clone, Copy)]
+pub struct Transition<'a> {
+    /// The accepted region image fixed when this transition started.
+    pub old: TransitionImage<'a>,
+    /// The current region image produced for this draw.
+    pub new: TransitionImage<'a>,
+    /// Progress sampled on the application's clock, in `[0, 1)` while running.
+    pub progress: f32,
+}
+
+/// A region image scoped to one [`transition`] draw. Coordinates outside its bounds
+/// represent transparent pixels. Each image has its own bounds and scale.
+#[derive(Clone, Copy)]
+pub struct TransitionImage<'a> {
+    /// Sampled view of premultiplied sRGB-encoded pixels. `Rgba8Unorm` and `Bgra8Unorm`
+    /// both sample in RGBA order. Use the view as a read-only binding within this draw.
+    pub view: &'a wgpu::TextureView,
+    /// The top-left corner in window device pixels at this image's `scale`.
+    pub origin: [u32; 2],
+    /// Width and height in device pixels. Use this extent to bound samples. An empty
+    /// current region has a zero extent and a transparent backing view.
+    pub size: [u32; 2],
+    /// Device pixels per logical window pixel when this image was drawn.
+    pub scale: f32,
 }
 
 /// The pixels available to a [`backdrop`] callback in this draw.
@@ -165,7 +216,13 @@ impl CanvasFrame<'_> {
     }
 }
 
-type CanvasDraw = dyn for<'a> Fn(&mut CanvasFrame<'a>, Option<Backdrop<'a>>) + Send + Sync;
+enum CanvasInput<'a> {
+    Local,
+    Backdrop(Backdrop<'a>),
+    Transition(Transition<'a>),
+}
+
+type CanvasDraw = dyn for<'a> Fn(&mut CanvasFrame<'a>, CanvasInput<'a>) + Send + Sync;
 type CanvasPrepare = dyn Fn(&wgpu::Device) -> Box<CanvasDraw> + Send + Sync;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -173,6 +230,7 @@ pub(super) enum CanvasMode {
     Volatile,
     Retained,
     Backdrop,
+    Transition,
 }
 
 pub(super) struct Canvas {
@@ -284,6 +342,12 @@ pub(super) enum CanvasTarget<'a> {
     Working(Option<&'a wgpu::Texture>),
 }
 
+enum CanvasSource<'a> {
+    Local,
+    Backdrop(BackdropCopy<'a>, &'a mut BackdropInputs),
+    Transition(Transition<'a>),
+}
+
 impl Programs {
     pub(super) fn prepare_material(
         &mut self,
@@ -345,7 +409,7 @@ impl Programs {
             CanvasTarget::Transient(slot) => self.targets.get(slot),
             CanvasTarget::Working(texture) => texture,
         };
-        let output = prepared.encode(device, paint, scale, reuse, None, measurement.as_deref_mut());
+        let output = prepared.encode(device, paint, scale, reuse, CanvasSource::Local, measurement.as_deref_mut());
         if let Some(start) = start
             && let Some(measurement) = measurement
         {
@@ -376,7 +440,25 @@ impl Programs {
             paint,
             scale,
             target,
-            Some((copy, &mut self.backdrop_inputs)),
+            CanvasSource::Backdrop(copy, &mut self.backdrop_inputs),
+            measurement,
+        )
+    }
+
+    pub(super) fn encode_transition(
+        &mut self,
+        device: &wgpu::Device,
+        paint: &CanvasPaint,
+        scale: f32,
+        images: Transition<'_>,
+        measurement: Option<&mut FrameMeasurement>,
+    ) -> Result<(wgpu::TextureView, wgpu::CommandBuffer), PaintFallback> {
+        Self::prepare_canvas(&mut self.canvases, device, paint).encode(
+            device,
+            paint,
+            scale,
+            None,
+            CanvasSource::Transition(images),
             measurement,
         )
     }
@@ -388,7 +470,11 @@ impl Programs {
     ) -> &'a mut PreparedCanvas {
         let canvas = paint.program.downcast_ref::<Canvas>().expect("a canvas request");
         let owner = paint.program.downgrade();
-        let name = if canvas.mode == CanvasMode::Backdrop { "backdrop" } else { "canvas" };
+        let name = match canvas.mode {
+            CanvasMode::Volatile | CanvasMode::Retained => "canvas",
+            CanvasMode::Backdrop => "backdrop",
+            CanvasMode::Transition => "transition",
+        };
         canvases.entry(owner.as_ptr().cast::<()>().addr()).or_insert_with(|| {
             let draw = checked(device, || (canvas.prepare)(device))
                 .map_err(|error| eprintln!("Octara {name} preparation at {:?}: {error}", paint.fallback_source))
@@ -405,15 +491,15 @@ impl PreparedCanvas {
         paint: &CanvasPaint,
         scale: f32,
         target: Option<&wgpu::Texture>,
-        mut copy: Option<(BackdropCopy<'_>, &mut BackdropInputs)>,
+        mut source: CanvasSource<'_>,
         mut measurement: Option<&mut FrameMeasurement>,
     ) -> Result<(wgpu::TextureView, wgpu::CommandBuffer), PaintFallback> {
         let draw = self.draw.as_ref().ok_or(PaintFallback::PreparationFailed)?;
         let [width, height] = paint.size;
-        let (name, label, kind, clear) = if copy.is_some() {
-            ("backdrop", "octara backdrop", GpuPassKind::Backdrop, GpuPassKind::BackdropClear)
-        } else {
-            ("canvas", "octara canvas", GpuPassKind::Canvas, GpuPassKind::CanvasClear)
+        let (name, label, kind, clear) = match source {
+            CanvasSource::Local => ("canvas", "octara canvas", GpuPassKind::Canvas, GpuPassKind::CanvasClear),
+            CanvasSource::Backdrop(..) => ("backdrop", "octara backdrop", GpuPassKind::Backdrop, GpuPassKind::BackdropClear),
+            CanvasSource::Transition(_) => ("transition", "octara transition", GpuPassKind::Transition, GpuPassKind::TransitionClear),
         };
         let mut timestamps = measurement.as_mut().and_then(|measurement| measurement.timestamps.as_mut());
         let checkpoint = timestamps.as_deref().map(TimestampFrame::checkpoint);
@@ -425,13 +511,15 @@ impl PreparedCanvas {
             let view = texture.create_view(&Default::default());
             // A failed author pass can invalidate its encoder, so record each canvas independently.
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
-            let sample = copy.as_mut().map(|(copy, inputs)| {
+            let sample = if let CanvasSource::Backdrop(copy, inputs) = &mut source {
                 let (input, reused) = inputs.view(device, copy);
                 TimestampFrame::commands(timestamps.as_deref_mut(), &mut encoder, GpuPassKind::BackdropCopy, |encoder, _| {
                     copy.encode(encoder, input.texture());
                 });
-                (input, reused)
-            });
+                Some((input, reused))
+            } else {
+                None
+            };
             TimestampFrame::commands(timestamps.as_deref_mut(), &mut encoder, kind, |encoder, mut timestamps| {
                 let timestamp_writes = timestamps.as_deref_mut().and_then(|timestamps| timestamps.clear_pass(clear));
                 drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -445,11 +533,15 @@ impl PreparedCanvas {
                     timestamp_writes,
                     ..Default::default()
                 }));
-                let backdrop = copy.as_ref().zip(sample.as_ref()).map(|((copy, _), (view, _))| Backdrop {
-                    view,
-                    size: copy.size,
-                    offset: copy.offset,
-                });
+                let input = match &source {
+                    CanvasSource::Local => CanvasInput::Local,
+                    CanvasSource::Backdrop(copy, _) => CanvasInput::Backdrop(Backdrop {
+                        view: &sample.as_ref().expect("copied backdrop input").0,
+                        size: copy.size,
+                        offset: copy.offset,
+                    }),
+                    CanvasSource::Transition(images) => CanvasInput::Transition(*images),
+                };
                 draw(
                     &mut CanvasFrame {
                         device,
@@ -463,7 +555,7 @@ impl PreparedCanvas {
                         params: paint.params,
                         timestamps,
                     },
-                    backdrop,
+                    input,
                 );
             });
             ((view, encoder.finish()), sample)
@@ -471,15 +563,15 @@ impl PreparedCanvas {
         match output {
             Ok((output, sample)) => {
                 if let Some(measurement) = measurement.as_deref_mut() {
-                    let pixels = |[width, height]: [u32; 2]| u64::from(width) * u64::from(height);
-                    measurement.profile.canvas_pixels += pixels(paint.size);
-                    measurement.profile.backdrop_copy_pixels += copy.as_ref().map_or(0, |(copy, _)| pixels(copy.size));
+                    measurement.profile.canvas_pixels += u64::from(width) * u64::from(height);
                 }
-                if let Some(((_, inputs), (input, reused))) = copy.zip(sample) {
+                if let (CanvasSource::Backdrop(copy, inputs), Some((input, reused))) = (source, sample) {
                     if !reused {
                         inputs.retain_view(input);
                     }
                     if let Some(measurement) = measurement {
+                        let [width, height] = copy.size;
+                        measurement.profile.backdrop_copy_pixels += u64::from(width) * u64::from(height);
                         measurement.profile.backdrop_allocations += u32::from(!reused);
                         measurement.profile.backdrop_reuses += u32::from(reused);
                         let peak = &mut measurement.profile.backdrop_cache_peak_bytes;

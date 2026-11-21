@@ -4,6 +4,7 @@ mod flow;
 mod glass;
 pub mod input_pressure;
 pub mod replay;
+mod transition;
 
 use octara::prelude::*;
 use octara_icons as icons;
@@ -321,7 +322,7 @@ fn glass_control() -> El {
 #[ui]
 fn glass_dialog(open: Signal<bool>, program: PaintProgram) -> El {
     let refraction = state("refraction", || 0.75);
-    col()
+    let dialog = col()
         .id("gpu-glass-dialog")
         .role(Role::Dialog)
         .label("Glass lens")
@@ -376,7 +377,12 @@ fn glass_dialog(open: Signal<bool>, program: PaintProgram) -> El {
                     ),
                 )
                 .child(slider("gpu-glass-refraction", refraction, 0.0, 1.0, 0.05).label("Refraction").w_full()),
-        )
+        );
+    if std::env::var_os("OCTARA_GPU_LAB_TRANSITION").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        dialog.child(transition::panel())
+    } else {
+        dialog
+    }
 }
 
 #[ui]

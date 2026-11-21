@@ -518,6 +518,7 @@ impl Window {
         if redraw {
             let number = previous.map_or(1, |drawing| drawing.number.checked_add(1).expect("drawing revision exhausted"));
             self.w.drawing.set(Some(DrawingPublication { number, prepared: revision, continuous }));
+            self.w.published_frame.borrow_mut().take();
         }
         self.w.frames.set(self.w.frames.get() + 1);
     }

@@ -248,6 +248,8 @@ struct Node {
     paint_ver: u64,
     /// The custom program and parameters for its background and border drawing.
     custom_paint: Option<paint::CustomPaintBinding>,
+    /// A stable region that transitions between drawings when its content key changes.
+    transition_paint: Option<Box<paint::TransitionBinding>>,
     /// The place last sent to assistive technology (`None`: not sent, or dropped since).
     a11y_sent: Cell<Option<a11y::AccessibilityGeometry>>,
     /// The resolved active option last sent; its allocation can change without its test id.
@@ -1180,6 +1182,7 @@ impl Kernel {
             drawn: RefCell::new(None),
             paint_ver: 0,
             custom_paint: None,
+            transition_paint: None,
             a11y_sent: Cell::new(None),
             role: None,
             parent: None,

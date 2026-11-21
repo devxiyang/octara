@@ -477,6 +477,14 @@ impl Kernel {
         }
     }
 
+    /// The region's accepted pixels take over the outgoing drawing on a key change.
+    pub(super) fn retire_transition_exits(&mut self, region: NodeId) {
+        let exits: Vec<_> = self.ghosts.iter().copied().filter(|&ghost| self.is_within(ghost, region)).collect();
+        for ghost in exits {
+            self.destroy_ghost(ghost);
+        }
+    }
+
     /// A closed window no longer advances the clock that would finish its exits.
     pub(crate) fn discard_exits(&mut self) {
         while let Some(ghost) = self.ghosts.last().copied() {
@@ -612,29 +620,35 @@ impl Kernel {
         }
     }
 
+    pub(super) fn motion_rest_at(&self, id: NodeId) -> Option<f64> {
+        let node = self.nodes.get(id)?;
+        let properties = node.anim.as_ref().and_then(|a| a.rest_at(self.now));
+        let transition = node.transition_paint.as_ref().and_then(|paint| paint.progress.rest_at(self.now));
+        [properties, transition].into_iter().flatten().reduce(f64::max)
+    }
+
     /// Whether anything is moving at the kernel's time (nodes at rest leave the moving set).
     pub fn in_motion(&mut self) -> bool {
         self.reap_ghosts();
-        if !self.glides.is_empty() {
-            return true;
-        }
-        let t = self.now;
         let ids: Vec<NodeId> = self.moving.iter().copied().collect();
         for id in ids {
-            let still = !self.is_alive(id) || self.node(id).anim.as_ref().is_none_or(|a| a.rest_at(t).is_none());
-            if still {
+            if let Some(paint) = self.nodes.get_mut(id).and_then(|node| node.transition_paint.as_mut())
+                && !paint.progress.moving(self.now)
+            {
+                paint.land();
+            }
+            if self.motion_rest_at(id).is_none() {
                 self.moving.remove(&id);
             }
         }
-        !self.moving.is_empty()
+        !self.moving.is_empty() || !self.glides.is_empty()
     }
 
     /// Whether everything shows its resting values at the kernel's time: no property moving, no
     /// scroll gliding, no subtree fading out (whether or not they have been tidied away yet).
     pub(crate) fn at_rest(&self) -> bool {
         let t = self.now;
-        let resting = |id: &NodeId| !self.is_alive(*id) || self.node(*id).anim.as_ref().is_none_or(|a| a.rest_at(t).is_none());
-        self.moving.iter().all(resting)
+        self.moving.iter().all(|&id| self.motion_rest_at(id).is_none())
             && self.glides.values().all(|[x, y]| x.rest_at(t).is_none() && y.rest_at(t).is_none())
             && self.ghosts.is_empty()
     }
@@ -642,12 +656,7 @@ impl Kernel {
     /// Moving nodes and when each comes to rest (seconds), for `App::pending`.
     pub fn motions(&self) -> Vec<(NodeId, f64)> {
         let t = self.now;
-        let mut out: Vec<(NodeId, f64)> = self
-            .moving
-            .iter()
-            .filter(|id| self.is_alive(**id))
-            .filter_map(|id| self.node(*id).anim.as_ref().and_then(|a| a.rest_at(t)).map(|r| (*id, r)))
-            .collect();
+        let mut out: Vec<(NodeId, f64)> = self.moving.iter().filter_map(|&id| Some((id, self.motion_rest_at(id)?))).collect();
         for (id, [x, y]) in &self.glides {
             if let Some(r) = [x.rest_at(t), y.rest_at(t)].into_iter().flatten().reduce(f64::max) {
                 out.push((*id, r));
@@ -659,6 +668,7 @@ impl Kernel {
 
     /// Lands every moving property on its target now.
     pub fn land_motion(&mut self) {
+        self.land_transition_motion();
         let t = f64::INFINITY;
         let glides: Vec<(NodeId, [Track; 2])> = self.glides.drain().collect();
         for (id, [x, y]) in glides {
@@ -683,5 +693,18 @@ impl Kernel {
             }
         }
         self.sample_anchor_offsets();
+    }
+
+    /// Lands author transitions when Reduce Motion is enabled, leaving other tracks alone.
+    pub(crate) fn land_transition_motion(&mut self) {
+        let mut changed = false;
+        for &id in &self.moving {
+            if let Some(paint) = self.nodes.get_mut(id).and_then(|node| node.transition_paint.as_mut()) {
+                changed |= paint.land();
+            }
+        }
+        if changed {
+            self.mark(super::Dirty::PAINT);
+        }
     }
 }

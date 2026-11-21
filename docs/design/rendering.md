@@ -84,7 +84,7 @@ Rune 的 `effect` 提供了绘制位置、比例、裁剪和参数。普通回�
 
 背景采样读取所在合成组截至当前绘制位置的像素，分配时区分写入区域和采样范围。宿主为需要读取的目标安排可采样或可复制的纹理，并按设备能力选择表面路径。窗口表面在适配器支持时启用源复制。原生视图的独立表面、系统层和候选窗由平台适配器持有，它们的像素只有在宿主明确提供同版本输入时才参加相关效果。[Surface 配置](../../crates/octara-shell/src/platform.rs#L154) · [原生视图](native-island.md) · [WebGPU 资源用法](https://www.w3.org/TR/webgpu/#synchronization)
 
-进退场从上一已发布画面的版本获得起始内容。保留版绘制可以按原坐标重放，作者 GPU 内容可保留最后一次有效输出。新分支在自己的挂载身份下绘制。作者获得可用的新旧纹理和窗口采样的过渡进度，决定如何合成。输入、焦点和辅助功能按当前生效的结构结算，旧画面与在途命令引用的资源按帧结束和 GPU 完成释放。[内核动画](../../crates/octara/src/kernel/anim.rs) · [Rune 退场回归](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune/tests/effect_data.rs#L126-L161) · [Web View Transitions](https://www.w3.org/TR/css-view-transitions-1/#rendering-model)
+结构退场可以按原坐标重放保留的绘制，作者背景效果可沿用最后一次被宿主接纳的有效输出。局部转场需要冻结该区域实际被接纳的像素，再与新分支的当前画面组合。新分支在自己的挂载身份下绘制，输入、焦点和辅助功能按当前生效的结构结算。旧画面随使用它的转场帧和绘制捕获完成而释放。[内核动画](../../crates/octara/src/kernel/anim.rs) · [Rune 退场回归](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune/tests/effect_data.rs#L126-L161) · [Web View Transitions](https://www.w3.org/TR/css-view-transitions-1/#rendering-model)
 
 每次窗口重绘按当前输出目标计算正确的完整画面。划区更新若能减少实际 GPU 成本，可以使用具有已知内容版本的保留目标，连同透明混合与滤镜读取范围一起验证。纹理池按尺寸、格式和用法管理，区域失效或内存压力时可回收未使用的分配与缓存。
 
@@ -169,7 +169,36 @@ Metal 的 28 项渲染测试通过。材质测试断言参数不同的相邻实�
 
 `gpu::backdrop` 沿用 `El::paint` 的盒子、属性绑定与样式回退。绘制到该位置时，渲染器保存当前附件，复制效果盒子、裁剪边界和当前合成目标的矩形交集。作者获得纹理、设备像素尺寸和相对盒子的偏移，可以录制自己的 wgpu pass。其命令与后续 UI 绘制按顺序进入同一次提交，效果的合成仍走圆角裁剪。源不支持复制时使用样式回退。[作者接口](../../crates/octara-render/src/gpu/custom.rs) · [提交顺序](../../crates/octara-render/src/gpu.rs)
 
-活跃背景效果按挂载保存宿主最近接纳的结果。GPU 提交后，待接纳的帧单独持有候选纹理。原生呈现调用成功且宿主验证窗口、表面和设备后，候选纹理才进入退场历史。缩放、关闭或设备失效淘汰的结果随该帧释放。退出时旧挂载退出输入和辅助功能，透明度轨道继续合成最近接纳的纹理。绘制截图可读取这份历史。同区域重开建立新挂载，旧纹理随旧挂载收尾。通用的新旧子树纹理输入与作者自定义过渡进度接口仍在待办中。[内核绘制](../../crates/octara/src/kernel/paint.rs) · [宿主接纳](../../crates/octara-shell/src/platform.rs) · [绘制保留测试](../../crates/octara/tests/integration/display_list.rs)
+活跃背景效果按挂载保存宿主最近接纳的结果。GPU 提交后，待接纳的帧单独持有候选纹理。原生呈现调用成功且宿主验证窗口、表面和设备后，候选纹理才进入退场历史。缩放、关闭或设备失效淘汰的结果随该帧释放。退出时旧挂载退出输入和辅助功能，透明度轨道继续合成最近接纳的纹理。绘制截图可读取这份历史。同区域重开建立新挂载，旧纹理随旧挂载收尾。[内核绘制](../../crates/octara/src/kernel/paint.rs) · [宿主接纳](../../crates/octara-shell/src/platform.rs) · [绘制保留测试](../../crates/octara/tests/integration/display_list.rs)
+
+### Dialog 局部转场的输入
+
+以打开的 Dialog 在两份内容间切换为例。面板边框、关闭按钮和遮罩继续用普通视图绘制。内容区可以由作者做擦除或交叉淡变。旧内容退出动作树，新内容独立挂载并接收输入。关闭后立即重开，原内容可以继续退场，新 Dialog 取得自己的焦点和目标。Shader Lab 的 Glass 已覆盖关闭、重开及 GPU 绘制回退，可用同一窗口检查这些边界。[Glass 实窗流程](../../examples/live_inspect.py#L867) · [浮层身份回归](../../crates/octara/tests/integration/overlay.rs)
+
+| 输入 | 需要传递的数据和约束 |
+| --- | --- |
+| 旧画面 | 同一窗口和设备代次中，指定绘制区域最后一次宿主接纳的局部像素。冻结图像、坐标和帧回执。首次打开可没有旧画面。 |
+| 新画面 | 当前帧已结算的局部绘制段。正常跟随新内容，包括转场期间的文字和画布更新。关闭时可没有新画面。 |
+| 图像坐标 | 每张纹理各自的窗口逻辑范围、设备像素范围和比例。可见范围受裁剪、阴影外延与资源预算约束。样本在各自范围之外为透明。 |
+| 合成 | 窗口在 App 时钟上采样的进度与已有 `CanvasFrame` 的录制能力。原型沿用预乘 alpha、sRGB 编码的 `Rgba8Unorm`。两张纹理供读取，结果写入独立目标。结果插回该区域的原绘制位置，外层裁剪和组透明度在合成时各应用一次。 |
+
+配对归属于应用明确选择的稳定绘制区域。每次配对记录这次转场及前后分支的精确挂载身份，重开按新实例结算。有配对效果时由这一处绘制合成前后内容。被替代的退出画面随原分支退休，保留的纹理随转场及在途绘制引用释放。同一区域的上一次混合画面如果已经被接纳，可以成为下一次转场的起点。历史不可用、减少动效或 GPU 编码失败时走已有淡出或直接显示当前内容，窗口照常结算。[退出生命周期](../../crates/octara/src/kernel/anim.rs) · [浮层绘制顺序](../../crates/octara/src/kernel/paint.rs)
+
+沿用宿主接纳门槛，再为每个区域固定完整的 `PaintSample` 和纹理。局部转场保留最后接纳的内容画面，若那一帧实际合成了样式回退，回退像素也属于这一版。背景效果的退场历史继续保留最后接纳的有效作者背景输出。绘制捕获固定本次采样，并按转场身份读取已建立的历史引用。缺少已接纳的来源时，绘制捕获用当前内容并报告回退。设备失效清空该设备的历史，重配后用新的输出范围计算合成。宿主接纳描述呈现交付，实屏像素由平台证据确认。Inspector 的 `paint.effects` 报告 `outcome: transition` 和完整的 `old` 样本。当前画面的样本随 `paint` 回传。[资源与接纳](../../crates/octara-render/src/gpu/outputs.rs) · [窗口帧接纳](../../crates/octara-shell/src/platform.rs) · [绘制捕获](capture.md)
+
+范围限定在一个实际绘制子树。锚定的子浮层有自己的绘制位置。含独立原生子视图的区域按普通画序绘制，接纳该帧时退役该区域的旧纹理。转场区域形成独立合成组，组内 `backdrop` 读取该组的前序像素。需要读取窗体背景的效果可以放在该组之前，例如 Shader Lab 的 Dialog 背景。只为明确选择转场的局部区域保留纹理。480×320 点的区域在 2× 时，每张 RGBA8 纹理约 2.34 MiB。旧、新和合成目标同时在用时约 7.03 MiB，后续实测还需计入裁剪外延和在途帧。[有序绘制计划](../../crates/octara-render/src/gpu.rs) · [原生表面契约](native-island.md)
+
+W3C View Transitions 保持旧图像快照，并在转场期间从新元素更新图像。Octara 采用这些输入语义，把配对留在原绘制区域，以现有窗口时间和已结算的交互树交付。Exact 的 AppKit 转场在动画更新时重新读取目的位置和像素，Rune 的效果回调在原绘制位置取得前序像素。[W3C 图像对](https://www.w3.org/TR/css-view-transitions-1/#view-transition-pseudo-elements) · [W3C 新图像更新](https://www.w3.org/TR/css-view-transitions-1/#style-transition-pseudo-elements-algorithm) · [Exact 目的画面](https://github.com/expo/exact/blob/08c889a9de21a30b7c3b308422fc588cf1a480d3/host/apple/Sources/ExactKit/Mac/FlightsMac.swift#L251-L285) · [Rune 前序像素](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune/src/render/pass.rs#L99-L144)
+
+macOS 的 Shader Lab 实窗复跑通过。关闭和重开路径核对了命令失效回退及退场使用的来源。在渲染执行器保留候选帧期间，把窗口从 800×620 点缩放至 840×640 点并关闭 Dialog。GPU 已提交的候选绘制版本 6 在呈现之前被弃用，退场读回的是宿主先前接纳的版本 5。表面代次从 2 变为 3。该结果验证了旧来源的接纳规则，配对及局部着色另由 Metal 探针验证。[实窗脚本](../../examples/live_inspect.py#L970)
+
+Apple M4 的 Metal 探针用现有 `GpuRenderer::record` 生产两个位置和尺寸各异的局部纹理，再通过作者 `canvas` 的 WGSL compute 按窗口坐标采样。两份输入全程留在 GPU，只读回合成后的画面。2× 下，重叠区域的同一点在进度 `0 / 0.5 / 1` 时读取 `[64,191,0,255]`、`[32,207,16,255]`、`[0,223,32,255]`。保持进度 `0.5` 并重画新画面后，重叠点变为 `[32,175,48,255]`，仅有旧画面的点保持 `[32,223,0,255]`。同次验证覆盖圆角与内层矩形裁剪、组透明度、图像范围外的透明像素，以及后续的前景覆盖。[Metal 转场探针](../../crates/octara-render/tests/integration/gpu/transition.rs)
+
+### 转场窗口接入
+
+通过 `El::paint_transition(program, key, curve)` 标记保留挂载的区域。绑定的 `u64` key 改变时启动一次转场，后代可用同一来源驱动 `keyed` 以更换内容。旧控件随着结构更新退休。`gpu::transition` 的作者回调获得 `CanvasFrame` 和带各自起点、像素尺寸及比例的两个输入。进入减少动效、初次挂载及动画结束时直接绘制当前内容。保留的区域图像和活动旧纹理各有 32 MiB 与 64 项预算。挂载退出和转场完成后，旧纹理继续服务仍持有该画面的在途帧及捕获。[视图入口](../../crates/octara/src/view/element.rs) · [作者入口](../../crates/octara-render/src/gpu/custom.rs) · [保留预算](../../crates/octara-render/src/gpu/outputs.rs)
+
+用 `examples/live_inspect.py --gpu-transition` 在 macOS Shader Lab 复现。两组内容的位置不同。中途更新新内容的颜色只改变新画面的像素，Inspector 的旧来源保持稳定。反向切换时冻结宿主接纳的混合画面。关闭过程中，旧控件的操作目标已失效，焦点回到触发器。立即重开会取得新区域。[Dialog 示例](../../examples/src/gpu_lab/transition.rs) · [实窗复现](../../examples/live_inspect.py)
 
 在 macOS Glass Lens 回归中，工作线程完成版本 6 的 GPU 提交后暂缓交回结果。期间用系统接口缩放窗口并关闭弹层。宿主丢弃旧表面结果，退场截图回报来源版本 5，随后该窗口在新表面代次提交。独立 Metal 测试还核对了两个候选版本并存时的像素，以及显式接纳后退场来源的变化。[实窗时序](../../examples/live_inspect.py) · [Metal 回归](../../crates/octara-render/src/gpu.rs)
 

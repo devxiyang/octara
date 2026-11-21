@@ -23,8 +23,8 @@ struct Target {
     /// Premultiplied RGBA, sRGB-encoded (blending happens in that space, as browsers and Rune).
     pixels: Vec<[f32; 4]>,
     clips: ClipStack,
-    /// Pixels under open layers, with each layer's opacity.
-    layers: Vec<(Vec<[f32; 4]>, f32)>,
+    /// Pixels under open groups. A transition at full opacity passes through to its parent.
+    layers: Vec<Option<(Vec<[f32; 4]>, f32)>>,
 }
 
 impl Target {
@@ -98,14 +98,32 @@ impl CpuRenderer {
                 Item::Native { rect, radius, cut: true, .. } => cutout(&mut t, *rect, *radius, scale),
                 // Otherwise its placeholder or snapshot, painted before, shows.
                 Item::Native { .. } => {}
+                Item::SkipTransition { source, .. } => {
+                    effects.push(PaintReceipt {
+                        source: *source,
+                        outcome: PaintOutcome::Fallback { reason: PaintFallback::UnsupportedRegion },
+                    });
+                }
                 Item::PushClip { rect, radius, .. } => t.clips.push(*rect, *radius, scale),
                 Item::PopClip => t.clips.pop(),
-                Item::PushLayer { opacity, .. } => {
+                Item::PushLayer { opacity, .. } | Item::PushTransition(octara_primitives::paint::TransitionPaint { opacity, .. }) => {
+                    if let Item::PushTransition(paint) = item {
+                        if paint.progress < 1.0 {
+                            effects.push(PaintReceipt {
+                                source: paint.source,
+                                outcome: PaintOutcome::Fallback { reason: PaintFallback::ReferenceRenderer },
+                            });
+                        }
+                        if *opacity == 1.0 {
+                            t.layers.push(None);
+                            continue;
+                        }
+                    }
                     let below = std::mem::replace(&mut t.pixels, vec![[0.0; 4]; count]);
-                    t.layers.push((below, *opacity));
+                    t.layers.push(Some((below, *opacity)));
                 }
                 Item::PopLayer => {
-                    let Some((below, opacity)) = t.layers.pop() else { continue };
+                    let Some(Some((below, opacity))) = t.layers.pop() else { continue };
                     let layer = std::mem::replace(&mut t.pixels, below);
                     // The layer is 8-bit, as the GPU renderer's layer texture.
                     for (dst, src) in t.pixels.iter_mut().zip(layer) {
