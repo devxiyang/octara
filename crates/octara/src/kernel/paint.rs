@@ -174,6 +174,11 @@ impl Kernel {
                 mark(Some(*id));
             }
         }
+        for &id in self.anchor_offsets.keys() {
+            if self.is_mounted(id) {
+                mark(Some(id));
+            }
+        }
         for g in &self.ghosts {
             if self.is_alive(*g) {
                 mark(Some(*g));
@@ -209,6 +214,26 @@ impl Kernel {
             w: (rect.w - border.left - border.right).max(0.0),
             h: (rect.h - border.top - border.bottom).max(0.0),
         }
+    }
+
+    /// The row's presented rectangle in its parent's viewport, when some of the box can paint.
+    pub(super) fn visible_exit_rect(&self, id: NodeId, parent: NodeId) -> Option<Rect> {
+        let (x, y, w, h) = self.shown_rect(id);
+        let window = Rect::new(0.0, 0.0, self.viewport.0, self.viewport.1);
+        let mut visible = window.intersect(&Rect::new(x, y, w, h));
+        let mut current = Some(id);
+        while let Some(node) = current {
+            let n = self.node(node);
+            if visible.is_empty() || n.layout.display == taffy::Display::None || self.presented(node).opacity <= 0.0 {
+                return None;
+            }
+            if node != id && self.clips_children(node) {
+                let (x, y, w, h) = self.shown_rect(node);
+                visible = visible.intersect(&self.padding_box(node, Rect::new(x, y, w, h)));
+            }
+            current = n.parent;
+        }
+        (!visible.is_empty()).then(|| self.rect_in_parent_viewport(id, parent))
     }
 
     /// Whether `id`'s subtree can be skipped by its ink: not while something in it moves (its
@@ -299,11 +324,13 @@ impl Kernel {
     /// goes into a layer composited at that opacity (Rune's group opacity); a single thing is
     /// faded directly.
     fn paint(&self, id: NodeId, origin: (f32, f32), opacity: f32, clip: Rect, out: &mut Vec<Part>, mode: PaintMode) {
-        let n = self.node(id);
-        if n.layout.display == taffy::Display::None {
+        if self.node(id).layout.display == taffy::Display::None {
             return;
         }
-        let rect = self.rect_at(id, origin);
+        self.paint_rect(id, self.rect_at(id, origin), opacity, clip, out, mode);
+    }
+
+    fn paint_rect(&self, id: NodeId, rect: Rect, opacity: f32, clip: Rect, out: &mut Vec<Part>, mode: PaintMode) {
         if !self.ink_meets(id, rect, &clip) {
             return;
         }
@@ -376,7 +403,7 @@ impl Kernel {
         if n.children().is_empty() && ghosts.is_empty() {
             return;
         }
-        let clips = n.layout.overflow.x != taffy::Overflow::Visible || n.layout.overflow.y != taffy::Overflow::Visible;
+        let clips = self.clips_children(id);
         let mut child_clip = clip;
         if clips {
             let v = self.presented_at(id, motion_at);
@@ -388,6 +415,15 @@ impl Kernel {
             out.push(Part::Item(Item::PushClip { source: id, rect: inner, radius: (v.radius - l.border.left).max(0.0) }));
         }
         let origin = self.content_origin(id, rect);
+        let paint_exit = |exit, out: &mut Vec<Part>| {
+            if let Some(bounds) = self.frozen_exit_rect(exit) {
+                // The exit keeps its presented place when the live content moves.
+                let bounds = Rect { x: rect.x + bounds.x, y: rect.y + bounds.y, ..bounds };
+                self.paint_rect(exit, bounds, opacity, child_clip, out, mode);
+            } else {
+                self.paint(exit, origin, opacity, child_clip, out, mode);
+            }
+        };
         if id == self.overlay_layer {
             ghosts.sort_by_key(|&exit| {
                 let order = self.node(exit).overlay_mount.map(|mount| mount.order);
@@ -401,14 +437,14 @@ impl Kernel {
                 while let Some(&exit) = exits.peek()
                     && self.node(exit).overlay_mount.is_some_and(|old| old.order <= mount.order)
                 {
-                    self.paint(exit, origin, opacity, child_clip, out, mode);
+                    paint_exit(exit, out);
                     exits.next();
                 }
             }
             self.paint(child, origin, opacity, child_clip, out, mode);
         }
         for exit in exits {
-            self.paint(exit, origin, opacity, child_clip, out, mode);
+            paint_exit(exit, out);
         }
         if clips {
             out.push(Part::Item(Item::PopClip));

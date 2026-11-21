@@ -1,7 +1,7 @@
 //! Pointer input: presses with capture, double presses, context menus, long presses, drags,
 //! touch scrolling with momentum, and the focus ring following the keyboard.
 
-use octara::app::{Button, InputEvent, Modifiers, Phase, PointerEvent, PointerKind, TargetPlatform, TouchScrollStage};
+use octara::app::{Button, Event, InputEvent, Modifiers, Phase, PointerEvent, PointerKind, TargetPlatform, TouchScrollStage};
 use octara::prelude::*;
 use std::time::Duration;
 
@@ -540,4 +540,128 @@ fn replacement_during_the_before_stage_drops_the_delta_and_its_contact() {
     assert_eq!(offset(&app), 0.0);
     assert_eq!(app.kernel().text_of("after-calls").as_deref(), Some("0"));
     assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+fn nested_touch_window() -> Window {
+    Window::headless(|| {
+        let presses = state("presses", || 0);
+        col()
+            .size_full()
+            .child(input().id("editor").h(40.0).value("Draft"))
+            .child(
+                col()
+                    .id("outer")
+                    .h(240.0)
+                    .overflow_y_scroll()
+                    .child(
+                        col()
+                            .id("list")
+                            .w(160.0)
+                            .h(100.0)
+                            .flex_shrink_0()
+                            .overflow_x_hidden()
+                            .overflow_y_scroll()
+                            .child(el().id("inner-item").w(220.0).h(400.0).focusable().on_press(move || presses.update(|n| *n += 1))),
+                    )
+                    .child(el().id("outer-item").h(480.0).focusable().on_press(move || presses.update(|n| *n += 1))),
+            )
+            .child(text(move || presses.get().to_string()).id("presses"))
+    })
+}
+
+#[test]
+fn a_nested_touch_reverses_its_glide_on_the_captured_axis_at_any_frame_cadence() {
+    for hz in [1, 60, 120] {
+        let mut app = nested_touch_window();
+        let clock = app.app();
+        let (x, y) = center(&app, "list");
+        app.dispatch(Event::ScrollTo("list".into(), 0.0, 288.0)).unwrap();
+        app.dispatch(Event::Focus("editor".into())).unwrap();
+        touch(&mut app, Phase::Down, (x, y));
+        clock.advance(Duration::from_millis(20));
+        touch(&mut app, Phase::Move, (x - 5.0, y - 30.0));
+        assert_eq!(offset(&app), 300.0);
+        clock.advance(Duration::from_millis(20));
+        touch(&mut app, Phase::Move, (x - 10.0, y - 75.0));
+        assert_eq!(offset(&app), 300.0, "the contact stays with the inner viewport past its edge");
+        clock.advance(Duration::from_millis(15));
+        touch(&mut app, Phase::Move, (x - 15.0, y - 60.0));
+        touch(&mut app, Phase::Up, (x - 15.0, y - 60.0));
+        assert_eq!(offset(&app), 285.0);
+
+        let release = clock.now();
+        for frame in 1..hz / 20 {
+            clock.advance_to(release + Duration::from_secs_f64(f64::from(frame) / f64::from(hz)));
+        }
+        clock.advance_to(release + Duration::from_millis(50));
+        let k = app.kernel();
+        let (inner_x, inner_y) = k.scroll_offset(k.find("list").unwrap());
+        let decay = f64::from(app.tuning().momentum_decay);
+        let expected = 285.0 - (decay.powi(50) - 1.0) / decay.ln();
+        assert!((f64::from(inner_y) - expected).abs() < 0.01, "{hz} Hz: {inner_y} vs. {expected}");
+        assert_eq!(inner_x, 0.0, "momentum stays on the enabled axis");
+        assert_eq!(k.scroll_offset(k.find("outer").unwrap()), (0.0, 0.0));
+        drop(k);
+        clock.advance_to(release + Duration::from_secs(2));
+        assert_eq!(offset(&app), 0.0);
+        assert_eq!(app.inspect().focus.as_deref(), Some("editor"));
+        assert_eq!(app.kernel().text_of("presses").as_deref(), Some("0"));
+        assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+    }
+}
+
+#[test]
+fn a_touch_grabs_a_nested_glide_and_cancels_without_disturbing_the_editor() {
+    let mut app = nested_touch_window();
+    let clock = app.app();
+    let (x, y) = center(&app, "list");
+    app.dispatch(Event::Focus("editor".into())).unwrap();
+    app.set_selection(1, 4);
+    app.event(InputEvent::Preedit { text: "nihao".into(), selection: Some((1, 3)) });
+    let editor = app.text_field().unwrap();
+    touch(&mut app, Phase::Down, (x, y));
+    clock.advance(Duration::from_millis(20));
+    touch(&mut app, Phase::Move, (x, y - 20.0));
+    touch(&mut app, Phase::Up, (x, y - 20.0));
+    clock.advance(Duration::from_millis(25));
+    let gliding = offset(&app);
+    assert!(gliding > 20.0);
+
+    touch(&mut app, Phase::Down, (x, y));
+    assert_eq!(app.text_field().unwrap(), editor);
+    assert!(!app.kernel().state_of("inner-item").unwrap().contains(State::PRESSED));
+    clock.advance(Duration::from_millis(16));
+    assert_eq!(offset(&app), gliding);
+    touch(&mut app, Phase::Move, (x, y + 4.0));
+    assert_eq!(offset(&app), gliding - 4.0, "the moving viewport follows the new contact immediately");
+    touch(&mut app, Phase::Cancel, (x, y + 4.0));
+    touch(&mut app, Phase::Move, (x, y + 30.0));
+    touch(&mut app, Phase::Up, (x, y + 30.0));
+    clock.advance(Duration::from_millis(250));
+    assert_eq!(app.held_pointer(), None);
+    assert_eq!(offset(&app), gliding - 4.0);
+    assert_eq!(app.text_field().unwrap(), editor);
+    assert_eq!(app.kernel().text_of("presses").as_deref(), Some("0"));
+    assert!(app.app().diagnostics().is_empty(), "{:?}", app.app().diagnostics());
+}
+
+#[test]
+fn a_press_outside_a_nested_glide_keeps_its_normal_activation_and_focus() {
+    let mut app = nested_touch_window();
+    let clock = app.app();
+    let (x, y) = center(&app, "list");
+    touch(&mut app, Phase::Down, (x, y));
+    clock.advance(Duration::from_millis(20));
+    touch(&mut app, Phase::Move, (x, y - 20.0));
+    touch(&mut app, Phase::Up, (x, y - 20.0));
+    clock.advance(Duration::from_millis(25));
+    let gliding = offset(&app);
+    assert!(gliding > 20.0);
+
+    touch(&mut app, Phase::Down, (x, y + 80.0));
+    touch(&mut app, Phase::Up, (x, y + 80.0));
+    clock.advance(Duration::from_millis(250));
+    assert_eq!(offset(&app), gliding);
+    assert_eq!(app.inspect().focus.as_deref(), Some("outer-item"));
+    assert_eq!(app.kernel().text_of("presses").as_deref(), Some("1"));
 }

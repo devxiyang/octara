@@ -28,7 +28,7 @@ objc2-foundation.workspace = true
 objc2-ui-kit = { workspace = true, features = [
     "std", "block2", "objc2-core-foundation",
     "UIAccessibility", "UIColor", "UIControl", "UIEvent", "UIGeometry", "UIGestureRecognizer", "UIKeyboardLayoutGuide", "UILayoutGuide", "UITrackingLayoutGuide",
-    "UINavigationController", "UIResponder", "UIScene", "UISceneOptions", "UISceneSession", "UITextField", "UITextInput",
+    "UINavigationController", "UIResponder", "UIScene", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UITextField", "UITextInput",
     "UIScrollView", "UITextInputTraits", "UITextView", "UIView", "UIViewController", "UIViewControllerTransitionCoordinator", "UIWindow", "UIWindowScene",
 ] }
 

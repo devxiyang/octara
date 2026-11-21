@@ -10,7 +10,7 @@
 
 - [x] 统一弹层的绘制顺序、交互范围和关闭仲裁。分别验证逻辑焦点路径、逆序打开的同级弹层、外点关闭的原目标校验，以及窗口内绘制提示框的焦点恢复。[弹层契约](design/ui-primitives.md#5-overlays) · [弹层回归](../crates/octara/tests/integration/overlay.rs)
 - [x] 让建议列表和可编辑的非模态面板共用关闭仲裁。覆盖触发器范围、重复 Escape、Tab 进出、模型拒绝关闭、旧按压和同名目标，以及 iOS 键盘收起后的原目标投递。[实窗与模拟器实测](design/interaction-scenarios.md#非模态浮层的关闭与焦点)
-- [ ] 按统一动画架构收敛结构进退、呈现几何和原生手势收尾。先对齐普通分支、虚拟行和浮层的退出所有权。浮层原型已核对中间像素、旧目标退休及同区域重开。[动画架构](design/motion.md) · [原型证据](design/interaction-scenarios.md#浮层退出动画)
+- [x] 收敛动画的结构退场、呈现几何和原生手势收尾。普通分支、可见虚拟行和锚定浮层共用退场生命周期。打开的浮层跟随触发器的呈现位置。固定时钟、macOS 实窗和 iOS 模拟器覆盖滚动接续、反向、取消、迟到事件和返回后的焦点。[动画架构](design/motion.md) · [交互实测](design/interaction-scenarios.md#手机相册的交互式返回)
 - [ ] 推进渲染与作者 wgpu 能力。局部画布已按声明的输入复用像素，Metal 对照验证了滚动时跳过画布生成、内容和比例变化时重建。接下来用实际转场用例推导新旧画面输入，并用可见窗口的高刷呈现、获取等待与重配尾延迟选择宿主优化。[渲染架构](design/rendering.md)
 - [x] 统一已结算画面的发布和宿主呈现回执。可暂停宿主验证两窗口独立结算、返回时取最新画面、重配或关闭后拒绝旧结果，以及绘制来源随帧保留。[核心帧契约](design/core.md#窗口结算与实际呈现)
 - [x] 用独立 Metal 实窗对照同步与后台获取，在持有旧 drawable 时核对两窗输入、缩放、关闭重开及新表面实际上屏。另用 drawable 池耗尽对照 `CAMetalDisplayLink` 的两个 RunLoop。[实测](design/rendering.md#macos-drawable-等待对照)

@@ -9,8 +9,8 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_foundation::NSArray;
 use objc2_ui_kit::{
     NSObjectUIAccessibility, UIGestureRecognizer, UIGestureRecognizerDelegate, UINavigationController, UINavigationControllerDelegate,
-    UIView, UIViewAutoresizing, UIViewController, UIViewControllerTransitionCoordinator, UIViewControllerTransitionCoordinatorContext,
-    UIWindow,
+    UISceneActivationState, UIView, UIViewAutoresizing, UIViewController, UIViewControllerTransitionCoordinator,
+    UIViewControllerTransitionCoordinatorContext, UIWindow,
 };
 use octara::app::BackPhase;
 use octara::kernel::HandlerId;
@@ -48,8 +48,12 @@ impl PopEvents {
         });
     }
 
+    fn pending(&self, id: u64) -> Option<Pop> {
+        self.pop.get().filter(|pop| pop.id == id && pop.cancelled.is_none())
+    }
+
     fn finish(&self, id: u64, cancelled: bool) {
-        let Some(mut pop) = self.pop.get().filter(|pop| pop.id == id && pop.cancelled.is_none()) else { return };
+        let Some(mut pop) = self.pending(id) else { return };
         pop.cancelled = Some(cancelled);
         self.pop.set(Some(pop));
         self.send(pop, if cancelled { BackPhase::Cancelled } else { BackPhase::Completed });
@@ -57,6 +61,7 @@ impl PopEvents {
 }
 
 struct ObserverState {
+    window: Weak<UIWindow>,
     navigation: Weak<UINavigationController>,
     content: Weak<UIViewController>,
     preview: Retained<UIViewController>,
@@ -64,6 +69,15 @@ struct ObserverState {
 }
 
 type TransitionContext = ProtocolObject<dyn UIViewControllerTransitionCoordinatorContext>;
+
+impl ObserverState {
+    fn window_accepts_gestures(&self) -> bool {
+        self.window.load().is_some_and(|window| {
+            window.isKeyWindow()
+                && window.windowScene().is_some_and(|scene| scene.activationState() == UISceneActivationState::ForegroundActive)
+        })
+    }
+}
 
 define_class!(
     #[unsafe(super(NSObject))]
@@ -80,6 +94,7 @@ define_class!(
             let state = self.ivars();
             state.events.drawn_owner.get().is_some()
                 && state.events.pop.get().is_none()
+                && state.window_accepts_gestures()
                 && state.navigation.load().is_some_and(|navigation| {
                     navigation.transitionCoordinator().is_none()
                         && navigation.topViewController().zip(state.content.load()).is_some_and(|(top, content)| ptr::eq(&*top, &*content))
@@ -98,7 +113,8 @@ define_class!(
             let interactive = coordinator.as_ref().is_some_and(|coordinator| coordinator.initiallyInteractive());
             static NEXT: AtomicU64 = AtomicU64::new(1);
             let id = NEXT.fetch_add(1, Ordering::Relaxed);
-            let pop = Pop { id, owner: state.events.drawn_owner.get(), interactive, coordinated: coordinator.is_some(), cancelled: None };
+            let owner = state.events.drawn_owner.get().filter(|_| state.window_accepts_gestures());
+            let pop = Pop { id, owner, interactive, coordinated: coordinator.is_some(), cancelled: None };
             state.events.pop.set(Some(pop));
             state.events.send(pop, BackPhase::Started);
             let Some(coordinator) = coordinator else { return };
@@ -107,9 +123,10 @@ define_class!(
                 let progress = RcBlock::new(move |context: NonNull<TransitionContext>| {
                     // SAFETY: UIKit supplies a live context for the duration of this callback.
                     let context = unsafe { context.as_ref() };
-                    if context.isInteractive() || !events.pop.get().is_some_and(|current| current.id == id && current.cancelled.is_none()) {
+                    if context.isInteractive() {
                         return;
                     }
+                    let Some(pop) = events.pending(id) else { return };
                     let progress = context.percentComplete() as f32;
                     if progress.is_finite() {
                         events.send(pop, BackPhase::Progress(progress.clamp(0.0, 1.0)));
@@ -122,7 +139,13 @@ define_class!(
                 // SAFETY: UIKit supplies a live context for the duration of this callback.
                 events.finish(id, unsafe { context.as_ref() }.isCancelled());
             });
-            coordinator.animateAlongsideTransition_completion(None, Some(&completion));
+            if !coordinator.animateAlongsideTransition_completion(None, Some(&completion))
+                && let Some(mut pop) = state.events.pending(id)
+            {
+                // didShow can settle the pop if the registration fails.
+                pop.coordinated = false;
+                state.events.pop.set(Some(pop));
+            }
         }
 
         #[unsafe(method(navigationController:didShowViewController:animated:))]
@@ -199,8 +222,13 @@ impl BackNavigation {
         self.window.setRootViewController(None);
         navigation.pushViewController_animated(&self.content, false);
         navigation.loadViewIfNeeded();
-        let state =
-            ObserverState { navigation: Weak::new(&*navigation), content: Weak::new(&*self.content), preview, events: self.events.clone() };
+        let state = ObserverState {
+            window: Weak::new(&*self.window),
+            navigation: Weak::new(&*navigation),
+            content: Weak::new(&*self.content),
+            preview,
+            events: self.events.clone(),
+        };
         // SAFETY: Initialize the observer's NSObject superclass on the UIKit thread.
         let observer: Retained<NavigationObserver> = unsafe { msg_send![super(mtm.alloc::<NavigationObserver>().set_ivars(state)), init] };
         // SAFETY: Keep the weak delegate alive while the navigation stack is installed.
@@ -227,8 +255,16 @@ impl BackNavigation {
         Ok(())
     }
 
-    pub(crate) fn owns(&self, id: u64) -> bool {
-        self.events.pop.get().is_some_and(|pop| pop.id == id)
+    pub(crate) fn permits_delivery(&self, id: u64) -> Option<bool> {
+        self.events.pop.get().filter(|pop| pop.id == id).map(|pop| pop.owner.is_some())
+    }
+
+    pub(crate) fn interrupt(&self) {
+        if let Some(mut pop) = self.events.pop.get() {
+            // A Start may still be queued. Revoke delivery and keep ownership through UIKit's settlement.
+            pop.owner = None;
+            self.events.pop.set(Some(pop));
+        }
     }
 
     pub(crate) fn disarm(&mut self) {

@@ -153,8 +153,9 @@ impl Window {
                 self.input_frame(|| {
                     self.w.kernel.borrow_mut().set_window_active(on);
                     if !on {
-                        self.cancel_pointer();
                         self.cancel_back_gesture();
+                        self.dismiss_tip();
+                        self.cancel_pointer();
                     }
                 });
                 true

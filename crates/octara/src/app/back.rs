@@ -50,6 +50,9 @@ impl Window {
     }
 
     pub(super) fn on_back_gesture(&self, id: u64, phase: BackPhase) -> bool {
+        if !self.is_active() {
+            return false;
+        }
         let mut handled = false;
         self.input_frame(|| handled = self.apply_back_phase(id, phase));
         handled
@@ -58,9 +61,6 @@ impl Window {
     fn apply_back_phase(&self, id: u64, phase: BackPhase) -> bool {
         let state = BackGestureState { id, phase, delivered: false };
         if phase == BackPhase::Started {
-            if !self.is_active() {
-                return false;
-            }
             {
                 let interaction = self.w.interaction.borrow();
                 let back = &interaction.back;

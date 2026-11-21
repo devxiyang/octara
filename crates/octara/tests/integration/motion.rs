@@ -43,6 +43,35 @@ fn without_motion_changes_land_at_once() {
 }
 
 #[test]
+fn settling_waits_for_touch_momentum_until_it_finishes_or_is_cancelled() {
+    use octara::app::{InputEvent, Phase, PointerEvent};
+
+    for cancel in [false, true] {
+        let mut window =
+            Window::headless(|| col().id("fling-list").w(120.0).h(120.0).overflow_y_scroll().children((0..30).map(|_| el().h(32.0))));
+        let app = window.app();
+        for (time, phase, y) in [(0, Phase::Down, 100.0), (30, Phase::Move, 70.0), (60, Phase::Move, 40.0), (60, Phase::Up, 40.0)] {
+            app.advance_to(ms(time));
+            window.event(InputEvent::Pointer(PointerEvent::touch(1, phase, 20.0, y)));
+        }
+        let list = window.kernel().find("fling-list").unwrap();
+        assert_eq!(window.kernel().scroll_offset(list).1, 60.0);
+        let pending = app.run_until_idle(Duration::ZERO).expect_err("a released touch is still scrolling");
+        assert!(pending.iter().any(|work| work.kind == WorkKind::Motion && work.scope == "fling-list"));
+        assert!(window.unsettled().iter().any(|label| label.contains("scroll momentum")));
+        if cancel {
+            window.event(InputEvent::Active(false));
+            app.run_until_idle(Duration::ZERO).unwrap();
+            assert_eq!(window.kernel().scroll_offset(list).1, 60.0);
+        } else {
+            app.run_until_idle(ms(3000)).unwrap();
+            assert!(window.kernel().scroll_offset(list).1 > 60.0);
+        }
+        assert!(window.unsettled().is_empty());
+    }
+}
+
+#[test]
 fn with_motion_a_change_moves_on_its_spring() {
     let mut app = Window::headless(view);
     assert_eq!(red(&app, "moving"), 0.0, "a first mount does not move");
@@ -319,7 +348,16 @@ mod layout {
 mod presence {
     use super::ms;
     use octara::app::Event;
+    use octara::inspect::{self, Delivery};
     use octara::prelude::*;
+    use octara::reactive::untrack;
+    use octara::serde_json::json;
+    use octara::task::WorkKind;
+    use octara_primitives::identity::NodeId;
+    use octara_primitives::paint::{Item, Quad, Rect};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Duration;
 
     fn app(with_motion: bool) -> Window {
         Window::headless(move || {
@@ -344,11 +382,12 @@ mod presence {
     }
 
     /// How opaque the element is drawn: its group layer's opacity, else its fill's alpha.
-    fn drawn(app: &Window, id: octara_primitives::identity::NodeId) -> Option<f32> {
+    fn drawn(app: &Window, id: NodeId) -> Option<f32> {
         let dl = app.display_list();
-        let layer = dl.items().iter().find_map(|i| {
-            if let octara_primitives::paint::Item::PushLayer { source, opacity } = i { (*source == id).then_some(*opacity) } else { None }
-        });
+        let layer = dl
+            .items()
+            .iter()
+            .find_map(|i| if let Item::PushLayer { source, opacity } = i { (*source == id).then_some(*opacity) } else { None });
         let fill = dl.quads().find(|q| q.source == id).and_then(|q| q.fill).map(|c| c.components[3]);
         fill.map(|f| f * layer.unwrap_or(1.0))
     }
@@ -444,11 +483,193 @@ mod presence {
             col().size_full().motion(Spring::SNAP).child(col().id("list").h(200).overflow_y_scroll().child(virtual_each(
                 move || items.read_only(),
                 |_| 20.0,
-                |id, _| el().id(format!("v{id}")).h(20),
+                |id, _| el().id(format!("v{id}")).h(20).bg(Token::Surface),
             )))
         });
+        let original = app.kernel().find("v2").unwrap();
+        assert_eq!(drawn(&app, original), Some(1.0));
         app.dispatch(Event::Scroll("list".into(), 0.0, 600.0)).unwrap();
+        assert!(!app.kernel().is_alive(original));
+        assert_eq!(drawn(&app, original), None);
+        let incoming = app.kernel().find("v32").unwrap();
+        assert_eq!(drawn(&app, incoming), Some(1.0));
         assert_eq!(app.app().next_deadline(), None);
+
+        app.dispatch(Event::Scroll("list".into(), 0.0, -600.0)).unwrap();
+        assert!(!app.kernel().is_alive(incoming));
+        let remounted = app.kernel().find("v2").unwrap();
+        assert_ne!(remounted, original);
+        assert_eq!(drawn(&app, remounted), Some(1.0));
+        assert_eq!(app.app().next_deadline(), None);
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum RowSource {
+        Incremental,
+        Snapshot,
+    }
+
+    const LAST_ROW: u32 = 99;
+    const ROW_HEIGHT: f32 = 24.0;
+
+    fn virtual_tail(source: RowSource) -> (Window, Rc<RefCell<Vec<bool>>>) {
+        let cleaned = Rc::new(RefCell::new(Vec::new()));
+        let seen = cleaned.clone();
+        let window = Window::headless(move || {
+            let items = state_list("rows", || (0..=LAST_ROW).map(|key| (key, false)).collect(), |row: &(u32, bool)| row.0);
+            on_command("remove-last", move || items.remove(&LAST_ROW));
+            on_command("remove-clipped", move || items.remove(&(LAST_ROW - 1)));
+            on_command("restore-last", move || items.push((LAST_ROW, true)));
+            let seen = seen.clone();
+            let render = move |&key: &u32, item: ReadSignal<(u32, bool)>| {
+                let replacement = untrack(|| item.get().1);
+                if key == LAST_ROW {
+                    let seen = seen.clone();
+                    on_cleanup(move || seen.borrow_mut().push(replacement));
+                }
+                el().id(format!("row-{key}"))
+                    .label(format!("Row {key}"))
+                    .w_full()
+                    .h(ROW_HEIGHT)
+                    .flex_shrink_0()
+                    .bg(if replacement { Token::Accent } else { Token::Surface })
+                    .opacity_motion(Spring::SNAP)
+                    .focusable()
+                    .style_when(State::FOCUSED, |style| style.bg(Token::AccentHover))
+                    .on_press(|| {})
+            };
+            let rows = match source {
+                RowSource::Incremental => virtual_each(move || items.read_only(), |_| ROW_HEIGHT, render),
+                RowSource::Snapshot => virtual_each(
+                    move || items.keys().into_iter().map(|key| (key, items.item(&key).unwrap().get())).collect::<Vec<_>>(),
+                    |_| ROW_HEIGHT,
+                    render,
+                ),
+            };
+            col().size_full().p_4().child(col().id("tail").w(180.0).h(20.0).overflow_y_scroll().follow_tail().child(rows))
+        });
+        (window, cleaned)
+    }
+
+    fn clipped_row(window: &Window, viewport: NodeId, row: NodeId) -> (Quad, Rect) {
+        let mut clips = Vec::new();
+        for item in window.display_list().items() {
+            match item {
+                Item::PushClip { source, rect, .. } => clips.push((source, rect)),
+                Item::PopClip => {
+                    clips.pop().expect("balanced drawing clips");
+                }
+                Item::Quad(quad) if quad.source == row => {
+                    let &(_, clip) = clips.iter().find(|(source, _)| *source == viewport).expect("the row stays clipped to its viewport");
+                    return (quad, clip);
+                }
+                _ => {}
+            }
+        }
+        panic!("expected row {row:?} to be drawn");
+    }
+
+    #[test]
+    fn removing_the_virtual_tail_keeps_its_clipped_exit_and_reaps_only_the_old_row() {
+        let last_row = format!("row-{LAST_ROW}");
+        for source in [RowSource::Incremental, RowSource::Snapshot] {
+            let mut midpoint = None::<f32>;
+            for sample_hz in [None, Some(60), Some(120)] {
+                let (mut window, cleaned) = virtual_tail(source);
+                let app = window.app();
+                window.dispatch(Event::Focus(last_row.clone())).unwrap();
+                let focused = window.inspect();
+                assert_eq!(focused.focus.as_deref(), Some(last_row.as_str()));
+                let started = app.now();
+                let viewport = window.kernel().find("tail").unwrap();
+                let old = window.kernel().find(&last_row).unwrap();
+                let old_target = focused.find(&last_row).unwrap().target.clone();
+                let baseline_nodes = window.kernel().live_nodes();
+                let baseline_reactive = app.work().reactive_nodes;
+                let scroll_before = window.kernel().scroll_offset(viewport).1;
+                let (old_quad, clip) = clipped_row(&window, viewport, old);
+                assert!(old_quad.rect.y < clip.y && old_quad.rect.bottom() > clip.y, "the tail row is partly clipped");
+                assert_eq!(old_quad.fill, Some(app.theme().get(Token::AccentHover)));
+
+                window.invoke("remove-last").unwrap();
+                assert_eq!(window.kernel().scroll_offset(viewport).1, scroll_before - ROW_HEIGHT);
+                let removed = window.inspect();
+                assert!(removed.find(&last_row).is_none());
+                assert!(removed.focus.is_none());
+                assert_eq!(cleaned.borrow().as_slice(), &[false]);
+                let (exiting, exiting_clip) = clipped_row(&window, viewport, old);
+                assert_eq!((exiting.rect, exiting_clip), (old_quad.rect, clip));
+                assert_eq!(drawn(&window, old), Some(1.0));
+
+                window.invoke("restore-last").unwrap();
+                let new = window.kernel().find(&last_row).unwrap();
+                let new_target = window.inspect().find(&last_row).unwrap().target.clone();
+                assert_ne!(new, old);
+                assert_ne!(new_target, old_target);
+                let (exiting, exiting_clip) = clipped_row(&window, viewport, old);
+                assert_eq!((exiting.rect, exiting_clip), (old_quad.rect, clip));
+                let (new_quad, new_clip) = clipped_row(&window, viewport, new);
+                assert_eq!((new_quad.rect, new_clip), (old_quad.rect, clip));
+                assert_ne!(new_quad.fill, exiting.fill);
+                assert_eq!(drawn(&window, new), Some(1.0));
+
+                let stale = inspect::handle_line(&mut window, &json!({"op":"tap","target":old_target}).to_string());
+                assert_eq!(stale.code.as_deref(), Some("STALE_TARGET"));
+                assert_eq!(stale.delivery, Some(Delivery::Refused));
+                let fresh = inspect::handle_line(&mut window, &json!({"op":"tap","target":new_target}).to_string());
+                assert!(fresh.ok, "{fresh:?}");
+                assert_eq!(fresh.pointer.last().unwrap().captured.as_ref().unwrap().target, new_target);
+
+                let end =
+                    app.pending().into_iter().find(|work| work.kind == WorkKind::Motion).unwrap().due.unwrap() + Duration::from_micros(1);
+                if let Some(hz) = sample_hz {
+                    for tick in 1.. {
+                        let elapsed = Duration::from_secs_f64(f64::from(tick) / f64::from(hz));
+                        if started + elapsed >= end {
+                            break;
+                        }
+                        app.advance_to(started + elapsed);
+                        if elapsed == ms(50) {
+                            let alpha = drawn(&window, old).expect("old row still fading");
+                            assert!(alpha > 0.0 && alpha < 1.0, "{alpha}");
+                            let (fading, fading_clip) = clipped_row(&window, viewport, old);
+                            assert_eq!((fading.rect, fading_clip), (old_quad.rect, clip));
+                            assert_eq!(drawn(&window, new), Some(1.0));
+                            if let Some(previous) = midpoint {
+                                assert!((alpha - previous).abs() < 1e-6, "{alpha} != {previous} at {hz} Hz");
+                            }
+                            midpoint = Some(alpha);
+                        }
+                    }
+                }
+                app.advance_to(end);
+                assert!(!window.kernel().is_alive(old), "{source:?} at {sample_hz:?}");
+                assert_eq!(drawn(&window, old), None);
+                assert_eq!(drawn(&window, new), Some(1.0));
+                assert_eq!(window.kernel().live_nodes(), baseline_nodes);
+                assert_eq!(app.work().reactive_nodes, baseline_reactive);
+                assert_eq!(cleaned.borrow().as_slice(), &[false]);
+                assert!(app.pending().is_empty());
+                assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
+                app.shutdown();
+                assert_eq!(cleaned.borrow().as_slice(), &[false, true]);
+                assert_eq!(app.work().reactive_nodes, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn deleting_a_fully_clipped_resident_row_does_not_start_an_exit() {
+        for source in [RowSource::Incremental, RowSource::Snapshot] {
+            let (mut window, _) = virtual_tail(source);
+            let clipped = window.kernel().find(&format!("row-{}", LAST_ROW - 1)).expect("overscanned row is resident");
+            assert_eq!(drawn(&window, clipped), None);
+            window.invoke("remove-clipped").unwrap();
+            assert!(!window.kernel().is_alive(clipped));
+            assert!(window.app().pending().is_empty());
+            assert_eq!(window.app().next_deadline(), None);
+            window.app().shutdown();
+        }
     }
 }
 

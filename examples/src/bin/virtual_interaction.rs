@@ -1,8 +1,10 @@
 //! A real-window fixture for editor and pointer residency in a sparse virtual list.
 //! Inspector commands inject framework events; `virtual.compose` does not exercise an OS IME.
+//! Set `OCTARA_VIRTUAL_EXIT=1` to show the deletion and reinsertion of row zero.
 
 use octara::app::{Event, InputEvent, Phase, PointerEvent};
 use octara::prelude::*;
+use octara::reactive::untrack;
 use octara_kit::button;
 
 const ROW_HEIGHT: f32 = 64.0;
@@ -19,6 +21,7 @@ struct Model {
     drag_at: Signal<(f32, f32)>,
     value: Signal<String>,
     edits: Signal<u32>,
+    exit_reinserted: Option<Signal<bool>>,
 }
 
 fn update_report(window: &Window, model: Model) {
@@ -63,7 +66,7 @@ fn action(label: &'static str, id: &'static str, name: &'static str) -> View {
 #[ui]
 fn virtual_row(key: u32, model: Model) -> El {
     let draft = state("draft", || SEED.to_owned());
-    row()
+    let row = row()
         .id(format!("virtual-row-{key}"))
         .h(ROW_HEIGHT)
         .flex_shrink_0()
@@ -104,7 +107,15 @@ fn virtual_row(key: u32, model: Model) -> El {
                 .preserve_focus_on_press(true)
                 .child("Drag this row")
                 .on_drag(move |drag| model.drags.update(|events| events.push(format!("{key}:{:?}", drag.phase)))),
-        )
+        );
+    if let Some(reinserted) = model.exit_reinserted
+        && key == 0
+    {
+        let color = if untrack(|| reinserted.get()) { rgb(0x285fe6) } else { rgb(0xe12d42) };
+        row.opacity_motion(Curve::Fade(2.0)).child(el().id("virtual-exit-swatch").absolute().right(12).top(0).w(16).h(ROW_HEIGHT).bg(color))
+    } else {
+        row
+    }
 }
 
 #[ui]
@@ -119,7 +130,7 @@ fn virtual_list(model: Model) -> View {
 }
 
 #[ui]
-fn virtual_interaction() -> View {
+fn virtual_interaction(exit_probe: bool) -> View {
     let model = Model {
         items: state_list("items", || (0..ROWS).collect(), |key| *key),
         shown: state("shown", || true),
@@ -128,6 +139,7 @@ fn virtual_interaction() -> View {
         drag_at: state("drag_at", || (0.0, 0.0)),
         value: state("value", || SEED.to_owned()),
         edits: state("edits", || 0),
+        exit_reinserted: exit_probe.then(|| state("exit-reinserted", || false)),
     };
     command("virtual.report", model, |_, _| {});
     command("virtual.home", model, |window, _| scroll(window, 0.0));
@@ -176,6 +188,9 @@ fn virtual_interaction() -> View {
     command("virtual.reset", model, |_, model| {
         model.items.remove(&0);
         model.items.remove(&1);
+        if let Some(reinserted) = model.exit_reinserted {
+            reinserted.set(true);
+        }
         model.items.insert(0, 1);
         model.items.insert(0, 0);
         model.shown.set(true);
@@ -221,8 +236,9 @@ fn virtual_interaction() -> View {
 }
 
 fn main() {
+    let exit_probe = std::env::var_os("OCTARA_VIRTUAL_EXIT").is_some_and(|value| value == "1");
     octara_shell::run_with(
         octara_shell::Options { window: WindowOptions::new("Octara Virtual Interaction").size(960.0, 760.0), ..Default::default() },
-        virtual_interaction,
+        move || virtual_interaction(exit_probe),
     );
 }

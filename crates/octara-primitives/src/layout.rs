@@ -95,7 +95,6 @@ impl Placement {
 
     /// Places an overlay of natural `size` next to anchor rect `a` in viewport `vp`.
     pub fn place(self, a: (f32, f32, f32, f32), size: (f32, f32), vp: (f32, f32)) -> Placed {
-        let (ax, ay, aw, ah) = a;
         let opp = self.side.opposite();
         let (room, extent) = self.room(self.side, a, size, vp);
         let (room_opp, _) = self.room(opp, a, size, vp);
@@ -112,6 +111,14 @@ impl Placement {
                 Side::Left | Side::Right => w = l,
             }
         }
+        let (x, y) = self.position(side, a, (w, h), vp);
+        Placed { x, y, side, limit, clamped: neither && !self.fit }
+    }
+
+    /// Positions an already measured overlay on its chosen side of the anchor.
+    #[doc(hidden)]
+    pub fn position(self, side: Side, a: (f32, f32, f32, f32), (w, h): (f32, f32), vp: (f32, f32)) -> (f32, f32) {
+        let (ax, ay, aw, ah) = a;
         let main = match side {
             Side::Bottom => ay + ah + self.gap,
             Side::Top => ay - self.gap - h,
@@ -125,10 +132,9 @@ impl Placement {
             Align::Center => start + (alen - len) / 2.0,
             Align::End => start + alen - len,
         };
-        let (x, y) = match side {
+        match side {
             Side::Top | Side::Bottom => (clamp(cross(ax, aw, w), w, vp.0), clamp(main, h, vp.1)),
             Side::Left | Side::Right => (clamp(main, w, vp.0), clamp(cross(ay, ah, h), h, vp.1)),
-        };
-        Placed { x, y, side, limit, clamped: neither && !self.fit }
+        }
     }
 }

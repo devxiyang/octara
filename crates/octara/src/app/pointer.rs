@@ -164,7 +164,7 @@ enum Mode {
     Dragging,
     /// A touch scrolling this container.
     Panning(NodeId),
-    /// Lifting presses nothing (scrolled, long-pressed, stopped momentum, cancelled).
+    /// Lifting presses nothing (scrolled, long-pressed, cancelled).
     Spent,
 }
 
@@ -216,6 +216,29 @@ impl TouchPress {
 }
 
 impl Held {
+    fn new(ev: PointerEvent, mode: Mode, now: f64) -> Self {
+        Self {
+            capture: Rc::new(()),
+            pointer: ev.id,
+            kind: ev.kind,
+            down_button: ev.button,
+            action_button: ev.button,
+            hit: None,
+            target: None,
+            editing_owner: None,
+            outside_layer: None,
+            start: (ev.x, ev.y),
+            at: (ev.x, ev.y),
+            down_at: now,
+            inside: true,
+            mode,
+            clicks: 1,
+            samples: vec![(now, ev.x, ev.y)],
+            selecting: None,
+            long_pressed: false,
+        }
+    }
+
     fn matches_pointer(&self, ev: PointerEvent) -> bool {
         self.pointer == ev.id && self.kind == ev.kind
     }
@@ -234,6 +257,27 @@ impl Held {
         if let Some(target) = self.target.filter(|&target| kernel.is_alive(target)) {
             kernel.set_state(target, State::PRESSED, false);
         }
+    }
+
+    fn release_velocity(&self, now: f64, position: impl Fn(&(f64, f32, f32)) -> f32) -> f32 {
+        let mut recent = self.samples.iter().rev().take_while(|sample| now - sample.0 <= VELOCITY_WINDOW_MS);
+        let Some(last) = recent.next() else { return 0.0 };
+        let mut first = last;
+        let mut direction = 0.0;
+        // Use the latest run in each axis, so a reversal at the edge takes effect at release.
+        for sample in recent {
+            let delta = position(sample) - position(first);
+            if delta != 0.0 {
+                let sign = delta.signum();
+                if direction != 0.0 && sign != direction {
+                    break;
+                }
+                direction = sign;
+            }
+            first = sample;
+        }
+        let elapsed = now - first.0;
+        if elapsed > 0.0 { (position(first) - position(last)) / elapsed as f32 } else { 0.0 }
     }
 }
 
@@ -363,7 +407,7 @@ impl WindowState {
         let at = self.interaction.borrow().pointer.press_at?;
         let kernel = self.kernel.borrow();
         let node = kernel.find(id)?;
-        let (x, y, _, _) = kernel.rect(node);
+        let (x, y, _, _) = kernel.shown_rect(node);
         Some((at.0 - x, at.1 - y))
     }
 }
@@ -681,9 +725,9 @@ impl Window {
         self.long_press_due().into_iter().chain(self.tip_due()).min_by(f64::total_cmp)
     }
 
-    /// Whether momentum is gliding (it moves with every clock step).
-    pub(super) fn gliding(&self) -> bool {
-        self.w.interaction.borrow().pointer.momentum.is_some()
+    /// The viewport still moving after the finger was released.
+    pub(super) fn momentum_target(&self) -> Option<NodeId> {
+        self.w.interaction.borrow().pointer.momentum.map(|momentum| momentum.node)
     }
 
     /// The clock moved: a long press now due fires, momentum glides to the current time.
@@ -692,7 +736,7 @@ impl Window {
             self.long_press_fire();
         }
         self.tip_time();
-        if self.w.interaction.borrow().pointer.momentum.is_some() {
+        if self.momentum_target().is_some() {
             self.glide();
         }
     }
@@ -705,15 +749,10 @@ impl Window {
     }
 
     fn down(&self, ev: PointerEvent, mut step: Option<&mut PointerStep>, guard: Option<&TargetGuard>) -> bool {
-        let stopped = {
-            let mut i = self.w.interaction.borrow_mut();
-            if i.pointer.held.is_some() {
-                // One pointer at a time: other fingers (and other buttons) are ignored.
-                return false;
-            }
-            // A touch on gliding content stops it, and presses nothing (as on iOS).
-            i.pointer.momentum.take().is_some()
-        };
+        if self.w.interaction.borrow().pointer.held.is_some() {
+            // One pointer at a time: other fingers (and other buttons) are ignored.
+            return false;
+        }
         self.set_modality(Modality::Pointer);
         // Dismiss at most one layer. A nonmodal dismissal can keep the original hit, but its
         // callback can also retire the hit or the entire window.
@@ -722,14 +761,36 @@ impl Window {
             step.hit = self.pointer_evidence_target(raw);
         }
         let (outside, dismiss) = self.outside_dismissal(raw);
+        let modal = self.top_modal();
         if let Some(guard) = guard {
-            let owner = self.w.kernel.borrow().press_route(raw, Button::Primary, self.top_modal()).1;
-            if outside || stopped || !owner.is_some_and(|target| self.tap_at_owner_matches(guard, target)) {
+            let owner = self.w.kernel.borrow().press_route(raw, Button::Primary, modal).1;
+            if outside || !owner.is_some_and(|target| self.tap_at_owner_matches(guard, target)) {
                 return false;
             }
         }
+        let momentum = self.w.interaction.borrow_mut().pointer.momentum.take();
+        if ev.kind == PointerKind::Touch
+            && ev.button == Button::Primary
+            && !outside
+            && let (Some(momentum), Some(hit)) = (momentum, raw)
+            && {
+                let k = self.w.kernel.borrow();
+                k.check_interaction_scope(momentum.node, modal).is_ok()
+                    && k.is_within(hit, momentum.node)
+                    && k.scrollable(momentum.node) != (false, false)
+            }
+        {
+            // Grab the viewport at its current offset without running press behavior.
+            let mut i = self.w.interaction.borrow_mut();
+            i.pointer.hover_at = None;
+            i.pointer.last_press = None;
+            i.pointer.held = Some(Held::new(ev, Mode::Panning(momentum.node), self.now_ms()));
+            drop(i);
+            self.set_hover(None);
+            return true;
+        }
         let outside_layer = dismiss.filter(|&layer| {
-            if ev.kind != PointerKind::Touch || ev.button != Button::Primary || outside || stopped {
+            if ev.kind != PointerKind::Touch || ev.button != Button::Primary || outside {
                 return false;
             }
             let Some(editor) = self.pointer_field(self.focused_node()) else { return false };
@@ -773,7 +834,6 @@ impl Window {
                 let k = self.w.kernel.borrow();
                 let focus = target.filter(|&n| k.is_focusable(n));
                 let defer = ev.kind == PointerKind::Touch
-                    && !stopped
                     && target.is_some_and(|n| k.kind(n) != Kind::TextInput && k.check_activation(n, modal).is_ok());
                 (focus, defer)
             };
@@ -799,7 +859,7 @@ impl Window {
         let enabled = target.is_some_and(|n| !self.w.kernel.borrow().state(n).contains(State::DISABLED));
         // A press on a selectable region's text, not on anything pressable, selects.
         // (A target around the region, such as the scroll container it is, does not stop it.)
-        let selecting = (button == Button::Primary && !outside && !stopped)
+        let selecting = (button == Button::Primary && !outside)
             .then(|| {
                 let k = self.w.kernel.borrow();
                 let modal = self.top_modal();
@@ -808,13 +868,9 @@ impl Window {
                     .filter(|r| target.is_none_or(|t| k.is_within(*r, t)))
             })
             .flatten();
-        let can_pan = !enabled
-            && !stopped
-            && ev.kind == PointerKind::Touch
-            && button == Button::Primary
-            && self.scroll_target(hit, 1.0, 1.0).is_some();
+        let can_pan = !enabled && ev.kind == PointerKind::Touch && button == Button::Primary && self.scroll_target(hit, 1.0, 1.0).is_some();
         let target = target.filter(|_| enabled || !can_pan);
-        let mode = if selecting.is_some() || can_pan || (!stopped && enabled) { Mode::Pending } else { Mode::Spent };
+        let mode = if selecting.is_some() || can_pan || enabled { Mode::Pending } else { Mode::Spent };
         // The run of presses (double click) counts from the press (AppKit, Rune).
         let clicks = match target.or(selecting) {
             Some(n) if mode == Mode::Pending && button == Button::Primary => self.count_press(n, ev.kind, (ev.x, ev.y)),
@@ -834,26 +890,15 @@ impl Window {
         {
             self.w.kernel.borrow_mut().set_state(n, State::PRESSED, true);
         }
-        let now = self.now_ms();
         self.w.interaction.borrow_mut().pointer.held = Some(Held {
-            capture: Rc::new(()),
-            pointer: ev.id,
-            kind: ev.kind,
-            down_button: ev.button,
             action_button: button,
             hit,
             target,
             editing_owner,
             outside_layer,
-            start: (ev.x, ev.y),
-            at: (ev.x, ev.y),
-            down_at: now,
-            inside: true,
-            mode,
             clicks,
-            samples: vec![(now, ev.x, ev.y)],
             selecting,
-            long_pressed: false,
+            ..Held::new(ev, mode, self.now_ms())
         });
         if let Some(step) = step {
             step.captured = self.pointer_evidence_target(target);
@@ -1109,7 +1154,7 @@ impl Window {
         if matches!(phase, DragPhase::Start | DragPhase::Move) {
             self.w.kernel.borrow_mut().set_instant(true);
         }
-        let (x, y, _, _) = self.w.kernel.borrow().rect(n);
+        let (x, y, _, _) = self.w.kernel.borrow().shown_rect(n);
         let d = Drag { phase, x: h.at.0 - x, y: h.at.1 - y, dx: h.at.0 - h.start.0, dy: h.at.1 - h.start.1 };
         handler.run(&self.app.rt, |handler| {
             if let Handler::Drag(f) = handler {
@@ -1266,23 +1311,20 @@ impl Window {
     }
 
     fn start_momentum(&self, node: NodeId, h: &Held) {
-        if self.w.kernel.borrow().check_interaction_scope(node, self.top_modal()).is_err() {
+        let modal = self.top_modal();
+        let k = self.w.kernel.borrow();
+        if k.check_interaction_scope(node, modal).is_err() {
             return;
         }
+        let (scroll_x, scroll_y) = k.scrollable(node);
+        let from = k.scroll_offset(node);
         let now = self.now_ms();
-        let samples: Vec<_> = h.samples.iter().filter(|s| now - s.0 <= VELOCITY_WINDOW_MS).collect();
-        let (Some(first), Some(last)) = (samples.first(), samples.last()) else { return };
-        let dt = last.0 - first.0;
-        if dt <= 0.0 {
+        let vx = if scroll_x { h.release_velocity(now, |sample| sample.1) } else { 0.0 };
+        let vy = if scroll_y { h.release_velocity(now, |sample| sample.2) } else { 0.0 };
+        let speed = vx.hypot(vy);
+        if !speed.is_finite() || speed == 0.0 || speed * 1000.0 < self.app.tuning.get().momentum_stop {
             return;
         }
-        // The content follows the finger: the offset changes against the finger's motion.
-        let (vx, vy) = ((first.1 - last.1) / dt as f32, (first.2 - last.2) / dt as f32);
-        let speed = (vx * vx + vy * vy).sqrt();
-        if speed * 1000.0 < self.app.tuning.get().momentum_stop {
-            return;
-        }
-        let from = self.w.kernel.borrow().scroll_offset(node);
         self.w.interaction.borrow_mut().pointer.momentum =
             Some(Momentum { node, start: now, sampled_at: now, from, dir: (vx / speed, vy / speed), speed });
     }

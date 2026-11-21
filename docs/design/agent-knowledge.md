@@ -16,6 +16,8 @@
 
 屏外控件需要先滚动。在 `actions` 含 `scroll` 的视口上发送 `{"op":"scroll","target":"<viewport target>","dx":0,"dy":120}`。位移以逻辑像素计，正值增大偏移。回执中 `scroll.offset` 是当前偏移 `[x,y]`，`scroll.delta` 是本次实际变化，包含布局校正。到达边界后继续向外滚动可返回 `[0,0]`。滚动后重新读取树，再操作进入视口的控件。[待办实窗验收](../../examples/live_inspect.py)
 
+触摸抬手后的惯性滚动会进入 `settle` 的待结算工作，条目包含滚动视口。使用 `settle` 等待位置稳定，或者用零等待预算的 `capture` 记录当前绘制并从报告读取 `settled`。联动面板的最近一笔位移可从 `touch_scroll` 观察，系统返回的完成结果从 `back_gesture` 读取。[滚动与返回协议](input.md#scroll-routing) · [截图协议](capture.md)
+
 `octara.inspect/2` 的 `selection` 提供文档选区预览。`preview` 从当前帧已挂载的选区按文档顺序读取，最多 2,000 个 Unicode 标量值。`complete` 为 `false` 表示预览截断或选区包含未挂载行。选区全部位于未挂载行时，`preview` 为空且 `complete` 为 `false`。显式 `copy` 请求按复制规则提取选区，可以临时挂载屏外行。旧版 `octara.inspect/1` 的 `selection` 是字符串。[预览与复制测试](../../crates/octara/tests/integration/selection.rs)
 
 节点上的 `labelled_by`、`controls` 和 `active_descendant` 都是当前语义树中目标的 `id`。关系未能解析时，该字段省略。根据关系找到实际节点后，操作时使用它的 `target`。控件的 `name` 已反映当前可用的标签。[关系与名称](ui-primitives.md#语义关系)

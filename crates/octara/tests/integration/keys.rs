@@ -42,6 +42,31 @@ fn interactive_back_cannot_complete_on_a_replacement_command() {
     assert_eq!(window.kernel().text_of("calls").as_deref(), Some("1"));
 }
 
+#[test]
+fn deactivation_cancels_back_before_notifying_the_drag_handler() {
+    let mut window = Window::headless(|| {
+        let calls = state("back-calls", || 0u32);
+        let drag_cancelled = state("drag-cancelled", || false);
+        col()
+            .on_command("navigation.back", move || calls.update(|n| *n += 1))
+            .child(el().size_12().on_drag(move |drag| {
+                if drag.phase == DragPhase::Cancel {
+                    let mut window = App::current().window(current_window()).unwrap();
+                    let id = window.inspect().back_gesture.unwrap().id;
+                    assert!(!window.event(InputEvent::BackGesture { id, phase: BackPhase::Completed }));
+                    assert_eq!(window.inspect().back_gesture.unwrap().phase, BackPhase::Cancelled);
+                    drag_cancelled.set(true);
+                }
+            }))
+            .child(text(move || format!("{} {}", calls.get(), drag_cancelled.get())).id("result"))
+    });
+    assert!(window.event(InputEvent::BackGesture { id: 1, phase: BackPhase::Started }));
+    window.pointer_down(10.0, 10.0);
+    window.pointer_move(25.0, 10.0);
+    assert!(window.event(InputEvent::Active(false)));
+    assert_eq!(window.kernel().text_of("result").as_deref(), Some("0 true"));
+}
+
 fn view() -> View {
     let log = state("log", Vec::<String>::new);
     let push = move |s: &str| {

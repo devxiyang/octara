@@ -78,7 +78,7 @@ impl App {
             let glides = w.w.kernel.borrow().gliding_scrolls();
             // Hover held while layout moved catches up once it has settled.
             let catch_up = w.hover_held() && !w.w.kernel.borrow().layout_in_motion();
-            if w.gliding() || glides || catch_up {
+            if w.momentum_target().is_some() || glides || catch_up {
                 w.input_frame(|| {
                     w.pointer_time();
                     w.w.kernel.borrow_mut().step_glides();
@@ -126,7 +126,8 @@ impl App {
         }
     }
 
-    /// Lands everything in motion on its target now, in every window.
+    /// Lands property tracks, requested scrolls and paced text now, in every window.
+    /// Use [`Self::run_until_idle`] to let touch momentum finish on the app clock.
     pub fn settle_motion(&self) {
         for w in self.each() {
             w.w.kernel.borrow_mut().land_motion();
@@ -283,12 +284,19 @@ impl Window {
 
     pub(super) fn animation_frame_demand(&self) -> bool {
         let k = self.w.kernel.borrow();
-        self.gliding() || k.gliding_scrolls() || !k.at_rest()
+        self.momentum_target().is_some() || k.gliding_scrolls() || !k.at_rest()
     }
 
     /// This window's motion, as pending work.
     fn motion_work(&self) -> Vec<PendingWork> {
         let k = self.w.kernel.borrow();
+        let work = |id, label, due| PendingWork {
+            kind: WorkKind::Motion,
+            label: format!("{label} of {}", k.describe(id)),
+            scope: k.test_id(id).unwrap_or("").to_owned(),
+            at: k.origin(id).map(|l| format!("{}:{}", crate::diagnostics::source_file(l), l.line())).unwrap_or_default(),
+            due,
+        };
         let paced = self
             .w
             .paced
@@ -305,13 +313,8 @@ impl Window {
             .collect::<Vec<_>>();
         k.motions()
             .into_iter()
-            .map(|(id, rest)| PendingWork {
-                kind: WorkKind::Motion,
-                label: format!("motion of {}", k.describe(id)),
-                scope: k.test_id(id).unwrap_or("").to_owned(),
-                at: k.origin(id).map(|l| format!("{}:{}", crate::diagnostics::source_file(l), l.line())).unwrap_or_default(),
-                due: Some(duration(rest * 1000.0)),
-            })
+            .map(|(id, rest)| work(id, "motion", Some(duration(rest * 1000.0))))
+            .chain(self.momentum_target().filter(|&id| k.is_mounted(id)).map(|id| work(id, "scroll momentum", None)))
             .chain(paced)
             .collect()
     }

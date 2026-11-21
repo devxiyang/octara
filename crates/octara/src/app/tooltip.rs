@@ -84,12 +84,11 @@ impl Window {
         }
     }
 
-    /// `event` puts the tooltip away: a press, a scroll, a key, the window going inactive.
+    /// Whether the next pointer, wheel or key input dismisses the tooltip.
     pub(super) fn tip_dismissed_by(&self, event: &InputEvent) {
         let dismisses = match event {
             InputEvent::Pointer(p) => p.phase == super::Phase::Down,
             InputEvent::Wheel { .. } | InputEvent::Key(_) => true,
-            InputEvent::Active(on) => !on,
             _ => false,
         };
         let pending = {
@@ -97,12 +96,16 @@ impl Window {
             i.tip.anchor.is_some() && !i.tip.spent
         };
         if dismisses && pending {
-            self.input_frame(|| {
-                self.hide_tip();
-                let mut i = self.w.interaction.borrow_mut();
-                i.tip.spent = true;
-                i.tip.due = None;
-            });
+            self.input_frame(|| self.dismiss_tip());
+        }
+    }
+
+    pub(super) fn dismiss_tip(&self) {
+        self.hide_tip();
+        let mut i = self.w.interaction.borrow_mut();
+        if i.tip.anchor.is_some() {
+            i.tip.spent = true;
+            i.tip.due = None;
         }
     }
 

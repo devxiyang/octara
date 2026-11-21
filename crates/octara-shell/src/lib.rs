@@ -494,14 +494,15 @@ impl Shell {
     #[cfg(target_os = "ios")]
     fn ios_back(&mut self, window: WindowId, id: u64, owner: Option<HandlerId>, phase: BackPhase, interactive: bool) {
         let Some(mut window) = self.window_of(window) else { return };
-        if !ww(&window, |host| host.ios_back.as_ref().is_some_and(|back| back.owns(id))).unwrap_or_default() {
+        let Some(permitted) = ww(&window, |host| host.ios_back.as_ref()?.permits_delivery(id)).flatten() else {
             return;
-        }
+        };
         self.tick();
         // The recognizer saw the frame that was drawn before this proxy event. A timer,
         // native edit or other input can move the current command before dispatch.
-        let current = phase != BackPhase::Started || owner.is_some() && owner == window.back_gesture_target();
-        let accepted = current && window.event(InputEvent::BackGesture { id, phase });
+        let accepted = permitted
+            && (phase != BackPhase::Started || owner.is_some() && owner == window.back_gesture_target())
+            && window.event(InputEvent::BackGesture { id, phase });
         if matches!(phase, BackPhase::Completed | BackPhase::Cancelled) {
             let eligible = window.back_gesture_target().is_some();
             ww(&window, |host| {
@@ -1370,10 +1371,11 @@ impl Shell {
         let _in = InLoop::enter(&self.shared, event_loop);
         // End the contact before the next clock tick can run a held gesture's deadline.
         let held = window.held_pointer();
-        if let Some((owner, expected)) = ww(&window, |host| host.ios_input.set_active(active)).flatten() {
+        let edit_to_cancel = ww(&window, |host| host.ios_input.set_active(active)).flatten();
+        Self::set_window_active(&mut window, active);
+        if let Some((owner, expected)) = edit_to_cancel {
             window.apply_text_edit(owner, &expected, &octara_primitives::text::TextEdit::Cancel);
         }
-        window.event(InputEvent::Active(active));
         ww(&window, |host| host.set_occluded(!active));
         if self.shared.trace {
             eprintln!(
@@ -1391,6 +1393,18 @@ impl Shell {
             self.tick();
             self.show();
         }
+    }
+
+    fn set_window_active(window: &mut AppWindow, active: bool) {
+        #[cfg(target_os = "ios")]
+        if !active {
+            ww(window, |host| {
+                if let Some(back) = &host.ios_back {
+                    back.interrupt();
+                }
+            });
+        }
+        window.event(InputEvent::Active(active));
     }
 
     fn on_window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -1493,12 +1507,10 @@ impl Shell {
                 if on {
                     self.active = Some(w.id());
                 }
+                Self::set_window_active(&mut w, on);
                 if !on {
-                    // The window lost the pointer: a held press or drag is cancelled.
-                    let (x, y) = cursor;
-                    self.pointer(&mut w, PointerEvent::mouse(Phase::Cancel, x, y), None);
+                    self.tick();
                 }
-                w.event(InputEvent::Active(on));
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {
                 let at = self.shared.trace.then(Instant::now);

@@ -4,6 +4,7 @@
 
 use super::{BoxShadow, Color, Kernel, NodeId, Visual};
 use crate::motion::{Curve, PropClass, Track};
+use crate::paint::Rect;
 use color::{AlphaColor, Oklab, Srgb};
 
 /// A color as four tracks: premultiplied OKLab (L·α, a·α, b·α, α), so a fade to or from
@@ -68,6 +69,8 @@ pub(crate) struct Anim {
     /// Position (relative to the parent) and size: x, y, width, height. Set at the node's first
     /// layout; moves on later ones.
     frame: Option<[Track; 4]>,
+    /// If set, the exiting root stays at this rectangle in its parent's viewport.
+    exit_rect: Option<Rect>,
 }
 
 fn lerp(a: f32, b: f32, k: f32) -> f32 {
@@ -110,6 +113,7 @@ impl Anim {
             shadow_to: shadows,
             shadow_phase: Track::new(1.0),
             frame: None,
+            exit_rect: None,
         }
     }
     fn shadows(&self, t: f64) -> Vec<BoxShadow> {
@@ -169,6 +173,7 @@ impl Kernel {
             }
         }
         self.now = seconds;
+        self.sample_anchor_offsets();
     }
     pub fn time(&self) -> f64 {
         self.now
@@ -216,7 +221,10 @@ impl Kernel {
         a.background.retarget(new.background, t, color);
         a.text.retarget(Some(new.text), t, color);
         a.border.retarget(Some(new.border), t, color);
-        a.opacity.retarget(new.opacity as f64, t, opacity, PropClass::Opacity);
+        // An exit owns opacity even if retiring focus or hover resolves a different style.
+        if !n.exiting {
+            a.opacity.retarget(new.opacity as f64, t, opacity, PropClass::Opacity);
+        }
         if new_shadows != a.shadow_to {
             a.shadow_from = a.shadows(t);
             a.shadow_to = new_shadows;
@@ -236,6 +244,13 @@ impl Kernel {
         for id in ids {
             if !self.is_alive(id) {
                 self.framed.remove(&id);
+                continue;
+            }
+            if self.node(id).anchor.is_some() {
+                // The placed root follows its anchor without a second layout track.
+                if let Some(a) = self.node_mut(id).anim.as_mut() {
+                    a.frame = None;
+                }
                 continue;
             }
             let l = *self.taffy.layout(self.node(id).taffy).expect("taffy");
@@ -352,6 +367,17 @@ impl Kernel {
     /// destroy calls until then do nothing. Returns whether it is leaving this way.
     #[track_caller]
     pub fn begin_exit(&mut self, id: NodeId) -> bool {
+        self.begin_exit_inner(id, false)
+    }
+
+    /// Retains a visible row at its presented position while its viewport reflows.
+    #[track_caller]
+    pub(crate) fn begin_visible_exit(&mut self, id: NodeId) -> bool {
+        self.begin_exit_inner(id, true)
+    }
+
+    #[track_caller]
+    fn begin_exit_inner(&mut self, id: NodeId, visible_only: bool) -> bool {
         if self.quiet || !self.is_alive(id) {
             return false;
         }
@@ -368,10 +394,19 @@ impl Kernel {
         if !n.attached || n.born == self.layouts || matches!(curve, Curve::Instant) {
             return false;
         }
+        let exit_rect = if visible_only {
+            let Some(rect) = self.visible_exit_rect(id, parent) else { return false };
+            Some(rect)
+        } else if n.anchor.is_some() {
+            Some(self.rect_in_parent_viewport(id, parent))
+        } else {
+            None
+        };
         let anim = n.anim.is_none().then(|| Box::new(Anim::at(&n.visual, n.visual.shadow.resolve(&self.res.theme.borrow()))));
         if n.anchor.is_some() {
             // The detached subtree keeps its last layout even if the anchor moves.
             self.anchored.retain(|&anchored| anchored != id);
+            self.anchor_offsets.remove(&id);
         }
         let pos = self.node(parent).children().iter().position(|c| *c == id).expect("child of parent");
         self.node_mut(parent).application_children_mut().remove(pos);
@@ -387,7 +422,9 @@ impl Kernel {
         if let Some(anim) = anim {
             n.anim = Some(anim);
         }
-        n.anim.as_mut().expect("exiting node has an opacity track").opacity.retarget(0.0, t, curve, PropClass::Opacity);
+        let anim = n.anim.as_mut().expect("exiting node has an opacity track");
+        anim.exit_rect = exit_rect;
+        anim.opacity.retarget(0.0, t, curve, PropClass::Opacity);
         self.ghosts.push(id);
         self.moving.insert(id);
         self.counters.structural_ops += 1;
@@ -452,6 +489,59 @@ impl Kernel {
         self.ghosts.iter().copied().filter(|g| self.node(*g).parent == Some(parent)).collect()
     }
 
+    pub(super) fn frozen_exit_rect(&self, id: NodeId) -> Option<Rect> {
+        self.node(id).anim.as_ref()?.exit_rect
+    }
+
+    pub(super) fn rect_in_parent_viewport(&self, id: NodeId, parent: NodeId) -> Rect {
+        let (x, y, w, h) = self.shown_frame(id);
+        let (scroll_x, scroll_y) = self.node(parent).scroll;
+        Rect::new(x - scroll_x, y - scroll_y, w, h)
+    }
+
+    /// Samples the anchor translation while keeping each popup's measured extent and side.
+    pub(super) fn sample_anchor_offsets(&mut self) {
+        if self.anchored.is_empty() && self.anchor_offsets.is_empty() {
+            return;
+        }
+        std::mem::swap(&mut self.anchor_offsets, &mut self.previous_anchor_offsets);
+        self.anchor_offsets.clear();
+        let bounds = self.overlay_bounds();
+        // The enclosing popup is registered first. An inner anchor reads its sampled transform.
+        for index in 0..self.anchored.len() {
+            let id = self.anchored[index];
+            let node = self.node(id);
+            let (Some((anchor, placement)), Some(placed)) = (node.anchor, node.placed) else { continue };
+            if !node.attached || !self.is_alive(anchor) || !self.node(anchor).attached {
+                continue;
+            }
+            let target = self.rect(anchor);
+            let shown = self.shown_rect(anchor);
+            if shown == target {
+                continue;
+            }
+            let layout = self.taffy.layout(node.taffy).expect("taffy");
+            let size = (layout.size.width, layout.size.height);
+            let position = |(x, y, w, h)| placement.position(placed.side, (x - bounds.x, y - bounds.y, w, h), size, (bounds.w, bounds.h));
+            let (target_x, target_y) = position(target);
+            let (shown_x, shown_y) = position(shown);
+            let offset = (shown_x - target_x, shown_y - target_y);
+            if offset != (0.0, 0.0) {
+                self.anchor_offsets.insert(id, offset);
+            }
+        }
+        if self.anchor_offsets != self.previous_anchor_offsets {
+            self.paint_gen += 1;
+            self.a11y_geometry.set(true);
+            for &id in self.anchor_offsets.keys().chain(self.previous_anchor_offsets.keys()) {
+                if self.is_mounted(id) && self.anchor_offsets.get(&id) != self.previous_anchor_offsets.get(&id) {
+                    self.a11y_touch(id);
+                }
+            }
+            self.update_motion();
+        }
+    }
+
     /// A node's position relative to its parent and its size, as shown now.
     pub(crate) fn shown_frame(&self, id: NodeId) -> (f32, f32, f32, f32) {
         let n = self.node(id);
@@ -459,14 +549,16 @@ impl Kernel {
         if matches!(n.content, super::Content::Link(_)) {
             return self.link_frame(id);
         }
-        if let Some(f) = n.anim.as_ref().and_then(|a| a.frame.as_ref())
+        if n.anchor.is_none()
+            && let Some(f) = n.anim.as_ref().and_then(|a| a.frame.as_ref())
             && f.iter().any(|tr| tr.moving(self.now))
         {
             let v = f.map(|tr| tr.value(self.now) as f32);
             return (v[0], v[1], v[2].max(0.0), v[3].max(0.0));
         }
         let l = self.taffy.layout(n.taffy).expect("taffy");
-        (l.location.x, l.location.y, l.size.width, l.size.height)
+        let (x, y) = if n.anchor.is_some() && n.attached { self.anchor_offsets.get(&id).copied().unwrap_or_default() } else { (0.0, 0.0) };
+        (l.location.x + x, l.location.y + y, l.size.width, l.size.height)
     }
 
     /// Where the node is shown now (logical pixels): its frame and its ancestors', as they move,
@@ -590,5 +682,6 @@ impl Kernel {
                 a.land();
             }
         }
+        self.sample_anchor_offsets();
     }
 }

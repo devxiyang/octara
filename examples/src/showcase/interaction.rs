@@ -113,6 +113,9 @@ fn editor_tools() -> El {
     let open = state("editor-tools-open", || false);
     let note = state("editor-tools-note", String::new);
     let presses = state("editor-after-tools-presses", || 0);
+    let shifted = state("editor-tools-shifted", || false);
+    on_command("interaction.move-tools", move || shifted.update(|value| *value = !*value));
+    let show_marker = std::env::var_os("OCTARA_MOVING_POPUP").is_some_and(|value| value == "1");
     col()
         .w_full()
         .gap_2()
@@ -124,6 +127,8 @@ fn editor_tools() -> El {
                         .id("editor-tools")
                         .controls("editor-tools-panel")
                         .expanded(open)
+                        .layout_motion(Curve::Fade(1.8))
+                        .style_with(move |style| style.ml(if shifted.get() { 128.0 } else { 0.0 }))
                         .on_press(move || open.update(|value| *value = !*value))
                         .overlay(
                             move || open.get(),
@@ -146,6 +151,11 @@ fn editor_tools() -> El {
                                     .dismissible(true, move || open.set(false))
                                     .child(text_field(note).id("editor-tools-field").label("备注").placeholder("备注").w_full())
                                     .child(button("关闭设置").id("editor-tools-close").on_press(move || open.set(false)))
+                                    .children(
+                                        show_marker.then(|| {
+                                            el().id("editor-tools-marker").absolute().top(3).left(16).w(56).h(5).bg(rgb(0x19b785))
+                                        }),
+                                    )
                             },
                         ),
                 )

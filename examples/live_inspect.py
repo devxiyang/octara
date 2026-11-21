@@ -3,6 +3,7 @@
 
 Build the window example and CLI first, then run from any directory:
     python3 examples/live_inspect.py --window target/debug/window --octara target/debug/octara
+Use --virtual-exit with --window target/debug/virtual_interaction to check virtual row deletion.
 
 Requires an interactive desktop and Unix-domain sockets. Windows is skipped. Screenshots,
 window logs and CLI transcripts stay in the printed output directory (or --output DIRECTORY).
@@ -51,7 +52,7 @@ def find(snapshot, target):
     raise SmokeFailure(f"snapshot has no {target!r} node")
 
 
-def png_pixels(path, *, region=None):
+def png_rgba(path):
     """Decode the RGBA8, noninterlaced PNGs written by Octara's Picture::save_png."""
     data = path.read_bytes()
     require(data[:8] == b"\x89PNG\r\n\x1a\n", f"{path}: not a PNG")
@@ -100,10 +101,16 @@ def png_pixels(path, *, region=None):
             row[x] = (row[x] + prediction) & 255
         pixels.extend(row)
         previous = row
+    return width, height, pixels
+
+
+def png_pixels(path, *, region=None):
+    width, height, pixels = png_rgba(path)
     if region is None:
         return width, height, hashlib.sha256(pixels).hexdigest()
     x, y, w, h = region
     require(w > 0 and h > 0 and 0 <= x <= width - w and 0 <= y <= height - h, f"{path}: invalid pixel region {region}")
+    stride = width * 4
     digest = hashlib.sha256()
     for row in range(y, y + h):
         start = row * stride + x * 4
@@ -1216,6 +1223,176 @@ def surface_drain(args, output, sockets):
         print("surface_drain: both windows settled input during the worker wait and a closed note did not submit", flush=True)
 
 
+def virtual_exit(args, output, sockets):
+    with LiveWindow("virtual-exit", args, output, sockets, [], env={"OCTARA_VIRTUAL_EXIT": "1"}) as app, app.wire() as stream:
+        def request(op, **fields):
+            step = {"op": op, **fields}
+            reply = app.wire_request(stream, step)
+            require(reply.get("ok"), f"virtual_exit: {step} failed: {reply}")
+            return reply
+
+        def capture(name):
+            path = output / f"virtual-exit-{name}.png"
+            report = request("capture", path=str(path), scale=1, pixels="painted", settle_ms=0)["capture"]
+            require(report["renderer"] == "gpu" and report["pixels"] == "painted", f"virtual_exit: unexpected capture source: {report}")
+            return path, report
+
+        def residents(snapshot):
+            return find(snapshot, "virtual-report")["name"].split("; scroll:", 1)[0]
+
+        request("reduced_motion", on=False)
+        request("invoke", command="virtual.report")
+        home = request("inspect")["snapshot"]
+        viewport = find(home, "virtual-list")
+        request("scroll", target=viewport["target"], dx=0, dy=32)
+        before = request("inspect")["snapshot"]
+        old = find(before, "virtual-row-0")["target"]
+        old_editor = find(before, "virtual-editor-0")["target"]
+        bounds = find(before, "virtual-list")["bounds"]
+        top = bounds[1]
+        x, y, w, h = find(before, "virtual-exit-swatch")["bounds"]
+        require(y < top - 8 and y + h > top + 12, "virtual_exit: the old swatch must cross the viewport edge")
+        sample_x = math.floor(x + w / 2) - 2
+        inside_y, outside_y = math.floor(top + 8), math.floor(top - 8)
+        baseline, _ = capture("before")
+
+        request("invoke", command="virtual.remove")
+        retired = request("inspect")["snapshot"]
+        require(not any(node.get("id") in ("virtual-row-0", "virtual-editor-0", "virtual-exit-swatch") for node in nodes(retired)),
+                "virtual_exit: the removed row still appears in the semantic tree")
+        require(find(retired, "virtual-list")["bounds"] == bounds, "virtual_exit: the viewport moved during deletion")
+        stale = {"op": "focus", "target": old_editor}
+        refused = app.wire_request(stream, stale)
+        require(refused.get("code") == "STALE_TARGET" and refused.get("delivery") == "refused",
+                f"virtual_exit: the outgoing editor accepted input: {refused}")
+        time.sleep(0.6)
+        fading, report = capture("fading")
+        require(any("motion of `virtual-row-0`" in work for work in report.get("pending", [])),
+                f"virtual_exit: capture missed the outgoing row's fade: {report}")
+
+        request("invoke", command="virtual.reset")
+        request("invoke", command="virtual.home")
+        revived = request("inspect")["snapshot"]
+        fresh = find(revived, "virtual-row-0")["target"]
+        fresh_editor = find(revived, "virtual-editor-0")["target"]
+        require(fresh != old and fresh_editor != old_editor and revived["pending"] > 0,
+                "virtual_exit: reinsertion must mount a fresh row while the old fade is active")
+        request("settle", limit_ms=5000)
+        request("invoke", command="virtual.report")
+        after = request("inspect")["snapshot"]
+        require(find(after, "virtual-row-0")["target"] == fresh and residents(after) == residents(home),
+                "virtual_exit: settling remounted the new row or left extra resident nodes")
+        final, report = capture("settled")
+        require(report["settled"], f"virtual_exit: pending work remained after the fade: {report}")
+        request("focus", target=fresh_editor)
+        require(request("inspect")["snapshot"].get("focus") == "virtual-editor-0", "virtual_exit: the new editor could not take focus")
+
+        # Decode after reinsertion so image processing consumes none of the fade budget.
+        def patch(path, x, y):
+            return png_pixels(path, region=(x, y, 4, 4))[2]
+
+        old_color = hashlib.sha256(bytes((0xe1, 0x2d, 0x42, 0xff)) * 16).hexdigest()
+        new_color = hashlib.sha256(bytes((0x28, 0x5f, 0xe6, 0xff)) * 16).hexdigest()
+        require(patch(baseline, sample_x, inside_y) == old_color, "virtual_exit: the original swatch did not render")
+        require(patch(fading, sample_x, inside_y) not in (old_color, patch(fading, sample_x - 24, inside_y)),
+                "virtual_exit: the outgoing swatch did not fade in its last position")
+        require(patch(fading, sample_x, outside_y) == patch(baseline, sample_x, outside_y),
+                "virtual_exit: the outgoing drawing escaped the viewport clip")
+        x, y, w, h = find(after, "virtual-exit-swatch")["bounds"]
+        require(patch(final, math.floor(x + w / 2) - 2, math.floor(y + h / 2) - 2) == new_color,
+                "virtual_exit: the settled drawing did not show the reinserted row's swatch")
+
+
+def moving_popup(args, output, sockets):
+    anchor, panel, field, marker = "editor-tools", "editor-tools-panel", "editor-tools-field", "editor-tools-marker"
+    ids = (anchor, panel, field, marker)
+    with LiveWindow("moving-popup", args, output, sockets, ["showcase", "interaction"],
+                    env={"OCTARA_MOVING_POPUP": "1"}) as app, app.wire() as stream:
+        def request(op, **fields):
+            step = {"op": op, **fields}
+            reply = app.wire_request(stream, step)
+            require(reply.get("ok"), f"moving_popup: {step} failed: {reply}")
+            return reply
+
+        def inspect():
+            return request("inspect")["snapshot"]
+
+        def tap(identifier):
+            request("tap", target=find(inspect(), identifier)["target"])
+
+        def capture(name):
+            path = output / f"moving-popup-{name}.png"
+            report = request("capture", path=str(path), scale=1, pixels="painted", settle_ms=0)["capture"]
+            require(report["renderer"] == "gpu" and report["pixels"] == "painted", f"moving_popup: wrong capture source: {report}")
+            return path, report
+
+        def relative_geometry(snapshot):
+            a, p, f = (find(snapshot, identifier)["bounds"] for identifier in ids[:3])
+            c = snapshot["text_input"]["caret"]
+            return (p[0] - a[0], p[1] - a[1] - a[3], f[0] - p[0], f[1] - p[1], c[0] - f[0], c[1] - f[1])
+
+        def read_marker(path, first, last):
+            width, height, pixels = png_rgba(path)
+            y = math.floor(first[1] + first[3] / 2)
+            require(0 <= y < height, f"moving_popup: marker row outside {path.name}")
+            row = pixels[y * width * 4 : (y + 1) * width * 4]
+            color = bytes((0x19, 0xb7, 0x85, 0xff))
+            xs = [x for x in range(width) if row[x * 4 : x * 4 + 4] == color]
+            left, right = min(first[0], last[0]), max(first[0] + first[2], last[0] + last[2])
+            require(xs and len(xs) >= first[2] - 4 and left - 1 <= xs[0] and xs[-1] < right + 1,
+                    f"moving_popup: marker in {path.name} fell outside the observed corridor [{left}, {right}]")
+
+        request("reduced_motion", on=False)
+        tap("interaction-open")
+        tap("editor-tabs-tab-preview")
+        tap(anchor)
+        editor = find(inspect(), field)["target"]
+        request("focus", target=editor)
+        request("type", target=editor, text="Moving note")
+        request("key", target=editor, chord="shift+left")
+        request("settle", limit_ms=5000)
+        before = inspect()
+        initial_targets = [find(before, identifier)["target"] for identifier in ids]
+        initial_document = before["text_input"]
+        baseline = relative_geometry(before)
+        require(baseline[1] >= 0, "moving_popup: the panel should start below the trigger")
+        still, _ = capture("before")
+
+        request("invoke", target=before["target"], command="interaction.move-tools")
+        time.sleep(0.6)
+        head = inspect()
+        x, y, w, h = find(head, field)["bounds"]
+        picked = request("pick", target=head["target"], x=x + w / 2, y=y + h / 2)["picked"]["node"]
+        require(picked["target"] == editor, "moving_popup: the editor did not receive hits at its moving position")
+        moving, report = capture("moving")
+        tail = inspect()
+        require(not report["settled"] and head["observation"]["drawing_revision"] <= report["paint"]["revision"]
+                <= tail["observation"]["drawing_revision"], "moving_popup: capture missed the observed interval of motion")
+        request("settle", limit_ms=5000)
+        after = inspect()
+        settled, report = capture("settled")
+        require(report["settled"], "moving_popup: the anchor still had pending motion after settling")
+
+        start_x = find(before, anchor)["bounds"][0]
+        middle_x = find(head, anchor)["bounds"][0]
+        end_x = find(after, anchor)["bounds"][0]
+        require(start_x + 4 < middle_x < end_x - 4 and abs(end_x - start_x - 128) < 0.3,
+                "moving_popup: the moving and settled positions did not exercise the requested anchor shift")
+        for snapshot in (head, tail, after):
+            require([find(snapshot, identifier)["target"] for identifier in ids] == initial_targets and snapshot.get("focus") == field,
+                    "moving_popup: movement replaced an allocation or transferred focus")
+            require(all(snapshot["text_input"][key] == initial_document[key] for key in ("text", "selection", "selection_utf16")),
+                    "moving_popup: movement changed the editor document or selection")
+            require(all(abs(current - old) < 0.3 for current, old in zip(relative_geometry(snapshot), baseline)),
+                    "moving_popup: panel placement, field bounds, or caret diverged from its anchor")
+
+        before_marker, head_marker, tail_marker, after_marker = (find(snap, marker)["bounds"] for snap in (before, head, tail, after))
+        require(tail_marker[0] < after_marker[0] - 4, "moving_popup: the second observation already reached the final position")
+        read_marker(still, before_marker, before_marker)
+        read_marker(moving, head_marker, tail_marker)
+        read_marker(settled, after_marker, after_marker)
+
+
 def main():
     repo = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1228,6 +1405,8 @@ def main():
     probe.add_argument("--gpu-paint-evidence", action="store_true", help="verify Shader Lab paint through a fallback, exit, and reopen")
     probe.add_argument("--gpu-stale-paint", action="store_true", help="verify a resized macOS window discards an in-flight Glass drawing")
     probe.add_argument("--surface-drain", action="store_true", help="verify input during shared surface configuration with a macOS debug window build")
+    probe.add_argument("--virtual-exit", action="store_true", help="check virtual row deletion and reinsertion with --window target/debug/virtual_interaction")
+    probe.add_argument("--moving-popup", action="store_true", help="check the settings popup following a moving anchor in the interaction showcase")
     args = parser.parse_args()
     if os.name != "posix" or not hasattr(socket, "AF_UNIX"):
         print("SKIP: this live smoke check uses Unix-domain sockets")
@@ -1259,6 +1438,10 @@ def main():
         scenarios = (gpu_stale_paint,)
     if args.surface_drain:
         scenarios = (surface_drain,)
+    if args.virtual_exit:
+        scenarios = (virtual_exit,)
+    if args.moving_popup:
+        scenarios = (moving_popup,)
     with tempfile.TemporaryDirectory(prefix="octara-agent-", dir="/tmp") as temporary:
         sockets = Path(temporary)
         for scenario in scenarios:
@@ -1272,6 +1455,10 @@ def main():
         print("Live Inspector stale GPU paint passed.")
     elif args.surface_drain:
         print("Live Inspector surface drain passed.")
+    elif args.virtual_exit:
+        print("Live Inspector confirmed a clipped fade and fresh row identity after reinsertion.")
+    elif args.moving_popup:
+        print("Live Inspector confirmed moving popup pixels, hits, focus and editor geometry.")
     else:
         print("Live Inspector: inspect, gestures, native resize, realtime settle, GPU capture, errors, window routing and reconnect passed.")
     return 0

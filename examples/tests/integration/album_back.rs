@@ -55,6 +55,7 @@ fn a_cancelled_back_keeps_both_pages_and_a_completed_back_releases_only_the_deta
     assert_eq!(window.kernel().text_of(DETAIL_COUNTERS).as_deref(), Some("Back 0 · Released 0"));
 
     assert!(back(&mut window, 1, BackPhase::Progress(0.1)));
+    assert_back(&window, 1, BackPhase::Progress(0.1), false);
     assert!(back(&mut window, 1, BackPhase::Cancelled));
     assert!(!back(&mut window, 1, BackPhase::Completed));
     assert_back(&window, 1, BackPhase::Cancelled, false);
@@ -68,9 +69,22 @@ fn a_cancelled_back_keeps_both_pages_and_a_completed_back_releases_only_the_deta
 
     assert!(back(&mut window, 2, BackPhase::Started));
     assert!(back(&mut window, 2, BackPhase::Progress(0.8)));
-    assert!(back(&mut window, 2, BackPhase::Completed));
+    assert!(window.event(InputEvent::Active(false)));
+    assert_back(&window, 2, BackPhase::Cancelled, false);
+    assert_eq!(target(&window, DETAIL), detail);
+    assert_eq!(window.inspect().focus.as_deref(), Some(DETAIL_SCROLL));
+    assert_eq!(offset(&window, DETAIL_SCROLL), detail_offset);
+    assert_eq!(window.kernel().text_of(DETAIL_COUNTERS).as_deref(), Some("Back 0 · Released 0"));
+    assert!(!back(&mut window, 2, BackPhase::Progress(0.9)));
+
+    assert!(window.event(InputEvent::Active(true)));
+    assert!(back(&mut window, 3, BackPhase::Started));
     assert!(!back(&mut window, 2, BackPhase::Completed));
-    assert_back(&window, 2, BackPhase::Completed, true);
+    assert_back(&window, 3, BackPhase::Started, false);
+    assert!(back(&mut window, 3, BackPhase::Progress(0.8)));
+    assert!(back(&mut window, 3, BackPhase::Completed));
+    assert!(!back(&mut window, 3, BackPhase::Completed));
+    assert_back(&window, 3, BackPhase::Completed, true);
     assert!(window.back_gesture_target().is_none());
     assert!(!window.kernel().exists(DETAIL));
     assert_eq!(target(&window, LIST), list);

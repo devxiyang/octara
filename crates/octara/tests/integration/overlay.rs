@@ -1,8 +1,14 @@
 //! Overlays: shown above everything, placed next to their anchor, flipped and clamped.
 
 use octara::app::{DEFAULT_VIEWPORT, Event, InputEvent, Phase, PointerEvent};
+use octara::inspect::{self, Delivery};
+use octara::platform::HeadlessWindow;
 use octara::prelude::*;
+use octara::serde_json::json;
 use octara_primitives::layout::Placed;
+use octara_primitives::paint::Rect;
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::Duration;
 
 /// A trigger at `(left, top)` opening a 100×40 panel.
@@ -536,6 +542,201 @@ fn nested_overlays_follow_their_anchors_after_a_viewport_resize() {
     app.resize(1000.0, 720.0);
     assert_ne!(rect(&app, "outer-trigger"), before, "the anchor actually moves with the viewport");
     assert_nested_anchors(&app);
+}
+
+#[derive(Default)]
+struct PopupPresses {
+    count: Cell<u32>,
+    point: Cell<Option<(f32, f32)>>,
+}
+
+fn reordering_popup() -> (Window, Rc<PopupPresses>) {
+    let applied = Rc::new(PopupPresses::default());
+    let presses = applied.clone();
+    let mut window = Window::headless(move || {
+        let rows = state("rows", || (0..8u32).map(|key| (key, ())).collect::<Vec<_>>());
+        let open = state("open", || false);
+        on_command("reorder", move || rows.update(|rows| rows.swap(2, 5)));
+        let presses = presses.clone();
+        col().size_full().p_4().child(col().id("scroller").w(240.0).h(320.0).overflow_y_scroll().layout_motion(Spring::REFLOW).child(each(
+            move || rows.get(),
+            move |&key, _| {
+                let row = col().h(64.0).flex_shrink_0();
+                if key != 2 {
+                    return row;
+                }
+                let presses = presses.clone();
+                row.child(el().id("reordering-trigger").label("Open notes").w(96.0).h(32.0).on_press(move || open.set(true)).overlay(
+                    move || open.get(),
+                    Placement::BELOW,
+                    move || {
+                        let presses = presses.clone();
+                        col()
+                            .id("reordering-popup")
+                            .w(180.0)
+                            .h(96.0)
+                            .p_2()
+                            .gap_2()
+                            .bg(Token::Surface)
+                            .child(input().id("popup-editor").label("Notes").value("Draft").h(28.0).w_full())
+                            .child(
+                                el().id("popup-apply")
+                                    .role(Role::Button)
+                                    .label("Apply")
+                                    .h(28.0)
+                                    .w_full()
+                                    .bg(Token::Accent)
+                                    .preserve_focus_on_press(true)
+                                    .on_press(move || {
+                                        presses.count.set(presses.count.get() + 1);
+                                        presses.point.set(pointer_position_in("popup-apply"));
+                                    }),
+                            )
+                    },
+                ))
+            },
+        )))
+    });
+    window.app().set_target_platform(octara::app::TargetPlatform::MacOs);
+    window.dispatch(Event::Scroll("scroller".into(), 0.0, 48.0)).unwrap();
+    window.dispatch(Event::Press("reordering-trigger".into())).unwrap();
+    window.dispatch(Event::Focus("popup-editor".into())).unwrap();
+    window.set_selection(1, 3);
+    (window, applied)
+}
+
+fn hosted_selection(app: &Window) -> Rect {
+    let host = app.platform_window();
+    let host = host.as_any().downcast_ref::<HeadlessWindow>().unwrap();
+    let (range, rect) = host.text_input.as_ref().unwrap().geometry.as_ref().unwrap().first_rect(1..3).unwrap();
+    assert_eq!(range, 1..3);
+    rect
+}
+
+#[test]
+fn an_open_popup_follows_a_reordering_anchor_across_paint_input_and_text_geometry() {
+    let (mut window, applied) = reordering_popup();
+    let app = window.app();
+    let (trigger, panel, editor, button, placement) = {
+        let k = window.kernel();
+        let panel = k.find("reordering-popup").unwrap();
+        let viewport = k.find("scroller").unwrap();
+        assert_eq!(k.scroll_offset(viewport).1, 48.0);
+        (
+            k.find("reordering-trigger").unwrap(),
+            panel,
+            k.find("popup-editor").unwrap(),
+            k.find("popup-apply").unwrap(),
+            k.parent(panel).unwrap(),
+        )
+    };
+    let initial = window.inspect();
+    let editor_target = &initial.find("popup-editor").unwrap().target;
+    let button_target = &initial.find("popup-apply").unwrap().target;
+    let before_panel = rect(&window, "reordering-popup");
+    let before_editor = hosted_selection(&window);
+    let placement = octara::kernel::a11y::a11y_id(placement);
+    let editor_ax = octara::kernel::a11y::a11y_id(editor);
+    let ax = window.accessibility_update();
+    assert_eq!(ax.focus, editor_ax);
+    assert!(ax.nodes.iter().any(|(id, _)| *id == placement));
+
+    window.invoke("reorder").unwrap();
+    let target_panel = rect(&window, "reordering-popup");
+    let target_button = rect(&window, "popup-apply");
+    assert_eq!(target_panel, (before_panel.0, before_panel.1 + 3.0 * 64.0, before_panel.2, before_panel.3));
+    window.reset_counters();
+    let near = |actual: f32, expected: f32| assert!((actual - expected).abs() <= 0.06, "{actual} != {expected}");
+    let start = app.now();
+    for elapsed in [0, 80, 160, 2000] {
+        app.advance_to(start + Duration::from_millis(elapsed));
+        let (trigger_x, trigger_y, _, trigger_h) = window.kernel().shown_rect(trigger);
+        let (x, y, w, h) = window.kernel().shown_rect(panel);
+        near(x, trigger_x);
+        near(y, trigger_y + trigger_h + 4.0);
+        assert_eq!((w, h), (target_panel.2, target_panel.3));
+        assert_eq!(window.kernel().placed_side(panel), Some(Side::Bottom));
+        assert_eq!(rect(&window, "reordering-popup"), target_panel);
+        match elapsed {
+            0 => near(y, before_panel.1),
+            2000 => near(y, target_panel.1),
+            _ => assert!(before_panel.1 < y && y < target_panel.1),
+        }
+
+        let drawing = window.display_list();
+        let panel_quad = drawing.quads().find(|q| q.source == panel).unwrap();
+        assert_eq!(panel_quad.rect, Rect::new(x, y, w, h));
+        let selection = hosted_selection(&window);
+        near(selection.y - before_editor.y, y - before_panel.1);
+        assert!(drawing.quads().filter(|q| q.source == editor).any(|q| {
+            (q.rect.y - selection.y).abs() <= 0.01 && (q.rect.x - selection.x).abs() <= 0.01 && (q.rect.w - selection.w).abs() <= 0.01
+        }));
+
+        let snapshot = window.inspect();
+        let bounds = snapshot.find("reordering-popup").unwrap().bounds;
+        near(bounds[1], y);
+        assert_eq!(snapshot.focus.as_deref(), Some("popup-editor"));
+        assert_eq!(&snapshot.find("popup-editor").unwrap().target, editor_target);
+        assert_eq!(snapshot.text_input.as_ref().unwrap().selection, [1, 3]);
+        assert_eq!(&snapshot.find("popup-apply").unwrap().target, button_target);
+
+        let ax = window.accessibility_update();
+        assert!(ax.tree.is_none());
+        assert_eq!(ax.focus, editor_ax);
+        if elapsed > 0 {
+            let surface = &ax.nodes.iter().find(|(id, _)| *id == placement).expect("the anchored surface reports its new transform").1;
+            let bounds = surface.transform().unwrap().transform_rect_bbox(surface.bounds().unwrap());
+            near(bounds.x0 as f32, x);
+            near(bounds.y0 as f32, y);
+        }
+
+        if elapsed == 80 {
+            let (tx, ty, tw, th) = target_button;
+            let stale = json!({"op":"tap_at","target":button_target,"x":tx + tw / 2.0,"y":ty + th / 2.0});
+            let reply = inspect::handle_line(&mut window, &stale.to_string());
+            assert_eq!(reply.code.as_deref(), Some("STEP_FAILED"));
+            assert_eq!(reply.delivery, Some(Delivery::Refused));
+            assert!(reply.pointer.is_empty());
+            assert_eq!(applied.count.get(), 0);
+
+            let at = drawing.quads().find(|q| q.source == button).unwrap().rect;
+            let (local_x, local_y) = (at.w / 4.0, at.h / 2.0);
+            let (x, y) = (at.x + local_x, at.y + local_y);
+            assert_eq!(window.kernel().hit_test(x, y), Some(button));
+            let [bx, by, bw, bh] = snapshot.find("popup-apply").unwrap().bounds;
+            near(bx + bw / 4.0, x);
+            near(by + bh / 2.0, y);
+            let revision = snapshot.observation.unwrap().drawing_revision.unwrap();
+            let click = json!({"op":"tap_at","target":button_target,"x":x,"y":y,"drawing_revision":revision});
+            let reply = inspect::handle_line(&mut window, &click.to_string());
+            assert!(reply.ok, "{reply:?}");
+            assert_eq!(reply.pointer.last().unwrap().captured.as_ref().unwrap().target, *button_target);
+            assert_eq!(applied.count.get(), 1);
+            let (px, py) = applied.point.get().expect("the press has an element-relative point");
+            near(px, local_x);
+            near(py, local_y);
+        }
+    }
+    assert_eq!(window.kernel().counters().layout_runs, 0, "animation samples only move the presented geometry");
+
+    app.set_reduced_motion(true);
+    let safe_area = Rect::new(48.0, 24.0, 504.0, 452.0);
+    window.event(InputEvent::Resize { width: 600.0, height: 500.0, scale: 1.0, safe_area: Some(safe_area) });
+    window.invoke("reorder").unwrap();
+    assert_eq!(window.size(), (600.0, 500.0));
+    let (x, y, w, h) = window.kernel().shown_rect(panel);
+    assert_eq!((x, y, w, h), rect(&window, "reordering-popup"));
+    let (_, anchor_y, _, anchor_h) = window.kernel().shown_rect(trigger);
+    assert_eq!(y, anchor_y + anchor_h + 4.0);
+    assert_eq!(y, before_panel.1);
+    assert!(x > before_panel.0, "the inset constrains the popup's left edge");
+    let shown = Rect::new(x, y, w, h);
+    assert_eq!(shown.intersect(&safe_area), shown);
+    let selection = hosted_selection(&window);
+    near(selection.x - before_editor.x, x - before_panel.0);
+    near(selection.y - before_editor.y, y - before_panel.1);
+    assert!(window.layout_issues().is_empty(), "{:?}", window.layout_issues());
+    assert!(app.diagnostics().is_empty(), "{:?}", app.diagnostics());
 }
 
 #[test]

@@ -659,6 +659,9 @@ pub struct Kernel {
     overlay_layer: NodeId,
     /// Anchored nodes in the order they were anchored (parents before nested overlays).
     anchored: Vec<NodeId>,
+    /// Presentation offsets for anchored roots. The previous allocation is reused on the next sample.
+    anchor_offsets: FxHashMap<NodeId, (f32, f32)>,
+    previous_anchor_offsets: FxHashMap<NodeId, (f32, f32)>,
     viewport: (f32, f32),
     safe_area: Option<crate::paint::Rect>,
     screen: Breakpoint,
@@ -769,6 +772,8 @@ impl Kernel {
             root: NodeId::default(),
             overlay_layer: NodeId::default(),
             anchored: Vec::new(),
+            anchor_offsets: FxHashMap::default(),
+            previous_anchor_offsets: FxHashMap::default(),
             viewport: (0.0, 0.0),
             safe_area: None,
             screen: Breakpoint::Compact,
@@ -1402,6 +1407,7 @@ impl Kernel {
         }
         if n.anchor.is_some() {
             self.anchored.retain(|a| *a != id);
+            self.anchor_offsets.remove(&id);
         }
         self.taffy.remove(n.taffy).expect("taffy");
         self.counters.nodes_destroyed += 1;
@@ -1793,6 +1799,7 @@ impl Kernel {
             (Some(_), None) => self.anchored.retain(|a| *a != id),
             _ => {}
         }
+        self.anchor_offsets.remove(&id);
         self.resolve(id, "anchor");
         self.needs_layout = true;
         self.mutation_gen += 1;
@@ -2294,8 +2301,7 @@ impl Kernel {
             }
         }
         self.compute_layout(width, height);
-        let viewport = crate::paint::Rect::new(0.0, 0.0, width, height);
-        let bounds = self.safe_area.map_or(viewport, |area| viewport.intersect(&area));
+        let bounds = self.overlay_bounds();
         let sizes: Vec<_> = self
             .anchored
             .iter()
@@ -2321,6 +2327,7 @@ impl Kernel {
         self.layouts += 1;
         self.clamp_scrolls();
         self.track_frames();
+        self.sample_anchor_offsets();
         self.invalidate_text_presentations();
         self.settle_fields(true);
         self.counters.layout_runs += 1;
@@ -2387,6 +2394,11 @@ impl Kernel {
         for id in ids {
             self.resolve(id, "screen");
         }
+    }
+
+    fn overlay_bounds(&self) -> crate::paint::Rect {
+        let viewport = crate::paint::Rect::new(0.0, 0.0, self.viewport.0, self.viewport.1);
+        self.safe_area.map_or(viewport, |area| viewport.intersect(&area))
     }
 
     /// Positions anchored nodes from the current layout; true if any moved.
@@ -2518,12 +2530,7 @@ impl Kernel {
         let (cw, ch) = self.client_size(id);
         let (sw, sh) = self.scroll_size(id);
         let to = (x.clamp(0.0, (sw - cw).max(0.0)), y.clamp(0.0, (sh - ch).max(0.0)));
-        if !self.set_scroll_offset(id, to) {
-            return false;
-        }
-        // Overlays anchored inside may need to move.
-        self.needs_layout |= !self.anchored.is_empty();
-        true
+        self.set_scroll_offset(id, to)
     }
 
     fn set_scroll_offset(&mut self, id: NodeId, to: (f32, f32)) -> bool {
@@ -2531,6 +2538,8 @@ impl Kernel {
             return false;
         }
         self.node_mut(id).scroll = to;
+        // Overlays anchored inside may need their settled placement updated.
+        self.needs_layout |= !self.anchored.is_empty();
         self.a11y_touch(id);
         self.a11y_geometry.set(true);
         self.changed(id, Dirty::PAINT, "scroll", || format!("{to:?}"));

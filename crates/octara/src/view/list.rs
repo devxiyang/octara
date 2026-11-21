@@ -148,6 +148,13 @@ struct Rows<K: 'static, T: 'static, R> {
     row: Box<RowFactory<K, T, R>>,
 }
 
+#[derive(Clone, Copy)]
+enum RowExit {
+    Normal,
+    Visible,
+    Quiet,
+}
+
 impl<K: Eq + Hash + Clone + Display + 'static, T: Clone + 'static, R: Into<El>> Rows<K, T, R> {
     fn build(&self, identity: &RowKey, offscreen: bool) -> Option<(ScopeId, NodeId)> {
         let key = identity.value::<K>().expect("live list row key");
@@ -196,11 +203,15 @@ impl<K: Eq + Hash + Clone + Display + 'static, T: Clone + 'static, R: Into<El>> 
         Some((row.1, true))
     }
 
-    fn remove(&self, key: &RowKey, exit: bool) -> Option<()> {
+    fn remove(&self, key: &RowKey, exit: RowExit) -> Option<()> {
         let removed = self.entries.borrow_mut().remove(key);
         if let Some((scope, node)) = removed {
-            if exit {
-                structure::begin_exit(&mut crate::app::window().kernel.borrow_mut(), [node]);
+            match exit {
+                RowExit::Normal => structure::begin_exit(&mut crate::app::window().kernel.borrow_mut(), [node]),
+                RowExit::Visible => {
+                    crate::app::window().kernel.borrow_mut().begin_visible_exit(node);
+                }
+                RowExit::Quiet => {}
             }
             rt(|rt| rt.dispose_scope(scope));
         }
@@ -208,7 +219,7 @@ impl<K: Eq + Hash + Clone + Display + 'static, T: Clone + 'static, R: Into<El>> 
         rt(|rt| rt.scope_alive(self.owner)).then_some(())
     }
 
-    fn reconcile(&self, keys: &[RowKey], exit: bool) -> Option<bool> {
+    fn reconcile(&self, keys: &[RowKey], exit: RowExit) -> Option<bool> {
         #[allow(clippy::mutable_key_type, reason = "RowKey hashes immutable identity; the Cell only marks retirement")]
         let wanted: HashSet<_> = keys.iter().collect();
         let removed: Vec<_> = self.entries.borrow().keys().filter(|key| !wanted.contains(key)).cloned().collect();
@@ -284,11 +295,11 @@ where
                             if changes.iter().any(|change| matches!(change, Change::Insert { key, .. } if removed.contains(key))) {
                                 for change in &changes {
                                     if let Change::Remove { key, .. } = change {
-                                        rows.remove(key, true)?;
+                                        rows.remove(key, RowExit::Normal)?;
                                     }
                                 }
                                 let keys = next.snapshot(&namespace);
-                                rows.reconcile(&keys, true)?;
+                                rows.reconcile(&keys, RowExit::Normal)?;
                                 let entries = rows.entries.borrow();
                                 structure::place(
                                     &mut u.kernel.borrow_mut(),
@@ -308,7 +319,7 @@ where
                                         count.set(count.get() + 1);
                                     }
                                     Change::Remove { key, .. } => {
-                                        rows.remove(&key, true)?;
+                                        rows.remove(&key, RowExit::Normal)?;
                                         count.set(count.get() - 1);
                                     }
                                     Change::Move { key, to, .. } => {
@@ -323,7 +334,7 @@ where
                     }
                     let cursor = next.subscribe();
                     let keys = next.snapshot(&namespace);
-                    rows.reconcile(&keys, true)?;
+                    rows.reconcile(&keys, RowExit::Normal)?;
                     {
                         let entries = rows.entries.borrow();
                         structure::place(
@@ -447,7 +458,8 @@ pub fn reveal_row<K: Eq + Hash + Display + 'static>(viewport: &str, key: K) -> b
 /// weights, without mounting the offscreen rows. The
 /// edge spacers are `{parent id}-top` / `-bottom`. Focus and pointer capture temporarily keep
 /// their rows resident; hidden gap spacers preserve their positions without mounting the
-/// intervening rows.
+/// intervening rows. A visible row removed from the data can animate its exit. Rows mounted
+/// or removed to follow scrolling use quiet residency changes.
 #[track_caller]
 pub fn virtual_each<K, T, S: IntoRows<K, T> + 'static, R: Into<El> + 'static>(
     list: impl Fn() -> S + 'static,
@@ -713,7 +725,7 @@ where
                                         m.remove(&key);
                                     }
                                     estimates.borrow_mut().remove(&key);
-                                    rows.remove(&key, false)?;
+                                    rows.remove(&key, RowExit::Visible)?;
                                     measured.borrow_mut().remove(&key);
                                 }
                                 Change::Move { key, to, .. } => {
@@ -743,7 +755,7 @@ where
                         // bounded-log recovery must retire absent rows before selecting pins.
                         let removed: Vec<_> = rows.entries.borrow().keys().filter(|key| !m.contains(key)).cloned().collect();
                         for key in removed {
-                            rows.remove(&key, false)?;
+                            rows.remove(&key, RowExit::Visible)?;
                         }
                         measured.borrow_mut().retain(|key| m.contains(key));
                         if let Some(anchor) = &mut anchor {
@@ -828,7 +840,7 @@ where
                     // window neither enter nor exit (they are not added or removed).
                     let was_quiet = u.kernel.borrow_mut().replace_quiet(true);
                     let _quiet = std::mem::DropGuard::new(&u, move |u| u.kernel.borrow_mut().set_quiet(was_quiet));
-                    let changed = rows.reconcile(&want, false)?;
+                    let changed = rows.reconcile(&want, RowExit::Quiet)?;
                     let entries = rows.entries.borrow();
                     measured.borrow_mut().retain(|key| entries.contains_key(key));
                     if changed {
