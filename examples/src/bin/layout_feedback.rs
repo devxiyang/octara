@@ -34,7 +34,7 @@ fn layout_feedback() -> View {
 
 fn main() {
     octara_shell::run_with(
-        octara_shell::Options { title: "Octara layout feedback".into(), size: (800.0, 500.0), ..Default::default() },
+        octara_shell::Options { window: WindowOptions::new("Octara layout feedback").size(800.0, 500.0), ..Default::default() },
         layout_feedback,
     );
 }

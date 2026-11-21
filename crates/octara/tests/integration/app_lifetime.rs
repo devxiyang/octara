@@ -239,7 +239,7 @@ fn refused_input_keeps_the_app_running_and_closed_windows_refuse_delivery() {
 
 #[test]
 fn failed_host_submission_does_not_publish_a_completed_frame() {
-    use octara::platform::{Frame, Platform, PlatformWindow};
+    use octara::platform::{Frame, OpenedWindow, Platform, PlatformWindow, WindowViewport};
     use std::any::Any;
     struct Host(Rc<Cell<bool>>);
     impl PlatformWindow for Host {
@@ -256,8 +256,11 @@ fn failed_host_submission_does_not_publish_a_completed_frame() {
             None
         }
         fn write_text(&mut self, _: &str) {}
-        fn open_window(&mut self, _: WindowId, _: &WindowOptions) -> Result<Box<dyn PlatformWindow>, String> {
-            Ok(Box::new(Host(self.0.clone())))
+        fn open_window(&mut self, _: WindowId, options: &WindowOptions) -> Result<OpenedWindow, String> {
+            Ok(OpenedWindow {
+                window: Box::new(Host(self.0.clone())),
+                viewport: WindowViewport { size: options.size, scale: 1.0, safe_area: None },
+            })
         }
         fn as_any(&self) -> &dyn Any {
             self

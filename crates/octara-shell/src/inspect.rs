@@ -4,7 +4,7 @@ use super::{Shell, ShellEvent, ww};
 use octara::app::{TargetGuard, Window, WindowId};
 use octara::capture::PaintFrame;
 use octara::diagnostics as codes;
-use octara::inspect::{Completion, Delivery, LayoutState, Reply, Request, SurfaceState};
+use octara::inspect::{Completion, Delivery, LayoutState, PointerStep, Reply, Request, SurfaceState};
 use octara::serde_json::{self, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,6 +16,7 @@ const OPERATIONS: &[&str] = &[
     "inspect",
     "issues",
     "tap",
+    "tap_at",
     "double_tap",
     "long_press",
     "drag",
@@ -83,6 +84,8 @@ pub(crate) struct Responder {
     target: Option<(Window, Option<TargetGuard>)>,
     sent: std::cell::Cell<bool>,
     delivery: std::cell::Cell<Option<Delivery>>,
+    // Keep completed gesture phases available if a later phase unwinds.
+    pointer: Vec<PointerStep>,
 }
 
 impl Responder {
@@ -96,6 +99,7 @@ impl Responder {
             target: None,
             sent: std::cell::Cell::new(false),
             delivery: std::cell::Cell::new(Some(Delivery::Refused)),
+            pointer: Vec::new(),
         }
     }
 
@@ -134,7 +138,7 @@ impl Responder {
         self.send_with(reply, extra);
     }
 
-    fn send_gesture(self, mut reply: Reply, delivered: bool) {
+    fn send_gesture(mut self, mut reply: Reply, delivered: bool) {
         if reply.delivery.is_none() {
             reply.delivery = if delivered {
                 Some(Delivery::Delivered)
@@ -144,6 +148,8 @@ impl Responder {
                 Some(Delivery::Refused)
             };
         }
+        self.pointer.append(&mut reply.pointer);
+        reply.pointer = std::mem::take(&mut self.pointer);
         self.send(reply);
     }
 
@@ -243,7 +249,7 @@ impl Pending {
             && !reply.connected.load(Ordering::Relaxed)
             && let Some(mut window) = app.window(job.window())
         {
-            job.cancel(&mut window);
+            job.cancel(&mut window, None);
         }
     }
 
@@ -260,6 +266,7 @@ impl Pending {
 fn route(request: &Request) -> (&'static str, bool) {
     match request {
         Request::Tap { .. }
+        | Request::TapAt { .. }
         | Request::DoubleTap { .. }
         | Request::LongPress { .. }
         | Request::Drag { .. }
@@ -322,7 +329,7 @@ impl Shell {
                 }
             };
         let (route, input) = route(&request);
-        let response = respond(route, input).with_target(&target, guard.as_ref());
+        let mut response = respond(route, input).with_target(&target, guard.as_ref());
         if let Some(reply) = octara::inspect::failure_refusal(&target, &request) {
             response.send(reply);
             return;
@@ -347,7 +354,7 @@ impl Shell {
                     _ => super::gesture::Kind::LongPress,
                 };
                 let guard = guard.expect("a gesture has a bound target");
-                match super::gesture::Job::start_guarded(&mut target, kind, Instant::now(), guard) {
+                match super::gesture::Job::start_guarded(&mut target, kind, Instant::now(), guard, &mut response.pointer) {
                     Ok(mut job) => {
                         job.trace_epoch = self.shared.trace.then_some(self.shared.trace_epoch);
                         self.inspect_pending = Some(Pending::gesture(job, response));
@@ -400,6 +407,7 @@ impl Shell {
                     &self.shared.proxy,
                 ));
                 self.capture_step();
+                self.show();
             }
             Request::Settle { limit_ms } => {
                 let ms = limit_ms.unwrap_or(10_000);
@@ -483,7 +491,7 @@ impl Shell {
                     self.inspect_pending = Some(Pending::Settle(waiting));
                 }
             }
-            Pending::Gesture { mut job, reply } => {
+            Pending::Gesture { mut job, mut reply } => {
                 let Some(mut window) = self.app.as_ref().and_then(|app| app.window(job.window())) else {
                     reply.send_gesture(Reply::fail(&codes::STEP_FAILED, "the target window closed during the gesture"), job.delivered());
                     return;
@@ -491,7 +499,7 @@ impl Shell {
                 if !job.delivered() {
                     reply.begin();
                 }
-                match job.poll(&mut window, Instant::now()) {
+                match job.poll(&mut window, Instant::now(), &mut reply.pointer) {
                     Some(result) => reply.send_gesture(result, job.delivered()),
                     None => {
                         self.inspect_pending = Some(Pending::gesture(job, reply));
@@ -610,17 +618,25 @@ mod target_feedback {
         let parsed = octara::inspect::parse_guarded_request(&window, r#"{"op":"double_tap","id":"target"}"#).unwrap();
         let guard = parsed.guard.unwrap();
         let (send, receive) = std::sync::mpsc::channel();
-        let response = Responder::new(send, Arc::new(AtomicBool::new(true)), "framework", true).with_target(&window, Some(&guard));
+        let mut response = Responder::new(send, Arc::new(AtomicBool::new(true)), "framework", true).with_target(&window, Some(&guard));
         response.begin();
-        let reply = super::super::gesture::Job::start_guarded(&mut window, super::super::gesture::Kind::DoubleTap, Instant::now(), guard)
-            .err()
-            .expect("the first click panicked");
+        let reply = super::super::gesture::Job::start_guarded(
+            &mut window,
+            super::super::gesture::Kind::DoubleTap,
+            Instant::now(),
+            guard,
+            &mut response.pointer,
+        )
+        .err()
+        .expect("the first click panicked");
         response.send_gesture(*reply, false);
 
         let reply: serde_json::Value = serde_json::from_str(&receive.recv().unwrap()).unwrap();
         assert_eq!(reply["code"], "APP_FAILED");
         assert_eq!(reply["live"]["delivery"], "unknown");
         assert!(reply.get("delivery").is_none() && reply.get("completion").is_none());
+        let steps = reply["pointer"].as_array().unwrap();
+        assert_eq!(steps.iter().map(|step| step["phase"].as_str().unwrap()).collect::<Vec<_>>(), ["move", "down"]);
         window.app().shutdown();
     }
 
@@ -701,13 +717,13 @@ mod target_feedback {
             let app = window.app();
             let (send, receive) = std::sync::mpsc::channel();
             let connection = Arc::new(AtomicBool::new(true));
-            let response = Responder::new(send, connection.clone(), "framework", true).with_target(&window, None);
+            let mut response = Responder::new(send, connection.clone(), "framework", true).with_target(&window, None);
             response.begin();
             if matches!(kind, Kind::DoubleTap) {
                 window.tap("target").unwrap();
                 assert!(!window.pointer_click_cooldown().is_zero());
             }
-            let job = Job::start(&mut window, "target", kind, Instant::now()).unwrap();
+            let job = Job::start(&mut window, "target", kind, Instant::now(), &mut response.pointer).unwrap();
             let pending = Pending::gesture(job, response);
             let held = window.held_pointer();
             assert_eq!(held.is_some(), matches!(kind, Kind::LongPress));
@@ -727,6 +743,13 @@ mod target_feedback {
                 assert_eq!(reply["code"], "APP_FAILED");
                 assert_eq!(reply["delivery"], expected_delivery);
                 assert_eq!(reply["live"]["delivery"], expected_delivery);
+                if matches!(kind, Kind::LongPress) {
+                    let steps = reply["pointer"].as_array().unwrap();
+                    assert_eq!(steps.len(), 1);
+                    assert_eq!(steps[0]["phase"], "down");
+                } else {
+                    assert!(reply.get("pointer").is_none());
+                }
             }
             assert!(matches!(receive.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
             app.shutdown();
@@ -772,6 +795,20 @@ mod target_feedback {
         assert_eq!(reply["code"], "STALE_TARGET");
         assert_eq!(reply["live"]["route"], "framework");
         assert_eq!(reply["live"]["delivery"], "refused");
+    }
+
+    #[test]
+    fn a_bad_tap_at_target_keeps_the_framework_input_route() {
+        let window = Window::headless(octara::view::el);
+        let line = r#"{"op":"tap_at","x":12.5,"y":16,"drawing_revision":1,"target":false}"#;
+        let failure = octara::inspect::parse_guarded_request(&window, line).err().expect("the target must be an opaque string");
+        let reply = response(line, *failure, false);
+        assert_eq!(reply["code"], "BAD_REQUEST");
+        assert_eq!(reply["delivery"], "refused");
+        assert_eq!(reply["live"]["route"], "framework");
+        assert_eq!(reply["live"]["delivery"], "refused");
+        assert!(reply.get("pointer").is_none());
+        window.app().shutdown();
     }
 
     #[test]
@@ -1105,6 +1142,7 @@ impl Drop for Responder {
         {
             let mut reply = Reply::fail(&codes::APP_FAILED, "App failed while the request was pending; do not retry");
             reply.delivery = self.delivery.get();
+            reply.pointer = std::mem::take(&mut self.pointer);
             if self.input && reply.delivery == Some(Delivery::Delivered) {
                 reply.completion = Some(Completion::observe(window));
             }

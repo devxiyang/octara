@@ -22,7 +22,8 @@ mod outputs;
 mod profile;
 pub use custom::{Backdrop, CanvasFrame, backdrop, canvas, material, retained_canvas};
 use custom::{CanvasMode, CanvasTarget};
-use outputs::{CanvasKey, OutputChanges, OutputHistory, OutputSlot};
+pub use outputs::PendingPresentation;
+use outputs::{BackdropChange, BackdropHistory, CanvasCache, CanvasKey, OutputChanges};
 use profile::{FrameMeasurement, PendingTimestamps, TimestampPool};
 pub use profile::{FrameProfile, GpuPassKind, GpuPassTiming, GpuTimings};
 
@@ -265,7 +266,7 @@ impl BackdropRegion {
 enum BackdropInput {
     /// End the current pass, copy the painter prefix, then resume with Load.
     Prefix(BackdropRegion),
-    Submitted,
+    Accepted,
     Unavailable,
 }
 
@@ -347,7 +348,7 @@ impl FramePlan {
                 let attachment =
                     if request.target == 0 { output } else { CopyAttachment { extent: target.allocation(window), copyable: true } };
                 let input = if request.exiting {
-                    BackdropInput::Submitted
+                    BackdropInput::Accepted
                 } else {
                     BackdropRegion::crop(attachment, target, &request.paint).map_or(BackdropInput::Unavailable, BackdropInput::Prefix)
                 };
@@ -371,7 +372,7 @@ struct PreparedFrame {
 #[derive(Default)]
 struct FrameRecording<'a> {
     before: Vec<wgpu::CommandBuffer>,
-    /// A capture can read submitted outputs without publishing new pixels.
+    /// Captures reuse cached canvases and accepted backdrop history without publishing outputs.
     outputs: Option<OutputChanges>,
     receipts: Vec<PaintReceipt>,
     measurement: Option<&'a mut FrameMeasurement>,
@@ -564,7 +565,8 @@ pub struct RecordedFrame<'renderer> {
     encoder: wgpu::CommandEncoder,
     device: &'renderer wgpu::Device,
     queue: &'renderer wgpu::Queue,
-    history: &'renderer mut OutputHistory,
+    canvas_cache: &'renderer mut CanvasCache,
+    backdrop_history: &'renderer BackdropHistory,
     changes: OutputChanges,
     revision: Option<u64>,
     receipts: Vec<PaintReceipt>,
@@ -584,8 +586,16 @@ impl RecordedFrame<'_> {
         &self.receipts
     }
 
-    /// Finishes the encoder and submits the frame with its staged uploads.
+    /// Finishes the encoder and submits the frame with its staged uploads. Retained canvases
+    /// become reusable at submission. Use [`Self::submit_for_presentation`] to retain a frame's
+    /// backdrop outputs for host acceptance.
     pub fn submit(self) -> wgpu::SubmissionIndex {
+        self.submit_for_presentation().0
+    }
+
+    /// Submits the frame and returns its candidate backdrop outputs. Give the token to
+    /// [`GpuRenderer::accept_presentation`] once the host accepts the frame.
+    pub fn submit_for_presentation(self) -> (wgpu::SubmissionIndex, PendingPresentation) {
         let submit = || self.queue.submit(self.before.into_iter().chain([self.encoder.finish()]));
         let submission = if !self.changes.has_fresh() {
             submit()
@@ -596,11 +606,13 @@ impl RecordedFrame<'_> {
             }
             submission
         };
-        self.history.commit(self.changes, self.revision);
+        let OutputChanges { canvases, backdrops } = self.changes;
+        self.canvas_cache.submit(canvases, self.revision);
+        let pending = self.backdrop_history.pending(backdrops, self.revision);
         if let Some(timestamps) = self.timestamps {
             timestamps.submitted(self.timestamp_pool, self.queue);
         }
-        submission
+        (submission, pending)
     }
 }
 
@@ -704,7 +716,8 @@ pub struct GpuRenderer {
     glyphs: GlyphCache,
     instances: Option<(wgpu::Buffer, u64)>,
     programs: custom::Programs,
-    output_history: OutputHistory,
+    canvas_cache: CanvasCache,
+    backdrop_history: BackdropHistory,
     timestamps: TimestampPool,
     format: wgpu::TextureFormat,
 }
@@ -847,7 +860,8 @@ impl GpuRenderer {
             glyphs: GlyphCache::default(),
             instances: None,
             programs: custom::Programs::default(),
-            output_history: OutputHistory::default(),
+            canvas_cache: CanvasCache::default(),
+            backdrop_history: BackdropHistory::default(),
             timestamps: TimestampPool::default(),
             format,
         }
@@ -1035,7 +1049,7 @@ impl GpuRenderer {
                             Draw::Backdrop(index)
                         } else {
                             let index = requests.canvases.len();
-                            let retained_mount = (retained && OutputHistory::can_retain(size)).then(|| paint.mount.downgrade());
+                            let retained_mount = (retained && CanvasCache::can_retain(size)).then(|| paint.mount.downgrade());
                             requests.canvases.push(CanvasRequest { pass: current, instance: out.len(), paint: entry, retained_mount });
                             Draw::Canvas(index)
                         };
@@ -1146,7 +1160,8 @@ impl GpuRenderer {
     /// Coordinate access to the shared queue so the returned frame is submitted or dropped before
     /// other work is staged or submitted. Finish any open debug groups first. Author canvases
     /// use separate command buffers in the same submission. A backdrop runs after its group's
-    /// preceding draws. Submitted backdrops are kept for their mounts' exit animations.
+    /// preceding draws. Accept the frame's [`PendingPresentation`] to keep its backdrop outputs
+    /// for their mounts' exit animations.
     /// `size` is the view's extent in device pixels.
     pub fn record(
         &mut self,
@@ -1202,6 +1217,14 @@ impl GpuRenderer {
         }
     }
 
+    /// Keeps a submitted frame's backdrop outputs for exit animations once the host accepts it.
+    ///
+    /// # Panics
+    /// Panics if the token contains outputs from a different renderer.
+    pub fn accept_presentation(&mut self, pending: PendingPresentation) {
+        self.backdrop_history.accept(pending);
+    }
+
     fn record_profiled_input(
         &mut self,
         mut encoder: wgpu::CommandEncoder,
@@ -1245,7 +1268,8 @@ impl GpuRenderer {
     ) -> RecordedFrame<'_> {
         let preparing = recording.measurement.is_some().then(Instant::now);
         let attachment = CopyAttachment::from_texture(view.texture(), self.format);
-        self.output_history.prune();
+        self.canvas_cache.prune();
+        self.backdrop_history.prune();
         let frame = self.prepare_frame(input, attachment, &mut recording);
         let prepared = preparing.map(|start| {
             let end = Instant::now();
@@ -1268,7 +1292,8 @@ impl GpuRenderer {
             encoder,
             device: &self.device,
             queue: &self.queue,
-            history: &mut self.output_history,
+            canvas_cache: &mut self.canvas_cache,
+            backdrop_history: &self.backdrop_history,
             changes: recording.outputs.unwrap_or_default(),
             revision: input.sample.map(|sample| sample.revision),
             receipts: recording.receipts,
@@ -1297,17 +1322,17 @@ impl GpuRenderer {
         for request in requests {
             let index = views.len();
             let retained = request.retained_mount.map(|mount| {
-                let slot = OutputSlot::Canvas(mount.as_ptr().addr());
+                let slot = mount.as_ptr().addr();
                 (slot, mount, CanvasKey::new(&request.paint, scale))
             });
             if let Some((slot, _, key)) = &retained
-                && let Some(image) = self.output_history.canvas(*slot, key)
+                && let Some(image) = self.canvas_cache.get(*slot, key)
             {
                 views.push(image.view.clone());
                 slots.push(Some(index));
                 recording.receipts[request.paint.receipt].outcome = PaintOutcome::Retained { revision: image.revision };
                 if let Some(changes) = &mut recording.outputs {
-                    changes.reuse_canvas(*slot);
+                    changes.canvases.reuse(*slot);
                 }
                 if let Some(measurement) = recording.measurement.as_deref_mut() {
                     measurement.profile.retained_canvases += 1;
@@ -1315,7 +1340,9 @@ impl GpuRenderer {
                 continue;
             }
             let target = match &retained {
-                Some((slot, _, _)) => CanvasTarget::Working(self.output_history.working(*slot, recording.outputs.as_ref())),
+                Some((slot, _, _)) => {
+                    CanvasTarget::Working(self.canvas_cache.working(*slot, recording.outputs.as_ref().map(|changes| &changes.canvases)))
+                }
                 None => CanvasTarget::Transient(transient_views),
             };
             let product = self.programs.encode_canvas(&self.device, &request.paint, scale, target, recording.measurement.as_deref_mut());
@@ -1323,7 +1350,7 @@ impl GpuRenderer {
                 Ok((view, command)) => {
                     if let Some((_, mount, key)) = retained {
                         if let Some(changes) = &mut recording.outputs {
-                            changes.record(mount, view.clone(), Some(key));
+                            changes.canvases.record(mount, view.clone(), key);
                         }
                     } else {
                         transient_views += 1;
@@ -1489,12 +1516,11 @@ impl GpuRenderer {
         recording: &mut FrameRecording<'_>,
     ) -> Result<EncodedBackdrop, PaintFallback> {
         let request = &backdrop.request;
-        let slot = OutputSlot::Backdrop(request.mount.as_ptr().addr());
         let region = match backdrop.input {
             BackdropInput::Prefix(region) => region,
             BackdropInput::Unavailable => return Err(PaintFallback::BackdropUnavailable),
-            BackdropInput::Submitted => {
-                let image = self.output_history.submitted(slot).ok_or(PaintFallback::HistoryUnavailable)?;
+            BackdropInput::Accepted => {
+                let image = self.backdrop_history.get(&request.mount).ok_or(PaintFallback::HistoryUnavailable)?;
                 if let Some(p) = recording.measurement.as_deref_mut() {
                     p.profile.retained_backdrops += 1;
                 }
@@ -1506,11 +1532,17 @@ impl GpuRenderer {
             }
         };
         let copy = custom::BackdropCopy::new(target.texture(), self.format, region);
-        let working = self.output_history.working(slot, recording.outputs.as_ref());
-        let (view, command) =
-            self.programs.encode_backdrop(&self.device, &request.paint, scale, working, copy, recording.measurement.as_deref_mut())?;
+        let working = recording.outputs.as_ref().and_then(|_| self.backdrop_history.take_working(&request.mount));
+        let (view, command) = self.programs.encode_backdrop(
+            &self.device,
+            &request.paint,
+            scale,
+            working.as_ref().map(wgpu::TextureView::texture),
+            copy,
+            recording.measurement.as_deref_mut(),
+        )?;
         if let Some(changes) = &mut recording.outputs {
-            changes.record(request.mount.clone(), view.clone(), None);
+            changes.backdrops.push(BackdropChange { mount: request.mount.clone(), view: view.clone() });
         }
         Ok(EncodedBackdrop { view, prefix_commands: Some(command), outcome: PaintOutcome::Rendered })
     }
@@ -1880,7 +1912,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_canvas_keeps_accepted_pixels_and_independent_outputs_for_duplicate_mounts() {
+    fn retained_canvas_keeps_submitted_pixels_and_independent_outputs_for_duplicate_mounts() {
         let Some(mut gpu) = GpuRenderer::new() else {
             eprintln!("no GPU adapter: skipped");
             return;
@@ -1896,11 +1928,11 @@ mod tests {
         let red = [1.0, 0.0, 0.0, 1.0];
         let green = [0.0, 1.0, 0.0, 1.0];
         let blue = [0.0, 0.0, 1.0, 1.0];
-        let accepted = picture([draw(2.0, 8.0, green)]);
+        let submitted = picture([draw(2.0, 8.0, green)]);
         let device = gpu.device().clone();
         let target = device_target(&device, wgpu::TextureUsages::COPY_SRC);
         let view = target.create_view(&Default::default());
-        for (revision, frame) in [(10, picture([draw(2.0, 8.0, red)])), (20, accepted.clone())] {
+        for (revision, frame) in [(10, picture([draw(2.0, 8.0, red)])), (20, submitted.clone())] {
             profile_frame(&mut gpu, &view, &frame, 1.0, revision).0.submit();
         }
         let unsubmitted = picture([draw(2.0, 8.0, blue)]);
@@ -1920,7 +1952,7 @@ mod tests {
         assert_eq!(recorded.paint_receipts()[0].outcome, PaintOutcome::Fallback { reason: PaintFallback::EncodingFailed });
         assert_eq!((profile.canvas_pixels, profile.retained_canvases), (0, 0));
         recorded.submit();
-        let capture = gpu.paint_with_receipts(&accepted, 1.0, None).unwrap();
+        let capture = gpu.paint_with_receipts(&submitted, 1.0, None).unwrap();
         assert_eq!(capture.effects[0].outcome, PaintOutcome::Retained { revision: Some(20) });
         close(capture.picture.pixel(4, 4), [0, 255, 0, 255]);
         assert_eq!(draws.load(Ordering::Relaxed), 6);
@@ -1952,14 +1984,14 @@ mod tests {
         device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: None }).unwrap();
         assert_eq!(&*readback.get_mapped_range(..).unwrap(), &[0, 0, 255, 255, 255, 0, 0, 255]);
 
-        drop(accepted);
+        drop(submitted);
         drop(unsubmitted);
         drop(resized);
         drop(failed);
         drop(duplicate);
         drop(paint);
         gpu.render(&picture([]), 1.0);
-        assert!(gpu.output_history.is_empty());
+        assert!(gpu.canvas_cache.is_empty());
     }
 
     #[test]
@@ -2012,12 +2044,12 @@ mod tests {
         );
         assert_eq!(plan.backdrops[0].input, BackdropInput::Prefix(BackdropRegion { origin: [4, 5], size: [8, 5], offset: [2, 2] }));
         assert_eq!(plan.backdrops[1].input, BackdropInput::Prefix(BackdropRegion { origin: [0, 0], size: [5, 4], offset: [3, 3] }));
-        assert_eq!(plan.backdrops[2].input, BackdropInput::Submitted);
+        assert_eq!(plan.backdrops[2].input, BackdropInput::Accepted);
         assert_eq!(plan.backdrops[2].fallback, 9);
         let no_copy = FramePlan::new(&passes, &bounds, &[0, 5], requests(), 7, CopyAttachment { copyable: false, ..attachment });
         assert_eq!(no_copy.backdrops[0].input, BackdropInput::Unavailable);
         assert_eq!(no_copy.backdrops[1].input, plan.backdrops[1].input);
-        assert_eq!(no_copy.backdrops[2].input, BackdropInput::Submitted);
+        assert_eq!(no_copy.backdrops[2].input, BackdropInput::Accepted);
 
         let plain = Pass { insts: vec![Inst::zeroed(); 4], ..Default::default() };
         let direct = FramePlan::new(&[plain], &bounds[..1], &[0], Vec::new(), 4, attachment);
@@ -2066,6 +2098,7 @@ mod tests {
         fn assert_send_and_sync<T: Send + Sync>() {}
         assert_send_and_sync::<GpuRenderer>();
         assert_send_and_sync::<RecordedFrame<'static>>();
+        assert_send_and_sync::<PendingPresentation>();
     }
 
     #[test]
@@ -2286,7 +2319,7 @@ mod tests {
     }
 
     #[test]
-    fn backdrop_exit_replays_only_the_submitted_image_of_its_mount() {
+    fn backdrop_exit_replays_only_the_accepted_image_of_its_mount() {
         let Some(mut gpu) = GpuRenderer::new() else {
             eprintln!("no GPU adapter: skipped");
             return;
@@ -2337,15 +2370,25 @@ mod tests {
         for (background, revision) in [(0xffff00, 10), (0xff0000, 20)] {
             let (frame, _) = gpu.record_sampled(encoder(), &view, sampled(&live(background, [0.0; 4]), revision), None);
             assert_eq!(frame.paint_receipts()[0].outcome, PaintOutcome::Rendered);
-            frame.submit();
+            let (_, pending) = frame.submit_for_presentation();
+            gpu.accept_presentation(pending);
         }
-        drop(gpu.record_sampled(encoder(), &view, sampled(&live(0x00ff00, [0.0; 4]), 30), None));
+        // The deferred frame can use the previous allocation. Subsequent frames must leave
+        // those pixels available until the host accepts it.
+        let (frame, _) = gpu.record_sampled(encoder(), &view, sampled(&live(0x00ff00, [0.0; 4]), 30), None);
+        assert_eq!(frame.paint_receipts()[0].outcome, PaintOutcome::Rendered);
+        let (_, pending) = frame.submit_for_presentation();
+        let (frame, _) = gpu.record_sampled(encoder(), &view, sampled(&live(0x0000ff, [0.0; 4]), 31), None);
+        assert_eq!(frame.paint_receipts()[0].outcome, PaintOutcome::Rendered);
+        frame.submit();
+        drop(gpu.record_sampled(encoder(), &view, sampled(&live(0xffff00, [0.0; 4]), 32), None));
         let capture = gpu.render(&live(0x0000ff, [0.0; 4]), 1.0);
         close(capture.pixel(5, 5), [0, 0, 255, 255]);
         let unsupported = device_target(&device, wgpu::TextureUsages::empty()).create_view(&Default::default());
         let (frame, _) = gpu.record_sampled(encoder(), &unsupported, sampled(&live(0x000000, [0.0; 4]), 40), None);
         assert_eq!(frame.paint_receipts()[0].outcome, PaintOutcome::Fallback { reason: PaintFallback::BackdropUnavailable });
-        frame.submit();
+        let (_, unavailable) = frame.submit_for_presentation();
+        gpu.accept_presentation(unavailable);
         let mut failing = live(0x00ff00, [-1.0; 4]);
         failing.parts.push(Part::Item(Item::Quad(solid(Rect::new(8.0, 3.0, 1.0, 2.0), rgb(0x0000ff)))));
         let failure = gpu.render(&failing, 1.0);
@@ -2353,31 +2396,33 @@ mod tests {
         close(failure.pixel(8, 3), [0, 0, 255, 255]);
         let (frame, _) = gpu.record_sampled(encoder(), &view, sampled(&failing, 50), None);
         assert_eq!(frame.paint_receipts()[0].outcome, PaintOutcome::Fallback { reason: PaintFallback::EncodingFailed });
-        frame.submit();
+        let (_, failed) = frame.submit_for_presentation();
+        gpu.accept_presentation(failed);
         let offscreen = gpu.render(&picture([effect(mount.clone(), 34.0, false, [0.0; 4])]), 1.0);
         close(offscreen.pixel(31, 5), [0; 4]);
 
-        let exit = gpu
-            .paint_with_receipts(
-                &picture([
-                    Item::PushLayer { source: NodeId::default(), opacity: 0.5 },
-                    effect(mount.clone(), 2.0, true, [0.0; 4]),
-                    effect(replacement, 13.0, true, [0.0; 4]),
-                    Item::PopLayer,
-                ]),
-                1.0,
-                Some(PaintSample { revision: 60, sampled_at: Duration::from_millis(60) }),
-            )
-            .unwrap();
+        let exiting = picture([
+            Item::PushLayer { source: NodeId::default(), opacity: 0.5 },
+            effect(mount.clone(), 2.0, true, [0.0; 4]),
+            effect(replacement, 13.0, true, [0.0; 4]),
+            Item::PopLayer,
+        ]);
+        let exit =
+            gpu.paint_with_receipts(&exiting, 1.0, Some(PaintSample { revision: 60, sampled_at: Duration::from_millis(60) })).unwrap();
         close(exit.picture.pixel(5, 5), [255, 0, 0, 128]);
         close(exit.picture.pixel(16, 5), [255, 0, 255, 128]);
         assert_eq!(exit.effects[0].outcome, PaintOutcome::Retained { revision: Some(20) });
         assert_eq!(exit.effects[1].outcome, PaintOutcome::Fallback { reason: PaintFallback::HistoryUnavailable });
-        assert_eq!(draws.load(Ordering::Relaxed), 6);
+        gpu.accept_presentation(pending);
+        let exit = gpu.paint_with_receipts(&exiting, 1.0, None).unwrap();
+        close(exit.picture.pixel(5, 5), [0, 255, 0, 128]);
+        assert_eq!(exit.effects[0].outcome, PaintOutcome::Retained { revision: Some(30) });
+        assert_eq!(draws.load(Ordering::Relaxed), 8);
+        drop(exiting);
         drop(failing);
         drop(mount);
         gpu.render(&picture([]), 1.0);
-        assert!(gpu.output_history.is_empty());
+        assert!(gpu.backdrop_history.is_empty());
     }
 
     #[test]
@@ -2482,7 +2527,8 @@ mod tests {
         assert_eq!((profile.layer_pixels, profile.canvas_pixels, profile.backdrop_copy_pixels), (768, 80, 64));
         assert_eq!(profile.retained_backdrops, 0);
         assert_eq!(profile.gpu_sampled, timestamps_supported);
-        frame.submit();
+        let (_, pending) = frame.submit_for_presentation();
+        gpu.accept_presentation(pending);
         let deadline = Instant::now() + Duration::from_secs(5);
         while gpu.poll_profile() {
             assert!(Instant::now() < deadline, "timestamp mapping did not complete");

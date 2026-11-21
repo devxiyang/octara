@@ -16,9 +16,10 @@ use crate::{
 use octara::capture::PaintFrame;
 #[cfg(target_os = "ios")]
 use octara::kernel::HandlerId;
-use octara::platform::{Frame, NativeSnapshotRequest, Platform, PlatformWindow, PublishedFrame, TextInput};
+use octara::platform::{Frame, NativeSnapshotRequest, OpenedWindow, Platform, PlatformWindow, PublishedFrame, TextInput, WindowViewport};
 use octara::serde_json::{Value, json};
 use octara_primitives::input::CursorStyle;
+use octara_render::gpu::PendingPresentation;
 use octara_render::wgpu;
 use std::any::Any;
 use std::cell::RefCell;
@@ -110,11 +111,7 @@ impl Platform for WinitPlatform {
             eprintln!("octara-shell: cannot open {url}: {e}");
         }
     }
-    fn open_window(
-        &mut self,
-        id: octara::app::WindowId,
-        options: &octara::platform::WindowOptions,
-    ) -> Result<Box<dyn PlatformWindow>, String> {
+    fn open_window(&mut self, id: octara::app::WindowId, options: &octara::platform::WindowOptions) -> Result<OpenedWindow, String> {
         let shared = &self.shared;
         let event_loop = shared.event_loop().ok_or("windows open while the event loop runs")?;
         // Hidden until the accessibility adapter is attached (AccessKit requires it).
@@ -177,21 +174,6 @@ impl Platform for WinitPlatform {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         let wid = window.id();
-        let configure_started = shared.trace.then(Instant::now);
-        let configured = g.configure_surface(&surface, &config);
-        if let Some(started) = configure_started {
-            trace::SurfaceConfiguration {
-                window: wid,
-                attempt: None,
-                surface_generation: 0,
-                device_generation: g.generation.number,
-                size: [config.width, config.height],
-                desired_maximum_frame_latency: config.desired_maximum_frame_latency,
-                reason: "open",
-                configured,
-            }
-            .log(shared.trace_epoch, started, &surface);
-        }
         drop(gpu);
         #[cfg(target_os = "macos")]
         let text_input = {
@@ -212,7 +194,7 @@ impl Platform for WinitPlatform {
             (native, host, link)
         };
         shared.windows.borrow_mut().insert(wid, id);
-        Ok(Box::new(WindowHost(RefCell::new(WinitWindow {
+        let host = WinitWindow {
             window,
             shared: shared.clone(),
             surface,
@@ -222,7 +204,12 @@ impl Platform for WinitPlatform {
             #[cfg(target_os = "macos")]
             metal,
             surface_occluded: false,
-            surface_needs_configure: !configured,
+            pending_surface_configuration: Some(SurfaceConfigurationRequest {
+                reason: "open",
+                attempt: None,
+                recreate: None,
+                wait_for_redraw: false,
+            }),
             a11y,
             #[cfg(target_os = "ios")]
             ios_back: None,
@@ -259,12 +246,14 @@ impl Platform for WinitPlatform {
             dropped: Vec::new(),
             last_submission_at: None,
             resized: false,
-            sized: false,
+            viewport_checked: false,
             unshown: None,
             occluded: None,
             frames: 0,
             attempts: 0,
-        }))))
+        };
+        let viewport = host.viewport(host.drawable_size());
+        Ok(OpenedWindow { window: Box::new(WindowHost(RefCell::new(host))), viewport })
     }
     fn waker(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
         let proxy = self.shared.proxy.clone();
@@ -327,7 +316,7 @@ pub(crate) struct WinitWindow {
     #[cfg(target_os = "macos")]
     metal: Option<MetalPresentation>,
     surface_occluded: bool,
-    surface_needs_configure: bool,
+    pending_surface_configuration: Option<SurfaceConfigurationRequest>,
     pub(crate) a11y: accesskit_winit::Adapter,
     #[cfg(target_os = "ios")]
     pub(crate) ios_back: Option<super::back_ios::BackNavigation>,
@@ -378,13 +367,27 @@ pub(crate) struct WinitWindow {
     last_submission_at: Option<Instant>,
     /// It resized since the last frame (native views present with the frame).
     pub(crate) resized: bool,
-    /// The app was told its size.
-    pub(crate) sized: bool,
+    /// The actual viewport has been checked after creating the window.
+    pub(crate) viewport_checked: bool,
     /// `OCTARA_TRACE_INPUT`: only the oldest input and bounded aggregate counts.
     unshown: Option<super::trace::Input>,
     pub(crate) occluded: Option<bool>,
     pub(crate) frames: u32,
     attempts: u64,
+}
+
+struct SurfaceConfigurationRequest {
+    reason: &'static str,
+    attempt: Option<u64>,
+    recreate: Option<SurfaceRecreation>,
+    /// A failed recreation can be retried on exposure without spinning the event loop.
+    wait_for_redraw: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SurfaceRecreation {
+    Lost,
+    DeviceRecovery,
 }
 
 #[cfg(target_os = "macos")]
@@ -410,7 +413,7 @@ enum WindowDrawable {
 }
 
 enum DrawAttempt {
-    Submitted,
+    HandedOff { paint: PaintFrame, presentation: PendingPresentation, generation: DrawableGeneration, number: u32 },
     Recording,
     Failed,
 }
@@ -525,7 +528,7 @@ impl WinitWindow {
         };
         let accepted = self.presentation.finish(completion.token, generation)
             && gpu.available()
-            && !self.surface_needs_configure
+            && self.pending_surface_configuration.is_none()
             && self.can_acquire_metal()
             && self.metal_window_visible();
         if self.shared.trace {
@@ -617,6 +620,17 @@ impl WinitWindow {
         self.window.scale_factor() as f32
     }
 
+    pub(crate) fn viewport(&self, pixels: PhysicalSize<u32>) -> WindowViewport {
+        let scale = self.scale();
+        let width = pixels.width as f32 / scale;
+        let height = pixels.height as f32 / scale;
+        #[cfg(target_os = "ios")]
+        let (height, safe_area) = (self.ios_input.keyboard_top().unwrap_or(height), super::scene_ios::safe_area(&self.window));
+        #[cfg(not(target_os = "ios"))]
+        let safe_area = None;
+        WindowViewport { size: (width, height), scale, safe_area }
+    }
+
     /// One refresh of the display it is on (60 Hz when that is unknown).
     fn refresh(&self) -> Duration {
         let mhz = self.window.current_monitor().and_then(|m| m.refresh_rate_millihertz()).filter(|r| *r > 0).unwrap_or(60_000);
@@ -638,7 +652,11 @@ impl WinitWindow {
     }
 
     fn can_draw(&self) -> bool {
-        self.presentation.schedule.wants_frame() && self.can_present() && !self.presentation.waiting() && self.shared.renderer_idle()
+        self.pending_surface_configuration.is_none()
+            && self.presentation.schedule.wants_frame()
+            && self.can_present()
+            && !self.presentation.waiting()
+            && self.shared.renderer_idle()
     }
 
     pub(crate) fn request_draw(&mut self) {
@@ -647,6 +665,9 @@ impl WinitWindow {
 
     pub(crate) fn redraw(&mut self) {
         self.surface_occluded = false;
+        if let Some(request) = &mut self.pending_surface_configuration {
+            request.wait_for_redraw = false;
+        }
         self.presentation.schedule.redraw(Instant::now());
     }
 
@@ -659,6 +680,9 @@ impl WinitWindow {
             self.pause_frame_clock();
         } else {
             self.surface_occluded = false;
+            if let Some(request) = &mut self.pending_surface_configuration {
+                request.wait_for_redraw = false;
+            }
             self.request_draw();
         }
     }
@@ -723,7 +747,7 @@ impl WinitWindow {
     pub(crate) fn sync_frame_clock(&mut self) {
         #[cfg(target_os = "macos")]
         if self.link.is_some() {
-            if !self.can_present() {
+            if self.pending_surface_configuration.is_some() || !self.can_present() {
                 self.presentation.schedule.pause();
                 self.set_frame_clock(false, "surface_unavailable");
             } else if self.presentation.schedule.wants_frame() {
@@ -776,7 +800,7 @@ impl WinitWindow {
 
     #[cfg(target_os = "macos")]
     pub(crate) fn offer_display_tick(&mut self, opportunity: Opportunity, now: Instant) {
-        let reason = if !self.can_present() {
+        let reason = if self.pending_surface_configuration.is_some() || !self.can_present() {
             self.sync_frame_clock();
             "surface_unavailable"
         } else if !opportunity.valid(now) {
@@ -803,47 +827,86 @@ impl WinitWindow {
         }
     }
 
-    pub(crate) fn resize(&mut self, width: u32, height: u32, gpu: &Gpu) {
+    pub(crate) fn resize(&mut self, width: u32, height: u32) {
         if (width, height) == (self.config.width, self.config.height) {
             return;
         }
         self.config.width = width;
         self.config.height = height;
-        self.configure_surface(gpu, "resize", None);
+        self.request_surface_configuration("resize", None, None);
     }
 
-    fn configure_surface(&mut self, gpu: &Gpu, reason: &'static str, attempt: Option<u64>) {
+    fn request_surface_configuration(&mut self, reason: &'static str, attempt: Option<u64>, recreate: Option<SurfaceRecreation>) {
+        let recreate = recreate.or_else(|| self.pending_surface_configuration.as_ref().and_then(|request| request.recreate));
+        self.pending_surface_configuration = Some(SurfaceConfigurationRequest { reason, attempt, recreate, wait_for_redraw: false });
         self.resized = true;
         self.request_draw();
         self.presentation.invalidate();
         self.presentation.clear_submission();
         #[cfg(target_os = "macos")]
         self.discard_metal_drawable();
-        if self.presentation.waiting() {
-            self.surface_needs_configure = true;
-            return;
+        self.pause_frame_clock();
+    }
+
+    pub(crate) fn ready_to_configure(&self) -> bool {
+        self.pending_surface_configuration.as_ref().is_some_and(|request| !request.wait_for_redraw) && !self.presentation.waiting()
+    }
+
+    /// Called by the window thread after the renderer finished draining the shared GPU queue.
+    pub(crate) fn apply_surface_configuration(&mut self, gpu: &Gpu) -> Result<(), String> {
+        if !self.ready_to_configure() {
+            return Ok(());
         }
+        let mut request = self.pending_surface_configuration.take().expect("a configuration request is ready");
         let configure_started = self.shared.trace.then(Instant::now);
-        self.surface_needs_configure = !gpu.configure_surface(&self.surface, &self.config);
-        if !self.surface_needs_configure {
+        if request.recreate.is_some()
+            && let Err(error) = self.recreate_surface(gpu)
+        {
+            if request.recreate == Some(SurfaceRecreation::DeviceRecovery) {
+                return Err(error);
+            }
+            if !gpu.generation.is_lost() {
+                eprintln!("octara-shell: cannot recreate the window surface: {error}");
+                self.surface_occluded = true;
+                request.wait_for_redraw = true;
+            }
+            self.pending_surface_configuration = Some(request);
+            return Ok(());
+        }
+        let configured = gpu.apply_surface_configuration(&self.surface, &self.config);
+        if configured {
             self.surface_generation = self.surface_generation.checked_add(1).expect("surface generation exhausted");
+            self.presentation.clear_submission();
+            self.resized = true;
+            if request.recreate.is_some() {
+                self.surface_occluded = false;
+            }
+            self.request_draw();
         }
         if let Some(started) = configure_started {
             trace::SurfaceConfiguration {
                 window: self.window.id(),
-                attempt,
+                attempt: request.attempt,
                 surface_generation: self.surface_generation,
                 device_generation: gpu.generation.number,
                 size: [self.config.width, self.config.height],
                 desired_maximum_frame_latency: self.config.desired_maximum_frame_latency,
-                reason,
-                configured: !self.surface_needs_configure,
+                reason: request.reason,
+                configured,
             }
             .log(self.shared.trace_epoch, started, &self.surface);
         }
+        if !configured {
+            let recovering_device = request.recreate == Some(SurfaceRecreation::DeviceRecovery);
+            self.pending_surface_configuration = Some(request);
+            if recovering_device || gpu.available() {
+                return Err("the GPU could not configure the window surface after draining".into());
+            }
+        }
+        Ok(())
     }
 
-    pub(crate) fn recover_surface(&mut self, gpu: &Gpu) -> Result<(), String> {
+    pub(crate) fn recover_surface(&mut self, gpu: &Gpu) {
         let size = self.drawable_size();
         if super::resize::validate_physical(size, gpu.device().limits().max_texture_dimension_2d).is_ok() {
             self.config.width = size.width;
@@ -854,11 +917,10 @@ impl WinitWindow {
         self.surface_occluded = false;
         // A lost device can retain an acquired texture in the old surface. Replacing the
         // surface also gives its old swapchain the correct device for unconfiguration.
-        self.recreate_surface(gpu, "device_recovery", None)
+        self.request_surface_configuration("device_recovery", None, Some(SurfaceRecreation::DeviceRecovery));
     }
 
-    fn recreate_surface(&mut self, gpu: &Gpu, reason: &'static str, attempt: Option<u64>) -> Result<(), String> {
-        self.presentation.clear_submission();
+    fn recreate_surface(&mut self, gpu: &Gpu) -> Result<(), String> {
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         let metal_layer = if gpu.adapter.get_info().backend == wgpu::Backend::Metal {
             // SAFETY: retain the layer on the main thread without taking ownership of the
@@ -889,10 +951,6 @@ impl WinitWindow {
         }
         self.config.usage = capabilities.usages & SURFACE_USAGE;
         self.surface = surface;
-        self.configure_surface(gpu, reason, attempt);
-        if self.surface_needs_configure {
-            return Err("the GPU device was lost while configuring the window surface".into());
-        }
         Ok(())
     }
 
@@ -908,27 +966,17 @@ impl WinitWindow {
         }
     }
 
-    /// Bring the surface up to date and start any blocking acquisition before building the
-    /// display list. An acquisition is independent of the drawing published when it begins.
-    pub(crate) fn prepare_draw(&mut self, scale: f32, gpu: &Gpu, opportunity: Opportunity) -> bool {
+    /// Start any blocking acquisition before building the display list. An acquisition is
+    /// independent of the drawing published when it begins.
+    pub(crate) fn prepare_draw(&mut self, scale: f32, _gpu: &Gpu, opportunity: Opportunity) -> bool {
+        if self.pending_surface_configuration.is_some() {
+            self.skip_opportunity(opportunity, "surface_not_configured");
+            return false;
+        }
         if !self.matches_drawable(scale) {
             self.presentation.schedule.retry(Instant::now());
             self.skip_opportunity(opportunity, "drawable_mismatch");
             return false;
-        }
-        // Underlays show through the frame's cutouts. The layer uses the renderer's alpha mode.
-        #[cfg(target_os = "macos")]
-        if self.native.as_ref().is_some_and(|n| n.transparent()) && self.config.alpha_mode != wgpu::CompositeAlphaMode::PostMultiplied {
-            self.config.alpha_mode = wgpu::CompositeAlphaMode::PostMultiplied;
-            self.surface_needs_configure = true;
-        }
-        if self.surface_needs_configure {
-            self.configure_surface(gpu, "draw", None);
-            if self.surface_needs_configure {
-                self.presentation.schedule.retry(Instant::now());
-                self.skip_opportunity(opportunity, "surface_not_configured");
-                return false;
-            }
         }
         #[cfg(target_os = "macos")]
         if self.can_acquire_metal() {
@@ -940,7 +988,7 @@ impl WinitWindow {
                 return false;
             }
             if !self.has_ready_drawable() {
-                match self.request_metal_drawable(self.drawable_generation(gpu.generation.number)) {
+                match self.request_metal_drawable(self.drawable_generation(_gpu.generation.number)) {
                     Ok(()) => return false,
                     Err(error) => self.disable_metal(error),
                 }
@@ -959,14 +1007,16 @@ impl WinitWindow {
             t.surface_generation = self.surface_generation;
         }
         let generation = gpu.generation.clone();
-        let submitted = match generation.run(|| self.draw_frame(published, gpu, &mut trace)) {
-            Some(DrawAttempt::Submitted) => true,
-            Some(DrawAttempt::Recording) => false,
-            Some(DrawAttempt::Failed) | None => {
-                self.presentation.schedule.retry(Instant::now());
-                false
-            }
+        let result = generation.run(|| self.draw_frame(published, gpu, &mut trace));
+        let recording = matches!(&result, Some(DrawAttempt::Recording));
+        let submitted = if let Some(DrawAttempt::HandedOff { paint, presentation, generation, number }) = result {
+            self.record_present(gpu, paint, presentation, generation, number)
+        } else {
+            false
         };
+        if !submitted && !recording {
+            self.presentation.schedule.retry(Instant::now());
+        }
         self.log_draw(published.revision, published.scale, trace, &generation, submitted);
         submitted
     }
@@ -1017,9 +1067,10 @@ impl WinitWindow {
 
     fn draw_frame(&mut self, published: &PublishedFrame, gpu: &mut Gpu, trace: &mut Option<trace::Frame>) -> DrawAttempt {
         let scale = published.scale;
-        if !self.matches_drawable(scale) {
+        let configuring = self.pending_surface_configuration.is_some();
+        if configuring || !self.matches_drawable(scale) {
             if let Some(t) = trace.as_mut() {
-                t.skip_reason = Some("drawable_mismatch");
+                t.skip_reason = Some(if configuring { "surface_not_configured" } else { "drawable_mismatch" });
             }
             return DrawAttempt::Failed;
         }
@@ -1093,7 +1144,7 @@ impl WinitWindow {
                 wgpu::CurrentSurfaceTexture::Success(f) => f,
                 wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
                     // This texture is still usable. Reconfigure before the next acquisition.
-                    self.surface_needs_configure = true;
+                    self.request_surface_configuration("suboptimal", attempt, None);
                     f
                 }
                 status => {
@@ -1124,6 +1175,8 @@ impl WinitWindow {
             let window = self.window.id();
             let published = published.clone();
             let device = gpu.generation.clone();
+            #[cfg(debug_assertions)]
+            let (hold, epoch) = (self.shared.render_worker_hold, self.shared.trace_epoch);
             let mut trace = trace.take();
             if let Some(t) = trace.as_mut() {
                 t.render_worker = true;
@@ -1133,6 +1186,20 @@ impl WinitWindow {
                     crate::gpu::submit_frame(renderer, &device, &published, drawable.texture(), number, generation.surface, report);
                 if let Some(t) = trace.as_mut() {
                     t.encoded = Some(Instant::now());
+                }
+                #[cfg(debug_assertions)]
+                if !hold.is_zero()
+                    && let Some(submission) = &submission
+                {
+                    eprintln!(
+                        "{}",
+                        json!({
+                            "schema": "octara.pending_presentation/1",
+                            "at_us": epoch.elapsed().as_secs_f64() * 1_000_000.0,
+                            "paint": &submission.paint,
+                        })
+                    );
+                    std::thread::sleep(hold);
                 }
                 RenderCompletion::Window(Box::new(RenderedWindow {
                     window,
@@ -1160,7 +1227,11 @@ impl WinitWindow {
         let presented = self.present_target(gpu, drawable, &submission.paint, trace);
         #[cfg(target_os = "macos")]
         drop(transaction);
-        if presented && self.record_present(gpu, submission, generation, number) { DrawAttempt::Submitted } else { DrawAttempt::Failed }
+        if presented {
+            DrawAttempt::HandedOff { paint: submission.paint, presentation: submission.presentation, generation, number }
+        } else {
+            DrawAttempt::Failed
+        }
     }
 
     pub(crate) fn rendered(&mut self, gpu: &mut Gpu, completed: RenderedWindow, latest: Option<u64>) -> bool {
@@ -1168,7 +1239,7 @@ impl WinitWindow {
         let current = gpu.generation.clone();
         let eligible = gpu.available()
             && generation == self.drawable_generation(current.number)
-            && !self.surface_needs_configure
+            && self.pending_surface_configuration.is_none()
             && self.matches_drawable(scale);
         #[cfg(target_os = "macos")]
         let eligible = eligible && self.can_acquire_metal() && self.metal_window_visible();
@@ -1176,12 +1247,8 @@ impl WinitWindow {
             if let Some(t) = trace.as_mut() {
                 t.render = submission.profile.take();
             }
-            current
-                .run(|| {
-                    self.present_target(gpu, drawable, &submission.paint, &mut trace)
-                        && self.record_present(gpu, submission, generation, number)
-                })
-                .unwrap_or(false)
+            current.run(|| self.present_target(gpu, drawable, &submission.paint, &mut trace)) == Some(true)
+                && self.record_present(gpu, submission.paint, submission.presentation, generation, number)
         } else {
             drop(drawable);
             if let Some(t) = trace.as_mut() {
@@ -1228,11 +1295,18 @@ impl WinitWindow {
         true
     }
 
-    fn record_present(&mut self, gpu: &mut Gpu, submission: FrameSubmission, generation: DrawableGeneration, number: u32) -> bool {
-        if gpu.generation.is_lost() || !self.presentation.record_submission(submission.paint, generation) {
+    fn record_present(
+        &mut self,
+        gpu: &mut Gpu,
+        paint: PaintFrame,
+        presentation: PendingPresentation,
+        generation: DrawableGeneration,
+        number: u32,
+    ) -> bool {
+        if gpu.generation.is_lost() || !self.presentation.record_submission(paint, generation) {
             return false;
         }
-        gpu.submitted();
+        gpu.accept_presentation(presentation);
         self.resized = false;
         self.surface_occluded = false;
         self.last_submission_at = Some(Instant::now());
@@ -1242,14 +1316,9 @@ impl WinitWindow {
 
     fn acquire_failed(&mut self, gpu: &Gpu, status: wgpu::CurrentSurfaceTexture, attempt: Option<u64>) {
         match status {
-            wgpu::CurrentSurfaceTexture::Outdated => self.configure_surface(gpu, "outdated", attempt),
+            wgpu::CurrentSurfaceTexture::Outdated => self.request_surface_configuration("outdated", attempt, None),
             wgpu::CurrentSurfaceTexture::Lost => {
-                if let Err(error) = self.recreate_surface(gpu, "surface_lost", attempt)
-                    && !gpu.generation.is_lost()
-                {
-                    eprintln!("octara-shell: cannot recreate the window surface: {error}");
-                    self.surface_occluded = true;
-                }
+                self.request_surface_configuration("surface_lost", attempt, Some(SurfaceRecreation::Lost));
             }
             wgpu::CurrentSurfaceTexture::Occluded => self.surface_occluded = true,
             wgpu::CurrentSurfaceTexture::Validation => {
@@ -1269,7 +1338,7 @@ impl WinitWindow {
     }
 
     pub(crate) fn configured_size(&self) -> Option<PhysicalSize<u32>> {
-        (!self.surface_needs_configure).then(|| PhysicalSize::new(self.config.width, self.config.height))
+        self.pending_surface_configuration.is_none().then(|| PhysicalSize::new(self.config.width, self.config.height))
     }
 
     pub(crate) fn has_submitted(&self, revision: u64) -> bool {
@@ -1277,6 +1346,9 @@ impl WinitWindow {
     }
 
     pub(crate) fn submitted_paint(&self) -> Option<&PaintFrame> {
+        if self.pending_surface_configuration.is_some() {
+            return None;
+        }
         let gpu = self.shared.gpu.borrow();
         let gpu = gpu.as_ref().filter(|g| g.available())?;
         self.presentation.submitted_paint(self.drawable_generation(gpu.generation.number))
@@ -1485,6 +1557,15 @@ impl WinitWindow {
             for change in frame.native {
                 host.apply(change);
             }
+        }
+        // Underlays show through cutouts once the surface uses the renderer's alpha mode.
+        #[cfg(target_os = "macos")]
+        if placed
+            && self.native.as_ref().is_some_and(|native| native.transparent())
+            && self.config.alpha_mode != wgpu::CompositeAlphaMode::PostMultiplied
+        {
+            self.config.alpha_mode = wgpu::CompositeAlphaMode::PostMultiplied;
+            self.request_surface_configuration("alpha_mode", None, None);
         }
         #[cfg(target_os = "macos")]
         if std::mem::take(&mut self.show_on_first_commit) {

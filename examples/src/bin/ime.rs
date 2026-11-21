@@ -93,19 +93,22 @@ fn ime() -> View {
 fn main() {
     match std::env::var("OCTARA_IME_SCENE").as_deref() {
         Ok("rename") => octara_shell::run_with(
-            octara_shell::Options { title: "Octara Rename Validation".into(), size: (800.0, 600.0), ..Default::default() },
+            octara_shell::Options { window: WindowOptions::new("Octara Rename Validation").size(800.0, 600.0), ..Default::default() },
             rename_fixture,
         ),
         Ok("controlled") => octara_shell::run_with(
-            octara_shell::Options { title: "Octara Controlled IME Validation".into(), size: (720.0, 480.0), ..Default::default() },
+            octara_shell::Options {
+                window: WindowOptions::new("Octara Controlled IME Validation").size(720.0, 480.0),
+                ..Default::default()
+            },
             controlled::view,
         ),
         Ok("choices") => octara_shell::run_with(
-            octara_shell::Options { title: "Octara IME Choices".into(), size: (720.0, 600.0), ..Default::default() },
+            octara_shell::Options { window: WindowOptions::new("Octara IME Choices").size(720.0, 600.0), ..Default::default() },
             choices::view,
         ),
         _ => octara_shell::run_with(
-            octara_shell::Options { title: "Octara IME Validation".into(), size: (800.0, 720.0), ..Default::default() },
+            octara_shell::Options { window: WindowOptions::new("Octara IME Validation").size(800.0, 720.0), ..Default::default() },
             ime,
         ),
     }

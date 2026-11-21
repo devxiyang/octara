@@ -16,9 +16,9 @@
 use serde::{Deserialize, Serialize};
 
 mod target;
-#[doc(hidden)]
-pub use target::guarded_point;
 pub use target::{ParsedRequest, handle_guarded, parse_guarded_request, parse_request};
+#[doc(hidden)]
+pub use target::{dispatch_pointer, guarded_point};
 pub(crate) use target::{node_target, paint_target, window_target};
 mod tree;
 pub use tree::{pick, tree};
@@ -38,6 +38,9 @@ pub struct Snapshot {
     pub octara: String,
     /// Window size in logical pixels.
     pub viewport: [f32; 2],
+    /// Identity of the currently settled window state, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<WindowObservation>,
     pub theme: String,
     pub breakpoint: String,
     /// The app clock, in milliseconds since start.
@@ -75,6 +78,15 @@ pub struct Snapshot {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub asks: Vec<AskInfo>,
     pub root: Node,
+}
+
+/// Identifies a committed window state within that window's lifetime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowObservation {
+    pub revision: u64,
+    /// A state change can keep the same published drawing. Hosts report its submission separately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drawing_revision: Option<u64>,
 }
 
 /// The platform phase and whether its completion reached the captured Back command.
@@ -338,6 +350,15 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
     },
+    /// A primary click at a fixed point in logical window coordinates. The wire request
+    /// requires an observed node `target` that owns the primary press at this point.
+    TapAt {
+        x: f32,
+        y: f32,
+        /// Optionally require the source drawing to be current before moving the pointer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        drawing_revision: Option<u64>,
+    },
     DoubleTap {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
@@ -529,9 +550,37 @@ pub struct Reply {
     /// A `scroll`'s measured movement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll: Option<ScrollResult>,
+    /// Pointer recognizer phases completed by this request, in dispatch order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pointer: Vec<PointerStep>,
     /// What a `copy` copied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+}
+
+/// Evidence read during one pointer recognizer phase.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PointerStep {
+    pub phase: crate::app::Phase,
+    /// The event's point in logical window coordinates.
+    pub at: [f32; 2],
+    /// The settled window state at the start of recognition, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<WindowObservation>,
+    /// The node consulted by hit testing during this phase, when there was a hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hit: Option<PointerTarget>,
+    /// The recognizer's held press target at this phase, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured: Option<PointerTarget>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PointerTarget {
+    /// The allocation's identity at dispatch. A later phase may have retired it.
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 /// The viewport's post-scroll position and net change in logical pixels, ordered as `[x, y]`.
@@ -671,6 +720,7 @@ impl Reply {
             capture: None,
             picked: None,
             scroll: None,
+            pointer: Vec::new(),
             text: None,
         }
     }
@@ -684,12 +734,13 @@ impl Reply {
     }
 }
 
-use crate::app::{App, AppConfig, TargetPlatform, Window};
+use crate::app::{AppConfig, AppDefinition, AppMode, TargetPlatform, Window};
 use crate::capture::Painter;
 use crate::diagnostics::{self as codes, Code, Severity};
 use crate::kernel::{NodeId, Theme};
 use crate::platform::{HeadlessPlatform, WindowOptions};
 use crate::view::IntoView;
+use std::panic::Location;
 use std::rc::Rc;
 
 pub(crate) fn severity_name(s: Severity) -> &'static str {
@@ -753,7 +804,7 @@ pub(crate) fn request_boundary(app: &mut Window, req: Request, f: impl FnOnce(&m
     }
 }
 
-fn handle_inner(app: &mut Window, req: Request, guard: Option<&crate::app::TargetGuard>) -> Reply {
+fn handle_inner(app: &mut Window, req: Request, guard: Option<&crate::app::TargetGuard>, pointer: &mut Vec<PointerStep>) -> Reply {
     use crate::app::{Button, Event, PointerKind};
     use std::time::Duration;
     let target = || guard.expect("the request bound its target");
@@ -771,12 +822,13 @@ fn handle_inner(app: &mut Window, req: Request, guard: Option<&crate::app::Targe
             app.app().hot_reload();
             Reply::ok()
         }
-        Request::Tap { .. } => target::pointer(app, target(), PointerKind::Mouse, Button::Primary, false, false),
-        Request::DoubleTap { .. } => target::pointer(app, target(), PointerKind::Mouse, Button::Primary, true, false),
-        Request::LongPress { .. } => target::pointer(app, target(), PointerKind::Touch, Button::Primary, false, true),
-        Request::Drag { dx, dy, .. } => target::drag(app, target(), dx, dy),
+        Request::Tap { .. } => target::pointer(app, target(), PointerKind::Mouse, Button::Primary, false, false, pointer),
+        Request::TapAt { x, y, drawing_revision } => target::tap_at(app, target(), (x, y), drawing_revision, pointer),
+        Request::DoubleTap { .. } => target::pointer(app, target(), PointerKind::Mouse, Button::Primary, true, false, pointer),
+        Request::LongPress { .. } => target::pointer(app, target(), PointerKind::Touch, Button::Primary, false, true, pointer),
+        Request::Drag { dx, dy, .. } => target::drag(app, target(), dx, dy, pointer),
         Request::Scroll { dx, dy, .. } => target::scroll(app, target(), dx, dy),
-        Request::SecondaryTap { .. } => target::pointer(app, target(), PointerKind::Mouse, Button::Secondary, false, false),
+        Request::SecondaryTap { .. } => target::pointer(app, target(), PointerKind::Mouse, Button::Secondary, false, false, pointer),
         Request::Focus { .. } => target::semantic(app, target(), Event::Focus),
         Request::Hover { on, .. } => target::semantic(app, target(), |id| Event::Hover(id, on)),
         Request::SetValue { value, .. } => {
@@ -1067,18 +1119,32 @@ impl CheckReport {
 /// How long `check` lets the app settle, in app time.
 pub const SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
-#[track_caller]
-fn start_headless<V: IntoView>(
+fn view_entry<V: IntoView>(
     view: impl Fn() -> V + 'static,
-    config: AppConfig,
-    options: WindowOptions,
-    painter: Option<fn() -> Box<dyn Painter>>,
-) -> Window {
-    let app = App::with_config(HeadlessPlatform::default(), config);
-    if let Some(painter) = painter {
-        app.set_painter(painter());
+    source: &'static Location<'static>,
+) -> impl Fn(AppMode, AppConfig) -> Result<AppDefinition, String> {
+    let view = Rc::new(view);
+    move |_, config| {
+        let view = view.clone();
+        Ok(AppDefinition::new_at(config, WindowOptions::new("Headless"), move || view(), source))
     }
-    app.open_window(options, view).expect("a headless window opens")
+}
+
+fn start_headless(
+    entry: &impl Fn(AppMode, AppConfig) -> Result<AppDefinition, String>,
+    config: AppConfig,
+    size: Option<(f32, f32)>,
+    painter: Option<fn() -> Box<dyn Painter>>,
+) -> Result<Window, String> {
+    let mut definition = entry(AppMode::Headless, config)?;
+    if let Some(size) = size {
+        definition.window.size = size;
+    }
+    definition.start(HeadlessPlatform::default(), |app| {
+        if let Some(painter) = painter {
+            app.set_painter(painter());
+        }
+    })
 }
 
 /// Mounts `view` fresh at each theme and size, on the size's platform, lets it settle, and
@@ -1087,7 +1153,10 @@ fn start_headless<V: IntoView>(
 /// Each cell sets its theme, platform and viewport before the root factory runs.
 #[track_caller]
 pub fn check<V: IntoView>(view: impl Fn() -> V + 'static, opts: &CheckOptions) -> CheckReport {
-    let view = Rc::new(view);
+    check_app(&view_entry(view, Location::caller()), opts).expect("a headless window opens")
+}
+
+fn check_app(entry: &impl Fn(AppMode, AppConfig) -> Result<AppDefinition, String>, opts: &CheckOptions) -> Result<CheckReport, String> {
     let mut findings: Vec<Finding> = Vec::new();
     let mut cells = Vec::new();
     for theme in &opts.themes {
@@ -1099,8 +1168,7 @@ pub fn check<V: IntoView>(view: impl Fn() -> V + 'static, opts: &CheckOptions) -
                 target_platform: platform(&size.platform).unwrap_or_else(TargetPlatform::current),
                 ..AppConfig::default()
             };
-            let view = view.clone();
-            let app = start_headless(move || view(), config, WindowOptions::new("Headless").size(size.width, size.height), None);
+            let app = start_headless(entry, config, Some((size.width, size.height)), None).map_err(|error| format!("{cell}: {error}"))?;
             let mut found = issues(&app);
             if let Err(pending) = app.app().run_until_idle(SETTLE_LIMIT) {
                 found.push(Issue {
@@ -1168,14 +1236,14 @@ pub fn check<V: IntoView>(view: impl Fn() -> V + 'static, opts: &CheckOptions) -
             None => open.push(f),
         }
     }
-    CheckReport {
+    Ok(CheckReport {
         schema: CHECK_SCHEMA.into(),
         octara: env!("CARGO_PKG_VERSION").into(),
         clean: open.iter().all(|f| f.severity == "info"),
         cells,
         findings: open,
         accepted,
-    }
+    })
 }
 
 // ---- the harness entry point ----
@@ -1190,17 +1258,29 @@ pub fn check<V: IntoView>(view: impl Fn() -> V + 'static, opts: &CheckOptions) -
 ///   prints one reply line each (`{"line":n,"ok":..}`); `--stop` ends at the first failure.
 ///
 /// Exits 2 on bad arguments.
+#[track_caller]
 pub fn main<V: IntoView>(view: impl Fn() -> V + 'static) {
-    run_main(view, None)
+    run_main(view_entry(view, Location::caller()), None)
 }
 
 /// [`main`], with `painter` painting `capture` requests (the harness passes `octara-render`'s
 /// reference renderer).
+#[track_caller]
 pub fn main_with<V: IntoView>(view: impl Fn() -> V + 'static, painter: fn() -> Box<dyn Painter>) {
-    run_main(view, Some(painter))
+    main_app_with(view_entry(view, Location::caller()), painter)
 }
 
-fn run_main<V: IntoView>(view: impl Fn() -> V + 'static, painter: Option<fn() -> Box<dyn Painter>>) {
+/// Runs the harness described by [`main`] with a shared application definition and a painter.
+/// Calls `entry` with [`AppMode::Headless`] and the initial theme and platform configuration.
+/// The entry can customise the selected theme and other resources before returning a definition.
+/// Each `check` cell gets a fresh definition. An explicit or matrix size replaces the
+/// definition's requested size before mounting. An entry error exits with status 2 and
+/// prints the error to stderr.
+pub fn main_app_with(entry: impl Fn(AppMode, AppConfig) -> Result<AppDefinition, String>, painter: fn() -> Box<dyn Painter>) {
+    run_main(entry, Some(painter))
+}
+
+fn run_main(entry: impl Fn(AppMode, AppConfig) -> Result<AppDefinition, String>, painter: Option<fn() -> Box<dyn Painter>>) {
     use std::io::{BufRead, Write};
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
@@ -1208,19 +1288,19 @@ fn run_main<V: IntoView>(view: impl Fn() -> V + 'static, painter: Option<fn() ->
         eprintln!("octara harness: {msg}");
         std::process::exit(2)
     };
-    let start = |view| {
-        let mut options = WindowOptions::new("Headless");
-        if let Some(size) = flag("--size") {
-            let parsed = size.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)));
-            let Some((w, h)) = parsed else { fail(format!("--size takes <width>x<height>, not `{size}`")) };
-            options = options.size(w, h);
-        }
+    let start = || {
+        let size = flag("--size").map(|size| {
+            size.split_once('x')
+                .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+                .unwrap_or_else(|| fail(format!("--size takes <width>x<height>, not `{size}`")))
+        });
         let theme = match flag("--theme").as_deref() {
-            None | Some("light") => Theme::light(),
+            None => Theme::default(),
+            Some("light") => Theme::light(),
             Some("dark") => Theme::dark(),
             Some(other) => fail(format!("unknown theme `{other}`")),
         };
-        start_headless(view, AppConfig { theme, ..AppConfig::default() }, options, painter)
+        start_headless(&entry, AppConfig { theme, ..AppConfig::default() }, size, painter).unwrap_or_else(|error| fail(error))
     };
     match args.first().map(String::as_str) {
         Some("check") => {
@@ -1231,10 +1311,11 @@ fn run_main<V: IntoView>(view: impl Fn() -> V + 'static, painter: Option<fn() ->
             if let Some(s) = opts.sizes.iter().find(|s| platform(&s.platform).is_none()) {
                 fail(format!("size `{}`: unknown platform `{}` (ios, android, macos, windows, linux)", s.name, s.platform));
             }
-            println!("{}", check(view, &opts).to_json());
+            let report = check_app(&entry, &opts).unwrap_or_else(|error| fail(error));
+            println!("{}", report.to_json());
         }
         Some("inspect") => {
-            let app = start(view);
+            let app = start();
             let _ = app.app().run_until_idle(SETTLE_LIMIT);
             let mut snapshot = serde_json::to_value(app.inspect()).expect("a snapshot serializes");
             snapshot["completion"] = serde_json::to_value(Completion::observe(&app)).expect("completion serializes");
@@ -1242,7 +1323,7 @@ fn run_main<V: IntoView>(view: impl Fn() -> V + 'static, painter: Option<fn() ->
             app.app().shutdown();
         }
         Some("run") => {
-            let mut app = start(view);
+            let mut app = start();
             let stop = args.iter().any(|a| a == "--stop");
             let stdout = std::io::stdout();
             for (i, line) in std::io::stdin().lock().lines().enumerate() {
@@ -1264,5 +1345,99 @@ fn run_main<V: IntoView>(view: impl Fn() -> V + 'static, painter: Option<fn() ->
             app.app().shutdown();
         }
         _ => fail("usage: check [--options <json>] | inspect [--size WxH] [--theme T] | run [--size WxH] [--theme T] [--stop]".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::prelude::{App, Token, WindowKind, current_window, el, rgb};
+    use octara_primitives::capture::Picture;
+    use octara_primitives::paint::DisplayList;
+    use std::cell::RefCell;
+
+    #[test]
+    fn check_builds_a_fresh_definition_for_each_cell() {
+        let definitions = RefCell::new(Vec::new());
+        let mounts = Rc::new(RefCell::new(Vec::new()));
+        let entry = |mode, mut config: AppConfig| {
+            assert!(matches!(mode, AppMode::Headless));
+            definitions.borrow_mut().push((config.theme.name, config.target_platform));
+            let accent = if config.theme.name == "dark" { rgb(0x88bbff) } else { rgb(0x224488) };
+            config.theme = config.theme.color(Token::Accent, accent);
+            let mounts = mounts.clone();
+            let options = WindowOptions::new("Definition").size(700.0, 500.0).kind(WindowKind::Dialog);
+            Ok(AppDefinition::new(config, options, move || {
+                let app = App::current();
+                let window = app.window(current_window()).unwrap();
+                let theme = app.theme();
+                assert_eq!(theme.get(Token::Accent), accent);
+                assert_eq!(window.options().title, "Definition");
+                assert_eq!(window.options().kind, WindowKind::Dialog);
+                mounts.borrow_mut().push((theme.name, app.target_platform(), window.size()));
+                el()
+            }))
+        };
+
+        let report = check_app(&entry, &CheckOptions::default()).unwrap();
+        assert!(report.clean, "{}", report.to_json());
+        assert_eq!(report.cells, ["light/phone", "light/desktop", "dark/phone", "dark/desktop"]);
+        assert_eq!(
+            *mounts.borrow(),
+            [
+                ("light", TargetPlatform::Ios, (390.0, 844.0)),
+                ("light", TargetPlatform::MacOs, (1280.0, 800.0)),
+                ("dark", TargetPlatform::Ios, (390.0, 844.0)),
+                ("dark", TargetPlatform::MacOs, (1280.0, 800.0)),
+            ]
+        );
+        assert_eq!(*definitions.borrow(), mounts.borrow().iter().map(|&(theme, platform, _)| (theme, platform)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn entry_failure_stops_headless_start_and_check() {
+        let entry = |_, _| Err("fixtures unavailable".into());
+        let painter = || -> Box<dyn Painter> { panic!("entry failure must skip host preparation") };
+        let error = start_headless(&entry, AppConfig::default(), None, Some(painter)).err();
+        assert_eq!(error.as_deref(), Some("fixtures unavailable"));
+        let error = check_app(&entry, &CheckOptions::default()).unwrap_err();
+        assert_eq!(error, "light/phone: fixtures unavailable");
+    }
+
+    struct TestPainter;
+
+    impl Painter for TestPainter {
+        fn renderer(&self) -> &'static str {
+            "test"
+        }
+
+        fn paint(&mut self, _: &DisplayList, _: f32) -> Result<Picture, String> {
+            unreachable!("startup never paints a capture")
+        }
+    }
+
+    #[test]
+    fn headless_start_configures_the_first_window_before_mount() {
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let entry = |mode, config| {
+            assert!(matches!(mode, AppMode::Headless));
+            let observed = observed.clone();
+            Ok(AppDefinition::new(config, WindowOptions::new("Definition").size(640.0, 480.0), move || {
+                let app = App::current();
+                let painter = app.take_painter().expect("the painter is installed before the root runs");
+                assert_eq!(painter.renderer(), "test");
+                app.set_painter(painter);
+                let window = app.window(current_window()).unwrap();
+                observed.borrow_mut().push(window.size());
+                el()
+            }))
+        };
+
+        for size in [None, Some((315.0, 280.0))] {
+            let window = start_headless(&entry, AppConfig::default(), size, Some(|| Box::new(TestPainter))).unwrap();
+            assert_eq!(window.options().title, "Definition");
+            window.app().shutdown();
+        }
+        assert_eq!(*observed.borrow(), [(640.0, 480.0), (315.0, 280.0)]);
     }
 }

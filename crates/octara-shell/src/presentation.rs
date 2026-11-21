@@ -3,7 +3,9 @@
 use octara::app::WindowId;
 use octara::capture::{PaintFrame, PaintOrigin};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+const CAPTURE_MAX_WAIT: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy)]
 pub(crate) enum Opportunity {
@@ -19,11 +21,15 @@ pub(crate) enum Opportunity {
 }
 
 impl Opportunity {
-    pub(crate) fn valid(self, _now: Instant) -> bool {
+    pub(crate) fn valid(self, now: Instant) -> bool {
+        self.deadline().is_none_or(|deadline| now < deadline)
+    }
+
+    pub(crate) fn deadline(self) -> Option<Instant> {
         match self {
             #[cfg(target_os = "macos")]
-            Self::DisplayLink { expires_at, .. } => _now < expires_at,
-            _ => true,
+            Self::DisplayLink { expires_at, .. } => Some(expires_at),
+            _ => None,
         }
     }
 
@@ -34,6 +40,12 @@ impl Opportunity {
             _ => None,
         }
     }
+}
+
+/// Compares an eligible display frame with a capture whose snapshots are ready.
+pub(crate) fn capture_precedes_frame(ready_at: Instant, opportunity: Opportunity, now: Instant) -> bool {
+    let capture_deadline = ready_at + CAPTURE_MAX_WAIT;
+    capture_deadline <= now || opportunity.deadline().is_some_and(|deadline| deadline <= now || capture_deadline < deadline)
 }
 
 #[cfg(target_os = "macos")]
@@ -268,7 +280,6 @@ impl Presentation {
 mod tests {
     use super::*;
     use octara::capture::PaintSample;
-    use std::time::Duration;
 
     const GENERATION: DrawableGeneration = DrawableGeneration { surface: 3, device: 4 };
 
@@ -293,6 +304,38 @@ mod tests {
             handled_at: at,
             expires_at: target,
         }
+    }
+
+    #[test]
+    fn a_capture_that_has_waited_50_ms_precedes_frames_due_now() {
+        let ready = Instant::now();
+        let before_deadline = ready + Duration::from_millis(49);
+        let at_deadline = ready + Duration::from_millis(50);
+        let later = ready + Duration::from_millis(51);
+        for frame in [Opportunity::Immediate, Opportunity::Redraw, Opportunity::Timer(later)] {
+            assert!(!capture_precedes_frame(ready, frame, before_deadline));
+            assert!(capture_precedes_frame(ready, frame, at_deadline));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_capture_precedes_an_expired_display_opportunity() {
+        let ready = Instant::now();
+        let frame = display(ready);
+        assert!(!capture_precedes_frame(ready, frame, ready));
+        assert!(capture_precedes_frame(ready, frame, frame.deadline().unwrap()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_earlier_capture_deadline_precedes_a_valid_display_opportunity() {
+        let ready = Instant::now();
+        let now = ready + Duration::from_millis(45);
+        let frame = display(now);
+        assert!(capture_precedes_frame(ready, frame, now));
+        let same_deadline = frame.deadline().unwrap() - CAPTURE_MAX_WAIT;
+        assert!(!capture_precedes_frame(same_deadline, frame, now));
     }
 
     #[cfg(target_os = "macos")]

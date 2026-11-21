@@ -33,16 +33,17 @@
 
 #[cfg(target_os = "ios")]
 use octara::app::BackPhase;
-use octara::app::{App, Button, FileDrag, InputEvent, Key, KeyEvent, Modifiers, Phase, PointerEvent, Window as AppWindow};
+use octara::app::{
+    App, AppDefinition, AppMode, Button, FileDrag, InputEvent, Key, KeyEvent, Modifiers, Phase, PointerEvent, Window as AppWindow,
+};
 #[cfg(target_os = "ios")]
 use octara::kernel::HandlerId;
 use octara::platform::WindowOptions;
-use octara::view::{IntoView, View};
+use octara::view::IntoView;
 use platform::WinitWindow;
 use presentation::Opportunity;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::panic::Location;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
@@ -145,9 +146,8 @@ const LINE: f32 = 40.0;
 
 /// Options for [`run_with`].
 pub struct Options {
-    pub title: String,
-    /// Initial size in logical pixels.
-    pub size: (f32, f32),
+    /// Requested properties of the first window.
+    pub window: WindowOptions,
     /// Exit after the first window drew this many frames (smoke tests).
     pub exit_after_frames: Option<u32>,
     /// Resources prepared before the root is built. Defaults to system fonts and fallback.
@@ -158,24 +158,31 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         let exit_after_frames = std::env::var("OCTARA_EXIT_AFTER_FRAMES").ok().and_then(|v| v.parse().ok());
-        Options {
-            title: "Octara".into(),
-            size: (800.0, 600.0),
-            exit_after_frames,
-            app: octara::app::AppConfig::default().with_system_fonts(),
-        }
+        Options { window: WindowOptions::new("Octara"), exit_after_frames, app: octara::app::AppConfig::default().with_system_fonts() }
     }
 }
 
 /// Opens a window showing `root` and runs until the app's last window is closed.
 #[track_caller]
 pub fn run<V: IntoView>(title: &str, root: impl Fn() -> V + 'static) {
-    run_with(Options { title: title.into(), ..Options::default() }, root)
+    run_with(Options { window: WindowOptions::new(title), ..Options::default() }, root)
 }
 
 /// Runs with explicit window and App options.
 #[track_caller]
 pub fn run_with<V: IntoView>(options: Options, root: impl Fn() -> V + 'static) {
+    run_definition(AppDefinition::new(options.app, options.window, root), options.exit_after_frames);
+}
+
+/// Runs the same application entry used by headless inspection, with native resources.
+pub fn run_app(entry: impl FnOnce(AppMode, octara::app::AppConfig) -> Result<AppDefinition, String>) -> Result<(), String> {
+    let options = Options::default();
+    let definition = entry(AppMode::Native, options.app)?;
+    run_definition(definition, options.exit_after_frames);
+    Ok(())
+}
+
+fn run_definition(definition: AppDefinition, exit_after_frames: Option<u32>) {
     let event_loop = EventLoop::<ShellEvent>::with_user_event().build().expect("event loop");
     #[cfg(target_os = "ios")]
     scene_ios::register(event_loop.create_proxy());
@@ -196,6 +203,10 @@ pub fn run_with<V: IntoView>(options: Options, root: impl Fn() -> V + 'static) {
         metal_acquire_delay: std::time::Duration::from_millis(
             std::env::var("OCTARA_METAL_ACQUIRE_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(0).min(1000),
         ),
+        #[cfg(debug_assertions)]
+        render_worker_hold: std::time::Duration::from_millis(
+            std::env::var("OCTARA_RENDER_WORKER_HOLD_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(0).min(1500),
+        ),
         trace: trace_gpu || std::env::var_os("OCTARA_TRACE_INPUT").is_some_and(|v| v != "0"),
         trace_native_input: cfg!(target_os = "macos") && std::env::var_os("OCTARA_TRACE_NATIVE_INPUT").is_some_and(|v| v == "1"),
         trace_gpu,
@@ -206,10 +217,8 @@ pub fn run_with<V: IntoView>(options: Options, root: impl Fn() -> V + 'static) {
         trace_epoch: started,
     });
     let mut shell = Shell {
-        window_options: WindowOptions::new(options.title).size(options.size.0, options.size.1),
-        config: Some(options.app),
-        exit_after_frames: options.exit_after_frames,
-        open_initial_window: Some(initial_window_factory(root)),
+        definition: Some(definition),
+        exit_after_frames,
         shared,
         app: None,
         main: None,
@@ -259,6 +268,8 @@ pub(crate) struct Shared {
     pub(crate) metal_frame_latency: u32,
     #[cfg(target_os = "macos")]
     pub(crate) metal_acquire_delay: std::time::Duration,
+    #[cfg(debug_assertions)]
+    pub(crate) render_worker_hold: std::time::Duration,
     /// Optional CPU frame/input timings as JSON on stderr.
     pub(crate) trace: bool,
     trace_native_input: bool,
@@ -304,31 +315,9 @@ impl Drop for InLoop {
     }
 }
 
-type OpenInitialWindow = Box<dyn FnOnce(&App, WindowOptions) -> Result<AppWindow, String>>;
-
-#[track_caller]
-fn initial_window_factory<V: IntoView>(root: impl Fn() -> V + 'static) -> OpenInitialWindow {
-    let source = Location::caller();
-    Box::new(move |app, options| app.open_window(options, move || RootContent { content: root(), source }))
-}
-
-// Keep the app's launch site through the deferred open. Core owns conversion and mounting.
-struct RootContent<V> {
-    content: V,
-    source: &'static Location<'static>,
-}
-
-impl<V: IntoView> IntoView for RootContent<V> {
-    fn into_view(self, _: &'static Location<'static>) -> View {
-        self.content.into_view(self.source)
-    }
-}
-
 struct Shell {
-    window_options: WindowOptions,
-    config: Option<octara::app::AppConfig>,
+    definition: Option<AppDefinition>,
     exit_after_frames: Option<u32>,
-    open_initial_window: Option<OpenInitialWindow>,
     shared: Rc<Shared>,
     app: Option<App>,
     /// The first window (captures and `exit_after_frames` are its).
@@ -583,32 +572,27 @@ impl Shell {
     }
 
     /// Apply an actual native client-area size through the same path as a resize event.
-    fn resize_window(&mut self, w: &mut AppWindow, size: winit::dpi::PhysicalSize<u32>) {
-        if let Some(g) = &*self.shared.gpu.borrow() {
+    fn resize_window(&self, w: &mut AppWindow, size: winit::dpi::PhysicalSize<u32>) {
+        let changed = ww(w, |host| (host.config.width, host.config.height) != (size.width, size.height)) == Some(true);
+        if changed && let Some(g) = &*self.shared.gpu.borrow() {
             let limit = g.device().limits().max_texture_dimension_2d;
             if resize::validate_physical(size, limit).is_ok() {
-                ww(w, |x| x.resize(size.width, size.height, g));
+                ww(w, |x| x.resize(size.width, size.height));
             }
         }
         self.sync_viewport(w, size);
     }
 
     fn sync_viewport(&self, w: &mut AppWindow, size: winit::dpi::PhysicalSize<u32>) {
-        let event = ww(w, |host| {
-            let scale = host.scale();
-            let width = size.width as f32 / scale;
-            let height = size.height as f32 / scale;
-            #[cfg(target_os = "ios")]
-            let (height, safe_area) = (host.ios_input.keyboard_top().unwrap_or(height), scene_ios::safe_area(&host.window));
-            #[cfg(not(target_os = "ios"))]
-            let safe_area = None;
-            let changed = !host.sized || w.size() != (width, height) || w.scale() != scale || w.kernel().safe_area() != safe_area;
-            host.sized = true;
-            changed.then_some(InputEvent::Resize { width, height, scale, safe_area })
-        })
-        .flatten();
-        if let Some(event) = event {
-            w.event(event);
+        let Some(viewport) = ww(w, |host| {
+            host.viewport_checked = true;
+            host.viewport(size)
+        }) else {
+            return;
+        };
+        let (width, height) = viewport.size;
+        if w.size() != viewport.size || w.scale() != viewport.scale || w.kernel().safe_area() != viewport.safe_area {
+            w.event(InputEvent::Resize { width, height, scale: viewport.scale, safe_area: viewport.safe_area });
         }
     }
 
@@ -651,9 +635,42 @@ impl Shell {
         self.show_frames(false);
     }
 
+    /// Reserves the renderer before waiting for the device. The worker returns it with a
+    /// device-wide result, so newer window requests can use the same drain.
+    fn drain_for_surfaces(&mut self) {
+        let epoch = self.shared.trace.then_some(self.shared.trace_epoch);
+        let result = self
+            .shared
+            .gpu
+            .borrow_mut()
+            .as_mut()
+            .filter(|gpu| gpu.idle() && gpu.available())
+            .map_or(Ok(()), |gpu| gpu.start_surface_drain(epoch));
+        if let Err(error) = result {
+            self.gpu_failed(&error);
+        }
+    }
+
+    /// Applies only the requests that still belong to open windows with free drawables.
+    /// Run this before reopening admission for drawing, captures or profiler submits.
+    fn apply_surface_configurations(&self) -> Result<(), String> {
+        let Some(app) = &self.app else { return Ok(()) };
+        for mut window in app.windows().into_iter().filter_map(|id| app.window(id)) {
+            let Some(size) = ww(&window, |host| host.ready_to_configure().then(|| host.drawable_size())).flatten() else { continue };
+            // The native window may already reflect a size whose resize event is still queued.
+            self.resize_window(&mut window, size);
+            let gpu = self.shared.gpu.borrow();
+            let Some(gpu) = gpu.as_ref().filter(|gpu| gpu.available()) else { break };
+            ww(&window, |host| host.apply_surface_configuration(gpu)).transpose()?;
+        }
+        Ok(())
+    }
+
     /// Schedules each settled window on its own clock and updates assistive technology.
-    fn show_frames(&mut self, mut clock_sampled: bool) {
-        if self.app_failed() {
+    fn show_frames(&mut self, clock_sampled: bool) {
+        #[cfg(target_os = "macos")]
+        let mut clock_sampled = clock_sampled;
+        if self.done || self.app_failed() {
             return;
         }
         if let Some(generation) = self.deferred_gpu_loss.take() {
@@ -662,6 +679,14 @@ impl Shell {
         }
         let Some(app) = self.app.clone() else { return };
         let mut windows = app.windows();
+        if self.shared.renderer_idle()
+            && windows.iter().any(|id| app.window(*id).is_some_and(|w| ww(&w, |host| host.ready_to_configure()).unwrap_or(false)))
+        {
+            self.drain_for_surfaces();
+            if self.done {
+                return;
+            }
+        }
         #[cfg(target_os = "macos")]
         {
             // Publish all the opportunities the main run loop already delivered before any
@@ -695,10 +720,14 @@ impl Shell {
         {
             windows[..=ready].rotate_right(1);
         }
-        for id in windows {
+        let mut frames = VecDeque::new();
+        for &id in &windows {
             let Some(mut w) = app.window(id) else { continue };
-            if let Some(size) = ww(&w, |host| (cfg!(target_os = "ios") || !host.sized).then(|| host.drawable_size())).flatten() {
-                self.sync_viewport(&mut w, size);
+            if let Some(size) = ww(&w, |host| (cfg!(target_os = "ios") || !host.viewport_checked).then(|| host.drawable_size())).flatten() {
+                self.resize_window(&mut w, size);
+                if ww(&w, |host| host.ready_to_configure()) == Some(true) {
+                    self.drain_for_surfaces();
+                }
             }
             if !w.frame_is_settled() {
                 ww(&w, |x| {
@@ -715,21 +744,71 @@ impl Shell {
             }
             let draw = ww(&w, |x| x.schedule_frame(Instant::now())).flatten();
             if let Some((opportunity, continuous)) = draw {
-                // An event can wake the loop when a fallback frame is due. Sample that
-                // opportunity as well, so input bursts approaching a deadline keep drawing.
-                if continuous && !clock_sampled {
-                    self.tick();
-                    clock_sampled = true;
-                }
-                self.draw_for(&w, opportunity);
+                frames.push_back((w, opportunity, continuous));
             }
+        }
+        self.admit_render_work(frames, clock_sampled);
+        for w in windows.into_iter().filter_map(|id| app.window(id)).filter(AppWindow::frame_is_settled) {
             ww(&w, |x| x.a11y.update_if_active(|| w.accessibility_update()));
         }
     }
 
-    /// Draws the latest publication and returns whether the submission and present calls returned.
+    fn admit_render_work(&mut self, mut frames: VecDeque<(AppWindow, Opportunity, bool)>, clock_sampled: bool) {
+        // Sample an animation that reached its fallback deadline before choosing GPU work.
+        if !clock_sampled && frames.iter().any(|(_, _, continuous)| *continuous) {
+            self.tick();
+        }
+        // Native snapshots can finish even while the renderer belongs to another job.
+        let mut capture = self.capture.as_mut().and_then(capture::Job::ready_to_render);
+        while !self.done && self.shared.renderer_idle() {
+            let now = Instant::now();
+            let next_window = match capture {
+                Some((_, ready_at)) => frames.iter().position(|(window, opportunity, _)| {
+                    window.frame_is_settled() && !presentation::capture_precedes_frame(ready_at, *opportunity, now)
+                }),
+                None => Some(0),
+            };
+            let Some(next_window) = next_window else {
+                let capture = capture.take().expect("a capture is ready");
+                let competing_frame = frames
+                    .iter()
+                    .find(|(window, opportunity, _)| opportunity.valid(now) && window.frame_is_settled())
+                    .map(|(window, opportunity, _)| (window.id(), *opportunity));
+                if self.submit_ready_capture() {
+                    self.trace_admission(now, "capture", capture, competing_frame);
+                }
+                continue;
+            };
+            let Some((window, opportunity, _)) = frames.remove(next_window) else { break };
+            if self.draw_for(&window, opportunity)
+                && let Some(capture) = capture
+            {
+                self.trace_admission(now, "window", capture, Some((window.id(), opportunity)));
+            }
+            // Acquisition can request configuration during a draw.
+            if ww(&window, |host| host.ready_to_configure()) == Some(true) {
+                self.drain_for_surfaces();
+            }
+        }
+    }
+
+    fn trace_admission(
+        &self,
+        at: Instant,
+        selected: &'static str,
+        capture: (octara::app::WindowId, Instant),
+        frame: Option<(octara::app::WindowId, Opportunity)>,
+    ) {
+        if self.shared.trace
+            && let Some(gpu) = self.shared.gpu.borrow().as_ref()
+        {
+            trace::device_admission(self.shared.trace_epoch, at, gpu.generation.number, selected, capture, frame);
+        }
+    }
+
+    /// Draws the latest publication and reports whether a frame submitted or took the worker.
     fn draw_for(&mut self, w: &AppWindow, opportunity: Opportunity) -> bool {
-        if self.app_failed() || !self.shared.renderer_idle() || !ww(w, |x| x.can_present()).unwrap_or(false) {
+        if self.app_failed() || !w.frame_is_settled() || !self.shared.renderer_idle() || !ww(w, |x| x.can_present()).unwrap_or(false) {
             return false;
         }
         let attempted = Instant::now();
@@ -781,7 +860,7 @@ impl Shell {
             ww(w, |x| x.did_draw_ios_back(back_owner));
         }
         self.finish_window_draw(w, submitted);
-        submitted
+        submitted || !self.shared.renderer_idle()
     }
 
     fn finish_window_draw(&mut self, w: &AppWindow, submitted: bool) {
@@ -834,14 +913,27 @@ impl Shell {
                 }
             }
             Ok(Some(gpu::RenderCompletion::Capture)) => {}
+            Ok(Some(gpu::RenderCompletion::SurfaceDrain(result))) => {
+                let result = match result {
+                    Ok(true) => self.apply_surface_configurations(),
+                    Ok(false) => {
+                        // A long GPU submission may take more than one bounded wait. Retry
+                        // the latest configuration before admitting another GPU submission.
+                        self.show();
+                        return;
+                    }
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = result {
+                    self.gpu_failed(&error);
+                    return;
+                }
+            }
             Ok(None) => return,
             Err(error) => {
                 self.gpu_failed(&error);
                 return;
             }
-        }
-        if self.capture.as_ref().is_some_and(capture::Job::waiting_to_start_render) {
-            self.capture_step();
         }
         self.show();
     }
@@ -951,7 +1043,7 @@ impl Shell {
             let replacement =
                 ww(first, |host| gpu.replacement(&host.surface, &self.shared.proxy)).ok_or("the app has no GPU surface")??;
             for window in &windows {
-                ww(window, |host| host.recover_surface(&replacement)).transpose()?;
+                ww(window, |host| host.recover_surface(&replacement));
             }
             if !replacement.available() {
                 return Err("the replacement GPU device was lost during surface recovery".into());
@@ -1177,6 +1269,7 @@ impl Shell {
             ShellEvent::Capture => {
                 self.inspect_poll();
                 self.capture_step();
+                self.show();
                 return;
             }
             ShellEvent::Inspect { line, reply, connected } => {
@@ -1238,9 +1331,9 @@ impl Shell {
     }
 
     fn start_app(&mut self) {
-        let open = self.open_initial_window.take().expect("initial window factory");
-        let app = App::with_config(platform::WinitPlatform::new(self.shared.clone()), self.config.take().expect("initial App config"));
-        let mut w = open(&app, self.window_options.clone()).expect("the window");
+        let definition = self.definition.take().expect("initial application definition");
+        let mut w = definition.start(platform::WinitPlatform::new(self.shared.clone()), |_| {}).expect("the window");
+        let app = w.app();
         self.capture = capture::Job::from_env(w.id(), &self.shared.proxy);
         if std::env::var("OCTARA_PICK").is_ok_and(|v| v == "1") {
             w.set_picking(true);
@@ -1581,18 +1674,17 @@ mod tests {
     use presentation::{DrawableGeneration, Presentation};
 
     #[test]
-    fn initial_window_factory_keeps_the_window_scope_and_launch_site() {
+    fn application_definition_keeps_the_window_scope_and_source() {
         let owner = Rc::new(Cell::new(None));
         let observed = owner.clone();
         let line = line!() + 1;
-        let open = initial_window_factory(move || {
+        let definition = AppDefinition::new(Default::default(), WindowOptions::default(), move || {
             observed.set(Some(octara::window::current_window()));
             "Ready"
         });
         assert_eq!(owner.get(), None);
 
-        let app = App::new(HeadlessPlatform::default());
-        let window = open(&app, WindowOptions::default()).unwrap();
+        let window = definition.start(HeadlessPlatform::default(), |_| {}).unwrap();
         assert_eq!(owner.get(), Some(window.id()));
         let kernel = window.kernel();
         let node = kernel.children(kernel.root())[0];

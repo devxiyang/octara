@@ -351,7 +351,7 @@ mod tests {
         let options = crate::gpu_lab::options();
         let app = App::with_config(HeadlessPlatform::default(), options.app);
         let mut replay = Replay::new(&app);
-        let mut window = app.open_window(WindowOptions::new(options.title).size(SIZE.0 as f32, SIZE.1 as f32), replay.view()).unwrap();
+        let mut window = app.open_window(options.window.size(SIZE.0 as f32, SIZE.1 as f32), replay.view()).unwrap();
         let mut offsets = Vec::new();
         for hz in [60, 120] {
             replay.restart(&mut window).unwrap();
@@ -384,8 +384,7 @@ mod tests {
         for hz in [60, 120] {
             let options = crate::gpu_lab::options();
             let app = App::with_config(HeadlessPlatform::default(), options.app);
-            let mut window =
-                app.open_window(WindowOptions::new(options.title).size(SIZE.0 as f32, SIZE.1 as f32), move || live_view(hz)).unwrap();
+            let mut window = app.open_window(options.window.size(SIZE.0 as f32, SIZE.1 as f32), move || live_view(hz)).unwrap();
             assert_eq!(window.kernel().text_of("gpu-phase-value").as_deref(), Some("0.38"));
             window.invoke(START_COMMAND).unwrap();
             app.poll();
@@ -413,8 +412,7 @@ mod tests {
     fn sustained_replays_survive_resizes_and_settle_both_windows() {
         let options = crate::gpu_lab::options();
         let app = App::with_config(HeadlessPlatform::default(), options.app);
-        let mut window =
-            app.open_window(WindowOptions::new(options.title).size(STRESS_SIZE.0 as f32, STRESS_SIZE.1 as f32), stress_view).unwrap();
+        let mut window = app.open_window(options.window.size(STRESS_SIZE.0 as f32, STRESS_SIZE.1 as f32), stress_view).unwrap();
         window.invoke(OPEN_PEER_COMMAND).unwrap();
         window.invoke(OPEN_PEER_COMMAND).unwrap();
         let windows = app.windows();

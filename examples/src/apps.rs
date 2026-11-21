@@ -1,10 +1,14 @@
 //! Example apps ([running the examples](../README.md)).
 
-use octara::app::Window;
+use octara::app::{AppConfig, AppDefinition, AppMode, Window};
 use octara::prelude::*;
 use octara::reactive::list::{FlatItem, FlatKey};
 use octara::reactive::untrack;
 use octara_kit::{button, checkbox, ghost_button, primary_button, switch, text_field, toggle_button};
+
+pub fn counter_app(_: AppMode, config: AppConfig) -> Result<AppDefinition, String> {
+    Ok(AppDefinition::new(config, WindowOptions::new("Octara — counter"), counter))
+}
 
 #[ui]
 pub fn counter() -> El {

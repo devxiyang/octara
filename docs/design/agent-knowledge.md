@@ -8,6 +8,10 @@
 
 已送达的动作和 `inspect` 回传目标窗口在应答时的 `completion`。`layout: settled` 表示当前布局与焦点可以读回，后续任务仍可能在等待。`surface.state: submitted` 表示当前窗口画面已有宿主队列提交，画面相同时可沿用已有的 `frame`。`pending` 表示当前画面尚未提交，可再次 `inspect` 读取进度。无窗口运行的宿主状态为 `unavailable`。屏幕像素用 `capture` 的 `display` 来源核对。[回执定义](../../crates/octara/src/inspect.rs) · [截图来源](capture.md)
 
+`snapshot.observation` 标识该窗口当前已结算的版本，并附上对应的 `drawing_revision`。点击和拖动等指针请求在 `pointer` 中按派发顺序记录每个已完成阶段。`at` 是窗口内的逻辑坐标，`observation` 是识别前已结算的版本。`hit` 记录命中测试查到的节点，`captured` 记录这次按压持有的目标。例如点击按钮中文字时，可以命中文字并由按钮持有按压。拖动释放可以沿用捕获目标。后续阶段失败时，用已有记录确认此前发生的操作。若回调重建了控件，阶段内的 `target` 仍标识当时的挂载，随后读取的快照可以识别新挂载。动作效果从应用状态回读，呈现情况由 `completion` 和截图报告。[指针回执](../../crates/octara/src/inspect.rs) · [实窗目标回归](../../examples/live_targets.py)
+
+从截图选点时，按捕获报告的 `scale` 把像素换算成窗口内逻辑坐标，再提交 `{"op":"tap_at","target":"<按钮的 target>","x":42,"y":18,"drawing_revision":7}`。`target` 必须是这次按压应由哪个挂载接收的观察令牌。`drawing_revision` 可取自同一窗口 `capture.paint.revision`，用来在任何输入前核对截图对应的绘制。指针经过悬停、按下和释放时保留原坐标，并重新核对当时的接收者。若点已移出控件或当前命中另一个接收者，请求失败，`pointer` 保留已完成的阶段。需要跟随控件移动时，可以用按当前中心派发的 `tap`。[固定坐标点击](../../crates/octara/src/inspect/target.rs) · [截图报告](capture.md)
+
 在 iOS 27.2 模拟器，城市搜索选择器用 Inspector 的 `Up` 跳到尚未挂载的末项。该步回传 `delivered`、`settled` 和 `pending`，最后一次宿主提交为第 15 帧。随后只请求 `inspect`，回传 `submitted` 第 18 帧，搜索框保持原焦点，末项已在视口内并成为 `active_descendant`，选中的城市仍为杭州。[虚拟选项实测](../research/headless-ui-react.md#虚拟选项与退出时序)
 
 屏外控件需要先滚动。在 `actions` 含 `scroll` 的视口上发送 `{"op":"scroll","target":"<viewport target>","dx":0,"dy":120}`。位移以逻辑像素计，正值增大偏移。回执中 `scroll.offset` 是当前偏移 `[x,y]`，`scroll.delta` 是本次实际变化，包含布局校正。到达边界后继续向外滚动可返回 `[0,0]`。滚动后重新读取树，再操作进入视口的控件。[待办实窗验收](../../examples/live_inspect.py)

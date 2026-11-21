@@ -47,6 +47,23 @@ def token(value):
     return target
 
 
+def require_click_evidence(reply, snapshot, node, expected_point=None):
+    steps = reply.get("pointer", [])
+    require([step["phase"] for step in steps] == ["move", "down", "up"], f"expected one click: {reply}")
+    if expected_point is None:
+        x, y, width, height = node["bounds"]
+        expected_point = (x + width / 2, y + height / 2)
+    revision = snapshot["observation"]["revision"]
+    target = {"id": node["id"], "target": token(node)}
+    for step in steps:
+        point = step["at"]
+        require(len(point) == 2 and all(abs(a - b) <= 0.2 for a, b in zip(point, expected_point)),
+                f"pointer phase did not use the expected point {expected_point}: {step}")
+        require(step["observation"]["revision"] >= revision, f"pointer phase used an earlier observation: {step}")
+        require(step.get("hit") == target, f"pointer phase did not hit the observed allocation: {step}")
+    require([step.get("captured") for step in steps] == [None, target, target], f"wrong pointer capture: {steps}")
+
+
 class Scenario:
     def __init__(self, args, output):
         self.args = args
@@ -81,8 +98,8 @@ class Scenario:
         require(reply.get("ok") is (code is None), f"{prefix}: unexpected reply: {reply}")
         require(reply.get("live", {}).get("route") == route, f"{prefix}: expected live.route={route!r}: {reply}")
         if code is not None:
-            require(reply.get("code") == code, f"{prefix}: wrong refusal code: {reply}")
-            delivery = "refused"
+            require(reply.get("code") == code, f"{prefix}: wrong error code: {reply}")
+            delivery = delivery or "refused"
         if delivery:
             require(reply.get("delivery") == delivery, f"{prefix}: wrong Reply.delivery: {reply}")
             require(reply.get("live", {}).get("delivery") == delivery, f"{prefix}: wrong live.delivery: {reply}")
@@ -134,7 +151,8 @@ class Scenario:
         return self.inspect(f"{name}-after", snapshot["window"])
 
     def refuse(self, name, request, route):
-        self.request(name, request, route=route, code="STALE_TARGET")
+        reply = self.request(name, request, route=route, code="STALE_TARGET")
+        require("pointer" not in reply, f"{name}: a stale request sent pointer input: {reply}")
         return self.inspect(f"{name}-unchanged", self.main)
 
     def capture(self, name, snapshot):
@@ -152,6 +170,7 @@ class Scenario:
                 "capture dimensions disagree with its report")
         issues = self.request(f"{name}-issues", {"op": "issues", "window": snapshot["window"], "target": token(snapshot)})
         require(issues.get("issues") == [], f"capture has layout issues or diagnostics: {issues}")
+        return report
 
 
 def child_info(snapshot):
@@ -167,7 +186,7 @@ def run(app):
     require(len(first["windows"]) == 1 and first["windows"][0]["title"] == "Octara Target Validation",
             "start with a fresh targets fixture and no child window")
     a = token(find(first, "target-action"))
-    app.capture("initial-gpu", first)
+    old_drawing = app.capture("initial-gpu", first)["paint"]["revision"]
     first_hit = app.hit("fresh-a", first, a)
     old_node = find(first_hit, "target-action")
 
@@ -197,8 +216,36 @@ def run(app):
     require(token(new_node) == a, "value/geometry update changed the node target")
     require(new_node.get("name") != old_node.get("name") and new_node["bounds"][0] != old_node["bounds"][0],
             "update did not change both the target label and its position")
-    app.hit("retained-a", moved, a)
-    app.capture("updated-gpu", app.inspect("updated-picture-state", app.main))
+    reply = app.request("retained-a", {"op": "tap", "window": app.main, "id": "target-action", "target": a},
+                        route="framework", delivery="delivered")
+    require_click_evidence(reply, moved, new_node)
+    app.hits += 1
+    picture = app.capture("updated-gpu", app.inspect("updated-picture-state", app.main))
+    pictured = app.inspect("updated-capture-state", app.main)
+    pictured_node = find(pictured, "target-action")
+    drawing = picture["paint"]["revision"]
+    require(pictured["observation"]["drawing_revision"] == drawing and drawing != old_drawing,
+            "the observed geometry must match the fresh GPU capture")
+
+    old_x, old_y, old_width, old_height = old_node["bounds"]
+    previous_point = (old_x + old_width / 4, old_y + old_height / 2)
+    x, y, width, height = pictured_node["bounds"]
+    scale = picture["scale"]
+    pixel = (round((x + width / 4) * scale), round((y + height / 2) * scale))
+    require(0 <= pixel[0] < picture["width"] and 0 <= pixel[1] < picture["height"], "chosen point is outside the capture")
+    point = (pixel[0] / scale, pixel[1] / scale)
+    require(previous_point[0] < x, "the old point should lie left of the moved target")
+    request = {"op": "tap_at", "window": app.main, "target": a, "x": point[0], "y": point[1]}
+    for name, rejected in (("old-coordinate", {**request, "x": previous_point[0], "y": previous_point[1]}),
+                           ("old-drawing", {**request, "drawing_revision": old_drawing})):
+        refusal = app.request(name, rejected, route="framework", code="STEP_FAILED")
+        require("pointer" not in refusal, f"{name}: a refused point request sent pointer input: {refusal}")
+
+    click = app.request("click-from-gpu-capture", {**request, "drawing_revision": drawing}, route="framework", delivery="delivered")
+    require_click_evidence(click, pictured, pictured_node, point)
+    require(click["pointer"][0]["observation"]["drawing_revision"] == drawing, "the click used a different drawing from the capture")
+    app.hits += 1
+    app.inspect("clicked-from-capture", app.main)
 
     app.control("replace", "targets-replace")
     app.generation += 1
@@ -236,7 +283,11 @@ def run(app):
     app.inspect("child-hit-shared", app.main)
     app.capture("child-gpu", child)
 
-    app.control("close-child", "targets-close")
+    close = find(child, "targets-child-close")
+    partial = app.request("close-child-on-first-click", {"op": "double_tap", "window": old_number, "target": token(close)},
+                          route="framework", delivery="delivered", code="STEP_FAILED")
+    require_click_evidence(partial, child, close)
+    require(partial["completion"]["layout"] == "unavailable", f"the gesture's window should be closed: {partial}")
     closed = app.inspect("child-closed", app.main)
     require(not any(info["window"] == old_number for info in closed["windows"])
             and find(closed, "targets-child")["name"] == "Child: closed", "child was not closed")

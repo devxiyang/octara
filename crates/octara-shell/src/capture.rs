@@ -90,6 +90,7 @@ enum Stage {
         scale: f32,
         pending: Vec<String>,
         fallback: Option<String>,
+        ready_at: Option<Instant>,
     },
     Readback {
         prepared: PreparedCapture,
@@ -245,8 +246,12 @@ impl Drop for Job {
 }
 
 impl Job {
-    pub(crate) fn waiting_to_start_render(&self) -> bool {
-        matches!(&self.stage, Stage::Snapshots { window, id, .. } if window.capture_awaiting(*id).is_empty())
+    pub(crate) fn ready_to_render(&mut self) -> Option<(WindowId, Instant)> {
+        let Stage::Snapshots { window, id, ready_at, .. } = &mut self.stage else { return None };
+        if ready_at.is_none() && window.capture_awaiting(*id).is_empty() {
+            *ready_at = Some(Instant::now());
+        }
+        ready_at.map(|at| (self.window, at))
     }
 
     fn output(
@@ -269,17 +274,11 @@ impl Job {
 }
 
 impl Shell {
-    /// One step of the capture in progress.
-    pub(crate) fn capture_step(&mut self) {
-        let Some(mut job) = self.capture.take() else { return };
-        self.tick();
-        if let Some(app) = &self.app {
-            app.poll();
-        }
+    fn capture_window(&mut self, job: &mut Job) -> Option<Window> {
         if job.reply.as_ref().is_some_and(|reply| !reply.connected.load(Ordering::Relaxed)) {
-            return;
+            return None;
         }
-        let Some(mut w) = self.app.as_ref().and_then(|app| app.window(job.window)) else {
+        let Some(window) = self.app.as_ref().and_then(|app| app.window(job.window)).filter(|window| !window.is_closed()) else {
             let message = "the target window closed while capturing";
             if let Some(reply) = job.reply.take() {
                 let (code, message) = if reply.target_current() {
@@ -292,17 +291,26 @@ impl Shell {
                 eprintln!("octara-shell: capture {}: {message}", job.path);
                 self.done = true;
             }
-            return;
+            return None;
         };
-        if job.reply.as_ref().is_some_and(|reply| !reply.target_current()) {
-            if let Some(reply) = job.reply.take() {
-                reply.send(octara::inspect::Reply::fail(
-                    &octara::diagnostics::STALE_TARGET,
-                    "the observed window was rebuilt while capturing; inspect again",
-                ));
-            }
-            return;
+        if let Some(reply) = job.reply.take_if(|reply| !reply.target_current()) {
+            reply.send(octara::inspect::Reply::fail(
+                &octara::diagnostics::STALE_TARGET,
+                "the observed window was rebuilt while capturing; inspect again",
+            ));
+            return None;
         }
+        Some(window)
+    }
+
+    /// Advances settling, native snapshots or the output of an admitted capture.
+    pub(crate) fn capture_step(&mut self) {
+        let Some(mut job) = self.capture.take() else { return };
+        self.tick();
+        if let Some(app) = &self.app {
+            app.poll();
+        }
+        let Some(mut w) = self.capture_window(&mut job) else { return };
         if !self.shared.gpu_available() {
             self.capture = Some(job);
             return;
@@ -326,7 +334,7 @@ impl Shell {
         }
         if let Stage::Start = job.stage {
             if let Some(dy) = job.scroll {
-                let (width, height) = self.window_options.size;
+                let (width, height) = w.size();
                 w.wheel(width / 2.0, height / 2.0, 0.0, dy);
             }
             job.stage = Stage::Settling { until: now + job.settle, display_failure: None };
@@ -335,7 +343,6 @@ impl Shell {
             let pending = w.unsettled();
             if (!w.frame_is_settled() || !pending.is_empty()) && now < until {
                 self.capture = Some(job);
-                self.show();
                 return;
             }
             if job.reply.is_some()
@@ -358,7 +365,6 @@ impl Shell {
                         job.stage = Stage::AwaitingSubmission { until, display };
                         if needs_submission {
                             self.capture = Some(job);
-                            self.show();
                             return;
                         }
                     }
@@ -439,7 +445,6 @@ impl Shell {
         }
         if matches!(job.stage, Stage::Settling { .. }) {
             self.capture = Some(job);
-            self.show();
             return;
         }
         if let Stage::PreparingSnapshots { until, ref fallback, ref mut placement_requested } = job.stage {
@@ -447,7 +452,6 @@ impl Shell {
             if prepare_native_placements(&w, !*placement_requested || now < until) {
                 *placement_requested = true;
                 self.capture = Some(job);
-                self.show();
                 return;
             }
             let scale = job.scale.unwrap_or(w.scale());
@@ -459,49 +463,11 @@ impl Shell {
                     return;
                 }
             };
-            job.stage = Stage::Snapshots { window: w.clone(), id, scale, pending, fallback: fallback.clone() };
+            job.stage = Stage::Snapshots { window: w.clone(), id, scale, pending, fallback: fallback.clone(), ready_at: None };
         }
-        if let Stage::Snapshots { id, scale, ref pending, ref fallback, .. } = job.stage {
-            if !w.capture_awaiting(id).is_empty() {
-                self.capture = Some(job);
-                return;
-            }
-            if !self.shared.gpu.borrow().as_ref().is_some_and(super::gpu::Gpu::idle) {
-                self.capture = Some(job);
-                return;
-            }
-            let prepared = match w.capture_prepare(id) {
-                Ok(prepared) => prepared,
-                Err(error) => {
-                    self.report(&w, Err(error), job);
-                    return;
-                }
-            };
-            let list = prepared.display_list();
-            if job.reply.is_some()
-                && let Err(error) = validate_size(list.size, scale)
-            {
-                self.report(&w, Err(error), job);
-                return;
-            }
-            let (generation, renderer, pixels) = {
-                let mut gpu = self.shared.gpu.borrow_mut();
-                let gpu = gpu.as_mut().expect("the window has a GPU renderer");
-                (
-                    gpu.generation.number,
-                    gpu.renderer_name(),
-                    gpu.start_capture(list, scale, prepared.paint_sample(), job.waking.clone(), self.shared.proxy.clone()),
-                )
-            };
-            let pixels = match pixels {
-                Ok(pixels) => pixels,
-                Err(error) => {
-                    self.report(&w, Err(error), job);
-                    return;
-                }
-            };
-            job.stage =
-                Stage::Readback { prepared, pixels, generation, renderer, scale, pending: pending.clone(), fallback: fallback.clone() };
+        if matches!(job.stage, Stage::Snapshots { .. }) {
+            self.capture = Some(job);
+            return;
         }
         if let Stage::Readback { generation, ref pixels, .. } = job.stage {
             let recording = match pixels.try_recv() {
@@ -554,6 +520,51 @@ impl Shell {
             }
             self.report(&w, result, job);
         }
+    }
+
+    /// Admits a queued painted capture through the shared renderer scheduler.
+    pub(crate) fn submit_ready_capture(&mut self) -> bool {
+        if !self.shared.gpu.borrow().as_ref().is_some_and(|gpu| gpu.idle() && gpu.available()) {
+            return false;
+        }
+        let Some(mut job) = self.capture.take_if(|job| job.ready_to_render().is_some()) else { return false };
+        let Stage::Snapshots { id, scale, .. } = job.stage else { unreachable!("only queued snapshots can start painting") };
+        let Some(w) = self.capture_window(&mut job) else { return false };
+        // The window keeps the capture session until admission, so resize can invalidate snapshots.
+        let prepared = match w.capture_prepare(id) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.report(&w, Err(error), job);
+                return false;
+            }
+        };
+        let list = prepared.display_list();
+        if job.reply.is_some()
+            && let Err(error) = validate_size(list.size, scale)
+        {
+            self.report(&w, Err(error), job);
+            return false;
+        }
+        let (generation, renderer, pixels) = {
+            let mut gpu = self.shared.gpu.borrow_mut();
+            let gpu = gpu.as_mut().expect("the renderer is available");
+            (
+                gpu.generation.number,
+                gpu.renderer_name(),
+                gpu.start_capture(list, scale, prepared.paint_sample(), job.waking.clone(), self.shared.proxy.clone()),
+            )
+        };
+        let pixels = match pixels {
+            Ok(pixels) => pixels,
+            Err(error) => {
+                self.report(&w, Err(error), job);
+                return false;
+            }
+        };
+        let Stage::Snapshots { pending, fallback, .. } = std::mem::replace(&mut job.stage, Stage::Start) else { unreachable!() };
+        job.stage = Stage::Readback { prepared, pixels, generation, renderer, scale, pending, fallback };
+        self.capture = Some(job);
+        true
     }
 
     /// Prints the report (stdout) and each native view's AppKit frame (stderr), and exits.

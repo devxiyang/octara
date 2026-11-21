@@ -25,7 +25,7 @@ mod virtual_list;
 pub(crate) use crate::kernel::TextDocument;
 pub use asks::menu_surface;
 pub use back::BackPhase;
-pub use config::AppConfig;
+pub use config::{AppConfig, AppDefinition, AppMode};
 pub use edit::{TextField, byte_offset, utf16_offset};
 pub use event::{FileDrag, InputEvent, Recorded, Recording, WheelPhase};
 pub(crate) use guard::GuardTarget;
@@ -284,6 +284,7 @@ pub(crate) struct WindowState {
     published_frame: RefCell<Option<crate::platform::PublishedFrame>>,
     /// The revision accepted at the App's final publication boundary.
     settled_revision: Cell<Option<WindowRevision>>,
+    observation_number: Cell<u64>,
     /// Frames presented to the platform window.
     frames: Cell<u64>,
     /// The active painted capture and its native responses.
@@ -589,11 +590,13 @@ impl WindowState {
         id: WindowId,
         options: crate::platform::WindowOptions,
         root: Rc<dyn Fn() -> View>,
-        platform: Box<dyn crate::platform::PlatformWindow>,
+        opened: crate::platform::OpenedWindow,
     ) -> WindowState {
-        let size = options.size;
+        let crate::platform::OpenedWindow { window, viewport } = opened;
+        let size = viewport.size;
         let mut kernel = Kernel::new(app.res.clone());
         kernel.bind_identity(app.namespace, id.number());
+        kernel.set_safe_area(viewport.safe_area);
         let breakpoint = kernel.theme().breakpoint_of(size.0);
         WindowState {
             id,
@@ -620,8 +623,8 @@ impl WindowState {
             interaction: RefCell::default(),
             interaction_revision: app.rt.enter(|| Signal::detached(0)),
             size: Cell::new(size),
-            scale: Cell::new(1.0),
-            platform: RefCell::new(platform),
+            scale: Cell::new(viewport.scale),
+            platform: RefCell::new(window),
             text_input: RefCell::new(None),
             cursor: Cell::new(octara_primitives::input::CursorStyle::Arrow),
             native_sent: RefCell::default(),
@@ -629,6 +632,7 @@ impl WindowState {
             drawing: Cell::new(None),
             published_frame: RefCell::default(),
             settled_revision: Cell::new(None),
+            observation_number: Cell::new(0),
             frames: Cell::new(0),
             capturing: RefCell::default(),
             picking: RefCell::default(),
@@ -708,7 +712,8 @@ impl App {
 
     /// Opens a window showing `root`. A host call mounts and lays it out before returning.
     /// Calls during an App update mount it when that update processes its window requests.
-    /// The factory runs in the window's scope and can return any [`IntoView`].
+    /// The factory runs in the window's scope and can return any [`IntoView`]. Its initial
+    /// viewport comes from the host.
     #[track_caller]
     pub fn open_window<V: IntoView>(
         &self,
@@ -938,9 +943,9 @@ impl AppState {
             return Err("window creation is not allowed in this execution phase".into());
         }
         let id = self.windows.borrow_mut().try_insert_with_key(|id| {
-            let platform = self.system.borrow_mut().open_window(id, &options)?;
+            let opened = self.system.borrow_mut().open_window(id, &options)?;
             let root = Rc::new(move || build_content(at, &root));
-            Ok::<_, String>(Rc::new(WindowState::new(self, id, options, root, platform)))
+            Ok::<_, String>(Rc::new(WindowState::new(self, id, options, root, opened)))
         })?;
         self.order.borrow_mut().push(id);
         self.opening.borrow_mut().push(id);
@@ -1309,7 +1314,7 @@ impl Window {
         let scale = self.w.scale.get();
         self.event(InputEvent::Resize { width, height, scale, safe_area: None });
     }
-    /// Its scale: device pixels per logical pixel (what the last resize said).
+    /// Device pixels per logical pixel, supplied by the host at open and on resize.
     pub fn scale(&self) -> f32 {
         self.w.scale.get()
     }
@@ -1359,6 +1364,7 @@ impl Window {
     /// Reads the semantic tree and app state for the Inspector protocol without settling the
     /// window or evaluating application callbacks. See [`crate::inspect`].
     pub fn inspect(&self) -> crate::inspect::Snapshot {
+        let observation = self.observation();
         let (w, h) = self.size();
         let k = self.w.kernel.borrow();
         let focus = self.w.interaction.borrow().focused.filter(|n| k.is_alive(*n)).and_then(|n| k.test_id(n).map(str::to_owned));
@@ -1371,6 +1377,7 @@ impl Window {
             schema: crate::inspect::SCHEMA.into(),
             octara: env!("CARGO_PKG_VERSION").into(),
             viewport: [w, h],
+            observation,
             theme: k.theme().name.into(),
             breakpoint: crate::inspect::snake(&format!("{:?}", self.breakpoint())),
             time_ms: self.app().now().as_millis() as u64,

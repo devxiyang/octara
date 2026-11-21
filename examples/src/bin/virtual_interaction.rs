@@ -222,7 +222,7 @@ fn virtual_interaction() -> View {
 
 fn main() {
     octara_shell::run_with(
-        octara_shell::Options { title: "Octara Virtual Interaction".into(), size: (960.0, 760.0), ..Default::default() },
+        octara_shell::Options { window: WindowOptions::new("Octara Virtual Interaction").size(960.0, 760.0), ..Default::default() },
         virtual_interaction,
     );
 }

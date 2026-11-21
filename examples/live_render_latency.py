@@ -5,6 +5,7 @@ Build the release window and the Inspector CLI and put the window on that displa
 Each run replays 27 seconds of Shader Lab. Inspector clicks, scrolling, and drag moves
 are timed from framework dispatch to the first Metal display of the resulting revision.
 The report counts changed revisions that had no attributable display separately.
+Use --scenario admission to check window and capture ordering at the current display mode.
 """
 
 import argparse
@@ -27,9 +28,10 @@ INPUT = "octara.inspect_delivery/1"
 REPLAY = "octara.shader_lab_replay/1"
 SURFACE = "octara.surface_trace/1"
 ACQUIRE = "octara.acquire_trace/1"
+ADMISSION = "octara.device_admission/1"
 OUTPUT = "octara.capture_trace/1"
 OPPORTUNITY = "octara.display_opportunity/1"
-SCHEMAS = (FRAME, PRESENTED, INPUT, REPLAY, SURFACE, ACQUIRE, OUTPUT, OPPORTUNITY)
+SCHEMAS = (FRAME, PRESENTED, INPUT, REPLAY, SURFACE, ACQUIRE, ADMISSION, OUTPUT, OPPORTUNITY)
 PERIOD_US = 1_000_000 / 120
 SLIDER = "gpu-glass-refraction"
 
@@ -147,6 +149,39 @@ def input_report(deliveries, displays, probes):
             for kind, result in results.items()}
 
 
+def admission_report(rows, windows, outputs):
+    decisions = rows[ADMISSION]
+    require(all(row["capture"] in windows and row["selected"] in ("window", "capture")
+                and row["window"] in [None, *windows] and row["capture_wait_us"] >= 0
+                for row in decisions), "admission: invalid work receipt")
+    captures = [row for row in decisions if row["selected"] == "capture"]
+    require(len(captures) == len(outputs) and all(
+        start["capture"] == output["window"] and start["at_us"] <= output["started_us"]
+        for start, output in zip(captures, outputs)
+    ), "admission: completed captures did not match the GPU admissions in order")
+    windows_first = [row for row in decisions if row["selected"] == "window"]
+    require(all(row["window"] in windows and (row["frame_deadline_us"] is None or row["at_us"] < row["frame_deadline_us"])
+                for row in windows_first), "admission: a window won with no current frame opportunity")
+
+    png_intervals = [(start["device_generation"], output["started_us"], output["started_us"] + output["elapsed_us"])
+                     for start, output in zip(captures, outputs)]
+    frames_during_output = {window: 0 for window in windows}
+    for frame in rows[FRAME]:
+        if not (frame["submitted"] and frame["render_worker"]):
+            continue
+        paint = frame["paint"]
+        submitted = frame["timeline_us"]["render_submitted"]
+        if paint["window"] in frames_during_output and submitted is not None and any(
+            paint["device_generation"] == device and start < submitted < end for device, start, end in png_intervals
+        ):
+            frames_during_output[paint["window"]] += 1
+    require(all(frames_during_output.values()), "admission: both windows must submit while painted PNG output is running")
+    captures_first = [row for row in captures if row["window"] is not None]
+    return {"window_first": len(windows_first), "capture_first_with_window_ready": len(captures_first),
+            "contended_capture_wait": statistics(row["capture_wait_us"] for row in captures_first),
+            "frames_during_output": frames_during_output}
+
+
 def exercise(app, stream, scenario):
     def request(op, window=None, **fields):
         message = {"op": op, **fields}
@@ -161,7 +196,7 @@ def exercise(app, stream, scenario):
 
     main = inspect()["window"]
     windows = [main]
-    if scenario == "dual":
+    if scenario in ("dual", "admission"):
         request("invoke", main, command="shader-lab.replay.open-peer")
         peer = [w["window"] for w in inspect()["windows"] if w["title"] == "Octara Shader Lab Peer"]
         require(len(peer) == 1, "the peer window did not open")
@@ -184,8 +219,26 @@ def exercise(app, stream, scenario):
         probes.append((op, before, log.stat().st_size))
         return reply
 
+    def capture(window, cycle, index, size):
+        path = app.output / f"{app.fixture}-{cycle}-{index}.png"
+        report = request("capture", window, path=str(path), pixels="painted", scale=2, settle_ms=0)["capture"]
+        require(report["pixels"] == "painted" and report["renderer"] == "gpu", "capture did not use GPU paint")
+        require(report["paint"]["origin"] == "rerecorded" and report["paint"]["window"] == window,
+                "capture did not record the requested window")
+        with path.open("rb") as image:
+            header = image.read(24)
+        require(header[:8] == b"\x89PNG\r\n\x1a\n" and struct.unpack(">II", header[16:24]) == tuple(round(side * 2) for side in size),
+                f"capture did not write a 2× PNG for {size}")
+        path.unlink()
+
     for cycle in range(6):
         start = cycle * 4.5
+        if scenario == "admission":
+            for index, window in enumerate(windows):
+                # Vary the sample phase relative to the display clock across rounds.
+                at(start + 0.9 * (index + 1) + cycle * 0.003)
+                capture(window, cycle, index, inspect(window)["viewport"])
+            continue
         if scenario == "capture":
             for index, (second, size) in enumerate(((0.9, (1320, 820)), (1.8, (1440, 900)))):
                 at(start + second)
@@ -193,14 +246,7 @@ def exercise(app, stream, scenario):
                 detail = request("size", main, width=width, height=height)["live"]["resize"]
                 require(detail["matched"] and detail["synchronized"] and detail["physical"] == [width, height],
                         f"native resize did not converge at 1×: {detail}")
-                path = app.output / f"{app.fixture}-{cycle}-{index}.png"
-                report = request("capture", main, path=str(path), pixels="painted", scale=2, settle_ms=0)["capture"]
-                require(report["pixels"] == "painted" and report["renderer"] == "gpu", "capture did not use GPU paint")
-                with path.open("rb") as image:
-                    header = image.read(24)
-                require(header[:8] == b"\x89PNG\r\n\x1a\n" and struct.unpack(">II", header[16:24]) == (2 * width, 2 * height),
-                        f"capture did not write a 2× PNG for {size}")
-                path.unlink()
+                capture(main, cycle, index, size)
 
         at(start + 2.60)
         slider = find(inspect(main), SLIDER)
@@ -232,9 +278,16 @@ def compare(args, temporary, scenario, depth, repeat):
     configured = [row for row in rows[SURFACE] if row["configured"]]
     require(configured and all(row["metal_drawables"] == depth for row in configured),
             f"{name}: unexpected number of drawables on a configured CAMetalLayer")
-    captures = sum(row["phase"] == "painted_output" and row["saved"] for row in rows[OUTPUT])
-    require(captures == (12 if scenario == "capture" else 0), f"{name}: expected exactly 12 worker outputs in the capture run")
-    result = {"scenario": scenario, "drawables": depth, "round": repeat, "painted_outputs": captures, "windows": []}
+    outputs = [row for row in rows[OUTPUT] if row["phase"] == "painted_output" and row["saved"]]
+    expected_outputs = 12 if scenario in ("capture", "admission") else 0
+    require(len(outputs) == expected_outputs, f"{name}: expected {expected_outputs} completed worker outputs")
+    result = {"scenario": scenario, "drawables": depth, "round": repeat, "painted_outputs": len(outputs), "windows": []}
+    if scenario == "admission":
+        result["admission"] = admission_report(rows, windows, outputs)
+        for window in windows:
+            _, submissions, displays = window_frames(rows, window)
+            result["windows"].append({"window": window, "submitted": len(submissions), "displayed": len(displays)})
+        return result
     for index, window in enumerate(windows):
         bounds, submissions, displays = window_frames(rows, window)
         expected_sizes = {(800, 620)} if index else {(1440, 900), (1320, 820)} if scenario == "capture" else {(1440, 900)}
@@ -251,7 +304,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--window", type=Path, default=repo / "target/release/window")
     parser.add_argument("--octara", type=Path, default=repo / "target/debug/octara")
-    parser.add_argument("--scenario", choices=("single", "dual", "capture"), action="append", help="default: all three")
+    parser.add_argument("--scenario", choices=("single", "dual", "capture", "admission"), action="append",
+                        help="default: single, dual, and capture")
     parser.add_argument("--rounds", type=int, default=2, help="paired runs per scene, with alternating order")
     args = parser.parse_args()
     require(sys.platform == "darwin" and args.rounds >= 1, "run on macOS with at least one paired round")
@@ -260,9 +314,15 @@ def main():
     require(args.window.is_file() and args.octara.is_file(), "build the release window example and the Octara Inspector CLI first")
     with tempfile.TemporaryDirectory(prefix="octara-latency-", dir="/tmp") as temporary:
         for scenario in args.scenario or ("single", "dual", "capture"):
+            window_first = 0
             for repeat in range(1, args.rounds + 1):
                 for depth in ((3, 2) if repeat % 2 else (2, 3)):
-                    print(json.dumps(compare(args, Path(temporary), scenario, depth, repeat)), flush=True)
+                    result = compare(args, Path(temporary), scenario, depth, repeat)
+                    print(json.dumps(result), flush=True)
+                    if scenario == "admission":
+                        window_first += result["admission"]["window_first"]
+            if scenario == "admission":
+                require(window_first > 0, "admission: no ready window won a device turn while a capture waited")
 
 
 if __name__ == "__main__":

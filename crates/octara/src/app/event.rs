@@ -5,7 +5,8 @@
 //! gets, with the time and the window, and replay them on another app built the same way: the
 //! same snapshots and display lists on the virtual clock.
 
-use super::{App, BackPhase, Event, KeyEvent, Phase, PointerEvent, Window, WindowId};
+use super::{App, BackPhase, Button, Event, KeyEvent, Phase, PointerEvent, PointerKind, TargetGuard, Window, WindowId};
+use crate::inspect::PointerStep;
 use crate::kernel::{NodeId, TextDocument};
 use crate::native::{NativeEvent, NativeId};
 use crate::paint::Rect;
@@ -105,14 +106,39 @@ impl Window {
         self.event_guarded(event, None)
     }
 
-    pub(crate) fn event_guarded(&mut self, event: InputEvent, guard: Option<&super::TargetGuard>) -> bool {
+    pub(crate) fn event_guarded(&mut self, event: InputEvent, guard: Option<&TargetGuard>) -> bool {
+        self.event_with_pointer_steps(event, guard, None)
+    }
+
+    pub(crate) fn observed_pointer(&mut self, event: PointerEvent, steps: &mut Vec<PointerStep>) {
+        self.event_with_pointer_steps(InputEvent::Pointer(event), None, Some(steps));
+    }
+
+    /// Delivers a phase of a fixed-point click. Cancellation only requires the operation's
+    /// pointer to still be held, since its original target can retire before cleanup.
+    pub(crate) fn observed_pointer_at(&mut self, event: PointerEvent, guard: &TargetGuard, steps: &mut Vec<PointerStep>) -> bool {
+        debug_assert!(event.kind == PointerKind::Mouse && event.button == Button::Primary && event.modifiers.is_empty());
+        let held = self.held_pointer();
+        let available = match event.phase {
+            Phase::Down | Phase::Move => held.is_none(),
+            Phase::Up | Phase::Cancel => held == Some((event.id, event.kind)),
+        };
+        if !available || (event.phase != Phase::Cancel && (self.picking() || !guard.is_current(self))) {
+            return false;
+        }
+        self.event_with_pointer_steps(InputEvent::Pointer(event), Some(guard), Some(steps))
+    }
+
+    fn event_with_pointer_steps(&mut self, event: InputEvent, guard: Option<&TargetGuard>, steps: Option<&mut Vec<PointerStep>>) -> bool {
         if self.app.shutdown.get() || self.w.closed.get() {
             return false;
         }
         // Native edit entry points admit and record the event against the actual editor.
         if !event.is_native_text() {
             self.app.record(self.w.id, || event.clone());
-            if self.picks(&event) {
+            // The picker must not keep an operation's own press held after it is cancelled.
+            let owned_cancel = guard.is_some() && matches!(&event, InputEvent::Pointer(PointerEvent { phase: Phase::Cancel, .. }));
+            if !owned_cancel && self.picks(&event) {
                 return true;
             }
             self.tip_dismissed_by(&event);
@@ -136,8 +162,13 @@ impl Window {
             InputEvent::BackGesture { id, phase } => self.on_back_gesture(id, phase),
             InputEvent::Command { name, chord } => self.on_menu_command(&name, chord.as_deref()),
             InputEvent::Pointer(ev) => {
-                self.on_pointer(ev);
-                true
+                if ev.phase != Phase::Cancel
+                    && guard.is_some_and(|guard| self.picking() || !guard.is_current(self) || !self.frame_is_settled())
+                {
+                    return false;
+                }
+                let accepted = self.on_pointer(ev, guard, steps);
+                guard.is_none() || accepted
             }
             InputEvent::PointerLeave => {
                 self.on_pointer_leave();

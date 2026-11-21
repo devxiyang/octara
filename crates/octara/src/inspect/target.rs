@@ -1,13 +1,16 @@
 //! Opaque wire targets and request validation. A request binds one mounted allocation at
 //! admission and keeps it through host waits. Operation-specific checks run before delivery.
 
-use super::{Completion, Delivery, Reply, Request, ScrollResult, Window, codes};
+use super::{Completion, Delivery, PointerStep, Reply, Request, ScrollResult, Window, codes};
 use crate::app::{Button, Chord, Event, GuardTarget, InputEvent, Key, Modifiers, Phase, PointerEvent, PointerKind, TargetGuard};
 use crate::identity::TreeIdentity;
 use crate::kernel::{Kernel, NameError, NodeId};
 use slotmap::{Key as _, KeyData};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+// Reserved synthetic ids keep cancellation away from a person's mouse or touch.
+static NEXT_CLICK_POINTER: AtomicU64 = AtomicU64::new(1 << 63);
 
 fn token(identity: TreeIdentity, node: Option<NodeId>) -> String {
     let mut token = format!("ot1:{:032x}:{:016x}:{:016x}", identity.namespace, identity.window, identity.generation);
@@ -46,6 +49,7 @@ enum Binding<'a> {
 
 fn binding(request: &Request) -> Binding<'_> {
     match request {
+        Request::TapAt { .. } => Binding::Node(None),
         Request::Tap { id }
         | Request::DoubleTap { id }
         | Request::LongPress { id }
@@ -149,6 +153,7 @@ fn bind_request(window: &Window, request: &Request, observed: Option<ObservedTar
         match binding {
             Binding::Window => return Ok(None),
             Binding::Focus => GuardTarget::Focus(window.focused_node()),
+            Binding::Node(None) if matches!(request, Request::TapAt { .. }) => return Err(bad("tap_at requires an observed node target")),
             Binding::Node(None) => return Err(bad("this operation requires id or target")),
             Binding::Node(Some(id)) => match window.kernel().named_node(id) {
                 Ok(node) => GuardTarget::Node(node),
@@ -192,6 +197,9 @@ pub fn parse_request(window: &Window, line: &str) -> Result<(Window, Request), B
     if observed.is_some() {
         return Err(bad("this host must retain target guards with parse_guarded_request and handle_guarded"));
     }
+    if matches!(request, Request::TapAt { .. }) {
+        return Err(bad("tap_at requires an observed node target"));
+    }
     if matches!(binding(&request), Binding::Node(None)) {
         return Err(bad("this operation requires id"));
     }
@@ -201,7 +209,8 @@ pub fn parse_request(window: &Window, line: &str) -> Result<(Window, Request), B
 /// Executes one operation while retaining the original target through focus, pointer phases
 /// and key-to-text fallback. A failed later phase reports that earlier input was delivered.
 pub fn handle_guarded(window: &mut Window, request: Request, guard: Option<&TargetGuard>) -> Reply {
-    super::request_boundary(window, request, |window, request| {
+    let mut steps = Vec::new();
+    let mut reply = super::request_boundary(window, request, |window, request| {
         let bound;
         let guard = match guard {
             Some(guard) => {
@@ -222,7 +231,7 @@ pub fn handle_guarded(window: &mut Window, request: Request, guard: Option<&Targ
         let input =
             !matches!(request, Request::Inspect | Request::Issues | Request::Pick { .. } | Request::Expect(_) | Request::Capture { .. });
         let action = input && !matches!(request, Request::Settle { .. });
-        let mut reply = super::handle_inner(window, request, guard);
+        let mut reply = super::handle_inner(window, request, guard, &mut steps);
         if input
             && (guard.is_some() || action && reply.ok)
             && reply.delivery.is_none()
@@ -235,7 +244,9 @@ pub fn handle_guarded(window: &mut Window, request: Request, guard: Option<&Targ
             reply.completion = Some(Completion::observe(window));
         }
         reply
-    })
+    });
+    reply.pointer = steps;
+    reply
 }
 
 pub(super) fn semantic(window: &mut Window, guard: &TargetGuard, event: impl FnOnce(String) -> Event) -> Reply {
@@ -333,19 +344,76 @@ pub fn guarded_point(window: &Window, guard: &TargetGuard, delivery: Delivery) -
     window.activation_point(node).map_err(|why| Box::new(failure(&codes::STEP_FAILED, why, delivery)))
 }
 
-pub(super) fn pointer(window: &mut Window, guard: &TargetGuard, kind: PointerKind, button: Button, double: bool, long: bool) -> Reply {
-    // Reserved synthetic ids keep cancellation away from a person's mouse or touch. Only
-    // the current operation's id is ever cancelled; there is no pointer/token registry.
-    static NEXT_POINTER: AtomicU64 = AtomicU64::new(1 << 63);
+/// Delivers one raw pointer event and collects any evidence from its recognizer phase.
+pub fn dispatch_pointer(window: &mut Window, event: PointerEvent, steps: &mut Vec<PointerStep>) {
+    window.observed_pointer(event, steps);
+}
+
+pub(super) fn tap_at(
+    window: &mut Window,
+    guard: &TargetGuard,
+    (x, y): (f32, f32),
+    drawing_revision: Option<u64>,
+    steps: &mut Vec<PointerStep>,
+) -> Reply {
+    let mut delivery = Delivery::Refused;
+    if !x.is_finite() || !y.is_finite() {
+        return failure(&codes::BAD_REQUEST, "tap_at requires finite window coordinates", delivery);
+    }
+    let target = guard.node().expect("tap_at bound an observed node");
+    let pointer = NEXT_CLICK_POINTER.fetch_add(1, Ordering::Relaxed);
+    let held = Some((pointer, PointerKind::Mouse));
+    let event = |phase| PointerEvent { id: pointer, ..PointerEvent::mouse(phase, x, y) };
+    for phase in [Phase::Move, Phase::Down, Phase::Up] {
+        let expected_held = if phase == Phase::Up { held } else { None };
+        let refusal = if !guard.is_current(window) {
+            Some(stale(delivery))
+        } else if !window.frame_is_settled() {
+            Some(failure(&codes::NOT_SETTLED, "the window has no current settled geometry", delivery))
+        } else if phase == Phase::Move && drawing_revision.is_some_and(|revision| window.published_revision() != Some(revision)) {
+            Some(failure(&codes::STEP_FAILED, "the requested drawing is no longer current; inspect again", delivery))
+        } else if window.held_pointer() != expected_held {
+            Some(failure(&codes::STEP_FAILED, "another pointer interrupted the fixed-coordinate click", delivery))
+        } else if !window.tap_at_matches(target, x, y) {
+            Some(failure(&codes::STEP_FAILED, "the fixed point does not reach its observed press target", delivery))
+        } else if window.observed_pointer_at(event(phase), guard, steps) {
+            None
+        } else if !guard.is_current(window) {
+            Some(stale(delivery))
+        } else if !window.frame_is_settled() {
+            Some(failure(&codes::NOT_SETTLED, "the window has no current settled geometry", delivery))
+        } else {
+            Some(failure(&codes::STEP_FAILED, "the pointer phase could not complete for the observed target", delivery))
+        };
+        if let Some(reply) = refusal {
+            if window.held_pointer() == held {
+                window.observed_pointer_at(event(Phase::Cancel), guard, steps);
+            }
+            return reply;
+        }
+        delivery = Delivery::Delivered;
+    }
+    Reply { delivery: Some(delivery), ..Reply::ok() }
+}
+
+pub(super) fn pointer(
+    window: &mut Window,
+    guard: &TargetGuard,
+    kind: PointerKind,
+    button: Button,
+    double: bool,
+    long: bool,
+    steps: &mut Vec<PointerStep>,
+) -> Reply {
     if window.held_pointer().is_some() {
         return failure(&codes::STEP_FAILED, "a pointer is already held", Delivery::Refused);
     }
-    let pointer = NEXT_POINTER.fetch_add(1, Ordering::Relaxed);
+    let pointer = NEXT_CLICK_POINTER.fetch_add(1, Ordering::Relaxed);
     let mut delivered = Delivery::Refused;
     let event = |phase, (x, y)| PointerEvent { id: pointer, kind, button, ..PointerEvent::mouse(phase, x, y) };
-    let cancel = |window: &mut Window, at| {
+    let cancel = |window: &mut Window, at, steps: &mut Vec<PointerStep>| {
         if !window.is_closed() && window.held_pointer() == Some((pointer, kind)) {
-            window.event(InputEvent::Pointer(event(Phase::Cancel, at)));
+            dispatch_pointer(window, event(Phase::Cancel, at), steps);
         }
     };
     for click in 0..if double { 2 } else { 1 } {
@@ -357,7 +425,7 @@ pub(super) fn pointer(window: &mut Window, guard: &TargetGuard, kind: PointerKin
             Err(reply) => return *reply,
         };
         if kind != PointerKind::Touch {
-            window.event(InputEvent::Pointer(event(Phase::Move, at)));
+            dispatch_pointer(window, event(Phase::Move, at), steps);
             delivered = Delivery::Delivered;
             at = match guarded_point(window, guard, delivered) {
                 Ok(at) => at,
@@ -367,30 +435,30 @@ pub(super) fn pointer(window: &mut Window, guard: &TargetGuard, kind: PointerKin
         if window.held_pointer().is_some() {
             return failure(&codes::STEP_FAILED, "another pointer interrupted the gesture before its down", delivered);
         }
-        window.event(InputEvent::Pointer(event(Phase::Down, at)));
+        dispatch_pointer(window, event(Phase::Down, at), steps);
         delivered = Delivery::Delivered;
         if long {
             window.app().advance(window.tuning().long_press);
             if window.pointer_long_pressed(pointer) {
-                cancel(window, at);
+                cancel(window, at, steps);
                 return Reply { delivery: Some(Delivery::Delivered), ..Reply::ok() };
             }
         }
         let at = match guarded_point(window, guard, delivered) {
             Ok(at) => at,
             Err(reply) => {
-                cancel(window, at);
+                cancel(window, at, steps);
                 return *reply;
             }
         };
-        window.event(InputEvent::Pointer(event(Phase::Up, at)));
+        dispatch_pointer(window, event(Phase::Up, at), steps);
     }
     Reply { delivery: Some(Delivery::Delivered), ..Reply::ok() }
 }
 
 /// The headless equivalent of the host's realtime drag job. Even without an explicit token,
 /// every phase keeps the original node and cancels only its unique synthetic mouse pointer.
-pub(super) fn drag(window: &mut Window, guard: &TargetGuard, dx: f32, dy: f32) -> Reply {
+pub(super) fn drag(window: &mut Window, guard: &TargetGuard, dx: f32, dy: f32, steps: &mut Vec<PointerStep>) -> Reply {
     static NEXT_POINTER: AtomicU64 = AtomicU64::new(1 << 62);
     let refused = Delivery::Refused;
     if !dx.is_finite() || !dy.is_finite() {
@@ -411,7 +479,7 @@ pub(super) fn drag(window: &mut Window, guard: &TargetGuard, dx: f32, dy: f32) -
     let current = |window: &Window| guarded_point(window, guard, delivered);
     let pointer = NEXT_POINTER.fetch_add(1, Ordering::Relaxed);
     let event = |phase, (x, y)| PointerEvent { id: pointer, ..PointerEvent::mouse(phase, x, y) };
-    window.event(InputEvent::Pointer(event(Phase::Move, hover)));
+    dispatch_pointer(window, event(Phase::Move, hover), steps);
     let start = match current(window) {
         Ok(point) => point,
         Err(reply) => return *reply,
@@ -422,32 +490,32 @@ pub(super) fn drag(window: &mut Window, guard: &TargetGuard, dx: f32, dy: f32) -
     if window.held_pointer().is_some() {
         return failure(&codes::STEP_FAILED, "another pointer interrupted the drag before its down", delivered);
     }
-    let cancel = |window: &mut Window| {
+    let cancel = |window: &mut Window, steps: &mut Vec<PointerStep>| {
         if !window.is_closed() && window.held_pointer() == Some((pointer, PointerKind::Mouse)) {
-            window.event(InputEvent::Pointer(event(Phase::Cancel, start)));
+            dispatch_pointer(window, event(Phase::Cancel, start), steps);
         }
     };
-    window.event(InputEvent::Pointer(event(Phase::Down, start)));
+    dispatch_pointer(window, event(Phase::Down, start), steps);
     for step in 1..=4 {
         window.app().advance(Duration::from_millis(16));
         if let Err(reply) = current(window) {
-            cancel(window);
+            cancel(window, steps);
             return *reply;
         }
         if window.held_pointer() != Some((pointer, PointerKind::Mouse)) {
             return failure(&codes::STEP_FAILED, "the drag pointer was cancelled or replaced", delivered);
         }
         let fraction = step as f32 / 4.0;
-        window.event(InputEvent::Pointer(event(Phase::Move, (start.0 + dx * fraction, start.1 + dy * fraction))));
+        dispatch_pointer(window, event(Phase::Move, (start.0 + dx * fraction, start.1 + dy * fraction)), steps);
     }
     if let Err(reply) = current(window) {
-        cancel(window);
+        cancel(window, steps);
         return *reply;
     }
     if window.held_pointer() != Some((pointer, PointerKind::Mouse)) {
         return failure(&codes::STEP_FAILED, "the drag pointer was cancelled or replaced before release", delivered);
     }
-    window.event(InputEvent::Pointer(event(Phase::Up, (start.0 + dx, start.1 + dy))));
+    dispatch_pointer(window, event(Phase::Up, (start.0 + dx, start.1 + dy)), steps);
     Reply { delivery: Some(delivered), ..Reply::ok() }
 }
 

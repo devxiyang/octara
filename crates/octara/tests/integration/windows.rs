@@ -3,12 +3,13 @@
 //! closing one disposes its scope and frees it.
 
 use octara::app::{AppConfig, Event};
-use octara::platform::{Frame, HeadlessPlatform, Platform, PlatformWindow, WindowOptions};
+use octara::platform::{Frame, HeadlessPlatform, OpenedWindow, Platform, PlatformWindow, WindowOptions, WindowViewport};
 use octara::prelude::*;
 use octara::reactive::untrack;
 use octara::task::WorkKind;
 use octara::view::native_view;
 use octara_primitives::native::NativeChange;
+use octara_primitives::paint::Rect;
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -22,16 +23,22 @@ struct HostLog {
     dropped: Vec<WindowId>,
 }
 
-struct RecordingPlatform(Rc<RefCell<HostLog>>);
+struct RecordingPlatform {
+    log: Rc<RefCell<HostLog>>,
+    initial_viewport: Option<WindowViewport>,
+}
 
 impl Platform for RecordingPlatform {
     fn read_text(&mut self) -> Option<String> {
         None
     }
     fn write_text(&mut self, _: &str) {}
-    fn open_window(&mut self, id: WindowId, _: &WindowOptions) -> Result<Box<dyn PlatformWindow>, String> {
-        self.0.borrow_mut().opened.push(id);
-        Ok(Box::new(RecordingWindow { id, log: self.0.clone() }))
+    fn open_window(&mut self, id: WindowId, options: &WindowOptions) -> Result<OpenedWindow, String> {
+        self.log.borrow_mut().opened.push(id);
+        Ok(OpenedWindow {
+            window: Box::new(RecordingWindow { id, log: self.log.clone() }),
+            viewport: self.initial_viewport.unwrap_or(WindowViewport { size: options.size, scale: 1.0, safe_area: None }),
+        })
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -60,7 +67,33 @@ impl Drop for RecordingWindow {
 
 fn recording_app() -> (App, Rc<RefCell<HostLog>>) {
     let log = Rc::new(RefCell::new(HostLog::default()));
-    (App::new(RecordingPlatform(log.clone())), log)
+    (App::new(RecordingPlatform { log: log.clone(), initial_viewport: None }), log)
+}
+
+#[test]
+fn the_host_viewport_is_used_during_mount_and_first_publication() {
+    let safe_area = Some(Rect { x: 10.0, y: 22.0, w: 340.0, h: 196.0 });
+    let initial_viewport = WindowViewport { size: (360.0, 240.0), scale: 2.0, safe_area };
+    let log = Rc::new(RefCell::new(HostLog::default()));
+    let app = App::new(RecordingPlatform { log: log.clone(), initial_viewport: Some(initial_viewport) });
+    let window = app
+        .open_window(WindowOptions::new("Actual viewport").size(800.0, 600.0), move || {
+            let window = App::current().window(current_window()).unwrap();
+            assert_eq!(window.size(), initial_viewport.size);
+            assert_eq!(untrack(|| viewport().get()), initial_viewport.size);
+            assert_eq!(untrack(|| breakpoint().get()), Breakpoint::Compact);
+            assert_eq!(window.scale(), initial_viewport.scale);
+            assert_eq!(window.kernel().safe_area(), initial_viewport.safe_area);
+            el().size_full().bg(Token::Surface)
+        })
+        .unwrap();
+
+    let first = window.published_frame().unwrap();
+    assert_eq!(first.revision, 1);
+    assert_eq!(first.list.size, initial_viewport.size);
+    assert_eq!(first.scale, initial_viewport.scale);
+    assert_eq!(log.borrow().frames.len(), 1);
+    app.shutdown();
 }
 
 #[test]

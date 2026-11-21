@@ -6,7 +6,8 @@ Build the window example and CLI first, then run from any directory:
 
 Requires an interactive desktop and Unix-domain sockets. Windows is skipped. Screenshots,
 window logs and CLI transcripts stay in the printed output directory (or --output DIRECTORY).
-This checks framework input delivered to a real window, not OS keyboard/gesture injection.
+Inputs are delivered through the framework. The --gpu-stale-paint check also uses a native
+resize and requires macOS Accessibility access and a Swift compiler.
 """
 
 import argparse
@@ -226,6 +227,24 @@ class LiveWindow:
         self.transcript.write(json.dumps({"wire": line, "reply": reply}) + "\n")
         self.transcript.flush()
         return reply
+
+    def wait_for(self, observe, description):
+        deadline = time.monotonic() + self.args.timeout
+        while not (result := observe()):
+            self.alive()
+            require(time.monotonic() < deadline, f"{self.fixture}: timed out waiting for {description}")
+            time.sleep(0.01)
+        return result
+
+    def trace_rows(self, offset, *schemas):
+        labels = tuple(schema.encode() for schema in schemas)
+        with Path(self.log.name).open("rb") as log:
+            log.seek(offset)
+            for line in log:
+                if line.startswith(b"{") and line.endswith(b"\n") and any(label in line for label in labels):
+                    row = json.loads(line)
+                    if row.get("schema") in schemas:
+                        yield row
 
 
 def counter(args, output, sockets):
@@ -829,6 +848,13 @@ def gpu_lab(args, output, sockets, *, scale=1):
                      {"op": "expect", "id": "gpu-pass-popover", "exists": False}, {"op": "expect", "clean": True})
 
 
+def glass_effect(paint, target):
+    effects = [effect for effect in paint.get("effects", []) if effect["target"] == target]
+    require(len(effects) == 1 and effects[0]["id"] == "gpu-glass-dialog",
+            f"expected one paint outcome for the Glass dialog: {paint}")
+    return effects[0]
+
+
 def gpu_glass(args, output, sockets, *, scale=1, probe_fallback=False):
     env = {"OCTARA_GPU_LAB_PROBE_FALLBACK": "1", "OCTARA_TRACE_GPU": "1"} if probe_fallback else None
     with LiveWindow("gpu_glass", args, output, sockets, ["gpu_lab"], env=env) as app:
@@ -847,18 +873,12 @@ def gpu_glass(args, output, sockets, *, scale=1, probe_fallback=False):
             return {"op": "capture", "target": opened["target"], "path": str(output / name),
                     "scale": scale, "pixels": "painted", "settle_ms": settle_ms}
 
-        def lens(paint, target):
-            effects = [effect for effect in paint["effects"] if effect["target"] == target]
-            require(len(effects) == 1 and effects[0]["id"] == "gpu-glass-dialog",
-                    f"gpu_glass: expected one paint outcome for the dialog: {paint}")
-            return effects[0]
-
         def sample(name, outcome="rendered"):
             info = app.requests(capture(name, 2000))[0]["capture"]
             require(info["renderer"] == "gpu" and info["settled"], f"gpu_glass: expected settled GPU pixels: {info}")
             paint = info["paint"]
             require(paint["origin"] == "rerecorded" and "frame" not in paint, f"gpu_glass: incorrect capture provenance: {paint}")
-            effect = lens(paint, dialog["target"])
+            effect = glass_effect(paint, dialog["target"])
             require(effect["outcome"] == outcome and effect["source"] == dialog["source"],
                     f"gpu_glass: expected {outcome} paint from the dialog site: {effect}")
             width, height, digest = png_pixels(output / name, region=region)
@@ -873,10 +893,10 @@ def gpu_glass(args, output, sockets, *, scale=1, probe_fallback=False):
             submitted = reply["paint"]
             require(submitted["revision"] == paint["revision"] and submitted["frame"] == surface["frame"],
                     f"gpu_glass: submitted paint and capture disagree on the settled revision: {submitted}")
-            require(lens(submitted, dialog["target"])["outcome"] == expected and submitted["origin"] == "submitted",
+            require(glass_effect(submitted, dialog["target"])["outcome"] == expected and submitted["origin"] == "submitted",
                     f"gpu_glass: Inspector reported the wrong submitted paint: {submitted}")
             cli = app.inspect()["paint"]
-            require(cli["revision"] == submitted["revision"] and lens(cli, dialog["target"])["outcome"] == expected,
+            require(cli["revision"] == submitted["revision"] and glass_effect(cli, dialog["target"])["outcome"] == expected,
                     f"gpu_glass: CLI lost the live paint evidence: {cli}")
             return submitted
 
@@ -907,7 +927,7 @@ def gpu_glass(args, output, sockets, *, scale=1, probe_fallback=False):
             require(not any(node.get("id") == "gpu-glass-dialog" for node in nodes(retired)), "gpu_glass: retired dialog was still interactive")
             exit_capture = request(capture("gpu-glass-exit.png", 0))["capture"]
             require(bool(exit_capture.get("pending")), "gpu_glass: exit was not active when captured")
-            outgoing = lens(exit_capture["paint"], dialog["target"])
+            outgoing = glass_effect(exit_capture["paint"], dialog["target"])
             require(outgoing["exiting"], f"gpu_glass: exit still claims an actionable mount: {outgoing}")
             if last_good:
                 require(outgoing["outcome"] == "retained" and outgoing["source_revision"] == last_good["revision"],
@@ -924,7 +944,7 @@ def gpu_glass(args, output, sockets, *, scale=1, probe_fallback=False):
             require(find(reopened, "gpu-glass-refraction-value")["name"] == "75%", "gpu_glass: new dialog inherited retired control state")
             if probe_fallback:
                 new_paint = request(capture("gpu-glass-reopened.png", 0))["capture"]["paint"]
-                new_effect = lens(new_paint, new_target)
+                new_effect = glass_effect(new_paint, new_target)
                 require(new_effect["outcome"] == "rendered" and not new_effect["exiting"],
                         f"gpu_glass: reopened mount used the previous effect's outcome: {new_effect}")
             refused = app.wire_request(connection, {"op": "set_value", "target": slider, "value": 0.7})
@@ -932,14 +952,143 @@ def gpu_glass(args, output, sockets, *, scale=1, probe_fallback=False):
                     f"gpu_glass: retired slider accepted input: {refused}")
         app.requests({"op": "expect", "clean": True})
         if failed_submission:
-            log = (output / "gpu_glass-window.log").read_text(encoding="utf-8")
-            traces = [json.loads(line) for line in log.splitlines() if line.startswith('{"') and '"octara.frame_trace/1"' in line]
-            require(any(trace.get("paint") == failed_submission for trace in traces),
+            require(any(trace.get("paint") == failed_submission for trace in app.trace_rows(0, "octara.frame_trace/1")),
                     "gpu_glass: frame trace and Inspector disagree on the failed submission")
 
 
 def gpu_paint_evidence(args, output, sockets):
     gpu_glass(args, output, sockets, probe_fallback=True)
+
+
+def gpu_stale_paint(args, output, sockets):
+    frame_schema = "octara.frame_trace/1"
+    input_schema = "octara.inspect_delivery/1"
+    pending_schema = "octara.pending_presentation/1"
+    helper = sockets / "live-window"
+    command = ["swiftc", "-module-cache-path", str(sockets / "swift-cache"), str(args.repo / "examples/live_window.swift"),
+               "-o", str(helper)]
+    built = subprocess.run(command, text=True, capture_output=True, timeout=args.timeout)
+    require(built.returncode == 0, f"gpu_stale_paint: could not build the native resize helper: {built.stderr}")
+    env = {"WGPU_BACKEND": "metal", "OCTARA_TRACE_INPUT": "1", "OCTARA_ASYNC_METAL": "1",
+           "OCTARA_RENDER_WORKER": "1", "OCTARA_RENDER_WORKER_HOLD_MS": "1500"}
+    with LiveWindow("gpu_stale_paint", args, output, sockets, ["gpu_lab"], env=env) as app:
+        narrow = resize(app, 800, 620)
+        window = narrow["window"]
+        opener = find(narrow, "gpu-glass-open")["target"]
+        log = Path(app.log.name)
+        with app.wire() as stream:
+            def send(op, **fields):
+                reply = app.wire_request(stream, {"op": op, "window": window, **fields})
+                require(reply.get("ok"), f"gpu_stale_paint: {op} failed: {reply}")
+                return reply
+
+            def visible_submission():
+                reply = send("inspect")
+                host = reply["live"]["window"]
+                completion = reply["completion"]
+                surface = completion["surface"]
+                if completion["layout"] == "settled" and surface["state"] == "submitted" and host["visible"] and not host["occluded"]:
+                    paint = reply["paint"]
+                    require(paint["origin"] == "submitted" and paint["window"] == window and paint["frame"] == surface["frame"],
+                            f"gpu_stale_paint: mismatched submission evidence: {reply}")
+                    return reply
+                return None
+
+            send("tap", target=opener)
+            send("settle", limit_ms=2000)
+            before = app.wait_for(visible_submission, "the settled Glass window to submit (desktop must be unlocked)")
+            accepted = before["paint"]
+            opened = before["snapshot"]
+            dialog = find(opened, "gpu-glass-dialog")["target"]
+            close = find(opened, "gpu-glass-cancel")["target"]
+            slider = find(opened, "gpu-glass-refraction")["target"]
+            effect = glass_effect(accepted, dialog)
+            require(effect["outcome"] == "rendered" and not effect["exiting"], f"gpu_stale_paint: bad baseline: {effect}")
+            accepted_trace = next((row for row in app.trace_rows(0, frame_schema) if row["paint"] == accepted), None)
+            require(accepted_trace and accepted_trace["render_worker"] and accepted_trace["submitted"],
+                    "gpu_stale_paint: Glass baseline did not submit through the Metal render worker")
+            trace_window = accepted_trace["window"]
+
+            offset = log.stat().st_size
+            edit = send("set_value", target=slider, value=0.15)
+            require(edit["delivery"] == "delivered", "gpu_stale_paint: the refraction setting was not delivered")
+            change = next((row for row in app.trace_rows(offset, input_schema)
+                           if row["window"] == window and row["route"] == "semantic"), None)
+            require(change and change["before_revision"] == accepted["revision"] and change["revision"] > accepted["revision"],
+                    f"gpu_stale_paint: the edit did not publish a newer drawing: {change}")
+
+            def parked_submission():
+                return next((row for row in app.trace_rows(offset, pending_schema)
+                             if row["paint"]["window"] == window and row["paint"]["revision"] == change["revision"]), None)
+
+            parked = app.wait_for(parked_submission, "the edited GPU drawing to park (use a debug window build)")
+            candidate = parked["paint"]
+            effect = glass_effect(candidate, dialog)
+            require(effect["outcome"] == "rendered" and not effect["exiting"] and candidate["frame"] == accepted["frame"] + 1
+                    and candidate["surface_generation"] == accepted["surface_generation"]
+                    and candidate["device_generation"] == accepted["device_generation"],
+                    f"gpu_stale_paint: the parked drawing did not produce Glass on the original surface: {candidate}")
+
+            # Inspector's size receipt waits for surface configuration. Resize out of band so
+            # this connection can dismiss Glass while the worker still owns its old drawable.
+            width = 840
+            sized = subprocess.run([str(helper), "size", str(app.process.pid), str(width), "640"],
+                                   text=True, capture_output=True, timeout=args.timeout)
+            require(sized.returncode == 0, f"gpu_stale_paint: native resize failed ({sized.returncode}): {sized.stderr.strip()}")
+
+            def resized_layout():
+                reply = send("inspect")
+                return reply if reply["snapshot"]["viewport"][0] == width else None
+
+            resized = app.wait_for(resized_layout, "the native resize to reach the framework")
+            viewport = resized["snapshot"]["viewport"]
+            require(resized["completion"]["surface"]["state"] == "pending" and resized["live"]["window"]["frames"] == accepted["frame"]
+                    and find(resized["snapshot"], "gpu-glass-refraction-value")["name"] == "15%",
+                    "gpu_stale_paint: resize did not leave the edited Glass layout awaiting submission")
+            closed = send("tap", target=close)
+            require(closed["delivery"] == "delivered", "gpu_stale_paint: Glass dismissal was not delivered")
+            retired = send("inspect")["snapshot"]
+            require(retired.get("focus") == "gpu-glass-open" and not any(node.get("id") == "gpu-glass-dialog" for node in nodes(retired)),
+                    "gpu_stale_paint: dismissed Glass remained interactive")
+
+            # With zero settle time the capture pins the exit drawing before GPU readback can start.
+            path = output / "gpu-stale-paint-exit.png"
+            report = send("capture", path=str(path), scale=1, pixels="painted", settle_ms=0)["capture"]
+            paint = report["paint"]
+            outgoing = glass_effect(paint, dialog)
+            require(report["renderer"] == "gpu" and report["pixels"] == "painted" and report.get("pending")
+                    and paint["origin"] == "rerecorded" and paint["window"] == window and outgoing["exiting"]
+                    and outgoing["outcome"] == "retained" and outgoing["source_revision"] == accepted["revision"],
+                    f"gpu_stale_paint: exit did not use the accepted Glass revision {accepted['revision']}: {outgoing}")
+            require(png_pixels(path)[:2] == tuple(math.ceil(side) for side in viewport),
+                    "gpu_stale_paint: exit capture did not follow the native viewport")
+
+            after = app.wait_for(visible_submission, "the resized window to submit")
+            replacement = after["paint"]
+            require(after["snapshot"]["target"] == opened["target"] and after["snapshot"]["viewport"] == viewport
+                    and replacement["surface_generation"] > candidate["surface_generation"]
+                    and replacement["device_generation"] == candidate["device_generation"],
+                    f"gpu_stale_paint: the live window did not submit a replacement surface: {after}")
+
+            rows = list(app.trace_rows(offset, pending_schema, input_schema, frame_schema))
+            frames = [row for row in rows if row["schema"] == frame_schema and row["window"] == trace_window]
+            attempts = [row for row in frames if row["revision"] == candidate["revision"]]
+            discarded = next((row for row in attempts if row["skip_reason"] == "stale_render" and row["render_worker"]), None)
+            require(discarded and not any(row["submitted"] for row in attempts)
+                    and discarded["surface_generation"] == candidate["surface_generation"]
+                    and discarded["device_generation"] == candidate["device_generation"]
+                    and discarded["timeline_us"]["render_submitted"] <= parked["at_us"]
+                    and discarded["timeline_us"]["present_called"] is None,
+                    f"gpu_stale_paint: expected the GPU drawing to be discarded before presenting: {attempts}")
+            dismissals = [row for row in rows if row["schema"] == input_schema and row["window"] == window and row["route"] == "framework"]
+            require(len(dismissals) == 1 and parked["at_us"] < dismissals[0]["started_us"]
+                    and rows.index(dismissals[0]) < rows.index(discarded),
+                    "gpu_stale_paint: Glass did not close while the edited drawing was parked")
+            require(any(row["paint"] == replacement and row["submitted"]
+                        and row["size_px"] == [round(side * row["scale"]) for side in viewport] for row in frames),
+                    "gpu_stale_paint: the replacement submission trace did not match the resized window")
+            print(f"gpu_stale_paint: discarded revision {candidate['revision']}, exit kept revision {accepted['revision']}, "
+                  f"surface {accepted['surface_generation']} -> {replacement['surface_generation']}", flush=True)
 
 
 def gpu_recovery(args, output, sockets):
@@ -976,6 +1125,97 @@ def gpu_recovery(args, output, sockets):
               flush=True)
 
 
+def surface_drain(args, output, sockets):
+    drain_schema = "octara.surface_drain/1"
+    input_schema = "octara.inspect_delivery/1"
+    env = {"WGPU_BACKEND": "metal", "OCTARA_TRACE_INPUT": "1", "OCTARA_SURFACE_DRAIN_DELAY_MS": "750"}
+    with LiveWindow("surface_drain", args, output, sockets, ["windows"], env=env) as app, app.wire() as stream:
+        def send(op, **fields):
+            reply = app.wire_request(stream, {"op": op, **fields})
+            require(reply.get("ok"), f"surface_drain: {op} failed: {reply}")
+            if op != "inspect":
+                require(reply.get("delivery") == "delivered", f"surface_drain: {op} was not delivered: {reply}")
+            return reply
+
+        def marker(offset, phase, start=None):
+            def read():
+                return next((row for row in app.trace_rows(offset, drain_schema) if row["phase"] == phase
+                             and (start is None or (row["device_generation"] == start["device_generation"]
+                                                    and row["at_us"] > start["at_us"]))), None)
+
+            return app.wait_for(read, f"worker drain {phase} (use a debug window build)")
+
+        def submitted(window):
+            def read():
+                reply = send("inspect", window=window)
+                completion = reply["completion"]
+                surface = completion["surface"]
+                if completion["layout"] == "settled" and surface["state"] == "submitted":
+                    paint = reply["paint"]
+                    require(paint["origin"] == "submitted" and paint["window"] == window and paint["frame"] == surface["frame"],
+                            f"surface_drain: window {window} has mismatched submission evidence")
+                    return reply
+                return None
+
+            return app.wait_for(read, f"window {window} to submit its settled drawing")
+
+        def open_note(number):
+            send("tap", window=main, id="new")
+            windows = send("inspect", window=main)["snapshot"]["windows"]
+            notes = [window for window in windows if window["title"] == f"Note {number}"]
+            require(len(notes) == 1, f"surface_drain: Note {number} did not open")
+            return notes[0]["window"]
+
+        def require_overlap(offset, start, inputs):
+            finish = marker(offset, "finish", start)
+            require(finish.get("ready") is True, f"surface_drain: worker returned without draining: {finish}")
+            during = [(row["window"], row["route"]) for row in app.trace_rows(offset, input_schema)
+                      if start["at_us"] < row["started_us"] <= row["at_us"] < finish["at_us"]]
+            require(during == inputs, f"surface_drain: expected input {inputs} inside the drain, saw {during}")
+
+        main = send("inspect")["snapshot"]["window"]
+        main_before = submitted(main)["snapshot"]
+        offset = Path(app.log.name).stat().st_size
+        note = open_note(1)
+        start = marker(offset, "start")
+        field = find(send("inspect", window=note)["snapshot"], "body")["target"]
+        focused = send("focus", window=main, id="open")
+        edited = send("type", window=note, id="body", target=field, text="Edited during configuration")
+        require(focused["completion"]["layout"] == edited["completion"]["layout"] == "settled"
+                and edited["completion"]["surface"]["state"] == "pending",
+                "surface_drain: input did not settle while the note was waiting for its first surface")
+        require_overlap(offset, start, [(main, "semantic"), (note, "framework")])
+
+        first = submitted(note)
+        snapshot = first["snapshot"]
+        body = find(snapshot, "body")
+        require(snapshot["viewport"] == [360.0, 240.0] and body["target"] == field and body["value"] == "Edited during configuration"
+                and first["paint"]["device_generation"] == start["device_generation"],
+                "surface_drain: first note submission lost its viewport, target, edit or device")
+        require(send("inspect", window=main)["snapshot"]["viewport"] == main_before["viewport"],
+                "surface_drain: opening the note changed the main viewport")
+        send("tap", window=note, id="close")
+
+        offset = Path(app.log.name).stat().st_size
+        closing = open_note(2)
+        start = marker(offset, "start")
+        closed = send("tap", window=closing, id="close")
+        require(closed["completion"]["layout"] == "unavailable", "surface_drain: closing the waiting window did not retire it")
+        replacement = open_note(3)
+        require_overlap(offset, start, [(closing, "framework"), (main, "framework")])
+        result = submitted(replacement)
+        require(replacement != closing and result["snapshot"]["viewport"] == [360.0, 240.0]
+                and result["paint"]["device_generation"] == start["device_generation"],
+                "surface_drain: the replacement did not submit its own drawing")
+        retired = app.wire_request(stream, {"op": "inspect", "window": closing})
+        require(not retired.get("ok") and retired.get("code") == "BAD_REQUEST", "surface_drain: a closed window remained routable")
+        require(not any(row.get("submitted") and (row.get("paint") or {}).get("window") == closing
+                        for row in app.trace_rows(offset, "octara.frame_trace/1")),
+                "surface_drain: the closed window submitted a drawing after its drain")
+        send("tap", window=replacement, id="close")
+        print("surface_drain: both windows settled input during the worker wait and a closed note did not submit", flush=True)
+
+
 def main():
     repo = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -986,9 +1226,17 @@ def main():
     probe = parser.add_mutually_exclusive_group()
     probe.add_argument("--gpu-recovery", action="store_true", help="verify one injected device loss with a debug window build")
     probe.add_argument("--gpu-paint-evidence", action="store_true", help="verify Shader Lab paint through a fallback, exit, and reopen")
+    probe.add_argument("--gpu-stale-paint", action="store_true", help="verify a resized macOS window discards an in-flight Glass drawing")
+    probe.add_argument("--surface-drain", action="store_true", help="verify input during shared surface configuration with a macOS debug window build")
     args = parser.parse_args()
     if os.name != "posix" or not hasattr(socket, "AF_UNIX"):
         print("SKIP: this live smoke check uses Unix-domain sockets")
+        return 0
+    if args.surface_drain and sys.platform != "darwin":
+        print("SKIP: the surface drain check requires macOS")
+        return 0
+    if args.gpu_stale_paint and sys.platform != "darwin":
+        print("SKIP: the stale GPU paint check requires macOS")
         return 0
     require(0 < args.timeout <= 30, "--timeout must be greater than zero and at most 30 seconds")
     args.repo = repo
@@ -1007,6 +1255,10 @@ def main():
         scenarios = (gpu_recovery,)
     if args.gpu_paint_evidence:
         scenarios = (gpu_paint_evidence,)
+    if args.gpu_stale_paint:
+        scenarios = (gpu_stale_paint,)
+    if args.surface_drain:
+        scenarios = (surface_drain,)
     with tempfile.TemporaryDirectory(prefix="octara-agent-", dir="/tmp") as temporary:
         sockets = Path(temporary)
         for scenario in scenarios:
@@ -1016,6 +1268,10 @@ def main():
         print("Live Inspector GPU recovery passed.")
     elif args.gpu_paint_evidence:
         print("Live Inspector author paint evidence passed.")
+    elif args.gpu_stale_paint:
+        print("Live Inspector stale GPU paint passed.")
+    elif args.surface_drain:
+        print("Live Inspector surface drain passed.")
     else:
         print("Live Inspector: inspect, gestures, native resize, realtime settle, GPU capture, errors, window routing and reconnect passed.")
     return 0
@@ -1024,6 +1280,6 @@ def main():
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (SmokeFailure, OSError, ValueError, KeyError, struct.error, zlib.error) as error:
+    except (SmokeFailure, OSError, ValueError, KeyError, struct.error, subprocess.TimeoutExpired, zlib.error) as error:
         print(f"FAIL: {error}", file=sys.stderr)
         raise SystemExit(1)

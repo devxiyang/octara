@@ -1,6 +1,6 @@
 //! The ordinary Chat root with two loopback models for `live_model_selection.py`.
 
-use octara::prelude::Sender;
+use octara::prelude::{Sender, WindowOptions};
 use octara_chat::engine::{Cancel, Model, Request};
 use octara_chat::model::Event;
 use octara_chat::network::{NetworkConfig, NetworkModel};
@@ -45,7 +45,7 @@ fn main() {
         .collect();
     let store = Store::new(directory);
     octara_shell::run_with(
-        octara_shell::Options { title: "Octara Chat model selection".into(), size: (1000.0, 720.0), ..Default::default() },
+        octara_shell::Options { window: WindowOptions::new("Octara Chat model selection").size(1000.0, 720.0), ..Default::default() },
         move || {
             let (models, store) = (models.clone(), store.clone());
             root(move || Options { models: models.clone(), store: Some(store.clone()), ..Options::default() })

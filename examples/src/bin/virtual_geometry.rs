@@ -223,7 +223,7 @@ fn virtual_geometry() -> View {
 
 fn main() {
     octara_shell::run_with(
-        octara_shell::Options { title: "Octara Virtual Geometry".into(), size: (960.0, 760.0), ..Default::default() },
+        octara_shell::Options { window: WindowOptions::new("Octara Virtual Geometry").size(960.0, 760.0), ..Default::default() },
         virtual_geometry,
     );
 }

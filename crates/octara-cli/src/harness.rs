@@ -1,11 +1,11 @@
 //! The harness `octara check` / `inspect` / `run` build around an app: a small binary that
-//! calls `octara::inspect::main_with` with the app's root view and the reference renderer.
+//! calls `octara::inspect::main_app_with` with the app's startup entry and the reference renderer.
 //!
-//! The app names its view in `Cargo.toml`:
+//! The app names its startup entry in `Cargo.toml`:
 //!
 //! ```toml
 //! [package.metadata.octara]
-//! view = "my_app::app"          # a function returning El, View, or other IntoView content
+//! entry = "my_app::startup"     # fn(AppMode, AppConfig) -> Result<AppDefinition, String>
 //! # optional, for `octara check`:
 //! themes = ["light", "dark"]
 //! sizes = [{ name = "phone", width = 390, height = 844, platform = "ios" }]
@@ -29,9 +29,9 @@ pub struct Target {
     pub manifest_dir: PathBuf,
     pub workspace_root: PathBuf,
     pub target_dir: PathBuf,
-    /// The root view's path (`my_app::app`).
-    pub view: String,
-    /// The `[package.metadata.octara]` table minus `view`: options for `check`.
+    /// The startup function's path (`my_app::startup`).
+    pub entry: String,
+    /// The `[package.metadata.octara]` table minus `entry`: options for `check`.
     pub options: serde_json::Value,
     /// The app's `octara` dependency, as an inline TOML table.
     pub octara: String,
@@ -48,9 +48,8 @@ fn cargo() -> Command {
     c
 }
 
-/// Finds the app: the one named `package`; else the package `manifest_path` names (or the current
-/// directory is in) if it has `[package.metadata.octara] view`; else the workspace's one package
-/// with a view.
+/// Finds the app by `package`, then by the package containing `manifest_path` or the current
+/// directory if it names an entry, then by the workspace's only package naming an entry.
 pub fn find(manifest_path: Option<&Path>, package: Option<&str>) -> Result<Target, String> {
     let mut cmd = cargo();
     cmd.args(["metadata", "--format-version", "1", "--no-deps"]);
@@ -63,14 +62,14 @@ pub fn find(manifest_path: Option<&Path>, package: Option<&str>) -> Result<Targe
     }
     let meta: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("cargo metadata: {e}"))?;
     let packages = meta["packages"].as_array().cloned().unwrap_or_default();
-    let with_view: Vec<&serde_json::Value> = packages.iter().filter(|p| p["metadata"]["octara"]["view"].is_string()).collect();
+    let with_entry: Vec<&serde_json::Value> = packages.iter().filter(|p| p["metadata"]["octara"]["entry"].is_string()).collect();
     // As cargo does: the package `manifest_path` names, else the one the current directory is in.
     let here = match manifest_path {
         Some(m) => Some(crate::api::plain(&m.canonicalize().unwrap_or_else(|_| m.to_path_buf()))),
         None => std::env::current_dir().ok().map(|d| crate::api::plain(&d.canonicalize().unwrap_or(d))),
     };
     let own = here.and_then(|here| {
-        with_view
+        with_entry
             .iter()
             .filter(|p| {
                 let manifest = crate::api::plain(Path::new(p["manifest_path"].as_str().unwrap_or_default()));
@@ -82,30 +81,30 @@ pub fn find(manifest_path: Option<&Path>, package: Option<&str>) -> Result<Targe
     let pkg = match package {
         Some(name) => packages.iter().find(|p| p["name"] == name).ok_or_else(|| format!("no package `{name}` in this workspace"))?,
         None if own.is_some() => own.expect("checked"),
-        None => match with_view.as_slice() {
+        None => match with_entry.as_slice() {
             [one] => one,
             [] => {
-                return Err("no package names its root view: add to the app's Cargo.toml\n\n[package.metadata.octara]\nview = \"my_app::app\"   # a function returning IntoView content".into());
+                return Err("no package names an Octara startup entry. Add this to the app's Cargo.toml:\n\n[package.metadata.octara]\nentry = \"my_app::startup\"".into());
             }
             many => {
                 let names: Vec<&str> = many.iter().filter_map(|p| p["name"].as_str()).collect();
-                return Err(format!("several packages name a view ({}); pick one with --package", names.join(", ")));
+                return Err(format!("several packages name an Octara startup entry ({}). Pick one with --package", names.join(", ")));
             }
         },
     };
     let name = pkg["name"].as_str().unwrap_or_default().to_string();
-    let view = pkg["metadata"]["octara"]["view"]
+    let entry = pkg["metadata"]["octara"]["entry"]
         .as_str()
-        .ok_or_else(|| format!("`{name}` has no [package.metadata.octara] view = \"crate::path::to::view\""))?
+        .ok_or_else(|| format!("`{name}` needs [package.metadata.octara] entry = \"my_app::startup\""))?
         .to_string();
-    if view.is_empty() || !view.split("::").all(|s| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_')) {
-        return Err(format!("view = \"{view}\" is not a path like `my_app::app`"));
+    if !entry.split("::").all(|s| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_')) {
+        return Err(format!("entry = \"{entry}\" must be a Rust path like `my_app::startup`"));
     }
     let lib = pkg["targets"]
         .as_array()
         .and_then(|ts| ts.iter().find(|t| t["kind"].as_array().is_some_and(|k| k.iter().any(|k| k == "lib"))))
         .and_then(|t| t["name"].as_str())
-        .ok_or_else(|| format!("`{name}` has no library target: put the view in `src/lib.rs` so the harness can use it"))?
+        .ok_or_else(|| format!("`{name}` needs a library target. Export the startup function from `src/lib.rs` so the harness can use it"))?
         .replace('-', "_");
     let manifest_dir =
         crate::api::plain(Path::new(pkg["manifest_path"].as_str().unwrap_or_default())).parent().map(Path::to_path_buf).unwrap_or_default();
@@ -114,14 +113,14 @@ pub fn find(manifest_path: Option<&Path>, package: Option<&str>) -> Result<Targe
         .and_then(|ds| ds.iter().find(|d| d["name"] == "octara" && d["kind"].is_null()))
         .ok_or_else(|| format!("`{name}` does not depend on `octara`"))?;
     let mut options = pkg["metadata"]["octara"].clone();
-    options.as_object_mut().map(|o| o.remove("view"));
+    options.as_object_mut().map(|o| o.remove("entry"));
     Ok(Target {
         package: name,
         lib,
         manifest_dir,
         workspace_root: crate::api::plain(Path::new(meta["workspace_root"].as_str().unwrap_or_default())),
         target_dir: PathBuf::from(meta["target_directory"].as_str().unwrap_or_default()),
-        view,
+        entry,
         options,
         octara: dependency(dep),
         render: render_dependency(dep),
@@ -219,8 +218,8 @@ pub fn generate(t: &Target) -> Result<PathBuf, String> {
         profiles(&root_manifest)
     );
     let main = format!(
-        "// Generated by `octara`.\nfn main() {{\n    octara::inspect::main_with({}, octara_render::reference_painter);\n}}\n",
-        t.view
+        "// Generated by `octara`.\nfn main() {{\n    octara::inspect::main_app_with({}, octara_render::reference_painter);\n}}\n",
+        t.entry
     );
     let write = |name: &str, text: &str| -> Result<(), String> {
         let p = dir.join(name);

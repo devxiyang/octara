@@ -8,13 +8,10 @@ pub mod engine;
 pub mod model;
 pub mod network;
 pub mod settings;
+mod startup;
 pub mod store;
 mod ui;
 
 pub use chat::{Chat, ModelEntry, Options, Queued};
+pub use startup::app;
 pub use ui::{root, view};
-
-/// The app with the scripted model and nothing saved (what `octara check` and tests drive).
-pub fn app() -> octara::view::View {
-    root(Options::default)
-}

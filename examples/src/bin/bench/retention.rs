@@ -1,7 +1,7 @@
 use super::{FORMAT, Offscreen, SAMPLES, Sample, WARMUP, metal_renderer, percentiles, print_features};
 use octara::app::{App, InputEvent, Window};
 use octara::inspect::{self, Delivery, Reply, Request, Snapshot};
-use octara::platform::{HeadlessPlatform, PublishedFrame, WindowOptions};
+use octara::platform::{HeadlessPlatform, PublishedFrame};
 use octara::prelude::El;
 use octara_examples::gpu_lab::{self, replay::SIZE};
 use octara_primitives::capture::{PaintOutcome, PaintReceipt, Painter};
@@ -223,7 +223,7 @@ fn with_scene<T>(retained: bool, scale: u32, run: impl FnOnce(&App, &mut Window)
     let app = App::with_config(HeadlessPlatform::default(), options.app);
     let view: fn() -> El = if retained { gpu_lab::retained_view } else { gpu_lab::view };
     let result = (|| {
-        let mut window = app.open_window(WindowOptions::new(options.title).size(SIZE.0 as f32, SIZE.1 as f32), view)?;
+        let mut window = app.open_window(options.window.size(SIZE.0 as f32, SIZE.1 as f32), view)?;
         set_scale(&mut window, scale);
         run(&app, &mut window)
     })();

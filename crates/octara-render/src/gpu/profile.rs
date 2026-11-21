@@ -27,7 +27,7 @@ pub struct FrameProfile {
     pub backdrop_reuses: u32,
     /// Largest cached backdrop-input capacity observed this frame, in descriptor bytes.
     pub backdrop_cache_peak_bytes: u64,
-    /// Backdrop draws from a mount's last submitted output.
+    /// Backdrop draws from a mount's last output accepted by the host.
     pub retained_backdrops: u32,
     /// Canvas draws that reused a compatible submitted output without encoding local work.
     pub retained_canvases: u32,

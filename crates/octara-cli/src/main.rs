@@ -45,7 +45,8 @@ enum Command {
     /// diagnostics, work that never settles and accessibility problems. Exit 0 when clean, 1 with
     /// findings, 2 when the app does not build or run.
     ///
-    /// The app names its root view in Cargo.toml: `[package.metadata.octara] view = "my_app::app"`.
+    /// The app names its startup function under `[package.metadata.octara]` in Cargo.toml
+    /// with `entry = "my_app::startup"`.
     Check {
         #[command(flatten)]
         app: AppArgs,
@@ -99,13 +100,13 @@ enum Command {
     },
 }
 
-/// Which app: the package naming `[package.metadata.octara] view`.
+/// Which app to build from `[package.metadata.octara] entry`.
 #[derive(clap::Args)]
 struct AppArgs {
     /// The app's Cargo.toml (default: the current directory's workspace).
     #[arg(long)]
     manifest_path: Option<std::path::PathBuf>,
-    /// The package, when several in the workspace name a view.
+    /// The package, when several in the workspace name an Octara startup entry.
     #[arg(long, short)]
     package: Option<String>,
 }
@@ -700,6 +701,7 @@ fn run(out: &mut String, app: &AppArgs, window: &WindowArgs, script: Option<&std
         let status = std::process::Command::new(&exe).args(&args).status();
         return match status {
             Ok(s) if s.success() => ExitCode::SUCCESS,
+            Ok(s) if s.code() == Some(2) => ExitCode::from(2),
             Ok(_) => ExitCode::FAILURE,
             Err(e) => {
                 eprintln!("error: {e}");

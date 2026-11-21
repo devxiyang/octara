@@ -40,7 +40,7 @@ fn fixture() -> El {
 #[cfg(not(target_os = "ios"))]
 fn main() {
     octara_shell::run_with(
-        octara_shell::Options { title: "Octara panel scroll".into(), size: (420.0, 460.0), ..Default::default() },
+        octara_shell::Options { window: WindowOptions::new("Octara panel scroll").size(420.0, 460.0), ..Default::default() },
         fixture,
     );
 }

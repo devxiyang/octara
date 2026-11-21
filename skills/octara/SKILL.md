@@ -16,7 +16,7 @@ metadata:
 - `state` 表达所有者拥有的值，`memo` 推导值，Signal 或闭包把属性绑定到来源。构造过程读取会采样一次。显式快照从 `octara::reactive` 导入 `untrack`。在处理器或任务内修改状态。
 - 为独立寿命建立 `scope`。兄弟结构 key 须稳定且唯一。可变化的列表用业务 key，集合变换从 `items.read_only()` 开始。文字标签、列表下标和 Inspector 查找名各有不同用途。
 - 受控输入的回调接收提议；先读取模型接受的值再保存。组件内部回调用 `behavior` 安装，让应用回调仍可追加。任务和外部订阅绑定到使用它们的 owner，共享任务可放入 `App::run`。
-- 平台约定、字体、主题在打开窗口前配置。移动宿主、原生输入法和屏幕呈现的可用范围按实际平台验证。
+- 平台约定、字体、主题在打开窗口前配置。独立应用可用同一个 Rust 入口返回 `AppDefinition`，交给 `octara_shell::run_app`，并在 Cargo 的 `[package.metadata.octara] entry` 中登记。移动宿主、原生输入法和屏幕呈现的可用范围按实际平台验证。
 
 ## 给 Agent 一手反馈
 

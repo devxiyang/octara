@@ -100,7 +100,7 @@ fn main() {
         std::env::var_os("OCTARA_CHAT_DIR").map(PathBuf::from).expect("set an isolated OCTARA_CHAT_DIR for lifecycle verification");
     let model = Controlled::default();
     octara_shell::run_with(
-        octara_shell::Options { title: "Octara Chat lifecycle".into(), size: (1000.0, 720.0), ..Default::default() },
+        octara_shell::Options { window: WindowOptions::new("Octara Chat lifecycle").size(1000.0, 720.0), ..Default::default() },
         move || lifecycle(model.clone(), directory.clone()),
     );
 }

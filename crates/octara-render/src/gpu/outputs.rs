@@ -2,13 +2,7 @@ use super::CanvasPaint;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::any::Any;
 use std::collections::VecDeque;
-use std::sync::Weak;
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum OutputSlot {
-    Backdrop(usize),
-    Canvas(usize),
-}
+use std::sync::{Arc, Weak};
 
 pub(super) struct CanvasKey {
     program: Weak<dyn Any + Send + Sync>,
@@ -17,7 +11,7 @@ pub(super) struct CanvasKey {
 
 #[derive(PartialEq, Eq)]
 struct CanvasInputs {
-    // The history already belongs to one device and all author outputs use Rgba8Unorm.
+    // The cache belongs to one device and all author outputs use Rgba8Unorm.
     params: [u32; 4],
     logical_size: [u32; 2],
     radius: u32,
@@ -44,66 +38,70 @@ impl CanvasKey {
     }
 }
 
-pub(super) struct SubmittedOutput {
+pub(super) struct OutputImage {
     pub(super) view: wgpu::TextureView,
     pub(super) revision: Option<u64>,
-    canvas: Option<CanvasKey>,
 }
 
-struct OutputEntry {
+struct CanvasEntry {
     mount: Weak<()>,
-    submitted: SubmittedOutput,
+    submitted: OutputImage,
+    key: CanvasKey,
     /// An earlier output that a later submission can overwrite in queue order.
     working: Option<wgpu::TextureView>,
 }
 
-impl OutputEntry {
+impl CanvasEntry {
     fn bytes(&self) -> u64 {
         texture_bytes(&self.submitted.view) + self.working.as_ref().map_or(0, texture_bytes)
     }
 }
 
-/// Submitted outputs and their independent working allocations for one renderer device.
+/// Compatible retained-canvas output becomes reusable on submission.
 #[derive(Default)]
-pub(super) struct OutputHistory {
-    entries: FxHashMap<OutputSlot, OutputEntry>,
-    canvases: VecDeque<OutputSlot>,
-    canvas_bytes: u64,
+pub(super) struct CanvasCache {
+    entries: FxHashMap<usize, CanvasEntry>,
+    lru: VecDeque<usize>,
+    bytes: u64,
 }
 
-/// Changes owned by the recording until the queue accepts it. Captures have no changes.
 #[derive(Default)]
 pub(super) struct OutputChanges {
-    fresh: Vec<OutputChange>,
-    written: FxHashSet<OutputSlot>,
-    reused: Vec<OutputSlot>,
+    pub(super) canvases: CanvasChanges,
+    pub(super) backdrops: Vec<BackdropChange>,
 }
 
-struct OutputChange {
-    slot: OutputSlot,
+#[derive(Default)]
+pub(super) struct CanvasChanges {
+    fresh: Vec<CanvasChange>,
+    written: FxHashSet<usize>,
+    reused: Vec<usize>,
+}
+
+struct CanvasChange {
     mount: Weak<()>,
     view: wgpu::TextureView,
-    canvas: Option<CanvasKey>,
+    key: CanvasKey,
 }
 
 impl OutputChanges {
     pub(super) fn has_fresh(&self) -> bool {
-        !self.fresh.is_empty()
+        !self.canvases.fresh.is_empty() || !self.backdrops.is_empty()
+    }
+}
+
+impl CanvasChanges {
+    pub(super) fn record(&mut self, mount: Weak<()>, view: wgpu::TextureView, key: CanvasKey) {
+        self.written.insert(mount.as_ptr().addr());
+        self.fresh.push(CanvasChange { mount, view, key });
     }
 
-    pub(super) fn record(&mut self, mount: Weak<()>, view: wgpu::TextureView, canvas: Option<CanvasKey>) {
-        let address = mount.as_ptr().addr();
-        let slot = if canvas.is_some() { OutputSlot::Canvas(address) } else { OutputSlot::Backdrop(address) };
-        self.written.insert(slot);
-        self.fresh.push(OutputChange { slot, mount, view, canvas });
-    }
-
-    pub(super) fn reuse_canvas(&mut self, slot: OutputSlot) {
+    pub(super) fn reuse(&mut self, slot: usize) {
         self.reused.push(slot);
     }
 }
 
-impl OutputHistory {
+impl CanvasCache {
     const CANVAS_BYTES: u64 = 32 * 1024 * 1024;
     const CANVAS_SLOTS: usize = 64;
 
@@ -113,22 +111,17 @@ impl OutputHistory {
 
     pub(super) fn prune(&mut self) {
         for (slot, entry) in self.entries.extract_if(|_, entry| entry.mount.strong_count() == 0) {
-            if matches!(slot, OutputSlot::Canvas(_)) {
-                self.canvases.retain(|cached| *cached != slot);
-                self.canvas_bytes -= entry.bytes();
-            }
+            self.lru.retain(|cached| *cached != slot);
+            self.bytes -= entry.bytes();
         }
     }
 
-    pub(super) fn submitted(&self, slot: OutputSlot) -> Option<&SubmittedOutput> {
-        self.entries.get(&slot).map(|entry| &entry.submitted)
+    pub(super) fn get(&self, slot: usize, key: &CanvasKey) -> Option<&OutputImage> {
+        let entry = self.entries.get(&slot)?;
+        entry.key.matches(key).then_some(&entry.submitted)
     }
 
-    pub(super) fn canvas(&self, slot: OutputSlot, key: &CanvasKey) -> Option<&SubmittedOutput> {
-        self.submitted(slot).filter(|image| image.canvas.as_ref().is_some_and(|submitted| submitted.matches(key)))
-    }
-
-    pub(super) fn working(&self, slot: OutputSlot, changes: Option<&OutputChanges>) -> Option<&wgpu::Texture> {
+    pub(super) fn working(&self, slot: usize, changes: Option<&CanvasChanges>) -> Option<&wgpu::Texture> {
         // Standalone canvases can all run before either output is composited. A second draw for
         // the same mount needs a separate allocation while the first output is referenced.
         if changes?.written.contains(&slot) {
@@ -137,42 +130,103 @@ impl OutputHistory {
         self.entries.get(&slot)?.working.as_ref().map(wgpu::TextureView::texture)
     }
 
-    pub(super) fn commit(&mut self, changes: OutputChanges, revision: Option<u64>) {
+    pub(super) fn submit(&mut self, changes: CanvasChanges, revision: Option<u64>) {
         for slot in changes.reused {
-            if let Some(index) = self.canvases.iter().position(|cached| *cached == slot) {
-                self.canvases.remove(index);
-                self.canvases.push_back(slot);
+            if let Some(index) = self.lru.iter().position(|cached| *cached == slot) {
+                self.lru.remove(index);
+                self.lru.push_back(slot);
             }
         }
-        for OutputChange { slot, mount, view, canvas } in changes.fresh {
-            let previous = self.entries.remove(&slot);
-            let submitted = SubmittedOutput { view, revision, canvas };
-            let mut working = previous.as_ref().map(|entry| entry.submitted.view.clone());
-            if matches!(slot, OutputSlot::Canvas(_)) {
-                let bytes = texture_bytes(&submitted.view);
-                if let Some(previous) = previous {
-                    self.canvas_bytes -= previous.bytes();
-                    self.canvases.retain(|cached| *cached != slot);
-                }
-                // Keep the optional working allocation when it can serve another draw at
-                // the current extent without exceeding this mount's share of the cache.
-                working = working.filter(|view| {
-                    view.texture().size() == submitted.view.texture().size() && bytes + texture_bytes(view) <= Self::CANVAS_BYTES
-                });
-                self.canvas_bytes += bytes + working.as_ref().map_or(0, texture_bytes);
-                self.canvases.push_back(slot);
-            }
-            self.entries.insert(slot, OutputEntry { mount, submitted, working });
-            while self.canvas_bytes > Self::CANVAS_BYTES || self.canvases.len() > Self::CANVAS_SLOTS {
-                let oldest = self.canvases.pop_front().expect("a canvas over budget");
-                self.canvas_bytes -= self.entries.remove(&oldest).expect("a cached canvas").bytes();
+        for CanvasChange { mount, view, key } in changes.fresh {
+            let slot = mount.as_ptr().addr();
+            let bytes = texture_bytes(&view);
+            let working = self.entries.remove(&slot).map(|previous| {
+                self.bytes -= previous.bytes();
+                self.lru.retain(|cached| *cached != slot);
+                previous.submitted.view
+            });
+            // Keep the optional working allocation when it can serve another draw at
+            // the current extent without exceeding this mount's share of the cache.
+            let working = working.filter(|previous| {
+                previous.texture().size() == view.texture().size() && bytes + texture_bytes(previous) <= Self::CANVAS_BYTES
+            });
+            self.bytes += bytes + working.as_ref().map_or(0, texture_bytes);
+            self.lru.push_back(slot);
+            self.entries.insert(slot, CanvasEntry { mount, submitted: OutputImage { view, revision }, key, working });
+            while self.bytes > Self::CANVAS_BYTES || self.lru.len() > Self::CANVAS_SLOTS {
+                let oldest = self.lru.pop_front().expect("a canvas over budget");
+                self.bytes -= self.entries.remove(&oldest).expect("a cached canvas").bytes();
             }
         }
     }
+}
 
-    #[cfg(test)]
-    pub(super) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+/// Backdrop outputs from a submitted frame, awaiting the host's acceptance.
+///
+/// Dropping the token discards its outputs. Use
+/// [`GpuRenderer::accept_presentation`](super::GpuRenderer::accept_presentation) to retain them
+/// for exit animations after the host accepts the frame.
+#[must_use = "accept the frame to publish its backdrop history"]
+pub struct PendingPresentation(Option<PendingBackdrops>);
+
+struct PendingBackdrops {
+    renderer: Arc<()>,
+    changes: Vec<BackdropChange>,
+    revision: Option<u64>,
+}
+
+pub(super) struct BackdropChange {
+    pub(super) mount: Weak<()>,
+    pub(super) view: wgpu::TextureView,
+}
+
+struct BackdropEntry {
+    mount: Weak<()>,
+    accepted: OutputImage,
+    working: Option<wgpu::TextureView>,
+}
+
+/// History for exiting backdrops comes from frames the host accepted.
+#[derive(Default)]
+pub(super) struct BackdropHistory {
+    renderer: Arc<()>,
+    entries: FxHashMap<usize, BackdropEntry>,
+}
+
+impl BackdropHistory {
+    pub(super) fn prune(&mut self) {
+        self.entries.retain(|_, entry| entry.mount.strong_count() != 0);
+    }
+
+    pub(super) fn get(&self, mount: &Weak<()>) -> Option<&OutputImage> {
+        self.entries.get(&mount.as_ptr().addr()).map(|entry| &entry.accepted)
+    }
+
+    pub(super) fn take_working(&mut self, mount: &Weak<()>) -> Option<wgpu::TextureView> {
+        // A frame can remain pending while another records. Give the recording exclusive use
+        // of this allocation until it becomes accepted or is discarded.
+        self.entries.get_mut(&mount.as_ptr().addr())?.working.take()
+    }
+
+    pub(super) fn pending(&self, changes: Vec<BackdropChange>, revision: Option<u64>) -> PendingPresentation {
+        PendingPresentation((!changes.is_empty()).then(|| PendingBackdrops { renderer: self.renderer.clone(), changes, revision }))
+    }
+
+    pub(super) fn accept(&mut self, pending: PendingPresentation) {
+        let Some(PendingBackdrops { renderer, changes, revision }) = pending.0 else {
+            return;
+        };
+        assert!(Arc::ptr_eq(&self.renderer, &renderer), "presentation belongs to another GPU renderer");
+        for BackdropChange { mount, view } in changes {
+            if mount.strong_count() == 0 {
+                continue;
+            }
+            let slot = mount.as_ptr().addr();
+            // Earlier readers have submitted their commands, so later frames can reuse the
+            // previous image's allocation in queue order.
+            let working = self.entries.remove(&slot).map(|previous| previous.accepted.view);
+            self.entries.insert(slot, BackdropEntry { mount, accepted: OutputImage { view, revision }, working });
+        }
     }
 }
 
@@ -189,12 +243,23 @@ fn texture_bytes(view: &wgpu::TextureView) -> u64 {
 mod tests {
     use super::*;
     use crate::GpuRenderer;
-    use std::sync::Arc;
+
+    impl CanvasCache {
+        pub(in crate::gpu) fn is_empty(&self) -> bool {
+            self.entries.is_empty()
+        }
+    }
+
+    impl BackdropHistory {
+        pub(in crate::gpu) fn is_empty(&self) -> bool {
+            self.entries.is_empty()
+        }
+    }
 
     #[test]
     fn canvas_cache_evicts_the_least_recent_optional_output() {
-        assert!(OutputHistory::can_retain([2048, 4096]));
-        assert!(!OutputHistory::can_retain([2048, 4097]));
+        assert!(CanvasCache::can_retain([2048, 4096]));
+        assert!(!CanvasCache::can_retain([2048, 4097]));
         let Some(gpu) = GpuRenderer::new() else {
             eprintln!("no GPU adapter: skipped");
             return;
@@ -217,31 +282,34 @@ mod tests {
             program: program.downgrade(),
             inputs: CanvasInputs { params: [0; 4], logical_size: [0; 2], radius: 0, extent: [1, 1], scale: 0 },
         };
-        let mounts: Vec<_> = (0..OutputHistory::CANVAS_SLOTS).map(|_| Arc::new(())).collect();
+        let mounts: Vec<_> = (0..CanvasCache::CANVAS_SLOTS).map(|_| Arc::new(())).collect();
         let backdrop = Arc::new(());
-        let mut changes = OutputChanges::default();
-        changes.record(Arc::downgrade(&backdrop), view.clone(), None);
+        let backdrop_mount = Arc::downgrade(&backdrop);
+        let mut history = BackdropHistory::default();
+        let pending = history.pending(vec![BackdropChange { mount: backdrop_mount.clone(), view: view.clone() }], Some(1));
+        history.accept(pending);
+        let mut changes = CanvasChanges::default();
         for mount in &mounts {
-            changes.record(Arc::downgrade(mount), view.clone(), Some(key()));
+            changes.record(Arc::downgrade(mount), view.clone(), key());
         }
-        let mut history = OutputHistory::default();
-        history.commit(changes, Some(1));
-        let slot = |mount: &Arc<()>| OutputSlot::Canvas(Arc::as_ptr(mount).addr());
+        let mut cache = CanvasCache::default();
+        cache.submit(changes, Some(1));
+        let slot = |mount: &Arc<()>| Arc::as_ptr(mount).addr();
         let newest = Arc::new(());
-        let mut changes = OutputChanges::default();
-        changes.reuse_canvas(slot(&mounts[0]));
-        changes.record(Arc::downgrade(&newest), view, Some(key()));
-        history.commit(changes, Some(2));
-        assert_eq!(history.canvas(slot(&mounts[0]), &key()).unwrap().revision, Some(1));
-        assert!(history.canvas(slot(&mounts[1]), &key()).is_none());
-        assert_eq!(history.canvas(slot(&newest), &key()).unwrap().revision, Some(2));
-        assert!(history.submitted(OutputSlot::Backdrop(Arc::as_ptr(&backdrop).addr())).is_some());
-        assert_eq!(history.canvases.len(), OutputHistory::CANVAS_SLOTS);
-        assert_eq!(history.canvas_bytes, OutputHistory::CANVAS_SLOTS as u64 * 4);
+        let mut changes = CanvasChanges::default();
+        changes.reuse(slot(&mounts[0]));
+        changes.record(Arc::downgrade(&newest), view, key());
+        cache.submit(changes, Some(2));
+        assert_eq!(cache.get(slot(&mounts[0]), &key()).unwrap().revision, Some(1));
+        assert!(cache.get(slot(&mounts[1]), &key()).is_none());
+        assert_eq!(cache.get(slot(&newest), &key()).unwrap().revision, Some(2));
+        assert!(history.get(&backdrop_mount).is_some());
+        assert_eq!(cache.lru.len(), CanvasCache::CANVAS_SLOTS);
+        assert_eq!(cache.bytes, CanvasCache::CANVAS_SLOTS as u64 * 4);
         drop(mounts);
         drop(newest);
-        history.prune();
-        assert_eq!(history.entries.len(), 1);
-        assert_eq!(history.canvas_bytes, 0);
+        cache.prune();
+        assert!(cache.is_empty());
+        assert_eq!(cache.bytes, 0);
     }
 }

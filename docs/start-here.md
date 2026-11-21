@@ -282,23 +282,24 @@ assert!(app.is_shutdown());
 
 ## 初始资源
 
-要保证第一次呈现就使用正确的字体或主题，在创建窗口前配置 App。桌面宿主在 `octara_shell::Options::app` 中接受相应设置。
+应用入口可以返回 `AppDefinition`，统一配置资源、首窗和根视图。宿主先提供 `AppConfig`，应用可以在它的主题和字体资源上加自己的配置。通过 `AppMode` 选择启动时所需的业务依赖，例如真实存储或无窗口测试数据。
 
 ```rust
-use octara::app::AppConfig;
+use octara::app::{AppConfig, AppDefinition, AppMode};
 use octara::prelude::*;
 use octara::platform::HeadlessPlatform;
 
-let app = App::with_config(HeadlessPlatform::default(), AppConfig {
-    theme: Theme::dark(),
-    ..Default::default()
-});
-let window = app.open_window(WindowOptions::new("Configured"), || text("Ready")).unwrap();
+fn app(_: AppMode, config: AppConfig) -> Result<AppDefinition, String> {
+    Ok(AppDefinition::new(config, WindowOptions::new("Configured"), || text("Ready")))
+}
+
+let config = AppConfig { theme: Theme::dark(), ..Default::default() };
+let window = app(AppMode::Headless, config).unwrap().start(HeadlessPlatform::default(), |_| {}).unwrap();
 assert_eq!(window.inspect().theme, "dark");
-app.shutdown();
+window.app().shutdown();
 ```
 
-同一个根函数可以交给桌面宿主、`Window::headless` 和 `octara check`。根函数可直接返回 `El`、`View` 或其他 `IntoView` 内容。CLI 从应用的 `[package.metadata.octara]` 表读取 `view` 的函数路径。检查矩阵在每次执行根函数前设置平台、主题和尺寸。`octara inspect` 与 `octara run` 会在挂载前应用传入的 `--theme` 和 `--size`。
+在二进制的 `main` 中调用 `octara_shell::run_app(my_app::app)`。在应用的 `[package.metadata.octara]` 表中写 `entry = "my_app::app"`，让 `octara check`、`inspect` 和 `run` 调用同一个入口。检查矩阵每个单元都创建一个新应用。主题和平台在调用应用入口前选定，尺寸在挂载前应用。无窗口 `inspect` 和 `run` 使用首窗默认尺寸，也接受 `--theme` 和 `--size`。单个组件可以直接用 `Window::headless` 验证。
 
 ## 进入真实窗口
 
@@ -312,4 +313,6 @@ OCTARA_INSPECT=/tmp/octara-first.sock cargo run -p octara-examples --bin window 
 cargo run -q -p octara-cli -- inspect --connect /tmp/octara-first.sock --json
 ```
 
-取得目标后，操作应带上这次观察返回的 `target`。若目标已失效，重新观察当前窗口；若反馈显示前序输入已经送达，先检查实际结果。真实窗口 Inspector 可以验证框架事件，系统输入法候选和系统返回手势还需要对应的操作系统入口。查 API 用 `octara vocab <name>`，查诊断用 `octara explain <code>`。
+取得目标后，操作应带上这次观察返回的 `target`。点击和拖动的 `pointer` 回执记录识别时的逻辑坐标、已结算版本、命中节点和捕获目标。若目标已失效，重新观察当前窗口。若反馈显示前序输入已经送达，先检查实际结果。真实窗口 Inspector 可以验证框架事件，系统输入法候选和系统返回手势还需要对应的操作系统入口。查 API 用 `octara vocab <name>`，查诊断用 `octara explain <code>`。
+
+用截图定位点击时，`tap_at` 接受固定逻辑坐标和预期控件的 `target`。可以附上 `capture.paint.revision` 作为 `drawing_revision`，派发前核对对应的绘制。每个阶段都在原点核对接收者。[操作回执](design/agent-knowledge.md)

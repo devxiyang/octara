@@ -4,6 +4,7 @@
 mod long_session;
 
 use long_session::{LongSession, seed};
+use octara::window::WindowOptions;
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -12,7 +13,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = seed(&directory, count)?;
     let model = LongSession::default();
     octara_shell::run_with(
-        octara_shell::Options { title: format!("Octara Chat long session — {count}"), size: (1000.0, 720.0), ..Default::default() },
+        octara_shell::Options {
+            window: WindowOptions::new(format!("Octara Chat long session — {count}")).size(1000.0, 720.0),
+            ..Default::default()
+        },
         move || model.view(Some(store.clone())),
     );
     Ok(())

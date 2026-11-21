@@ -1,15 +1,15 @@
 //! The shared device and the notification that ends each device generation.
 
-use crate::ShellEvent;
 use crate::platform::RenderedWindow;
 use crate::render_worker::{RenderWorker, Work};
+use crate::{ShellEvent, trace};
 use octara::capture::{PaintFrame, PaintOrigin};
 use octara::platform::PublishedFrame;
 use octara_primitives::{
     capture::{PaintSample, PaintedPicture, Painter},
     paint::DisplayList,
 };
-use octara_render::gpu::{FrameInput, FrameProfile, GpuTimings};
+use octara_render::gpu::{FrameInput, FrameProfile, GpuTimings, PendingPresentation};
 use octara_render::{GpuRenderer, wgpu};
 use std::any::Any;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
@@ -26,6 +26,8 @@ pub(crate) struct Gpu {
     pub(crate) adapter: wgpu::Adapter,
     renderer: Option<GpuRenderer>,
     worker: Option<RenderWorker<RenderCompletion>>,
+    proxy: EventLoopProxy<ShellEvent>,
+    threaded_render: bool,
     device: wgpu::Device,
     queue: wgpu::Queue,
     renderer_name: &'static str,
@@ -35,17 +37,26 @@ pub(crate) struct Gpu {
     /// A replacement must accept work before another recovery attempt.
     awaiting_work: bool,
     #[cfg(debug_assertions)]
-    destroy_deadline: Option<Instant>,
+    destroy: Option<TestDestroy>,
+}
+
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy)]
+enum TestDestroy {
+    Requested,
+    AwaitingLoss(Instant),
 }
 
 pub(crate) enum RenderCompletion {
     Window(Box<RenderedWindow>),
     Capture,
+    SurfaceDrain(Result<bool, String>),
 }
 
 pub(crate) struct FrameSubmission {
     pub(crate) paint: PaintFrame,
     pub(crate) profile: Option<(FrameProfile, Duration)>,
+    pub(crate) presentation: PendingPresentation,
 }
 
 pub(crate) struct DeviceGeneration {
@@ -108,17 +119,15 @@ impl Gpu {
             .or_else(|| caps.formats.first().copied())
             .ok_or("no GPU surface format for the window")?;
         let (renderer, generation) = request_renderer(&adapter, &descriptor, format, 0, proxy)?;
-        let worker = if std::env::var_os("OCTARA_RENDER_WORKER").is_some_and(|value| value == "1") {
-            Some(render_worker(proxy, generation.number)?)
-        } else {
-            None
-        };
+        let worker = render_worker(proxy, generation.number)?;
         let (device, queue, renderer_name) = (renderer.device().clone(), renderer.queue().clone(), renderer.renderer());
         Ok(Self {
             instance,
             adapter,
             renderer: Some(renderer),
-            worker,
+            worker: Some(worker),
+            proxy: proxy.clone(),
+            threaded_render: std::env::var_os("OCTARA_RENDER_WORKER").is_some_and(|value| value == "1"),
             device,
             queue,
             renderer_name,
@@ -127,13 +136,13 @@ impl Gpu {
             descriptor,
             awaiting_work: false,
             #[cfg(debug_assertions)]
-            destroy_deadline: None,
+            destroy: None,
         })
     }
 
     pub(crate) fn available(&self) -> bool {
         #[cfg(debug_assertions)]
-        if self.destroy_deadline.is_some() {
+        if self.destroy.is_some() {
             return false;
         }
         !self.generation.is_lost()
@@ -157,13 +166,15 @@ impl Gpu {
                 (renderer, generation, adapter)
             }
         };
-        let worker = self.worker.as_ref().map(|_| render_worker(proxy, number)).transpose()?;
+        let worker = render_worker(proxy, number)?;
         let (device, queue, renderer_name) = (renderer.device().clone(), renderer.queue().clone(), renderer.renderer());
         Ok(Self {
             instance: self.instance.clone(),
             adapter,
             renderer: Some(renderer),
-            worker,
+            worker: Some(worker),
+            proxy: proxy.clone(),
+            threaded_render: self.threaded_render,
             device,
             queue,
             renderer_name,
@@ -172,12 +183,17 @@ impl Gpu {
             descriptor: self.descriptor.clone(),
             awaiting_work: true,
             #[cfg(debug_assertions)]
-            destroy_deadline: None,
+            destroy: None,
         })
     }
 
     pub(crate) fn submitted(&mut self) {
         self.awaiting_work = false;
+    }
+
+    pub(crate) fn accept_presentation(&mut self, pending: PendingPresentation) {
+        self.renderer.as_mut().expect("the host owns the renderer when accepting a frame").accept_presentation(pending);
+        self.submitted();
     }
 
     pub(crate) fn device(&self) -> &wgpu::Device {
@@ -198,7 +214,7 @@ impl Gpu {
     }
 
     pub(crate) fn threaded(&self) -> bool {
-        self.worker.is_some()
+        self.threaded_render && self.worker.is_some()
     }
 
     /// Hands the only renderer to the worker. This admits one job and the caller can keep
@@ -212,6 +228,7 @@ impl Gpu {
             Err(renderer) => {
                 self.renderer = Some(renderer);
                 self.worker = None;
+                self.threaded_render = false;
                 eprintln!("octara-shell: the render worker disconnected before admission");
                 false
             }
@@ -256,7 +273,40 @@ impl Gpu {
         self.queue.present(frame);
     }
 
-    pub(crate) fn configure_surface(&self, surface: &wgpu::Surface<'static>, config: &wgpu::SurfaceConfiguration) -> bool {
+    /// Reserve the renderer while the worker waits for the shared device's submissions.
+    pub(crate) fn start_surface_drain(&mut self, trace_epoch: Option<Instant>) -> Result<(), String> {
+        if self.worker.is_none() {
+            self.worker = Some(render_worker(&self.proxy, self.generation.number)?);
+        }
+        let generation = self.generation.clone();
+        self.start_work(Box::new(move |renderer| {
+            if let Some(epoch) = trace_epoch {
+                trace::surface_drain(epoch, generation.number, None);
+            }
+            #[cfg(debug_assertions)]
+            if let Some(milliseconds) = std::env::var("OCTARA_SURFACE_DRAIN_DELAY_MS").ok().and_then(|value| value.parse::<u64>().ok())
+                && milliseconds != 0
+                && !generation.is_lost()
+            {
+                std::thread::sleep(Duration::from_millis(milliseconds.min(1000)));
+            }
+            let wait = wgpu::PollType::Wait { submission_index: None, timeout: Some(Duration::from_millis(50)) };
+            let ready = match generation.run(|| renderer.device().poll(wait)) {
+                Some(Ok(status)) => Ok(status.is_queue_empty()),
+                None | Some(Err(wgpu::PollError::Timeout)) => Ok(false),
+                Some(Err(error)) => Err(format!("cannot drain the GPU for surface configuration: {error}")),
+            };
+            if let Some(epoch) = trace_epoch {
+                trace::surface_drain(epoch, generation.number, Some(matches!(ready, Ok(true))));
+            }
+            RenderCompletion::SurfaceDrain(ready)
+        }))
+        .then_some(())
+        .ok_or_else(|| "the render worker did not accept the surface drain".into())
+    }
+
+    /// Apply on the window thread after a successful drain, before admitting another job.
+    pub(crate) fn apply_surface_configuration(&self, surface: &wgpu::Surface<'static>, config: &wgpu::SurfaceConfiguration) -> bool {
         self.idle()
             && self.available()
             && self
@@ -293,11 +343,21 @@ impl Gpu {
     }
 
     pub(crate) fn poll(&mut self, profile: bool) -> Result<bool, String> {
+        let Some(renderer) = self.renderer.as_mut() else { return Ok(false) };
         if self.generation.is_lost() {
             return Ok(false);
         }
         #[cfg(debug_assertions)]
-        if let Some(deadline) = self.destroy_deadline {
+        if let Some(destroy) = self.destroy {
+            let deadline = match destroy {
+                TestDestroy::Requested => {
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    self.destroy = Some(TestDestroy::AwaitingLoss(deadline));
+                    self.device.destroy();
+                    deadline
+                }
+                TestDestroy::AwaitingLoss(deadline) => deadline,
+            };
             self.instance.poll_all(false);
             if self.generation.is_lost() {
                 return Ok(false);
@@ -307,13 +367,12 @@ impl Gpu {
             }
             return Ok(true);
         }
-        Ok(profile && self.renderer.as_mut().is_some_and(|renderer| self.generation.run(|| renderer.poll_profile()).unwrap_or(false)))
+        Ok(profile && self.generation.run(|| renderer.poll_profile()).unwrap_or(false))
     }
 
     #[cfg(debug_assertions)]
     pub(crate) fn destroy_for_test(&mut self) {
-        self.destroy_deadline = Some(Instant::now() + Duration::from_secs(2));
-        self.device.destroy();
+        self.destroy.get_or_insert(TestDestroy::Requested);
     }
 }
 
@@ -392,9 +451,9 @@ pub(crate) fn submit_frame(
             let origin = PaintOrigin::Submitted { frame, surface_generation, device_generation: generation.number };
             let paint = published.paint_frame(origin, recorded.paint_receipts());
             let started = profile.as_ref().map(|_| Instant::now());
-            recorded.submit();
+            let (_, presentation) = recorded.submit_for_presentation();
             let profile = profile.zip(started).map(|(profile, started)| (profile, started.elapsed()));
-            Some(FrameSubmission { paint, profile })
+            Some(FrameSubmission { paint, profile, presentation })
         })
         .flatten()
 }

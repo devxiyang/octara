@@ -4,7 +4,7 @@
 //! start before DisplayList preparation; event-loop work before that is not in the frame total.
 //! Opportunity and present instants use the shell's monotonic clock. An observed window tick
 //! skipped before drawing uses `octara.display_opportunity/1`. Surface configuration has its own
-//! `octara.surface_trace/1` event, including work done by a native resize before drawing.
+//! `octara.surface_trace/1` event. The worker's device wait uses `octara.surface_drain/1`.
 //! Input times start at shell dispatch (or an owned native text callback), not at the hardware
 //! event. Coalesced counts are dispatches, including nested key/native edits, not keystrokes.
 //! `octara.inspect_delivery/1` records publication revisions before and after Inspector input.
@@ -310,6 +310,42 @@ impl AcquireStatus {
     pub(crate) fn acquired(self) -> bool {
         matches!(self, Self::Success | Self::Suboptimal)
     }
+}
+
+pub(crate) fn surface_drain(epoch: Instant, device_generation: u64, ready: Option<bool>) {
+    eprintln!(
+        "{}",
+        json!({
+            "schema": "octara.surface_drain/1",
+            "phase": if ready.is_some() { "finish" } else { "start" },
+            "at_us": since_us(epoch, Instant::now()),
+            "device_generation": device_generation,
+            "ready": ready,
+        })
+    );
+}
+
+pub(crate) fn device_admission(
+    epoch: Instant,
+    at: Instant,
+    device_generation: u64,
+    selected: &'static str,
+    capture: (octara::app::WindowId, Instant),
+    frame: Option<(octara::app::WindowId, Opportunity)>,
+) {
+    eprintln!(
+        "{}",
+        json!({
+            "schema": "octara.device_admission/1",
+            "at_us": since_us(epoch, at),
+            "device_generation": device_generation,
+            "selected": selected,
+            "window": frame.map(|(window, _)| window.number()),
+            "capture": capture.0.number(),
+            "capture_wait_us": us(capture.1, at),
+            "frame_deadline_us": frame.and_then(|(_, opportunity)| opportunity.deadline()).map(|deadline| since_us(epoch, deadline)),
+        })
+    );
 }
 
 pub(crate) struct SurfaceConfiguration {

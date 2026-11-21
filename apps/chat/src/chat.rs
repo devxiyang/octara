@@ -41,13 +41,14 @@ pub struct Queued {
 }
 
 /// What the app starts with.
+#[derive(Clone)]
 pub struct Options {
     /// Models with unique stable IDs (the first is initially picked). An empty list is valid;
     /// sending then preserves the draft until a model becomes available.
     pub models: Vec<ModelEntry>,
     /// Where conversations are kept (`None`: nowhere).
     pub store: Option<Store>,
-    /// The wall clock in seconds since the Unix epoch (conversations' dates).
+    /// Clock for conversation dates, in seconds since the Unix epoch.
     pub clock: Rc<dyn Fn() -> u64>,
 }
 

@@ -7,9 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-# `octara check` / `inspect` / `run` drive this view.
+# `octara check` / `inspect` / `run` use this startup entry.
 [package.metadata.octara]
-view = "octara_chat::app"
+entry = "octara_chat::app"
 
 [dependencies]
 octara = { workspace = true, features = ["system-fonts"] }

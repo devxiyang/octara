@@ -47,8 +47,8 @@ pub trait Platform {
     fn set_menus(&mut self, menus: &[crate::menu::Menu]) {
         let _ = menus;
     }
-    /// Opens window `id` as `options` asks (the id names it in the input it sends back).
-    fn open_window(&mut self, id: crate::app::WindowId, options: &WindowOptions) -> Result<Box<dyn PlatformWindow>, String>;
+    /// Opens window `id` and reports its initial viewport (the id names it in the input it sends back).
+    fn open_window(&mut self, id: crate::app::WindowId, options: &WindowOptions) -> Result<OpenedWindow, String>;
     fn as_any(&self) -> &dyn Any;
 }
 
@@ -65,7 +65,7 @@ pub enum WindowKind {
 #[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WindowOptions {
     pub title: String,
-    /// Its content size in logical pixels.
+    /// Its requested content size in logical pixels.
     pub size: (f32, f32),
     pub kind: WindowKind,
 }
@@ -88,6 +88,23 @@ impl WindowOptions {
         self.kind = kind;
         self
     }
+}
+
+/// The viewport reported by the host before the root view mounts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowViewport {
+    /// Content size in logical pixels.
+    pub size: (f32, f32),
+    /// Device pixels per logical pixel.
+    pub scale: f32,
+    /// Usable area for anchored overlays, in logical window coordinates.
+    pub safe_area: Option<Rect>,
+}
+
+/// An opened platform window and the viewport the App uses for its first layout.
+pub struct OpenedWindow {
+    pub window: Box<dyn PlatformWindow>,
+    pub viewport: WindowViewport,
 }
 
 /// One snapshot request issued to a platform window. Echo it in the completion event.
@@ -315,8 +332,11 @@ impl Platform for HeadlessPlatform {
         self.clipboard = Some(text.to_owned());
         self.clipboard_image = None;
     }
-    fn open_window(&mut self, _: crate::app::WindowId, _: &WindowOptions) -> Result<Box<dyn PlatformWindow>, String> {
-        Ok(Box::new(self.next_window.take().unwrap_or_default()))
+    fn open_window(&mut self, _: crate::app::WindowId, options: &WindowOptions) -> Result<OpenedWindow, String> {
+        Ok(OpenedWindow {
+            window: Box::new(self.next_window.take().unwrap_or_default()),
+            viewport: WindowViewport { size: options.size, scale: 1.0, safe_area: None },
+        })
     }
     fn as_any(&self) -> &dyn Any {
         self

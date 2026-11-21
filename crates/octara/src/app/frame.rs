@@ -164,7 +164,16 @@ impl Window {
         let revision = self.revision();
         self.present(revision);
         // Only mark the sampled revision. A host callback may itself invalidate it.
-        self.w.settled_revision.set(Some(revision));
+        if self.w.settled_revision.replace(Some(revision)) != Some(revision) {
+            self.w.observation_number.set(self.w.observation_number.get().checked_add(1).expect("window observation exhausted"));
+        }
+    }
+
+    pub(crate) fn observation(&self) -> Option<crate::inspect::WindowObservation> {
+        self.frame_is_settled().then(|| crate::inspect::WindowObservation {
+            revision: self.w.observation_number.get(),
+            drawing_revision: self.w.drawing.get().map(|drawing| drawing.number),
+        })
     }
 
     fn published_drawing(&self) -> Option<DrawingPublication> {

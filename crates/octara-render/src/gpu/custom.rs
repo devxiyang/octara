@@ -92,7 +92,8 @@ where
 /// item's position in the display list. An isolated opacity group starts with transparent pixels.
 /// Preparation, output, clipping and validation use the same conventions as [`canvas`].
 /// When the current attachment cannot be copied, the renderer draws the box's ordinary paint.
-/// An exiting mount replays its last submitted output or uses the ordinary paint if none exists.
+/// An exiting mount replays its last output accepted by the host or uses the ordinary paint
+/// if none exists.
 pub fn backdrop<C>(prepare: impl Fn(&wgpu::Device) -> C + Send + Sync + 'static) -> PaintProgram
 where
     C: for<'a> Fn(&mut CanvasFrame<'a>, Backdrop<'a>) + Send + Sync + 'static,

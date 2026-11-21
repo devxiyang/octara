@@ -6,17 +6,22 @@
 //! `gpu_lab input-pressure` runs native input probes next to the animated GPU canvas.
 
 use octara::view::View;
+use octara::window::WindowOptions;
 use octara_examples::{apps, gpu_lab, showcase};
 
 fn main() {
     let name = std::env::args().nth(1).unwrap_or_else(|| "showcase".into());
+    if name == "counter" {
+        octara_shell::run_app(apps::counter_app).expect("the counter starts");
+        return;
+    }
     if name == "gpu_lab" {
         let mut args = std::env::args().skip(2);
         let mut options = gpu_lab::options();
         let mode = args.next();
         if mode.as_deref() == Some("input-pressure") {
-            options.title = gpu_lab::input_pressure::TITLE.into();
-            options.size = (1440.0, 900.0);
+            options.window.title = gpu_lab::input_pressure::TITLE.into();
+            options.window.size = (1440.0, 900.0);
             octara_shell::run_with(options, gpu_lab::input_pressure::view);
         } else if mode.as_deref() == Some("replay") {
             let (hz, stress) = match (args.next().as_deref(), args.next().as_deref(), args.next()) {
@@ -29,7 +34,7 @@ fn main() {
                 }
             };
             let (width, height) = if stress { gpu_lab::replay::STRESS_SIZE } else { gpu_lab::replay::SIZE };
-            options.size = (width as f32, height as f32);
+            options.window.size = (width as f32, height as f32);
             if stress {
                 octara_shell::run_with(options, gpu_lab::replay::stress_view);
             } else {
@@ -41,15 +46,15 @@ fn main() {
         return;
     }
     if name == "undo" {
+        let (width, height) = apps::UNDO_DOCUMENT_SIZE;
         let options =
-            octara_shell::Options { title: apps::UNDO_DOCUMENT_TITLE.into(), size: apps::UNDO_DOCUMENT_SIZE, ..Default::default() };
+            octara_shell::Options { window: WindowOptions::new(apps::UNDO_DOCUMENT_TITLE).size(width, height), ..Default::default() };
         octara_shell::run_with(options, || apps::undo_document("A"));
         return;
     }
     let card = std::env::args().nth(2);
     let view: Box<dyn Fn() -> View> = match name.as_str() {
         "failure" => Box::new(octara_examples::failure::view),
-        "counter" => Box::new(|| apps::counter().into()),
         "styles" => Box::new(apps::styles),
         "activation" => Box::new(octara_examples::activation::view),
         "handlers" => Box::new(octara_examples::handlers::view),

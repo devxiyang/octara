@@ -102,6 +102,8 @@ App 更新、渲染执行和平台呈现各自推进。窗口发布可跨线程�
 
 后台获取路径先检查表面，再等待 drawable。资源就绪后才构建最新已结算修订的绘制列表。录制开始后新来的重绘请求继续有效，录制失败也会恢复绘制需求。共享执行器按窗口轮转，优先使用已经持有 drawable 且有有效机会的窗口。缩放、关闭和设备失效仍按表面和设备身份处理资源。[窗口调度](../../crates/octara-shell/src/lib.rs) · [表面与提交](../../crates/octara-shell/src/platform.rs)
 
+窗口帧和绘制截图从同一个入口取得绘制器。截图在原生快照就绪后开始等待准入，并保留原捕获会话直到获准提交。有有效显示机会的窗口通常先绘制，截图的等待期限早于该显示机会，或已等待 50 ms 时，截图获得下一个可用的录制位置。若窗口仍需等待 drawable，截图可以用空闲绘制器。开始读回后，图像整理和 PNG 输出独立推进，窗口可以继续出帧。`device_admission` 记录两者争用时的选择和时限。[等待策略](../../crates/octara-shell/src/presentation.rs) · [截图会话](../../crates/octara-shell/src/capture.rs)
+
 macOS 普通窗口可以在有效显示机会的目标时刻采样颜色、透明度和阴影等解析式绘制动效。几何、滚动、输入和定时器继续在实际 App 时钟结算。带原生视图的事务帧和无窗口录制采用已结算时刻。上屏回执携带实际采用的绘制采样时间。[发布与采样](../../crates/octara/src/app/frame.rs) · [Rune 的目标时钟](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune/src/frame/clock.rs#L96-L106)
 
 渲染调度以直接交互的反馈为首要目标。按键、输入法、指针按下和释放保留交付顺序。宿主完成相应状态和布局结算后，下一次可用的绘制机会消费最新画面。drawable 获取、GPU 读回等待、PNG 编码与写盘在各自的后台路径推进。用真实输入的到屏 P95、P99 和滚动、拖动期间的上屏间隔约束调度。背景动画的吞吐量也要记录，以便判断它和直接交互争用的资源。[窗口输入迹线](../../crates/octara-shell/src/trace.rs) · [帧选择](../../crates/octara-shell/src/lib.rs)
@@ -109,6 +111,10 @@ macOS 普通窗口可以在有效显示机会的目标时刻采样颜色、透�
 获取协议和回执检查在各宿主上使用相同规则。先用可暂停的测试宿主核对多窗口进度、当前画面选择、旧请求返回及重配代次，再验证平台执行位置。wgpu 的 Metal 获取同时涉及 drawable 池和 AppKit 遮挡查询。让获取在后台运行之前，需要验证 AppKit 线程边界、表面锁和关闭期间的回收。若帧需要原生事务，纹理获取时采用的事务模式也必须与最终呈现一致。[核心帧契约](core.md#窗口结算与实际呈现) · [Metal 获取与事务模式](https://github.com/gfx-rs/wgpu/blob/v30.0.2/wgpu-hal/src/metal/surface.rs#L348-L400) · [原生事务](../../crates/octara-shell/src/native_mac.rs)
 
 窗口尺寸、比例或表面发生变化时，宿主只提交匹配当前目标的帧。`Occluded` 等待再次可见，`Timeout` 让出本次机会，`Outdated` 重配，`Lost` 重新创建表面。设备丢失时重建设备及依赖资源，并用当前已结算帧恢复绘制。关闭时先结束该窗口的出帧需求，交还在用表面，回收剩余资源。跨设备或已过期的作者结果随原版本退休。[wgpu 状态契约](https://github.com/gfx-rs/wgpu/blob/v30.0.2/wgpu/src/api/surface_texture.rs#L44-L79) · [当前窗口处理](../../crates/octara-shell/src/platform.rs#L493)
+
+开窗、缩放和表面恢复都提交一份最新的窗口配置。窗口先交还旧 drawable，再参与设备准入。设备工作线程占用共享绘制器并等待 wgpu 队列清空，窗口的输入与布局在此期间继续处理。宿主收到回执后重新采样窗口尺寸，只对仍存活的窗口应用最新请求，再允许绘制和截图提交。宿主负责原生表面配置，`surface_drain` 和 `surface_trace` 分别记录等待区间与宿主操作耗时。[设备等待](../../crates/octara-shell/src/gpu.rs) · [宿主准入](../../crates/octara-shell/src/lib.rs) · [双窗口回归](../../examples/live_inspect.py)
+
+wgpu 的提交队列清空后，某些后端在换链时还会等待系统呈现。Vulkan 释放旧交换链资源时调用 `vkDeviceWaitIdle`。DX12 在调整缓冲区前等待单独的呈现队列。这部分时间计入宿主配置，并按各后端实测。[Vulkan](https://github.com/gfx-rs/wgpu/blob/v30.0.2/wgpu-hal/src/vulkan/swapchain/native.rs#L379-L391) · [DX12](https://github.com/gfx-rs/wgpu/blob/v30.0.2/wgpu-hal/src/dx12/mod.rs#L1488-L1490)
 
 ## 帧证据与 Agent 反馈
 
@@ -163,7 +169,9 @@ Metal 的 28 项渲染测试通过。材质测试断言参数不同的相邻实�
 
 `gpu::backdrop` 沿用 `El::paint` 的盒子、属性绑定与样式回退。绘制到该位置时，渲染器保存当前附件，复制效果盒子、裁剪边界和当前合成目标的矩形交集。作者获得纹理、设备像素尺寸和相对盒子的偏移，可以录制自己的 wgpu pass。其命令与后续 UI 绘制按顺序进入同一次提交，效果的合成仍走圆角裁剪。源不支持复制时使用样式回退。[作者接口](../../crates/octara-render/src/gpu/custom.rs) · [提交顺序](../../crates/octara-render/src/gpu.rs)
 
-活跃效果按挂载保存最后一次成功提交的输出。退出时旧挂载退出输入和辅助功能，现有透明度轨道继续合成保留纹理。成功提交才替换保留版本，丢弃录制和绘制截图保留原版本。同区域重开建立新挂载。缓存按挂载寿命收尾，已提交的命令继续持有所引用的资源。通用的新旧子树纹理输入与作者自定义过渡进度接口仍在待办中。[内核绘制](../../crates/octara/src/kernel/paint.rs) · [绘制保留测试](../../crates/octara/tests/integration/display_list.rs)
+活跃背景效果按挂载保存宿主最近接纳的结果。GPU 提交后，待接纳的帧单独持有候选纹理。原生呈现调用成功且宿主验证窗口、表面和设备后，候选纹理才进入退场历史。缩放、关闭或设备失效淘汰的结果随该帧释放。退出时旧挂载退出输入和辅助功能，透明度轨道继续合成最近接纳的纹理。绘制截图可读取这份历史。同区域重开建立新挂载，旧纹理随旧挂载收尾。通用的新旧子树纹理输入与作者自定义过渡进度接口仍在待办中。[内核绘制](../../crates/octara/src/kernel/paint.rs) · [宿主接纳](../../crates/octara-shell/src/platform.rs) · [绘制保留测试](../../crates/octara/tests/integration/display_list.rs)
+
+在 macOS Glass Lens 回归中，工作线程完成版本 6 的 GPU 提交后暂缓交回结果。期间用系统接口缩放窗口并关闭弹层。宿主丢弃旧表面结果，退场截图回报来源版本 5，随后该窗口在新表面代次提交。独立 Metal 测试还核对了两个候选版本并存时的像素，以及显式接纳后退场来源的变化。[实窗时序](../../examples/live_inspect.py) · [Metal 回归](../../crates/octara-render/src/gpu.rs)
 
 Shader Lab 的 Glass Lens 用滑块改变折射。在 macOS 窗口 1× 和 2× 的 GPU 绘制捕获中，滑块从 75% 调到 15% 后，Dialog 内无文字区域的像素变化。关闭立即归还触发器焦点，淡出期间采样并重开后，旧滑块请求返回 `STALE_TARGET`，新滑块的初始值为 75%。2× 截图为 `1600×1240`。Metal 回归验证同一帧中两个重叠采样效果的前后顺序、缩放后的组裁剪和透明度，以及丢弃录制、截图重放和新挂载对旧提交的隔离。[示例](../../examples/src/gpu_lab.rs) · [窗口回归](../../examples/live_inspect.py) · [GPU 回归](../../crates/octara-render/src/gpu.rs)
 
@@ -383,7 +391,7 @@ Metal 隔离回归销毁测试设备后用同一份已发布绘制列表重建�
 
 内部绘制计划按目标保存有序批次和背景读取方式。普通绘制直接进入目标，背景依赖在准备时固定复制范围、目标能力和绘制位置。作者命令验证通过后，在该位置保存已绘制的前缀、执行局部复制和作者命令，再加载目标并继续。回退在原位置绘制普通样式。矩形裁剪链使用矩形交集，圆角裁剪保留祖先形状，CPU 和 GPU 都用裁剪链各项覆盖度的最小值。[绘制计划](../../crates/octara-render/src/gpu.rs) · [裁剪数据](../../crates/octara-render/src/shape.rs)
 
-`PaintFrame` 把窗口、绘制版本和采样时间与逐效果结果关联。实窗提交还报告帧序号、表面代次和设备代次。效果复用会报告可用的源版本，回退会报告原因。退场使用挂载最近成功并提交的效果纹理。绘制截图以固定的绘制输入重新录制，回执来源为 `rerecorded`。窗口服务器截图以核对过的宿主提交作为证据。[捕获与回执](../../crates/octara/src/capture.rs) · [捕获实现](../../crates/octara-shell/src/capture.rs)
+`PaintFrame` 把窗口、绘制版本和采样时间与逐效果结果关联。实窗提交还报告帧序号、表面代次和设备代次。效果复用会报告可用的源版本，回退会报告原因。退场使用最近一次宿主接纳的背景效果纹理。绘制截图以固定的绘制输入重新录制，回执来源为 `rerecorded`。窗口服务器截图以核对过的宿主提交作为证据。[捕获与回执](../../crates/octara/src/capture.rs) · [捕获实现](../../crates/octara-shell/src/capture.rs)
 
 背景采样的临时输入按精确尺寸和格式复用。复制命令和读取该视图的作者命令同属有序提交，因此同一设备中后续采样可以再次使用该分配。活动和退场的输出纹理仍由挂载版本持有。缓存最多保留 8 张视图和 32 MiB 的描述符容量，较大的采样仍可临时分配。迹线记录成功操作的分配次数、复用次数和观察到的缓存峰值。[背景临时池](../../crates/octara-render/src/gpu/custom.rs) · [渲染计数](../../crates/octara-render/src/gpu/profile.rs)
 

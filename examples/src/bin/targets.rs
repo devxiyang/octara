@@ -159,7 +159,7 @@ fn targets() -> El {
 
 fn main() {
     octara_shell::run_with(
-        octara_shell::Options { title: "Octara Target Validation".into(), size: (840.0, 620.0), ..Default::default() },
+        octara_shell::Options { window: WindowOptions::new("Octara Target Validation").size(840.0, 620.0), ..Default::default() },
         targets,
     );
 }

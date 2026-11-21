@@ -7,9 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
-# `octara check` / `inspect` / `run` drive this view.
+# `octara check` / `inspect` / `run` call the counter's application entry.
 [package.metadata.octara]
-view = "octara_examples::apps::counter"
+entry = "octara_examples::apps::counter_app"
 
 [dependencies]
 octara-primitives.workspace = true

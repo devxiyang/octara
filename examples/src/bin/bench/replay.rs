@@ -1,6 +1,6 @@
 use super::{FORMAT, Offscreen, Sample, metal_renderer, percentiles, print_features, print_passes};
 use octara::app::{App, InputEvent};
-use octara::platform::{HeadlessPlatform, WindowOptions};
+use octara::platform::HeadlessPlatform;
 use octara_examples::gpu_lab::{
     self,
     replay::{DURATION, Replay, SIZE},
@@ -59,7 +59,7 @@ fn measure(renderer: &mut GpuRenderer, target: &Offscreen, hz: u32) -> Result<([
     let result = (|| {
         let mut replay = Replay::new(&app);
         let (width, height) = (SIZE.0 as f32, SIZE.1 as f32);
-        let mut window = app.open_window(WindowOptions::new(options.title).size(width, height), replay.view())?;
+        let mut window = app.open_window(options.window.size(width, height), replay.view())?;
         window.event(InputEvent::Resize { width, height, scale: target.scale as f32, safe_area: None });
         let preview = window.kernel().find("gpu-preview").ok_or("The Shader Lab flow canvas is missing.")?;
         let (send, receive) = mpsc::channel();

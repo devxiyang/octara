@@ -5,7 +5,7 @@ mod retention;
 
 use octara::app::{App, InputEvent};
 use octara::inspect::{self, Request};
-use octara::platform::{HeadlessPlatform, PublishedFrame, WindowOptions};
+use octara::platform::{HeadlessPlatform, PublishedFrame};
 use octara_examples::gpu_lab;
 use octara_primitives::{capture::PaintReceipt, paint::Item};
 use octara_render::gpu::{FrameInput, FrameProfile, GpuTimings};
@@ -134,10 +134,11 @@ impl Offscreen {
         check(recorded.paint_receipts())?;
         let submitting = Instant::now();
         let record = submitting.duration_since(started);
-        let submission = recorded.submit();
+        let (submission, presentation) = recorded.submit_for_presentation();
         let submit = submitting.elapsed();
         self.wait(Some(submission))?;
         let complete = started.elapsed();
+        renderer.accept_presentation(presentation);
         // Draining Metal's separate timestamp resolves is outside the completion measurement.
         while renderer.profile_pending() && renderer.poll_profile() {
             self.wait(None)?;
@@ -151,7 +152,7 @@ fn measure_scale(renderer: &mut GpuRenderer, scale: u32) -> Result<[Measurement;
     let target = Offscreen::new(renderer, scale);
     let options = gpu_lab::options();
     let app = App::with_config(HeadlessPlatform::default(), options.app);
-    let mut window = app.open_window(WindowOptions::new(options.title).size(width as f32, height as f32), gpu_lab::view)?;
+    let mut window = app.open_window(options.window.size(width as f32, height as f32), gpu_lab::view)?;
     window.event(InputEvent::Resize { width: width as f32, height: height as f32, scale: scale as f32, safe_area: None });
 
     let drawing = window.published_frame().ok_or("The normal scene did not publish its drawing.")?;
@@ -166,7 +167,7 @@ fn measure_scale(renderer: &mut GpuRenderer, scale: u32) -> Result<[Measurement;
     let drawing = window.published_frame().ok_or("Glass direct sample did not publish its drawing.")?;
     let direct = measure(renderer, &target, &drawing, "Glass direct sample")?;
     refraction(&mut window, 0.75)?;
-    // Submit the live lens before retiring the mount so the fade uses its last GPU output.
+    // Accept the live lens before retiring the mount so the fade uses its last output.
     let drawing = window.published_frame().ok_or("Glass refraction did not publish its drawing.")?;
     let glass = measure(renderer, &target, &drawing, "Glass refraction")?;
     if [&direct, &glass].into_iter().flat_map(|m| &m.samples).any(|sample| {

@@ -12,13 +12,15 @@
 | 设置 `OCTARA_CHAT_DIR` | 将会话与保存的设置放在指定目录，便于隔离测试 |
 | 设置 `OCTARA_CHAT_TIMEOUT_SECS` | 配置连接或读取空闲超时，取值 1 至 600 秒，默认 60 秒 |
 
-新会话存储写入 `<thread>.v2.json`。较早的 `<thread>.json` 文件仍留在原处，当前版本只加载新格式。启动配置和网络事件可在[网络测试](tests/network.rs)中核查。
+新会话存储写入 `<thread>.v2.json`。较早的 `<thread>.json` 文件仍留在原处，当前版本只加载新格式。启动配置见[启动测试](src/startup.rs)，网络事件见[网络测试](tests/network.rs)。
 
 ## 请求何时确定
 
 模型以稳定 ID 保存。用户按发送或将消息加入队列时，应用捕获模型及当时生效的设置。流式输出途中切换模型只影响之后创建的请求。停止或重新生成会退休旧请求；迟到的增量、错误和结束事件不能再写入新回复或释放新队列。取消设置对话框会丢弃草稿，保存才更新配置。[模型身份测试](tests/model_identity.rs) · [生命周期测试](tests/lifecycle.rs)
 
 ## 离线与本地 HTTP 验证
+
+无窗口的 `octara check`、`octara inspect` 与 `octara run` 使用桌面程序的界面、窗口配置和浅色主题。会话保存在内存中，使用离线 Scripted 后端和固定的会话时间。检查矩阵与命令行选项可以覆盖窗口尺寸和主题。
 
 ```sh
 cargo test -p octara-chat --test lifecycle --test network --test model_picker

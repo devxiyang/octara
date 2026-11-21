@@ -3,13 +3,16 @@
 import AppKit
 import ApplicationServices
 
-guard CommandLine.arguments.count == 3,
-      let pid = Int32(CommandLine.arguments[2]),
+let arguments = CommandLine.arguments
+guard arguments.count >= 3,
+      let pid = Int32(arguments[2]), pid > 1,
       let app = NSRunningApplication(processIdentifier: pid) else { exit(2) }
-switch CommandLine.arguments[1] {
+let operation = arguments[1]
+guard arguments.count == (operation == "size" ? 5 : 3) else { exit(2) }
+switch operation {
 case "activate":
     guard app.activate(options: [.activateAllWindows]) else { exit(3) }
-case "close":
+case "close", "size":
     guard AXIsProcessTrusted() else {
         fputs("Accessibility access unavailable\n", stderr)
         exit(4)
@@ -18,6 +21,25 @@ case "close":
     var value: CFTypeRef?
     guard AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &value) == .success,
           let windows = value as? [AXUIElement] else { exit(5) }
+    if operation == "size" {
+        guard let width = Double(arguments[3]), let height = Double(arguments[4]),
+              width.isFinite, height.isFinite, width > 0, height > 0 else { exit(2) }
+        let resizable = windows.filter { window in
+            var settable = DarwinBoolean(false)
+            return AXUIElementIsAttributeSettable(window, kAXSizeAttribute as CFString, &settable) == .success && settable.boolValue
+        }
+        guard resizable.count == 1 else {
+            fputs("Expected one resizable native window for the test process\n", stderr)
+            exit(7)
+        }
+        var requested = CGSize(width: width, height: height)
+        guard let size = AXValueCreate(.cgSize, &requested),
+              AXUIElementSetAttributeValue(resizable[0], kAXSizeAttribute as CFString, size) == .success else {
+            fputs("Could not resize the native test window\n", stderr)
+            exit(6)
+        }
+        exit(0)
+    }
     // AccessKit may also expose an application-root entry; use only a native close button.
     for window in windows {
         var button: CFTypeRef?

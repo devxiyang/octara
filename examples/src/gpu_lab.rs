@@ -42,7 +42,7 @@ const PRESETS: [Preset; 8] = [
 const MATERIAL: &str = concat!(include_str!("gpu_lab/palette.wgsl"), include_str!("gpu_lab/swatch.wgsl"));
 
 pub fn options() -> octara_shell::Options {
-    let mut options = octara_shell::Options { title: "Octara Shader Lab".into(), size: (1000.0, 700.0), ..Default::default() };
+    let mut options = octara_shell::Options { window: WindowOptions::new("Octara Shader Lab").size(1000.0, 700.0), ..Default::default() };
     options.app.theme = theme();
     options
 }

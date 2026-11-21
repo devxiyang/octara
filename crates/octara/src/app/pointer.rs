@@ -8,6 +8,7 @@
 use super::event::{InputEvent, WheelPhase};
 use super::frame::AfterUpdate;
 use super::{GuardTarget, Handler, Modality, ScopedHandler, TargetGuard, Window, WindowState};
+use crate::inspect::{PointerStep, PointerTarget};
 use crate::kernel::{HandlerKind, Kernel, Kind, NodeId, State};
 use bitflags::bitflags;
 use std::panic::Location;
@@ -401,6 +402,13 @@ impl Kernel {
             _ => self.pointer_target(hit),
         }
     }
+
+    fn press_route(&self, raw: Option<NodeId>, button: Button, modal: Option<NodeId>) -> (Option<NodeId>, Option<NodeId>) {
+        let hit = raw.filter(|&node| self.check_interaction_scope(node, modal).is_ok());
+        let target = self.press_target(hit, button).filter(|&node| self.check_interaction_scope(node, modal).is_ok());
+        (hit, target)
+    }
+
     /// The nearest node from `from` up with a `kind` handler.
     pub(crate) fn handler_above(&self, from: Option<NodeId>, kind: HandlerKind) -> Option<NodeId> {
         self.up_from(from, |id| self.handler(id, kind).is_some())
@@ -427,6 +435,41 @@ impl Window {
     /// The topmost node under `(x, y)` that input can reach (not behind an open modal).
     fn hit_at(&self, x: f32, y: f32) -> Option<NodeId> {
         self.live(self.w.kernel.borrow().hit_test(x, y))
+    }
+
+    /// Whether the point currently routes a primary press to this exact allocation.
+    pub(crate) fn tap_at_matches(&self, target: NodeId, x: f32, y: f32) -> bool {
+        if self.is_closed() || self.picking() {
+            return false;
+        }
+        let modal = self.top_modal();
+        let kernel = self.w.kernel.borrow();
+        let (width, height) = kernel.viewport();
+        if !(0.0..width).contains(&x) || !(0.0..height).contains(&y) || kernel.check_activation(target, modal).is_err() {
+            return false;
+        }
+        kernel.press_route(kernel.hit_test(x, y), Button::Primary, modal).1 == Some(target)
+    }
+
+    fn tap_at_owner_matches(&self, guard: &TargetGuard, target: NodeId) -> bool {
+        guard.node() == Some(target)
+            && guard.is_current(self)
+            && !self.picking()
+            && self.w.kernel.borrow().check_activation(target, self.top_modal()).is_ok()
+    }
+
+    fn tap_at_capture_matches(&self, guard: &TargetGuard, target: Option<NodeId>, event: PointerEvent) -> bool {
+        self.held_pointer().is_none()
+            && guard.node() == target
+            && guard.is_current(self)
+            && target.is_some_and(|target| self.tap_at_matches(target, event.x, event.y))
+    }
+
+    fn pointer_evidence_target(&self, node: Option<NodeId>) -> Option<PointerTarget> {
+        let node = node?;
+        let kernel = self.w.kernel.borrow();
+        let target = crate::inspect::node_target(&kernel, node)?;
+        Some(PointerTarget { target, id: kernel.test_id(node).map(str::to_owned) })
     }
 
     fn scroll_target(&self, hit: Option<NodeId>, dx: f32, dy: f32) -> Option<NodeId> {
@@ -456,19 +499,34 @@ impl Window {
     }
 
     /// One raw pointer event, as a window delivers it.
-    pub(super) fn on_pointer(&mut self, ev: PointerEvent) {
+    pub(super) fn on_pointer(&mut self, ev: PointerEvent, guard: Option<&TargetGuard>, steps: Option<&mut Vec<PointerStep>>) -> bool {
+        let mut accepted = false;
         self.input_frame(|| {
+            let mut step = steps.as_ref().map(|_| PointerStep {
+                phase: ev.phase,
+                at: [ev.x, ev.y],
+                observation: self.observation(),
+                hit: None,
+                captured: None,
+            });
             let before = self.w.interaction_nodes();
-            match ev.phase {
-                Phase::Down => self.down(ev),
-                Phase::Move => self.moved(ev),
-                Phase::Up => self.up(ev),
-                Phase::Cancel => self.cancel(ev),
-            }
+            accepted = match ev.phase {
+                Phase::Down => self.down(ev, step.as_mut(), guard),
+                Phase::Move => {
+                    self.moved(ev, step.as_mut());
+                    true
+                }
+                Phase::Up => self.up(ev, step.as_mut(), guard),
+                Phase::Cancel => self.cancel(ev, step.as_mut()),
+            };
             if before != self.w.interaction_nodes() {
                 self.w.interaction_changed();
             }
+            if let Some((steps, step)) = steps.zip(step) {
+                steps.push(step);
+            }
         });
+        accepted
     }
 
     pub(super) fn cancel_pointer(&self) {
@@ -646,12 +704,12 @@ impl Window {
             .then(|| crate::task::whole_ns(h.down_at + self.app.tuning.get().long_press.as_secs_f64() * 1000.0))
     }
 
-    fn down(&self, ev: PointerEvent) {
+    fn down(&self, ev: PointerEvent, mut step: Option<&mut PointerStep>, guard: Option<&TargetGuard>) -> bool {
         let stopped = {
             let mut i = self.w.interaction.borrow_mut();
             if i.pointer.held.is_some() {
                 // One pointer at a time: other fingers (and other buttons) are ignored.
-                return;
+                return false;
             }
             // A touch on gliding content stops it, and presses nothing (as on iOS).
             i.pointer.momentum.take().is_some()
@@ -660,7 +718,16 @@ impl Window {
         // Dismiss at most one layer. A nonmodal dismissal can keep the original hit, but its
         // callback can also retire the hit or the entire window.
         let raw = self.w.kernel.borrow().hit_test(ev.x, ev.y);
+        if let Some(step) = &mut step {
+            step.hit = self.pointer_evidence_target(raw);
+        }
         let (outside, dismiss) = self.outside_dismissal(raw);
+        if let Some(guard) = guard {
+            let owner = self.w.kernel.borrow().press_route(raw, Button::Primary, self.top_modal()).1;
+            if outside || stopped || !owner.is_some_and(|target| self.tap_at_owner_matches(guard, target)) {
+                return false;
+            }
+        }
         let outside_layer = dismiss.filter(|&layer| {
             if ev.kind != PointerKind::Touch || ev.button != Button::Primary || outside || stopped {
                 return false;
@@ -676,20 +743,22 @@ impl Window {
             self.notify_lifecycle(layer, HandlerKind::Dismiss);
         }
         if self.is_closed() || self.app.shutdown.get() {
-            return;
+            return false;
         }
         let modal = self.top_modal();
         let (hit, target, button) = {
             let k = self.w.kernel.borrow();
-            let hit = raw.filter(|&node| !outside && k.check_interaction_scope(node, modal).is_ok());
             let control_click = ev.button == Button::Primary
                 && ev.kind == PointerKind::Mouse
                 && ev.modifiers.contains(Modifiers::CTRL)
                 && self.app.platform.get().is_apple();
             let button = if control_click { Button::Secondary } else { ev.button };
-            let target = k.press_target(hit, button).filter(|&node| k.check_interaction_scope(node, modal).is_ok());
+            let (hit, target) = k.press_route(raw.filter(|_| !outside), button, modal);
             (hit, target, button)
         };
+        if guard.is_some_and(|guard| !self.tap_at_capture_matches(guard, target, ev)) {
+            return false;
+        }
         if ev.kind == PointerKind::Touch {
             self.w.interaction.borrow_mut().pointer.hover_at = None;
             self.set_hover(None);
@@ -724,6 +793,9 @@ impl Window {
             let live = |node: Option<NodeId>| node.filter(|node| k.is_alive(*node) && !k.is_exiting(*node));
             (live(hit), live(target))
         };
+        if guard.is_some_and(|guard| !self.tap_at_capture_matches(guard, target, ev)) {
+            return false;
+        }
         let enabled = target.is_some_and(|n| !self.w.kernel.borrow().state(n).contains(State::DISABLED));
         // A press on a selectable region's text, not on anything pressable, selects.
         // (A target around the region, such as the scroll container it is, does not stop it.)
@@ -783,6 +855,9 @@ impl Window {
             selecting,
             long_pressed: false,
         });
+        if let Some(step) = step {
+            step.captured = self.pointer_evidence_target(target);
+        }
         // A field places its caret on the primary press.
         if mode == Mode::Pending
             && button == Button::Primary
@@ -790,16 +865,23 @@ impl Window {
         {
             self.press_in_field(n, (ev.x, ev.y), clicks, ev.modifiers.contains(Modifiers::SHIFT));
         }
+        true
     }
 
-    fn moved(&self, ev: PointerEvent) {
+    fn moved(&self, ev: PointerEvent, mut step: Option<&mut PointerStep>) {
         if ev.kind != PointerKind::Touch {
             self.w.interaction.borrow_mut().pointer.hover_at = Some((ev.x, ev.y));
             let hit = self.hit_at(ev.x, ev.y);
+            if let Some(step) = &mut step {
+                step.hit = self.pointer_evidence_target(hit);
+            }
             self.w.interaction.borrow_mut().hover_held = false;
             self.set_hover(hit);
         }
         let Some(mut h) = self.w.interaction.borrow().pointer.held.as_ref().filter(|h| h.matches_pointer(ev)).cloned() else { return };
+        if let Some(step) = &mut step {
+            step.captured = self.pointer_evidence_target(h.target);
+        }
         // Selecting: the focus follows the pointer.
         if let Some(region) = h.selecting
             && matches!(h.mode, Mode::Pending | Mode::Dragging)
@@ -859,10 +941,13 @@ impl Window {
         match h.mode {
             Mode::Pending => {
                 // Leaving the element un-presses it; coming back presses it again (AppKit).
-                let inside = {
-                    let k = self.w.kernel.borrow();
-                    h.target.is_some() && k.press_target(self.hit_at(ev.x, ev.y), h.action_button) == h.target
-                };
+                let inside = h.target.is_some_and(|target| {
+                    let hit = self.hit_at(ev.x, ev.y);
+                    if let Some(step) = step {
+                        step.hit = self.pointer_evidence_target(hit);
+                    }
+                    self.w.kernel.borrow().press_target(hit, h.action_button) == Some(target)
+                });
                 if inside != h.inside {
                     h.inside = inside;
                     if let Some(n) = h.target
@@ -882,18 +967,30 @@ impl Window {
         self.update_held(h);
     }
 
-    fn up(&self, ev: PointerEvent) {
+    fn up(&self, ev: PointerEvent, mut step: Option<&mut PointerStep>, guard: Option<&TargetGuard>) -> bool {
         let held = self.w.interaction.borrow_mut().pointer.held.take_if(|h| h.matches_pointer(ev) && h.down_button == ev.button);
-        let Some(mut h) = held else { return };
+        let Some(mut h) = held else { return false };
+        if let Some(step) = &mut step {
+            step.captured = self.pointer_evidence_target(h.target);
+        }
         h.at = (ev.x, ev.y);
         self.unpress(&h);
+        if guard.is_some() && (h.mode != Mode::Pending || h.at != h.start) {
+            return false;
+        }
+        let mut matched = false;
         self.finishing_pointer(Rc::new(h), |h| match h.mode {
             Mode::Pending => {
-                let inside = {
-                    let k = self.w.kernel.borrow();
-                    k.press_target(self.hit_at(ev.x, ev.y), h.action_button) == h.target
-                };
+                let hit = self.hit_at(ev.x, ev.y);
+                if let Some(step) = step {
+                    step.hit = self.pointer_evidence_target(hit);
+                }
+                let inside = self.w.kernel.borrow().press_target(hit, h.action_button) == h.target;
                 let Some(n) = h.target.filter(|_| inside) else { return };
+                if guard.is_some_and(|guard| !self.tap_at_owner_matches(guard, n)) {
+                    return;
+                }
+                matched = true;
                 if h.action_button == Button::Secondary {
                     self.run(n, &[HandlerKind::SecondaryPress], None);
                 } else if h.action_button == Button::Primary {
@@ -933,6 +1030,7 @@ impl Window {
             Mode::Panning(c) if !self.coordinates_touch_scroll(c) => self.start_momentum(c, h),
             Mode::Panning(_) | Mode::Spent => {}
         });
+        matched
     }
 
     pub(super) fn deliver_touch_press(&self, press: TouchPress) {
@@ -955,11 +1053,14 @@ impl Window {
         }
     }
 
-    fn cancel(&self, ev: PointerEvent) {
+    fn cancel(&self, ev: PointerEvent, step: Option<&mut PointerStep>) -> bool {
         let held = self.w.interaction.borrow_mut().pointer.held.take_if(|h| h.matches_pointer(ev));
-        if let Some(held) = held {
-            self.cancel_held(held);
+        let Some(held) = held else { return false };
+        if let Some(step) = step {
+            step.captured = self.pointer_evidence_target(held.target);
         }
+        self.cancel_held(held);
+        true
     }
 
     fn cancel_held(&self, held: Held) {
