@@ -181,6 +181,8 @@ RESIZE_SPANS = {
     "configure_to_schedule": ("configure_finished", "scheduled"),
     "schedule_to_display": ("scheduled", "presented"),
     "configure_to_display": ("configure_finished", "presented"),
+    "client_reply_to_display": ("client_reply", "presented"),
+    "display_to_client_reply": ("presented", "client_reply"),
 }
 
 

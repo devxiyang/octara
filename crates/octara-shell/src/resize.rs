@@ -76,8 +76,12 @@ impl Job {
         Ok(Self { window: target.id(), requested: [width, height], until: Instant::now() + LIMIT, immediate: applied.is_some() })
     }
 
-    /// No clock advancement or waiting here: the native event loop remains in charge.
-    pub(crate) fn poll(&self, shell: &Shell) -> Option<Completion> {
+    pub(crate) fn deadline(&self) -> Instant {
+        self.until
+    }
+
+    /// Check readiness after native or surface changes, even if drawing has yet to start.
+    pub(crate) fn complete(&self, shell: &Shell) -> Option<Completion> {
         let Some(window) = shell.app.as_ref().and_then(|app| app.window(self.window)) else {
             return Some(Completion {
                 reply: Reply::fail(&codes::STEP_FAILED, "the target window closed while resizing"),
@@ -93,29 +97,32 @@ impl Job {
         let viewport = window.size();
         let expected = logical_size(self.requested).to_physical::<u32>(scale);
         let matched = actual == expected;
-        let synchronized = shell.shared.gpu_available() && configured.is_some_and(|size| synchronized(actual, size, viewport, scale));
+        let synchronized = shell.shared.gpu_available()
+            && window.scale() == scale as f32
+            && configured.is_some_and(|size| synchronized(actual, size, viewport, scale));
+        let ok = matched && synchronized;
+        if !(ok || self.immediate && synchronized || Instant::now() >= self.until) {
+            return None;
+        }
         let metadata = json!({
             "window": self.window.number(), "requested": self.requested,
             "actual": [f64::from(actual.width) / scale, f64::from(actual.height) / scale],
             "physical": [actual.width, actual.height], "scale": scale,
             "viewport": [viewport.0, viewport.1], "matched": matched, "synchronized": synchronized,
         });
-        if matched && synchronized {
+        if ok {
             return Some(Completion { reply: Reply::ok(), resize: metadata });
         }
-        if (self.immediate && synchronized) || Instant::now() >= self.until {
-            let mut reply = Reply::fail(
-                &codes::STEP_FAILED,
-                if synchronized {
-                    "the window system did not apply the requested size; inspect live.resize for the actual size"
-                } else {
-                    "the native window and framework viewport did not agree within the resize budget"
-                },
-            );
-            reply.actual = Some(metadata.clone());
-            return Some(Completion { reply, resize: metadata });
-        }
-        None
+        let mut reply = Reply::fail(
+            &codes::STEP_FAILED,
+            if synchronized {
+                "the window system did not apply the requested size; inspect live.resize for the actual size"
+            } else {
+                "the native window and framework viewport did not agree within the resize budget"
+            },
+        );
+        reply.actual = Some(metadata.clone());
+        Some(Completion { reply, resize: metadata })
     }
 }
 

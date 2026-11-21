@@ -1,7 +1,7 @@
 //! The opt-in live Inspector: one local connection, ordered requests, UI-thread execution.
 
 use super::{Shell, ShellEvent, ww};
-use octara::app::{TargetGuard, Window, WindowId};
+use octara::app::{App, TargetGuard, Window, WindowId};
 use octara::capture::PaintFrame;
 use octara::diagnostics as codes;
 use octara::inspect::{Completion, Delivery, LayoutState, PointerStep, Reply, Request, SurfaceState};
@@ -58,7 +58,7 @@ impl Server {
             if !path.is_absolute() {
                 return Err("OCTARA_INSPECT needs an absolute Unix socket path".into());
             }
-            let wire = wire::Server::start(&path, proxy, trace)?;
+            let wire = wire::Server::start(&path, move |event| proxy.send_event(event).is_ok(), trace)?;
             let build = std::env::var("OCTARA_INSPECT_BUILD")
                 .ok()
                 .filter(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
@@ -89,6 +89,9 @@ impl Server {
 /// One response belongs to its connection, even if that connection has since closed.
 pub(crate) struct Responder {
     tx: Sender<String>,
+    // Drop the sender before waking the wire, even when there is no reply to send.
+    #[cfg(unix)]
+    _wake: Option<wire::ReplyWake>,
     pub(crate) connected: Arc<AtomicBool>,
     route: &'static str,
     input: bool,
@@ -104,6 +107,8 @@ impl Responder {
     fn new(tx: Sender<String>, connected: Arc<AtomicBool>, route: &'static str, input: bool) -> Self {
         Self {
             tx,
+            #[cfg(unix)]
+            _wake: None,
             connected,
             route,
             input,
@@ -215,6 +220,33 @@ impl Responder {
     }
 }
 
+impl Drop for Responder {
+    fn drop(&mut self) {
+        if !self.sent.get()
+            && self.connected.load(Ordering::Relaxed)
+            && let Some((window, _)) = &self.target
+            && window.app().is_failed()
+        {
+            let mut reply = Reply::fail(&codes::APP_FAILED, "App failed while the request was pending; do not retry");
+            reply.delivery = self.delivery.get();
+            reply.pointer = std::mem::take(&mut self.pointer);
+            if self.input && reply.delivery == Some(Delivery::Delivered) {
+                reply.completion = Some(Completion::observe(window));
+            }
+            let mut value = serde_json::to_value(reply).expect("failure reply serializes");
+            value["live"] = json!({
+                "clock": "realtime", "route": self.route, "pid": std::process::id(),
+                "platform": std::env::consts::OS, "delivery": match self.delivery.get() {
+                    Some(Delivery::Refused) => "refused",
+                    Some(Delivery::Delivered) => "delivered",
+                    None => "unknown",
+                }
+            });
+            let _ = self.tx.send(value.to_string());
+        }
+    }
+}
+
 fn observe_completion(window: &Window) -> (Completion, Option<PaintFrame>) {
     let mut completion = Completion::observe(window);
     if completion.layout != LayoutState::Unavailable
@@ -253,7 +285,7 @@ impl Pending {
     }
 
     /// Cancel our held pointer before ticking timers once transport has observed disconnect.
-    pub(crate) fn cancel_disconnected(&self, app: &octara::app::App) {
+    pub(crate) fn cancel_disconnected(&self, app: &App) {
         if app.is_failed() {
             return;
         }
@@ -272,6 +304,14 @@ impl Pending {
         }
         .connected
         .load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn deadline(&self, app: &App, started: Instant) -> Option<Instant> {
+        match self {
+            Self::Settle(waiting) => Some(waiting.until),
+            Self::Gesture { job, .. } => app.window(job.window()).map(|window| job.deadline(&window, started)),
+            Self::Resize { job, .. } => Some(job.deadline()),
+        }
     }
 }
 
@@ -321,9 +361,15 @@ impl Shell {
             return;
         }
         let build = self.inspector.as_ref().and_then(|server| server.build.clone());
+        #[cfg(unix)]
+        let wake = self.inspector.as_ref().map(|server| server.wire.reply_wake());
         let respond = move |route, input| {
             let mut response = Responder::new(tx, connected, route, input);
             response.build = build;
+            #[cfg(unix)]
+            {
+                response._wake = wake;
+            }
             response
         };
         let window = self.main_window().or_else(|| self.app.as_ref().and_then(|app| app.windows().first().and_then(|id| app.window(*id))));
@@ -370,8 +416,8 @@ impl Shell {
                     Ok(mut job) => {
                         job.trace_epoch = self.shared.trace.then_some(self.shared.trace_epoch);
                         self.inspect_pending = Some(Pending::gesture(job, response));
+                        self.inspect_step();
                         self.show();
-                        self.inspect_poll();
                     }
                     Err(reply) => response.send_gesture(*reply, false),
                 }
@@ -385,8 +431,8 @@ impl Shell {
                     Ok(job) => {
                         response.delivery.set(Some(Delivery::Delivered));
                         self.inspect_pending = Some(Pending::Resize { job, reply: response });
+                        self.inspect_resize_ready();
                         self.show();
-                        self.inspect_poll();
                     }
                     Err(reply) if reply.code.as_deref() == Some(codes::STEP_FAILED.id) => {
                         let actual = reply.actual.clone();
@@ -413,15 +459,7 @@ impl Shell {
                     response.send(Reply::fail(&codes::BAD_REQUEST, why));
                     return;
                 }
-                self.capture = Some(super::capture::Job::live(
-                    target.id(),
-                    path,
-                    Duration::from_millis(ms),
-                    scale,
-                    pixels,
-                    response,
-                    &self.shared.proxy,
-                ));
+                self.capture = Some(super::capture::Job::live(target.id(), path, Duration::from_millis(ms), scale, pixels, response));
                 self.capture_step();
                 self.show();
             }
@@ -436,7 +474,7 @@ impl Shell {
                     until: Instant::now() + Duration::from_millis(ms),
                     reply: response,
                 }));
-                self.inspect_poll();
+                self.inspect_step();
             }
             request => {
                 let trace = (input && self.shared.trace).then(|| super::trace::InspectInput::start(&target));
@@ -460,33 +498,28 @@ impl Shell {
         }
     }
 
-    /// Called while a live request waits; the event loop continues to accept native replies.
-    pub(crate) fn inspect_poll(&mut self) {
-        if let Some(pending) = &self.inspect_pending
-            && let Some(app) = &self.app
-        {
-            pending.cancel_disconnected(app);
+    /// Resize receipts can go out as soon as they have geometry, before the next draw.
+    pub(crate) fn inspect_resize_ready(&mut self) {
+        if matches!(self.inspect_pending, Some(Pending::Resize { .. })) {
+            self.inspect_step();
         }
+    }
+
+    /// Recheck the waiting operation after a host event or one of its own deadlines.
+    pub(crate) fn inspect_step(&mut self) {
         let Some(pending) = self.inspect_pending.take() else { return };
         if !pending.connected() {
+            if let Some(app) = &self.app {
+                pending.cancel_disconnected(app);
+            }
             return;
         }
-        self.tick();
-        if let Some(app) = &self.app {
-            app.poll();
-        }
-        self.show();
-        if let Some(app) = &self.app {
-            pending.cancel_disconnected(app);
-        }
-        if !pending.connected() {
-            return;
-        }
-        // Ready callbacks or rendering can take time. Sample wall time again before testing
-        // gesture deadlines so a due recognizer is processed before its job checks feedback.
-        self.tick();
         match pending {
             Pending::Settle(waiting) => {
+                let now = Instant::now();
+                if now >= waiting.until {
+                    self.tick_at(now);
+                }
                 if !waiting.reply.target_current() {
                     waiting.reply.send(Reply::fail(&codes::STALE_TARGET, "the observed window changed while waiting; inspect again"));
                     return;
@@ -498,7 +531,7 @@ impl Shell {
                 let pending = window.unsettled();
                 if pending.is_empty() {
                     waiting.reply.send_wait(Reply::ok(), Some((true, pending)));
-                } else if Instant::now() >= waiting.until {
+                } else if now >= waiting.until {
                     waiting.reply.send_wait(
                         Reply::fail(&codes::STEP_FAILED, "the live wait budget ended with work still pending"),
                         Some((false, pending)),
@@ -508,22 +541,27 @@ impl Shell {
                 }
             }
             Pending::Gesture { mut job, mut reply } => {
+                let now = Instant::now();
+                self.tick_at(now);
                 let Some(mut window) = self.app.as_ref().and_then(|app| app.window(job.window())) else {
                     reply.send_gesture(Reply::fail(&codes::STEP_FAILED, "the target window closed during the gesture"), job.delivered());
                     return;
                 };
+                if !reply.connected.load(Ordering::Relaxed) {
+                    job.cancel(&mut window, None);
+                    return;
+                }
                 if !job.delivered() {
                     reply.begin();
                 }
-                match job.poll(&mut window, Instant::now(), &mut reply.pointer) {
+                match job.poll(&mut window, now, &mut reply.pointer) {
                     Some(result) => reply.send_gesture(result, job.delivered()),
                     None => {
                         self.inspect_pending = Some(Pending::gesture(job, reply));
                     }
                 }
-                self.show();
             }
-            Pending::Resize { job, reply } => reply.with_current_resize_target(|reply| match job.poll(self) {
+            Pending::Resize { job, reply } => reply.with_current_resize_target(|reply| match job.complete(self) {
                 Some(done) => reply.send_with(done.reply, json!({ "resize": done.resize, "delivery": "delivered" })),
                 None => self.inspect_pending = Some(Pending::Resize { job, reply }),
             }),
@@ -848,8 +886,12 @@ mod target_feedback {
 #[cfg(unix)]
 mod wire {
     use super::*;
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    use rustix::io::Errno;
     use std::fs;
     use std::io::{ErrorKind, Read, Write};
+    use std::net::Shutdown;
+    use std::os::fd::AsFd;
     use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
@@ -858,18 +900,32 @@ mod wire {
 
     const REQUEST_LIMIT: usize = 1024 * 1024;
     const REPLY_LIMIT: usize = 16 * 1024 * 1024;
-    const POLL: Duration = Duration::from_millis(50);
+    const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
     // The wire forwards one request at a time. The connection identity prevents a stale
     // event from consuming the next connection's timestamp.
     type Forwarded = Mutex<Option<(Weak<AtomicBool>, Instant)>>;
 
     pub(super) struct Server {
-        stop: Arc<AtomicBool>,
-        client: Arc<Mutex<Option<UnixStream>>>,
+        stopped: Arc<AtomicBool>,
+        wake: Arc<UnixStream>,
         forwarded: Option<Arc<Forwarded>>,
         worker: Option<JoinHandle<()>>,
         _socket: Socket,
+    }
+
+    pub(super) struct ReplyWake(Arc<UnixStream>);
+
+    impl Drop for ReplyWake {
+        fn drop(&mut self) {
+            let mut wake = self.0.as_ref();
+            // A full wake socket already has notifications waiting to be read.
+            while let Err(error) = wake.write(&[0]) {
+                if error.kind() != ErrorKind::Interrupted {
+                    break;
+                }
+            }
+        }
     }
 
     struct Socket {
@@ -902,31 +958,33 @@ mod wire {
     }
 
     impl Server {
-        pub(super) fn start(path: &Path, proxy: winit::event_loop::EventLoopProxy<ShellEvent>, trace: bool) -> Result<Self, String> {
+        pub(super) fn start(path: &Path, post: impl Fn(ShellEvent) -> bool + Send + 'static, trace: bool) -> Result<Self, String> {
             let socket = Socket::bind(path)?;
-            let stop = Arc::new(AtomicBool::new(false));
-            let client = Arc::new(Mutex::new(None));
+            let listener = socket.listener.try_clone().map_err(|e| e.to_string())?;
+            let (wake, notify) = UnixStream::pair().map_err(|e| e.to_string())?;
+            wake.set_nonblocking(true).map_err(|e| e.to_string())?;
+            notify.set_nonblocking(true).map_err(|e| e.to_string())?;
+            let stopped = Arc::new(AtomicBool::new(false));
+            let readiness = Readiness { wake, stopped: stopped.clone() };
             let forwarded = trace.then(|| Arc::new(Mutex::new(None)));
-            let mut server = Self { stop, client, forwarded: forwarded.clone(), worker: None, _socket: socket };
-            let listener = server._socket.listener.try_clone().map_err(|e| e.to_string())?;
-            let stop = server.stop.clone();
-            let active = server.client.clone();
-            server.worker = Some(thread::spawn(move || {
-                while !stop.load(Ordering::Relaxed) {
+            let trace_timing = forwarded.clone();
+            let worker = thread::spawn(move || {
+                while let Some(ready) = readiness.wait(&listener, PollFlags::IN, None) {
+                    if !ready.contains(PollFlags::IN) {
+                        continue;
+                    }
                     match listener.accept() {
-                        Ok((stream, _)) => {
-                            if let Ok(clone) = stream.try_clone() {
-                                *active.lock().expect("inspector client lock") = Some(clone);
-                            }
-                            connection(stream, &proxy, &stop, forwarded.as_deref());
-                            *active.lock().expect("inspector client lock") = None;
-                        }
-                        Err(e) if e.kind() == ErrorKind::WouldBlock => thread::sleep(POLL),
+                        Ok((stream, _)) => connection(stream, &post, &readiness, trace_timing.as_deref()),
+                        Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) => {}
                         Err(_) => break,
                     }
                 }
-            }));
-            Ok(server)
+            });
+            Ok(Self { stopped, wake: Arc::new(notify), forwarded, worker: Some(worker), _socket: socket })
+        }
+
+        pub(super) fn reply_wake(&self) -> ReplyWake {
+            ReplyWake(self.wake.clone())
         }
 
         pub(super) fn take_forwarded(&self, connected: &Arc<AtomicBool>) -> Option<Instant> {
@@ -941,12 +999,56 @@ mod wire {
 
     impl Drop for Server {
         fn drop(&mut self) {
-            self.stop.store(true, Ordering::Relaxed);
-            if let Some(client) = self.client.lock().expect("inspector client lock").as_ref() {
-                let _ = client.shutdown(std::net::Shutdown::Both);
-            }
+            self.stopped.store(true, Ordering::Release);
+            // This delivers EOF even if a pending responder still owns a wake handle.
+            let _ = self.wake.shutdown(Shutdown::Write);
             if let Some(worker) = self.worker.take() {
                 let _ = worker.join();
+            }
+        }
+    }
+
+    struct Readiness {
+        wake: UnixStream,
+        stopped: Arc<AtomicBool>,
+    }
+
+    impl Readiness {
+        fn running(&self) -> bool {
+            !self.stopped.load(Ordering::Acquire)
+        }
+
+        fn wait(&self, fd: &impl AsFd, interest: PollFlags, until: Option<Instant>) -> Option<PollFlags> {
+            let mut fds = [PollFd::new(&self.wake, PollFlags::IN), PollFd::new(fd, interest)];
+            while self.running() {
+                let timeout =
+                    until.map(|at| Timespec::try_from(at.saturating_duration_since(Instant::now())).expect("bounded wire timeout"));
+                match poll(&mut fds, timeout.as_ref()) {
+                    Ok(0) => return None,
+                    Ok(_) => {
+                        if !self.running() || (!fds[0].revents().is_empty() && !drain_wake(&self.wake)) {
+                            return None;
+                        }
+                        let ready = fds[1].revents();
+                        return (!ready.intersects(PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL)).then_some(ready);
+                    }
+                    Err(Errno::INTR) => {}
+                    Err(_) => return None,
+                }
+            }
+            None
+        }
+    }
+
+    fn drain_wake(mut wake: &UnixStream) -> bool {
+        let mut bytes = [0; 64];
+        loop {
+            match wake.read(&mut bytes) {
+                Ok(0) => return false,
+                Ok(_) => {}
+                Err(e) if e.kind() == ErrorKind::WouldBlock => return true,
+                Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                Err(_) => return false,
             }
         }
     }
@@ -964,14 +1066,16 @@ mod wire {
     fn receive(stream: &mut UnixStream, buffer: &mut Vec<u8>) -> Result<bool, ()> {
         let mut bytes = [0; 8192];
         loop {
-            match stream.read(&mut bytes) {
+            let room = REQUEST_LIMIT + 1 - buffer.len();
+            let read = bytes.len().min(room + 1);
+            match stream.read(&mut bytes[..read]) {
                 Ok(0) => return Ok(false),
                 Ok(n) => {
-                    buffer.extend_from_slice(&bytes[..n]);
                     // The limit applies to content, with one additional byte for the LF.
-                    if buffer.len() > REQUEST_LIMIT + 1 || (buffer.len() == REQUEST_LIMIT + 1 && buffer.last() != Some(&b'\n')) {
+                    if n > room || (n == room && bytes[n - 1] != b'\n') {
                         return Err(());
                     }
+                    buffer.extend_from_slice(&bytes[..n]);
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => return Ok(true),
                 Err(e) if e.kind() == ErrorKind::Interrupted => {}
@@ -980,20 +1084,23 @@ mod wire {
         }
     }
 
-    fn write_reply(stream: &mut UnixStream, reply: &str, stop: &AtomicBool) -> bool {
+    fn write_reply(stream: &mut UnixStream, mut reply: String, readiness: &Readiness, until: Instant) -> bool {
         // The operation may already have run. Close rather than replace its result with a
         // misleading validation refusal; the client must treat the outcome as unknown.
         if reply.len() > REPLY_LIMIT {
             return false;
         }
-        let bytes = format!("{reply}\n");
-        let mut left = bytes.as_bytes();
-        let until = Instant::now() + Duration::from_secs(5);
-        while !left.is_empty() && !stop.load(Ordering::Relaxed) && Instant::now() < until {
+        reply.push('\n');
+        let mut left = reply.as_bytes();
+        while !left.is_empty() && readiness.running() && Instant::now() < until {
             match stream.write(left) {
                 Ok(0) => return false,
                 Ok(n) => left = &left[n..],
-                Err(e) if e.kind() == ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(5)),
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    if readiness.wait(stream, PollFlags::OUT, Some(until)).is_none() {
+                        return false;
+                    }
+                }
                 Err(e) if e.kind() == ErrorKind::Interrupted => {}
                 Err(_) => return false,
             }
@@ -1001,22 +1108,36 @@ mod wire {
         left.is_empty()
     }
 
-    fn connection(
-        mut stream: UnixStream,
-        proxy: &winit::event_loop::EventLoopProxy<ShellEvent>,
-        stop: &AtomicBool,
-        forwarded: Option<&Forwarded>,
-    ) {
+    fn await_reply(stream: &mut UnixStream, buffer: &mut Vec<u8>, readiness: &Readiness, rx: mpsc::Receiver<String>) -> Option<String> {
+        while readiness.running() {
+            match rx.try_recv() {
+                Ok(reply) => return Some(reply),
+                Err(mpsc::TryRecvError::Disconnected) => return None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            if readiness.wait(stream, PollFlags::IN, None)?.contains(PollFlags::IN) && receive(stream, buffer) != Ok(true) {
+                return None;
+            }
+        }
+        None
+    }
+
+    fn connection(mut stream: UnixStream, post: &impl Fn(ShellEvent) -> bool, readiness: &Readiness, forwarded: Option<&Forwarded>) {
         if stream.set_nonblocking(true).is_err() {
             return;
         }
         let connected = Arc::new(AtomicBool::new(true));
         let mut buffer = Vec::new();
-        'session: while !stop.load(Ordering::Relaxed) {
+        while readiness.running() {
             match receive(&mut stream, &mut buffer) {
                 Ok(false) => break,
                 Err(()) => {
-                    let _ = write_reply(&mut stream, &failure("a live request must not exceed 1 MiB"), stop);
+                    let _ = write_reply(
+                        &mut stream,
+                        failure("a live request must not exceed 1 MiB"),
+                        readiness,
+                        Instant::now() + WRITE_TIMEOUT,
+                    );
                     break;
                 }
                 Ok(true) => {}
@@ -1024,11 +1145,13 @@ mod wire {
             let line = match take_line(&mut buffer) {
                 Ok(Some(line)) => line,
                 Ok(None) => {
-                    thread::sleep(POLL);
+                    if readiness.wait(&stream, PollFlags::IN, None).is_none() {
+                        break;
+                    }
                     continue;
                 }
                 Err(()) => {
-                    if !write_reply(&mut stream, &failure("a live request must be UTF-8"), stop) {
+                    if !write_reply(&mut stream, failure("a live request must be UTF-8"), readiness, Instant::now() + WRITE_TIMEOUT) {
                         break;
                     }
                     continue;
@@ -1042,45 +1165,60 @@ mod wire {
             if let Some(mut forwarded) = forwarded.and_then(|forwarded| forwarded.lock().ok()) {
                 *forwarded = Some((Arc::downgrade(&connected), Instant::now()));
             }
-            if proxy.send_event(event).is_err() {
+            if !post(event) {
                 break;
             }
-            loop {
-                if stop.load(Ordering::Relaxed) {
-                    break 'session;
-                }
-                match rx.recv_timeout(POLL) {
-                    Ok(reply) => {
-                        if !write_reply(&mut stream, &reply, stop) {
-                            break 'session;
-                        }
-                        break;
-                    }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break 'session,
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        match receive(&mut stream, &mut buffer) {
-                            Ok(true) => {}
-                            _ => break 'session,
-                        }
-                        if proxy.send_event(ShellEvent::Capture).is_err() {
-                            break 'session;
-                        }
-                    }
-                }
+            let Some(reply) = await_reply(&mut stream, &mut buffer, readiness, rx) else {
+                connected.store(false, Ordering::Relaxed);
+                let _ = post(ShellEvent::Capture);
+                return;
+            };
+            if !write_reply(&mut stream, reply, readiness, Instant::now() + WRITE_TIMEOUT) {
+                break;
             }
         }
         connected.store(false, Ordering::Relaxed);
-        let _ = proxy.send_event(ShellEvent::Capture);
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::io::{BufRead, BufReader};
         use std::sync::atomic::AtomicU64;
+
+        const TEST_TIMEOUT: Duration = Duration::from_secs(2);
 
         fn path() -> PathBuf {
             static NEXT: AtomicU64 = AtomicU64::new(0);
             std::env::temp_dir().join(format!("octara-inspect-{}-{}.sock", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)))
+        }
+
+        fn server() -> (Server, mpsc::Receiver<ShellEvent>) {
+            let (post, events) = mpsc::channel();
+            let server = Server::start(&path(), move |event| post.send(event).is_ok(), false).unwrap();
+            (server, events)
+        }
+
+        fn client(server: &Server) -> UnixStream {
+            let stream = UnixStream::connect(&server._socket.path).unwrap();
+            stream.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+            stream.set_write_timeout(Some(TEST_TIMEOUT)).unwrap();
+            stream
+        }
+
+        fn readiness() -> (Readiness, UnixStream) {
+            let (wake, notify) = UnixStream::pair().unwrap();
+            wake.set_nonblocking(true).unwrap();
+            (Readiness { wake, stopped: Arc::new(AtomicBool::new(false)) }, notify)
+        }
+
+        fn responder(server: &Server, events: &mpsc::Receiver<ShellEvent>, expected_line: &str) -> Responder {
+            let event = events.recv_timeout(TEST_TIMEOUT).unwrap();
+            let ShellEvent::Inspect { line, reply, connected } = event else { panic!("expected an Inspector request, got {event:?}") };
+            assert_eq!(line, expected_line);
+            let mut response = Responder::new(reply, connected, "query", false);
+            response._wake = Some(server.reply_wake());
+            response
         }
 
         #[test]
@@ -1128,74 +1266,147 @@ mod wire {
         fn oversized_input_is_bounded() {
             let (mut reader, mut writer) = UnixStream::pair().unwrap();
             reader.set_nonblocking(true).unwrap();
+            let (readiness, _notify) = readiness();
+            let (release, hold) = mpsc::channel();
             let sending = thread::spawn(move || {
-                let _ = writer.write_all(&vec![b'x'; REQUEST_LIMIT + 1]);
+                writer.write_all(&vec![b'x'; REQUEST_LIMIT + 1]).unwrap();
+                let _ = hold.recv_timeout(TEST_TIMEOUT);
             });
-            let until = Instant::now() + Duration::from_secs(5);
+            let until = Instant::now() + TEST_TIMEOUT;
             let mut buffer = Vec::new();
             let refused = loop {
+                assert!(readiness.wait(&reader, PollFlags::IN, Some(until)).is_some());
                 match receive(&mut reader, &mut buffer) {
                     Err(()) => break true,
                     Ok(false) => break false,
-                    Ok(true) if Instant::now() < until => thread::yield_now(),
-                    Ok(true) => break false,
+                    Ok(true) => {}
                 }
             };
-            drop(reader);
+            release.send(()).unwrap();
             sending.join().unwrap();
             assert!(refused);
-            assert!(buffer.len() <= REQUEST_LIMIT + 8192);
+            assert!(buffer.len() <= REQUEST_LIMIT);
         }
 
         #[test]
         fn exact_limit_content_allows_the_terminating_lf() {
             let (mut reader, mut writer) = UnixStream::pair().unwrap();
             reader.set_nonblocking(true).unwrap();
+            let (readiness, _notify) = readiness();
             let (release, hold) = mpsc::channel();
             let sending = thread::spawn(move || {
                 let mut line = vec![b'x'; REQUEST_LIMIT];
                 line.push(b'\n');
                 writer.write_all(&line).unwrap();
                 // Keep the socket open until the receiver has read the complete frame.
-                let _ = hold.recv_timeout(Duration::from_secs(5));
+                let _ = hold.recv_timeout(TEST_TIMEOUT);
             });
-            let until = Instant::now() + Duration::from_secs(5);
+            let until = Instant::now() + TEST_TIMEOUT;
             let mut buffer = Vec::new();
-            while buffer.last() != Some(&b'\n') && Instant::now() < until {
+            while buffer.last() != Some(&b'\n') {
+                assert!(readiness.wait(&reader, PollFlags::IN, Some(until)).is_some());
                 assert_eq!(receive(&mut reader, &mut buffer), Ok(true));
-                thread::yield_now();
             }
             assert_eq!(buffer.len(), REQUEST_LIMIT + 1);
             assert_eq!(take_line(&mut buffer).unwrap().unwrap().len(), REQUEST_LIMIT + 1);
             release.send(()).unwrap();
             sending.join().unwrap();
         }
-    }
-}
 
-impl Drop for Responder {
-    fn drop(&mut self) {
-        if !self.sent.get()
-            && self.connected.load(Ordering::Relaxed)
-            && let Some((window, _)) = &self.target
-            && window.app().is_failed()
-        {
-            let mut reply = Reply::fail(&codes::APP_FAILED, "App failed while the request was pending; do not retry");
-            reply.delivery = self.delivery.get();
-            reply.pointer = std::mem::take(&mut self.pointer);
-            if self.input && reply.delivery == Some(Delivery::Delivered) {
-                reply.completion = Some(Completion::observe(window));
-            }
-            let mut value = serde_json::to_value(reply).expect("failure reply serializes");
-            value["live"] = json!({
-                "clock": "realtime", "route": self.route, "pid": std::process::id(),
-                "platform": std::env::consts::OS, "delivery": match self.delivery.get() {
-                    Some(Delivery::Refused) => "refused",
-                    Some(Delivery::Delivered) => "delivered",
-                    None => "unknown",
-                }
+        #[test]
+        fn pending_request_waits_for_reply_before_forwarding_the_next_line() {
+            let (server, events) = server();
+            let mut client = BufReader::new(client(&server));
+            client.get_mut().write_all(b"1\n2\n").unwrap();
+            let first = responder(&server, &events, "1\n");
+            assert!(matches!(events.recv_timeout(Duration::from_millis(120)), Err(mpsc::RecvTimeoutError::Timeout)));
+
+            first.send(Reply::ok());
+            let mut reply = String::new();
+            client.read_line(&mut reply).unwrap();
+            assert_eq!(serde_json::from_str::<serde_json::Value>(&reply).unwrap()["ok"], true);
+
+            let second = responder(&server, &events, "2\n");
+            second.send(Reply::fail(&codes::BAD_REQUEST, "second"));
+            reply.clear();
+            client.read_line(&mut reply).unwrap();
+            assert_eq!(serde_json::from_str::<serde_json::Value>(&reply).unwrap()["ok"], false);
+        }
+
+        #[test]
+        fn peer_close_notifies_host_and_dropping_a_responder_closes_its_client() {
+            let (server, events) = server();
+            let mut first = client(&server);
+            first.write_all(b"1\n").unwrap();
+            let disconnected = responder(&server, &events, "1\n");
+
+            drop(first);
+            assert!(matches!(events.recv_timeout(TEST_TIMEOUT), Ok(ShellEvent::Capture)));
+            assert!(!disconnected.connected.load(Ordering::Relaxed));
+
+            let mut second = client(&server);
+            second.write_all(b"2\n").unwrap();
+            let dropped = responder(&server, &events, "2\n");
+            drop(disconnected);
+            drop(dropped);
+            assert_eq!(second.read(&mut [0]).unwrap(), 0);
+        }
+
+        #[test]
+        fn shutdown_wakes_waiting_worker_even_with_a_live_responder() {
+            let (server, events) = server();
+            let mut client = client(&server);
+            client.write_all(b"1\n").unwrap();
+            let pending = responder(&server, &events, "1\n");
+
+            let endpoint = server._socket.path.clone();
+            drop(server);
+            assert!(!endpoint.exists());
+            assert!(!pending.connected.load(Ordering::Relaxed));
+            assert_eq!(client.read(&mut [0]).unwrap(), 0);
+        }
+
+        #[test]
+        fn stopped_worker_does_not_process_queued_input() {
+            let (stream, mut peer) = UnixStream::pair().unwrap();
+            let (readiness, _notify) = readiness();
+            peer.write_all(b"// queued\n1\n").unwrap();
+            readiness.stopped.store(true, Ordering::Release);
+            connection(stream, &|_| panic!("a stopped worker must not post an event"), &readiness, None);
+        }
+
+        #[test]
+        fn writes_resume_after_backpressure() {
+            let (mut stream, peer) = UnixStream::pair().unwrap();
+            let (readiness, _notify) = readiness();
+            stream.set_nonblocking(true).unwrap();
+            peer.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+            let size = 4 * 1024 * 1024;
+            let writing = thread::spawn(move || write_reply(&mut stream, "x".repeat(size), &readiness, Instant::now() + TEST_TIMEOUT));
+
+            let mut reply = Vec::new();
+            BufReader::new(peer).read_until(b'\n', &mut reply).unwrap();
+            assert!(writing.join().unwrap());
+            assert_eq!(reply.len(), size + 1);
+            assert_eq!(reply.last(), Some(&b'\n'));
+        }
+
+        #[test]
+        fn shutdown_interrupts_a_stalled_writer() {
+            let (mut stream, mut peer) = UnixStream::pair().unwrap();
+            let (readiness, notify) = readiness();
+            stream.set_nonblocking(true).unwrap();
+            peer.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+            let (complete, result) = mpsc::channel();
+            let writing = thread::spawn(move || {
+                let sent = write_reply(&mut stream, "x".repeat(REPLY_LIMIT), &readiness, Instant::now() + WRITE_TIMEOUT);
+                complete.send(sent).unwrap();
             });
-            let _ = self.tx.send(value.to_string());
+
+            peer.read_exact(&mut [0]).unwrap();
+            notify.shutdown(Shutdown::Write).unwrap();
+            assert!(!result.recv_timeout(TEST_TIMEOUT).unwrap());
+            writing.join().unwrap();
         }
     }
 }

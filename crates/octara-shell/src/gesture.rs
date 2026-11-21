@@ -148,6 +148,17 @@ impl Job {
         self.delivered
     }
 
+    pub(crate) fn deadline(&self, window: &Window, started: Instant) -> Instant {
+        let clock = |at: Duration, after: Duration| started.checked_add(at.saturating_add(after)).unwrap_or(self.deadline);
+        let phase = match self.stage {
+            Stage::First => clock(window.app().now(), window.pointer_click_cooldown()),
+            Stage::Second { first_wall, first_clock, gap, .. } => (first_wall + gap).max(clock(first_clock, gap)),
+            Stage::Hold { until, .. } => until,
+            Stage::Drag { last_wall, last_clock, .. } => (last_wall + DRAG_STEP).max(clock(last_clock, DRAG_STEP)),
+        };
+        phase.min(self.deadline)
+    }
+
     fn reply(&self, mut reply: Reply) -> Reply {
         if self.delivered {
             reply.delivery = Some(Delivery::Delivered);

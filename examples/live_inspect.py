@@ -382,7 +382,7 @@ def gestures(args, output, sockets):
                     "gestures: long press also triggered the short-press handler")
             require("pressed" not in find(held, "hold-target").get("states", []), "gestures: long press left the pointer held")
             removed = app.wire_request(stream, {"op": "double_tap", "id": "vanishing-double"})
-            require(removed.get("ok") is False and removed.get("code") == "STEP_FAILED"
+            require(removed.get("ok") is False and removed.get("code") in ("STEP_FAILED", "STALE_TARGET")
                     and removed.get("live", {}).get("delivery") == "delivered",
                     f"gestures: removing a double-click target lost the first click's delivery: {removed}")
             require(app.wire_request(stream, {"op": "expect", "id": "vanishing-double", "exists": False}).get("ok") is True,
@@ -391,7 +391,7 @@ def gestures(args, output, sockets):
                     "gestures: double click activated a removed target")
             require(app.wire_request(stream, {"op": "tap", "id": "arm-remove"}).get("ok") is True, "gestures: could not arm removal")
             removed = app.wire_request(stream, {"op": "long_press", "id": "volatile-hold"})
-            require(removed.get("ok") is False and removed.get("code") in ("STEP_FAILED", "NO_SUCH_ELEMENT"),
+            require(removed.get("ok") is False and removed.get("code") in ("STEP_FAILED", "NO_SUCH_ELEMENT", "STALE_TARGET"),
                     f"gestures: long press succeeded after target removal: {removed}")
             require(app.wire_request(stream, {"op": "expect", "id": "volatile-hold", "exists": False}).get("ok") is True,
                     "gestures: the pending removal did not execute on the real app clock")

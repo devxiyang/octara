@@ -751,10 +751,12 @@ pub(crate) fn severity_name(s: Severity) -> &'static str {
     }
 }
 
-/// Every layout issue and diagnostic of `app` now.
+/// Layout issues from a running App, plus its recorded diagnostics.
 pub fn issues(app: &Window) -> Vec<Issue> {
-    let mut out: Vec<Issue> = app
-        .layout_issues()
+    let state = app.app();
+    // Computing layout issues can call resource providers, which a failed App has revoked.
+    let layout = if state.is_failed() { Vec::new() } else { app.layout_issues() };
+    let mut out: Vec<Issue> = layout
         .into_iter()
         .map(|i| Issue {
             code: i.code.id.into(),
@@ -764,7 +766,7 @@ pub fn issues(app: &Window) -> Vec<Issue> {
             source: i.at,
         })
         .collect();
-    out.extend(app.app().diagnostics().into_iter().map(|d| Issue {
+    out.extend(state.diagnostics().into_iter().map(|d| Issue {
         code: d.code.id.into(),
         severity: severity_name(d.code.severity).into(),
         message: d.message,

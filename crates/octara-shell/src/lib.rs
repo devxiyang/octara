@@ -109,7 +109,7 @@ pub enum ShellEvent {
         phase: BackPhase,
         interactive: bool,
     },
-    /// A capture in progress looks again (`OCTARA_CAPTURE`).
+    /// Capture progress or an Inspector disconnect needs attention.
     Capture,
     /// A local Inspector request, returned only to the connection that submitted it.
     Inspect {
@@ -549,6 +549,10 @@ impl Shell {
 
     /// Brings the app's clock to now (before each event and frame).
     fn tick(&self) {
+        self.tick_at(Instant::now());
+    }
+
+    fn tick_at(&self, now: Instant) {
         if self.app_failed() {
             return;
         }
@@ -557,7 +561,7 @@ impl Shell {
                 pending.cancel_disconnected(app);
             }
             let started = self.shared.trace.then(Instant::now);
-            app.advance_to(self.started.elapsed());
+            app.advance_to(now.duration_since(self.started));
             if let Some(started) = started {
                 eprintln!(
                     "{}",
@@ -874,6 +878,9 @@ impl Shell {
     }
 
     fn finish_window_draw(&mut self, w: &AppWindow, submitted: bool) {
+        if submitted && self.capture.as_ref().is_some_and(|job| job.waits_for_draw(w.id())) {
+            let _ = self.shared.proxy.send_event(ShellEvent::Capture);
+        }
         if submitted
             && Some(w.id()) == self.main
             && let Some(n) = self.exit_after_frames
@@ -943,6 +950,7 @@ impl Shell {
                     self.gpu_failed(&error);
                     return;
                 }
+                self.inspect_resize_ready();
             }
             Ok(None) => return,
             Err(error) => {
@@ -1074,6 +1082,7 @@ impl Shell {
                         self.sync_viewport(window, size);
                     }
                 }
+                self.inspect_resize_ready();
                 self.show();
             }
             Ok(false) => {}
@@ -1116,7 +1125,12 @@ impl Shell {
             }
             return;
         }
+        let _in = InLoop::enter(&self.shared, event_loop);
         let last_closed = self.app.as_ref().is_some_and(|a| a.windows().is_empty());
+        if last_closed {
+            self.inspect_step();
+            self.capture_step();
+        }
         if self.done || last_closed {
             event_loop.exit();
             return;
@@ -1125,7 +1139,6 @@ impl Shell {
         // over a window follow the pointer.
         let mut dragging = false;
         if let Some(app) = self.app.clone() {
-            let _in = InLoop::enter(&self.shared, event_loop);
             for id in app.windows() {
                 let Some(mut w) = app.window(id) else { continue };
                 let (dropped, hover) = ww(&w, |x| {
@@ -1146,10 +1159,34 @@ impl Shell {
                     w.event(InputEvent::FileDrag(FileDrag::Over { x, y, paths }));
                 }
             }
+            self.inspect_step();
+            self.capture_step();
             self.show();
+            // A frame can advance the app clock and land the last motion in this turn.
+            if matches!(self.inspect_pending, Some(inspect::Pending::Settle(_))) {
+                self.inspect_step();
+            }
+            if self.capture.as_ref().is_some_and(capture::Job::settling) {
+                self.capture_step();
+                if self.capture.as_ref().is_some_and(|job| !job.settling()) {
+                    self.show();
+                }
+            }
+        }
+        if self.done {
+            event_loop.exit();
+            return;
         }
         let now = Instant::now();
-        let deadline = self.app.as_ref().and_then(|a| a.next_timer_deadline()).map(|d| self.started + d);
+        let waiting_for_work =
+            matches!(self.inspect_pending, Some(inspect::Pending::Settle(_))) || self.capture.as_ref().is_some_and(capture::Job::settling);
+        let deadline = self.app.as_ref().and_then(|app| {
+            // Settling still needs motion samples when a window's display clock is paused.
+            if waiting_for_work { app.next_deadline() } else { app.next_timer_deadline() }.map(|at| self.started + at)
+        });
+        let inspect_deadline = self.app.as_ref().and_then(|app| self.inspect_pending.as_ref()?.deadline(app, self.started));
+        let capture_deadline =
+            self.app.as_ref().filter(|_| self.shared.gpu_available()).and_then(|app| self.capture.as_ref()?.deadline(app));
         let fallback = self.app.as_ref().and_then(|app| {
             app.windows()
                 .into_iter()
@@ -1161,7 +1198,7 @@ impl Shell {
                 .min()
         });
         let follow = dragging.then(|| now + std::time::Duration::from_millis(16));
-        let deadline = deadline.into_iter().chain(fallback).chain(follow).min();
+        let deadline = deadline.into_iter().chain(inspect_deadline).chain(capture_deadline).chain(fallback).chain(follow).min();
         self.gpu_poll_wake = None;
         let poll = self.shared.gpu.borrow_mut().as_mut().map_or(Ok(false), |gpu| gpu.poll(self.shared.trace_gpu));
         match poll {
@@ -1283,7 +1320,7 @@ impl Shell {
                 return;
             }
             ShellEvent::Capture => {
-                self.inspect_poll();
+                self.inspect_step();
                 self.capture_step();
                 self.show();
                 return;
@@ -1350,7 +1387,7 @@ impl Shell {
         let definition = self.definition.take().expect("initial application definition");
         let mut w = definition.start(platform::WinitPlatform::new(self.shared.clone()), |_| {}).expect("the window");
         let app = w.app();
-        self.capture = capture::Job::from_env(w.id(), &self.shared.proxy);
+        self.capture = capture::Job::from_env(w.id());
         if std::env::var("OCTARA_PICK").is_ok_and(|v| v == "1") {
             w.set_picking(true);
         }
@@ -1463,6 +1500,7 @@ impl Shell {
                         trace::resize(self.shared.trace_epoch, id, size, at, trace::ResizePhase::Event(reported));
                     }
                     self.resize_window(&mut w, size);
+                    self.inspect_resize_ready();
                 }
             }
             // The system asks for exposure. Retry a surface that was occluded.

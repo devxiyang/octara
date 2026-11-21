@@ -406,7 +406,7 @@ fn targets_are_judged_by_the_platforms_minimum() {
 #[test]
 fn panic_feedback_preserves_unknown_delivery_and_allows_only_diagnostics() {
     for guarded in [false, true] {
-        let mut window = Window::headless(|| el().id("fail").size(40).on_press(|| panic!("inspector callback failed")));
+        let mut window = Window::headless(|| el().id("fail").size(40).on_press(|| panic!("inspector callback failed")).child(text("Fail")));
         let request = if guarded {
             let target = window.inspect().find("fail").unwrap().target.clone();
             octara::serde_json::json!({"op": "tap", "id": "fail", "target": target}).to_string()

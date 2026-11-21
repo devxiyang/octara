@@ -334,9 +334,16 @@ impl Gpu {
         proxy: EventLoopProxy<ShellEvent>,
     ) -> Result<Receiver<Result<PaintedPicture, String>>, String> {
         let (reply, pixels) = channel();
+        let waking = active.clone();
+        // Wake after the final sender is dropped, including when readback unwinds.
+        let reply = Arc::new(std::mem::DropGuard::new(reply, move |sender| {
+            drop(sender);
+            if waking.load(Ordering::Relaxed) {
+                let _ = proxy.send_event(ShellEvent::Capture);
+            }
+        }));
         let work = prepare_readback(list, scale, sample, active, self.generation.clone(), move |result| {
             let _ = reply.send(result);
-            let _ = proxy.send_event(ShellEvent::Capture);
         });
         if self.threaded() {
             if !self.start_work(work) {
