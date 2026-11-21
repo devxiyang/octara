@@ -279,9 +279,9 @@ impl Gpu {
             self.worker = Some(render_worker(&self.proxy, self.generation.number)?);
         }
         let generation = self.generation.clone();
-        self.start_work(Box::new(move |renderer| {
+        let work: Work<RenderCompletion> = Box::new(move |renderer| {
             if let Some(epoch) = trace_epoch {
-                trace::surface_drain(epoch, generation.number, None);
+                trace::surface_drain(epoch, generation.number, Instant::now(), "start", None);
             }
             #[cfg(debug_assertions)]
             if let Some(milliseconds) = std::env::var("OCTARA_SURFACE_DRAIN_DELAY_MS").ok().and_then(|value| value.parse::<u64>().ok())
@@ -297,12 +297,18 @@ impl Gpu {
                 Some(Err(error)) => Err(format!("cannot drain the GPU for surface configuration: {error}")),
             };
             if let Some(epoch) = trace_epoch {
-                trace::surface_drain(epoch, generation.number, Some(matches!(ready, Ok(true))));
+                trace::surface_drain(epoch, generation.number, Instant::now(), "finish", Some(matches!(ready, Ok(true))));
             }
             RenderCompletion::SurfaceDrain(ready)
-        }))
-        .then_some(())
-        .ok_or_else(|| "the render worker did not accept the surface drain".into())
+        });
+        let enqueued = trace_epoch.map(|epoch| (epoch, Instant::now()));
+        if !self.start_work(work) {
+            return Err("the render worker did not accept the surface drain".into());
+        }
+        if let Some((epoch, at)) = enqueued {
+            trace::surface_drain(epoch, self.generation.number, at, "enqueue", None);
+        }
+        Ok(())
     }
 
     /// Apply on the window thread after a successful drain, before admitting another job.

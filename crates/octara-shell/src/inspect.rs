@@ -45,12 +45,12 @@ const OPERATIONS: &[&str] = &[
 /// Keeps the endpoint alive and removes only the socket it created.
 pub(crate) struct Server {
     #[cfg(unix)]
-    _wire: wire::Server,
+    wire: wire::Server,
     build: Option<Arc<str>>,
 }
 
 impl Server {
-    pub(crate) fn from_env(proxy: winit::event_loop::EventLoopProxy<ShellEvent>) -> Result<Option<Self>, String> {
+    pub(crate) fn from_env(proxy: winit::event_loop::EventLoopProxy<ShellEvent>, trace: bool) -> Result<Option<Self>, String> {
         let Some(path) = std::env::var_os("OCTARA_INSPECT") else { return Ok(None) };
         #[cfg(unix)]
         {
@@ -58,18 +58,30 @@ impl Server {
             if !path.is_absolute() {
                 return Err("OCTARA_INSPECT needs an absolute Unix socket path".into());
             }
-            let server = wire::Server::start(&path, proxy)?;
+            let wire = wire::Server::start(&path, proxy, trace)?;
             let build = std::env::var("OCTARA_INSPECT_BUILD")
                 .ok()
                 .filter(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
                 .map(Arc::from);
             eprintln!("octara-shell: inspector {}", path.display());
-            Ok(Some(Server { _wire: server, build }))
+            Ok(Some(Server { wire, build }))
         }
         #[cfg(not(unix))]
         {
-            let _ = (path, proxy);
+            let _ = (path, proxy, trace);
             Err("OCTARA_INSPECT requires a host with Unix sockets".into())
+        }
+    }
+
+    fn take_forwarded(&self, connected: &Arc<AtomicBool>) -> Option<Instant> {
+        #[cfg(unix)]
+        {
+            self.wire.take_forwarded(connected)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = connected;
+            None
         }
     }
 }
@@ -304,7 +316,7 @@ fn route_line(line: &str) -> (&'static str, bool) {
 }
 
 impl Shell {
-    pub(crate) fn inspect_request(&mut self, line: String, tx: Sender<String>, connected: Arc<AtomicBool>) {
+    pub(crate) fn inspect_request(&mut self, line: String, tx: Sender<String>, connected: Arc<AtomicBool>, entered: Option<Instant>) {
         if !connected.load(Ordering::Relaxed) {
             return;
         }
@@ -365,7 +377,11 @@ impl Shell {
                 }
             }
             Request::Size { width, height } => {
-                response.with_current_resize_target(|response| match super::resize::Job::start(self, &mut target, width, height) {
+                let timing = entered.map(|handler| super::trace::ResizeRequest {
+                    forwarded: self.inspector.as_ref().and_then(|server| server.take_forwarded(&response.connected)),
+                    handler,
+                });
+                response.with_current_resize_target(|response| match super::resize::Job::start(self, &mut target, width, height, timing) {
                     Ok(job) => {
                         response.delivery.set(Some(Delivery::Delivered));
                         self.inspect_pending = Some(Pending::Resize { job, reply: response });
@@ -837,16 +853,21 @@ mod wire {
     use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
-    use std::sync::{Mutex, mpsc};
+    use std::sync::{Mutex, Weak, mpsc};
     use std::thread::{self, JoinHandle};
 
     const REQUEST_LIMIT: usize = 1024 * 1024;
     const REPLY_LIMIT: usize = 16 * 1024 * 1024;
     const POLL: Duration = Duration::from_millis(50);
 
+    // The wire forwards one request at a time. The connection identity prevents a stale
+    // event from consuming the next connection's timestamp.
+    type Forwarded = Mutex<Option<(Weak<AtomicBool>, Instant)>>;
+
     pub(super) struct Server {
         stop: Arc<AtomicBool>,
         client: Arc<Mutex<Option<UnixStream>>>,
+        forwarded: Option<Arc<Forwarded>>,
         worker: Option<JoinHandle<()>>,
         _socket: Socket,
     }
@@ -881,11 +902,12 @@ mod wire {
     }
 
     impl Server {
-        pub(super) fn start(path: &Path, proxy: winit::event_loop::EventLoopProxy<ShellEvent>) -> Result<Self, String> {
+        pub(super) fn start(path: &Path, proxy: winit::event_loop::EventLoopProxy<ShellEvent>, trace: bool) -> Result<Self, String> {
             let socket = Socket::bind(path)?;
             let stop = Arc::new(AtomicBool::new(false));
             let client = Arc::new(Mutex::new(None));
-            let mut server = Self { stop, client, worker: None, _socket: socket };
+            let forwarded = trace.then(|| Arc::new(Mutex::new(None)));
+            let mut server = Self { stop, client, forwarded: forwarded.clone(), worker: None, _socket: socket };
             let listener = server._socket.listener.try_clone().map_err(|e| e.to_string())?;
             let stop = server.stop.clone();
             let active = server.client.clone();
@@ -896,7 +918,7 @@ mod wire {
                             if let Ok(clone) = stream.try_clone() {
                                 *active.lock().expect("inspector client lock") = Some(clone);
                             }
-                            connection(stream, &proxy, &stop);
+                            connection(stream, &proxy, &stop, forwarded.as_deref());
                             *active.lock().expect("inspector client lock") = None;
                         }
                         Err(e) if e.kind() == ErrorKind::WouldBlock => thread::sleep(POLL),
@@ -905,6 +927,15 @@ mod wire {
                 }
             }));
             Ok(server)
+        }
+
+        pub(super) fn take_forwarded(&self, connected: &Arc<AtomicBool>) -> Option<Instant> {
+            self.forwarded
+                .as_ref()?
+                .lock()
+                .ok()?
+                .take_if(|(connection, _)| std::ptr::eq(connection.as_ptr(), Arc::as_ptr(connected)))
+                .map(|(_, at)| at)
         }
     }
 
@@ -970,7 +1001,12 @@ mod wire {
         left.is_empty()
     }
 
-    fn connection(mut stream: UnixStream, proxy: &winit::event_loop::EventLoopProxy<ShellEvent>, stop: &AtomicBool) {
+    fn connection(
+        mut stream: UnixStream,
+        proxy: &winit::event_loop::EventLoopProxy<ShellEvent>,
+        stop: &AtomicBool,
+        forwarded: Option<&Forwarded>,
+    ) {
         if stream.set_nonblocking(true).is_err() {
             return;
         }
@@ -1002,7 +1038,11 @@ mod wire {
                 continue;
             }
             let (tx, rx) = mpsc::channel();
-            if proxy.send_event(ShellEvent::Inspect { line, reply: tx, connected: connected.clone() }).is_err() {
+            let event = ShellEvent::Inspect { line, reply: tx, connected: connected.clone() };
+            if let Some(mut forwarded) = forwarded.and_then(|forwarded| forwarded.lock().ok()) {
+                *forwarded = Some((Arc::downgrade(&connected), Instant::now()));
+            }
+            if proxy.send_event(event).is_err() {
                 break;
             }
             loop {

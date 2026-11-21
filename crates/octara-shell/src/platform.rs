@@ -209,6 +209,7 @@ impl Platform for WinitPlatform {
                 attempt: None,
                 recreate: None,
                 wait_for_redraw: false,
+                traced_eligible: false,
             }),
             a11y,
             #[cfg(target_os = "ios")]
@@ -382,6 +383,7 @@ struct SurfaceConfigurationRequest {
     recreate: Option<SurfaceRecreation>,
     /// A failed recreation can be retried on exposure without spinning the event loop.
     wait_for_redraw: bool,
+    traced_eligible: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -827,18 +829,23 @@ impl WinitWindow {
         }
     }
 
-    pub(crate) fn resize(&mut self, width: u32, height: u32) {
-        if (width, height) == (self.config.width, self.config.height) {
+    pub(crate) fn resize(&mut self, size: PhysicalSize<u32>) {
+        if (size.width, size.height) == (self.config.width, self.config.height) {
             return;
         }
-        self.config.width = width;
-        self.config.height = height;
+        self.config.width = size.width;
+        self.config.height = size.height;
+        let observed = self.shared.trace.then(Instant::now);
         self.request_surface_configuration("resize", None, None);
+        if let Some(at) = observed {
+            trace::resize(self.shared.trace_epoch, self.window.id(), size, at, trace::ResizePhase::Observed);
+        }
     }
 
     fn request_surface_configuration(&mut self, reason: &'static str, attempt: Option<u64>, recreate: Option<SurfaceRecreation>) {
         let recreate = recreate.or_else(|| self.pending_surface_configuration.as_ref().and_then(|request| request.recreate));
-        self.pending_surface_configuration = Some(SurfaceConfigurationRequest { reason, attempt, recreate, wait_for_redraw: false });
+        self.pending_surface_configuration =
+            Some(SurfaceConfigurationRequest { reason, attempt, recreate, wait_for_redraw: false, traced_eligible: false });
         self.resized = true;
         self.request_draw();
         self.presentation.invalidate();
@@ -850,6 +857,18 @@ impl WinitWindow {
 
     pub(crate) fn ready_to_configure(&self) -> bool {
         self.pending_surface_configuration.as_ref().is_some_and(|request| !request.wait_for_redraw) && !self.presentation.waiting()
+    }
+
+    pub(crate) fn trace_resize_eligibility(&mut self, at: Instant) {
+        if self.ready_to_configure()
+            && let Some(request) = &mut self.pending_surface_configuration
+            && request.reason == "resize"
+            && !request.traced_eligible
+        {
+            request.traced_eligible = true;
+            let size = PhysicalSize::new(self.config.width, self.config.height);
+            trace::resize(self.shared.trace_epoch, self.window.id(), size, at, trace::ResizePhase::Eligible);
+        }
     }
 
     /// Called by the window thread after the renderer finished draining the shared GPU queue.

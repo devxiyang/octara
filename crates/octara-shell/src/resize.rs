@@ -1,7 +1,7 @@
 //! An Inspector size request goes through the native window, then waits for the host and
 //! framework to agree about the size the window system actually applied.
 
-use super::{AppWindow, Shell, ww};
+use super::{AppWindow, Shell, trace, ww};
 use octara::app::WindowId;
 use octara::diagnostics as codes;
 use octara::inspect::Reply;
@@ -26,7 +26,13 @@ pub(crate) struct Completion {
 }
 
 impl Job {
-    pub(crate) fn start(shell: &mut Shell, target: &mut AppWindow, width: f32, height: f32) -> Result<Self, Box<Reply>> {
+    pub(crate) fn start(
+        shell: &mut Shell,
+        target: &mut AppWindow,
+        width: f32,
+        height: f32,
+        timing: Option<trace::ResizeRequest>,
+    ) -> Result<Self, Box<Reply>> {
         if cfg!(target_os = "ios") {
             return Err(Box::new(Reply::fail(&codes::BAD_REQUEST, "the iOS scene owns the window size")));
         }
@@ -39,9 +45,22 @@ impl Job {
             .as_ref()
             .map(|g| g.device().limits().max_texture_dimension_2d)
             .ok_or_else(|| Box::new(Reply::fail(&codes::BAD_REQUEST, "the window has no GPU renderer")))?;
-        validate_size([width, height], scale, dimension_limit).map_err(|why| Box::new(Reply::fail(&codes::BAD_REQUEST, why)))?;
-        let applied = ww(target, |w| w.window.request_inner_size(LogicalSize::new(f64::from(width), f64::from(height))))
-            .ok_or_else(|| Box::new(Reply::fail(&codes::BAD_REQUEST, "the target has no native window")))?;
+        let expected =
+            validate_size([width, height], scale, dimension_limit).map_err(|why| Box::new(Reply::fail(&codes::BAD_REQUEST, why)))?;
+        let logical = logical_size([width, height]);
+        let applied = ww(target, |host| {
+            let request = timing.map(|timing| (Instant::now(), timing));
+            let applied = host.window.request_inner_size(logical);
+            if let Some((started, timing)) = request {
+                let returned = Instant::now();
+                let epoch = shell.shared.trace_epoch;
+                let window = host.window.id();
+                trace::resize(epoch, window, expected, started, trace::ResizePhase::Request(timing));
+                trace::resize(epoch, window, expected, returned, trace::ResizePhase::RequestReturn);
+            }
+            applied
+        })
+        .ok_or_else(|| Box::new(Reply::fail(&codes::BAD_REQUEST, "the target has no native window")))?;
         // Some platforms do not emit Resized when the request completes synchronously.
         // Reuse precisely the handler that updates both the GPU surface and framework input.
         if let Some(size) = applied {

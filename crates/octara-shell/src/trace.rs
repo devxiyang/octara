@@ -4,7 +4,8 @@
 //! start before DisplayList preparation; event-loop work before that is not in the frame total.
 //! Opportunity and present instants use the shell's monotonic clock. An observed window tick
 //! skipped before drawing uses `octara.display_opportunity/1`. Surface configuration has its own
-//! `octara.surface_trace/1` event. The worker's device wait uses `octara.surface_drain/1`.
+//! `octara.surface_trace/1` event. `octara.surface_drain/1` records device wait admission and
+//! execution. `octara.resize_trace/1` records native resize delivery and host surface readiness.
 //! Input times start at shell dispatch (or an owned native text callback), not at the hardware
 //! event. Coalesced counts are dispatches, including nested key/native edits, not keystrokes.
 //! `octara.inspect_delivery/1` records publication revisions before and after Inspector input.
@@ -26,6 +27,7 @@ use octara::serde_json::{Value, json};
 use octara_render::gpu::{FrameProfile, GpuTimings};
 use octara_render::wgpu;
 use std::time::{Duration, Instant};
+use winit::dpi::PhysicalSize;
 
 fn us(start: Instant, end: Instant) -> f64 {
     duration_us(end.saturating_duration_since(start))
@@ -312,13 +314,51 @@ impl AcquireStatus {
     }
 }
 
-pub(crate) fn surface_drain(epoch: Instant, device_generation: u64, ready: Option<bool>) {
+pub(crate) struct ResizeRequest {
+    pub(crate) forwarded: Option<Instant>,
+    pub(crate) handler: Instant,
+}
+
+pub(crate) enum ResizePhase {
+    Request(ResizeRequest),
+    RequestReturn,
+    Event(PhysicalSize<u32>),
+    Observed,
+    Viewport,
+    Eligible,
+}
+
+pub(crate) fn resize(epoch: Instant, window: winit::window::WindowId, size: PhysicalSize<u32>, at: Instant, phase: ResizePhase) {
+    let (phase, event_size, request) = match phase {
+        ResizePhase::Request(request) => ("request", None, Some(request)),
+        ResizePhase::RequestReturn => ("request_return", None, None),
+        ResizePhase::Event(size) => ("event", Some([size.width, size.height]), None),
+        ResizePhase::Observed => ("observed", None, None),
+        ResizePhase::Viewport => ("viewport", None, None),
+        ResizePhase::Eligible => ("eligible", None, None),
+    };
+    eprintln!(
+        "{}",
+        json!({
+            "schema": "octara.resize_trace/1",
+            "window": format!("{window:?}"),
+            "size_px": [size.width, size.height],
+            "at_us": since_us(epoch, at),
+            "phase": phase,
+            "event_size_px": event_size,
+            "forwarded_us": request.as_ref().and_then(|request| request.forwarded).map(|at| since_us(epoch, at)),
+            "handler_us": request.map(|request| since_us(epoch, request.handler)),
+        })
+    );
+}
+
+pub(crate) fn surface_drain(epoch: Instant, device_generation: u64, at: Instant, phase: &'static str, ready: Option<bool>) {
     eprintln!(
         "{}",
         json!({
             "schema": "octara.surface_drain/1",
-            "phase": if ready.is_some() { "finish" } else { "start" },
-            "at_us": since_us(epoch, Instant::now()),
+            "phase": phase,
+            "at_us": since_us(epoch, at),
             "device_generation": device_generation,
             "ready": ready,
         })

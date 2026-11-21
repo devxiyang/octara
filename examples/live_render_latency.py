@@ -5,14 +5,16 @@ Build the release window and the Inspector CLI and put the window on that displa
 Each run replays 27 seconds of Shader Lab. Inspector clicks, scrolling, and drag moves
 are timed from framework dispatch to the first Metal display of the resulting revision.
 The report counts changed revisions that had no attributable display separately.
+Use --scenario resize to measure window resizing without concurrent PNG captures.
 Use --scenario admission to check window and capture ordering at the current display mode.
 """
 
 import argparse
-from collections import defaultdict
+from collections import Counter, defaultdict
+import ctypes
 import json
 from pathlib import Path
-from statistics import quantiles
+from statistics import median, quantiles
 import struct
 import sys
 import tempfile
@@ -26,12 +28,14 @@ FRAME = "octara.frame_trace/1"
 PRESENTED = "octara.presented_trace/1"
 INPUT = "octara.inspect_delivery/1"
 REPLAY = "octara.shader_lab_replay/1"
+RESIZE = "octara.resize_trace/1"
 SURFACE = "octara.surface_trace/1"
+DRAIN = "octara.surface_drain/1"
 ACQUIRE = "octara.acquire_trace/1"
 ADMISSION = "octara.device_admission/1"
 OUTPUT = "octara.capture_trace/1"
 OPPORTUNITY = "octara.display_opportunity/1"
-SCHEMAS = (FRAME, PRESENTED, INPUT, REPLAY, SURFACE, ACQUIRE, ADMISSION, OUTPUT, OPPORTUNITY)
+SCHEMAS = (FRAME, PRESENTED, INPUT, REPLAY, RESIZE, SURFACE, DRAIN, ACQUIRE, ADMISSION, OUTPUT, OPPORTUNITY)
 PERIOD_US = 1_000_000 / 120
 SLIDER = "gpu-glass-refraction"
 
@@ -89,10 +93,13 @@ def frame_report(rows, window, bounds, submissions, displays):
     for _, change in endpoints:
         pending += change
         peak = max(peak, pending)
-    acquisitions = {row["acquisition"]: row for row in rows[ACQUIRE]
-                    if row["window"] == window and row["phase"] == "return" and row["status"] == "ready"}
+    returned = [row for row in rows[ACQUIRE] if row["window"] == window and row["phase"] == "return"]
+    acquisitions = {row["acquisition"]: row for row in returned if row["route"] == "worker" and row["status"] == "ready"}
     acquired = [acquisitions[row["acquisition_request"]] for row in submissions.values()
                 if row["acquisition_request"] in acquisitions]
+    acquisition_status_counts = defaultdict(Counter)
+    for row in returned:
+        acquisition_status_counts[row["route"]][row["status"]] += 1
     winit_window = next(iter(submissions.values()))["window"]
     lo, hi = (ms * 1000 for ms in bounds)
     empty_ticks = [row["opportunity"]["target_us"] for row in rows[OPPORTUNITY]
@@ -112,10 +119,191 @@ def frame_report(rows, window, bounds, submissions, displays):
         "inter_display": statistics(gaps), "gaps_over_1_5_refresh": sum(gap > 1.5 * PERIOD_US for gap in gaps),
         "scheduled_to_display": statistics(row["presented_us"] - row["scheduled_us"] for row in displays),
         "acquisition_wait": statistics(row["at_us"] - row["started_us"] for row in acquired),
+        "acquisition_status_counts": dict(acquisition_status_counts),
+        "worker_acquisition_attempt_wait": statistics(row["at_us"] - row["started_us"] for row in returned
+                                                      if row["route"] == "worker" and row["status"] in ("ready", "stale", "timeout")),
         "peak_matched_pending_presents": peak,
         "empty_display_ticks": len(empty_ticks),
         "empty_ticks_used_for_display": len(displayed_targets.intersection(empty_ticks)),
     }
+
+
+def surface_drains(rows):
+    enqueues = {}
+    starts = {}
+    drains = defaultdict(list)
+    for row in sorted(rows, key=lambda row: row["at_us"]):
+        device = row["device_generation"]
+        if row["phase"] == "enqueue":
+            enqueues[device] = row["at_us"]
+        elif row["phase"] == "start":
+            starts[device] = {"started_us": row["at_us"]}
+            if device in enqueues:
+                starts[device]["enqueued_us"] = enqueues.pop(device)
+        elif row["phase"] == "finish" and device in starts:
+            drains[device].append({**starts.pop(device), "finished_us": row["at_us"], "ready": row["ready"]})
+    return drains
+
+
+RESIZE_SPANS = {
+    "client_round_trip": ("client_request", "client_reply"),
+    "client_to_wire_forward": ("client_request", "wire_forwarded"),
+    "wire_forward_to_host_handler": ("wire_forwarded", "host_handler"),
+    "host_handler_to_native_call": ("host_handler", "native_call"),
+    "client_to_native_call": ("client_request", "native_call"),
+    "client_to_event": ("client_request", "event"),
+    "native_call_elapsed": ("native_call", "native_return"),
+    "native_call_to_event": ("native_call", "event"),
+    "native_return_to_event": ("native_return", "event"),
+    "native_call_to_observed": ("native_call", "observed"),
+    "native_return_to_observed": ("native_return", "observed"),
+    "event_to_observed": ("event", "observed"),
+    "observed_to_viewport": ("observed", "viewport"),
+    "viewport_to_eligible": ("viewport", "eligible"),
+    "observed_to_eligible": ("observed", "eligible"),
+    "eligible_to_drain_enqueue": ("eligible", "drain_enqueued"),
+    "drain_enqueue_to_worker_start": ("drain_enqueued", "drain_started"),
+    "drain_finish_to_configure": ("drain_finished", "configure_started"),
+    "request_to_configure": ("client_request", "configure_finished"),
+    "configure_elapsed": ("configure_started", "configure_finished"),
+    "configure_to_client_reply": ("configure_finished", "client_reply"),
+    "configure_to_first_accepted_frame_start": ("configure_finished", "first_accepted_frame_started"),
+    "configure_to_first_accepted_render_submit": ("configure_finished", "first_accepted_render_submitted"),
+    "configure_to_first_accepted_present_call": ("configure_finished", "first_accepted_present_called"),
+    "configure_to_presented_frame_drawable_request": ("configure_finished", "drawable_requested"),
+    "drawable_request_to_worker_start": ("drawable_requested", "drawable_acquire_started"),
+    "presented_frame_drawable_wait": ("drawable_acquire_started", "drawable_acquire_finished"),
+    "drawable_return_to_host": ("drawable_acquire_finished", "drawable_handled"),
+    "drawable_return_to_frame_start": ("drawable_acquire_finished", "frame_started"),
+    "configure_to_presented_frame_start": ("configure_finished", "frame_started"),
+    "presented_frame_start_to_render_submit": ("frame_started", "render_submitted"),
+    "render_submit_to_schedule": ("render_submitted", "scheduled"),
+    "configure_to_schedule": ("configure_finished", "scheduled"),
+    "schedule_to_display": ("scheduled", "presented"),
+    "configure_to_display": ("configure_finished", "presented"),
+}
+
+
+def resize_milestones(events, size, request_us, reply_us, next_request_us, configure_started_us):
+    timeline = {"client_request": request_us, "client_reply": reply_us, "configure_started": configure_started_us}
+    phases = {
+        "request": ("native_call", reply_us),
+        "request_return": ("native_return", reply_us),
+        "event": ("event", next_request_us),
+        "observed": ("observed", configure_started_us),
+        "viewport": ("viewport", configure_started_us),
+        "eligible": ("eligible", configure_started_us),
+    }
+    for phase, (name, end_us) in phases.items():
+        event = next((row for row in events if row["phase"] == phase and row["size_px"] == size
+                      and request_us <= row["at_us"] <= end_us), None)
+        if event is None:
+            continue
+        timeline[name] = event["at_us"]
+        if phase == "request":
+            for field, stage in (("forwarded_us", "wire_forwarded"), ("handler_us", "host_handler")):
+                at = event.get(field)
+                if at is not None and request_us <= at <= timeline[name]:
+                    timeline[stage] = at
+    return timeline
+
+
+def resize_surface(row):
+    return (row["size_px"], row["surface_generation"], row["device_generation"])
+
+
+def resize_report(rows, window, submissions, displays, requests, *, reply_confirms_config=True):
+    # The requests and Metal timestamps share the system Core Animation clock.
+    epoch_us = median(row["presented_time_s"] * 1_000_000 - row["presented_us"] for row in displays)
+    configurations = [row for row in rows[SURFACE] if row["window"] == window and row["reason"] == "resize" and row["configured"]]
+    events = sorted((row for row in rows.get(RESIZE, ()) if row["window"] == window), key=lambda row: row["at_us"])
+    drains = surface_drains(rows.get(DRAIN, ()))
+    acquisitions = {(row["window"], row["acquisition"], row["phase"]): row for row in rows.get(ACQUIRE, ()) if row["route"] == "worker"}
+    samples = []
+    for index, (size, sent_s, replied_s) in enumerate(requests):
+        size = list(size)
+        request_us = sent_s * 1_000_000 - epoch_us
+        reply_us = replied_s * 1_000_000 - epoch_us
+        next_request_s = requests[index + 1][1] if index + 1 < len(requests) else float("inf")
+        next_request_us = next_request_s * 1_000_000 - epoch_us
+        configure_by_us = min(reply_us, next_request_us) if reply_confirms_config else next_request_us
+        failures = []
+        sample = {"size_px": size, "request_us": request_us, "reply_us": reply_us, "failures": failures}
+        samples.append(sample)
+        matching = [row for row in configurations if row["size_px"] == size
+                    and request_us <= row["started_us"] <= row["started_us"] + row["elapsed_us"] <= configure_by_us]
+        if len(matching) != 1:
+            failures.append("ambiguous_configuration" if matching else "missing_configuration")
+            continue
+
+        config = matching[0]
+        device, surface = config["device_generation"], config["surface_generation"]
+        configured_us = config["started_us"] + config["elapsed_us"]
+        timeline = resize_milestones(events, size, request_us, reply_us, next_request_us, config["started_us"])
+        timeline["configure_finished"] = configured_us
+        sample.update(device_generation=device, surface_generation=surface, configure_started_us=config["started_us"],
+                      timeline_us=timeline)
+        if "native_call" in timeline and "native_return" in timeline:
+            sample["during_native_call"] = [phase for phase in ("event", "observed", "viewport") if phase in timeline
+                                            and timeline["native_call"] <= timeline[phase] <= timeline["native_return"]]
+        attempts = []
+        for drain in drains[device]:
+            if request_us <= drain["finished_us"] <= config["started_us"]:
+                if attempts and attempts[-1]["ready"]:
+                    attempts.clear()
+                attempts.append(drain)
+        sample["drain_attempts"] = attempts
+        if attempts and attempts[-1]["ready"]:
+            timeline.update(drain_started=attempts[0]["started_us"], drain_finished=attempts[-1]["finished_us"])
+            if "enqueued_us" in attempts[0]:
+                timeline["drain_enqueued"] = attempts[0]["enqueued_us"]
+            sample["drain_elapsed_us"] = sum(drain["finished_us"] - drain["started_us"] for drain in attempts)
+            sample["drain_retries"] = len(attempts) - 1
+        else:
+            failures.append("missing_ready_drain")
+
+        target = resize_surface(config)
+        first_accepted = min((row for row in submissions.values() if row["window"] == window and resize_surface(row) == target
+                              and (render_submitted := row["timeline_us"].get("render_submitted")) is not None
+                              and configured_us <= render_submitted < next_request_us),
+                             key=lambda row: row["timeline_us"]["render_submitted"], default=None)
+        if first_accepted is not None:
+            frame = first_accepted["timeline_us"]
+            sample.update(first_accepted_frame=first_accepted["frame"], first_accepted_revision=first_accepted["revision"])
+            timeline.update(first_accepted_frame_started=frame.get("started"), first_accepted_render_submitted=frame["render_submitted"])
+            present_called = frame.get("present_called")
+            if present_called is not None and present_called < next_request_us:
+                timeline["first_accepted_present_called"] = present_called
+
+        shown = min((row for row in displays if resize_surface(row) == target and configured_us <= row["scheduled_us"]
+                     and sent_s <= row["presented_time_s"] < next_request_s), key=lambda row: row["presented_time_s"], default=None)
+        if shown is None:
+            failures.append("missing_display")
+        else:
+            sample.update(presented_frame=shown["frame"], presented_revision=shown["revision"], presented_us=shown["presented_us"],
+                          request_to_display_us=(shown["presented_time_s"] - sent_s) * 1_000_000)
+            submitted = submissions[frame_key(shown)]
+            frame = submitted["timeline_us"]
+            timeline.update(frame_started=frame.get("started"), render_submitted=frame.get("render_submitted"),
+                            scheduled=shown["scheduled_us"], presented=shown["presented_us"])
+            acquisition = submitted.get("acquisition_request")
+            requested = acquisitions.get((shown["window"], acquisition, "start"))
+            returned = acquisitions.get((shown["window"], acquisition, "return"))
+            if requested is not None:
+                timeline["drawable_requested"] = requested["at_us"]
+                sample["acquisition_request"] = acquisition
+            if returned is not None and returned["status"] == "ready":
+                timeline.update(drawable_acquire_started=returned["started_us"], drawable_acquire_finished=returned["at_us"],
+                                drawable_handled=returned.get("handled_us"))
+                sample["acquisition_request"] = acquisition
+        for span, (start, finish) in RESIZE_SPANS.items():
+            began, ended = timeline.get(start), timeline.get(finish)
+            if began is not None and ended is not None and began <= ended:
+                sample[f"{span}_us"] = ended - began
+    metrics = ("request_to_display", "drain_elapsed", *RESIZE_SPANS)
+    return {"requests": len(samples), "failures": dict(Counter(failure for sample in samples for failure in sample["failures"])),
+            "drain_retries": sum(sample.get("drain_retries", 0) for sample in samples), "samples": samples,
+            **{metric: statistics(sample[f"{metric}_us"] for sample in samples if f"{metric}_us" in sample) for metric in metrics}}
 
 
 def input_report(deliveries, displays, probes):
@@ -208,6 +396,11 @@ def exercise(app, stream, scenario):
 
     log = Path(app.log.name)
     probes = []
+    resizes = []
+    if scenario in ("capture", "resize"):
+        media_time = ctypes.CDLL("/System/Library/Frameworks/QuartzCore.framework/QuartzCore").CACurrentMediaTime
+        media_time.argtypes = []
+        media_time.restype = ctypes.c_double
 
     def at(second):
         time.sleep(max(0, origin + second - time.monotonic()))
@@ -239,14 +432,18 @@ def exercise(app, stream, scenario):
                 at(start + 0.9 * (index + 1) + cycle * 0.003)
                 capture(window, cycle, index, inspect(window)["viewport"])
             continue
-        if scenario == "capture":
-            for index, (second, size) in enumerate(((0.9, (1320, 820)), (1.8, (1440, 900)))):
+        if scenario in ("capture", "resize"):
+            for index, (second, width, height) in enumerate(((0.9, 1320, 820), (1.8, 1440, 900))):
                 at(start + second)
-                width, height = size
-                detail = request("size", main, width=width, height=height)["live"]["resize"]
+                sent_s = media_time()
+                reply = request("size", main, width=width, height=height)
+                replied_s = media_time()
+                detail = reply["live"]["resize"]
                 require(detail["matched"] and detail["synchronized"] and detail["physical"] == [width, height],
                         f"native resize did not converge at 1×: {detail}")
-                capture(main, cycle, index, size)
+                resizes.append((detail["physical"], sent_s, replied_s))
+                if scenario == "capture":
+                    capture(main, cycle, index, (width, height))
 
         at(start + 2.60)
         slider = find(inspect(main), SLIDER)
@@ -262,7 +459,7 @@ def exercise(app, stream, scenario):
         if inspect(main).get("focus") != "gpu-glass-open":
             request("focus", main, id="gpu-glass-open")
     at(27.6)
-    return windows, probes
+    return windows, probes, resizes
 
 
 def compare(args, temporary, scenario, depth, repeat):
@@ -273,7 +470,7 @@ def compare(args, temporary, scenario, depth, repeat):
            "OCTARA_METAL_FRAME_LATENCY": str(depth - 1), "OCTARA_METAL_ACQUIRE_DELAY_MS": "0"}
     with LiveWindow(name, args, temporary, temporary, ["gpu_lab", "replay", "120", "stress"], env=env) as app:
         with app.wire() as stream:
-            windows, probes = exercise(app, stream, scenario)
+            windows, probes, resizes = exercise(app, stream, scenario)
         rows = read_trace(app.log.name)
     configured = [row for row in rows[SURFACE] if row["configured"]]
     require(configured and all(row["metal_drawables"] == depth for row in configured),
@@ -290,11 +487,15 @@ def compare(args, temporary, scenario, depth, repeat):
         return result
     for index, window in enumerate(windows):
         bounds, submissions, displays = window_frames(rows, window)
-        expected_sizes = {(800, 620)} if index else {(1440, 900), (1320, 820)} if scenario == "capture" else {(1440, 900)}
-        require({tuple(row["size_px"]) for row in displays} == expected_sizes, f"{name}: unexpected or missing display sizes")
+        expected_sizes = {(800, 620)} if index else {(1440, 900), (1320, 820)} if resizes else {(1440, 900)}
+        actual_sizes = {tuple(row["size_px"]) for row in displays}
+        require(actual_sizes <= expected_sizes if scenario == "resize" else actual_sizes == expected_sizes,
+                f"{name}: unexpected or missing display sizes")
         report = {"window": window, **frame_report(rows, window, bounds, submissions, displays)}
         if not index:
             report["inputs"] = input_report([row for row in rows[INPUT] if row["window"] == window], displays, probes)
+            if resizes:
+                report["resize"] = resize_report(rows, next(iter(submissions.values()))["window"], submissions, displays, resizes)
         result["windows"].append(report)
     return result
 
@@ -304,7 +505,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--window", type=Path, default=repo / "target/release/window")
     parser.add_argument("--octara", type=Path, default=repo / "target/debug/octara")
-    parser.add_argument("--scenario", choices=("single", "dual", "capture", "admission"), action="append",
+    parser.add_argument("--scenario", choices=("single", "dual", "resize", "capture", "admission"), action="append",
                         help="default: single, dual, and capture")
     parser.add_argument("--rounds", type=int, default=2, help="paired runs per scene, with alternating order")
     args = parser.parse_args()

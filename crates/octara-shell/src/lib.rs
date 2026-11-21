@@ -575,13 +575,22 @@ impl Shell {
     /// Apply an actual native client-area size through the same path as a resize event.
     fn resize_window(&self, w: &mut AppWindow, size: winit::dpi::PhysicalSize<u32>) {
         let changed = ww(w, |host| (host.config.width, host.config.height) != (size.width, size.height)) == Some(true);
+        let mut traced_window = None;
         if changed && let Some(g) = &*self.shared.gpu.borrow() {
             let limit = g.device().limits().max_texture_dimension_2d;
             if resize::validate_physical(size, limit).is_ok() {
-                ww(w, |x| x.resize(size.width, size.height));
+                ww(w, |host| {
+                    host.resize(size);
+                    traced_window = self.shared.trace.then(|| host.window.id());
+                });
             }
         }
         self.sync_viewport(w, size);
+        if let Some(window) = traced_window {
+            let at = Instant::now();
+            trace::resize(self.shared.trace_epoch, window, size, at, trace::ResizePhase::Viewport);
+            ww(w, |host| host.trace_resize_eligibility(at));
+        }
     }
 
     fn sync_viewport(&self, w: &mut AppWindow, size: winit::dpi::PhysicalSize<u32>) {
@@ -887,7 +896,12 @@ impl Shell {
             {
                 let gpu = self.shared.gpu.borrow();
                 if let Some(gpu) = gpu.as_ref() {
-                    ww(&w, |host| host.take_metal_drawable(gpu));
+                    ww(&w, |host| {
+                        host.take_metal_drawable(gpu);
+                        if self.shared.trace {
+                            host.trace_resize_eligibility(Instant::now());
+                        }
+                    });
                 }
             }
             self.show_frames(true);
@@ -1169,9 +1183,10 @@ impl Shell {
     }
 
     fn on_user_event(&mut self, event_loop: &ActiveEventLoop, event: ShellEvent) {
+        let inspect_entered = (self.shared.trace && matches!(event, ShellEvent::Inspect { .. })).then(Instant::now);
         if self.app_failed() {
             if let ShellEvent::Inspect { line, reply, connected } = event {
-                self.inspect_request(line, reply, connected);
+                self.inspect_request(line, reply, connected, inspect_entered);
             }
             return;
         }
@@ -1274,7 +1289,7 @@ impl Shell {
                 return;
             }
             ShellEvent::Inspect { line, reply, connected } => {
-                self.inspect_request(line, reply, connected);
+                self.inspect_request(line, reply, connected, inspect_entered);
                 return;
             }
             ShellEvent::Command { name, chord } => {
@@ -1342,7 +1357,7 @@ impl Shell {
         self.main = Some(w.id());
         self.app = Some(app.clone());
         self.show();
-        match inspect::Server::from_env(self.shared.proxy.clone()) {
+        match inspect::Server::from_env(self.shared.proxy.clone(), self.shared.trace) {
             Ok(server) => self.inspector = server,
             Err(why) => {
                 eprintln!("octara-shell: inspector: {why}");
@@ -1408,6 +1423,10 @@ impl Shell {
     }
 
     fn on_window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        let resize_event = match &event {
+            WindowEvent::Resized(size) if self.shared.trace => Some((Instant::now(), *size)),
+            _ => None,
+        };
         let received = self.shared.trace_native_input.then(Instant::now);
         let _in = InLoop::enter(&self.shared, event_loop);
         if self.app_failed() {
@@ -1440,6 +1459,9 @@ impl Shell {
                 // A queued event can describe an older request; configure what the native
                 // window actually has now, just as Inspector feedback observes it.
                 if let Some(size) = ww(&w, |host| host.drawable_size()) {
+                    if let Some((at, reported)) = resize_event {
+                        trace::resize(self.shared.trace_epoch, id, size, at, trace::ResizePhase::Event(reported));
+                    }
                     self.resize_window(&mut w, size);
                 }
             }
