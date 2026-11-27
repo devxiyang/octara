@@ -3,11 +3,12 @@
 use crate::layout::LayoutEngine;
 use crate::text::TextEngine;
 use accesskit as ak;
-use octara_model::geometry::Rect;
+use octara_model::geometry::{Rect, Vec2};
 use octara_model::identity::TreeId;
 use octara_model::semantics::{Checked, Live, Relations, Role};
 use octara_model::style::{Display, State, UserSelect};
 use octara_model::text::TextGeometry;
+use octara_runtime::engine::ScrollRange;
 use octara_tree::selection::DocSelection;
 use octara_tree::semantics::SemanticScope;
 use octara_tree::tables::HandlerKind;
@@ -21,26 +22,82 @@ mod publication;
 pub(crate) use publication::AccessPublication;
 use publication::Published;
 
+/// Cumulative accessibility projection work, including staged feedback rounds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AccessibilityWork {
+    /// Active projection rounds, including the initial full build.
+    pub projections: u64,
+    /// Semantic, scope, and geometry inputs considered across those rounds.
+    pub candidates: u64,
+    /// Entries projected from retained semantics.
+    pub nodes_built: u64,
+    /// Geometry patches to existing entries.
+    pub geometry_updates: u64,
+}
+
 pub fn node_identity(node: NodeId) -> ak::NodeId {
     ak::NodeId(node.data().as_ffi())
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Run {
     id: ak::NodeId,
     node: ak::Node,
     bytes: Arc<[usize]>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Entry {
     node: ak::Node,
     runs: Vec<Run>,
     parent: Option<NodeId>,
-    bounds: Rect,
+    geometry: Geometry,
     exposed: bool,
     relations: Relations<Arc<str>>,
     selection: Option<DocSelection>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Geometry {
+    rect: Rect,
+    offset: Vec2,
+    range: Option<ScrollRange>,
+    scale: f32,
+}
+
+impl Geometry {
+    fn read(layout: &LayoutEngine, node: NodeId, scale: f32) -> Self {
+        Self {
+            rect: layout.geometry(node).map_or_else(Rect::default, |geometry| geometry.rect),
+            offset: layout.scroll_offset(node),
+            range: layout.scroll_range(node),
+            scale,
+        }
+    }
+
+    fn apply(self, node: &mut ak::Node) {
+        // AccessKit composes node transforms through ancestors. Counter-offset the
+        // scroller's own bounds so its viewport stays fixed while its children move.
+        let offset = (f64::from(self.offset.x), f64::from(self.offset.y));
+        let transform = ak::Affine::translate((f64::from(self.rect.x) - offset.0, f64::from(self.rect.y) - offset.1));
+        node.set_transform(ak::Affine::scale(f64::from(self.scale)) * transform);
+        node.set_bounds(ak::Rect::new(offset.0, offset.1, offset.0 + f64::from(self.rect.w), offset.1 + f64::from(self.rect.h)));
+        if let Some(range) = self.range {
+            node.set_scroll_x(offset.0);
+            node.set_scroll_y(offset.1);
+            node.set_scroll_x_min(0.0);
+            node.set_scroll_y_min(0.0);
+            node.set_scroll_x_max(f64::from(range.max.x));
+            node.set_scroll_y_max(f64::from(range.max.y));
+        } else {
+            node.clear_scroll_x();
+            node.clear_scroll_y();
+            node.clear_scroll_x_min();
+            node.clear_scroll_y_min();
+            node.clear_scroll_x_max();
+            node.clear_scroll_y_max();
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -97,7 +154,7 @@ struct Staging {
     // A cycle can project several feedback rounds. Revisit their dirty inputs against the
     // committed baseline so changes that are superseded before commit never escape.
     dirty: FxHashSet<NodeId>,
-    moved: FxHashSet<NodeId>,
+    geometry_dirty: FxHashSet<NodeId>,
     scope_dirty: FxHashSet<NodeId>,
     modal_order_dirty: bool,
     tree_id: Option<TreeId>,
@@ -108,9 +165,8 @@ struct Staging {
     scopes: FxHashMap<NodeId, Option<ScopeInput>>,
     names: FxHashMap<NodeId, [Option<Arc<str>>; 2]>,
     entries: FxHashMap<NodeId, Option<Entry>>,
-    #[cfg(test)]
+    geometry: FxHashMap<NodeId, Geometry>,
     built: usize,
-    #[cfg(test)]
     candidates: usize,
 }
 
@@ -125,6 +181,9 @@ impl AccessKitProjector {
     }
 
     pub(crate) fn project(&mut self, tree: &Tree, delta: &TreeDelta, layout: &LayoutEngine, text: &TextEngine, scale: f32, verify: bool) {
+        if !self.publication.active() {
+            return;
+        }
         let committed = self.publication.0.borrow();
         let staging = &mut self.staging;
         staging.tree_id = Some(tree.id());
@@ -172,26 +231,14 @@ impl AccessKitProjector {
         staging.dirty.extend(delta.created.iter().copied());
         staging.dirty.extend(delta.layout_dirty.iter());
         staging.dirty.extend(delta.editor_dirty.iter());
-        staging.dirty.extend(text.changed().iter());
-        staging.moved.extend(layout.changed().iter());
+        if !reset {
+            staging.dirty.extend(text.changed().iter());
+            staging.geometry_dirty.extend(layout.changed().iter());
+            staging.geometry_dirty.extend(layout.scroll_changed().iter());
+        }
         let mut dirty = staging.dirty.clone();
         if committed.scale != scale {
-            dirty.insert(tree.root());
-        }
-        for &node in &staging.moved {
-            if !scope.includes(node) {
-                continue;
-            }
-            let bounds = layout.bounds(node).unwrap_or_default();
-            let old = committed.entries.get(&node).map_or_else(Rect::default, |entry| entry.bounds);
-            if old != bounds {
-                dirty.insert(node);
-                if old.x != bounds.x || old.y != bounds.y {
-                    // A fixed-position child may have unchanged absolute bounds when its
-                    // parent moves, but AccessKit encodes relative transforms.
-                    dirty.extend(tree.children(node).iter().copied());
-                }
-            }
+            staging.geometry_dirty.insert(tree.root());
         }
 
         let exposure = exposure_changes(tree, scope, reset, &committed, staging);
@@ -212,18 +259,23 @@ impl AccessKitProjector {
         let regions = dirty.iter().filter_map(|node| committed.selecting.get(node)).flatten().copied().collect::<Vec<_>>();
         dirty.extend(regions);
 
-        staging.entries.clear();
-        #[cfg(test)]
-        {
-            staging.candidates = dirty.len() + staging.moved.len() + staging.scope_dirty.len();
-            staging.built = 0;
+        staging.geometry.clear();
+        for &node in &staging.geometry_dirty {
+            if !dirty.contains(&node)
+                && let Some(entry) = committed.entries.get(&node)
+            {
+                let geometry = Geometry::read(layout, node, if node == tree.root() { scale } else { 1.0 });
+                if entry.geometry != geometry {
+                    staging.geometry.insert(node, geometry);
+                }
+            }
         }
+        staging.entries.clear();
+        staging.candidates = dirty.len() + staging.geometry_dirty.len() + staging.scope_dirty.len();
+        staging.built = 0;
         for node in dirty {
             let entry = scope.includes(node).then(|| build_entry(tree, scope, node, layout, text, scale));
-            #[cfg(test)]
-            {
-                staging.built += usize::from(entry.is_some());
-            }
+            staging.built += usize::from(entry.is_some());
             if entry.is_some() || committed.entries.contains_key(&node) {
                 staging.entries.insert(node, entry);
             }
@@ -250,10 +302,26 @@ impl AccessKitProjector {
         if verify {
             verify_projection(tree, layout, text, scale, &committed, staging);
         }
+        drop(committed);
+        let mut published = self.publication.0.borrow_mut();
+        published.work.projections += 1;
+        published.work.candidates += staging.candidates as u64;
+        published.work.nodes_built += staging.built as u64;
+        published.work.geometry_updates += staging.geometry.len() as u64;
     }
 
-    pub(crate) fn commit(&mut self) -> ak::TreeUpdate {
-        self.publication.0.borrow_mut().commit(std::mem::take(&mut self.staging))
+    pub(crate) fn commit(&mut self, version: u64) -> Option<Arc<ak::TreeUpdate>> {
+        self.staging.root?;
+        let mut published = self.publication.0.borrow_mut();
+        let update = Arc::new(published.commit(std::mem::take(&mut self.staging), true)?);
+        published.record_platform_update(version, &update);
+        Some(update)
+    }
+
+    pub(crate) fn activate(&self, tree: &Tree, layout: &LayoutEngine, text: &TextEngine, scale: f32, verify: bool) {
+        let mut initial = Self::new(self.publication.clone());
+        initial.project(tree, &TreeDelta::default(), layout, text, scale, verify);
+        self.publication.0.borrow_mut().commit(initial.staging, false);
     }
 
     pub(crate) fn reset_staging(&mut self) {
@@ -352,6 +420,13 @@ fn verify_projection(tree: &Tree, layout: &LayoutEngine, text: &TextEngine, scal
     }
     for &node in reference.keys().chain(committed.entries.keys()).chain(staged.entries.keys()) {
         let current = staged.entries.get(&node).map_or_else(|| committed.entries.get(&node), Option::as_ref);
+        let patched = staged.geometry.get(&node).map(|geometry| {
+            let mut entry = current.expect("geometry patch has a committed entry").clone();
+            geometry.apply(&mut entry.node);
+            entry.geometry = *geometry;
+            entry
+        });
+        let current = patched.as_ref().or(current);
         assert_eq!(current, reference.get(&node), "incremental AccessKit projection diverged for {node:?}");
     }
     assert_eq!(staged.focus, Some(scope.focus()), "incremental AccessKit focus diverged");
@@ -382,16 +457,13 @@ fn build_entry(tree: &Tree, scope: Scope<'_>, id: NodeId, layout: &LayoutEngine,
         })
     };
     let mut node = ak::Node::new(role(selected_role));
-    let bounds = layout.bounds(id).unwrap_or_default();
     let parent = tree.physical_parent(id);
-    let parent_bounds = parent.and_then(|parent| layout.bounds(parent)).unwrap_or_default();
-    let transform = ak::Affine::translate((f64::from(bounds.x - parent_bounds.x), f64::from(bounds.y - parent_bounds.y)));
-    node.set_transform(if id == tree.root() { ak::Affine::scale(f64::from(scale)) * transform } else { transform });
-    node.set_bounds(ak_rect(Rect::new(0.0, 0.0, bounds.w, bounds.h)));
+    let geometry = Geometry::read(layout, id, if id == tree.root() { scale } else { 1.0 });
+    geometry.apply(&mut node);
     let mut children: Vec<_> = tree.children(id).iter().copied().filter(|&child| scope.includes(child)).map(node_identity).collect();
     if !exposed {
         node.set_children(children);
-        return Entry { node, runs: Vec::new(), parent, bounds, exposed, relations: Relations::default(), selection: None };
+        return Entry { node, runs: Vec::new(), parent, geometry, exposed, relations: Relations::default(), selection: None };
     }
 
     let label = semantics.and_then(|slot| slot.label.as_deref());
@@ -547,22 +619,32 @@ fn build_entry(tree: &Tree, scope: Scope<'_>, id: NodeId, layout: &LayoutEngine,
     }
 
     let runs = text
-        .geometry(id)
-        .and_then(|geometry| {
+        .local_geometry(id)
+        .and_then(|mut local| {
+            let editor = tree.editor(id);
+            let mut offset = geometry.offset;
+            if editor.is_some_and(|editor| editor.multiline)
+                && let Some(content) = layout.local_content(id)
+            {
+                // The editor's text already scrolls with its ancestor transform.
+                // Keep runs in content coordinates across fractional offsets.
+                local.origin.y = content.y;
+                offset.y = 0.0;
+            }
             let value = tree
                 .editor(id)
                 .and_then(|editor| {
                     editor.reportable_value().map(|value| editor.composition().map_or(value, |composition| composition.text()))
                 })
                 .or_else(|| tree.text(id).map(|slot| slot.text.as_ref()))?;
-            Some(text_runs(id, value, bounds, &geometry))
+            Some(text_runs(id, value, offset, &local))
         })
         .unwrap_or_default();
     children.splice(0..0, runs.iter().map(|run| run.id));
     node.set_children(children);
     let relations = semantics.map_or_else(Relations::default, |slot| slot.relations.clone());
     let selection = selectable.then(|| tree.doc_selection(id)).flatten();
-    let mut entry = Entry { node, runs, parent, bounds, exposed, relations, selection };
+    let mut entry = Entry { node, runs, parent, geometry, exposed, relations, selection };
     if !selectable && let Some(editor) = tree.editor(id) {
         let selected = editor.composition().map_or(Some(editor.selection()), |composition| composition.selection());
         if let Some((anchor, focus)) = selected
@@ -574,7 +656,7 @@ fn build_entry(tree: &Tree, scope: Scope<'_>, id: NodeId, layout: &LayoutEngine,
     entry
 }
 
-fn text_runs(id: NodeId, value: &str, bounds: Rect, geometry: &TextGeometry) -> Vec<Run> {
+fn text_runs(id: NodeId, value: &str, offset: Vec2, geometry: &TextGeometry) -> Vec<Run> {
     // Keep the protocol's one-byte character lengths representable, even for long graphemes.
     let mut runs = Vec::new();
     if value.len() > 64 * 1024 {
@@ -621,8 +703,8 @@ fn text_runs(id: NodeId, value: &str, bounds: Rect, geometry: &TextGeometry) -> 
             run.set_text_direction(if rtl { ak::TextDirection::RightToLeft } else { ak::TextDirection::LeftToRight });
             run.set_bounds(ak_rect(Rect::new(0.0, 0.0, right - left, line.rect.h)));
             run.set_transform(ak::Affine::translate((
-                f64::from(left + geometry.origin.x - bounds.x),
-                f64::from(line.rect.y + geometry.origin.y - bounds.y),
+                f64::from(left) + f64::from(geometry.origin.x) + f64::from(offset.x),
+                f64::from(line.rect.y) + f64::from(geometry.origin.y) + f64::from(offset.y),
             )));
             let node = node_identity(id).0;
             let synthetic = (1_u64 << 63) | ((runs.len() as u64) << 51) | (node & ((1_u64 << 51) - 1));

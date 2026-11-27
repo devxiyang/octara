@@ -178,6 +178,112 @@ fn profile_frame<'a>(
     (frame, profile.expect("a profiled frame"))
 }
 
+#[test]
+fn retained_scroll_submits_sparse_offsets_with_shared_atlas_pixels() {
+    use octara_model::geometry::Vec2;
+    use octara_model::image::Image;
+    use octara_model::paint::{ImagePaint, ScrollPlacement, ScrollPlacements};
+
+    let Some(mut gpu) = GpuRenderer::new() else {
+        assert!(std::env::var_os("OCTARA_REQUIRE_GPU").is_none(), "a GPU adapter is required");
+        return;
+    };
+    let source = NodeId::default();
+    let rect = Rect::new(3.0, 11.0, 12.0, 8.0);
+    let image = Image::rgba(1, 1, [255, 0, 0, 255]);
+    let geometry = Arc::from([
+        Part::Item(Item::PushClip { source, rect: Rect::new(2.0, 7.0, 14.0, 12.0), radius: [0.0; 4] }),
+        Part::ScrollContent {
+            source,
+            spatial_id: 91,
+            scrollbar_offset: Vec2::default(),
+            parts: Arc::from([Part::Item(Item::Image(ImagePaint {
+                source,
+                image: image.sample(),
+                rect,
+                bounds: rect,
+                radius: [0.0; 4],
+                opacity: 1.0,
+            }))]),
+        },
+        Part::Item(Item::PopClip),
+    ]);
+    let scene = |x, y| {
+        let mut scrolls = ScrollPlacements::default();
+        scrolls.set(source, Some(ScrollPlacement { offset: Vec2::new(x, y), scrollbars: [None, None] }));
+        DisplayList { parts: vec![Part::ScrollFrame { scrolls, parts: Arc::clone(&geometry) }], ..picture([]) }
+    };
+    let first_list = scene(0.0, 0.0);
+    let scrolled_list = scene(0.25, -5.6);
+    let discarded = gpu.record_capture(&first_list, 1.0, None).unwrap();
+    drop(discarded);
+    assert!(gpu.prepared.is_none());
+
+    let mut first = gpu.record_capture(&first_list, 1.0, None).unwrap().submit().unwrap();
+    let mut second = gpu.record_capture(&scrolled_list, 1.0, None).unwrap().submit().unwrap();
+    assert!(first.upload_bytes() > 2 * 16);
+    assert_eq!(second.upload_bytes(), 16);
+    gpu.device().poll(wgpu::PollType::Wait { submission_index: Some(second.submission().clone()), timeout: None }).unwrap();
+    let first = first.take_mapped().unwrap().unwrap().finish().unwrap().picture;
+    let second = second.take_mapped().unwrap().unwrap().finish().unwrap().picture;
+    for x in [4, 10] {
+        assert_eq!(first.pixel(x, 8), Some([0; 4]));
+        assert_eq!(second.pixel(x, 8), Some([255, 0, 0, 255]));
+        assert_eq!(second.pixel(x, 6), Some([0; 4]));
+        assert_eq!(first.pixel(x, 16), Some([255, 0, 0, 255]));
+        assert_eq!(second.pixel(x, 16), Some([0; 4]));
+    }
+
+    gpu.set_target_generation(1);
+    assert!(gpu.prepared.is_none());
+    let target = device_target(gpu.device(), wgpu::TextureUsages::COPY_SRC);
+    let (first, profile) = profile_frame(&mut gpu, &target, &first_list, 1.0, 1);
+    assert!(!profile.retained_prepare && profile.instance_upload_bytes > 0);
+    first.submit();
+    let (abandoned, profile) = profile_frame(&mut gpu, &target, &scrolled_list, 1.0, 2);
+    assert!(profile.retained_prepare);
+    assert_eq!((profile.instance_upload_bytes, profile.spatial_upload_bytes, profile.atlas_upload_bytes), (0, 16, 0));
+    drop(abandoned);
+    // A discarded recording cannot publish its new offsets as submitted data.
+    let (next, profile) = profile_frame(&mut gpu, &target, &scrolled_list, 1.0, 3);
+    assert!(!profile.retained_prepare && profile.instance_upload_bytes > 0);
+    next.submit();
+}
+
+#[test]
+fn retained_scroll_inherits_an_enclosing_translation() {
+    use octara_model::geometry::Vec2;
+    use octara_model::paint::{ScrollPlacement, ScrollPlacements};
+
+    let Some(mut gpu) = GpuRenderer::new() else {
+        assert!(std::env::var_os("OCTARA_REQUIRE_GPU").is_none(), "a GPU adapter is required");
+        return;
+    };
+    let source = NodeId::default();
+    let geometry = Arc::from([Part::TranslatedGroup {
+        spatial_id: 7,
+        offset: Vec2::new(8.0, 0.0),
+        parts: Arc::from([Part::ScrollContent {
+            source,
+            spatial_id: 9,
+            scrollbar_offset: Vec2::default(),
+            parts: Arc::from([Part::Item(Item::Quad(solid(Rect::new(1.0, 8.0, 4.0, 4.0), Color::WHITE)))]),
+        }]),
+    }]);
+    let scene = |y| {
+        let mut scrolls = ScrollPlacements::default();
+        scrolls.set(source, Some(ScrollPlacement { offset: Vec2::new(0.0, y), scrollbars: [None, None] }));
+        DisplayList { parts: vec![Part::ScrollFrame { scrolls, parts: Arc::clone(&geometry) }], ..picture([]) }
+    };
+    let first = scene(0.0);
+    let second = scene(-4.0);
+    let first = gpu.render(&first, 1.0);
+    assert_eq!(first.pixel(10, 9), Some([255; 4]));
+    assert_eq!(first.pixel(2, 9), Some([0; 4]));
+    let second = gpu.record_capture(&second, 1.0, None).unwrap().submit().unwrap();
+    assert_eq!(second.upload_bytes(), 16);
+}
+
 fn retained_color(draws: Arc<AtomicUsize>) -> PaintProgram {
     retained_canvas(move |device| {
         let draws = draws.clone();
@@ -1288,3 +1394,5 @@ fn offscreen_readbacks_keep_their_own_pixels_and_receipts() {
     assert!(first.take_mapped().is_none());
     assert!(second.take_mapped().is_none());
 }
+
+mod damage;

@@ -57,6 +57,13 @@ impl std::fmt::Display for ProjectError {
 
 impl std::error::Error for ProjectError {}
 
+/// Independent consumers of a window's platform accessibility projection.
+#[derive(Clone, Copy, Debug)]
+pub enum AccessibilityConsumer {
+    Platform,
+    Inspector,
+}
+
 pub trait HostEngine {
     fn project(&mut self, tree: &Tree, delta: &TreeDelta, viewport: WindowViewport, now: f64) -> Result<ProjectFeedback, ProjectError>;
     fn commit(&mut self) -> CommitOutput;
@@ -128,6 +135,8 @@ pub trait HostEngine {
     }
 
     fn native_reply(&mut self, _reply: &HostReply) {}
+
+    fn set_accessibility_active(&self, _tree: &Tree, _consumer: AccessibilityConsumer, _active: bool) {}
 
     /// Update the host's accessibility motion policy before the next projection.
     fn set_reduced_motion(&mut self, _reduced_motion: bool) {}

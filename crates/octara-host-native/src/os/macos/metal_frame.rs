@@ -17,7 +17,7 @@ pub(super) struct MetalFrame {
     queue: Option<wgpu::Queue>,
     size: (u32, u32),
     color: OutputColor,
-    from_display_link: bool,
+    transactional: bool,
 }
 
 // SAFETY: One retained drawable is handed from the acquirer to the presenter by value. Only
@@ -29,9 +29,9 @@ impl MetalFrame {
         drawable: Retained<ProtocolObject<dyn CAMetalDrawable>>,
         size: (u32, u32),
         color: OutputColor,
-        from_display_link: bool,
+        transactional: bool,
     ) -> Self {
-        Self { drawable, queue: None, size, color, from_display_link }
+        Self { drawable, queue: None, size, color, transactional }
     }
 }
 
@@ -83,7 +83,7 @@ impl DrawTarget for MetalFrame {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             };
             // SAFETY: The drawable owns this texture, whose device and full descriptor were
@@ -104,18 +104,19 @@ impl Drawable for MetalFrame {
         if self.queue.as_ref() != Some(queue) {
             return Err("the Metal drawable must be presented on its rendering queue".into());
         }
-        if self.from_display_link {
-            // Core Animation owns the display opportunity. The worker submitted all rendering
-            // before returning the frame, so the display link can schedule this drawable.
-            self.drawable.present();
-            return Ok(());
-        }
         autoreleasepool(|_| {
             // SAFETY: This is the same live queue used to import and render the drawable.
             let queue = unsafe { queue.as_hal::<Metal>() }.ok_or("the wgpu queue is not Metal")?;
             let command = queue.as_raw().commandBuffer().ok_or("Metal could not create the present command buffer")?;
-            command.presentDrawable(ProtocolObject::from_ref(&*self.drawable));
+            if !self.transactional {
+                command.presentDrawable(ProtocolObject::from_ref(&*self.drawable));
+            }
             command.commit();
+            if self.transactional {
+                // Earlier rendering must be scheduled before the drawable joins the open transaction.
+                command.waitUntilScheduled();
+                self.drawable.present();
+            }
             Ok(())
         })
     }

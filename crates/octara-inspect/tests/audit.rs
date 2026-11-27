@@ -2,7 +2,7 @@
 
 use octara::{
     prelude::*,
-    runtime::Input,
+    runtime::{Input, engine::AccessibilityConsumer},
     tree::{NodeChange, NodeContent, NodeFlags, NodeSpec},
 };
 use octara_inspect::{
@@ -17,6 +17,7 @@ use octara_model::{
     overlay::LayerPolicy,
     style::Display,
 };
+use octara_pipeline::{NativeEngine, NativePublication};
 use std::{
     cell::RefCell,
     hint::black_box,
@@ -48,6 +49,32 @@ fn target(driver: &HeadlessDriver, window: WindowId, test_id: &str) -> TargetRef
     let tree = driver.app().runtime().window(window).unwrap().tree();
     let [id] = tree.test_ids(test_id) else { panic!("expected one node for {test_id}") };
     tree.guard(*id)
+}
+
+#[test]
+fn a_native_audit_activates_accessibility_from_the_already_published_frame() {
+    let publication = NativePublication::for_window_host();
+    let source = publication.clone();
+    let mut app = App::new(move |_, _| Box::new(NativeEngine::with_publication(Default::default(), source.clone())));
+    let label = app.build(|build| build.signal(String::from("Original"))).unwrap();
+    let window = app.open_window(options(), move |_| text(label)).unwrap();
+    let mut inspector = Inspector::default();
+    let mut inspect = |app: &mut App, command| inspector.execute(app, &mut (), AgentRequest::new(Some(window), command));
+
+    let number = publication.latest().unwrap().number;
+    assert!(inspect(&mut app, AgentCommand::Observe).ok);
+    assert_eq!(publication.accessibility_work(), Default::default());
+    assert!(inspect(&mut app, AgentCommand::Audit).ok);
+    assert_eq!(publication.latest().unwrap().number, number);
+    assert!(publication.snapshot_full().unwrap().nodes.iter().any(|(_, node)| node.value() == Some("Original")));
+
+    let state = app.runtime().window(window).unwrap();
+    state.set_accessibility_active(AccessibilityConsumer::Platform, true);
+    state.set_accessibility_active(AccessibilityConsumer::Platform, false);
+    app.update(|write| write.set(label, String::from("Updated"))).unwrap();
+    let frame = publication.latest().unwrap();
+    assert!(frame.accessibility.as_ref().unwrap().nodes.iter().any(|(_, node)| node.value() == Some("Updated")));
+    assert!(publication.take_accessibility_updates().is_empty());
 }
 
 #[test]

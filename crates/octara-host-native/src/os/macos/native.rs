@@ -1,5 +1,6 @@
 //! AppKit mounting, event delivery and snapshots for the MapKit underlay.
 
+use crate::presentation::PendingNativeViews;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
@@ -54,6 +55,12 @@ impl Inbox {
 
     pub(super) fn take(&self) -> Vec<(NativeId, NativeEvent)> {
         self.events.take()
+    }
+
+    fn discard_events(&self, retired: NativeId) {
+        let mut events = self.events.take();
+        events.retain(|(id, _)| *id != retired);
+        self.events.set(events);
     }
 
     pub(super) fn take_snapshots(&self) -> Vec<SnapshotCompletion> {
@@ -323,9 +330,44 @@ fn apply_map(map: &MKMapView, props: &Value, applied: &mut Value) {
 struct Hosted {
     clip: Retained<Clip>,
     map: Retained<MKMapView>,
-    delegate: Retained<MapDelegate>,
+    delegate: Option<Retained<MapDelegate>>,
     applied: Value,
     placed: Option<NativePlacement>,
+}
+
+impl Hosted {
+    fn stop_events(&mut self) {
+        if let Some(_delegate) = self.delegate.take() {
+            // SAFETY: Clear the non-owning delegate before releasing it.
+            unsafe { self.map.setDelegate(None) };
+        }
+    }
+
+    fn place(&mut self, host: &Underlay, p: NativePlacement, flipped: bool, height: f32) {
+        if self.placed.is_none() {
+            host.addSubview(&self.clip);
+        }
+        let c = p.clip;
+        let y = if flipped { c.y } else { height - c.y - c.h };
+        self.clip.setFrame(rect(c.x, y, c.w, c.h));
+        if let Some(layer) = self.clip.layer() {
+            layer.setCornerRadius(p.clip_radius as f64);
+        }
+        self.map.setFrame(rect(p.rect.x - c.x, p.rect.y - c.y, p.rect.w, p.rect.h));
+        if let Some(layer) = self.map.layer() {
+            crate::os::corners::apply(&layer, p.radius, self.map.isFlipped());
+        }
+        self.clip.setAlphaValue(p.opacity as f64);
+        self.clip.setHidden(!p.visible);
+        self.placed = Some(p);
+    }
+}
+
+impl Drop for Hosted {
+    fn drop(&mut self) {
+        self.stop_events();
+        self.clip.removeFromSuperview();
+    }
 }
 
 /// The views of one window, shared by the app's host (create, update, place, destroy) and the
@@ -336,8 +378,7 @@ pub(super) struct Views {
     parent: Retained<NSView>,
     inbox: Rc<Inbox>,
     hosted: HashMap<NativeId, Hosted>,
-    /// Placements handed over by the last settle, applied with the next present.
-    pending: Vec<NativePlacement>,
+    pending: PendingNativeViews<Hosted>,
     /// The host of underlay views, below winit's view's subviews (made with the first one).
     underlay: Option<Retained<Underlay>>,
     vibrancy: Option<Retained<NSVisualEffectView>>,
@@ -351,7 +392,7 @@ fn rect(x: f32, y: f32, w: f32, h: f32) -> NSRect {
 
 impl Views {
     fn create(&mut self, id: NativeId, kind: &str, slot: NativeSlot, props: &Value) {
-        self.destroy(id);
+        self.retire(id);
         if !self.shows(kind, slot) {
             return;
         }
@@ -368,7 +409,7 @@ impl Views {
         let clip = Clip::new(mtm);
         clip.addSubview(&map);
         clip.setHidden(true);
-        self.hosted.insert(id, Hosted { clip, map, delegate, applied, placed: None });
+        self.hosted.insert(id, Hosted { clip, map, delegate: Some(delegate), applied, placed: None });
     }
 
     fn update(&mut self, id: NativeId, props: &Value) {
@@ -377,19 +418,19 @@ impl Views {
         }
     }
 
-    fn destroy(&mut self, id: NativeId) {
-        let Some(hosted) = self.hosted.remove(&id) else { return };
-        // SAFETY: Clear the non-owning delegate before releasing it.
-        unsafe { hosted.map.setDelegate(None) };
-        hosted.clip.removeFromSuperview();
-        self.update_regions();
+    fn retire(&mut self, id: NativeId) {
+        let Some(mut hosted) = self.hosted.remove(&id) else { return };
+        hosted.stop_events();
+        self.inbox.discard_events(id);
+        let placed = hosted.placed.is_some();
+        self.pending.retire(id, hosted, placed);
     }
 
     /// Requests a snapshot and echoes the request when the platform answers.
     pub(super) fn snapshot(&self, request: NativeSnapshotRequest) -> Result<(), String> {
         let view = self.hosted.get(&request.id).ok_or("native view is unavailable")?;
         let placed = view.placed.as_ref().ok_or("native view has not been placed")?;
-        if self.pending.iter().any(|placement| placement.id == request.id && placement != placed) {
+        if self.pending.latest(request.id).is_some_and(|placement| placement != placed) {
             return Err("native placement has not been committed".into());
         }
         let scale = self.parent.window().map_or(1.0, |window| window.backingScaleFactor());
@@ -420,7 +461,7 @@ impl Views {
     }
 
     pub(super) fn busy(&self, id: NativeId) -> Option<String> {
-        self.hosted.get(&id)?.delegate.ivars().loading.get().then(|| "loading map tiles".to_owned())
+        self.hosted.get(&id)?.delegate.as_ref()?.ivars().loading.get().then(|| "loading map tiles".to_owned())
     }
 
     /// The underlay host: made with the first underlay view, below every subview of winit's
@@ -454,6 +495,7 @@ impl Views {
         let regions = self
             .hosted
             .values()
+            .chain(self.pending.retired_views())
             .filter_map(|h| h.placed.as_ref())
             .filter(|p| p.visible)
             .map(|p| (p.rect.intersect(&p.clip), p.covered.clone()))
@@ -466,32 +508,20 @@ impl Views {
         !self.hosted.is_empty()
     }
 
-    /// Applies the waiting placements (inside the frame's transaction).
-    fn apply(&mut self) {
+    /// Applies native view placements and removals inside the frame's transaction.
+    pub(super) fn commit(&mut self, revision: u64) {
+        if !self.pending.needs_commit(revision) {
+            return;
+        }
         let flipped = self.parent.isFlipped();
         let height = self.parent.bounds().size.height as f32;
-        let pending = std::mem::take(&mut self.pending);
-        let underlay = pending.iter().any(|p| self.hosted.get(&p.id).is_some_and(|h| h.placed.is_none()));
-        let host = underlay.then(|| self.underlay_host());
-        for p in pending {
-            let Some(h) = self.hosted.get_mut(&p.id) else { continue };
-            if h.placed.is_none() {
-                host.as_ref().expect("the underlay host").addSubview(&h.clip);
+        let host = self.underlay_host();
+        self.pending.commit(revision, |placement, retired| {
+            let view = if let Some(view) = retired { Some(view) } else { self.hosted.get_mut(&placement.id) };
+            if let Some(view) = view {
+                view.place(&host, placement, flipped, height);
             }
-            let c = p.clip;
-            let y = if flipped { c.y } else { height - c.y - c.h };
-            h.clip.setFrame(rect(c.x, y, c.w, c.h));
-            if let Some(layer) = h.clip.layer() {
-                layer.setCornerRadius(p.clip_radius as f64);
-            }
-            h.map.setFrame(rect(p.rect.x - c.x, p.rect.y - c.y, p.rect.w, p.rect.h));
-            if let Some(layer) = h.map.layer() {
-                crate::os::corners::apply(&layer, p.radius, h.map.isFlipped());
-            }
-            h.clip.setAlphaValue(p.opacity as f64);
-            h.clip.setHidden(!p.visible);
-            h.placed = Some(p);
-        }
+        });
         self.update_regions();
     }
 }
@@ -505,7 +535,7 @@ impl Views {
             parent,
             inbox,
             hosted: HashMap::new(),
-            pending: Vec::new(),
+            pending: PendingNativeViews::default(),
             underlay: None,
             vibrancy: None,
             metal: None,
@@ -573,23 +603,21 @@ impl Views {
                 NativeChange::Update { id, props } => self.update(*id, props),
                 NativeChange::Place { placements } => {
                     for placement in placements.iter().filter(|placement| self.hosted.contains_key(&placement.id)) {
-                        self.pending.retain(|current| current.id != placement.id);
-                        self.pending.push(placement.clone());
+                        self.pending.insert(placement.clone());
                     }
                 }
-                NativeChange::Destroy { id } => {
-                    self.pending.retain(|placement| placement.id != *id);
-                    self.destroy(*id);
-                }
+                NativeChange::Destroy { id } => self.retire(*id),
                 NativeChange::CreateTyped { .. } | NativeChange::UpdateTyped { .. } => {}
             }
         }
     }
 
-    pub(super) fn commit(&mut self) {
-        if !self.pending.is_empty() {
-            self.apply();
-        }
+    pub(super) fn prepare(&mut self, revision: u64) -> bool {
+        self.pending.prepare(revision)
+    }
+
+    pub(super) fn abandon(&mut self) {
+        self.pending.abandon();
     }
 
     pub(super) fn shows(&self, kind: &str, slot: NativeSlot) -> bool {
@@ -622,9 +650,8 @@ impl Views {
 
 impl Drop for Views {
     fn drop(&mut self) {
-        for id in self.hosted.keys().copied().collect::<Vec<_>>() {
-            self.destroy(id);
-        }
+        self.hosted.clear();
+        self.pending = PendingNativeViews::default();
         if let Some(underlay) = &self.underlay {
             underlay.removeFromSuperview();
         }

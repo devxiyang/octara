@@ -500,6 +500,11 @@ impl Tree {
         self.tables.scrolls.get(node)
     }
 
+    /// Nodes with retained scroll state.
+    pub fn scroll_nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.tables.scrolls.keys()
+    }
+
     /// Whether this port preserves the position of its visible content.
     pub fn maintains_scroll_anchor(&self, node: NodeId) -> bool {
         let Some(core) = self.node(node) else { return false };

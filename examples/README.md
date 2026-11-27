@@ -16,6 +16,7 @@ Build and run from the repository root. `octara-examples` contains the example a
 | Interactive GPU materials, flow fields, and refraction | `cargo run -p octara-examples-desktop --bin window -- gpu_lab` |
 | CPU reference screenshots | `cargo run -p octara-examples --bin screenshot -- /tmp/octara-shots 2 --bundled` |
 | CPU projection benchmark | `cargo run --release -p octara-examples --bin bench` |
+| Retained scroll, Markdown flings, and list switches | `cargo run --release -p octara-examples --bin scroll_bench -- 120` |
 | GPU painting and cache benchmarks | `cargo run --release -p octara-examples-desktop --bin gpu_bench -- gpu` or `-- gpu-retain` |
 
 CPU screenshots use bundled fonts by default. To use system fonts, add the Cargo flag `--features system-fonts` and omit `--bundled`.

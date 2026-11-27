@@ -8,9 +8,11 @@
 //! rasterized only where it shows.
 
 use crate::glyphs::SUBPIXEL_STEPS;
+use octara_model::geometry::Vec2;
 use octara_model::paint::PathPaint;
-use octara_model::paint::{FillRule, LineCap, LineJoin, PathCmd, PathStyle, Transform};
+use octara_model::paint::{FillRule, Item, LineCap, LineJoin, PathCmd, PathStyle, PlacedItem, Transform};
 use rustc_hash::{FxHashMap, FxHasher};
+use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
 
 /// What identifies a mask.
@@ -175,8 +177,26 @@ pub fn place(p: &PathPaint, scale: f32, window: (f32, f32, f32, f32)) -> Option<
         style: h.finish(),
         region: [x0, y0, x1, y1],
     };
-    let (width, height) = ((x1 - x0) as u32, (y1 - y0) as u32);
-    Some(Placed { key, x: ix as i32 + x0, y: iy as i32 + y0, width, height, transform: local })
+    let (width, height) = (x1.abs_diff(x0), y1.abs_diff(y0));
+    Some(Placed { key, x: (ix as i32).saturating_add(x0), y: (iy as i32).saturating_add(y0), width, height, transform: local })
+}
+
+pub(crate) fn raster_item(placed: PlacedItem<'_>) -> (Cow<'_, Item>, Vec2) {
+    let (offset, shift) = crate::shape::raster_offsets(placed);
+    let item = if offset == Vec2::default() && placed.fade >= 1.0 {
+        Cow::Borrowed(placed.item)
+    } else {
+        Cow::Owned(placed.item.placed(offset, placed.fade))
+    };
+    (item, shift)
+}
+
+pub(crate) fn place_translated(p: &PathPaint, scale: f32, window: (f32, f32, f32, f32), shift: Vec2) -> Option<Placed> {
+    let Vec2 { x, y } = shift;
+    let mut at = place(p, scale, (window.0 - x, window.1 - y, window.2 - x, window.3 - y))?;
+    at.x = at.x.saturating_add(x as i32);
+    at.y = at.y.saturating_add(y as i32);
+    Some(at)
 }
 
 /// Rasterizes the placed region of `p`.

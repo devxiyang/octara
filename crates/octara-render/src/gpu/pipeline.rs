@@ -95,13 +95,14 @@ impl DrawLayout {
                 if kind == PipelineKind::Glyph { Stages::VERTEX_FRAGMENT } else { Stages::FRAGMENT },
                 false,
             ),
-            buffer_entry(5, size_of::<ClipNode>(), Stages::FRAGMENT, false),
+            buffer_entry(5, size_of::<ClipNode>(), Stages::VERTEX_FRAGMENT, false),
             buffer_entry(
                 6,
                 if kind == PipelineKind::Glyph { size_of::<GlyphDraw>() } else { size_of::<DrawInst>() },
                 Stages::VERTEX_FRAGMENT,
                 false,
             ),
+            buffer_entry(8, size_of::<[f32; 4]>(), Stages::VERTEX_FRAGMENT, false),
         ];
         if matches!(kind, PipelineKind::Quad | PipelineKind::Image) {
             entries.push(buffer_entry(7, size_of::<GradientInst>(), Stages::FRAGMENT, false));

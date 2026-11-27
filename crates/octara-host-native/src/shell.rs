@@ -1,10 +1,14 @@
 //! Winit orchestration driven by runtime deadlines and device completion events.
 
-use crate::os::{self, HostEvent, KeyDispatch, OsHost, OsWindowContext};
+mod frame_input;
+
+use self::frame_input::FrameInput;
+use crate::os::{self, FrameTick, HostEvent, KeyDispatch, OsHost, OsWindowContext};
 use crate::window::{Device, FileDrop, HostWindow, transparent_background};
 use crate::{NativeAppOptions, ShellConfig, ShellError, ShellHook, trace};
 use octara::module::HostLifecycleEvent;
 use octara::runtime::cycle::AppError;
+use octara::runtime::engine::AccessibilityConsumer;
 use octara::runtime::{HostCommand, Input, RestartState, WindowId};
 use octara::tree::editor::EditorSession;
 use octara::{App, AppDefinition, WindowOptions};
@@ -54,6 +58,10 @@ pub enum ShellEvent {
         window: WindowId,
         target: Instant,
     },
+    DisplayTick {
+        window: WindowId,
+        tick: FrameTick,
+    },
     Native {
         window: WindowId,
         id: NativeId,
@@ -100,6 +108,7 @@ pub(crate) struct Shell {
     frame_sources: Rc<RefCell<BTreeMap<WindowId, NativePublication>>>,
     windows: BTreeMap<WindowId, HostWindow>,
     ids: HashMap<HostId, WindowId>,
+    frame_input: FrameInput,
     instance: wgpu::Instance,
     device: Option<Device>,
     surface_renderer: Option<SurfaceRendererFactory>,
@@ -153,6 +162,7 @@ impl Shell {
             frame_sources,
             windows: BTreeMap::new(),
             ids: HashMap::new(),
+            frame_input: FrameInput::default(),
             instance: wgpu::Instance::default(),
             device: None,
             surface_renderer,
@@ -256,6 +266,7 @@ impl Shell {
     }
 
     fn dispatch(&mut self, id: WindowId, input: Input) -> Result<bool, String> {
+        self.flush_frame_input(None)?;
         let resync_editor = matches!(
             input,
             Input::Editor(_) | Input::Interaction(InteractionEvent::WindowActive(_)) | Input::Host(HostReply::FocusChanged { .. })
@@ -545,7 +556,7 @@ impl Shell {
             let lease = result.map_err(|error| error.to_string())?;
             for host in self.windows.values_mut().filter(|host| host.can_configure(now)) {
                 if host.configure(&self.instance, &device.adapter, lease.device())? {
-                    host.window.request_redraw();
+                    host.request_frame();
                 }
             }
             lease.resume();
@@ -555,11 +566,12 @@ impl Shell {
 
     fn finish_frames(&mut self) -> Result<(), String> {
         let Some(device) = &self.device else { return Ok(()) };
+        let reduced_motion = self.app.runtime().system_preferences().reduced_motion;
         let mut shown = Vec::new();
         for host in self.windows.values_mut() {
             let Some(runtime) = self.app.runtime().window(host.id) else { continue };
             let first = host.presented.is_none();
-            if host.finish_draw(runtime, device)? {
+            if host.finish_draw(runtime, device, reduced_motion)? {
                 if first {
                     shown.push(host.id);
                 }
@@ -586,13 +598,13 @@ impl Shell {
         Ok(())
     }
 
-    fn draw(&mut self, id: WindowId, target: Instant) -> Result<(), String> {
+    fn draw(&mut self, id: WindowId, target: Instant, from_clock: bool) -> Result<(), String> {
         if self.drain.is_none()
             && let (Some(host), Some(runtime), Some(device)) =
                 (self.windows.get_mut(&id), self.app.runtime().window(id), self.device.as_ref())
         {
             let sample = if self.config.manual_clock { self.app.runtime().now() } else { target.saturating_duration_since(self.started) };
-            host.draw(runtime, device, sample, Instant::now())?;
+            host.draw(runtime, device, sample, Instant::now(), from_clock)?;
         }
         Ok(())
     }
@@ -668,6 +680,10 @@ impl Shell {
         } else {
             self.app.advance_to(self.started.elapsed()).map_err(|error| error.to_string())?;
         }
+        self.run_ready_after_clock(event_loop)
+    }
+
+    fn run_ready_after_clock(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
         self.drain_commands(event_loop)?;
         self.configure_surfaces(Instant::now())?;
         self.finish_frames()?;
@@ -684,14 +700,14 @@ impl Shell {
         }
         for host in self.windows.values_mut() {
             if host.take_retry(now) {
-                host.window.request_redraw();
+                host.request_frame();
             }
         }
         // A scene can become ready without delivering a winit redraw. Admit the
         // latest settled revision once when the OS has no separate frame clock.
         let ready: Vec<_> = self.windows.iter_mut().filter_map(|(&id, host)| host.needs_unpaced_frame(now).then_some(id)).collect();
         for id in ready {
-            self.draw(id, now)?;
+            self.draw(id, now, false)?;
         }
         Ok(())
     }
@@ -797,6 +813,23 @@ impl Shell {
     }
 
     fn window_input(&mut self, id: WindowId, event: WindowEvent) -> Result<(), String> {
+        let wheel_phase = if let WindowEvent::MouseWheel { delta, phase, .. } = event {
+            let native = self.windows.get_mut(&id).and_then(|host| host.os.on_winit_wheel(delta, phase));
+            Some(native.unwrap_or_else(|| frame_input::wheel_phase(delta, phase)))
+        } else {
+            None
+        };
+        if self.frame_input.window.is_some_and(|window| window != id) {
+            self.flush_frame_input(None)?;
+        }
+        if matches!(event, WindowEvent::CursorMoved { .. } | WindowEvent::MouseWheel { .. })
+            && self.windows.get_mut(&id).is_some_and(HostWindow::externally_paced)
+        {
+            return self.queue_frame_input(id, event, wheel_phase);
+        }
+        if !matches!(event, WindowEvent::RedrawRequested) {
+            self.flush_frame_input(None)?;
+        }
         let cursor_moved = matches!(event, WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. });
         match event {
             WindowEvent::CloseRequested => {
@@ -809,7 +842,7 @@ impl Shell {
                 self.refresh_viewport(id)?;
             }
             WindowEvent::Moved(_) => self.refresh_viewport(id)?,
-            WindowEvent::RedrawRequested => self.draw(id, Instant::now())?,
+            WindowEvent::RedrawRequested => self.draw(id, Instant::now(), false)?,
             WindowEvent::Focused(active) => {
                 self.focus_changed |= self.os.follows_window_focus();
                 self.windows.get_mut(&id).expect("known window").os.text_input().focused(active);
@@ -849,17 +882,7 @@ impl Shell {
             WindowEvent::MouseWheel { delta, .. } => {
                 let host = &self.windows[&id];
                 let Some(pos) = host.pointer else { return Ok(()) };
-                let delta = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => Vec2::new(-x * 32.0, -y * 32.0),
-                    MouseScrollDelta::PixelDelta(point) => {
-                        let point: LogicalPosition<f32> = point.to_logical(host.window.scale_factor());
-                        Vec2::new(-point.x, -point.y)
-                    }
-                };
-                self.dispatch(
-                    id,
-                    Input::Interaction(InteractionEvent::Wheel { pos, delta, phase: WheelPhase::Discrete, mods: host.modifiers }),
-                )?;
+                self.dispatch(id, Input::Interaction(wheel_input(host, pos, delta, wheel_phase.expect("wheel phase"))))?;
             }
             event @ (WindowEvent::PinchGesture { .. } | WindowEvent::RotationGesture { .. }) => {
                 let host = self.windows.get_mut(&id).expect("known window");
@@ -907,13 +930,78 @@ impl Shell {
         Ok(())
     }
 
+    fn queue_frame_input(&mut self, id: WindowId, event: WindowEvent, wheel_phase: Option<WheelPhase>) -> Result<(), String> {
+        let host = &self.windows[&id];
+        let pos = self.frame_input.pointer(host.pointer);
+        let event = match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let p = position.to_logical::<f32>(host.window.scale_factor());
+                let next = Point::new(p.x, p.y);
+                // AppKit emits a cursor-position update before each wheel sample.
+                if Some(next) == pos {
+                    return Ok(());
+                }
+                frame_input::cursor(next, host.modifiers)
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let Some(pos) = pos else { return Ok(()) };
+                let input = wheel_input(host, pos, delta, wheel_phase.expect("wheel phase"));
+                if let InteractionEvent::Wheel { phase, .. } = input
+                    && self.frame_input.wheel_phase().is_some_and(|previous| previous != phase)
+                {
+                    self.flush_frame_input(None)?;
+                }
+                input
+            }
+            _ => unreachable!("only continuous pointer input is queued"),
+        };
+        self.windows.get_mut(&id).expect("buffered window").activate_frame_clock();
+        self.frame_input.window = Some(id);
+        let merge_wheel = if let InteractionEvent::Wheel { pos, .. } = event
+            && matches!(self.frame_input.packets.last(), Some(InteractionEvent::Wheel { .. }))
+        {
+            self.app.runtime().window(id).is_some_and(|runtime| runtime.can_coalesce_wheel(pos))
+        } else {
+            false
+        };
+        self.frame_input.push(event, merge_wheel);
+        Ok(())
+    }
+
+    fn flush_frame_input(&mut self, time: Option<Duration>) -> Result<bool, String> {
+        let Some(id) = self.frame_input.window.take() else { return Ok(false) };
+        let Some(host) = self.windows.get_mut(&id) else {
+            self.frame_input.packets.clear();
+            return Ok(false);
+        };
+        let previous = host.pointer;
+        host.pointer = self.frame_input.pointer(previous);
+        self.app.runtime_mut().set_keyboard_open(id, host.os.scene().is_some_and(|scene| scene.keyboard_open()));
+        if let Some(hook) = self.hook.as_mut() {
+            for &event in &self.frame_input.packets {
+                hook.before_input(&self.app, id, &Input::Interaction(event));
+            }
+        }
+        let result = self.app.runtime_mut().dispatch_frame_inputs(id, self.frame_input.packets.drain(..).map(Input::Interaction), time);
+        if host.pointer != previous
+            && let Some(runtime) = self.app.runtime().window(id)
+        {
+            host.synchronize_cursor(runtime);
+        }
+        match result {
+            Ok(_) | Err(AppError::UnknownWindow(_)) => Ok(true),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     fn accessibility(&mut self, event: accesskit_winit::Event) -> Result<(), String> {
         let Some(&id) = self.ids.get(&event.window_id) else { return Ok(()) };
         let Some(host) = self.windows.get_mut(&id) else { return Ok(()) };
         match event.window_event {
             accesskit_winit::WindowEvent::InitialTreeRequested => {
-                if host.publication.latest().is_some() {
-                    host.a11y.update_if_active(|| host.publication.snapshot_full().expect("published accessibility tree"));
+                if let Some(runtime) = self.app.runtime().window(id) {
+                    runtime.set_accessibility_active(AccessibilityConsumer::Platform, true);
+                    host.set_accessibility_active(true);
                 }
             }
             accesskit_winit::WindowEvent::ActionRequested(request) => {
@@ -923,7 +1011,12 @@ impl Shell {
                     self.dispatch(id, Input::Host(reply))?;
                 }
             }
-            accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
+            accesskit_winit::WindowEvent::AccessibilityDeactivated => {
+                host.set_accessibility_active(false);
+                if let Some(runtime) = self.app.runtime().window(id) {
+                    runtime.set_accessibility_active(AccessibilityConsumer::Platform, false);
+                }
+            }
         }
         Ok(())
     }
@@ -998,6 +1091,7 @@ impl ApplicationHandler<ShellEvent> for Shell {
 
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
         self.handle(event_loop, |shell| {
+            shell.flush_frame_input(None)?;
             for host in shell.windows.values_mut() {
                 host.set_suspended(true);
             }
@@ -1009,7 +1103,10 @@ impl ApplicationHandler<ShellEvent> for Shell {
     }
 
     fn memory_warning(&mut self, event_loop: &ActiveEventLoop) {
-        self.handle(event_loop, |shell| shell.lifecycle(HostLifecycleEvent::MemoryWarning));
+        self.handle(event_loop, |shell| {
+            shell.flush_frame_input(None)?;
+            shell.lifecycle(HostLifecycleEvent::MemoryWarning)
+        });
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, raw: HostId, event: WindowEvent) {
@@ -1034,6 +1131,9 @@ impl ApplicationHandler<ShellEvent> for Shell {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: ShellEvent) {
         self.handle(event_loop, |shell| {
+            if !matches!(event, ShellEvent::DisplayTick { .. } | ShellEvent::Frame { .. } | ShellEvent::Wake) {
+                shell.flush_frame_input(None)?;
+            }
             match event {
                 ShellEvent::PlatformReady => {
                     shell.launch_definition(event_loop)?;
@@ -1044,7 +1144,28 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 ShellEvent::Input { window, input } => {
                     shell.dispatch(window, input)?;
                 }
-                ShellEvent::Frame { window, target } => shell.draw(window, target)?,
+                ShellEvent::Frame { window, target } => shell.draw(window, target, false)?,
+                ShellEvent::DisplayTick { window, tick } => {
+                    if shell.config.trace_frame_clock {
+                        trace::display_tick(window, tick, shell.started);
+                    }
+                    shell.app.runtime_mut().set_frame_interval(tick.interval);
+                    if shell.frame_input.window == Some(window) {
+                        let time = (!shell.config.manual_clock).then(|| shell.started.elapsed());
+                        if shell.flush_frame_input(time)? {
+                            shell.run_ready_after_clock(event_loop)?;
+                        } else {
+                            shell.run_ready(event_loop)?;
+                        }
+                    } else {
+                        shell.run_ready(event_loop)?;
+                    }
+                    shell.draw(window, tick.target, true)?;
+                    if let Some(host) = shell.windows.get_mut(&window) {
+                        host.idle_frame_clock_if_clean();
+                    }
+                    shell.schedule(event_loop);
+                }
                 ShellEvent::Native { window, id, event } => shell.native_reply(window, id, event)?,
                 ShellEvent::RefreshViewport { window } => shell.refresh_viewport(window)?,
                 ShellEvent::RefreshSystemPreferences => shell.refresh_system_preferences(None)?,
@@ -1111,6 +1232,17 @@ fn color_scheme(theme: winit::window::Theme) -> ColorScheme {
         winit::window::Theme::Light => ColorScheme::Light,
         winit::window::Theme::Dark => ColorScheme::Dark,
     }
+}
+
+fn wheel_input(host: &HostWindow, pos: Point, delta: MouseScrollDelta, phase: WheelPhase) -> InteractionEvent {
+    let delta = match delta {
+        MouseScrollDelta::LineDelta(x, y) => Vec2::new(-x * 32.0, -y * 32.0),
+        MouseScrollDelta::PixelDelta(point) => {
+            let point = point.to_logical::<f32>(host.window.scale_factor());
+            Vec2::new(-point.x, -point.y)
+        }
+    };
+    InteractionEvent::Wheel { pos, delta, phase, mods: host.modifiers }
 }
 
 fn read_restart(config: &ShellConfig) -> Result<Option<RestartState>, String> {

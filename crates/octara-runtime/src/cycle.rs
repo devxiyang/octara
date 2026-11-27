@@ -32,6 +32,7 @@ use octara_tree::transaction::TreeError;
 use octara_tree::{NodeId, NodeRef, RuntimeOp, TreeDelta};
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::time::Duration;
 
 pub const WINDOW_ROUNDS: usize = 16;
 
@@ -104,7 +105,32 @@ impl AppRuntime {
         {
             return Err(AppError::UnknownWindow(*window));
         }
+        self.run_input_cycle(incoming.into_iter(), None)
+    }
+
+    /// Dispatch coalesced host inputs in order, publishing the settled frame once.
+    pub fn dispatch_frame_inputs(
+        &mut self,
+        window: WindowId,
+        inputs: impl IntoIterator<Item = Input>,
+        time: Option<Duration>,
+    ) -> Result<CycleReceipt, AppError> {
+        self.require_active()?;
+        if !self.windows.contains_key(&window) {
+            return Err(AppError::UnknownWindow(window));
+        }
+        self.run_input_cycle(inputs.into_iter().map(|input| (window, input)), time)
+    }
+
+    fn run_input_cycle(
+        &mut self,
+        incoming: impl Iterator<Item = (WindowId, Input)>,
+        time: Option<Duration>,
+    ) -> Result<CycleReceipt, AppError> {
         self.guarded(|app| {
+            if let Some(time) = time {
+                app.tasks.advance_to(time);
+            }
             let result = app.drive_cycle(incoming);
             if result.is_err() {
                 app.rollback();
@@ -113,7 +139,7 @@ impl AppRuntime {
         })
     }
 
-    fn drive_cycle(&mut self, incoming: Option<(WindowId, Input)>) -> Result<CycleReceipt, AppError> {
+    fn drive_cycle(&mut self, mut incoming: impl Iterator<Item = (WindowId, Input)>) -> Result<CycleReceipt, AppError> {
         self.tasks.begin_cycle();
         self.drain_module_messages();
         let now = self.now();
@@ -127,12 +153,14 @@ impl AppRuntime {
 
         let mut receipt = CycleReceipt::default();
         let mut routed = VecDeque::new();
-        if let Some((window, input)) = incoming {
+        if let Some((window, input)) = incoming.next() {
             receipt.delivered = self.ingress(window, input, &mut routed);
         }
 
-        for round in 1..=WINDOW_ROUNDS {
-            receipt.rounds = round;
+        let mut rounds = 0;
+        while rounds < WINDOW_ROUNDS {
+            rounds += 1;
+            receipt.rounds += 1;
             if let Some(job) = routed.pop_front() {
                 receipt.handled |= self.route(job, &mut routed);
             }
@@ -153,6 +181,11 @@ impl AppRuntime {
             {
                 self.update_tooltips(now);
                 if self.world.has_pending_work() {
+                    continue;
+                }
+                if let Some((window, input)) = incoming.find(|(id, _)| self.windows.contains_key(id)) {
+                    receipt.delivered |= self.ingress(window, input, &mut routed);
+                    rounds = 0;
                     continue;
                 }
                 self.publish();

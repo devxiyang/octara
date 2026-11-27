@@ -1,13 +1,12 @@
 //! Flat, paint-ordered geometry for viewport culling and native hit tests.
 
-use crate::{LayoutEngine, TextEngine, frame_arena::FrameArena, paint_order};
+use crate::{LayoutEngine, TextEngine, paint_order};
 use octara_model::geometry::{Point, Rect};
 use octara_tree::{DirtyBitmap, NodeFlags, NodeId, NodeKind, Tree, TreeDelta};
 use rustc_hash::FxHashMap;
 use slotmap::SecondaryMap;
 use std::sync::Arc;
 
-const WIDTH: usize = 4;
 const LINK: u16 = 1;
 const OVERLAY_ROOT: u16 = 2;
 const CELL_SIZE: f32 = 128.0;
@@ -115,51 +114,13 @@ fn index_exhausted() -> ! {
     panic!("flat tree exceeds the slot index range")
 }
 
-#[repr(C, align(16))]
-#[derive(Clone, Copy, Default)]
-struct Lanes([f32; WIDTH]);
-
-#[derive(Default)]
-struct Bounds {
-    x: Vec<Lanes>,
-    y: Vec<Lanes>,
-    w: Vec<Lanes>,
-    h: Vec<Lanes>,
-}
-
-impl Bounds {
-    fn reset(&mut self, len: usize) {
-        let blocks = len.div_ceil(WIDTH);
-        for axis in [&mut self.x, &mut self.y, &mut self.w, &mut self.h] {
-            axis.resize(blocks, Lanes::default());
-            axis.fill(Lanes::default());
-        }
-    }
-
-    fn get(&self, index: u32) -> Rect {
-        let (block, lane) = (index as usize / WIDTH, index as usize % WIDTH);
-        Rect::new(self.x[block].0[lane], self.y[block].0[lane], self.w[block].0[lane], self.h[block].0[lane])
-    }
-
-    fn store_batch(&mut self, batch: ClipBatch, flat: &[FlatNode], visible: &mut FrameArena<u32>) {
-        let block = batch.block;
-        let [x, y, w, h] = batch.clipped();
-        [self.x[block], self.y[block], self.w[block], self.h[block]] = [x, y, w, h];
-        let start = block * WIDTH;
-        for (offset, entry) in flat[start..(start + WIDTH).min(flat.len())].iter().enumerate() {
-            if entry.flags & OVERLAY_ROOT == 0 && w.0[offset] > 0.0 && h.0[offset] > 0.0 {
-                visible.push(flat_index(start + offset));
-            }
-        }
-    }
-}
-
 type Cell = (i32, i32);
 
 #[derive(Default)]
 struct Grid {
     cells: FxHashMap<Cell, Vec<u32>>,
     large: Vec<u32>,
+    scrollports: Vec<u32>,
 }
 
 impl Grid {
@@ -184,6 +145,7 @@ impl Grid {
 
     fn clear(&mut self) {
         self.large.clear();
+        self.scrollports.clear();
         for candidates in self.cells.values_mut() {
             candidates.clear();
         }
@@ -194,151 +156,75 @@ fn cell(point: Point) -> Cell {
     ((point.x / CELL_SIZE).floor() as i32, (point.y / CELL_SIZE).floor() as i32)
 }
 
-#[derive(Clone, Copy)]
-struct ClipBatch {
-    block: usize,
-    rects: [Rect; WIDTH],
-    clips: [Rect; WIDTH],
-}
-
-impl ClipBatch {
-    fn new(block: usize) -> Self {
-        Self { block, rects: [Rect::default(); WIDTH], clips: [Rect::default(); WIDTH] }
-    }
-
-    fn clipped(self) -> [Lanes; 4] {
-        clip_four(edges(self.rects), edges(self.clips))
-    }
-}
-
-fn edges(rects: [Rect; WIDTH]) -> [Lanes; 4] {
-    [lanes(rects, |r| r.x), lanes(rects, |r| r.y), lanes(rects, |r| r.right()), lanes(rects, |r| r.bottom())]
-}
-
-fn lanes(rects: [Rect; WIDTH], get: impl Fn(Rect) -> f32) -> Lanes {
-    Lanes(rects.map(get))
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn clip_four([x, y, r, b]: [Lanes; 4], [cx, cy, cr, cb]: [Lanes; 4]) -> [Lanes; 4] {
-    use std::arch::aarch64::*;
-    let mut result = [Lanes::default(); 4];
-    // AArch64 guarantees NEON. Each load and store spans one aligned four-lane array.
-    unsafe {
-        let load = |value: &Lanes| vld1q_f32(value.0.as_ptr());
-        let left = vmaxnmq_f32(load(&x), load(&cx));
-        let top = vmaxnmq_f32(load(&y), load(&cy));
-        let zero = vdupq_n_f32(0.0);
-        let width = vmaxnmq_f32(zero, vsubq_f32(vminnmq_f32(load(&r), load(&cr)), left));
-        let height = vmaxnmq_f32(zero, vsubq_f32(vminnmq_f32(load(&b), load(&cb)), top));
-        for (output, value) in result.iter_mut().zip([left, top, width, height]) {
-            vst1q_f32(output.0.as_mut_ptr(), value);
-        }
-    }
-    result
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-#[inline]
-fn clip_four([x, y, r, b]: [Lanes; 4], [cx, cy, cr, cb]: [Lanes; 4]) -> [Lanes; 4] {
-    let left = std::array::from_fn(|i| x.0[i].max(cx.0[i]));
-    let top = std::array::from_fn(|i| y.0[i].max(cy.0[i]));
-    let width = std::array::from_fn(|i| (r.0[i].min(cr.0[i]) - left[i]).max(0.0));
-    let height = std::array::from_fn(|i| (b.0[i].min(cb.0[i]) - top[i]).max(0.0));
-    [Lanes(left), Lanes(top), Lanes(width), Lanes(height)]
-}
-
 #[derive(Default)]
 struct FlatFrame {
     topology: Arc<Topology>,
-    bounds: Bounds,
+    bounds: Vec<Rect>,
     grid: Grid,
+    scrolled: FxHashMap<NodeId, Grid>,
 }
 
 impl FlatFrame {
-    fn rebuild_bounds(&mut self, layout: &LayoutEngine, scratch: &mut FrameArena<u32>) {
-        let flat = &self.topology.nodes;
-        self.bounds.reset(flat.len());
+    fn rebuild_bounds(&mut self, layout: &LayoutEngine) {
+        self.bounds.clear();
         self.grid.clear();
-        let mut index = 0;
-        let mut batch = ClipBatch::new(0);
-        while let Some(entry) = flat.get(index) {
-            if let Some((bounds, clip)) = layout.bounds(entry.node).zip(layout.clip(entry.node)).filter(|(_, clip)| !clip.is_empty()) {
-                let block = index / WIDTH;
-                if block != batch.block {
-                    self.bounds.store_batch(batch, flat, scratch);
-                    batch = ClipBatch::new(block);
-                }
-                batch.rects[index % WIDTH] = bounds;
-                batch.clips[index % WIDTH] = clip;
-                let clips_subtree =
-                    index != 0 && entry.flags & OVERLAY_ROOT == 0 && layout.child_clip(entry.node).is_some_and(|clip| clip.is_empty());
-                index = if clips_subtree { entry.subtree_end as usize } else { index + 1 };
-            } else if entry.flags & OVERLAY_ROOT != 0 {
-                // Overlay children use the viewport clip, even when their parent's clip is empty.
-                index += 1;
+        self.scrolled.retain(|&node, grid| {
+            grid.clear();
+            self.topology.indices.contains_key(node) && layout.scroll_range(node).is_some()
+        });
+        for (index, entry) in self.topology.nodes.iter().enumerate() {
+            let bounds = layout.paint_bounds(entry.node).unwrap_or_default();
+            self.bounds.push(bounds);
+            if entry.flags & OVERLAY_ROOT != 0 {
+                continue;
+            }
+            let grid = if let Some(ancestor) = layout.scroll_ancestor(entry.node) {
+                self.scrolled.entry(ancestor).or_default()
             } else {
-                index = entry.subtree_end as usize;
+                &mut self.grid
+            };
+            let index = flat_index(index);
+            grid.insert(index, bounds);
+            if layout.scroll_range(entry.node).is_some() {
+                // The child clip can extend beyond the box on its non-clipping axis.
+                grid.scrollports.push(index);
             }
         }
-        self.bounds.store_batch(batch, flat, scratch);
-        for &index in scratch.used().iter() {
-            self.grid.insert(index, self.bounds.get(index));
+        for grid in std::iter::once(&mut self.grid).chain(self.scrolled.values_mut()) {
+            grid.cells.retain(|_, entries| !entries.is_empty());
         }
-        self.grid.cells.retain(|_, candidates| !candidates.is_empty());
-        scratch.finish();
     }
 
     fn hit(&self, tree: &Tree, layout: &LayoutEngine, text: &TextEngine, pos: Point) -> Option<NodeId> {
-        let candidates = self.grid.cells.get(&cell(pos)).map_or(&[][..], Vec::as_slice);
-        let hit = |candidates: &[u32]| {
-            candidates.rchunks(WIDTH).find_map(|chunk| {
-                let mut rects = [Rect::default(); WIDTH];
-                for (rect, &index) in rects.iter_mut().zip(chunk) {
-                    *rect = self.bounds.get(index);
+        let mut pending = smallvec::SmallVec::<[(&Grid, Point); 4]>::new();
+        pending.push((&self.grid, pos));
+        let mut top = None;
+        while let Some((grid, local)) = pending.pop() {
+            let candidates = grid.cells.get(&cell(local)).map_or(&[][..], Vec::as_slice);
+            for &index in candidates.iter().rev().chain(grid.large.iter().rev()) {
+                if top.is_none_or(|top| top < index)
+                    && self.bounds[index as usize].contains(local)
+                    && exact_hit(tree, layout, text, self.topology.nodes[index as usize], pos)
+                {
+                    top = Some(index);
                 }
-                let mut mask = point_mask(rects, pos) & ((1 << chunk.len()) - 1);
-                while mask != 0 {
-                    let lane = (u8::BITS - 1 - mask.leading_zeros()) as usize;
-                    let index = chunk[lane];
-                    let entry = self.topology.nodes[index as usize];
-                    if exact_hit(tree, layout, text, entry, pos) {
-                        return Some(index);
-                    }
-                    mask &= !(1 << lane);
+            }
+            for &index in &grid.scrollports {
+                let entry = self.topology.nodes[index as usize];
+                if top.is_some_and(|top| top >= entry.subtree_end)
+                    || !layout.child_clip(entry.node).or_else(|| layout.clip(entry.node)).is_some_and(|clip| clip.contains(pos))
+                {
+                    continue;
                 }
-                None
-            })
-        };
-        let index = hit(candidates).into_iter().chain(hit(&self.grid.large)).max()?;
-        Some(self.topology.nodes[index as usize].node)
+                if let Some(children) = self.scrolled.get(&entry.node) {
+                    let shift = layout.scroll_translation(entry.node);
+                    let offset = layout.scroll_offset(entry.node);
+                    pending.push((children, Point::new(pos.x - shift.x + offset.x, pos.y - shift.y + offset.y)));
+                }
+            }
+        }
+        top.map(|index| self.topology.nodes[index as usize].node)
     }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-fn point_mask(rects: [Rect; WIDTH], point: Point) -> u8 {
-    use std::arch::aarch64::*;
-    let [x, y, right, bottom] = edges(rects);
-    // AArch64 guarantees NEON and all four lane loads are in bounds.
-    unsafe {
-        let px = vdupq_n_f32(point.x);
-        let py = vdupq_n_f32(point.y);
-        let load = |lane: &Lanes| vld1q_f32(lane.0.as_ptr());
-        let horizontal = vandq_u32(vcgeq_f32(px, load(&x)), vcleq_f32(px, load(&right)));
-        let vertical = vandq_u32(vcgeq_f32(py, load(&y)), vcleq_f32(py, load(&bottom)));
-        let flags = vld1q_u32([1, 2, 4, 8].as_ptr());
-        vaddvq_u32(vandq_u32(vandq_u32(horizontal, vertical), flags)) as u8
-    }
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-#[inline]
-fn point_mask(rects: [Rect; WIDTH], point: Point) -> u8 {
-    let inside = rects.map(|r| (point.x >= r.x) & (point.x <= r.right()) & (point.y >= r.y) & (point.y <= r.bottom()));
-    let [a, b, c, d] = inside.map(u8::from);
-    a | (b << 1) | (c << 2) | (d << 3)
 }
 
 fn exact_hit(tree: &Tree, layout: &LayoutEngine, text: &TextEngine, entry: FlatNode, pos: Point) -> bool {
@@ -353,7 +239,7 @@ fn exact_hit(tree: &Tree, layout: &LayoutEngine, text: &TextEngine, entry: FlatN
     }
     let radii = |node| tree.style(node).map_or([0.0; 4], |style| style.visual.radius);
     let hit = if entry.flags & LINK != 0 {
-        text.link_rects(node).iter().any(|rect| rect.contains(pos))
+        text.link_contains(node, layout, pos)
     } else {
         layout.bounds(node).is_some_and(|rect| rect.contains_rounded(pos, radii(node)))
     };
@@ -369,7 +255,6 @@ pub(crate) struct FlatTree {
     current: FlatFrame,
     staging: FlatFrame,
     ready: bool,
-    scratch: FrameArena<u32>,
 }
 
 impl FlatTree {
@@ -383,7 +268,7 @@ impl FlatTree {
             return;
         };
         self.staging.topology = topology;
-        self.staging.rebuild_bounds(layout, &mut self.scratch);
+        self.staging.rebuild_bounds(layout);
         self.ready = true;
     }
 
@@ -395,12 +280,6 @@ impl FlatTree {
 
     pub(crate) fn rollback(&mut self) {
         self.ready = false;
-    }
-
-    pub(crate) fn viewport_visible(&self, node: NodeId) -> Option<bool> {
-        let frame = if self.ready { &self.staging } else { &self.current };
-        let index = *frame.topology.indices.get(node)?;
-        Some(!frame.bounds.get(index).is_empty())
     }
 
     pub(crate) fn hit(&self, tree: &Tree, layout: &LayoutEngine, text: &TextEngine, pos: Point) -> Option<NodeId> {

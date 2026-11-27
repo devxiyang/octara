@@ -20,7 +20,7 @@ use octara_model::paint::{DisplayList, FontData, Item};
 use octara_model::semantics::TextClip;
 use octara_model::text::TextGeometry;
 use octara_model::window::WindowMaterial;
-use octara_runtime::engine::ScrollRange;
+use octara_runtime::engine::{AccessibilityConsumer, ScrollRange};
 use octara_runtime::{CommitOutput, HostEngine, ProjectError, ProjectFeedback};
 use octara_tree::arbiter::{ScrollbarHit, ScrollbarKey};
 use octara_tree::{NodeId, NodeKind, Tree, TreeDelta};
@@ -31,6 +31,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use text::TextEngine;
 
+pub use a11y::AccessibilityWork;
 pub use flat_tree::FlatNode;
 pub use layout::LayoutWork;
 pub use text::TextWork;
@@ -53,7 +54,8 @@ pub struct NativeFrame {
     /// Cumulative text work through this publication, including its projection rounds.
     pub text_work: TextWork,
     pub scene: Option<Arc<PaintScene>>,
-    pub accessibility: accesskit::TreeUpdate,
+    /// The incremental accessibility update, if this frame changed the active tree.
+    pub accessibility: Option<Arc<accesskit::TreeUpdate>>,
     pub native_changes: Vec<NativeChange>,
     pub editor_caret: Option<Rect>,
     pub editor_geometry: Option<TextGeometry>,
@@ -69,9 +71,9 @@ pub struct NativePublication {
 }
 
 impl NativePublication {
-    /// Retain native lifecycle deltas until the window shell consumes them.
+    /// Retain native lifecycle and active accessibility deltas for window delivery.
     pub fn for_window_host() -> Self {
-        Self { pending_native_changes: Some(Rc::default()), ..Self::default() }
+        Self { accessibility: AccessPublication::for_window_host(), pending_native_changes: Some(Rc::default()), ..Self::default() }
     }
 
     pub fn latest(&self) -> Option<Arc<NativeFrame>> {
@@ -82,9 +84,18 @@ impl NativePublication {
         self.pending_native_changes.as_ref().map_or_else(Vec::new, |changes| std::mem::take(&mut *changes.borrow_mut()))
     }
 
-    /// Build the complete AccessKit tree from the latest committed semantics.
+    /// Build a complete snapshot of the active AccessKit tree.
     pub fn snapshot_full(&self) -> Option<accesskit::TreeUpdate> {
         self.accessibility.snapshot_full()
+    }
+
+    pub fn accessibility_work(&self) -> AccessibilityWork {
+        self.accessibility.work()
+    }
+
+    /// Drain active platform updates in committed frame order.
+    pub fn take_accessibility_updates(&self) -> Vec<(u64, Arc<accesskit::TreeUpdate>)> {
+        self.accessibility.take_platform_updates()
     }
 
     pub fn accessibility_node(&self, id: accesskit::NodeId) -> Option<NodeId> {
@@ -100,6 +111,7 @@ struct StagedFrame {
     draw: Arc<DisplayList>,
     scene: Option<Arc<PaintScene>>,
     sampled_at: std::time::Duration,
+    scale: f32,
     editor_caret: Option<Rect>,
     editor_geometry: Option<TextGeometry>,
 }
@@ -116,6 +128,7 @@ pub struct NativeEngine {
     accessibility: AccessKitProjector,
     native: NativeViews,
     frame: u64,
+    committed_scale: f32,
     publication: NativePublication,
     staged: Option<StagedFrame>,
 }
@@ -138,6 +151,7 @@ impl NativeEngine {
             accessibility: AccessKitProjector::new(publication.accessibility.clone()),
             native: NativeViews::default(),
             frame: 0,
+            committed_scale: 1.0,
             publication,
             staged: None,
         }
@@ -196,15 +210,23 @@ impl NativeEngine {
     }
 
     pub fn text_hit(&self, node: NodeId, pos: Point) -> Option<usize> {
-        text::geometry::hit_byte(&self.text.geometry(node)?, pos)
+        text::geometry::hit_byte(&self.text.geometry(node, &self.layout)?, pos)
     }
 
     pub fn text_vertical(&self, node: NodeId, byte: usize, direction: i32, column: Option<f32>) -> Option<(usize, f32)> {
-        text::geometry::vertical_byte(&self.text.geometry(node)?, byte, direction, column)
+        text::geometry::vertical_byte(&self.text.geometry(node, &self.layout)?, byte, direction, column)
     }
 }
 
 impl HostEngine for NativeEngine {
+    fn set_accessibility_active(&self, tree: &Tree, consumer: AccessibilityConsumer, active: bool) {
+        let publication = &self.publication.accessibility;
+        publication.set_active(consumer, active);
+        if active && self.frame != 0 && self.staged.is_none() && !publication.has_tree() {
+            self.accessibility.activate(tree, &self.layout, &self.text, self.committed_scale, self.config.check_a11y_cache);
+        }
+    }
+
     fn set_window_active(&mut self, active: bool) {
         self.window_active = active;
     }
@@ -242,7 +264,6 @@ impl HostEngine for NativeEngine {
             tree,
             delta,
             &self.layout,
-            &self.flat,
             &mut self.text,
             CompileOptions {
                 viewport,
@@ -259,8 +280,9 @@ impl HostEngine for NativeEngine {
             draw: frame.draw,
             scene: frame.scene,
             sampled_at: std::time::Duration::from_secs_f64(now),
-            editor_caret: editor.filter(|_| self.window_active).and_then(|node| self.text.caret(node)),
-            editor_geometry: editor.and_then(|node| self.text.geometry(node)),
+            scale: viewport.scale,
+            editor_caret: editor.filter(|_| self.window_active).and_then(|node| self.text.caret(node, &self.layout)),
+            editor_geometry: editor.and_then(|node| self.text.geometry(node, &self.layout)),
         });
         Ok(ProjectFeedback { updates, replies: frame.replies, next_deadline: frame.next_deadline.into_iter().chain(scroll_deadline).min() })
     }
@@ -268,12 +290,13 @@ impl HostEngine for NativeEngine {
     fn commit(&mut self) -> CommitOutput {
         let staged = self.staged.take().expect("native publication requires a projected frame");
         self.frame = self.frame.checked_add(1).expect("native frame identity exhausted");
+        self.committed_scale = staged.scale;
         self.layout.commit_stage();
         self.flat.commit();
         self.text.commit_stage();
         self.paint.commit();
         self.scrolling.commit_stage();
-        let accessibility = self.accessibility.commit();
+        let accessibility = self.accessibility.commit(self.frame);
         let (native_changes, measurements) = self.native.commit();
         if let Some(pending) = &self.publication.pending_native_changes {
             pending.borrow_mut().extend(native_changes.iter().cloned());
@@ -323,23 +346,23 @@ impl HostEngine for NativeEngine {
     }
 
     fn inline_attachment_bounds(&self, node: NodeId, index: usize) -> Option<Rect> {
-        self.text.attachment_bounds(node, index)
+        self.text.attachment_bounds(node, index, &self.layout)
     }
 
     fn caret_rect(&self, tree: &Tree, node: NodeId) -> Option<Rect> {
-        (tree.focus() == Some(node)).then(|| self.text.caret(node)).flatten()
+        (tree.focus() == Some(node)).then(|| self.text.caret(node, &self.layout)).flatten()
     }
 
     fn selection_rect(&self, tree: &Tree, node: NodeId) -> Option<Rect> {
-        self.text.selection_rect(tree, node)
+        self.text.selection_rect(tree, &self.layout, node)
     }
 
     fn text_geometry(&self, _: &Tree, node: NodeId) -> Option<TextGeometry> {
-        self.text.geometry(node)
+        self.text.geometry(node, &self.layout)
     }
 
     fn text_pointer_hit(&self, node: NodeId, pos: Point) -> Option<(usize, usize)> {
-        text::geometry::hit_text(&self.text.geometry(node)?, pos)
+        text::geometry::hit_text(&self.text.geometry(node, &self.layout)?, pos)
     }
 
     fn text_vertical(&self, node: NodeId, byte: usize, direction: i32, column: Option<f32>) -> Option<(usize, f32)> {

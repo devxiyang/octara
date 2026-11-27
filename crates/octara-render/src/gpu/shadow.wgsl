@@ -67,9 +67,10 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) id: u32) -> VsOut
 
 @fragment
 fn fs(v: VsOut) -> @location(0) vec4f {
-    let p = v.pos.xy + globals.origin;
+    let world = v.pos.xy + globals.origin;
     let draw_inst = draws[v.inst_id];
+    let p = world - draw_offset(draw_inst);
     let shadow = shadows[draw_inst.payload];
-    let alpha = shadow_alpha(p, shadow.rect, shadow.radius, shadow.sigma) * clip_coverage(p, draw_inst);
+    let alpha = shadow_alpha(p, shadow.rect, shadow.radius, shadow.sigma) * clip_coverage(world, draw_inst);
     return premultiply(shadow.color) * alpha;
 }

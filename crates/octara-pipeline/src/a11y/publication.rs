@@ -1,10 +1,11 @@
 //! Committed accessibility state for the current window.
 
-use super::{Entry, ScopeInput, Staging, node_identity};
+use super::{AccessibilityWork, Entry, ScopeInput, Staging, node_identity};
 use accesskit as ak;
 use octara_model::identity::TreeId;
 use octara_model::input::HostReply;
 use octara_model::semantics::{A11yAction, TextPosition};
+use octara_runtime::engine::AccessibilityConsumer;
 use octara_tree::semantics::SemanticScope;
 use octara_tree::{NodeId, Tree};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -17,6 +18,42 @@ use std::sync::Arc;
 pub(crate) struct AccessPublication(pub(super) Rc<RefCell<Published>>);
 
 impl AccessPublication {
+    pub(crate) fn for_window_host() -> Self {
+        Self(Rc::new(RefCell::new(Published { platform_updates: Some(Vec::new()), ..Published::default() })))
+    }
+
+    pub(crate) fn active(&self) -> bool {
+        self.0.borrow().active()
+    }
+
+    pub(crate) fn set_active(&self, consumer: AccessibilityConsumer, active: bool) {
+        let mut published = self.0.borrow_mut();
+        match consumer {
+            AccessibilityConsumer::Platform => {
+                published.platform_active = active;
+                if !active && let Some(updates) = &mut published.platform_updates {
+                    updates.clear();
+                }
+            }
+            AccessibilityConsumer::Inspector => published.inspector_active = active,
+        }
+        if !published.active() {
+            published.clear_tree();
+        }
+    }
+
+    pub(crate) fn has_tree(&self) -> bool {
+        self.0.borrow().root.is_some()
+    }
+
+    pub(crate) fn work(&self) -> AccessibilityWork {
+        self.0.borrow().work
+    }
+
+    pub(crate) fn take_platform_updates(&self) -> Vec<(u64, Arc<ak::TreeUpdate>)> {
+        self.0.borrow_mut().platform_updates.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
     pub(crate) fn snapshot_full(&self) -> Option<ak::TreeUpdate> {
         let published = self.0.borrow();
         let root = node_identity(published.root?);
@@ -72,6 +109,10 @@ impl AccessPublication {
 
 #[derive(Default)]
 pub(super) struct Published {
+    platform_active: bool,
+    inspector_active: bool,
+    platform_updates: Option<Vec<(u64, Arc<ak::TreeUpdate>)>>,
+    pub work: AccessibilityWork,
     pub tree_id: Option<TreeId>,
     pub root: Option<NodeId>,
     pub focus: Option<NodeId>,
@@ -91,6 +132,29 @@ pub(super) struct Published {
 }
 
 impl Published {
+    fn active(&self) -> bool {
+        self.platform_active || self.inspector_active
+    }
+
+    fn clear_tree(&mut self) {
+        let platform_updates = self.platform_updates.as_ref().map(|_| Vec::new());
+        *self = Self {
+            platform_active: self.platform_active,
+            inspector_active: self.inspector_active,
+            platform_updates,
+            work: self.work,
+            ..Self::default()
+        };
+    }
+
+    pub(super) fn record_platform_update(&mut self, version: u64, update: &Arc<ak::TreeUpdate>) {
+        if self.platform_active
+            && let Some(updates) = &mut self.platform_updates
+        {
+            updates.push((version, update.clone()));
+        }
+    }
+
     fn node(&self, native: ak::NodeId) -> Option<NodeId> {
         self.targets.get(&native).copied().or_else(|| self.runs.get(&native).map(|entry| entry.0))
     }
@@ -100,13 +164,14 @@ impl Published {
         Some(TextPosition { node: *node, offset: *bytes.get(position.character_index)? })
     }
 
-    pub(super) fn commit(&mut self, staged: Staging) -> ak::TreeUpdate {
+    pub(super) fn commit(&mut self, staged: Staging, emit: bool) -> Option<ak::TreeUpdate> {
         let root = staged.root.expect("project before publish");
         let focus = staged.focus.expect("project focus before publish");
+        let focus_changed = self.focus != Some(focus);
         let new_tree = self.tree_id != staged.tree_id;
         let tree = (new_tree || self.root != Some(root)).then(|| ak::TreeInfo::new(node_identity(root)));
         if new_tree {
-            *self = Self::default();
+            self.clear_tree();
         }
         self.root = Some(root);
         self.tree_id = staged.tree_id;
@@ -124,7 +189,7 @@ impl Published {
 
         #[cfg(test)]
         {
-            self.committed = staged.entries.len();
+            self.committed = staged.entries.len() + staged.geometry.len();
         }
         let mut nodes = Vec::new();
         for (id, entry) in staged.entries {
@@ -138,12 +203,14 @@ impl Published {
                 }
             }
             if let Some(entry) = entry {
-                if old.as_ref().is_none_or(|old| entry.node != old.node) {
+                if emit && old.as_ref().is_none_or(|old| entry.node != old.node) {
                     nodes.push((key, entry.node.clone()));
                 }
                 self.targets.insert(key, id);
                 for (index, run) in entry.runs.iter().enumerate() {
-                    if old.as_ref().and_then(|entry| entry.runs.get(index)).is_none_or(|old| old.id != run.id || old.node != run.node) {
+                    if emit
+                        && old.as_ref().and_then(|entry| entry.runs.get(index)).is_none_or(|old| old.id != run.id || old.node != run.node)
+                    {
                         nodes.push((run.id, run.node.clone()));
                     }
                     self.runs.insert(run.id, (id, run.bytes.clone()));
@@ -152,8 +219,21 @@ impl Published {
                 self.entries.insert(id, entry);
             }
         }
+        for (id, geometry) in staged.geometry {
+            let entry = self.entries.get_mut(&id).expect("geometry patch has a published node");
+            geometry.apply(&mut entry.node);
+            entry.geometry = geometry;
+            if emit {
+                nodes.push((node_identity(id), entry.node.clone()));
+            }
+        }
         nodes.sort_unstable_by_key(|(id, _)| *id);
-        ak::TreeUpdate { nodes, tree, tree_id: ak::TreeId::ROOT, focus: node_identity(focus) }
+        (emit && (!nodes.is_empty() || tree.is_some() || focus_changed)).then(|| ak::TreeUpdate {
+            nodes,
+            tree,
+            tree_id: ak::TreeId::ROOT,
+            focus: node_identity(focus),
+        })
     }
 
     fn index(&mut self, id: NodeId, entry: &Entry, insert: bool) {

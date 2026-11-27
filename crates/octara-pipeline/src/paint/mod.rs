@@ -4,26 +4,25 @@ mod scene;
 mod scrollbars;
 pub use scene::PaintScene;
 
-use crate::flat_tree::FlatTree;
 use crate::frame_arena::FrameArena;
 use crate::layout::LayoutEngine;
 use crate::motion::{MotionOptions, NodeMotion, TargetMotion, next_frame};
 use crate::text::{PaintKey, TextEngine};
-use octara_model::geometry::{LayoutBox, Point, Rect, Size, WindowViewport};
+use octara_model::geometry::{LayoutBox, Point, Rect, Size, Vec2, WindowViewport};
 use octara_model::image::MediaAsset;
 use octara_model::input::HostReply;
 use octara_model::motion::{PropClass, TextRevealTrack, Track};
 use octara_model::native::NativeSlot;
 use octara_model::paint::{
-    CanvasOp, CustomPaint, DisplayList, Image, ImagePaint, Item, NodeIcon, PaintInput, PaintMount, PaintProgram, Part, PathPaint, Quad,
-    Sample, Shadow, Transform, TransitionPaint,
+    CanvasOp, CustomPaint, DisplayList, Image, ImagePaint, Item, NodeIcon, PaintInput, PaintMount, PaintProgram, PathPaint, Quad, Sample,
+    ScrollPlacement, ScrollPlacements, Shadow, Transform, TransitionPaint,
 };
 use octara_model::style::{Display, Ring, Visual};
 use octara_model::text::{InlineAttachment, InlineContent};
 use octara_model::theme::{BoxShadow, Color, ColorToken, Fill, Gradient};
 use octara_tree::{DirtyBitmap, ExitTicket, NodeFlags, NodeId, RetiredNode, Tree, TreeDelta};
 use rustc_hash::{FxHashMap, FxHashSet};
-use scene::{ChildList, Element, ExitGhost, PaintNode};
+use scene::{ChildList, Element, ExitGhost, PaintNode, Translation};
 use scrollbars::Scrollbars;
 use smallvec::SmallVec;
 use std::rc::Rc;
@@ -101,16 +100,10 @@ impl Decoration {
         items
     }
 
-    fn shadows_meet(&self, rect: Rect, clip: Rect) -> bool {
-        self.shadows.iter().any(|shadow| {
+    fn shadow_bounds(&self, rect: Rect) -> impl Iterator<Item = Rect> + '_ {
+        self.shadows.iter().map(move |shadow| {
             let extent = shadow.spread_radius + 1.5 * shadow.blur_radius;
-            let reach = Rect::new(
-                rect.x + shadow.offset.0 - extent,
-                rect.y + shadow.offset.1 - extent,
-                rect.w + 2.0 * extent,
-                rect.h + 2.0 * extent,
-            );
-            !reach.intersect(&clip).is_empty()
+            Rect::new(rect.x + shadow.offset.0 - extent, rect.y + shadow.offset.1 - extent, rect.w + 2.0 * extent, rect.h + 2.0 * extent)
         })
     }
 }
@@ -166,6 +159,8 @@ pub struct PaintMetrics {
     pub subtrees_rebuilt: u64,
     /// Persistent child-sequence leaves and branches created by topology or subtree changes.
     pub child_spans_rebuilt: u64,
+    /// Scroll placements replaced without recompiling their content.
+    pub scroll_wrappers_updated: u64,
     /// Nodes sampled for motion or a caret. Resting spans are shared without sampling their nodes.
     pub timed_nodes_sampled: u64,
     /// Child-sequence leaves and branches examined to assemble timed samples.
@@ -182,6 +177,7 @@ struct RetainedNode {
 #[derive(Default)]
 struct Stage {
     nodes: FxHashMap<NodeId, Option<RetainedNode>>,
+    scrolls: ScrollPlacements,
     ghosts: FxHashMap<NodeId, Option<Arc<ExitGhost>>>,
     drawings: FxHashMap<NodeId, Rc<Drawing>>,
     destroyed: FxHashSet<NodeId>,
@@ -194,10 +190,12 @@ struct Stage {
 #[derive(Default)]
 pub(crate) struct PaintCompiler {
     scrollbars: Scrollbars,
+    scrolls: ScrollPlacements,
     cache: FxHashMap<NodeId, DrawingCache>,
     nodes: FxHashMap<NodeId, RetainedNode>,
     ghosts: FxHashMap<NodeId, Arc<ExitGhost>>,
     image_nodes: FxHashSet<NodeId>,
+    translation_nodes: FxHashSet<NodeId>,
     stage: Option<Stage>,
     blink: Option<Blink>,
     window_active: bool,
@@ -206,6 +204,7 @@ pub(crate) struct PaintCompiler {
     metrics: PaintMetrics,
     local_dirty: DirtyBitmap,
     branch_dirty: DirtyBitmap,
+    scroll_dirty: DirtyBitmap,
     finished_exits: FrameArena<ExitTicket>,
     last_scene: Option<Arc<PaintScene>>,
     resting_draw: Option<Arc<DisplayList>>,
@@ -233,13 +232,13 @@ impl PaintCompiler {
         tree: &Tree,
         delta: &TreeDelta,
         layout: &LayoutEngine,
-        flat: &FlatTree,
         text: &mut TextEngine,
         options: CompileOptions,
     ) -> PaintFrame {
         if self.stage.is_none() {
             self.stage = Some(Stage {
                 blink: self.blink,
+                scrolls: self.scrolls.clone(),
                 window_active: self.window_active,
                 image_generation: self.image_generation,
                 reduced_motion: self.reduced_motion,
@@ -252,7 +251,9 @@ impl PaintCompiler {
         local.union_with(layout.changed());
         local.union_with(text.changed());
         local.extend(delta.created.iter().copied());
-        let scrollbar_deadline = self.scrollbars.step(tree, layout, &options, &mut local);
+        let mut scroll_updates = std::mem::take(&mut self.scroll_dirty);
+        scroll_updates.union_with(layout.scroll_changed());
+        let scrollbar_deadline = self.scrollbars.step(tree, layout, &options, &mut scroll_updates);
         if self.window_active != options.window_active {
             self.window_active = options.window_active;
             let regions: FxHashSet<_> = tree.selection_endpoints().filter_map(|node| tree.region_of(node)).collect();
@@ -283,6 +284,7 @@ impl PaintCompiler {
                 RetiredNode::Destroyed(node) => {
                     self.set_node(node, None);
                     self.set_ghost(node, None);
+                    scroll_updates.insert(node);
                     self.stage.as_mut().expect("open stage").destroyed.insert(node);
                 }
                 RetiredNode::Exiting { ticket, visible } if tree.accepts_exit(ticket) => {
@@ -335,6 +337,22 @@ impl PaintCompiler {
                 }
             }
         }
+        scroll_updates.extend(local.iter().filter(|&node| layout.scroll_range(node).is_some() || self.scrolls.get(node).is_some()));
+        for node in scroll_updates.iter() {
+            let placement = if layout.scroll_range(node).is_some() {
+                let scroll = layout.scroll_offset(node);
+                let scrollbars = self.scrollbars.placements(tree, layout, node, self.scrolls.get(node));
+                Some(ScrollPlacement { offset: Vec2::new(-scroll.x, -scroll.y), scrollbars })
+            } else {
+                None
+            };
+            if self.scrolls.get(node) != placement.as_ref() {
+                self.scrolls.set(node, placement);
+                self.metrics.scroll_wrappers_updated = self.metrics.scroll_wrappers_updated.saturating_add(1);
+            }
+        }
+        scroll_updates.clear();
+        self.scroll_dirty = scroll_updates;
         let mut branches = std::mem::take(&mut self.branch_dirty);
         let mut changed_children = FxHashMap::<NodeId, SmallVec<[NodeId; 4]>>::default();
         for node in local.iter().chain(delta.topology_dirty.iter()) {
@@ -358,23 +376,30 @@ impl PaintCompiler {
             owner: self,
             tree,
             layout,
-            flat,
             text,
             options: &options,
             local,
             branches,
             changed_children,
             topology_dirty: &delta.topology_dirty,
-            immediate_layout: !delta.scroll_dirty.is_empty() || !layout.scrolled().is_empty(),
+            immediate_layout: !delta.scroll_dirty.is_empty() || !layout.scroll_changed().is_empty(),
             cancel_active_motion,
         };
         let root = compile.node(tree.root());
         let size = options.viewport.size;
         let background = if options.transparent_window { Color::TRANSPARENT } else { tree.theme().get(ColorToken::Background) };
-        let scene = if let Some(scene) = compile.owner.last_scene.as_ref().filter(|scene| scene.matches(size, background, root.as_ref())) {
+        let scene = if let Some(scene) =
+            compile.owner.last_scene.as_ref().filter(|scene| scene.matches(size, background, root.as_ref(), &compile.owner.scrolls))
+        {
             scene.clone()
         } else {
-            let scene = Arc::new(PaintScene { size, background, root });
+            let translations = compile
+                .owner
+                .last_scene
+                .as_ref()
+                .filter(|previous| root.as_ref().zip(previous.root.as_ref()).is_some_and(|(a, b)| Arc::ptr_eq(a, b)))
+                .map_or_else(|| compile.owner.translations(options.now), |previous| previous.translations.clone());
+            let scene = Arc::new(PaintScene { size, background, root, scrolls: compile.owner.scrolls.clone(), translations });
             compile.owner.last_scene = Some(scene.clone());
             compile.owner.resting_draw = None;
             scene
@@ -421,10 +446,8 @@ impl PaintCompiler {
         let snapshot = self.nodes.get(&node)?.scene.as_ref()?;
         let element = snapshot.element.as_ref()?;
         let bounds = element.motion.as_ref().map_or(element.bounds, |track| track.bounds(now));
-        if visible_only && bounds.intersect(&element.clip).is_empty() {
-            return None;
-        }
-        let mut nested = false;
+        let mut retiring = Vec::new();
+        let mut ancestors = SmallVec::<[_; 8]>::new();
         let mut inherited_opacity = 1.0_f64;
         for parent in std::iter::successors(tree.physical_parent(node), |&parent| tree.physical_parent(parent)) {
             let ancestor = self.nodes.get(&parent)?.scene.as_ref()?.element.as_ref()?;
@@ -432,9 +455,34 @@ impl PaintCompiler {
             if opacity <= 0.0 {
                 return None;
             }
+            let offset = self.scrolls.get(parent).map_or(Vec2::default(), |placement| placement.offset);
+            let clip = ancestor.clip_at(now);
             if !tree.is_live(parent) {
                 inherited_opacity *= f64::from(opacity.min(1.0));
-                nested = true;
+                retiring.push((parent, clip.clone(), offset));
+            }
+            ancestors.push((clip, offset));
+        }
+        if visible_only {
+            let size = self.last_scene.as_ref()?.size;
+            let mut clip = Rect::new(0.0, 0.0, size.width, size.height);
+            let mut offset = Vec2::default();
+            for (parent_clip, scroll) in ancestors.into_iter().rev() {
+                if let Some(parent_clip) = parent_clip {
+                    let rect = match parent_clip {
+                        Item::PushClip { rect, .. } => Rect::new(rect.x + offset.x, rect.y + offset.y, rect.w, rect.h),
+                        Item::PushAxisClip { rect, horizontal: true, .. } => Rect::new(rect.x + offset.x, clip.y, rect.w, clip.h),
+                        Item::PushAxisClip { rect, horizontal: false, .. } => Rect::new(clip.x, rect.y + offset.y, clip.w, rect.h),
+                        _ => unreachable!("paint ancestor clip"),
+                    };
+                    clip = clip.intersect(&rect);
+                }
+                offset.x += scroll.x;
+                offset.y += scroll.y;
+            }
+            let bounds = Rect::new(bounds.x + offset.x, bounds.y + offset.y, bounds.w, bounds.h);
+            if bounds.intersect(&clip).is_empty() {
+                return None;
             }
         }
         let mut opacity = Track::new(inherited_opacity);
@@ -442,7 +490,7 @@ impl PaintCompiler {
         if !opacity.moving(now) {
             return None;
         }
-        ExitGhost::capture(ticket, snapshot, now, opacity, independent, nested)
+        ExitGhost::capture(ticket, snapshot, now, opacity, independent, &retiring, &self.scrolls)
     }
 
     fn set_node(&mut self, node: NodeId, next: Option<RetainedNode>) {
@@ -450,7 +498,26 @@ impl PaintCompiler {
         self.stage.as_mut().expect("open stage").nodes.entry(node).or_insert(previous);
     }
 
+    fn translations(&self, now: f64) -> Arc<[Translation]> {
+        let mut translations: Vec<_> = self
+            .translation_nodes
+            .iter()
+            .filter_map(|&node| {
+                let motion = self.nodes.get(&node)?.motion.as_ref()?;
+                let until = motion.rest_at().filter(|&rest| rest > now)?;
+                Some(Translation { node, target: motion.bounds(f64::INFINITY), motion: motion.clone(), until })
+            })
+            .collect();
+        translations.sort_unstable_by(|a, b| a.until.total_cmp(&b.until));
+        translations.into()
+    }
+
     fn replace_node(&mut self, node: NodeId, next: Option<RetainedNode>) -> Option<RetainedNode> {
+        if next.as_ref().and_then(|node| node.scene.as_ref()).is_some_and(|scene| scene.translates) {
+            self.translation_nodes.insert(node);
+        } else {
+            self.translation_nodes.remove(&node);
+        }
         if let Some(next) = next {
             if next.images.is_empty() {
                 self.image_nodes.remove(&node);
@@ -494,6 +561,7 @@ impl PaintCompiler {
                 self.ghosts.remove(&node);
             }
         }
+        self.scrolls = stage.scrolls;
         self.blink = stage.blink;
         self.window_active = stage.window_active;
         self.image_generation = stage.image_generation;
@@ -532,7 +600,6 @@ struct Compile<'a> {
     owner: &'a mut PaintCompiler,
     tree: &'a Tree,
     layout: &'a LayoutEngine,
-    flat: &'a FlatTree,
     text: &'a mut TextEngine,
     options: &'a CompileOptions,
     local: DirtyBitmap,
@@ -561,7 +628,7 @@ impl Compile<'_> {
             let (element, images) = if let Some(element) = existing.filter(|_| !self.local.contains(&node)) {
                 (element.clone(), previous.expect("retained element").images.clone())
             } else {
-                let (bounds, clip, local) = self.geometry(node)?;
+                let (bounds, local) = self.geometry(node)?;
                 let visual = self.tree.visual(node);
                 let binding = self.tree.paint(node).and_then(|slot| slot.transition.as_ref());
                 let motion = (!visual.motion.is_none() || binding.is_some()).then(|| {
@@ -595,8 +662,7 @@ impl Compile<'_> {
                     .copied()
                     .filter(|reveal| reveal.enabled(self.options.reduced_motion))
                     .map(|reveal| TextRevealTrack::update(previous_reveal, reveal, self.options.now));
-                let mut element = self.element(node, bounds, clip, visual, &drawing, motion);
-                element.visible = !bounds.intersect(&clip).is_empty();
+                let mut element = self.element(node, bounds, visual, &drawing, motion);
                 element.reveal = reveal;
                 element.reveal_tint = reveal.and_then(TextRevealTrack::tint).map(|color| color.resolve(self.tree.theme_at(node)).0);
                 self.owner.stage.as_mut().expect("open stage").drawings.insert(node, drawing);
@@ -604,7 +670,14 @@ impl Compile<'_> {
             };
             let motion = element.motion.clone();
             let children = self.children(node, previous_children);
-            let scene = Some(Arc::new(PaintNode::element(element, children)));
+            let translates = self.tree.children(node).is_empty()
+                && !element.scroll
+                && element.reveal.is_none()
+                && element.caret.is_none()
+                && element.transition.is_none()
+                && !element.own.iter().any(|item| matches!(item, Item::Native { .. } | Item::Custom(_)))
+                && motion.as_ref().is_some_and(|motion| motion.translation_only(self.options.now));
+            let scene = Some(Arc::new(PaintNode::element(element, children, translates)));
             RetainedNode { scene, motion, images }
         };
         self.owner.metrics.subtrees_rebuilt = self.owner.metrics.subtrees_rebuilt.saturating_add(1);
@@ -640,47 +713,53 @@ impl Compile<'_> {
     #[cold]
     #[inline(never)]
     fn verify_draw(&mut self, draw: &DisplayList, size: Size, background: Color, image_generation: u64) {
-        let mut parts = Vec::new();
-        self.uncached_emit(self.tree.root(), &mut parts);
+        let root = self.uncached_node(self.tree.root());
         if image_generation == Image::pixel_generation() {
-            assert_eq!(draw.items(), DisplayList { size, background, parts }.items(), "incremental paint projection diverged");
+            let scene = PaintScene {
+                root,
+                size,
+                background,
+                scrolls: self.owner.scrolls.clone(),
+                translations: self.owner.translations(self.options.now),
+            };
+            assert_eq!(draw.items(), scene.sample(self.options.now).items(), "incremental paint projection diverged");
         }
     }
 
-    fn uncached_emit(&mut self, node: NodeId, output: &mut Vec<Part>) {
-        let now = self.options.now;
+    fn uncached_node(&mut self, node: NodeId) -> Option<Arc<PaintNode>> {
         if self.tree.node(node).is_some_and(|core| core.flags.contains(NodeFlags::EXITING)) {
-            if let Some(ghost) = self.owner.ghosts.get(&node) {
-                ghost.emit(now, output);
-            }
-            for &child in crate::paint_order(self.tree, node).iter() {
-                self.uncached_emit(child, output);
-            }
-            return;
+            let ghost = self.owner.ghosts.get(&node).cloned();
+            let children = self.uncached_children(node);
+            return Some(Arc::new(PaintNode::ghost(ghost, children)));
         }
-        let Some((bounds, clip, local)) = self.geometry(node) else { return };
+        let (bounds, local) = self.geometry(node)?;
         let visual = self.tree.visual(node);
         let samples = image_samples(self.tree, node);
         let drawing = self.drawing(node, self.draw_key(node, visual, local, &samples), samples);
         let motion = self.owner.nodes.get(&node).and_then(|entry| entry.motion.clone());
-        let mut element = self.element(node, bounds, clip, visual, &drawing, motion);
-        element.visible = !bounds.intersect(&clip).is_empty();
+        let mut element = self.element(node, bounds, visual, &drawing, motion);
         if let Some(sample) = self.owner.nodes.get(&node).and_then(|entry| entry.scene.as_ref()?.element.as_ref()) {
             element.reveal = sample.reveal;
             element.reveal_tint = sample.reveal_tint;
         }
-        element.emit(now, |output| crate::paint_order(self.tree, node).iter().for_each(|&child| self.uncached_emit(child, output)), output);
+        let children = self.uncached_children(node);
+        let translates = self.owner.nodes.get(&node).and_then(|node| node.scene.as_ref()).is_some_and(|scene| scene.translates);
+        Some(Arc::new(PaintNode::element(Arc::new(element), children, translates)))
     }
 
-    fn geometry(&self, node: NodeId) -> Option<(Rect, Rect, LayoutBox)> {
+    fn uncached_children(&mut self, node: NodeId) -> ChildList {
+        let order = crate::paint_order(self.tree, node);
+        ChildList::new(order.iter().map(|&child| (child, self.tree.stacking_key(child).1, self.uncached_node(child))), &mut 0)
+    }
+
+    fn geometry(&self, node: NodeId) -> Option<(Rect, LayoutBox)> {
         if !self.tree.is_live(node) || self.tree.layout_style(node).display == Display::None {
             return None;
         }
-        let bounds = self.layout.bounds(node)?;
-        let clip = self.layout.clip(node)?;
+        let bounds = self.layout.paint_bounds(node)?;
         let layout = self.layout.geometry(node)?;
         let local = LayoutBox { rect: Rect::new(0.0, 0.0, bounds.w, bounds.h), ..layout };
-        Some((bounds, clip, local))
+        Some((bounds, local))
     }
 
     fn draw_key(&self, node: NodeId, visual: Visual, local: LayoutBox, images: &[Sample]) -> DrawKey {
@@ -712,15 +791,7 @@ impl Compile<'_> {
         Drawing { key, decoration, items: items.into(), content_start }
     }
 
-    fn element(
-        &self,
-        node: NodeId,
-        bounds: Rect,
-        clip: Rect,
-        visual: Visual,
-        drawing: &Drawing,
-        motion: Option<Arc<NodeMotion>>,
-    ) -> Element {
+    fn element(&self, node: NodeId, bounds: Rect, visual: Visual, drawing: &Drawing, motion: Option<Arc<NodeMotion>>) -> Element {
         let transition = self.tree.paint(node).and_then(|slot| slot.transition.as_ref()).map(|binding| TransitionPaint {
             source: node,
             mount: binding.mount.clone(),
@@ -731,19 +802,18 @@ impl Compile<'_> {
             opacity: visual.opacity,
         });
         let caret = self.owner.blink.filter(|(focus, _, _)| *focus == node).and_then(|(_, _, start)| {
-            let rect = self.text.caret(node)?;
+            let local = self.text.local_caret(node)?;
+            let rect = Rect::new(bounds.x + local.x, bounds.y + local.y, local.w, local.h);
             Some((Item::Quad(solid(node, rect, visual.text)), start))
         });
         Element {
             source: node,
             bounds,
-            clip,
-            visible: self.flat.viewport_visible(node).unwrap_or_else(|| !bounds.intersect(&clip).is_empty()),
-            child_clip: self
-                .layout
-                .rounded_child_clip(node)
-                .map(|rect| (rect, true))
-                .or_else(|| self.layout.child_clip(node).map(|rect| (rect, false))),
+            child_clip: self.layout.local_client(node).and_then(|client| {
+                let axes = self.layout.clip_axes(node);
+                (axes != [false; 2]).then(|| (Rect::new(bounds.x + client.x, bounds.y + client.y, client.w, client.h), axes))
+            }),
+            scroll: self.layout.scroll_range(node).is_some(),
             visual,
             decoration: drawing.decoration.clone(),
             own: drawing.items.clone(),
@@ -753,7 +823,6 @@ impl Compile<'_> {
             reveal_tint: None,
             transition,
             caret,
-            scrollbars: self.owner.scrollbars.thumbs(self.tree, self.layout, node),
         }
     }
 
@@ -822,9 +891,8 @@ impl Compile<'_> {
         }
         positions.sort_unstable_by_key(|&(index, _)| index);
         let mut positions = positions.into_iter().peekable();
-        if let Some(rect) = clip {
-            out.push(Item::PushClip { source: node, rect, radius: [0.0; 4] });
-        }
+        let clipped = clip.is_some();
+        out.extend(clip);
         for (index, attachment) in node_attachments(self.tree, node).iter().enumerate() {
             let mut samples = images.by_ref().take(attachment_images(self.tree, node, index, attachment).count());
             if positions.peek().is_some_and(|position| position.0 == index) {
@@ -855,7 +923,7 @@ impl Compile<'_> {
             }
             samples.for_each(drop);
         }
-        if clip.is_some() {
+        if clipped {
             out.push(Item::PopClip);
         }
     }

@@ -84,7 +84,6 @@ impl Tree {
                     if *slot != next {
                         *slot = next;
                         delta.scroll_dirty.insert(node);
-                        self.paint_changed(node, &mut delta);
                     }
                 }
             }

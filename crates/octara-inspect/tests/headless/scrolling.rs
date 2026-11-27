@@ -22,6 +22,38 @@ fn top_row(driver: &HeadlessDriver, id: WindowId) -> NodeId {
 }
 
 #[test]
+fn frame_wheel_batch_retests_each_sample_as_a_nested_scrollport_moves() {
+    let mut driver = driver();
+    let id = driver
+        .app_mut()
+        .open_window(options(), |_| {
+            col()
+                .test_id("outer")
+                .w(120)
+                .h(100)
+                .scroll_y()
+                .child(el().h(80).shrink(0.0))
+                .child(col().test_id("inner").h(60).shrink(0.0).scroll_y().child(el().h(180).shrink(0.0)))
+                .child(el().h(140).shrink(0.0))
+        })
+        .unwrap();
+    let outer = node(&driver, id, "outer");
+    let inner = node(&driver, id, "inner");
+    assert!(!driver.app().runtime().window(id).unwrap().can_coalesce_wheel(Point::new(30.0, 70.0)));
+    let wheel = InteractionEvent::Wheel {
+        pos: Point::new(30.0, 70.0),
+        delta: Vec2::new(0.0, 20.0),
+        phase: WheelPhase::Discrete,
+        mods: Modifiers::empty(),
+    };
+    let receipt =
+        driver.app_mut().runtime_mut().dispatch_frame_inputs(id, [Input::Interaction(wheel), Input::Interaction(wheel)], None).unwrap();
+    assert!(receipt.handled);
+    assert_eq!(offset(&driver, id, outer).y, 20.0);
+    assert_eq!(offset(&driver, id, inner).y, 20.0);
+}
+
+#[test]
 fn keyboard_focus_reveals_nested_scrollports_and_respects_a_request() {
     let mut driver = driver();
     let id = driver

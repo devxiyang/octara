@@ -51,6 +51,7 @@ pub(super) struct FrameBuffers {
     glyph_clips: Storage,
     materials: Storage,
     gradients: Storage,
+    spatials: Storage,
     sampler: wgpu::Sampler,
 }
 
@@ -82,6 +83,7 @@ impl FrameBuffers {
             glyph_clips: Storage::new::<GlyphClip>(device, "octara glyph clips"),
             materials: Storage::new::<MaterialInst>(device, "octara material instances"),
             gradients: Storage::new::<GradientInst>(device, "octara gradient buffer"),
+            spatials: Storage::new::<[f32; 4]>(device, "octara spatial offsets"),
             sampler,
         }
     }
@@ -99,6 +101,7 @@ impl FrameBuffers {
         self.glyph_clips.prepare(device, &data.instances.glyph_clips, limit)?;
         self.materials.prepare(device, &data.instances.materials, limit)?;
         self.gradients.prepare(device, &data.instances.gradients, limit)?;
+        self.spatials.prepare(device, &data.spatials, limit)?;
         Ok(())
     }
 
@@ -162,6 +165,7 @@ impl FrameBuffers {
             wgpu::BindGroupEntry { binding: 2, resource: payload.0.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 5, resource: self.clips.0.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 6, resource: draws.0.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 8, resource: self.spatials.0.as_entire_binding() },
         ];
         if matches!(kind, PipelineKind::Quad | PipelineKind::Image) {
             entries.push(wgpu::BindGroupEntry { binding: 7, resource: self.gradients.0.as_entire_binding() });
@@ -182,7 +186,11 @@ impl FrameBuffers {
     }
 
     pub(super) fn stage<'a>(&'a self, textures: &'a mut SceneTextures, data: FrameData) -> FrameUploads<'a> {
-        FrameUploads { textures, buffers: self, data }
+        FrameUploads { buffers: self, writes: FrameWrites::Full { textures, data: Box::new(data) } }
+    }
+
+    pub(super) fn stage_spatials(&self, writes: Vec<SpatialWrite>) -> FrameUploads<'_> {
+        FrameUploads { buffers: self, writes: FrameWrites::Spatial(writes) }
     }
 }
 
@@ -190,6 +198,12 @@ pub(super) struct FrameData {
     pub(super) instances: Instances,
     pub(super) uniforms: Vec<u8>,
     pub(super) clips: Vec<ClipNode>,
+    pub(super) spatials: Vec<[f32; 4]>,
+}
+
+pub(super) struct SpatialWrite {
+    pub(super) row: usize,
+    pub(super) offset: [f32; 4],
 }
 
 pub(super) fn payload_bytes(i: &Instances, uniforms: usize, clips: &[ClipNode]) -> u64 {
@@ -207,21 +221,54 @@ pub(super) fn payload_bytes(i: &Instances, uniforms: usize, clips: &[ClipNode]) 
 }
 
 pub(super) struct FrameUploads<'renderer> {
-    textures: &'renderer mut SceneTextures,
     buffers: &'renderer FrameBuffers,
-    data: FrameData,
+    writes: FrameWrites<'renderer>,
+}
+
+enum FrameWrites<'renderer> {
+    Full { textures: &'renderer mut SceneTextures, data: Box<FrameData> },
+    Spatial(Vec<SpatialWrite>),
 }
 
 impl FrameUploads<'_> {
     pub(super) fn bytes(&self) -> u64 {
-        self.textures.atlases.upload_bytes + payload_bytes(&self.data.instances, self.data.uniforms.len(), &self.data.clips)
+        let atlas_bytes = match &self.writes {
+            FrameWrites::Full { textures, .. } => textures.atlases.upload_bytes,
+            FrameWrites::Spatial(_) => 0,
+        };
+        atlas_bytes + self.instance_bytes() + self.spatial_bytes()
+    }
+
+    pub(super) fn instance_bytes(&self) -> u64 {
+        match &self.writes {
+            FrameWrites::Full { data, .. } => payload_bytes(&data.instances, data.uniforms.len(), &data.clips),
+            FrameWrites::Spatial(_) => 0,
+        }
+    }
+
+    pub(super) fn spatial_bytes(&self) -> u64 {
+        let len = match &self.writes {
+            FrameWrites::Full { data, .. } => data.spatials.len(),
+            FrameWrites::Spatial(writes) => writes.len(),
+        };
+        (len * size_of::<[f32; 4]>()) as u64
     }
 
     pub(super) fn queue(&self, queue: &wgpu::Queue) {
-        self.textures.atlases.queue_uploads(queue);
-        queue.write_buffer(&self.buffers.globals, 0, &self.data.uniforms);
-        let i = &self.data.instances;
-        self.buffers.clips.write(queue, &self.data.clips);
+        let (textures, data) = match &self.writes {
+            FrameWrites::Full { textures, data } => (textures, data),
+            FrameWrites::Spatial(writes) => {
+                for write in writes {
+                    let offset = (write.row * size_of::<[f32; 4]>()) as u64;
+                    queue.write_buffer(&self.buffers.spatials.0, offset, bytemuck::bytes_of(&write.offset));
+                }
+                return;
+            }
+        };
+        textures.atlases.queue_uploads(queue);
+        queue.write_buffer(&self.buffers.globals, 0, &data.uniforms);
+        let i = &data.instances;
+        self.buffers.clips.write(queue, &data.clips);
         self.buffers.draws.write(queue, &i.draws);
         self.buffers.quads.write(queue, &i.quads);
         self.buffers.shadows.write(queue, &i.shadows);
@@ -231,15 +278,20 @@ impl FrameUploads<'_> {
         self.buffers.glyph_clips.write(queue, &i.glyph_clips);
         self.buffers.materials.write(queue, &i.materials);
         self.buffers.gradients.write(queue, &i.gradients);
+        self.buffers.spatials.write(queue, &data.spatials);
     }
 
     pub(super) fn commit(&mut self) {
-        self.textures.atlases.commit_uploads();
+        if let FrameWrites::Full { textures, .. } = &mut self.writes {
+            textures.atlases.commit_uploads();
+        }
     }
 }
 
 impl Drop for FrameUploads<'_> {
     fn drop(&mut self) {
-        self.textures.finish_frame();
+        if let FrameWrites::Full { textures, .. } = &mut self.writes {
+            textures.finish_frame();
+        }
     }
 }

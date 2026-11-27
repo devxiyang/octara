@@ -20,11 +20,12 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) id: u32) -> VsOut
 
 @fragment
 fn fs_material(v: VsOut) -> @location(0) vec4f {
-    let p = v.pos.xy + globals.origin;
+    let world = v.pos.xy + globals.origin;
     let draw_inst = draws[v.inst_id];
+    let p = world - draw_offset(draw_inst);
     let paint = materials[draw_inst.payload];
     let outer = coverage(sd_round_rect(p, paint.rect, paint.radius));
     let color = material(quad_uv(p, paint.rect), paint.params);
-    let alpha = clamp(color.a, 0.0, 1.0) * paint.opacity * outer * clip_coverage(p, draw_inst);
+    let alpha = clamp(color.a, 0.0, 1.0) * paint.opacity * outer * clip_coverage(world, draw_inst);
     return vec4f(color.rgb * alpha, alpha);
 }

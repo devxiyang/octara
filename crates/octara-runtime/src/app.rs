@@ -132,6 +132,7 @@ pub struct AppRuntime {
     pub(crate) tasks: TaskScheduler,
     pub(crate) media: MediaScheduler,
     text_stream_ready_at: Duration,
+    text_stream_interval: Duration,
     text_stream_deadline: Option<Duration>,
     pub(crate) commands: AppCommands,
     pub(crate) diagnostics: Vec<Diagnostic>,
@@ -169,6 +170,7 @@ impl AppRuntime {
             tasks: TaskScheduler::new(),
             media: MediaScheduler::default(),
             text_stream_ready_at: Duration::ZERO,
+            text_stream_interval: Duration::from_nanos(1_000_000_000 / 60),
             text_stream_deadline: None,
             commands: AppCommands::default(),
             diagnostics: Vec::new(),
@@ -304,7 +306,20 @@ impl AppRuntime {
             self.text_stream_deadline = Some(self.text_stream_ready_at);
         } else if self.world.drain_text_streams() {
             // Respect the app clock in tests and publish at most once per frame.
-            self.text_stream_ready_at = now.saturating_add(Duration::from_nanos(1_000_000_000 / 60));
+            self.text_stream_ready_at = now.saturating_add(self.text_stream_interval);
+        }
+    }
+
+    /// Updates the host cadence used to publish adjacent text stream edits.
+    pub fn set_frame_interval(&mut self, interval: Duration) {
+        if !interval.is_zero() && interval != self.text_stream_interval {
+            if self.text_stream_ready_at != Duration::ZERO {
+                self.text_stream_ready_at = self.text_stream_ready_at.saturating_sub(self.text_stream_interval).saturating_add(interval);
+                if self.text_stream_deadline.is_some() {
+                    self.text_stream_deadline = Some(self.text_stream_ready_at);
+                }
+            }
+            self.text_stream_interval = interval;
         }
     }
 

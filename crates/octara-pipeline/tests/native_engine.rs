@@ -1,14 +1,15 @@
-use octara_model::geometry::{Point, Rect, Size, WindowViewport};
+use octara_model::geometry::{Point, Rect, Size, Vec2, WindowViewport};
 use octara_model::identity::{NativeId, TreeId};
 use octara_model::input::HostReply;
 use octara_model::motion::{Curve, Motion};
 use octara_model::native::{NativeChange, NativeSlot};
 use octara_model::paint::Item;
 use octara_model::semantics::Role;
-use octara_model::style::{Length, Overflow, Position, Radius, State, StyleProp, When};
+use octara_model::style::{FlexDirection, Length, Overflow, Position, Radius, State, StyleProp, When};
 use octara_model::theme::{Color, ColorValue, Fill};
-use octara_pipeline::{NativeEngine, NativeEngineConfig, NativePublication};
+use octara_pipeline::{NativeEngine, NativeEngineConfig, NativePublication, a11y::node_identity};
 use octara_runtime::HostEngine;
+use octara_runtime::engine::AccessibilityConsumer;
 use octara_tree::tables::{AuthoredStyle, SemanticsSlot};
 use octara_tree::{NodeChange, NodeContent, NodeFlags, NodeSpec, RetiredNode, Retirement, RuntimeOp, Tree, TreeDelta};
 
@@ -162,10 +163,12 @@ fn pointer_events_skip_only_the_node_and_preserve_focus_and_accessibility() {
     let frames = engine.publication();
     engine.project(&tree, &initial, viewport(), 0.0).unwrap();
     engine.commit();
+    engine.set_accessibility_active(&tree, AccessibilityConsumer::Inspector, true);
     let hit = |engine: &NativeEngine, tree: &Tree, point| engine.hit_test(tree, point).and_then(|target| target.hit.node());
     assert_eq!(hit(&engine, &tree, Point::new(40.0, 40.0)), Some(back));
     assert_eq!(hit(&engine, &tree, Point::new(5.0, 5.0)), Some(child));
-    assert_eq!(frames.accessibility_node(octara_pipeline::a11y::node_identity(front)), Some(front));
+    assert_eq!(frames.accessibility_node(node_identity(front)), Some(front));
+    assert_eq!(frames.snapshot_full().unwrap().focus, node_identity(front));
 
     let delta = tree.apply_runtime(RuntimeOp::SetState { node: front, state: State::SELECTED, on: true });
     assert!(!tree.node(front).unwrap().flags.contains(NodeFlags::POINTER_EVENTS_NONE));
@@ -181,7 +184,8 @@ fn pointer_events_skip_only_the_node_and_preserve_focus_and_accessibility() {
     engine.commit();
     assert_eq!(hit(&engine, &tree, Point::new(40.0, 40.0)), Some(back));
     assert_eq!(tree.focus(), Some(front));
-    assert_eq!(frames.accessibility_node(octara_pipeline::a11y::node_identity(front)), Some(front));
+    assert_eq!(frames.accessibility_node(node_identity(front)), Some(front));
+    assert_eq!(frames.snapshot_full().unwrap().focus, node_identity(front));
 }
 
 #[test]
@@ -309,15 +313,17 @@ fn reuses_local_drawings_and_emits_only_changed_accessibility_entries() {
     let draw = engine.commit().draw.unwrap();
     let start = engine.drawings_compiled();
     assert_eq!(draw.glyph_runs().count(), 2);
-    let first_access = frames.latest().unwrap();
-    assert!(first_access.accessibility.tree.is_some());
-    assert!(first_access.accessibility.nodes.len() >= 5);
+    assert!(frames.latest().unwrap().accessibility.is_none());
+    engine.set_accessibility_active(&tree, AccessibilityConsumer::Inspector, true);
+    let first_access = frames.snapshot_full().unwrap();
+    assert!(first_access.tree.is_some());
+    assert!(first_access.nodes.len() >= 5);
 
     engine.project(&tree, &TreeDelta::default(), viewport(), 0.05).unwrap();
     let after = engine.commit().draw.unwrap();
     assert_eq!(draw, after);
     assert_eq!(engine.drawings_compiled(), start);
-    assert!(frames.latest().unwrap().accessibility.nodes.is_empty());
+    assert!(frames.latest().unwrap().accessibility.is_none());
 
     let mut change = tree.transaction();
     change.change(tree.node_ref(second), NodeChange::Text("SECOND".into()));
@@ -325,11 +331,111 @@ fn reuses_local_drawings_and_emits_only_changed_accessibility_entries() {
     engine.project(&tree, &delta, viewport(), 0.1).unwrap();
     engine.commit();
     let frame = frames.latest().unwrap();
-    assert!(!frame.accessibility.nodes.is_empty());
-    assert!(frame.accessibility.nodes.len() < frames.snapshot_full().unwrap().nodes.len());
-    assert_eq!(frames.accessibility_node(octara_pipeline::a11y::node_identity(first)), Some(first));
+    let update = frame.accessibility.as_ref().unwrap();
+    assert!(!update.nodes.is_empty());
+    assert!(update.nodes.len() < frames.snapshot_full().unwrap().nodes.len());
+    assert_eq!(frames.accessibility_node(node_identity(first)), Some(first));
     assert!(engine.text_hit(first, Point::new(1.0, 2.0)).is_some());
     assert!(engine.drawings_compiled() <= start + 2);
+}
+
+#[test]
+fn accessibility_stays_dormant_then_scroll_updates_only_the_container() {
+    let mut tree = tree();
+    let mut tx = tree.transaction();
+    let panel = tx.create(NodeSpec::new(NodeContent::Box));
+    let style =
+        |props: &[StyleProp]| NodeChange::Style(Box::new(AuthoredStyle { base: props.iter().copied().collect(), ..Default::default() }));
+    tx.change(
+        panel,
+        style(&[
+            StyleProp::Width(200.into()),
+            StyleProp::Height(100.into()),
+            StyleProp::Direction(FlexDirection::Column),
+            StyleProp::OverflowY(Overflow::Scroll),
+        ]),
+    );
+    tx.place(tree.node_ref(tree.root()), 0, panel);
+    let rows: Vec<_> = (0..144)
+        .map(|index| {
+            let row = tx.create(NodeSpec::new(NodeContent::Text(format!("Row {index}").into())));
+            tx.change(row, style(&[StyleProp::Height(22.into()), StyleProp::Shrink(0.0), StyleProp::OverflowY(Overflow::Hidden)]));
+            tx.place(panel, index, row);
+            row
+        })
+        .collect();
+    let (receipt, mounted) = tree.apply(tx.finish()).unwrap();
+    let panel = receipt.node(panel).unwrap();
+    let row = receipt.node(rows[3]).unwrap();
+    let mut initial = tree.initial_delta();
+    initial.merge(mounted);
+    let frames = NativePublication::for_window_host();
+    let mut engine = NativeEngine::with_publication(NativeEngineConfig::default(), frames.clone());
+    engine.project(&tree, &initial, viewport(), 0.0).unwrap();
+    engine.commit();
+
+    let scroll = |tree: &mut Tree, engine: &mut NativeEngine, offset, time| {
+        let delta = tree.apply_runtime(RuntimeOp::SetScroll { node: panel, offset: Vec2::new(0.0, offset), clamped: false });
+        engine.project(tree, &delta, viewport(), time).unwrap();
+        engine.commit();
+    };
+    scroll(&mut tree, &mut engine, 5.3, 0.01);
+    assert_eq!(frames.accessibility_work(), Default::default());
+    assert!(frames.snapshot_full().is_none());
+    assert!(frames.latest().unwrap().accessibility.is_none());
+
+    engine.set_accessibility_active(&tree, AccessibilityConsumer::Platform, true);
+    let initial_work = frames.accessibility_work();
+    let snapshot = frames.snapshot_full().unwrap();
+    assert!(snapshot.nodes.len() > 288);
+    assert!(initial_work.nodes_built > 144);
+    let initial_number = frames.latest().unwrap().number;
+    let lookup = |id| snapshot.nodes.iter().find(|(key, _)| *key == id).unwrap().1.clone();
+    let panel_node = lookup(node_identity(panel));
+    assert_eq!(panel_node.scroll_y(), Some(f64::from(5.3_f32)));
+    let row_node = lookup(node_identity(row));
+    let run_node = lookup(row_node.children()[0]);
+    let root_transform = *lookup(node_identity(tree.root())).transform().unwrap();
+    let initial_panel_rect = (root_transform * *panel_node.transform().unwrap()).transform_rect_bbox(panel_node.bounds().unwrap());
+    let row_transform = *row_node.transform().unwrap();
+    let run_transform = *run_node.transform().unwrap();
+
+    for (index, offset) in [12.37, 37.3, 9.85].into_iter().enumerate() {
+        let work = frames.accessibility_work();
+        scroll(&mut tree, &mut engine, offset, 0.02 + index as f64 * 0.01);
+        let updated_work = frames.accessibility_work();
+        assert_eq!(updated_work.nodes_built, initial_work.nodes_built);
+        assert_eq!(updated_work.geometry_updates - work.geometry_updates, 1);
+        assert_eq!(updated_work.candidates - work.candidates, 1);
+        let frame = frames.latest().unwrap();
+        assert_eq!(frame.number, initial_number + index as u64 + 1);
+        let update = frame.accessibility.as_ref().unwrap();
+        let [(key, new_panel)] = update.nodes.as_slice() else { panic!("expected only the scroller") };
+        assert_eq!(*key, node_identity(panel));
+        assert_eq!(new_panel.scroll_y(), Some(f64::from(offset)));
+        let panel_transform = root_transform * *new_panel.transform().unwrap();
+        assert_eq!(panel_transform.transform_rect_bbox(new_panel.bounds().unwrap()), initial_panel_rect);
+        let row_bounds = (panel_transform * row_transform).transform_rect_bbox(row_node.bounds().unwrap());
+        let layout_bounds = engine.interaction_bounds(row).unwrap();
+        assert!((row_bounds.y0 - f64::from(layout_bounds.y * viewport().scale)).abs() < 0.001);
+        let run_bounds = (panel_transform * row_transform * run_transform).transform_rect_bbox(run_node.bounds().unwrap());
+        let text = engine.text_geometry(&tree, row).unwrap();
+        let line = text.lines[0].rect;
+        assert!((run_bounds.y0 - f64::from((text.origin.y + line.y) * viewport().scale)).abs() < 0.001);
+        assert!((run_bounds.height() - f64::from(line.h * viewport().scale)).abs() < 0.001);
+    }
+
+    let pending = frames.take_accessibility_updates();
+    assert_eq!(pending.len(), 3);
+    for (index, (version, update)) in pending.into_iter().enumerate() {
+        assert_eq!(version, initial_number + index as u64 + 1);
+        assert_eq!(update.nodes[0].0, node_identity(panel));
+    }
+    engine.set_accessibility_active(&tree, AccessibilityConsumer::Platform, false);
+    let work = frames.accessibility_work();
+    scroll(&mut tree, &mut engine, 21.25, 0.1);
+    assert_eq!(frames.accessibility_work(), work);
+    assert!(frames.snapshot_full().is_none());
 }
 
 #[test]

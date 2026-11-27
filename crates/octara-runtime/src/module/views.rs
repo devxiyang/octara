@@ -166,6 +166,7 @@ struct MountedView {
     slot: NativeSlot,
     instance: Box<dyn NativeViewInstance>,
     _mount: Arc<()>,
+    placed: bool,
 }
 
 /// Host-owned native views for a single window. Dropping a mount releases its instance.
@@ -198,7 +199,7 @@ impl NativeViewMounts {
                 let mount = Arc::new(());
                 let emitter = NativeViewEmitter { window, id: *id, dispatcher: dispatcher.clone(), mount: Arc::downgrade(&mount) };
                 let instance = factory.create(surface, *id, *slot, payload, emitter)?;
-                self.views.insert(*id, MountedView { slot: *slot, instance, _mount: mount });
+                self.views.insert(*id, MountedView { slot: *slot, instance, _mount: mount, placed: false });
                 Ok(true)
             }
             NativeChange::UpdateTyped { id, props } => {
@@ -214,7 +215,7 @@ impl NativeViewMounts {
                 }
                 Ok(false)
             }
-            NativeChange::Destroy { id } => Ok(self.views.remove(id).is_some()),
+            NativeChange::Destroy { id } => Ok(self.retire(*id).is_some()),
             NativeChange::Create { .. } | NativeChange::Update { .. } => Ok(false),
         }
     }
@@ -223,10 +224,17 @@ impl NativeViewMounts {
         self.views.contains_key(&id)
     }
 
+    /// End command, measurement and event delivery now. The host can keep the
+    /// instance mounted until presentation and knows whether it received a placement.
+    pub fn retire(&mut self, id: NativeId) -> Option<(Box<dyn NativeViewInstance>, bool)> {
+        self.views.remove(&id).map(|view| (view.instance, view.placed))
+    }
+
     /// Apply a placement to its mounted view during host presentation.
     pub fn place(&mut self, placement: &NativePlacement) {
         if let Some(view) = self.views.get_mut(&placement.id) {
             view.instance.place(placement);
+            view.placed = true;
         }
     }
 

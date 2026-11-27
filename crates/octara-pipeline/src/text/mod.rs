@@ -247,14 +247,13 @@ impl Run {
 
 struct Projected {
     paint: PaintKey,
-    origin: Point,
 }
 
 #[derive(Clone)]
 pub(crate) struct PaintKey {
     presentation: Rc<Presentation>,
     local_origin: Point,
-    clip: Option<Rect>,
+    clip: Option<(Rect, [bool; 2])>,
     caret: Option<Rect>,
 }
 
@@ -775,8 +774,11 @@ impl TextEngine {
         let mut origin = Point::new(content.x, content.y - layout.scroll_offset(node).y);
         if tree.editor(node).is_some_and(|editor| !editor.multiline) {
             origin.y += ((content.h - presentation.size.height) * 0.5).max(0.0);
-            let current =
-                self.projected.get(&node).and_then(|previous| Some(previous.paint.clip?.x - previous.paint.local_origin.x)).unwrap_or(0.0);
+            let current = self
+                .projected
+                .get(&node)
+                .and_then(|previous| Some(previous.paint.clip?.0.x - previous.paint.local_origin.x))
+                .unwrap_or(0.0);
             let max = (presentation.size.width + 1.0 - content.w).max(0.0);
             let (low, high) = caret.map_or((0.0, max), |caret| {
                 let low = (caret.right() - content.w).clamp(0.0, max);
@@ -834,20 +836,25 @@ impl TextEngine {
         }))
     }
 
-    pub(crate) fn selection_rect(&self, tree: &Tree, node: NodeId) -> Option<Rect> {
+    pub(crate) fn selection_rect(&self, tree: &Tree, layout: &LayoutEngine, node: NodeId) -> Option<Rect> {
         let selection = |node, range: Range<usize>| {
             let projected = self.projected.get(&node)?;
             let paint = &projected.paint;
-            let clip = paint.clip.map(|clip| {
-                geometry::translate(clip, Point::new(projected.origin.x - paint.local_origin.x, projected.origin.y - paint.local_origin.y))
-            });
+            let bounds = layout.bounds(node)?;
+            let position = Point::new(bounds.x, bounds.y);
+            let origin = Point::new(position.x + paint.local_origin.x, position.y + paint.local_origin.y);
+            let clip = if tree.editor(node).is_some() {
+                paint.clip.map(|(clip, _)| geometry::translate(clip, position))
+            } else {
+                layout.child_clip(node)
+            };
             geometry::union(
                 paint
                     .presentation
                     .range_rects(&range, None)
                     .into_iter()
                     .map(|rect| {
-                        let rect = geometry::translate(rect, projected.origin);
+                        let rect = geometry::translate(rect, origin);
                         clip.map_or(rect, |clip| rect.intersect(&clip))
                     })
                     .filter(|rect| !rect.is_empty()),
@@ -881,6 +888,7 @@ impl TextEngine {
         }
         let mut changed = std::mem::take(&mut self.candidates);
         changed.union_with(layout.changed());
+        changed.extend(layout.scroll_changed().iter().filter(|&node| tree.editor(node).is_some()));
         changed.union_with(&delta.layout_dirty);
         changed.union_with(&delta.editor_dirty);
         if std::mem::take(&mut self.needs_projection) {
@@ -890,8 +898,7 @@ impl TextEngine {
             if tree.text(node).is_none() && tree.editor(node).is_none() {
                 continue;
             }
-            let content = layout.content_bounds(node);
-            let Some((content, bounds)) = content.zip(layout.bounds(node)) else {
+            let Some(content) = layout.local_content(node) else {
                 if self.projected.remove(&node) {
                     self.changed.insert(node);
                 }
@@ -908,18 +915,16 @@ impl TextEngine {
             let presentation = self.node_presentation(tree, node, content.w).expect("shown text has a document");
             let caret = if tree.focus() == Some(node) { self.editor_caret_in_content(tree, node, content.w) } else { None };
             let previous = self.projected.get(&node);
-            let (origin, clip) = if tree.editor(node).is_some() {
+            let (local_origin, clip) = if tree.editor(node).is_some() {
                 let origin = self.editor_origin(tree, layout, node, content, &presentation, caret);
-                let local = Rect::new(content.x - bounds.x, content.y - bounds.y, content.w, content.h);
-                (origin, Some(local))
+                (origin, Some((content, [true, true])))
             } else {
                 let origin = leaf_origin(tree, node, content, presentation.size.height);
-                let clip = layout.child_clip(node).map(|clip| geometry::translate(clip, Point::new(-bounds.x, -bounds.y)));
-                (origin, clip)
+                let axes = layout.clip_axes(node);
+                (origin, layout.local_client(node).filter(|_| axes != [false; 2]).map(|clip| (clip, axes)))
             };
-            let local_origin = Point::new(origin.x - bounds.x, origin.y - bounds.y);
             let paint = PaintKey { presentation, local_origin, clip, caret };
-            let projected_changed = previous.is_none_or(|previous| previous.paint != paint || previous.origin != origin);
+            let projected_changed = previous.is_none_or(|previous| previous.paint != paint);
             if let Some(text) = tree.text(node) {
                 for &link in &text.links {
                     let Some(link_slot) = tree.link(link) else { continue };
@@ -927,7 +932,7 @@ impl TextEngine {
                         .presentation
                         .range_rects(&link_slot.range, None)
                         .into_iter()
-                        .map(|rect| geometry::translate(rect, origin))
+                        .map(|rect| geometry::translate(rect, paint.local_origin))
                         .collect();
                     if rects.is_empty() {
                         self.remove_link(link);
@@ -939,16 +944,24 @@ impl TextEngine {
             }
             if projected_changed {
                 self.changed.insert(node);
-                self.projected.insert(node, Projected { paint, origin });
+                self.projected.insert(node, Projected { paint });
             }
         }
         changed.clear();
         self.candidates = changed;
     }
 
-    pub(crate) fn geometry(&self, node: NodeId) -> Option<TextGeometry> {
+    pub(crate) fn geometry(&self, node: NodeId, layout: &LayoutEngine) -> Option<TextGeometry> {
+        let mut geometry = self.local_geometry(node)?;
+        let bounds = layout.bounds(node)?;
+        geometry.origin.x += bounds.x;
+        geometry.origin.y += bounds.y;
+        Some(geometry)
+    }
+
+    pub(crate) fn local_geometry(&self, node: NodeId) -> Option<TextGeometry> {
         let projected = self.projected.get(&node)?;
-        Some(TextGeometry { origin: projected.origin, lines: projected.paint.presentation.lines.clone() })
+        Some(TextGeometry { origin: projected.paint.local_origin, lines: projected.paint.presentation.lines.clone() })
     }
 
     pub(crate) fn clipped(&self) -> Vec<(NodeId, TextClip)> {
@@ -966,8 +979,16 @@ impl TextEngine {
         Some(self.projected.get(&node)?.paint.clone())
     }
 
-    pub(crate) fn link_rects(&self, node: NodeId) -> &[Rect] {
-        self.links.get(&node).map_or(&[], Vec::as_slice)
+    pub(crate) fn link_contains(&self, node: NodeId, layout: &LayoutEngine, pos: Point) -> bool {
+        self.link_window_rects(node, layout).any(|rect| rect.contains(pos))
+    }
+
+    fn link_window_rects(&self, node: NodeId, layout: &LayoutEngine) -> impl Iterator<Item = Rect> + '_ {
+        let origin = layout
+            .bounds(node)
+            .zip(layout.geometry(node))
+            .map_or(Point::default(), |(bounds, layout)| Point::new(bounds.x - layout.rect.x, bounds.y - layout.rect.y));
+        self.links.get(&node).into_iter().flatten().map(move |rect| geometry::translate(*rect, origin))
     }
 
     fn remove_link(&mut self, node: NodeId) {
@@ -980,17 +1001,20 @@ impl TextEngine {
         &self.changed_links
     }
 
-    pub(crate) fn link_bounds(&self, node: NodeId) -> Option<Rect> {
-        geometry::union(self.link_rects(node).iter().copied())
+    pub(crate) fn link_local_bounds(&self, node: NodeId) -> Option<Rect> {
+        geometry::union(self.links.get(&node)?.iter().copied())
     }
 
-    pub(crate) fn caret(&self, node: NodeId) -> Option<Rect> {
-        let text = self.projected.get(&node)?;
-        let local = &text.paint;
-        let caret = geometry::translate(local.caret?, local.local_origin);
-        let caret = local.clip.map_or(caret, |clip| caret.intersect(&clip));
-        (!caret.is_empty())
-            .then(|| geometry::translate(caret, Point::new(text.origin.x - local.local_origin.x, text.origin.y - local.local_origin.y)))
+    pub(crate) fn local_caret(&self, node: NodeId) -> Option<Rect> {
+        let paint = &self.projected.get(&node)?.paint;
+        let caret = geometry::translate(paint.caret?, paint.local_origin);
+        let caret = paint.clip.map_or(caret, |(clip, _)| caret.intersect(&clip));
+        (!caret.is_empty()).then_some(caret)
+    }
+
+    pub(crate) fn caret(&self, node: NodeId, layout: &LayoutEngine) -> Option<Rect> {
+        let bounds = layout.bounds(node)?;
+        Some(geometry::translate(self.local_caret(node)?, Point::new(bounds.x, bounds.y)))
     }
 
     pub(crate) fn items(&self, tree: &Tree, node: NodeId, window_active: bool) -> Vec<Item> {
@@ -1009,8 +1033,8 @@ impl TextEngine {
         let selection_color = || {
             if window_active { theme_color(ColorToken::Selection) } else { ColorToken::TextSubtle.alpha(0.28).resolve(theme).0 }
         };
-        if let Some(rect) = text.clip {
-            items.push(Item::PushClip { source: node, rect, radius: [0.0; 4] });
+        if let Some((rect, axes)) = text.clip {
+            items.extend(Item::clip(node, rect, axes, [0.0; 4]));
         }
         let range_rects =
             |range| geometry::range_rects(&text.presentation.lines, &range).into_iter().map(|rect| geometry::translate(rect, origin));
@@ -1102,14 +1126,14 @@ impl TextEngine {
         items
     }
 
-    pub(crate) fn attachments(&self, node: NodeId) -> (Option<Rect>, Vec<(usize, Rect)>) {
+    pub(crate) fn attachments(&self, node: NodeId) -> (Option<Item>, Vec<(usize, Rect)>) {
         let Some(text) = self.projected.get(&node).map(|projected| &projected.paint) else { return (None, Vec::new()) };
         let positions =
             text.presentation.attachments.iter().map(|&(index, rect)| (index, geometry::translate(rect, text.local_origin))).collect();
-        (text.clip, positions)
+        (text.clip.and_then(|(rect, axes)| Item::clip(node, rect, axes, [0.0; 4])), positions)
     }
 
-    pub(crate) fn attachment_bounds(&self, node: NodeId, index: usize) -> Option<Rect> {
+    pub(crate) fn attachment_bounds(&self, node: NodeId, index: usize, layout: &LayoutEngine) -> Option<Rect> {
         let text = self.projected.get(&node)?;
         let presentation = &text.paint.presentation;
         let rect = presentation
@@ -1117,7 +1141,9 @@ impl TextEngine {
             .iter()
             .find_map(|&(candidate, rect)| (candidate == index).then_some(rect))
             .or_else(|| presentation.pills.iter().find_map(|pill| (pill.index == index).then_some(pill.rect)))?;
-        Some(geometry::translate(rect, text.origin))
+        let bounds = layout.bounds(node)?;
+        let origin = Point::new(bounds.x + text.paint.local_origin.x, bounds.y + text.paint.local_origin.y);
+        Some(geometry::translate(rect, origin))
     }
 
     pub(crate) fn canvas_items(&mut self, source: NodeId, text: &CanvasText, mut style: TextStyle, color: Color) -> Vec<Item> {
@@ -1261,7 +1287,7 @@ mod tests {
         let mut layout = LayoutEngine::default();
         let mut text = TextEngine::new(false);
         layout.project(&tree, &delta, viewport, &mut text);
-        let geometry = text.geometry(label).unwrap();
+        let geometry = text.geometry(label, &layout).unwrap();
         assert_eq!(geometry.lines.len(), 2);
         assert_eq!(geometry.lines[0].range.end, content.find('s').unwrap());
         assert!(geometry.lines[0].fragments.iter().any(|fragment| fragment.range == (2..5)));
@@ -1438,7 +1464,8 @@ mod tests {
             })
         };
         assert_eq!(version(&first.draw), Some(0));
-        assert!(first.accessibility.nodes.iter().any(|(_, node)| node.value() == Some(source)));
+        engine.set_accessibility_active(&tree, crate::AccessibilityConsumer::Inspector, true);
+        assert!(engine.publication().snapshot_full().unwrap().nodes.iter().any(|(_, node)| node.value() == Some(source)));
         image.set(1, 1, [0, 180, 0, 255]);
         engine.project(&tree, &TreeDelta::default(), viewport, 1.0).unwrap();
         engine.commit();
@@ -1556,11 +1583,11 @@ mod tests {
             let label = receipt.node(label).unwrap();
             let link = tree.children(label)[0];
             let content = layout.content_bounds(label).unwrap();
-            let geometry = text.geometry(label).unwrap();
+            let geometry = text.geometry(label, &layout).unwrap();
             let line_height = geometry.lines[0].rect.h;
             assert_eq!(geometry.origin.y, content.y + fraction * (content.h - line_height));
-            assert_eq!(text.link_rects(link), &[layout.bounds(link).unwrap()]);
-            assert_eq!(text.link_rects(link)[0].y, geometry.origin.y);
+            assert_eq!(text.link_window_rects(link, &layout).collect::<Vec<_>>(), &[layout.bounds(link).unwrap()]);
+            assert_eq!(text.link_window_rects(link, &layout).collect::<Vec<_>>()[0].y, geometry.origin.y);
         }
     }
 
@@ -1606,7 +1633,7 @@ mod tests {
         layout.project(&tree, &delta, viewport, &mut text);
         for (label, padding) in labels {
             let label = receipt.node(label).unwrap();
-            let geometry = text.geometry(label).unwrap();
+            let geometry = text.geometry(label, &layout).unwrap();
             assert!(geometry.lines.len() > 1);
             let local_y = geometry.origin.y - layout.bounds(label).unwrap().y;
             let items = text.items(&tree, label, true);
@@ -1692,9 +1719,9 @@ mod tests {
         layout.project(&tree, &delta, viewport, &mut text);
         assert_eq!(text.clipped(), vec![(label, TextClip::Ellipsis)]);
         let link_bounds = layout.bounds(link).expect("partially visible inline link geometry");
-        assert_eq!(text.link_rects(link), &[link_bounds]);
+        assert_eq!(text.link_window_rects(link, &layout).collect::<Vec<_>>(), &[link_bounds]);
         assert!(link_bounds.w < 60.0);
-        let geometry = text.geometry(editor).unwrap();
+        let geometry = text.geometry(editor, &layout).unwrap();
         let fragments = &geometry.lines[0].fragments;
         assert_eq!(fragments.iter().map(|fragment| fragment.range.clone()).collect::<Vec<_>>(), [0..2, 2..5]);
         let glyphs: Vec<_> = text

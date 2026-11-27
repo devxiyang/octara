@@ -131,7 +131,8 @@ crates/octara-host-native/src/
   trace.rs            # Optional structured CPU/GPU/input trace writer
   os/
     mod.rs            # OsHost & OsWindow trait definitions + single factory `create_os_host()`
-    macos/            # AppKit NSTextInputClient, async Metal drawable acquire, CAMetalDisplayLink,
+    apple_frame_clock.rs  # Shared CADisplayLink driver with on-demand drawable acquisition
+    macos/            # AppKit NSTextInputClient, async Metal startup drawable acquisition,
                       # NSView attachment and MapKit underlay, NSMenu bar, AppKit prompts, secure input
     ios/              # UIKit Scene, UITextField/UITextView sessions, interactive swipe-back, safe area
     desktop/          # Linux & Windows: winit IME adapter, arboard clipboard, rfd file picker, open::that_detached

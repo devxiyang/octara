@@ -59,7 +59,9 @@ fn field_updates_the_accessible_name_on_the_same_editor_and_inherits_disabled_st
         })
         .unwrap();
 
-    let tree = app.runtime().window(window).unwrap().tree();
+    let window_state = app.runtime().window(window).unwrap();
+    window_state.set_accessibility_active(octara::runtime::engine::AccessibilityConsumer::Inspector, true);
+    let tree = window_state.tree();
     let [editor, label, description, field] = ["editor", "label", "description", "field"].map(|name| tree.test_ids(name)[0]);
     assert_eq!(tree.children(field), [label, description, editor]);
     let editor_target = tree.guard(editor);

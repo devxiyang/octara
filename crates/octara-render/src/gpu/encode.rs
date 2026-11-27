@@ -1,7 +1,9 @@
 //! Records the prepared scene and interleaves painter-prefix and transition commands.
 
-use super::batch::Draw;
+use super::backing::Clear;
+use super::batch::{Draw, PlannedBatch};
 use super::custom::{self, CanvasPaint};
+use super::damage::DamageRect;
 use super::outputs::{BackdropChange, RegionImage};
 use super::pipeline::PipelineKind;
 use super::plan::{Attachment, BackdropInput, PassBounds, PlannedBackdrop, TransitionRequest};
@@ -20,7 +22,7 @@ struct EncodedBackdrop {
 }
 
 impl FrameRecording<'_> {
-    fn pass(&mut self, kind: GpuPassKind) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
+    pub(super) fn pass(&mut self, kind: GpuPassKind) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
         self.measurement.as_deref_mut()?.pass(kind)
     }
 
@@ -98,6 +100,26 @@ fn draw_batch(
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, bind, projection);
     pass.draw(0..4, instances);
+}
+
+fn draw_visible(
+    pass: &mut wgpu::RenderPass<'_>,
+    pipeline: &wgpu::RenderPipeline,
+    bind: &wgpu::BindGroup,
+    projection: &[u32],
+    batch: &PlannedBatch,
+    damage: Rect,
+    offsets: &[[f32; 4]],
+) -> u32 {
+    let mut bind_once = true;
+    batch.visible_ranges(damage, offsets, |instances| {
+        if bind_once {
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, bind, projection);
+            bind_once = false;
+        }
+        pass.draw(0..4, instances);
+    })
 }
 
 impl GpuRenderer {
@@ -198,12 +220,14 @@ impl GpuRenderer {
         product.map(|(view, command, _)| (view, command))
     }
 
+    #[expect(clippy::too_many_arguments)]
     pub(super) async fn encode_frame(
         &mut self,
         mut encoder: wgpu::CommandEncoder,
         frame: &mut PreparedFrame,
-        output: &wgpu::TextureView,
-        intermediate: Option<&wgpu::TextureView>,
+        draw_target: &wgpu::TextureView,
+        partial: Option<(DamageRect, &Clear)>,
+        offsets: &[[f32; 4]],
         input: FrameInput<'_>,
         recording: &mut FrameRecording<'_>,
     ) -> wgpu::CommandEncoder {
@@ -211,8 +235,9 @@ impl GpuRenderer {
             recording.before.insert(0, encoder.finish());
             encoder = drawing_encoder(&self.device);
         }
-        let draw_target = intermediate.unwrap_or(output);
+
         let output_format = draw_target.texture().format();
+        let mut partial_batches = 0;
         for target_plan in &frame.plan.targets {
             let (target, format, clear, kind, index) = match target_plan.attachment {
                 Attachment::Output => (draw_target, output_format, frame.background, GpuPassKind::Ui, 0),
@@ -220,13 +245,19 @@ impl GpuRenderer {
                     (&frame.layer_views[index - 1], WORKING_FORMAT, wgpu::Color::TRANSPARENT, GpuPassKind::Layer, index)
                 }
             };
-            let mut load = wgpu::LoadOp::Clear(clear);
+            let mut load = if partial.is_some() { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(clear) };
+            let mut needs_damage_clear = partial.is_some();
             let depth = &frame.depth[index];
             let projection = [self.buffers.projection_offset(index)];
             let pipeline_key = (format, frame.fragment_clipping);
             for segment in &target_plan.segments {
                 if !segment.cores.is_empty() {
-                    let mut pass = scene_pass(&mut encoder, target, load, depth, true, recording.pass(kind));
+                    let mut pass = scene_pass(&mut encoder, target, load, depth, partial.is_none(), recording.pass(kind));
+                    if let Some((damage, clear)) = partial {
+                        damage.scissor(&mut pass);
+                        clear.encode(&mut pass);
+                        needs_damage_clear = false;
+                    }
                     let pipelines = &self.pipelines.formats[&pipeline_key];
                     for batch in &frame.plan.batches[segment.cores.clone()] {
                         let (pipeline, bind) = match batch.draw {
@@ -234,14 +265,26 @@ impl GpuRenderer {
                             Draw::Image(array) => (&pipelines.image_core, &frame.image_binds[&array]),
                             _ => unreachable!("only quads and images have opaque cores"),
                         };
-                        draw_batch(&mut pass, pipeline, bind, &projection, batch.instances.clone());
+                        if let Some((damage, _)) = partial {
+                            partial_batches += draw_visible(&mut pass, pipeline, bind, &projection, batch, damage.rect(), offsets);
+                        } else {
+                            draw_batch(&mut pass, pipeline, bind, &projection, batch.instances.clone());
+                        }
                     }
                     load = wgpu::LoadOp::Load;
                 }
                 if segment.blended.is_empty() {
                     continue;
                 }
-                let mut pass = scene_pass(&mut encoder, target, load, depth, segment.cores.is_empty(), recording.pass(kind));
+                let mut pass =
+                    scene_pass(&mut encoder, target, load, depth, partial.is_none() && segment.cores.is_empty(), recording.pass(kind));
+                if let Some((damage, clear)) = partial {
+                    damage.scissor(&mut pass);
+                    if needs_damage_clear {
+                        clear.encode(&mut pass);
+                        needs_damage_clear = false;
+                    }
+                }
                 load = wgpu::LoadOp::Load;
                 for batch in &frame.plan.batches[segment.blended.clone()] {
                     let pipelines = &self.pipelines.formats[&pipeline_key];
@@ -291,10 +334,18 @@ impl GpuRenderer {
                             continue;
                         }
                     };
-                    draw_batch(&mut pass, pipeline, bind, &projection, instances);
+                    if let Some((damage, _)) = partial {
+                        partial_batches += draw_visible(&mut pass, pipeline, bind, &projection, batch, damage.rect(), offsets);
+                    } else {
+                        draw_batch(&mut pass, pipeline, bind, &projection, instances);
+                    }
                 }
             }
-            if matches!(load, wgpu::LoadOp::Clear(_)) {
+            if let Some((damage, clear)) = partial.filter(|_| needs_damage_clear) {
+                let mut pass = scene_pass(&mut encoder, target, load, depth, false, recording.pass(kind));
+                damage.scissor(&mut pass);
+                clear.encode(&mut pass);
+            } else if matches!(load, wgpu::LoadOp::Clear(_)) {
                 drop(color_pass(&mut encoder, target, load, recording.pass(kind)));
             }
             if let Some(transition) = frame.transitions.get_mut(&index)
@@ -306,15 +357,10 @@ impl GpuRenderer {
                 frame.layer_binds[index - 1] = self.bind_composite(&frame.empty_array, &composite);
             }
         }
-        if intermediate.is_some() {
-            self.output_resolve.encode(&mut encoder, output, recording.pass(GpuPassKind::Output));
-            if let Some(measurement) = recording.measurement.as_deref_mut() {
-                let texture = output.texture();
-                measurement.profile.output_pixels = u64::from(texture.width()) * u64::from(texture.height());
-            }
-        }
-        if recording.outputs.is_none() {
-            self.output_resolve.release_source();
+        if partial.is_some()
+            && let Some(measurement) = recording.measurement.as_deref_mut()
+        {
+            measurement.profile.draw_batches = partial_batches;
         }
         encoder
     }

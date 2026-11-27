@@ -1,11 +1,16 @@
 //! Frame recording and submission with staged uploads and presentation changes.
 
+use super::backing::{Backing, Raster};
+use super::damage::SceneSnapshot;
 use super::outputs::{CanvasCache, OutputChanges, PendingPresentation, PresentationHistory};
+use super::plan::{plan_frame_cached, plan_frame_spatial};
+use super::prepare::PreparedFrame;
 use super::profile::{FrameMeasurement, FrameProfile, GpuTimings, Instant, PendingTimestamps, TimestampPool};
 use super::resolve::AttachmentInfo;
+use super::retained::{CachedFrame, RetainedTarget, ScrollScene};
 use super::surface::record_surface;
-use super::upload::FrameUploads;
-use super::{FrameInput, FrameTarget, GpuRenderer, RecordError, custom};
+use super::upload::{FrameData, FrameUploads};
+use super::{FrameInput, FrameTarget, GpuRenderer, RecordError, SceneTextures, custom};
 use octara_model::capture::{PaintReceipt, PaintSample};
 
 #[derive(Default)]
@@ -29,6 +34,11 @@ pub struct RecordedFrame<'renderer> {
     pub(super) device: &'renderer wgpu::Device,
     queue: &'renderer wgpu::Queue,
     uploads: Option<FrameUploads<'renderer>>,
+    cache: &'renderer mut Option<CachedFrame>,
+    retained: Option<CachedFrame>,
+    backing_cache: &'renderer mut Option<Backing>,
+    // Captures leave the presented backing alone. Ordinary submission replaces it.
+    backing: Option<Option<Backing>>,
     canvas_cache: &'renderer mut CanvasCache,
     presentation_history: &'renderer PresentationHistory,
     changes: OutputChanges,
@@ -82,6 +92,10 @@ impl RecordedFrame<'_> {
             encoder,
             device,
             queue,
+            cache,
+            retained,
+            backing_cache,
+            backing,
             canvas_cache,
             presentation_history,
             changes,
@@ -107,6 +121,10 @@ impl RecordedFrame<'_> {
         if let Some(uploads) = &mut uploads {
             uploads.commit();
         }
+        *cache = retained;
+        if let Some(backing) = backing {
+            *backing_cache = backing;
+        }
         let OutputChanges { canvases, backdrops, transitions } = changes;
         canvas_cache.submit(canvases, sample.map(|sample| sample.revision));
         let pending = presentation_history.pending(backdrops, transitions, sample);
@@ -123,7 +141,8 @@ impl GpuRenderer {
     /// The target is a single-sample, single-level 2D texture with `RENDER_ATTACHMENT` usage.
     /// Use `Rgba16Float` for [`OutputColor::Linear`](super::OutputColor::Linear) or an RGBA8/BGRA8 format for sRGB output.
     /// Opaque sRGB attachments can be drawn directly. Other sRGB outputs are encoded after
-    /// composition in a linear-light attachment.
+    /// composition in a linear-light attachment. Sampled frames can retain scene pixels
+    /// across recordings, including when the host supplies a different drawable on each frame.
     ///
     /// The caller can record earlier commands into the encoder before passing it here. The
     /// recording owns its uploads until submission. Their queue writes execute before all
@@ -191,6 +210,7 @@ impl GpuRenderer {
         if let Some(renderer) = &mut self.surface_renderer
             && let Some((commands, receipts)) = record_surface(renderer.as_mut(), &self.device, target, input).await?
         {
+            self.prepared = None;
             recording.before.extend([encoder.finish(), commands]);
             return Ok(RecordedFrame {
                 before: recording.before,
@@ -198,6 +218,10 @@ impl GpuRenderer {
                 device: &self.device,
                 queue: &self.queue,
                 uploads: None,
+                cache: &mut self.prepared,
+                retained: None,
+                backing_cache: &mut self.backing,
+                backing: recording.outputs.is_some().then_some(None),
                 canvas_cache: &mut self.canvas_cache,
                 presentation_history: &self.presentation_history,
                 changes: recording.outputs.unwrap_or_default(),
@@ -209,41 +233,133 @@ impl GpuRenderer {
         }
         let attachment = AttachmentInfo::for_target(target, input.scale, self.device.limits().max_texture_dimension_2d);
         let view = target.texture.create_view(&Default::default());
-        // Keep the texture transaction local until recording succeeds. A panic during recording
-        // drops the uncommitted cache along with the rest of the frame.
-        let mut textures = self.textures.take().unwrap_or_default();
-        textures.atlases.begin_frame();
-        let mut frame = match self.prepare_frame(input, attachment, &mut textures, &mut recording).await {
-            Ok(frame) => frame,
-            Err(error) => {
-                textures.finish_frame();
-                self.textures = Some(textures);
-                return Err(error);
-            }
+        let retained_target = RetainedTarget::from(target);
+        // Any preparation that may replace buffers or evict atlas slots first drops the plan
+        // referring to them. A reused plan keeps the last submission's atlas working set intact.
+        let cached = self.prepared.take().and_then(|mut cached| {
+            let writes = cached.scroll.update(input, retained_target)?;
+            Some((cached, writes))
+        });
+        let reused = cached.is_some();
+        let mut full_upload = None;
+        let mut spatial_writes = Vec::new();
+        let (mut frame, scroll, atlas_bytes) = if let Some((CachedFrame { scroll, frame, atlas_bytes }, writes)) = cached {
+            spatial_writes = writes;
+            (frame, Some(scroll), atlas_bytes)
+        } else {
+            // A panic drops any uncommitted atlas slots with the local texture transaction.
+            let mut textures = self.textures.take().unwrap_or_default();
+            textures.atlases.begin_frame();
+            let (frame, data, scroll) = match self.prepare_miss(input, attachment, retained_target, &mut textures, &mut recording).await {
+                Ok(frame) => frame,
+                Err(error) => {
+                    textures.finish_frame();
+                    self.textures = Some(textures);
+                    return Err(error);
+                }
+            };
+            let atlas_bytes = textures.atlases.frame_bytes;
+            full_upload = Some((textures, data));
+            (frame, scroll, atlas_bytes)
         };
-        if let Some(measurement) = recording.measurement.as_deref_mut() {
-            measurement.profile.atlas_bytes = textures.atlases.frame_bytes;
-            measurement.profile.atlas_upload_bytes = textures.atlases.upload_bytes;
+        let presenting = recording.outputs.is_some();
+        let (mut backing, raster) = if presenting && input.sample.is_some() && frame.plan.supports_damage() && recording.receipts.is_empty()
+        {
+            let spatial = scroll.is_some();
+            let compatible_target = self.backing.as_ref().filter(|backing| backing.target == retained_target);
+            let previous = compatible_target.filter(|backing| backing.spatial == spatial);
+            let mut scene = SceneSnapshot::new(input, attachment.requirements.extent);
+            let damage = previous.and_then(|backing| {
+                let textures = full_upload.as_mut().map(|(textures, _)| textures).or(self.textures.as_mut())?;
+                scene.damage_since(&backing.scene, &mut textures.glyphs, spatial)
+            });
+            let raster = match damage {
+                Some(damage) if damage.is_empty() => Raster::Reuse,
+                Some(damage) if damage.is_partial(attachment.requirements.extent) => Raster::Damage(damage),
+                _ => Raster::Full,
+            };
+            // A large edit is cheap to draw directly. The next compatible scene can seed a
+            // fresh backing; the older snapshot cannot describe the newly submitted pixels.
+            let backing = if damage.map_or_else(|| !scene.can_retain(), |damage| !damage.is_partial(attachment.requirements.extent)) {
+                None
+            } else {
+                Some(self.backing_pipelines.prepare(&self.device, attachment, target, scene, compatible_target, spatial))
+            };
+            (backing, raster)
+        } else {
+            (None, Raster::Full)
+        };
+        if let Some(backing) = &mut backing {
+            match raster {
+                Raster::Full => backing.clear = None,
+                Raster::Damage(_) if backing.clear.is_none() => {
+                    backing.clear = Some(self.backing_pipelines.prepare_clear(&self.device, attachment.format, frame.background));
+                }
+                _ => {}
+            }
         }
-        let intermediate = self.output_resolve.prepare(&self.device, frame.plan.resolve_output.then_some(attachment), target);
+        let intermediate =
+            self.output_resolve.prepare(&self.device, (backing.is_none() && frame.plan.resolve_output).then_some(attachment), target);
         let prepared = preparing.map(|start| {
             let end = Instant::now();
             (end, end.duration_since(start))
         });
-        let encoder = self.encode_frame(encoder, &mut frame, &view, intermediate.as_ref(), input, &mut recording).await;
+        let mut encoder = encoder;
+        if !matches!(raster, Raster::Reuse) {
+            let draw_target = backing.as_ref().map_or_else(|| intermediate.as_ref().unwrap_or(&view), |backing| &backing.view);
+            let partial = if let Raster::Damage(damage) = raster {
+                Some((damage, backing.as_ref().and_then(|backing| backing.clear.as_ref()).expect("damage clear")))
+            } else {
+                None
+            };
+            let offsets = scroll.as_ref().map_or(&[][..], |scroll| scroll.offsets.as_slice());
+            encoder = self.encode_frame(encoder, &mut frame, draw_target, partial, offsets, input, &mut recording).await;
+        }
+        if let Some(backing) = &backing {
+            self.backing_pipelines.transfer(&mut encoder, backing, &view, &mut recording);
+        } else if intermediate.is_some() {
+            self.output_resolve.encode(&mut encoder, &view, recording.pass(super::GpuPassKind::Output));
+            if let Some(measurement) = recording.measurement.as_deref_mut() {
+                let [width, height] = attachment.requirements.extent;
+                measurement.profile.output_pixels = u64::from(width) * u64::from(height);
+            }
+        }
+        if !presenting {
+            self.output_resolve.release_source();
+        }
+        let atlas_upload_bytes = full_upload.as_ref().map_or(0, |(textures, _)| textures.atlases.upload_bytes);
+        let uploads = if let Some((textures, data)) = full_upload {
+            self.buffers.stage(self.textures.insert(textures), data)
+        } else {
+            self.buffers.stage_spatials(spatial_writes)
+        };
         if let Some((encoding, prepare)) = prepared
             && let Some(measurement) = recording.measurement
         {
+            measurement.profile.retained_prepare = reused;
+            measurement.profile.partial_raster = !matches!(raster, Raster::Full);
+            measurement.profile.damage_area_ratio = match raster {
+                Raster::Full => 1.0,
+                Raster::Damage(rect) => rect.area_ratio(attachment.requirements.extent),
+                Raster::Reuse => 0.0,
+            };
+            measurement.profile.instance_upload_bytes = uploads.instance_bytes();
+            measurement.profile.spatial_upload_bytes = uploads.spatial_bytes();
+            measurement.profile.atlas_bytes = atlas_bytes;
+            measurement.profile.atlas_upload_bytes = atlas_upload_bytes;
             measurement.record_frame(prepare, encoding.elapsed(), &frame.plan, &frame.layer_views);
         }
-        let textures = self.textures.insert(textures);
-        let uploads = self.buffers.stage(textures, frame.data);
+        let retained = scroll.map(|scroll| CachedFrame { scroll, frame, atlas_bytes });
         Ok(RecordedFrame {
             before: recording.before,
             encoder,
             device: &self.device,
             queue: &self.queue,
             uploads: Some(uploads),
+            cache: &mut self.prepared,
+            retained,
+            backing_cache: &mut self.backing,
+            backing: presenting.then_some(backing),
             canvas_cache: &mut self.canvas_cache,
             presentation_history: &self.presentation_history,
             changes: recording.outputs.unwrap_or_default(),
@@ -252,5 +368,31 @@ impl GpuRenderer {
             timestamp_pool: &mut self.timestamps,
             timestamps: None,
         })
+    }
+
+    async fn prepare_miss(
+        &mut self,
+        input: FrameInput<'_>,
+        attachment: AttachmentInfo,
+        target: RetainedTarget,
+        textures: &mut SceneTextures,
+        recording: &mut FrameRecording<'_>,
+    ) -> Result<(PreparedFrame, FrameData, Option<ScrollScene>), RecordError> {
+        if let Some(scroll) = ScrollScene::new(input, target)
+            && let Some(plan) = plan_frame_spatial(input.list, attachment.requirements, input.sample, &mut textures.glyphs, &scroll.slots)
+        {
+            match self.prepare_frame(input, attachment, textures, recording, plan, scroll.offsets.clone()).await {
+                Ok((frame, data)) => return Ok((frame, data, Some(scroll))),
+                Err(_) => {
+                    // Unculled geometry can exceed the storage or atlas budget even when the
+                    // visible working set fits. Retry with the conventional visible plan.
+                    textures.finish_frame();
+                    textures.atlases.begin_frame();
+                }
+            }
+        }
+        let plan = plan_frame_cached(input.list, attachment.requirements, input.sample, &mut textures.glyphs);
+        let (frame, data) = self.prepare_frame(input, attachment, textures, recording, plan, Vec::new()).await?;
+        Ok((frame, data, None))
     }
 }

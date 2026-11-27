@@ -34,10 +34,10 @@ struct NaturalSize {
 struct Frame {
     layout: LayoutBox,
     bounds: Rect,
-    client: Rect,
-    content: Rect,
-    clip: Rect,
-    child_clip: Rect,
+    scroll_parent: Option<NodeId>,
+    clip_parent: Option<NodeId>,
+    local_client: Rect,
+    local_content: Rect,
     clip_axes: [bool; 2],
     scroll: Option<ScrollRange>,
     offset: Vec2,
@@ -122,8 +122,22 @@ impl<T: Copy + PartialEq> Projected<T> {
 }
 
 impl Frame {
-    fn anchor_bounds(self) -> (Rect, Rect) {
-        (self.bounds, self.content)
+    fn anchor_bounds(self) -> (Rect, Rect, Option<NodeId>) {
+        (self.bounds, self.local_content, self.scroll_parent)
+    }
+
+    fn child_context(self, node: NodeId, overlay_root: bool) -> FrameContext {
+        FrameContext {
+            origin: Point::new(self.bounds.x, self.bounds.y),
+            scroll_parent: if self.scroll.is_some() { Some(node) } else { self.scroll_parent },
+            clip_parent: if overlay_root {
+                None
+            } else if self.clip_axes != [false; 2] {
+                Some(node)
+            } else {
+                self.clip_parent
+            },
+        }
     }
 }
 
@@ -178,11 +192,13 @@ pub(crate) struct LayoutEngine {
     keys: SecondaryMap<NodeId, taffy::NodeId>,
     frames: Projected<Frame>,
     scroll_anchors: Projected<ContentAnchor>,
+    virtual_anchor_markers: FxHashSet<NodeId>,
+    virtual_anchor_ports: FxHashSet<NodeId>,
     keyboard_focus: Option<NodeId>,
     committed_keyboard_focus: Option<NodeId>,
     links: Projected<Frame>,
     changed: DirtyBitmap,
-    scrolled: DirtyBitmap,
+    scroll_changed: DirtyBitmap,
     animated_scrolls: DirtyBitmap,
     anchors: AnchorIndex,
     placement: Projected<AnchorPlacement>,
@@ -191,6 +207,8 @@ pub(crate) struct LayoutEngine {
     measurements: FxHashMap<NodeId, Measurement>,
     native_sizes: FxHashMap<NodeId, Size>,
     viewport: Option<WindowViewport>,
+    window: Rect,
+    committed_window: Rect,
     font_generation: u64,
     stage_collected: bool,
     needs_collection: bool,
@@ -208,11 +226,13 @@ impl Default for LayoutEngine {
             keys: SecondaryMap::new(),
             frames: Projected::default(),
             scroll_anchors: Projected::default(),
+            virtual_anchor_markers: FxHashSet::default(),
+            virtual_anchor_ports: FxHashSet::default(),
             keyboard_focus: None,
             committed_keyboard_focus: None,
             links: Projected::default(),
             changed: DirtyBitmap::default(),
-            scrolled: DirtyBitmap::default(),
+            scroll_changed: DirtyBitmap::default(),
             animated_scrolls: DirtyBitmap::default(),
             anchors: AnchorIndex::default(),
             placement: Projected::default(),
@@ -221,6 +241,8 @@ impl Default for LayoutEngine {
             measurements: FxHashMap::default(),
             native_sizes: FxHashMap::default(),
             viewport: None,
+            window: Rect::default(),
+            committed_window: Rect::default(),
             font_generation: 0,
             stage_collected: false,
             needs_collection: false,
@@ -247,6 +269,7 @@ impl LayoutEngine {
 
         let viewport_changed = self.viewport != Some(viewport);
         self.viewport = Some(viewport);
+        self.window = Rect::new(0.0, 0.0, viewport.size.width, viewport.size.height);
         let root = self.keys[tree.root()];
         let dirty = self.taffy.dirty(root).expect("retained layout root");
         let recompute = dirty || viewport_changed;
@@ -321,12 +344,26 @@ impl LayoutEngine {
         self.place_anchors(tree, text, &mut projection, &mut updates);
         self.report_scroll(tree, &projection.scroll, &mut updates);
         self.record_scroll_anchors(tree, &projection.scroll);
-        self.scrolled.clear();
-        self.scrolled.extend(self.frames.before_project.iter().filter_map(|(&node, previous)| {
-            let frame = self.frames.entries.get(&node)?;
-            (frame.scroll.is_some() && previous.is_some_and(|previous| previous.offset != frame.offset)).then_some(node)
-        }));
-        self.changed.extend(self.frames.changes());
+        self.scroll_changed.clear();
+        for (&node, &previous) in &self.frames.before_project {
+            let current = self.frames.entries.get(&node).copied();
+            match (previous, current) {
+                (Some(previous), Some(current)) => {
+                    if previous.offset != current.offset {
+                        self.scroll_changed.insert(node);
+                    }
+                    let prior = Frame { offset: current.offset, scroll_clamped: current.scroll_clamped, ..previous };
+                    if prior != current {
+                        self.changed.insert(node);
+                    }
+                }
+                _ if previous != current => {
+                    self.changed.insert(node);
+                }
+                _ => {}
+            }
+        }
+        self.frames.before_project.clear();
         self.placement.before_project = FxHashMap::default();
         text.project(tree, delta, self);
         self.project_links(tree, text);
@@ -334,6 +371,7 @@ impl LayoutEngine {
     }
 
     fn sync(&mut self, tree: &Tree, delta: &TreeDelta) {
+        self.sync_virtual_anchors(tree, delta);
         let extent = self.viewport.map_or_else(Size::default, |viewport| viewport.size);
         for node in delta.overlay_dirty.iter() {
             self.anchors.sync(tree, node);
@@ -484,13 +522,12 @@ impl LayoutEngine {
         visited: &mut FxHashSet<NodeId>,
         full: bool,
     ) {
-        let window = projection.window;
         let parent = if root == tree.root() {
-            Some(FrameContext { clip: window, ..Default::default() })
+            Some(FrameContext::default())
         } else {
             tree.physical_parent(root).and_then(|node| {
                 let frame = self.frames.entries.get(&node)?;
-                Some(FrameContext::children(*frame, node == tree.overlay_root(), window))
+                Some(frame.child_context(node, node == tree.overlay_root()))
             })
         };
         let mut remaining: SmallVec<[_; 16]> = [(root, parent)].into_iter().collect();
@@ -518,7 +555,7 @@ impl LayoutEngine {
             if next.is_some_and(|frame| frame.scroll.is_some()) {
                 projection.scroll.insert(node);
             }
-            let child_context = |frame| FrameContext::children(frame, node == tree.overlay_root(), window);
+            let child_context = |frame: Frame| frame.child_context(node, node == tree.overlay_root());
             let child = next.map(child_context);
             if (full && child.is_some() || previous.map(child_context) != child) && tree.text(node).is_none() {
                 remaining.extend(tree.children(node).iter().rev().map(|&node| (node, child)));
@@ -528,8 +565,20 @@ impl LayoutEngine {
 
     fn set_frame(&mut self, tree: &Tree, node: NodeId, next: Option<Frame>, projection: &mut Projection) {
         let previous = self.frames.entries.get(&node).copied();
-        if self.frames.set(node, next) && previous.map(Frame::anchor_bounds) != next.map(Frame::anchor_bounds) {
-            self.queue_anchor_watchers(tree, node, projection);
+        if self.frames.set(node, next) {
+            if previous.map(Frame::anchor_bounds) != next.map(Frame::anchor_bounds) {
+                self.queue_anchor_watchers(tree, node, projection);
+            }
+            if previous.map(|frame| frame.offset) != next.map(|frame| frame.offset)
+                && (previous.is_some_and(|frame| frame.offset != Vec2::default())
+                    || next.is_some_and(|frame| frame.offset != Vec2::default()))
+            {
+                for &target in self.anchors.watchers.keys() {
+                    if self.scroll_parents(target).any(|parent| parent == node) {
+                        self.queue_anchor_watchers(tree, target, projection);
+                    }
+                }
+            }
         }
         if next.is_none_or(|frame| frame.scroll.is_none()) {
             self.scroll_anchors.set(node, None);
@@ -554,34 +603,43 @@ impl LayoutEngine {
         projection: &Projection,
     ) -> Frame {
         let result = self.taffy.layout(key).expect("computed layout");
-        let FrameContext { origin, clip, offset: parent_scroll } = parent;
+        let FrameContext { origin, scroll_parent, clip_parent } = parent;
         let position = match self.placement.entries.get(&node) {
             Some(AnchorPlacement::Placed(placed)) if tree.overlay(node).is_some_and(|slot| slot.target.is_some()) => Some(*placed),
             _ => None,
         };
-        let (x, y) = position
-            .map_or((origin.x + result.location.x - parent_scroll.x, origin.y + result.location.y - parent_scroll.y), |placement| {
-                (placement.x, placement.y)
-            });
+        let (x, y) = position.map_or_else(
+            || (origin.x + result.location.x, origin.y + result.location.y),
+            |placed| {
+                let scroll = self.translation_from(scroll_parent);
+                (placed.x - scroll.x, placed.y - scroll.y)
+            },
+        );
         let bounds = Rect::new(x, y, result.size.width, result.size.height);
         let border = edges(result.border);
         let padding = edges(result.padding);
-        let client = inner(
-            bounds,
-            Edges { right: border.right + result.scrollbar_size.width, bottom: border.bottom + result.scrollbar_size.height, ..border },
-        );
-        let content = inner(client, padding);
+        let client_edges =
+            Edges { right: border.right + result.scrollbar_size.width, bottom: border.bottom + result.scrollbar_size.height, ..border };
+        let local_client = inner(Rect::new(0.0, 0.0, bounds.w, bounds.h), client_edges);
+        let local_content = inner(local_client, padding);
         let native = self.taffy.style(key).expect("compiled layout");
         let clip_x = native.overflow.x != taffy::Overflow::Visible;
         let clip_y = native.overflow.y != taffy::Overflow::Visible;
-        let child_clip = clip_axes(clip, client, clip_x, clip_y);
         let mut max = Vec2::new(
-            if native.overflow.x == taffy::Overflow::Scroll { (result.scrollable_overflow_rect.right - client.w).max(0.0) } else { 0.0 },
-            if native.overflow.y == taffy::Overflow::Scroll { (result.scrollable_overflow_rect.bottom - client.h).max(0.0) } else { 0.0 },
+            if native.overflow.x == taffy::Overflow::Scroll {
+                (result.scrollable_overflow_rect.right - local_client.w).max(0.0)
+            } else {
+                0.0
+            },
+            if native.overflow.y == taffy::Overflow::Scroll {
+                (result.scrollable_overflow_rect.bottom - local_client.h).max(0.0)
+            } else {
+                0.0
+            },
         );
         let slot = tree.scroll(node);
         if tree.editor(node).is_some_and(|editor| editor.multiline) {
-            max.y = max.y.max(text.editor_scroll_range(tree, node, content.w, content.h));
+            max.y = max.y.max(text.editor_scroll_range(tree, node, local_content.w, local_content.h));
         }
         let scroll = slot.map(|_| ScrollRange { max });
         let (offset, scroll_clamped) = slot.zip(scroll).map_or_else(Default::default, |(slot, range)| {
@@ -592,10 +650,10 @@ impl LayoutEngine {
             } else if follows_tail(tree, node) {
                 Vec2::new(slot.offset.x, range.max.y)
             } else if tree.focus() == Some(node)
-                && (projection.editor.reveal || projection.editor.previous_size != Some(rect_size(content)))
-                && let Some(caret) = text.editor_caret_in_content(tree, node, content.w)
+                && (projection.editor.reveal || projection.editor.previous_size != Some(rect_size(local_content)))
+                && let Some(caret) = text.editor_caret_in_content(tree, node, local_content.w)
             {
-                Vec2::new(slot.offset.x, ScrollRange::reveal_axis(slot.offset.y, content.h, caret.y, caret.bottom()))
+                Vec2::new(slot.offset.x, ScrollRange::reveal_axis(slot.offset.y, local_content.h, caret.y, caret.bottom()))
             } else if let Some(&focus) = projection.focus_reveals.get(&node) {
                 focus
             } else if let Some(delta) = self.scroll_anchor_delta(tree, node) {
@@ -607,17 +665,17 @@ impl LayoutEngine {
             (offset, offset != target)
         });
         let rect = if position.is_some() {
-            Rect::new(x - origin.x + parent_scroll.x, y - origin.y + parent_scroll.y, bounds.w, bounds.h)
+            Rect::new(x - origin.x, y - origin.y, bounds.w, bounds.h)
         } else {
             Rect::new(result.location.x, result.location.y, bounds.w, bounds.h)
         };
         Frame {
             layout: LayoutBox { rect, padding, border },
             bounds,
-            client,
-            content,
-            clip,
-            child_clip,
+            scroll_parent,
+            clip_parent,
+            local_client,
+            local_content,
             clip_axes: [clip_x, clip_y],
             scroll,
             offset,
@@ -625,9 +683,52 @@ impl LayoutEngine {
         }
     }
 
+    fn sync_virtual_anchors(&mut self, tree: &Tree, delta: &TreeDelta) {
+        let mut ports = DirtyBitmap::default();
+        ports.extend(delta.topology_dirty.iter().filter(|&node| tree.scroll(node).is_some() || self.virtual_anchor_ports.contains(&node)));
+        ports.extend(
+            delta
+                .layout_dirty
+                .iter()
+                .filter(|&node| tree.scroll(node).is_some() != self.frames.entries.get(&node).is_some_and(|frame| frame.scroll.is_some())),
+        );
+        for node in delta.created.iter().copied().chain(delta.semantics_dirty.iter()) {
+            let marked = tree.node(node).is_some_and(|core| core.flags.contains(NodeFlags::VIRTUAL_SCROLL_ANCHOR));
+            let changed = if marked { self.virtual_anchor_markers.insert(node) } else { self.virtual_anchor_markers.remove(&node) };
+            if changed && let Some(parent) = tree.physical_parent(node) {
+                ports.insert(parent);
+            }
+        }
+        for retired in &delta.retired {
+            if let RetiredNode::Destroyed(node) = *retired {
+                self.virtual_anchor_markers.remove(&node);
+                self.virtual_anchor_ports.remove(&node);
+            }
+        }
+        for port in ports.iter() {
+            let marked = tree.scroll(port).is_some() && tree.children(port).iter().any(|child| self.virtual_anchor_markers.contains(child));
+            if marked {
+                self.virtual_anchor_ports.insert(port);
+            } else {
+                self.virtual_anchor_ports.remove(&port);
+            }
+        }
+    }
+
+    fn maintains_scroll_anchor(&self, tree: &Tree, node: NodeId) -> bool {
+        tree.node(node).is_some_and(|core| {
+            !core.flags.contains(NodeFlags::FOLLOW_TAIL_ACTIVE)
+                && (core.flags.intersects(NodeFlags::FOLLOW_TAIL | NodeFlags::MAINTAIN_SCROLL_ANCHOR)
+                    || self.virtual_anchor_ports.contains(&node))
+        })
+    }
+
     fn scroll_anchor_delta(&self, tree: &Tree, node: NodeId) -> Option<f32> {
         let anchor = self.scroll_anchors.entries.get(&node)?;
-        if !tree.maintains_scroll_anchor(node) || tree.physical_parent(anchor.child) != Some(node) || !anchor_child(tree, anchor.child) {
+        if !self.maintains_scroll_anchor(tree, node)
+            || tree.physical_parent(anchor.child) != Some(node)
+            || !anchor_child(tree, anchor.child)
+        {
             return None;
         }
         let layout = self.taffy.layout(*self.keys.get(anchor.child)?).ok()?;
@@ -636,13 +737,13 @@ impl LayoutEngine {
 
     fn record_scroll_anchors(&mut self, tree: &Tree, scrollports: &FxHashSet<NodeId>) {
         for &node in scrollports {
-            let anchor = tree
-                .maintains_scroll_anchor(node)
+            let anchor = self
+                .maintains_scroll_anchor(tree, node)
                 .then(|| {
-                    let port = self.frames.entries.get(&node)?;
+                    let clip = self.child_clip(node).or_else(|| self.clip(node))?;
                     tree.children(node).iter().copied().filter(|&child| anchor_child(tree, child)).find_map(|child| {
                         let frame = self.frames.entries.get(&child)?;
-                        (!frame.bounds.intersect(&port.child_clip).is_empty()).then_some(ContentAnchor { child, y: frame.layout.rect.y })
+                        (!self.bounds(child)?.intersect(&clip).is_empty()).then_some(ContentAnchor { child, y: frame.layout.rect.y })
                     })
                 })
                 .flatten();
@@ -666,7 +767,7 @@ impl LayoutEngine {
             if slot.requested.is_some() || self.animated_scrolls.contains(&node) || follows_tail(tree, node) {
                 continue;
             }
-            let client = frame.client;
+            let Some(client) = self.scroll_client(node) else { continue };
             let offset = frame.offset;
             let desired = range.clamp(Vec2::new(
                 ScrollRange::reveal_axis(slot.offset.x, client.w, target.x - client.x + offset.x, target.right() - client.x + offset.x),
@@ -820,16 +921,17 @@ impl LayoutEngine {
         for node in dirty.iter() {
             self.work.links += 1;
             let frame = (|| {
-                let parent = self.frames.entries.get(&tree.physical_parent(node)?)?;
-                let bounds = text.link_bounds(node)?;
-                let rect = Rect::new(bounds.x - parent.bounds.x, bounds.y - parent.bounds.y, bounds.w, bounds.h);
+                let parent_id = tree.physical_parent(node)?;
+                let parent = self.frames.entries.get(&parent_id)?;
+                let rect = text.link_local_bounds(node)?;
+                let bounds = translated(rect, Vec2::new(parent.bounds.x, parent.bounds.y));
                 Some(Frame {
                     layout: LayoutBox { rect, ..Default::default() },
                     bounds,
-                    client: bounds,
-                    content: bounds,
-                    clip: parent.child_clip,
-                    child_clip: parent.child_clip,
+                    scroll_parent: parent.scroll_parent,
+                    clip_parent: parent.child_context(parent_id, false).clip_parent,
+                    local_client: Rect::new(0.0, 0.0, bounds.w, bounds.h),
+                    local_content: Rect::new(0.0, 0.0, bounds.w, bounds.h),
                     clip_axes: [false; 2],
                     scroll: None,
                     offset: Vec2::default(),
@@ -849,6 +951,7 @@ impl LayoutEngine {
         self.frames.commit();
         self.scroll_anchors.commit();
         self.committed_keyboard_focus = self.keyboard_focus;
+        self.committed_window = self.window;
         self.links.commit();
         self.placement.commit();
         self.stage_collected = false;
@@ -858,9 +961,11 @@ impl LayoutEngine {
         self.frames.rollback();
         self.scroll_anchors.rollback();
         self.keyboard_focus = self.committed_keyboard_focus;
+        self.window = self.committed_window;
         self.links.rollback();
         self.placement.rollback();
         self.changed.clear();
+        self.scroll_changed.clear();
         // A full pass can change geometry outside the authored delta. Project those warm Taffy results again on retry.
         self.needs_collection |= std::mem::take(&mut self.stage_collected);
     }
@@ -886,16 +991,29 @@ impl LayoutEngine {
     }
 
     pub(crate) fn bounds(&self, node: NodeId) -> Option<Rect> {
-        self.projected_frame(node).map(|frame| frame.bounds)
+        Some(translated(self.projected_frame(node)?.bounds, self.scroll_translation(node)))
     }
 
     pub(crate) fn content_bounds(&self, node: NodeId) -> Option<Rect> {
-        self.projected_frame(node).map(|frame| frame.content)
+        let frame = self.projected_frame(node)?;
+        let bounds = self.bounds(node)?;
+        Some(translated(frame.local_content, Vec2::new(bounds.x, bounds.y)))
     }
 
     pub(crate) fn scroll_client(&self, node: NodeId) -> Option<Rect> {
-        let frame = self.frames.entries.get(&node)?;
-        frame.scroll.map(|_| frame.client)
+        self.scroll_range(node)?;
+        self.world_client(node)
+    }
+
+    fn world_client(&self, node: NodeId) -> Option<Rect> {
+        let local = self.local_client(node)?;
+        let bounds = self.bounds(node)?;
+        Some(translated(local, Vec2::new(bounds.x, bounds.y)))
+    }
+
+    /// Preserve the full rounded padding box even when an outer scissor intersects it.
+    pub(crate) fn rounded_child_clip(&self, node: NodeId) -> Option<Rect> {
+        (self.clip_axes(node) == [true; 2]).then(|| self.world_client(node)).flatten()
     }
 
     pub(crate) fn scroll_anchor(&self, node: NodeId) -> Option<NodeId> {
@@ -903,16 +1021,55 @@ impl LayoutEngine {
     }
 
     pub(crate) fn clip(&self, node: NodeId) -> Option<Rect> {
-        self.projected_frame(node).map(|frame| frame.clip)
+        let mut parent = self.projected_frame(node)?.clip_parent;
+        let mut clip = self.window;
+        while let Some(node) = parent {
+            let frame = self.frames.entries.get(&node)?;
+            let [x, y] = frame.clip_axes;
+            clip = clip_axes(clip, self.world_client(node)?, x, y);
+            parent = frame.clip_parent;
+        }
+        Some(clip)
     }
 
     pub(crate) fn child_clip(&self, node: NodeId) -> Option<Rect> {
-        self.frames.entries.get(&node).filter(|frame| frame.clip_axes != [false; 2]).map(|frame| frame.child_clip)
+        let [x, y] = self.clip_axes(node);
+        (x || y).then(|| Some(clip_axes(self.clip(node)?, self.world_client(node)?, x, y))).flatten()
     }
 
-    /// An ancestor's scissor can intersect the padding box without changing its corners.
-    pub(crate) fn rounded_child_clip(&self, node: NodeId) -> Option<Rect> {
-        self.frames.entries.get(&node).filter(|frame| frame.clip_axes == [true; 2]).map(|frame| frame.client)
+    pub(crate) fn paint_bounds(&self, node: NodeId) -> Option<Rect> {
+        self.projected_frame(node).map(|frame| frame.bounds)
+    }
+
+    pub(crate) fn local_client(&self, node: NodeId) -> Option<Rect> {
+        self.frames.entries.get(&node).map(|frame| frame.local_client)
+    }
+
+    pub(crate) fn local_content(&self, node: NodeId) -> Option<Rect> {
+        self.frames.entries.get(&node).map(|frame| frame.local_content)
+    }
+
+    pub(crate) fn clip_axes(&self, node: NodeId) -> [bool; 2] {
+        self.frames.entries.get(&node).map_or([false; 2], |frame| frame.clip_axes)
+    }
+
+    pub(crate) fn scroll_ancestor(&self, node: NodeId) -> Option<NodeId> {
+        self.projected_frame(node)?.scroll_parent
+    }
+
+    fn scroll_parents(&self, node: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+        std::iter::successors(self.scroll_ancestor(node), |&parent| self.scroll_ancestor(parent))
+    }
+
+    fn translation_from(&self, ancestor: Option<NodeId>) -> Vec2 {
+        std::iter::successors(ancestor, |&parent| self.scroll_ancestor(parent)).fold(Vec2::default(), |shift, node| {
+            let offset = self.scroll_offset(node);
+            Vec2::new(shift.x - offset.x, shift.y - offset.y)
+        })
+    }
+
+    pub(crate) fn scroll_translation(&self, node: NodeId) -> Vec2 {
+        self.translation_from(self.scroll_ancestor(node))
     }
 
     pub(crate) fn scroll_range(&self, node: NodeId) -> Option<ScrollRange> {
@@ -927,8 +1084,8 @@ impl LayoutEngine {
         &self.changed
     }
 
-    pub(crate) fn scrolled(&self) -> &DirtyBitmap {
-        &self.scrolled
+    pub(crate) fn scroll_changed(&self) -> &DirtyBitmap {
+        &self.scroll_changed
     }
 
     pub(crate) fn set_animated_scrolls(&mut self, nodes: impl Iterator<Item = NodeId>) {
@@ -982,23 +1139,12 @@ struct EditorProjection {
 #[derive(Clone, Copy, Default, PartialEq)]
 struct FrameContext {
     origin: Point,
-    clip: Rect,
-    offset: Vec2,
-}
-
-impl FrameContext {
-    fn children(frame: Frame, overlay_root: bool, window: Rect) -> Self {
-        Self {
-            origin: Point::new(frame.bounds.x, frame.bounds.y),
-            clip: if overlay_root { window } else { frame.child_clip },
-            offset: frame.offset,
-        }
-    }
+    scroll_parent: Option<NodeId>,
+    clip_parent: Option<NodeId>,
 }
 
 struct Projection {
     viewport: WindowViewport,
-    window: Rect,
     editor: EditorProjection,
     focus_reveals: FxHashMap<NodeId, Vec2>,
     scroll: FxHashSet<NodeId>,
@@ -1010,7 +1156,6 @@ impl Projection {
     fn new(viewport: WindowViewport, editor: EditorProjection) -> Self {
         Self {
             viewport,
-            window: Rect::new(0.0, 0.0, viewport.size.width, viewport.size.height),
             editor,
             focus_reveals: FxHashMap::default(),
             scroll: FxHashSet::default(),
@@ -1061,6 +1206,10 @@ fn inner(rect: Rect, edges: Edges) -> Rect {
         (rect.w - edges.left - edges.right).max(0.0),
         (rect.h - edges.top - edges.bottom).max(0.0),
     )
+}
+
+fn translated(rect: Rect, offset: Vec2) -> Rect {
+    Rect::new(rect.x + offset.x, rect.y + offset.y, rect.w, rect.h)
 }
 
 fn clip_axes(clip: Rect, client: Rect, x: bool, y: bool) -> Rect {

@@ -82,7 +82,10 @@ fn minimum_os_versions_default_without_modules() {
     let app = w.package("app", "");
     let out = w.merge(&app, "defaults", &[]);
 
-    assert_eq!(plist(&out, "ios/Info.plist"), [("MinimumOSVersion", "18.4")].into_iter().collect());
+    assert_eq!(
+        plist(&out, "ios/Info.plist"),
+        [("MinimumOSVersion", "18.4".into()), ("CADisableMinimumFrameDurationOnPhone", plist::Value::Boolean(true))].into_iter().collect()
+    );
     assert_eq!(plist(&out, "macos/Info.plist"), [("LSMinimumSystemVersion", "15.4")].into_iter().collect());
     assert!(plist(&out, "ios/Module.entitlements").is_empty());
     assert!(plist(&out, "macos/Module.entitlements").is_empty());
@@ -262,6 +265,7 @@ NSMicrophoneUsageDescription = "Record a note"
     .collect();
     let url_type = [("CFBundleURLSchemes", Plist::Array(vec!["example".into()]))].into_iter().collect();
     ios_info.insert("CFBundleURLTypes".into(), Plist::Array(vec![Plist::Dictionary(url_type)]));
+    ios_info.insert("CADisableMinimumFrameDurationOnPhone".into(), Plist::Boolean(false));
     let ios_entitlements: plist::Dictionary =
         [("keychain-access-groups", Plist::Array(vec!["$(AppIdentifierPrefix)com.example.ios".into()]))].into_iter().collect();
     let macos_info: plist::Dictionary = [

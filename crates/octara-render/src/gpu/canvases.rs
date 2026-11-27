@@ -8,8 +8,8 @@ use super::plan::CanvasRequest;
 use super::recording::FrameRecording;
 use crate::shape::ClipStack;
 use octara_model::capture::PaintOutcome;
-use octara_model::geometry::{Rect, Vec2};
-use octara_model::paint::{DisplayList, Item, Part};
+use octara_model::geometry::Rect;
+use octara_model::paint::{DisplayList, Item};
 use std::collections::VecDeque;
 use std::sync::Weak;
 
@@ -121,45 +121,37 @@ impl GpuRenderer {
         let mut clips = ClipStack::default();
         let mut remaining = CanvasCache::CANVAS_BYTES;
         let max_dimension = self.device.limits().max_texture_dimension_2d;
-        for part in list.parts() {
-            let (items, Vec2 { x: dx, y: dy }) = match part {
-                Part::Drawing { offset, items, .. } => (items.as_ref(), *offset),
-                Part::Item(item) => (std::slice::from_ref(item), Vec2::default()),
-                Part::Group(_) => unreachable!("parts expands shared groups"),
-            };
-            for item in items {
-                match item {
-                    Item::PushClip { rect, .. } => clips.push(Rect::new(rect.x + dx, rect.y + dy, rect.w, rect.h), [0.0; 4], scale),
-                    Item::PopClip => clips.pop(),
-                    Item::Custom(paint)
-                        if !paint.exiting
-                            && paint.program.downcast_ref::<super::custom::Canvas>().is_some_and(|c| c.mode == CanvasMode::Retained) =>
-                    {
-                        let mut placed = paint.fallback;
-                        placed.rect.x += dx;
-                        placed.rect.y += dy;
-                        let clip = clips.current().bounds.map_or(NO_CLIP, |r| [r.x, r.y, r.w, r.h]);
-                        let fallback = quad(&placed, scale, clip, 0);
-                        if fallback.visible_bounds(&window).is_empty() {
-                            continue;
-                        }
-                        let Some(canvas) = CanvasPaint::from_custom(paint, fallback, CanvasMode::Retained, scale, None, max_dimension)
-                        else {
-                            continue;
-                        };
-                        let mount = paint.mount.downgrade();
-                        if updates.pending.iter().any(|(prepared, _)| prepared.ptr_eq(&mount)) {
-                            continue;
-                        }
-                        let Some(left) = remaining.checked_sub(rgba_bytes(canvas.size)) else { continue };
-                        remaining = left;
-                        updates.pending.push_back((mount, canvas));
-                        if updates.pending.len() == CanvasCache::CANVAS_SLOTS || remaining == 0 {
-                            return updates;
-                        }
+        for placed in list.placed_items_at(scale) {
+            if !matches!(placed.item, Item::PushClip { .. } | Item::PushAxisClip { .. } | Item::PopClip | Item::Custom(_)) {
+                continue;
+            }
+            match placed.resolve().as_ref() {
+                Item::PushClip { rect, .. } => clips.push(*rect, [0.0; 4], scale),
+                Item::PopClip => clips.pop(),
+                Item::Custom(paint)
+                    if !paint.exiting
+                        && paint.program.downcast_ref::<super::custom::Canvas>().is_some_and(|c| c.mode == CanvasMode::Retained) =>
+                {
+                    let clip = clips.current().bounds.map_or(NO_CLIP, |r| [r.x, r.y, r.w, r.h]);
+                    let fallback = quad(&paint.fallback, scale, clip, 0);
+                    if fallback.visible_bounds(&window).is_empty() {
+                        continue;
                     }
-                    _ => {}
+                    let Some(canvas) = CanvasPaint::from_custom(paint, fallback, CanvasMode::Retained, scale, None, max_dimension) else {
+                        continue;
+                    };
+                    let mount = paint.mount.downgrade();
+                    if updates.pending.iter().any(|(prepared, _)| prepared.ptr_eq(&mount)) {
+                        continue;
+                    }
+                    let Some(left) = remaining.checked_sub(rgba_bytes(canvas.size)) else { continue };
+                    remaining = left;
+                    updates.pending.push_back((mount, canvas));
+                    if updates.pending.len() == CanvasCache::CANVAS_SLOTS || remaining == 0 {
+                        return updates;
+                    }
                 }
+                _ => {}
             }
         }
         updates

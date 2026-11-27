@@ -1,5 +1,6 @@
 //! AppKit window services, native text input and Metal presentation.
 
+mod acquisition;
 mod asks;
 mod chrome;
 mod editor;
@@ -7,14 +8,15 @@ mod lifecycle;
 mod menus;
 mod metal_frame;
 mod native;
-mod pacing;
 mod preferences;
 mod services;
+mod wheel;
 
+use super::apple_frame_clock::{DisplayClock, retry_on_clock};
 use super::gestures::TrackpadGestures;
 use super::{
-    Drawable, DrawableAcquisition, HostEvent, OsHost, OsWindow, OsWindowContext, ServiceCleanup, WindowAsks, WindowHostEvent,
-    WindowNativeViews, WindowPresentation, WindowTextInput, reply, surface_drawable,
+    Drawable, DrawableAcquisition, FrameClockActivity, HostEvent, OsHost, OsWindow, OsWindowContext, ServiceCleanup, WindowAsks,
+    WindowHostEvent, WindowNativeViews, WindowPresentation, WindowTextInput, reply, surface_drawable,
 };
 use crate::ShellEvent;
 use objc2::MainThreadMarker;
@@ -28,7 +30,7 @@ use octara::{TitlebarStyle, WindowChrome, WindowGeometry, WindowGeometryRequest,
 use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
 use octara_model::geometry::{Point, Size, WindowViewport};
 use octara_model::identity::NativeId;
-use octara_model::input::{GestureEvent, HostReply, Modifiers, PasteEvent};
+use octara_model::input::{GestureEvent, HostReply, Modifiers, PasteEvent, WheelPhase};
 use octara_model::native::{NativeChange, NativeMeasureRequest, NativeSlot, NativeSnapshotRequest};
 use octara_model::paint::Image;
 use octara_model::theme::ColorScheme;
@@ -39,7 +41,7 @@ use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
-use winit::event::WindowEvent;
+use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::EventLoopProxy;
 use winit::platform::macos::WindowAttributesExtMacOS;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -144,6 +146,7 @@ impl OsHost for MacHost {
         let mtm = MainThreadMarker::new().ok_or("AppKit windows must be created on the main thread")?;
         let view = content_view(window)?;
         let ns_window = view.window().ok_or("AppKit content view has no window")?;
+        wheel::install(&view);
         let number = ns_window.windowNumber();
         let chrome = chrome::Chrome::new(ns_window, proxy.clone(), id);
         {
@@ -154,9 +157,12 @@ impl OsHost for MacHost {
         window.set_ime_allowed(false);
         let editor = editor::Editor::new(&view, mtm, wake(proxy.clone()));
         let native = native::Views::new(view.clone(), mtm, backend == wgpu::Backend::Metal, wake(proxy.clone()));
-        let frame_wake = proxy.clone();
-        let pacing = (backend == wgpu::Backend::Metal).then(|| {
-            pacing::Pacing::new(mtm, !config.manual_clock, config.metal_acquire_delay, config.metal_frame_latency, move |target| {
+        let metal = backend == wgpu::Backend::Metal;
+        let clock =
+            (metal && !config.manual_clock && config.metal_acquire_delay.is_zero()).then(|| DisplayClock::new(&view, id, proxy.clone()));
+        let acquisition = metal.then(|| {
+            let frame_wake = proxy.clone();
+            acquisition::Acquisition::new(config.metal_acquire_delay, move |target| {
                 let _ = frame_wake.send_event(ShellEvent::Frame { window: id, target });
             })
         });
@@ -171,7 +177,9 @@ impl OsHost for MacHost {
             gestures: TrackpadGestures::default(),
             native,
             asks: Rc::default(),
-            pacing,
+            clock,
+            acquisition,
+            transactional: false,
         }))
     }
 
@@ -241,10 +249,16 @@ struct MacWindow {
     gestures: TrackpadGestures,
     native: native::Views,
     asks: Rc<asks::Shown>,
-    pacing: Option<pacing::Pacing>,
+    clock: Option<DisplayClock>,
+    acquisition: Option<acquisition::Acquisition>,
+    transactional: bool,
 }
 
 impl OsWindow for MacWindow {
+    fn on_winit_wheel(&mut self, delta: MouseScrollDelta, phase: TouchPhase) -> Option<WheelPhase> {
+        wheel::take_phase(&self.view, delta, phase)
+    }
+
     fn on_winit_gesture(&mut self, event: &WindowEvent, anchor: Option<Point>, modifiers: Modifiers) -> Option<GestureEvent> {
         // Winit forwards magnifyWithEvent: and rotateWithEvent: after their cursor update.
         self.gestures.update(event, anchor, modifiers)
@@ -332,8 +346,8 @@ impl OsWindow for MacWindow {
         window.set_visible(true);
         window.focus_window();
         self.chrome.did_show(window);
-        if let Some(pacing) = &mut self.pacing {
-            pacing.did_show();
+        if let Some(clock) = &mut self.clock {
+            clock.did_show();
         }
     }
 
@@ -404,42 +418,58 @@ impl WindowNativeViews for MacWindow {
 
 impl WindowPresentation for MacWindow {
     fn externally_paced(&self) -> bool {
-        self.pacing.as_ref().is_some_and(pacing::Pacing::externally_paced)
+        self.clock.as_ref().is_some_and(DisplayClock::externally_paced)
     }
 
-    fn set_frame_clock_active(&mut self, active: bool) {
-        if let Some(pacing) = &mut self.pacing {
-            pacing.set_active(active);
+    fn set_frame_clock_activity(&mut self, activity: FrameClockActivity) {
+        if let Some(clock) = &mut self.clock {
+            clock.set_activity(activity);
         }
     }
 
     fn surface_will_reconfigure(&mut self) -> bool {
         self.native.set_layer(None);
-        self.pacing.as_mut().is_none_or(pacing::Pacing::reset)
+        self.acquisition.as_mut().is_none_or(acquisition::Acquisition::reset)
     }
 
-    fn try_acquire_drawable(&mut self, surface: &Arc<wgpu::Surface<'static>>, color: OutputColor) -> DrawableAcquisition {
-        let Some(pacing) = &mut self.pacing else { return surface_drawable(surface, color) };
-        let acquired = pacing.acquire(surface, color);
-        self.native.set_layer(pacing.layer());
-        acquired
+    fn set_transactional_presentation(&mut self, native_rev: u64, transactional: bool) {
+        self.transactional = self.native.prepare(native_rev) || transactional;
+    }
+
+    fn abandon_native_view_frame(&mut self) {
+        self.native.abandon();
+    }
+
+    fn try_acquire_drawable(&mut self, surface: &Arc<wgpu::Surface<'static>>, color: OutputColor, from_clock: bool) -> DrawableAcquisition {
+        let externally_paced = self.externally_paced();
+        if externally_paced && !from_clock {
+            return DrawableAcquisition::WaitingForClock;
+        }
+        let Some(acquisition) = &mut self.acquisition else { return surface_drawable(surface, color) };
+        let acquired = acquisition.acquire(surface, color, externally_paced, self.transactional);
+        self.native.set_layer(acquisition.layer());
+        retry_on_clock(acquired, externally_paced)
     }
 
     fn present(&mut self, drawable: Box<dyn Drawable>, queue: &wgpu::Queue) -> Result<(), String> {
-        self.present_with_native_views(drawable, queue, &mut || {})
+        drawable.present(queue)
     }
 
     fn present_with_native_views(
         &mut self,
         drawable: Box<dyn Drawable>,
         queue: &wgpu::Queue,
+        native_rev: u64,
         commit_native_views: &mut dyn FnMut(),
     ) -> Result<(), String> {
+        if !self.transactional {
+            return drawable.present(queue);
+        }
         CATransaction::begin();
         CATransaction::setDisableActions(true);
         let _transaction = std::mem::DropGuard::new((), |()| CATransaction::commit());
         drawable.present(queue)?;
-        self.native.commit();
+        self.native.commit(native_rev);
         commit_native_views();
         Ok(())
     }

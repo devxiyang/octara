@@ -8,8 +8,8 @@ use super::instances::Instances;
 use super::outputs::RegionImage;
 use super::pipeline::{PipelineKind, color_texture, depth_texture};
 use super::plan::{
-    Attachment, DrawSample, EncodedPlan, FramePlan, GlyphRequest, PaintRequests, PassBounds, PlannedBackdrop, ResourcePlan, TargetInfo,
-    TargetPlan, TransitionRequest, backdrop_inputs, bound_passes, plan_frame_cached, transition_composite_bounds,
+    Attachment, DrawSample, EncodedPlan, FramePlan, GlyphRequest, PaintRequests, PassBounds, PlannedBackdrop, ResourcePlan, TargetPlan,
+    TransitionRequest, backdrop_inputs, bound_passes, transition_composite_bounds,
 };
 use super::recording::FrameRecording;
 use super::resolve::AttachmentInfo;
@@ -34,7 +34,7 @@ pub(super) struct TransitionComposite {
     pub(super) bounds: PassBounds,
 }
 
-/// Prepared resources and pending uploads for the ordered frame plan.
+/// Prepared resources for the ordered frame plan.
 pub(super) struct PreparedFrame {
     pub(super) plan: EncodedPlan,
     pub(super) background: wgpu::Color,
@@ -51,7 +51,6 @@ pub(super) struct PreparedFrame {
     pub(super) layer_binds: Vec<wgpu::BindGroup>,
     pub(super) canvas_binds: Vec<wgpu::BindGroup>,
     pub(super) transitions: FxHashMap<usize, PlannedTransition>,
-    pub(super) data: FrameData,
 }
 
 impl GpuRenderer {
@@ -153,11 +152,11 @@ impl GpuRenderer {
         output: AttachmentInfo,
         textures: &mut SceneTextures,
         recording: &mut FrameRecording<'_>,
-    ) -> Result<PreparedFrame, RecordError> {
-        let target =
-            TargetInfo { scale: input.scale, max_texture_dimension: self.device.limits().max_texture_dimension_2d, ..output.requirements };
-        let FramePlan { mut passes, requests, clips, resources, bounds, resolve_output, backdrop_inputs: backdrop_reads } =
-            plan_frame_cached(input.list, target, input.sample, &mut textures.glyphs);
+        plan: FramePlan,
+        spatials: Vec<[f32; 4]>,
+    ) -> Result<(PreparedFrame, FrameData), RecordError> {
+        let target = output.requirements;
+        let FramePlan { mut passes, requests, clips, resources, bounds, resolve_output, backdrop_inputs: backdrop_reads } = plan;
 
         let PaintRequests { canvases, backdrops, skipped_transitions, receipts } = requests;
         recording.receipts = receipts;
@@ -256,7 +255,7 @@ impl GpuRenderer {
             layer_views.push(texture.create_view(&Default::default()));
         }
         let uniforms = self.buffers.prepare_projections(&self.device, &bounds, window, &layer_views);
-        let data = FrameData { instances, uniforms, clips: clips.into_nodes() };
+        let data = FrameData { instances, uniforms, clips: clips.into_nodes(), spatials };
         self.buffers.prepare(&self.device, &data)?;
         let extents: Vec<_> =
             std::iter::once(window).chain(layer_views.iter().map(|view| [view.texture().width(), view.texture().height()])).collect();
@@ -291,7 +290,7 @@ impl GpuRenderer {
         let material_bind = bind(PipelineKind::Material, None, None);
         let [r, g, b, a] = straight(input.list.background);
         let background = wgpu::Color { r: (r * a) as f64, g: (g * a) as f64, b: (b * a) as f64, a: a as f64 };
-        Ok(PreparedFrame {
+        let frame = PreparedFrame {
             plan,
             background,
             bounds,
@@ -307,8 +306,8 @@ impl GpuRenderer {
             layer_binds,
             canvas_binds,
             transitions,
-            data,
-        })
+        };
+        Ok((frame, data))
     }
 
     fn plan_transition(

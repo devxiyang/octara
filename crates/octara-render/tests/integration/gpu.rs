@@ -249,6 +249,99 @@ fn gpu_matches_the_reference_renderer() {
     }
 }
 
+fn capture_with_upload_bytes(gpu: &mut GpuRenderer, list: &DisplayList, scale: f32) -> (Picture, u64) {
+    let mut capture = gpu.record_capture(list, scale, None).unwrap().submit().unwrap();
+    gpu.device().poll(wgpu::PollType::Wait { submission_index: Some(capture.submission().clone()), timeout: None }).unwrap();
+    let picture = capture.take_mapped().unwrap().unwrap().finish().unwrap().picture;
+    (picture, capture.upload_bytes())
+}
+
+#[test]
+fn gpu_spatial_draws_match_nested_parent_and_content_clips() {
+    use octara_model::geometry::{Size, Vec2};
+    use octara_model::paint::{FillRule, Path, PathPaint, PathStyle, ScrollPlacement, ScrollPlacements, Transform};
+    use std::sync::Arc;
+
+    let Some(mut gpu) = gpu_or_skip() else { return };
+    let mut cpu = CpuRenderer::new();
+    let source = NodeId::default();
+    let area = Rect::new(9.25, 17.0, 74.0, 62.0);
+    let image = picture();
+    let inner: Arc<[Part]> = Arc::from([
+        Part::Item(Item::PushClip { source, rect: Rect::new(3.25, 21.5, 69.5, 62.0), radius: [9.0, 7.0, 19.0, 0.0] }),
+        Part::Item(Item::Quad(quad(area, 6.5, rgb(0x3b82f6).with_alpha(0.7)))),
+        Part::Item(sample(&image, area, Rect::new(18.0, 21.5, 53.25, 55.0), 14.0, 0.5)),
+        Part::Item(glyphs("你好", point(21.25, 48.5), 22.0, Color::WHITE)),
+        Part::Item(Item::Path(PathPaint {
+            source,
+            path: Path::circle(point(0.0, 0.0), 7.5),
+            style: PathStyle::Fill(FillRule::NonZero),
+            transform: Transform::translate(40.1, 44.75),
+            bounds: Rect::new(32.6, 37.25, 15.0, 15.0),
+            color: rgb(0xc04b22),
+            gradient: None,
+        })),
+        Part::Item(Item::PopClip),
+    ]);
+    let outer: Arc<[Part]> = Arc::from([
+        Part::Item(Item::PushAxisClip { source, rect: Rect::new(0.0, 16.25, 0.0, 44.0), horizontal: false }),
+        Part::ScrollContent { source, spatial_id: 2, scrollbar_offset: Vec2::default(), parts: inner },
+        Part::Item(Item::PopClip),
+    ]);
+    let parts: Arc<[Part]> = Arc::from([
+        Part::Item(Item::PushClip { source, rect: Rect::new(13.25, 8.25, 64.0, 47.5), radius: [0.0; 4] }),
+        Part::ScrollContent { source, spatial_id: 1, scrollbar_offset: Vec2::default(), parts: outer },
+        Part::Item(Item::PopClip),
+    ]);
+    for scale in [2.0, 3.0] {
+        for (index, shift) in [0.0, -3.4, -10.15, -20.2, -39.2, -2.12].into_iter().enumerate() {
+            let mut scrolls = ScrollPlacements::default();
+            scrolls.set(source, Some(ScrollPlacement { offset: Vec2::new(0.0, shift), scrollbars: [None, None] }));
+            let dl = DisplayList {
+                size: Size::new(94.0, 76.0),
+                background: Color::TRANSPARENT,
+                parts: vec![Part::ScrollFrame { scrolls, parts: parts.clone() }],
+            };
+            let (picture, uploaded) = capture_with_upload_bytes(&mut gpu, &dl, scale);
+            if index > 0 {
+                assert_eq!(uploaded, 2 * 16, "only the two spatial rows changed");
+            }
+            compare(&format!("nested scroll, {scale}x, {shift}pt"), &cpu.render(&dl, scale), &picture);
+        }
+    }
+}
+
+#[test]
+fn gpu_retains_translation_motion_with_fractional_x() {
+    use octara_model::geometry::{Size, Vec2};
+    use octara_model::paint::{ScrollPlacement, ScrollPlacements};
+    use std::sync::Arc;
+
+    let Some(mut gpu) = gpu_or_skip() else { return };
+    let mut cpu = CpuRenderer::new();
+    let source = NodeId::default();
+    let content = Part::Item(Item::Quad(quad(Rect::new(2.25, 4.0, 37.5, 23.0), 7.25, rgb(0x138191))));
+    let parts: Arc<[Part]> = Arc::from([
+        Part::Item(Item::PushClip { source, rect: Rect::new(10.0, 0.0, 38.0, 34.0), radius: [4.0; 4] }),
+        Part::MotionContent { source, spatial_id: 1, parts: Arc::from([content]) },
+        Part::Item(Item::PopClip),
+    ]);
+    for (index, offset) in [Vec2::default(), Vec2::new(0.15, 2.55), Vec2::new(18.7, 12.4)].into_iter().enumerate() {
+        let mut scrolls = ScrollPlacements::default();
+        scrolls.set(source, Some(ScrollPlacement { offset, scrollbars: [None, None] }));
+        let list = DisplayList {
+            size: Size::new(60.0, 40.0),
+            background: Color::TRANSPARENT,
+            parts: vec![Part::ScrollFrame { scrolls, parts: parts.clone() }],
+        };
+        let (picture, uploaded) = capture_with_upload_bytes(&mut gpu, &list, 3.0);
+        if index > 0 {
+            assert_eq!(uploaded, 16, "only the moving layer's spatial row changed");
+        }
+        compare("translation motion at 3x", &cpu.render(&list, 3.0), &picture);
+    }
+}
+
 #[test]
 fn capture_painter_rejects_invalid_sizes_without_losing_the_renderer() {
     let Some(mut gpu) = gpu_or_skip() else { return };

@@ -22,7 +22,6 @@ pub struct ShellConfig {
     pub trace_scroll: bool,
     pub trace_frame_clock: bool,
     pub trace_presented: bool,
-    pub metal_frame_latency: u32,
     pub metal_acquire_delay: Duration,
 }
 
@@ -54,7 +53,6 @@ impl ShellConfig {
             trace_scroll: enabled("OCTARA_TRACE_SCROLL"),
             trace_frame_clock: enabled("OCTARA_TRACE_FRAME_CLOCK"),
             trace_presented: enabled("OCTARA_TRACE_PRESENTED"),
-            metal_frame_latency: if get("OCTARA_METAL_FRAME_LATENCY").is_some_and(|value| value == "1") { 1 } else { 2 },
             metal_acquire_delay: duration("OCTARA_METAL_ACQUIRE_DELAY_MS", 0).min(Duration::from_secs(1)),
         }
     }

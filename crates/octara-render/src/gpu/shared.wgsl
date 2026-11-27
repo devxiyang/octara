@@ -9,9 +9,13 @@ struct ClipNode {
     rect: vec4f,
     radius: vec4f,
     parent: u32,
+    spatial: u32,
+    flags: u32,
 };
 
 @group(0) @binding(5) var<storage, read> clip_nodes: array<ClipNode>;
+// Each entry holds a window-space pixel translation, opacity and reserved flags.
+@group(0) @binding(8) var<storage, read> spatials: array<vec4f>;
 
 struct DrawInst {
     bounds: vec4f,
@@ -29,16 +33,60 @@ struct VsOut {
 };
 
 const FRACTIONAL_CLIP: u32 = 1u;
+const SPATIAL_CLIP: u32 = 2u;
+const SPATIAL_SHIFT: u32 = 2u;
+const RECT_PREFIX: u32 = 1u;
+const CLIP_HORIZONTAL: u32 = 2u;
+const CLIP_VERTICAL: u32 = 4u;
 
 // Integral rectangular clips are already resolved by the vertex clamp.
 override FRAGMENT_CLIPPING: bool = true;
 
+fn spatial_offset(id: u32) -> vec2f {
+    if id == 0u {
+        return vec2f(0.0);
+    }
+    return spatials[id].xy;
+}
+
+fn draw_offset(draw_inst: DrawInst) -> vec2f {
+    return spatial_offset(draw_inst.flags >> SPATIAL_SHIFT);
+}
+
+fn world_clip(node: ClipNode) -> vec4f {
+    let pos = node.rect.xy + spatial_offset(node.spatial);
+    if (node.flags & CLIP_HORIZONTAL) != 0u {
+        return vec4f(pos.x, node.rect.y, node.rect.zw);
+    }
+    if (node.flags & CLIP_VERTICAL) != 0u {
+        return vec4f(node.rect.x, pos.y, node.rect.zw);
+    }
+    return vec4f(pos, node.rect.zw);
+}
+
+fn intersect_clip(a: vec4f, b: vec4f) -> vec4f {
+    let lo = max(a.xy, b.xy);
+    return vec4f(lo, min(a.xy + a.zw, b.xy + b.zw) - lo);
+}
+
 fn draw_vertex(vi: u32, id: u32, rect: vec4f, draw_inst: DrawInst) -> VsOut {
     let corner = vec2f(f32(vi & 1u), f32(vi >> 1u));
-    let clip = draw_inst.clip;
-    let pad = select(0.0, 0.5, (draw_inst.flags & FRACTIONAL_CLIP) != 0u);
-    let lo = max(rect.xy, clip.xy - pad);
-    let hi = max(lo, min(rect.xy + rect.zw, clip.xy + clip.zw + pad));
+    let origin = rect.xy + draw_offset(draw_inst);
+    var clip = draw_inst.clip;
+    var pad = select(0.0, 0.5, (draw_inst.flags & FRACTIONAL_CLIP) != 0u);
+    if (draw_inst.flags & SPATIAL_CLIP) != 0u {
+        let inner = clip_nodes[draw_inst.clip_head - 1u];
+        clip = world_clip(inner);
+        var head = inner.parent;
+        while head != 0u && all(clip.zw > vec2f(0.0)) {
+            let node = clip_nodes[head - 1u];
+            clip = intersect_clip(clip, world_clip(node));
+            head = node.parent;
+        }
+        pad = 0.5;
+    }
+    let lo = max(origin, clip.xy - pad);
+    let hi = max(lo, min(origin + rect.zw, clip.xy + clip.zw + pad));
     let p = select(lo + corner * (hi - lo), lo, any(clip.zw <= vec2f(0.0)));
     let local = (p - globals.origin) / globals.size;
     return VsOut(vec4f(local.x * 2.0 - 1.0, 1.0 - local.y * 2.0, draw_inst.depth, 1.0), id);
@@ -95,12 +143,26 @@ fn coverage(d: f32) -> f32 {
     return clamp(0.5 - d, 0.0, 1.0);
 }
 
-fn clip_chain_coverage(p: vec2f, clip_head: u32) -> f32 {
+fn clip_chain_coverage(p: vec2f, clip_head: u32, spatial: bool) -> f32 {
     var head = clip_head;
     var alpha = 1.0;
     while head != 0u && alpha > 0.0 {
         let node = clip_nodes[head - 1u];
-        alpha = min(alpha, coverage(sd_round_rect(p, node.rect, node.radius)));
+        var rect = node.rect;
+        if spatial {
+            rect = world_clip(node);
+            // The reference combines rectangular clips up to the first rounded clip.
+            if (node.flags & RECT_PREFIX) != 0u {
+                head = node.parent;
+                while head != 0u {
+                    let outer = clip_nodes[head - 1u];
+                    rect = intersect_clip(rect, world_clip(outer));
+                    head = outer.parent;
+                }
+                return min(alpha, coverage(sd_round_rect(p, rect, vec4f(0.0))));
+            }
+        }
+        alpha = min(alpha, coverage(sd_round_rect(p, rect, node.radius)));
         head = node.parent;
     }
     return alpha;
@@ -111,7 +173,7 @@ fn clip_coverage(p: vec2f, draw_inst: DrawInst) -> f32 {
         return 1.0;
     }
     if draw_inst.clip_head != 0u {
-        return clip_chain_coverage(p, draw_inst.clip_head);
+        return clip_chain_coverage(p, draw_inst.clip_head, (draw_inst.flags & SPATIAL_CLIP) != 0u);
     }
     // Integral rectangles have no fractional coverage at device-pixel centers.
     if (draw_inst.flags & FRACTIONAL_CLIP) != 0u {

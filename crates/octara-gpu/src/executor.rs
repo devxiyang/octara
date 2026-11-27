@@ -726,6 +726,7 @@ impl<'a> Worker<'a> {
                 reply.check_live()?;
                 alive()?;
                 let (texture, color) = target.texture(self.renderer.device(), self.renderer.queue()).map_err(GpuError::Drawable)?;
+                self.renderer.set_target_generation(stamp.surface_generation);
                 let encoder =
                     self.renderer.device().create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Octara window frame") });
                 let input = FrameInput { list: &list, scale, sample: Some(stamp.sample) };

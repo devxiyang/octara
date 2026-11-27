@@ -6,7 +6,7 @@ use crate::authoring::WindowAuthoring;
 use crate::cx::{BuildCx, ReadCx, WriteCx};
 use crate::cycle::TextInteraction;
 use crate::cycle::scroll::ScrollMotion;
-use crate::engine::{CommitOutput, HostEngine};
+use crate::engine::{AccessibilityConsumer, CommitOutput, HostEngine};
 use crate::graph::value::{ReadSignal, Signal};
 use crate::task::TaskSpawner;
 use crate::tooltip::{HoverTooltip, HoveredTooltip};
@@ -26,9 +26,10 @@ use octara_tree::delta::RetiredNode;
 use octara_tree::editor::{EditorProposal, EditorRichText, EditorState};
 use octara_tree::selection::DocSelection;
 use octara_tree::tables::{CommandSlot, HandlerId, HandlerKind};
-use octara_tree::transaction::{PendingNode, RejectedTransaction};
+use octara_tree::transaction::{PendingNode, RejectedTransaction, RetirementCache};
 use octara_tree::{NodeChange, NodeId, NodeRef, NodeSpec, Retirement, RuntimeOp, TargetGuard, Tree, TreeDelta, TreeReceipt, TxBuilder};
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -210,6 +211,7 @@ pub(crate) struct MountWork {
     pub retire_scopes: Vec<ScopeId>,
     pub created: Vec<(ScopeId, PendingNode)>,
     pub retire_nodes: FxHashSet<NodeRef>,
+    retirement_cache: RefCell<RetirementCache>,
     pub parents: FxHashMap<NodeRef, NodeRef>,
     pub portal_owners: FxHashMap<NodeRef, Option<NodeRef>>,
     pub places: Vec<(NodeRef, usize, NodeRef)>,
@@ -289,7 +291,9 @@ impl MountCx<'_> {
     pub fn place(&mut self, parent: impl Into<NodeRef>, index: usize, child: impl Into<NodeRef>) {
         let (parent, child) = (parent.into(), child.into());
         let work = &mut self.window.work;
-        work.parents.insert(child, parent);
+        if work.parents.insert(child, parent) != Some(parent) {
+            work.retirement_cache.get_mut().changed_ancestry(child);
+        }
         if let Some(&position) = work.place_by_child.get(&child) {
             work.places[position] = (parent, index, child);
         } else {
@@ -304,7 +308,12 @@ impl MountCx<'_> {
 
     pub fn retire(&mut self, node: impl Into<NodeRef>, mode: Retirement) {
         let node = node.into();
-        if self.window.work.retire_nodes.insert(node) || mode == Retirement::Destroy {
+        let work = &mut self.window.work;
+        let inserted = work.retire_nodes.insert(node);
+        if inserted {
+            work.retirement_cache.get_mut().clear();
+        }
+        if inserted || mode == Retirement::Destroy {
             self.window.tx.retire(node, mode);
         }
     }
@@ -641,6 +650,12 @@ impl WindowRuntime {
     pub fn tree(&self) -> &Tree {
         &self.tree
     }
+
+    /// Request or release the host accessibility projection for a consumer.
+    pub fn set_accessibility_active(&self, consumer: AccessibilityConsumer, active: bool) {
+        self.engine.set_accessibility_active(&self.tree, consumer, active);
+    }
+
     pub fn options(&self) -> &WindowOptions {
         &self.options
     }
@@ -854,6 +869,25 @@ impl WindowRuntime {
         self.engine.hit_test(&self.tree, at)
     }
 
+    /// Whether a burst at a fixed point can share one wheel hit test.
+    pub fn can_coalesce_wheel(&self, pos: Point) -> bool {
+        let Some(hit) = self.hit_test(pos).and_then(|target| target.hit.node()) else { return false };
+        let mut chain =
+            std::iter::successors(Some(hit), |&node| self.tree.physical_parent(node)).filter(|&node| self.tree.scroll(node).is_some());
+        let Some(port) = chain.next() else { return true };
+        let inside = |node| std::iter::successors(Some(node), |&node| self.tree.physical_parent(node)).any(|node| node == port);
+        // Nested scrollports can move under the pointer after the first delta.
+        // Scroll feedback can also change the tree between two deltas.
+        chain.next().is_none()
+            && !self.tree.scroll_nodes().any(|node| node != port && inside(node))
+            && !self.feedback.iter().any(|binding| {
+                matches!(
+                    binding.signal,
+                    FeedbackSignal::Scroll(_) | FeedbackSignal::ScrollAnchor(_) | FeedbackSignal::Geometry(_) | FeedbackSignal::Pinned(_)
+                ) && matches!(binding.node, NodeRef::Existing { id, .. } if inside(id))
+            })
+    }
+
     /// Find the nearest interactive drop receiver at a point in window coordinates.
     /// Use its guard when dispatching a host file drop.
     pub fn file_drop_target(&self, at: Point) -> Option<TargetGuard> {
@@ -902,7 +936,10 @@ impl WindowRuntime {
 
     pub(crate) fn stage_change(&mut self, node: NodeRef, change: NodeChange) {
         if let NodeChange::Overlay(overlay) = &change {
-            self.work.portal_owners.insert(node, overlay.mount.map(|(owner, _)| owner));
+            let owner = overlay.mount.map(|(owner, _)| owner);
+            if self.work.portal_owners.insert(node, owner) != Some(owner) {
+                self.work.retirement_cache.get_mut().changed_ancestry(node);
+            }
         }
         if let NodeRef::Existing { id, .. } = node
             && let Some(edit) = &mut self.edit
@@ -931,29 +968,27 @@ impl WindowRuntime {
         if self.work.retire_nodes.is_empty() {
             return false;
         }
-        let mut pending: smallvec::SmallVec<[NodeRef; 8]> = smallvec::smallvec![node];
-        let mut seen = FxHashSet::default();
-        while let Some(node) = pending.pop() {
-            if !seen.insert(node) {
-                continue;
-            }
-            if self.work.retire_nodes.contains(&node) {
-                return true;
-            }
-            let mut parent = self.work.parents.get(&node).copied();
-            let owner = self.work.portal_owners.get(&node).copied().unwrap_or_else(|| match node {
-                NodeRef::Existing { id, .. } => {
-                    self.tree.overlay(id).and_then(|slot| slot.mount).map(|mount| self.tree.node_ref(mount.owner))
-                }
-                NodeRef::Pending(_) => None,
-            });
-            pending.extend(owner);
-            if let NodeRef::Existing { id, .. } = node {
-                parent = parent.or_else(|| self.tree.physical_parent(id).map(|id| self.tree.node_ref(id)));
-            }
-            pending.extend(parent);
-        }
-        false
+        self.work
+            .retirement_cache
+            .borrow_mut()
+            .find(
+                node,
+                |node| self.work.retire_nodes.contains(&node),
+                |node| {
+                    let physical = match node {
+                        NodeRef::Existing { id, .. } => self.tree.physical_parent(id).map(|id| self.tree.node_ref(id)),
+                        NodeRef::Pending(_) => None,
+                    };
+                    let owner = self.work.portal_owners.get(&node).copied().unwrap_or_else(|| match node {
+                        NodeRef::Existing { id, .. } => {
+                            self.tree.overlay(id).and_then(|slot| slot.mount).map(|mount| self.tree.node_ref(mount.owner))
+                        }
+                        NodeRef::Pending(_) => None,
+                    });
+                    [self.work.parents.get(&node).copied().or(physical), owner]
+                },
+            )
+            .is_some()
     }
 
     pub(crate) fn scope_is_retiring(&self, world: &ReactiveWorld, scope: ScopeId) -> bool {
@@ -963,9 +998,12 @@ impl WindowRuntime {
     pub(crate) fn discard_retiring_allocations(&mut self, world: &ReactiveWorld) {
         let mut created = std::mem::take(&mut self.work.created);
         created.retain(|&(scope, node)| {
-            if self.scope_is_retiring(world, scope) || self.is_retiring(node.into()) {
+            let retiring_node = self.is_retiring(node.into());
+            if retiring_node || self.scope_is_retiring(world, scope) {
                 self.tx.discard(node);
-                self.work.retire_nodes.insert(node.into());
+                if self.work.retire_nodes.insert(node.into()) && !retiring_node {
+                    self.work.retirement_cache.get_mut().clear();
+                }
                 return false;
             }
             scope != self.scope
@@ -1007,6 +1045,7 @@ impl WindowRuntime {
         self.work.parents.clear();
         self.work.portal_owners.clear();
         self.work.retire_nodes.clear();
+        self.work.retirement_cache.get_mut().clear();
         self.work.place_by_child.clear();
 
         if !self.tx.is_empty() {

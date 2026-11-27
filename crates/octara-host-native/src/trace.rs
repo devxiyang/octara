@@ -2,6 +2,17 @@
 
 use octara_model::capture::FrameReceipt;
 use octara_model::identity::WindowId;
+use std::time::Instant;
+
+pub(crate) fn display_tick(window: WindowId, tick: crate::os::FrameTick, started: Instant) {
+    let record = serde_json::json!({
+        "event": "display_tick",
+        "window": window,
+        "target_ns": tick.target.saturating_duration_since(started).as_nanos(),
+        "interval_ns": tick.interval.as_nanos(),
+    });
+    eprintln!("{record}");
+}
 
 pub(crate) fn presented(window: WindowId, receipt: FrameReceipt) {
     let frame = receipt.stamp.frame;

@@ -161,17 +161,25 @@ impl NodeMotion {
         )
     }
 
+    pub(crate) fn translation_only(&self, now: f64) -> bool {
+        self.position[..2].iter().any(|track| track.moving(now))
+            && self.position[2..].iter().all(|track| !track.moving(now))
+            && self.visual_rest_times().all(|rest| rest <= now)
+    }
+
     pub(crate) fn rest_at(&self) -> Option<f64> {
-        self.position
-            .iter()
-            .chain(std::iter::once(&self.opacity))
-            .filter_map(|track| track.rest_at(0.0))
+        self.position.iter().filter_map(|track| track.rest_at(0.0)).chain(self.visual_rest_times()).reduce(f64::max)
+    }
+
+    fn visual_rest_times(&self) -> impl Iterator<Item = f64> + '_ {
+        self.opacity
+            .rest_at(0.0)
+            .into_iter()
             .chain(self.fill.rest_at())
             .chain(self.border.rest_at())
             .chain(self.text.rest_at())
             .chain(self.ring.iter().flat_map(|track| track.color.rest_at()))
             .chain(self.transition.and_then(|(_, track)| track.rest_at(0.0)))
-            .reduce(f64::max)
     }
 }
 

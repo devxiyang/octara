@@ -374,7 +374,8 @@ pub trait HostEngine {
 - **`octara-host-native`**:
   - Pure-Rust winit event-loop orchestrator + `HostWindow` state machine with **zero `#[cfg(target_os)]` business logic**.
   - Internal `OsHost` / `OsWindow` traits implemented cleanly in:
-    - `backends/macos/`: AppKit `NSTextInputClient`, async Metal drawable acquisition, `CAMetalDisplayLink`, `NSView` island, `NSMenu` bar, AppKit asks.
+    - macOS and iOS share a `CADisplayLink` driver with on-demand drawable acquisition.
+    - `backends/macos/`: AppKit `NSTextInputClient`, `NSView` island, `NSMenu` bar, AppKit asks.
     - `backends/ios/`: UIKit Scene, `UITextField`/`UITextView`, interactive swipe-back coordinator.
     - `backends/desktop/`: Linux & Windows winit IME, clipboard, `rfd` file picker, standard wgpu surface.
 

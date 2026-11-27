@@ -290,6 +290,88 @@ struct Preflight<'a> {
     tree: &'a Tree,
     tx: &'a Transaction,
     topology: StagedTopology,
+    retirement_cache: std::cell::RefCell<RetirementCache>,
+}
+
+/// Shares retirement queries across a staged physical and portal topology.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct RetirementCache {
+    known: FxHashMap<NodeRef, Option<NodeRef>>,
+    visiting: FxHashSet<NodeRef>,
+    pending: smallvec::SmallVec<[RetirementPath; 8]>,
+}
+
+struct RetirementPath {
+    node: NodeRef,
+    ancestors: Option<std::array::IntoIter<Option<NodeRef>, 2>>,
+    uncertain: bool,
+}
+
+impl RetirementPath {
+    fn new(node: NodeRef) -> Self {
+        Self { node, ancestors: None, uncertain: false }
+    }
+}
+
+impl RetirementCache {
+    pub fn clear(&mut self) {
+        self.known.clear();
+    }
+
+    pub fn changed_ancestry(&mut self, node: NodeRef) {
+        if self.known.contains_key(&node) {
+            self.clear();
+        }
+    }
+
+    pub fn find(
+        &mut self,
+        node: NodeRef,
+        retired: impl Fn(NodeRef) -> bool,
+        ancestors: impl Fn(NodeRef) -> [Option<NodeRef>; 2],
+    ) -> Option<NodeRef> {
+        if let Some(&known) = self.known.get(&node) {
+            return known;
+        }
+        self.pending.push(RetirementPath::new(node));
+        self.visiting.insert(node);
+        while let Some(current) = self.pending.last_mut() {
+            let node = current.node;
+            if let Some(found) = self.known.get(&node).copied().flatten().or_else(|| retired(node).then_some(node)) {
+                for path in self.pending.drain(..) {
+                    self.known.insert(path.node, Some(found));
+                }
+                self.visiting.clear();
+                return Some(found);
+            }
+            if let Some(ancestor) = current.ancestors.get_or_insert_with(|| ancestors(node).into_iter()).next() {
+                if let Some(ancestor) = ancestor {
+                    if let Some(known) = self.known.get(&ancestor) {
+                        if let Some(found) = known {
+                            self.known.insert(node, Some(*found));
+                        }
+                    } else if self.visiting.insert(ancestor) {
+                        self.pending.push(RetirementPath::new(ancestor));
+                    } else {
+                        // This staged topology is still subject to cycle validation.
+                        current.uncertain = true;
+                    }
+                }
+            } else {
+                let current = self.pending.pop().expect("retirement path");
+                self.visiting.remove(&node);
+                if current.uncertain {
+                    if let Some(parent) = self.pending.last_mut() {
+                        parent.uncertain = true;
+                    }
+                } else {
+                    self.known.insert(node, None);
+                }
+            }
+        }
+        None
+    }
 }
 
 impl Preflight<'_> {
@@ -346,20 +428,11 @@ impl Preflight<'_> {
         if self.topology.retirements.is_empty() {
             return None;
         }
-        let mut seen = FxHashSet::default();
-        let mut pending = smallvec::SmallVec::<[NodeRef; 8]>::new();
-        pending.push(node);
-        while let Some(node) = pending.pop() {
-            if !seen.insert(node) {
-                continue;
-            }
-            if self.topology.retirements.contains_key(&node) {
-                return Some(node);
-            }
-            pending.extend(self.parent(node));
-            pending.extend(self.portal_owner(node));
-        }
-        None
+        self.retirement_cache.borrow_mut().find(
+            node,
+            |node| self.topology.retirements.contains_key(&node),
+            |node| [self.portal_owner(node), self.parent(node)],
+        )
     }
 
     fn portal_owner(&self, node: NodeRef) -> Option<NodeRef> {
@@ -594,7 +667,8 @@ impl Tree {
             } else {
                 TreeRev(self.revision().0.checked_add(1).ok_or(TreeError::RevisionExhausted)?)
             };
-            let topology = Preflight { tree: self, tx: &tx, topology: StagedTopology::default() }.validate()?;
+            let topology =
+                Preflight { tree: self, tx: &tx, topology: StagedTopology::default(), retirement_cache: Default::default() }.validate()?;
             Ok((revision, topology))
         };
         let (revision, topology) = match preflight() {
@@ -677,6 +751,33 @@ mod tests {
 
     fn tree() -> Tree {
         Tree::new(TreeId::new([3, 7], 1), Default::default())
+    }
+
+    #[test]
+    fn retirement_queries_share_ancestry_and_invalidate_reparented_paths() {
+        use std::cell::Cell;
+
+        let tree = tree();
+        let mut tx = tree.transaction();
+        let nodes: Vec<NodeRef> = (0..512).map(|_| tx.create(NodeSpec::new(NodeContent::Box)).into()).collect();
+        let indices: FxHashMap<_, _> = nodes.iter().copied().enumerate().map(|(i, node)| (node, i)).collect();
+        let visits = Cell::new(0);
+        let portal = Cell::new(true);
+        let parents = |node| {
+            visits.set(visits.get() + 1);
+            let index = indices[&node];
+            let parent = index.checked_sub(1).map(|prior| nodes[prior]);
+            [if index == 1 { portal.get().then_some(nodes[0]) } else { None }, parent.filter(|_| index != 1)]
+        };
+        let retired = |node| node == nodes[0];
+        let mut cache = RetirementCache::default();
+        for &node in nodes.iter().rev() {
+            assert_eq!(cache.find(node, retired, parents), Some(nodes[0]));
+        }
+        assert!(visits.get() < 520);
+        portal.set(false);
+        cache.changed_ancestry(nodes[1]);
+        assert_eq!(cache.find(nodes[511], retired, parents), None);
     }
 
     #[test]

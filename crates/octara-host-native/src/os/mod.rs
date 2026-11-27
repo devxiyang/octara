@@ -9,7 +9,7 @@ use octara_gpu::DrawTarget;
 use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceId, ServiceRequest};
 use octara_model::geometry::{Point, Rect, Size, WindowViewport};
 use octara_model::identity::{EditorSessionId, NativeId, TargetGuard};
-use octara_model::input::{EditorEvent, GestureEvent, HostReply, Modifiers};
+use octara_model::input::{EditorEvent, GestureEvent, HostReply, Modifiers, WheelPhase};
 use octara_model::native::{NativeChange, NativeCommand, NativeMeasureRequest, NativeSlot, NativeSnapshotRequest};
 use octara_model::paint::Image;
 use octara_model::text::TextGeometry;
@@ -18,13 +18,18 @@ use octara_model::window::{UserAttention, WindowChrome, WindowGeometry, WindowGe
 use octara_render::{gpu::OutputColor, wgpu};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use winit::dpi::{LogicalPosition, LogicalSize};
-use winit::event::{Ime, KeyEvent, WindowEvent};
+use winit::event::{Ime, KeyEvent, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::EventLoopProxy;
 use winit::window::{Fullscreen, Theme, UserAttentionType, Window, WindowAttributes};
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
+mod apple_frame_clock;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple_media;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod apple_metal;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple_preferences;
 #[cfg(target_os = "macos")]
@@ -174,6 +179,11 @@ pub trait OsWindow {
     fn text_input(&mut self) -> &mut dyn WindowTextInput;
     fn request_service(&mut self, id: ServiceId, request: ServiceRequest) -> Option<ServiceCleanup>;
     fn on_winit_gesture(&mut self, _event: &WindowEvent, _anchor: Option<Point>, _modifiers: Modifiers) -> Option<GestureEvent> {
+        None
+    }
+
+    /// Supplies the native phase for the matching winit wheel event when available.
+    fn on_winit_wheel(&mut self, _delta: MouseScrollDelta, _phase: TouchPhase) -> Option<WheelPhase> {
         None
     }
 
@@ -328,19 +338,41 @@ pub trait WindowScene {
     fn drain_scene_events(&mut self, out: &mut Vec<WindowHostEvent>);
 }
 
+/// The predicted scanout time and current interval reported by the platform clock.
+#[derive(Clone, Copy, Debug)]
+pub struct FrameTick {
+    pub target: Instant,
+    pub interval: Duration,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrameClockActivity {
+    /// Stop issuing ticks immediately, for example when a window is suspended.
+    Paused,
+    /// Keep ticking at a low rate through a short idle grace period.
+    Idle,
+    /// Keep ticking at a low rate while motion is active.
+    Low,
+    /// Request the screen's fastest available cadence.
+    Interactive,
+}
+
 pub trait WindowPresentation {
     fn externally_paced(&self) -> bool;
-    fn set_frame_clock_active(&mut self, active: bool);
+    fn set_frame_clock_activity(&mut self, activity: FrameClockActivity);
     fn surface_will_reconfigure(&mut self) -> bool;
-    fn try_acquire_drawable(&mut self, surface: &Arc<wgpu::Surface<'static>>, color: OutputColor) -> DrawableAcquisition;
+    fn set_transactional_presentation(&mut self, _native_rev: u64, _transactional: bool) {}
+    fn abandon_native_view_frame(&mut self) {}
+    fn try_acquire_drawable(&mut self, surface: &Arc<wgpu::Surface<'static>>, color: OutputColor, from_clock: bool) -> DrawableAcquisition;
     fn present(&mut self, drawable: Box<dyn Drawable>, queue: &wgpu::Queue) -> Result<(), String>;
 
-    /// Present the drawable and commit typed native views once on success.
+    /// Present the drawable and commit native view placements for its revision.
     /// Backends with a platform transaction call the callback inside that transaction.
     fn present_with_native_views(
         &mut self,
         drawable: Box<dyn Drawable>,
         queue: &wgpu::Queue,
+        _native_rev: u64,
         commit_native_views: &mut dyn FnMut(),
     ) -> Result<(), String> {
         self.present(drawable, queue)?;
@@ -364,6 +396,7 @@ impl DrawTarget for Box<dyn Drawable> {
 
 pub enum DrawableAcquisition {
     Ready(Box<dyn Drawable>),
+    WaitingForClock,
     Retry,
     Reconfigure,
     Lost,

@@ -65,6 +65,26 @@ fn app() -> (App, Rc<Probe>) {
 }
 
 #[test]
+fn frame_inputs_settle_in_order_and_publish_once() {
+    let (mut app, probe) = app();
+    let window = app
+        .open_window(WindowOptions::default(), |b| {
+            let preferences = b.system_preferences();
+            text(move |read: &mut ReadCx<'_>| read.get(preferences).locale.clone()).test_id("locale")
+        })
+        .unwrap();
+    let prior = probe.commits.get();
+    let inputs = ["fr-FR", "ja-JP"]
+        .map(|locale| Input::Host(HostReply::SystemPreferencesChanged(SystemPreferences { locale: locale.into(), ..Default::default() })));
+    let receipt = app.runtime_mut().dispatch_frame_inputs(window, inputs, None).unwrap();
+    assert!(receipt.delivered && receipt.handled);
+    assert_eq!(probe.commits.get(), prior + 1);
+    let window = app.window(window).unwrap();
+    let tree = window.runtime().tree();
+    assert_eq!(&*tree.text(tree.test_ids("locale")[0]).unwrap().text, "ja-JP");
+}
+
+#[test]
 fn system_preferences_are_initialized_and_shared_reactively() {
     let (mut app, probe) = app();
     let initial = SystemPreferences {

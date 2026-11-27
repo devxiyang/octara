@@ -45,15 +45,17 @@ fn vs_core(@builtin(vertex_index) vi: u32, @builtin(instance_index) id: u32) -> 
 
 @fragment
 fn fs_core(v: VsOut) -> @location(0) vec4f {
-    return image_sample(v.pos.xy + globals.origin, images[draws[v.inst_id].payload]);
+    let draw_inst = draws[v.inst_id];
+    return image_sample(v.pos.xy + globals.origin - draw_offset(draw_inst), images[draw_inst.payload]);
 }
 
 @fragment
 fn fs(v: VsOut) -> @location(0) vec4f {
-    let p = v.pos.xy + globals.origin;
+    let world = v.pos.xy + globals.origin;
     let draw_inst = draws[v.inst_id];
+    let p = world - draw_offset(draw_inst);
     let image = images[draw_inst.payload];
-    let clip = clip_coverage(p, draw_inst);
+    let clip = clip_coverage(world, draw_inst);
 
     switch image.kind {
         case IMAGE: {

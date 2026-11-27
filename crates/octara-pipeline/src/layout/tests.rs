@@ -116,7 +116,7 @@ fn initial_keyboard_focus_reveals_an_inline_link_before_link_projection() {
 }
 
 #[test]
-fn scroll_projects_only_its_subtree_links_and_dependent_anchors() {
+fn scroll_moves_links_lazily_and_projects_dependent_anchors() {
     let mut tree = Tree::new(TreeId::new([3, 5], 1), Default::default());
     let mut delta = tree.initial_delta();
     let mut tx = TxBuilder::new(tree.id(), tree.revision());
@@ -204,16 +204,17 @@ fn scroll_projects_only_its_subtree_links_and_dependent_anchors() {
     let updates = layout.project(&tree, &delta, viewport, &mut text);
     let after = layout.work();
     assert_eq!(after.computes, before.computes);
-    assert_eq!(after.frames - before.frames, 6);
+    assert_eq!(after.frames - before.frames, 3);
     assert_eq!(after.anchors - before.anchors, 2);
-    assert_eq!(after.links - before.links, 1);
+    assert_eq!(after.links, before.links);
     assert_eq!(layout.bounds(link).unwrap().y, initial_link.y - 20.0);
     assert_eq!(layout.bounds(first).unwrap().y, initial_first.y - 20.0);
     assert_eq!(layout.bounds(second).unwrap().y, initial_second.y - 20.0);
     assert_eq!(layout.clip(link), initial_clip);
     assert_eq!(layout.bounds(unrelated_link), initial_unrelated);
     assert_eq!(layout.bounds(idle), initial_idle);
-    assert!(layout.changed().contains(&link));
+    assert!(!layout.changed().contains(&link));
+    assert_eq!(layout.scroll_changed().iter().collect::<Vec<_>>(), [port]);
     assert!(!layout.changed().contains(&unrelated_link));
     assert!(updates.iter().any(|update| matches!(
         update,
@@ -227,7 +228,7 @@ fn scroll_projects_only_its_subtree_links_and_dependent_anchors() {
     assert_eq!(layout.bounds(second), Some(initial_second));
     layout.project(&tree, &delta, viewport, &mut text);
     assert_eq!(layout.work().computes, after.computes);
-    assert_eq!(layout.work().frames - after.frames, 6);
+    assert_eq!(layout.work().frames - after.frames, 3);
     assert_eq!(layout.bounds(link).unwrap().y, initial_link.y - 20.0);
     assert_eq!(layout.bounds(second).unwrap().y, initial_second.y - 20.0);
 }
@@ -306,7 +307,7 @@ fn fixed_height_editor_reveals_the_caret_and_replaces_text_without_recomputing_t
     text.commit_stage();
     let before = layout.work();
     let bounds = layout.bounds(editor).unwrap();
-    let old_caret = text.caret(editor).unwrap();
+    let old_caret = text.caret(editor, &layout).unwrap();
     let session = EditorSession::active(&tree).unwrap();
     let EditorAction::Apply(update) = session
         .route(EditorEvent::ProposeSelection {
@@ -326,13 +327,13 @@ fn fixed_height_editor_reveals_the_caret_and_replaces_text_without_recomputing_t
     assert_eq!(layout.bounds(editor), Some(bounds));
     assert!(layout.scroll_offset(editor).y > 0.0);
     assert!(updates.iter().any(|update| matches!(update, RuntimeOp::SetScroll { node, .. } if *node == editor)));
-    let caret = text.caret(editor).unwrap();
+    let caret = text.caret(editor, &layout).unwrap();
     assert!(caret.y > old_caret.y);
     assert!(caret.bottom() <= bounds.bottom());
     layout.rollback_stage();
     text.rollback_stage();
     assert_eq!(layout.scroll_offset(editor), Vec2::default());
-    assert_eq!(text.caret(editor), Some(old_caret));
+    assert_eq!(text.caret(editor, &layout), Some(old_caret));
 
     let before = layout.work();
     let mut tx = tree.transaction();
@@ -342,7 +343,7 @@ fn fixed_height_editor_reveals_the_caret_and_replaces_text_without_recomputing_t
     assert_eq!(layout.work().computes, before.computes);
     assert_eq!(layout.work().frames - before.frames, 1);
     assert_eq!(layout.bounds(editor), Some(bounds));
-    assert_eq!(text.geometry(editor).unwrap().lines.len(), 1);
+    assert_eq!(text.geometry(editor, &layout).unwrap().lines.len(), 1);
 }
 
 #[test]

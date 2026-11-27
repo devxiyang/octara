@@ -5,11 +5,10 @@ use super::custom::{self, CanvasMode, CanvasPaint};
 use super::outputs::CanvasCache;
 use crate::glyphs::{GlyphCache, GlyphImage, GlyphKey, SUBPIXEL_STEPS};
 use crate::paths;
-use crate::shape::{ClipStack, ClipState};
+use crate::shape::{ClipAxes, ClipStack, ClipState, raster_offsets};
 use octara_model::capture::{PaintFallback, PaintOutcome, PaintReceipt, PaintSample};
-use octara_model::geometry::Rect;
-use octara_model::paint::Item;
-use octara_model::paint::{DisplayList, ImagePaint, PathPaint, Quad, TransitionPaint};
+use octara_model::geometry::{Rect, Vec2};
+use octara_model::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, PlacedItem, Quad, TransitionPaint};
 use octara_model::theme::Color;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
@@ -161,6 +160,149 @@ pub fn plan_frame(list: &DisplayList, target: TargetInfo) -> FramePlan {
     plan_frame_cached(list, target, None, &mut GlyphCache::default())
 }
 
+/// Plan stable geometry without pruning by the current scroll position. Effects with
+/// position-dependent target allocations or authored callbacks use the regular planner.
+pub(super) fn plan_frame_spatial(
+    list: &DisplayList,
+    target: TargetInfo,
+    _sample: Option<PaintSample>,
+    glyphs: &mut GlyphCache,
+    spatial_slots: &FxHashMap<u32, u32>,
+) -> Option<FramePlan> {
+    let scale = target.scale;
+    let mut pass = Pass { spatial: true, ..Pass::default() };
+    let mut clips = ClipStack::default();
+    let mut resources = ResourcePlan::default();
+    for placed in list.placed_items_unculled_at(scale) {
+        let spatial = if placed.spatial_id == 0 { 0 } else { *spatial_slots.get(&placed.spatial_id)? };
+        if spatial > u32::MAX >> super::instances::SPATIAL_SHIFT {
+            return None;
+        }
+        let local = placed.local_offset;
+        let head = clips.current().head;
+        let base = Paint { clip_head: head, spatial, ..Paint::default() };
+        if let Item::Glyphs(run) = placed.item {
+            if placed.spatial_offset_px.x.fract() != 0.0 || placed.spatial_offset_px.y.fract() != 0.0 {
+                return None;
+            }
+            push_glyphs((&mut pass, &mut resources), glyphs, run, placed, scale, None, base);
+            continue;
+        }
+        let item = if local == Default::default() && placed.fade >= 1.0 {
+            Cow::Borrowed(placed.item)
+        } else {
+            Cow::Owned(placed.item.placed(local, placed.fade))
+        };
+        let (mut instance, draw) = match item.as_ref() {
+            Item::Quad(q) => (quad(q, scale, NO_CLIP, head), Draw::Quad),
+            Item::Shadow(s) => (shadow(s, scale, NO_CLIP, head), Draw::Shadow),
+            Item::Image(i) => {
+                let frame = i.image.frame();
+                if i.opacity <= 0.0 || frame.width == 0 || frame.height == 0 {
+                    continue;
+                }
+                let index = resources.samples.len();
+                resources.samples.push(DrawSample::Image(i.clone()));
+                (image(i, scale, NO_CLIP, head), Draw::Sample(index))
+            }
+            Item::Path(p) => {
+                if placed.spatial_offset_px.x.fract() != 0.0 || placed.spatial_offset_px.y.fract() != 0.0 {
+                    return None;
+                }
+                let Some(at) = paths::place(p, scale, (f32::NEG_INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::INFINITY)) else {
+                    continue;
+                };
+                // Fall back to viewport-limited rasterization for large vector shapes.
+                if u64::from(at.width) * u64::from(at.height) > u64::from(target.extent[0]) * u64::from(target.extent[1]) {
+                    return None;
+                }
+                push_path(&mut pass, &mut resources, p, at, scale, Vec2::default(), base);
+                continue;
+            }
+            Item::PushClip { rect, radius, .. } => {
+                clips.push_spatial(*rect, *radius, scale, spatial, ClipAxes::Both);
+                continue;
+            }
+            Item::PushAxisClip { rect, horizontal, .. } => {
+                let (rect, axes) = if *horizontal {
+                    (Rect::new(rect.x, 0.0, rect.w, list.size.height), ClipAxes::Horizontal)
+                } else {
+                    (Rect::new(0.0, rect.y, list.size.width, rect.h), ClipAxes::Vertical)
+                };
+                clips.push_spatial(rect, [0.0; 4], scale, spatial, axes);
+                continue;
+            }
+            Item::PopClip => {
+                clips.pop();
+                continue;
+            }
+            _ => return None,
+        };
+        instance.spatial = spatial;
+        pass.push(instance, draw);
+    }
+    Some(FramePlan {
+        passes: vec![pass],
+        requests: PaintRequests::default(),
+        clips,
+        resources,
+        bounds: vec![PassBounds { size: target.extent, ..PassBounds::default() }],
+        resolve_output: target.encode_output,
+        backdrop_inputs: Vec::new(),
+    })
+}
+
+fn push_glyphs(
+    (pass, resources): (&mut Pass, &mut ResourcePlan),
+    glyphs: &mut GlyphCache,
+    run: &GlyphRun,
+    placed: PlacedItem<'_>,
+    scale: f32,
+    visible: Option<Rect>,
+    base: Paint,
+) {
+    let size = run.size * scale;
+    let (offset, shift) = if pass.spatial { (placed.local_offset, Vec2::default()) } else { raster_offsets(placed) };
+    for (g, color) in run.placed_colored_at(offset, placed.fade) {
+        let color = color.to_rgba8();
+        if color.a == 0 {
+            continue;
+        }
+        let color = u32::from_le_bytes([color.r, color.g, color.b, color.a]);
+        let x = (g.x * scale).floor();
+        let y = (g.y * scale).round();
+        let subpixel = (((g.x * scale - x) * SUBPIXEL_STEPS).floor() as u8).min(SUBPIXEL_STEPS as u8 - 1);
+        let key = GlyphKey::new(run, g.id, size, subpixel);
+        let Some(glyph) = glyphs.rasterize(&run.font, key.clone()) else { continue };
+        let rect = Rect::new(x + shift.x + glyph.left as f32, y + shift.y - glyph.top as f32, glyph.width as f32, glyph.height as f32);
+        if visible.is_some_and(|visible| rect.intersect(&visible).is_empty()) {
+            continue;
+        }
+        let index = resources.samples.len();
+        resources.samples.push(DrawSample::Glyph(GlyphRequest { key, image: glyph.clone(), pos: [rect.x, rect.y], color }));
+        pass.push(Paint { rect: xywh(rect), shape: Shape::Glyph(None), ..base }, Draw::Sample(index));
+    }
+}
+
+fn push_path(pass: &mut Pass, resources: &mut ResourcePlan, paint: &PathPaint, at: paths::Placed, scale: f32, shift: Vec2, base: Paint) {
+    let index = resources.samples.len();
+    resources.samples.push(DrawSample::Path(paint.clone(), at));
+    let Rect { x, y, w, h } = paint.bounds;
+    pass.push(
+        Paint {
+            rect: [at.x as f32, at.y as f32, at.width as f32, at.height as f32],
+            shape: Shape::Path {
+                bounds: [x * scale + shift.x, y * scale + shift.y, w * scale, h * scale],
+                color: paint.color,
+                gradient: paint.gradient,
+                region: None,
+            },
+            ..base
+        },
+        Draw::Sample(index),
+    );
+}
+
 pub(super) fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: Option<PaintSample>, glyphs: &mut GlyphCache) -> FramePlan {
     let scale = target.scale;
     let mut passes = vec![Pass::default()];
@@ -171,8 +313,12 @@ pub(super) fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: 
     let [width, height] = target.extent;
     let window = Rect::new(0.0, 0.0, width as f32, height as f32);
     let mut native_transitions = None;
-    for (index, placed) in list.placed_items().enumerate() {
-        let item = if matches!(placed.item, Item::Glyphs(_)) { Cow::Borrowed(placed.item) } else { placed.resolve() };
+    for (index, placed) in list.placed_items_at(scale).enumerate() {
+        let (item, path_shift) = match placed.item {
+            Item::Glyphs(_) => (Cow::Borrowed(placed.item), Vec2::default()),
+            Item::Path(_) => paths::raster_item(placed),
+            _ => (placed.resolve(), Vec2::default()),
+        };
         let clip_state = clips.current();
         let clip = clip_state.bounds.map_or(NO_CLIP, |c| [c.x, c.y, c.w, c.h]);
         let clip_head = clip_state.head;
@@ -245,57 +391,19 @@ pub(super) fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: 
                 passes[current].push(instance, Draw::Sample(index));
             }
             Item::Glyphs(run) => {
-                let size = run.size * scale;
                 let visible = passes[current].visible_window(&window);
                 let visible = clip_state.bounds.map_or(visible, |rect| visible.intersect(&clip_envelope(rect)));
                 if visible.is_empty() {
                     continue;
                 }
-                for (g, color) in run.placed_colored_at(placed.offset, placed.fade) {
-                    let color = color.to_rgba8();
-                    if color.a == 0 {
-                        continue;
-                    }
-                    let color = u32::from_le_bytes([color.r, color.g, color.b, color.a]);
-                    let x = (g.x * scale).floor();
-                    let y = (g.y * scale).round();
-                    let subpixel = (((g.x * scale - x) * SUBPIXEL_STEPS).floor() as u8).min(SUBPIXEL_STEPS as u8 - 1);
-                    let key = GlyphKey::new(run, g.id, size, subpixel);
-                    let Some(glyph) = glyphs.rasterize(&run.font, key.clone()) else { continue };
-                    let rect = Rect::new(x + glyph.left as f32, y - glyph.top as f32, glyph.width as f32, glyph.height as f32);
-                    let bounds = rect.intersect(&visible);
-                    if bounds.is_empty() {
-                        continue;
-                    }
-                    let index = resources.samples.len();
-                    resources.samples.push(DrawSample::Glyph(GlyphRequest { key, image: glyph.clone(), pos: [rect.x, rect.y], color }));
-                    passes[current].push(
-                        Paint { rect: xywh(rect), clip, clip_head, shape: Shape::Glyph(None), ..Paint::default() },
-                        Draw::Sample(index),
-                    );
-                }
+                let base = Paint { clip, clip_head, ..Paint::default() };
+                push_glyphs((&mut passes[current], &mut resources), glyphs, run, placed, scale, Some(visible), base);
             }
             Item::Path(p) => {
                 let window = paths::window((width, height), clip_state.bounds.map(|c| (c.x, c.y, c.w, c.h)));
-                let Some(at) = paths::place(p, scale, window) else { continue };
-
-                let index = resources.samples.len();
-                resources.samples.push(DrawSample::Path(p.clone(), at));
-                passes[current].push(
-                    Paint {
-                        rect: [at.x as f32, at.y as f32, at.width as f32, at.height as f32],
-                        clip,
-                        clip_head,
-                        shape: Shape::Path {
-                            bounds: xywh(p.bounds).map(|px| px * scale),
-                            color: p.color,
-                            gradient: p.gradient,
-                            region: None,
-                        },
-                        ..Paint::default()
-                    },
-                    Draw::Sample(index),
-                );
+                let Some(at) = paths::place_translated(p, scale, window, path_shift) else { continue };
+                let base = Paint { clip, clip_head, ..Paint::default() };
+                push_path(&mut passes[current], &mut resources, p, at, scale, path_shift, base);
             }
             // An underlay view the platform shows: its hole, drawn destination-out.
             Item::Native { source, rect, radius, cut: true, .. } => {
@@ -313,6 +421,7 @@ pub(super) fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: 
             // Otherwise its placeholder or snapshot, drawn before, shows.
             Item::Native { .. } => {}
             Item::PushClip { rect, radius, .. } => clips.push(*rect, *radius, scale),
+            Item::PushAxisClip { .. } => unreachable!("placed clips resolve to window coordinates"),
             Item::PopClip => clips.pop(),
             Item::PushLayer { opacity, .. } => {
                 passes.push(Pass { opacity: *opacity, clip_limit: passes[current].clip_limit, ..Pass::default() });
@@ -324,7 +433,7 @@ pub(super) fn plan_frame_cached(list: &DisplayList, target: TargetInfo, sample: 
                 requests.receipts.push(PaintReceipt { source: *source, outcome });
             }
             Item::PushTransition(paint) => {
-                let native = native_transitions.get_or_insert_with(|| transitions_with_native(list)).contains(&index);
+                let native = native_transitions.get_or_insert_with(|| transitions_with_native(list, scale)).contains(&index);
                 let supported = !native;
                 let receipt = (paint.progress < 1.0).then(|| {
                     let receipt = requests.receipts.len();
@@ -479,6 +588,14 @@ pub(super) struct EncodedPlan {
     pub(super) resolve_output: bool,
 }
 
+impl EncodedPlan {
+    pub(super) fn supports_damage(&self) -> bool {
+        self.targets.len() == 1
+            && self.targets[0].segments.len() <= 1
+            && self.batches.iter().all(|batch| matches!(batch.draw, Draw::Quad | Draw::Shadow | Draw::Image(_) | Draw::Glyph(_)))
+    }
+}
+
 /// Size the inner layers first, then use their composite bounds in the parent.
 pub(super) fn bound_passes(
     passes: &mut [Pass],
@@ -537,11 +654,11 @@ pub(super) fn union(a: Rect, b: Rect) -> Rect {
 }
 
 /// An independent native surface cannot be drawn into an Octara layer.
-fn transitions_with_native(list: &DisplayList) -> FxHashSet<usize> {
+fn transitions_with_native(list: &DisplayList, scale: f32) -> FxHashSet<usize> {
     let mut blocked = FxHashSet::default();
     let mut layers = Vec::new();
     let mut native_count = 0;
-    for (index, placed) in list.placed_items().enumerate() {
+    for (index, placed) in list.placed_items_at(scale).enumerate() {
         match placed.item {
             Item::PushLayer { .. } => layers.push(None),
             Item::PushTransition(_) => layers.push(Some((index, native_count))),

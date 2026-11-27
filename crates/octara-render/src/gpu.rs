@@ -6,9 +6,11 @@ use octara_model::capture::PaintSample;
 use octara_model::paint::DisplayList;
 
 mod atlas;
+mod backing;
 mod batch;
 mod canvases;
 mod custom;
+mod damage;
 mod device_loss;
 mod encode;
 mod glyph_pipeline;
@@ -21,12 +23,14 @@ mod profile;
 mod readback;
 mod recording;
 mod resolve;
+mod retained;
 mod schedule;
 mod surface;
 mod upload;
 
 pub use atlas::RecordError;
 use atlas::SceneTextures;
+use backing::{Backing, BackingPipelines};
 #[doc(hidden)]
 pub use canvases::CanvasUpdates;
 #[cfg(not(target_arch = "wasm32"))]
@@ -47,6 +51,7 @@ pub use readback::{MappedReadback, Readback, RecordedCapture};
 pub use recording::RecordedFrame;
 use resolve::OutputResolve;
 pub use resolve::{FrameTarget, OutputColor};
+use retained::CachedFrame;
 pub use surface::{SurfaceFrame, SurfaceRenderer, SurfaceRendererFactory};
 use upload::FrameBuffers;
 
@@ -70,6 +75,10 @@ pub struct GpuRenderer {
     surface_renderer: Option<Box<dyn SurfaceRenderer>>,
     output_resolve: OutputResolve,
     buffers: FrameBuffers,
+    prepared: Option<CachedFrame>,
+    backing: Option<Backing>,
+    backing_pipelines: BackingPipelines,
+    target_generation: u64,
     textures: Option<SceneTextures>,
     /// Layer targets, reused while their allocation covers the same size bucket.
     layers: Vec<Option<wgpu::Texture>>,
@@ -113,6 +122,10 @@ impl GpuRenderer {
             surface_renderer: None,
             output_resolve: OutputResolve::default(),
             buffers,
+            prepared: None,
+            backing: None,
+            backing_pipelines: BackingPipelines::default(),
+            target_generation: 0,
             textures: None,
             layers: Vec::new(),
             no_layer,
@@ -129,6 +142,15 @@ impl GpuRenderer {
     }
     pub fn queue(&self) -> &wgpu::Queue {
         &self.queue
+    }
+
+    /// Invalidates retained geometry and scene pixels when the host reconfigures its presentation target.
+    pub fn set_target_generation(&mut self, generation: u64) {
+        if self.target_generation != generation {
+            self.target_generation = generation;
+            self.prepared = None;
+            self.backing = None;
+        }
     }
 
     /// Installs a backend for recording display lists into this device's attachments.

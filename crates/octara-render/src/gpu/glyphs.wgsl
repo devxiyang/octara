@@ -45,18 +45,18 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) id: u32) -> VsOut
 fn fs(v: VsOut) -> @location(0) vec4f {
     let glyph = glyphs[v.inst_id];
     let p = v.pos.xy + globals.origin;
-    let texel = vec2i(unpack_pair(glyph.atlas_origin)) + vec2i(floor(p - glyph.pos));
+    let clip_index = glyph_draws[v.inst_id].clip;
+    var delta = vec2f(0.0);
+    var clip_alpha = 1.0;
+    if clip_index != 0u {
+        let clip = glyph_clips[clip_index];
+        delta = spatial_offset(clip.flags >> SPATIAL_SHIFT);
+        clip_alpha = clip_coverage(p, DrawInst(vec4f(0.0), clip.rect, vec4f(0.0), 0.0, 0u, clip.head, clip.flags));
+    }
+    let texel = vec2i(unpack_pair(glyph.atlas_origin)) + vec2i(floor(p - delta - glyph.pos));
     let sample = textureLoad(atlas, texel, i32(glyph.layer_flags & 0xffffu), 0);
     let color = unpack4x8unorm(glyph.color_rgba8);
-    var coverage = 1.0;
-    if FRAGMENT_CLIPPING {
-        let clip_index = glyph_draws[v.inst_id].clip;
-        if clip_index != 0u {
-            let clip = glyph_clips[clip_index];
-            coverage = clip_coverage(p, DrawInst(vec4f(0.0), clip.rect, vec4f(0.0), 0.0, 0u, clip.head, clip.flags));
-        }
-    }
-    let alpha = sample.a * color.a * coverage;
+    let alpha = sample.a * color.a * clip_alpha;
     if (glyph.layer_flags & COLOR_GLYPH) != 0u {
         return vec4f(sample.rgb * alpha, alpha);
     }

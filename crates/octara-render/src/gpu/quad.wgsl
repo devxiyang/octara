@@ -54,14 +54,16 @@ fn vs_core(@builtin(vertex_index) vi: u32, @builtin(instance_index) id: u32) -> 
 
 @fragment
 fn fs_core(v: VsOut) -> @location(0) vec4f {
-    let quad = quads[draws[v.inst_id].payload];
-    return quad_fill(v.pos.xy + globals.origin, quad, gradient_index(quad));
+    let draw_inst = draws[v.inst_id];
+    let quad = quads[draw_inst.payload];
+    return quad_fill(v.pos.xy + globals.origin - draw_offset(draw_inst), quad, gradient_index(quad));
 }
 
 @fragment
 fn fs(v: VsOut) -> @location(0) vec4f {
-    let p = v.pos.xy + globals.origin;
+    let world = v.pos.xy + globals.origin;
     let draw_inst = draws[v.inst_id];
+    let p = world - draw_offset(draw_inst);
     let quad = quads[draw_inst.payload];
     let b = quad.border;
     let has_border = any(b > vec4f(0.0));
@@ -81,7 +83,7 @@ fn fs(v: VsOut) -> @location(0) vec4f {
     if clip_id != 0xffffu {
         clipped.clip_head = clip_id;
     }
-    let clip = clip_coverage(p, clipped);
+    let clip = clip_coverage(world, clipped);
     var fill = vec4f(0.0);
     if (quad.flags & FILLED) != 0u && !on_core {
         fill = quad_fill(p, quad, grad) * (outer * clip);

@@ -1,21 +1,20 @@
 //! Per-window negotiation of surfaces, frame admission and native publication.
 
-use crate::os::{ActiveEditorView, Drawable, DrawableAcquisition, OsWindow, surface_drawable};
-use crate::presentation::Presentation;
-use octara::module::{HostSurfaceKind, ModuleDispatcher, NativeViewMounts};
+use crate::os::{ActiveEditorView, Drawable, DrawableAcquisition, FrameClockActivity, OsWindow, surface_drawable};
+use crate::presentation::{PendingNativeViews, Presentation};
+use octara::module::{HostSurfaceKind, ModuleDispatcher, NativeViewInstance, NativeViewMounts};
 use octara::runtime::{AppRuntime, WindowId, WindowRuntime};
 use octara::tree::editor::EditorSession;
 use octara::tree::resolve_cursor;
 use octara_gpu::{DeviceExecutor, DeviceGeneration, DrawWork, DrawnFrame, FrameProgress, GpuError, GpuTask, SurfaceRendererFactory};
 use octara_model::geometry::{Point, Size, WindowViewport};
-use octara_model::identity::{NativeId, TargetGuard};
+use octara_model::identity::TargetGuard;
 use octara_model::input::{CursorStyle, DroppedFile, Modifiers};
-use octara_model::native::{NativeChange, NativePlacement};
+use octara_model::native::NativeChange;
 use octara_model::theme::{ColorToken, Theme};
 use octara_model::window::{WindowChrome, WindowGeometryRequest};
 use octara_pipeline::{NativeFrame, NativePublication};
 use octara_render::{gpu::OutputColor, wgpu};
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::window::{CursorIcon, Window};
@@ -75,12 +74,21 @@ pub(crate) struct FileDrop {
     pub files: Vec<DroppedFile>,
 }
 
+#[derive(Clone, Copy)]
+enum AccessibilityDelivery {
+    Inactive,
+    Requested,
+    Published(u64),
+}
+
 pub(crate) struct HostWindow {
     pub id: WindowId,
     pub native_mounts: NativeViewMounts,
+    pending_module_views: PendingNativeViews<Box<dyn NativeViewInstance>>,
     pub window: Arc<Window>,
     pub os: Box<dyn OsWindow>,
     pub a11y: accesskit_winit::Adapter,
+    accessibility: AccessibilityDelivery,
     pub publication: NativePublication,
     pub synchronized: Option<u64>,
     pub presented: Option<FrameProgress>,
@@ -90,8 +98,6 @@ pub(crate) struct HostWindow {
     pub chrome: WindowChrome,
     pub initial_fullscreen: bool,
     pub service_cleanup: std::collections::HashMap<octara_model::ask::ServiceId, crate::os::ServiceCleanup>,
-    // Deltas through the synchronized revision, including publications skipped by the renderer.
-    native_placements: BTreeMap<NativeId, NativePlacement>,
     surface: Arc<wgpu::Surface<'static>>,
     presentation: Presentation,
     surface_info: Option<SurfaceInfo>,
@@ -115,9 +121,11 @@ impl HostWindow {
         Self {
             id,
             native_mounts: NativeViewMounts::default(),
+            pending_module_views: PendingNativeViews::default(),
             window,
             os,
             a11y,
+            accessibility: AccessibilityDelivery::Inactive,
             publication,
             synchronized: None,
             presented: None,
@@ -127,7 +135,6 @@ impl HostWindow {
             chrome: WindowChrome::default(),
             initial_fullscreen: false,
             service_cleanup: std::collections::HashMap::new(),
-            native_placements: BTreeMap::new(),
             surface,
             presentation: Presentation::default(),
             surface_info: None,
@@ -166,13 +173,39 @@ impl HostWindow {
             && self.publication.latest().is_some_and(|frame| !self.presentation.presented_revision(frame.number))
     }
 
-    fn externally_paced(&mut self) -> bool {
+    pub fn externally_paced(&mut self) -> bool {
         self.os.presentation().is_some_and(|presentation| presentation.externally_paced())
     }
 
-    fn set_frame_clock_active(&mut self, active: bool) {
+    pub fn activate_frame_clock(&mut self) -> bool {
+        let paced = self.externally_paced();
+        if paced && !self.suspended {
+            self.set_frame_clock_activity(FrameClockActivity::Interactive);
+        }
+        paced
+    }
+
+    pub fn idle_frame_clock_if_clean(&mut self) {
+        if self.draw.is_none()
+            && !self.suspended
+            && self.publication.latest().is_none_or(|frame| {
+                self.presentation.presented_revision(frame.number)
+                    && frame.scene.as_ref().is_none_or(|scene| !scene.continuously_animated(frame.sampled_at.as_secs_f64()))
+            })
+        {
+            self.set_frame_clock_activity(FrameClockActivity::Idle);
+        }
+    }
+
+    pub fn request_frame(&mut self) {
+        if !self.suspended && !self.activate_frame_clock() {
+            self.window.request_redraw();
+        }
+    }
+
+    fn set_frame_clock_activity(&mut self, activity: FrameClockActivity) {
         if let Some(presentation) = self.os.presentation() {
-            presentation.set_frame_clock_active(active);
+            presentation.set_frame_clock_activity(activity);
         }
     }
 
@@ -190,13 +223,21 @@ impl HostWindow {
         self.presentation.invalidate(rebuild);
         // The worker retains any target until abandoned job cleanup. Reconfiguration waits on the drain barrier.
         self.draw = None;
+        self.abandon_native_view_frame();
+    }
+
+    fn abandon_native_view_frame(&mut self) {
+        self.pending_module_views.abandon();
+        if let Some(presentation) = self.os.presentation() {
+            presentation.abandon_native_view_frame();
+        }
     }
 
     pub fn set_suspended(&mut self, suspended: bool) {
         self.suspended = suspended;
         if suspended {
             self.invalidate_surface(true);
-            self.set_frame_clock_active(false);
+            self.set_frame_clock_activity(FrameClockActivity::Paused);
         }
         if let Some(scene) = self.os.scene() {
             scene.set_suspended(suspended);
@@ -223,7 +264,7 @@ impl HostWindow {
             config.format = *format;
         }
         config.present_mode = wgpu::PresentMode::AutoVsync;
-        config.usage |= supported.usages & wgpu::TextureUsages::COPY_SRC;
+        config.usage |= supported.usages & (wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST);
         if let Some(alpha) = preferred_alpha_mode(self.transparent, &supported.alpha_modes) {
             config.alpha_mode = alpha;
         }
@@ -251,14 +292,19 @@ impl HostWindow {
                 NativeChange::Place { placements } => {
                     for placement in placements {
                         if self.native_mounts.contains(placement.id) {
-                            self.native_placements.insert(placement.id, placement.clone());
+                            self.pending_module_views.insert(placement.clone());
                         }
                     }
                     built_in.push(change);
                     continue;
                 }
                 NativeChange::Destroy { id } => {
-                    self.native_placements.remove(id);
+                    if let Some((view, placed)) = self.native_mounts.retire(*id) {
+                        self.pending_module_views.retire(*id, view, placed);
+                    } else {
+                        built_in.push(change);
+                    }
+                    continue;
                 }
                 _ => {}
             }
@@ -289,10 +335,41 @@ impl HostWindow {
         if let Some(scene) = self.os.scene() {
             scene.sync_back(runtime.back_target());
         }
-        self.a11y.update_if_active(|| frame.accessibility.clone());
-        self.set_frame_clock_active(true);
-        if !self.externally_paced() {
-            self.window.request_redraw();
+        self.synchronize_accessibility();
+        self.request_frame();
+    }
+
+    pub fn set_accessibility_active(&mut self, active: bool) {
+        self.accessibility = if active { AccessibilityDelivery::Requested } else { AccessibilityDelivery::Inactive };
+        if active {
+            self.synchronize_accessibility();
+        }
+    }
+
+    fn synchronize_accessibility(&mut self) {
+        match self.accessibility {
+            AccessibilityDelivery::Inactive => {}
+            AccessibilityDelivery::Requested => {
+                if let Some(frame) = self.publication.latest()
+                    && let Some(snapshot) = self.publication.snapshot_full()
+                {
+                    self.a11y.update_if_active(|| {
+                        // The snapshot already includes these committed revisions.
+                        self.publication.take_accessibility_updates();
+                        self.accessibility = AccessibilityDelivery::Published(frame.number);
+                        snapshot
+                    });
+                }
+            }
+            AccessibilityDelivery::Published(previous) => {
+                // Accessibility consumes each delta even when presentation skips a frame.
+                for (version, update) in self.publication.take_accessibility_updates() {
+                    if version > previous {
+                        self.a11y.update_if_active(|| update.as_ref().clone());
+                        self.accessibility = AccessibilityDelivery::Published(version);
+                    }
+                }
+            }
         }
     }
 
@@ -332,12 +409,24 @@ impl HostWindow {
         self.cursor = cursor;
     }
 
-    pub fn draw(&mut self, runtime: &WindowRuntime, device: &Device, sample: Duration, now: Instant) -> Result<(), String> {
+    pub fn draw(
+        &mut self,
+        runtime: &WindowRuntime,
+        device: &Device,
+        sample: Duration,
+        now: Instant,
+        from_clock: bool,
+    ) -> Result<(), String> {
         if self.draw.is_some() || self.suspended || self.configure_needed() || self.redraw_at.is_some_and(|deadline| deadline > now) {
             return Ok(());
         }
+        let externally_paced = self.externally_paced();
+        if externally_paced && !from_clock {
+            return Ok(());
+        }
         let Some(surface) = self.surface_info.filter(|info| self.presentation.ready([info.width, info.height])) else { return Ok(()) };
-        let Some(frame) = self.publication.latest() else { return Ok(()) };
+        // Freeze the native deltas accumulated through this publication before admitting the draw.
+        let Some(frame) = self.publication.latest().filter(|frame| self.synchronized == Some(frame.number)) else { return Ok(()) };
         let sample = if frame.scene.as_ref().is_some_and(|scene| scene.continuously_animated(frame.sampled_at.as_secs_f64())) {
             sample
         } else {
@@ -346,8 +435,12 @@ impl HostWindow {
         if !self.presentation.needs_draw(frame.number, sample) {
             return Ok(());
         }
+        let transactional = self.pending_module_views.prepare(frame.number);
         let target = match self.os.presentation() {
-            Some(presentation) => presentation.try_acquire_drawable(&self.surface, surface.color),
+            Some(presentation) => {
+                presentation.set_transactional_presentation(frame.number, transactional);
+                presentation.try_acquire_drawable(&self.surface, surface.color, from_clock)
+            }
             None => surface_drawable(&self.surface, surface.color),
         };
         match target {
@@ -356,46 +449,57 @@ impl HostWindow {
                 let stamp = self.presentation.stamp(runtime.tree().id(), device.executor.generation().number(), frame.number, sample);
                 match device.executor.draw(DrawWork { target, list, scale: self.viewport().scale, stamp, valid_until: None, report: None })
                 {
-                    Ok(draw) => self.draw = Some(draw),
-                    Err(GpuError::Busy) => self.redraw_at = Some(now + Duration::from_millis(8)),
-                    Err(_) if device.executor.generation().is_lost() => return Ok(()),
+                    Ok(draw) => {
+                        self.draw = Some(draw);
+                        return Ok(());
+                    }
+                    Err(GpuError::Busy) if !externally_paced => self.redraw_at = Some(now + Duration::from_millis(8)),
+                    Err(GpuError::Busy) => {}
+                    Err(_) if device.executor.generation().is_lost() => self.invalidate_surface(true),
                     Err(error) => return Err(error.to_string()),
                 }
             }
-            DrawableAcquisition::Retry => self.redraw_at = Some(now + Duration::from_millis(16)),
+            retry @ (DrawableAcquisition::WaitingForClock | DrawableAcquisition::Retry) => {
+                self.redraw_at = acquisition_retry_deadline(&retry, now, externally_paced);
+            }
             DrawableAcquisition::Reconfigure => self.invalidate_surface(false),
             DrawableAcquisition::Lost => self.invalidate_surface(true),
             DrawableAcquisition::Suspended => {}
         }
+        self.abandon_native_view_frame();
         Ok(())
     }
 
-    pub fn finish_draw(&mut self, runtime: &WindowRuntime, device: &Device) -> Result<bool, String> {
+    pub fn finish_draw(&mut self, runtime: &WindowRuntime, device: &Device, reduced_motion: bool) -> Result<bool, String> {
         let Some(result) = self.draw.as_mut().and_then(GpuTask::try_take) else { return Ok(false) };
         self.draw = None;
-        let frame = match result {
-            Ok(frame) => frame,
-            Err(_) if device.executor.generation().is_lost() => return Ok(false),
-            Err(error) => return Err(error.to_string()),
-        };
-        let latest = self.publication.latest().map_or(0, |frame| frame.number);
-        if self.synchronized != Some(latest)
-            || !self.presentation.accepts(frame.stamp, runtime.tree().id(), device.executor.generation().number(), latest, self.size())
-        {
-            self.window.request_redraw();
+        let generation = device.executor.generation();
+        if generation.is_lost() {
+            self.invalidate_surface(true);
+            return Ok(false);
+        }
+        let frame = result.map_err(|error| error.to_string())?;
+        if !self.presentation.accepts(frame.stamp, runtime.tree().id(), generation.number(), self.size()) {
+            self.abandon_native_view_frame();
+            self.request_frame();
             return Ok(false);
         }
         let suboptimal = frame.target.suboptimal();
         let progress = frame.progress();
         self.window.pre_present_notify();
         let mut commit_native_views = || {
-            for placement in self.native_placements.values() {
-                self.native_mounts.place(placement);
-            }
-            self.native_placements.clear();
+            self.pending_module_views.commit(frame.stamp.native_rev, |placement, retired| {
+                if let Some(view) = retired {
+                    view.place(&placement);
+                } else {
+                    self.native_mounts.place(&placement);
+                }
+            });
         };
         match self.os.presentation() {
-            Some(presentation) => presentation.present_with_native_views(frame.target, &device.queue, &mut commit_native_views)?,
+            Some(presentation) => {
+                presentation.present_with_native_views(frame.target, &device.queue, frame.stamp.native_rev, &mut commit_native_views)?
+            }
             None => {
                 frame.target.present(&device.queue)?;
                 commit_native_views();
@@ -420,9 +524,18 @@ impl HostWindow {
         if suboptimal {
             self.invalidate_surface(false);
         }
-        if let Some(frame) = self.publication.latest() {
-            let motion = frame.scene.as_ref().is_some_and(|scene| scene.continuously_animated(frame.sampled_at.as_secs_f64()));
-            self.set_frame_clock_active(motion);
+        if let Some(latest) = self.publication.latest() {
+            if !self.presentation.presented_revision(latest.number) {
+                self.request_frame();
+            } else {
+                let motion = latest.scene.as_ref().is_some_and(|scene| scene.continuously_animated(latest.sampled_at.as_secs_f64()));
+                let activity = match (motion, reduced_motion) {
+                    (true, true) => FrameClockActivity::Low,
+                    (true, false) => FrameClockActivity::Interactive,
+                    _ => FrameClockActivity::Idle,
+                };
+                self.set_frame_clock_activity(activity);
+            }
         }
         Ok(true)
     }
@@ -442,11 +555,16 @@ impl HostWindow {
 
 impl Drop for HostWindow {
     fn drop(&mut self) {
-        self.set_frame_clock_active(false);
+        self.draw = None;
+        self.set_frame_clock_activity(FrameClockActivity::Paused);
         for (_, cancel) in self.service_cleanup.drain() {
             cancel();
         }
     }
+}
+
+fn acquisition_retry_deadline(acquisition: &DrawableAcquisition, now: Instant, externally_paced: bool) -> Option<Instant> {
+    (!externally_paced && matches!(acquisition, DrawableAcquisition::Retry)).then(|| now + Duration::from_millis(16))
 }
 
 pub(crate) fn transparent_background(theme: &Theme) -> bool {
@@ -502,7 +620,47 @@ fn cursor_icon(style: CursorStyle) -> Option<CursorIcon> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use octara_model::identity::TreeId;
     use octara_model::theme::{Color, Theme};
+
+    #[test]
+    fn overlapping_scroll_and_hover_keep_presenting_on_60_and_120_hz_ticks() {
+        let size = [160, 120];
+        let tree = TreeId::new([1, 2], 3);
+        for hz in [60, 120] {
+            let mut presentation = Presentation::default();
+            presentation.configure(size);
+            let start = Instant::now();
+            let interval = Duration::from_secs(1) / hz;
+            let mut latest = 1;
+            for tick in 0..hz {
+                let sample = interval * tick;
+                assert!(presentation.needs_draw(latest, sample));
+                let stamp = presentation.stamp(tree, 1, latest, sample);
+                // Both inputs publish while this tick's GPU work is still in flight.
+                let scroll = latest + 1;
+                latest = scroll + 1; // Hover
+                assert!(presentation.accepts(stamp, tree, 1, size));
+                presentation.did_present(stamp);
+                assert!(presentation.presented_revision(stamp.native_rev));
+                assert!(!presentation.presented_revision(latest));
+
+                let between_ticks = start + sample + interval / 2;
+                assert_eq!(acquisition_retry_deadline(&DrawableAcquisition::WaitingForClock, between_ticks, true), None);
+                assert_eq!(acquisition_retry_deadline(&DrawableAcquisition::Retry, between_ticks, true), None);
+            }
+            let final_frame = presentation.stamp(tree, 1, latest, interval * hz);
+            assert!(presentation.accepts(final_frame, tree, 1, size));
+            assert_eq!(final_frame.frame, u64::from(hz) + 1);
+        }
+    }
+
+    #[test]
+    fn only_unpaced_drawable_retry_sets_a_deadline() {
+        let now = Instant::now();
+        assert_eq!(acquisition_retry_deadline(&DrawableAcquisition::Retry, now, false), Some(now + Duration::from_millis(16)));
+        assert_eq!(acquisition_retry_deadline(&DrawableAcquisition::WaitingForClock, now, false), None);
+    }
 
     #[test]
     fn maps_visible_and_hidden_cursors_for_winit() {

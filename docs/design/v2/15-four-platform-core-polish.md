@@ -166,9 +166,13 @@ pub enum TextContentType { #[default] None, Username, Password, NewPassword, One
      - Even when accessibility IS active, pure scroll offset updates MUST update only the scroll container's scroll properties/transform rather than pushing every scrolled descendant into `staging.moved` and running `Tree::is_locally_accessible` + `build_entry` + `accesskit::Properties::eq` across hundreds/thousands of unchanged nodes.
    - **P0-B — O(1) Scroll-Transform Retained Paint (`crates/octara-pipeline/src/paint/mod.rs`)**:
      - Keep scroll-container children compiled in scroll-content-local coordinates beneath a single scroll-offset transform/clip wrapper so pure `SetScroll` rebuilds **O(1)** subtrees (the scroll container wrapper only) instead of re-evaluating 600–1,600 descendant `draw_keys` / `subtrees_rebuilt` / `child_spans_rebuilt`.
+     - Keep offset changes separate from layout geometry changes. Use content-space hit grids and resolve the current scroll chain for world bounds, text selection, and clips.
    - **P1-C — O(1) Bulk Teardown & Preflight (`crates/octara-runtime/src/window.rs::is_retiring`, `crates/octara-tree/src/transaction.rs::Preflight::retirement_ancestor`)**:
      - Replace repeated per-node ancestor-chain walks during bulk subtree retirement and transaction preflight with memoized / flat retired-set lookup so heavy list/thread switches avoid O(N × depth) overhead.
    - **Regression Gates**: Add DST & Release micro-benchmarks asserting O(1) `subtrees_rebuilt` on pure scroll (100+ scrolled rows), zero `AccessKitProjector` work while dormant, zero stale-frame discards / `Retry` stalls under overlapping 60Hz/120Hz scroll & hover input, and verified Release timings for pure micro-scroll, fast-fling `virtual_each` + `octara-markdown`, and heavy list switches.
+5. **Retained GPU Spatial Buffers & Damage**:
+   - Use stable spatial slots in the display list and shared CPU/GPU scroll snapping. In a compatible frame, reuse prepared draw order and instance buffers and upload only changed spatial rows.
+   - On a compatible initialized backing texture, compute damage in device pixels from old and new content bounds and from moved scrollports. Below 60% coverage, clear and rasterize the damaged rectangle, then transfer the completed frame to the current drawable. A new target, a large damaged area, or a pass with non-local effects uses full rendering.
 
 ---
 

@@ -4,7 +4,7 @@ use super::{Decoration, radius, ring_rect};
 use crate::motion::NodeMotion;
 use octara_model::geometry::{Rect, Size, Vec2};
 use octara_model::motion::{TextRevealTrack, Track};
-use octara_model::paint::{DisplayList, Item, Part, Quad, TransitionPaint};
+use octara_model::paint::{DisplayList, Item, Part, ScrollPlacement, ScrollPlacements, TransitionPaint};
 use octara_model::style::Visual;
 use octara_model::theme::Color;
 use octara_tree::{ExitTicket, NodeId};
@@ -16,21 +16,41 @@ pub struct PaintScene {
     pub(super) size: Size,
     pub(super) background: Color,
     pub(super) root: Option<Arc<PaintNode>>,
+    pub(super) scrolls: ScrollPlacements,
+    pub(super) translations: Arc<[Translation]>,
 }
 
 impl PaintScene {
-    pub(super) fn matches(&self, size: Size, background: Color, root: Option<&Arc<PaintNode>>) -> bool {
+    pub(super) fn matches(&self, size: Size, background: Color, root: Option<&Arc<PaintNode>>, scrolls: &ScrollPlacements) -> bool {
         self.size == size
             && self.background == background
+            && self.scrolls.same_snapshot(scrolls)
             && self.root.as_ref().zip(root).map_or(self.root.is_none() && root.is_none(), |(a, b)| Arc::ptr_eq(a, b))
     }
 
     pub(super) fn timed_at(&self, time: f64) -> bool {
-        self.root.as_ref().is_some_and(|root| root.timing.timed_at(time))
+        self.root.as_ref().is_some_and(|root| root.timing.timed_at(time)) || self.translations_at(time)
     }
 
     pub fn continuously_animated(&self, time: f64) -> bool {
-        self.root.as_ref().is_some_and(|root| root.motion_at(time))
+        self.root.as_ref().is_some_and(|root| root.motion_at(time)) || self.translations_at(time)
+    }
+
+    fn translations_at(&self, time: f64) -> bool {
+        self.translations.last().is_some_and(|translation| time < translation.until)
+    }
+
+    fn sample_placements(&self, time: f64) -> ScrollPlacements {
+        let mut placements = self.scrolls.clone();
+        if self.translations_at(time) {
+            let active = self.translations.partition_point(|translation| translation.until <= time);
+            for translation in &self.translations[active..] {
+                let bounds = translation.motion.bounds(time);
+                let offset = Vec2::new(bounds.x - translation.target.x, bounds.y - translation.target.y);
+                placements.set(translation.node, Some(ScrollPlacement { offset, scrollbars: [None, None] }));
+            }
+        }
+        placements
     }
 
     pub fn sample(&self, time: f64) -> Arc<DisplayList> {
@@ -38,13 +58,29 @@ impl PaintScene {
     }
 
     pub(super) fn sample_counted(&self, time: f64) -> (Arc<DisplayList>, SampleWork) {
+        let scrolls = self.sample_placements(time);
+        if let Some(root) = &self.root
+            && !root.timing.timed_at(time)
+        {
+            let parts = vec![Part::ScrollFrame { scrolls, parts: root.resting.clone() }];
+            return (Arc::new(DisplayList { size: self.size, background: self.background, parts }), SampleWork::default());
+        }
         let mut sample = Sample { time, work: SampleWork::default() };
         let mut parts = Vec::new();
         if let Some(root) = &self.root {
             root.emit(&mut sample, &mut parts);
         }
+        let parts = if parts.is_empty() { parts } else { vec![Part::ScrollFrame { scrolls, parts: parts.into() }] };
         (Arc::new(DisplayList { size: self.size, background: self.background, parts }), sample.work)
     }
+}
+
+#[derive(Debug)]
+pub(super) struct Translation {
+    pub node: NodeId,
+    pub target: Rect,
+    pub motion: Arc<NodeMotion>,
+    pub until: f64,
 }
 
 #[derive(Debug)]
@@ -52,9 +88,8 @@ pub(super) struct Element {
     pub source: NodeId,
     pub visual: Visual,
     pub bounds: Rect,
-    pub clip: Rect,
-    pub visible: bool,
-    pub child_clip: Option<(Rect, bool)>,
+    pub child_clip: Option<(Rect, [bool; 2])>,
+    pub scroll: bool,
     pub decoration: Arc<Decoration>,
     pub own: Arc<[Item]>,
     pub content_start: usize,
@@ -63,7 +98,6 @@ pub(super) struct Element {
     pub reveal_tint: Option<Color>,
     pub transition: Option<TransitionPaint>,
     pub caret: Option<(Item, f64)>,
-    pub scrollbars: smallvec::SmallVec<[Quad; 2]>,
 }
 
 #[derive(Debug)]
@@ -80,7 +114,8 @@ impl ExitGhost {
         now: f64,
         opacity: Track,
         independent: &FxHashSet<NodeId>,
-        nested: bool,
+        ancestors: &[(NodeId, Option<Item>, Vec2)],
+        scrolls: &ScrollPlacements,
     ) -> Option<Self> {
         let element = snapshot.element.as_ref()?;
         let visual = element.motion.as_ref().map_or(element.visual, |track| track.visual(now));
@@ -103,11 +138,18 @@ impl ExitGhost {
         if parts.is_empty() {
             return None;
         }
-        if nested {
-            parts.insert(0, Part::Item(Item::PushClip { source: element.source, rect: element.clip, radius: [0.0; 4] }));
-            parts.push(Part::Item(Item::PopClip));
+        for (source, clip, offset) in ancestors {
+            if *offset != Vec2::default() {
+                parts =
+                    vec![Part::TranslatedGroup { spatial_id: ScrollPlacements::spatial_id(*source), offset: *offset, parts: parts.into() }];
+            }
+            if let Some(clip) = clip {
+                parts.insert(0, Part::Item(clip.clone()));
+                parts.push(Part::Item(Item::PopClip));
+            }
         }
-        Some(Self { ticket, frozen: parts.into(), opacity })
+        let frozen = Arc::from([Part::ScrollFrame { scrolls: scrolls.clone(), parts: parts.into() }]);
+        Some(Self { ticket, frozen, opacity })
     }
 
     pub(super) fn emit(&self, time: f64, output: &mut Vec<Part>) {
@@ -152,6 +194,7 @@ struct ChildSpan {
     len: usize,
     content: SpanContent,
     resting: Arc<[Part]>,
+    coverage: Option<Rect>,
     timing: Timing,
 }
 
@@ -202,8 +245,11 @@ impl ChildSpan {
 
     fn leaf(node: Option<Arc<PaintNode>>, rebuilt: &mut u64) -> Arc<Self> {
         *rebuilt = rebuilt.saturating_add(1);
-        let (timing, resting) = node.as_ref().map_or_else(Default::default, |node| (node.timing, node.resting.clone()));
-        Arc::new(Self { len: 1, content: SpanContent::Leaf(node), resting, timing })
+        let (timing, resting, coverage) = node.as_ref().map_or_else(
+            || (Timing::default(), Arc::from([]), Some(Rect::default())),
+            |node| (node.timing, node.resting.clone(), node.coverage),
+        );
+        Arc::new(Self { len: 1, content: SpanContent::Leaf(node), resting, coverage, timing })
     }
 
     fn branch(left: Arc<Self>, right: Arc<Self>, rebuilt: &mut u64) -> Arc<Self> {
@@ -211,11 +257,12 @@ impl ChildSpan {
         let resting = match (left.resting.is_empty(), right.resting.is_empty()) {
             (true, _) => right.resting.clone(),
             (_, true) => left.resting.clone(),
-            (false, false) => Arc::from([Part::Group(left.resting.clone()), Part::Group(right.resting.clone())]),
+            (false, false) => Arc::from([group(&left.resting, left.coverage), group(&right.resting, right.coverage)]),
         };
         Arc::new(Self {
             len: left.len + right.len,
             timing: left.timing.combine(right.timing),
+            coverage: left.coverage.zip(right.coverage).map(|(left, right)| union(left, right)),
             content: SpanContent::Branch(left, right),
             resting,
         })
@@ -241,7 +288,7 @@ impl ChildSpan {
     fn emit(&self, sample: &mut Sample, output: &mut Vec<Part>) {
         sample.work.spans += 1;
         if !self.timing.timed_at(sample.time) {
-            append_group(&self.resting, output);
+            append_covered(&self.resting, self.coverage, output);
             return;
         }
         match &self.content {
@@ -284,9 +331,11 @@ impl ChildSpan {
 #[derive(Debug)]
 pub(super) struct PaintNode {
     pub element: Option<Arc<Element>>,
+    pub translates: bool,
     pub children: ChildList,
     ghost: Option<Arc<ExitGhost>>,
     resting: Arc<[Part]>,
+    coverage: Option<Rect>,
     timing: Timing,
 }
 
@@ -302,11 +351,12 @@ struct Sample {
 }
 
 impl PaintNode {
-    pub(super) fn element(element: Arc<Element>, children: ChildList) -> Self {
+    pub(super) fn element(element: Arc<Element>, children: ChildList, translates: bool) -> Self {
         let mut timing = Timing {
             motion_until: element
                 .motion
                 .as_ref()
+                .filter(|_| !translates)
                 .and_then(|track| track.rest_at())
                 .into_iter()
                 .chain(element.reveal.and_then(TextRevealTrack::rest_at))
@@ -318,7 +368,7 @@ impl PaintNode {
             f64::INFINITY,
             |output| {
                 if let Some(children) = &children.root {
-                    append_group(&children.resting, output);
+                    append_covered(&children.resting, children.coverage, output);
                 }
             },
             &mut resting,
@@ -327,7 +377,18 @@ impl PaintNode {
         if let Some(children) = &children.root {
             timing = timing.combine(children.timing);
         }
-        Self { element: Some(element), ghost: None, children, resting: resting.into(), timing }
+        let child_coverage = children.root.as_ref().map_or(Some(Rect::default()), |children| children.coverage);
+        let coverage = if translates {
+            resting = vec![Part::MotionContent {
+                source: element.source,
+                spatial_id: ScrollPlacements::spatial_id(element.source),
+                parts: resting.into(),
+            }];
+            None
+        } else {
+            element.coverage(child_coverage)
+        };
+        Self { element: Some(element), translates, ghost: None, children, resting: resting.into(), coverage, timing }
     }
 
     pub(super) fn ghost(ghost: Option<Arc<ExitGhost>>, children: ChildList) -> Self {
@@ -335,9 +396,10 @@ impl PaintNode {
         let mut resting = Vec::new();
         if let Some(children) = &children.root {
             timing = timing.combine(children.timing);
-            append_group(&children.resting, &mut resting);
+            append_covered(&children.resting, children.coverage, &mut resting);
         }
-        Self { element: None, ghost, children, resting: resting.into(), timing }
+        let coverage = children.root.as_ref().map_or(Some(Rect::default()), |children| children.coverage);
+        Self { element: None, translates: false, ghost, children, resting: resting.into(), coverage, timing }
     }
 
     fn motion_at(&self, time: f64) -> bool {
@@ -346,7 +408,7 @@ impl PaintNode {
 
     fn emit(&self, sample: &mut Sample, output: &mut Vec<Part>) {
         if !self.timing.timed_at(sample.time) {
-            append_group(&self.resting, output);
+            append_covered(&self.resting, self.coverage, output);
             return;
         }
         sample.work.nodes += 1;
@@ -390,9 +452,8 @@ impl Element {
         }
 
         let offset = Vec2::new(bounds.x, bounds.y);
-        let visible = if bounds == self.bounds { self.visible } else { !bounds.intersect(&self.clip).is_empty() };
-        let ring_visible = visual.ring.and_then(|ring| ring_rect(bounds, ring)).is_some_and(|rect| !rect.intersect(&self.clip).is_empty());
-        if visible || ring_visible || self.decoration.shadows_meet(bounds, self.clip) {
+        if !self.own.is_empty() || self.caret.is_some() || visual.ring.is_some() || visual.background.is_some() {
+            let mut own = Vec::new();
             let items = if visual != self.visual || bounds.w != self.bounds.w || bounds.h != self.bounds.h {
                 let mut items = self.decoration.items(Rect::new(0.0, 0.0, bounds.w, bounds.h), visual);
                 items.extend(self.own[self.content_start..].iter().cloned().map(|mut item| {
@@ -424,7 +485,7 @@ impl Element {
                 items
             };
             if !items.is_empty() {
-                output.push(Part::Drawing { offset, fade: 1.0, items });
+                own.push(Part::Drawing { offset, fade: 1.0, items });
             }
             if let Some((caret, start)) = &self.caret
                 && time.is_finite()
@@ -432,23 +493,27 @@ impl Element {
             {
                 let mut caret = caret.clone();
                 caret.translate(bounds.x - self.bounds.x, bounds.y - self.bounds.y);
-                output.push(Part::Item(caret));
+                own.push(Part::Item(caret));
+            }
+            if !own.is_empty() {
+                output.push(Part::CulledGroup { bounds: self.own_coverage(bounds, visual), parts: own.into() });
             }
         }
 
-        if let Some((mut clip, round)) = self.child_clip {
-            clip.x += bounds.x - self.bounds.x;
-            clip.y += bounds.y - self.bounds.y;
-            let radius = if round { radius(visual, clip) } else { [0.0; 4] };
-            output.push(Part::Item(Item::PushClip { source: self.source, rect: clip, radius }));
+        if let Some(clip) = self.sampled_clip(bounds, visual) {
+            output.push(Part::Item(clip));
         }
-        children(output);
-        if visible {
-            for thumb in &self.scrollbars {
-                let mut thumb = Item::Quad(*thumb);
-                thumb.translate(bounds.x - self.bounds.x, bounds.y - self.bounds.y);
-                output.push(Part::Item(thumb));
-            }
+        if self.scroll {
+            let mut content = Vec::new();
+            children(&mut content);
+            output.push(Part::ScrollContent {
+                source: self.source,
+                spatial_id: ScrollPlacements::spatial_id(self.source),
+                scrollbar_offset: Vec2::new(bounds.x - self.bounds.x, bounds.y - self.bounds.y),
+                parts: content.into(),
+            });
+        } else {
+            children(output);
         }
         if self.child_clip.is_some() {
             output.push(Part::Item(Item::PopClip));
@@ -457,11 +522,83 @@ impl Element {
             output.push(Part::Item(Item::PopLayer));
         }
     }
+    fn own_coverage(&self, bounds: Rect, visual: Visual) -> Rect {
+        let coverage = visual.ring.and_then(|ring| ring_rect(bounds, ring)).map_or(bounds, |ring| union(bounds, ring));
+        self.decoration.shadow_bounds(bounds).fold(coverage, union)
+    }
+
+    fn coverage(&self, children: Option<Rect>) -> Option<Rect> {
+        if self.transition.is_some() {
+            return None;
+        }
+        let mut children = children?;
+        if let Some((clip, axes)) = self.child_clip {
+            if self.scroll {
+                let [x, y] = axes;
+                children = union(
+                    clip,
+                    Rect::new(
+                        if x { clip.x } else { children.x },
+                        if y { clip.y } else { children.y },
+                        if x { clip.w } else { children.w },
+                        if y { clip.h } else { children.h },
+                    ),
+                );
+            } else {
+                children = restrict(children, clip, axes);
+            }
+        } else if self.scroll {
+            return None;
+        }
+        let own = self.own_coverage(self.bounds, self.visual);
+        Some(union(own, children))
+    }
+
+    pub(super) fn clip_at(&self, time: f64) -> Option<Item> {
+        let (visual, bounds) = self.motion.as_ref().map_or((self.visual, self.bounds), |track| (track.visual(time), track.bounds(time)));
+        self.sampled_clip(bounds, visual)
+    }
+
+    fn sampled_clip(&self, bounds: Rect, visual: Visual) -> Option<Item> {
+        let (mut clip, axes) = self.child_clip?;
+        clip.x += bounds.x - self.bounds.x;
+        clip.y += bounds.y - self.bounds.y;
+        Item::clip(self.source, clip, axes, radius(visual, clip))
+    }
+}
+
+fn union(a: Rect, b: Rect) -> Rect {
+    if a.is_empty() {
+        return b;
+    }
+    if b.is_empty() {
+        return a;
+    }
+    let x = a.x.min(b.x);
+    let y = a.y.min(b.y);
+    Rect::new(x, y, a.right().max(b.right()) - x, a.bottom().max(b.bottom()) - y)
+}
+
+fn restrict(bounds: Rect, clip: Rect, [x, y]: [bool; 2]) -> Rect {
+    bounds.intersect(&Rect::new(
+        if x { clip.x } else { bounds.x },
+        if y { clip.y } else { bounds.y },
+        if x { clip.w } else { bounds.w },
+        if y { clip.h } else { bounds.h },
+    ))
+}
+
+fn group(parts: &Arc<[Part]>, coverage: Option<Rect>) -> Part {
+    coverage.map_or_else(|| Part::Group(parts.clone()), |bounds| Part::CulledGroup { bounds, parts: parts.clone() })
 }
 
 fn append_group(parts: &Arc<[Part]>, output: &mut Vec<Part>) {
+    append_covered(parts, None, output);
+}
+
+fn append_covered(parts: &Arc<[Part]>, coverage: Option<Rect>, output: &mut Vec<Part>) {
     if !parts.is_empty() {
-        output.push(Part::Group(parts.clone()));
+        output.push(group(parts, coverage));
     }
 }
 
@@ -474,6 +611,11 @@ fn mark_exiting(part: &mut Part) {
     match part {
         Part::Item(item) => mark_item(item),
         Part::Drawing { items, .. } => Arc::make_mut(items).iter_mut().for_each(mark_item),
-        Part::Group(parts) => Arc::make_mut(parts).iter_mut().for_each(mark_exiting),
+        Part::Group(parts)
+        | Part::CulledGroup { parts, .. }
+        | Part::TranslatedGroup { parts, .. }
+        | Part::ScrollContent { parts, .. }
+        | Part::MotionContent { parts, .. }
+        | Part::ScrollFrame { parts, .. } => Arc::make_mut(parts).iter_mut().for_each(mark_exiting),
     }
 }

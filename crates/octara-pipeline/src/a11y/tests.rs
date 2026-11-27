@@ -4,6 +4,7 @@ use octara_model::geometry::{Size, Vec2, WindowViewport};
 use octara_model::input::HostReply;
 use octara_model::semantics::{A11yAction, TextPosition};
 use octara_model::style::{FlexDirection, Length, Overflow, State, StyleProp, When};
+use octara_runtime::engine::AccessibilityConsumer;
 use octara_tree::overlay::LayerPolicy;
 use octara_tree::tables::{AuthoredStyle, SemanticsSlot};
 use octara_tree::transaction::OverlaySpec;
@@ -63,10 +64,12 @@ struct Projection {
 
 impl Projection {
     fn new() -> Self {
+        let publication = AccessPublication::default();
+        publication.set_active(AccessibilityConsumer::Inspector, true);
         Self {
             layout: LayoutEngine::default(),
             text: TextEngine::new(false),
-            access: AccessKitProjector::new(AccessPublication::default()),
+            access: AccessKitProjector::new(publication),
             viewport: WindowViewport { size: Size::new(320.0, 240.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 },
         }
     }
@@ -80,7 +83,15 @@ impl Projection {
     fn commit(&mut self) -> ak::TreeUpdate {
         self.layout.commit_stage();
         self.text.commit_stage();
-        self.access.commit()
+        self.access.commit(0).map_or_else(
+            || ak::TreeUpdate {
+                nodes: Vec::new(),
+                tree: None,
+                tree_id: ak::TreeId::ROOT,
+                focus: node_identity(self.access.publication.0.borrow().focus.unwrap()),
+            },
+            Arc::unwrap_or_clone,
+        )
     }
 
     fn publish(&mut self, tree: &Tree, delta: &TreeDelta) -> ak::TreeUpdate {
@@ -233,11 +244,12 @@ fn edits_and_local_scroll_do_dirty_work_with_a_lazy_committed_snapshot() {
 
     let delta = tree.apply_runtime(RuntimeOp::SetScroll { node: panel, offset: Vec2::new(0.0, 10.0), clamped: false });
     projector.project(&tree, &delta, false);
-    assert_eq!(projector.access.staging.built, 3);
-    assert!(projector.access.staging.candidates <= 8);
+    assert_eq!(projector.access.staging.built, 0);
+    assert_eq!(projector.access.staging.candidates, 1);
     let scroll_update = projector.commit();
-    assert_eq!(published.0.borrow().committed, 3);
-    assert_eq!(scroll_update.nodes.len(), 3);
+    assert_eq!(published.0.borrow().committed, 1);
+    assert_eq!(scroll_update.nodes.len(), 1);
+    assert_eq!(scroll_update.nodes[0].0, node_identity(panel));
     applied.apply(scroll_update);
     assert_eq!(published.0.borrow().snapshotted.get(), 0);
 

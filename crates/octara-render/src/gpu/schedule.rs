@@ -1,14 +1,13 @@
 //! Opaque core extraction and ordering for the four micro-pipelines.
 
 use super::batch::{Draw, NO_CLIP, Paint, Pass, PlannedBatch, Shape, grow, rect, xywh};
-use super::instances::{DrawInst, Instances};
+use super::instances::{DrawInst, FRACTIONAL_CLIP, Instances, SPATIAL_CLIP, SPATIAL_SHIFT};
 use super::plan::DrawSegment;
 use crate::shape::{ClipStack, inner_rect};
 use octara_model::geometry::Rect;
 use rustc_hash::FxHashMap;
 use std::ops::Range;
 
-const FRACTIONAL_CLIP: u32 = 1;
 // Stay comfortably within the depth precision and keep numeric order even on large lists.
 const MAX_DEPTH_STEPS: usize = 1 << 20;
 
@@ -97,7 +96,7 @@ struct Geometry {
     flags: u32,
 }
 
-fn geometry(paint: Paint, clips: &ClipStack, target: Rect) -> Geometry {
+fn shape_bounds(paint: Paint) -> (Rect, bool) {
     let shape = rect(paint.rect);
     let shadow_tail = matches!(paint.shape, Shape::Shadow { sigma, .. } if sigma > 0.0);
     let aa = paint.padding(0.5) != 0.0 && !shadow_tail;
@@ -111,6 +110,11 @@ fn geometry(paint: Paint, clips: &ClipStack, target: Rect) -> Geometry {
     if let Shape::Image { bounds: image, .. } = paint.shape {
         bounds = bounds.intersect(&grow(rect(image), 0.5));
     }
+    (bounds, aa)
+}
+
+fn geometry(paint: Paint, clips: &ClipStack, target: Rect) -> Geometry {
+    let (bounds, aa) = shape_bounds(paint);
     let authored = rect(paint.clip);
     let mut head = paint.clip_head;
     let mut flags = 0;
@@ -127,7 +131,7 @@ fn geometry(paint: Paint, clips: &ClipStack, target: Rect) -> Geometry {
         flags = FRACTIONAL_CLIP;
     }
     let envelope = if flags == FRACTIONAL_CLIP { grow(clip, 0.5) } else { clip };
-    let vertex_bounds = if authored.is_empty() || (matches!(paint.shape, Shape::Image { .. }) && shape.is_empty()) {
+    let vertex_bounds = if authored.is_empty() || (matches!(paint.shape, Shape::Image { .. }) && rect(paint.rect).is_empty()) {
         Rect::default()
     } else {
         raster_pixels(bounds, aa).intersect(&target)
@@ -251,13 +255,11 @@ fn append_batches(
         } else {
             instances.push_draw(entry.inst)
         };
-        if let Some(last) = batches[start..].last_mut()
-            && last.draw == entry.draw
-        {
-            last.instances.end = index + 1;
-        } else {
-            batches.push(PlannedBatch { draw: entry.draw, instances: index..index + 1 });
+        if batches[start..].last().is_none_or(|last| last.draw != entry.draw) {
+            batches.push(PlannedBatch::new(entry.draw, index));
         }
+        let batch = batches.last_mut().expect("the batch is present");
+        batch.extend(index, rect(entry.inst.bounds), entry.inst.flags >> SPATIAL_SHIFT);
     }
     start..batches.len()
 }
@@ -276,7 +278,7 @@ pub(super) fn schedule_pass(
         let limit = (start + MAX_DEPTH_STEPS).min(draws.len());
         let end = draws[start..limit].iter().position(|draw| matches!(draw, Draw::Backdrop(_))).map_or(limit, |pos| start + pos + 1);
         let segment = Segment { paints: &pass.paints[start..end], draws: &draws[start..end], target, clips };
-        segments.push(segment.schedule(instances, batches));
+        segments.push(if pass.spatial { segment.schedule_spatial(instances, batches) } else { segment.schedule(instances, batches) });
         start = end;
     }
     segments
@@ -296,6 +298,47 @@ struct Segment<'a> {
 }
 
 impl Segment<'_> {
+    fn schedule_spatial(self, instances: &mut Instances, batches: &mut Vec<PlannedBatch>) -> DrawSegment {
+        // Relative overlap within one space stays constant. Different spaces can overlap
+        // after scrolling, so only group compatible draws inside consecutive runs.
+        let mut entries = Vec::new();
+        for (index, (&paint, &draw)) in self.paints.iter().zip(self.draws).enumerate() {
+            let (bounds, _) = shape_bounds(paint);
+            if bounds.is_empty() || (matches!(paint.shape, Shape::Image { .. }) && rect(paint.rect).is_empty()) {
+                continue;
+            }
+            let head = paint.clip_head;
+            debug_assert!(paint.spatial <= u32::MAX >> SPATIAL_SHIFT);
+            let flags = (paint.spatial << SPATIAL_SHIFT) | (u32::from(head != 0) * SPATIAL_CLIP);
+            let payload = if matches!(draw, Draw::Glyph(_)) { index as u32 } else { instances.push_paint(paint, head) };
+            let inst = DrawInst { bounds: xywh(bounds), clip: NO_CLIP, core: [0.0; 4], depth: 0.0, payload, clip_head: head, flags };
+            entries.push(Entry { key: 0, draw, inst });
+        }
+        for run in entries.chunk_by_mut(|a, b| (a.inst.flags >> SPATIAL_SHIFT) == (b.inst.flags >> SPATIAL_SHIFT)) {
+            if run.len() < 2 || run.iter().all(|e| e.draw == run[0].draw) {
+                continue;
+            }
+            // Size the tiles for the largest draw, including long backgrounds outside the
+            // current viewport. This bounds the tile work for any one draw.
+            let target = run.iter().fold(self.target, |mut target, e| {
+                target.w = target.w.max(e.inst.bounds[2]);
+                target.h = target.h.max(e.inst.bounds[3]);
+                target
+            });
+            let mut order = DrawOrder::new(target);
+            for entry in run.iter_mut() {
+                let bounds = rect(entry.inst.bounds);
+                let x = bounds.x.floor();
+                let y = bounds.y.floor();
+                let pixels = Rect::new(x, y, (bounds.right().ceil() - x).max(1.0), (bounds.bottom().ceil() - y).max(1.0));
+                entry.key = order.key(entry.draw, pixels);
+            }
+            radix_sort(run);
+        }
+        let blended = append_batches(entries, self.paints, instances, batches);
+        DrawSegment { cores: blended.start..blended.start, blended }
+    }
+
     fn schedule(self, instances: &mut Instances, batches: &mut Vec<PlannedBatch>) -> DrawSegment {
         let mut cores = Vec::new();
         let mut blended = Vec::new();

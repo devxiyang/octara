@@ -3,7 +3,7 @@
 use crate::{HeadlessDriver, inspector::snapshot, protocol::TargetRef};
 use octara::{
     prelude::*,
-    runtime::{HostCommand, Input, cycle::AppError},
+    runtime::{HostCommand, Input, cycle::AppError, engine::AccessibilityConsumer},
     tree::{editor::EditorSession, overlay::LayerPolicy},
 };
 use octara_model::{
@@ -182,6 +182,7 @@ fn open(driver: &mut HeadlessDriver) -> Result<SimWindow, AppError> {
                 },
             )))
     })?;
+    driver.app().runtime().window(id).expect("open simulation window").set_accessibility_active(AccessibilityConsumer::Inspector, true);
     Ok(SimWindow { id, fixture: capture.get().expect("window built during open"), pointer: None })
 }
 

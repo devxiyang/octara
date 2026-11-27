@@ -34,13 +34,14 @@ pub(super) struct Paint {
     pub(super) rect: [f32; 4],
     pub(super) clip: [f32; 4],
     pub(super) clip_head: u32,
+    pub(super) spatial: u32,
     pub(super) radius: [f32; 4],
     pub(super) shape: Shape,
 }
 
 impl Default for Paint {
     fn default() -> Self {
-        Self { rect: [0.0; 4], clip: NO_CLIP, clip_head: 0, radius: [0.0; 4], shape: Shape::default() }
+        Self { rect: [0.0; 4], clip: NO_CLIP, clip_head: 0, spatial: 0, radius: [0.0; 4], shape: Shape::default() }
     }
 }
 
@@ -55,6 +56,17 @@ pub(super) fn xywh(r: Rect) -> [f32; 4] {
 pub(super) fn grow(rect: Rect, padding: f32) -> Rect {
     let inset = xywh(rect);
     Rect::new(inset[0] - padding, inset[1] - padding, inset[2] + 2.0 * padding, inset[3] + 2.0 * padding)
+}
+
+pub(super) fn union(a: Rect, b: Rect) -> Rect {
+    if a.is_empty() {
+        return b;
+    }
+    if b.is_empty() {
+        return a;
+    }
+    let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+    Rect::new(x, y, a.right().max(b.right()) - x, a.bottom().max(b.bottom()) - y)
 }
 
 impl Paint {
@@ -88,6 +100,7 @@ pub(super) fn image(i: &ImagePaint, scale: f32, clip: [f32; 4], clip_head: u32) 
         rect: xywh(i.rect).map(|px| px * scale),
         clip,
         clip_head,
+        spatial: 0,
         radius: i.bounds.corner_radii(i.radius).map(|radius| radius * scale),
         shape: Shape::Image { bounds: xywh(i.bounds).map(|px| px * scale), opacity: i.opacity, region: None },
     }
@@ -98,6 +111,7 @@ pub(super) fn shadow(s: &Shadow, scale: f32, clip: [f32; 4], clip_head: u32) -> 
         rect: xywh(s.rect).map(|px| px * scale),
         clip,
         clip_head,
+        spatial: 0,
         radius: s.rect.corner_radii(s.radius).map(|radius| radius * scale),
         shape: Shape::Shadow { color: s.color, sigma: s.blur * 0.5 * scale },
     }
@@ -108,6 +122,7 @@ pub(super) fn quad(q: &Quad, scale: f32, clip: [f32; 4], clip_head: u32) -> Pain
         rect: xywh(q.rect).map(|px| px * scale),
         clip,
         clip_head,
+        spatial: 0,
         radius: q.rect.corner_radii(q.radius).map(|radius| radius * scale),
         shape: Shape::Quad { fill: q.fill, gradient: q.gradient, border_widths: q.border.map(|b| b * scale), border_color: q.border_color },
     }
@@ -118,6 +133,7 @@ pub(super) fn quad(q: &Quad, scale: f32, clip: [f32; 4], clip_head: u32) -> Pain
 pub(super) struct Pass {
     pub(super) paints: Vec<Paint>,
     pub(super) batches: Vec<Batch>,
+    pub(super) spatial: bool,
     pub(super) opacity: f32,
     pub(super) clip_limit: Option<Rect>,
     pub(super) transition: Option<TransitionRequest>,
@@ -144,10 +160,70 @@ pub(super) struct Batch {
     pub(super) draw: Draw,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub(super) struct PlannedBatch {
     pub(super) draw: Draw,
     pub(super) instances: Range<u32>,
+    bounds: Vec<Rect>,
+    spans: Vec<DrawSpan>,
+}
+
+#[derive(Debug, PartialEq)]
+struct DrawSpan {
+    bounds: Rect,
+    spatial: u32,
+    end: u32,
+}
+
+impl PlannedBatch {
+    pub(super) fn new(draw: Draw, first: u32) -> Self {
+        Self { draw, instances: first..first, bounds: Vec::new(), spans: Vec::new() }
+    }
+
+    pub(super) fn extend(&mut self, index: u32, bounds: Rect, spatial: u32) {
+        const SPAN_LEN: usize = 32;
+        self.instances.end = index + 1;
+        if self.bounds.len().is_multiple_of(SPAN_LEN) || self.spans.last().is_none_or(|last| last.spatial != spatial) {
+            self.spans.push(DrawSpan { bounds, spatial, end: index + 1 });
+        } else if let Some(last) = self.spans.last_mut() {
+            last.bounds = union(last.bounds, bounds);
+            last.end = index + 1;
+        }
+        self.bounds.push(bounds);
+    }
+
+    pub(super) fn visible_ranges(&self, damage: Rect, spatials: &[[f32; 4]], mut emit: impl FnMut(Range<u32>)) -> u32 {
+        let mut start = self.instances.start;
+        let mut next = start..start;
+        let mut draws = 0;
+        for span in &self.spans {
+            let [x, y, ..] = spatials.get(span.spatial as usize).copied().unwrap_or([0.0; 4]);
+            let local = Rect::new(damage.x - x, damage.y - y, damage.w, damage.h);
+            if !span.bounds.intersect(&local).is_empty() {
+                for index in start..span.end {
+                    if self.bounds[(index - self.instances.start) as usize].intersect(&local).is_empty() {
+                        continue;
+                    }
+                    if next.end == index || next.is_empty() {
+                        if next.is_empty() {
+                            next.start = index;
+                        }
+                        next.end = index + 1;
+                    } else {
+                        emit(next);
+                        draws += 1;
+                        next = index..index + 1;
+                    }
+                }
+            }
+            start = span.end;
+        }
+        if !next.is_empty() {
+            emit(next);
+            draws += 1;
+        }
+        draws
+    }
 }
 
 impl Pass {

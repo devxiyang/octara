@@ -10,6 +10,7 @@ use octara::{
     runtime::{
         Input, WindowRuntime,
         cycle::{AppError, CycleReceipt},
+        engine::AccessibilityConsumer,
     },
     tree::{NodeKind, editor::EditorSession, tables::HandlerKind},
 };
@@ -229,7 +230,10 @@ impl InspectionState {
                     let enabled = self.picking.get(&id).copied().unwrap_or(false);
                     receipt.snapshot = Some(snapshot(state, enabled));
                 }
-                AgentCommand::Audit => receipt.findings = Some(audit::run(state, app.runtime().world(), &self.rules)),
+                AgentCommand::Audit => {
+                    state.set_accessibility_active(AccessibilityConsumer::Inspector, true);
+                    receipt.findings = Some(audit::run(state, app.runtime().world(), &self.rules));
+                }
                 AgentCommand::Act { target, action } => match self.act(app, id, target, action) {
                     Ok(cycle) => {
                         receipt.handled = Some(cycle.handled);

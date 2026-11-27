@@ -1,7 +1,14 @@
 //! The geometry both renderers share. The GPU shaders implement exactly these formulas, and a
 //! differential test keeps the two within a level or two per channel.
 
-use octara_model::geometry::Rect;
+use octara_model::geometry::{Rect, Vec2};
+use octara_model::paint::PlacedItem;
+
+/// Raster masks can follow whole-pixel translations without changing their phase.
+pub(crate) fn raster_offsets(placed: PlacedItem<'_>) -> (Vec2, Vec2) {
+    let pixels = placed.spatial_offset_px;
+    if pixels.x.fract() == 0.0 && pixels.y.fract() == 0.0 { (placed.local_offset, pixels) } else { (placed.offset, Vec2::default()) }
+}
 
 /// Distance from a pixel center to the rounded edge, negative inside.
 pub fn sd_round_rect(px: f32, py: f32, x: f32, y: f32, w: f32, h: f32, radii: [f32; 4]) -> f32 {
@@ -45,7 +52,17 @@ pub(crate) struct ClipNode {
     rect: [f32; 4],
     radius: [f32; 4],
     parent: u32,
-    _pad: [u32; 3],
+    spatial: u32,
+    flags: u32,
+    _pad: u32,
+}
+
+/// Axis clips follow the scroll space only along their constrained axis.
+#[cfg(feature = "gpu")]
+pub(crate) enum ClipAxes {
+    Both,
+    Horizontal,
+    Vertical,
 }
 
 #[derive(Default)]
@@ -93,8 +110,28 @@ impl ClipStack {
     }
 
     pub(crate) fn add_node(&mut self, rect: Rect, radius: [f32; 4], parent: u32) -> u32 {
-        self.nodes.push(ClipNode { rect: [rect.x, rect.y, rect.w, rect.h], radius, parent, _pad: [0; 3] });
+        self.nodes.push(ClipNode { rect: [rect.x, rect.y, rect.w, rect.h], radius, parent, spatial: 0, flags: 0, _pad: 0 });
         u32::try_from(self.nodes.len()).expect("clip node index")
+    }
+
+    /// Retained plans intersect clip rectangles in window space after applying each offset.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn push_spatial(&mut self, rect: Rect, radius: [f32; 4], scale: f32, spatial: u32, axes: ClipAxes) {
+        const RECT_PREFIX: u32 = 1;
+        let ClipState { head: parent, .. } = self.current();
+        let rect = Rect::new(rect.x * scale, rect.y * scale, rect.w * scale, rect.h * scale);
+        let radius = rect.corner_radii(radius.map(|r| r * scale));
+        let prefix = radius == [0.0; 4] && (parent == 0 || self.nodes[parent as usize - 1].flags & RECT_PREFIX != 0);
+        let head = self.add_node(rect, radius, parent);
+        let node = self.nodes.last_mut().expect("a clip node");
+        node.spatial = spatial;
+        node.flags = u32::from(prefix)
+            | match axes {
+                ClipAxes::Both => 0,
+                ClipAxes::Horizontal => 2,
+                ClipAxes::Vertical => 4,
+            };
+        self.stack.push(ClipState { bounds: None, head });
     }
 
     /// A conservative box covered completely by all rounded nodes in the chain.

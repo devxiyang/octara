@@ -362,6 +362,12 @@ pub enum Item {
         rect: Rect,
         radius: [f32; 4],
     },
+    /// Clips a single axis. Display-list traversal resolves the other axis against the viewport.
+    PushAxisClip {
+        source: NodeId,
+        rect: Rect,
+        horizontal: bool,
+    },
     PopClip,
     /// Draw into a transparent layer until the matching `PopLayer`, then composite
     /// the entire layer at `opacity`.
@@ -381,6 +387,16 @@ pub enum Item {
 }
 
 impl Item {
+    /// Opens a clip for the selected axes.
+    pub fn clip(source: NodeId, rect: Rect, axes: [bool; 2], radius: [f32; 4]) -> Option<Self> {
+        match axes {
+            [true, true] => Some(Self::PushClip { source, rect, radius }),
+            [true, false] => Some(Self::PushAxisClip { source, rect, horizontal: true }),
+            [false, true] => Some(Self::PushAxisClip { source, rect, horizontal: false }),
+            [false, false] => None,
+        }
+    }
+
     /// Whether the item draws pixels.
     pub fn draws(&self) -> bool {
         matches!(self, Item::Shadow(_) | Item::Quad(_) | Item::Custom(_) | Item::Image(_) | Item::Glyphs(_) | Item::Path(_))
@@ -421,7 +437,7 @@ impl Item {
                 p.transform = p.transform.then(&Transform::translate(dx, dy));
                 r(&mut p.bounds);
             }
-            Item::Native { rect, .. } | Item::PushClip { rect, .. } => r(rect),
+            Item::Native { rect, .. } | Item::PushClip { rect, .. } | Item::PushAxisClip { rect, .. } => r(rect),
             Item::PopClip | Item::PushLayer { .. } | Item::PushTransition(_) | Item::SkipTransition { .. } | Item::PopLayer => {}
         }
     }
@@ -455,7 +471,12 @@ impl Item {
                     f(&mut g.to.0);
                 }
             }
-            Item::PushClip { .. } | Item::PopClip | Item::PopLayer | Item::Native { .. } | Item::SkipTransition { .. } => {}
+            Item::PushClip { .. }
+            | Item::PushAxisClip { .. }
+            | Item::PopClip
+            | Item::PopLayer
+            | Item::Native { .. }
+            | Item::SkipTransition { .. } => {}
             Item::PushLayer { opacity, .. } => *opacity *= k,
             Item::PushTransition(paint) => paint.opacity *= k,
         }
@@ -472,6 +493,119 @@ pub enum Part {
     Item(Item),
     /// A shared span of drawing steps in the same coordinate space.
     Group(Arc<[Part]>),
+    /// A shared span whose drawing is conservatively contained in `bounds`.
+    CulledGroup { bounds: Rect, parts: Arc<[Part]> },
+    /// A local translation applied to every step in this span.
+    TranslatedGroup { spatial_id: u32, offset: Vec2, parts: Arc<[Part]> },
+    /// Shared content positioned by the nearest frame's scroll snapshot.
+    ScrollContent { source: NodeId, spatial_id: u32, scrollbar_offset: Vec2, parts: Arc<[Part]> },
+    /// A retained layer whose translation is sampled onto the frame's spatial table.
+    MotionContent { source: NodeId, spatial_id: u32, parts: Arc<[Part]> },
+    /// Positions retained spatial content and scrollbar decorations for a frozen frame.
+    ScrollFrame { scrolls: ScrollPlacements, parts: Arc<[Part]> },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrollPlacement {
+    pub offset: Vec2,
+    pub scrollbars: [Option<ScrollbarPlacement>; 2],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrollbarPlacement {
+    pub offset: Vec2,
+    pub parts: Arc<[Part]>,
+}
+
+/// An immutable, shared snapshot of the scroll placements in one frame.
+///
+/// Copy-on-write radix branches keep updates independent of the number of children and scrollports.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScrollPlacements(Option<Arc<ScrollEntry>>);
+
+#[derive(Clone, Debug, PartialEq)]
+enum ScrollEntry {
+    Offset(NodeId, ScrollPlacement),
+    Branch(Box<[Option<Arc<Self>>; 16]>),
+}
+
+impl ScrollPlacements {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
+
+    /// The scrollport's stable tree slot. Spatial slot zero denotes the window.
+    pub fn spatial_id(source: NodeId) -> u32 {
+        if slotmap::Key::is_null(&source) {
+            return 0;
+        }
+        let slot = slotmap::Key::data(&source).as_ffi() as u32;
+        slot.checked_mul(3).expect("spatial slot capacity")
+    }
+
+    pub fn scrollbar_spatial_id(source: NodeId, index: usize) -> u32 {
+        Self::spatial_id(source) + 1 + index as u32
+    }
+
+    pub fn same_snapshot(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    pub fn get(&self, source: NodeId) -> Option<&ScrollPlacement> {
+        let key = slotmap::Key::data(&source).as_ffi() as u32;
+        let mut slot = self.0.as_deref();
+        let mut shift = 0;
+        while let Some(entry) = slot {
+            match entry {
+                ScrollEntry::Offset(id, placement) => return (*id == source).then_some(placement),
+                ScrollEntry::Branch(branch) => {
+                    slot = branch[((key >> shift) & 15) as usize].as_deref();
+                    shift += 4;
+                }
+            }
+        }
+        None
+    }
+
+    pub fn set(&mut self, source: NodeId, placement: Option<ScrollPlacement>) {
+        if self.get(source) == placement.as_ref() {
+            return;
+        }
+        let key = slotmap::Key::data(&source).as_ffi() as u32;
+        ScrollEntry::set(&mut self.0, source, key, 0, placement);
+    }
+}
+
+impl ScrollEntry {
+    fn set(entry: &mut Option<Arc<Self>>, source: NodeId, key: u32, shift: u32, placement: Option<ScrollPlacement>) {
+        match entry.as_deref() {
+            None => *entry = placement.map(|placement| Arc::new(Self::Offset(source, placement))),
+            Some(Self::Offset(id, _)) if slotmap::Key::data(id).as_ffi() as u32 == key => {
+                *entry = placement.map(|placement| Arc::new(Self::Offset(source, placement)));
+            }
+            Some(Self::Offset(id, _)) => {
+                let existing = slotmap::Key::data(id).as_ffi() as u32;
+                let mut branch = Box::new(std::array::from_fn(|_| None));
+                branch[((existing >> shift) & 15) as usize] = entry.take();
+                *entry = Some(Arc::new(Self::Branch(branch)));
+                Self::set(entry, source, key, shift, placement);
+            }
+            Some(Self::Branch(_)) => {
+                let Self::Branch(branch) = Arc::make_mut(entry.as_mut().expect("scroll branch")) else { unreachable!() };
+                Self::set(&mut branch[((key >> shift) & 15) as usize], source, key, shift + 4, placement);
+                let mut retained = branch.iter().flatten();
+                match (retained.next(), retained.next()) {
+                    (None, _) => *entry = None,
+                    (Some(leaf), None) if matches!(**leaf, Self::Offset(..)) => *entry = Some(leaf.clone()),
+                    _ => {}
+                }
+            }
+        }
+    }
 }
 
 /// An item borrowed from a display list, with its drawing's placement in the window.
@@ -480,15 +614,34 @@ pub struct PlacedItem<'a> {
     pub item: &'a Item,
     pub offset: Vec2,
     pub fade: f32,
+    pub spatial_id: u32,
+    /// The content-space translation to the window, including ancestor scrollports.
+    pub spatial_offset: Vec2,
+    /// The spatial translation in device pixels, rounded before converting back to logical pixels.
+    pub spatial_offset_px: Vec2,
+    /// The offset relative to this item's spatial translation.
+    pub local_offset: Vec2,
+    viewport: Rect,
 }
 
 impl<'a> PlacedItem<'a> {
     /// Gets the item in window coordinates, borrowing it when no offset or fade is needed.
     pub fn resolve(self) -> Cow<'a, Item> {
+        if let Item::PushAxisClip { source, rect, horizontal } = *self.item {
+            return Cow::Owned(Item::PushClip { source, rect: self.axis_clip(rect, horizontal), radius: [0.0; 4] });
+        }
         if self.offset != Vec2::default() || self.fade < 1.0 {
             Cow::Owned(self.item.placed(self.offset, self.fade))
         } else {
             Cow::Borrowed(self.item)
+        }
+    }
+
+    fn axis_clip(self, rect: Rect, horizontal: bool) -> Rect {
+        if horizontal {
+            Rect::new(rect.x + self.offset.x, self.viewport.y, rect.w, self.viewport.h)
+        } else {
+            Rect::new(self.viewport.x, rect.y + self.offset.y, self.viewport.w, rect.h)
         }
     }
 }
@@ -501,14 +654,54 @@ pub struct DisplayList {
     pub parts: Vec<Part>,
 }
 
+#[derive(Clone)]
+struct PlacementGroup<'a> {
+    parts: slice::Iter<'a, Part>,
+    scroll_offset: Vec2,
+    extra_offset: Vec2,
+    spatial_id: u32,
+    scrolls: Option<&'a ScrollPlacements>,
+}
+
+impl<'a> PlacementGroup<'a> {
+    fn child(&self, parts: &'a [Part]) -> Self {
+        Self { parts: parts.iter(), ..self.clone() }
+    }
+
+    fn spatial_offsets(&self, scale: Option<f32>) -> (Vec2, Vec2) {
+        let offset = add(self.scroll_offset, self.extra_offset);
+        if let Some(scale) = scale {
+            let y = (self.scroll_offset.y * scale).round();
+            (Vec2::new(offset.x, y / scale + self.extra_offset.y), Vec2::new(offset.x * scale, y + self.extra_offset.y * scale))
+        } else {
+            (offset, offset)
+        }
+    }
+}
+
+fn add(a: Vec2, b: Vec2) -> Vec2 {
+    Vec2::new(a.x + b.x, a.y + b.y)
+}
+
+fn translated(rect: Rect, offset: Vec2) -> Rect {
+    Rect::new(rect.x + offset.x, rect.y + offset.y, rect.w, rect.h)
+}
+
 impl DisplayList {
-    /// The drawing steps in order, descending through shared groups.
+    /// The raw drawing steps in order, descending through shared groups.
     pub fn parts(&self) -> impl Iterator<Item = &Part> {
-        let mut remaining = vec![self.parts.iter()];
+        let mut remaining = smallvec::SmallVec::<[_; 8]>::from_elem(self.parts.iter(), 1);
         std::iter::from_fn(move || {
             loop {
                 match remaining.last_mut()?.next() {
-                    Some(Part::Group(parts)) => remaining.push(parts.iter()),
+                    Some(
+                        Part::Group(parts)
+                        | Part::CulledGroup { parts, .. }
+                        | Part::TranslatedGroup { parts, .. }
+                        | Part::ScrollContent { parts, .. }
+                        | Part::MotionContent { parts, .. }
+                        | Part::ScrollFrame { parts, .. },
+                    ) => remaining.push(parts.iter()),
                     Some(part) => return Some(part),
                     None => {
                         remaining.pop();
@@ -518,15 +711,134 @@ impl DisplayList {
         })
     }
 
-    /// Iterates the shared items in drawing order without flattening or copying their payloads.
+    /// Iterates visible shared items in drawing order with their window placement.
     pub fn placed_items(&self) -> impl Iterator<Item = PlacedItem<'_>> {
-        self.parts().flat_map(|part| {
-            let (items, offset, fade) = match part {
-                Part::Drawing { offset, fade, items } => (items.as_ref(), *offset, *fade),
-                Part::Item(item) => (slice::from_ref(item), Vec2::default(), 1.0),
-                Part::Group(_) => unreachable!("parts expands shared groups"),
-            };
-            items.iter().map(move |item| PlacedItem { item, offset, fade })
+        self.walk_items(None, true)
+    }
+
+    /// Positions the drawings for a device scale, aligning cumulative vertical scroll to pixels.
+    pub fn placed_items_at(&self, scale: f32) -> impl Iterator<Item = PlacedItem<'_>> {
+        self.walk_items(Some(scale), true)
+    }
+
+    /// Streams the full retained structure, including spans outside the viewport.
+    pub fn placed_items_unculled_at(&self, scale: f32) -> impl Iterator<Item = PlacedItem<'_>> {
+        self.walk_items(Some(scale), false)
+    }
+
+    fn walk_items(&self, scale: Option<f32>, cull: bool) -> impl Iterator<Item = PlacedItem<'_>> {
+        let viewport = Rect::new(0.0, 0.0, self.size.width, self.size.height);
+        let mut groups = smallvec::SmallVec::<[_; 24]>::from_elem(
+            PlacementGroup {
+                parts: self.parts.iter(),
+                scroll_offset: Vec2::default(),
+                extra_offset: Vec2::default(),
+                spatial_id: 0,
+                scrolls: None,
+            },
+            1,
+        );
+        let mut items = [].iter();
+        let mut offset = Vec2::default();
+        let mut fade = 1.0;
+        let mut spatial_id = 0;
+        let mut spatial_offset = Vec2::default();
+        let mut spatial_offset_px = Vec2::default();
+        let mut local_offset = Vec2::default();
+        let mut clips = smallvec::SmallVec::<[Rect; 8]>::new();
+        std::iter::from_fn(move || {
+            loop {
+                if let Some(item) = items.next() {
+                    let placed = PlacedItem { item, offset, fade, spatial_id, spatial_offset, spatial_offset_px, local_offset, viewport };
+                    if cull {
+                        let clip = clips.last().copied().unwrap_or(viewport);
+                        match *item {
+                            Item::PushClip { rect, .. } => clips.push(clip.intersect(&translated(rect, offset))),
+                            Item::PushAxisClip { rect, horizontal, .. } => clips.push(clip.intersect(&placed.axis_clip(rect, horizontal))),
+                            Item::PopClip => {
+                                clips.pop();
+                            }
+                            _ => {}
+                        }
+                    }
+                    return Some(placed);
+                }
+
+                let group = groups.last_mut()?;
+                let Some(part) = group.parts.next() else {
+                    groups.pop();
+                    continue;
+                };
+                let (spatial, spatial_px) = group.spatial_offsets(scale);
+                match part {
+                    Part::Group(parts) => {
+                        let child = group.child(parts);
+                        groups.push(child);
+                    }
+                    Part::CulledGroup { bounds, parts } => {
+                        let clip = clips.last().copied().unwrap_or(viewport);
+                        if !cull || !translated(*bounds, spatial).intersect(&clip).is_empty() {
+                            let child = group.child(parts);
+                            groups.push(child);
+                        }
+                    }
+                    Part::TranslatedGroup { spatial_id, offset, parts } => {
+                        let child = PlacementGroup {
+                            spatial_id: *spatial_id,
+                            extra_offset: add(group.extra_offset, *offset),
+                            ..group.child(parts)
+                        };
+                        groups.push(child);
+                    }
+                    Part::ScrollFrame { scrolls, parts } => {
+                        let child = PlacementGroup { scrolls: Some(scrolls), ..group.child(parts) };
+                        groups.push(child);
+                    }
+                    Part::ScrollContent { source, spatial_id, scrollbar_offset, parts } => {
+                        let placement = group.scrolls.and_then(|scrolls| scrolls.get(*source));
+                        let scroll_offset = placement.map_or(group.scroll_offset, |placement| add(group.scroll_offset, placement.offset));
+                        let content = PlacementGroup { scroll_offset, spatial_id: *spatial_id, ..group.child(parts) };
+                        let mut bars = [None, None];
+                        if let Some(placement) = placement {
+                            for (index, bar) in placement.scrollbars.iter().enumerate() {
+                                if let Some(bar) = bar {
+                                    bars[index] = Some(PlacementGroup {
+                                        spatial_id: ScrollPlacements::scrollbar_spatial_id(*source, index),
+                                        extra_offset: add(group.extra_offset, add(*scrollbar_offset, bar.offset)),
+                                        ..group.child(&bar.parts)
+                                    });
+                                }
+                            }
+                        }
+                        groups.extend(bars.into_iter().rev().flatten());
+                        groups.push(content);
+                    }
+                    Part::MotionContent { source, spatial_id, parts } => {
+                        let placement = group.scrolls.and_then(|scrolls| scrolls.get(*source));
+                        let scroll_offset = placement.map_or(group.scroll_offset, |placement| add(group.scroll_offset, placement.offset));
+                        let content = PlacementGroup { scroll_offset, spatial_id: *spatial_id, ..group.child(parts) };
+                        groups.push(content);
+                    }
+                    Part::Drawing { offset: local, fade: alpha, items: drawing } => {
+                        items = drawing.iter();
+                        local_offset = *local;
+                        offset = add(local_offset, spatial);
+                        spatial_id = group.spatial_id;
+                        spatial_offset = spatial;
+                        spatial_offset_px = spatial_px;
+                        fade = *alpha;
+                    }
+                    Part::Item(item) => {
+                        items = slice::from_ref(item).iter();
+                        offset = spatial;
+                        spatial_id = group.spatial_id;
+                        spatial_offset = spatial;
+                        spatial_offset_px = spatial_px;
+                        local_offset = Vec2::default();
+                        fade = 1.0;
+                    }
+                }
+            }
         })
     }
 

@@ -73,6 +73,16 @@ impl GpuRenderer {
 pub struct FrameProfile {
     /// Display-list and resource preparation, measured on the CPU.
     pub prepare: Duration,
+    /// The frame reused a submitted plan, its sorted instance buffers and their bindings.
+    pub retained_prepare: bool,
+    /// Fraction of the root attachment redrawn, from zero for reuse to one for a full draw.
+    pub damage_area_ratio: f64,
+    /// The frame reused submitted backing pixels outside its damage rectangle.
+    pub partial_raster: bool,
+    /// Bytes of instance data, clips and projection uniforms staged for submission.
+    pub instance_upload_bytes: u64,
+    /// Bytes of spatial offsets staged for submission.
+    pub spatial_upload_bytes: u64,
     /// Command recording, including author drawing, its validation and late backdrop setup.
     pub encode: Duration,
     /// Draw calls in Octara's UI and layer passes, including composites and fallback draws.
@@ -87,7 +97,7 @@ pub struct FrameProfile {
     pub atlas_bytes: u64,
     /// Texel bytes prepared for submission with this frame.
     pub atlas_upload_bytes: u64,
-    /// Area of the intermediate output resolved to the caller's target, or zero for direct drawing.
+    /// Pixels copied or resolved into the caller's target, or zero for direct drawing.
     pub output_pixels: u64,
     /// Area of the author canvas, backdrop and transition output targets recorded this frame, in device pixels.
     pub canvas_pixels: u64,
@@ -537,7 +547,9 @@ impl FrameMeasurement {
     pub(super) fn record_frame(&mut self, prepare: Duration, encode: Duration, plan: &EncodedPlan, layers: &[wgpu::TextureView]) {
         self.profile.encode = encode + self.canvas_encode;
         self.profile.prepare = prepare.saturating_sub(self.canvas_encode);
-        self.profile.draw_batches = plan.batches.len() as u32;
+        if !self.profile.partial_raster {
+            self.profile.draw_batches = plan.batches.len() as u32;
+        }
         self.profile.material_batches = plan.batches.iter().filter(|batch| matches!(batch.draw, Draw::Material(_))).count() as u32;
         self.profile.layer_pixels = layers.iter().map(|view| u64::from(view.texture().width()) * u64::from(view.texture().height())).sum();
     }

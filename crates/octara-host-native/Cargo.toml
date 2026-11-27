@@ -80,4 +80,4 @@ objc2-metal = { workspace = true, features = [
     "std", "block2", "objc2-core-foundation", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice",
     "MTLDrawable", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLResource", "MTLTexture",
 ] }
-objc2-quartz-core = { workspace = true, features = ["CAMetalDisplayLink", "CAMetalLayer", "objc2-metal"] }
+objc2-quartz-core = { workspace = true, features = ["CADisplayLink", "CAFrameRateRange", "CAMetalLayer", "objc2-metal"] }

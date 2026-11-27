@@ -7,6 +7,10 @@ use bytemuck::{Pod, Zeroable};
 use octara_model::theme::{Color, Gradient};
 use rustc_hash::FxHashMap;
 
+pub(super) const FRACTIONAL_CLIP: u32 = 1;
+pub(super) const SPATIAL_CLIP: u32 = 2;
+pub(super) const SPATIAL_SHIFT: u32 = 2;
+
 // Kept separately so one payload can back a core plus up to four strips.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -20,12 +24,16 @@ pub(super) struct DrawInst {
     pub(super) flags: u32,
 }
 
+const _: () = assert!(size_of::<DrawInst>() == 64);
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(super) struct GlyphDraw {
     depth: f32,
     clip: u32,
 }
+
+const _: () = assert!(size_of::<GlyphDraw>() == 8);
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -133,8 +141,8 @@ fn append<T>(list: &mut Vec<T>, value: T) -> u32 {
 
 impl Instances {
     pub(super) fn needs_fragment_clips(&self) -> bool {
-        self.draws.iter().any(|draw| draw.clip_head != 0 || draw.flags != 0)
-            || self.glyph_clips.iter().any(|clip| clip.head != 0 || clip.flags != 0)
+        self.draws.iter().any(|draw| draw.clip_head != 0 || draw.flags & FRACTIONAL_CLIP != 0)
+            || self.glyph_clips.iter().any(|clip| clip.head != 0 || clip.flags & FRACTIONAL_CLIP != 0)
     }
 
     fn gradient(&mut self, base: Color, gradient: Option<Gradient>, border: Color, radii: [f32; 4]) -> u32 {
@@ -155,7 +163,7 @@ impl Instances {
     }
 
     pub(super) fn push_glyph(&mut self, glyph: GlyphInst, draw: DrawInst) -> u32 {
-        let clip = if draw.clip == NO_CLIP {
+        let clip = if draw.clip == NO_CLIP && draw.clip_head == 0 && draw.flags == 0 {
             0
         } else {
             let [x, y, w, h] = draw.clip.map(f32::to_bits);

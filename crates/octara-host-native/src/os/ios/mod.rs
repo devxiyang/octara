@@ -6,15 +6,19 @@ mod editor;
 mod gestures;
 mod scene;
 
+use super::apple_frame_clock::{DisplayClock, retry_on_clock};
+use super::apple_metal::{metal_layer, set_transactional};
 use crate::ShellEvent;
 use crate::os::{
-    ActiveEditorView, KeyDispatch, OsHost, OsWindow, OsWindowContext, ServiceCleanup, WindowHostEvent, WindowScene, WindowTextInput, reply,
+    ActiveEditorView, Drawable, DrawableAcquisition, FrameClockActivity, KeyDispatch, OsHost, OsWindow, OsWindowContext, ServiceCleanup,
+    WindowHostEvent, WindowPresentation, WindowScene, WindowTextInput, reply, surface_drawable,
 };
 use back::BackNavigation;
 use editor::TextInput;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_foundation::{NSCurrentLocaleDidChangeNotification, NSDictionary, NSNotificationCenter, NSString, NSURL};
+use objc2_quartz_core::{CAMetalLayer, CATransaction};
 use objc2_ui_kit::{
     UIAccessibilityDarkerSystemColorsEnabled, UIAccessibilityDarkerSystemColorsStatusDidChangeNotification,
     UIAccessibilityIsReduceMotionEnabled, UIAccessibilityReduceMotionStatusDidChangeNotification, UIApplication,
@@ -28,6 +32,7 @@ use octara_model::identity::TargetGuard;
 use octara_model::input::{HostReply, InteractionEvent};
 use octara_model::theme::ColorScheme;
 use octara_model::window::{WindowGeometry, WindowGeometryRequest, WindowMaterial};
+use octara_render::{gpu::OutputColor, wgpu};
 use scene::SceneConnection;
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -129,7 +134,7 @@ impl OsHost for IosHost {
     }
 
     fn create_window(&mut self, context: OsWindowContext<'_>) -> Result<Box<dyn OsWindow>, String> {
-        let OsWindowContext { window, id, proxy, .. } = context;
+        let OsWindowContext { window, id, backend, config, proxy } = context;
         let content = scene::view(window)?;
         let scene_active = Rc::new(Cell::new(true));
         let refresh: Rc<dyn Fn()> = Rc::new({
@@ -159,7 +164,22 @@ impl OsHost for IosHost {
         );
         let back = BackNavigation::new(window, proxy.clone())?;
         let gestures = gestures::Recognizers::new(&content, proxy.clone(), id);
-        Ok(Box::new(IosWindow { content, scene, editor, back, _gestures: gestures, proxy, id, scene_active, active: true, focused: true }))
+        let clock = (backend == wgpu::Backend::Metal && !config.manual_clock).then(|| DisplayClock::new(&content, id, proxy.clone()));
+        Ok(Box::new(IosWindow {
+            content,
+            scene,
+            editor,
+            back,
+            _gestures: gestures,
+            proxy,
+            id,
+            scene_active,
+            active: true,
+            focused: true,
+            clock,
+            layer: None,
+            transactional: false,
+        }))
     }
 
     fn open_url(&mut self, url: &str) {
@@ -189,6 +209,9 @@ struct IosWindow {
     scene_active: Rc<Cell<bool>>,
     active: bool,
     focused: bool,
+    clock: Option<DisplayClock>,
+    layer: Option<Retained<CAMetalLayer>>,
+    transactional: bool,
 }
 
 impl IosWindow {
@@ -239,9 +262,16 @@ impl OsWindow for IosWindow {
         Some(self)
     }
 
+    fn presentation(&mut self) -> Option<&mut dyn WindowPresentation> {
+        Some(self)
+    }
+
     fn show(&mut self, _: &Window) {
         self.scene.show();
         self.editor.focus();
+        if let Some(clock) = &mut self.clock {
+            clock.did_show();
+        }
     }
 
     fn request_service(&mut self, id: ServiceId, request: ServiceRequest) -> Option<ServiceCleanup> {
@@ -254,6 +284,65 @@ impl OsWindow for IosWindow {
         };
         reply(&self.proxy, self.id, HostReply::ServiceReply { id, outcome });
         Some(Box::new(|| {}))
+    }
+}
+
+impl WindowPresentation for IosWindow {
+    fn externally_paced(&self) -> bool {
+        self.clock.as_ref().is_some_and(DisplayClock::externally_paced)
+    }
+
+    fn set_frame_clock_activity(&mut self, activity: FrameClockActivity) {
+        if let Some(clock) = &mut self.clock {
+            clock.set_activity(activity);
+        }
+    }
+
+    fn surface_will_reconfigure(&mut self) -> bool {
+        if let Some(layer) = self.layer.take() {
+            set_transactional(&layer, false);
+        }
+        true
+    }
+
+    fn set_transactional_presentation(&mut self, _: u64, transactional: bool) {
+        self.transactional = transactional;
+    }
+
+    fn try_acquire_drawable(&mut self, surface: &Arc<wgpu::Surface<'static>>, color: OutputColor, from_clock: bool) -> DrawableAcquisition {
+        let externally_paced = self.externally_paced();
+        if externally_paced && !from_clock {
+            return DrawableAcquisition::WaitingForClock;
+        }
+        if self.transactional && self.layer.is_none() {
+            self.layer = metal_layer(surface);
+        }
+        if let Some(layer) = &self.layer {
+            set_transactional(layer, self.transactional);
+        }
+        retry_on_clock(surface_drawable(surface, color), externally_paced)
+    }
+
+    fn present(&mut self, drawable: Box<dyn Drawable>, queue: &wgpu::Queue) -> Result<(), String> {
+        drawable.present(queue)
+    }
+
+    fn present_with_native_views(
+        &mut self,
+        drawable: Box<dyn Drawable>,
+        queue: &wgpu::Queue,
+        _: u64,
+        commit_native_views: &mut dyn FnMut(),
+    ) -> Result<(), String> {
+        if !self.transactional {
+            return drawable.present(queue);
+        }
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        let _transaction = std::mem::DropGuard::new((), |()| CATransaction::commit());
+        drawable.present(queue)?;
+        commit_native_views();
+        Ok(())
     }
 }
 

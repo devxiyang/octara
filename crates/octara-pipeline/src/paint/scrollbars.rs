@@ -1,8 +1,8 @@
 use super::{CompileOptions, next_frame};
 use crate::layout::LayoutEngine;
 use octara_model::{
-    geometry::{Point, Rect},
-    paint::Quad,
+    geometry::{Point, Rect, Vec2},
+    paint::{Item, Part, Quad, ScrollPlacement, ScrollbarPlacement},
     style::ScrollbarVisibility,
     theme::{Color, ColorToken},
 };
@@ -11,7 +11,7 @@ use octara_tree::{
     arbiter::{ScrollbarAxis, ScrollbarHit, ScrollbarKey, ScrollbarPart},
 };
 use rustc_hash::FxHashMap;
-use smallvec::SmallVec;
+use std::sync::Arc;
 use std::time::Duration;
 
 const INSET: f32 = 2.0;
@@ -62,7 +62,7 @@ impl Scrollbars {
             }
             *interaction = self.interaction;
         }
-        for node in layout.scrolled().iter() {
+        for node in layout.scroll_changed().iter() {
             if tree.visual(node).scrollbar == ScrollbarVisibility::Auto {
                 last_activity.insert(node, options.now);
             }
@@ -105,31 +105,43 @@ impl Scrollbars {
         next_deadline
     }
 
-    pub(super) fn thumbs(&self, tree: &Tree, layout: &LayoutEngine, node: NodeId) -> SmallVec<[Quad; 2]> {
+    pub(super) fn placements(
+        &self,
+        tree: &Tree,
+        layout: &LayoutEngine,
+        node: NodeId,
+        previous: Option<&ScrollPlacement>,
+    ) -> [Option<ScrollbarPlacement>; 2] {
         let opacity = match tree.visual(node).scrollbar {
             ScrollbarVisibility::Auto => self.state.opacity.get(&node).copied().unwrap_or_default(),
             ScrollbarVisibility::Always => OPACITY,
-            ScrollbarVisibility::Hidden => return SmallVec::new(),
+            ScrollbarVisibility::Hidden => 0.0,
         };
-        if opacity <= 0.0 {
-            return SmallVec::new();
-        }
+        let Some(bounds) = layout.paint_bounds(node).filter(|_| opacity > 0.0) else { return [None, None] };
+        let Some(client) = layout.local_client(node) else { return [None, None] };
         let (hovered, dragged) = self.state.interaction;
-        bars(layout, node)
-            .map(|bar| {
-                let alpha = if Some(bar.key) == hovered || Some(bar.key) == dragged { ENGAGED_OPACITY } else { opacity };
-                let (color, _) = ColorToken::TextSubtle.alpha(alpha).resolve(tree.theme_at(node));
-                Quad {
-                    source: node,
-                    rect: bar.thumb,
-                    radius: [THICKNESS / 2.0; 4],
-                    fill: Some(color),
-                    gradient: None,
-                    border: [0.0; 4],
-                    border_color: Color::TRANSPARENT,
-                }
-            })
-            .collect()
+        let mut placements = [None, None];
+        let client = Rect::new(bounds.x + client.x, bounds.y + client.y, client.w, client.h);
+        for bar in bars(layout, node, Some(client)) {
+            let alpha = if Some(bar.key) == hovered || Some(bar.key) == dragged { ENGAGED_OPACITY } else { opacity };
+            let (color, _) = ColorToken::TextSubtle.alpha(alpha).resolve(tree.theme_at(node));
+            let item = Part::Item(Item::Quad(Quad {
+                source: node,
+                rect: bar.thumb,
+                radius: [THICKNESS / 2.0; 4],
+                fill: Some(color),
+                gradient: None,
+                border: [0.0; 4],
+                border_color: Color::TRANSPARENT,
+            }));
+            let axis = usize::from(bar.key.axis == ScrollbarAxis::Horizontal);
+            let parts = previous
+                .and_then(|previous| previous.scrollbars[axis].as_ref())
+                .filter(|previous| previous.parts.as_ref() == std::slice::from_ref(&item))
+                .map_or_else(|| Arc::from([item]), |previous| previous.parts.clone());
+            placements[axis] = Some(ScrollbarPlacement { offset: bar.translation, parts });
+        }
+        placements
     }
 
     pub(super) fn commit(&mut self) {
@@ -147,6 +159,7 @@ struct Bar {
     key: ScrollbarKey,
     track: Rect,
     thumb: Rect,
+    translation: Vec2,
     page: f32,
     scale: f32,
 }
@@ -159,12 +172,14 @@ pub(super) fn hit(tree: &Tree, layout: &LayoutEngine, node: NodeId, pos: Point) 
     {
         return None;
     }
-    bars(layout, node).find(|bar| bar.track.contains(pos)).map(|bar| {
+    bars(layout, node, layout.scroll_client(node)).find(|bar| bar.track.contains(pos)).map(|bar| {
         let pos = bar.key.axis.position(pos);
         let (start, end) = match bar.key.axis {
             ScrollbarAxis::Horizontal => (bar.thumb.x, bar.thumb.right()),
             ScrollbarAxis::Vertical => (bar.thumb.y, bar.thumb.bottom()),
         };
+        let translation = bar.key.axis.offset(bar.translation);
+        let (start, end) = (start + translation, end + translation);
         let part = if pos >= start && pos <= end {
             ScrollbarPart::Thumb { scale: bar.scale }
         } else {
@@ -174,8 +189,8 @@ pub(super) fn hit(tree: &Tree, layout: &LayoutEngine, node: NodeId, pos: Point) 
     })
 }
 
-fn bars(layout: &LayoutEngine, node: NodeId) -> impl Iterator<Item = Bar> {
-    let port = layout.scroll_client(node).zip(layout.scroll_range(node));
+fn bars(layout: &LayoutEngine, node: NodeId, client: Option<Rect>) -> impl Iterator<Item = Bar> {
+    let port = client.zip(layout.scroll_range(node));
     [ScrollbarAxis::Vertical, ScrollbarAxis::Horizontal].into_iter().filter_map(move |axis| {
         let (client, range) = port?;
         let scroll = axis.offset(range.max);
@@ -196,7 +211,12 @@ fn bars(layout: &LayoutEngine, node: NodeId) -> impl Iterator<Item = Bar> {
         if travel <= 0.0 {
             return None;
         }
-        let thumb_pos = start + INSET + travel * (axis.offset(layout.scroll_offset(node)) / scroll);
+        let thumb_pos = start + INSET;
+        let translation = travel * (axis.offset(layout.scroll_offset(node)) / scroll);
+        let translation = match axis {
+            ScrollbarAxis::Horizontal => Vec2::new(translation, 0.0),
+            ScrollbarAxis::Vertical => Vec2::new(0.0, translation),
+        };
         let (track, thumb) = match axis {
             ScrollbarAxis::Horizontal => (
                 Rect::new(start, edge - EDGE.min(client.h), page - edge_space, EDGE.min(client.h)),
@@ -207,6 +227,6 @@ fn bars(layout: &LayoutEngine, node: NodeId) -> impl Iterator<Item = Bar> {
                 Rect::new(edge - INSET - THICKNESS, thumb_pos, THICKNESS, thumb_len),
             ),
         };
-        Some(Bar { key: ScrollbarKey { node, axis }, track, thumb, page, scale: scroll / travel })
+        Some(Bar { key: ScrollbarKey { node, axis }, track, thumb, translation, page, scale: scroll / travel })
     })
 }

@@ -5,11 +5,11 @@
 use crate::glyphs::{GlyphCache, GlyphKey, SUBPIXEL_STEPS};
 use crate::image_mips::{IMAGE_ATLAS_EDGE, ImageLevel, full_lod, opaque, packed_lod};
 use crate::paths::{self, PathCache};
-use crate::shape::{ClipStack, blend, blend_premultiplied, coverage, inner_rect, sd_round_rect, shadow_alpha};
+use crate::shape::{ClipStack, blend, blend_premultiplied, coverage, inner_rect, raster_offsets, sd_round_rect, shadow_alpha};
 use color::{LinearSrgb, PremulColor, Rgba8};
 use octara_model::capture::{PaintFallback, PaintOutcome, PaintReceipt, PaintSample, PaintedPicture};
 use octara_model::geometry::{Rect, Vec2};
-use octara_model::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, Picture, Quad, Shadow};
+use octara_model::paint::{DisplayList, GlyphRun, ImagePaint, Item, PathPaint, Picture, PlacedItem, Quad, Shadow};
 use octara_model::theme::{Color, Gradient};
 use std::alloc::Layout;
 use std::borrow::Cow;
@@ -128,8 +128,12 @@ impl CpuRenderer {
         let base = [bg[0] * bga, bg[1] * bga, bg[2] * bga, bga];
         let mut t = Target { width, height, pixels: vec![base; count], clips: ClipStack::default(), layers: Vec::new() };
         let mut effects = Vec::new();
-        for placed in dl.placed_items() {
-            let item = if matches!(placed.item, Item::Glyphs(_)) { Cow::Borrowed(placed.item) } else { placed.resolve() };
+        for placed in dl.placed_items_at(scale) {
+            let (item, path_shift) = match placed.item {
+                Item::Glyphs(_) => (Cow::Borrowed(placed.item), Vec2::default()),
+                Item::Path(_) => paths::raster_item(placed),
+                _ => (placed.resolve(), Vec2::default()),
+            };
             let item = item.as_ref();
             match item {
                 Item::Shadow(s) => shadow(&mut t, s, scale),
@@ -142,8 +146,8 @@ impl CpuRenderer {
                     });
                 }
                 Item::Image(i) => image(&mut t, i, scale),
-                Item::Glyphs(g) => self.glyph_run(&mut t, g, scale, placed.offset, placed.fade),
-                Item::Path(p) => self.path(&mut t, p, scale),
+                Item::Glyphs(g) => self.glyph_run(&mut t, g, scale, placed),
+                Item::Path(p) => self.path(&mut t, p, scale, path_shift),
                 // An underlay view the platform shows: a hole down to transparent.
                 Item::Native { rect, radius, cut: true, .. } => cutout(&mut t, *rect, *radius, scale),
                 // Otherwise its placeholder or snapshot, painted before, shows.
@@ -155,6 +159,7 @@ impl CpuRenderer {
                     });
                 }
                 Item::PushClip { rect, radius, .. } => t.clips.push(*rect, *radius, scale),
+                Item::PushAxisClip { .. } => unreachable!("placed clips resolve to window coordinates"),
                 Item::PopClip => t.clips.pop(),
                 Item::PushLayer { opacity, .. } | Item::PushTransition(octara_model::paint::TransitionPaint { opacity, .. }) => {
                     if let Item::PushTransition(paint) = item {
@@ -185,13 +190,13 @@ impl CpuRenderer {
         Ok(PaintedPicture { picture: from_premultiplied(width, height, &t.pixels), effects })
     }
 
-    fn path(&mut self, t: &mut Target, p: &PathPaint, scale: f32) {
+    fn path(&mut self, t: &mut Target, p: &PathPaint, scale: f32, shift: Vec2) {
         let window = paths::window((t.width, t.height), t.clips.current().bounds.map(|c| (c.x, c.y, c.w, c.h)));
-        let Some(at) = paths::place(p, scale, window) else { return };
+        let Some(at) = paths::place_translated(p, scale, window, shift) else { return };
         let mask = self.paths.get(p, &at);
         let (color, alpha) = rgb(p.color);
         let b = p.bounds;
-        let gradient = p.gradient.map(|g| LinearGradient::new(g, b.x * scale, b.y * scale, b.w * scale, b.h * scale));
+        let gradient = p.gradient.map(|g| LinearGradient::new(g, b.x * scale + shift.x, b.y * scale + shift.y, b.w * scale, b.h * scale));
         for row in 0..mask.height {
             let py = at.y + row as i32;
             for col in 0..mask.width {
@@ -212,9 +217,10 @@ impl CpuRenderer {
         }
     }
 
-    fn glyph_run(&mut self, t: &mut Target, run: &GlyphRun, scale: f32, offset: Vec2, fade: f32) {
+    fn glyph_run(&mut self, t: &mut Target, run: &GlyphRun, scale: f32, placed: PlacedItem<'_>) {
         let size = run.size * scale;
-        for (g, color) in run.placed_colored_at(offset, fade) {
+        let (offset, shift) = raster_offsets(placed);
+        for (g, color) in run.placed_colored_at(offset, placed.fade) {
             let (color, alpha) = rgb(color);
             if alpha <= 0.0 {
                 continue;
@@ -225,7 +231,7 @@ impl CpuRenderer {
             let iy = gy.round();
             let key = GlyphKey::new(run, g.id, size, subpixel);
             let Some(img) = self.glyphs.rasterize(&run.font, key) else { continue };
-            let (ox, oy) = (ix as i32 + img.left, iy as i32 - img.top);
+            let (ox, oy) = ((ix + shift.x) as i32 + img.left, (iy + shift.y) as i32 - img.top);
             let (x0, y0, x1, y1) = t.bounds(ox as f32, oy as f32, img.width as f32, img.height as f32);
             for py in y0..y1 {
                 for px in x0..x1 {
