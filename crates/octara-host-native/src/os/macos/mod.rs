@@ -17,17 +17,19 @@ use super::{
 use crate::ShellEvent;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSApplication, NSView, NSWorkspace};
+use objc2_app_kit::{NSApplication, NSRequestUserAttentionType, NSView, NSWorkspace};
 use objc2_foundation::{NSString, NSURL};
 use objc2_quartz_core::CATransaction;
 use octara::runtime::{Input, WindowId};
 use octara::{TitlebarStyle, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial, WindowOptions};
-use octara_model::ask::{Ask, AskId, Menu, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
+use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
 use octara_model::geometry::{Point, Size, WindowViewport};
 use octara_model::identity::NativeId;
-use octara_model::input::HostReply;
+use octara_model::input::{HostReply, PasteEvent};
 use octara_model::native::{NativeChange, NativeCommand, NativeMeasureRequest, NativeSlot, NativeSnapshotRequest};
 use octara_model::paint::Image;
+use octara_model::theme::ColorScheme;
+use octara_model::window::UserAttention;
 use octara_render::{gpu::OutputColor, wgpu};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -54,7 +56,7 @@ struct MacHost {
 pub(super) fn create() -> Box<dyn OsHost> {
     let routing = Rc::<RefCell<MenuRouting>>::default();
     let commands = routing.clone();
-    let menu_bar = menus::MenuBar::new(move |name, chord| {
+    let menu_bar = menus::MenuBar::new(move |selection| {
         let Some(mtm) = MainThreadMarker::new() else { return };
         let app = NSApplication::sharedApplication(mtm);
         let mut routing = commands.borrow_mut();
@@ -63,7 +65,11 @@ pub(super) fn create() -> Box<dyn OsHost> {
             .flatten()
             .find_map(|window| routing.windows.get(&window.windowNumber()).copied());
         let Some(window) = window else { return };
-        routing.pending.push(HostEvent { window, input: Input::Host(HostReply::MenuCommand { name, chord }) });
+        let reply = match selection {
+            menus::Selection::Command { name, chord } => HostReply::MenuCommand { name, chord },
+            menus::Selection::Paste => HostReply::Paste(PasteEvent { items: services::read_clipboard(ClipboardKinds::all()) }),
+        };
+        routing.pending.push(HostEvent { window, input: Input::Host(reply) });
         if let Some(proxy) = &routing.proxy {
             let _ = proxy.send_event(ShellEvent::Wake);
         }
@@ -75,6 +81,7 @@ impl OsHost for MacHost {
     fn initialize(&mut self, proxy: EventLoopProxy<ShellEvent>) {
         super::scheduling::interactive();
         self.preferences = Some(preferences::Observer::new(proxy));
+        self.set_menus(&[]);
     }
 
     fn reduced_motion(&self) -> Option<bool> {
@@ -142,22 +149,32 @@ impl OsHost for MacHost {
         }
     }
 
+    fn set_app_badge(&mut self, badge: Option<&str>) {
+        let Some(mtm) = MainThreadMarker::new() else { return };
+        let label = badge.map(NSString::from_str);
+        NSApplication::sharedApplication(mtm).dockTile().setBadgeLabel(label.as_deref());
+    }
+
+    fn request_user_attention(&mut self, _: Option<&Window>, attention: UserAttention) {
+        let Some(mtm) = MainThreadMarker::new() else { return };
+        NSApplication::sharedApplication(mtm).requestUserAttention(match attention {
+            UserAttention::Informational => NSRequestUserAttentionType::InformationalRequest,
+            UserAttention::Critical => NSRequestUserAttentionType::CriticalRequest,
+        });
+    }
+
     fn open_url(&mut self, url: &str) {
         if let Some(url) = NSURL::URLWithString(&NSString::from_str(url)) {
             NSWorkspace::sharedWorkspace().openURL(&url);
         }
     }
 
-    fn read_clipboard_text(&mut self) -> Option<String> {
-        services::read_text()
+    fn read_clipboard(&mut self, accept: ClipboardKinds) -> Option<Vec<ClipboardItem>> {
+        Some(services::read_clipboard(accept))
     }
 
     fn write_clipboard_text(&mut self, text: &str) {
         services::write_text(text);
-    }
-
-    fn read_clipboard_image(&mut self) -> Option<Image> {
-        services::read_image()
     }
 
     fn write_clipboard_image(&mut self, image: &Image) {
@@ -202,9 +219,18 @@ impl OsWindow for MacWindow {
 
     fn configure_chrome(&mut self, window: &Window, options: &WindowOptions) {
         self.chrome.configure(window, options);
-        if let WindowMaterial::Vibrancy(material) = options.material {
-            self.native.set_vibrancy(chrome::visual_effect(&self.view, material));
-        }
+    }
+
+    fn apply_presentation(&mut self, window: &Window, title: &str, color_scheme: ColorScheme, material: WindowMaterial) {
+        window.set_title(title);
+        window.set_theme(Some(match color_scheme {
+            ColorScheme::Light => winit::window::Theme::Light,
+            ColorScheme::Dark => winit::window::Theme::Dark,
+        }));
+        self.native.set_vibrancy(match material {
+            WindowMaterial::Opaque => None,
+            WindowMaterial::Vibrancy(material) => Some(material),
+        });
     }
 
     fn window_is_vibrant(&self) -> bool {
@@ -255,7 +281,7 @@ impl OsWindow for MacWindow {
         let (proxy, window) = (self.proxy.clone(), self.id);
         let send = move |outcome| reply(&proxy, window, HostReply::ServiceReply { id, outcome });
         match request {
-            ServiceRequest::ReadClipboardText => send(ServiceOutcome::ClipboardText(services::read_text().unwrap_or_default())),
+            ServiceRequest::ReadClipboard { accept } => send(ServiceOutcome::Clipboard(services::read_clipboard(accept))),
             ServiceRequest::WriteClipboardText { text } => send(if services::write_text(&text) {
                 ServiceOutcome::ClipboardWritten
             } else {

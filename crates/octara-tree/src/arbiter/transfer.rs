@@ -50,8 +50,8 @@ pub(super) fn transfer_is_current(tree: &Tree, target: NodeId, source: TargetGua
 
 pub(super) fn keyboard_position(tree: &Tree, source: TargetGuard, target: NodeId) -> Option<DropPosition> {
     let source = source.node()?;
-    let parent = tree.parent(source)?;
-    if tree.parent(target) != Some(parent) || target == source {
+    let parent = tree.physical_parent(source)?;
+    if tree.physical_parent(target) != Some(parent) || target == source {
         return None;
     }
     let first = tree.children(parent).iter().find(|&&node| node == source || node == target)?;
@@ -132,7 +132,7 @@ impl InteractionArbiter {
         let modal = tree.front_modal();
         let receiver = geometry.and_then(|geometry| {
             let hit = guarded_node(tree, geometry.hit?, modal)?;
-            let node = std::iter::successors(Some(hit), |&node| tree.interaction_parent(node)).find(|&node| {
+            let node = std::iter::successors(Some(hit), |&node| tree.logical_parent(node)).find(|&node| {
                 transfer.source.node() != Some(node) && tree.interactive_in(node, modal) && accepts(tree, node, &transfer.payload.kind)
             })?;
             let policy = tree.drag_drop(node)?.target.as_ref()?;
@@ -229,7 +229,7 @@ impl InteractionArbiter {
             Key::Left | Key::Up | Key::Right | Key::Down => {
                 let forward = matches!(key.key, Key::Right | Key::Down);
                 if let Some(source) = transfer.source.node()
-                    && let Some(parent) = tree.parent(source)
+                    && let Some(parent) = tree.physical_parent(source)
                 {
                     let rows = tree.children(parent);
                     let current = transfer.receiver.and_then(|receiver| receiver.target.node()).unwrap_or(source);

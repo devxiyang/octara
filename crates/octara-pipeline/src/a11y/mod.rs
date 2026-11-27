@@ -60,8 +60,8 @@ impl ScopeInput {
         Some(Self {
             shown: tree.is_live(node) && tree.style(node).is_none_or(|style| style.layout.display != Display::None),
             visible: tree.is_locally_accessible(node),
-            parent: tree.parent(node),
-            owner: tree.interaction_parent(node),
+            parent: tree.physical_parent(node),
+            owner: tree.logical_parent(node),
             modal: tree.overlay(node).and_then(|overlay| overlay.layer).is_some_and(|layer| layer.inert_outside),
             group: tree.layer_group(node),
         })
@@ -202,7 +202,7 @@ impl AccessKitProjector {
         }
         for node in exposure {
             dirty.insert(node);
-            dirty.extend(tree.parent(node));
+            dirty.extend(tree.physical_parent(node));
             dirty.extend(committed.entries.get(&node).and_then(|entry| entry.parent));
             relation_names.extend(indexed_names(tree, node).into_iter().flatten());
         }
@@ -383,7 +383,7 @@ fn build_entry(tree: &Tree, scope: Scope<'_>, id: NodeId, layout: &LayoutEngine,
     };
     let mut node = ak::Node::new(role(selected_role));
     let bounds = layout.bounds(id).unwrap_or_default();
-    let parent = tree.parent(id);
+    let parent = tree.physical_parent(id);
     let parent_bounds = parent.and_then(|parent| layout.bounds(parent)).unwrap_or_default();
     let transform = ak::Affine::translate((f64::from(bounds.x - parent_bounds.x), f64::from(bounds.y - parent_bounds.y)));
     node.set_transform(if id == tree.root() { ak::Affine::scale(f64::from(scale)) * transform } else { transform });
@@ -411,7 +411,8 @@ fn build_entry(tree: &Tree, scope: Scope<'_>, id: NodeId, layout: &LayoutEngine,
     {
         node.push_labelled_by(node_identity(*caption));
     } else if let Some(link) = tree.link(id)
-        && let Some(label) = tree.parent(id).and_then(|parent| tree.text(parent)).and_then(|text| text.text.get(link.range.clone()))
+        && let Some(label) =
+            tree.physical_parent(id).and_then(|parent| tree.text(parent)).and_then(|text| text.text.get(link.range.clone()))
     {
         node.set_label(label);
     }
@@ -516,7 +517,7 @@ fn build_entry(tree: &Tree, scope: Scope<'_>, id: NodeId, layout: &LayoutEngine,
             node.set_active_descendant(target);
         }
     }
-    if core.state.contains(State::DISABLED) {
+    if tree.is_disabled(id) {
         node.set_disabled();
     }
     if core.state.contains(State::SELECTED) {
@@ -539,7 +540,7 @@ fn build_entry(tree: &Tree, scope: Scope<'_>, id: NodeId, layout: &LayoutEngine,
         node.add_action(ak::Action::Click);
     }
     if tree.handler(id, HandlerKind::SecondaryPress).is_some()
-        || std::iter::successors(Some(id), |&node| tree.interaction_parent(node))
+        || std::iter::successors(Some(id), |&node| tree.logical_parent(node))
             .any(|node| tree.handler(node, HandlerKind::ContextMenu).is_some())
     {
         node.add_action(ak::Action::ShowContextMenu);

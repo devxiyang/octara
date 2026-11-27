@@ -1,12 +1,12 @@
-use super::{AppCommand, AppRuntime, Routed, WindowRuntime};
+use super::{AppCommand, AppRuntime, HandlerEvent, HandlerKind, Routed, WindowRuntime};
 use octara_model::{
-    ask::{ServiceOutcome, ServiceRequest},
+    ask::{ClipboardItem, ClipboardKinds, ServiceOutcome, ServiceRequest},
     geometry::Point,
     identity::{EditorSessionId, TargetGuard, WindowId},
-    input::{EditorEvent, Key, KeyEvent, Modifiers, TextEdit},
+    input::{EditorEvent, Key, KeyEvent, Modifiers, PasteEvent, TextEdit},
 };
 use octara_tree::{
-    NodeId, RuntimeOp,
+    NodeId, RuntimeOp, Tree,
     arbiter::{InteractionIntent, TextPointerIntent, TextPointerTarget},
     editor::EditorSession,
     selection::{Address, DocSelection, paragraph_at, word_at, word_edge},
@@ -34,7 +34,86 @@ struct TextDrag {
     value_rev: Option<u64>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PasteTarget {
+    node: TargetGuard,
+    editor: Option<(EditorSessionId, u64)>,
+}
+
+impl PasteTarget {
+    fn current(window: &WindowRuntime) -> Option<Self> {
+        if !window.arbiter.is_active() {
+            return None;
+        }
+        let tree = &window.tree;
+        let root = tree.root();
+        let node = tree.focus().or_else(|| tree.front_modal()).unwrap_or_else(|| {
+            tree.children(root).iter().copied().find(|&node| node != tree.overlay_root() && tree.is_interactive(node)).unwrap_or(root)
+        });
+        tree.is_interactive(node).then(|| Self {
+            node: tree.guard(node),
+            editor: EditorSession::active(tree).map(|session| (session.id(), session.editor().document_rev())),
+        })
+    }
+
+    fn handlers(self, tree: &Tree) -> impl Iterator<Item = octara_tree::tables::HandlerId> {
+        std::iter::successors(self.node.node(), |&node| tree.logical_parent(node)).filter_map(|node| tree.handler(node, HandlerKind::Paste))
+    }
+}
+
 impl AppRuntime {
+    fn request_paste(&mut self, id: WindowId) -> bool {
+        let window = &self.windows[&id];
+        let Some(target) = PasteTarget::current(window) else { return false };
+        let accept = if target.handlers(&window.tree).next().is_some() {
+            ClipboardKinds::all()
+        } else if target.editor.is_some() {
+            ClipboardKinds::TEXT
+        } else {
+            return false;
+        };
+        self.write(window.scope, id).request_service(ServiceRequest::ReadClipboard { accept }, move |cx, outcome| {
+            if let ServiceOutcome::Clipboard(items) = outcome {
+                cx.commands().queued.push_back(AppCommand::Paste { window: id, target, event: PasteEvent { items } });
+            }
+        });
+        true
+    }
+
+    pub(super) fn deliver_paste(
+        &mut self,
+        id: WindowId,
+        expected: Option<PasteTarget>,
+        event: PasteEvent,
+        routed: &mut VecDeque<Routed>,
+    ) -> bool {
+        let Some(window) = self.windows.get(&id) else { return false };
+        let Some(target) = PasteTarget::current(window) else { return false };
+        if event.items.is_empty() || expected.is_some_and(|expected| expected != target) {
+            return false;
+        }
+        let handlers = target.handlers(&window.tree).collect::<smallvec::SmallVec<[_; 2]>>();
+        if handlers.into_iter().any(|handler| self.invoke(id, handler, HandlerEvent::Paste(&event)).consumed) {
+            return true;
+        }
+        let Some((session, expected_rev)) = target.editor else { return false };
+        let Some(mut text) = event.items.into_iter().find_map(|item| match item {
+            ClipboardItem::Text(text) => Some(text),
+            _ => None,
+        }) else {
+            return false;
+        };
+        if self.windows[&id].tree.editor(session.node).is_some_and(|editor| !editor.multiline) {
+            text.retain(|ch| !matches!(ch, '\r' | '\n'));
+        }
+        !text.is_empty()
+            && self.route_editor(
+                id,
+                EditorEvent::ProposeEdit { session, expected_rev, edit: TextEdit::Insert { text, replacement: None } },
+                routed,
+            )
+    }
+
     pub(super) fn route_text_pointer(&mut self, id: WindowId, intent: TextPointerIntent, routed: &mut VecDeque<Routed>) -> bool {
         let window = self.windows.get_mut(&id).expect("known window");
         let target = match intent {
@@ -160,6 +239,9 @@ impl AppRuntime {
             return false;
         }
         let Some(command) = clipboard_key(key) else { return false };
+        if command == 'v' {
+            return self.request_paste(id);
+        }
         let region = window
             .text
             .region
@@ -197,6 +279,9 @@ impl AppRuntime {
         if editor.composition().is_some() {
             return false;
         }
+        if clipboard_key(key) == Some('v') {
+            return self.request_paste(id);
+        }
         let session = session.id();
         let expected_rev = editor.document_rev();
         let select = |selection| EditorEvent::ProposeSelection { session, expected_rev, selection };
@@ -224,21 +309,6 @@ impl AppRuntime {
                     self.write(scope, id).request_service(ServiceRequest::WriteClipboardText { text }, move |cx, outcome| {
                         if command == 'x' && outcome == ServiceOutcome::ClipboardWritten {
                             let event = insert(String::new(), Some(ordered));
-                            cx.commands().queued.push_back(AppCommand::EditorEdit { window: id, event });
-                        }
-                    });
-                    return true;
-                }
-                'v' => {
-                    let scope = window.scope;
-                    let multiline = editor.multiline;
-                    self.write(scope, id).request_service(ServiceRequest::ReadClipboardText, move |cx, outcome| {
-                        let ServiceOutcome::ClipboardText(mut text) = outcome else { return };
-                        if !multiline {
-                            text.retain(|ch| !matches!(ch, '\r' | '\n'));
-                        }
-                        if !text.is_empty() {
-                            let event = insert(text, None);
                             cx.commands().queued.push_back(AppCommand::EditorEdit { window: id, event });
                         }
                     });
@@ -324,7 +394,7 @@ fn text_span(value: &str, caret: usize, character: usize, count: u8, secure: boo
 fn document_span(window: &WindowRuntime, region: NodeId, pos: Point, count: u8) -> Option<DocSelection> {
     let tree = &window.tree;
     let hit = window.engine.hit_test(tree, pos).and_then(|hit| hit.hit.node());
-    let direct = std::iter::successors(hit, |&node| tree.parent(node)).find(|&node| tree.selectable_in(region, node));
+    let direct = std::iter::successors(hit, |&node| tree.physical_parent(node)).find(|&node| tree.selectable_in(region, node));
     let node = direct.or_else(|| {
         tree.selectable_texts(region)
             .into_iter()

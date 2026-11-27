@@ -8,7 +8,7 @@ use octara_render::{CpuRenderer, GpuRenderer};
 #[test]
 fn rich_span_pill_has_cpu_gpu_parity() {
     let mut app = App::new(|_, _| Box::new(NativeEngine::new(NativeEngineConfig::default())));
-    let viewport = WindowViewport { size: Size::new(180.0, 64.0), scale: 1.0, safe_area: None };
+    let viewport = WindowViewport { size: Size::new(180.0, 64.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
     let options = WindowOptions { viewport, ..Default::default() };
     let background = rgb(0xd5e8fb);
     let border_color = rgb(0x284572);

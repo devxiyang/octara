@@ -31,7 +31,7 @@ pub use controls::{
 };
 pub use data::{data_table, tree_view, tree_view_with};
 pub use dialog::{DialogOptions, alert_dialog, dialog};
-pub use feedback::{command_palette, toast_viewport, tooltip};
+pub use feedback::{command_palette, toast_viewport};
 pub use forms::{FieldInfo, field, fieldset, radio_group};
 pub use locale::KitLocale;
 pub use menus::{context_menu, menu_button};

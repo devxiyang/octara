@@ -62,14 +62,14 @@ fn audit_reports_source_and_fails_only_the_windows_with_errors() {
     let socket = temp.path().join("audit.sock");
     let build = BuildIdentity { digest: "1".repeat(64), pid: 42 };
     let _server = Server::bind_app(&socket, build, || {
+        let options = |title: &str| WindowOptions {
+            presentation: WindowPresentation { title: title.into(), ..Default::default() },
+            ..Default::default()
+        };
         AppDefinition::new()
-            .window(WindowDefinition::new(WindowOptions { title: "Ready".into(), ..WindowOptions::default() }, |_| text("Ready")))
-            .window(WindowDefinition::new(WindowOptions { title: "Warning".into(), ..WindowOptions::default() }, |_| {
-                el().w(30).h(30).label("Unavailable").focusable().a11y_hidden()
-            }))
-            .window(WindowDefinition::new(WindowOptions { title: "Broken".into(), ..WindowOptions::default() }, |_| {
-                el().w(30).h(30).role(Role::Button).on_press(|_| {})
-            }))
+            .window(WindowDefinition::new(options("Ready"), |_| text("Ready")))
+            .window(WindowDefinition::new(options("Warning"), |_| el().w(30).h(30).label("Unavailable").focusable().a11y_hidden()))
+            .window(WindowDefinition::new(options("Broken"), |_| el().w(30).h(30).role(Role::Button).on_press(|_| {})))
     });
     let run =
         |args: &[&str]| Command::new(env!("CARGO_BIN_EXE_octara")).arg("audit").arg("--connect").arg(&socket).args(args).output().unwrap();

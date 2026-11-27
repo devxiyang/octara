@@ -11,7 +11,7 @@ struct Queue {
     notified: AtomicBool,
     producer: AtomicBool,
     consumer: AtomicBool,
-    slots: Box<[UnsafeCell<Option<String>>]>,
+    slots: Box<[UnsafeCell<Option<TextStreamOp>>]>,
 }
 
 const _: () = {
@@ -25,8 +25,8 @@ const _: () = {
 unsafe impl Sync for Queue {}
 
 /// A single producer for a scope-owned text buffer. Transfer it to a task or
-/// thread to append chunks without taking a lock. A full queue returns the
-/// original chunk so the producer can retry without losing data.
+/// thread to send edits without taking a lock. A full queue returns the
+/// original operation so the producer can retry without losing data.
 pub struct TextStreamSink {
     queue: Arc<Queue>,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -35,9 +35,16 @@ pub struct TextStreamSink {
 pub(crate) struct TextStreamDrain(Arc<Queue>);
 
 #[derive(Debug, PartialEq, Eq)]
+pub enum TextStreamOp {
+    Append(String),
+    Clear,
+    Replace(String),
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum TextStreamError {
-    Full(String),
-    Closed(String),
+    Full(TextStreamOp),
+    Closed(TextStreamOp),
 }
 
 impl TextStreamSink {
@@ -55,21 +62,33 @@ impl TextStreamSink {
     }
 
     pub fn try_send(&mut self, text: String) -> Result<(), TextStreamError> {
+        self.try_push(TextStreamOp::Append(text))
+    }
+
+    pub fn try_clear(&mut self) -> Result<(), TextStreamError> {
+        self.try_push(TextStreamOp::Clear)
+    }
+
+    pub fn try_replace(&mut self, text: String) -> Result<(), TextStreamError> {
+        self.try_push(TextStreamOp::Replace(text))
+    }
+
+    fn try_push(&mut self, op: TextStreamOp) -> Result<(), TextStreamError> {
         let queue = &self.queue;
         if !queue.consumer.load(Ordering::Acquire) {
-            return Err(TextStreamError::Closed(text));
+            return Err(TextStreamError::Closed(op));
         }
-        if text.is_empty() {
+        if matches!(&op, TextStreamOp::Append(text) if text.is_empty()) {
             return Ok(());
         }
         let written = queue.written.load(Ordering::Relaxed);
         let read = queue.read.load(Ordering::Acquire);
         if written.wrapping_sub(read) == queue.slots.len() {
-            return Err(TextStreamError::Full(text));
+            return Err(TextStreamError::Full(op));
         }
         let slot = &queue.slots[written & (queue.slots.len() - 1)];
         // SAFETY: This slot is outside the consumer's published interval.
-        unsafe { *slot.get() = Some(text) };
+        unsafe { *slot.get() = Some(op) };
         queue.written.store(written.wrapping_add(1), Ordering::Release);
         self.notify();
         Ok(())
@@ -98,7 +117,8 @@ impl TextStreamDrain {
         self.0.notified.load(Ordering::Acquire)
     }
 
-    pub(crate) fn take(&mut self) -> (Option<String>, bool) {
+    /// Drain the published prefix and batch adjacent appends.
+    pub(crate) fn drain(&mut self, mut apply: impl FnMut(TextStreamOp)) -> bool {
         let queue = &self.0;
         queue.notified.swap(false, Ordering::AcqRel);
         let producer = queue.producer.load(Ordering::Acquire);
@@ -109,16 +129,29 @@ impl TextStreamDrain {
             let slot = &queue.slots[read & (queue.slots.len() - 1)];
             // SAFETY: The producer published the slot and cannot reuse it until
             // the read cursor advances.
-            let text = unsafe { (*slot.get()).take() }.expect("published stream chunk");
-            if let Some(combined) = combined.as_mut() {
-                combined.push_str(&text);
-            } else {
-                combined = Some(text);
-            }
+            let op = unsafe { (*slot.get()).take() }.expect("published stream operation");
             read = read.wrapping_add(1);
+            match op {
+                TextStreamOp::Append(text) => {
+                    if let Some(combined) = combined.as_mut() {
+                        combined.push_str(&text);
+                    } else {
+                        combined = Some(text);
+                    }
+                }
+                op => {
+                    if let Some(text) = combined.take() {
+                        apply(TextStreamOp::Append(text));
+                    }
+                    apply(op);
+                }
+            }
         }
         queue.read.store(read, Ordering::Release);
-        (combined, producer)
+        if let Some(text) = combined {
+            apply(TextStreamOp::Append(text));
+        }
+        producer
     }
 }
 

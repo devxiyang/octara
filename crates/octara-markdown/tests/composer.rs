@@ -11,6 +11,7 @@ struct Mounted {
     model: Signal<String>,
     composer: MarkdownComposer,
     action: Signal<Option<String>>,
+    scheme: Option<Signal<ColorScheme>>,
 }
 
 impl Mounted {
@@ -23,8 +24,17 @@ impl Mounted {
         triggers: Option<Vec<TriggerConfig>>,
         configure: impl FnOnce(TextInput, Signal<String>) -> TextInput + 'static,
     ) -> Self {
+        Self::with_theme(initial, triggers, configure, None)
+    }
+
+    fn with_theme(
+        initial: &str,
+        triggers: Option<Vec<TriggerConfig>>,
+        configure: impl FnOnce(TextInput, Signal<String>) -> TextInput + 'static,
+        theme: Option<ColorScheme>,
+    ) -> Self {
         let mut driver = HeadlessDriver::default();
-        let (model, composer, action) = driver
+        let (model, composer, action, scheme) = driver
             .app_mut()
             .build(|build| {
                 let model = build.signal(initial.to_owned());
@@ -32,13 +42,13 @@ impl Mounted {
                     Some(triggers) => MarkdownComposer::bind_with_triggers(build, model, triggers),
                     None => MarkdownComposer::bind(build, model),
                 };
-                (model, composer, build.signal(None))
+                (model, composer, build.signal(None), theme.map(|scheme| build.signal(scheme)))
             })
             .unwrap();
         let window = driver
             .app_mut()
             .open_window(WindowOptions::default(), move |build| {
-                col().p(30.0).child(composer.editor_with_completion(
+                let container = col().p(30.0).child(composer.editor_with_completion(
                     build,
                     configure(textarea().test_id("draft"), model),
                     |_, query| match query.trigger {
@@ -55,11 +65,21 @@ impl Mounted {
                             write.set(action, Some(key.into()));
                         }
                     },
-                ))
+                ));
+                if let Some(scheme) = scheme {
+                    container.theme_patch(move |read: &mut ReadCx<'_>| {
+                        ThemePatch::scope(match read.get(scheme) {
+                            ColorScheme::Light => Theme::light(),
+                            ColorScheme::Dark => Theme::dark(),
+                        })
+                    })
+                } else {
+                    container
+                }
             })
             .unwrap();
         driver.app_mut().update_window(window, |write| write.focus("draft")).unwrap();
-        Self { driver, window, model, composer, action }
+        Self { driver, window, model, composer, action, scheme }
     }
 
     fn window(&self) -> &WindowRuntime {
@@ -121,6 +141,25 @@ impl Mounted {
     fn action(&mut self) -> Option<String> {
         self.driver.app_mut().update_window(self.window, |write| write.get(self.action)).unwrap()
     }
+}
+
+#[test]
+fn completion_popup_follows_the_composers_live_theme_scope() {
+    let mut mounted = Mounted::with_theme("", None, |input, _| input, Some(ColorScheme::Dark));
+    mounted.type_text("@");
+    let popup = mounted.popup().unwrap();
+    let tree = mounted.window().tree();
+    assert_eq!(tree.physical_parent(popup), Some(tree.overlay_root()));
+    assert_eq!(tree.logical_parent(popup), Some(mounted.node()));
+    assert_eq!(tree.theme_at(popup).scheme, ColorScheme::Dark);
+    assert_eq!(tree.visual(popup).background, Some(Theme::dark().get(ColorToken::SurfaceElevated)));
+
+    let scheme = mounted.scheme.unwrap();
+    mounted.driver.app_mut().update_window(mounted.window, |write| write.set(scheme, ColorScheme::Light)).unwrap();
+    let tree = mounted.window().tree();
+    assert_eq!(mounted.popup(), Some(popup));
+    assert_eq!(tree.theme_at(popup).scheme, ColorScheme::Light);
+    assert_eq!(tree.visual(popup).background, Some(Theme::light().get(ColorToken::SurfaceElevated)));
 }
 
 #[test]

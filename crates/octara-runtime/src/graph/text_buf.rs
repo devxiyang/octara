@@ -3,7 +3,7 @@
 use std::ops::Range;
 
 use super::delta::{Changes, Cursor, DeltaLog};
-use super::text_stream::{TextStreamDrain, TextStreamSink};
+use super::text_stream::{TextStreamDrain, TextStreamOp, TextStreamSink};
 use crate::arena::{NodeKind, ReactiveId, ReactiveWorld};
 use crate::cx::{BuildCx, ReadCx, WriteCx};
 
@@ -35,7 +35,7 @@ impl BuildCx<'_> {
     }
 
     /// Connect a producer to this buffer. Capacity rounds up to a power of two.
-    /// Reconnecting closes the previous producer and discards its queued chunks.
+    /// Reconnecting closes the previous producer and discards its queued operations.
     pub fn text_stream(&mut self, buffer: TextBuffer, capacity: usize) -> TextStreamSink {
         let wake = self.tasks.as_ref().and_then(|tasks| tasks.host_wake());
         let (sink, drain) = TextStreamSink::pair(capacity, wake);
@@ -96,26 +96,45 @@ impl WriteCx<'_> {
     /// Applies an edit if its range is valid and it changes the text.
     #[track_caller]
     pub fn splice_text(&mut self, buffer: TextBuffer, edit: TextEdit) -> bool {
-        let data = self.world.value_mut::<TextData>(buffer.0);
+        if !self.world.value_mut::<TextData>(buffer.0).apply(edit) {
+            return false;
+        }
+        self.world.mark_changed(buffer.0);
+        true
+    }
+
+    /// Apply the operations published to this buffer before the drain began.
+    /// Returns whether an operation changed the buffer.
+    #[track_caller]
+    pub fn drain_text_stream(&mut self, buffer: TextBuffer) -> bool {
+        let (changed, open) = self.world.drain_text_stream(buffer.0);
+        if !open {
+            self.world.text_streams.remove(&buffer.0);
+        }
+        changed
+    }
+}
+
+impl TextData {
+    fn apply(&mut self, edit: TextEdit) -> bool {
         let bytes = match &edit {
             TextEdit::Append(text) => {
                 if text.is_empty() {
                     return false;
                 }
-                data.value.push_str(text);
+                self.value.push_str(text);
                 text.capacity()
             }
             TextEdit::Splice { range, insert } => {
-                let Some(previous) = data.value.get(range.clone()) else { return false };
+                let Some(previous) = self.value.get(range.clone()) else { return false };
                 if previous == insert {
                     return false;
                 }
-                data.value.replace_range(range.clone(), insert);
+                self.value.replace_range(range.clone(), insert);
                 insert.capacity()
             }
         };
-        data.log.push_sized(edit, bytes);
-        self.world.mark_changed(buffer.0);
+        self.log.push_sized(edit, bytes);
         true
     }
 }
@@ -132,23 +151,33 @@ impl ReactiveWorld {
             if !self.is_alive(id) {
                 return false;
             }
-            let data = self.value_mut::<TextData>(id);
-            let Some(drain) = data.stream.as_mut() else { return false };
-            let (text, open) = drain.take();
-            if !open {
-                data.stream = None;
-            }
-            if let Some(text) = text {
-                let bytes = text.capacity();
-                data.value.push_str(&text);
-                data.log.push_sized(TextEdit::Append(text), bytes);
-                self.mark_changed(id);
-                flushed = true;
-            }
+            let (changed, open) = self.drain_text_stream(id);
+            flushed |= changed;
             open
         });
         self.text_streams = streams;
         flushed
+    }
+
+    fn drain_text_stream(&mut self, id: ReactiveId) -> (bool, bool) {
+        let data = self.value_mut::<TextData>(id);
+        let Some(mut drain) = data.stream.take() else { return (false, false) };
+        let mut changed = false;
+        let open = drain.drain(|op| {
+            let edit = match op {
+                TextStreamOp::Append(text) => TextEdit::Append(text),
+                TextStreamOp::Clear => TextEdit::Splice { range: 0..data.value.len(), insert: String::new() },
+                TextStreamOp::Replace(text) => TextEdit::Splice { range: 0..data.value.len(), insert: text },
+            };
+            changed |= data.apply(edit);
+        });
+        if open {
+            data.stream = Some(drain);
+        }
+        if changed {
+            self.mark_changed(id);
+        }
+        (changed, open)
     }
 }
 
@@ -182,6 +211,41 @@ mod stream_tests {
     use crate::graph::text_stream::TextStreamError;
 
     #[test]
+    fn synchronous_drain_replays_resets_in_fifo_order_before_local_edits() {
+        let mut world = ReactiveWorld::new();
+        let scope = world.root_scope();
+        let mut build = world.build(scope, None);
+        let buffer = build.text_buffer("α");
+        let mut sink = build.text_stream(buffer, 8);
+        let mut cursor = world.read().text_cursor(buffer);
+        let producer = std::thread::spawn(move || {
+            sink.try_send("β".into()).unwrap();
+            sink.try_clear().unwrap();
+            sink.try_send("γ".into()).unwrap();
+            sink.try_replace("δε".into()).unwrap();
+            sink.try_send("ζ".into()).unwrap();
+        });
+        producer.join().unwrap();
+        let mut write = world.write(scope, None);
+        assert!(write.drain_text_stream(buffer));
+        assert!(!write.drain_text_stream(buffer));
+        assert_eq!(write.text(buffer), "δεζ");
+        write.append_text(buffer, "η");
+        assert_eq!(
+            world.read().text_changes(buffer, &mut cursor),
+            Changes::Delta(vec![
+                TextEdit::Append("β".into()),
+                TextEdit::Splice { range: 0..4, insert: String::new() },
+                TextEdit::Append("γ".into()),
+                TextEdit::Splice { range: 0..2, insert: "δε".into() },
+                TextEdit::Append("ζ".into()),
+                TextEdit::Append("η".into()),
+            ])
+        );
+        assert!(!world.drain_text_streams());
+    }
+
+    #[test]
     fn a_stream_burst_replays_as_one_edit_and_scope_drop_closes_the_sink() {
         let mut world = ReactiveWorld::new();
         let scope = world.root_scope();
@@ -192,7 +256,7 @@ mod stream_tests {
         let mut sink = std::thread::spawn(move || {
             sink.try_send("é".into()).unwrap();
             sink.try_send("🍉".into()).unwrap();
-            assert_eq!(sink.try_send("overflow".into()), Err(TextStreamError::Full("overflow".into())));
+            assert_eq!(sink.try_send("overflow".into()), Err(TextStreamError::Full(TextStreamOp::Append("overflow".into()))));
             sink
         })
         .join()
@@ -204,7 +268,7 @@ mod stream_tests {
         world.drain_text_streams();
         assert_eq!(world.read().text(buffer), "Aé🍉B");
         drop(world);
-        assert_eq!(sink.try_send("lost".into()), Err(TextStreamError::Closed("lost".into())));
+        assert_eq!(sink.try_send("lost".into()), Err(TextStreamError::Closed(TextStreamOp::Append("lost".into()))));
     }
 }
 

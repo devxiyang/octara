@@ -32,7 +32,7 @@ fn failed_projection_preserves_published_geometry_and_warm_caches() {
     delta.merge(mounted);
     let editor = receipt.node(editor).unwrap();
     let untouched = receipt.node(untouched.unwrap()).unwrap();
-    let viewport = WindowViewport { size: Size::new(480.0, 16_000.0), scale: 1.0, safe_area: None };
+    let viewport = WindowViewport { size: Size::new(480.0, 16_000.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
     let mut engine = NativeEngine::new(Default::default());
     engine.register_font(Arc::from(&include_bytes!("../assets/fonts/Inter-Regular.ttf")[..]), &[*b"Latn"]);
     let publication = engine.publication();

@@ -2,14 +2,14 @@
 
 use crate::os::{ActiveEditorView, Drawable, DrawableAcquisition, OsWindow, surface_drawable};
 use crate::presentation::Presentation;
-use octara::runtime::{WindowId, WindowOptions, WindowRuntime};
+use octara::runtime::{WindowId, WindowRuntime};
 use octara::tree::editor::EditorSession;
 use octara::tree::resolve_cursor;
 use octara_gpu::{DeviceExecutor, DeviceGeneration, DrawWork, DrawnFrame, FrameProgress, GpuError, GpuTask, SurfaceRendererFactory};
 use octara_model::geometry::{Point, Size, WindowViewport};
 use octara_model::identity::TargetGuard;
 use octara_model::input::{CursorStyle, DroppedFile, Modifiers};
-use octara_model::theme::ColorToken;
+use octara_model::theme::{ColorToken, Theme};
 use octara_model::window::{WindowChrome, WindowGeometryRequest};
 use octara_pipeline::{NativeFrame, NativePublication};
 use octara_render::{gpu::OutputColor, wgpu};
@@ -134,7 +134,12 @@ impl HostWindow {
     pub fn viewport(&mut self) -> WindowViewport {
         let size = self.window.inner_size();
         let scale = self.window.scale_factor().max(f64::EPSILON) as f32;
-        let viewport = WindowViewport { size: Size::new(size.width as f32 / scale, size.height as f32 / scale), scale, safe_area: None };
+        let viewport = WindowViewport {
+            size: Size::new(size.width as f32 / scale, size.height as f32 / scale),
+            scale,
+            safe_area: None,
+            keyboard_inset: 0.0,
+        };
         self.os.scene().map_or(viewport, |scene| scene.viewport(viewport))
     }
 
@@ -236,7 +241,7 @@ impl HostWindow {
             native.sync_native_views(&native_changes);
             native.has_underlay()
         });
-        let transparent = transparent_background(runtime.options()) || has_underlay || self.os.window_is_vibrant();
+        let transparent = transparent_background(&runtime.presentation().theme) || has_underlay || self.os.window_is_vibrant();
         if transparent != self.transparent {
             self.transparent = transparent;
             self.window.set_transparent(transparent);
@@ -396,8 +401,8 @@ impl Drop for HostWindow {
     }
 }
 
-pub(crate) fn transparent_background(options: &WindowOptions) -> bool {
-    options.theme.get(ColorToken::Background).components[3] < 1.0
+pub(crate) fn transparent_background(theme: &Theme) -> bool {
+    theme.get(ColorToken::Background).components[3] < 1.0
 }
 
 fn preferred_alpha_mode(transparent: bool, modes: &[wgpu::CompositeAlphaMode]) -> Option<wgpu::CompositeAlphaMode> {
@@ -464,12 +469,10 @@ mod tests {
 
     #[test]
     fn background_and_surface_alpha_are_opt_in() {
-        let options = WindowOptions::default();
-        assert!(!transparent_background(&options));
+        assert!(!transparent_background(&Theme::default()));
         for alpha in [0, 128] {
             let background = Color::from_rgba8(10, 20, 30, alpha);
-            let options = WindowOptions { theme: Theme::default().color(ColorToken::Background, background), ..options.clone() };
-            assert!(transparent_background(&options));
+            assert!(transparent_background(&Theme::default().color(ColorToken::Background, background)));
         }
 
         use wgpu::CompositeAlphaMode::*;

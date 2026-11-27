@@ -1,24 +1,73 @@
 //! AppKit pasteboard and scoped file picking.
 
 use super::asks::later;
-use super::native::pixels;
 use crate::os::ServiceCleanup;
-use objc2::{AllocAnyThread, MainThreadMarker, Message, rc::Retained};
+use objc2::{AllocAnyThread, ClassType, MainThreadMarker, Message, rc::Retained};
 use objc2_app_kit::{
-    NSBitmapFormat, NSBitmapImageFileType, NSBitmapImageRep, NSCalibratedRGBColorSpace, NSImage, NSModalResponseCancel, NSModalResponseOK,
-    NSOpenPanel, NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeString, NSPasteboardTypeTIFF, NSView,
+    NSBitmapFormat, NSBitmapImageFileType, NSBitmapImageRep, NSCalibratedRGBColorSpace, NSModalResponseCancel, NSModalResponseOK,
+    NSOpenPanel, NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeString, NSPasteboardTypeTIFF, NSPasteboardURLReadingFileURLsOnlyKey,
+    NSView,
 };
-use objc2_foundation::{NSArray, NSDictionary, NSString};
-use octara_model::ask::{ServiceError, ServiceOutcome};
+use objc2_foundation::{NSArray, NSData, NSDictionary, NSNumber, NSString, NSURL};
+use octara_model::ask::{ClipboardItem, ClipboardKinds, ServiceError, ServiceOutcome};
 use octara_model::paint::Image;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub(super) fn read_text() -> Option<String> {
-    // SAFETY: AppKit exports this constant for the general pasteboard's string representation.
-    NSPasteboard::generalPasteboard().stringForType(unsafe { NSPasteboardTypeString }).map(|text| text.to_string())
+pub(super) fn read_clipboard(accept: ClipboardKinds) -> Vec<ClipboardItem> {
+    let pasteboard = NSPasteboard::generalPasteboard();
+    let mut items = Vec::new();
+    if accept.contains(ClipboardKinds::FILES) {
+        // SAFETY: AppKit expects the NSURL class and an NSNumber for the file-URL option.
+        let urls = unsafe {
+            let yes = NSNumber::new_bool(true);
+            let options = NSDictionary::from_slices(&[NSPasteboardURLReadingFileURLsOnlyKey], &[yes.as_ref()]);
+            pasteboard.readObjectsForClasses_options(&NSArray::from_slice(&[NSURL::class()]), Some(&options))
+        };
+        if let Some(urls) = urls {
+            let paths: Vec<_> = urls.iter().filter_map(|value| value.downcast_ref::<NSURL>()?.to_file_path()).collect();
+            if !paths.is_empty() {
+                items.push(ClipboardItem::Files(paths));
+            }
+        }
+    }
+    if !accept.intersects(ClipboardKinds::TEXT | ClipboardKinds::IMAGE) {
+        return items;
+    }
+    if let Some(entries) = pasteboard.pasteboardItems() {
+        for entry in &entries {
+            if accept.contains(ClipboardKinds::IMAGE)
+                && let Some(image) = clipboard_image(|kind| entry.dataForType(kind))
+            {
+                items.push(image);
+            }
+            // SAFETY: AppKit exports a static type for the string representation.
+            if accept.contains(ClipboardKinds::TEXT)
+                && let Some(text) = entry.stringForType(unsafe { NSPasteboardTypeString })
+            {
+                items.push(ClipboardItem::Text(text.to_string()));
+            }
+        }
+    }
+    items
+}
+
+fn clipboard_image(data: impl Fn(&NSString) -> Option<Retained<NSData>>) -> Option<ClipboardItem> {
+    // SAFETY: AppKit exports static types for PNG and TIFF representations.
+    let (png, tiff) = unsafe { (NSPasteboardTypePNG, NSPasteboardTypeTIFF) };
+    let jpeg = NSString::from_str("public.jpeg");
+    for (kind, media_type) in [(png, "image/png"), (&*jpeg, "image/jpeg")] {
+        if let Some(bytes) = data(kind) {
+            return Some(ClipboardItem::Image { media_type: media_type.into(), bytes: bytes.to_vec() });
+        }
+    }
+    let data = data(tiff)?;
+    let rep = NSBitmapImageRep::initWithData(NSBitmapImageRep::alloc(), &data)?;
+    // SAFETY: The PNG encoder accepts an empty bitmap property dictionary.
+    let png = unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) }?;
+    Some(ClipboardItem::Image { media_type: "image/png".into(), bytes: png.to_vec() })
 }
 
 pub(super) fn write_text(text: &str) -> bool {
@@ -26,18 +75,6 @@ pub(super) fn write_text(text: &str) -> bool {
     pasteboard.clearContents();
     // SAFETY: The AppKit string type is a static pasteboard representation.
     pasteboard.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString })
-}
-
-pub(super) fn read_image() -> Option<Image> {
-    let pasteboard = NSPasteboard::generalPasteboard();
-    // SAFETY: These AppKit constants identify image data representations.
-    let data = unsafe { [NSPasteboardTypePNG, NSPasteboardTypeTIFF] }.into_iter().find_map(|kind| pasteboard.dataForType(kind))?;
-    // NSBitmapImageRep describes actual pixel dimensions, even for a scaled (e.g. Retina) image.
-    let rep = NSBitmapImageRep::initWithData(NSBitmapImageRep::alloc(), &data)?;
-    let source = NSImage::initWithSize(NSImage::alloc(), objc2_foundation::NSSize::new(rep.pixelsWide() as f64, rep.pixelsHigh() as f64));
-    source.addRepresentation(&rep);
-    let (width, height, pixels) = pixels(&source, 1.0)?;
-    Some(Image::rgba(width, height, pixels))
 }
 
 pub(super) fn write_image(image: &Image) {

@@ -36,7 +36,8 @@ impl Tree {
     pub fn is_locally_accessible(&self, node: NodeId) -> bool {
         self.is_locally_shown(node)
             && self.overlay_target_shown(node)
-            && self.node(node).is_some_and(|core| !core.flags.intersects(NodeFlags::HIDDEN | NodeFlags::INERT))
+            && self.node(node).is_some_and(|core| !core.flags.contains(NodeFlags::HIDDEN))
+            && !self.is_inert(node)
             && (node != self.overlay_root() || !self.children(node).is_empty())
     }
 
@@ -46,7 +47,7 @@ impl Tree {
             if node == self.root() {
                 return true;
             }
-            let Some(parent) = self.parent(node) else { break };
+            let Some(parent) = self.physical_parent(node) else { break };
             node = parent;
         }
         false
@@ -72,12 +73,12 @@ impl Tree {
 
         scope.ancestors.insert(self.root());
         for &node in &scope.members {
-            let mut parent = self.parent(node);
+            let mut parent = self.physical_parent(node);
             while let Some(id) = parent {
                 if scope.members.contains(&id) || !scope.ancestors.insert(id) {
                     break;
                 }
-                parent = self.parent(id);
+                parent = self.physical_parent(id);
             }
         }
         scope

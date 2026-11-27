@@ -106,7 +106,7 @@ pub fn view(b: &mut BuildCx<'_>, chat: Chat) -> View {
                 .on_command("navigation.back", move |w| {
                     nav.pop(w);
                 })
-                .style_with(move |r, p| p.h((r.get(viewport).height - 128.0).max(120.0)))
+                .style_with(move |r, p| p.h((r.get(viewport).unobscured_size().height - 128.0).max(120.0)))
         }))
         .into()
 }
@@ -1101,14 +1101,11 @@ fn chat_completions(query: &TriggerQuery) -> Vec<Completion> {
 }
 
 fn attach_files(chat: Chat, w: &mut WriteCx<'_>) {
-    w.ask(
-        Ask::Paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some("Attach".into()) }),
-        move |w, answer| {
-            if let Answer::Paths(Some(paths)) = answer {
-                chat.attach(w, &paths);
-            }
-        },
-    );
+    w.ask(Ask::pick_files(Some("Attach".into()), true), move |w, answer| {
+        if let Answer::Paths(Some(paths)) = answer {
+            chat.attach(w, &paths);
+        }
+    });
 }
 
 fn queued_row(b: &mut BuildCx<'_>, chat: Chat, id: u64, queued: RowSignal<Queued>) -> El {

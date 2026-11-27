@@ -175,7 +175,7 @@ impl WindowNativeViews for Views {
                     if let Some(view) = self.hosted.get_mut(id) {
                         match &mut view.platform {
                             Platform::Web(web) => web.update(props),
-                            Platform::Video { controller, player } => player.update(&**controller, props),
+                            Platform::Video { controller, player } => player.update(controller, props),
                         }
                     }
                 }

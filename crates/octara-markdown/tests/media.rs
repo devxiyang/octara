@@ -126,7 +126,7 @@ fn scoped_block_and_inline_requests_bypass_disk_with_auth_and_cancel_after_scrol
     assert_eq!(paragraph.attachments[slot_index].range, 4..7);
     let link = paragraph.links[0];
     let rect = window.geometry(link).unwrap().rect;
-    let position = std::iter::successors(tree.parent(link), |&node| tree.parent(node))
+    let position = std::iter::successors(tree.physical_parent(link), |&node| tree.physical_parent(node))
         .filter_map(|node| Some(window.geometry(node)?.rect))
         .fold(Point::new(rect.x + rect.w / 2.0, rect.y + rect.h / 2.0), |point, rect| Point::new(point.x + rect.x, point.y + rect.y));
     let hit = window.hit_test(position).unwrap();

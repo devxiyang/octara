@@ -1,7 +1,7 @@
 # Octara v2 Clean-Sheet Architecture
 
 > **Design premise**: Zero historical baggage, zero backwards compatibility with v1.  
-> **North star**: Combine the **author ergonomics of fine-grained Signals**, the **compile-time safety of Rust's borrow checker**, the **memory density of a data-oriented ECS**, the **multi-host fidelity of Exact (Native GPU + Real OS Sessions + Real Web DOM)**, and the **deterministic simulation testability of TigerBeetle/FoundationDB**.
+> **North star**: Combine the **author ergonomics of fine-grained Signals**, the **compile-time safety of Rust's borrow checker**, the **memory density of a data-oriented ECS**, the **fidelity of native GPU rendering, OS sessions, and the browser DOM**, and the **deterministic simulation testability of TigerBeetle/FoundationDB**.
 
 ## Detailed Specification Suite
 

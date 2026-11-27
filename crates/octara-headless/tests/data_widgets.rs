@@ -37,7 +37,7 @@ fn focus(driver: &mut HeadlessDriver, window: WindowId, test_id: &str) {
 
 fn window_point(driver: &HeadlessDriver, window: WindowId, node: NodeId, offset: Point) -> Point {
     let runtime = runtime(driver, window);
-    std::iter::successors(Some(node), |&node| runtime.tree().parent(node))
+    std::iter::successors(Some(node), |&node| runtime.tree().physical_parent(node))
         .filter_map(|node| runtime.geometry(node))
         .fold(offset, |point, bounds| Point::new(point.x + bounds.rect.x, point.y + bounds.rect.y))
 }

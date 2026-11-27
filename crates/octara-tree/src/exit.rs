@@ -61,7 +61,7 @@ impl Tree {
                 continue;
             }
 
-            let parent = self.parent(node);
+            let parent = self.physical_parent(node);
             if self.exit_participant(node, requests) {
                 self.pending_exits.insert(node, root);
                 count += 1;
@@ -133,22 +133,15 @@ impl Tree {
         if self.node(root).is_none() || self.overlay_index.is_empty() {
             return self.subtree(root).collect();
         }
-        let mut portals = FxHashMap::<NodeId, Vec<NodeId>>::default();
-        for &node in &self.overlay_index {
-            if let Some(mount) = self.overlay(node).and_then(|slot| slot.mount) {
-                portals.entry(mount.owner).or_default().push(node);
-            }
-        }
         let mut nodes = Vec::new();
         let mut seen = FxHashSet::default();
         let mut pending = vec![root];
         while let Some(node) = pending.pop() {
             if seen.insert(node) {
                 nodes.push(node);
-                if let Some(mut owned) = portals.remove(&node) {
-                    owned.sort_unstable();
-                    pending.extend(owned.into_iter().rev());
-                }
+                let mut owned = smallvec::SmallVec::<[NodeId; 2]>::from_slice(self.logical_portals(node));
+                owned.sort_unstable();
+                pending.extend(owned.into_iter().rev());
                 pending.extend(self.children(node).iter().rev().copied());
             }
         }
@@ -159,8 +152,13 @@ impl Tree {
         let nodes = self.retirement_subtree(root);
         let members: FxHashSet<_> = nodes.iter().copied().collect();
         let mut settled = Vec::new();
+        // Exiting portals keep their ownership until the visual exit settles.
+        // Remove their edges before clearing any of the retained allocations.
         for &node in &nodes {
-            if self.parent(node).is_none_or(|parent| !members.contains(&parent)) {
+            self.unindex_portal(node);
+        }
+        for &node in &nodes {
+            if self.physical_parent(node).is_none_or(|parent| !members.contains(&parent)) {
                 self.detach(node, delta);
             }
             self.exit_roots.remove(&node);

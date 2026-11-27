@@ -4,18 +4,20 @@
 use super::draft::{self, Change, Draft, PendingInputs, byte_offset};
 use crate::os::ActiveEditorView;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
-use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint, NSRange, NSRect, NSSize, NSString};
+use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint, NSRange, NSRect, NSSize, NSString, NSValue};
 use objc2_ui_kit::{
-    NSObjectUIAccessibility, UIColor, UIControlEvents, UIEdgeInsets, UIEvent, UIKeyboardDidChangeFrameNotification,
-    UIKeyboardDidHideNotification, UIScrollViewDelegate, UITextField, UITextFieldDelegate, UITextInput, UITextInputTraits, UITextPosition,
-    UITextRange, UITextView, UITextViewDelegate, UIView,
+    NSObjectUIAccessibility, NSValueUIGeometryExtensions, UIColor, UIControlEvents, UICoordinateSpace, UIEdgeInsets, UIEvent,
+    UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification, UIScrollViewDelegate,
+    UITextField, UITextFieldDelegate, UITextInput, UITextInputTraits, UITextPosition, UITextRange, UITextView, UITextViewDelegate, UIView,
 };
 use octara::EditorRope;
+use octara::runtime::Input;
+use octara_model::ask::ClipboardKinds;
 use octara_model::geometry::Rect;
 use octara_model::identity::EditorSessionId;
-use octara_model::input::EditorEvent;
+use octara_model::input::{HostReply, PasteEvent};
 use octara_model::text::TextGeometry;
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
@@ -65,6 +67,17 @@ impl Signals {
             }
         }
     }
+
+    fn paste(&self, read: impl FnOnce() -> Draft) {
+        if self.muted.get() {
+            return;
+        }
+        let items = super::read_clipboard(ClipboardKinds::all());
+        if !items.is_empty() {
+            self.capture(read);
+            self.pending.borrow_mut().record_paste(PasteEvent { items });
+        }
+    }
 }
 
 define_class!(
@@ -83,6 +96,22 @@ define_class!(
         #[unsafe(method(editingChanged))]
         fn editing_changed(&self) {
             self.ivars().changed(|| self.draft());
+        }
+
+        #[unsafe(method(paste:))]
+        fn paste_action(&self, _: Option<&AnyObject>) {
+            self.ivars().paste(|| self.draft());
+        }
+
+        #[unsafe(method(canPerformAction:withSender:))]
+        fn can_perform_action(&self, action: Sel, sender: Option<&AnyObject>) -> bool {
+            if action == sel!(paste:) {
+                super::has_paste_items()
+            } else {
+                // SAFETY: Forward the inherited responder action validation unchanged.
+                let allowed: Bool = unsafe { msg_send![super(self), canPerformAction: action, withSender: sender] };
+                allowed.as_bool()
+            }
         }
 
         #[unsafe(method(setMarkedText:selectedRange:))]
@@ -131,7 +160,6 @@ impl Field {
 struct AreaState {
     signals: Rc<Signals>,
     projection: RefCell<GeometryProjection>,
-    pasting: Cell<bool>,
 }
 
 // objc2 stores these values inline in Objective-C ivars.
@@ -152,7 +180,7 @@ define_class!(
 
         #[unsafe(method(insertText:))]
         fn insert_text(&self, text: &NSString) {
-            if !self.ivars().pasting.get() && self.markedTextRange().is_none() && text.length() == 1 && text.characterAtIndex(0) == 10 {
+            if self.markedTextRange().is_none() && text.length() == 1 && text.characterAtIndex(0) == 10 {
                 self.ivars().signals.return_pressed();
             } else {
                 // SAFETY: UITextView owns the native edit, including the marked-text session.
@@ -161,12 +189,19 @@ define_class!(
         }
 
         #[unsafe(method(paste:))]
-        fn paste_text(&self, sender: Option<&AnyObject>) {
-            let pasting = &self.ivars().pasting;
-            let previous = pasting.replace(true);
-            // SAFETY: This is the inherited UIResponder paste action.
-            let _: () = unsafe { msg_send![super(self), paste: sender] };
-            pasting.set(previous);
+        fn paste_action(&self, _: Option<&AnyObject>) {
+            self.ivars().signals.paste(|| self.draft());
+        }
+
+        #[unsafe(method(canPerformAction:withSender:))]
+        fn can_perform_action(&self, action: Sel, sender: Option<&AnyObject>) -> bool {
+            if action == sel!(paste:) {
+                super::has_paste_items()
+            } else {
+                // SAFETY: Forward the inherited responder action validation unchanged.
+                let allowed: Bool = unsafe { msg_send![super(self), canPerformAction: action, withSender: sender] };
+                allowed.as_bool()
+            }
         }
 
         #[unsafe(method(setMarkedText:selectedRange:))]
@@ -284,20 +319,43 @@ fn first_rect(geometry: &TextGeometry, start: usize, end: usize) -> Option<Rect>
     Some(Rect::new(geometry.origin.x + left, geometry.origin.y + line.rect.y, right - left, line.rect.h))
 }
 
+struct KeyboardState {
+    frame: Cell<Option<NSRect>>,
+    refresh: Box<dyn Fn()>,
+}
+
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "OctaraKeyboardObserver"]
-    #[ivars = Rc<dyn Fn()>]
+    #[ivars = KeyboardState]
     struct KeyboardObserver;
 
     impl KeyboardObserver {
         #[unsafe(method(keyboardChanged:))]
-        fn changed(&self, _: &NSNotification) {
-            (self.ivars())();
+        fn changed(&self, event: &NSNotification) {
+            let Some(info) = event.userInfo() else { return };
+            // SAFETY: UIKit documents the value for this notification key as a CGRect in an NSValue.
+            let frame = unsafe { info.objectForKey(UIKeyboardFrameEndUserInfoKey) }
+                .and_then(|value| value.downcast::<NSValue>().ok())
+                .map(|value| unsafe { value.CGRectValue() });
+            self.update_frame(frame);
+        }
+
+        #[unsafe(method(keyboardHidden:))]
+        fn hidden(&self, _: &NSNotification) {
+            self.update_frame(None);
         }
     }
 );
+
+impl KeyboardObserver {
+    fn update_frame(&self, frame: Option<NSRect>) {
+        if self.ivars().frame.replace(frame) != frame {
+            (self.ivars().refresh)();
+        }
+    }
+}
 
 fn position_byte(input: &(impl UITextInput + Message), text: &EditorRope, position: &UITextPosition) -> usize {
     let beginning = input.beginningOfDocument();
@@ -407,15 +465,14 @@ pub(super) struct TextInput {
 impl TextInput {
     pub(super) fn new(content: Retained<UIView>, wake: impl Fn() + 'static, refresh: impl Fn() + 'static) -> Self {
         let mtm = MainThreadMarker::from(&*content);
+        let state = KeyboardState { frame: Cell::new(None), refresh: Box::new(refresh) };
         // SAFETY: NSObject initialization on the UIKit thread.
-        let observer: Retained<KeyboardObserver> =
-            unsafe { msg_send![super(mtm.alloc::<KeyboardObserver>().set_ivars(Rc::new(refresh))), init] };
+        let observer: Retained<KeyboardObserver> = unsafe { msg_send![super(mtm.alloc::<KeyboardObserver>().set_ivars(state)), init] };
         let center = NSNotificationCenter::defaultCenter();
         // SAFETY: UIKit posts these notifications on the main thread and the selector accepts NSNotification.
         unsafe {
-            for name in [UIKeyboardDidChangeFrameNotification, UIKeyboardDidHideNotification] {
-                center.addObserver_selector_name_object(&observer, sel!(keyboardChanged:), Some(name), None);
-            }
+            center.addObserver_selector_name_object(&observer, sel!(keyboardChanged:), Some(UIKeyboardWillChangeFrameNotification), None);
+            center.addObserver_selector_name_object(&observer, sel!(keyboardHidden:), Some(UIKeyboardWillHideNotification), None);
         }
         Self { content, observer, wake: Rc::new(wake), session: None, active: true }
     }
@@ -445,7 +502,7 @@ impl TextInput {
         }
         let changed = match session.inflight.take() {
             Some(Change::Document(native)) => native != *session.expected,
-            Some(Change::Return) | None => updated,
+            Some(Change::Return | Change::Paste(_)) | None => updated,
         };
         if changed {
             session.signals.pending.borrow_mut().clear();
@@ -486,11 +543,7 @@ impl TextInput {
             Rc::new(Signals { wake: self.wake.clone(), pending: RefCell::default(), muted: Cell::new(true), mutating: Cell::new(false) });
         let clear = UIColor::clearColor();
         let editor = if input.multiline {
-            let state = AreaState {
-                signals: signals.clone(),
-                projection: RefCell::new(GeometryProjection::new(input, expected.clone())),
-                pasting: Cell::new(false),
-            };
+            let state = AreaState { signals: signals.clone(), projection: RefCell::new(GeometryProjection::new(input, expected.clone())) };
             // SAFETY: UITextView initialization on the UIKit thread with a default text container.
             let area: Retained<Area> =
                 unsafe { msg_send![super(mtm.alloc::<Area>().set_ivars(state)), initWithFrame: frame, textContainer: None::<&AnyObject>] };
@@ -559,17 +612,20 @@ impl TextInput {
         }
     }
 
-    pub(super) fn take(&mut self) -> Option<EditorEvent> {
+    pub(super) fn take(&mut self) -> Option<Input> {
         let session = self.session.as_mut()?;
         if session.inflight.is_some() {
             return None;
         }
         loop {
             let change = session.signals.pending.borrow_mut().take()?;
+            if let Change::Paste(event) = change {
+                return Some(Input::Host(HostReply::Paste(event)));
+            }
             match draft::proposal(&change, &session.expected, &session.committed, session.id, session.rev) {
                 Ok(Some(event)) => {
                     session.inflight = Some(change);
-                    return Some(event);
+                    return Some(Input::Editor(event));
                 }
                 Ok(None) => {}
                 Err(()) => {
@@ -581,11 +637,16 @@ impl TextInput {
         }
     }
 
-    pub(super) fn keyboard_top(&self) -> Option<f32> {
-        let guide = self.content.keyboardLayoutGuide().layoutFrame();
+    pub(super) fn keyboard_inset(&self) -> f32 {
+        let Some(frame) = self.observer.ivars().frame.get() else { return 0.0 };
+        let Some(window) = self.content.window() else { return 0.0 };
+        let Some(scene) = window.windowScene() else { return 0.0 };
+        let frame = self.content.convertRect_fromCoordinateSpace(frame, &scene.screen().coordinateSpace());
         let bounds = self.content.bounds();
-        let top = guide.origin.y - bounds.origin.y;
-        (top > 0.0 && bounds.size.height - top > self.content.safeAreaInsets().bottom + 1.0).then_some(top as f32)
+        if frame.min().x >= bounds.max().x || frame.max().x <= bounds.min().x || frame.max().y + 0.5 < bounds.max().y {
+            return 0.0;
+        }
+        (bounds.max().y - frame.min().y).clamp(0.0, bounds.size.height) as f32
     }
 
     pub(super) fn inspect(&self) -> Value {
@@ -594,7 +655,7 @@ impl TextInput {
             "native_focus": self.session.as_ref().is_some_and(|session| session.editor.view().isFirstResponder()),
             "key_window": self.content.window().is_some_and(|window| window.isKeyWindow()),
             "has_marked": self.session.as_ref().is_some_and(|session| session.expected.marked.is_some()),
-            "keyboard_top": self.keyboard_top(),
+            "keyboard_inset": self.keyboard_inset(),
         })
     }
 }

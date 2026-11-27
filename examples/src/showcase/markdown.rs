@@ -124,7 +124,7 @@ pub fn view(b: &mut BuildCx<'_>) -> El {
         .test_id("answer")
         .label("Eclipse conversation")
         .w(rel(1.0))
-        .style_with(move |r, p| p.max_h((r.get(viewport).height - 164.0).clamp(180.0, 500.0)))
+        .style_with(move |r, p| p.max_h((r.get(viewport).unobscured_size().height - 164.0).clamp(180.0, 500.0)))
         .overflow_y(Overflow::Scroll)
         .follow_tail()
         .gap(sp(4.0))

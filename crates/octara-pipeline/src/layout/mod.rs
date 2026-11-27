@@ -149,7 +149,7 @@ impl AnchorIndex {
         if let Some(target) = tree.overlay(node).and_then(|slot| slot.target).and_then(|(target, _)| target.node()) {
             targets.push(target);
             if tree.link(target).is_some()
-                && let Some(parent) = tree.parent(target)
+                && let Some(parent) = tree.physical_parent(target)
             {
                 targets.push(parent);
             }
@@ -488,7 +488,7 @@ impl LayoutEngine {
         let parent = if root == tree.root() {
             Some(FrameContext { clip: window, ..Default::default() })
         } else {
-            tree.parent(root).and_then(|node| {
+            tree.physical_parent(root).and_then(|node| {
                 let frame = self.frames.entries.get(&node)?;
                 Some(FrameContext::children(*frame, node == tree.overlay_root(), window))
             })
@@ -627,7 +627,7 @@ impl LayoutEngine {
 
     fn scroll_anchor_delta(&self, tree: &Tree, node: NodeId) -> Option<f32> {
         let anchor = self.scroll_anchors.entries.get(&node)?;
-        if !tree.maintains_scroll_anchor(node) || tree.parent(anchor.child) != Some(node) || !anchor_child(tree, anchor.child) {
+        if !tree.maintains_scroll_anchor(node) || tree.physical_parent(anchor.child) != Some(node) || !anchor_child(tree, anchor.child) {
             return None;
         }
         let layout = self.taffy.layout(*self.keys.get(anchor.child)?).ok()?;
@@ -653,13 +653,13 @@ impl LayoutEngine {
 
     fn reveal_focus(&mut self, tree: &Tree, text: &mut TextEngine, focus: NodeId, projection: &mut Projection) {
         let bounds = if let Some(link) = tree.link(focus) {
-            tree.parent(focus).and_then(|parent| text.link_bounds_in(tree, parent, &link.range, self.content_bounds(parent)?))
+            tree.physical_parent(focus).and_then(|parent| text.link_bounds_in(tree, parent, &link.range, self.content_bounds(parent)?))
         } else {
             self.bounds(focus)
         };
         let Some(mut target) = bounds else { return };
         let mut outermost = None;
-        for node in std::iter::successors(tree.parent(focus), |&node| tree.parent(node)) {
+        for node in std::iter::successors(tree.physical_parent(focus), |&node| tree.physical_parent(node)) {
             let Some(frame) = self.frames.entries.get(&node) else { break };
             let Some(range) = frame.scroll else { continue };
             let Some(slot) = tree.scroll(node) else { continue };
@@ -691,7 +691,7 @@ impl LayoutEngine {
         match target {
             AnchorTarget::Node(node) => {
                 if let Some(link) = tree.link(node) {
-                    let parent = tree.parent(node)?;
+                    let parent = tree.physical_parent(node)?;
                     return text.link_bounds_in(tree, parent, &link.range, self.content_bounds(parent)?);
                 }
                 self.bounds(node)
@@ -724,7 +724,8 @@ impl LayoutEngine {
                 }
                 continue;
             };
-            if !self.keys.contains_key(node) || !tree.parent(node).is_some_and(|parent| self.frames.entries.contains_key(&parent)) {
+            if !self.keys.contains_key(node) || !tree.physical_parent(node).is_some_and(|parent| self.frames.entries.contains_key(&parent))
+            {
                 continue;
             }
             let mut natural =
@@ -819,7 +820,7 @@ impl LayoutEngine {
         for node in dirty.iter() {
             self.work.links += 1;
             let frame = (|| {
-                let parent = self.frames.entries.get(&tree.parent(node)?)?;
+                let parent = self.frames.entries.get(&tree.physical_parent(node)?)?;
                 let bounds = text.link_bounds(node)?;
                 let rect = Rect::new(bounds.x - parent.bounds.x, bounds.y - parent.bounds.y, bounds.w, bounds.h);
                 Some(Frame {
@@ -1022,7 +1023,7 @@ impl Projection {
         if !self.placed.contains(&node) {
             // Resolve targets within an anchored overlay after their enclosing anchor.
             let depth = std::iter::successors(Some(node), |&node| {
-                tree.overlay(node).and_then(|slot| slot.target.and_then(|(target, _)| target.node())).or_else(|| tree.parent(node))
+                tree.overlay(node).and_then(|slot| slot.target.and_then(|(target, _)| target.node())).or_else(|| tree.physical_parent(node))
             })
             .count();
             self.anchors.insert((depth, node));
@@ -1042,7 +1043,7 @@ fn anchor_child(tree: &Tree, node: NodeId) -> bool {
 }
 
 fn physical_depth(tree: &Tree, node: NodeId) -> usize {
-    std::iter::successors(tree.parent(node), |&parent| tree.parent(parent)).count()
+    std::iter::successors(tree.physical_parent(node), |&parent| tree.physical_parent(parent)).count()
 }
 
 fn rect_size(rect: Rect) -> Size {

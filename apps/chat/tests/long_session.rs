@@ -27,7 +27,12 @@ fn thousand_and_ten_thousand_message_histories_use_the_same_virtual_transcript()
             .driver
             .dispatch(
                 fixture.window,
-                Input::Host(HostReply::ViewportChanged(WindowViewport { size: Size::new(800.0, 650.0), scale: 1.0, safe_area: None })),
+                Input::Host(HostReply::ViewportChanged(WindowViewport {
+                    size: Size::new(800.0, 650.0),
+                    scale: 1.0,
+                    safe_area: None,
+                    keyboard_inset: 0.0,
+                })),
             )
             .unwrap();
         let snapshot = fixture.driver.execute(AgentRequest::new(Some(fixture.window), AgentCommand::Observe)).snapshot.unwrap();
@@ -65,7 +70,7 @@ fn scrolling_back_holds_the_reading_position_and_jump_resumes_following() {
     let runtime = state.runtime();
     let tree = runtime.tree();
     let hit = runtime.hit_test(Point::new(600.0, 300.0)).and_then(|target| target.hit.node());
-    let hit_chain: Vec<_> = std::iter::successors(hit, |&node| tree.parent(node))
+    let hit_chain: Vec<_> = std::iter::successors(hit, |&node| tree.logical_parent(node))
         .map(|node| (tree.provenance(node).and_then(|p| p.test_id.as_deref()), tree.scroll(node), runtime.geometry(node)))
         .collect();
     assert!(reading < initial - 500.0, "wheel failed: {initial} to {reading}, {receipt:?}, {hit_chain:?}");

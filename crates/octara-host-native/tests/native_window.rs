@@ -16,10 +16,17 @@ fn main() -> Result<(), ShellError> {
     }
     let transparent = Theme::default().color(ColorToken::Background, Color::TRANSPARENT);
     let windows = AppDefinition::new()
-        .window(WindowDefinition::new(WindowOptions { title: OPAQUE.into(), ..Default::default() }, |_| text("Opaque")))
-        .window(WindowDefinition::new(WindowOptions { title: TRANSPARENT.into(), theme: transparent, ..Default::default() }, |_| {
-            text("Transparent")
-        }));
+        .window(WindowDefinition::new(
+            WindowOptions { presentation: WindowPresentation { title: OPAQUE.into(), ..Default::default() }, ..Default::default() },
+            |_| text("Opaque"),
+        ))
+        .window(WindowDefinition::new(
+            WindowOptions {
+                presentation: WindowPresentation { title: TRANSPARENT.into(), theme: transparent, ..Default::default() },
+                ..Default::default()
+            },
+            |_| text("Transparent"),
+        ));
     run_app_with_hook(windows, TestWindows { started: Instant::now(), observed_hidden: [false; 2], observed_first: [false; 2] })?;
     println!("Opaque and transparent native windows reached their first GPU-complete frames");
     Ok(())
@@ -36,7 +43,7 @@ impl ShellHook for TestWindows {
         let mut finished = Vec::new();
         let mut ready = 0;
         for (&id, window) in app.runtime().windows() {
-            let title = window.options().title.as_str();
+            let title = window.presentation().title.as_ref();
             let index = usize::from(title == TRANSPARENT);
             let receipt = presented(id);
             if let Some((visible, opaque)) = appkit_window(title) {

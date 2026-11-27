@@ -96,12 +96,11 @@ impl Shell {
         let outputs = frame_sources.clone();
         let mut os = os_host.unwrap_or_else(os::create_os_host);
         let supports_vibrancy = os.supports_window_vibrancy();
-        let mut app = App::new(move |id, options| {
+        let mut app = App::new(move |id, _| {
             let publication = NativePublication::for_window_host();
             outputs.borrow_mut().insert(id, publication.clone());
-            let transparent_window = supports_vibrancy && matches!(options.material, WindowMaterial::Vibrancy(_));
             Box::new(NativeEngine::with_publication(
-                NativeEngineConfig { system_fonts: true, transparent_window, ..Default::default() },
+                NativeEngineConfig { system_fonts: true, supports_window_vibrancy: supports_vibrancy, ..Default::default() },
                 publication,
             ))
         });
@@ -166,12 +165,13 @@ impl Shell {
     fn create_window(&mut self, event_loop: &ActiveEventLoop, id: WindowId) -> Result<(), String> {
         let Some(runtime) = self.app.runtime().window(id) else { return Ok(()) };
         let options = runtime.options().clone();
+        let presentation = runtime.presentation();
         let size = options.viewport.size;
-        let transparent = transparent_background(&options)
-            || (self.os.supports_window_vibrancy() && matches!(options.material, WindowMaterial::Vibrancy(_)));
+        let transparent = transparent_background(&presentation.theme)
+            || (self.os.supports_window_vibrancy() && matches!(presentation.material, WindowMaterial::Vibrancy(_)));
         let initial_fullscreen = runtime.window_geometry().fullscreen;
         let mut attributes = Window::default_attributes()
-            .with_title(&options.title)
+            .with_title(presentation.title.as_ref())
             .with_inner_size(LogicalSize::new(size.width, size.height))
             .with_resizable(options.resizable)
             .with_maximized(options.maximized)
@@ -253,10 +253,18 @@ impl Shell {
                     self.frame_sources.borrow_mut().remove(&id);
                 }
                 HostCommand::Menus(menus) => self.os.set_menus(&menus),
-                HostCommand::SetWindowTitle { window, title } => {
+                HostCommand::UpdateWindowPresentation { window, title, color_scheme, material } => {
                     if let Some(host) = self.windows.get_mut(&window) {
-                        host.os.set_window_title(&host.window, &title);
+                        host.os.apply_presentation(&host.window, &title, color_scheme, material);
                     }
+                }
+                HostCommand::SetAppBadge { badge } => self.os.set_app_badge(badge.as_deref()),
+                HostCommand::RequestUserAttention { window, attention } => {
+                    let host = window
+                        .and_then(|id| self.windows.get(&id))
+                        .or_else(|| self.windows.values().find(|host| host.window.has_focus()))
+                        .or_else(|| self.windows.values().next());
+                    self.os.request_user_attention(host.map(|host| host.window.as_ref()), attention);
                 }
                 HostCommand::SetWindowGeometry { window, mut geometry } => {
                     if let Some(host) = self.windows.get_mut(&window)
@@ -316,10 +324,10 @@ impl Shell {
                         continue;
                     }
                     let outcome = match request {
-                        ServiceRequest::ReadClipboardText => self
+                        ServiceRequest::ReadClipboard { accept } => self
                             .os
-                            .read_clipboard_text()
-                            .map_or(ServiceOutcome::Error(ServiceError::Unavailable), ServiceOutcome::ClipboardText),
+                            .read_clipboard(accept)
+                            .map_or(ServiceOutcome::Error(ServiceError::Unavailable), ServiceOutcome::Clipboard),
                         ServiceRequest::WriteClipboardText { text } => {
                             self.os.write_clipboard_text(&text);
                             ServiceOutcome::ClipboardWritten

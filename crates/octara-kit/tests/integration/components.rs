@@ -312,7 +312,7 @@ fn data_widgets_and_breadcrumbs_project_their_actual_semantics() {
     let positions = |app: &Mounted| {
         ["cell-1", "cell-2", "cell-3"].map(|id| {
             let cell = app.node(id);
-            let row = app.tree().parent(cell).unwrap();
+            let row = app.tree().physical_parent(cell).unwrap();
             app.window().geometry(row).unwrap().rect.y
         })
     };

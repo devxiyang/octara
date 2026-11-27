@@ -1,13 +1,14 @@
 //! Values and capabilities used to author views.
 
 pub use octara_model::ask::{
-    Answer, Ask, Menu, MenuItem, PathPromptOptions, PickedFile, PromptLevel, ServiceError, ServiceOutcome, ServiceRequest,
+    Answer, Ask, ClipboardItem, ClipboardKinds, Menu, MenuItem, PathPromptOptions, PickedFile, PromptLevel, ServiceError, ServiceOutcome,
+    ServiceRequest,
 };
 pub use octara_model::geometry::{Align, Edges, LayoutBox, Placement, Point, Rect, Side, Size, Vec2, WindowViewport, point};
 pub use octara_model::image::{CachePolicy, HttpMediaEntry, ImageSource, ImageState, VideoSource, VideoSurface};
 pub use octara_model::input::{
     Button, Chord, ContextMenuEvent, ContextMenuItem, CopyFormat, CursorStyle, DragPayload, DropAxis, DropEvent, DropHover, DropPosition,
-    DroppedFile, Key, KeyEvent, LinkEvent, LinkEventKind, Modifiers,
+    DroppedFile, Key, KeyEvent, LinkEvent, LinkEventKind, Modifiers, PasteEvent,
 };
 pub use octara_model::motion::{Curve, Motion, Spring, TextReveal, TextRevealKind};
 pub use octara_model::native::{NativeCommand, NativeEvent, NativeSlot};
@@ -28,20 +29,21 @@ pub use octara_model::theme::{
     contrast, linear_color_stop, linear_gradient, over, palette, rgb,
 };
 pub use octara_model::window::{
-    SystemPreferences, TitlebarStyle, VibrancyMaterial, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial,
+    SystemPreferences, TitlebarStyle, UserAttention, VibrancyMaterial, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial,
+    WindowPresentation,
 };
 pub use octara_runtime::graph::{
     delta::{Changes, Cursor},
     list::{FlatItem, FlatKey, GroupInfo, Groups, IntoReadList, ListDelta, ReadList, RowSignal, StateList},
     text_buf::TextEdit as TextBufferEdit,
-    text_stream::{TextStreamError, TextStreamSink},
+    text_stream::{TextStreamError, TextStreamOp, TextStreamSink},
     value::Memo,
 };
 pub use octara_runtime::media::{MediaCacheBackend, MediaResolver, VideoSurfaceProvider};
 pub use octara_runtime::task::{Receiver, Sender, TaskId, channel};
 pub use octara_runtime::{
-    Binding, BuildCx, CleanupCx, CloseHandle, Field, HandlerEvent, HandlerOutcome, Navigator, ReadCx, ReadSignal, Readable, RestartState,
-    ScopeId, Signal, Store, TaskCx, TextBuffer, Trigger, Watch, WindowId, WindowOptions, Writable, WriteCx,
+    Binding, BuildCx, CleanupCx, CloseHandle, Field, HandlerEvent, HandlerOutcome, HoveredTooltip, Navigator, ReadCx, ReadSignal, Readable,
+    RestartState, ScopeId, Signal, Store, TaskCx, TextBuffer, Trigger, Watch, WindowId, WindowOptions, Writable, WriteCx,
 };
 pub use octara_tree::{
     arbiter::{Drag as DragEvent, DragPhase, InteractionPayload, TouchScrollStage},

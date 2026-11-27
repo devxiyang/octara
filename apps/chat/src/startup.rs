@@ -2,7 +2,7 @@ use crate::chat::{ModelEntry, Options};
 use crate::network::{NetworkConfig, NetworkModel};
 use crate::store::Store;
 use crate::ui::root;
-use octara::prelude::{AppDefinition, ColorToken, Size, Theme, WindowDefinition, WindowOptions, rgb};
+use octara::prelude::{AppDefinition, ColorToken, Size, Theme, WindowDefinition, WindowOptions, WindowPresentation, rgb};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -24,7 +24,10 @@ pub fn startup() -> AppDefinition {
 }
 
 pub fn definition(options: Options) -> AppDefinition {
-    let mut window = WindowOptions { title: "Octara Chat".into(), theme: theme(), ..WindowOptions::default() };
+    let mut window = WindowOptions {
+        presentation: WindowPresentation { title: "Octara Chat".into(), theme: theme(), ..Default::default() },
+        ..Default::default()
+    };
     window.viewport.size = Size::new(1180.0, 820.0);
     AppDefinition::new().window(WindowDefinition::new(window, move |b| root(b, options)))
 }

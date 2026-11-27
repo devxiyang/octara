@@ -6,7 +6,7 @@ use smallvec::SmallVec;
 
 pub mod palette;
 
-/// A drop shadow (GPUI's `BoxShadow`). As in CSS (and Rune), `blur_radius` is twice the
+/// A drop shadow. As in CSS, `blur_radius` is twice the
 /// Gaussian's standard deviation. Positive spread grows the shape, while negative spread shrinks it.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct BoxShadow {

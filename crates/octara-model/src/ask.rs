@@ -59,6 +59,18 @@ pub enum Ask {
     NewPath { directory: PathBuf, name: Option<String> },
 }
 
+impl Ask {
+    /// Prompts for a single native directory path.
+    pub fn pick_directory(prompt: Option<String>) -> Self {
+        Self::Paths(PathPromptOptions { directories: true, prompt, ..Default::default() })
+    }
+
+    /// Prompts for native file paths, with optional multiple selection.
+    pub fn pick_files(prompt: Option<String>, multiple: bool) -> Self {
+        Self::Paths(PathPromptOptions { files: true, multiple, prompt, ..Default::default() })
+    }
+}
+
 /// Who presents an ask for a window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -106,13 +118,55 @@ impl Answer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ServiceId(pub u64);
 
+/// Data offered by the system clipboard. Debug formatting omits private contents.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipboardItem {
+    Text(String),
+    Image { media_type: String, bytes: Vec<u8> },
+    Files(Vec<PathBuf>),
+}
+
+impl fmt::Debug for ClipboardItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kind = match self {
+            Self::Text(_) => "Text",
+            Self::Image { .. } => "Image",
+            Self::Files(_) => "Files",
+        };
+        f.debug_tuple(kind).field(&"<redacted>").finish()
+    }
+}
+
+bitflags::bitflags! {
+    /// Clipboard formats a caller accepts.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    pub struct ClipboardKinds: u8 {
+        const TEXT = 1 << 0;
+        const IMAGE = 1 << 1;
+        const FILES = 1 << 2;
+    }
+}
+
 /// An operation requested from the host. Recorders must omit private transfer data.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceRequest {
     PickFile { max_bytes: usize, accept: String },
-    ReadClipboardText,
+    ReadClipboard { accept: ClipboardKinds },
     WriteClipboardText { text: String },
+}
+
+impl fmt::Debug for ServiceRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PickFile { max_bytes, accept } => {
+                f.debug_struct("PickFile").field("max_bytes", max_bytes).field("accept", accept).finish()
+            }
+            Self::ReadClipboard { accept } => f.debug_struct("ReadClipboard").field("accept", accept).finish(),
+            Self::WriteClipboardText { .. } => f.debug_struct("WriteClipboardText").field("text", &"<redacted>").finish(),
+        }
+    }
 }
 
 /// Bytes from a file explicitly selected in the host's file chooser.
@@ -128,9 +182,20 @@ pub struct PickedFile {
 #[serde(rename_all = "snake_case")]
 pub enum ServiceOutcome {
     FilePicked(Option<PickedFile>),
-    ClipboardText(String),
+    Clipboard(Vec<ClipboardItem>),
     ClipboardWritten,
     Error(ServiceError),
+}
+
+impl ServiceOutcome {
+    /// The first text representation returned by a clipboard read.
+    pub fn clipboard_text(&self) -> Option<&str> {
+        let Self::Clipboard(items) = self else { return None };
+        items.iter().find_map(|item| match item {
+            ClipboardItem::Text(text) => Some(text.as_str()),
+            _ => None,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,6 +229,19 @@ impl std::error::Error for ServiceError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_helpers_and_clipboard_text_preserve_payload_types() {
+        assert_eq!(
+            Ask::pick_directory(Some("Choose a folder".into())),
+            Ask::Paths(PathPromptOptions { directories: true, prompt: Some("Choose a folder".into()), ..Default::default() }),
+        );
+        assert_eq!(Ask::pick_files(None, true), Ask::Paths(PathPromptOptions { files: true, multiple: true, ..Default::default() }));
+        let images = vec![ClipboardItem::Image { media_type: "image/jpeg".into(), bytes: vec![1, 2, 3] }];
+        assert_eq!(ServiceOutcome::Clipboard(images.clone()).clipboard_text(), None);
+        let contents = ServiceOutcome::Clipboard([images, vec![ClipboardItem::Text("text".into())]].concat());
+        assert_eq!(contents.clipboard_text(), Some("text"));
+    }
 
     #[test]
     fn answers_respect_disabled_submenus_and_prompt_bounds() {

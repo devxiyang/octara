@@ -19,6 +19,7 @@ use octara_model::native::{NativeChange, NativeMeasureRequest, NativeMeasureTick
 use octara_model::paint::{DisplayList, FontData, Item};
 use octara_model::semantics::TextClip;
 use octara_model::text::TextGeometry;
+use octara_model::window::WindowMaterial;
 use octara_runtime::engine::ScrollRange;
 use octara_runtime::{CommitOutput, HostEngine, ProjectError, ProjectFeedback};
 use octara_tree::arbiter::{ScrollbarHit, ScrollbarKey};
@@ -41,6 +42,7 @@ pub struct NativeEngineConfig {
     pub system_fonts: bool,
     pub reduced_motion: bool,
     pub transparent_window: bool,
+    pub supports_window_vibrancy: bool,
 }
 
 /// A published native frame. Accessibility, native placements and paint use the same geometry.
@@ -105,6 +107,7 @@ struct StagedFrame {
 pub struct NativeEngine {
     config: NativeEngineConfig,
     window_active: bool,
+    vibrant_window: bool,
     layout: LayoutEngine,
     flat: FlatTree,
     text: TextEngine,
@@ -126,6 +129,7 @@ impl NativeEngine {
         Self {
             config,
             window_active: true,
+            vibrant_window: false,
             layout: LayoutEngine::default(),
             flat: FlatTree::default(),
             text: TextEngine::new(config.system_fonts),
@@ -209,6 +213,11 @@ impl HostEngine for NativeEngine {
         NativeEngine::set_reduced_motion(self, reduced_motion);
     }
 
+    fn set_window_material(&mut self, material: WindowMaterial) -> bool {
+        let vibrant = self.config.supports_window_vibrancy && matches!(material, WindowMaterial::Vibrancy(_));
+        std::mem::replace(&mut self.vibrant_window, vibrant) != vibrant && !self.config.transparent_window
+    }
+
     fn project(&mut self, tree: &Tree, delta: &TreeDelta, viewport: WindowViewport, now: f64) -> Result<ProjectFeedback, ProjectError> {
         if !now.is_finite() || now < 0.0 {
             return Err(timestamp_error());
@@ -224,7 +233,8 @@ impl HostEngine for NativeEngine {
         }
         self.text.begin_stage();
         self.layout.set_animated_scrolls(self.scrolling.active_nodes(tree));
-        let mut updates = self.layout.project(tree, delta, viewport, &mut self.text);
+        let layout_viewport = WindowViewport { size: viewport.unobscured_size(), keyboard_inset: 0.0, ..viewport };
+        let mut updates = self.layout.project(tree, delta, layout_viewport, &mut self.text);
         self.flat.project(tree, delta, &self.layout);
         let scroll_deadline = self.scrolling.step(tree, &self.layout, &mut updates, now, self.config.reduced_motion);
         self.accessibility.project(tree, delta, &self.layout, &self.text, viewport.scale, self.config.check_a11y_cache);
@@ -239,7 +249,7 @@ impl HostEngine for NativeEngine {
                 now,
                 reduced_motion: self.config.reduced_motion,
                 verify: self.config.check_paint_cache,
-                transparent_window: self.config.transparent_window,
+                transparent_window: self.config.transparent_window || self.vibrant_window,
                 window_active: self.window_active,
             },
         );
@@ -297,7 +307,7 @@ impl HostEngine for NativeEngine {
 
     fn hit_test(&self, tree: &Tree, pos: Point) -> Option<ContactTarget> {
         let hit = self.flat.hit(tree, &self.layout, &self.text, pos)?;
-        let action = std::iter::successors(Some(hit), |&node| tree.interaction_parent(node)).find(|&node| {
+        let action = std::iter::successors(Some(hit), |&node| tree.logical_parent(node)).find(|&node| {
             let kind = tree.node(node).map(|core| core.kind);
             matches!(kind, Some(NodeKind::TextInput | NodeKind::Link)) || tree.has_activation_handler(node) || tree.is_focusable(node)
         });
@@ -351,7 +361,7 @@ impl HostEngine for NativeEngine {
     fn scrollbar_hit(&self, tree: &Tree, position: Point) -> Option<ScrollbarHit> {
         let hit = self.flat.hit(tree, &self.layout, &self.text, position)?;
         // A parent's scrollbar paints over its descendants.
-        std::iter::successors(Some(hit), |&node| tree.parent(node))
+        std::iter::successors(Some(hit), |&node| tree.physical_parent(node))
             .filter_map(|node| self.paint.scrollbar_hit(tree, &self.layout, node, position))
             .last()
     }
@@ -431,7 +441,7 @@ impl NativeViews {
         for node in tree.native_nodes() {
             let native = tree.native(node).expect("indexed native content");
             let rect = layout.bounds(node).unwrap_or_default();
-            let clip = layout.clip(node).unwrap_or_else(|| viewport.safe_bounds());
+            let clip = layout.clip(node).unwrap_or_else(|| viewport.visible_bounds());
             let visual = tree.visual(node);
             self.staged.insert(
                 node,

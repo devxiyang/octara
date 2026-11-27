@@ -53,7 +53,12 @@ impl Session {
     }
 
     pub fn resize(&self, width: f32, height: f32) {
-        self.host(HostReply::ViewportChanged(WindowViewport { size: Size::new(width, height), scale: 1.0, safe_area: None }));
+        self.host(HostReply::ViewportChanged(WindowViewport {
+            size: Size::new(width, height),
+            scale: 1.0,
+            safe_area: None,
+            keyboard_inset: 0.0,
+        }));
     }
 
     pub fn text(&self, value: &str) {

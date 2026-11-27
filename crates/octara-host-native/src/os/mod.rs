@@ -5,20 +5,21 @@ use octara::WindowOptions;
 use octara::runtime::{Input, WindowId};
 use octara::tree::editor::{Composition, EditorSlot};
 use octara_gpu::DrawTarget;
-use octara_model::ask::{Ask, AskId, Menu, ServiceId, ServiceRequest};
+use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceId, ServiceRequest};
 use octara_model::geometry::{Point, Rect, Size, WindowViewport};
 use octara_model::identity::{EditorSessionId, NativeId, TargetGuard};
 use octara_model::input::{EditorEvent, HostReply};
 use octara_model::native::{NativeChange, NativeCommand, NativeMeasureRequest, NativeSlot, NativeSnapshotRequest};
 use octara_model::paint::Image;
 use octara_model::text::TextGeometry;
-use octara_model::window::{WindowChrome, WindowGeometry, WindowGeometryRequest};
+use octara_model::theme::ColorScheme;
+use octara_model::window::{UserAttention, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial};
 use octara_render::{gpu::OutputColor, wgpu};
 use std::sync::Arc;
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::{Ime, KeyEvent};
 use winit::event_loop::EventLoopProxy;
-use winit::window::{Fullscreen, Window, WindowAttributes};
+use winit::window::{Fullscreen, Theme, UserAttentionType, Window, WindowAttributes};
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple_media;
@@ -118,14 +119,21 @@ pub trait OsHost {
     }
     fn create_window(&mut self, context: OsWindowContext<'_>) -> Result<Box<dyn OsWindow>, String>;
     fn set_menus(&mut self, _menus: &[Menu]) {}
+    fn set_app_badge(&mut self, _badge: Option<&str>) {}
+    fn request_user_attention(&mut self, window: Option<&Window>, attention: UserAttention) {
+        if let Some(window) = window {
+            let attention = match attention {
+                UserAttention::Informational => UserAttentionType::Informational,
+                UserAttention::Critical => UserAttentionType::Critical,
+            };
+            window.request_user_attention(Some(attention));
+        }
+    }
     fn open_url(&mut self, _url: &str) {}
-    fn read_clipboard_text(&mut self) -> Option<String> {
+    fn read_clipboard(&mut self, _accept: ClipboardKinds) -> Option<Vec<ClipboardItem>> {
         None
     }
     fn write_clipboard_text(&mut self, _text: &str) {}
-    fn read_clipboard_image(&mut self) -> Option<Image> {
-        None
-    }
     fn write_clipboard_image(&mut self, _image: &Image) {}
     fn drain_platform_events(&mut self, _out: &mut Vec<HostEvent>) {}
     /// Configure the thread that encodes and submits interactive frames.
@@ -178,8 +186,12 @@ pub trait OsWindow {
         apply_window_geometry(window, geometry);
     }
 
-    fn set_window_title(&mut self, window: &Window, title: &str) {
+    fn apply_presentation(&mut self, window: &Window, title: &str, color_scheme: ColorScheme, _material: WindowMaterial) {
         window.set_title(title);
+        window.set_theme(Some(match color_scheme {
+            ColorScheme::Light => Theme::Light,
+            ColorScheme::Dark => Theme::Dark,
+        }));
     }
 
     fn focus_window(&mut self, window: &Window) {

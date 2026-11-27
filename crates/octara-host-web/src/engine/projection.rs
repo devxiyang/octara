@@ -152,7 +152,7 @@ impl DomEngine {
             tree.overlay_nodes()
                 .chain([modal])
                 .filter(|&node| tree.is_in_modal_scope(node, modal))
-                .flat_map(|node| std::iter::successors(tree.parent(node), |&id| tree.parent(id)))
+                .flat_map(|node| std::iter::successors(tree.physical_parent(node), |&id| tree.physical_parent(id)))
                 .collect()
         });
         let mut actions = FxHashSet::default();
@@ -166,14 +166,9 @@ impl DomEngine {
             }
         }
         actions.extend(moved);
+        actions.extend(delta.overlay_dirty.iter().filter(|node| semantics.contains(node)));
         if !actions.is_empty() {
-            let mut affected = subtrees(tree, actions.iter().copied());
-            for node in tree.overlay_nodes() {
-                if actions.iter().any(|&ancestor| tree.is_logically_owned_by(node, ancestor)) {
-                    affected.extend(tree.subtree(node));
-                }
-            }
-            for node in affected {
+            for node in subtrees(tree, actions) {
                 if let Some(previous) = self.dom.set_action(node, dom::action(tree, node, modal)) {
                     self.pending().actions.entry(node).or_insert(previous);
                 }

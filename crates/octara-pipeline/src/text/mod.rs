@@ -1168,7 +1168,7 @@ mod tests {
         let (receipt, created) = tree.apply(tx.finish()).unwrap();
         delta.merge(created);
         let label = receipt.node(label).unwrap();
-        let viewport = WindowViewport { size: Size::new(300.0, 160.0), scale: 1.0, safe_area: None };
+        let viewport = WindowViewport { size: Size::new(300.0, 160.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
         let mut layout = LayoutEngine::default();
         let mut text = TextEngine::new(false);
         layout.project(&tree, &delta, viewport, &mut text);
@@ -1267,7 +1267,7 @@ mod tests {
         let (receipt, mounted) = tree.apply(tx.finish()).unwrap();
         delta.merge(mounted);
         let label = receipt.node(label).unwrap();
-        let viewport = WindowViewport { size: Size::new(300.0, 160.0), scale: 1.0, safe_area: None };
+        let viewport = WindowViewport { size: Size::new(300.0, 160.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
         let mut engine = NativeEngine::new(NativeEngineConfig { check_paint_cache: true, ..Default::default() });
         engine.project(&tree, &delta, viewport, 0.0).unwrap();
         engine.commit();
@@ -1389,7 +1389,7 @@ mod tests {
         });
         let (receipt, created) = tree.apply(tx.finish()).unwrap();
         delta.merge(created);
-        let viewport = WindowViewport { size: Size::new(600.0, 160.0), scale: 1.0, safe_area: None };
+        let viewport = WindowViewport { size: Size::new(600.0, 160.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
         let mut layout = LayoutEngine::default();
         let mut text = TextEngine::new(false);
         layout.project(&tree, &delta, viewport, &mut text);
@@ -1441,7 +1441,7 @@ mod tests {
         });
         let (receipt, created) = tree.apply(tx.finish()).unwrap();
         delta.merge(created);
-        let viewport = WindowViewport { size: Size::new(350.0, 400.0), scale: 1.0, safe_area: None };
+        let viewport = WindowViewport { size: Size::new(350.0, 400.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
         let mut layout = LayoutEngine::default();
         let mut text = TextEngine::new(false);
         layout.project(&tree, &delta, viewport, &mut text);
@@ -1527,7 +1527,7 @@ mod tests {
         let label = receipt.node(label).unwrap();
         let editor = receipt.node(editor).unwrap();
         let link = tree.children(label)[0];
-        let viewport = WindowViewport { size: Size::new(300.0, 160.0), scale: 1.0, safe_area: None };
+        let viewport = WindowViewport { size: Size::new(300.0, 160.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
         let mut layout = LayoutEngine::default();
         let mut text = TextEngine::new(false);
         layout.project(&tree, &delta, viewport, &mut text);

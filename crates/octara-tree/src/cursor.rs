@@ -4,11 +4,11 @@ use octara_model::input::CursorStyle;
 use octara_model::semantics::Role;
 use octara_model::style::State;
 
-/// Resolve the cursor at a hit node using physical ancestry, shared by the desktop and web hosts.
+/// Resolve the cursor at a hit node using logical ancestry, shared by desktop and Web.
 pub fn resolve_cursor(tree: &Tree, hit: Option<NodeId>) -> CursorStyle {
     let hit = hit.filter(|&node| tree.is_live(node));
     let mut fallback = None;
-    for node in std::iter::successors(hit, |&node| tree.parent(node)) {
+    for node in std::iter::successors(hit, |&node| tree.logical_parent(node)) {
         let core = tree.node(node).expect("live hit ancestry");
         let semantics = tree.semantics(node);
         let clickable = core.kind == NodeKind::Link

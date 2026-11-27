@@ -45,7 +45,9 @@ const PRESETS: [Preset; 8] = [
 const MATERIAL: &str = concat!(include_str!("gpu_lab/palette.wgsl"), include_str!("gpu_lab/swatch.wgsl"));
 
 pub fn options() -> WindowOptions {
-    WindowOptions { theme: theme(), ..window_options("Octara Shader Lab", 1000.0, 700.0) }
+    let mut options = window_options("Octara Shader Lab", 1000.0, 700.0);
+    options.presentation.theme = theme();
+    options
 }
 
 fn theme() -> Theme {

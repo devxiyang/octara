@@ -73,7 +73,7 @@ fn modal<V: IntoView + 'static>(
                     .w(rel(1.0))
                     .max_w(480)
                     .min_w(0)
-                    .style_with(move |r, p| p.max_h((r.get(viewport).height - 32.0).max(0.0)))
+                    .style_with(move |r, p| p.max_h((r.get(viewport).unobscured_size().height - 32.0).max(0.0)))
                     .rounded(RadiusToken::Lg)
                     .border(1)
                     .border_color(ColorToken::Border)

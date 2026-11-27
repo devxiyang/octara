@@ -12,9 +12,10 @@ use octara_model::ask::{Answer, Ask, AskId, Menu, ServiceId, ServiceOutcome, Ser
 use octara_model::diagnostics::Diagnostic;
 use octara_model::geometry::Vec2;
 use octara_model::identity::{NativeId, TreeId, WindowId};
-use octara_model::input::{EditorEvent, HostReply, InteractionEvent, TextEdit};
+use octara_model::input::{EditorEvent, HostReply, InteractionEvent, PasteEvent, TextEdit};
 use octara_model::native::NativeCommand;
-use octara_model::window::{SystemPreferences, WindowGeometry, WindowGeometryRequest};
+use octara_model::theme::{ColorScheme, Theme};
+use octara_model::window::{SystemPreferences, UserAttention, WindowGeometry, WindowGeometryRequest, WindowMaterial, WindowPresentation};
 use octara_tree::NodeId;
 use octara_tree::editor::{EditorSession, EditorState};
 use octara_tree::selection::DocSelection;
@@ -53,7 +54,9 @@ pub enum HostCommand {
     WithdrawAsk { window: WindowId, id: AskId },
     Service { window: WindowId, id: ServiceId, request: ServiceRequest },
     OpenUrl { url: String },
-    SetWindowTitle { window: WindowId, title: String },
+    UpdateWindowPresentation { window: WindowId, title: Arc<str>, color_scheme: ColorScheme, material: WindowMaterial },
+    SetAppBadge { badge: Option<Arc<str>> },
+    RequestUserAttention { window: Option<WindowId>, attention: UserAttention },
     SetWindowGeometry { window: WindowId, geometry: WindowGeometryRequest },
     FocusWindow { window: WindowId },
     MinimizeWindow { window: WindowId },
@@ -67,6 +70,9 @@ pub(crate) enum AppCommand {
     Close(WindowId),
     Focus { window: WindowId, test_id: Option<String> },
     WindowControl { window: WindowId, command: HostCommand },
+    WindowPresentation { window: WindowId, update: PresentationUpdate },
+    SetAppBadge(Option<Arc<str>>),
+    RequestUserAttention { window: Option<WindowId>, attention: UserAttention },
     Command { window: WindowId, name: String, after_commit: bool },
     Scroll { window: WindowId, node: NodeId, offset: Vec2 },
     ScrollEnd { window: WindowId, container: String },
@@ -74,7 +80,26 @@ pub(crate) enum AppCommand {
     Ask { window: WindowId, scope: ScopeId, ask: Ask, done: AnswerCallback },
     Service { window: WindowId, scope: ScopeId, request: ServiceRequest, done: ServiceCallback },
     EditorEdit { window: WindowId, event: EditorEvent },
+    Paste { window: WindowId, target: crate::turn::PasteTarget, event: PasteEvent },
     NativeCommand { window: WindowId, command: NativeCommand },
+}
+
+pub(crate) enum PresentationUpdate {
+    Title(Arc<str>),
+    Theme(Box<Theme>),
+    Material(WindowMaterial),
+    All(Box<WindowPresentation>),
+}
+
+impl PresentationUpdate {
+    pub(crate) fn apply(self, presentation: &mut WindowPresentation) {
+        match self {
+            Self::Title(title) => presentation.title = title,
+            Self::Theme(theme) => presentation.theme = *theme,
+            Self::Material(material) => presentation.material = material,
+            Self::All(next) => *presentation = *next,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -117,6 +142,8 @@ pub struct AppRuntime {
     pub(crate) published_host: Vec<HostCommand>,
     pub(crate) menu_window: Option<WindowId>,
     pub(crate) published_menus: Vec<Menu>,
+    pub(crate) app_badge: Option<Arc<str>>,
+    pub(crate) published_badge: Option<Arc<str>>,
     pub(crate) window_geometry: BTreeMap<String, WindowGeometry>,
     pub(crate) normal_window_geometry: BTreeMap<String, WindowGeometry>,
     state_schema: String,
@@ -151,6 +178,8 @@ impl AppRuntime {
             published_host: Vec::new(),
             menu_window: None,
             published_menus: Vec::new(),
+            app_badge: None,
+            published_badge: None,
             window_geometry: BTreeMap::new(),
             normal_window_geometry: BTreeMap::new(),
             state_schema: String::new(),
@@ -242,7 +271,7 @@ impl AppRuntime {
             .next_deadline()
             .into_iter()
             .chain(self.text_stream_deadline)
-            .chain(self.windows.values().filter_map(|window| window.next_deadline))
+            .chain(self.windows.values().flat_map(|window| window.next_deadline.into_iter().chain(window.tooltip.deadline())))
             .min()
     }
 
@@ -302,6 +331,7 @@ impl AppRuntime {
                 .or_insert_with(|| WindowGeometry { maximized: false, ..options.initial_geometry() });
         }
         let mut engine = (self.engine)(id, &options);
+        engine.set_window_material(options.presentation.material);
         if let Some(preferences) = self.host_preferences {
             engine.set_reduced_motion(preferences.reduced_motion);
         }
@@ -428,8 +458,37 @@ impl WriteCx<'_> {
         self.commands().queued.push_back(AppCommand::Close(id));
     }
 
-    pub fn set_window_title(&mut self, title: impl Into<String>) {
-        self.window_control(|window| HostCommand::SetWindowTitle { window, title: title.into() });
+    pub fn set_window_title(&mut self, title: impl Into<Arc<str>>) {
+        self.update_window_presentation(PresentationUpdate::Title(title.into()));
+    }
+
+    pub fn set_window_theme(&mut self, theme: Theme) {
+        self.update_window_presentation(PresentationUpdate::Theme(Box::new(theme)));
+    }
+
+    pub fn set_window_material(&mut self, material: WindowMaterial) {
+        self.update_window_presentation(PresentationUpdate::Material(material));
+    }
+
+    pub fn set_window_presentation(&mut self, presentation: WindowPresentation) {
+        self.update_window_presentation(PresentationUpdate::All(Box::new(presentation)));
+    }
+
+    fn update_window_presentation(&mut self, update: PresentationUpdate) {
+        if let Some(window) = self.window_id() {
+            self.commands().queued.push_back(AppCommand::WindowPresentation { window, update });
+        }
+    }
+
+    /// Set the application's platform badge label, or clear it with `None`.
+    pub fn set_app_badge(&mut self, badge: Option<Arc<str>>) {
+        self.commands().queued.push_back(AppCommand::SetAppBadge(badge));
+    }
+
+    /// Request platform attention for the current window, or the application's active window.
+    pub fn request_user_attention(&mut self, attention: UserAttention) {
+        let window = self.window_id();
+        self.commands().queued.push_back(AppCommand::RequestUserAttention { window, attention });
     }
 
     pub fn set_window_geometry(&mut self, geometry: WindowGeometryRequest) {

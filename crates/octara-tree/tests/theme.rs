@@ -1,6 +1,7 @@
 use octara_model::style::{FontSize, Length, LineHeight, Radius, StyleProp, When};
 use octara_model::theme::{Color, ColorScheme, ColorToken, Fill, FontSizeToken, RadiusToken, TextScale, Theme, ThemePatch, rgb};
-use octara_tree::{NodeChange, NodeContent, NodeSpec, RuntimeOp, Tree, TreeId, tables::AuthoredStyle};
+use octara_tree::transaction::OverlaySpec;
+use octara_tree::{NodeChange, NodeContent, NodeFlags, NodeSpec, Retirement, RuntimeOp, Tree, TreeId, tables::AuthoredStyle};
 
 fn scope(patch: ThemePatch) -> NodeChange {
     NodeChange::ThemePatch(Some(Box::new(patch)))
@@ -124,4 +125,75 @@ fn token_typography_inherits_and_resolves_inside_the_current_scope() {
     assert_eq!((explicit.font_size, explicit.line_height), (14.0, 28.0));
     assert_eq!((scoped.font_size, scoped.line_height), (13.0, 19.0));
     assert_ne!(token.text, Color::TRANSPARENT);
+}
+
+#[test]
+fn portal_inherits_from_its_owner_and_refreshes_nested_scopes_after_reparenting() {
+    use octara_model::{geometry::Placement, overlay::AnchorTarget};
+
+    let mut tree = Tree::new(TreeId::new([7, 1], 3), Theme::light());
+    let mut tx = tree.transaction();
+    let owner = tx.create(NodeSpec::new(NodeContent::Box));
+    let anchor = tx.create(NodeSpec::new(NodeContent::Box));
+    let portal = tx.create(NodeSpec::new(NodeContent::Box));
+    let nested = tx.create(NodeSpec::new(NodeContent::Text("Nested".into())));
+    let mount = |owner, anchor| {
+        NodeChange::Overlay(OverlaySpec {
+            mount: Some((owner, 1)),
+            target: Some((AnchorTarget::Node(anchor), Placement::BELOW)),
+            ..Default::default()
+        })
+    };
+    let style = |base| NodeChange::Style(Box::new(AuthoredStyle { base, ..Default::default() }));
+    let dark = scope(ThemePatch::default().scheme(ColorScheme::Dark));
+    tx.change(owner, dark);
+    tx.change(owner, style([StyleProp::FontSize(FontSize::Len(Length::Px(22.0)))].into_iter().collect()));
+    tx.change(portal, mount(owner.into(), anchor.into()));
+    tx.change(nested, NodeChange::Overlay(OverlaySpec { mount: Some((portal.into(), 2)), ..Default::default() }));
+    tx.change(nested, accent_style());
+    tx.place(tree.node_ref(tree.root()), 0, owner);
+    tx.place(tree.node_ref(tree.root()), 1, anchor);
+    tx.place(tree.node_ref(tree.overlay_root()), 0, portal);
+    tx.place(tree.node_ref(tree.overlay_root()), 1, nested);
+    let (receipt, _) = tree.apply(tx.finish()).unwrap();
+    let [owner, anchor, portal, nested] = [owner, anchor, portal, nested].map(|id| receipt.node(id).unwrap());
+
+    assert_eq!(tree.physical_parent(portal), Some(tree.overlay_root()));
+    assert_eq!(tree.logical_parent(portal), Some(owner));
+    assert_eq!(tree.logical_parent(nested), Some(portal));
+    assert_eq!(tree.theme_at(nested).scheme, ColorScheme::Dark);
+    assert_eq!(tree.visual(nested).text, tree.theme_at(nested).get(ColorToken::Info));
+    assert_eq!(tree.visual(nested).font_size, 22.0);
+    assert!(tree.validate_integrity().is_ok());
+
+    let mut tx = tree.transaction();
+    tx.change(tree.node_ref(anchor), NodeChange::Disabled(true));
+    tx.change(tree.node_ref(owner), scope(ThemePatch::default().scheme(ColorScheme::Light)));
+    let (_, changed) = tree.apply(tx.finish()).unwrap();
+    assert!(tree.is_interactive(nested));
+    assert_eq!(tree.theme_at(nested).scheme, ColorScheme::Light);
+    assert!(changed.paint_dirty.contains(&nested));
+
+    let mut tx = tree.transaction();
+    tx.change(tree.node_ref(portal), mount(tree.node_ref(anchor), tree.node_ref(owner)));
+    let (_, changed) = tree.apply(tx.finish()).unwrap();
+    assert_eq!(tree.logical_parent(portal), Some(anchor));
+    assert_eq!(tree.visual(nested).font_size, tree.visual(anchor).font_size);
+    assert!(changed.layout_dirty.contains(&nested));
+    assert!(!tree.is_interactive(nested));
+    assert!(tree.validate_integrity().is_ok());
+
+    let mut tx = tree.transaction();
+    tx.change(tree.node_ref(anchor), NodeChange::Disabled(false));
+    tx.change(tree.node_ref(anchor), NodeChange::Flags(NodeFlags::INERT));
+    tree.apply(tx.finish()).unwrap();
+    assert!(!tree.is_interactive(nested));
+
+    let mut tx = tree.transaction();
+    tx.retire(tree.node_ref(anchor), Retirement::Destroy);
+    tree.apply(tx.finish()).unwrap();
+    assert!(tree.node(owner).is_some());
+    assert!(tree.node(portal).is_none());
+    assert!(tree.node(nested).is_none());
+    assert!(tree.validate_integrity().is_ok());
 }

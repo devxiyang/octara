@@ -16,13 +16,14 @@ use editor::TextInput;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_foundation::{NSDictionary, NSString, NSURL};
-use objc2_ui_kit::{UIApplication, UIPasteboard, UIView};
+use objc2_ui_kit::{UIApplication, UIPasteboard, UIUserInterfaceStyle, UIView};
 use octara::runtime::{Input, WindowId};
-use octara_model::ask::{ServiceId, ServiceOutcome, ServiceRequest};
+use octara_model::ask::{ClipboardItem, ClipboardKinds, ServiceId, ServiceOutcome, ServiceRequest};
 use octara_model::geometry::{Size, WindowViewport};
 use octara_model::identity::TargetGuard;
 use octara_model::input::{HostReply, InteractionEvent};
-use octara_model::window::{WindowGeometry, WindowGeometryRequest};
+use octara_model::theme::ColorScheme;
+use octara_model::window::{WindowGeometry, WindowGeometryRequest, WindowMaterial};
 use scene::SceneConnection;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -116,8 +117,8 @@ impl OsHost for IosHost {
         unsafe { UIApplication::sharedApplication(mtm).openURL_options_completionHandler(&url, &NSDictionary::new(), None) };
     }
 
-    fn read_clipboard_text(&mut self) -> Option<String> {
-        clipboard_text()
+    fn read_clipboard(&mut self, accept: ClipboardKinds) -> Option<Vec<ClipboardItem>> {
+        MainThreadMarker::new().map(|_| read_clipboard(accept))
     }
 
     fn write_clipboard_text(&mut self, text: &str) {
@@ -156,7 +157,15 @@ impl OsWindow for IosWindow {
 
     fn set_window_geometry(&mut self, _window: &Window, _geometry: WindowGeometryRequest) {}
 
-    fn set_window_title(&mut self, _window: &Window, _title: &str) {}
+    fn apply_presentation(&mut self, _window: &Window, title: &str, color_scheme: ColorScheme, _material: WindowMaterial) {
+        self.content.setOverrideUserInterfaceStyle(match color_scheme {
+            ColorScheme::Light => UIUserInterfaceStyle::Light,
+            ColorScheme::Dark => UIUserInterfaceStyle::Dark,
+        });
+        if let Some(scene) = self.content.window().and_then(|window| window.windowScene()) {
+            scene.setTitle(Some(&NSString::from_str(title)));
+        }
+    }
 
     fn focus_window(&mut self, _window: &Window) {
         if let Some(window) = self.content.window() {
@@ -189,7 +198,7 @@ impl OsWindow for IosWindow {
 
     fn request_service(&mut self, id: ServiceId, request: ServiceRequest) -> Option<ServiceCleanup> {
         let outcome = match request {
-            ServiceRequest::ReadClipboardText => ServiceOutcome::ClipboardText(clipboard_text().unwrap_or_default()),
+            ServiceRequest::ReadClipboard { accept } => ServiceOutcome::Clipboard(read_clipboard(accept)),
             ServiceRequest::WriteClipboardText { text } => {
                 write_clipboard_text(&text);
                 ServiceOutcome::ClipboardWritten
@@ -226,8 +235,8 @@ impl WindowTextInput for IosWindow {
     }
 
     fn drain_text_input(&mut self, out: &mut Vec<WindowHostEvent>) {
-        if let Some(event) = self.editor.take() {
-            out.push(Input::Editor(event));
+        if let Some(input) = self.editor.take() {
+            out.push(input);
         }
     }
 
@@ -238,11 +247,11 @@ impl WindowTextInput for IosWindow {
 
 impl WindowScene for IosWindow {
     fn viewport(&self, viewport: WindowViewport) -> WindowViewport {
-        scene::viewport(&self.content, self.editor.keyboard_top(), viewport)
+        scene::viewport(&self.content, self.editor.keyboard_inset(), viewport)
     }
 
     fn keyboard_open(&self) -> bool {
-        self.editor.keyboard_top().is_some()
+        self.editor.keyboard_inset() > 0.0
     }
 
     fn sync_back(&mut self, owner: Option<TargetGuard>) {
@@ -264,10 +273,42 @@ impl WindowScene for IosWindow {
     }
 }
 
-fn clipboard_text() -> Option<String> {
-    let _mtm = MainThreadMarker::new()?;
-    // SAFETY: UIKit pasteboard access is on the main thread.
-    unsafe { UIPasteboard::generalPasteboard().string() }.map(|value| value.to_string())
+fn read_clipboard(accept: ClipboardKinds) -> Vec<ClipboardItem> {
+    let Some(_mtm) = MainThreadMarker::new() else { return Vec::new() };
+    let pasteboard = UIPasteboard::generalPasteboard();
+    let mut items = Vec::new();
+    // SAFETY: These pasteboard reads are on the main thread.
+    unsafe {
+        if accept.contains(ClipboardKinds::TEXT)
+            && let Some(texts) = pasteboard.strings()
+        {
+            items.extend(texts.iter().map(|text| ClipboardItem::Text(text.to_string())));
+        }
+        if accept.contains(ClipboardKinds::IMAGE)
+            && let Some(images) = pasteboard.images()
+        {
+            items.extend(images.iter().filter_map(|image| {
+                Some(ClipboardItem::Image { media_type: "image/png".into(), bytes: image.png_representation()?.to_vec() })
+            }));
+        }
+        if accept.contains(ClipboardKinds::FILES)
+            && let Some(urls) = pasteboard.URLs()
+        {
+            let paths: Vec<_> = urls.iter().filter(|url| url.isFileURL()).filter_map(|url| url.to_file_path()).collect();
+            if !paths.is_empty() {
+                items.push(ClipboardItem::Files(paths));
+            }
+        }
+    }
+    items
+}
+
+fn has_paste_items() -> bool {
+    // SAFETY: UIKit asks the responder to validate actions on the main thread.
+    unsafe {
+        let pasteboard = UIPasteboard::generalPasteboard();
+        pasteboard.hasStrings() || pasteboard.hasImages() || pasteboard.hasURLs()
+    }
 }
 
 fn write_clipboard_text(text: &str) {

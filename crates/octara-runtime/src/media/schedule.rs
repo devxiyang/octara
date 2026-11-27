@@ -301,7 +301,7 @@ impl AppRuntime {
                     let mut visible = view;
                     let mut prefetch = expand(view);
                     let mut hidden = false;
-                    for ancestor in std::iter::successors(Some(node), |&node| runtime.tree.parent(node)) {
+                    for ancestor in std::iter::successors(Some(node), |&node| runtime.tree.physical_parent(node)) {
                         hidden |= runtime.tree.node(ancestor).is_some_and(|core| core.flags.contains(NodeFlags::HIDDEN))
                             || runtime.tree.layout_style(ancestor).display == Display::None;
                         if ancestor != node

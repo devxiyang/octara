@@ -46,14 +46,13 @@ impl Tree {
         let mut region = None;
         let mut next = Some(node);
         while let Some(node) = next {
-            let core = self.node(node)?;
             if self.selection_excluded(node) {
                 return None;
             }
             if self.user_select(node) == Some(UserSelect::Text) {
                 region = Some(node);
             }
-            next = core.parent;
+            next = self.logical_parent(node);
         }
         region
     }
@@ -76,7 +75,7 @@ impl Tree {
             if self.text(node).is_some() {
                 texts.push(node);
             } else {
-                stack.extend(self.children(node).iter().rev().copied());
+                stack.extend(self.logical_children(node).rev());
             }
         }
         texts
@@ -153,7 +152,7 @@ impl Tree {
             if self.selection_excluded(text) {
                 return false;
             }
-            let Some(parent) = self.parent(text) else { return false };
+            let Some(parent) = self.logical_parent(text) else { return false };
             text = parent;
         }
         true

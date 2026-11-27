@@ -2,7 +2,7 @@
 
 use octara_model::{
     geometry::Vec2,
-    input::{DroppedFile, KeyEvent},
+    input::{DroppedFile, KeyEvent, PasteEvent},
 };
 use octara_runtime::{HandlerEvent, HandlerOutcome, MountCx, WriteCx};
 use octara_tree::{NodeRef, tables::HandlerKind};
@@ -69,6 +69,14 @@ impl Behavior {
     pub fn on_key(self, f: impl Fn(&mut WriteCx<'_>, &KeyEvent) -> bool + 'static) -> Self {
         self.handle(HandlerKind::Key, move |w, event| {
             let consumed = matches!(event, HandlerEvent::Key(key) if f(w, key));
+            HandlerOutcome { consumed, ..Default::default() }
+        })
+    }
+
+    /// Returns `true` to consume the paste before ancestors or the focused editor receive it.
+    pub fn on_paste(self, f: impl Fn(&mut WriteCx<'_>, &PasteEvent) -> bool + 'static) -> Self {
+        self.handle(HandlerKind::Paste, move |w, event| {
+            let consumed = matches!(event, HandlerEvent::Paste(paste) if f(w, paste));
             HandlerOutcome { consumed, ..Default::default() }
         })
     }

@@ -179,11 +179,11 @@ impl From<Spring> for Curve {
     }
 }
 
-/// The fade Reduce Motion turns opacity and color changes into (Rune: 0.18 s).
+/// The fade Reduce Motion turns opacity and color changes into.
 pub const REDUCED_FADE: Curve = Curve::Fade(0.18);
 
 /// What kind of quantity a property is: it decides when motion counts as at rest, and what
-/// Reduce Motion does with it (Rune's `PropClass`).
+/// Reduce Motion does with it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PropClass {
     /// Positions and sizes (logical pixels).

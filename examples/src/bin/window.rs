@@ -15,7 +15,7 @@ fn main() -> Result<(), ShellError> {
         let mut options = gpu_lab::options();
         return match args.next().as_deref() {
             Some("input-pressure") => {
-                options.title = gpu_lab::input_pressure::TITLE.into();
+                options.presentation.title = gpu_lab::input_pressure::TITLE.into();
                 options.viewport.size = Size::new(1440.0, 900.0);
                 native::run(options, gpu_lab::input_pressure::view)
             }

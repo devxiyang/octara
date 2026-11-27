@@ -63,7 +63,7 @@ pub(crate) fn style(tree: &Tree, node: NodeId, viewport: WindowViewport, activat
     );
     let _ = write!(css, "isolation:isolate;z-index:{};", v.z_index);
     if let Some(link) = tree.link(node)
-        && let Some(text) = tree.parent(node).and_then(|parent| tree.text(parent))
+        && let Some(text) = tree.physical_parent(node).and_then(|parent| tree.text(parent))
         && text.runs.iter().any(|(range, _)| range.contains(&link.range.start))
     {
         css.push_str("text-decoration:none;");
@@ -357,7 +357,10 @@ pub(crate) fn style(tree: &Tree, node: NodeId, viewport: WindowViewport, activat
         if drag_source {
             Some(UserSelect::None)
         } else if kind != NodeKind::TextInput {
-            tree.user_select(node)
+            tree.user_select(node).or_else(|| {
+                (tree.logical_parent(node) != tree.physical_parent(node))
+                    .then(|| if tree.region_of(node).is_some() { UserSelect::Text } else { UserSelect::None })
+            })
         } else {
             None
         }
@@ -389,7 +392,7 @@ pub(crate) fn style(tree: &Tree, node: NodeId, viewport: WindowViewport, activat
     if node == tree.overlay_root() || core.flags.contains(NodeFlags::POINTER_EVENTS_NONE) {
         css.push_str("pointer-events:none;");
     } else if v.pointer_events == Some(true)
-        || tree.parent(node).is_some_and(|parent| {
+        || tree.physical_parent(node).is_some_and(|parent| {
             parent == tree.overlay_root() || tree.node(parent).is_some_and(|parent| parent.flags.contains(NodeFlags::POINTER_EVENTS_NONE))
         })
     {

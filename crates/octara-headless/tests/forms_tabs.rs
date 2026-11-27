@@ -2,7 +2,6 @@
 
 use octara::{Input, InteractionEvent, prelude::*};
 use octara_headless::{
-    TooltipState,
     checkbox::{checkbox, switch},
     field::{FieldState, FieldsetState, control, description, field, fieldset, label},
     range::{NumberFieldState, ProgressState, Range, SliderState},
@@ -53,11 +52,7 @@ fn field_updates_the_accessible_name_on_the_same_editor_and_inherits_disabled_st
                     View::fragment([
                         label(build, text(name).test_id("label")).into_view(),
                         description(build, text("Use the full name").test_id("description")).into_view(),
-                        TooltipState::new(build, Default::default())
-                            .trigger(control(build, input().test_id("editor").value("Original")), Placement::BELOW, None, |_| {
-                                text("Optional hint")
-                            })
-                            .into_view(),
+                        control(build, input().test_id("editor").value("Original")).tooltip("Optional hint").into_view(),
                     ])
                 })
             })
@@ -260,7 +255,7 @@ fn checked_mixed_switch_and_range_use_the_callers_actual_elements() {
 fn controllers_are_copy_with_owned_keys_and_payloads() {
     use octara_headless::{
         Collection, ComboboxState, ContextMenuState, DataTableState, DialogState, DisclosureState, ListboxState, MenuState, PopoverGroup,
-        PopoverState, RadioGroupState, Selection, ToastQueue, TreeViewState, tooltip::TooltipGroup,
+        PopoverState, RadioGroupState, Selection, ToastQueue, TreeViewState,
     };
 
     fn check<T: Copy>() {}
@@ -282,8 +277,6 @@ fn controllers_are_copy_with_owned_keys_and_payloads() {
     check::<TreeViewState<String>>();
     check::<DataTableState<String, String>>();
     check::<ToastQueue<String>>();
-    check::<TooltipState>();
-    check::<TooltipGroup>();
     check::<NumberFieldState>();
     check::<ProgressState<Signal<Option<f64>>>>();
     check::<SliderState>();

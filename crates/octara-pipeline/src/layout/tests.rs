@@ -44,7 +44,7 @@ fn scroll_anchoring_keeps_window_bounds_stable_in_the_layout_that_moves_the_chil
     let leading = receipt.node(leading).unwrap();
     let hidden = receipt.node(hidden).unwrap();
     let anchor = receipt.node(anchor).unwrap();
-    let viewport = WindowViewport { size: Size::new(200.0, 200.0), scale: 1.0, safe_area: None };
+    let viewport = WindowViewport { size: Size::new(200.0, 200.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
     let mut layout = LayoutEngine::default();
     let mut text = TextEngine::new(false);
     delta.merge(tree.apply_runtime(RuntimeOp::RequestScroll { node: port, target: Vec2::new(0.0, 90.0) }));
@@ -105,7 +105,7 @@ fn initial_keyboard_focus_reveals_an_inline_link_before_link_projection() {
     let port = receipt.node(port).unwrap();
     let link = tree.children(receipt.node(label).unwrap())[0];
     delta.merge(tree.apply_runtime(RuntimeOp::SetFocus { node: Some(link), visible: true }));
-    let viewport = WindowViewport { size: Size::new(200.0, 200.0), scale: 1.0, safe_area: None };
+    let viewport = WindowViewport { size: Size::new(200.0, 200.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
     let mut layout = LayoutEngine::default();
     let mut text = TextEngine::new(false);
     assert!(layout.bounds(link).is_none());
@@ -183,7 +183,7 @@ fn scroll_projects_only_its_subtree_links_and_dependent_anchors() {
     let first = receipt.node(first).unwrap();
     let second = receipt.node(second).unwrap();
     let idle = receipt.node(idle).unwrap();
-    let viewport = WindowViewport { size: Size::new(320.0, 300.0), scale: 1.0, safe_area: None };
+    let viewport = WindowViewport { size: Size::new(320.0, 300.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
     let mut layout = LayoutEngine::default();
     let mut text = TextEngine::new(false);
     for update in layout.project(&tree, &delta, viewport, &mut text) {
@@ -245,7 +245,7 @@ fn aborted_topology_restores_projected_geometry_and_reuses_taffy() {
     delta.merge(created);
     let existing = receipt.node(existing).unwrap();
     let retired = receipt.node(retired).unwrap();
-    let viewport = WindowViewport { size: Size::new(320.0, 300.0), scale: 1.0, safe_area: None };
+    let viewport = WindowViewport { size: Size::new(320.0, 300.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
     let mut layout = LayoutEngine::default();
     let mut text = TextEngine::new(false);
     layout.project(&tree, &delta, viewport, &mut text);
@@ -298,7 +298,7 @@ fn fixed_height_editor_reveals_the_caret_and_replaces_text_without_recomputing_t
     delta.merge(created);
     let editor = receipt.node(editor).unwrap();
     delta.merge(tree.apply_runtime(RuntimeOp::SetFocus { node: Some(editor), visible: true }));
-    let viewport = WindowViewport { size: Size::new(320.0, 300.0), scale: 1.0, safe_area: None };
+    let viewport = WindowViewport { size: Size::new(320.0, 300.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
     let mut layout = LayoutEngine::default();
     let mut text = TextEngine::new(false);
     layout.project(&tree, &delta, viewport, &mut text);
@@ -358,7 +358,7 @@ fn growing_editor_recomputes_layout_after_the_value_changes() {
     let (receipt, created) = tree.apply(tx.finish()).unwrap();
     delta.merge(created);
     let editor = receipt.node(editor).unwrap();
-    let viewport = WindowViewport { size: Size::new(320.0, 300.0), scale: 1.0, safe_area: None };
+    let viewport = WindowViewport { size: Size::new(320.0, 300.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
     let mut layout = LayoutEngine::default();
     let mut text = TextEngine::new(false);
     layout.project(&tree, &delta, viewport, &mut text);
@@ -394,7 +394,12 @@ fn settles_safe_fit_scroll_feedback_and_destroyed_layout_nodes() {
     delta.merge(transaction_delta);
     let overlay = receipt.node(overlay).unwrap();
     let child = receipt.node(child).unwrap();
-    let viewport = WindowViewport { size: Size::new(180.0, 140.0), scale: 1.0, safe_area: Some(Rect::new(12.0, 16.0, 144.0, 112.0)) };
+    let viewport = WindowViewport {
+        size: Size::new(180.0, 140.0),
+        scale: 1.0,
+        safe_area: Some(Rect::new(12.0, 16.0, 144.0, 112.0)),
+        keyboard_inset: 0.0,
+    };
     let mut layout = LayoutEngine::default();
     let mut text = TextEngine::new(false);
     let updates = layout.project(&tree, &delta, viewport, &mut text);
@@ -434,7 +439,7 @@ fn unanchored_portal_geometry_follows_the_display_of_its_owner() {
     delta.merge(created);
     let page = receipt.node(page).unwrap();
     let portal = receipt.node(portal).unwrap();
-    let viewport = WindowViewport { size: Size::new(320.0, 300.0), scale: 1.0, safe_area: None };
+    let viewport = WindowViewport { size: Size::new(320.0, 300.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
     let mut layout = LayoutEngine::default();
     let mut text = TextEngine::new(false);
     layout.project(&tree, &delta, viewport, &mut text);

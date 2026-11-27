@@ -131,7 +131,7 @@ Create `crates/octara-headless` (`version.workspace = true`, `publish = true`) d
 - `combobox.rs` — `ComboboxState<K>`, `input` (IME composition guard — Enter during composition never commits option), `button`, `options` (standard & virtualized via `virtual_each` + `reveal_row`), `option` (custom row builder, single or multi selection).
 - `radio_group.rs` — `RadioGroupState<K>`, `group`, `radio`.
 - `tabs.rs` — `TabsState<K>`, `Activation::Automatic | Activation::Manual`, orientation (`Horizontal | Vertical`), `list`, `tab`, `panels`, `panel` (auto-wires `controls` / `labelled_by`).
-- `tooltip.rs` — `TooltipState`, hover/focus open delay + warmup/cooldown, Escape dismiss, non-modal anchored `Role::Tooltip`.
+- Tooltips use `El::tooltip` and the shared window layer in [13 §2.4](13-window-presentation-multimodal-input-and-inline-primitives.md#24-m4--precise-linkevent-modifiers-ordered-spsc-textstreamop-and-layered-hover-tooltip).
 - `toast.rs` — `ToastQueue<T>` (`Copy` handle), `push`/`dismiss`/`pause`/`resume`, auto-dismiss timer via `TaskCx::sleep` (virtual-clock DST testable!), `Live::Polite` / `Live::Assertive`.
 - `range.rs` — `SliderState`, `NumberFieldState`, `ProgressState`.
 - `tree_view.rs` — `TreeViewState<K>`, reactive flattened visible rows over `ReadList`, expand/collapse (Left/Right arrows), roving focus, single/multi selection, virtual-ready.
@@ -158,7 +158,7 @@ All 5 scenarios MUST have dedicated automated tests in `crates/octara-headless/t
 - Complete turnkey widget surface:
   - **Core Controls**: `button(label, size, variant)`, `button_part` for custom elements, `icon_button`, `toggle_button` with a boolean binding, `checkbox` (tri-state), `switch`, `text_field`, `text_area`, `search_field`, `password_field`, `number_field`, `slider`, `progress`, `file_dropzone`.
   - **Forms & Choices**: `field`, `fieldset`, `radio_group`, `select` and `combobox` with `Selection`, `PickerOptions` and caller-authored row factories, and `combobox_input` for inline suggestions. Pickers and radio groups use Headless `Choice` data.
-  - **Overlays & Feedback**: `dialog`, `alert_dialog`, `popover`, `menu_button`, `context_menu`, `tooltip`, `toast_viewport` + `ToastQueue`, `command_palette`.
+  - **Overlays & Feedback**: `dialog`, `alert_dialog`, `popover`, `menu_button`, `context_menu`, `toast_viewport` + `ToastQueue`, `command_palette`.
   - **Navigation & Structure**: `tabs` (auto & manual, integrated `tab_panel`), `segmented`, `breadcrumb`, `collapsible`, `list` / `list_item` / `list_header`, `split` / `splitter`, `separator`.
   - **Data & Rich Content**: `tree_view`, `data_table`, `badge`, `avatar`, `skeleton`, `spinner`, `chip` / `removable_chip`, `callout`, streaming `markdown`.
 

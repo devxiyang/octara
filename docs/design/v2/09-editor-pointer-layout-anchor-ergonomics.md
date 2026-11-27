@@ -140,7 +140,7 @@
 1. **Export `octara_kit::parts`**:
    - Publish Kit's styled building blocks (`button_part`, `popup_surface`, `editor_style`, `option_list`, `option_row`, `focus_outline`, `input_outline`) so apps can freely compose `octara-headless` + Kit visuals without waiting on wrapper options.
 2. **Shared `PopupOptions` & `ComboboxOptions`**:
-   - `PopupOptions { placement: Placement, width: Option<Length>, min_width: Option<Length>, max_height: Option<Length>, match_trigger_width: bool, surface_style: Option<StylePatch> }` with fluent builders, reused across `select`, `combobox`, `combobox_input`, `popover`, `menu_button`, `context_menu`, `tooltip`.
+   - `PopupOptions { placement: Placement, width: Option<Length>, min_width: Option<Length>, max_height: Option<Length>, match_trigger_width: bool, surface_style: Option<StylePatch> }` with fluent builders, reused across `select`, `combobox`, `combobox_input`, `popover`, `menu_button`, `context_menu`.
    - `ComboboxOptions { picker: PickerOptions, popup: PopupOptions, placeholder: Option<String>, trigger_style: Option<StylePatch>, input_style: Option<StylePatch> }` replacing the old `PickerOptions` parameter on `combobox` (zero `Rc::new` / zero `RefCell`).
 3. **`KitLocale` Localization Context**:
    - Define `KitLocale` (with `KitLocale::en()` default + `KitLocale::zh_cn()` preset + field overrides) provided via `b.provide(KitLocale::...)` and consumed by all Kit components (`copy`, `copied`, `search`, `close`, `loading`, `clear_search`, `dismiss_notification`, `search_commands`, `breadcrumb`, `remove_item`).
@@ -150,7 +150,7 @@
 - `input` / `textarea` (`editor_style`): highlight border on `State::FOCUSED` (and composite fields on `State::FOCUS_WITHIN`), while buttons keep `State::FOCUS_VISIBLE`.
 - `menu_item`: render a visible check icon (`icons::CHECK`) for checked `MenuItemCheckbox` items (and aligned spacer when unchecked in a checkable menu).
 - `badge` & `callout`: use semantic tinted surfaces (`tone.alpha(0.10)` background + `tone.alpha(0.25)` border) powered by Wave 1 `ColorValue::Alpha`.
-- `tooltip`: sensible default `max_w(280)` and `PopupOptions`.
+- `WindowTooltipLayer` caps the default tooltip width at 280 logical pixels.
 - `dialog` & `popup_surface`: use `ColorToken::SurfaceElevated` for clear dark-mode elevation contrast.
 
 ### 3.3 Four-Layer Markdown & Typography Architecture (`octara-kit::markdown`)

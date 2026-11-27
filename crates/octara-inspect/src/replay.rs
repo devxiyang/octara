@@ -199,7 +199,8 @@ fn private_reply(app: &App, window: WindowId, reply: &HostReply) -> bool {
     match reply {
         HostReply::AskAnswer { answer: Answer::Paths(_) | Answer::NewPath(_), .. }
         | HostReply::FilesDropped { .. }
-        | HostReply::ServiceReply { outcome: ServiceOutcome::FilePicked(_) | ServiceOutcome::ClipboardText(_), .. }
+        | HostReply::Paste(_)
+        | HostReply::ServiceReply { outcome: ServiceOutcome::FilePicked(_) | ServiceOutcome::Clipboard(_), .. }
         | HostReply::NativeEvent { .. }
         | HostReply::NativeSnapshot { .. } => true,
         HostReply::AccessibilityAction { target, action: A11yAction::SetValue(_) } => app.runtime().window(window).is_none_or(|window| {

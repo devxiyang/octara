@@ -31,7 +31,6 @@ pub mod range;
 pub mod splitter;
 pub mod tabs;
 pub mod toast;
-pub mod tooltip;
 pub mod tree_view;
 
 pub use collection::{Choice, Collection, Navigation, Selection};
@@ -47,7 +46,6 @@ pub use radio_group::RadioGroupState;
 pub use range::{NumberFieldState, ProgressState, SliderState};
 pub use tabs::TabsState;
 pub use toast::ToastQueue;
-pub use tooltip::TooltipState;
 pub use tree_view::TreeViewState;
 
 use octara::prelude::{Binding, BuildCx, Signal};

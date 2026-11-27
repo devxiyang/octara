@@ -1,8 +1,113 @@
 use octara::{HostCommand, HostReply, Input, InteractionEvent, PointerId, PointerKind, prelude::*};
 use octara_inspect::HeadlessDriver;
+use octara_pipeline::NativeEngineConfig;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
+
+#[test]
+fn initial_presentation_resolves_custom_tokens_during_mount() {
+    use octara::model::diagnostics::codes;
+
+    let mut driver = HeadlessDriver::new(Default::default());
+    let app = driver.app_mut();
+    let token = ColorToken::Custom("fixture-accent");
+    let theme = Theme::dark().color(token, rgb(0x26478c));
+    let window = AppDefinition::new()
+        .window(WindowDefinition::new(WindowOptions::default(), move |_| el().bg(token)).presentation_with(move |_| WindowPresentation {
+            title: "Custom".into(),
+            theme: theme.clone(),
+            ..Default::default()
+        }))
+        .launch(app, None)
+        .unwrap()[0];
+    assert_eq!(app.runtime().window(window).unwrap().presentation().title.as_ref(), "Custom");
+    assert!(app.runtime_mut().take_diagnostics().iter().all(|diagnostic| diagnostic.code != &codes::MISSING_THEME_TOKEN));
+}
+
+#[test]
+fn reactive_and_imperative_presentation_share_the_published_frame() {
+    let mut driver = HeadlessDriver::new(NativeEngineConfig { supports_window_vibrancy: true, ..Default::default() });
+    let app = driver.app_mut();
+    let (title, dark, vibrant) = app.build(|build| (build.signal("Initial"), build.signal(false), build.signal(false))).unwrap();
+    let material = WindowMaterial::Vibrancy(VibrancyMaterial::Sidebar);
+    let window = AppDefinition::new()
+        .window(
+            WindowDefinition::new(WindowOptions::default(), |_| el())
+                .title_with(move |read| read.get(title))
+                .theme_with(move |read| if read.get(dark) { Theme::dark() } else { Theme::light() })
+                .material_with(move |read| if read.get(vibrant) { material } else { WindowMaterial::Opaque }),
+        )
+        .launch(app, None)
+        .unwrap()[0];
+    let current = app.runtime().window(window).unwrap();
+    assert_eq!(current.presentation().title.as_ref(), "Initial");
+    assert_eq!(current.last_commit().unwrap().draw.as_ref().unwrap().background, current.tree().theme().get(ColorToken::Background));
+    assert!(matches!(app.runtime_mut().take_host_commands().as_slice(), [
+        HostCommand::Opened(opened),
+        HostCommand::UpdateWindowPresentation { window: updated, title, color_scheme: ColorScheme::Light, material: WindowMaterial::Opaque },
+    ] if *opened == window && *updated == window && title.as_ref() == "Initial"));
+
+    app.update_window(window, |write| {
+        write.set_window_title("Intermediate");
+        write.set(title, "Reactive");
+        write.set(dark, true);
+        write.set(vibrant, true);
+    })
+    .unwrap();
+    assert!(matches!(app.runtime_mut().take_host_commands().as_slice(), [
+        HostCommand::UpdateWindowPresentation { window: updated, title, color_scheme: ColorScheme::Dark, material: updated_material },
+    ] if *updated == window && title.as_ref() == "Reactive" && *updated_material == material));
+    let current = app.runtime().window(window).unwrap();
+    assert_eq!(current.presentation().theme, Theme::dark());
+    assert_eq!(current.tree().theme(), &current.presentation().theme);
+    assert_eq!(current.last_commit().unwrap().draw.as_ref().unwrap().background, Color::TRANSPARENT);
+
+    let background = rgb(0x203757);
+    let theme = Theme::dark().color(ColorToken::Background, background);
+    app.update_window(window, |write| {
+        write.set_window_theme(theme.clone());
+        write.set_window_material(WindowMaterial::Opaque);
+        write.set_window_title("Final");
+    })
+    .unwrap();
+    let current = app.runtime().window(window).unwrap();
+    assert_eq!(current.options().presentation.title.as_ref(), "Final");
+    assert_eq!(current.tree().theme(), &theme);
+    assert_eq!(current.last_commit().unwrap().draw.as_ref().unwrap().background, background);
+    assert!(matches!(app.runtime_mut().take_host_commands().as_slice(), [
+        HostCommand::UpdateWindowPresentation { window: updated, title, color_scheme: ColorScheme::Dark, material: WindowMaterial::Opaque },
+    ] if *updated == window && title.as_ref() == "Final"));
+
+    app.update_window(window, |write| {
+        write.set_window_title("Temporary");
+        write.set_window_title("Final");
+    })
+    .unwrap();
+    assert!(app.runtime_mut().take_host_commands().is_empty());
+}
+
+#[test]
+fn headless_records_badge_and_attention_commands() {
+    let mut driver = HeadlessDriver::new(Default::default());
+    let app = driver.app_mut();
+    let window = app.open_window(WindowOptions::default(), |_| el()).unwrap();
+    app.runtime_mut().take_host_commands();
+    app.update_window(window, |write| {
+        write.set_app_badge(Some("1".into()));
+        write.set_app_badge(Some("2".into()));
+        write.request_user_attention(UserAttention::Informational);
+        write.request_user_attention(UserAttention::Critical);
+    })
+    .unwrap();
+    assert!(matches!(app.runtime_mut().take_host_commands().as_slice(), [
+        HostCommand::RequestUserAttention { window: Some(first), attention: UserAttention::Informational },
+        HostCommand::RequestUserAttention { window: Some(second), attention: UserAttention::Critical },
+        HostCommand::SetAppBadge { badge: Some(badge) },
+    ] if *first == window && *second == window && badge.as_ref() == "2"));
+    app.update(|write| write.set_app_badge(None)).unwrap();
+    assert!(matches!(app.runtime_mut().take_host_commands().as_slice(), [HostCommand::SetAppBadge { badge: None }]));
+}
 
 #[test]
 fn titlebar_hit_testing_leaves_child_and_ancestor_controls_available() {
@@ -113,7 +218,10 @@ fn window_feedback_and_restart_state_are_independent_by_key() {
             move |build| {
                 metrics.set(Some((build.window_geometry(), build.window_chrome(), build.viewport())));
                 let geometry = build.window_geometry();
-                text(move |read: &mut ReadCx<'_>| format!("{}", read.get(geometry).size.width)).test_id("width")
+                let viewport = build.viewport();
+                col()
+                    .child(text(move |read: &mut ReadCx<'_>| format!("{}", read.get(geometry).size.width)).test_id("width"))
+                    .child(text(move |read: &mut ReadCx<'_>| format!("{}", read.get(viewport).keyboard_inset)).test_id("keyboard"))
             }
         })
         .unwrap();
@@ -124,19 +232,23 @@ fn window_feedback_and_restart_state_are_independent_by_key() {
     app.dispatch(main, Input::Host(HostReply::ChromeChanged(chrome))).unwrap();
     app.dispatch(panel, Input::Host(HostReply::GeometryChanged(inspector))).unwrap();
     app.dispatch(main, Input::Host(HostReply::GeometryChanged(full))).unwrap();
-    let usable = Size::new(full.size.width, full.size.height - 270.0);
-    app.dispatch(main, Input::Host(HostReply::ViewportChanged(WindowViewport { size: usable, scale: full.scale, safe_area: None })))
-        .unwrap();
+    let viewport = WindowViewport { size: full.size, scale: full.scale, safe_area: None, keyboard_inset: 270.0 };
+    app.dispatch(main, Input::Host(HostReply::ViewportChanged(viewport))).unwrap();
     let zoomed = WindowGeometry { maximized: true, fullscreen: false, ..full };
     app.dispatch(startup_max, Input::Host(HostReply::GeometryChanged(zoomed))).unwrap();
     let (geometry_signal, chrome_signal, viewport_signal) = metrics.get().unwrap();
     assert_eq!(
         app.update_window(main, |write| (write.get(geometry_signal), write.get(chrome_signal), write.get(viewport_signal))).unwrap(),
-        (full, chrome, usable)
+        (full, chrome, viewport)
     );
+    assert_eq!(viewport.visible_bounds(), Rect::new(0.0, 0.0, full.size.width, full.size.height - 270.0));
     let main_tree = app.runtime().window(main).unwrap().tree();
     let width_text = main_tree.text(main_tree.test_ids("width")[0]).unwrap();
     assert_eq!(width_text.text.as_ref(), "1400");
+    assert_eq!(main_tree.text(main_tree.test_ids("keyboard")[0]).unwrap().text.as_ref(), "270");
+    app.dispatch(main, Input::Host(HostReply::ViewportChanged(WindowViewport { keyboard_inset: 0.0, ..viewport }))).unwrap();
+    let tree = app.runtime().window(main).unwrap().tree();
+    assert_eq!(tree.text(tree.test_ids("keyboard")[0]).unwrap().text.as_ref(), "0");
     assert_eq!(app.runtime().window(panel).unwrap().window_geometry(), inspector);
 
     let request = WindowGeometryRequest { size: Some(Size::new(400.0, 300.0)), ..Default::default() };
@@ -150,12 +262,12 @@ fn window_feedback_and_restart_state_are_independent_by_key() {
     .unwrap();
     let commands = app.runtime_mut().take_host_commands();
     assert!(matches!(commands.as_slice(), [
-        HostCommand::SetWindowTitle { window: title_window, title },
         HostCommand::SetWindowGeometry { window: size_window, geometry },
         HostCommand::MinimizeWindow { window: minimized },
         HostCommand::ToggleMaximizeWindow { window: zoomed },
         HostCommand::FocusWindow { window: focused },
-    ] if *title_window == main && title == "Renamed" && *size_window == main && *geometry == request && *minimized == main && *zoomed == main && *focused == panel));
+        HostCommand::UpdateWindowPresentation { window: title_window, title, .. },
+    ] if *title_window == main && title.as_ref() == "Renamed" && *size_window == main && *geometry == request && *minimized == main && *zoomed == main && *focused == panel));
     app.close_window(main).unwrap();
     let saved: RestartState = serde_json::from_slice(&serde_json::to_vec(&app.export_persisted()).unwrap()).unwrap();
     assert_eq!(saved.window_geometry["main"], full);

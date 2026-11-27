@@ -6,7 +6,9 @@ use block2::RcBlock;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AllocAnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSBitmapImageRep, NSDeviceRGBColorSpace, NSGraphicsContext, NSImage, NSView, NSWindowOrderingMode};
+use objc2_app_kit::{
+    NSBitmapImageRep, NSDeviceRGBColorSpace, NSGraphicsContext, NSImage, NSView, NSVisualEffectView, NSWindowOrderingMode,
+};
 use objc2_foundation::{NSError, NSPoint, NSRect, NSSize};
 use objc2_map_kit::{
     MKCoordinateRegion, MKCoordinateSpan, MKHybridMapConfiguration, MKImageryMapConfiguration, MKMapConfiguration, MKMapSnapshot,
@@ -18,6 +20,7 @@ use octara_model::geometry::{Rect, Size};
 use octara_model::identity::NativeId;
 use octara_model::native::{NativeChange, NativeCommand, NativeEvent, NativePlacement, NativeSlot, NativeSnapshot, NativeSnapshotRequest};
 use octara_model::paint::Picture;
+use octara_model::window::VibrancyMaterial;
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -353,7 +356,7 @@ pub(super) struct Views {
     pending: Vec<NativePlacement>,
     /// The host of underlay views, below winit's view's subviews (made with the first one).
     underlay: Option<Retained<Underlay>>,
-    vibrancy: Option<Retained<NSView>>,
+    vibrancy: Option<Retained<NSVisualEffectView>>,
     /// The window's Metal layer, kept above the underlay host.
     metal: Option<Retained<CAMetalLayer>>,
 }
@@ -518,7 +521,7 @@ impl Views {
                 root.insertSublayer_above(metal, Some(&host_layer));
             }
             // AppKit re-sorts sublayers to its subviews' order when it updates the layer tree;
-            // siblings composite by z position first (Rune).
+            // siblings composite by z position first.
             metal.setZPosition(1.0);
         }
         self.underlay = Some(host.clone());
@@ -604,9 +607,23 @@ impl Views {
         }
     }
 
-    pub(super) fn set_vibrancy(&mut self, effect: Retained<NSView>) {
+    pub(super) fn set_vibrancy(&mut self, material: Option<VibrancyMaterial>) {
+        let Some(material) = material.map(super::chrome::visual_effect_material) else {
+            if let Some(effect) = self.vibrancy.take() {
+                effect.removeFromSuperview();
+            }
+            return;
+        };
+        if let Some(effect) = &self.vibrancy {
+            if effect.material() != material {
+                effect.setMaterial(material);
+            }
+            return;
+        }
+        let effect = super::chrome::visual_effect(&self.parent, material);
         self.parent.addSubview_positioned_relativeTo(&effect, NSWindowOrderingMode::Below, None);
         self.vibrancy = Some(effect);
+        self.order_metal_above_backing();
     }
 
     pub(super) fn has_vibrancy(&self) -> bool {
@@ -622,7 +639,11 @@ impl Views {
             return;
         }
         self.metal = metal.map(objc2::Message::retain);
-        let backing = self.underlay.as_deref().map(|host| host.as_super()).or(self.vibrancy.as_deref());
+        self.order_metal_above_backing();
+    }
+
+    fn order_metal_above_backing(&self) {
+        let backing = self.underlay.as_deref().map(|host| host.as_super()).or(self.vibrancy.as_deref().map(|effect| effect.as_super()));
         if let (Some(layer), Some(backing)) = (&self.metal, backing)
             && let (Some(root), Some(host_layer)) = (self.parent.layer(), backing.layer())
             && !std::ptr::eq(&*root, &***layer)

@@ -91,13 +91,12 @@ pub(crate) fn run(window: &WindowRuntime, world: &ReactiveWorld, rules: &[Arc<dy
         let semantics = tree.semantics(id);
         let activation = tree.has_activation_handler(id);
         let role = role(tree, id, core.kind, semantics, activation);
-        let flags = inherited_flags(tree, id);
         let provenance = tree.provenance(id);
-        let source = provenance.or_else(|| tree.parent(id).and_then(|parent| tree.provenance(parent)));
+        let source = provenance.or_else(|| tree.physical_parent(id).and_then(|parent| tree.provenance(parent)));
         let focusable = core.flags.contains(NodeFlags::FOCUSABLE);
         let mut node = AuditNode {
             node: tree.guard(id),
-            parent: tree.parent(id).map(|parent| tree.guard(parent)),
+            parent: tree.physical_parent(id).map(|parent| tree.guard(parent)),
             test_id: provenance.and_then(|provenance| provenance.test_id.as_deref()),
             provenance: source.map(|provenance| provenance.origin),
             role,
@@ -106,8 +105,8 @@ pub(crate) fn run(window: &WindowRuntime, world: &ReactiveWorld, rules: &[Arc<dy
             geometry: window.geometry(id),
             text_clip: clips.get(&id).copied(),
             shown: tree.is_shown(id),
-            hidden_from_accessibility: flags.contains(NodeFlags::HIDDEN),
-            inert: flags.contains(NodeFlags::INERT),
+            hidden_from_accessibility: hidden_from_accessibility(tree, id),
+            inert: tree.is_inert(id),
             in_modal_scope: modal.is_none_or(|modal| tree.is_in_modal_scope(id, modal)),
             authored_interactive: focusable || activation || role.is_some_and(interactive_role),
             authored_focusable: focusable || tree.is_layer_focus_container(id),
@@ -144,23 +143,10 @@ fn exposes_semantics(node: &AuditNode<'_>) -> bool {
     node.shown && !node.hidden_from_accessibility && !node.inert && node.in_modal_scope
 }
 
-fn inherited_flags(tree: &Tree, node: NodeId) -> NodeFlags {
-    let mut flags = NodeFlags::empty();
-    let mut at = Some(node);
-    while let Some(id) = at {
-        let Some(core) = tree.node(id) else { break };
-        flags |= core.flags;
-        if let Some(owner) = tree.interaction_parent(id).filter(|&owner| Some(owner) != core.parent) {
-            let logical = std::iter::successors(Some(owner), |&id| tree.interaction_parent(id));
-            for id in logical {
-                if let Some(core) = tree.node(id) {
-                    flags |= core.flags;
-                }
-            }
-        }
-        at = core.parent;
-    }
-    flags
+fn hidden_from_accessibility(tree: &Tree, node: NodeId) -> bool {
+    std::iter::successors(Some(node), |&node| tree.physical_parent(node))
+        .chain(std::iter::successors(tree.logical_parent(node), |&node| tree.logical_parent(node)))
+        .any(|node| tree.node(node).is_some_and(|core| core.flags.contains(NodeFlags::HIDDEN)))
 }
 
 fn role(tree: &Tree, id: NodeId, kind: NodeKind, semantics: Option<&SemanticsSlot>, activation: bool) -> Option<Role> {
@@ -210,7 +196,7 @@ fn interactive_role(role: Role) -> bool {
 fn accessible_name(tree: &Tree, id: NodeId, node_role: Option<Role>, modal: Option<NodeId>) -> Option<&str> {
     let read_inline_link = || {
         let link = tree.link(id)?;
-        let parent = tree.parent(id)?;
+        let parent = tree.physical_parent(id)?;
         tree.text(parent)?.text.get(link.range.clone()).filter(|label| !label.trim().is_empty())
     };
     if let Some(name) = own_name(tree, id).or_else(read_inline_link) {
@@ -265,6 +251,6 @@ fn own_name(tree: &Tree, id: NodeId) -> Option<&str> {
 
 fn is_a11y_visible(tree: &Tree, node: NodeId, modal: Option<NodeId>) -> bool {
     tree.is_accessible_without_modal(node)
-        && !inherited_flags(tree, node).intersects(NodeFlags::HIDDEN | NodeFlags::INERT)
+        && !hidden_from_accessibility(tree, node)
         && modal.is_none_or(|modal| tree.is_in_modal_scope(node, modal))
 }

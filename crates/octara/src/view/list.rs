@@ -2,7 +2,7 @@
 
 use super::style::Styled;
 use super::{El, NodeHandle, Target, View, control::next_region, el, el::build_el, node_handle};
-use octara_model::geometry::{LayoutBox, Size, Vec2};
+use octara_model::geometry::{LayoutBox, Vec2, WindowViewport};
 use octara_runtime::{
     BuildCx, MountCx, ReadCx, ScopeId, Signal,
     graph::{
@@ -144,7 +144,7 @@ struct VirtualRows<K> {
     container: Signal<Option<LayoutBox>>,
     scroll: Signal<Vec2>,
     anchor: Signal<Option<NodeId>>,
-    viewport: octara_runtime::ReadSignal<Size>,
+    viewport: octara_runtime::ReadSignal<WindowViewport>,
     origin: f64,
     region: u64,
 }
@@ -230,7 +230,7 @@ where
         self.topology(read, list, estimate);
         let offset = f64::from(read.get(self.scroll).y);
         let container = read.get(self.container);
-        let viewport = read.get(self.viewport);
+        let viewport = read.get(self.viewport).unobscured_size();
         let top = read.get(self.top);
         self.origin = top.map_or(0.0, |top| f64::from(top.rect.y));
         let visible_height = container.map_or(viewport.height, |bounds| {

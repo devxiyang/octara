@@ -133,7 +133,7 @@ pub struct VideoSurface {
 /// How an image fills its element (GPUI's `ObjectFit`, CSS `object-fit`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum ObjectFit {
-    /// Stretched to the element (the default, as Rune's `pixels`).
+    /// Stretched to the element by default.
     #[default]
     Fill,
     /// Whole, at its aspect ratio, centered (letterboxed).

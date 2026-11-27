@@ -124,7 +124,7 @@ fn open(driver: &mut HeadlessDriver) -> Result<SimWindow, TurnError> {
     let result = capture.clone();
     let options = WindowOptions {
         touch: true,
-        viewport: WindowViewport { size: Size::new(240.0, 180.0), scale: 1.0, safe_area: None },
+        viewport: WindowViewport { size: Size::new(240.0, 180.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 },
         ..Default::default()
     };
     let id = driver.app_mut().open_window(options, move |cx| {

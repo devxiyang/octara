@@ -10,7 +10,10 @@ use crate::DragEvent;
 use octara_model::{
     geometry::{LayoutBox, Placement, Point, Vec2},
     image::{ImageSource, ImageState, VideoSource},
-    input::{ContextMenuEvent, CopyFormat, CursorStyle, DragPayload, DropAxis, DropEvent, DropHover, DroppedFile, KeyEvent, LinkEvent},
+    input::{
+        ContextMenuEvent, CopyFormat, CursorStyle, DragPayload, DropAxis, DropEvent, DropHover, DroppedFile, KeyEvent, LinkEvent,
+        PasteEvent,
+    },
     motion::Curve,
     native::{NativeEvent, NativeSlot},
     paint::{Canvas, Icon, Image, NodeIcon, ObjectFit, PaintInput, PaintMount, PaintProgram},
@@ -898,6 +901,11 @@ impl<C> El<C> {
 
     pub fn on_key(self, f: impl Fn(&mut WriteCx<'_>, &KeyEvent) -> bool + 'static) -> Self {
         self.behavior(|behavior| behavior.on_key(f))
+    }
+
+    /// Receives paste gestures targeted at this element or a logical descendant.
+    pub fn on_paste(self, f: impl Fn(&mut WriteCx<'_>, &PasteEvent) -> bool + 'static) -> Self {
+        self.behavior(|behavior| behavior.on_paste(f))
     }
 
     pub fn on_focus(self, f: impl Fn(&mut WriteCx<'_>) + 'static) -> Self {

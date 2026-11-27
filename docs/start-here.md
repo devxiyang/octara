@@ -29,7 +29,10 @@ fn counter(cx: &mut BuildCx<'_>) -> El {
 }
 
 fn app() -> AppDefinition {
-    let options = WindowOptions { title: "Counter".into(), ..Default::default() };
+    let options = WindowOptions {
+        presentation: WindowPresentation { title: "Counter".into(), ..Default::default() },
+        ..Default::default()
+    };
     AppDefinition::new().window(WindowDefinition::new(options, counter))
 }
 
@@ -80,10 +83,13 @@ use octara::prelude::*;
 
 fn workspace() -> WindowDefinition {
     let options = WindowOptions {
-        title: "Workspace".into(),
+        presentation: WindowPresentation {
+            title: "Workspace".into(),
+            material: WindowMaterial::Vibrancy(VibrancyMaterial::Sidebar),
+            ..Default::default()
+        },
         min_size: Some(Size::new(480.0, 320.0)),
         titlebar: TitlebarStyle::HiddenInset { traffic_light_offset: Some(point(14.0, 12.0)) },
-        material: WindowMaterial::Vibrancy(VibrancyMaterial::Sidebar),
         persistence_key: Some("workspace".into()),
         ..WindowOptions::default()
     };

@@ -2,7 +2,7 @@
 
 mod text;
 
-pub(crate) use text::TextInteraction;
+pub(crate) use text::{PasteTarget, TextInteraction};
 
 use crate::app::{AppCommand, AppRuntime, HostCommand, Input, PendingAsk, PendingService};
 use crate::arena::{NodeKind as ReactiveKind, ScopeId};
@@ -130,6 +130,7 @@ impl AppRuntime {
             self.tasks.poll_turn_ready(&mut self.world, &mut self.commands, |id| self.windows.get(&id).map(|window| &window.tree));
             self.drain_commands(&mut routed);
             self.react()?;
+            self.prepare_presentation(&mut routed);
             self.commit(&mut routed)?;
             self.project(&mut routed)?;
             self.sync_media();
@@ -139,6 +140,10 @@ impl AppRuntime {
                 && !self.tasks.has_turn_ready()
                 && self.windows.values().all(|window| window.pending.is_empty() && !window.force_project)
             {
+                self.update_tooltips(now);
+                if self.world.has_pending_work() {
+                    continue;
+                }
                 self.publish();
                 return Ok(receipt);
             }
@@ -162,6 +167,7 @@ impl AppRuntime {
                         .is_some_and(|session| session.id() == event.session() && session.editor().document_rev() == event.expected_rev())
             }
             Input::Host(HostReply::FilesDropped { target, files }) => !files.is_empty() && window.file_drop_handler(*target).is_some(),
+            Input::Host(HostReply::Paste(event)) => window.settled.is_some() && !event.items.is_empty(),
             Input::Host(
                 HostReply::NativeEvent { target, .. }
                 | HostReply::NativeLive { target, .. }
@@ -207,7 +213,7 @@ impl AppRuntime {
                     window.tree.is_live(node) && window.tree.node(node).is_some_and(|core| core.state.contains(State::HOVER) == hovered)
                 });
                 current
-                    && (self.deliver_link(id, node, LinkEventKind::Hover(hovered))
+                    && (self.deliver_link(id, node, LinkEventKind::Hover(hovered), Modifiers::empty())
                         | self.invoke_node(id, node, HandlerKind::Hover, HandlerEvent::Hover(hovered)).consumed)
             }
             Routed::FocusLeave(id, next, intent) => {
@@ -218,14 +224,26 @@ impl AppRuntime {
     }
 
     fn route_input(&mut self, id: WindowId, input: Input, routed: &mut VecDeque<Routed>) -> bool {
-        if !self.windows.contains_key(&id) {
-            return false;
+        let Some(window) = self.windows.get_mut(&id) else { return false };
+        match &input {
+            Input::Interaction(
+                InteractionEvent::PointerDown { .. }
+                | InteractionEvent::PointerCancel { .. }
+                | InteractionEvent::PointerLeave
+                | InteractionEvent::Wheel { .. }
+                | InteractionEvent::Key(_)
+                | InteractionEvent::BackGesture { .. }
+                | InteractionEvent::WindowActive(false),
+            )
+            | Input::Editor(_)
+            | Input::Host(HostReply::ScrollChanged { .. } | HostReply::Paste(_)) => window.tooltip.dismiss(),
+            _ => {}
         }
         match input {
             Input::Interaction(InteractionEvent::Wheel { pos, delta, .. }) => {
                 let window = &self.windows[&id];
                 let Some(hit) = window.hit_test(pos).and_then(|target| target.hit.node()) else { return false };
-                let scrolls: Vec<_> = std::iter::successors(Some(hit), |&node| window.tree.parent(node))
+                let scrolls: Vec<_> = std::iter::successors(Some(hit), |&node| window.tree.physical_parent(node))
                     .filter(|&node| window.engine.scroll_range(node).is_some() && window.tree.is_interactive(node))
                     .collect();
                 let mut remaining = delta;
@@ -321,8 +339,13 @@ impl AppRuntime {
                     scrollbar,
                 };
                 let mut decision = window.arbiter.handle(&window.tree, event, context);
-                if matches!(event, InteractionEvent::PointerMove { .. }) {
+                if let InteractionEvent::PointerMove { pos, .. } = event {
                     decision.operations.extend(window.arbiter.update_hover(&window.tree, hit).operations);
+                    if scrollbar.is_none() && window.arbiter.pointer_hover_active() {
+                        window.tooltip.pointer_moved(pos, window.tree.front_modal());
+                    } else {
+                        window.tooltip.dismiss();
+                    }
                 } else if matches!(event, InteractionEvent::PointerLeave) {
                     decision.operations.extend(window.arbiter.update_hover(&window.tree, None).operations);
                 }
@@ -474,9 +497,9 @@ impl AppRuntime {
                     window.options.viewport = viewport;
                     window.viewport_rev.0 = window.viewport_rev.0.checked_add(1).expect("viewport revision exhausted");
                     window.force_project = true;
-                    let breakpoint = window.options.theme.breakpoint_of(viewport.size.width);
+                    let breakpoint = window.tree.theme().breakpoint_of(viewport.size.width);
                     let mut write = self.world.write(window.scope, Some(id));
-                    write.set_if_changed(window.viewport_size_source, viewport.size);
+                    write.set_if_changed(window.viewport_source, viewport);
                     write.set_if_changed(window.breakpoint_source, breakpoint);
                     let touch = window.options.touch;
                     self.apply_operation(id, RuntimeOp::SetViewportContext { breakpoint, width: viewport.size.width, touch }, routed);
@@ -543,6 +566,7 @@ impl AppRuntime {
                 self.invoke(id, handler, HandlerEvent::FileDrop(&files));
                 true
             }
+            HostReply::Paste(event) => self.deliver_paste(id, None, event, routed),
             HostReply::MenuCommand { name, .. } => self.invoke_command(id, &name),
             HostReply::AskAnswer { id: ask, answer } => {
                 let Some(pending) = self.asks.get(&ask.0) else { return false };
@@ -604,7 +628,7 @@ impl AppRuntime {
                     }
                     A11yAction::Press => {
                         if window.tree.link(node).is_some() {
-                            return self.deliver_link(id, node, LinkEventKind::Press);
+                            return self.deliver_link(id, node, LinkEventKind::Press, Modifiers::empty());
                         }
                         let handler =
                             [HandlerKind::Press, HandlerKind::Toggle].into_iter().find_map(|kind| window.tree.handler(node, kind));
@@ -687,7 +711,11 @@ impl AppRuntime {
         };
         if let Some(link) = intent.resolve_link(&window.tree) {
             let kind = if intent.kind == HandlerKind::SecondaryPress { LinkEventKind::SecondaryPress } else { LinkEventKind::Press };
-            if self.deliver_link(id, link, kind) || kind == LinkEventKind::Press {
+            let modifiers = match &intent.payload {
+                InteractionPayload::Press { modifiers, .. } => *modifiers,
+                _ => Modifiers::empty(),
+            };
+            if self.deliver_link(id, link, kind, modifiers) || kind == LinkEventKind::Press {
                 return HandlerOutcome { consumed: true, ..Default::default() };
             }
         }
@@ -711,8 +739,8 @@ impl AppRuntime {
             consumed = self.context_menu(id, node, position);
             if !consumed {
                 let window = &self.windows[&id];
-                let parent = window.tree.parent(node);
-                let receiver = std::iter::successors(parent, |&node| window.tree.interaction_parent(node))
+                let parent = window.tree.logical_parent(node);
+                let receiver = std::iter::successors(parent, |&node| window.tree.logical_parent(node))
                     .find(|&node| window.tree.handler(node, HandlerKind::SecondaryPress).is_some() && window.tree.is_interactive(node));
                 if let Some(receiver) = receiver {
                     let target = window.tree.guard(receiver);
@@ -732,11 +760,11 @@ impl AppRuntime {
         HandlerOutcome { consumed, ..Default::default() }
     }
 
-    fn deliver_link(&mut self, id: WindowId, node: NodeId, kind: LinkEventKind) -> bool {
+    fn deliver_link(&mut self, id: WindowId, node: NodeId, kind: LinkEventKind, modifiers: Modifiers) -> bool {
         let window = &self.windows[&id];
         let tree = &window.tree;
         let Some(link) = tree.link(node) else { return false };
-        let handlers = std::iter::successors(Some(node), |&node| tree.parent(node))
+        let handlers = std::iter::successors(Some(node), |&node| tree.logical_parent(node))
             .filter_map(|node| tree.handler(node, HandlerKind::Link))
             .collect::<smallvec::SmallVec<[HandlerId; 2]>>();
         let navigation = (kind == LinkEventKind::Press).then(|| link.navigation_href().map(str::to_owned)).flatten();
@@ -744,7 +772,7 @@ impl AppRuntime {
             false
         } else {
             let text = tree
-                .parent(node)
+                .physical_parent(node)
                 .and_then(|parent| tree.text(parent))
                 .and_then(|text| text.text.get(link.range.clone()))
                 .unwrap_or_default();
@@ -752,6 +780,7 @@ impl AppRuntime {
                 href: link.href.clone(),
                 text: text.into(),
                 kind,
+                modifiers,
                 rect: window.engine.interaction_bounds(node).unwrap_or_default(),
             };
             handlers.into_iter().any(|handler| self.invoke(id, handler, HandlerEvent::Link(&event)).consumed)
@@ -765,7 +794,7 @@ impl AppRuntime {
     fn context_menu(&mut self, id: WindowId, target: NodeId, position: Option<Point>) -> bool {
         let window = &self.windows[&id];
         let tree = &window.tree;
-        let Some(handler) = std::iter::successors(Some(target), |&node| tree.interaction_parent(node))
+        let Some(handler) = std::iter::successors(Some(target), |&node| tree.logical_parent(node))
             .filter(|&node| tree.is_interactive(node))
             .find_map(|node| tree.handler(node, HandlerKind::ContextMenu))
         else {
@@ -876,12 +905,18 @@ impl AppRuntime {
                 AppCommand::Open { id, options, root } => self.insert_window(id, *options, root),
                 AppCommand::Close(id) => self.remove_window(id),
                 AppCommand::WindowControl { window, command } => {
-                    if let Some(state) = self.windows.get_mut(&window) {
-                        if let HostCommand::SetWindowTitle { title, .. } = &command {
-                            state.options.title.clone_from(title);
-                        }
+                    if self.windows.contains_key(&window) {
                         self.staged_host.push(command);
                     }
+                }
+                AppCommand::WindowPresentation { window, update } => {
+                    if let Some(window) = self.windows.get_mut(&window) {
+                        update.apply(window.pending_presentation.get_or_insert_with(|| window.options.presentation.clone()));
+                    }
+                }
+                AppCommand::SetAppBadge(badge) => self.app_badge = badge,
+                AppCommand::RequestUserAttention { window, attention } => {
+                    self.staged_host.push(HostCommand::RequestUserAttention { window, attention });
                 }
                 AppCommand::Focus { window, test_id } => {
                     let target = if let Some(test_id) = test_id {
@@ -940,6 +975,9 @@ impl AppRuntime {
                     }
                 }
                 AppCommand::EditorEdit { window, event } => routed.push_back(Routed::Input(window, Input::Editor(event))),
+                AppCommand::Paste { window, target, event } => {
+                    self.deliver_paste(window, Some(target), event, routed);
+                }
                 AppCommand::NativeCommand { window, command } => self.staged_host.push(HostCommand::NativeCommand { window, command }),
             }
         }
@@ -1224,6 +1262,45 @@ impl AppRuntime {
         }
     }
 
+    fn update_tooltips(&mut self, now: std::time::Duration) {
+        for window in self.windows.values_mut() {
+            let modal = window.tree.front_modal();
+            let hovered = window.tooltip.position().and_then(|position| {
+                if window.engine.scrollbar_hit(&window.tree, position).is_some() {
+                    return None;
+                }
+                let hit = window.engine.hit_test(&window.tree, position).map(|target| target.hit);
+                window.arbiter.hovered_tooltip(&window.tree, hit, modal)
+            });
+            let tooltip = window.tooltip.update(modal, hovered, now);
+            self.world.write(window.scope, Some(window.id)).set_if_changed(window.hovered_tooltip, tooltip);
+        }
+    }
+
+    // Resolve retained styles with the staged theme before mounting or updating nodes.
+    fn prepare_presentation(&mut self, routed: &mut VecDeque<Routed>) {
+        for window in self.windows.values_mut() {
+            for update in window.authoring.presentation_updates(&mut self.world) {
+                update.apply(window.pending_presentation.get_or_insert_with(|| window.options.presentation.clone()));
+            }
+            let Some(presentation) = &window.pending_presentation else { continue };
+            let theme = &presentation.theme;
+            let material = presentation.material;
+            if window.tree.theme() != theme {
+                let op = RuntimeOp::ThemeChanged(Box::new(theme.clone()));
+                let previous = window.tree.focus();
+                let width = window.options.viewport.size.width;
+                let breakpoint = theme.breakpoint_of(width);
+                window.apply(op);
+                window.apply(RuntimeOp::SetViewportContext { breakpoint, width, touch: window.options.touch });
+                self.world.write(window.scope, Some(window.id)).set_if_changed(window.breakpoint_source, breakpoint);
+                Self::note_focus(window, previous, routed);
+                window.force_project = true;
+            }
+            window.force_project |= window.engine.set_window_material(material);
+        }
+    }
+
     fn publish(&mut self) {
         let now = self.now();
         for window in self.windows.values_mut().filter(|window| window.projection_open) {
@@ -1239,7 +1316,24 @@ impl AppRuntime {
             window.staged = TreeDelta::default();
             window.projection_open = false;
         }
-        for window in self.windows.values() {
+        for window in self.windows.values_mut() {
+            let mut changed = !window.presentation_published;
+            if let Some(presentation) = window.pending_presentation.take()
+                && presentation != window.options.presentation
+            {
+                window.options.presentation = presentation;
+                changed = true;
+            }
+            if changed {
+                let presentation = window.presentation();
+                self.staged_host.push(HostCommand::UpdateWindowPresentation {
+                    window: window.id,
+                    title: presentation.title.clone(),
+                    color_scheme: presentation.theme.scheme,
+                    material: presentation.material,
+                });
+                window.presentation_published = true;
+            }
             let Some(key) = &window.options.persistence_key else { continue };
             let geometry = window.geometry;
             if self.window_geometry.get(key) != Some(&geometry)
@@ -1250,6 +1344,10 @@ impl AppRuntime {
                     self.normal_window_geometry.insert(key.clone(), geometry);
                 }
             }
+        }
+        if self.published_badge != self.app_badge {
+            self.published_badge.clone_from(&self.app_badge);
+            self.staged_host.push(HostCommand::SetAppBadge { badge: self.app_badge.clone() });
         }
         let menu_window = self.menu_window.filter(|id| self.windows.contains_key(id)).or_else(|| self.windows.keys().next().copied());
         self.menu_window = menu_window;

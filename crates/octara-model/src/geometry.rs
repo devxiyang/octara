@@ -165,6 +165,15 @@ pub struct WindowViewport {
     /// Device pixels per logical pixel.
     pub scale: f32,
     pub safe_area: Option<Rect>,
+    /// Logical pixels occluded by a keyboard at the bottom of the window.
+    #[serde(default)]
+    pub keyboard_inset: f32,
+}
+
+impl Default for WindowViewport {
+    fn default() -> Self {
+        Self { size: Size::default(), scale: 1.0, safe_area: None, keyboard_inset: 0.0 }
+    }
 }
 
 impl WindowViewport {
@@ -172,6 +181,17 @@ impl WindowViewport {
     pub fn safe_bounds(&self) -> Rect {
         let bounds = Rect::new(0.0, 0.0, self.size.width, self.size.height);
         self.safe_area.map_or(bounds, |safe_area| bounds.intersect(&safe_area))
+    }
+
+    /// Layout extent above the keyboard, including the system safe-area margins.
+    pub fn unobscured_size(&self) -> Size {
+        Size::new(self.size.width, (self.size.height - self.keyboard_inset.max(0.0)).max(0.0))
+    }
+
+    /// The intersection of the window's safe area and the area above the keyboard.
+    pub fn visible_bounds(&self) -> Rect {
+        let size = self.unobscured_size();
+        Rect::new(0.0, 0.0, size.width, size.height).intersect(&self.safe_bounds())
     }
 }
 
@@ -212,7 +232,7 @@ pub struct Placement {
     pub align: Align,
     /// Distance from the anchor.
     pub gap: f32,
-    /// Minimum distance from the window's edges (8, as in Rune).
+    /// Minimum distance from the window's edges, typically 8 logical pixels.
     pub margin: f32,
     /// Limit the size to the room available and scroll the content.
     pub fit: bool,

@@ -72,7 +72,7 @@ fn warm_frame_paint_and_hit_testing_do_not_allocate() {
     let mut initial = tree.initial_delta();
     initial.merge(mounted);
     let mut engine = NativeEngine::new(NativeEngineConfig::default());
-    let viewport = WindowViewport { size: Size::new(1536.0, 1536.0), scale: 1.0, safe_area: None };
+    let viewport = WindowViewport { size: Size::new(1536.0, 1536.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
     engine.project(&tree, &initial, viewport, 0.0).unwrap();
     engine.commit();
     let delta = TreeDelta::default();

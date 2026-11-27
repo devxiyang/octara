@@ -30,7 +30,10 @@ fn driver() -> HeadlessDriver {
 }
 
 fn options() -> WindowOptions {
-    WindowOptions { viewport: WindowViewport { size: Size::new(360.0, 260.0), scale: 1.0, safe_area: None }, ..Default::default() }
+    WindowOptions {
+        viewport: WindowViewport { size: Size::new(360.0, 260.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 },
+        ..Default::default()
+    }
 }
 
 fn audit(driver: &mut HeadlessDriver, window: WindowId) -> Vec<AuditFinding> {

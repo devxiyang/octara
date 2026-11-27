@@ -229,21 +229,25 @@ define_class!(
     }
 );
 
-pub(super) fn visual_effect(view: &NSView, material: VibrancyMaterial) -> Retained<NSView> {
-    let effect = WindowVisualEffect::alloc(MainThreadMarker::from(view)).set_ivars(());
-    // SAFETY: The subclass completes NSView initialization with its retained view frame.
-    let effect: Retained<WindowVisualEffect> = unsafe { msg_send![super(effect), initWithFrame: view.bounds()] };
-    let effect = effect.into_super();
-    effect.setMaterial(match material {
+pub(super) fn visual_effect_material(material: VibrancyMaterial) -> NSVisualEffectMaterial {
+    match material {
         VibrancyMaterial::Sidebar => NSVisualEffectMaterial::Sidebar,
         VibrancyMaterial::UnderWindowBackground => NSVisualEffectMaterial::UnderWindowBackground,
         VibrancyMaterial::Titlebar => NSVisualEffectMaterial::Titlebar,
         VibrancyMaterial::Popover => NSVisualEffectMaterial::Popover,
         VibrancyMaterial::Hud => NSVisualEffectMaterial::HUDWindow,
-    });
+    }
+}
+
+pub(super) fn visual_effect(view: &NSView, material: NSVisualEffectMaterial) -> Retained<NSVisualEffectView> {
+    let effect = WindowVisualEffect::alloc(MainThreadMarker::from(view)).set_ivars(());
+    // SAFETY: The subclass completes NSView initialization with its retained view frame.
+    let effect: Retained<WindowVisualEffect> = unsafe { msg_send![super(effect), initWithFrame: view.bounds()] };
+    let effect = effect.into_super();
+    effect.setMaterial(material);
     effect.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
     effect.setState(NSVisualEffectState::FollowsWindowActiveState);
     effect.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
     effect.setWantsLayer(true);
-    effect.into_super()
+    effect
 }

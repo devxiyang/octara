@@ -27,7 +27,7 @@ impl Tree {
             if id == self.root() {
                 return true;
             }
-            at = self.parent(id);
+            at = self.physical_parent(id);
         }
         false
     }
@@ -39,7 +39,7 @@ impl Tree {
     pub(crate) fn overlay_target_shown(&self, node: NodeId) -> bool {
         self.overlay(node).is_none_or(|slot| {
             let target_shown =
-                |target| self.interaction_ancestors(target).take_while(|&id| self.is_locally_shown(id)).last() == Some(self.root());
+                |target| self.logical_ancestors(target).take_while(|&id| self.is_locally_shown(id)).last() == Some(self.root());
             slot.mount.is_none_or(|mount| target_shown(mount.owner))
                 && slot.target.and_then(|(target, _)| target.node()).is_none_or(target_shown)
         })
@@ -56,33 +56,25 @@ impl Tree {
             if predicate(id) {
                 return Some(id);
             }
-            at = self.parent(id);
+            at = self.physical_parent(id);
         }
         None
     }
 
-    /// Logical ownership follows a portal to its authored owner, or its anchor if it has no owner.
-    pub fn interaction_parent(&self, node: NodeId) -> Option<NodeId> {
-        let portal_owner = self
-            .overlay(node)
-            .and_then(|slot| slot.mount.map(|mount| mount.owner).or_else(|| slot.target.and_then(|(target, _)| target.node())));
-        portal_owner.or_else(|| self.parent(node))
-    }
-
-    fn interaction_ancestors(&self, node: NodeId) -> impl Iterator<Item = NodeId> + '_ {
-        std::iter::successors(self.node(node).map(|_| node), |&id| self.interaction_parent(id)).take_while(|&id| self.node(id).is_some())
+    pub(crate) fn logical_ancestors(&self, node: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+        std::iter::successors(self.node(node).map(|_| node), |&id| self.logical_parent(id))
     }
 
     /// Whether a node is contained by an authored branch, including its nested portals.
     pub fn is_logically_owned_by(&self, node: NodeId, owner: NodeId) -> bool {
-        self.is_within(node, owner) || self.interaction_ancestors(node).any(|id| id == owner)
+        self.logical_ancestors(node).any(|id| id == owner)
     }
 
     pub fn is_in_interaction_scope(&self, node: NodeId, owner: NodeId) -> bool {
         self.is_logically_owned_by(node, owner)
             || self.layer_trigger(owner).is_some_and(|trigger| self.is_logically_owned_by(node, trigger))
             || self.layer_group(owner).is_some_and(|group| {
-                self.interaction_ancestors(node).any(|id| self.layer_group(id) == Some(group))
+                self.logical_ancestors(node).any(|id| self.layer_group(id) == Some(group))
                     || self.overlay_nodes().any(|id| {
                         self.layer_group(id) == Some(group)
                             && self.is_shown(id)
@@ -136,7 +128,7 @@ impl Tree {
                 path.reverse();
                 return Some(path);
             }
-            let parent = self.parent(node)?;
+            let parent = self.physical_parent(node)?;
             let ordinal = self.children(parent).iter().position(|&child| child == node)?;
             path.push((self.stacking_key(node), ordinal));
             node = parent;
@@ -167,17 +159,17 @@ impl Tree {
                 if at != layer && slot.layer.is_some() {
                     return None;
                 }
-                if slot.mount.is_some() || slot.target.is_some() {
+                if slot.mount.is_some() {
                     return Some(slot);
                 }
             }
-            at = self.parent(at)?;
+            at = self.physical_parent(at)?;
         }
     }
 
     fn layer_trigger(&self, layer: NodeId) -> Option<NodeId> {
         let portal = self.layer_portal(layer)?;
-        portal.mount.map(|mount| mount.owner).or_else(|| portal.target.and_then(|(target, _)| target.node()))
+        portal.mount.map(|mount| mount.owner)
     }
 
     /// The authored owner of a nonmodal layer relocated for Tab traversal.
@@ -191,12 +183,22 @@ impl Tree {
         self.interactive_in(node, self.front_modal())
     }
 
+    /// Whether the node or an authored ancestor blocks interaction and accessibility.
+    pub fn is_inert(&self, node: NodeId) -> bool {
+        self.logical_ancestors(node).any(|id| self.nodes[id].flags.contains(NodeFlags::INERT))
+    }
+
+    /// Whether the node or an authored ancestor is disabled.
+    pub fn is_disabled(&self, node: NodeId) -> bool {
+        self.logical_ancestors(node).any(|id| self.nodes[id].state.contains(State::DISABLED))
+    }
+
     pub(crate) fn interactive_in(&self, node: NodeId, modal: Option<NodeId>) -> bool {
-        let enabled = self.node(node).is_some_and(|core| !core.state.contains(State::DISABLED));
-        enabled
-            && self.is_shown(node)
-            && !self.interaction_ancestors(node).any(|id| self.node(id).is_some_and(|core| core.flags.contains(NodeFlags::INERT)))
-            && self.ancestor_matching(node, |id| self.node(id).is_some_and(|core| core.flags.contains(NodeFlags::INERT))).is_none()
+        self.is_shown(node)
+            && !self.logical_ancestors(node).any(|id| {
+                let core = &self.nodes[id];
+                core.flags.contains(NodeFlags::INERT) || core.state.contains(State::DISABLED)
+            })
             && modal.is_none_or(|modal| self.is_in_modal_scope(node, modal))
     }
 }

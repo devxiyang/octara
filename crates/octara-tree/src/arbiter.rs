@@ -6,7 +6,7 @@ mod transfer;
 
 use scrollbar::ScrollbarCapture;
 pub use scrollbar::{ScrollbarAxis, ScrollbarHit, ScrollbarKey, ScrollbarPart, ScrollbarScroll};
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use text::{TextContact, TextPress};
 pub use text::{TextPointerIntent, TextPointerTarget};
 pub use transfer::PointerGeometry;
@@ -132,7 +132,7 @@ impl FocusHandoff {
         let hit = scoped_hit(tree, self.hit, modal)?;
         let action = scoped_action(tree, self.action, modal)?;
         let preserve = hit.is_some_and(|id| {
-            tree.ancestor_matching(id, |id| tree.node(id).is_some_and(|core| core.flags.contains(NodeFlags::PRESERVE_FOCUS))).is_some()
+            tree.logical_ancestors(id).any(|id| tree.node(id).is_some_and(|core| core.flags.contains(NodeFlags::PRESERVE_FOCUS)))
         });
         let node = action.filter(|&node| tree.focusable_in(node, modal));
         (!preserve && (!self.outside_dismissal || node.is_some())).then_some(RuntimeOp::SetFocus { node, visible: false })
@@ -163,6 +163,7 @@ pub struct ActivationIntent {
     hit: TargetGuard,
     action: TargetGuard,
     kind: ActivationKind,
+    extends_link_selection: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -300,6 +301,7 @@ struct Contact {
     deferred_dismissal: Option<TargetGuard>,
     deferred_editor: Option<TargetGuard>,
     text: Option<TextContact>,
+    extends_link_selection: bool,
     outside_modal: bool,
     down: Point,
     at: Point,
@@ -392,6 +394,23 @@ impl InteractionArbiter {
         self.active && !self.contact.as_ref().is_some_and(|contact| contact.kind == PointerKind::Touch)
     }
 
+    /// The innermost interactive hover target with tooltip text.
+    pub fn hovered_tooltip<'a>(&self, tree: &'a Tree, hit: Option<TargetGuard>, modal: Option<NodeId>) -> Option<(NodeId, &'a Arc<str>)> {
+        if !self.active || self.contact.is_some() || self.scrollbar.is_some() {
+            return None;
+        }
+        self.hover_path(tree, hit, modal).find_map(|node| {
+            let text = tree.semantics(node)?.tooltip.as_ref()?;
+            (!text.trim().is_empty()).then_some((node, text))
+        })
+    }
+
+    fn hover_path<'a>(&self, tree: &'a Tree, hit: Option<TargetGuard>, modal: Option<NodeId>) -> impl Iterator<Item = NodeId> + 'a {
+        let hit = hit.and_then(|target| guarded_node(tree, target, modal)).filter(|_| self.pointer_hover_active());
+        std::iter::successors(hit, |&node| tree.logical_parent(node))
+            .filter(move |&node| Some(node) == hit || tree.node(node).is_some_and(|core| !core.flags.contains(NodeFlags::HOVER_ALONE)))
+    }
+
     pub fn window_moved(&mut self) {
         self.window_drag_press = None;
     }
@@ -413,10 +432,7 @@ impl InteractionArbiter {
 
     pub fn update_hover(&mut self, tree: &Tree, hit: Option<TargetGuard>) -> InteractionDecision {
         let mut decision = InteractionDecision::default();
-        let hit = hit.and_then(|target| guarded_node(tree, target, tree.front_modal())).filter(|_| self.pointer_hover_active());
-        let next: Vec<_> = std::iter::successors(hit, |&node| tree.parent(node))
-            .filter(|&node| Some(node) == hit || tree.node(node).is_some_and(|core| !core.flags.contains(NodeFlags::HOVER_ALONE)))
-            .collect();
+        let next: Vec<_> = self.hover_path(tree, hit, tree.front_modal()).collect();
         for &node in &self.hover {
             if !next.contains(&node) {
                 decision.state(node, State::HOVER, false);
@@ -499,6 +515,7 @@ impl InteractionArbiter {
                     deferred_dismissal: None,
                     deferred_editor: None,
                     text: None,
+                    extends_link_selection: false,
                     outside_modal: false,
                     down: pos,
                     at: pos,
@@ -596,6 +613,11 @@ impl InteractionArbiter {
         let text_target = (context.text_selection && contact.button == Button::Primary && !blocked)
             .then(|| TextPointerTarget::at(tree, hit?, action.and_then(TargetGuard::node)))
             .flatten();
+        contact.extends_link_selection = contact.button == Button::Primary
+            && mods.contains(Modifiers::SHIFT)
+            && action.and_then(TargetGuard::node).is_some_and(|node| {
+                tree.link(node).is_some() && tree.region_of(node).and_then(|region| tree.doc_selection(region)).is_some()
+            });
         contact.text = self.text_press(text_target, contact.kind, contact.down, mods, context.now);
 
         let dismissal = tree.outside_dismissal(hit, modal);
@@ -640,7 +662,7 @@ impl InteractionArbiter {
         if contact.button == Button::Primary && !blocked {
             let action = contact.target.action.and_then(TargetGuard::node);
             contact.pressed_feedback = hit.and_then(|hit| {
-                tree.ancestor_matching(hit, |node| {
+                tree.logical_ancestors(hit).find(|&node| {
                     Some(node) != action
                         && tree.interactive_in(node, modal)
                         && tree.node(node).is_some_and(|core| core.flags.contains(NodeFlags::INTERACTION_STATE))
@@ -698,7 +720,7 @@ impl InteractionArbiter {
                 let local_drag = drag.and_then(|target| target.node());
                 let transferable = |node| tree.drag_drop(node).is_some_and(|slot| slot.source.is_some());
                 if let Some(source) = contact.target.hit.node().and_then(|hit| {
-                    std::iter::successors(Some(hit), |&node| tree.interaction_parent(node))
+                    std::iter::successors(Some(hit), |&node| tree.logical_parent(node))
                         .find(|&node| tree.interactive_in(node, modal) && (transferable(node) || Some(node) == local_drag))
                 }) && transferable(source)
                     && self.grab(tree, decision, source, Grab::Pointer(contact.id))
@@ -769,6 +791,7 @@ impl InteractionArbiter {
                 hit: contact.target.hit,
                 action,
                 kind: ActivationKind::Pointer { button: contact.button, kind: contact.kind, pos: contact.at, modifiers, now },
+                extends_link_selection: contact.extends_link_selection,
             }));
         }
     }
@@ -835,6 +858,7 @@ impl InteractionArbiter {
                     hit: target,
                     action: target,
                     kind: ActivationKind::FocusGroup { group: tree.guard(group) },
+                    extends_link_selection: false,
                 }));
             }
         }
@@ -849,7 +873,11 @@ impl InteractionArbiter {
             return Vec::new();
         };
         let intentions = |kinds: &[HandlerKind], payload: InteractionPayload| {
-            kinds.iter().filter_map(|&kind| handler_intent(tree, activation.action, kind, payload.clone())).collect()
+            kinds
+                .iter()
+                .filter_map(|&kind| handler_intent(tree, activation.action, kind, payload.clone()))
+                .filter(|intent| !(activation.extends_link_selection && intent.kind == HandlerKind::Press && intent.handler.is_none()))
+                .collect()
         };
         match activation.kind {
             ActivationKind::FocusGroup { group } => {
@@ -909,7 +937,7 @@ fn guarded_node(tree: &Tree, guard: TargetGuard, modal: Option<NodeId>) -> Optio
 
 fn window_drag_region(tree: &Tree, hit: NodeId, modal: Option<NodeId>) -> Option<NodeId> {
     let mut region = None;
-    for node in std::iter::successors(Some(hit), |&node| tree.parent(node)) {
+    for node in std::iter::successors(Some(hit), |&node| tree.physical_parent(node)) {
         let core = tree.node(node)?;
         if region.is_none() && core.flags.contains(NodeFlags::WINDOW_DRAG_REGION) && tree.interactive_in(node, modal) {
             region = Some(node);
@@ -949,13 +977,13 @@ fn contact_action(tree: &Tree, target: ContactTarget, button: Button, modal: Opt
     let hit = scoped_hit(tree, target.hit, modal)?;
     let action = scoped_action(tree, target.action, modal)?;
     if let Some(action) = action
-        && !hit.is_some_and(|hit| tree.is_within(hit, action))
+        && !hit.is_some_and(|hit| tree.is_logically_owned_by(hit, action))
     {
         return None;
     }
     if button == Button::Secondary {
         let receiver = hit.and_then(|node| {
-            tree.ancestor_matching(node, |id| {
+            tree.logical_ancestors(node).find(|&id| {
                 tree.interactive_in(id, modal)
                     && (tree.link(id).is_some()
                         || tree.handler(id, HandlerKind::SecondaryPress).is_some()
@@ -972,10 +1000,8 @@ fn handler_intent(tree: &Tree, target: TargetGuard, kind: HandlerKind, payload: 
     let handler = tree.handler(node, kind);
     if handler.is_none() {
         let synthetic = match kind {
-            HandlerKind::Press => {
-                tree.link(node).is_some() && !matches!(payload, InteractionPayload::Press { modifiers, .. } if !modifiers.is_empty())
-            }
-            HandlerKind::SecondaryPress => std::iter::successors(Some(node), |&node| tree.interaction_parent(node)).any(|node| {
+            HandlerKind::Press => tree.link(node).is_some(),
+            HandlerKind::SecondaryPress => std::iter::successors(Some(node), |&node| tree.logical_parent(node)).any(|node| {
                 [HandlerKind::Link, HandlerKind::ContextMenu, HandlerKind::SecondaryPress]
                     .into_iter()
                     .any(|kind| tree.handler(node, kind).is_some())

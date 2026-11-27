@@ -60,7 +60,7 @@ impl DomEngine {
         for node in nodes {
             let mut parent = Some(node);
             while let Some(node) = parent.filter(|&id| visited.insert(id)) {
-                parent = tree.parent(node);
+                parent = tree.physical_parent(node);
             }
         }
         visited.retain(|&node| self.scrollports.contains(&node) || tree.scroll(node).is_some());
@@ -117,13 +117,13 @@ impl DomEngine {
         if let Some(focus) = focus {
             self.reveal_focus(tree, focus, &mut candidates);
         }
-        candidates.extend(candidates.iter().filter_map(|&node| tree.parent(node)).collect::<Vec<_>>());
+        candidates.extend(candidates.iter().filter_map(|&node| tree.physical_parent(node)).collect::<Vec<_>>());
         self.measure_nodes(tree, candidates)
     }
 
     fn reveal_focus(&mut self, tree: &Tree, focus: NodeId, candidates: &mut FxHashSet<NodeId>) {
         let Some(target) = self.projected_element(focus) else { return };
-        for node in std::iter::successors(tree.parent(focus), |&node| tree.parent(node)) {
+        for node in std::iter::successors(tree.physical_parent(focus), |&node| tree.physical_parent(node)) {
             let Some(slot) = tree.scroll(node) else { continue };
             if slot.requested.is_some() || tree.node(node).is_some_and(|core| core.flags.contains(NodeFlags::FOLLOW_TAIL_ACTIVE)) {
                 continue;
@@ -186,7 +186,7 @@ impl DomEngine {
         }
         let samples: Vec<_> = self.measure.read(&self.surface, &elements)?.collect();
         for (&node, geometry) in nodes.iter().zip(samples) {
-            let parent = tree.parent(node);
+            let parent = tree.physical_parent(node);
             let text_clip = tree.text(node).and_then(|_| {
                 let visual = tree.visual(node);
                 match visual.wrap {
@@ -242,7 +242,7 @@ impl DomEngine {
         for &node in anchors {
             let Some(slot) = tree.overlay(node) else { continue };
             let Some((target, placement)) = slot.target else { continue };
-            if std::iter::successors(target.node(), |&node| tree.parent(node)).any(|node| unsettled.contains(&node)) {
+            if std::iter::successors(target.node(), |&node| tree.physical_parent(node)).any(|node| unsettled.contains(&node)) {
                 unsettled.insert(node);
                 continue;
             }

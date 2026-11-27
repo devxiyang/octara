@@ -11,6 +11,7 @@ mod style;
 #[cfg(test)]
 mod tests;
 mod text;
+mod tooltip;
 
 pub use behavior::Behavior;
 pub use control::{keyed, keyed_or_else, scope, scoped, show};
@@ -28,6 +29,7 @@ pub use pace::paced;
 pub use prop::{IntoProp, Prop, bind};
 pub use style::{FontSize, Length, LineHeight, Radius, Ring, Shadows, State, StylePatch, Styled, TwStyle, When, px, rel, sp};
 pub use text::{IntoText, Rich, Span, rich};
+pub use tooltip::WindowTooltipLayer;
 
 use octara_runtime::{MountCx, ReadCx, ScopeId};
 use octara_tree::{NodeRef, Retirement, reconcile::stationary_indices};

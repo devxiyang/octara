@@ -13,8 +13,8 @@ mod macos {
     use objc2::MainThreadMarker;
     use objc2::rc::Retained;
     use objc2_app_kit::{
-        NSApplication, NSScreen, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectView, NSWindow, NSWindowButton,
-        NSWindowStyleMask, NSWindowTitleVisibility,
+        NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSApplication, NSScreen, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
+        NSVisualEffectView, NSWindow, NSWindowButton, NSWindowStyleMask, NSWindowTitleVisibility,
     };
     use objc2_core_graphics::{CGDisplayIsActive, CGMainDisplayID, CGSessionCopyCurrentDictionary};
     use objc2_foundation::NSPoint;
@@ -47,12 +47,15 @@ mod macos {
         let windows = AppDefinition::new()
             .window(WindowDefinition::new(
                 WindowOptions {
-                    title: CUSTOM.into(),
+                    presentation: WindowPresentation {
+                        title: CUSTOM.into(),
+                        material: WindowMaterial::Vibrancy(VibrancyMaterial::Sidebar),
+                        ..Default::default()
+                    },
                     titlebar: TitlebarStyle::HiddenInset { traffic_light_offset: Some(OFFSET) },
-                    material: WindowMaterial::Vibrancy(VibrancyMaterial::Sidebar),
                     min_size: Some(LIMITS[0]),
                     max_size: Some(LIMITS[1]),
-                    viewport: WindowViewport { size: SIZE, scale: 1.0, safe_area: None },
+                    viewport: WindowViewport { size: SIZE, scale: 1.0, safe_area: None, keyboard_inset: 0.0 },
                     position: Some(POSITION),
                     ..Default::default()
                 },
@@ -66,15 +69,15 @@ mod macos {
             ))
             .window(WindowDefinition::new(
                 WindowOptions {
-                    title: STANDARD.into(),
+                    presentation: WindowPresentation { title: STANDARD.into(), ..Default::default() },
                     maximized: true,
                     position: Some(STANDARD_POSITION),
-                    viewport: WindowViewport { size: STANDARD_SIZE, scale: 1.0, safe_area: None },
+                    viewport: WindowViewport { size: STANDARD_SIZE, scale: 1.0, safe_area: None, keyboard_inset: 0.0 },
                     ..Default::default()
                 },
                 |_| text("Observer"),
             ));
-        run_app_with_hook(windows, Test { started: Instant::now(), phase: Phase::FirstFrame, metrics })?;
+        run_app_with_hook(windows, Test { started: Instant::now(), phase: Phase::FirstFrame, metrics, effect: None })?;
         println!("AppKit chrome, vibrancy, and live multi-window geometry verified");
         Ok(())
     }
@@ -83,6 +86,7 @@ mod macos {
     enum Phase {
         FirstFrame,
         MoveResize,
+        Opaque,
         StartupUnzoom,
         Zoom,
         Unzoom,
@@ -94,17 +98,18 @@ mod macos {
         started: Instant,
         phase: Phase,
         metrics: Rc<Cell<Option<Metrics>>>,
+        effect: Option<Retained<NSVisualEffectView>>,
     }
 
     impl ShellHook for Test {
         fn tick(&mut self, app: &mut App, presented: &dyn Fn(WindowId) -> Option<FrameReceipt>) -> Result<Option<Duration>, ShellError> {
             assert!(self.started.elapsed() < Duration::from_secs(20), "stalled in {:?}", self.phase);
             let Some(custom) =
-                app.runtime().windows().find(|(_, w)| [CUSTOM, NEW_TITLE].contains(&w.options().title.as_str())).map(|(&id, _)| id)
+                app.runtime().windows().find(|(_, w)| [CUSTOM, NEW_TITLE].contains(&w.presentation().title.as_ref())).map(|(&id, _)| id)
             else {
                 return Ok(Some(Duration::from_millis(16)));
             };
-            let standard = app.runtime().windows().find(|(_, w)| w.options().title == STANDARD).map(|(&id, _)| id).unwrap();
+            let standard = app.runtime().windows().find(|(_, w)| w.presentation().title.as_ref() == STANDARD).map(|(&id, _)| id).unwrap();
             let (Some(native), Some(other)) = (appkit_window(CUSTOM).or_else(|| appkit_window(NEW_TITLE)), appkit_window(STANDARD)) else {
                 return Ok(Some(Duration::from_millis(16)));
             };
@@ -114,7 +119,7 @@ mod macos {
             match self.phase {
                 Phase::FirstFrame if [custom, standard].into_iter().all(|id| presented(id).is_some_and(|frame| frame.gpu_complete)) => {
                     verify_chrome(&native, chrome);
-                    verify_vibrancy(&native);
+                    self.effect = Some(verify_vibrancy(&native));
                     assert!(other.isOpaque());
                     assert!(standard_geometry.maximized && other.isZoomed());
                     let list = app.runtime().window(custom).unwrap().last_commit().unwrap().draw.as_ref().unwrap();
@@ -126,6 +131,8 @@ mod macos {
                     assert_eq!(native.contentMaxSize().height, f64::from(LIMITS[1].height));
                     app.update_window(custom, |write| {
                         write.set_window_title(NEW_TITLE);
+                        write.set_window_theme(Theme::dark());
+                        write.set_window_material(WindowMaterial::Vibrancy(VibrancyMaterial::Hud));
                         write.set_window_geometry(WindowGeometryRequest {
                             position: Some(Point::new(180.0, 140.0)),
                             size: Some(Size::new(460.0, 330.0)),
@@ -142,6 +149,21 @@ mod macos {
                     verify_chrome(&native, chrome);
                     verify_geometry(&native, geometry);
                     assert_eq!(geometry.position, Some(Point::new(180.0, 140.0)));
+                    let effect = visual_effect(&native).expect("live window visual effect");
+                    assert!(std::ptr::eq(&*effect, self.effect.as_deref().unwrap()));
+                    assert_eq!(effect.material(), NSVisualEffectMaterial::HUDWindow);
+                    // SAFETY: This is AppKit's static name for Dark Aqua.
+                    assert_eq!(&*native.effectiveAppearance().name(), unsafe { NSAppearanceNameDarkAqua });
+                    app.update_window(custom, |write| write.set_window_material(WindowMaterial::Opaque)).unwrap();
+                    self.phase = Phase::Opaque;
+                }
+                Phase::Opaque if native.isOpaque() => {
+                    assert!(visual_effect(&native).is_none());
+                    let runtime = app.runtime().window(custom).unwrap();
+                    assert_eq!(
+                        runtime.last_commit().unwrap().draw.as_ref().unwrap().background,
+                        runtime.tree().theme().get(ColorToken::Background),
+                    );
                     app.update_window(standard, |write| write.toggle_maximize_window()).unwrap();
                     self.phase = Phase::StartupUnzoom;
                 }
@@ -221,10 +243,14 @@ mod macos {
         }
     }
 
-    fn verify_vibrancy(window: &NSWindow) {
+    fn visual_effect(window: &NSWindow) -> Option<Retained<NSVisualEffectView>> {
+        window.contentView()?.subviews().iter().find_map(|view| view.downcast::<NSVisualEffectView>().ok())
+    }
+
+    fn verify_vibrancy(window: &NSWindow) -> Retained<NSVisualEffectView> {
         assert!(!window.isOpaque());
         let content = window.contentView().unwrap();
-        let effect = content.subviews().iter().find_map(|view| view.downcast::<NSVisualEffectView>().ok()).expect("window visual effect");
+        let effect = visual_effect(window).expect("window visual effect");
         assert_eq!(effect.frame(), content.bounds());
         assert_eq!(effect.material(), NSVisualEffectMaterial::Sidebar);
         assert_eq!(effect.blendingMode(), NSVisualEffectBlendingMode::BehindWindow);
@@ -235,6 +261,7 @@ mod macos {
             unsafe { root.sublayers() }.unwrap().iter().find_map(|layer| layer.downcast::<CAMetalLayer>().ok()).expect("Metal layer");
         assert!(metal.zPosition() > backing_layer.zPosition());
         assert!(!metal.isOpaque());
+        effect
     }
 
     fn verify_geometry(window: &NSWindow, geometry: WindowGeometry) {

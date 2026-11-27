@@ -37,7 +37,7 @@ impl Topology {
         for node in delta.topology_dirty.iter().chain(self.reordered_parents(tree, delta)) {
             let mut next = Some(node);
             while let Some(node) = next.filter(|&node| branches.insert(node)) {
-                next = tree.parent(node);
+                next = tree.physical_parent(node);
             }
         }
         let mut result = Self { nodes: Vec::with_capacity(self.nodes.len() + delta.created.len()), ..Self::default() };
@@ -93,7 +93,7 @@ impl Topology {
     fn reordered_parents<'a>(&'a self, tree: &'a Tree, delta: &'a TreeDelta) -> impl Iterator<Item = NodeId> + 'a {
         delta.paint_dirty.iter().filter_map(move |node| {
             let index = *self.indices.get(node)? as usize;
-            if self.z_indices[index] != tree.stacking_key(node).1 { tree.parent(node) } else { None }
+            if self.z_indices[index] != tree.stacking_key(node).1 { tree.physical_parent(node) } else { None }
         })
     }
 
@@ -347,6 +347,7 @@ fn exact_hit(tree: &Tree, layout: &LayoutEngine, text: &TextEngine, entry: FlatN
     if core.flags.contains(NodeFlags::POINTER_EVENTS_NONE)
         || layout.clip(node).is_some_and(|clip| !clip.contains(pos))
         || !tree.is_shown(node)
+        || tree.is_inert(node)
     {
         return false;
     }
@@ -356,7 +357,7 @@ fn exact_hit(tree: &Tree, layout: &LayoutEngine, text: &TextEngine, entry: FlatN
     } else {
         layout.bounds(node).is_some_and(|rect| rect.contains_rounded(pos, radii(node)))
     };
-    hit && std::iter::successors(tree.parent(node), |&node| tree.parent(node)).all(|node| {
+    hit && std::iter::successors(tree.physical_parent(node), |&node| tree.physical_parent(node)).all(|node| {
         layout.clip(node).is_none_or(|clip| clip.contains(pos))
             && layout.child_clip(node).is_none_or(|clip| clip.contains(pos))
             && layout.rounded_child_clip(node).is_none_or(|clip| clip.contains_rounded(pos, radii(node)))

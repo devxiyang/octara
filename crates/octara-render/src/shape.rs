@@ -165,7 +165,7 @@ fn blur_along_x(x: f32, y: f32, sigma: f32, [tl, tr, br, bl]: [f32; 4], half: (f
 
 /// How much of a box shadow covers the pixel at `(px, py)`: the rounded rect `(x, y, w, h)` with
 /// radius `r` blurred by a Gaussian of standard deviation `sigma` (Evan Wallace's closed form
-/// along x, four samples along y, as GPUI and Rune). `sigma` 0 is a sharp edge.
+/// along x, with four samples along y). `sigma` 0 is a sharp edge.
 pub fn shadow_alpha((px, py): (f32, f32), (x, y, w, h): (f32, f32, f32, f32), radii: [f32; 4], sigma: f32) -> f32 {
     if sigma <= 0.0 {
         return coverage(sd_round_rect(px, py, x, y, w, h, radii));

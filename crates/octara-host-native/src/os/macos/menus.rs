@@ -18,7 +18,12 @@ struct Entry {
 
 pub(super) struct Bar {
     entries: RefCell<Vec<Entry>>,
-    send: Box<dyn Fn(String, Option<Chord>)>,
+    send: Box<dyn Fn(Selection)>,
+}
+
+pub(super) enum Selection {
+    Command { name: String, chord: Option<Chord> },
+    Paste,
 }
 
 define_class!(
@@ -34,12 +39,25 @@ define_class!(
             let entries = self.ivars().entries.borrow();
             let Some(e) = entries.get(item.tag() as usize).filter(|entry| entry.enabled) else { return };
             let chord = e.chord.filter(|_| by_key());
-            (self.ivars().send)(e.command.clone(), chord);
+            (self.ivars().send)(Selection::Command { name: e.command.clone(), chord });
+        }
+
+        #[unsafe(method(runPaste:))]
+        fn run_paste(&self, sender: &NSMenuItem) {
+            let app = NSApplication::sharedApplication(self.mtm());
+            // SAFETY: Paste is a standard responder action with one object parameter.
+            if !unsafe { app.sendAction_to_from(sel!(paste:), None, Some(sender)) } {
+                (self.ivars().send)(Selection::Paste);
+            }
         }
 
         #[unsafe(method(validateMenuItem:))]
         fn validate(&self, item: &NSMenuItem) -> bool {
-            self.ivars().entries.borrow().get(item.tag() as usize).is_some_and(|e| e.enabled)
+            if item.action() == Some(sel!(runPaste:)) {
+                NSApplication::sharedApplication(self.mtm()).keyWindow().is_some()
+            } else {
+                self.ivars().entries.borrow().get(item.tag() as usize).is_some_and(|e| e.enabled)
+            }
         }
     }
 );
@@ -59,7 +77,7 @@ pub(super) struct MenuBar {
 
 impl MenuBar {
     /// A bar whose picks go to `send` (a command and, picked by its keys, the chord).
-    pub(super) fn new(send: impl Fn(String, Option<Chord>) + 'static) -> Option<MenuBar> {
+    pub(super) fn new(send: impl Fn(Selection) + 'static) -> Option<MenuBar> {
         let mtm = MainThreadMarker::new()?;
         let target = Target::alloc(mtm).set_ivars(Bar { entries: RefCell::default(), send: Box::new(send) });
         let target: Retained<Target> = unsafe { msg_send![super(target), init] };
@@ -83,13 +101,33 @@ impl MenuBar {
         let name = NSProcessInfo::processInfo().processName().to_string();
         bar.addItem(&holder(mtm, &name, &app_menu(mtm, &name)));
         let mut tag = 0;
+        let mut has_edit = false;
         for m in menus {
-            bar.addItem(&holder(mtm, &m.name, &self.build(mtm, m, &mut tag)));
+            let menu = self.build(mtm, m, &mut tag);
+            if m.name.eq_ignore_ascii_case("Edit") {
+                has_edit = true;
+                if !m.items.iter().any(|item| matches!(item, MenuItem::Action { label, .. } if label.eq_ignore_ascii_case("Paste"))) {
+                    menu.addItem(&self.paste_item(mtm));
+                }
+            }
+            bar.addItem(&holder(mtm, &m.name, &menu));
+        }
+        if !has_edit {
+            let edit = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("Edit"));
+            edit.addItem(&self.paste_item(mtm));
+            bar.addItem(&holder(mtm, "Edit", &edit));
         }
         let window = window_menu(mtm);
         bar.addItem(&holder(mtm, "Window", &window));
         app.setMainMenu(Some(&bar));
         app.setWindowsMenu(Some(&window));
+    }
+
+    fn paste_item(&self, mtm: MainThreadMarker) -> Retained<NSMenuItem> {
+        let item = item_with(mtm, "Paste", Some(sel!(runPaste:)), None);
+        // SAFETY: The target lives as long as the menu bar.
+        unsafe { item.setTarget(Some(&*self.target)) };
+        item
     }
 
     fn build(&self, mtm: MainThreadMarker, menu: &Menu, tag: &mut isize) -> Retained<NSMenu> {

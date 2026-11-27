@@ -340,7 +340,7 @@ impl PaintCompiler {
         for node in local.iter().chain(delta.topology_dirty.iter()) {
             let mut ancestor = Some(node);
             while let Some(id) = ancestor.filter(|&id| branches.insert(id)) {
-                ancestor = tree.parent(id);
+                ancestor = tree.physical_parent(id);
                 if let Some(parent) = ancestor {
                     changed_children.entry(parent).or_default().push(id);
                 }
@@ -426,7 +426,7 @@ impl PaintCompiler {
         }
         let mut nested = false;
         let mut inherited_opacity = 1.0_f64;
-        for parent in std::iter::successors(tree.parent(node), |&parent| tree.parent(parent)) {
+        for parent in std::iter::successors(tree.physical_parent(node), |&parent| tree.physical_parent(parent)) {
             let ancestor = self.nodes.get(&parent)?.scene.as_ref()?.element.as_ref()?;
             let opacity = ancestor.motion.as_ref().map_or(ancestor.visual, |track| track.visual(now)).opacity;
             if opacity <= 0.0 {

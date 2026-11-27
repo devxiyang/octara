@@ -67,7 +67,7 @@ impl Projection {
             layout: LayoutEngine::default(),
             text: TextEngine::new(false),
             access: AccessKitProjector::new(AccessPublication::default()),
-            viewport: WindowViewport { size: Size::new(320.0, 240.0), scale: 1.0, safe_area: None },
+            viewport: WindowViewport { size: Size::new(320.0, 240.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 },
         }
     }
 

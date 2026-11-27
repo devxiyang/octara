@@ -65,20 +65,12 @@ impl OsHost for DesktopHost {
         let _ = open::that_detached(url);
     }
 
-    fn read_clipboard_text(&mut self) -> Option<String> {
-        self.clipboard.with_native(arboard::Clipboard::get_text)?.ok()
+    fn read_clipboard(&mut self, accept: octara_model::ask::ClipboardKinds) -> Option<Vec<octara_model::ask::ClipboardItem>> {
+        self.clipboard.with_native(|native| services::read_clipboard(native, accept))?.ok()
     }
 
     fn write_clipboard_text(&mut self, text: &str) {
         let _ = self.clipboard.with_native(|clipboard| clipboard.set_text(text));
-    }
-
-    fn read_clipboard_image(&mut self) -> Option<Image> {
-        let image = self.clipboard.with_native(arboard::Clipboard::get_image)?.ok()?;
-        let width = u32::try_from(image.width).ok()?;
-        let height = u32::try_from(image.height).ok()?;
-        let len = image.width.checked_mul(image.height)?.checked_mul(4)?;
-        (image.bytes.len() == len).then(|| Image::rgba(width, height, image.bytes.into_owned()))
     }
 
     fn write_clipboard_image(&mut self, image: &Image) {

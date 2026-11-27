@@ -7,7 +7,7 @@ pub use access::{PreparedRead, Readable, Writable};
 pub use binding::Binding;
 pub use close::CloseHandle;
 
-use octara_model::geometry::Size;
+use octara_model::geometry::WindowViewport;
 use octara_model::identity::WindowId;
 use octara_model::theme::Breakpoint;
 use octara_model::window::{SystemPreferences, WindowChrome, WindowGeometry};
@@ -20,6 +20,7 @@ use crate::arena::{NodeKind, ReactiveId, ReactiveWorld, ScopeId, Source};
 use crate::authoring::WindowAuthoring;
 use crate::graph::value::{ReadSignal, Signal, Trigger, Watch};
 use crate::task::TaskSpawner;
+use crate::tooltip::HoveredTooltip;
 
 /// A tracked read of a reactive computation, binding, or watch source.
 ///
@@ -162,15 +163,26 @@ pub struct BuildCx<'a> {
     pub(crate) scope: ScopeId,
     pub(crate) window: Option<WindowId>,
     pub(crate) tasks: Option<TaskSpawner>,
-    viewport: Option<(ReadSignal<Size>, ReadSignal<Breakpoint>)>,
+    viewport: Option<(ReadSignal<WindowViewport>, ReadSignal<Breakpoint>)>,
     window_metrics: Option<(ReadSignal<WindowChrome>, ReadSignal<WindowGeometry>)>,
+    hovered_tooltip: Option<ReadSignal<Option<HoveredTooltip>>>,
     system_preferences: Option<ReadSignal<SystemPreferences>>,
     pub(crate) authoring: Option<&'a mut WindowAuthoring>,
 }
 
 impl<'a> BuildCx<'a> {
     pub(crate) fn new(world: &'a mut ReactiveWorld, scope: ScopeId, window: Option<WindowId>) -> Self {
-        Self { world, scope, window, tasks: None, viewport: None, window_metrics: None, system_preferences: None, authoring: None }
+        Self {
+            world,
+            scope,
+            window,
+            tasks: None,
+            viewport: None,
+            window_metrics: None,
+            hovered_tooltip: None,
+            system_preferences: None,
+            authoring: None,
+        }
     }
 
     pub fn with_tasks(mut self, tasks: TaskSpawner) -> Self {
@@ -183,13 +195,18 @@ impl<'a> BuildCx<'a> {
         self
     }
 
-    pub fn with_viewport(mut self, size: ReadSignal<Size>, breakpoint: ReadSignal<Breakpoint>) -> Self {
-        self.viewport = Some((size, breakpoint));
+    pub fn with_viewport(mut self, viewport: ReadSignal<WindowViewport>, breakpoint: ReadSignal<Breakpoint>) -> Self {
+        self.viewport = Some((viewport, breakpoint));
         self
     }
 
     pub(crate) fn with_window_metrics(mut self, chrome: ReadSignal<WindowChrome>, geometry: ReadSignal<WindowGeometry>) -> Self {
         self.window_metrics = Some((chrome, geometry));
+        self
+    }
+
+    pub(crate) fn with_hovered_tooltip(mut self, tooltip: ReadSignal<Option<HoveredTooltip>>) -> Self {
+        self.hovered_tooltip = Some(tooltip);
         self
     }
 
@@ -212,7 +229,7 @@ impl<'a> BuildCx<'a> {
     }
 
     #[track_caller]
-    pub fn viewport(&self) -> ReadSignal<Size> {
+    pub fn viewport(&self) -> ReadSignal<WindowViewport> {
         self.viewport.expect("build context has no viewport").0
     }
 
@@ -229,6 +246,12 @@ impl<'a> BuildCx<'a> {
     #[track_caller]
     pub fn window_geometry(&self) -> ReadSignal<WindowGeometry> {
         self.window_metrics.expect("build context has no window geometry").1
+    }
+
+    /// Observe the current tooltip after the window's pointer dwell delay.
+    #[track_caller]
+    pub fn hovered_tooltip(&self) -> ReadSignal<Option<HoveredTooltip>> {
+        self.hovered_tooltip.expect("build context has no window tooltip")
     }
 
     /// Observe the appearance and accessibility preferences shared by the application's windows.

@@ -1,6 +1,6 @@
 //! Delegates editing to native browser controls and admits proposals against the active session.
 
-use crate::{Driver, dom, event_element, modifiers, rich, undo::DomUndoLog};
+use crate::{Driver, dom, event_element, modifiers, rich, services::clipboard_image, undo::DomUndoLog};
 use octara::App;
 use octara::runtime::{Input, WindowId, turn::TurnError};
 use octara::tree::{
@@ -8,13 +8,15 @@ use octara::tree::{
     editor::{EditorSession, EditorSlot},
     selection::Address,
 };
+use octara_model::ask::ClipboardItem;
 use octara_model::identity::{EditorSessionId, NodeId};
-use octara_model::input::{EditorEvent, HostReply, InteractionEvent, Key, KeyEvent, Modifiers};
+use octara_model::input::{EditorEvent, HostReply, InteractionEvent, Key, KeyEvent, Modifiers, PasteEvent};
 use octara_model::semantics::TextPosition;
 use octara_model::text::{CommitKind, TextEdit};
 use std::cell::Cell;
 use std::rc::Rc;
 use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen_futures::spawn_local;
 use web_sys::{
     ClipboardEvent, CompositionEvent, Element, Event, HtmlElement, HtmlInputElement, HtmlTextAreaElement, InputEvent as BrowserInput,
     KeyboardEvent, Node,
@@ -43,6 +45,22 @@ impl Stamp {
 
     fn current(self, app: &App, window: WindowId) -> bool {
         Self::read(app, window, self.session.node) == Some(self)
+    }
+}
+
+#[derive(PartialEq, Eq)]
+struct PasteContext {
+    window: WindowId,
+    focus: Option<NodeId>,
+    modal: Option<NodeId>,
+    editor: Option<Stamp>,
+}
+
+impl PasteContext {
+    fn read(app: &App, window: WindowId) -> Option<Self> {
+        let tree = app.runtime().window(window)?.tree();
+        let focus = tree.focus();
+        Some(Self { window, focus, modal: tree.front_modal(), editor: focus.and_then(|node| Stamp::read(app, window, node)) })
     }
 }
 
@@ -179,6 +197,21 @@ impl Driver {
                 return;
             }
             driver.editor.before.set(None);
+            if input.input_type() == "insertFromPaste"
+                && input.cancelable()
+                && let Some(text) = input.data_transfer().and_then(|data| data.get_data("text/plain").ok()).or_else(|| input.data())
+            {
+                event.prevent_default();
+                if let Err(error) = driver.turn(|app, window| {
+                    driver.sync_selection(app, window, &field)?;
+                    let paste = PasteEvent { items: vec![ClipboardItem::Text(text)] };
+                    app.dispatch(window, Input::Host(HostReply::Paste(paste)))?;
+                    Ok(())
+                }) {
+                    driver.report_error(error);
+                }
+                return;
+            }
             if field.rich() && input.cancelable() && driver.rich_edit(&field, input) {
                 event.prevent_default();
                 return;
@@ -324,14 +357,68 @@ impl Driver {
                 }
             })?;
         }
-        self.listen(self.mount.as_ref(), "paste", false, |driver, event| {
-            let Some(field) = driver.event_field(&event).filter(Field::rich) else { return };
-            let Some(clipboard) = event.dyn_ref::<ClipboardEvent>().and_then(ClipboardEvent::clipboard_data) else { return };
-            let Ok(text) = clipboard.get_data("text/plain") else { return };
-            event.prevent_default();
-            driver.rich_insert(&field, text);
-        })?;
+        self.listen(self.mount.as_ref(), "paste", false, |driver, event| driver.paste(&event))?;
         Ok(())
+    }
+
+    fn paste(self: &Rc<Self>, event: &Event) {
+        if event.default_prevented() {
+            return;
+        }
+        let Some(clipboard) = event.dyn_ref::<ClipboardEvent>().and_then(ClipboardEvent::clipboard_data) else { return };
+        let mut items = clipboard
+            .get_data("text/plain")
+            .ok()
+            .filter(|text| !text.is_empty())
+            .map_or_else(Vec::new, |text| vec![ClipboardItem::Text(text)]);
+        let files = clipboard.files();
+        let images: Vec<_> = files
+            .into_iter()
+            .flat_map(|files| (0..files.length()).filter_map(move |index| files.get(index)))
+            .filter(|file| file.type_().starts_with("image/"))
+            .collect();
+        let field = self.event_field(event);
+        if items.is_empty() && images.is_empty() && field.is_none() {
+            return;
+        }
+        // Browser clipboard files expose a Blob and a basename, with no local path.
+        event.prevent_default();
+        let context = self.turn(|app, window| {
+            if let Some(field) = &field {
+                self.sync_selection(app, window, field)?;
+            }
+            if images.is_empty() {
+                let paste = PasteEvent { items: std::mem::take(&mut items) };
+                app.dispatch(window, Input::Host(HostReply::Paste(paste)))?;
+                return Ok(None);
+            }
+            Ok(PasteContext::read(app, window))
+        });
+        let context = match context {
+            Ok(Some(context)) => context,
+            Ok(None) => return,
+            Err(error) => {
+                self.report_error(error);
+                return;
+            }
+        };
+        let driver = Rc::downgrade(self);
+        spawn_local(async move {
+            for file in images {
+                if let Some(image) = clipboard_image(file.as_ref(), file.type_()).await {
+                    items.push(image);
+                }
+            }
+            let Some(driver) = driver.upgrade().filter(|driver| !driver.stopped.get()) else { return };
+            if let Err(error) = driver.turn(|app, window| {
+                if PasteContext::read(app, window) == Some(context) {
+                    app.dispatch(window, Input::Host(HostReply::Paste(PasteEvent { items })))?;
+                }
+                Ok(())
+            }) {
+                driver.report_error(error);
+            }
+        });
     }
 
     fn rich_edit(&self, field: &Field, input: &BrowserInput) -> bool {
@@ -341,7 +428,8 @@ impl Driver {
             "deleteWordBackward" => self.rich_key(field, KeyEvent::new(Key::Backspace, Modifiers::ALT)),
             "deleteWordForward" => self.rich_key(field, KeyEvent::new(Key::Delete, Modifiers::ALT)),
             "insertParagraph" | "insertLineBreak" => self.rich_insert(field, "\n".to_owned()),
-            "insertFromPaste" | "insertFromDrop" => {
+            "insertFromPaste" => {}
+            "insertFromDrop" => {
                 if let Some(text) = input.data_transfer().and_then(|data| data.get_data("text/plain").ok()).or_else(|| input.data()) {
                     self.rich_insert(field, text);
                 }
@@ -555,7 +643,7 @@ impl Driver {
 
     fn document_address(&self, tree: &Tree, endpoint: Node, offset: u32) -> Option<Address> {
         let node = self.dom_selection_node(endpoint.clone())?;
-        let node = if tree.link(node).is_some() { tree.parent(node)? } else { node };
+        let node = if tree.link(node).is_some() { tree.physical_parent(node)? } else { node };
         let owner = self.dom.element(node)?;
         tree.text(node)?;
         Some((node, rich::logical_offset(&owner, &endpoint, offset)?))

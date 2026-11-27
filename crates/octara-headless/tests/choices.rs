@@ -13,7 +13,10 @@ fn driver() -> HeadlessDriver {
 }
 
 fn window_options() -> WindowOptions {
-    WindowOptions { viewport: WindowViewport { size: Size::new(300.0, 220.0), scale: 1.0, safe_area: None }, ..Default::default() }
+    WindowOptions {
+        viewport: WindowViewport { size: Size::new(300.0, 220.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 },
+        ..Default::default()
+    }
 }
 
 fn observe(driver: &mut HeadlessDriver, window: WindowId) -> TreeSnapshot {

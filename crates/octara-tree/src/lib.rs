@@ -36,7 +36,7 @@ use octara_model::theme::{Breakpoint, ResponsiveBreakpoint, Theme};
 use overlay::OverlayMount;
 use rustc_hash::{FxHashMap, FxHashSet};
 use selection::DocSelection;
-use slotmap::SlotMap;
+use slotmap::{SecondaryMap, SlotMap};
 use smallvec::SmallVec;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -159,6 +159,8 @@ pub struct Tree {
     test_id_index: FxHashMap<Arc<str>, SmallVec<[NodeId; 1]>>,
     row_children: FxHashMap<(NodeId, RowKey), NodeId>,
     overlay_index: FxHashSet<NodeId>,
+    // Retained owner edges also keep visual exits reachable until they settle.
+    logical_portals: SecondaryMap<NodeId, SmallVec<[NodeId; 2]>>,
     native_index: FxHashSet<NodeId>,
     doc_selections: FxHashMap<NodeId, DocSelection>,
     exit_roots: FxHashMap<NodeId, usize>,
@@ -212,6 +214,7 @@ impl Tree {
             test_id_index: FxHashMap::default(),
             row_children: FxHashMap::default(),
             overlay_index: FxHashSet::default(),
+            logical_portals: SecondaryMap::new(),
             native_index: FxHashSet::default(),
             doc_selections: FxHashMap::default(),
             exit_roots: FxHashMap::default(),
@@ -270,7 +273,7 @@ impl Tree {
                 if let Some(scope) = self.theme_scope(current) {
                     return Some(scope);
                 }
-                node = self.parent(current);
+                node = self.logical_parent(current);
             }
         }
         None
@@ -310,8 +313,54 @@ impl Tree {
         self.nodes.iter()
     }
 
-    pub fn parent(&self, node: NodeId) -> Option<NodeId> {
+    /// The parent used for layout, stacking, and clipping.
+    pub fn physical_parent(&self, node: NodeId) -> Option<NodeId> {
         self.node(node)?.parent
+    }
+
+    /// The authored parent used for cascading properties and interaction.
+    pub fn logical_parent(&self, node: NodeId) -> Option<NodeId> {
+        let core = self.node(node)?;
+        if core.flags.contains(NodeFlags::HAS_OVERLAY_MOUNT) {
+            return self.tables.overlays[node].mount.map(|mount| mount.owner);
+        }
+        core.parent
+    }
+
+    fn portal_owner(&self, node: NodeId) -> Option<NodeId> {
+        self.node(node)?.flags.contains(NodeFlags::HAS_OVERLAY_MOUNT).then_some(())?;
+        self.overlay(node)?.mount.map(|mount| mount.owner)
+    }
+
+    pub(crate) fn logical_portals(&self, owner: NodeId) -> &[NodeId] {
+        self.logical_portals.get(owner).map_or(&[], SmallVec::as_slice)
+    }
+
+    /// Authored children, including portals mounted elsewhere for layout.
+    pub fn logical_children(&self, node: NodeId) -> impl DoubleEndedIterator<Item = NodeId> + '_ {
+        self.children(node)
+            .iter()
+            .copied()
+            .filter(|&child| !self.nodes[child].flags.contains(NodeFlags::HAS_OVERLAY_MOUNT))
+            .chain(self.logical_portals(node).iter().copied())
+    }
+
+    fn index_portal(&mut self, node: NodeId) {
+        let Some(owner) = self.overlay(node).and_then(|slot| slot.mount).map(|mount| mount.owner) else { return };
+        self.nodes[node].flags.insert(NodeFlags::HAS_OVERLAY_MOUNT);
+        self.logical_portals.entry(owner).expect("portal owner key").or_default().push(node);
+        self.add_style_bloom(owner, self.nodes[node].style_bloom);
+    }
+
+    fn unindex_portal(&mut self, node: NodeId) {
+        let Some(owner) = self.portal_owner(node) else { return };
+        self.nodes[node].flags.remove(NodeFlags::HAS_OVERLAY_MOUNT);
+        let portals = &mut self.logical_portals[owner];
+        portals.retain(|other| *other != node);
+        if portals.is_empty() {
+            self.logical_portals.remove(owner);
+        }
+        self.refresh_style_bloom(owner);
     }
 
     pub fn children(&self, node: NodeId) -> &[NodeId] {
@@ -508,7 +557,7 @@ impl Tree {
     }
 
     fn anchor_or_parent(&self, node: NodeId) -> Option<NodeId> {
-        self.overlay(node).and_then(|slot| slot.target.and_then(|(target, _)| target.node())).or_else(|| self.parent(node))
+        self.overlay(node).and_then(|slot| slot.target.and_then(|(target, _)| target.node())).or_else(|| self.physical_parent(node))
     }
 
     pub fn native_nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
@@ -523,7 +572,7 @@ impl Tree {
         if let Some(style) = self.style(node) {
             return style.visual;
         }
-        let inherited = self.inherited_at(self.parent(node));
+        let inherited = self.inherited_at(self.logical_parent(node));
         StyleResolver::new(self.theme_at(node), self.breakpoint, self.responsive_breakpoint, self.touch)
             .resolve(LayoutStyle::default(), &inherited, &[], &[], State::empty(), |_| false)
             .visual
@@ -617,6 +666,14 @@ impl Tree {
         delta.semantics_dirty.insert(node);
     }
 
+    fn logical_semantics_changed(&mut self, root: NodeId, delta: &mut TreeDelta) {
+        let mut pending: SmallVec<[NodeId; 8]> = smallvec::smallvec![root];
+        while let Some(node) = pending.pop() {
+            self.semantics_changed(node, delta);
+            pending.extend(self.logical_children(node));
+        }
+    }
+
     fn content_changed(&mut self, node: NodeId, delta: &mut TreeDelta) {
         self.layout_changed(node, delta);
         self.paint_changed(node, delta);
@@ -703,7 +760,7 @@ impl Tree {
     }
 
     fn clear_node(&mut self, node: NodeId, delta: &mut TreeDelta) {
-        if let Some(parent) = self.parent(node) {
+        if let Some(parent) = self.physical_parent(node) {
             self.remove_row_index(parent, node);
         }
         self.index_names(node, false);
@@ -805,7 +862,7 @@ impl Tree {
         );
         match change {
             NodeChange::Style(authored) => {
-                let from = self.inherited_at(self.parent(node));
+                let from = self.inherited_at(self.logical_parent(node));
                 self.nodes[node].present.insert(TableMask::STYLES);
                 let style = self.tables.styles.entry(node).expect("style target key").or_insert_with(|| StyleSlot {
                     theme_revision: self.root_theme_revision,
@@ -851,13 +908,21 @@ impl Tree {
                 if authored.contains(NodeFlags::MAINTAIN_SCROLL_ANCHOR) != core.flags.contains(NodeFlags::MAINTAIN_SCROLL_ANCHOR) {
                     delta.scroll_dirty.insert(node);
                 }
+                let inert_changed = core.flags.contains(NodeFlags::INERT) != authored.contains(NodeFlags::INERT);
                 core.flags = (core.flags - NodeFlags::AUTHORED) | authored;
-                self.semantics_changed(node, delta);
+                if inert_changed {
+                    self.logical_semantics_changed(node, delta);
+                } else {
+                    self.semantics_changed(node, delta);
+                }
             }
             NodeChange::Disabled(disabled) => {
+                if self.nodes[node].state.contains(State::DISABLED) == disabled {
+                    return;
+                }
                 self.nodes[node].state.set(State::DISABLED, disabled);
                 style_roots.insert(node);
-                self.semantics_changed(node, delta);
+                self.logical_semantics_changed(node, delta);
             }
             NodeChange::Text(text) => self.replace_text(node, RichText { text, ..Default::default() }, delta),
             NodeChange::RichText(rich) => self.replace_text(node, *rich, delta),
@@ -995,7 +1060,6 @@ impl Tree {
                 let target = spec.target.map(|(target, placement)| (target.map_node(resolve), placement));
                 let mount = spec.mount.map(|(owner, order)| OverlayMount { owner: resolve(owner), order });
                 self.nodes[node].flags.set(NodeFlags::HAS_ANCHOR, target.is_some());
-                self.nodes[node].flags.set(NodeFlags::HAS_OVERLAY_MOUNT, mount.is_some());
                 let has_overlay = target.is_some() || mount.is_some() || spec.layer.is_some() || spec.group.is_some();
                 self.nodes[node].present.set(TableMask::OVERLAYS, has_overlay);
                 if !has_overlay {

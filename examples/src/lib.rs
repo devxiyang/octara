@@ -1,6 +1,7 @@
 //! Example applications and their shared native launch options.
 
-use octara::prelude::{Size, WindowOptions, WindowViewport};
+use octara::prelude::{Size, WindowOptions, WindowPresentation, WindowViewport};
+use std::sync::Arc;
 
 pub mod album_back;
 pub mod apps;
@@ -11,10 +12,10 @@ pub mod panel_scroll;
 pub mod rename;
 pub mod showcase;
 
-pub fn window_options(title: impl Into<String>, width: f32, height: f32) -> WindowOptions {
+pub fn window_options(title: impl Into<Arc<str>>, width: f32, height: f32) -> WindowOptions {
     WindowOptions {
-        title: title.into(),
-        viewport: WindowViewport { size: Size::new(width, height), scale: 1.0, safe_area: None },
+        presentation: WindowPresentation { title: title.into(), ..Default::default() },
+        viewport: WindowViewport { size: Size::new(width, height), scale: 1.0, safe_area: None, keyboard_inset: 0.0 },
         touch: cfg!(target_os = "ios"),
         ..Default::default()
     }

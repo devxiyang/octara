@@ -276,6 +276,7 @@ impl TreeReceipt {
 struct StagedTopology {
     parents: FxHashMap<NodeRef, NodeRef>,
     mount_owners: FxHashMap<NodeRef, Option<NodeRef>>,
+    changed_mounts: FxHashSet<NodeRef>,
     placements: Vec<(NodeRef, usize, NodeRef)>,
     retirements: FxHashMap<NodeRef, Retirement>,
     retire_order: Vec<NodeRef>,
@@ -325,7 +326,7 @@ impl Preflight<'_> {
 
     fn parent(&self, node: NodeRef) -> Option<NodeRef> {
         self.topology.parents.get(&node).copied().or_else(|| match node {
-            NodeRef::Existing { id, .. } => self.tree.parent(id).map(|parent| self.tree.node_ref(parent)),
+            NodeRef::Existing { id, .. } => self.tree.physical_parent(id).map(|parent| self.tree.node_ref(parent)),
             NodeRef::Pending(_) => None,
         })
     }
@@ -352,13 +353,16 @@ impl Preflight<'_> {
                 return Some(node);
             }
             pending.extend(self.parent(node));
-            let mount = self.topology.mount_owners.get(&node).copied().unwrap_or_else(|| match node {
-                NodeRef::Existing { id, .. } => self.tree.overlay(id)?.mount.map(|mount| self.tree.node_ref(mount.owner)),
-                NodeRef::Pending(_) => None,
-            });
-            pending.extend(mount);
+            pending.extend(self.portal_owner(node));
         }
         None
+    }
+
+    fn portal_owner(&self, node: NodeRef) -> Option<NodeRef> {
+        self.topology.mount_owners.get(&node).copied().unwrap_or_else(|| match node {
+            NodeRef::Existing { id, .. } => self.tree.portal_owner(id).map(|owner| self.tree.node_ref(owner)),
+            NodeRef::Pending(_) => None,
+        })
     }
 
     fn validate(mut self) -> Result<StagedTopology, TreeError> {
@@ -389,7 +393,11 @@ impl Preflight<'_> {
                     }
                 }
                 TxOp::Change(node, NodeChange::Overlay(overlay)) => {
-                    self.topology.mount_owners.insert(node, overlay.mount.map(|(owner, _)| owner));
+                    let owner = overlay.mount.map(|(owner, _)| owner);
+                    if owner != self.portal_owner(node) {
+                        self.topology.changed_mounts.insert(node);
+                    }
+                    self.topology.mount_owners.insert(node, owner);
                 }
                 TxOp::Change(..) => {}
             }
@@ -451,40 +459,18 @@ impl Preflight<'_> {
         if overlays.is_empty() && self.tree.overlay_index.is_empty() {
             return Ok(());
         }
-        for use_owner in [false, true] {
-            let mut resolved = FxHashSet::default();
-            let mut visited = FxHashSet::default();
-            let seeds = overlays.keys().copied().chain(self.topology.parents.keys().copied());
-            for seed in seeds {
-                visited.clear();
-                let mut next = Some(seed);
-                while let Some(node) = next {
-                    if resolved.contains(&node) {
-                        break;
-                    }
-                    if !visited.insert(node) {
-                        return Err(TreeError::Cycle(seed));
-                    }
-                    let target = if let Some(spec) = overlays.get(&node) {
-                        let owner = spec.mount.filter(|_| use_owner).map(|(owner, _)| owner);
-                        owner.or_else(|| spec.target.and_then(|(target, _)| target.node()))
-                    } else if let NodeRef::Existing { id, .. } = node {
-                        self.tree
-                            .overlay(id)
-                            .and_then(|slot| {
-                                let owner = slot.mount.filter(|_| use_owner).map(|mount| mount.owner);
-                                owner.or_else(|| slot.target.and_then(|(target, _)| target.node()))
-                            })
-                            .map(|target| self.tree.node_ref(target))
-                    } else {
-                        None
-                    };
-                    next = target.or_else(|| self.parent(node));
-                }
-                resolved.extend(visited.iter().copied());
+        let anchor = |node| {
+            if let Some(spec) = overlays.get(&node) {
+                spec.target.and_then(|(target, _)| target.node())
+            } else if let NodeRef::Existing { id, .. } = node {
+                self.tree.overlay(id)?.target?.0.node().map(|node| self.tree.node_ref(node))
+            } else {
+                None
             }
-        }
-        Ok(())
+        };
+        let seeds = || overlays.keys().copied().chain(self.topology.parents.keys().copied());
+        validate_parent_paths(seeds(), |node| [anchor(node).or_else(|| self.parent(node))])?;
+        validate_parent_paths(seeds(), |node| [self.portal_owner(node), self.parent(node)])
     }
 
     fn validate_changes(&self) -> Result<(), TreeError> {
@@ -511,6 +497,13 @@ impl Preflight<'_> {
                 return Err(TreeError::WrongContent(node));
             }
             if let NodeChange::Overlay(overlay) = change {
+                if let Some((owner, _)) = overlay.mount {
+                    self.application_node(node, false)?;
+                    // Text edits rebuild inline link allocations without authoring placements.
+                    if self.kind(owner)? == NodeKind::Link {
+                        return Err(TreeError::InternalNode(owner));
+                    }
+                }
                 for target in
                     overlay.target.and_then(|(target, _)| target.node()).into_iter().chain(overlay.mount.map(|(target, _)| target))
                 {
@@ -554,6 +547,31 @@ impl Preflight<'_> {
     }
 }
 
+fn validate_parent_paths<const N: usize>(
+    seeds: impl Iterator<Item = NodeRef>,
+    parents: impl Fn(NodeRef) -> [Option<NodeRef>; N],
+) -> Result<(), TreeError> {
+    let mut resolved = FxHashSet::default();
+    let mut path = FxHashSet::default();
+    let mut pending = smallvec::SmallVec::<[(NodeRef, bool); 8]>::new();
+    for seed in seeds {
+        pending.push((seed, false));
+        while let Some((node, leaving)) = pending.pop() {
+            if leaving {
+                path.remove(&node);
+                resolved.insert(node);
+            } else if !resolved.contains(&node) {
+                if !path.insert(node) {
+                    return Err(TreeError::Cycle(seed));
+                }
+                pending.push((node, true));
+                pending.extend(parents(node).into_iter().flatten().map(|parent| (parent, false)));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Tree {
     pub fn transaction(&self) -> TxBuilder {
         TxBuilder::new(self.id(), self.revision())
@@ -595,13 +613,33 @@ impl Tree {
 
         let mut style_roots = FxHashSet::default();
         let mut theme_roots = FxHashSet::default();
+        let mut portals: Vec<_> =
+            topology.changed_mounts.iter().copied().map(resolve).map(|portal| (portal, self.portal_owner(portal))).collect();
+        portals.sort_unstable();
+        // Remove old edges before adding new ones. Each intermediate Bloom update
+        // then sees a subset of either the old or the preflighted final graph.
+        for &(portal, _) in &portals {
+            self.unindex_portal(portal);
+        }
         for op in tx.ops {
             if let TxOp::Change(node, change) = op {
                 self.commit_change(resolve(node), change, &resolve, &mut style_roots, &mut theme_roots, &mut delta);
             }
         }
-        for &(_, _, child) in &topology.placements {
-            self.detach(resolve(child), &mut delta);
+        let mut changed_parent = FxHashSet::default();
+        for &(parent, _, child) in &topology.placements {
+            let child = resolve(child);
+            if self.physical_parent(child).is_some_and(|previous| previous != resolve(parent)) {
+                changed_parent.insert(child);
+            }
+            self.detach(child, &mut delta);
+        }
+        for (portal, old_owner) in portals {
+            self.index_portal(portal);
+            changed_parent.insert(portal);
+            if self.portal_owner(portal) != old_owner {
+                style_roots.insert(portal);
+            }
         }
         let retirements = topology.retirements.into_iter().map(|(node, mode)| (resolve(node), mode)).collect();
         self.retire_subtrees(topology.retire_order.into_iter().map(resolve).collect(), &retirements, &mut delta);
@@ -610,8 +648,11 @@ impl Tree {
             self.attach(resolve(parent), index, child, &mut delta);
             style_roots.insert(child);
         }
+        for node in changed_parent {
+            self.logical_semantics_changed(node, &mut delta);
+        }
         self.cancel_replaced_overlay_exits(&mut delta);
-        if !focus_ancestors.is_empty() && !delta.topology_dirty.is_empty() {
+        if !focus_ancestors.is_empty() && !(delta.topology_dirty.is_empty() && delta.overlay_dirty.is_empty()) {
             self.reconcile_focus_states(focus_ancestors, self.focus_visible(), &mut style_roots, &mut delta);
         }
         self.resolve_dirty_styles(style_roots, theme_roots, &mut delta);
@@ -661,9 +702,39 @@ mod tests {
         rotate.place(tree.node_ref(child), 0, tree.node_ref(parent));
         rotate.place(root, 0, tree.node_ref(child));
         tree.apply(rotate.finish()).unwrap();
-        assert_eq!(tree.parent(child), Some(tree.root()));
-        assert_eq!(tree.parent(parent), Some(child));
+        assert_eq!(tree.physical_parent(child), Some(tree.root()));
+        assert_eq!(tree.physical_parent(parent), Some(child));
         assert_eq!(tree.test_ids("child"), &[child]);
+    }
+
+    #[test]
+    fn preflight_rejects_cycles_crossing_physical_and_portal_edges() {
+        let mut tree = tree();
+        let root = tree.node_ref(tree.root());
+        let mut tx = tree.transaction();
+        let parent = tx.create(NodeSpec::new(NodeContent::Box));
+        let child = tx.create(NodeSpec::new(NodeContent::Box));
+        tx.place(root, 0, parent);
+        tx.place(parent, 0, child);
+        let (receipt, _) = tree.apply(tx.finish()).unwrap();
+        let parent = tree.node_ref(receipt.node(parent).unwrap());
+        let child = tree.node_ref(receipt.node(child).unwrap());
+        let mount = |owner| NodeChange::Overlay(OverlaySpec { mount: Some((owner, 0)), ..Default::default() });
+
+        let mut tx = tree.transaction();
+        tx.change(parent, mount(child));
+        tx.change(child, mount(root));
+        assert!(matches!(tree.apply(tx.finish()).unwrap_err().reason, TreeError::Cycle(_)));
+        assert_eq!(tree.revision(), receipt.revision);
+        assert!(tree.validate_integrity().is_ok());
+
+        // Moving the child makes these owner changes acyclic as a single transaction.
+        let mut tx = tree.transaction();
+        tx.change(parent, mount(child));
+        tx.change(child, mount(root));
+        tx.place(root, 1, child);
+        tree.apply(tx.finish()).unwrap();
+        assert!(tree.validate_integrity().is_ok());
     }
 
     #[test]

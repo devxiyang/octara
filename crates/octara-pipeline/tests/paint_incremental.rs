@@ -16,7 +16,7 @@ fn tree() -> Tree {
 }
 
 fn viewport() -> WindowViewport {
-    WindowViewport { size: Size::new(320.0, 800.0), scale: 1.0, safe_area: None }
+    WindowViewport { size: Size::new(320.0, 800.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 }
 }
 
 fn style(props: impl IntoIterator<Item = StyleProp>) -> NodeChange {

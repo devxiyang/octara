@@ -11,9 +11,10 @@ use objc2_foundation::{
 use octara::EditorRope;
 use octara::runtime::Input;
 use octara::tree::editor::EditorMirror;
+use octara_model::ask::ClipboardKinds;
 use octara_model::geometry::{Point, Rect};
 use octara_model::identity::EditorSessionId;
-use octara_model::input::EditorEvent;
+use octara_model::input::{EditorEvent, HostReply, PasteEvent};
 use octara_model::text::{TextEdit, TextGeometry, TextLine};
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
@@ -71,7 +72,7 @@ struct RetainedKey {
 #[derive(Default)]
 struct State {
     session: Option<Session>,
-    pending: Vec<EditorEvent>,
+    pending: Vec<Input>,
     predicted: VecDeque<(u64, EditorMirror)>,
     keys: VecDeque<RetainedKey>,
 }
@@ -83,7 +84,7 @@ impl State {
         session.revision = session.revision.checked_add(1).expect("editor document revisions exhausted");
         session.geometry = None;
         self.predicted.push_back((session.revision, session.document.clone()));
-        self.pending.push(event);
+        self.pending.push(Input::Editor(event));
         true
     }
 }
@@ -135,6 +136,11 @@ define_class!(
             if let Some(parent) = unsafe { self.superview() } {
                 parent.keyDown(event);
             }
+        }
+
+        #[unsafe(method(paste:))]
+        fn paste_action(&self, _: Option<&AnyObject>) {
+            self.paste();
         }
 
         #[unsafe(method(keyUp:))]
@@ -380,17 +386,14 @@ impl InputView {
     }
 
     fn paste(&self) -> bool {
-        let (revision, multiline) = {
-            let state = self.ivars().state.borrow();
-            let Some(session) = &state.session else { return false };
-            ((session.id, session.revision), session.multiline)
-        };
-        let Some(mut text) = super::services::read_text() else { return true };
-        if !multiline {
-            text.retain(|char| !matches!(char, '\n' | '\r'));
+        let ivars = self.ivars();
+        if ivars.state.borrow().session.is_none() {
+            return false;
         }
-        if !text.is_empty() && self.has_revision(revision) {
-            self.enqueue(TextEdit::Insert { text, replacement: None });
+        let items = super::services::read_clipboard(ClipboardKinds::all());
+        if !items.is_empty() {
+            ivars.state.borrow_mut().pending.push(Input::Host(HostReply::Paste(PasteEvent { items })));
+            (ivars.wake)();
         }
         true
     }
@@ -524,7 +527,7 @@ impl Editor {
         ivars.handled.get() || !ivars.forward.get()
     }
 
-    fn drain(&self) -> Vec<EditorEvent> {
+    fn drain(&self) -> Vec<Input> {
         std::mem::take(&mut self.view.ivars().state.borrow_mut().pending)
     }
 
@@ -588,7 +591,7 @@ impl WindowTextInput for Editor {
     }
 
     fn drain_text_input(&mut self, out: &mut Vec<WindowHostEvent>) {
-        out.extend(self.drain().into_iter().map(Input::Editor));
+        out.extend(self.drain());
     }
 
     fn inspect_text_input(&self) -> Value {

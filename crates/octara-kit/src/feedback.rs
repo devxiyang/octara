@@ -1,28 +1,13 @@
-//! Tooltips, toast notifications, and a searchable modal command palette.
+//! Toast notifications and a searchable modal command palette.
 
 use crate::{
-    DialogOptions, PickerOptions, PopupOptions,
+    DialogOptions, PickerOptions,
     choices::{choice_row, combobox_options},
     dialog, icon_button,
     parts::{editor_style, popup_surface},
 };
 use octara::prelude::*;
-use octara_headless::{Choice, ComboboxState, Selection, ToastQueue, TooltipState, tooltip::TooltipOptions};
-
-/// Attaches a delayed, themed description to a trigger.
-#[ui]
-pub fn tooltip<C>(b: &mut BuildCx<'_>, trigger: El<C>, label: impl Into<String>, options: PopupOptions) -> El<C>
-where
-    El<C>: IntoView,
-{
-    let label = label.into();
-    let state = TooltipState::new(b, TooltipOptions::default());
-    let (trigger, geometry) = options.anchor(b, trigger);
-    state.trigger(trigger, options.placement, options.anchor_target, move |_| {
-        let surface = popup_surface(text(label.clone())).px(sp(2.0)).py(sp(1.0)).max_w(280).text_size(FontSizeToken::Sm);
-        options.surface(surface, geometry)
-    })
-}
+use octara_headless::{Choice, ComboboxState, Selection, ToastQueue};
 
 /// Mounts queued toasts in the bottom-right corner of the surrounding view.
 /// Timers pause when the pointer rests on a toast.

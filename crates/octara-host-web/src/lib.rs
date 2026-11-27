@@ -320,9 +320,7 @@ impl Driver {
             }
             let Some(mouse) = event.dyn_ref::<MouseEvent>() else { return };
             if mouse.detail() != 0 {
-                let mods = modifiers(mouse.shift_key(), mouse.ctrl_key(), mouse.alt_key(), mouse.meta_key());
-                if mods.is_empty()
-                    && let Some(link) = event_element(&event).and_then(|element| element.closest("a").ok().flatten())
+                if let Some(link) = event_element(&event).and_then(|element| element.closest("a").ok().flatten())
                     && driver.dom.node(link.as_ref()).is_some()
                 {
                     // The window's pointer turn already decided the link activation.
@@ -348,7 +346,7 @@ impl Driver {
                 && let Ok(app) = driver.app.try_borrow()
                 && let Some(window) = app.as_ref().and_then(|app| app.runtime().window(driver.window.get()?))
                 && let Some(hit) = driver.dom.target(window.tree(), element.as_ref()).and_then(|hit| hit.hit.node())
-                && std::iter::successors(Some(hit), |&node| window.tree().interaction_parent(node)).any(|node| {
+                && std::iter::successors(Some(hit), |&node| window.tree().logical_parent(node)).any(|node| {
                     window.tree().is_interactive(node)
                         && [octara::HandlerKind::SecondaryPress, octara::HandlerKind::ContextMenu]
                             .into_iter()
@@ -363,7 +361,7 @@ impl Driver {
                 && let Ok(app) = driver.app.try_borrow()
                 && let Some(window) = app.as_ref().and_then(|app| app.runtime().window(driver.window.get()?))
                 && let Some(hit) = driver.dom.target(window.tree(), element.as_ref()).and_then(|hit| hit.hit.node())
-                && std::iter::successors(Some(hit), |&node| window.tree().interaction_parent(node))
+                && std::iter::successors(Some(hit), |&node| window.tree().logical_parent(node))
                     .any(|node| window.tree().drag_drop(node).is_some_and(|slot| slot.source.is_some()))
             {
                 event.prevent_default();
@@ -586,6 +584,7 @@ impl Driver {
             size: Size::new(self.mount.client_width() as f32, self.mount.client_height() as f32),
             scale: self.browser.device_pixel_ratio() as f32,
             safe_area: None,
+            keyboard_inset: 0.0,
         }
     }
 

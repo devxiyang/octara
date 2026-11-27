@@ -9,7 +9,7 @@ use octara_runtime::HostEngine;
 use octara_tree::tables::AuthoredStyle;
 use octara_tree::{NodeChange, NodeContent, NodeFlags, NodeSpec, RuntimeOp, Tree, TreeDelta};
 
-const VIEWPORT: WindowViewport = WindowViewport { size: Size::new(100.0, 100.0), scale: 1.0, safe_area: None };
+const VIEWPORT: WindowViewport = WindowViewport { size: Size::new(100.0, 100.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
 
 #[test]
 fn focus_ring_adds_an_outer_stroke_without_changing_the_border_box() {

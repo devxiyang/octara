@@ -23,7 +23,7 @@ mod browser {
     use wasm_bindgen_futures::JsFuture;
     use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, HtmlElement, HtmlInputElement};
 
-    const VIEWPORT: WindowViewport = WindowViewport { size: Size::new(400.0, 300.0), scale: 1.0, safe_area: None };
+    const VIEWPORT: WindowViewport = WindowViewport { size: Size::new(400.0, 300.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
 
     fn style(props: impl IntoIterator<Item = StyleProp>) -> NodeChange {
         NodeChange::Style(Box::new(AuthoredStyle { base: props.into_iter().collect(), ..Default::default() }))

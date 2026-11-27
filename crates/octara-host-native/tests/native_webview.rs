@@ -38,7 +38,9 @@ mod macos {
     pub(super) fn run() -> Result<(), ShellError> {
         let received = Rc::new(RefCell::new(Vec::new()));
         let source = Rc::new(Cell::new(None));
-        let app = AppDefinition::new().window(WindowDefinition::new(WindowOptions { title: TITLE.into(), ..Default::default() }, {
+        let options =
+            WindowOptions { presentation: WindowPresentation { title: TITLE.into(), ..Default::default() }, ..Default::default() };
+        let app = AppDefinition::new().window(WindowDefinition::new(options, {
             let received = received.clone();
             let source = source.clone();
             move |build| {

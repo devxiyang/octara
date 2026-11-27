@@ -14,7 +14,7 @@ impl Tree {
             if let Some(style) = self.style(current) {
                 return style.inherited;
             }
-            node = self.parent(current);
+            node = self.logical_parent(current);
         }
         self.initial_inherited
     }
@@ -24,7 +24,7 @@ impl Tree {
             if self.style(current).and_then(|style| style.authored.group) == Some(name) {
                 return self.nodes[current].state.contains(State::HOVER);
             }
-            node = self.parent(current);
+            node = self.logical_parent(current);
         }
         false
     }
@@ -56,29 +56,41 @@ impl Tree {
         mask
     }
 
-    pub(crate) fn add_style_bloom(&mut self, mut node: NodeId, added: u64) {
-        while self.nodes[node].style_bloom & added != added {
-            let core = &mut self.nodes[node];
-            core.style_bloom |= added;
-            let Some(parent) = core.parent else { break };
-            node = parent;
+    pub(crate) fn add_style_bloom(&mut self, node: NodeId, added: u64) {
+        let mut pending: SmallVec<[NodeId; 4]> = smallvec::smallvec![node];
+        while let Some(node) = pending.pop() {
+            if self.nodes[node].style_bloom & added != added {
+                self.nodes[node].style_bloom |= added;
+                pending.extend(self.physical_parent(node));
+                pending.extend(self.portal_owner(node));
+            }
         }
     }
 
-    pub(crate) fn refresh_style_bloom(&mut self, mut node: NodeId) {
-        loop {
-            let next = self.children(node).iter().fold(self.local_style_bloom(node), |mask, child| mask | self.nodes[*child].style_bloom);
-            let core = &mut self.nodes[node];
-            if core.style_bloom == next {
-                break;
+    pub(crate) fn subtree_style_bloom(&self, node: NodeId) -> u64 {
+        self.children(node)
+            .iter()
+            .chain(self.logical_portals(node))
+            .fold(self.local_style_bloom(node), |mask, child| mask | self.nodes[*child].style_bloom)
+    }
+
+    pub(crate) fn refresh_style_bloom(&mut self, node: NodeId) {
+        let mut pending: SmallVec<[NodeId; 4]> = smallvec::smallvec![node];
+        while let Some(node) = pending.pop() {
+            let next = self.subtree_style_bloom(node);
+            let prior = self.nodes[node].style_bloom;
+            if prior == next {
+                continue;
             }
-            let previous = std::mem::replace(&mut core.style_bloom, next);
-            let Some(parent) = core.parent else { break };
-            if previous & !next == 0 {
-                self.add_style_bloom(parent, next & !previous);
-                break;
+            self.nodes[node].style_bloom = next;
+            let parents = [self.physical_parent(node), self.portal_owner(node)].into_iter().flatten();
+            if prior & !next == 0 {
+                for parent in parents {
+                    self.add_style_bloom(parent, next & !prior);
+                }
+            } else {
+                pending.extend(parents);
             }
-            node = parent;
         }
     }
 
@@ -103,14 +115,14 @@ impl Tree {
     }
 
     fn has_style_dirty_parent(&self, node: NodeId, dirty: &FxHashSet<NodeId>) -> bool {
-        std::iter::successors(self.parent(node), |&parent| self.parent(parent)).any(|parent| dirty.contains(&parent))
+        std::iter::successors(self.logical_parent(node), |&parent| self.logical_parent(parent)).any(|parent| dirty.contains(&parent))
     }
 
     fn style_order(&self, dirty: impl IntoIterator<Item = NodeId>) -> SmallVec<[(usize, NodeId); 8]> {
         let mut nodes: SmallVec<[(usize, NodeId); 8]> = dirty
             .into_iter()
             .filter(|&node| self.nodes.contains_key(node))
-            .map(|node| (std::iter::successors(self.parent(node), |&parent| self.parent(parent)).count(), node))
+            .map(|node| (std::iter::successors(self.logical_parent(node), |&parent| self.logical_parent(parent)).count(), node))
             .collect();
         nodes.sort_unstable();
         nodes
@@ -131,6 +143,20 @@ impl Tree {
         self.walk_styles(node, invalidation, None, delta);
     }
 
+    /// Visit each child exactly once, from the node that determines its inherited values.
+    fn next_style_child(&self, parent: NodeId, index: &mut usize) -> Option<NodeId> {
+        let children = self.children(parent);
+        while let Some(&child) = children.get(*index) {
+            *index += 1;
+            if !self.nodes[child].flags.contains(NodeFlags::HAS_OVERLAY_MOUNT) {
+                return Some(child);
+            }
+        }
+        let &portal = self.logical_portals(parent).get(*index - children.len())?;
+        *index += 1;
+        Some(portal)
+    }
+
     fn walk_styles(
         &mut self,
         node: NodeId,
@@ -141,13 +167,12 @@ impl Tree {
         // Carry inherited values through read-only branches. Resume siblings from
         // one frame per ancestor rather than copying a wide subtree into scratch.
         let mut path = SmallVec::<[(NodeId, usize, StyleInvalidation, Inherited); 8]>::new();
-        let from = self.inherited_at(self.parent(node));
+        let from = self.inherited_at(self.logical_parent(node));
         invalidation.inherited_theme = invalidation.theme != 0 && invalidation.theme & sensitivity::color(from.text) != 0;
         let mut next = Some((node, invalidation, from));
         while let Some((current, mut invalidation, from)) = next.take().or_else(|| {
             while let Some((parent, index, invalidation, from)) = path.last_mut() {
-                if let Some(&child) = self.children(*parent).get(*index) {
-                    *index += 1;
+                if let Some(child) = self.next_style_child(*parent, index) {
                     return Some((child, *invalidation, *from));
                 }
                 path.pop();
@@ -173,7 +198,7 @@ impl Tree {
             {
                 self.style_visits += 1;
             }
-            let parent = self.parent(current);
+            let parent = self.logical_parent(current);
             if (invalidation.force || invalidation.theme != 0)
                 && core.present.intersects(TableMask::THEME_PATCHES | TableMask::THEME_SCOPES)
             {
@@ -199,12 +224,13 @@ impl Tree {
             };
             invalidation.inherited_dirty = previous_inherited.map_or(invalidation.inherited_dirty, |old| old != inherited);
             invalidation.local_state = 0;
+            let mut index = 0;
             if (invalidation.force || invalidation.inherited_dirty || invalidation.conditions | invalidation.theme != 0)
-                && let Some((&first, siblings)) = self.children(current).split_first()
+                && let Some(first) = self.next_style_child(current, &mut index)
             {
                 invalidation.inherited_theme = invalidation.theme != 0 && invalidation.theme & sensitivity::color(inherited.text) != 0;
-                if !siblings.is_empty() {
-                    path.push((current, 1, invalidation, inherited));
+                if index < self.children(current).len() + self.logical_portals(current).len() {
+                    path.push((current, index, invalidation, inherited));
                 }
                 next = Some((first, invalidation, inherited));
             }
@@ -221,7 +247,7 @@ impl Tree {
             }
             return;
         };
-        let parent = self.parent(node);
+        let parent = self.logical_parent(node);
         let theme_revision = self.theme_revision_at(node);
         let theme_changed = theme_invalidated && style.theme_revision != theme_revision;
         let resolved = StyleResolver::new(self.theme_at(node), self.breakpoint, self.responsive_breakpoint, self.touch).resolve(

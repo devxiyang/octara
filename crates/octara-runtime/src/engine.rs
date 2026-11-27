@@ -6,6 +6,7 @@ use octara_model::input::{ContactTarget, HostReply, Modifiers};
 use octara_model::paint::DisplayList;
 use octara_model::semantics::TextClip;
 use octara_model::text::TextGeometry;
+use octara_model::window::WindowMaterial;
 use octara_tree::arbiter::{ScrollbarHit, ScrollbarKey};
 use octara_tree::{NodeId, RuntimeOp, Tree, TreeDelta};
 use std::sync::Arc;
@@ -132,6 +133,11 @@ pub trait HostEngine {
     fn set_reduced_motion(&mut self, _reduced_motion: bool) {}
 
     fn set_window_active(&mut self, _active: bool) {}
+
+    /// Change the clear mode for the next projection. Return true if a new frame is required.
+    fn set_window_material(&mut self, _material: WindowMaterial) -> bool {
+        false
+    }
 }
 
 /// Platform requests are dispatched by the host after a successful turn.

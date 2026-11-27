@@ -462,16 +462,13 @@ pub fn windows(cx: &mut BuildCx<'_>) -> El {
             w.open_window(window_options(format!("Note {n}"), 360.0, 240.0), move |b| note(b, n));
         }))
         .child(button("Open files…", KitSize::Md, ButtonVariant::Secondary).test_id("open").on_press(move |w| {
-            w.ask(
-                Ask::Paths(PathPromptOptions { files: true, multiple: true, prompt: Some("Open".into()), ..Default::default() }),
-                move |w, answer| {
-                    let selected = match answer {
-                        Answer::Paths(Some(paths)) => paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n"),
-                        _ => "Cancelled".into(),
-                    };
-                    w.set(picked, selected);
-                },
-            );
+            w.ask(Ask::pick_files(Some("Open".into()), true), move |w, answer| {
+                let selected = match answer {
+                    Answer::Paths(Some(paths)) => paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n"),
+                    _ => "Cancelled".into(),
+                };
+                w.set(picked, selected);
+            });
         }))
         .child(text(picked).test_id("picked").text_size(FontSizeToken::Sm).text_color(ColorToken::TextMuted))
 }

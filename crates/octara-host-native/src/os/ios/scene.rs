@@ -229,13 +229,13 @@ fn safe_area(view: &UIView) -> Rect {
     Rect::new((origin.x - bounds.origin.x) as f32, (origin.y - bounds.origin.y) as f32, size.width as f32, size.height as f32)
 }
 
-pub(super) fn viewport(content: &UIView, keyboard_top: Option<f32>, mut viewport: WindowViewport) -> WindowViewport {
+pub(super) fn viewport(content: &UIView, keyboard_inset: f32, mut viewport: WindowViewport) -> WindowViewport {
     let bounds = content.bounds();
     if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
-        let height = bounds.size.height as f32;
-        viewport.size = Size::new(bounds.size.width as f32, keyboard_top.unwrap_or(height).min(height));
+        viewport.size = Size::new(bounds.size.width as f32, bounds.size.height as f32);
         viewport.scale = content.contentScaleFactor() as f32;
         viewport.safe_area = Some(safe_area(content));
+        viewport.keyboard_inset = keyboard_inset;
     }
     viewport
 }

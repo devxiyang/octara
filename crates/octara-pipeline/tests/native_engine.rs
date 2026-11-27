@@ -17,7 +17,7 @@ fn tree() -> Tree {
 }
 
 fn viewport() -> WindowViewport {
-    WindowViewport { size: Size::new(320.0, 240.0), scale: 2.0, safe_area: None }
+    WindowViewport { size: Size::new(320.0, 240.0), scale: 2.0, safe_area: None, keyboard_inset: 0.0 }
 }
 
 fn engine() -> NativeEngine {

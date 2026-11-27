@@ -3,14 +3,19 @@
 use crate::{Driver, Listener};
 use js_sys::Uint8Array;
 use octara::runtime::{HostCommand, WindowId};
-use octara_model::ask::{Answer, Ask, AskId, Menu, MenuItem, PickedFile, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
+use octara_model::ask::{
+    Answer, Ask, AskId, ClipboardItem, ClipboardKinds, Menu, MenuItem, PickedFile, ServiceError, ServiceId, ServiceOutcome, ServiceRequest,
+};
 use octara_model::input::{Chord, HostReply, KeyEvent, Modifiers};
+use octara_model::theme::ColorScheme;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::{Clipboard, Document, DomException, Event, EventTarget, File, HtmlDialogElement, HtmlElement, HtmlInputElement, Window};
+use web_sys::{
+    Blob, Clipboard, Document, DomException, Event, EventTarget, File, HtmlDialogElement, HtmlElement, HtmlInputElement, Window,
+};
 
 pub(crate) struct Services {
     browser: Window,
@@ -36,7 +41,14 @@ impl Services {
     pub(crate) fn apply(&mut self, command: HostCommand) {
         match command {
             HostCommand::Menus(menus) => self.menus = menus,
-            HostCommand::SetWindowTitle { title, .. } => self.document.set_title(&title),
+            HostCommand::UpdateWindowPresentation { title, color_scheme, .. } => {
+                self.document.set_title(&title);
+                let scheme = match color_scheme {
+                    ColorScheme::Light => "light",
+                    ColorScheme::Dark => "dark",
+                };
+                let _ = self.mount.style().set_property("color-scheme", scheme);
+            }
             HostCommand::FocusWindow { .. } => {
                 let _ = self.browser.focus();
             }
@@ -60,7 +72,11 @@ impl Services {
                 let _ = self.browser.open_with_url_and_target(&url, "_self");
             }
             HostCommand::Service { window, id, request } => self.request(window, id, request),
-            HostCommand::Opened(_) | HostCommand::Closed(_) | HostCommand::NativeCommand { .. } => {}
+            HostCommand::Opened(_)
+            | HostCommand::Closed(_)
+            | HostCommand::NativeCommand { .. }
+            | HostCommand::SetAppBadge { .. }
+            | HostCommand::RequestUserAttention { .. } => {}
         }
     }
 
@@ -187,22 +203,42 @@ impl Services {
                     self.reply(window, HostReply::ServiceReply { id, outcome: ServiceOutcome::Error(error) });
                 }
             }
-            request => {
+            ServiceRequest::ReadClipboard { accept } if !accept.intersects(ClipboardKinds::TEXT | ClipboardKinds::IMAGE) => {
+                self.reply(window, HostReply::ServiceReply { id, outcome: ServiceOutcome::Clipboard(Vec::new()) });
+            }
+            ServiceRequest::ReadClipboard { accept } => {
                 let Some(clipboard) = self.clipboard() else {
                     self.reply(window, HostReply::ServiceReply { id, outcome: ServiceOutcome::Error(ServiceError::Unavailable) });
                     return;
                 };
-                let (promise, reading) = match request {
-                    ServiceRequest::ReadClipboardText => (clipboard.read_text(), true),
-                    ServiceRequest::WriteClipboardText { text } => (clipboard.write_text(&text), false),
-                    ServiceRequest::PickFile { .. } => unreachable!(),
-                };
+                let multimodal = accept.contains(ClipboardKinds::IMAGE)
+                    && js_sys::Reflect::get(clipboard.as_ref(), &JsValue::from_str("read")).is_ok_and(|read| read.is_function());
+                if !multimodal && !accept.contains(ClipboardKinds::TEXT) {
+                    self.reply(window, HostReply::ServiceReply { id, outcome: ServiceOutcome::Error(ServiceError::Unavailable) });
+                    return;
+                }
+                let promise = if multimodal { clipboard.read() } else { clipboard.read_text() };
                 let owner = self.owner.clone();
                 spawn_local(async move {
                     let outcome = match JsFuture::from(promise).await {
-                        Ok(value) if reading => {
-                            value.as_string().map_or(ServiceOutcome::Error(ServiceError::Failed), ServiceOutcome::ClipboardText)
-                        }
+                        Ok(value) if multimodal => ServiceOutcome::Clipboard(clipboard_items(value, accept).await),
+                        Ok(value) => value.as_string().map_or(ServiceOutcome::Error(ServiceError::Failed), |text| {
+                            ServiceOutcome::Clipboard(if text.is_empty() { Vec::new() } else { vec![ClipboardItem::Text(text)] })
+                        }),
+                        Err(error) => ServiceOutcome::Error(browser_error(error)),
+                    };
+                    deliver(&owner, window, HostReply::ServiceReply { id, outcome });
+                });
+            }
+            ServiceRequest::WriteClipboardText { text } => {
+                let Some(clipboard) = self.clipboard() else {
+                    self.reply(window, HostReply::ServiceReply { id, outcome: ServiceOutcome::Error(ServiceError::Unavailable) });
+                    return;
+                };
+                let promise = clipboard.write_text(&text);
+                let owner = self.owner.clone();
+                spawn_local(async move {
+                    let outcome = match JsFuture::from(promise).await {
                         Ok(_) => ServiceOutcome::ClipboardWritten,
                         Err(error) => ServiceOutcome::Error(browser_error(error)),
                     };
@@ -353,6 +389,39 @@ async fn read_file(file: File, max_bytes: usize) -> Result<PickedFile, ServiceEr
     }
     let buffer = JsFuture::from(file.array_buffer()).await.map_err(browser_error)?;
     Ok(PickedFile { name: file.name(), media_type: file.type_(), bytes: Uint8Array::new(&buffer).to_vec() })
+}
+
+async fn clipboard_items(value: JsValue, accept: ClipboardKinds) -> Vec<ClipboardItem> {
+    let mut items = Vec::new();
+    for item in js_sys::Array::from(&value).iter().filter_map(|item| item.dyn_into::<web_sys::ClipboardItem>().ok()) {
+        let types = item.types();
+        if accept.contains(ClipboardKinds::TEXT)
+            && types.includes(&JsValue::from_str("text/plain"), 0)
+            && let Ok(blob) = JsFuture::from(item.get_type("text/plain")).await
+            && let Ok(blob) = blob.dyn_into::<Blob>()
+            && let Ok(text) = JsFuture::from(blob.text()).await
+            && let Some(text) = text.as_string()
+        {
+            items.push(ClipboardItem::Text(text));
+        }
+        if accept.contains(ClipboardKinds::IMAGE) {
+            for media_type in types.iter().filter_map(|kind| kind.as_string()).filter(|kind| kind.starts_with("image/")) {
+                if let Ok(blob) = JsFuture::from(item.get_type(&media_type)).await
+                    && let Ok(blob) = blob.dyn_into::<Blob>()
+                    && let Some(image) = clipboard_image(&blob, media_type).await
+                {
+                    items.push(image);
+                    break;
+                }
+            }
+        }
+    }
+    items
+}
+
+pub(crate) async fn clipboard_image(blob: &Blob, media_type: String) -> Option<ClipboardItem> {
+    let buffer = JsFuture::from(blob.array_buffer()).await.ok()?;
+    Some(ClipboardItem::Image { media_type, bytes: Uint8Array::new(&buffer).to_vec() })
 }
 
 fn browser_error(value: JsValue) -> ServiceError {

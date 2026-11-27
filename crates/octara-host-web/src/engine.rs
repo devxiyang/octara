@@ -454,7 +454,7 @@ fn subtrees(tree: &Tree, roots: impl IntoIterator<Item = NodeId>) -> FxHashSet<N
     let mut pending: Vec<_> = roots.into_iter().collect();
     while let Some(node) = pending.pop() {
         if tree.is_live(node) && seen.insert(node) {
-            pending.extend(tree.children(node).iter().copied());
+            pending.extend(tree.logical_children(node));
         }
     }
     seen

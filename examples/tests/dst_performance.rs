@@ -109,7 +109,8 @@ fn app(seed: u64, cjk: bool) -> (App, NativePublication) {
 
 impl Simulation {
     fn mount(mut app: App, publication: NativePublication, view: impl FnOnce(&mut BuildCx<'_>) -> El + 'static) -> Self {
-        let viewport = WindowViewport { size: Size::new(EXTENT[0] as f32, EXTENT[1] as f32), scale: 1.0, safe_area: None };
+        let viewport =
+            WindowViewport { size: Size::new(EXTENT[0] as f32, EXTENT[1] as f32), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
         let options = WindowOptions { viewport, ..WindowOptions::default() };
         let window = app.open_window(options, view).unwrap();
         let planner = TextFramePlanner::new(TargetInfo {

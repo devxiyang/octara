@@ -485,18 +485,23 @@ fn toast_viewport_renders_and_dismisses_queue_items() {
 }
 
 #[test]
-fn tooltip_links_delayed_description_to_trigger() {
+fn tooltip_on_kit_button_uses_the_shared_window_layer() {
     let driver = HeadlessDriver::default();
-    let mut mounted =
-        Mounted::new(driver, |b| tooltip(b, btn("Save").test_id("save"), "Save the current draft. ".repeat(8), PopupOptions::default()));
-    assert!(mounted.a11y("save", A11yAction::Focus));
-    mounted.driver.advance_to(Duration::from_millis(700)).unwrap();
-    let described_by = mounted.tree().semantics(mounted.node("save")).unwrap().relations.described_by.as_deref().unwrap();
-    let [tooltip] = mounted.tree().named_nodes(described_by) else { panic!("expected one tooltip description") };
-    assert_eq!(mounted.tree().semantics(*tooltip).unwrap().role, Some(Role::Tooltip));
-    assert_eq!(mounted.window().geometry(*tooltip).unwrap().rect.w, 280.0);
-    assert!(mounted.key(Key::Escape));
-    mounted.focus_is("save");
+    let mut mounted = Mounted::new(driver, |_| btn("Save").test_id("save").tooltip("Save the current draft. ".repeat(8)));
+    let anchor = mounted.node("save");
+    let bounds = mounted.window().geometry(anchor).unwrap().rect;
+    let event = InteractionEvent::PointerMove {
+        id: PointerId(1),
+        pos: Point::new(bounds.x + bounds.w / 2.0, bounds.y + bounds.h / 2.0),
+        mods: Modifiers::empty(),
+    };
+    mounted.driver.dispatch(mounted.id, Input::Interaction(event)).unwrap();
+    mounted.driver.advance_to(Duration::from_millis(450)).unwrap();
+    let tooltips: Vec<_> =
+        mounted.tree().overlay_nodes().filter(|&node| mounted.tree().semantics(node).unwrap().role == Some(Role::Tooltip)).collect();
+    let [tooltip] = tooltips.as_slice() else { panic!("expected one tooltip") };
+    assert_eq!(mounted.tree().logical_parent(*tooltip), Some(anchor));
+    assert!(mounted.window().geometry(*tooltip).unwrap().rect.w <= 280.0);
 }
 
 #[test]

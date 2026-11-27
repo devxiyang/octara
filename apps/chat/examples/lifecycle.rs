@@ -88,7 +88,8 @@ fn main() {
     let directory =
         std::env::var_os("OCTARA_CHAT_DIR").map(PathBuf::from).expect("set an isolated OCTARA_CHAT_DIR for lifecycle verification");
     let model = Controlled::default();
-    let mut window = WindowOptions { title: "Octara Chat lifecycle".into(), ..WindowOptions::default() };
+    let mut window = WindowOptions::default();
+    window.presentation.title = "Octara Chat lifecycle".into();
     window.viewport.size = Size::new(1000.0, 720.0);
     octara_host_native::run(window, move |b| {
         let app = root(

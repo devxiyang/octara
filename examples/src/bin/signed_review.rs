@@ -298,7 +298,8 @@ mod macos {
         );
         let session = Arc::new(session);
         let confirmer = session.clone();
-        let options = WindowOptions { theme: presentation.theme(), ..window_options("Octara · 发布审阅", 680.0, 550.0) };
+        let mut options = window_options("Octara · 发布审阅", 680.0, 550.0);
+        options.presentation.theme = presentation.theme();
         let app = AppDefinition::new()
             .window(WindowDefinition::new(options, move |b| view(b, &presentation, &version, &draft, draft_path, session, store)));
         octara_host_native::run_app_with_first_frame(app, move |receipt| match confirmer.confirm() {

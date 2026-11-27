@@ -224,11 +224,15 @@ impl Portal {
                             }) as TargetBinding
                         }),
                     };
-                    let node = build_el(cx, element, component, None, Some(overlay));
-                    cx.place(cx.overlay_root(), usize::MAX, node);
-                    node_handle(cx, node)
+                    mount_portal(cx, element, component, overlay)
                 }));
             }
         });
     }
+}
+
+pub(crate) fn mount_portal(cx: &mut MountCx<'_>, element: El, component: Option<Component>, overlay: OverlayBinding) -> NodeHandle {
+    let node = build_el(cx, element, component, None, Some(overlay));
+    cx.place(cx.overlay_root(), usize::MAX, node);
+    node_handle(cx, node)
 }

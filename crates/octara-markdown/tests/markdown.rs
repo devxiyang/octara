@@ -322,11 +322,11 @@ fn markdown_styles_cover_inline_and_block_layout() {
     let visual = tree.visual(code);
     assert_eq!((visual.background, visual.border, visual.radius), (Some(fill), accent, [8.0; 4]));
     let code_header = descendant(&mounted, code, |node| tree.text(node).is_some_and(|text| text.text.as_ref() == "lang"));
-    assert_eq!(tree.visual(tree.parent(code_header).unwrap()).background, Some(ink));
+    assert_eq!(tree.visual(tree.physical_parent(code_header).unwrap()).background, Some(ink));
     assert!(!tree.subtree(code).any(|node| tree.semantics(node).is_some_and(|slot| slot.role == Some(Role::Button))));
     let line = code_line(&mounted, "b5", "l0");
     assert_eq!((tree.visual(line).font_size, tree.visual(line).wrap), (11.0, TextWrap::Words));
-    assert_eq!(tree.layout_style(tree.parent(tree.parent(line).unwrap()).unwrap()).padding.left, LayoutLength::Px(9.0));
+    assert_eq!(tree.layout_style(tree.physical_parent(tree.physical_parent(line).unwrap()).unwrap()).padding.left, LayoutLength::Px(9.0));
     let table = block(&mounted, "b6");
     assert_eq!((tree.visual(table).border, tree.visual(table).radius), (accent, [10.0; 4]));
     let rows = tree.children(table);
@@ -616,7 +616,7 @@ fn markdown_callouts_and_code_controls_use_locale_and_theme() {
     assert!(mounted.tree().subtree(quote).any(|node| mounted.tree().icon(node).is_some()));
     assert!(mounted.tree().subtree(quote).any(|node| mounted.tree().text(node).is_some_and(|text| text.text.as_ref() == locale.warning)));
     let header = descendant(&mounted, code, |node| mounted.tree().text(node).is_some_and(|text| text.text.as_ref() == "rust example.rs"));
-    let header = mounted.tree().parent(header).unwrap();
+    let header = mounted.tree().physical_parent(header).unwrap();
     assert_eq!(mounted.tree().layout_style(header).border.bottom, LayoutLength::Px(1.0));
     let line = code_line(&mounted, "b1", "l0");
     assert_eq!(mounted.tree().text(line).unwrap().text.as_ref(), "a");

@@ -105,7 +105,7 @@ impl Tree {
 
     /// The nearest focus group enclosing this node.
     pub fn focus_group_of(&self, node: NodeId) -> Option<NodeId> {
-        self.ancestor_matching(self.parent(node)?, |id| self.semantics(id).is_some_and(|slot| slot.focus_group.is_some()))
+        self.logical_ancestors(self.logical_parent(node)?).find(|&id| self.semantics(id).is_some_and(|slot| slot.focus_group.is_some()))
     }
 
     fn ordered_focusable(&self, scope: Option<NodeId>) -> Vec<NodeId> {
@@ -234,14 +234,14 @@ impl Tree {
     }
 
     fn group_descendants(&self, group: NodeId) -> impl Iterator<Item = NodeId> + '_ {
-        let mut pending: Vec<_> = self.children(group).iter().rev().copied().collect();
+        let mut pending: Vec<_> = self.logical_children(group).rev().collect();
         std::iter::from_fn(move || {
             while let Some(node) = pending.pop() {
                 if !self.is_locally_shown(node) || self.nodes[node].flags.contains(NodeFlags::INERT) {
                     continue;
                 }
                 if self.semantics(node).is_none_or(|slot| slot.focus_group.is_none()) {
-                    pending.extend(self.children(node).iter().rev().copied());
+                    pending.extend(self.logical_children(node).rev());
                 }
                 return Some(node);
             }

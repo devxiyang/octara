@@ -156,7 +156,7 @@ impl InspectionState {
                     .map(|(&id, window)| WindowInfo {
                         id: id.into(),
                         target: TargetRef::for_window(window.tree().id()),
-                        title: window.options().title.clone(),
+                        title: window.presentation().title.to_string(),
                         viewport: window.options().viewport,
                         progress: progress(window, host),
                     })
@@ -279,7 +279,7 @@ impl InspectionState {
                 }
                 if let Some(node) = target.node() {
                     let hit = state.hit_test(pos).and_then(|hit| hit.hit.node());
-                    let receiver = std::iter::successors(hit, |&node| tree.parent(node))
+                    let receiver = std::iter::successors(hit, |&node| tree.physical_parent(node))
                         .find(|&node| tree.scroll(node).is_some() && tree.is_interactive(node));
                     if receiver != Some(node) {
                         return Err(ActionError::rejected("the wheel position routes to another scroll target"));
@@ -385,7 +385,7 @@ fn guarded_hit(window: &WindowRuntime, target: TargetRef, pos: Point, button: Bu
     }
     let hit = window.hit_test(pos).unwrap_or(ContactTarget { hit: TargetRef::for_window(tree.id()), action: None });
     let receiver = if button == Button::Secondary {
-        std::iter::successors(hit.hit.node(), |&node| tree.parent(node))
+        std::iter::successors(hit.hit.node(), |&node| tree.logical_parent(node))
             .find(|&node| tree.handler(node, HandlerKind::SecondaryPress).is_some())
             .map_or(hit.hit, |node| tree.guard(node))
     } else {
@@ -464,7 +464,7 @@ pub(crate) fn snapshot(window: &WindowRuntime, picking: bool) -> TreeSnapshot {
             };
             NodeSnapshot {
                 target: tree.guard(node),
-                parent: tree.parent(node).map(|parent| tree.guard(parent)),
+                parent: tree.physical_parent(node).map(|parent| tree.guard(parent)),
                 test_id: tree.provenance(node).and_then(|slot| slot.test_id.as_deref()).map(str::to_owned),
                 role: semantics.and_then(|slot| slot.role).or_else(|| match tree.node(node)?.kind {
                     NodeKind::Root => Some(Role::Window),

@@ -1,8 +1,9 @@
 //! Host-independent window chrome, materials, and geometry.
 
 use crate::geometry::{Point, Rect, Size};
-use crate::theme::ColorScheme;
+use crate::theme::{ColorScheme, Theme};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Appearance and accessibility preferences supplied by the host.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -38,6 +39,28 @@ pub enum WindowMaterial {
     #[default]
     Opaque,
     Vibrancy(VibrancyMaterial),
+}
+
+/// The presentation shared by the retained tree, renderer and host window.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowPresentation {
+    pub title: Arc<str>,
+    pub theme: Theme,
+    pub material: WindowMaterial,
+}
+
+impl Default for WindowPresentation {
+    fn default() -> Self {
+        Self { title: "Octara".into(), theme: Theme::default(), material: WindowMaterial::default() }
+    }
+}
+
+/// Urgency of a request to draw attention to the application.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserAttention {
+    Informational,
+    Critical,
 }
 
 /// Chrome occupied within the content area, measured in logical pixels.

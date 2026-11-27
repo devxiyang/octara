@@ -93,8 +93,8 @@ fn main() {
         let q = query.clone();
         let mut app = App::new(|_, _| Box::new(NativeEngine::new(NativeEngineConfig::default())));
         let options = WindowOptions {
-            viewport: WindowViewport { size: Size::new(720.0, 520.0), scale: 2.0, safe_area: None },
-            theme,
+            viewport: WindowViewport { size: Size::new(720.0, 520.0), scale: 2.0, safe_area: None, keyboard_inset: 0.0 },
+            presentation: WindowPresentation { theme, ..Default::default() },
             ..Default::default()
         };
         let window = app

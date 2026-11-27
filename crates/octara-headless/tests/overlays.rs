@@ -23,7 +23,7 @@ struct Mounted {
 
 impl Mounted {
     fn new<V: IntoView>(mut driver: HeadlessDriver, view: impl FnOnce(&mut BuildCx<'_>) -> V + 'static) -> Self {
-        let viewport = WindowViewport { size: Size::new(340.0, 240.0), scale: 1.0, safe_area: None };
+        let viewport = WindowViewport { size: Size::new(340.0, 240.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
         let id = driver.app_mut().open_window(WindowOptions { viewport, ..Default::default() }, view).unwrap();
         Self { driver, id }
     }

@@ -7,6 +7,7 @@ use crate::cx::{BuildCx, ReadCx, WriteCx};
 use crate::engine::{CommitOutput, HostEngine};
 use crate::graph::value::{ReadSignal, Signal};
 use crate::task::TaskSpawner;
+use crate::tooltip::{HoverTooltip, HoveredTooltip};
 use crate::turn::TextInteraction;
 use octara_model::geometry::{LayoutBox, Point, Size, Vec2, WindowViewport};
 pub use octara_model::identity::WindowId;
@@ -14,9 +15,10 @@ use octara_model::identity::{TreeId, ViewportRev, WindowRev};
 use octara_model::input::{ContactTarget, DroppedFile, KeyEvent, Modifiers};
 use octara_model::native::NativeEvent;
 use octara_model::semantics::{A11yAction, TextClip};
-use octara_model::theme::{Breakpoint, Theme};
+use octara_model::theme::Breakpoint;
 pub use octara_model::window::{
-    SystemPreferences, TitlebarStyle, VibrancyMaterial, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial,
+    SystemPreferences, TitlebarStyle, UserAttention, VibrancyMaterial, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial,
+    WindowPresentation,
 };
 use octara_tree::arbiter::{InteractionArbiter, InteractionPayload, ScrollbarKey};
 use octara_tree::delta::RetiredNode;
@@ -34,9 +36,8 @@ pub type EngineFactory = Box<dyn Fn(WindowId, &WindowOptions) -> Box<dyn HostEng
 
 #[derive(Clone)]
 pub struct WindowOptions {
-    pub title: String,
+    pub presentation: WindowPresentation,
     pub viewport: WindowViewport,
-    pub theme: Theme,
     pub touch: bool,
     pub position: Option<Point>,
     pub min_size: Option<Size>,
@@ -44,16 +45,14 @@ pub struct WindowOptions {
     pub resizable: bool,
     pub maximized: bool,
     pub titlebar: TitlebarStyle,
-    pub material: WindowMaterial,
     pub persistence_key: Option<String>,
 }
 
 impl Default for WindowOptions {
     fn default() -> Self {
         Self {
-            title: "Octara".into(),
-            viewport: WindowViewport { size: Size::new(800.0, 600.0), scale: 1.0, safe_area: None },
-            theme: Theme::default(),
+            presentation: WindowPresentation::default(),
+            viewport: WindowViewport { size: Size::new(800.0, 600.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 },
             touch: false,
             position: None,
             min_size: None,
@@ -61,7 +60,6 @@ impl Default for WindowOptions {
             resizable: true,
             maximized: false,
             titlebar: TitlebarStyle::default(),
-            material: WindowMaterial::default(),
             persistence_key: None,
         }
     }
@@ -82,6 +80,7 @@ impl WindowOptions {
 pub enum HandlerEvent<'a> {
     Interaction { target: TargetGuard, kind: HandlerKind, payload: InteractionPayload, local_pos: Option<Point> },
     FileDrop(&'a [DroppedFile]),
+    Paste(&'a octara_model::input::PasteEvent),
     EditorInput { node: NodeId, value: &'a str },
     Key(KeyEvent),
     Command(&'a str),
@@ -208,6 +207,7 @@ pub(crate) struct MountWork {
     pub created: Vec<(ScopeId, PendingNode)>,
     pub retire_nodes: FxHashSet<NodeRef>,
     pub parents: FxHashMap<NodeRef, NodeRef>,
+    pub portal_owners: FxHashMap<NodeRef, Option<NodeRef>>,
     pub places: Vec<(NodeRef, usize, NodeRef)>,
     pub place_by_child: FxHashMap<NodeRef, usize>,
     pub commands: FxHashMap<NodeRef, CommandSlot>,
@@ -236,13 +236,20 @@ impl MountCx<'_> {
         self.window.tree.node_ref(self.window.tree.overlay_root())
     }
 
+    /// Resolve a mounted node that will survive the current transaction.
+    pub fn live_node(&self, id: NodeId) -> Option<NodeRef> {
+        let node = self.window.tree.node_ref(id);
+        (self.window.tree.is_live(id) && !self.window.is_retiring(node)).then_some(node)
+    }
+
     pub fn build<R>(&mut self, f: impl FnOnce(&mut BuildCx<'_>) -> R) -> R {
         let mut cx = self
             .world
             .build(self.scope, Some(self.window.id))
             .with_tasks(self.tasks.clone())
-            .with_viewport(self.window.viewport_size, self.window.breakpoint)
+            .with_viewport(self.window.viewport_source.read_only(), self.window.breakpoint)
             .with_window_metrics(self.window.chrome_source.read_only(), self.window.geometry_source.read_only())
+            .with_hovered_tooltip(self.window.hovered_tooltip.read_only())
             .with_system_preferences(self.system_preferences)
             .with_authoring(&mut self.window.authoring);
         f(&mut cx)
@@ -474,6 +481,8 @@ struct PendingEdit {
 pub struct WindowRuntime {
     pub(crate) id: WindowId,
     pub(crate) options: WindowOptions,
+    pub(crate) pending_presentation: Option<WindowPresentation>,
+    pub(crate) presentation_published: bool,
     pub(crate) scope: ScopeId,
     pub(crate) tree: Tree,
     pub(crate) engine: Box<dyn HostEngine>,
@@ -483,10 +492,11 @@ pub struct WindowRuntime {
     pub(crate) tx: TxBuilder,
     pub(crate) work: MountWork,
     pub(crate) arbiter: InteractionArbiter,
+    pub(crate) tooltip: HoverTooltip,
+    pub(crate) hovered_tooltip: Signal<Option<HoveredTooltip>>,
     pub(crate) scrollbar_hovered: Option<ScrollbarKey>,
     pub(crate) viewport_rev: ViewportRev,
-    pub(crate) viewport_size: ReadSignal<Size>,
-    pub(crate) viewport_size_source: Signal<Size>,
+    pub(crate) viewport_source: Signal<WindowViewport>,
     pub(crate) breakpoint: ReadSignal<Breakpoint>,
     pub(crate) breakpoint_source: Signal<Breakpoint>,
     pub(crate) chrome_source: Signal<WindowChrome>,
@@ -541,13 +551,14 @@ impl WindowRuntime {
     ) -> Self {
         let scope = world.new_scope(world.root_scope());
         let mut build = world.build(scope, Some(id));
-        let breakpoint_value = options.theme.breakpoint_of(options.viewport.size.width);
-        let viewport_size = build.signal(options.viewport.size);
+        let breakpoint_value = options.presentation.theme.breakpoint_of(options.viewport.size.width);
+        let viewport_source = build.signal(options.viewport);
         let breakpoint = build.signal(breakpoint_value);
         let geometry = restored.unwrap_or_else(|| options.initial_geometry());
         let geometry_source = build.signal(geometry);
         let chrome_source = build.signal(WindowChrome::default());
-        let mut tree = Tree::new(tree_id, options.theme.clone());
+        let hovered_tooltip = build.signal(None);
+        let mut tree = Tree::new(tree_id, options.presentation.theme.clone());
         let mut pending = tree.initial_delta();
         pending.merge(tree.apply_runtime(RuntimeOp::SetViewportContext {
             breakpoint: breakpoint_value,
@@ -556,6 +567,8 @@ impl WindowRuntime {
         }));
         Self {
             id,
+            pending_presentation: None,
+            presentation_published: false,
             options,
             scope,
             tx: tree.transaction(),
@@ -566,10 +579,11 @@ impl WindowRuntime {
             root: Some(root),
             work: MountWork::default(),
             arbiter: InteractionArbiter::default(),
+            tooltip: HoverTooltip::default(),
+            hovered_tooltip,
             scrollbar_hovered: None,
             viewport_rev: ViewportRev::default(),
-            viewport_size: viewport_size.read_only(),
-            viewport_size_source: viewport_size,
+            viewport_source,
             breakpoint: breakpoint.read_only(),
             breakpoint_source: breakpoint,
             chrome_source,
@@ -620,6 +634,9 @@ impl WindowRuntime {
     pub fn options(&self) -> &WindowOptions {
         &self.options
     }
+    pub fn presentation(&self) -> &WindowPresentation {
+        &self.options.presentation
+    }
     pub fn window_geometry(&self) -> WindowGeometry {
         self.geometry
     }
@@ -642,7 +659,7 @@ impl WindowRuntime {
             self.tree.is_shown(node).then_some((node, *handler))
         };
         let tree = &self.tree;
-        std::iter::successors(tree.focus(), |&node| tree.interaction_parent(node))
+        std::iter::successors(tree.focus(), |&node| tree.logical_parent(node))
             .find_map(command)
             .or_else(|| tree.subtree(tree.front_modal().unwrap_or(tree.root())).find_map(command))
     }
@@ -704,7 +721,8 @@ impl WindowRuntime {
                 continue;
             }
             let row_of = |node| {
-                std::iter::successors(Some(node), |&node| self.tree.parent(node)).find(|&node| self.tree.parent(node) == Some(container))
+                std::iter::successors(Some(node), |&node| self.tree.physical_parent(node))
+                    .find(|&node| self.tree.physical_parent(node) == Some(container))
             };
             let (Some(first_row), Some(last_row)) = (row_of(first), row_of(last)) else {
                 intersects_virtual_rows |= ranges.iter().any(|&(node, _)| self.tree.is_within(node, container));
@@ -788,7 +806,7 @@ impl WindowRuntime {
             .filter_map(|(node, range)| {
                 let len = self.tree.text(*node)?.text.len();
                 let mut outer_row = None;
-                let mut rows: Vec<_> = std::iter::successors(Some(*node), |&node| self.tree.parent(node))
+                let mut rows: Vec<_> = std::iter::successors(Some(*node), |&node| self.tree.physical_parent(node))
                     .take_while(|&node| node != region)
                     .filter_map(|node| {
                         let key = self.tree.provenance(node)?.row_key.as_ref()?;
@@ -831,7 +849,7 @@ impl WindowRuntime {
     pub fn file_drop_target(&self, at: Point) -> Option<TargetGuard> {
         let hit = self.hit_test(at)?.hit;
         let node = hit.node().filter(|_| self.tree.contains_target(hit))?;
-        std::iter::successors(Some(node), |&node| self.tree.interaction_parent(node))
+        std::iter::successors(Some(node), |&node| self.tree.logical_parent(node))
             .map(|node| self.tree.guard(node))
             .find(|&target| self.file_drop_handler(target).is_some())
     }
@@ -867,12 +885,15 @@ impl WindowRuntime {
         if !self.tree.is_live(node) {
             return None;
         }
-        let node = self.tree.link(node).and_then(|_| self.tree.parent(node)).unwrap_or(node);
+        let node = self.tree.link(node).and_then(|_| self.tree.physical_parent(node)).unwrap_or(node);
         let scope = self.node_scopes.get(&node).copied().unwrap_or(self.scope);
         world.context_with_owner(scope)
     }
 
     pub(crate) fn stage_change(&mut self, node: NodeRef, change: NodeChange) {
+        if let NodeChange::Overlay(overlay) = &change {
+            self.work.portal_owners.insert(node, overlay.mount.map(|(owner, _)| owner));
+        }
         if let NodeRef::Existing { id, .. } = node
             && let Some(edit) = &mut self.edit
             && edit.node == id
@@ -910,11 +931,15 @@ impl WindowRuntime {
                 return true;
             }
             let mut parent = self.work.parents.get(&node).copied();
-            if let NodeRef::Existing { id, .. } = node {
-                if let Some(mount) = self.tree.overlay(id).and_then(|slot| slot.mount) {
-                    pending.push(self.tree.node_ref(mount.owner));
+            let owner = self.work.portal_owners.get(&node).copied().unwrap_or_else(|| match node {
+                NodeRef::Existing { id, .. } => {
+                    self.tree.overlay(id).and_then(|slot| slot.mount).map(|mount| self.tree.node_ref(mount.owner))
                 }
-                parent = parent.or_else(|| self.tree.parent(id).map(|id| self.tree.node_ref(id)));
+                NodeRef::Pending(_) => None,
+            });
+            pending.extend(owner);
+            if let NodeRef::Existing { id, .. } = node {
+                parent = parent.or_else(|| self.tree.physical_parent(id).map(|id| self.tree.node_ref(id)));
             }
             pending.extend(parent);
         }
@@ -970,6 +995,7 @@ impl WindowRuntime {
             }
         }
         self.work.parents.clear();
+        self.work.portal_owners.clear();
         self.work.retire_nodes.clear();
         self.work.place_by_child.clear();
 

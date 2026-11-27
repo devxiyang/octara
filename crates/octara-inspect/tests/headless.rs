@@ -6,6 +6,9 @@ mod scrolling;
 #[path = "headless/text_selection.rs"]
 mod text_selection;
 
+#[path = "headless/tooltip.rs"]
+mod tooltip;
+
 use octara::{
     prelude::*,
     runtime::{HandlerEvent, HandlerOutcome, HostCommand, Input},
@@ -31,7 +34,10 @@ fn driver() -> HeadlessDriver {
 }
 
 fn options() -> WindowOptions {
-    WindowOptions { viewport: WindowViewport { size: Size::new(260.0, 180.0), scale: 1.0, safe_area: None }, ..Default::default() }
+    WindowOptions {
+        viewport: WindowViewport { size: Size::new(260.0, 180.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 },
+        ..Default::default()
+    }
 }
 
 fn run(driver: &mut HeadlessDriver, id: WindowId, command: AgentCommand) -> AgentReceipt {
@@ -423,7 +429,7 @@ fn four_channel_recording_replays_to_identical_receipts_and_pixels() {
         edit: TextEdit::Insert { text: "日本".into(), replacement: Some(0..7) },
     };
     record_input(&mut recording, &mut original, id, Input::Editor(event));
-    let viewport = WindowViewport { size: Size::new(170.0, 90.0), scale: 1.0, safe_area: None };
+    let viewport = WindowViewport { size: Size::new(170.0, 90.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 };
     record_input(&mut recording, &mut original, id, Input::Host(HostReply::ViewportChanged(viewport)));
     let request = AgentRequest::new(Some(id), AgentCommand::Capture { source: CaptureSource::Painted, settle_ms: 7 });
     recording.record_request(original.app(), &request);
@@ -459,14 +465,18 @@ fn replay_redacts_password_keys_and_edits_and_private_platform_data() {
         id,
         &Input::Interaction(InteractionEvent::Key(KeyEvent::new(Key::Char('🦑'), Modifiers::empty()))),
     );
+    let items = vec![
+        ClipboardItem::Text("private clipboard token".into()),
+        ClipboardItem::Files(vec!["/private/clipboard/token".into()]),
+        ClipboardItem::Image { media_type: "image/png".into(), bytes: vec![111, 247, 32, 19] },
+    ];
     recording.record_input(
         driver.app(),
         id,
-        &Input::Host(HostReply::ServiceReply {
-            id: ServiceId(1),
-            outcome: ServiceOutcome::ClipboardText("private clipboard token".into()),
-        }),
+        &Input::Host(HostReply::ServiceReply { id: ServiceId(1), outcome: ServiceOutcome::Clipboard(items.clone()) }),
     );
+    let paste = HostReply::Paste(PasteEvent { items });
+    recording.record_input(driver.app(), id, &Input::Host(paste.clone()));
     recording.record_input(
         driver.app(),
         id,
@@ -494,17 +504,24 @@ fn replay_redacts_password_keys_and_edits_and_private_platform_data() {
             ref event => panic!("private input entered the recording: {event:?}"),
         })
         .collect::<Vec<_>>();
-    assert_eq!(channels, [Channel::Editor, Channel::Interaction, Channel::Host, Channel::Host, Channel::Host, Channel::Agent]);
+    assert_eq!(
+        channels,
+        [Channel::Editor, Channel::Interaction, Channel::Host, Channel::Host, Channel::Host, Channel::Host, Channel::Agent]
+    );
     let serialized = serde_json::to_string(&recording).unwrap();
+    let debug = format!("{paste:?}").replace(' ', "");
     for token in [
         "secure-recording-token",
         "🦑",
         "private clipboard token",
+        "/private/clipboard/token",
+        "[111,247,32,19]",
         "/private/path/token",
         "/private/drop/token",
         "private browser filename",
     ] {
         assert!(!serialized.contains(token));
+        assert!(!debug.contains(&token.replace(' ', "")));
     }
     let replayed = driver.replay(&recording).unwrap();
     assert_eq!(replayed, channels.into_iter().map(Step::Redacted).collect::<Vec<_>>());
@@ -670,4 +687,60 @@ fn rich_link_dispatches_hover_press_and_secondary_with_context_copy_formats() {
             ContextMenuItem::CopyLink("app:focus".into()),
         ]
     );
+}
+
+#[test]
+fn rich_links_receive_modifiers_except_when_shift_extends_document_selection() {
+    let mut driver = driver();
+    let modifiers = driver.app_mut().build(|b| b.signal(Vec::<Modifiers>::new())).unwrap();
+    let id = driver
+        .app_mut()
+        .open_window(options(), move |_| {
+            col()
+                .selectable(true)
+                .test_id("document")
+                .on_link(move |write, event| {
+                    if event.kind == LinkEventKind::Press {
+                        write.update(modifiers, |mods| mods.push(event.modifiers));
+                        return true;
+                    }
+                    false
+                })
+                .child(text(rich().link("Follow link", "app:focus")).test_id("link-text"))
+        })
+        .unwrap();
+    let doc = target(&driver, id, "document");
+    let text = target(&driver, id, "link-text").node().unwrap();
+    let runtime = driver.app().runtime().window(id).unwrap();
+    let link = runtime.tree().children(text)[0];
+    let bounds = runtime.geometry(link).unwrap().rect;
+    let pos = Point::new(bounds.x + bounds.w * 0.75, bounds.y + bounds.h * 0.5);
+    let hit = runtime.hit_test(pos).unwrap();
+    assert_eq!(hit.hit.node(), Some(link));
+    let click = |driver: &mut HeadlessDriver, mods| {
+        let id_pointer = PointerId(1);
+        for event in [
+            InteractionEvent::PointerDown { id: id_pointer, kind: PointerKind::Mouse, target: hit, pos, button: Button::Primary, mods },
+            InteractionEvent::PointerUp { id: id_pointer, target: Some(hit), pos, mods },
+        ] {
+            driver.dispatch(id, Input::Interaction(event)).unwrap();
+        }
+    };
+    let expected = [Modifiers::SHIFT, Modifiers::META, Modifiers::CTRL, Modifiers::ALT | Modifiers::META];
+    for mods in expected {
+        click(&mut driver, mods);
+    }
+
+    accessible(
+        &mut driver,
+        id,
+        doc,
+        A11yAction::SetTextSelection { anchor: TextPosition { node: text, offset: 0 }, focus: TextPosition { node: text, offset: 2 } },
+    );
+    click(&mut driver, Modifiers::SHIFT);
+    let runtime = driver.app().runtime().window(id).unwrap();
+    let selection = runtime.tree().doc_selection(doc.node().unwrap()).unwrap();
+    assert_eq!(selection[0], (text, 0));
+    assert!(selection[1].1 > 2);
+    assert_eq!(driver.app_mut().update(|write| write.get(modifiers)).unwrap(), expected);
 }

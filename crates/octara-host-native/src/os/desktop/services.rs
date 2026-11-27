@@ -1,7 +1,8 @@
 use super::Reply;
 use crate::os::ServiceCleanup;
 use crate::os::files::{accept_extensions, read_file};
-use octara_model::ask::{Answer, Ask, AskId, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
+use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
+use octara_model::ask::{Answer, Ask, AskId, ClipboardItem, ClipboardKinds, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
 use octara_model::input::HostReply;
 use std::cell::OnceCell;
 use std::collections::HashMap;
@@ -62,7 +63,7 @@ impl Services {
 
     pub(super) fn request(&mut self, window: &Window, id: ServiceId, request: ServiceRequest) -> Option<ServiceCleanup> {
         let result = match request {
-            ServiceRequest::ReadClipboardText | ServiceRequest::WriteClipboardText { .. } => {
+            ServiceRequest::ReadClipboard { .. } | ServiceRequest::WriteClipboardText { .. } => {
                 let reply = self.reply.clone();
                 let live = Arc::new(AtomicBool::new(true));
                 let cleanup = Arc::downgrade(&live);
@@ -196,16 +197,56 @@ fn file_dialog(window: &Window) -> rfd::FileDialog {
 }
 
 fn clipboard_request(native: &mut arboard::Clipboard, request: ServiceRequest) -> Result<ServiceOutcome, ServiceError> {
-    let result = match request {
-        ServiceRequest::ReadClipboardText => match native.get_text() {
-            Err(arboard::Error::ContentNotAvailable) => Ok(ServiceOutcome::ClipboardText(String::new())),
-            result => result.map(ServiceOutcome::ClipboardText),
-        },
-        ServiceRequest::WriteClipboardText { text } => native.set_text(text).map(|()| ServiceOutcome::ClipboardWritten),
-        ServiceRequest::PickFile { .. } => return Err(ServiceError::Unavailable),
-    };
-    result.map_err(|error| match error {
+    match request {
+        ServiceRequest::ReadClipboard { accept } => read_clipboard(native, accept).map(ServiceOutcome::Clipboard),
+        ServiceRequest::WriteClipboardText { text } => {
+            native.set_text(text).map(|()| ServiceOutcome::ClipboardWritten).map_err(clipboard_error)
+        }
+        ServiceRequest::PickFile { .. } => Err(ServiceError::Unavailable),
+    }
+}
+
+pub(super) fn read_clipboard(native: &mut arboard::Clipboard, accept: ClipboardKinds) -> Result<Vec<ClipboardItem>, ServiceError> {
+    let mut items = Vec::new();
+    let mut error = None;
+    for result in [
+        accept.contains(ClipboardKinds::TEXT).then(|| native.get_text().map(ClipboardItem::Text)),
+        accept.contains(ClipboardKinds::FILES).then(|| native.get().file_list().map(ClipboardItem::Files)),
+        accept.contains(ClipboardKinds::IMAGE).then(|| native.get_image().and_then(encode_image)),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        match result {
+            Ok(item) => items.push(item),
+            Err(arboard::Error::ContentNotAvailable) => {}
+            Err(reason) => error = Some(clipboard_error(reason)),
+        }
+    }
+    if items.is_empty()
+        && let Some(error) = error
+    {
+        return Err(error);
+    }
+    Ok(items)
+}
+
+fn encode_image(image: arboard::ImageData<'_>) -> Result<ClipboardItem, arboard::Error> {
+    let width = u32::try_from(image.width).map_err(|_| arboard::Error::ConversionFailure)?;
+    let height = u32::try_from(image.height).map_err(|_| arboard::Error::ConversionFailure)?;
+    if image.width.checked_mul(image.height).and_then(|pixels| pixels.checked_mul(4)) != Some(image.bytes.len()) {
+        return Err(arboard::Error::ConversionFailure);
+    }
+    let mut bytes = Vec::new();
+    PngEncoder::new(&mut bytes)
+        .write_image(&image.bytes, width, height, ExtendedColorType::Rgba8)
+        .map_err(|_| arboard::Error::ConversionFailure)?;
+    Ok(ClipboardItem::Image { media_type: "image/png".into(), bytes })
+}
+
+fn clipboard_error(error: arboard::Error) -> ServiceError {
+    match error {
         arboard::Error::ClipboardNotSupported => ServiceError::Unavailable,
         _ => ServiceError::Failed,
-    })
+    }
 }

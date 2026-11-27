@@ -1,8 +1,10 @@
 //! Application and window entry points for author-built views.
 
-use crate::view::IntoView;
+use crate::view::{IntoView, WindowTooltipLayer};
 use octara_model::ask::Menu;
 use octara_model::input::Chord;
+use octara_model::theme::Theme;
+use octara_model::window::{WindowMaterial, WindowPresentation};
 use octara_runtime::media::{MediaCacheBackend, VideoSurfaceProvider};
 use octara_runtime::turn::{TurnError, TurnReceipt};
 use octara_runtime::window::WindowRoot;
@@ -37,7 +39,10 @@ impl App {
         options: WindowOptions,
         build: impl FnOnce(&mut BuildCx<'_>) -> V + 'static,
     ) -> Result<WindowId, TurnError> {
-        self.runtime.open_window(options, move |mount| mount_view(mount, build))
+        self.runtime.open_window(options, move |mount| {
+            mount_view(mount, build);
+            WindowTooltipLayer::default().mount(mount);
+        })
     }
 
     pub fn window(&self, id: WindowId) -> Option<Window<'_>> {
@@ -89,6 +94,10 @@ impl<'a> Window<'a> {
     }
     pub fn runtime(&self) -> &'a WindowRuntime {
         self.0
+    }
+
+    pub fn presentation(&self) -> &'a WindowPresentation {
+        self.0.presentation()
     }
 
     /// Return true to allow a host close request or false to keep the window open.
@@ -167,7 +176,7 @@ impl AppDefinition {
             .into_iter()
             .map(|mut window| {
                 configure(&mut window.options);
-                let WindowDefinition { options, root, declarations } = window;
+                let WindowDefinition { options, root, declarations, tooltip } = window;
                 app.runtime.open_window(options, move |mount| {
                     if !declarations.is_empty() {
                         mount.build(|build| {
@@ -177,6 +186,9 @@ impl AppDefinition {
                         });
                     }
                     root(mount);
+                    if let Some(tooltip) = tooltip {
+                        tooltip.mount(mount);
+                    }
                 })
             })
             .collect()
@@ -189,16 +201,55 @@ pub struct WindowDefinition {
     options: WindowOptions,
     root: WindowRoot,
     declarations: Vec<Declare>,
+    tooltip: Option<WindowTooltipLayer>,
 }
 
 impl WindowDefinition {
     pub fn new<V: IntoView>(options: WindowOptions, build: impl FnOnce(&mut BuildCx<'_>) -> V + 'static) -> Self {
-        Self { options, root: Box::new(move |mount| mount_view(mount, build)), declarations: Vec::new() }
+        Self {
+            options,
+            root: Box::new(move |mount| mount_view(mount, build)),
+            declarations: Vec::new(),
+            tooltip: Some(WindowTooltipLayer::default()),
+        }
+    }
+
+    /// Replace the shared tooltip renderer or disable the automatic layer with `None`.
+    pub fn tooltip_layer(mut self, layer: Option<WindowTooltipLayer>) -> Self {
+        self.tooltip = layer;
+        self
     }
 
     /// Add reactive menus to this window's root scope before building its view.
     pub fn menus(mut self, source: impl FnMut(&mut ReadCx<'_>) -> Vec<Menu> + 'static) -> Self {
         self.declarations.push(Box::new(move |build| build.menus(source)));
+        self
+    }
+
+    /// Bind the complete presentation to reactive state in this window's root scope.
+    pub fn presentation_with(mut self, source: impl FnMut(&mut ReadCx<'_>) -> WindowPresentation + 'static) -> Self {
+        self.declarations.push(Box::new(move |build| build.bind_window_presentation(source)));
+        self
+    }
+
+    /// Bind the window title to reactive state.
+    pub fn title_with<T>(mut self, source: impl FnMut(&mut ReadCx<'_>) -> T + 'static) -> Self
+    where
+        T: Into<Arc<str>> + Clone + PartialEq + 'static,
+    {
+        self.declarations.push(Box::new(move |build| build.bind_window_title(source)));
+        self
+    }
+
+    /// Bind the window theme to reactive state.
+    pub fn theme_with(mut self, source: impl FnMut(&mut ReadCx<'_>) -> Theme + 'static) -> Self {
+        self.declarations.push(Box::new(move |build| build.bind_window_theme(source)));
+        self
+    }
+
+    /// Bind the window material to reactive state.
+    pub fn material_with(mut self, source: impl FnMut(&mut ReadCx<'_>) -> WindowMaterial + 'static) -> Self {
+        self.declarations.push(Box::new(move |build| build.bind_window_material(source)));
         self
     }
 
@@ -222,7 +273,10 @@ pub trait WindowActions {
 
 impl WindowActions for WriteCx<'_> {
     fn open_window<V: IntoView>(&mut self, options: WindowOptions, build: impl FnOnce(&mut BuildCx<'_>) -> V + 'static) -> WindowId {
-        self.request_window(options, move |mount| mount_view(mount, build))
+        self.request_window(options, move |mount| {
+            mount_view(mount, build);
+            WindowTooltipLayer::default().mount(mount);
+        })
     }
 }
 

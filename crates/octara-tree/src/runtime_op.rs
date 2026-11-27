@@ -51,7 +51,11 @@ impl Tree {
                         } else {
                             0
                         };
-                        self.semantics_changed(node, &mut delta);
+                        if changed.contains(State::DISABLED) {
+                            self.logical_semantics_changed(node, &mut delta);
+                        } else {
+                            self.semantics_changed(node, &mut delta);
+                        }
                         self.resolve_subtree(
                             node,
                             StyleInvalidation { conditions, local_state: sensitivity::state(changed), ..StyleInvalidation::default() },
@@ -240,7 +244,7 @@ impl Tree {
     }
 
     pub(crate) fn focus_ancestors(&self) -> SmallVec<[NodeId; 8]> {
-        std::iter::successors(self.focus, |&node| self.parent(node)).collect()
+        std::iter::successors(self.focus, |&node| self.logical_parent(node)).collect()
     }
 
     pub(crate) fn reconcile_focus_states(
@@ -259,7 +263,7 @@ impl Tree {
             state.set(State::FOCUSED, focused);
             state.set(State::FOCUS_VISIBLE, focused && visible);
             self.set_focus_state(node, state, style_roots, delta);
-            current = self.parent(node);
+            current = self.logical_parent(node);
         }
         for node in previous {
             self.set_focus_state(node, State::empty(), style_roots, delta);

@@ -222,7 +222,7 @@ fn address(tree: TreeId, node: NodeId) -> String {
 }
 
 pub(crate) fn action(tree: &Tree, node: NodeId, modal: Option<NodeId>) -> Option<NodeId> {
-    std::iter::successors(Some(node), |&node| tree.interaction_parent(node)).find(|&node| {
+    std::iter::successors(Some(node), |&node| tree.logical_parent(node)).find(|&node| {
         tree.node(node).is_some_and(|core| {
             matches!(core.kind, NodeKind::Link | NodeKind::TextInput)
                 || core.flags.contains(NodeFlags::FOCUSABLE)
@@ -242,9 +242,9 @@ pub(crate) fn update_semantics(
     let core = tree.node(node).expect("semantics for a retained node");
     let semantics = tree.semantics(node);
     let in_modal = modal.is_none_or(|modal| tree.is_in_modal_scope(node, modal));
-    let inert = core.flags.contains(NodeFlags::INERT) || (!in_modal && !modal_ancestors.contains(&node));
-    let expose = in_modal && !core.flags.intersects(NodeFlags::INERT | NodeFlags::HIDDEN);
-    let disabled = core.state.contains(State::DISABLED);
+    let inert = tree.is_inert(node) || (!in_modal && !modal_ancestors.contains(&node));
+    let expose = in_modal && !inert && !core.flags.contains(NodeFlags::HIDDEN);
+    let disabled = tree.is_disabled(node);
     let role = semantics.and_then(|slot| slot.role).or(match core.kind {
         NodeKind::Image | NodeKind::Media => Some(Role::Image),
         NodeKind::Link => Some(Role::Link),
@@ -267,8 +267,7 @@ pub(crate) fn update_semantics(
         }
     )?;
     set!("aria-label", semantics.filter(|_| expose).and_then(|slot| slot.label.as_deref()))?;
-    set!("aria-description", semantics.filter(|_| expose).and_then(|slot| slot.description.as_deref()))?;
-    set!("title", semantics.and_then(|slot| slot.tooltip.as_deref()))?;
+    set!("aria-description", semantics.filter(|_| expose).and_then(|slot| slot.description.as_deref().or(slot.tooltip.as_deref())))?;
     set!("aria-valuetext", semantics.filter(|_| expose).and_then(|slot| slot.a11y_value.as_deref()))?;
     set!("data-octara-id", tree.provenance(node).and_then(|source| source.test_id.as_deref()))?;
     set!("data-octara-action", tree.has_activation_handler(node).then_some(""))?;
@@ -364,12 +363,7 @@ pub(crate) fn update_relations(
     node: NodeId,
     modal: Option<NodeId>,
 ) -> Result<(), JsValue> {
-    let exposed = |node| {
-        tree.is_shown(node)
-            && modal.is_none_or(|modal| tree.is_in_modal_scope(node, modal))
-            && std::iter::successors(Some(node), |&node| tree.parent(node))
-                .all(|node| tree.node(node).is_some_and(|core| !core.flags.intersects(NodeFlags::INERT | NodeFlags::HIDDEN)))
-    };
+    let exposed = |node| tree.is_accessible_without_modal(node) && modal.is_none_or(|modal| tree.is_in_modal_scope(node, modal));
     let relations = tree.semantics(node).filter(|_| exposed(node)).map(|slot| &slot.relations);
     for (name, target) in [
         ("aria-labelledby", relations.and_then(|r| r.labelled_by.as_deref())),

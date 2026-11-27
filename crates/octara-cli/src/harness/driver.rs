@@ -69,7 +69,7 @@ impl WindowOverrides {
             window.viewport.size = size;
         }
         if let Some(theme) = self.theme {
-            window.theme = match theme {
+            window.presentation.theme = match theme {
                 ThemeName::Light => Theme::light(),
                 ThemeName::Dark => Theme::dark(),
             };

@@ -2,7 +2,7 @@
 //!
 //! A recorder must redact secure editor input, dropped files, and private service data before persisting events.
 
-use crate::ask::{Answer, AskId, ServiceId, ServiceOutcome};
+use crate::ask::{Answer, AskId, ClipboardItem, ServiceId, ServiceOutcome};
 use crate::geometry::{Point, Size, Vec2, WindowViewport};
 use crate::identity::{EditorSessionId, ExitTicket, TargetGuard};
 use crate::native::{NativeEvent, NativeMeasureTicket, NativeSnapshot, NativeSnapshotRequest};
@@ -29,6 +29,8 @@ pub struct LinkEvent {
     pub href: Arc<str>,
     pub text: Arc<str>,
     pub kind: LinkEventKind,
+    /// Modifier keys held when the pointer activated this link.
+    pub modifiers: Modifiers,
     pub rect: crate::geometry::Rect,
 }
 
@@ -124,6 +126,12 @@ pub struct DropEvent {
     pub data: Arc<serde_json::Value>,
     pub position: DropPosition,
     pub modifiers: Modifiers,
+}
+
+/// Data offered to the focused node by a system paste gesture.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PasteEvent {
+    pub items: Vec<ClipboardItem>,
 }
 
 /// A pointer's identity within this window for the duration of a contact.
@@ -450,6 +458,7 @@ impl fmt::Debug for DroppedFile {
 /// Window notifications and replies to requests, already associated with a receiving window.
 ///
 /// `FilesDropped` targets the guarded node that registered a file-drop handler.
+/// `Paste` offers clipboard data to the current focus and its logical ancestors.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostReply {
@@ -462,6 +471,7 @@ pub enum HostReply {
     DocumentSelection { selection: Option<(TargetGuard, [crate::semantics::TextPosition; 2])> },
     ScrollChanged { target: TargetGuard, offset: Vec2, at_end: bool },
     FilesDropped { target: TargetGuard, files: Vec<DroppedFile> },
+    Paste(PasteEvent),
     MenuCommand { name: String, chord: Option<Chord> },
     AskAnswer { id: AskId, answer: Answer },
     ServiceReply { id: ServiceId, outcome: ServiceOutcome },

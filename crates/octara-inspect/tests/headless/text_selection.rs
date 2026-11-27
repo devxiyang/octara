@@ -13,9 +13,13 @@ use octara_model::{
 };
 use octara_pipeline::{NativeEngine, NativeEngineConfig, NativePublication};
 use std::time::Duration;
+use std::{cell::RefCell, rc::Rc};
 
 fn options() -> WindowOptions {
-    WindowOptions { viewport: WindowViewport { size: Size::new(260.0, 180.0), scale: 1.0, safe_area: None }, ..Default::default() }
+    WindowOptions {
+        viewport: WindowViewport { size: Size::new(260.0, 180.0), scale: 1.0, safe_area: None, keyboard_inset: 0.0 },
+        ..Default::default()
+    }
 }
 
 fn native_app() -> (App, NativePublication) {
@@ -102,16 +106,113 @@ fn headless_editor_fallback_keeps_unicode_selections_and_clipboard_edits() {
     assert_eq!(value(app), "");
     key(app, window, Key::Char('v'), Modifiers::CTRL);
     let paste = app.runtime_mut().take_host_commands().into_iter().find_map(|command| match command {
-        HostCommand::Service { id, request: ServiceRequest::ReadClipboardText, .. } => Some(id),
+        HostCommand::Service { id, request: ServiceRequest::ReadClipboard { accept }, .. } if accept == ClipboardKinds::TEXT => Some(id),
         _ => None,
     });
     app.dispatch(
         window,
-        Input::Host(HostReply::ServiceReply { id: paste.unwrap(), outcome: ServiceOutcome::ClipboardText("中\r\n文".into()) }),
+        Input::Host(HostReply::ServiceReply {
+            id: paste.unwrap(),
+            outcome: ServiceOutcome::Clipboard(vec![ClipboardItem::Text("中\r\n文".into())]),
+        }),
     )
     .unwrap();
     assert_eq!(value(app), "中文");
     assert_eq!(selection(app, window, field), (6, 6));
+}
+
+#[test]
+fn paste_bubbles_through_the_portal_owner_before_editor_insertion() {
+    let mut driver = HeadlessDriver::default();
+    let app = driver.app_mut();
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let window = app
+        .open_window(options(), {
+            let calls = calls.clone();
+            move |cx| {
+                let value = cx.signal(String::new());
+                let owner_calls = calls.clone();
+                let field_calls = calls.clone();
+                col()
+                    .on_paste(move |_, event| {
+                        calls.borrow_mut().push("root");
+                        event.items.iter().any(|item| matches!(item, ClipboardItem::Files(_)))
+                    })
+                    .child(
+                        el().test_id("portal-owner")
+                            .on_paste(move |_, event| {
+                                owner_calls.borrow_mut().push("portal owner");
+                                event.items.iter().any(|item| matches!(item, ClipboardItem::Image { .. }))
+                            })
+                            .portal(
+                                |_| true,
+                                move |_| {
+                                    let field_calls = field_calls.clone();
+                                    input().value(value).on_input(move |w, text| w.set(value, text.to_owned())).test_id("field").on_paste(
+                                        move |_, _| {
+                                            field_calls.borrow_mut().push("editor");
+                                            false
+                                        },
+                                    )
+                                },
+                            ),
+                    )
+                    .child(el().focusable().test_id("other"))
+            }
+        })
+        .unwrap();
+    let field = id(app, window, "field");
+    let focus = |app: &mut App, node| {
+        let target = app.runtime().window(window).unwrap().tree().guard(node);
+        app.dispatch(window, Input::Host(HostReply::FocusChanged { target: Some(target), visible: true })).unwrap();
+    };
+    let paste = |items| Input::Host(HostReply::Paste(PasteEvent { items }));
+    let value = |app: &App| app.runtime().window(window).unwrap().tree().editor(field).unwrap().value().to_owned();
+    assert!(app.dispatch(window, paste(vec![ClipboardItem::Files(vec!["/tmp/attachment".into()])])).unwrap().handled);
+    assert_eq!(&*calls.borrow(), &["root"]);
+    calls.borrow_mut().clear();
+    focus(app, field);
+    assert!(
+        app.dispatch(
+            window,
+            paste(vec![
+                ClipboardItem::Image { media_type: "image/png".into(), bytes: vec![1, 2, 3] },
+                ClipboardItem::Text("consumed".into()),
+            ])
+        )
+        .unwrap()
+        .handled
+    );
+    assert_eq!(&*calls.borrow(), &["editor", "portal owner"]);
+    assert_eq!(value(app), "");
+
+    calls.borrow_mut().clear();
+    assert!(app.dispatch(window, paste(vec![ClipboardItem::Text("a\r\nb".into())])).unwrap().handled);
+    assert_eq!(&*calls.borrow(), &["editor", "portal owner", "root"]);
+    assert_eq!(value(app), "ab");
+
+    calls.borrow_mut().clear();
+    key(app, window, Key::Char('v'), Modifiers::CTRL);
+    let request = app
+        .runtime_mut()
+        .take_host_commands()
+        .into_iter()
+        .find_map(|command| match command {
+            HostCommand::Service { id, request: ServiceRequest::ReadClipboard { accept }, .. } if accept == ClipboardKinds::all() => {
+                Some(id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let other = id(app, window, "other");
+    focus(app, other);
+    app.dispatch(
+        window,
+        Input::Host(HostReply::ServiceReply { id: request, outcome: ServiceOutcome::Clipboard(vec![ClipboardItem::Text("stale".into())]) }),
+    )
+    .unwrap();
+    assert!(calls.borrow().is_empty());
+    assert_eq!(value(app), "ab");
 }
 
 #[test]

@@ -245,6 +245,7 @@ pub enum HandlerKind {
     Drop,
     DropHover,
     FileDrop,
+    Paste,
     TouchScrollPre,
     TouchScrollPost,
     Dismiss,

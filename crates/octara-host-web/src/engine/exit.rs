@@ -74,7 +74,7 @@ impl DomEngine {
                     return None;
                 }
                 let element = self.projected_element(ticket.node)?;
-                let inherited = std::iter::successors(tree.parent(ticket.node), |&parent| tree.parent(parent))
+                let inherited = std::iter::successors(tree.physical_parent(ticket.node), |&parent| tree.physical_parent(parent))
                     .take_while(|&parent| !tree.is_live(parent))
                     .filter_map(|parent| self.projected_element(parent))
                     .map(|element| octara_exit_opacity(&element))

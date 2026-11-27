@@ -3,7 +3,7 @@
 use crate::os::ActiveEditorView;
 use octara::EditorRope;
 use octara_model::identity::EditorSessionId;
-use octara_model::input::{EditorEvent, Key, KeyEvent, Modifiers};
+use octara_model::input::{EditorEvent, Key, KeyEvent, Modifiers, PasteEvent};
 use octara_model::text::{CommitKind, TextEdit};
 use std::collections::VecDeque;
 use std::ops::Range;
@@ -93,6 +93,7 @@ fn ordered((a, b): (usize, usize)) -> (usize, usize) {
 pub(super) enum Change {
     Document(Draft),
     Return,
+    Paste(PasteEvent),
 }
 
 #[derive(Default)]
@@ -114,6 +115,10 @@ impl PendingInputs {
 
     pub(super) fn record_return(&mut self) {
         self.0.push_back(Change::Return);
+    }
+
+    pub(super) fn record_paste(&mut self, event: PasteEvent) {
+        self.0.push_back(Change::Paste(event));
     }
 
     pub(super) fn take(&mut self) -> Option<Change> {
@@ -141,7 +146,7 @@ pub(super) fn proposal(
         Change::Return if previous.marked.is_none() => {
             Ok(Some(EditorEvent::KeyIntercept { session, expected_rev, key: KeyEvent::new(Key::Enter, Modifiers::empty()) }))
         }
-        Change::Return => Ok(None),
+        Change::Return | Change::Paste(_) => Ok(None),
     }
 }
 
