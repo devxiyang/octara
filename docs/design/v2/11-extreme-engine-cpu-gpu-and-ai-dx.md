@@ -62,14 +62,26 @@
   - `USER_INTERACTIVE` (P-Cores): Turn engine, layout, input ingress, frame GPU encode.
   - `UTILITY` / `BACKGROUND` (E-Cores): Offscreen syntax highlighting, image decoding, atlas compaction — keeping UI L2 cache warm and battery drain low.
 
-### 2.6 Surgical `octara-runtime` Signals & `octara-tree` Style Kernel Upgrades (Zero Public API Break)
-Auditing `octara-runtime/src/{arena,graph}` and `octara-tree/src/{delta,style}` confirms that Octara's core capability-context, `TypedSlab`, and dual-write-gate paradigms need **zero redesign** — only three targeted internal upgrades:
-1. **4-Tier Depth-Bucket + `u64` Bitmap Scheduler (Replacing `BTreeSet`)**:
-   - Replace `ReactiveWorld::pending: BTreeSet<(FlushTier, u32, ReactiveId)>` with `[Vec<Vec<u32>>; 4]` depth buckets + a `u64` non-empty depth mask per tier (`trailing_zeros()` pops minimum depth in $O(1)$) + a 1-bit `scheduled` flag — turning $O(\log K)$ B-tree pointer chasing into $O(1)$ array + bitops.
-2. **Hot/Cold `ReactiveNode` Split (`ReactiveHot <= 32 B`) + Zero-Copy `Check`**:
-   - Split `ReactiveNode` (~200+ B) into `ReactiveHot` (`state`, `depth`, `revision`, `flags`, `node` — `<= 32 B`, 2 nodes per 64 B cache line) and `ReactiveCold` (`compute`, `watch_effect`, `persisted_key`, `defined_at`, edge lists), and eliminate `sources.clone()` inside `needs_evaluation` — cutting dirty-propagation cache misses by **4×–6×**.
-3. **Computed `Arc<ResolvedStyle>` Interning (Servo-Class Style Sharing)**:
-   - Deduplicate identical resolved `(LayoutStyle, Visual)` pairs in `octara-tree` via lightweight content-addressed sharing (`Arc<ResolvedStyle>`), shrinking style memory on homogeneous lists and large tables by **10×–50×**.
+### 2.6 `octara-runtime` Signals Kernel & Final-Form Public API (`Wave 1` + `Wave 1b`)
+Octara's core capability contexts (`BuildCx`/`ReadCx`/`WriteCx`/`CleanupCx`/`TaskCx`), `TypedSlab`, all-`Copy` handles, and unified Value+Delta DAG remain the permanent foundation. `0.0.6` upgrades both the internal kernel (Wave 1) and the four long-term public Signals API debts (Wave 1b):
+1. **4-Tier Depth-Bucket + `u64` Bitmap Scheduler (`Wave 1`)**:
+   - Replace `ReactiveWorld::pending: BTreeSet<(FlushTier, u32, ReactiveId)>` with `[Vec<Vec<u32>>; 4]` depth buckets + a `u64` non-empty depth mask per tier (`trailing_zeros()` pops minimum depth in $O(1)$) + a 1-bit `scheduled` flag.
+2. **Hot/Cold `ReactiveNode` Split (`ReactiveHot <= 32 B`) + Zero-Copy `Check` (`Wave 1`)**:
+   - Split `ReactiveNode` into `ReactiveHot` (`<= 32 B`) and `ReactiveCold`, eliminating `sources.clone()` inside `needs_evaluation`.
+3. **Computed `Arc<ResolvedStyle>` Interning (`Wave 1`)**:
+   - Deduplicate identical resolved `(LayoutStyle, Visual)` pairs in `octara-tree` via content-addressed `Arc<ResolvedStyle>`.
+4. **True Fine-Grained `Store<T>` Replacing Fake `Lens` / `BuildCx::slice` (`Wave 1b`)**:
+   - Delete `Lens`, `BuildCx::slice`, `WriteCx::set_slice`, and `WriteCx::update_slice` (which previously allocated a `Memo` and cloned sibling fields on every unrelated write).
+   - Redesign `#[derive(Store)]` + `cx.store(init) -> Store<T>` so each field owns its own fine-grained reactive revision (`store.field()` returns a zero-clone `Copy` field handle; mutating `store.count` never wakes observers of `store.title`; supports nested `Store` field projections and whole-store reads/writes).
+5. **Unified `Readable<T>` / `Writable<T>` + `Rc`-Free `Binding<T>` (`Wave 1b`)**:
+   - Unify handle operations in one direction across `Signal<T>`, `ReadSignal<T>`, `Store` fields, `RowSignal<T>`, and `Binding<T>` (`r.get(x)` / `r.with(x, f)` / `w.set(x, v)` / `w.update(x, f)` / `w.mutate(x, f)`), removing the inverted `binding.get(r)` / `binding.set(w, v)` API.
+   - Move custom `Binding` accessors into `ReactiveWorld` slab storage, eliminating `Rc<Accessors<T>>` completely.
+6. **8-Byte Register-Sized `ReactiveId` & `Signal<T>` (`Wave 1b`)**:
+   - Pack `ReactiveId` into **8 bytes** (`const { assert!(size_of::<ReactiveId>() == 8); assert!(size_of::<Signal<i32>>() == 8); }`), moving slab `slot` into node storage and halving `Source` edge footprint (`32 B -> 16 B`).
+7. **In-Place `memo_with`, Exact `mutate`, and Zero-Byte `Trigger` (`Wave 1b`)**:
+   - `cx.memo_with(init, |r, prev: &mut T| -> bool) -> ReadSignal<T>`: enables zero-allocation buffer reuse (`Vec`/`String`/indices) without requiring `T: PartialEq`.
+   - `w.mutate(target, |v: &mut T| -> bool) -> bool`: marks changed **only** when the closure returns `true`, eliminating unconditional false invalidations on early return.
+   - `cx.trigger() -> Trigger`: zero-payload invalidation handle (`r.track(t)` / `w.notify(t)`) replacing `Signal<()>` with zero slab allocation.
 
 ---
 
@@ -127,5 +139,6 @@ Enable a `Depth24Plus` / `Depth16Unorm` attachment on the render target with mon
 | Wave | Scope | Hard Exit Gate |
 | --- | --- | --- |
 | **Wave 1: CPU Cache & Algorithmic Core** | `DirtyBitmap` (2-level 64-bit), `ReactiveHot (<= 32 B)`/`ReactiveCold` split + 4-tier depth-bucket `u64` scheduler + zero-copy `Check`, `Arc<ResolvedStyle>` interning, `FlatTree` + `O(1)` skip + SIMD SoA culling, Subtree `u64` Style Bloom Filter, `SumTree`/Fenwick variable-height `virtual_each`, LIS `each` reconciliation, Per-Frame Bump Arena, `128 B` alignment, P/E-Core QoS & `mmap` font loading | 0 hot-path heap allocs verified; `size_of::<ReactiveHot>() <= 32`; 100k-row `virtual_each` update < 5 µs; Bloom filter prunes > 90% untouched subtrees; DST 100% deterministic |
+| **Wave 1b: Final-Form Signals Public API** | Delete `Lens`/`BuildCx::slice`; true fine-grained `#[derive(Store)]` (`Store<T>` per-field revision, zero sibling wakeups & zero `Clone`, nested stores); unified `Readable<T>`/`Writable<T>` + `Rc`-free `Binding<T>`; 8 B `ReactiveId`/`Signal<T>` (`Source` 16 B); `cx.memo_with`, `w.mutate`, zero-byte `Trigger`; migrate full workspace | `size_of::<ReactiveId>() == 8`, `size_of::<Signal<i32>>() == 8`, `size_of::<ReactiveHot>() <= 32`; 0 `Rc` in `octara-runtime` `Binding`; sibling-field zero-wakeup & zero-clone `Store` tests green; full workspace & doctests green |
 | **Wave 2: Modern GPU Micro-Pipelines** | Delete legacy `156 B` uber-shader; 4 micro-pipelines + full `Vertex Pulling` (`VsOut = 4 B`) + 4-vertex `TriangleStrip`; Early-Z/Hi-Z 2-pass opaque core; hardware TMU + Mipmaps; Vertex rectangular clip + inner-safe rounded clip bypass; 4-Strip hollow shadows/rings; `Texture2DArray` + Skyline Atlas + Radix Sort batching + zero-copy `DisplayList` planning; finalize `SurfaceRenderer` SPI | CPU Oracle ↔ GPU parity tests green; `draw_calls <= 4` on chat showcase; dual `wasm32` & `ios-sim` checks green |
 | **Wave 3: `octara-inspect` Audit SPI & Perf CI** | `trait AuditRule` / `InspectTransport` / `TraceRecorder` SPIs, built-in `ClippedText` & focus/a11y checks, DST performance baseline assertions, CLI `octara audit` command, refresh `api.json.gz` & `skills/octara/`, bump to `0.0.6` | All 8 release gates + DST perf budget assertions green |
