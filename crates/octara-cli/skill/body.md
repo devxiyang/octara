@@ -1,4 +1,4 @@
-# 用 Octara 0.0.5 构建和验证应用
+# 用 Octara 0.0.6 构建和验证应用
 
 读这个版本的[入门指南](references/start-here.md)。`octara vocab` 列出 prelude，`octara vocab <name>` 显示应用所用源码中的签名、导入路径和定义，`octara explain <code>` 说明诊断原因。`octara skill install` 生成按模块组织的 [API 索引](references/api/index.md)。
 
@@ -19,7 +19,7 @@
 
 ## 验证应用
 
-1. 在 Cargo 的 `[package.metadata.octara]` 中登记 `entry = "my_app::startup"`。该函数返回 `AppDefinition`。`octara check -p my-app` 检查手机和桌面尺寸、亮色和暗色下的诊断与结算。`octara inspect -p my-app --json` 启动无头宿主并观察窗口。
+1. 在 Cargo 的 `[package.metadata.octara]` 中登记 `entry = "my_app::startup"`。该函数返回 `AppDefinition`。`octara check -p my-app` 检查手机和桌面尺寸、亮色和暗色下的诊断与结算。`octara inspect -p my-app --json` 启动无头宿主并观察窗口。`octara audit -p my-app --json` 检查文本裁剪、无障碍名称和焦点目标。按回执里的 `provenance.file` 和 `provenance.line` 定位问题。错误级问题退出码为 1。
 2. 用 `octara launch -p my-app --socket SOCKET --receipt FILE` 在本机启动同一个入口。选择未占用的绝对 Unix socket 路径和新的回执文件。`octara inspect --connect SOCKET --receipt FILE --json` 校验进程和构建身份。
 3. 用 `octara run` 在同一次会话中观察并操作，或通过 `--connect SOCKET` 操作已启动的宿主。每行写一个 `octara.inspect/2` 请求。先发送 `{"protocol":"octara.inspect/2","op":"list_windows"}` 或 `{"protocol":"octara.inspect/2","op":"observe"}` 查找窗口和节点。每次 `act` 都原样传回当前快照的 `target`；从节点的几何读取坐标，确认窗口和交互目标。通过 `octara vocab AgentRequest` 和 `octara vocab AgentAction` 查参数。
 4. 读取每步的 `delivery`、`progress.settled`、`committed_frame` 和 `presented_frame`。在下一条 `observe` 中核对值和焦点。收到 `STALE_TARGET` 或连接中断时先观察，再决定是否重试。用 `capture` 的 `painted` 来源核对绘制像素，用实际宿主分别验证系统输入法和呈现行为。

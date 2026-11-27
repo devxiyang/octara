@@ -1,6 +1,6 @@
 //! Non-blocking local socket transport. Call `pump` from the host's owning event loop.
 
-use super::{InspectTransport, REQUEST_LIMIT, malformed};
+use super::{InspectTransport, REQUEST_LIMIT, codec::JsonLines};
 use std::{
     fs,
     io::{self, ErrorKind, Read, Write},
@@ -111,7 +111,7 @@ impl Client {
                 break;
             }
             if self.input.len() > REQUEST_LIMIT {
-                self.output = malformed("request exceeds the line size limit");
+                self.output = JsonLines::malformed("request exceeds the line size limit");
                 self.close_after_write = true;
                 break;
             }
@@ -123,7 +123,7 @@ impl Client {
             match self.stream.read(&mut buffer) {
                 Ok(0) if self.input.is_empty() => return Ok((false, progressed)),
                 Ok(0) => {
-                    self.output = malformed("incomplete JSON request line");
+                    self.output = JsonLines::malformed("incomplete JSON request line");
                     self.close_after_write = true;
                     break;
                 }

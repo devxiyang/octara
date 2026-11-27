@@ -1,4 +1,4 @@
-# 用 Octara 0.0.5 构建界面
+# 用 Octara 0.0.6 构建界面
 
 Octara 用普通 Rust 函数组合视图。应用持有响应式状态和窗口树，宿主负责把树投影到原生窗口或浏览器 DOM。下面的 Rust 示例会随 `cargo test -p octara-cli --doc` 编译并运行。
 
@@ -359,6 +359,7 @@ assert!(snapshot.nodes.iter().any(|node| node.test_id.as_deref() == Some("status
 ```sh
 cargo run -q -p octara-cli -- vocab BuildCx
 cargo run -q -p octara-cli -- inspect --manifest-path examples/Cargo.toml --json
+cargo run -q -p octara-cli -- audit --manifest-path examples/Cargo.toml --json
 ```
 
 应用在 `[package.metadata.octara]` 的 `entry` 字段声明返回 `AppDefinition` 的公开 Rust 函数。连接已启动的应用时，把同一协议的 JSONL 请求交给 `octara run`。下例请求当前窗口列表。
@@ -368,3 +369,5 @@ cargo run -q -p octara-cli -- inspect --manifest-path examples/Cargo.toml --json
 ```
 
 从 `octara::diagnostics` 查询运行时诊断或使用 `octara explain CODE`。未结算的投影、失效目标和已经销毁的响应式句柄有各自的诊断。
+
+`octara audit` 检查已结算窗口的文本裁剪、交互控件的无障碍名称和失效的焦点目标。文本报告用 `file:line` 指向节点的定义位置。JSON 报告使用 `octara.audit/1`，按窗口列出问题及其级别、目标和源码位置。错误级问题退出码为 1。窗口无法启动、连接失败或无法完成审计时退出码为 2。只检查一扇窗口时，从 `list_windows` 回执取得 ID 后传给 `--window-id`。使用 `--connect SOCKET` 可以检查现有的宿主窗口。

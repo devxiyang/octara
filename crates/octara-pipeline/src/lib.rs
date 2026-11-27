@@ -48,6 +48,8 @@ pub struct NativeFrame {
     pub number: u64,
     pub sampled_at: std::time::Duration,
     pub draw: Arc<DisplayList>,
+    /// Cumulative text work through this publication, including its projection rounds.
+    pub text_work: TextWork,
     pub scene: Option<Arc<PaintScene>>,
     pub accessibility: accesskit::TreeUpdate,
     pub native_changes: Vec<NativeChange>,
@@ -270,6 +272,7 @@ impl HostEngine for NativeEngine {
             number: self.frame,
             sampled_at: staged.sampled_at,
             draw: staged.draw.clone(),
+            text_work: self.text_work(),
             scene: staged.scene,
             accessibility,
             native_changes,

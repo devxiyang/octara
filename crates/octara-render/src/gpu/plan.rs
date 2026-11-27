@@ -16,6 +16,9 @@ use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::Weak;
 
+mod metrics;
+pub use metrics::{TextFrameMetrics, TextFramePlanner};
+
 /// A pass's pixel bounds in window coordinates, before rounding its allocation up.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct PassBounds {

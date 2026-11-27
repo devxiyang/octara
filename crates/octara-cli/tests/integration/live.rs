@@ -25,6 +25,12 @@ struct Server {
 
 impl Server {
     fn bind(path: &Path, build: BuildIdentity) -> Self {
+        Self::bind_app(path, build, || {
+            AppDefinition::new().window(WindowDefinition::new(WindowOptions::default(), |_| text("live fixture").test_id("fixture")))
+        })
+    }
+
+    fn bind_app(path: &Path, build: BuildIdentity, startup: fn() -> AppDefinition) -> Self {
         let mut transport = UnixTransport::bind(path).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let done = stop.clone();
@@ -32,12 +38,7 @@ impl Server {
         let seen = actions.clone();
         let process = thread::spawn(move || {
             let mut driver = HeadlessDriver::default();
-            driver
-                .launch(
-                    AppDefinition::new()
-                        .window(WindowDefinition::new(WindowOptions::default(), |_| text("live fixture").test_id("fixture"))),
-                )
-                .unwrap();
+            driver.launch(startup()).unwrap();
             let mut handle = |request: AgentRequest| {
                 if matches!(request.command, AgentCommand::AdvanceClock { .. }) {
                     seen.fetch_add(1, Ordering::Relaxed);
@@ -53,6 +54,58 @@ impl Server {
         });
         Self { stop, process: Some(process), actions }
     }
+}
+
+#[test]
+fn audit_reports_source_and_fails_only_the_windows_with_errors() {
+    let temp = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = temp.path().join("audit.sock");
+    let build = BuildIdentity { digest: "1".repeat(64), pid: 42 };
+    let _server = Server::bind_app(&socket, build, || {
+        AppDefinition::new()
+            .window(WindowDefinition::new(WindowOptions { title: "Ready".into(), ..WindowOptions::default() }, |_| text("Ready")))
+            .window(WindowDefinition::new(WindowOptions { title: "Warning".into(), ..WindowOptions::default() }, |_| {
+                el().w(30).h(30).label("Unavailable").focusable().a11y_hidden()
+            }))
+            .window(WindowDefinition::new(WindowOptions { title: "Broken".into(), ..WindowOptions::default() }, |_| {
+                el().w(30).h(30).role(Role::Button).on_press(|_| {})
+            }))
+    });
+    let run =
+        |args: &[&str]| Command::new(env!("CARGO_BIN_EXE_octara")).arg("audit").arg("--connect").arg(&socket).args(args).output().unwrap();
+    let output = run(&["--json"]);
+    assert_eq!(output.status.code(), Some(1), "{}", String::from_utf8_lossy(&output.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["schema"], "octara.audit/1");
+    assert_eq!(report["clean"], false);
+    let windows = report["windows"].as_array().unwrap();
+    assert_eq!(windows.len(), 3);
+    let ready = windows.iter().find(|window| window["title"] == "Ready").unwrap();
+    assert_eq!(ready["findings"], serde_json::json!([]));
+    let broken = windows.iter().find(|window| window["title"] == "Broken").unwrap();
+    let finding = &broken["findings"][0];
+    assert_eq!(finding["code"], "MISSING_SEMANTICS");
+    assert_eq!(finding["severity"], "error");
+    assert!(finding["node"].is_object());
+    let file = finding["provenance"]["file"].as_str().unwrap();
+    let line = finding["provenance"]["line"].as_u64().unwrap();
+    assert!(file.ends_with("live.rs") && line > 0, "{finding}");
+    let output = run(&[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stdout).contains(&format!("{file}:{line}: error MISSING_SEMANTICS")));
+
+    let warning = windows.iter().find(|window| window["title"] == "Warning").unwrap();
+    assert_eq!(warning["findings"][0]["code"], "DEAD_FOCUS_TARGET");
+    assert_eq!(warning["findings"][0]["severity"], "warning");
+    let id = warning["id"].to_string();
+    let selected = run(&["--window-id", &id, "--json"]);
+    assert!(selected.status.success(), "{}", String::from_utf8_lossy(&selected.stderr));
+    let report: serde_json::Value = serde_json::from_slice(&selected.stdout).unwrap();
+    assert_eq!(report["windows"], serde_json::json!([warning]));
+    assert_eq!(report["clean"], true);
+    let unknown = run(&["--window-id", "0"]);
+    assert_eq!(unknown.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("no window has id 0"));
 }
 
 impl Drop for Server {

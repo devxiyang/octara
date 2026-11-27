@@ -40,6 +40,9 @@ pub fn verify_receipt(request: &AgentRequest, receipt: &AgentReceipt) -> Result<
         AgentCommand::Observe if !receipt.progress.settled || receipt.snapshot.is_none() => {
             Err(ContractError("observe succeeded without a settled snapshot"))
         }
+        AgentCommand::Audit if !receipt.progress.settled || receipt.findings.is_none() => {
+            Err(ContractError("audit succeeded without settled findings"))
+        }
         AgentCommand::ListWindows if receipt.windows.is_none() => Err(ContractError("list_windows succeeded without a window list")),
         AgentCommand::ExportRestartState if receipt.restart_state.is_none() => {
             Err(ContractError("export_restart_state succeeded without persisted state"))

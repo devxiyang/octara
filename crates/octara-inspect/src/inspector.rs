@@ -4,6 +4,7 @@ use crate::protocol::{
     AgentAction, AgentCommand, AgentReceipt, AgentRequest, Capture, EditorSnapshot, NodeSnapshot, PROTOCOL, Progress, TargetRef,
     TreeSnapshot, WindowInfo, WindowRef,
 };
+use crate::{AuditRule, InspectTransport, JsonLines, TraceRecorder, audit, replay};
 use octara::{
     App,
     runtime::{
@@ -20,7 +21,7 @@ use octara_model::{
     input::{Button, ContactTarget, HostReply, InteractionEvent, Modifiers, PointerId, PointerKind, WheelPhase},
     semantics::{Relations, Role},
 };
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 /// The presentation observations and capture sources supplied by an inspection host.
 pub trait InspectHost {
@@ -50,15 +51,75 @@ pub trait InspectHost {
 
 impl InspectHost for () {}
 
-#[derive(Default)]
 pub struct Inspector {
+    transport: Box<dyn InspectTransport>,
+    state: InspectionState,
+}
+
+impl Default for Inspector {
+    fn default() -> Self {
+        Self { transport: Box::new(JsonLines), state: InspectionState::default() }
+    }
+}
+
+#[derive(Default)]
+struct InspectionState {
     picking: BTreeMap<WindowId, bool>,
     contacts: BTreeMap<WindowId, (PointerId, TargetRef)>,
     tap_sequence: u64,
+    rules: Vec<Arc<dyn AuditRule>>,
+    recorder: Option<Box<dyn TraceRecorder>>,
 }
 
 impl Inspector {
+    /// Register a rule to run on every inspected window after the built-in rules.
+    pub fn with_audit_rule(mut self, rule: Arc<dyn AuditRule>) -> Self {
+        self.state.rules.push(rule);
+        self
+    }
+
+    /// Use a custom payload codec when exchanging bytes. The default is [`JsonLines`].
+    pub fn with_transport(mut self, transport: impl InspectTransport + 'static) -> Self {
+        self.transport = Box::new(transport);
+        self
+    }
+
+    /// Record agent commands and raw inputs through a privacy-filtered trace sink.
+    pub fn with_trace_recorder(mut self, recorder: impl TraceRecorder + 'static) -> Self {
+        self.state.recorder = Some(Box::new(recorder));
+        self
+    }
+
+    /// Process a complete payload on the application's owning thread.
+    pub fn exchange(&mut self, app: &mut App, host: &mut impl InspectHost, payload: &[u8]) -> Vec<u8> {
+        self.transport.exchange(payload, &mut |request| self.state.execute(app, host, request))
+    }
+
+    /// Record host input before dispatch. Agent commands are recorded by `execute` and `exchange`.
+    pub fn record_input(&mut self, app: &App, window: WindowId, input: &Input) {
+        if let Some(recorder) = &mut self.state.recorder {
+            recorder.record(replay::input_entry(app, window, input));
+        }
+    }
+
     pub fn execute(&mut self, app: &mut App, host: &mut impl InspectHost, request: AgentRequest) -> AgentReceipt {
+        self.state.execute(app, host, request)
+    }
+
+    pub(crate) fn execute_replayed(&mut self, app: &mut App, host: &mut impl InspectHost, request: AgentRequest) -> AgentReceipt {
+        self.state.dispatch_request(app, host, request)
+    }
+}
+
+impl InspectionState {
+    fn execute(&mut self, app: &mut App, host: &mut impl InspectHost, request: AgentRequest) -> AgentReceipt {
+        if let Some(recorder) = &mut self.recorder {
+            recorder.record(replay::request_entry(app, &request));
+        }
+        self.dispatch_request(app, host, request)
+    }
+
+    fn dispatch_request(&mut self, app: &mut App, host: &mut impl InspectHost, request: AgentRequest) -> AgentReceipt {
         let mut receipt = AgentReceipt::success(request.window);
         if request.protocol != PROTOCOL {
             receipt.fail(&codes::INSPECT_PROTOCOL, "expected the octara.inspect/2 protocol", false);
@@ -143,6 +204,7 @@ impl Inspector {
                     let enabled = self.picking.get(&id).copied().unwrap_or(false);
                     receipt.snapshot = Some(snapshot(state, enabled));
                 }
+                AgentCommand::Audit => receipt.findings = Some(audit::run(state, app.runtime().world(), &self.rules)),
                 AgentCommand::Act { target, action } => match self.act(app, id, target, action) {
                     Ok(turn) => receipt.handled = Some(turn.handled),
                     Err(error) => receipt.fail(error.code, error.message, error.delivered),

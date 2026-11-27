@@ -8,6 +8,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod audit;
 #[cfg(unix)]
 mod dev;
 mod launch;
@@ -74,6 +75,23 @@ enum Command {
         #[arg(long)]
         window_id: Option<u64>,
         /// Print the complete octara.inspect/2 receipt as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Audit the app's settled windows for text clipping, accessibility names and focus targets.
+    /// Exit 1 for errors in the report or 2 if the audit cannot run.
+    Audit {
+        #[command(flatten)]
+        app: AppArgs,
+        #[command(flatten)]
+        window: WindowArgs,
+        /// Audit an existing window at its OCTARA_INSPECT Unix socket.
+        #[arg(long, value_name = "SOCKET", conflicts_with_all = ["manifest_path", "package", "size", "theme"])]
+        connect: Option<PathBuf>,
+        /// Audit only this window id, as returned by list_windows.
+        #[arg(long)]
+        window_id: Option<u64>,
+        /// Print the report as JSON (`octara.audit/1`).
         #[arg(long)]
         json: bool,
     },
@@ -215,6 +233,9 @@ fn main() -> ExitCode {
         Command::Check { app, json } => check(&mut out, &app, json),
         Command::Inspect { app, window, connect, receipt, window_id, json } => {
             result(session::inspect(&mut out, &app, &window, connect.as_deref(), receipt.as_deref(), window_id, json))
+        }
+        Command::Audit { app, window, connect, window_id, json } => {
+            result(audit::run(&mut out, &app, &window, connect.as_deref(), window_id, json))
         }
         Command::Run { app, window, connect, require_build, script, json } => {
             result(session::run(&mut out, &app, &window, connect.as_deref(), require_build.as_deref(), script.as_deref(), json))

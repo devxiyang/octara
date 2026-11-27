@@ -112,6 +112,7 @@ impl Box2 {
     }
 }
 
+#[derive(Clone)]
 struct Guillotine {
     free: Vec<Box2>,
     size: [u32; 2],
@@ -172,6 +173,25 @@ impl Guillotine {
             rect = joined;
         }
         self.free.push(rect);
+    }
+}
+
+/// Device-free packing for text scenes that fit in one layer of a glyph atlas.
+#[derive(Clone)]
+pub(super) struct TextAtlas(Guillotine);
+
+impl TextAtlas {
+    pub(super) fn new(texture_limit: u32) -> Self {
+        Self(Guillotine::new([Family::Glyph.edge(texture_limit); 2]))
+    }
+
+    pub(super) fn place(&mut self, image: &GlyphImage) -> Option<(Region, u64)> {
+        let size = [image.width, image.height];
+        let footprint = self.0.allocate(size, 1)?;
+        let array = ArrayId(NonZeroU64::MIN);
+        let region = Region { array, layer: 0, origin: footprint.origin, size, max_lod: 0, opaque: false, id: 0 };
+        let bytes = u64::from(image.width) * u64::from(image.height) * u64::from(Family::Glyph.bytes_per_pixel());
+        Some((region, bytes))
     }
 }
 

@@ -1,6 +1,6 @@
 //! Candidate storage and the journal of admitted, running and confirmed versions.
 
-use super::{PACKET_LIMIT, Policy, Version, invalid, read_limited};
+use super::{Check, PACKET_LIMIT, Policy, ReleaseProvider, SecurityPolicy, Version, invalid, read_limited};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
@@ -14,6 +14,7 @@ const JOURNAL: &str = "selection.json";
 pub struct Store {
     directory: PathBuf,
     policy: Arc<Policy>,
+    security: Option<Arc<dyn SecurityPolicy>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -22,7 +23,7 @@ pub enum Staged {
     AlreadyAdmitted(Version),
 }
 
-pub(super) struct Prepared {
+struct Prepared {
     version: Version,
     bytes: Vec<u8>,
 }
@@ -53,7 +54,32 @@ struct Journal {
 
 impl Store {
     pub fn new(directory: impl AsRef<Path>, policy: Policy) -> Self {
-        Self { directory: directory.as_ref().join(policy.namespace()), policy: Arc::new(policy) }
+        Self { directory: directory.as_ref().join(policy.namespace()), policy: Arc::new(policy), security: None }
+    }
+
+    /// Requires application-specific authorization before decoding any authenticated release.
+    #[must_use]
+    pub fn with_security_policy(mut self, security: Arc<dyn SecurityPolicy>) -> Self {
+        self.security = Some(security);
+        self
+    }
+
+    /// Fetches and prepares one candidate, then rereads the pointer before admission.
+    /// Run this on a worker when the provider performs blocking I/O.
+    pub fn check<T>(&self, provider: &dyn ReleaseProvider, prepare: impl FnOnce(&str) -> io::Result<T>) -> io::Result<Check> {
+        let namespace = self.policy.namespace();
+        let Some(version) = provider.current(&namespace)? else { return Ok(Check::Unpublished) };
+        if self.already_admitted(version)? {
+            return Ok(Check::AlreadyAdmitted(version));
+        }
+        let prepared = self.prepare(provider.fetch(&namespace, version)?, Some(version), prepare)?;
+        if provider.current(&namespace)? != Some(version) {
+            return Ok(Check::Superseded);
+        }
+        match self.admit(prepared)? {
+            Staged::New(version) => Ok(Check::Staged(version)),
+            Staged::AlreadyAdmitted(version) => Ok(Check::AlreadyAdmitted(version)),
+        }
     }
 
     /// Verifies the publisher and lets the installed application check the payload before admission.
@@ -63,7 +89,7 @@ impl Store {
         self.admit(prepared)
     }
 
-    pub(super) fn prepare<T>(
+    fn prepare<T>(
         &self,
         packet: impl Read,
         expected: Option<Version>,
@@ -74,11 +100,11 @@ impl Store {
         if expected.is_some_and(|expected| expected != version) {
             return Err(invalid("the signed resource does not match the published version"));
         }
-        prepare(payload)?;
+        self.prepare_payload(version, payload, prepare)?;
         Ok(Prepared { version, bytes })
     }
 
-    pub(super) fn admit(&self, prepared: Prepared) -> io::Result<Staged> {
+    fn admit(&self, prepared: Prepared) -> io::Result<Staged> {
         let Prepared { version, bytes } = prepared;
         let _lock = self.lock_journal()?;
         let mut journal = self.read_journal()?;
@@ -103,13 +129,7 @@ impl Store {
         Ok(Staged::New(version))
     }
 
-    #[cfg(feature = "http")]
-    pub(super) fn namespace(&self) -> String {
-        self.policy.namespace()
-    }
-
-    #[cfg(feature = "http")]
-    pub(super) fn already_admitted(&self, version: Version) -> io::Result<bool> {
+    fn already_admitted(&self, version: Version) -> io::Result<bool> {
         self.policy.check_embedded(version)?;
         let _lock = self.lock_journal()?;
         version.already_admitted(self.read_journal()?.highest)
@@ -198,6 +218,13 @@ impl Store {
         if found != version {
             return Err(invalid("stored resource does not match its recorded sequence and digest"));
         }
+        self.prepare_payload(version, payload, prepare)
+    }
+
+    fn prepare_payload<T>(&self, version: Version, payload: &str, prepare: impl FnOnce(&str) -> io::Result<T>) -> io::Result<T> {
+        if let Some(security) = &self.security {
+            security.authorize(&self.policy.target, version, payload)?;
+        }
         prepare(payload)
     }
 
@@ -273,6 +300,9 @@ mod tests {
     use crate::{FORMAT, ReleaseTarget};
     use ring::signature::{Ed25519KeyPair, KeyPair};
     use serde_json::json;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn target() -> ReleaseTarget {
         ReleaseTarget {
@@ -334,6 +364,88 @@ mod tests {
         let Staged::New(version) = store.stage(valid.as_slice(), prepare).unwrap() else { panic!("new release") };
         assert_eq!(store.stage(valid.as_slice(), prepare).unwrap(), Staged::AlreadyAdmitted(version));
         assert!(store.stage(packet(&trusted, target(), 2, "Different signed bytes").as_slice(), prepare).is_err());
+    }
+
+    #[test]
+    fn provider_pointers_can_change_without_admitting_stale_or_mismatched_bytes() {
+        struct Delivery<'a> {
+            namespace: String,
+            pointers: Mutex<VecDeque<Option<Version>>>,
+            bytes: &'a [u8],
+        }
+
+        impl ReleaseProvider for Delivery<'_> {
+            fn current(&self, namespace: &str) -> io::Result<Option<Version>> {
+                assert_eq!(namespace, self.namespace);
+                Ok(self.pointers.lock().unwrap().pop_front().expect("one pointer per read"))
+            }
+
+            fn fetch(&self, namespace: &str, _: Version) -> io::Result<Box<dyn Read + '_>> {
+                assert_eq!(namespace, self.namespace);
+                Ok(Box::new(self.bytes))
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let trusted = key(4);
+        let store = store(root.path(), &trusted);
+        let bytes = packet(&trusted, target(), 2, "B");
+        let (version, _) = store.policy.verify(&bytes).unwrap();
+        let pointer = Some(version);
+        let delivery = |pointers, bytes| Delivery { namespace: store.policy.namespace(), pointers: Mutex::new(pointers), bytes };
+
+        assert_eq!(store.check(&delivery([None].into(), &[]), prepare).unwrap(), Check::Unpublished);
+        let other_bytes = packet(&trusted, target(), 2, "Different digest");
+        assert!(store.check(&delivery([pointer].into(), &other_bytes), |_| -> io::Result<()> { panic!("mismatched pointer") }).is_err());
+        assert_eq!(store.check(&delivery([pointer, None].into(), &bytes), prepare).unwrap(), Check::Superseded);
+        assert!(store.start(prepare).unwrap().selected.is_none());
+        assert_eq!(store.check(&delivery([pointer, pointer].into(), &bytes), prepare).unwrap(), Check::Staged(version));
+        assert_eq!(store.check(&delivery([pointer].into(), &[]), prepare).unwrap(), Check::AlreadyAdmitted(version));
+    }
+
+    #[test]
+    fn security_policy_can_deny_admission_and_force_startup_recovery() {
+        struct MaximumSequence(AtomicU64);
+
+        impl SecurityPolicy for MaximumSequence {
+            fn authorize(&self, installed: &ReleaseTarget, version: Version, payload: &str) -> io::Result<()> {
+                assert_eq!(*installed, target());
+                assert!(matches!(payload, "\"B\"" | "\"C\""));
+                if version.sequence > self.0.load(Ordering::Relaxed) {
+                    return Err(io::Error::new(io::ErrorKind::PermissionDenied, "not yet authorized"));
+                }
+                Ok(())
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let trusted = key(4);
+        let security = Arc::new(MaximumSequence(AtomicU64::new(2)));
+        let store = store(root.path(), &trusted).with_security_policy(security.clone());
+        let no_prepare = |_: &str| -> io::Result<()> { panic!("unauthorized resource reached the decoder") };
+        let mut wrong_target = target();
+        wrong_target.channel = "preview".into();
+        for invalid in [
+            packet(&key(5), target(), 2, "Other publisher"),
+            packet(&trusted, wrong_target, 2, "Other target"),
+            packet(&trusted, target(), 1, "Embedded replay"),
+        ] {
+            assert!(store.stage(invalid.as_slice(), no_prepare).is_err());
+        }
+        let c = packet(&trusted, target(), 3, "C");
+        assert_eq!(store.stage(c.as_slice(), no_prepare).unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        let b = stage(&store, &trusted, 2, "B");
+        assert_eq!(store.start(prepare).unwrap().session.confirm().unwrap(), Some(b));
+
+        security.0.store(3, Ordering::Relaxed);
+        let Staged::New(trial) = store.stage(c.as_slice(), prepare).unwrap() else { panic!("new trial") };
+        security.0.store(2, Ordering::Relaxed);
+        let recovered = store.start(prepare).unwrap();
+        assert_eq!(recovered.selected, Some((b, "B".into())));
+        assert!(recovered.recovery.unwrap().contains("not yet authorized"));
+        assert_eq!(recovered.session.confirm().unwrap(), None);
+        security.0.store(3, Ordering::Relaxed);
+        assert_eq!(store.stage(c.as_slice(), prepare).unwrap(), Staged::AlreadyAdmitted(trial));
     }
 
     #[test]

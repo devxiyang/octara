@@ -1,9 +1,10 @@
-//! Signed resource data. The installed application owns the trust policy and decodes the payload.
+//! Signed resource delivery and startup recovery. The installed application owns the trust policy and payload decoder.
 
 #[cfg(any(feature = "http", feature = "signing"))]
 mod channel;
 #[cfg(feature = "http")]
 mod http;
+mod provider;
 mod store;
 
 use ring::signature::{ED25519, UnparsedPublicKey};
@@ -14,7 +15,8 @@ use std::fmt;
 use std::io::{self, Read};
 
 #[cfg(feature = "http")]
-pub use http::{Channel, Check};
+pub use http::Channel;
+pub use provider::{Check, ReleaseProvider};
 pub use store::{Session, Staged, Startup, Store};
 
 const FORMAT: &str = "octara.resource.v1";
@@ -40,6 +42,14 @@ pub struct Policy {
     pub target: ReleaseTarget,
     pub public_key: [u8; 32],
     pub embedded_sequence: u64,
+}
+
+/// Additional application rules for authenticated resources.
+///
+/// The store verifies the Ed25519 signature, installed target and embedded
+/// sequence floor before invoking these rules during staging and startup.
+pub trait SecurityPolicy: Send + Sync {
+    fn authorize(&self, target: &ReleaseTarget, version: Version, payload: &str) -> io::Result<()>;
 }
 
 /// A signed sequence and the SHA-256 of the exact signed document.
@@ -80,11 +90,9 @@ fn document(bytes: &[u8]) -> io::Result<ResourceDocument<'_>> {
 impl Policy {
     fn verify<'a>(&self, packet: &'a [u8]) -> io::Result<(Version, &'a str)> {
         let (version, document) = authenticate(&self.public_key, packet)?;
-        if document.target != self.target {
-            return Err(invalid("resource target does not match the installed application, channel, platform, runtime and schemas"));
-        }
-        self.check_embedded(version)?;
-        Ok((version, document.payload.get()))
+        let payload = document.payload.get();
+        self.authorize(&document.target, version, payload)?;
+        Ok((version, payload))
     }
 
     fn check_embedded(&self, version: Version) -> io::Result<()> {
@@ -102,7 +110,26 @@ impl Policy {
     }
 }
 
+impl SecurityPolicy for Policy {
+    fn authorize(&self, target: &ReleaseTarget, version: Version, _payload: &str) -> io::Result<()> {
+        if *target != self.target {
+            return Err(invalid("resource target does not match the installed application, channel, platform, runtime and schemas"));
+        }
+        self.check_embedded(version)
+    }
+}
+
 impl Version {
+    /// Creates a release pointer from the sequence and SHA-256 of the signed document bytes.
+    pub const fn new(sequence: u64, digest: [u8; 32]) -> Self {
+        Self { sequence, digest }
+    }
+
+    /// Returns the SHA-256 of the signed document bytes.
+    pub const fn digest(self) -> [u8; 32] {
+        self.digest
+    }
+
     // An admitted sequence identifies exactly one version, even when an older
     // version is still running or was recovered locally.
     fn already_admitted(self, highest: Option<Self>) -> io::Result<bool> {
@@ -127,7 +154,7 @@ fn authenticate<'a>(public_key: &[u8; 32], packet: &'a [u8]) -> io::Result<(Vers
         .verify(bytes, signature)
         .map_err(|_| io::Error::new(io::ErrorKind::PermissionDenied, "resource signature does not match the publisher key"))?;
     let document = document(bytes)?;
-    let version = Version { sequence: document.sequence, digest: Sha256::digest(bytes).into() };
+    let version = Version::new(document.sequence, Sha256::digest(bytes).into());
     Ok((version, document))
 }
 

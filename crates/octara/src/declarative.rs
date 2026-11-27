@@ -1,5 +1,6 @@
 //! Compile verified scene data into the same transactions as authored Rust views.
 
+use crate::{El, Styled, View, WriteCx, el, text};
 use octara_model::semantics::Role;
 use octara_model::style::{FlexDirection, Length, StyleProp};
 use octara_model::theme::{Color, Fill};
@@ -7,6 +8,7 @@ use octara_tree::tables::{AuthoredStyle, CommandSlot, HandlerId, HandlerKind, Se
 use octara_tree::{NodeChange, NodeContent, NodeFlags, NodeId, NodeRef, NodeSpec, Transaction, Tree, TxBuilder};
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 pub const SCENE_FORMAT: &str = "octara.scene/2";
@@ -115,8 +117,8 @@ impl ScenePacket {
         Ok(scene)
     }
 
-    /// Programs can resolve existing command registrations while the retained tree is borrowed.
-    /// `Tree::apply` remains responsible for validating the base revision, references and topology.
+    /// Compiles directly against a retained tree, for example to preflight a candidate.
+    /// For app windows use [`Self::into_view`] to register runtime-scoped commands.
     pub fn compile(
         self,
         tree: &Tree,
@@ -129,6 +131,16 @@ impl ScenePacket {
             spec.emit(parent, &self.palette, &mut commands, &mut draft)?;
         }
         Ok(draft.finish())
+    }
+
+    /// Prepares a scene for a window by resolving each command to an app-owned callback.
+    /// The view mounts through the window's authored transaction and registers commands in its scope.
+    pub fn into_view<C>(self, mut commands: impl FnMut(&str) -> Option<C>) -> Result<View, SceneError>
+    where
+        C: Fn(&mut WriteCx<'_>) + 'static,
+    {
+        let nodes: Vec<_> = self.nodes.into_iter().map(|spec| spec.into_el(&self.palette, &mut commands)).collect::<Result<_, _>>()?;
+        Ok(View::fragment(nodes))
     }
 }
 
@@ -170,6 +182,36 @@ impl Spec {
             child.emit(node.into(), palette, commands, draft)?;
         }
         Ok(())
+    }
+
+    fn into_el<C>(self, palette: &BTreeMap<String, [u8; 4]>, commands: &mut impl FnMut(&str) -> Option<C>) -> Result<El, SceneError>
+    where
+        C: Fn(&mut WriteCx<'_>) + 'static,
+    {
+        let mut node = match self.content {
+            Content::Box => el(),
+            Content::Text { value } => text(value),
+        }
+        .push_styles(&self.style.resolve(palette)?.base);
+        if let Some(id) = self.test_id {
+            node = node.test_id(id);
+        }
+        if let Some(label) = self.label {
+            node = node.label(label);
+        }
+        if let Some(role) = self.role {
+            node = node.role(role);
+        }
+        if let Some(name) = self.press {
+            let Some(command) = commands(&name) else { return Err(SceneError::Command(name)) };
+            let command = Rc::new(command);
+            let press = Rc::clone(&command);
+            node = node.focusable().on_command(name, move |write| command(write)).on_press(move |write| press(write));
+        }
+        for child in self.children {
+            node = node.child(child.into_el(palette, commands)?);
+        }
+        Ok(node)
     }
 }
 

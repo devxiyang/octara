@@ -156,6 +156,18 @@ pub mod codes {
             "The inspection host refused a development restart command.",
             "Only a dev host provides restart state export and shutdown commands.",
             "docs/design/v2/07-app-primitives-and-headless-kit.md#27-dev-hot-restart-runner-octara-cli";
+        CLIPPED_TEXT: Warning,
+            "A text element is clipped at its settled layout size.",
+            "The host truncated the text with an ellipsis or a line limit.",
+            "docs/design/v2/11-extreme-engine-cpu-gpu-and-ai-dx.md#5-octara-inspect-audit-spi--deterministic-performance-gates";
+        MISSING_SEMANTICS: Error,
+            "An interactive element has no accessible name.",
+            "The element has no nonblank label, text alternative, or usable labeling relationship.",
+            "docs/design/v2/11-extreme-engine-cpu-gpu-and-ai-dx.md#5-octara-inspect-audit-spi--deterministic-performance-gates";
+        DEAD_FOCUS_TARGET: Warning,
+            "A focus target cannot be reached in the settled window.",
+            "The target is hidden, inert, has empty bounds, or is outside the active modal.",
+            "docs/design/v2/11-extreme-engine-cpu-gpu-and-ai-dx.md#5-octara-inspect-audit-spi--deterministic-performance-gates";
         BUILD_MISMATCH: Error,
             "The inspected process differs from the launch receipt.",
             "The process identifier or executable digest in the Inspector response differs from the expected build.",

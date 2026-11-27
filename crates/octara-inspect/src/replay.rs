@@ -19,7 +19,7 @@ use octara_model::{
     semantics::A11yAction,
 };
 use serde::{Deserialize, Serialize};
-use std::{fmt, time::Duration};
+use std::{cell::RefCell, fmt, rc::Rc, time::Duration};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -46,12 +46,36 @@ pub struct Entry {
     pub event: Event,
 }
 
+/// A sequential sink for timestamped, privacy-filtered inspection events.
+pub trait TraceRecorder {
+    fn record(&mut self, entry: Entry);
+}
+
+impl<F: FnMut(Entry)> TraceRecorder for F {
+    fn record(&mut self, entry: Entry) {
+        self(entry);
+    }
+}
+
 /// A recorder stores elapsed app time and filters private payloads before appending an entry.
 /// Recreate the application with the recorded namespace and the same initial window state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Replay {
     namespace: [u64; 2],
     entries: Vec<Entry>,
+}
+
+impl TraceRecorder for Replay {
+    fn record(&mut self, entry: Entry) {
+        self.entries.push(entry);
+    }
+}
+
+/// Share the in-memory recording with its caller while an inspector appends events.
+impl TraceRecorder for Rc<RefCell<Replay>> {
+    fn record(&mut self, entry: Entry) {
+        self.borrow_mut().record(entry);
+    }
 }
 
 impl Replay {
@@ -69,21 +93,12 @@ impl Replay {
 
     /// Observe the input immediately before its ordinary dispatch.
     pub fn record_input(&mut self, app: &App, window: WindowId, input: &Input) {
-        let event = match input {
-            Input::Interaction(event) if private_interaction(app, window, event) => Event::Redacted(Channel::Interaction),
-            Input::Interaction(event) => Event::Interaction { window, event: *event },
-            Input::Editor(event) if private_editor(app, window, event.session()) => Event::Redacted(Channel::Editor),
-            Input::Editor(event) => Event::Editor { window, event: event.clone() },
-            Input::Host(reply) if private_reply(app, window, reply) => Event::Redacted(Channel::Host),
-            Input::Host(reply) => Event::Host { window, reply: reply.clone() },
-        };
-        self.entries.push(Entry { at: app.runtime().now(), event });
+        self.record(input_entry(app, window, input));
     }
 
     /// Record the outer command only. Its translated input is regenerated during playback.
     pub fn record_request(&mut self, app: &App, request: &AgentRequest) {
-        let event = if private_request(app, request) { Event::Redacted(Channel::Agent) } else { Event::Agent(request.clone()) };
-        self.entries.push(Entry { at: app.runtime().now(), event });
+        self.record(request_entry(app, request));
     }
 
     /// Do not substitute fabricated data for private input. Subsequent events may depend on
@@ -105,13 +120,30 @@ impl Replay {
                 Event::Interaction { window, event } => raw(app, index, *window, Input::Interaction(*event))?,
                 Event::Editor { window, event } => raw(app, index, *window, Input::Editor(event.clone()))?,
                 Event::Host { window, reply } => raw(app, index, *window, Input::Host(reply.clone()))?,
-                Event::Agent(request) => Step::Agent(Box::new(inspector.execute(app, host, request.clone()))),
+                Event::Agent(request) => Step::Agent(Box::new(inspector.execute_replayed(app, host, request.clone()))),
                 Event::Redacted(channel) => Step::Redacted(*channel),
             };
             steps.push(delivery);
         }
         Ok(steps)
     }
+}
+
+pub(crate) fn input_entry(app: &App, window: WindowId, input: &Input) -> Entry {
+    let event = match input {
+        Input::Interaction(event) if private_interaction(app, window, event) => Event::Redacted(Channel::Interaction),
+        Input::Interaction(event) => Event::Interaction { window, event: *event },
+        Input::Editor(event) if private_editor(app, window, event.session()) => Event::Redacted(Channel::Editor),
+        Input::Editor(event) => Event::Editor { window, event: event.clone() },
+        Input::Host(reply) if private_reply(app, window, reply) => Event::Redacted(Channel::Host),
+        Input::Host(reply) => Event::Host { window, reply: reply.clone() },
+    };
+    Entry { at: app.runtime().now(), event }
+}
+
+pub(crate) fn request_entry(app: &App, request: &AgentRequest) -> Entry {
+    let event = if private_request(app, request) { Event::Redacted(Channel::Agent) } else { Event::Agent(request.clone()) };
+    Entry { at: app.runtime().now(), event }
 }
 
 fn raw(app: &mut App, index: usize, window: WindowId, input: Input) -> Result<Step, ReplayError> {

@@ -2,6 +2,7 @@
 
 use octara::runtime::RestartState;
 use octara_model::{
+    audit::AuditFinding,
     capture::{CaptureSource, PaintReceipt, PaintSample},
     diagnostics::{Code, Diagnostic},
     geometry::{LayoutBox, Point, Vec2, WindowViewport},
@@ -46,6 +47,7 @@ impl AgentRequest {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum AgentCommand {
     Observe,
+    Audit,
     Act {
         target: TargetRef,
         action: AgentAction,
@@ -163,6 +165,8 @@ pub struct AgentReceipt {
     pub handled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<TreeSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub findings: Option<Vec<AuditFinding>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capture: Option<Capture>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -193,6 +197,7 @@ impl AgentReceipt {
             message: None,
             handled: None,
             snapshot: None,
+            findings: None,
             capture: None,
             windows: None,
             restart_state: None,

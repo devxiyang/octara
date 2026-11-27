@@ -9,13 +9,13 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdout, Command, ExitCode, Stdio};
 
-enum Session {
+pub(crate) enum Session {
     Live(live::Client),
     Headless(Headless),
 }
 
 impl Session {
-    fn open(app: &AppArgs, options: &WindowArgs, connect: Option<&Path>) -> Result<Self, String> {
+    pub(crate) fn open(app: &AppArgs, options: &WindowArgs, connect: Option<&Path>) -> Result<Self, String> {
         if let Some(path) = connect {
             return live::Client::connect(path).map(Self::Live);
         }
@@ -42,13 +42,17 @@ impl Session {
     }
 
     fn observe(&mut self, window: Option<u64>) -> Result<AgentReceipt, String> {
-        let mut request = AgentRequest::new(None, AgentCommand::Observe);
-        request.window = window.map(WindowRef);
-        self.request(&serde_json::to_string(&request).expect("an Observe request serializes"))
+        self.command(window.map(WindowRef), AgentCommand::Observe)
+    }
+
+    pub(crate) fn command(&mut self, window: Option<WindowRef>, command: AgentCommand) -> Result<AgentReceipt, String> {
+        let request = AgentRequest { window, ..AgentRequest::new(None, command) };
+        let line = serde_json::to_string(&request).map_err(|error| error.to_string())?;
+        self.request(&line)
     }
 }
 
-struct Headless {
+pub(crate) struct Headless {
     child: Child,
     output: BufReader<ChildStdout>,
 }
@@ -105,8 +109,7 @@ pub(crate) fn run(
     };
     let mut session = Session::open(app, window, connect)?;
     if expected.is_some() || connect.is_none() {
-        let request = AgentRequest::new(None, AgentCommand::ListWindows);
-        let observed = session.request(&serde_json::to_string(&request).expect("a ListWindows request serializes"))?;
+        let observed = session.command(None, AgentCommand::ListWindows)?;
         if let Some(refusal) = expected.and_then(|expected| expected.mismatch(&observed)) {
             if interactive || json {
                 writeln!(out, "{}", serde_json::to_string(&refusal).expect("a refusal serializes")).expect("writing to a String");

@@ -1,22 +1,13 @@
 //! Pulls candidates from a static origin on the application's background worker.
 
 use super::channel::{HEAD, HEAD_LIMIT, Head, package_path};
-use super::{Staged, Store, Version, invalid, read_limited};
+use super::{Check, ReleaseProvider, Store, Version, invalid, read_limited};
 use reqwest::blocking::{Client, ClientBuilder, Response};
 use reqwest::{StatusCode, Url, header, redirect};
 use std::io::{self, Read};
 use std::time::{Duration, Instant};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// A check against the configured channel, separate from startup and confirmation.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Check {
-    Unpublished,
-    AlreadyAdmitted(Version),
-    Staged(Version),
-    Superseded,
-}
 
 /// A publisher directory configured by the installed app.
 pub struct Channel {
@@ -58,34 +49,7 @@ impl Channel {
     /// Fetches, authenticates and prepares one candidate, then rereads the pointer
     /// before staging it. The Store checks admission again when writing the journal.
     pub fn check<T>(&self, store: &Store, prepare: impl FnOnce(&str) -> io::Result<T>) -> io::Result<Check> {
-        let namespace = store.namespace();
-        let pointer = self.url(&format!("{namespace}/{HEAD}"))?;
-        let Some(version) = self.head(&pointer)? else { return Ok(Check::Unpublished) };
-        if store.already_admitted(version)? {
-            return Ok(Check::AlreadyAdmitted(version));
-        }
-
-        let package = self.get(self.url(&package_path(&namespace, version))?, false)?;
-        if package.response.status() != StatusCode::OK {
-            return Err(io::Error::other(format!("the update package returned HTTP {}", package.response.status())));
-        }
-        let prepared = store.prepare(package, Some(version), prepare)?;
-        if self.head(&pointer)? != Some(version) {
-            return Ok(Check::Superseded);
-        }
-        match store.admit(prepared)? {
-            Staged::New(version) => Ok(Check::Staged(version)),
-            Staged::AlreadyAdmitted(version) => Ok(Check::AlreadyAdmitted(version)),
-        }
-    }
-
-    fn head(&self, pointer: &Url) -> io::Result<Option<Version>> {
-        let pointer = self.get(pointer.clone(), true)?;
-        match pointer.response.status() {
-            StatusCode::OK => Ok(Some(Head::read(&read_limited(pointer, HEAD_LIMIT)?)?.version)),
-            StatusCode::NOT_FOUND => Ok(None),
-            status => Err(io::Error::other(format!("the update pointer returned HTTP {status}"))),
-        }
+        store.check(self, prepare)
     }
 
     fn get(&self, url: Url, revalidate: bool) -> io::Result<Body> {
@@ -99,7 +63,30 @@ impl Channel {
     }
 
     fn url(&self, path: &str) -> io::Result<Url> {
+        let namespace = path.split_once('/').and_then(|(namespace, _)| namespace.strip_prefix("v1-"));
+        if !namespace.is_some_and(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())) {
+            return Err(invalid("invalid update channel namespace"));
+        }
         self.origin.join(path).map_err(io::Error::other)
+    }
+}
+
+impl ReleaseProvider for Channel {
+    fn current(&self, namespace: &str) -> io::Result<Option<Version>> {
+        let pointer = self.get(self.url(&format!("{namespace}/{HEAD}"))?, true)?;
+        match pointer.response.status() {
+            StatusCode::OK => Ok(Some(Head::read(&read_limited(pointer, HEAD_LIMIT)?)?.version)),
+            StatusCode::NOT_FOUND => Ok(None),
+            status => Err(io::Error::other(format!("the update pointer returned HTTP {status}"))),
+        }
+    }
+
+    fn fetch(&self, namespace: &str, version: Version) -> io::Result<Box<dyn Read + '_>> {
+        let package = self.get(self.url(&package_path(namespace, version))?, false)?;
+        if package.response.status() != StatusCode::OK {
+            return Err(io::Error::other(format!("the update package returned HTTP {}", package.response.status())));
+        }
+        Ok(Box::new(package))
     }
 }
 
@@ -137,7 +124,10 @@ mod tests {
         ] {
             assert!(Channel::new(origin).is_err(), "{origin}");
         }
-        assert!(Channel::new("https://updates.example.com/channel/").is_ok());
+        let channel = Channel::new("https://updates.example.com/channel/").unwrap();
+        for namespace in ["../outside", "//outside.example.com", "https://outside.example.com/"] {
+            assert_eq!(channel.current(namespace).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        }
         assert_eq!(Channel::new("http://127.0.0.1:32123/").is_ok(), cfg!(debug_assertions));
     }
 

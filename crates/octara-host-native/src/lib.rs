@@ -13,9 +13,10 @@ pub use media::DiskMediaCache;
 pub use octara_gpu::{SurfaceFrame, SurfaceRenderer, SurfaceRendererFactory};
 pub use shell::ShellEvent;
 
-use octara::runtime::{BuildCx, WindowId, WindowOptions};
+use octara::runtime::{BuildCx, Input, WindowId, WindowOptions};
 use octara::{App, AppDefinition, IntoView, WindowDefinition};
 use octara_model::capture::FrameReceipt;
+use os::OsHost;
 use std::time::Duration;
 use winit::event_loop::EventLoop;
 
@@ -35,24 +36,28 @@ pub fn run<V: IntoView>(options: WindowOptions, root: impl FnOnce(&mut BuildCx<'
 }
 
 pub fn run_app(application: AppDefinition) -> Result<(), ShellError> {
-    launch(application, ShellConfig::from_env(), None, None, None)
+    run_app_with_options(application, NativeAppOptions::default())
 }
 
 pub fn run_app_with_config(application: AppDefinition, config: ShellConfig) -> Result<(), ShellError> {
-    launch(application, config, None, None, None)
+    run_app_with_options(application, NativeAppOptions { config: Some(config), ..Default::default() })
 }
 
 /// Launches the application with a surface backend shared by its native windows.
 pub fn run_app_with_surface_renderer(application: AppDefinition, factory: SurfaceRendererFactory) -> Result<(), ShellError> {
-    launch(application, ShellConfig::from_env(), None, None, Some(factory))
+    run_app_with_options(application, NativeAppOptions { surface_renderer: Some(factory), ..Default::default() })
 }
 
 pub fn run_app_with_first_frame(application: AppDefinition, first_frame: impl FnOnce(FrameReceipt) + 'static) -> Result<(), ShellError> {
-    launch(application, ShellConfig::from_env(), Some(Box::new(first_frame)), None, None)
+    run_app_with_options(application, NativeAppOptions { first_frame: Some(Box::new(first_frame)), ..Default::default() })
 }
 
-/// Runs after publication on the event-loop thread. A returned delay schedules the next tick.
+/// Observes native window activity on the event-loop thread.
 pub trait ShellHook {
+    /// Runs immediately before the shell dispatches a host input to the app.
+    fn before_input(&mut self, _app: &App, _window: WindowId, _input: &Input) {}
+
+    /// Runs after publication. A returned delay schedules the next tick.
     fn tick(&mut self, app: &mut App, presented: &dyn Fn(WindowId) -> Option<FrameReceipt>) -> Result<Option<Duration>, ShellError>;
 
     /// Exit the event loop through its ordinary shutdown path after this tick.
@@ -62,18 +67,25 @@ pub trait ShellHook {
 }
 
 pub fn run_app_with_hook(application: AppDefinition, hook: impl ShellHook + 'static) -> Result<(), ShellError> {
-    launch(application, ShellConfig::from_env(), None, Some(Box::new(hook)), None)
+    run_app_with_options(application, NativeAppOptions { hook: Some(Box::new(hook)), ..Default::default() })
 }
 
-fn launch(
-    application: AppDefinition,
-    config: ShellConfig,
-    first_frame: Option<Box<dyn FnOnce(FrameReceipt)>>,
-    hook: Option<Box<dyn ShellHook>>,
-    surface_renderer: Option<SurfaceRendererFactory>,
-) -> Result<(), ShellError> {
+/// Native host and rendering extensions installed before the event loop starts.
+#[derive(Default)]
+pub struct NativeAppOptions {
+    /// Defaults to `ShellConfig::from_env()`.
+    pub config: Option<ShellConfig>,
+    /// Defaults to the platform's built-in host.
+    pub os_host: Option<Box<dyn OsHost>>,
+    pub surface_renderer: Option<SurfaceRendererFactory>,
+    pub hook: Option<Box<dyn ShellHook>>,
+    pub first_frame: Option<Box<dyn FnOnce(FrameReceipt)>>,
+}
+
+/// Runs a native app with the supplied OS host, renderer and event-loop hook.
+pub fn run_app_with_options(application: AppDefinition, options: NativeAppOptions) -> Result<(), ShellError> {
     let event_loop = EventLoop::<ShellEvent>::with_user_event().build().map_err(|error| ShellError(error.to_string()))?;
-    let mut shell = shell::Shell::new(application, config, event_loop.create_proxy(), first_frame, hook, surface_renderer);
+    let mut shell = shell::Shell::new(application, event_loop.create_proxy(), options);
     event_loop.run_app(&mut shell).map_err(|error| ShellError(error.to_string()))?;
     shell.take_error().map_or(Ok(()), Err)
 }

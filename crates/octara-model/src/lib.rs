@@ -1,6 +1,7 @@
 //! Shared Octara values and host protocols.
 
 pub mod ask;
+pub mod audit;
 pub mod capture;
 pub mod diagnostics;
 pub mod geometry;

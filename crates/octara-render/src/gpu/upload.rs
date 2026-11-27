@@ -192,6 +192,20 @@ pub(super) struct FrameData {
     pub(super) clips: Vec<ClipNode>,
 }
 
+pub(super) fn payload_bytes(i: &Instances, uniforms: usize, clips: &[ClipNode]) -> u64 {
+    (uniforms
+        + size_of_val(i.draws.as_slice())
+        + size_of_val(i.quads.as_slice())
+        + size_of_val(i.shadows.as_slice())
+        + size_of_val(i.images.as_slice())
+        + size_of_val(i.glyphs.as_slice())
+        + size_of_val(i.glyph_draws.as_slice())
+        + size_of_val(i.glyph_clips.as_slice())
+        + size_of_val(i.materials.as_slice())
+        + size_of_val(i.gradients.as_slice())
+        + size_of_val(clips)) as u64
+}
+
 pub(super) struct FrameUploads<'renderer> {
     textures: &'renderer mut SceneTextures,
     buffers: &'renderer FrameBuffers,
@@ -200,19 +214,7 @@ pub(super) struct FrameUploads<'renderer> {
 
 impl FrameUploads<'_> {
     pub(super) fn bytes(&self) -> u64 {
-        let i = &self.data.instances;
-        self.textures.atlases.upload_bytes
-            + (self.data.uniforms.len()
-                + size_of_val(i.draws.as_slice())
-                + size_of_val(i.quads.as_slice())
-                + size_of_val(i.shadows.as_slice())
-                + size_of_val(i.images.as_slice())
-                + size_of_val(i.glyphs.as_slice())
-                + size_of_val(i.glyph_draws.as_slice())
-                + size_of_val(i.glyph_clips.as_slice())
-                + size_of_val(i.materials.as_slice())
-                + size_of_val(i.gradients.as_slice())
-                + size_of_val(self.data.clips.as_slice())) as u64
+        self.textures.atlases.upload_bytes + payload_bytes(&self.data.instances, self.data.uniforms.len(), &self.data.clips)
     }
 
     pub(super) fn queue(&self, queue: &wgpu::Queue) {

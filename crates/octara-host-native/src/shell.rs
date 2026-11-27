@@ -2,7 +2,7 @@
 
 use crate::os::{self, HostEvent, KeyDispatch, OsHost, OsWindowContext};
 use crate::window::{Device, FileDrop, HostWindow, transparent_background};
-use crate::{ShellConfig, ShellError, ShellHook, trace};
+use crate::{NativeAppOptions, ShellConfig, ShellError, ShellHook, trace};
 use octara::runtime::turn::TurnError;
 use octara::runtime::{HostCommand, Input, RestartState, WindowId};
 use octara::tree::editor::EditorSession;
@@ -89,17 +89,12 @@ pub(crate) struct Shell {
 }
 
 impl Shell {
-    pub(crate) fn new(
-        definition: AppDefinition,
-        config: ShellConfig,
-        proxy: EventLoopProxy<ShellEvent>,
-        first_frame: Option<Box<dyn FnOnce(FrameReceipt)>>,
-        hook: Option<Box<dyn ShellHook>>,
-        surface_renderer: Option<SurfaceRendererFactory>,
-    ) -> Self {
+    pub(crate) fn new(definition: AppDefinition, proxy: EventLoopProxy<ShellEvent>, options: NativeAppOptions) -> Self {
+        let NativeAppOptions { config, os_host, surface_renderer, hook, first_frame } = options;
+        let config = config.unwrap_or_else(ShellConfig::from_env);
         let frame_sources = Rc::new(RefCell::new(BTreeMap::new()));
         let outputs = frame_sources.clone();
-        let mut os = os::create_os_host();
+        let mut os = os_host.unwrap_or_else(os::create_os_host);
         let supports_vibrancy = os.supports_window_vibrancy();
         let mut app = App::new(move |id, options| {
             let publication = NativePublication::for_window_host();
@@ -228,6 +223,9 @@ impl Shell {
             if let Some(request) = service {
                 host.service_cleanup.remove(&request);
             }
+        }
+        if let Some(hook) = &mut self.hook {
+            hook.before_input(&self.app, id, &input);
         }
         let receipt = self.app.dispatch(id, input);
         if resync_editor

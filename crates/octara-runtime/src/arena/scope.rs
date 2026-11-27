@@ -200,11 +200,15 @@ impl ReactiveWorld {
     }
 
     pub(crate) fn context<T: Clone + 'static>(&self, scope: ScopeId) -> Option<T> {
+        self.context_with_owner(scope).map(|(_, value)| value)
+    }
+
+    pub(crate) fn context_with_owner<T: Clone + 'static>(&self, scope: ScopeId) -> Option<(ScopeId, T)> {
         let mut scope = Some(scope);
         while let Some(id) = scope {
             let data = self.scope_data(id)?;
             if let Some(value) = data.context.get(&TypeId::of::<T>()) {
-                return value.downcast_ref::<T>().cloned();
+                return value.downcast_ref::<T>().map(|value| (id, value.clone()));
             }
             scope = data.parent;
         }

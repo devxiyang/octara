@@ -44,6 +44,12 @@ impl HeadlessDriver {
         Self { app, inspector: Inspector::default(), host: PaintedCapture::default() }
     }
 
+    /// Install the application's audit rules, payload codec, or trace recorder before launch.
+    pub fn with_inspector(mut self, inspector: Inspector) -> Self {
+        self.inspector = inspector;
+        self
+    }
+
     pub fn launch(&mut self, definition: AppDefinition) -> Result<Vec<WindowId>, TurnError> {
         definition.launch(&mut self.app, None)
     }
@@ -60,7 +66,12 @@ impl HeadlessDriver {
         self.inspector.execute(&mut self.app, &mut self.host, request)
     }
 
+    pub fn exchange(&mut self, payload: &[u8]) -> Vec<u8> {
+        self.inspector.exchange(&mut self.app, &mut self.host, payload)
+    }
+
     pub fn dispatch(&mut self, window: WindowId, input: Input) -> Result<TurnReceipt, TurnError> {
+        self.inspector.record_input(&self.app, window, &input);
         self.app.dispatch(window, input)
     }
 

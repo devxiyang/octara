@@ -13,12 +13,13 @@ pub use octara_model::identity::WindowId;
 use octara_model::identity::{TreeId, ViewportRev, WindowRev};
 use octara_model::input::{ContactTarget, DroppedFile, KeyEvent, Modifiers};
 use octara_model::native::NativeEvent;
-use octara_model::semantics::A11yAction;
+use octara_model::semantics::{A11yAction, TextClip};
 use octara_model::theme::{Breakpoint, Theme};
 pub use octara_model::window::{
     SystemPreferences, TitlebarStyle, VibrancyMaterial, WindowChrome, WindowGeometry, WindowGeometryRequest, WindowMaterial,
 };
 use octara_tree::arbiter::{InteractionArbiter, InteractionPayload, ScrollbarKey};
+use octara_tree::delta::RetiredNode;
 use octara_tree::editor::{EditorProposal, EditorRichText, EditorState};
 use octara_tree::selection::DocSelection;
 use octara_tree::tables::{CommandSlot, HandlerId, HandlerKind};
@@ -494,6 +495,7 @@ pub struct WindowRuntime {
     pub(crate) handlers: FxHashMap<HandlerId, ScopedHandler>,
     pub(crate) structures: FxHashMap<ReactiveId, Box<dyn Structure>>,
     pub(crate) bindings: FxHashMap<ReactiveId, ScopedBinding>,
+    node_scopes: FxHashMap<NodeId, ScopeId>,
     pub(crate) feedback: Vec<ScopedFeedback>,
     pub(crate) reveal: Vec<ScopedReveal>,
     pub(crate) copy_rows: Vec<ScopedCopyRows>,
@@ -576,6 +578,7 @@ impl WindowRuntime {
             handlers: FxHashMap::default(),
             structures: FxHashMap::default(),
             bindings: FxHashMap::default(),
+            node_scopes: FxHashMap::default(),
             feedback: Vec::new(),
             reveal: Vec::new(),
             copy_rows: Vec::new(),
@@ -854,6 +857,21 @@ impl WindowRuntime {
         self.engine.geometry(node)
     }
 
+    /// Text truncation reported by the current settled host layout.
+    pub fn clipped_text(&self) -> Vec<(NodeId, TextClip)> {
+        self.settled.map_or_else(Vec::new, |_| self.engine.clipped_text(&self.tree))
+    }
+
+    /// Resolve context for a live node and identify the scope that provided the value.
+    pub fn node_context<T: Clone + 'static>(&self, world: &ReactiveWorld, node: NodeId) -> Option<(ScopeId, T)> {
+        if !self.tree.is_live(node) {
+            return None;
+        }
+        let node = self.tree.link(node).and_then(|_| self.tree.parent(node)).unwrap_or(node);
+        let scope = self.node_scopes.get(&node).copied().unwrap_or(self.scope);
+        world.context_with_owner(scope)
+    }
+
     pub(crate) fn stage_change(&mut self, node: NodeRef, change: NodeChange) {
         if let NodeRef::Existing { id, .. } = node
             && let Some(edit) = &mut self.edit
@@ -908,12 +926,16 @@ impl WindowRuntime {
     }
 
     pub(crate) fn discard_retiring_allocations(&mut self, world: &ReactiveWorld) {
-        for (scope, node) in std::mem::take(&mut self.work.created) {
+        let mut created = std::mem::take(&mut self.work.created);
+        created.retain(|&(scope, node)| {
             if self.scope_is_retiring(world, scope) || self.is_retiring(node.into()) {
                 self.tx.discard(node);
                 self.work.retire_nodes.insert(node.into());
+                return false;
             }
-        }
+            scope != self.scope
+        });
+        self.work.created = created;
     }
 
     pub(crate) fn commit_tree(&mut self) -> Result<(), RejectedTransaction> {
@@ -953,11 +975,10 @@ impl WindowRuntime {
 
         if !self.tx.is_empty() {
             let tx = std::mem::replace(&mut self.tx, self.tree.transaction()).finish();
-            let (receipt, mut delta) = self.tree.apply(tx)?;
+            let (receipt, delta) = self.tree.apply(tx)?;
             self.transaction_count = self.transaction_count.checked_add(1).expect("transaction count exhausted");
             self.tx = self.tree.transaction();
-            drop(delta.take_retired_assets());
-            self.pending.merge(delta);
+            self.merge_delta(delta);
             self.activate(receipt);
         }
         if let Some((node, update)) = editor_update {
@@ -967,6 +988,11 @@ impl WindowRuntime {
     }
 
     fn activate(&mut self, receipt: TreeReceipt) {
+        for (scope, pending) in self.work.created.drain(..) {
+            if let Some(node) = receipt.node(pending) {
+                self.node_scopes.insert(node, scope);
+            }
+        }
         let resolve = |node: &mut NodeRef| {
             if let NodeRef::Pending(pending) = *node
                 && let Some(id) = receipt.node(pending)
@@ -1008,7 +1034,16 @@ impl WindowRuntime {
     }
 
     pub(crate) fn apply(&mut self, op: RuntimeOp) {
-        let mut delta = self.tree.apply_runtime(op);
+        let delta = self.tree.apply_runtime(op);
+        self.merge_delta(delta);
+    }
+
+    fn merge_delta(&mut self, mut delta: TreeDelta) {
+        for retired in &delta.retired {
+            if let RetiredNode::Destroyed(node) = retired {
+                self.node_scopes.remove(node);
+            }
+        }
         drop(delta.take_retired_assets());
         self.pending.merge(delta);
     }

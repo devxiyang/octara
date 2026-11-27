@@ -5,6 +5,7 @@ use octara_model::motion::{TextReveal, TextRevealKind, TextRevealTrack};
 use octara_model::paint::{DisplayList, Image, Item, Quad, Shadow};
 use octara_model::theme::{Color, Gradient, rgb};
 use octara_render::gpu::{FrameInput, FrameTarget, OutputColor};
+use octara_render::plan::{TargetInfo, TextFramePlanner};
 use octara_render::{CpuRenderer, wgpu};
 
 #[test]
@@ -152,6 +153,20 @@ fn minified_atlas_images_keep_premultiplied_mips_and_isolated_edges() {
 #[test]
 fn glyph_pipeline_matches_a_sampled_text_reveal() {
     let Some(mut gpu) = gpu_or_skip() else { return };
+    let scale = 1.25;
+    let extent = [110, 43];
+    let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
+        label: Some("text reveal metrics parity"),
+        size: wgpu::Extent3d { width: extent[0], height: extent[1], depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let max_texture_dimension = gpu.device().limits().max_texture_dimension_2d;
+    let mut planner = TextFramePlanner::new(TargetInfo { extent, scale, max_texture_dimension, copyable: false, encode_output: false });
     let tint = rgb(0x4789f8);
     let gradient = TextRevealKind::Gradient { trail_bytes: 6, tint: Some(tint.into()), glide_bytes_per_sec: 12.0 };
     let fade = TextRevealKind::Fade { duration_secs: 1.75 };
@@ -164,7 +179,15 @@ fn glyph_pipeline_matches_a_sampled_text_reveal() {
         run.colors = Some(colors.into());
         assert!(std::sync::Arc::ptr_eq(&positions, &run.glyphs));
         let dl = list((88.0, 34.0), Color::TRANSPARENT, [Item::Glyphs(run)]);
-        compare(name, &CpuRenderer::new().render(&dl, 1.25), &gpu.render(&dl, 1.25));
+        let planned = planner.measure(&dl).unwrap();
+        let encoder = gpu.device().create_command_encoder(&Default::default());
+        let input = FrameInput { list: &dl, scale, sample: None };
+        let target = FrameTarget { texture: &target, color: OutputColor::Linear };
+        let (frame, profile) = gpu.record(encoder, target, input, Some(Box::new(|_| {}))).unwrap();
+        assert_eq!(planned.draw_calls, profile.unwrap().draw_batches as usize);
+        assert_eq!(planned.uploaded_bytes, frame.upload_bytes());
+        frame.submit();
+        compare(name, &CpuRenderer::new().render(&dl, scale), &gpu.render(&dl, scale));
     }
 }
 

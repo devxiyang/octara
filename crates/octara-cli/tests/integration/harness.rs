@@ -90,6 +90,18 @@ fn check_inspect_and_run_the_declared_counter() {
     assert_eq!(replies[1].delivery, Delivery::Refused);
 }
 
+#[test]
+fn audit_runs_the_declared_counter_headlessly() {
+    let output = counter(&["audit", "--json", "--size", "390x844", "--theme", "dark"]).output().unwrap();
+    let report: serde_json::Value = serde_json::from_str(&success(output)).unwrap();
+    assert_eq!(report["schema"], "octara.audit/1");
+    assert_eq!(report["clean"], true, "{report}");
+    let windows = report["windows"].as_array().unwrap();
+    assert_eq!(windows.len(), 1);
+    assert_eq!(windows[0]["title"], "Octara — counter");
+    assert_eq!(windows[0]["findings"], serde_json::json!([]));
+}
+
 #[cfg(unix)]
 #[test]
 fn the_declared_entry_compiles_with_the_native_inspection_bridge() {
