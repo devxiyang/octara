@@ -12,6 +12,7 @@ mod style;
 mod tests;
 mod text;
 mod tooltip;
+mod tuple;
 
 pub use behavior::Behavior;
 pub use control::{keyed, keyed_or_else, scope, scoped, show};
@@ -105,6 +106,12 @@ impl View {
 pub trait IntoView: Sized {
     fn into_view(self) -> View;
 
+    #[doc(hidden)]
+    #[inline(always)]
+    fn append_to<C>(self, parent: &mut El<C>) {
+        parent.push_child(self.into_view());
+    }
+
     /// Attaches provenance at an ordinary Rust component boundary.
     #[doc(hidden)]
     fn with_component(self, _component: Component) -> Self {
@@ -156,6 +163,13 @@ impl<V: IntoView> IntoView for Option<V> {
         self.map_or_else(View::empty, IntoView::into_view)
     }
 
+    #[inline]
+    fn append_to<C>(self, parent: &mut El<C>) {
+        if let Some(view) = self {
+            view.append_to(parent);
+        }
+    }
+
     fn with_component(self, component: Component) -> Self {
         self.map(|view| view.with_component(component))
     }
@@ -176,6 +190,9 @@ impl IntoView for () {
     fn into_view(self) -> View {
         View::empty()
     }
+
+    #[inline(always)]
+    fn append_to<C>(self, _: &mut El<C>) {}
 }
 
 pub(crate) fn mount_children(

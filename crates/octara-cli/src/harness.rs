@@ -177,8 +177,8 @@ fn dependency(d: &serde_json::Value, sibling: Option<&str>) -> String {
     format!("{{ {} }}", parts.join(", "))
 }
 
-/// The `[profile.*]` sections of a manifest, verbatim: the harness compiles dependencies the way
-/// the app's workspace does, so their builds are reused.
+/// Copy the workspace's `[profile.*]` tables verbatim into the generated manifest.
+/// Cargo evaluates package overrides in the harness workspace, where the app is a dependency.
 fn profiles(manifest: &str) -> String {
     let mut out = String::new();
     let mut inside = false;
@@ -376,7 +376,10 @@ mod tests {
 
     #[test]
     fn profiles_are_taken_verbatim() {
-        let manifest = "[workspace]\nmembers = []\n\n[profile.dev.package.\"*\"]\nopt-level = 2\n\n[dependencies]\nx = 1\n";
-        assert_eq!(profiles(manifest), "[profile.dev.package.\"*\"]\nopt-level = 2\n\n");
+        let dev = "[profile.dev.package.\"*\"]\nopt-level = 1\n\n";
+        let app_override = "[profile.dev.package.\"my-app:0.1.0\"]\nopt-level = 3\n\n";
+        let test = "[profile.test.package.\"*\"]\nopt-level = 1\n";
+        let manifest = format!("[workspace]\nmembers = []\n\n{dev}{app_override}[workspace.dependencies]\nserde = \"1\"\n\n{test}");
+        assert_eq!(profiles(&manifest), format!("{dev}{app_override}{test}"));
     }
 }

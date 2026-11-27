@@ -2,9 +2,9 @@
 
 mod store;
 mod tw;
+mod ui;
 
 use proc_macro::TokenStream;
-use quote::quote;
 use syn::{DeriveInput, ItemFn, LitStr, parse_macro_input};
 
 /// Compiles a string of whitespace-separated style utilities into an Octara `TwStyle`.
@@ -31,30 +31,8 @@ pub fn tw(input: TokenStream) -> TokenStream {
 /// components need no context. The function keeps its return type and runs synchronously.
 #[proc_macro_attribute]
 pub fn ui(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let mut function = parse_macro_input!(item as ItemFn);
-    if !attr.is_empty() {
-        return syn::Error::new_spanned(&function.sig.ident, "`#[ui]` takes no arguments").into_compile_error().into();
-    }
-    if let Some(asynchronous) = function.sig.asyncness {
-        return syn::Error::new_spanned(asynchronous, "a UI component builds its view synchronously").into_compile_error().into();
-    }
-    if !function.attrs.iter().any(|attr| attr.path().is_ident("track_caller")) {
-        function.attrs.push(syn::parse_quote!(#[track_caller]));
-    }
-    let name = &function.sig.ident;
-    let body = function.block;
-    function.block = syn::parse_quote!({
-        let __octara_result = (|| #body)();
-        ::octara::view::IntoView::with_component(
-            __octara_result,
-            ::octara::view::Component {
-                name: ::core::stringify!(#name),
-                module: ::core::module_path!(),
-                at: ::core::panic::Location::caller(),
-            },
-        )
-    });
-    quote!(#function).into()
+    let function = parse_macro_input!(item as ItemFn);
+    ui::expand(function, !attr.is_empty()).unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
 /// Generates a reactive accessor for every named field of a struct.

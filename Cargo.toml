@@ -103,7 +103,9 @@ octara-runtime = { path = "crates/octara-runtime", version = "0.0.7" }
 octara-svg = { path = "crates/octara-svg", version = "0.0.7" }
 octara-tree = { path = "crates/octara-tree", version = "0.0.7" }
 
-# Dependencies (Parley's shaping above all) are optimized even in dev builds, so debug tests
-# that lay out thousands of texts stay fast; workspace crates keep fast debug builds.
+# Enable basic optimization for non-workspace dependencies. Members use the profile defaults.
 [profile.dev.package."*"]
-opt-level = 2
+opt-level = 1
+
+[profile.test.package."*"]
+opt-level = 1

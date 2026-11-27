@@ -6,29 +6,42 @@ Octara 用普通 Rust 函数组合视图。应用持有响应式状态和窗口�
 
 构造函数接收 `BuildCx` 来创建状态。动态属性接收 `ReadCx` 来跟踪读取。事件处理器接收 `WriteCx` 来更新状态或排队请求。纯展示组件可以直接返回 `El`。用 `El::select_none()` 关闭按钮标签等界面文字的文本选择。
 
+用短小的 `#[ui]` 函数表达组件的用途，方便在检查结果中追踪组件来源。把角色、可访问名称和事件处理器放在实际操作的节点上。将静态样式写成 `const STYLE: TwStyle = tw!(...)`，再用 `.tw(STYLE)` 应用。`tw!` 会在编译时检查样式类。
+
+一组固定的子节点用 `.child((a, b, c))`。元组成员可以是不同的 `IntoView` 类型。一组同类型的子节点用 `.children(iter)`，可直接传入数组或迭代器。
+
 ```rust
 use octara::prelude::*;
 
+const COUNTER_STYLE: TwStyle = tw!("p-4 gap-2");
+const BUTTON_STYLE: TwStyle = tw!("px-3 py-2 rounded-md bg-surface");
+
 #[ui]
-fn counter(cx: &mut BuildCx<'_>) -> El {
-    let count = cx.signal(0);
-    col()
-        .p(sp(4.0))
-        .gap(sp(2.0))
-        .child(text(move |r: &mut ReadCx<'_>| format!("Count {}", r.get(count))))
-        .child(
-            el()
-                .role(Role::Button)
-                .label("Increment")
-                .test_id("increment")
-                .focusable()
-                .select_none()
-                .on_press(move |w| w.update(count, |count| *count += 1))
-                .child("Increment"),
-        )
+fn increment_button(count: Signal<u32>) -> El {
+    el()
+        .tw(BUTTON_STYLE)
+        .role(Role::Button)
+        .label("Increment")
+        .test_id("increment")
+        .focusable()
+        .select_none()
+        .on_press(move |w| w.update(count, |count| *count += 1))
+        .child("Increment")
 }
 
-fn app() -> AppDefinition {
+#[ui]
+fn counter(cx: &mut BuildCx<'_>) -> El {
+    let count = cx.signal(0_u32);
+    col()
+        .tw(COUNTER_STYLE)
+        .child((
+            text("Counter").role(Role::Heading),
+            move |r: &mut ReadCx<'_>| format!("Count {}", r.get(count)),
+            increment_button(count),
+        ))
+}
+
+pub fn startup() -> AppDefinition {
     let options = WindowOptions {
         presentation: WindowPresentation { title: "Counter".into(), ..Default::default() },
         ..Default::default()
@@ -36,12 +49,21 @@ fn app() -> AppDefinition {
     AppDefinition::new().window(WindowDefinition::new(options, counter))
 }
 
-# let mut driver = octara_inspect::HeadlessDriver::new(Default::default());
-# let windows = app().launch(driver.app_mut(), None).unwrap();
+# let mut driver = octara_inspect::HeadlessDriver::default();
+# let windows = driver.launch(startup()).unwrap();
 # assert_eq!(windows.len(), 1);
 ```
 
-桌面可执行文件把定义交给 `octara_host_native::run_app(app())`。浏览器把定义和根元素交给 `octara_host_web::WebApp::launch`，并持有返回的 `WebApp`。一个 `WebApp` 拥有一处浏览器挂载。
+```rust
+use octara::prelude::*;
+
+#[ui]
+fn tags(labels: &[&str]) -> El {
+    row().children(labels.iter().copied().map(text))
+}
+```
+
+桌面可执行文件把定义交给 `octara_host_native::run_app(startup())`。浏览器把定义和根元素交给 `octara_host_web::WebApp::launch`，并持有返回的 `WebApp`。一个 `WebApp` 拥有一处浏览器挂载。
 
 文件放置目标通过 `El::on_file_drop` 声明。回调接收 `WriteCx` 和一组 `DroppedFile` 引用。原生宿主提供本地路径，浏览器提供文件显示名。
 
@@ -350,13 +372,20 @@ fn notes(build: &mut BuildCx<'_>, source: TextBuffer) -> El {
 
 ## 用 Inspect 验证应用
 
-在 headless 驱动和真实宿主中都可以通过 `octara.inspect/2` 发送观察与动作。先从观察结果取完整目标；节点被销毁并重建或换窗后重新观察。回执提供送达状态、当前树版本、结算状态和已提交帧。有实际呈现回执的宿主还提供已呈现帧。
+在应用库的 `Cargo.toml` 中把 `octara-inspect` 加为开发依赖。`HeadlessDriver` 可以用 `launch(startup())` 启动同一个应用定义，也可以单独打开待测界面。布局、语义和交互断言都可以在无头测试中执行。需要将原生宿主排除在测试构建之外时，把 `octara-host-native` 依赖放在独立的桌面启动包中。
+
+```toml
+[dev-dependencies]
+octara-inspect = "0.0.7"
+```
+
+在无头驱动和真实宿主中都可以通过 `octara.inspect/2` 发送观察与动作。先从观察结果取完整目标。节点被销毁并重建或换窗后重新观察。回执提供送达状态、当前树版本、结算状态和已提交帧。有实际呈现回执的宿主还提供已呈现帧。
 
 ```rust
 use octara::prelude::*;
 use octara_inspect::{HeadlessDriver, protocol::{AgentCommand, AgentRequest}};
 
-let mut driver = HeadlessDriver::new(Default::default());
+let mut driver = HeadlessDriver::default();
 let id = driver.app_mut().open_window(WindowOptions::default(), |_| {
     text("Ready").test_id("status")
 }).unwrap();
@@ -366,7 +395,14 @@ let snapshot = receipt.snapshot.unwrap();
 assert!(snapshot.nodes.iter().any(|node| node.test_id.as_deref() == Some("status")));
 ```
 
-查询当前 Rust 源码里的签名，或者让 CLI 用应用的 Cargo metadata 入口启动 headless 会话。
+CLI 通过应用库公开的 `startup` 函数启动无头会话。若包名为 `my-app`，在该包的 `Cargo.toml` 中登记入口。
+
+```toml
+[package.metadata.octara]
+entry = "my_app::startup"
+```
+
+用 `octara vocab` 查询当前 Rust 源码里的签名，用 `octara inspect` 观察窗口，用 `octara audit` 检查界面问题。
 
 ```sh
 cargo run -q -p octara-cli -- vocab BuildCx
@@ -374,7 +410,7 @@ cargo run -q -p octara-cli -- inspect --manifest-path examples/Cargo.toml --json
 cargo run -q -p octara-cli -- audit --manifest-path examples/Cargo.toml --json
 ```
 
-应用在 `[package.metadata.octara]` 的 `entry` 字段声明返回 `AppDefinition` 的公开 Rust 函数。连接已启动的应用时，把同一协议的 JSONL 请求交给 `octara run`。下例请求当前窗口列表。
+用 `octara run` 发送同一协议的 JSONL 请求。连接已启动的应用时传入 `--connect SOCKET`。下例请求当前窗口列表。
 
 ```json
 {"protocol":"octara.inspect/2","op":"list_windows"}
@@ -383,3 +419,19 @@ cargo run -q -p octara-cli -- audit --manifest-path examples/Cargo.toml --json
 从 `octara::diagnostics` 查询运行时诊断或使用 `octara explain CODE`。未结算的投影、失效目标和已经销毁的响应式句柄有各自的诊断。
 
 `octara audit` 检查已结算窗口的文本裁剪、交互控件的无障碍名称和失效的焦点目标。文本报告用 `file:line` 指向节点的定义位置。JSON 报告使用 `octara.audit/1`，按窗口列出问题及其级别、目标和源码位置。错误级问题退出码为 1。窗口无法启动、连接失败或无法完成审计时退出码为 2。只检查一扇窗口时，从 `list_windows` 回执取得 ID 后传给 `--window-id`。使用 `--connect SOCKET` 可以检查现有的宿主窗口。
+
+## 配置开发与测试构建
+
+在工作区根 `Cargo.toml` 设置 Cargo profile。下面的通配覆盖为非工作区依赖启用基础优化。工作区成员仍使用默认的 `opt-level = 0`，也可以用具名包覆盖单独调整。[Cargo profile 参考](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides)
+
+```toml
+[profile.dev.package."*"]
+opt-level = 1
+
+[profile.test.package."*"]
+opt-level = 1
+```
+
+这组设置在开发和测试构建中为文本排版和渲染依赖保留基础优化。在 macOS 上，可以用 `xcrun size -m` 分别查看测试可执行文件的 `__eh_frame` 和 `__unwind_info`，核对展开表大小。
+
+Octara CLI 将根清单的 `[profile.*]` 表复制到生成程序的独立工作区，并使用应用的 Cargo target 目录。Cargo 在生成的工作区中把应用包及其依赖作为工作区外依赖处理，因此通配覆盖也可能命中应用原来的工作区成员。具名包覆盖按 Cargo 的优先级生效。[Cargo profile 参考](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides)

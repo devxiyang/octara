@@ -478,9 +478,15 @@ macro_rules! bool_properties {
 }
 
 impl<C> El<C> {
+    /// Appends a child or a tuple of up to twelve children in order.
     pub fn child(mut self, child: impl IntoView) -> Self {
-        self.props.push_child(child.into_view());
+        child.append_to(&mut self);
         self
+    }
+
+    #[inline(always)]
+    pub(crate) fn push_child(&mut self, child: View) {
+        self.props.push_child(child);
     }
 
     pub fn children(mut self, children: impl IntoIterator<Item = impl IntoView>) -> Self {
@@ -1444,4 +1450,17 @@ pub(crate) fn build_el(
         }
     }
     node
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_tuples_use_inline_child_storage() {
+        let parent = el().child(((), Some((input(), "first")), (None::<El>, el(), ("second",))));
+        assert_eq!(parent.props.children.len(), 4);
+        assert!(!parent.props.children.spilled());
+        assert!(parent.props.children.iter().all(|child| matches!(&child.kind, super::super::Kind::Element(_))));
+    }
 }

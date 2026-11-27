@@ -5,6 +5,7 @@
 ## 编写视图和状态
 
 - 用普通 Rust 函数组合视图，通过 `AppDefinition` 和 `WindowDefinition` 指定窗口入口。单行编辑用 `input()`，多行编辑用 `textarea()`。把语义角色、标签和处理器放在实际操作的节点上。
+- 用短小的 `#[ui]` 函数命名有明确用途的组件，便于在检查结果中追踪来源。将静态样式写成 `const STYLE: TwStyle = tw!(...)`，再用 `.tw(STYLE)` 应用。用 `.child((a, b, c))` 添加一组固定子节点，元组可混合不同的 `IntoView` 类型。用 `.children(iter)` 添加同类型的子节点。
 - `BuildCx` 创建 Signal、Memo、集合和任务所需的状态。`ReadCx` 用于动态读取，`WriteCx` 用于处理器中的修改。构造时用 `cx.read(|r| …)` 做一次非订阅读取。受控控件用可复制的 `Binding<T>`，从 Signal 转换或用 `cx.binding(read, write)` 定义读写。
 - 用 `cx.persisted(key, init)` 保存需要跨进程恢复的应用状态，并声明状态 schema。为变动列表选择稳定唯一的业务 key。用 `StateList::read_only()` 开始增量派生，或用 `cx.derive_list` 从普通响应式值构造 keyed list，再用 `each` 按 key 挂载行。
 - 用 `cx.menus` 声明窗口菜单，`cx.on_chord` 注册快捷键。菜单项和快捷键可以调用同一命令。用 `El::select_none()` 关闭界面文字的文本选择。
@@ -20,7 +21,13 @@
 
 ## 验证应用
 
+在应用库的 `[dev-dependencies]` 中添加 `octara-inspect`，用 `HeadlessDriver::launch(startup())` 启动定义。为待测节点设置稳定的 `test_id`，用 `Observe` 取得目标，再发送 `Act` 并断言更新后的状态。将 `octara-host-native` 依赖放在独立的桌面启动包中，可以让应用库的测试只使用无头驱动。
+
 1. 在 Cargo 的 `[package.metadata.octara]` 中登记 `entry = "my_app::startup"`。该函数返回 `AppDefinition`。`octara check -p my-app` 检查手机和桌面尺寸、亮色和暗色下的诊断与结算。`octara inspect -p my-app --json` 启动无头宿主并观察窗口。`octara audit -p my-app --json` 检查文本裁剪、无障碍名称和焦点目标。按回执里的 `provenance.file` 和 `provenance.line` 定位问题。错误级问题退出码为 1。
 2. 用 `octara launch -p my-app --socket SOCKET --receipt FILE` 在本机启动同一个入口。选择未占用的绝对 Unix socket 路径和新的回执文件。`octara inspect --connect SOCKET --receipt FILE --json` 校验进程和构建身份。
 3. 用 `octara run` 在同一次会话中观察并操作，或通过 `--connect SOCKET` 操作已启动的宿主。每行写一个 `octara.inspect/2` 请求。先发送 `{"protocol":"octara.inspect/2","op":"list_windows"}` 或 `{"protocol":"octara.inspect/2","op":"observe"}` 查找窗口和节点。每次 `act` 都原样传回当前快照的 `target`；从节点的几何读取坐标，确认窗口和交互目标。通过 `octara vocab AgentRequest` 和 `octara vocab AgentAction` 查参数。
 4. 读取每步的 `delivery`、`progress.settled`、`committed_frame` 和 `presented_frame`。在下一条 `observe` 中核对值和焦点。收到 `STALE_TARGET` 或连接中断时先观察，再决定是否重试。用 `capture` 的 `painted` 来源核对绘制像素，用实际宿主分别验证系统输入法和呈现行为。
+
+## 配置开发与测试构建
+
+把 `[profile.dev.package."*"]` 和 `[profile.test.package."*"]` 放在工作区根 `Cargo.toml`。在两张表中设置 `opt-level = 1` 可为非工作区依赖启用基础优化，工作区成员使用默认的 `opt-level = 0`。CLI 将根清单中的 profile 表复制到生成程序的独立工作区，其中应用包也作为依赖参与构建。具名包覆盖优先于通配覆盖。[Cargo profile 参考](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides)

@@ -52,25 +52,10 @@ pub fn view(b: &mut BuildCx<'_>, chat: Chat) -> View {
             }
         },
     );
-    b.menus(|_| {
-        vec![
-            Menu { name: "File".into(), items: vec![menu_action("New Chat", "chat.new", "mod+n")] },
-            Menu {
-                name: "Chat".into(),
-                items: vec![
-                    menu_action("Focus Composer", "chat.focus_composer", "mod+l"),
-                    menu_action("Stop Answering", "chat.stop", "mod+."),
-                ],
-            },
-        ]
-    });
-    b.on_chord("mod+n".parse().unwrap(), |w| w.request_command("chat.new"));
-    b.on_chord("mod+l".parse().unwrap(), |w| w.request_command("chat.focus_composer"));
-    b.on_chord("mod+.".parse().unwrap(), |w| w.request_command("chat.stop"));
+    chat_commands(b);
     row()
         .test_id("panes")
-        .size(FULL)
-        .bg(ColorToken::Background)
+        .tw(PANES)
         .on_command("chat.new", move |w| {
             chat.new_chat(w);
             if nav.pop_to_root(w) {
@@ -89,26 +74,51 @@ pub fn view(b: &mut BuildCx<'_>, chat: Chat) -> View {
                 w.focus("composer");
             }
         })
-        .child(show(
-            move |r| !r.get(compact),
-            move |b| {
-                let pane_width = b.binding(move |r| r.get(width), move |w, next: f32| w.set(width, next.clamp(180.0, 420.0)));
-                View::fragment([
-                    sidebar(b, chat, nav).h(FULL).shrink(0.0).style_with(move |r, p| p.w(r.get(width))).into_view(),
-                    splitter(b, "panes-divider", pane_width).into_view(),
-                ])
-            },
+        .child((
+            show(move |r| !r.get(compact), move |b| desktop_sidebar(b, chat, nav, width)),
+            conversation(b, chat, nav_model, compact, toasts),
+            compact_sidebar(chat, nav, nav_model),
         ))
-        .child(conversation(b, chat, nav_model, compact, toasts))
-        .child(dialog("chat-listing", "Conversations", nav_model, DialogOptions::default(), move |b| {
-            let viewport = b.viewport();
-            sidebar(b, chat, nav)
-                .on_command("navigation.back", move |w| {
-                    nav.pop(w);
-                })
-                .style_with(move |r, p| p.h((r.get(viewport).unobscured_size().height - 128.0).max(120.0)))
-        }))
-        .into()
+        .into_view()
+}
+
+const PANES: TwStyle = tw!("size-full bg-background");
+const SIDEBAR_PANE: TwStyle = tw!("h-full shrink-0");
+
+#[ui]
+fn desktop_sidebar(b: &mut BuildCx<'_>, chat: Chat, nav: Navigator<Page>, width: Signal<f32>) -> (El, El) {
+    let pane_width = b.binding(move |r| r.get(width), move |w, next: f32| w.set(width, next.clamp(180.0, 420.0)));
+    (sidebar(b, chat, nav).tw(SIDEBAR_PANE).style_with(move |r, p| p.w(r.get(width))), splitter(b, "panes-divider", pane_width))
+}
+
+#[ui]
+fn compact_sidebar(chat: Chat, nav: Navigator<Page>, open: Binding<bool>) -> View {
+    dialog("chat-listing", "Conversations", open, DialogOptions::default(), move |b| {
+        let viewport = b.viewport();
+        sidebar(b, chat, nav)
+            .on_command("navigation.back", move |w| {
+                nav.pop(w);
+            })
+            .style_with(move |r, p| p.h((r.get(viewport).unobscured_size().height - 128.0).max(120.0)))
+    })
+}
+
+fn chat_commands(b: &mut BuildCx<'_>) {
+    b.menus(|_| {
+        vec![
+            Menu { name: "File".into(), items: vec![menu_action("New Chat", "chat.new", "mod+n")] },
+            Menu {
+                name: "Chat".into(),
+                items: vec![
+                    menu_action("Focus Composer", "chat.focus_composer", "mod+l"),
+                    menu_action("Stop Answering", "chat.stop", "mod+."),
+                ],
+            },
+        ]
+    });
+    b.on_chord("mod+n".parse().unwrap(), |w| w.request_command("chat.new"));
+    b.on_chord("mod+l".parse().unwrap(), |w| w.request_command("chat.focus_composer"));
+    b.on_chord("mod+.".parse().unwrap(), |w| w.request_command("chat.stop"));
 }
 
 fn menu_action(label: &str, id: &str, shortcut: &str) -> MenuItem {
@@ -398,75 +408,77 @@ fn thread_row(
         ))
 }
 
+const CONVERSATION: TwStyle = tw!("h-full grow basis-[0px] min-w-[0px]");
+const CONVERSATION_HEADER: TwStyle = tw!("items-center gap-2 h-[64px] shrink-0 px-4");
+const CONVERSATION_TITLE: TwStyle = tw!("font-medium text-sm grow min-w-[0px]");
+const CONVERSATION_BODY: TwStyle = tw!("relative grow basis-[0px] min-h-[0px] min-w-[0px]");
+
+#[ui]
 fn conversation(b: &mut BuildCx<'_>, chat: Chat, listing: Binding<bool>, compact: ReadSignal<bool>, toasts: ToastQueue<String>) -> El {
     let settings_open = b.signal(false);
     let choices = chat.model_choices(b);
     let no_models = choices.is_empty();
     let choices = b.list_from(choices.into_iter().map(|(id, label)| (id, Choice::new(label)))).read_only();
-    col()
-        .test_id("conversation")
-        .h(FULL)
-        .grow(1.0)
-        .basis(0.0)
-        .min_w(0.0)
-        .child(
-            row()
-                .test_id("conversation-header")
-                .align(AlignItems::Center)
-                .gap(sp(2.0))
-                .h(64.0)
-                .shrink(0.0)
-                .px(sp(4.0))
-                .child(show(
-                    move |r| r.get(compact),
-                    move |_| icon_button(icons::MENU, "Conversations").test_id("conversations").on_press(move |w| w.set(listing, true)),
-                ))
-                .child(
-                    text(move |r: &mut ReadCx<'_>| {
-                        chat.active_thread(r)
-                            .and_then(|id| r.with_row(chat.threads, &id, |t| t.map(|t| t.title.clone())))
-                            .unwrap_or_else(|| "New chat".into())
-                    })
-                    .test_id("title")
-                    .role(Role::Heading)
-                    .level(1)
-                    .text_weight(500)
-                    .text_size(FontSizeToken::Sm)
-                    .max_lines(1)
-                    .grow(1.0)
-                    .min_w(0.0),
-                )
-                .child(combobox(
-                    "model",
-                    "Model",
-                    Selection::Single(chat.model.into()),
-                    choices,
-                    ComboboxOptions::default(),
-                    move |caption| {
-                        let caption = move |r: &mut ReadCx<'_>| if no_models { "No models".into() } else { r.get(caption) };
-                        button(caption, ControlSize::Md, ButtonVariant::Secondary)
-                            .style_with(move |r, p| p.w(if r.get(compact) { 124.0 } else { 206.0 }))
-                            .min_w(0.0)
-                            .max_lines(1)
-                            .overflow_x(Overflow::Hidden)
-                            .disabled(no_models)
-                            .tooltip("Applies to the next message or regenerated answer.")
-                    },
-                    choice_row,
-                ))
-                .child(icon_button(icons::SETTINGS, "Settings").test_id("settings-open").on_press(move |w| w.set(settings_open, true))),
-        )
-        .child(
-            el().position(Position::Relative)
-                .grow(1.0)
-                .basis(0.0)
-                .min_h(0.0)
+    col().test_id("conversation").tw(CONVERSATION).child((
+        conversation_header(chat, listing, compact, settings_open, choices, no_models),
+        el().tw(CONVERSATION_BODY).child((
+            keyed(move |r| chat.active_thread(r).unwrap_or(0), move |b, thread| transcript(b, chat, *thread, compact, toasts)),
+            toast_viewport("chat-toasts", toasts).top(sp(4.0)).bottom(Length::Auto),
+        )),
+        composer(b, chat, no_models),
+        settings_dialog(chat, settings_open, choices),
+    ))
+}
+
+#[ui]
+fn conversation_header(
+    chat: Chat,
+    listing: Binding<bool>,
+    compact: ReadSignal<bool>,
+    settings_open: Signal<bool>,
+    choices: ReadList<String, Choice>,
+    no_models: bool,
+) -> El {
+    row().test_id("conversation-header").tw(CONVERSATION_HEADER).child((
+        show(
+            move |r| r.get(compact),
+            move |_| icon_button(icons::MENU, "Conversations").test_id("conversations").on_press(move |w| w.set(listing, true)),
+        ),
+        text(move |r: &mut ReadCx<'_>| {
+            chat.active_thread(r)
+                .and_then(|id| r.with_row(chat.threads, &id, |t| t.map(|t| t.title.clone())))
+                .unwrap_or_else(|| "New chat".into())
+        })
+        .test_id("title")
+        .role(Role::Heading)
+        .level(1)
+        .max_lines(1)
+        .tw(CONVERSATION_TITLE),
+        model_picker(chat, compact, choices, no_models),
+        icon_button(icons::SETTINGS, "Settings").test_id("settings-open").on_press(move |w| w.set(settings_open, true)),
+    ))
+}
+
+#[ui]
+fn model_picker(chat: Chat, compact: ReadSignal<bool>, choices: ReadList<String, Choice>, no_models: bool) -> View {
+    combobox(
+        "model",
+        "Model",
+        Selection::Single(chat.model.into()),
+        choices,
+        ComboboxOptions::default(),
+        move |caption| {
+            let caption = move |r: &mut ReadCx<'_>| if no_models { "No models".into() } else { r.get(caption) };
+            button(caption, ControlSize::Md, ButtonVariant::Secondary)
+                .style_with(move |r, p| p.w(if r.get(compact) { 124.0 } else { 206.0 }))
                 .min_w(0.0)
-                .child(keyed(move |r| chat.active_thread(r).unwrap_or(0), move |b, thread| transcript(b, chat, *thread, compact, toasts)))
-                .child(toast_viewport("chat-toasts", toasts).top(sp(4.0)).bottom(Length::Auto)),
-        )
-        .child(composer(b, chat, no_models))
-        .child(settings_dialog(chat, settings_open, choices))
+                .max_lines(1)
+                .overflow_x(Overflow::Hidden)
+                .disabled(no_models)
+                .tooltip("Applies to the next message or regenerated answer.")
+        },
+        choice_row,
+    )
 }
 
 fn settings_dialog(chat: Chat, open: Signal<bool>, choices: ReadList<String, Choice>) -> View {
@@ -957,6 +969,12 @@ fn stream_text(b: &mut BuildCx<'_>, source: impl Fn(&mut ReadCx<'_>) -> String +
     buffer
 }
 
+const COMPOSER_AREA: TwStyle = tw!("w-full max-w-[800px] self-center shrink-0 px-4 pb-4 gap-2");
+const COMPOSER_PANEL: TwStyle = tw!("gap-2 p-3 rounded-2xl border border-border bg-background");
+const COMPOSER_TOOLBAR: TwStyle = tw!("items-center gap-2");
+const SEND_BUTTON: TwStyle = tw!("bg-accent text-accent-text hover:bg-accent-hover hover:text-accent-text rounded-full");
+
+#[ui]
 fn composer(b: &mut BuildCx<'_>, chat: Chat, no_models: bool) -> El {
     let composer = MarkdownComposer::bind(b, chat.draft);
     let input = editor_style(textarea())
@@ -988,103 +1006,79 @@ fn composer(b: &mut BuildCx<'_>, chat: Chat, no_models: bool) -> El {
             _ => {}
         },
     );
-    col()
-        .test_id("composer-area")
-        .on_file_drop(move |w, files| chat.attach_dropped(w, files))
-        .w(FULL)
-        .max_w(800.0)
-        .align_self(AlignItems::Center)
-        .shrink(0.0)
-        .px(sp(4.0))
-        .pb(sp(4.0))
-        .gap(sp(2.0))
-        .child(keyed(
-            move |r| chat.active_thread(r).unwrap_or(0),
-            move |b, thread| {
-                let thread = *thread;
-                let queue = chat.queue.read_only().filter(b, move |q| q.thread == thread);
-                col().gap(sp(2.0)).max_h(168.0).overflow_y(Overflow::Scroll).child(each(queue, move |b, id, q| queued_row(b, chat, *id, q)))
-            },
-        ))
-        .child(show(
+    col().test_id("composer-area").on_file_drop(move |w, files| chat.attach_dropped(w, files)).tw(COMPOSER_AREA).child((
+        keyed(move |r| chat.active_thread(r).unwrap_or(0), move |b, thread| queued_messages(b, chat, *thread)),
+        show(
             move |r| !chat.has_model(r),
             move |_| {
                 text(if no_models { "No models available. Your draft is kept." } else { "Choose a model to send. Your draft is kept." })
                     .test_id("model-status")
                     .role(Role::Status)
                     .live(Live::Polite)
-                    .text_size(FontSizeToken::Xs)
-                    .text_color(ColorToken::TextMuted)
+                    .tw(tw!("text-xs text-muted"))
             },
-        ))
-        .child(
-            col()
-                .gap(sp(2.0))
-                .p(sp(3.0))
-                .rounded(RadiusToken::Xl2)
-                .border(1.0)
-                .border_color(ColorToken::Border)
-                .bg(ColorToken::Background)
-                .child(show(
-                    move |r| r.get(chat.editing).is_some(),
-                    move |_| {
-                        row().align(AlignItems::Center).child(text("Editing message").grow(1.0).text_size(FontSizeToken::Sm)).child(
-                            button("Cancel edit", ControlSize::Sm, ButtonVariant::Ghost)
-                                .test_id("cancel-edit")
-                                .on_press(move |w| chat.cancel_edit(w)),
-                        )
-                    },
-                ))
-                .child(show(
-                    move |r| r.len(chat.files) > 0,
-                    move |_| {
-                        row().gap(sp(1.0)).wrap(FlexWrap::Wrap).child(each(chat.files, move |b, id, file| {
-                            let id = *id;
-                            let name = b.read(|r| r.with(file, |file| file.name.clone()));
-                            removable_chip(b, &name, |remove| {
-                                remove.test_id(format!("remove-file-{id}")).on_press(move |w| chat.detach(w, id))
-                            })
-                            .test_id(format!("file-{id}"))
-                        }))
-                    },
-                ))
-                .child(input)
-                .child(
-                    row()
-                        .align(AlignItems::Center)
-                        .gap(sp(2.0))
-                        .child(
-                            icon_button(icons::PAPERCLIP, "Attach files")
-                                .test_id("attach")
-                                .tooltip("Choose files or drop them on the composer. File contents stay on this device.")
-                                .on_press(move |w| attach_files(chat, w)),
-                        )
-                        .child(
-                            text("@ mentions · / commands · Enter to send").text_size(FontSizeToken::Xs).text_color(ColorToken::TextMuted),
-                        )
-                        .child(spacer().grow(1.0))
-                        .child(show(
-                            move |r| chat.active_thread(r).is_some_and(|id| chat.is_answering(r, id)),
-                            move |_| {
-                                icon_button(icons::SQUARE, "Stop").test_id("stop").on_press(move |w| {
-                                    if let Some(thread) = w.get(chat.current) {
-                                        chat.stop(w, thread);
-                                    }
-                                })
-                            },
-                        ))
-                        .child(
-                            icon_button(icons::ARROW_UP, "Send")
-                                .test_id("send")
-                                .bg(ColorToken::Accent)
-                                .text_color(ColorToken::AccentText)
-                                .when(State::HOVER, |p| p.bg(ColorToken::AccentHover).text_color(ColorToken::AccentText))
-                                .rounded(Radius::Full)
-                                .disabled(move |r: &mut ReadCx<'_>| !chat.can_send(r))
-                                .on_press(move |w| chat.send(w)),
-                        ),
-                ),
-        )
+        ),
+        col().tw(COMPOSER_PANEL).child((
+            show(move |r| r.get(chat.editing).is_some(), move |_| edit_banner(chat)),
+            show(move |r| r.len(chat.files) > 0, move |_| attachments(chat)),
+            input,
+            composer_toolbar(chat),
+        )),
+    ))
+}
+
+const QUEUED_MESSAGES: TwStyle = tw!("gap-2 max-h-[168px] overflow-y-scroll");
+const ATTACHMENTS: TwStyle = tw!("gap-1 flex-wrap");
+
+#[ui]
+fn queued_messages(b: &mut BuildCx<'_>, chat: Chat, thread: ThreadId) -> El {
+    let queue = chat.queue.read_only().filter(b, move |q| q.thread == thread);
+    col().tw(QUEUED_MESSAGES).child(each(queue, move |b, id, q| queued_row(b, chat, *id, q)))
+}
+
+#[ui]
+fn edit_banner(chat: Chat) -> El {
+    row().tw(tw!("items-center")).child((
+        text("Editing message").tw(tw!("grow text-sm")),
+        button("Cancel edit", ControlSize::Sm, ButtonVariant::Ghost).test_id("cancel-edit").on_press(move |w| chat.cancel_edit(w)),
+    ))
+}
+
+#[ui]
+fn attachments(chat: Chat) -> El {
+    row().tw(ATTACHMENTS).child(each(chat.files, move |b, id, file| {
+        let id = *id;
+        let name = b.read(|r| r.with(file, |file| file.name.clone()));
+        removable_chip(b, &name, |remove| remove.test_id(format!("remove-file-{id}")).on_press(move |w| chat.detach(w, id)))
+            .test_id(format!("file-{id}"))
+    }))
+}
+
+#[ui]
+fn composer_toolbar(chat: Chat) -> El {
+    row().tw(COMPOSER_TOOLBAR).child((
+        icon_button(icons::PAPERCLIP, "Attach files")
+            .test_id("attach")
+            .tooltip("Choose files or drop them on the composer. File contents stay on this device.")
+            .on_press(move |w| attach_files(chat, w)),
+        text("@ mentions · / commands · Enter to send").tw(tw!("text-xs text-muted")),
+        spacer().grow(1.0),
+        show(
+            move |r| chat.active_thread(r).is_some_and(|id| chat.is_answering(r, id)),
+            move |_| {
+                icon_button(icons::SQUARE, "Stop").test_id("stop").on_press(move |w| {
+                    if let Some(thread) = w.get(chat.current) {
+                        chat.stop(w, thread);
+                    }
+                })
+            },
+        ),
+        icon_button(icons::ARROW_UP, "Send")
+            .test_id("send")
+            .tw(SEND_BUTTON)
+            .disabled(move |r: &mut ReadCx<'_>| !chat.can_send(r))
+            .on_press(move |w| chat.send(w)),
+    ))
 }
 
 fn chat_completions(query: &TriggerQuery) -> Vec<Completion> {

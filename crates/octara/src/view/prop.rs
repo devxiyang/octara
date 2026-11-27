@@ -54,7 +54,8 @@ impl<T, U: Into<T>, F: FnMut(&mut ReadCx<'_>) -> U + 'static> IntoProp<T> for F 
 
 impl<T, U: Clone + Into<T> + 'static> IntoProp<T> for Signal<U> {
     fn into_prop(self) -> Prop<T> {
-        bind(move |r| r.get(self).into())
+        // Share the boxed reader with ReadSignal<U> for the same target type.
+        self.read_only().into_prop()
     }
 }
 
