@@ -3,10 +3,10 @@ name: octara
 description: "Build and change native or browser UI with the Octara Rust framework: elements, styles, state, lists, input, motion, async work, headless tests and diagnostics. Use whenever code uses the `octara` crates (`use octara::prelude::*`), the task touches Octara views or tests, or an Octara diagnostic code (such as STALE_TARGET or LAYOUT_LOOP) appears."
 license: MIT OR Apache-2.0
 metadata:
-  octara-version: "0.0.8"
+  octara-version: "0.0.9"
 ---
 
-# Build and verify apps with Octara 0.0.8
+# Build and verify apps with Octara 0.0.9
 
 Read the [Getting Started guide for this version](references/start-here.md). `octara vocab` lists the prelude, and `octara vocab <name>` shows signatures, import paths, and definitions from the app’s source dependencies. `octara explain <code>` explains diagnostics. `octara skill install` generates an [API index organized by module](references/api/index.md).
 
@@ -21,6 +21,7 @@ Read the [Getting Started guide for this version](references/start-here.md). `oc
 - Use `octara::module` for typed platform calls. Add the optional packages your app needs and register them with `AppDefinition::with_module`. With `octara-webview`, mount pages using `octara_webview::view` and use typed commands and events for navigation and JavaScript. Use `octara-video` for playback, `octara-picker` for file selection such as `PickFiles`, and `octara-haptics` for haptic feedback. Use each package’s `mock()` for headless tests and disable default features to omit platform bindings.
 - Before packaging, set manifest variables in the app’s `octara.toml` and run `octara modules merge` with a new output directory. The CLI reads declarative `octara-module.toml` files from dependencies to generate Apple plists, entitlements, and framework lists, plus Web headers. The Apple baselines are macOS 15.4 and iOS 18.4.
 - Numeric style values are logical pixels. `sp(2.0)` uses theme spacing. Use `FontSizeToken`, `ColorToken`, and `Radius` for theme values and shapes.
+- Use `.on_gesture(...)` for named gestures, `.scroll_dismisses_keyboard(...)` for touch scrollports, and `PullToRefresh` when a downward drag should initiate a refresh. Set keyboard traits on `TextInput` for iOS and Web. Set `.text_direction(...)` when a subtree needs a direction override and use logical spacing helpers to follow that direction.
 - Set button size and emphasis with `octara_kit::button(label, size, variant)`. For custom controls, use themed styles from `octara_kit::parts` and behavior from `octara_kit::headless`. Call `build.provide(KitLocale::zh_cn())` to give Kit controls in that scope Simplified Chinese labels.
 - Use `headless::Choice` for options and `headless::Selection` for single or multiple selection. Configure the list with `PickerOptions` and a row factory, and configure the popup with `PopupOptions`. `ComboboxOptions` combines list, popup, and input settings.
 - Use `markdown_with(build, source, MarkdownConfig::chat())` to customize Markdown parsing, layout, links, and code blocks. Provide an `Arc<dyn MarkdownRenderer>` in scope to share a renderer across `markdown(build, source)` calls. `TextBuffer` supports incremental appends, and the block cache preserves nodes and selections.
@@ -35,7 +36,7 @@ In one workspace, expose `startup() -> AppDefinition` from the `my-app` library 
 ```toml
 [dependencies]
 my-app = { path = "../my-app" }
-octara-host-native = "0.0.8"
+octara-host-native = "0.0.9"
 ```
 
 Use `cargo test -p my-app` to test the app library on its own. `HeadlessDriver::launch(startup())` launches the app definition with the layout pipeline and CPU renderer. Use `cargo tree -p my-app` to check for native test dependencies such as `octara-host-native`, `octara-gpu`, `wgpu`, or `objc2`. [Cargo tree reference](https://doc.rust-lang.org/cargo/commands/cargo-tree.html)
@@ -46,6 +47,8 @@ Give test nodes a stable `test_id`. Send `Observe` to get a target, then `Act` a
 2. Use `octara launch -p my-app --socket SOCKET --receipt FILE` to launch the same entry point in a native window. Choose an unused absolute Unix socket path and a new receipt file. Use `octara inspect --connect SOCKET --receipt FILE --json` to verify the process and build identity.
 3. Use `octara run` to observe and act in one session, or pass `--connect SOCKET` to control a running host. Write one `octara.inspect/2` request per line. Start with `{"protocol":"octara.inspect/2","op":"list_windows"}` or `{"protocol":"octara.inspect/2","op":"observe"}` to locate windows and nodes. In each `act`, pass the current snapshot’s `target` verbatim. Use the node’s geometry for coordinates and verify the window and interaction target. Look up the arguments with `octara vocab AgentRequest` and `octara vocab AgentAction`.
 4. Check `delivery`, `progress.settled`, `progress.committed_frame`, and `progress.presented_frame` after each action. Verify the value and focus with the next `observe`. If you get `STALE_TARGET` or the connection drops, observe again before deciding whether to retry. Use the `painted` capture source to verify rendered pixels, and test system input methods and presentation in the actual host.
+
+On Apple platforms, `CADisplayLink` paces native presentation at the available display rate. The generated iOS plist opts into ProMotion unless the app overrides it. Compatible scroll frames reuse retained GPU instances and transfer small spatial updates. Small damage can be redrawn in the backing texture before presentation. Use `octara audit` to request the accessibility projection. For timing work, record the input and display rates separately and use Release builds.
 
 ## Configure development and test builds
 

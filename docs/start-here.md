@@ -1,4 +1,4 @@
-# Build interfaces with Octara 0.0.8
+# Build interfaces with Octara 0.0.9
 
 Octara composes views with ordinary Rust functions. The app owns reactive state and the window tree. The host projects the tree into a native window or the browser DOM. The Apple deployment baselines are macOS 15.4 and iOS 18.4. `cargo test -p octara-cli --doc` compiles and runs the Rust examples marked for doctesting.
 
@@ -359,6 +359,16 @@ Set `.keyboard_type(...)`, `.return_key(...)`, `.content_type(...)`, `.autocapit
 
 Direction defaults to the host locale and inherits along logical parents. Set `.text_direction(Direction::Rtl)` for a right-to-left subtree. Use `.ms(...)` and `.me(...)` for inline margins, `.ps(...)` and `.pe(...)` for inline padding, and `.start(...)` and `.end(...)` for inline insets. Read `build.system_preferences()` to follow changes in locale, text scale, and contrast.
 
+## Verify native frame pacing and scroll rendering
+
+The Apple hosts use `CADisplayLink` to pace active windows at a rate chosen for the current display. Input can update the next frame while the current frame is on the GPU. Octara presents completed frames in order and applies their native view placements in the same presentation transaction. The clock pauses when the window settles.
+
+The iOS output of `octara modules merge` enables ProMotion through `CADisableMinimumFrameDurationOnPhone` by default and preserves an explicit app value. The display and system determine the available refresh rate.
+
+Native scrollports retain the layout, text, and drawing data of unchanged children. Compatible GPU frames update the spatial offsets and reuse their instance buffers. For a small changed region in a compatible frame, the renderer redraws that region in a persistent backing texture before presenting the complete image. The native accessibility projection starts when the platform or an Inspect audit requests it.
+
+Use `octara inspect` to check committed and presented frame revisions separately. Use `octara audit` for accessible names, focus targets, and clipped text. To measure scroll and list-update work in the Octara checkout, run `cargo run --release -p octara-examples --bin scroll_bench -- 120`. That argument selects the benchmark input rate. Measure presentation with the native host and a display that supports the refresh rate you want to verify.
+
 ## Customize streaming Markdown
 
 Add `octara-markdown` and use `markdown(build, source)` to render a string, reactive read, or `TextBuffer`. Use `markdown_stream` for model output and update the completion signal when input ends. The buffer then drains and the document switches to a full parse. If the upstream producer already batches deltas, disable the extra pacing buffer with `StreamingOptions::pace` while keeping stream filtering and text reveal effects. During incremental appends, completed blocks reuse their syntax trees and mounted nodes.
@@ -406,10 +416,10 @@ Make the app library and desktop launcher members of the same workspace. Expose 
 
 ```toml
 [dependencies]
-octara = "0.0.8"
+octara = "0.0.9"
 
 [dev-dependencies]
-octara-inspect = "0.0.8"
+octara-inspect = "0.0.9"
 ```
 
 The sibling `my-app-desktop/Cargo.toml` depends on the app library and native host. Call `octara_host_native::run_app(my_app::startup())` from the desktop package’s `src/main.rs`.
@@ -417,7 +427,7 @@ The sibling `my-app-desktop/Cargo.toml` depends on the app library and native ho
 ```toml
 [dependencies]
 my-app = { path = "../my-app" }
-octara-host-native = "0.0.8"
+octara-host-native = "0.0.9"
 ```
 
 Use `cargo test -p my-app` to run headless tests for the app library on its own. Use `HeadlessDriver::launch(startup())` to launch the same app definition or open a single view for testing. The driver uses `octara-pipeline` for layout and semantics and the `octara-render` CPU renderer for painted screenshots. Use `cargo tree -p my-app` to check for dependencies such as `octara-host-native`, `octara-gpu`, `wgpu`, and `objc2`. Building the app library by itself keeps desktop dependency features out of the test build. [Cargo tree reference](https://doc.rust-lang.org/cargo/commands/cargo-tree.html) · [Cargo feature resolution](https://doc.rust-lang.org/cargo/reference/resolver.html#features)

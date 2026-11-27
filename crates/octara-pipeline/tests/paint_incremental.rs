@@ -50,7 +50,7 @@ fn a_large_scene_reuses_resting_siblings_during_edit_scroll_and_blink() {
     );
     tx.place(root, 576, scroll);
     let mut rows = Vec::new();
-    for index in 0..160 {
+    for index in 0..224 {
         let row = tx.create(NodeSpec::new(NodeContent::Text(format!("Row {index}").into())));
         tx.change(row, style([StyleProp::Height(Length::Px(20.0)), StyleProp::Shrink(0.0), fill()]));
         tx.place(scroll, index, row);

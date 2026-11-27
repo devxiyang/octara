@@ -1,4 +1,4 @@
-# Octara 0.0.8
+# Octara 0.0.9
 
 Build native and Web interfaces in Rust. Explicit capability contexts let you compose views and update state. Native hosts render on the GPU, and the Web host projects views into the DOM. Use the same target and editor session protocol to test interactions, track frame progress, and replay failures.
 
@@ -39,7 +39,7 @@ On a Mac with the iOS Simulator SDK and the matching Rust target, check the nati
 IPHONEOS_DEPLOYMENT_TARGET=18.4 cargo check --target aarch64-apple-ios-sim -p octara-host-native
 ```
 
-Preflight all 23 publishable Octara 0.0.8 crates together. Cargo resolves internal dependencies in the release batch and builds from the unpacked archives.
+Preflight all 23 publishable Octara 0.0.9 crates together. Cargo resolves internal dependencies in the release batch and builds from the unpacked archives.
 
 ```sh
 cargo publish --workspace --dry-run
