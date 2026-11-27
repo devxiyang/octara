@@ -1,6 +1,6 @@
 # 16 — High-Frequency System Modules & WebView Depth (`0.0.10`)
 
-> **Design premise**: Deliver the six highest-frequency application capabilities across **Tier-1 platforms (macOS, iOS, Web, Linux + Headless DST)** purely as optional first-party `modules/*` crates on top of `0.0.8`'s `octara::module` SPI and `0.0.9`'s finalized core APIs — with **zero new core crates and zero core bloat**.
+> **Design premise**: Deliver the six highest-frequency application capabilities across **Tier-1 platforms (macOS 15.4+, iOS 18.4+, Web, Linux + Headless DST)** purely as optional first-party `modules/*` crates on top of `0.0.8`'s `octara::module` SPI and `0.0.9`'s finalized core APIs — with **zero new core crates and zero core bloat**.
 >
 > **Prerequisite**: `0.0.8` (`docs/design/v2/14-octara-module-architecture.md`) and `0.0.9` (`docs/design/v2/15-four-platform-core-polish.md`) complete.
 
@@ -168,7 +168,7 @@ pub struct GlobalHotkeyPressed { pub id: String }
 - **macOS**:
   - Tray: `NSStatusBar::systemStatusBar().statusItemWithLength(...)` + `NSMenu` built from `octara::Menu`.
   - Global Hotkey: Carbon `RegisterEventHotKey` (requires zero Accessibility permissions for standard shortcuts, cleanly unregistered on `shutdown()`).
-  - Launch-at-Login: `SMAppService::mainAppService()` (macOS 13+).
+  - Launch-at-Login: `SMAppService::mainAppService()` (unconditionally available on the macOS 15.4+ baseline).
 - **Linux**:
   - Tray: D-Bus `org.kde.StatusNotifierItem` + `com.canonical.dbusmenu`.
   - Global Hotkey: `org.freedesktop.portal.GlobalShortcuts` (Wayland-safe; graceful `Unavailable` when portal is absent).
@@ -283,7 +283,7 @@ pub struct NetworkStatusChanged(pub NetworkStatus); // ModuleEvent
 Extend `modules/octara-webview` (from `0.0.8`) without breaking its core `NativeViewFactory` contract:
 1. **Data Store & Profile Isolation**:
    - Add `WebViewProfile::{Default, Persistent(String), Ephemeral}` on `WebViewProps`.
-   - On Apple `WKWebView`: map `Ephemeral` to `WKWebsiteDataStore::nonPersistentDataStore()`, `Persistent(id)` to deterministic UUID `WKWebsiteDataStore::dataStoreForIdentifier:` (macOS 14+/iOS 17+), with typed command `WebViewCommand::ClearData { kinds, since }` (`Cookies`, `Cache`, `LocalStorage`, `IndexedDb`).
+   - On Apple `WKWebView`: map `Ephemeral` to `WKWebsiteDataStore::nonPersistentDataStore()`, `Persistent(id)` to deterministic UUID `WKWebsiteDataStore::dataStoreForIdentifier:` (unconditionally available on macOS 15.4+ / iOS 18.4+), with typed command `WebViewCommand::ClearData { kinds, since }` (`Cookies`, `Cache`, `LocalStorage`, `IndexedDb`).
 2. **User Script Injection (`WKUserScript`)**:
    - Add `WebViewScript { source: Arc<str>, injection_time: ScriptInjectionTime::{DocumentStart, DocumentEnd}, main_frame_only: bool }` to `WebViewProps` (installed on `WKUserContentController` before initial navigation).
 3. **Download Interception (`WKDownloadDelegate`)**:

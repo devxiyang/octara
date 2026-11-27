@@ -1,6 +1,6 @@
 # 15 — Tier-1 Core Interaction, Accessibility, Forms, RTL & Airspace Closure (`0.0.9`)
 
-> **Design premise**: Freeze and finish every core cross-cutting UI capability across **Tier-1 platforms (macOS, iOS, Web, Linux)** before scaling out the `modules/*` ecosystem. Zero backwards-compatibility shims, zero `#[cfg(target_os)]` in native core orchestration, and 100% DST testability.
+> **Design premise**: Freeze and finish every core cross-cutting UI capability across **Tier-1 platforms (macOS 15.4+, iOS 18.4+, Web, Linux)** before scaling out the `modules/*` ecosystem. Zero backwards-compatibility shims, zero pre-15.4/18.4 Apple fallbacks, zero `#[cfg(target_os)]` in native core orchestration, and 100% DST testability.
 >
 > **Prerequisite**: `0.0.8` (`docs/design/v2/14-octara-module-architecture.md`) complete.
 

@@ -6,12 +6,14 @@
 
 ---
 
-## 1. Target Platform Priority
+## 1. Target Platform Priority & Minimum OS Baseline
 
-| Priority Tier | Platforms | Strategy |
-| --- | --- | --- |
-| **Tier 1 (Primary)** | **macOS**, **iOS**, **Web (Wasm/DOM + opt-in WebGPU)**, **Linux (Wayland/X11)** + **WebView** (`WKWebView`, `WebKitGTK`, Web `<iframe>`) | First-class feature parity, native ergonomics, accessibility, packaging, and CI gates through `0.1.0`. |
-| **Tier 2 (Deferred)** | **Windows** (`DX12`, `WebView2`, Win32/Mica), **Android** (`android-activity`, JNI, TalkBack) | Architectural seams (`RawNativeSurface::Win32`, `HostSurfaceKind::Windows`, reserved `Android` variant) kept clean with zero core lock-in; full production backends land in `0.2.0`. |
+| Priority Tier | Platforms | Minimum OS / Runtime Baseline | Strategy |
+| --- | --- | --- | --- |
+| **Tier 1 (Primary)** | **macOS**, **iOS**, **Web (Wasm/DOM + opt-in WebGPU)**, **Linux (Wayland/X11)** + **WebView** (`WKWebView`, `WebKitGTK`, Web `<iframe>`) | **macOS 15.4+**, **iOS 18.4+**, evergreen browsers (ES2022 + Wasm), modern Linux (Wayland/X11 + XDG Portal) | First-class feature parity, native ergonomics, accessibility, packaging, and CI gates through `0.1.0`. Zero pre-15.4 / pre-18.4 Apple legacy fallbacks. |
+| **Tier 2 (Deferred)** | **Windows** (`DX12`, `WebView2`, Win32/Mica), **Android** (`android-activity`, JNI, TalkBack) | Windows 11 / modern Android | Architectural seams (`RawNativeSurface::Win32`, `HostSurfaceKind::Windows`, reserved `Android` variant) kept clean with zero core lock-in; full production backends land in `0.2.0`. |
+
+> **Apple SDK Floor (`macOS 15.4+` / `iOS 18.4+`)**: `octara-cli` defaults `LSMinimumSystemVersion = 15.4` and `MinimumOSVersion = 18.4`. Unconditionally rely on modern Apple APIs (`CADisplayLink` on macOS/iOS, `WKWebsiteDataStore::dataStoreForIdentifier:`, iOS `WKUIDelegate` open-panel callback, `SMAppService`, `PHPickerViewController`, `UniformTypeIdentifiers`, `UIWindowScene`, `NWPathMonitor`) without legacy `@available` shims.
 
 ---
 
@@ -36,7 +38,7 @@
 - **Spec**: [14 — Cycle Terminology Cleanup & `octara::module` Platform Extension Architecture](v2/14-octara-module-architecture.md)
 - **Delivered / In Flight**:
   - **Wave 1 *(Complete)*:** `turn.rs` → `cycle.rs`, `TurnError` → `AppError`, `TurnReceipt` → `CycleReceipt`; full `octara::module` SPI-7 spine (`octara-model::module` + `octara-runtime::module` → `octara::module`), `HostSurface`, `ModuleDispatcher`, `ScopeId` cancellation, `HostLifecycleEvent` bus, `NativeViewFactory`/`NativeViewRegistry`, `HeadlessDriver` DST stubs, `tools/check_layers.py` plugin layer.
-  - **Wave 2 *(In Flight)*:** Extract `modules/octara-webview` (upgraded Apple `WKWebView` + Web `<iframe>` + Headless `mock()`), `modules/octara-video` (removing `objc2-web-kit`/`AVKit` from `octara-host-native`), `modules/octara-picker` (macOS/iOS `PHPicker`+`UIDocumentPicker`/Linux/Web/Headless, deleting legacy `Ask::Paths`/`ServiceRequest::PickFile`), `modules/octara-haptics`, and `octara-cli` declarative `octara-module.toml` merger.
+  - **Wave 2 *(Complete)*:** Extract `modules/octara-webview` (upgraded Apple `WKWebView` + Web `<iframe>` + Headless `mock()`), `modules/octara-video` (removing `objc2-web-kit`/`AVKit` from `octara-host-native`), `modules/octara-picker` (macOS/iOS `PHPicker`+`UIDocumentPicker`/Linux/Web/Headless, deleting legacy `Ask::Paths`/`ServiceRequest::PickFile`), `modules/octara-haptics`, and `octara-cli` declarative `octara-module.toml` merger.
 
 ---
 
