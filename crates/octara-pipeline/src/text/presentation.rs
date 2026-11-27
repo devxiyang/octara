@@ -1,6 +1,6 @@
 //! Line breaking and positioned glyph extraction from shaped paragraphs.
 
-use super::{Decoration, Document, Presentation, Run, SpanEdge, TextEngine, inline};
+use super::{Decoration, Document, PillPaint, Presentation, Run, SpanEdge, TextEngine, inline};
 use octara_model::geometry::{Point, Rect, Size};
 use octara_model::paint::Glyph;
 use octara_model::semantics::TextClip;
@@ -100,7 +100,7 @@ impl TextEngine {
                     let inline = inline::Box::at(&shape.inline, range.start);
                     let object_rect = inline.and_then(|item| {
                         let positioned = positioned.next()?;
-                        matches!(item.content, inline::Content::Attachment(_)).then(|| {
+                        (!matches!(item.content, inline::Content::Edge { .. })).then(|| {
                             Rect::new(positioned.x, positioned.y + y - metrics.block_min_coord, positioned.width, positioned.height)
                         })
                     });
@@ -196,11 +196,18 @@ impl TextEngine {
                     let rect = cluster.fragment.rect;
                     Some(SpanEdge { brush, anchor, rect: Rect { x: rect.x + shift, ..rect } })
                 }));
-                out.attachments.extend(shown.iter().filter_map(|cluster| {
-                    let inline::Content::Attachment(index) = cluster.inline?.content else { return None };
-                    let rect = cluster.object_rect?;
-                    Some((index, Rect { x: rect.x + shift, ..rect }))
-                }));
+                for cluster in shown {
+                    let Some((item, rect)) = cluster.inline.zip(cluster.object_rect) else { continue };
+                    let rect = Rect { x: rect.x + shift, ..rect };
+                    match &item.content {
+                        inline::Content::Attachment(index) => out.attachments.push((*index, rect)),
+                        inline::Content::Pill { index, label } => {
+                            let glyphs = label.as_ref().map_or_else(Vec::new, |label| self.pill_glyphs(label, rect));
+                            out.pills.push(PillPaint { index: *index, rect, glyphs });
+                        }
+                        inline::Content::Edge { .. } => {}
+                    }
+                }
                 let rect = Rect::new(align_offset, y, used_width, metrics.line_height);
                 let glyph_top = (metrics.content_block_min_coord - metrics.block_min_coord).min(rect.h).max(0.0);
                 let glyph_bottom = (metrics.content_block_max_coord - metrics.block_min_coord).min(rect.h).max(glyph_top);
@@ -250,6 +257,37 @@ impl TextEngine {
         out
     }
 
+    fn pill_glyphs(&mut self, label: &inline::PillLabel, rect: Rect) -> Vec<Run> {
+        let shape = label.shape.borrow();
+        let offset = Point::new(rect.x + label.origin.x, rect.y + label.origin.y);
+        shape
+            .layout
+            .lines()
+            .flat_map(|line| line.items())
+            .filter_map(|item| {
+                let PositionedLayoutItem::GlyphRun(run) = item else { return None };
+                // Attachment labels render with their icon and background while document text reveals.
+                let glyphs = run.positioned_glyphs().map(|glyph| Glyph { id: glyph.id, x: glyph.x, y: glyph.y, source_end: 0 }).collect();
+                Some(self.glyph_run(&run, glyphs, offset))
+            })
+            .collect()
+    }
+
+    fn glyph_run(&mut self, run: &parley::GlyphRun<'_, u16>, glyphs: Vec<Glyph>, offset: Point) -> Run {
+        let shaped = run.run();
+        let synthesis = shaped.synthesis();
+        Run {
+            font: self.face(shaped.font()),
+            size: shaped.font_size(),
+            coords: shaped.normalized_coords().iter().map(|coord| coord.to_bits()).collect(),
+            embolden: synthesis.embolden(),
+            skew: synthesis.skew().unwrap_or_default(),
+            brush: run.style().brush,
+            glyphs: glyphs.into(),
+            offset,
+        }
+    }
+
     fn extract_runs(
         &mut self,
         line: parley::Line<'_, u16>,
@@ -277,26 +315,15 @@ impl TextEngine {
                 if let Some(remaining) = (count - skip - take).checked_sub(1) {
                     glyph_ends.nth(remaining);
                 }
-                let shaped = run.run();
                 let style = run.style();
-                let synthesis = shaped.synthesis();
-                out.glyphs.push(Run {
-                    font: self.face(shaped.font()),
-                    size: shaped.font_size(),
-                    coords: shaped.normalized_coords().iter().map(|coord| coord.to_bits()).collect(),
-                    embolden: synthesis.embolden(),
-                    skew: synthesis.skew().unwrap_or_default(),
-                    brush: style.brush,
-                    glyphs: glyphs.into(),
-                    offset,
-                });
+                out.glyphs.push(self.glyph_run(&run, glyphs, offset));
                 if style.underline.is_some() || style.strikethrough.is_some() {
                     let mut glyphs = run.glyphs();
                     let leading = glyphs.by_ref().take(skip).map(|glyph| glyph.advance).sum::<f32>();
                     let width = if take == count { run.advance() } else { glyphs.take(take).map(|glyph| glyph.advance).sum() };
                     let x = run.offset() + offset.x + leading;
                     let baseline = run.baseline() + offset.y;
-                    let metrics = shaped.font_metrics();
+                    let metrics = run.run().font_metrics();
                     for (decoration, position, thickness) in [
                         (&style.underline, metrics.underline_offset, metrics.underline_size),
                         (&style.strikethrough, metrics.strikethrough_offset, metrics.strikethrough_size),

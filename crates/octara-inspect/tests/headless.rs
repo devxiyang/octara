@@ -578,11 +578,11 @@ fn text_reveal_replays_to_identical_reference_pixels() {
         driver
             .app_mut()
             .open_window(options(), |_| {
-                col().child(text("Aé • Octara").text_reveal(TextReveal {
-                    kind: TextRevealKind::Gradient { trail_bytes: 6, tint: Some(Color::WHITE.into()), glide_bytes_per_sec: 48.0 },
-                    revealed_bytes: "Aé • Octara".len(),
-                    finished: false,
-                }))
+                col().child(text("Aé • Octara").text_reveal(TextReveal::new(
+                    TextRevealKind::Gradient { trail_bytes: 6, tint: Some(Color::WHITE.into()), glide_bytes_per_sec: 48.0 },
+                    "Aé • Octara".len(),
+                    false,
+                )))
             })
             .unwrap()
     }

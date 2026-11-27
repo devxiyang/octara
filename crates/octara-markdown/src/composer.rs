@@ -4,7 +4,7 @@ mod presentation;
 
 use octara::prelude::*;
 use octara_headless::popover::PopoverState;
-use std::{ops::Range, sync::Arc};
+use std::{fmt, ops::Range, sync::Arc};
 
 /// A character that opens completion at a word boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,9 +30,12 @@ pub struct TriggerQuery {
 }
 
 /// A suggestion offered by the application for an active trigger.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Completion {
     pub label: Arc<str>,
+    pub icon: Option<Icon>,
+    pub description: Option<Arc<str>>,
+    pub category: Option<Arc<str>>,
     item: CompletionItem,
 }
 
@@ -45,12 +48,31 @@ enum CompletionItem {
 impl Completion {
     /// Inserts an inline Markdown link. Private URI schemes are styled and edited as one token.
     pub fn new(label: impl Into<Arc<str>>, destination: impl Into<Arc<str>>) -> Self {
-        Self { label: label.into(), item: CompletionItem::Link(destination.into()) }
+        Self::suggestion(label.into(), CompletionItem::Link(destination.into()))
     }
 
     /// Removes the trigger text and reports the action key to the selection callback.
     pub fn action(label: impl Into<Arc<str>>, key: impl Into<Arc<str>>) -> Self {
-        Self { label: label.into(), item: CompletionItem::Action(key.into()) }
+        Self::suggestion(label.into(), CompletionItem::Action(key.into()))
+    }
+
+    fn suggestion(label: Arc<str>, item: CompletionItem) -> Self {
+        Self { label, icon: None, description: None, category: None, item }
+    }
+
+    pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    pub fn description(mut self, description: impl Into<Arc<str>>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    pub fn category(mut self, category: impl Into<Arc<str>>) -> Self {
+        self.category = Some(category.into());
+        self
     }
 
     pub fn action_key(&self) -> Option<&str> {
@@ -183,9 +205,23 @@ impl MarkdownComposer {
         self,
         build: &mut BuildCx<'_>,
         editor: TextInput,
-        mut suggestions: impl FnMut(&mut ReadCx<'_>, &TriggerQuery) -> Vec<Completion> + 'static,
+        suggestions: impl FnMut(&mut ReadCx<'_>, &TriggerQuery) -> Vec<Completion> + 'static,
         on_complete: impl Fn(&mut WriteCx<'_>, &Completion) + 'static,
     ) -> TextInput {
+        self.editor_with_completion_row(build, editor, suggestions, on_complete, default_completion_row)
+    }
+
+    /// Builds the contents of each suggestion row from its live item and selection signals.
+    /// The composer supplies the enclosing option, keyboard navigation, and acceptance.
+    pub fn editor_with_completion_row(
+        self,
+        build: &mut BuildCx<'_>,
+        editor: TextInput,
+        mut suggestions: impl FnMut(&mut ReadCx<'_>, &TriggerQuery) -> Vec<Completion> + 'static,
+        on_complete: impl Fn(&mut WriteCx<'_>, &Completion) + 'static,
+        render_row: impl Fn(&mut BuildCx<'_>, RowSignal<Completion>, ReadSignal<bool>) -> El + 'static,
+    ) -> TextInput {
+        let render_row = Arc::new(render_row);
         let items = build.memo(move |read| read.get(self.active_trigger).map_or_else(Vec::new, |query| suggestions(read, &query)));
         let selected = build.signal(0usize);
         let pending = build.signal(None::<(String, Completion)>);
@@ -291,6 +327,7 @@ impl MarkdownComposer {
             Placement::BELOW,
             bind(move |read| read.get(self.editor).map(|state| AnchorTarget::EditorCaret(state.session.node))),
             move |_| {
+                let render_row = render_row.clone();
                 popup
                     .panel(col())
                     .labelled_by(None::<String>)
@@ -306,17 +343,18 @@ impl MarkdownComposer {
                     .border_color(ColorToken::Border)
                     .preserve_focus_on_press()
                     .child(virtual_each(rows, VirtualOptions::default(), move |build, &index, item| {
-                        let label = build.memo(move |read| read.try_with(item, |item| item.label.to_string()).unwrap_or_default());
-                        text(move |read: &mut ReadCx<'_>| read.get(label))
+                        let active = build.memo(move |read| read.get(selected) == index);
+                        row()
                             .id(option_id(index))
                             .role(Role::ListBoxOption)
-                            .label(bind(move |read| read.get(label)))
-                            .selected(bind(move |read| read.get(selected) == index))
+                            .label(move |read: &mut ReadCx<'_>| read.try_with(item, |item| item.label.clone()).unwrap_or_default())
+                            .description(move |read: &mut ReadCx<'_>| read.try_with(item, completion_description).unwrap_or_default())
+                            .selected(active)
                             .px(8.0)
                             .py(5.0)
                             .rounded(RadiusToken::Sm)
                             .bg(bind(move |read| -> ColorValue {
-                                if read.get(selected) == index { ColorToken::SurfacePressed.into() } else { Color::TRANSPARENT.into() }
+                                if read.get(active) { ColorToken::SurfacePressed.into() } else { Color::TRANSPARENT.into() }
                             }))
                             .preserve_focus_on_press()
                             .on_press(move |write| {
@@ -324,10 +362,63 @@ impl MarkdownComposer {
                                     choose(write, item);
                                 }
                             })
+                            .child(render_row(build, item, active).a11y_hidden())
                     }))
             },
         )
     }
+}
+
+fn completion_description(item: &Completion) -> Arc<str> {
+    match (&item.description, &item.category) {
+        (Some(description), Some(category)) => Arc::from(format!("{category}. {description}")),
+        (description, category) => description.as_ref().or(category.as_ref()).cloned().unwrap_or_default(),
+    }
+}
+
+#[derive(PartialEq)]
+struct CompletionIcon(Option<Icon>);
+
+impl fmt::Display for CompletionIcon {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0.as_ref().map_or("", Icon::name))
+    }
+}
+
+fn default_completion_row(_: &mut BuildCx<'_>, item: RowSignal<Completion>, _: ReadSignal<bool>) -> El {
+    row()
+        .grow(1.0)
+        .min_w(0.0)
+        .align(AlignItems::Center)
+        .gap(8.0)
+        .child(keyed(
+            move |read| CompletionIcon(read.try_with(item, |item| item.icon.clone()).flatten()),
+            |_, icon_key| icon_key.0.clone().map(|glyph| icon(glyph).size(16.0).shrink(0.0)),
+        ))
+        .child(
+            col()
+                .grow(1.0)
+                .min_w(0.0)
+                .child(text(move |read: &mut ReadCx<'_>| read.try_with(item, |item| item.label.clone()).unwrap_or_default()))
+                .child(show(
+                    move |read| read.try_with(item, |item| item.description.is_some()).unwrap_or_default(),
+                    move |_| {
+                        text(move |read: &mut ReadCx<'_>| {
+                            read.try_with(item, |item| item.description.clone()).flatten().unwrap_or_default()
+                        })
+                        .text_size(FontSizeToken::Xs)
+                        .text_color(ColorToken::TextMuted)
+                    },
+                )),
+        )
+        .child(show(
+            move |read| read.try_with(item, |item| item.category.is_some()).unwrap_or_default(),
+            move |_| {
+                text(move |read: &mut ReadCx<'_>| read.try_with(item, |item| item.category.clone()).flatten().unwrap_or_default())
+                    .text_size(FontSizeToken::Xs)
+                    .text_color(ColorToken::TextMuted)
+            },
+        ))
 }
 
 fn trigger_query(source: &str, caret: usize, triggers: &[TriggerConfig]) -> Option<TriggerQuery> {

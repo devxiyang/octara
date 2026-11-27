@@ -22,7 +22,9 @@ pub use octara_model::style::{
     AlignItems, Display, FlexDirection, FlexWrap, GridPos, JustifyContent, LayoutLength, Overflow, Position, ScrollbarVisibility,
     StyleProp, UserSelect,
 };
-pub use octara_model::text::{FontStyle, FontWeight, InlineAlign, InlineAttachment, InlineContent, RichSpan, TextAlign, Wrap as TextWrap};
+pub use octara_model::text::{
+    FontStyle, FontWeight, InlineAlign, InlineAttachment, InlineContent, InlinePill, PillStyle, RichSpan, TextAlign, Wrap as TextWrap,
+};
 pub use octara_model::theme::{
     BoxShadow, Breakpoint, Color, ColorScheme, ColorToken, ColorValue, ContainerWidthToken, Family as FontFamilyToken, Fill, FontSizeToken,
     FontWeightToken, Gradient, LeadingToken, LinearGradient, RadiusToken, ResponsiveBreakpoint, ShadowToken, TextScale, Theme, ThemePatch,

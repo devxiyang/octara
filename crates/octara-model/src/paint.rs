@@ -192,7 +192,7 @@ pub struct Glyph {
     pub id: u32,
     pub x: f32,
     pub y: f32,
-    /// End of the original UTF-8 cluster represented by this glyph.
+    /// End of the original UTF-8 cluster, or zero for independent attachment glyphs.
     pub source_end: usize,
 }
 

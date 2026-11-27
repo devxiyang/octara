@@ -843,8 +843,13 @@ fn render_part(b: &mut BuildCx<'_>, id: MessageId, part: PartId, message: Messag
                         .unwrap_or(true)
                 });
                 // Chat coalesces provider deltas before they reach the transcript.
-                markdown_stream(b, source, finished, StreamingOptions { effects: rich::REVEAL, pace: false, ..StreamingOptions::default() })
-                    .test_id(format!("text-{id}-{part}"))
+                markdown_stream(
+                    b,
+                    source,
+                    finished,
+                    StreamingOptions { effects: Some(rich::REVEAL), pace: false, ..StreamingOptions::default() },
+                )
+                .test_id(format!("text-{id}-{part}"))
             }
         }
         PartKind::Reasoning => {

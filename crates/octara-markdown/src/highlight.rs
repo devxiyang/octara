@@ -4,7 +4,8 @@ use octara::prelude::{ColorToken, Rich, Span, rich};
 
 /// A highlighter registered via `BuildCx::provide::<Arc<dyn CodeHighlighter>>`.
 pub trait CodeHighlighter: Send + Sync + 'static {
-    /// Returns one rich line per `code.split('\n')`, preserving each line verbatim.
+    /// The renderer normalizes code line endings to LF before calling this method.
+    /// Return one rich line per `code.split('\n')`, preserving each line verbatim.
     /// Return `None` to use the built-in highlighter.
     fn highlight(&self, language: &str, code: &str) -> Option<Vec<Rich>>;
 }

@@ -222,6 +222,166 @@ mod browser {
     }
 
     #[wasm_bindgen]
+    pub fn run_dom_inline_pills() -> Result<(), JsValue> {
+        use octara::prelude::*;
+        use octara_host_web::WebApp;
+        use octara_model::text::{InlinePill, PillStyle};
+        use octara_model::theme::ColorToken;
+        use web_sys::{ClipboardEvent, Event};
+
+        const LABEL: &str = "Wïffi  漢";
+        const SOURCE: &str = "源🙂";
+        let browser = web_sys::window().unwrap();
+        let document = browser.document().unwrap();
+        let body = document.body().unwrap();
+        let surface = document.create_element("div")?.dyn_into::<HtmlElement>()?;
+        surface.set_attribute("style", "width:400px;height:300px;")?;
+        body.append_child(&surface)?;
+        let app = WebApp::mount(surface.clone(), |_| {
+            let style = PillStyle {
+                size: 20.0,
+                weight: 650,
+                color: Some(ColorToken::Accent.into()),
+                background: Some(ColorToken::Surface.into()),
+                border_color: Some(ColorToken::Border.into()),
+                radius: 9.0,
+                padding_x: 6.0,
+                padding_y: 3.0,
+                gap: 5.0,
+            };
+            let icon = NodeIcon::new(&Icon::path(Path::rect(Rect::new(0.0, 0.0, 20.0, 10.0))), None);
+            let link_start = LABEL.len() + 1;
+            let linked = InlinePill { icon: Some(icon.clone()), label: LABEL.into(), style };
+            let label_only = InlinePill { icon: None, label: " \r\n ".into(), style };
+            let icon_only = InlinePill { icon: Some(icon), label: "".into(), style };
+            col()
+                .test_id("pill-region")
+                .selectable(true)
+                .theme_scope(
+                    Theme::light()
+                        .color(ColorToken::Accent, rgb(0x152637))
+                        .color(ColorToken::Surface, rgb(0xdce9fa))
+                        .color(ColorToken::Border, rgb(0x596a7b)),
+                )
+                .child(
+                    text(
+                        rich()
+                            .span(LABEL, Span { size: Some(style.size), weight: Some(style.weight), ..Default::default() })
+                            .text(" ")
+                            .link(SOURCE, "#inline-pill")
+                            .text(" tail")
+                            .attachment(linked.attachment(link_start..link_start + SOURCE.len())),
+                    )
+                    .tw(tw!("leading-[48px]"))
+                    .test_id("linked-pill"),
+                )
+                .child(
+                    text(rich().text("ab").attachment(label_only.attachment(0..1)).attachment(icon_only.attachment(1..2)))
+                        .test_id("other-pills"),
+                )
+        })?;
+        let owner = element(&surface, "linked-pill");
+        let link = owner.query_selector("a")?.expect("link wrapper");
+        let pill = link.query_selector(":scope > span[data-octara-pill]")?.expect("a single linked capsule");
+        let label = pill.query_selector("span")?.expect("pill label");
+        let icon = pill.query_selector("svg")?.expect("pill icon");
+        assert_eq!(link.get_attribute("href").as_deref(), Some("#inline-pill"));
+        assert_eq!(pill.get_attribute("data-octara-inline-source").as_deref(), Some(SOURCE));
+        assert_eq!(pill.get_attribute("aria-label").as_deref(), Some(SOURCE));
+        assert_eq!(icon.get_attribute("aria-hidden").as_deref(), Some("true"));
+        assert_eq!(label.text_content().as_deref(), Some(LABEL));
+        let style = browser.get_computed_style(&pill)?.unwrap();
+        assert_eq!(style.get_property_value("display")?, "inline-flex");
+        assert_eq!(style.get_property_value("font-size")?, "20px");
+        assert_eq!(style.get_property_value("font-weight")?, "650");
+        assert_eq!(style.get_property_value("line-height")?, "normal");
+        assert_eq!(style.get_property_value("color")?, "rgb(21, 38, 55)");
+        assert_eq!(style.get_property_value("background-color")?, "rgb(220, 233, 250)");
+        assert_eq!(style.get_property_value("border-top-left-radius")?, "9px");
+        let border = style.get_property_value("box-shadow")?;
+        assert!(border.contains("inset") && border.contains("rgb(89, 106, 123)"));
+
+        let rect = pill.get_bounding_client_rect();
+        let text_rect = label.get_bounding_client_rect();
+        assert!(text_rect.height() < 48.0);
+        let icon = icon.get_bounding_client_rect();
+        let close = |actual: f64, expected: f64| assert!((actual - expected).abs() < 0.1, "{actual} ≠ {expected}");
+        close(icon.width(), 20.0);
+        close(icon.height(), 20.0);
+        close(rect.width(), 6.0 + icon.width() + 5.0 + text_rect.width() + 6.0);
+        close(rect.height(), icon.height().max(text_rect.height()) + 6.0);
+        close(icon.left(), rect.left() + 6.0);
+        close(text_rect.left(), icon.right() + 5.0);
+        close(icon.top() + icon.height() * 0.5, rect.top() + rect.height() * 0.5);
+        close(text_rect.top() + text_rect.height() * 0.5, rect.top() + rect.height() * 0.5);
+
+        let range = document.create_range()?;
+        let reference = owner.first_element_child().expect("unboxed reference text");
+        range.select_node_contents(&reference)?;
+        let reference_text = reference.first_child().expect("reference glyphs");
+        let reference = range.get_bounding_client_rect();
+        range.select_node_contents(&label)?;
+        let glyphs = range.get_bounding_client_rect();
+        close(text_rect.width(), glyphs.width());
+        close(glyphs.top(), reference.top());
+        close(glyphs.width(), reference.width());
+
+        let other = element(&surface, "other-pills");
+        let label_only = other.query_selector("[data-octara-inline-source=a]")?.expect("label-only pill");
+        let spaces = label_only.query_selector("span")?.expect("whitespace label");
+        assert_eq!(spaces.text_content().as_deref(), Some("   "));
+        let width = spaces.get_bounding_client_rect().width();
+        assert!(width > 0.0);
+        close(label_only.get_bounding_client_rect().width(), width + 12.0);
+        let icon_only = other.query_selector("[data-octara-inline-source=b]")?.expect("icon-only pill");
+        assert_eq!(icon_only.child_nodes().length(), 1);
+        close(icon_only.get_bounding_client_rect().width(), 32.0);
+        close(icon_only.get_bounding_client_rect().height(), 26.0);
+
+        let selection = document.get_selection()?.unwrap();
+        let glyphs = label.first_child().expect("selectable glyphs");
+        selection.set_base_and_extent(&glyphs, LABEL.encode_utf16().count() as u32, &glyphs, 0)?;
+        document.dispatch_event(&Event::new("selectionchange")?)?;
+        app.with_app(|inner| {
+            let tree = inner.runtime().window(app.window_id()).unwrap().tree();
+            let region = tree.test_ids("pill-region")[0];
+            assert_eq!(tree.selected_text(region).as_deref(), Some(SOURCE));
+        })
+        .unwrap();
+        let copy =
+            Function::new_no_args("return new ClipboardEvent('copy', {clipboardData:new DataTransfer(),bubbles:true,cancelable:true});");
+        let check_copy = |expected: &str| -> Result<(), JsValue> {
+            let event = copy.call0(&JsValue::UNDEFINED)?.dyn_into::<ClipboardEvent>()?;
+            assert!(!body.dispatch_event(&event)?);
+            assert_eq!(event.clipboard_data().unwrap().get_data("text/plain")?, expected);
+            Ok(())
+        };
+        check_copy(SOURCE)?;
+        for (anchor, focus) in [(1, 4), (4, 1)] {
+            selection.set_base_and_extent(&glyphs, anchor, &glyphs, focus)?;
+            document.dispatch_event(&Event::new("selectionchange")?)?;
+            app.with_app(|inner| {
+                let tree = inner.runtime().window(app.window_id()).unwrap().tree();
+                let region = tree.test_ids("pill-region")[0];
+                let [start, end] = tree.doc_selection(region).unwrap();
+                assert_eq!(start.1 > end.1, anchor > focus);
+                assert_eq!(tree.selected_text(region).as_deref(), Some(SOURCE));
+            })
+            .unwrap();
+            check_copy(SOURCE)?;
+        }
+        selection.set_base_and_extent(&glyphs, 0, &spaces.first_child().expect("spaces"), 3)?;
+        check_copy(&format!("{SOURCE} tail\na"))?;
+        selection.set_base_and_extent(&reference_text, 0, &reference_text, 3)?;
+        let ordinary = copy.call0(&JsValue::UNDEFINED)?.dyn_into::<ClipboardEvent>()?;
+        assert!(body.dispatch_event(&ordinary)?);
+        selection.remove_all_ranges()?;
+        drop(app);
+        surface.remove();
+        Ok(())
+    }
+
+    #[wasm_bindgen]
     pub fn run_dom_text_selection() -> Result<(), JsValue> {
         use octara::prelude::*;
         use octara_host_web::WebApp;
@@ -491,7 +651,7 @@ mod browser {
             return Ok(());
         };
         assert!(previous.is_empty());
-        let reveal = TextReveal { kind: TextRevealKind::Fade { duration_secs: 0.0 }, revealed_bytes: 6, finished: false };
+        let reveal = TextReveal::new(TextRevealKind::Fade { duration_secs: 0.0 }, 6, false);
         let set = |tree: &mut Tree, reveal| {
             let mut tx = tree.transaction();
             tx.change(tree.node_ref(label), NodeChange::TextReveal(Some(reveal)));
@@ -506,6 +666,9 @@ mod browser {
         engine.set_reduced_motion(true);
         settle(&mut engine, &mut tree, TreeDelta::default());
         assert_eq!(highlighted().as_deref(), Some(""));
+        let delta = set(&mut tree, TextReveal { allow_reduced_motion: true, ..reveal });
+        settle(&mut engine, &mut tree, delta);
+        assert_eq!(highlighted().as_deref(), Some("idden"));
         engine.set_reduced_motion(false);
         settle(&mut engine, &mut tree, TreeDelta::default());
         assert_eq!(highlighted().as_deref(), Some("idden"));

@@ -4,7 +4,6 @@ use super::{BlockRef, Kind, PositionKey, RenderBlock, focus_outline, keyed_rows}
 use crate::{
     MarkdownLocale,
     slots::{BlockSlot, SlotContent, SlotRecord},
-    stream::StreamingEffects,
 };
 use octara::prelude::*;
 use octara_headless::interactive;
@@ -101,16 +100,10 @@ pub fn default_code_block(build: &mut BuildCx<'_>, block: &RenderBlock) -> El {
             let content = text(move |r: &mut ReadCx<'_>| r.try_with(line, |line| (*line.0).clone()).unwrap_or_default())
                 .min_w(0)
                 .style_with(move |r, p| p.shrink(if r.with(theme, |t| t.code_block.wrap_lines) { 1.0 } else { 0.0 }));
-            let content = if reveal.context.effects == StreamingEffects::None {
-                content
-            } else {
-                let reveal = reveal.clone();
-                content.text_reveal(move |r: &mut ReadCx<'_>| {
-                    let bytes = r.try_with(line, |value| value.0.as_str().len()).unwrap_or_default();
-                    let settled = number < r.len(lines);
-                    reveal.reveal(r, bytes, settled)
-                })
-            };
+            let content = reveal.with_reveal(content, move |r| {
+                let bytes = r.try_with(line, |value| value.0.as_str().len()).unwrap_or_default();
+                (bytes, number < r.len(lines))
+            });
             row()
                 .align(AlignItems::Start)
                 .child(show(

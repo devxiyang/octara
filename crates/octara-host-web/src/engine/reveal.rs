@@ -21,30 +21,28 @@ impl DomEngine {
         let samples = Array::new();
         let mut tracks = FxHashMap::default();
         let mut moving = false;
-        if !self.reduced_motion {
-            for (node, reveal) in tree.text_reveals() {
-                if reveal.finished {
-                    continue;
-                }
-                let Some(text) = tree.text(node) else { continue };
-                let Some(element) = self.projected_element(node) else { continue };
-                let track = TextRevealTrack::update(previous.get(&node).copied(), *reveal, now);
-                moving |= track.rest_at().is_some_and(|rest| rest > now);
-                let mut coverage = Vec::new();
-                for (start, grapheme) in text.text.grapheme_indices(true) {
-                    let opacity = (track.opacity(start + grapheme.len(), now) * 255.0).round() as u8;
-                    coverage.extend(std::iter::repeat_n(opacity, grapheme.encode_utf16().count()));
-                }
-                if coverage.iter().any(|&opacity| opacity != 255) {
-                    let sample = Array::new();
-                    sample.push(&element);
-                    sample.push(&Uint8Array::from(coverage.as_slice()));
-                    let tint = track.tint().map(|tint| crate::css::color(tint.resolve(tree.theme_at(node)).0));
-                    sample.push(&tint.map_or(JsValue::NULL, |tint| JsValue::from_str(&tint)));
-                    samples.push(&sample);
-                }
-                tracks.insert(node, track);
+        for (node, reveal) in tree.text_reveals() {
+            if reveal.finished || !reveal.enabled(self.reduced_motion) {
+                continue;
             }
+            let Some(text) = tree.text(node) else { continue };
+            let Some(element) = self.projected_element(node) else { continue };
+            let track = TextRevealTrack::update(previous.get(&node).copied(), *reveal, now);
+            moving |= track.rest_at().is_some_and(|rest| rest > now);
+            let mut coverage = Vec::new();
+            for (start, grapheme) in text.text.grapheme_indices(true) {
+                let opacity = (track.opacity(start + grapheme.len(), now) * 255.0).round() as u8;
+                coverage.extend(std::iter::repeat_n(opacity, grapheme.encode_utf16().count()));
+            }
+            if coverage.iter().any(|&opacity| opacity != 255) {
+                let sample = Array::new();
+                sample.push(&element);
+                sample.push(&Uint8Array::from(coverage.as_slice()));
+                let tint = track.tint().map(|tint| crate::css::color(tint.resolve(tree.theme_at(node)).0));
+                sample.push(&tint.map_or(JsValue::NULL, |tint| JsValue::from_str(&tint)));
+                samples.push(&sample);
+            }
+            tracks.insert(node, track);
         }
         self.pending().reveals = Some((tracks, samples));
         moving.then(|| Duration::from_secs_f64(now + 1.0 / 60.0))

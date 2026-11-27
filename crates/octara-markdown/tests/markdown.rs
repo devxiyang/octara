@@ -407,6 +407,25 @@ impl octara_markdown::CodeHighlighter for RecordingHighlighter {
 
 #[cfg(feature = "highlight")]
 #[test]
+fn markdown_highlighter_receives_normalized_code_and_keeps_mixed_line_styles() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let highlighter_calls = calls.clone();
+    let mounted = Mounted::new(HeadlessDriver::default(), move |b| {
+        b.provide::<Arc<dyn octara_markdown::CodeHighlighter>>(Arc::new(RecordingHighlighter(highlighter_calls)));
+        markdown(b, "```rust\r\nlet first = 1;\r\nsecond\rthird\nlast\r\n```").test_id("markdown")
+    });
+    let expected = ["let first = 1;", "second", "third", "last"];
+    assert_eq!(*calls.lock().unwrap(), [("rust".to_owned(), expected.join("\n"))]);
+    for (index, expected) in expected.into_iter().enumerate() {
+        let node = code_line(&mounted, "b0", &format!("l{index}"));
+        let line = mounted.tree().text(node).unwrap();
+        assert_eq!(line.text.as_ref(), expected);
+        assert_eq!(line.runs[0].1.weight, Some(700));
+    }
+}
+
+#[cfg(feature = "highlight")]
+#[test]
 fn markdown_highlighter_only_revisits_changed_code_and_keeps_selectable_lines() {
     let mut driver = HeadlessDriver::default();
     let source = driver.app_mut().build(|b| b.text_buffer("Before\n\n```rust\nlet n = 1;\n```\n\n```js\nfirst\nlast")).unwrap();

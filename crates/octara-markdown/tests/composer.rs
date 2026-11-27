@@ -5,6 +5,8 @@ use octara_inspect::HeadlessDriver;
 use octara_markdown::{Completion, MarkdownComposer, TriggerConfig, TriggerQuery};
 use std::{ops::Range, sync::Arc};
 
+type RowBuilder = fn(&mut BuildCx<'_>, RowSignal<Completion>, ReadSignal<bool>) -> El;
+
 struct Mounted {
     driver: HeadlessDriver,
     window: WindowId,
@@ -33,6 +35,16 @@ impl Mounted {
         configure: impl FnOnce(TextInput, Signal<String>) -> TextInput + 'static,
         theme: Option<ColorScheme>,
     ) -> Self {
+        Self::with_row(initial, triggers, configure, theme, None)
+    }
+
+    fn with_row(
+        initial: &str,
+        triggers: Option<Vec<TriggerConfig>>,
+        configure: impl FnOnce(TextInput, Signal<String>) -> TextInput + 'static,
+        theme: Option<ColorScheme>,
+        render_row: Option<RowBuilder>,
+    ) -> Self {
         let mut driver = HeadlessDriver::default();
         let (model, composer, action, scheme) = driver
             .app_mut()
@@ -48,24 +60,17 @@ impl Mounted {
         let window = driver
             .app_mut()
             .open_window(WindowOptions::default(), move |build| {
-                let container = col().p(30.0).child(composer.editor_with_completion(
-                    build,
-                    configure(textarea().test_id("draft"), model),
-                    |_, query| match query.trigger {
-                        '@' if query.query == "many" => {
-                            (0..20).map(|n| Completion::new(format!("@Member {n}"), format!("user://member_{n}"))).collect()
-                        }
-                        '@' => vec![Completion::new("@Alice", "user://u_1"), Completion::new("@Émile", "user://u_2")],
-                        '#' => vec![Completion::new("#design", "channel://c_4")],
-                        '/' => vec![Completion::action("/summarize", "summary")],
-                        _ => vec![],
-                    },
-                    move |write, item| {
-                        if let Some(key) = item.action_key() {
-                            write.set(action, Some(key.into()));
-                        }
-                    },
-                ));
+                let editor = configure(textarea().test_id("draft"), model);
+                let on_complete = move |write: &mut WriteCx<'_>, item: &Completion| {
+                    if let Some(key) = item.action_key() {
+                        write.set(action, Some(key.into()));
+                    }
+                };
+                let composer = match render_row {
+                    Some(render_row) => composer.editor_with_completion_row(build, editor, suggestions, on_complete, render_row),
+                    None => composer.editor_with_completion(build, editor, suggestions, on_complete),
+                };
+                let container = col().p(30.0).child(composer);
                 if let Some(scheme) = scheme {
                     container.theme_patch(move |read: &mut ReadCx<'_>| {
                         ThemePatch::scope(match read.get(scheme) {
@@ -141,6 +146,69 @@ impl Mounted {
     fn action(&mut self) -> Option<String> {
         self.driver.app_mut().update_window(self.window, |write| write.get(self.action)).unwrap()
     }
+}
+
+fn suggestions(_: &mut ReadCx<'_>, query: &TriggerQuery) -> Vec<Completion> {
+    match query.trigger {
+        '@' if query.query == "many" => (0..20).map(|n| Completion::new(format!("@Member {n}"), format!("user://member_{n}"))).collect(),
+        '@' => vec![
+            Completion::new("@Alice", "user://u_1").icon(octara_icons::HASH).description("Design team").category("People"),
+            Completion::new("@Émile", "user://u_2"),
+        ],
+        '#' => vec![Completion::new("#design", "channel://c_4")],
+        '/' => vec![Completion::action("/summarize", "summary")],
+        _ => vec![],
+    }
+}
+
+#[test]
+fn default_completion_row_displays_icon_description_and_category() {
+    let mut mounted = Mounted::new("", None);
+    mounted.type_text("@");
+    let popup = mounted.popup().unwrap();
+    let tree = mounted.window().tree();
+    let option = tree
+        .children(popup)
+        .iter()
+        .copied()
+        .find(|&node| tree.semantics(node).is_some_and(|semantics| semantics.role == Some(Role::ListBoxOption)))
+        .unwrap();
+    let semantics = tree.semantics(option).unwrap();
+    assert_eq!(semantics.role, Some(Role::ListBoxOption));
+    assert_eq!(semantics.label.as_deref(), Some("@Alice"));
+    assert_eq!(semantics.description.as_deref(), Some("People. Design team"));
+    assert!(tree.subtree(option).any(|node| tree.icon(node).is_some_and(|icon| icon.name == "hash")));
+    let titles: Vec<_> = tree.subtree(option).filter_map(|node| tree.text(node).map(|text| text.text.as_ref())).collect();
+    assert_eq!(titles, ["@Alice", "Design team", "People"]);
+}
+
+#[test]
+fn custom_completion_row_follows_keyboard_selection_and_acceptance() {
+    let mut mounted = Mounted::with_row(
+        "",
+        None,
+        |input, _| input,
+        None,
+        Some(|_, item, selected| {
+            text(move |read: &mut ReadCx<'_>| {
+                let marker = if read.get(selected) { "Selected" } else { "Available" };
+                read.try_with(item, |item| format!("{marker} {}", item.label)).unwrap_or_default()
+            })
+            .test_id("custom-completion")
+        }),
+    );
+    mounted.type_text("@");
+    let rows = |mounted: &Mounted| {
+        let tree = mounted.window().tree();
+        tree.test_ids("custom-completion").iter().map(|&node| tree.text(node).unwrap().text.to_string()).collect::<Vec<_>>()
+    };
+    assert_eq!(rows(&mounted), ["Selected @Alice", "Available @Émile"]);
+    mounted.key(Key::Down, Modifiers::empty());
+    assert_eq!(rows(&mounted), ["Available @Alice", "Selected @Émile"]);
+    mounted.key(Key::Enter, Modifiers::empty());
+    assert_eq!(mounted.source(), "[@Émile](user://u_2)");
+    assert!(mounted.popup().is_none());
+    assert_eq!(mounted.window().tree().focus(), Some(mounted.node()));
 }
 
 #[test]

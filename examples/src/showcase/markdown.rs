@@ -141,7 +141,7 @@ pub fn view(b: &mut BuildCx<'_>) -> El {
                 .p(sp(3.0))
                 .child(markdown(b, move |r: &mut ReadCx<'_>| r.get(question))),
         )
-        .child(markdown_stream(b, reply.source, finished, StreamingOptions { effects: REVEAL, ..StreamingOptions::default() }));
+        .child(markdown_stream(b, reply.source, finished, StreamingOptions { effects: Some(REVEAL), ..StreamingOptions::default() }));
     super::section("Markdown")
         .w(rel(1.0))
         .max_w(680.0)

@@ -1,7 +1,7 @@
 //! View regions whose factories run in explicit child scopes.
 
 use super::style::{Styled, rel};
-use super::{Component, El, IntoView, Kind, NodeHandle, Prop, View, el, el::build_el, node_handle};
+use super::{Component, El, IntoView, Kind, NodeHandle, Prop, Target, View, el, el::build_el, node_handle};
 use octara_model::{CacheLine, geometry::Placement, overlay::AnchorTarget, style::Position};
 use octara_runtime::{BuildCx, MountCx, ReadCx, ScopeId};
 use octara_tree::{NodeChange, NodeRef, Retirement, transaction::OverlaySpec};
@@ -18,21 +18,20 @@ pub(crate) fn next_region() -> u64 {
 /// Builds one child scope with its own state and cleanup lifetime.
 #[track_caller]
 pub fn scope<V: IntoView + 'static>(key: impl Display, factory: impl FnOnce(&mut BuildCx<'_>) -> V + 'static) -> View {
-    let key = key.to_string();
-    View::region(move |cx, target| {
-        cx.with_named_scope(&key, |cx| {
-            let view = cx.build(factory).into_view();
-            target.mount(cx, view);
-        });
-    })
+    scoped_view(Some(key.to_string()), Box::new(move |cx| factory(cx).into_view()))
 }
 
 /// Builds one anonymous child scope with its own state and cleanup lifetime.
 #[track_caller]
 pub fn scoped<V: IntoView + 'static>(factory: impl FnOnce(&mut BuildCx<'_>) -> V + 'static) -> View {
+    scoped_view(None, Box::new(move |cx| factory(cx).into_view()))
+}
+
+#[inline(never)]
+fn scoped_view(key: Option<String>, factory: ScopeContent) -> View {
     View::region(move |cx, target| {
-        cx.with_scope(|cx| {
-            let view = cx.build(factory).into_view();
+        with_branch_scope(cx, key.as_deref(), |cx| {
+            let view = cx.build(factory);
             target.mount(cx, view);
         });
     })
@@ -42,20 +41,24 @@ pub fn scoped<V: IntoView + 'static>(factory: impl FnOnce(&mut BuildCx<'_>) -> V
 /// Each activation owns fresh state.
 #[track_caller]
 pub fn show<V: IntoView + 'static>(
-    condition: impl FnMut(&mut ReadCx<'_>) -> bool + 'static,
+    mut condition: impl FnMut(&mut ReadCx<'_>) -> bool + 'static,
     mut factory: impl FnMut(&mut BuildCx<'_>) -> V + 'static,
 ) -> View {
-    let mut condition = condition;
-    switch(move |r| condition(r).then_some(()), |_| None, move |cx, _| factory(cx), Retirement::VisibleExit)
+    switch(Box::new(move |r| condition(r).then_some(())), |_| None, Box::new(move |cx, _| factory(cx).into_view()), Retirement::VisibleExit)
 }
 
 /// Retains a branch while its key is unchanged and creates a fresh child scope on a key change.
 #[track_caller]
 pub fn keyed<K: Display + PartialEq + 'static, V: IntoView + 'static>(
     mut key: impl FnMut(&mut ReadCx<'_>) -> K + 'static,
-    factory: impl FnMut(&mut BuildCx<'_>, &K) -> V + 'static,
+    mut factory: impl FnMut(&mut BuildCx<'_>, &K) -> V + 'static,
 ) -> View {
-    switch(move |r| Some(key(r)), |key| Some(key.to_string()), factory, Retirement::Destroy)
+    switch(
+        Box::new(move |r| Some(key(r))),
+        |key: &K| Some(key.to_string()),
+        Box::new(move |cx, key| factory(cx, key).into_view()),
+        Retirement::Destroy,
+    )
 }
 
 /// Retains the fallback scope while successive keys produce no view.
@@ -102,10 +105,11 @@ pub fn keyed_or_else<K: Display + PartialEq + 'static, V: IntoView + 'static>(
     })
 }
 
-fn switch<K: PartialEq + 'static, V: IntoView + 'static>(
-    key: impl FnMut(&mut ReadCx<'_>) -> Option<K> + 'static,
-    name: impl Fn(&K) -> Option<String> + 'static,
-    mut factory: impl FnMut(&mut BuildCx<'_>, &K) -> V + 'static,
+#[inline(never)]
+fn switch<K: PartialEq + 'static>(
+    key: BranchKey<K>,
+    name: fn(&K) -> Option<String>,
+    mut factory: BranchContent<K>,
     retirement: Retirement,
 ) -> View {
     View::region(move |cx, target| {
@@ -121,23 +125,34 @@ fn switch<K: PartialEq + 'static, V: IntoView + 'static>(
                     for node in exiting.drain(..) {
                         cx.cancel_exit(node.get());
                     }
-                    let build = |cx: &mut MountCx<'_>| {
-                        let view = cx.build(|cx| factory(cx, key)).into_view();
-                        target.mount(cx, view);
-                    };
-                    let (scope, ()) = match name(key) {
-                        Some(name) => cx.with_named_scope(&name, build),
-                        None => cx.with_scope(build),
-                    };
-                    active = Some(scope);
+                    active = Some(mount_branch(cx, &target, name(key).as_deref(), &mut |cx| factory(cx, key)));
                 }
             })
         });
     })
 }
 
+fn with_branch_scope(cx: &mut MountCx<'_>, name: Option<&str>, build: impl FnOnce(&mut MountCx<'_>)) -> ScopeId {
+    let (scope, ()) = match name {
+        Some(name) => cx.with_named_scope(name, build),
+        None => cx.with_scope(build),
+    };
+    scope
+}
+
+#[inline(never)]
+fn mount_branch(cx: &mut MountCx<'_>, target: &Target, name: Option<&str>, factory: &mut dyn FnMut(&mut BuildCx<'_>) -> View) -> ScopeId {
+    with_branch_scope(cx, name, |cx| {
+        let view = cx.build(factory);
+        target.mount(cx, view);
+    })
+}
+
 type Open = Box<dyn FnMut(&mut ReadCx<'_>) -> bool>;
 type Content = Box<dyn FnMut(&mut BuildCx<'_>) -> View>;
+type ScopeContent = Box<dyn FnOnce(&mut BuildCx<'_>) -> View>;
+type BranchKey<K> = Box<dyn FnMut(&mut ReadCx<'_>) -> Option<K>>;
+type BranchContent<K> = Box<dyn FnMut(&mut BuildCx<'_>, &K) -> View>;
 
 type TargetBinding = Box<dyn FnMut(&mut ReadCx<'_>, OverlaySpec) -> NodeChange>;
 

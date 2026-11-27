@@ -593,7 +593,7 @@ impl Compile<'_> {
                     .tree
                     .text_reveal(node)
                     .copied()
-                    .filter(|_| !self.options.reduced_motion)
+                    .filter(|reveal| reveal.enabled(self.options.reduced_motion))
                     .map(|reveal| TextRevealTrack::update(previous_reveal, reveal, self.options.now));
                 let mut element = self.element(node, bounds, clip, visual, &drawing, motion);
                 element.visible = !bounds.intersect(&clip).is_empty();
@@ -831,7 +831,7 @@ impl Compile<'_> {
             if positions.peek().is_some_and(|position| position.0 == index) {
                 let (_, rect) = positions.next().expect("positioned inline object");
                 match &attachment.content {
-                    InlineContent::Spacer { .. } => {}
+                    InlineContent::Spacer { .. } | InlineContent::Pill(_) => {}
                     InlineContent::Image { fit, radius, .. } | InlineContent::ImageSource { fit, radius, .. } => {
                         let Some(image) = samples.next() else { continue };
                         let size = Size::new(image.frame().width as f32, image.frame().height as f32);
@@ -970,7 +970,7 @@ fn attachment_images<'a>(tree: &'a Tree, node: NodeId, index: usize, attachment:
     image.into_iter().chain(canvas_images(ops))
 }
 
-fn paint_icon(node: NodeId, icon: &NodeIcon, rect: Rect, color: Color, out: &mut Vec<Item>) {
+pub(crate) fn paint_icon(node: NodeId, icon: &NodeIcon, rect: Rect, color: Color, out: &mut Vec<Item>) {
     let view = icon.view_box;
     let size = (rect.w / view.w).min(rect.h / view.h);
     if !size.is_finite() || size <= 0.0 {

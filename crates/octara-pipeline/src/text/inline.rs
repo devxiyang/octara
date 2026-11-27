@@ -1,8 +1,8 @@
 //! Inline boxes reserve space for attachments and span edges while retaining source offsets.
 
-use super::Span;
-use octara_model::geometry::Size;
-use octara_model::text::{InlineAlign, InlineAttachment};
+use super::{ShapeStyle, SharedShape, Span, TextEngine};
+use octara_model::geometry::{Point, Size};
+use octara_model::text::{InlineAlign, InlineAttachment, InlineContent, InlinePill};
 use parley::{InlineBox, InlineBoxKind, Layout, RangedBuilder, StyleProperty, TextWrapMode, VerticalAlign};
 use std::borrow::Cow;
 use std::ops::Range;
@@ -14,6 +14,12 @@ const OBJECT_BYTES: usize = OBJECT.len_utf8();
 pub(super) enum Content {
     Edge { brush: u16, span: Range<usize>, opening: bool },
     Attachment(usize),
+    Pill { index: usize, label: Option<PillLabel> },
+}
+
+pub(super) struct PillLabel {
+    pub(super) shape: SharedShape,
+    pub(super) origin: Point,
 }
 
 pub(super) struct Box {
@@ -30,8 +36,9 @@ impl Box {
         text: &'a str,
         spans: &[Span],
         attachments: &[InlineAttachment],
-        offset: usize,
-        first: usize,
+        (offset, first): (usize, usize),
+        engine: &mut TextEngine,
+        style: ShapeStyle,
     ) -> (Cow<'a, str>, Vec<Self>) {
         let mut boxes = Vec::new();
         for span in spans.iter().filter(|span| span.inset > 0.0 && !span.range.is_empty()) {
@@ -49,13 +56,21 @@ impl Box {
                 });
             }
         }
-        boxes.extend(attachments.iter().enumerate().map(|(index, attachment)| Self {
-            content: Content::Attachment(first + index),
-            range: attachment.range.start - offset..attachment.range.end - offset,
-            index: 0,
-            size: attachment.layout_size(),
-            align: attachment.align,
-            baseline: attachment.layout_baseline(),
+        boxes.extend(attachments.iter().enumerate().map(|(index, attachment)| {
+            let index = first + index;
+            let range = attachment.range.start - offset..attachment.range.end - offset;
+            let (content, size, align, baseline) = if let InlineContent::Pill(pill) = &attachment.content {
+                let mut inherited = style;
+                for span in spans.iter().filter(|span| span.range.contains(&range.start)) {
+                    inherited.family = span.family.unwrap_or(inherited.family);
+                    inherited.italic |= span.italic;
+                }
+                let (size, baseline, label) = engine.measure_pill(pill, inherited);
+                (Content::Pill { index, label }, size, InlineAlign::Baseline, Some(baseline))
+            } else {
+                (Content::Attachment(index), attachment.layout_size(), attachment.align, attachment.layout_baseline())
+            };
+            Self { content, range, index: 0, size, align, baseline }
         }));
         if boxes.is_empty() {
             return (Cow::Borrowed(text), boxes);
@@ -63,7 +78,7 @@ impl Box {
         boxes.sort_by_key(|item| {
             let order = match item.content {
                 Content::Edge { brush, opening, .. } => (u8::from(opening), brush),
-                Content::Attachment(_) => (2, 0),
+                Content::Attachment(_) | Content::Pill { .. } => (2, 0),
             };
             (item.range.start, item.range.end, order)
         });
@@ -154,5 +169,38 @@ impl Box {
 
     pub(super) fn at(items: &[Self], index: usize) -> Option<&Self> {
         items.binary_search_by_key(&index, |item| item.index).ok().map(|i| &items[i])
+    }
+}
+
+impl TextEngine {
+    fn measure_pill(&mut self, pill: &InlinePill, inherited: ShapeStyle) -> (Size, f32, Option<PillLabel>) {
+        let style = pill.style.normalized();
+        let icon = if pill.icon.is_some() { style.size } else { 0.0 };
+        let label = pill.layout_label();
+        if label.is_empty() {
+            let size = Size::new(icon + 2.0 * style.padding_x, icon + 2.0 * style.padding_y);
+            let baseline = if pill.icon.is_some() { style.padding_y + icon } else { size.height };
+            return (size, baseline, None);
+        }
+
+        let gap = if pill.icon.is_some() { style.gap } else { 0.0 };
+        let shape = self.shape(
+            &label,
+            ShapeStyle { font_size: style.size, weight: style.weight, line_height: None, underline: false, strike: false, ..inherited },
+            &[],
+            true,
+        );
+        let (width, height, x, y, baseline) = {
+            let mut shaped = shape.borrow_mut();
+            let layout = &shaped.at(None, false).layout;
+            let line = layout.get(0).expect("nonempty pill label");
+            let metrics = line.metrics();
+            (metrics.advance, metrics.line_height, metrics.offset + metrics.inline_min_coord, metrics.block_min_coord, metrics.baseline)
+        };
+        let body_height = icon.max(height);
+        let top = style.padding_y + (body_height - height) * 0.5;
+        let size = Size::new(2.0 * style.padding_x + icon + gap + width, 2.0 * style.padding_y + body_height);
+        let origin = Point::new(style.padding_x + icon + gap - x, top - y);
+        (size, origin.y + baseline, Some(PillLabel { shape, origin }))
     }
 }

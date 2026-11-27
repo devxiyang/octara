@@ -31,7 +31,7 @@ impl StreamingEffects {
                 TextRevealKind::Gradient { trail_bytes, tint, glide_bytes_per_sec }
             }
         };
-        Some(TextReveal { kind, revealed_bytes, finished })
+        Some(TextReveal::new(kind, revealed_bytes, finished))
     }
 }
 

@@ -57,16 +57,26 @@ enum Kind {
 
 impl View {
     pub fn empty() -> Self {
-        Self::fragment(std::iter::empty::<Self>())
+        Self { kind: Kind::Fragment(Vec::new()), component: None }
     }
 
     pub fn fragment(views: impl IntoIterator<Item = impl IntoView>) -> Self {
-        Self { kind: Kind::Fragment(views.into_iter().map(IntoView::into_view).collect()), component: None }
+        Self::fragment_views(&mut views.into_iter().map(IntoView::into_view))
+    }
+
+    #[inline(never)]
+    fn fragment_views(views: &mut dyn Iterator<Item = View>) -> Self {
+        Self { kind: Kind::Fragment(views.collect()), component: None }
     }
 
     /// Mounts this view into the current window transaction.
     pub fn mount(self, cx: &mut MountCx<'_>, parent: impl Into<NodeRef>, index: usize) {
-        mount_children(cx, parent.into(), index, smallvec![self], None);
+        self.mount_to(cx, parent.into(), index);
+    }
+
+    #[inline(never)]
+    fn mount_to(self, cx: &mut MountCx<'_>, parent: NodeRef, index: usize) {
+        mount_children(cx, parent, index, smallvec![self], None);
     }
 
     pub(crate) fn element(element: El) -> Self {
@@ -74,7 +84,12 @@ impl View {
     }
 
     fn region(mount: impl FnOnce(&mut MountCx<'_>, Target) + 'static) -> Self {
-        Self { kind: Kind::Region(Box::new(mount)), component: None }
+        Self::region_boxed(Box::new(mount))
+    }
+
+    #[inline(never)]
+    fn region_boxed(mount: MountRegion) -> Self {
+        Self { kind: Kind::Region(mount), component: None }
     }
 
     fn has_region(&self) -> bool {
@@ -321,7 +336,12 @@ impl Target {
     }
 
     fn set_nodes<'a>(&self, cx: &mut MountCx<'_>, nodes: impl IntoIterator<Item = &'a NodeHandle>) {
-        self.slots.replace(nodes.into_iter().cloned().map(Slot::Node).collect());
+        self.replace_slots(cx, &mut nodes.into_iter().cloned().map(Slot::Node));
+    }
+
+    #[inline(never)]
+    fn replace_slots(&self, cx: &mut MountCx<'_>, slots: &mut dyn Iterator<Item = Slot>) {
+        self.slots.replace(slots.collect());
         self.siblings.schedule(cx);
     }
 }

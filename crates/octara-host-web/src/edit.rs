@@ -12,8 +12,9 @@ use octara_model::ask::ClipboardItem;
 use octara_model::identity::{EditorSessionId, NodeId};
 use octara_model::input::{EditorEvent, HostReply, InteractionEvent, Key, KeyEvent, Modifiers, PasteEvent};
 use octara_model::semantics::TextPosition;
-use octara_model::text::{CommitKind, TextEdit};
+use octara_model::text::{CommitKind, InlineAttachment, TextEdit};
 use std::cell::Cell;
+use std::ops::Range;
 use std::rc::Rc;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
@@ -597,35 +598,54 @@ impl Driver {
         let mut state = self.app.try_borrow_mut().ok()?;
         let app = state.as_mut()?;
         let tree = app.runtime().window(id)?.tree();
-        if let Some((region, selection)) = self.document_selection(tree) {
-            return app.runtime_mut().format_document_selection(id, region, selection);
+        let selection = self.document_endpoints(tree)?;
+        let touches_attachment = |attachments: &[InlineAttachment], range: &Range<usize>| {
+            attachments.iter().any(|item| {
+                if item.range.is_empty() {
+                    (range.start..=range.end).contains(&item.range.start)
+                } else {
+                    !range.is_empty() && range.start < item.range.end && item.range.start < range.end
+                }
+            })
+        };
+        if let Some(region) = selection_region(tree, selection) {
+            if let Some(formatted) = app.runtime_mut().format_document_selection(id, region, selection) {
+                return Some(formatted);
+            }
+            // Attachment DOM contents may differ from the logical source.
+            let tree = app.runtime().window(id)?.tree();
+            let ranges = tree.selected_text_ranges(region, selection)?;
+            if !ranges.iter().any(|(node, range)| tree.text(*node).is_some_and(|text| touches_attachment(&text.attachments, range))) {
+                return None;
+            }
+            let mut text = String::new();
+            for (index, (node, range)) in ranges.into_iter().enumerate() {
+                if index != 0 {
+                    text.push('\n');
+                }
+                text.push_str(tree.text(node)?.text.get(range)?);
+            }
+            return Some(text);
         }
-        let selection = self.document.get_selection().ok()??;
-        if selection.is_collapsed() {
-            return None;
-        }
-        let (node, start) = self.document_address(tree, selection.anchor_node()?, selection.anchor_offset())?;
-        let (end_node, end) = self.document_address(tree, selection.focus_node()?, selection.focus_offset())?;
+        let [(node, start), (end_node, end)] = selection;
         let slot = tree.text(node)?;
-        (node == end_node && start != end && !slot.attachments.is_empty())
-            .then(|| slot.text.get(start.min(end)..start.max(end)).map(str::to_owned))
-            .flatten()
+        let range = start.min(end)..start.max(end);
+        (node == end_node && touches_attachment(&slot.attachments, &range)).then(|| slot.text.get(range).map(str::to_owned)).flatten()
     }
 
-    fn document_selection(&self, tree: &Tree) -> Option<(NodeId, [Address; 2])> {
+    fn document_endpoints(&self, tree: &Tree) -> Option<[Address; 2]> {
         let selection = self.document.get_selection().ok()??;
         if selection.is_collapsed() {
             return None;
         }
-        let anchor = self.document_address(tree, selection.anchor_node()?, selection.anchor_offset())?;
-        let focus = self.document_address(tree, selection.focus_node()?, selection.focus_offset())?;
-        let region = tree.region_of(anchor.0)?;
-        (anchor != focus && tree.valid_doc_selection(region, [anchor, focus])).then_some((region, [anchor, focus]))
+        let [anchor, focus] = rich::selection_points(&selection)?;
+        Some([self.document_address(tree, anchor)?, self.document_address(tree, focus)?])
     }
 
     fn sync_document_selection(&self, app: &mut App, window: WindowId) -> Result<(), TurnError> {
         let Some(tree) = editor_tree(app, window) else { return Ok(()) };
-        let observed = self.active_field().is_none().then(|| self.document_selection(tree)).flatten();
+        let observed = self.active_field().is_none().then(|| self.document_endpoints(tree)).flatten();
+        let observed = observed.and_then(|points| selection_region(tree, points).map(|region| (region, points)));
         let selection = if let Some((region, addresses)) = observed {
             if tree.doc_selection(region) == Some(addresses) {
                 return Ok(());
@@ -641,12 +661,12 @@ impl Driver {
         Ok(())
     }
 
-    fn document_address(&self, tree: &Tree, endpoint: Node, offset: u32) -> Option<Address> {
-        let node = self.dom_selection_node(endpoint.clone())?;
+    fn document_address(&self, tree: &Tree, endpoint: rich::SelectionPoint) -> Option<Address> {
+        let node = self.dom_selection_node(endpoint.node.clone())?;
         let node = if tree.link(node).is_some() { tree.physical_parent(node)? } else { node };
         let owner = self.dom.element(node)?;
         tree.text(node)?;
-        Some((node, rich::logical_offset(&owner, &endpoint, offset)?))
+        Some((node, endpoint.logical_offset(&owner)?))
     }
 
     fn event_field(&self, event: &Event) -> Option<Field> {
@@ -757,6 +777,11 @@ impl Editor {
 
 fn editor_slot(app: &App, window: WindowId, node: NodeId) -> Option<&EditorSlot> {
     editor_tree(app, window)?.editor(node)
+}
+
+fn selection_region(tree: &Tree, points: [Address; 2]) -> Option<NodeId> {
+    let region = tree.region_of(points[0].0)?;
+    (points[0] != points[1] && tree.valid_doc_selection(region, points)).then_some(region)
 }
 
 fn editor_tree(app: &App, window: WindowId) -> Option<&Tree> {

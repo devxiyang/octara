@@ -110,7 +110,7 @@ pub(super) struct RenderContext {
     renderer: Arc<dyn MarkdownRenderer>,
     theme: ReadSignal<MarkdownTheme>,
     overlay: ReadSignal<Arc<AstOverlay>>,
-    effects: StreamingEffects,
+    effects: Option<ReadSignal<(StreamingEffects, bool)>>,
     finished: ReadSignal<bool>,
     #[cfg(feature = "math")]
     math: crate::math::MathDocument,
@@ -121,7 +121,7 @@ impl RenderContext {
         renderer: Arc<dyn MarkdownRenderer>,
         theme: ReadSignal<MarkdownTheme>,
         overlay: ReadSignal<Arc<AstOverlay>>,
-        effects: StreamingEffects,
+        effects: Option<ReadSignal<(StreamingEffects, bool)>>,
         finished: ReadSignal<bool>,
         #[cfg(feature = "math")] math: crate::math::MathDocument,
     ) -> Self {
@@ -171,9 +171,33 @@ impl RenderBlock {
         read.with(self.source, |block| block.as_deref().map(project).unwrap_or_default())
     }
 
-    fn reveal(&self, read: &mut ReadCx<'_>, bytes: usize, settled: bool) -> Option<TextReveal> {
-        let finished = settled || self.finished.is_none_or(|finished| read.get(finished));
-        self.context.effects.reveal(bytes, finished)
+    fn with_reveal(&self, node: El, mut measure: impl FnMut(&mut ReadCx<'_>) -> (usize, bool) + 'static) -> El {
+        let Some(effects) = self.context.effects else { return node };
+        let block_finished = self.finished;
+        let mut previous = None;
+        let mut visible_bytes = 0;
+        node.text_reveal(move |read: &mut ReadCx<'_>| {
+            let (effect, allow_reduced_motion) = read.get(effects);
+            let (bytes, settled) = measure(read);
+            // A policy change preserves the text already displayed in this block.
+            if let Some((previous_effect, previous_bytes)) = previous
+                && previous_effect != effect
+            {
+                visible_bytes = previous_bytes;
+            }
+            previous = Some((effect, bytes));
+            if effect == StreamingEffects::None {
+                visible_bytes = bytes;
+                return None;
+            }
+            let finished = settled || block_finished.is_none_or(|finished| read.get(finished));
+            visible_bytes = if finished { bytes } else { visible_bytes.min(bytes) };
+            effect.reveal(bytes, finished).map(|mut reveal| {
+                reveal.visible_bytes = visible_bytes;
+                reveal.allow_reduced_motion = allow_reduced_motion;
+                reveal
+            })
+        })
     }
 }
 
@@ -192,9 +216,10 @@ pub(super) fn block_view(build: &mut BuildCx<'_>, block: RowSignal<BlockRef>, co
     let slot =
         build.memo(move |r| r.with2(source, overlay, |block, overlay| block.as_deref().and_then(|block| overlay.slot(block)).cloned()));
     let document_finished = context.finished;
-    let finished = (context.effects != StreamingEffects::None).then(|| {
+    let finished = context.effects.map(|effects| {
         build.memo(move |r| {
-            r.get(document_finished)
+            r.get(effects).0 == StreamingEffects::None
+                || r.get(document_finished)
                 || r.with2(source, overlay, |block, overlay| block.as_deref().is_none_or(|block| overlay.is_finished(block)))
         })
     });
@@ -650,14 +675,8 @@ pub fn default_directive(block: &RenderBlock) -> El {
 fn plain_text(block: &RenderBlock, value: fn(&Kind) -> &str) -> El {
     let source = block.clone();
     let node = text(move |r: &mut ReadCx<'_>| source.project(r, |block| value(&block.kind).to_owned()));
-    if block.context.effects == StreamingEffects::None {
-        return node;
-    }
-    let block = block.clone();
-    node.text_reveal(move |r: &mut ReadCx<'_>| {
-        let bytes = block.project(r, |block| value(&block.kind).len());
-        block.reveal(r, bytes, false)
-    })
+    let source = block.clone();
+    block.with_reveal(node, move |r| (source.project(r, |block| value(&block.kind).len()), false))
 }
 
 /// A keyboard- and pointer-activated control that reveals the block body.

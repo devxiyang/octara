@@ -171,7 +171,7 @@ fn glyph_pipeline_matches_a_sampled_text_reveal() {
     let gradient = TextRevealKind::Gradient { trail_bytes: 6, tint: Some(tint.into()), glide_bytes_per_sec: 12.0 };
     let fade = TextRevealKind::Fade { duration_secs: 1.75 };
     for (kind, expected, name) in [(gradient, [1.0, 0.75, 0.25, 0.0], "gradient"), (fade, [0.5, 0.5, 0.5, 0.0], "fade")] {
-        let track = TextRevealTrack::update(None, TextReveal { kind, revealed_bytes: 9, finished: false }, 0.0);
+        let track = TextRevealTrack::update(None, TextReveal::new(kind, 9, false), 0.0);
         let Item::Glyphs(mut run) = glyphs("你好世界", point(5.25, 25.5), 19.5, rgb(0xed6941)) else { unreachable!() };
         let colors: Vec<_> = run.glyphs.iter().map(|glyph| track.color(glyph.source_end, 0.875, run.color, Some(tint))).collect();
         assert_eq!(colors.iter().map(|color| color.components[3]).collect::<Vec<_>>(), expected);

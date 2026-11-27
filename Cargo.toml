@@ -28,7 +28,7 @@ members = [
 edition = "2024"
 rust-version = "1.100"
 license = "MIT OR Apache-2.0"
-version = "0.0.6"
+version = "0.0.7"
 repository = "https://github.com/octoii-works/octara"
 homepage = "https://github.com/octoii-works/octara/blob/main/docs/start-here.md"
 readme = "README.md"
@@ -85,23 +85,23 @@ roxmltree = "0.21.2"
 pollster = "1.0.3"
 unicode-segmentation = "1.13.3"
 wgpu = "30.0.2"
-octara = { path = "crates/octara", version = "0.0.6" }
-octara-fonts = { path = "crates/octara-fonts", version = "0.0.6" }
-octara-gpu = { path = "crates/octara-gpu", version = "0.0.6" }
-octara-headless = { path = "crates/octara-headless", version = "0.0.6" }
-octara-host-native = { path = "crates/octara-host-native", version = "0.0.6" }
-octara-icons = { path = "crates/octara-icons", version = "0.0.6" }
-octara-inspect = { path = "crates/octara-inspect", version = "0.0.6" }
-octara-kit = { path = "crates/octara-kit", version = "0.0.6" }
-octara-markdown = { path = "crates/octara-markdown", version = "0.0.6" }
-octara-macros = { path = "crates/octara-macros", version = "0.0.6" }
-octara-model = { path = "crates/octara-model", version = "0.0.6" }
-octara-pipeline = { path = "crates/octara-pipeline", version = "0.0.6" }
-octara-release = { path = "crates/octara-release", version = "0.0.6" }
-octara-render = { path = "crates/octara-render", version = "0.0.6", default-features = false }
-octara-runtime = { path = "crates/octara-runtime", version = "0.0.6" }
-octara-svg = { path = "crates/octara-svg", version = "0.0.6" }
-octara-tree = { path = "crates/octara-tree", version = "0.0.6" }
+octara = { path = "crates/octara", version = "0.0.7" }
+octara-fonts = { path = "crates/octara-fonts", version = "0.0.7" }
+octara-gpu = { path = "crates/octara-gpu", version = "0.0.7" }
+octara-headless = { path = "crates/octara-headless", version = "0.0.7" }
+octara-host-native = { path = "crates/octara-host-native", version = "0.0.7" }
+octara-icons = { path = "crates/octara-icons", version = "0.0.7" }
+octara-inspect = { path = "crates/octara-inspect", version = "0.0.7" }
+octara-kit = { path = "crates/octara-kit", version = "0.0.7" }
+octara-markdown = { path = "crates/octara-markdown", version = "0.0.7" }
+octara-macros = { path = "crates/octara-macros", version = "0.0.7" }
+octara-model = { path = "crates/octara-model", version = "0.0.7" }
+octara-pipeline = { path = "crates/octara-pipeline", version = "0.0.7" }
+octara-release = { path = "crates/octara-release", version = "0.0.7" }
+octara-render = { path = "crates/octara-render", version = "0.0.7", default-features = false }
+octara-runtime = { path = "crates/octara-runtime", version = "0.0.7" }
+octara-svg = { path = "crates/octara-svg", version = "0.0.7" }
+octara-tree = { path = "crates/octara-tree", version = "0.0.7" }
 
 # Dependencies (Parley's shaping above all) are optimized even in dev builds, so debug tests
 # that lay out thousands of texts stay fast; workspace crates keep fast debug builds.

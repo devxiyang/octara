@@ -5,6 +5,7 @@ use crate::image::ImageSource;
 use crate::paint::{CanvasOp, Image, NodeIcon, ObjectFit};
 use crate::theme::ColorValue;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::fmt;
 use std::ops::Range;
 use std::sync::Arc;
@@ -166,6 +167,86 @@ pub enum InlineAlign {
     Bottom,
 }
 
+/// The typography, paint and spacing of an inline pill in logical pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PillStyle {
+    /// Font size, also used for both dimensions of the optional icon.
+    pub size: f32,
+    pub weight: FontWeight,
+    /// Text and icon color. Uses the containing text color when unset.
+    pub color: Option<ColorValue>,
+    pub background: Option<ColorValue>,
+    /// An optional one-pixel inset border.
+    pub border_color: Option<ColorValue>,
+    pub radius: f32,
+    pub padding_x: f32,
+    pub padding_y: f32,
+    /// Space between the icon and a nonempty label.
+    pub gap: f32,
+}
+
+impl Default for PillStyle {
+    fn default() -> Self {
+        Self {
+            size: 13.0,
+            weight: 400,
+            color: None,
+            background: None,
+            border_color: None,
+            radius: 4.0,
+            padding_x: 4.0,
+            padding_y: 2.0,
+            gap: 4.0,
+        }
+    }
+}
+
+impl PillStyle {
+    /// Resolves dimensions to finite values for native and browser layout.
+    pub fn normalized(self) -> Self {
+        Self {
+            size: dimension(self.size).max(1.0),
+            weight: self.weight.clamp(1, 1000),
+            radius: dimension(self.radius),
+            padding_x: dimension(self.padding_x),
+            padding_y: dimension(self.padding_y),
+            gap: dimension(self.gap),
+            ..self
+        }
+    }
+}
+
+/// A single-line capsule whose label and optional icon share one inline box.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InlinePill {
+    pub icon: Option<NodeIcon>,
+    pub label: Arc<str>,
+    pub style: PillStyle,
+}
+
+impl InlinePill {
+    /// Returns the visual label as one line, replacing each line break with a space.
+    pub fn layout_label(&self) -> Cow<'_, str> {
+        const LINE_BREAKS: [char; 4] = ['\r', '\n', '\u{2028}', '\u{2029}'];
+        if self.label.contains(LINE_BREAKS) {
+            Cow::Owned(self.label.replace("\r\n", " ").replace(LINE_BREAKS, " "))
+        } else {
+            Cow::Borrowed(&self.label)
+        }
+    }
+
+    /// Attaches this pill to logical text. The text engine measures its intrinsic size and baseline.
+    pub fn attachment(self, range: Range<usize>) -> InlineAttachment {
+        InlineAttachment {
+            range,
+            size: Size::new(0.0, 0.0),
+            align: InlineAlign::Baseline,
+            baseline: None,
+            content: InlineContent::Pill(self),
+        }
+    }
+}
+
 /// Visual content embedded in a text line.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InlineContent {
@@ -190,6 +271,7 @@ pub enum InlineContent {
     Vector {
         ops: Arc<[CanvasOp]>,
     },
+    Pill(InlinePill),
 }
 
 /// An object associated with a logical range in the containing text.
@@ -198,26 +280,31 @@ pub struct InlineAttachment {
     /// An empty range inserts at the given byte. A nonempty range replaces the glyphs while
     /// retaining the source text for copying and accessibility.
     pub range: Range<usize>,
+    /// Reserved size for fixed attachments. The text engine measures pills intrinsically.
     pub size: Size,
+    /// Alignment of a fixed attachment. Pills align to their label baseline.
     pub align: InlineAlign,
-    /// The distance in logical pixels from the top of a baseline-aligned object
-    /// to its baseline. `None` uses the bottom edge.
+    /// The distance from the top of a baseline-aligned fixed object to its baseline, in logical
+    /// pixels. `None` uses the bottom edge. Pills use the measured label baseline.
     pub baseline: Option<f32>,
     pub content: InlineContent,
 }
 
 impl InlineAttachment {
-    /// The layout size, with a spacer contributing only horizontal advance.
+    /// The fixed layout size. Spacers contribute only horizontal advance, and pills are intrinsic.
     pub fn layout_size(&self) -> Size {
-        let dimension = |value: f32| if value.is_finite() { value.max(0.0) } else { 0.0 };
         match self.content {
             InlineContent::Spacer { width } => Size::new(dimension(width), 0.0),
+            InlineContent::Pill(_) => Size::new(0.0, 0.0),
             _ => Size::new(dimension(self.size.width), dimension(self.size.height)),
         }
     }
 
     /// The baseline within the resolved object bounds, if specified.
     pub fn layout_baseline(&self) -> Option<f32> {
+        if matches!(self.content, InlineContent::Pill(_)) {
+            return None;
+        }
         self.baseline.filter(|offset| offset.is_finite()).map(|offset| offset.clamp(0.0, self.layout_size().height))
     }
 
@@ -232,6 +319,10 @@ impl InlineAttachment {
             valid
         })
     }
+}
+
+fn dimension(value: f32) -> f32 {
+    if value.is_finite() { value.max(0.0) } else { 0.0 }
 }
 
 impl RichSpan {
@@ -469,6 +560,16 @@ pub struct TextFragment {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pill_layout_preserves_logical_bytes_and_flattens_visual_line_breaks() {
+        let pill = InlinePill { icon: None, label: Arc::from(" A\r\nB\rC\nD\u{2028}E\u{2029}F "), style: PillStyle::default() };
+        assert_eq!(pill.layout_label(), " A B C D E F ");
+        let attachment = pill.attachment(3..9);
+        assert_eq!(attachment.range, 3..9);
+        assert_eq!(attachment.align, InlineAlign::Baseline);
+        assert_eq!(attachment.layout_baseline(), None);
+    }
 
     #[test]
     fn marking_and_unmarking_preserves_reverse_utf8_selection() {

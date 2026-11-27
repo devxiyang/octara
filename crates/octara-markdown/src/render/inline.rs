@@ -6,9 +6,8 @@ use crate::{
     ast::{Inline, Style},
     pills::{LinkPillContent, RecognizedLink},
     store::inline_images,
-    stream::StreamingEffects,
 };
-use octara::prelude::*;
+use octara::{InlinePill, PillStyle, prelude::*};
 use std::{ops::Range, sync::Arc};
 
 #[derive(Clone, Default, PartialEq)]
@@ -121,14 +120,7 @@ pub(super) fn inline_view(
     } else {
         node
     };
-    if block.context.effects == StreamingEffects::None {
-        return node;
-    }
-    let block = block.clone();
-    node.text_reveal(move |r: &mut ReadCx<'_>| {
-        let bytes = r.with(output, |out| out.rich.as_str().len());
-        block.reveal(r, bytes, false)
-    })
+    block.with_reveal(node, move |r| (r.with(output, |out| out.rich.as_str().len()), false))
 }
 
 impl InlineOutput {
@@ -162,7 +154,10 @@ struct InlinePlan {
 #[derive(Clone, PartialEq)]
 enum InlinePiece {
     #[cfg(feature = "media")]
-    DecorativeImage(String),
+    DecorativeImage {
+        at: usize,
+        url: String,
+    },
     Spoiler {
         start: usize,
         span: Span,
@@ -249,7 +244,7 @@ impl InlinePlan {
                 Style::Image { url, .. } if range.start == start && range.is_empty() => Some((range, url)),
                 _ => None,
             }) {
-                pieces.push(InlinePiece::DecorativeImage(url.clone()));
+                pieces.push(InlinePiece::DecorativeImage { at: start, url: url.clone() });
             }
             let Some(&end) = edges.get(index + 1) else { break };
             let mut span = Span::default();
@@ -316,6 +311,7 @@ impl InlinePlan {
 
     fn draw(&self, locale: MarkdownLocale, spoiler_prefix: &str, mut content: impl FnMut(&str) -> Option<LinkPillContent>) -> Rich {
         let metadata = self.links.iter().map(|(_, url)| content(url)).collect::<Vec<_>>();
+        let mut pills = vec![None; self.links.len()];
         let mut link_targets = vec![0..0; self.links.len()];
         let mut targets = Vec::new();
         let mut out = rich();
@@ -324,8 +320,10 @@ impl InlinePlan {
             let (range, span, link) = match piece {
                 InlinePiece::Text { range, span, link, .. } => (range, span, link),
                 #[cfg(feature = "media")]
-                InlinePiece::DecorativeImage(url) => {
-                    if let Some(attachment) = crate::media::inline_image(target..target, url) {
+                InlinePiece::DecorativeImage { at, url } => {
+                    let replaced =
+                        self.links.iter().zip(&pills).any(|((range, _), pill)| pill.is_some() && range.start < *at && range.contains(at));
+                    if !replaced && let Some(attachment) = crate::media::inline_image(target..target, url) {
                         out = out.attachment(attachment);
                     }
                     continue;
@@ -350,28 +348,30 @@ impl InlinePlan {
             if let Some(link) = *link {
                 let (source, url) = &self.links[link];
                 let metadata = metadata[link].as_ref();
+                let label = metadata.and_then(|content| content.label.as_ref()).filter(|label| !label.is_empty());
                 let first = range.start == source.start;
                 style.color = metadata.and_then(|content| content.tint).or(style.color);
                 if first {
                     link_targets[link].start = target;
-                    if let Some(icon) = metadata.and_then(|content| content.icon.as_ref()) {
-                        let size = style.size.unwrap_or(13.0).max(1.0);
-                        out = out.attachment(InlineAttachment {
-                            range: target..target,
-                            size: Size::new(size + 4.0, size),
-                            align: InlineAlign::CapHeightCenter,
-                            baseline: None,
-                            content: InlineContent::Icon { icon: NodeIcon::new(icon, None), color: style.color },
+                    if let Some(content) = metadata
+                        && (label.is_some() || content.icon.is_some())
+                    {
+                        pills[link] = Some(InlinePill {
+                            icon: content.icon.as_ref().map(|icon| NodeIcon::new(icon, None)),
+                            label: label.cloned().unwrap_or_else(|| Arc::from(&self.text[source.clone()])),
+                            style: pill_style(style),
                         });
                     }
                 }
-                if let Some(label) = metadata.and_then(|content| content.label.as_deref()).filter(|label| !label.is_empty()) {
-                    if first {
-                        let logical = if url.is_empty() { &self.text[source.clone()] } else { url };
-                        link_targets[link].end = target + logical.len();
-                        let attachment = pill_label(link_targets[link].clone(), label, style);
-                        out = out.text(logical).attachment(attachment);
-                    }
+                if pills[link].is_some() {
+                    let logical = match label {
+                        Some(_) if !first => continue,
+                        Some(_) if !url.is_empty() => url,
+                        Some(_) => &self.text[source.clone()],
+                        None => text,
+                    };
+                    link_targets[link].end = target + logical.len();
+                    out = out.text(logical);
                     continue;
                 }
                 link_targets[link].end = target + text.len();
@@ -394,8 +394,11 @@ impl InlinePlan {
                 }
             }
         }
-        for ((_, url), range) in self.links.iter().zip(link_targets) {
+        for (((_, url), range), pill) in self.links.iter().zip(link_targets).zip(pills) {
             if !range.is_empty() {
+                if let Some(pill) = pill {
+                    out = out.attachment(pill.attachment(range.clone()));
+                }
                 targets.push((range, url.clone()));
             }
         }
@@ -411,44 +414,17 @@ fn ranges_overlap(a: &Range<usize>, b: &Range<usize>) -> bool {
     a.start < b.end && b.start < a.end
 }
 
-fn pill_label(range: Range<usize>, label: &str, span: Span) -> InlineAttachment {
-    let size = span.size.unwrap_or(13.0).max(1.0);
-    let pad_x = span.padding_x.unwrap_or(4.0).max(0.0);
-    let pad_y = span.padding_y.unwrap_or(2.0).max(0.0);
-    let height = size * 1.35 + 2.0 * pad_y;
-    let ems: f32 = label
-        .chars()
-        .map(|ch| match ch {
-            'i' | 'l' | 'I' | ' ' | '.' | ':' => 0.38,
-            'M' | 'W' | 'm' | 'w' => 0.92,
-            ch if ch.is_ascii() => 0.70,
-            _ => 1.15,
-        })
-        .sum();
-    let width = size * ems + 2.0 * pad_x + 1.0;
-    let mut canvas = Canvas::new(width, height);
-    if span.background.is_some() || span.border_color.is_some() {
-        let bounds = Rect::new(0.5, 0.5, width - 1.0, height - 1.0);
-        let path = Path::rounded_rect(bounds, span.radius.unwrap_or(4.0));
-        if let Some(background) = span.background {
-            canvas.fill(&path, background);
-        }
-        if let Some(border) = span.border_color {
-            canvas.stroke(&path, &Stroke::new(1.0), border);
-        }
-    }
-    let text = canvas.text(label, point(pad_x, height / 2.0)).valign(Align::Center).size(size);
-    if let Some(color) = span.color {
-        text.color(color);
-    }
-    if let Some(weight) = span.weight {
-        text.weight(weight);
-    }
-    InlineAttachment {
-        range,
-        size: Size::new(width, height),
-        align: InlineAlign::CapHeightCenter,
-        baseline: None,
-        content: InlineContent::Vector { ops: canvas.into_ops().into() },
+fn pill_style(span: Span) -> PillStyle {
+    let default = PillStyle::default();
+    PillStyle {
+        size: span.size.unwrap_or(default.size),
+        weight: span.weight.unwrap_or(default.weight),
+        color: span.color,
+        background: span.background,
+        border_color: span.border_color,
+        radius: span.radius.unwrap_or(default.radius),
+        padding_x: span.padding_x.unwrap_or(default.padding_x),
+        padding_y: span.padding_y.unwrap_or(default.padding_y),
+        ..default
     }
 }

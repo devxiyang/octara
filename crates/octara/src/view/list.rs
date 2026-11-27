@@ -32,8 +32,8 @@ impl MountedRow {
     }
 }
 
-fn row_identity(region: u64, key: &impl Display, used: &mut FxHashSet<RowKey>) -> RowKey {
-    let label = key.to_string();
+#[inline(never)]
+fn row_identity(region: u64, label: String, used: &mut FxHashSet<RowKey>) -> RowKey {
     let primary = RowKey::new(region, label.clone());
     if used.insert(primary.clone()) {
         primary
@@ -44,42 +44,56 @@ fn row_identity(region: u64, key: &impl Display, used: &mut FxHashSet<RowKey>) -
     }
 }
 
-fn build_row<K, T, P>(
+type RenderRow<K, T> = dyn FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El;
+
+struct RowObservation {
+    geometry: Signal<Option<LayoutBox>>,
+    pinned: Signal<bool>,
+}
+
+#[inline(never)]
+fn build_row(
     cx: &mut MountCx<'_>,
     target: &Target,
     identity: RowKey,
-    key: &K,
-    list: ReadList<K, T>,
-    render: &mut impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El,
-    observe: impl FnOnce(&mut MountCx<'_>, NodeRef) -> P,
-) -> (MountedRow, P)
-where
-    K: Clone + Eq + Hash + 'static,
-    T: 'static,
-{
-    let mount = |cx: &mut MountCx<'_>| {
-        let element = cx.build(|cx| {
-            let row = cx.row_signal(list, key.clone());
-            render(cx, key, row)
-        });
-        let node = build_el(cx, element, target.component, Some(identity.clone()), None);
-        let feedback = observe(cx, node);
-        (node, feedback)
-    };
+    render: &mut dyn FnMut(&mut BuildCx<'_>) -> El,
+    virtual_row: bool,
+) -> (MountedRow, Option<RowObservation>) {
     let name = identity.to_string();
-    let (scope, (node, feedback)) = cx.with_named_scope(&name, mount);
+    let (scope, (node, feedback)) = cx.with_named_scope(&name, |cx| {
+        let mut element = cx.build(render);
+        if virtual_row {
+            element = element.shrink(0.0);
+        }
+        let node = build_el(cx, element, target.component, Some(identity.clone()), None);
+        let feedback = virtual_row.then(|| {
+            let (geometry, pinned) = cx.build(|cx| (cx.signal(None::<LayoutBox>), cx.signal(false)));
+            cx.observe_geometry(node, geometry);
+            cx.observe_pinned(node, pinned);
+            RowObservation { geometry, pinned }
+        });
+        (node, feedback)
+    });
     (MountedRow { scope, node: node_handle(cx, node), identity }, feedback)
 }
 
 /// Mounts one retained element per business key. Moves keep the existing row and child scope.
 /// Row properties can subscribe to `RowSignal` to update independently of the row order.
 #[track_caller]
-pub fn each<K, T>(list: impl IntoReadList<K, T>, mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + 'static) -> View
+pub fn each<K, T>(list: impl IntoReadList<K, T>, render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + 'static) -> View
 where
     K: Clone + Eq + Hash + Display + 'static,
     T: 'static,
 {
-    let list = list.into_read_list();
+    each_rows(list.into_read_list(), Box::new(render))
+}
+
+#[inline(never)]
+fn each_rows<K, T>(list: ReadList<K, T>, mut render: Box<RenderRow<K, T>>) -> View
+where
+    K: Clone + Eq + Hash + Display + 'static,
+    T: 'static,
+{
     View::region(move |cx, target| {
         let region = next_region();
         let mut entries = FxHashMap::<K, MountedRow>::default();
@@ -95,8 +109,12 @@ where
                     let mut identities = entries.values().map(|row| row.identity.clone()).collect();
                     for key in keys {
                         if !entries.contains_key(key) {
-                            let identity = row_identity(region, key, &mut identities);
-                            let (row, ()) = build_row(cx, &target, identity, key, list, &mut render, |_, _| ());
+                            let identity = row_identity(region, key.to_string(), &mut identities);
+                            let mut build = |cx: &mut BuildCx<'_>| {
+                                let item = cx.row_signal(list, key.clone());
+                                render(cx, key, item)
+                            };
+                            let (row, _) = build_row(cx, &target, identity, &mut build, false);
                             entries.insert(key.clone(), row);
                         }
                     }
@@ -319,7 +337,7 @@ where
     K: Clone + Eq + Hash + Display + 'static,
     T: 'static,
 {
-    virtual_rows(list, options, render, None)
+    virtual_rows(list.into_read_list(), options, Box::new(render), None)
 }
 
 /// Mounts a virtual list that can copy a selection across unmounted rows.
@@ -335,14 +353,14 @@ where
     K: Clone + Eq + Hash + Display + 'static,
     T: 'static,
 {
-    virtual_rows(list, options, render, Some(Box::new(copy_text)))
+    virtual_rows(list.into_read_list(), options, Box::new(render), Some(Box::new(copy_text)))
 }
 
-#[track_caller]
+#[inline(never)]
 fn virtual_rows<K, T>(
-    list: impl IntoReadList<K, T>,
+    list: ReadList<K, T>,
     mut options: VirtualOptions,
-    mut render: impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El + 'static,
+    mut render: Box<RenderRow<K, T>>,
     copy_text: Option<Box<RowText<K, T>>>,
 ) -> View
 where
@@ -352,7 +370,6 @@ where
     if !options.estimated_row_height.is_finite() || options.estimated_row_height <= 0.0 {
         options.estimated_row_height = VirtualOptions::default().estimated_row_height;
     }
-    let list = list.into_read_list();
     View::region(move |cx, target| {
         cx.with_scope(|cx| {
             let parent = target.siblings.parent.clone();
@@ -402,7 +419,7 @@ where
                 move |r| source.borrow_mut().plan(r, list, options),
                 move |cx, plan| {
                     let mut rows = rows.borrow_mut();
-                    apply_plan(cx, &target, &mut rows, list, plan, &mut render);
+                    apply_plan(cx, &target, &mut rows, list, plan, render.as_mut());
                 },
             );
         });
@@ -415,7 +432,7 @@ fn apply_plan<K, T>(
     state: &mut VirtualRows<K>,
     list: ReadList<K, T>,
     plan: &Plan<K>,
-    render: &mut impl FnMut(&mut BuildCx<'_>, &K, RowSignal<T>) -> El,
+    render: &mut RenderRow<K, T>,
 ) where
     K: Clone + Eq + Hash + Display + 'static,
     T: 'static,
@@ -445,14 +462,13 @@ fn apply_plan<K, T>(
             nodes.push(gap.node.clone());
         }
         if !state.rows.contains_key(key) {
-            let identity = row_identity(state.region, key, &mut identities);
-            let mut fixed_height = |cx: &mut BuildCx<'_>, key: &K, item| render(cx, key, item).shrink(0.0);
-            let (row, (geometry, pinned)) = build_row(cx, target, identity, key, list, &mut fixed_height, |cx, node| {
-                let (geometry, pinned) = cx.build(|cx| (cx.signal(None::<LayoutBox>), cx.signal(false)));
-                cx.observe_geometry(node, geometry);
-                cx.observe_pinned(node, pinned);
-                (geometry, pinned)
-            });
+            let identity = row_identity(state.region, key.to_string(), &mut identities);
+            let mut build = |cx: &mut BuildCx<'_>| {
+                let item = cx.row_signal(list, key.clone());
+                render(cx, key, item)
+            };
+            let (row, feedback) = build_row(cx, target, identity, &mut build, true);
+            let RowObservation { geometry, pinned } = feedback.expect("virtual rows observe geometry and pinning");
             state.rows.insert(key.clone(), Resident { row, geometry, pinned });
             added_rows = true;
         }

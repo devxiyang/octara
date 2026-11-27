@@ -9,11 +9,12 @@ mod presentation;
 
 use self::cache::Cache;
 use crate::layout::LayoutEngine;
+use crate::paint::paint_icon;
 use octara_model::CacheLine;
 use octara_model::geometry::{Align, Point, Rect, Size};
 use octara_model::paint::{CanvasText, FontData, FontFace, FontId, Glyph, GlyphRun, Item, Quad};
 use octara_model::semantics::TextClip;
-use octara_model::text::{InlineAttachment, RichSpan, TextAlign, TextGeometry, TextLine, TextStyle, Wrap};
+use octara_model::text::{InlineAttachment, InlineContent, RichSpan, TextAlign, TextGeometry, TextLine, TextStyle, Wrap};
 use octara_model::theme::{Color, ColorToken};
 use octara_tree::{DirtyBitmap, NodeId, RetiredNode, Tree, TreeDelta};
 use parley::fontique::{Blob, Collection, CollectionOptions, FallbackKey, GenericFamily, Script, SourceCache};
@@ -64,7 +65,7 @@ impl Shape {
 struct ShapeStyle {
     family: &'static str,
     font_size: f32,
-    line_height: f32,
+    line_height: Option<f32>,
     weight: u16,
     italic: bool,
     underline: bool,
@@ -78,7 +79,7 @@ impl From<TextStyle> for ShapeStyle {
         Self {
             family: style.family,
             font_size: style.font_size,
-            line_height: style.line_height,
+            line_height: Some(style.line_height),
             weight: style.weight,
             italic: style.italic,
             underline: style.underline,
@@ -165,6 +166,7 @@ struct Presentation {
     decorations: Vec<Decoration>,
     padding: Vec<SpanEdge>,
     attachments: Vec<(usize, Rect)>,
+    pills: Vec<PillPaint>,
     size: Size,
     clip: Option<TextClip>,
 }
@@ -173,6 +175,12 @@ struct SpanEdge {
     brush: u16,
     anchor: usize,
     rect: Rect,
+}
+
+struct PillPaint {
+    index: usize,
+    rect: Rect,
+    glyphs: Vec<Run>,
 }
 
 struct Decoration {
@@ -398,7 +406,7 @@ impl TextEngine {
             (
                 style.family,
                 style.font_size.to_bits(),
-                style.line_height.to_bits(),
+                style.line_height.map(f32::to_bits),
                 style.weight,
                 style.italic,
                 style.underline,
@@ -433,13 +441,16 @@ impl TextEngine {
             return entry.shape.clone();
         }
         self.work.shapes_built += 1;
-        let (shaped_text, inline) = inline::Box::project(text, spans, attachments, offset, first);
-        let mut builder = self.layouts.ranged_builder(&mut self.fonts, &shaped_text, 1.0, true);
+        let (shaped_text, inline) = inline::Box::project(text, spans, attachments, (offset, first), self, style);
+        // A pill label retains its fractional metrics inside the enclosing paragraph.
+        let mut builder = self.layouts.ranged_builder(&mut self.fonts, &shaped_text, 1.0, style.line_height.is_some());
         builder.push_default(StyleProperty::Brush(0));
         builder.push_default(StyleProperty::FontFamily(style.family.into()));
         builder.push_default(StyleProperty::FontSize(style.font_size));
         builder.push_default(StyleProperty::FontWeight(FontWeight::new(f32::from(style.weight))));
-        builder.push_default(StyleProperty::LineHeight(parley::LineHeight::Absolute(style.line_height)));
+        if let Some(height) = style.line_height {
+            builder.push_default(StyleProperty::LineHeight(parley::LineHeight::Absolute(height)));
+        }
         if style.italic {
             builder.push_default(StyleProperty::FontStyle(parley::FontStyle::Italic));
         }
@@ -466,8 +477,10 @@ impl TextEngine {
             }
             if let Some(size) = span.size {
                 builder.push(StyleProperty::FontSize(size), range.clone());
-                let ratio = style.line_height / style.font_size.max(1.0);
-                builder.push(StyleProperty::LineHeight(parley::LineHeight::FontSizeRelative(ratio)), range.clone());
+                if let Some(height) = style.line_height {
+                    let ratio = height / style.font_size.max(1.0);
+                    builder.push(StyleProperty::LineHeight(parley::LineHeight::FontSizeRelative(ratio)), range.clone());
+                }
             }
             if let Some(weight) = span.weight {
                 builder.push(StyleProperty::FontWeight(FontWeight::new(f32::from(weight))), range.clone());
@@ -972,9 +985,13 @@ impl TextEngine {
         let Some(text) = self.projected.get(&node).map(|projected| &projected.paint) else { return Vec::new() };
         let mut items = Vec::new();
         let theme = tree.theme_at(node);
-        let mut foreground = tree.visual(node).text;
+        let text_color = tree.visual(node).text;
+        let mut foreground = text_color;
         let editor = tree.editor(node);
-        let rich = tree.text(node).map_or_else(|| editor.map_or(&[][..], |editor| editor.decorations()), |text| text.runs.as_slice());
+        let (rich, attachments) = tree.text(node).map_or_else(
+            || editor.map_or((&[][..], &[][..]), |editor| (editor.decorations(), editor.attachments())),
+            |text| (text.runs.as_slice(), text.attachments.as_slice()),
+        );
         let origin = text.local_origin;
         let theme_color = |token| theme.get(token);
         let selection_color = || {
@@ -1005,6 +1022,28 @@ impl TextEngine {
                 })
             }));
         }
+        let pills = || {
+            text.presentation.pills.iter().filter_map(|paint| {
+                let InlineContent::Pill(pill) = &attachments.get(paint.index)?.content else { return None };
+                let rect = geometry::translate(paint.rect, origin);
+                (!rect.is_empty()).then_some((paint, pill, rect, pill.style.normalized()))
+            })
+        };
+        for (_, _, rect, style) in pills() {
+            let fill = style.background.map(|color| color.resolve(theme).0);
+            let border = style.border_color.map(|color| color.resolve(theme).0);
+            if fill.is_some() || border.is_some() {
+                items.push(Item::Quad(Quad {
+                    source: node,
+                    rect,
+                    radius: rect.corner_radii([style.radius; 4]),
+                    fill,
+                    gradient: None,
+                    border: [f32::from(border.is_some()); 4],
+                    border_color: border.unwrap_or(Color::TRANSPARENT),
+                }));
+            }
+        }
         if let Some(editor) = editor {
             let displayed = editor.composition().map_or(editor.value(), |composition| composition.text());
             if displayed.is_empty() {
@@ -1031,6 +1070,18 @@ impl TextEngine {
         }
         let color = |index| brush(rich, index).and_then(|span| span.color).map_or(foreground, |color| color.resolve(theme).0);
         items.extend(text.presentation.glyphs.iter().map(|run| run.item(node, color(run.brush), origin)));
+        for (paint, pill, rect, style) in pills() {
+            let range_start = attachments[paint.index].range.start;
+            let color = style
+                .color
+                .or_else(|| rich.iter().rev().filter(|(range, _)| range.contains(&range_start)).find_map(|(_, span)| span.color))
+                .map_or(text_color, |color| color.resolve(theme).0);
+            if let Some(icon) = &pill.icon {
+                let y = rect.y + (rect.h - style.size) * 0.5;
+                paint_icon(node, icon, Rect::new(rect.x + style.padding_x, y, style.size, style.size), color, &mut items);
+            }
+            items.extend(paint.glyphs.iter().map(|run| run.item(node, color, origin)));
+        }
         items
             .extend(text.presentation.decorations.iter().map(|line| quad(node, geometry::translate(line.rect, origin), color(line.brush))));
         if text.clip.is_some() {
@@ -1048,7 +1099,12 @@ impl TextEngine {
 
     pub(crate) fn attachment_bounds(&self, node: NodeId, index: usize) -> Option<Rect> {
         let text = self.projected.get(&node)?;
-        let &(_, rect) = text.paint.presentation.attachments.iter().find(|&&(candidate, _)| candidate == index)?;
+        let presentation = &text.paint.presentation;
+        let rect = presentation
+            .attachments
+            .iter()
+            .find_map(|&(candidate, rect)| (candidate == index).then_some(rect))
+            .or_else(|| presentation.pills.iter().find_map(|pill| (pill.index == index).then_some(pill.rect)))?;
         Some(geometry::translate(rect, text.origin))
     }
 
@@ -1231,6 +1287,76 @@ mod tests {
         assert_eq!((image.w, image.h), (24.0, 30.0));
         assert!((image.x - fragment.rect.x).abs() < 0.01);
         assert!(image.y >= 0.0 && image.bottom() <= presentation.size.height);
+    }
+
+    #[test]
+    fn inline_pills_use_natural_font_metrics_and_keep_logical_geometry() {
+        use octara_model::paint::{Icon, NodeIcon, Path};
+        use octara_model::text::{InlinePill, PillStyle};
+
+        let value = "A aéb B";
+        let source = 2..6;
+        let style = TextStyle { family: "Inter", font_size: 12.0, line_height: 18.0, ..Default::default() };
+        let spans = [Span {
+            range: 3..5,
+            brush: 1,
+            family: None,
+            size: None,
+            weight: None,
+            italic: false,
+            underline: false,
+            strike: false,
+            inset: 4.0,
+        }];
+        let pill_style = PillStyle { size: 20.0, weight: 600, padding_x: 3.5, padding_y: 4.25, gap: 2.75, ..Default::default() };
+        let icon = NodeIcon::new(&Icon::path(Path::rect(Rect::new(4.0, 4.0, 16.0, 16.0))), None);
+        let mut engine = TextEngine::new(false);
+        let mut widths = Vec::new();
+        for label in ["iiii", "WWWW", "WWWW\r\n"] {
+            let pill = InlinePill { icon: Some(icon.clone()), label: label.into(), style: pill_style };
+            let visual_label = pill.layout_label();
+            let mut builder = engine.layouts.ranged_builder(&mut engine.fonts, &visual_label, 1.0, false);
+            builder.push_default(StyleProperty::FontFamily(style.family.into()));
+            builder.push_default(StyleProperty::FontSize(pill_style.size));
+            builder.push_default(StyleProperty::FontWeight(FontWeight::new(f32::from(pill_style.weight))));
+            let mut reference = builder.build(&visual_label);
+            reference.break_all_lines(None);
+            let expected_width = 2.0 * pill_style.padding_x + pill_style.size + pill_style.gap + reference.full_width();
+            let expected_height = 2.0 * pill_style.padding_y + pill_style.size.max(reference.height());
+
+            let attachments = [pill.attachment(source.clone())];
+            let document = Document {
+                paragraphs: engine.paragraphs(value, style, &spans, &attachments, true),
+                style,
+                offsets: Vec::new(),
+                placeholder: false,
+            };
+            let drawing = engine.present(&document, None);
+            assert_eq!(drawing.lines.len(), 1);
+            assert_eq!(drawing.pills.len(), 1);
+            assert!(drawing.padding.is_empty());
+            let paint = &drawing.pills[0];
+            assert!(paint.glyphs.iter().flat_map(|run| run.glyphs.iter()).all(|glyph| glyph.source_end == 0));
+            assert!((paint.rect.w - expected_width).abs() < 0.01);
+            assert!((paint.rect.h - expected_height).abs() < 0.01);
+            widths.push(paint.rect.w);
+            let glyph_baseline = |run: &Run| run.offset.y + run.glyphs[0].y;
+            assert!((glyph_baseline(&drawing.glyphs[0]) - glyph_baseline(&paint.glyphs[0])).abs() < 0.01);
+
+            let selection = drawing.range_rects(&source, None);
+            assert_eq!(selection.len(), 1);
+            assert!((selection[0].w - paint.rect.w).abs() < 0.01);
+            let geometry = TextGeometry { origin: Point::default(), lines: drawing.lines.clone() };
+            assert_eq!(geometry::hit_byte(&geometry, Point::new(paint.rect.x + 1.0, paint.rect.y)), Some(source.start));
+            assert_eq!(geometry::hit_byte(&geometry, Point::new(paint.rect.right() - 1.0, paint.rect.y)), Some(source.end));
+
+            let wrapped = engine.present(&document, Some(paint.rect.w + 0.5));
+            assert!(wrapped.lines.len() > 1);
+            assert_eq!(wrapped.pills.len(), 1);
+            assert_eq!(wrapped.pills[0].rect.w, paint.rect.w);
+        }
+        assert!(widths[0] < widths[1]);
+        assert!(widths[1] < widths[2]);
     }
 
     #[test]

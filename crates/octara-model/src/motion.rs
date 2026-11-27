@@ -17,6 +17,20 @@ pub struct TextReveal {
     pub kind: TextRevealKind,
     pub revealed_bytes: usize,
     pub finished: bool,
+    /// The prefix that is already visible and should remain fully opaque.
+    pub visible_bytes: usize,
+    /// Enables this reveal even when reduced motion is active.
+    pub allow_reduced_motion: bool,
+}
+
+impl TextReveal {
+    pub const fn new(kind: TextRevealKind, revealed_bytes: usize, finished: bool) -> Self {
+        Self { kind, revealed_bytes, finished, visible_bytes: 0, allow_reduced_motion: false }
+    }
+
+    pub fn enabled(self, reduced_motion: bool) -> bool {
+        !reduced_motion || self.allow_reduced_motion
+    }
 }
 
 /// A timestamped reveal shared by native paint and browser projection.
@@ -40,7 +54,8 @@ impl TextRevealTrack {
                     TextRevealKind::Gradient { .. } => previous.frontier(now),
                 },
             );
-        Self { reveal, from: from.min(reveal.revealed_bytes as f64), start: now }
+        let from = from.max(reveal.visible_bytes as f64).min(reveal.revealed_bytes as f64);
+        Self { reveal, from, start: now }
     }
 
     fn frontier(self, now: f64) -> f64 {
@@ -56,7 +71,7 @@ impl TextRevealTrack {
     }
 
     pub fn rest_at(self) -> Option<f64> {
-        if self.reveal.finished || self.reveal.revealed_bytes == 0 {
+        if self.reveal.finished || self.reveal.revealed_bytes <= self.reveal.visible_bytes {
             return None;
         }
         match self.reveal.kind {
@@ -87,6 +102,9 @@ impl TextRevealTrack {
         }
         if byte_end > self.reveal.revealed_bytes {
             return 0.0;
+        }
+        if byte_end <= self.reveal.visible_bytes {
+            return 1.0;
         }
         let Some(rest) = self.rest_at().filter(|rest| now < *rest) else { return 1.0 };
         let byte_end = byte_end as f64;
@@ -412,11 +430,7 @@ mod tests {
 
     #[test]
     fn reveal_frontier_retargets_from_the_sampled_position() {
-        let mut reveal = TextReveal {
-            kind: TextRevealKind::Gradient { trail_bytes: 4, tint: None, glide_bytes_per_sec: 16.0 },
-            revealed_bytes: 8,
-            finished: false,
-        };
+        let mut reveal = TextReveal::new(TextRevealKind::Gradient { trail_bytes: 4, tint: None, glide_bytes_per_sec: 16.0 }, 8, false);
         let first = TextRevealTrack::update(None, reveal, 0.0);
         assert_eq!(first.opacity(6, 0.5), 0.5);
         reveal.revealed_bytes = 16;

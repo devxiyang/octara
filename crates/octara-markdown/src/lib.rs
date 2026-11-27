@@ -115,7 +115,8 @@ impl<F: FnMut(&mut ReadCx<'_>) -> String + 'static> IntoMarkdown for F {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StreamingOptions {
     pub filter: StreamingFilter,
-    pub effects: StreamingEffects,
+    /// Overrides the scoped renderer's reveal effect when present.
+    pub effects: Option<StreamingEffects>,
     /// Batches recent input into words and table rows. Set to false to render
     /// source edits in the same turn while keeping the streaming filter and reveal.
     pub pace: bool,
@@ -123,7 +124,7 @@ pub struct StreamingOptions {
 
 impl Default for StreamingOptions {
     fn default() -> Self {
-        Self { filter: StreamingFilter::default(), effects: StreamingEffects::None, pace: true }
+        Self { filter: StreamingFilter::default(), effects: None, pace: true }
     }
 }
 
@@ -178,7 +179,7 @@ pub fn markdown_with(build: &mut BuildCx<'_>, source: impl IntoMarkdown, config:
 pub fn markdown_stream(build: &mut BuildCx<'_>, source: TextBuffer, finished: ReadSignal<bool>, options: StreamingOptions) -> El {
     let renderer = scoped_renderer(build);
     let (buffer, finished) = if options.pace { pace(build, source, finished) } else { (source, finished) };
-    markdown_document(build, Source::Buffer(buffer), renderer, Some(finished), options.filter, Some(options.effects))
+    markdown_document(build, Source::Buffer(buffer), renderer, Some(finished), options.filter, options.effects)
 }
 
 enum StreamEdit {
@@ -302,7 +303,19 @@ fn markdown_document(
         source.with(r, |text| cache.update(text, finished, appended))
     });
     let overlay = build.memo(move |r| r.with(rendered, |rendered| rendered.overlay.clone()));
-    let effects = if streaming { effects.unwrap_or_else(|| renderer.streaming_effects()) } else { StreamingEffects::None };
+    let effects = (streaming && effects != Some(StreamingEffects::None)).then(|| {
+        let renderer = renderer.clone();
+        let preferences = build.system_preferences();
+        let allow_reduced_motion = renderer.allow_reduced_motion_effects();
+        build.memo(move |read| {
+            let effect = if !allow_reduced_motion && read.get(preferences).reduced_motion {
+                StreamingEffects::None
+            } else {
+                effects.unwrap_or_else(|| renderer.streaming_effects(read))
+            };
+            (effect, allow_reduced_motion)
+        })
+    });
     let context = RenderContext::new(
         renderer.clone(),
         theme,

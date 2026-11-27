@@ -76,9 +76,10 @@ impl TextRecognizer {
         Self::default()
     }
 
-    /// Enables path candidates such as `src/main.rs`, `./Makefile`, and `main.rs:42:8`.
+    /// Enables path candidates such as `src/main.rs`, `./Makefile#L10-L20`, and
+    /// `main.rs:42:8`. Line fragments can specify a single line or a range.
     /// A path without an explicit root or relative prefix needs a separator and an
-    /// extension, or a `:line` suffix. Names support letters, digits, underscores,
+    /// extension, or a line location. Names support letters, digits, underscores,
     /// hyphens, and periods.
     pub fn file_paths(mut self, resolve: impl Fn(&str) -> Option<String> + Send + Sync + 'static) -> Self {
         self.file = Some(Arc::new(resolve));
@@ -119,7 +120,9 @@ impl TextRecognizer {
                         .map_or(text.len(), |end| marker.end() + end);
                     continue;
                 }
-                "#" => (self.issue.as_ref().and_then(|_| marked_range(text, start, issue_char)), &self.issue),
+                "#" if self.file.is_none() || !text[marker.end()..].starts_with('L') || !text[..start].ends_with(path_char) => {
+                    (self.issue.as_ref().and_then(|_| marked_range(text, start, issue_char)), &self.issue)
+                }
                 "@" => (self.mention.as_ref().and_then(|_| marked_range(text, start, word_char)), &self.mention),
                 _ if self.file.is_some() => {
                     let token = path_token(text, start);
@@ -189,7 +192,7 @@ fn path_char(ch: char) -> bool {
 
 fn path_token(text: &str, marker: usize) -> Range<usize> {
     let start = text[..marker].char_indices().rev().find(|&(_, ch)| !path_char(ch)).map_or(0, |(index, ch)| index + ch.len_utf8());
-    let end = text[marker..].find(|ch| !path_char(ch)).map_or(text.len(), |end| marker + end);
+    let end = text[marker..].find(|ch| !path_char(ch) && ch != '#').map_or(text.len(), |end| marker + end);
     start..end
 }
 
@@ -198,14 +201,20 @@ fn file_range(text: &str, token: Range<usize>) -> Option<Range<usize>> {
         return None;
     }
     let raw = text[token.clone()].trim_end_matches(['.', ':']);
-    let drive = matches!(raw.as_bytes(), [letter, b':', b'/' | b'\\', ..] if letter.is_ascii_alphabetic());
-    let path_and_location = if drive { &raw[2..] } else { raw };
+    let (path_and_location, fragment) = match raw.split_once('#') {
+        Some((path, fragment)) if valid_line_fragment(fragment) => (path, true),
+        Some(_) => return None,
+        None => (raw, false),
+    };
+    let drive = matches!(path_and_location.as_bytes(), [letter, b':', b'/' | b'\\', ..] if letter.is_ascii_alphabetic());
+    let path_and_location = if drive { &path_and_location[2..] } else { path_and_location };
     let mut fields = path_and_location.split(':');
     let path = fields.next()?;
     let line = fields.next();
     let column = fields.next();
     if fields.next().is_some()
-        || [line, column].into_iter().flatten().any(|field| field.is_empty() || !field.chars().all(issue_char))
+        || [line, column].into_iter().flatten().any(|field| !line_digits(field))
+        || (fragment && line.is_some())
         || path.contains("//")
     {
         return None;
@@ -217,7 +226,19 @@ fn file_range(text: &str, token: Range<usize>) -> Option<Range<usize>> {
     }
     let qualified = matches!(path.split_once(['/', '\\']), Some(("" | "." | ".." | "~", _)));
     let has_extension = name.rsplit_once('.').is_some_and(|(_, extension)| extension.chars().any(char::is_alphabetic));
-    if qualified || line.is_some() || (!parent.is_empty() && has_extension) { Some(token.start..token.start + raw.len()) } else { None }
+    (qualified || line.is_some() || fragment || (!parent.is_empty() && has_extension)).then_some(token.start..token.start + raw.len())
+}
+
+fn valid_line_fragment(fragment: &str) -> bool {
+    let Some(fragment) = fragment.strip_prefix('L') else { return false };
+    match fragment.split_once('-') {
+        Some((start, end)) => line_digits(start) && line_digits(end.strip_prefix('L').unwrap_or(end)),
+        None => line_digits(fragment),
+    }
+}
+
+fn line_digits(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(issue_char)
 }
 
 #[cfg(test)]
@@ -277,5 +298,26 @@ mod tests {
             links.iter().map(|link| &text[link.range.clone()]).collect::<Vec<_>>(),
             ["/home/app", "./Makefile", "../../README:40", "~/app/.env", r"C:\src\app.rs:5", "main.rs:42"]
         );
+    }
+
+    #[test]
+    fn paths_cover_line_fragments_and_ranges() {
+        let recognizer = TextRecognizer::new().file_paths(|path| Some(format!("file:{path}"))).issues(|issue| Some(issue.into()));
+        let text = "🦀 (./Cargo.toml#L10-L20), src/主要.rs#L42, main.rs#L5-7. Makefile#L2 and #128";
+        let links = recognizer.recognize(text);
+        let result: Vec<_> = links.iter().map(|link| (&text[link.range.clone()], link.url.as_ref())).collect();
+        assert_eq!(
+            result,
+            [
+                ("./Cargo.toml#L10-L20", "file:./Cargo.toml#L10-L20"),
+                ("src/主要.rs#L42", "file:src/主要.rs#L42"),
+                ("main.rs#L5-7", "file:main.rs#L5-7"),
+                ("Makefile#L2", "file:Makefile#L2"),
+                ("#128", "#128"),
+            ],
+        );
+
+        let malformed = "src/lib.rs#L src/lib.rs#L4- src/lib.rs#L4-L src/lib.rs#L4-L5x src/lib.rs#note src/lib.rs:2#L5 https://example.test/src/lib.rs#L2";
+        assert!(recognizer.recognize(malformed).is_empty());
     }
 }

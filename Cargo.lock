@@ -2570,7 +2570,7 @@ dependencies = [
 
 [[package]]
 name = "octara"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "octara-macros",
  "octara-model",
@@ -2586,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "octara-chat"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "octara",
  "octara-host-native",
@@ -2603,7 +2603,7 @@ dependencies = [
 
 [[package]]
 name = "octara-cli"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "clap",
  "flate2",
@@ -2626,7 +2626,7 @@ dependencies = [
 
 [[package]]
 name = "octara-examples"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "objc2-foundation 0.3.2",
  "octara",
@@ -2647,11 +2647,11 @@ dependencies = [
 
 [[package]]
 name = "octara-fonts"
-version = "0.0.6"
+version = "0.0.7"
 
 [[package]]
 name = "octara-gpu"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "octara-model",
  "octara-render",
@@ -2661,7 +2661,7 @@ dependencies = [
 
 [[package]]
 name = "octara-headless"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "octara",
  "octara-inspect",
@@ -2670,7 +2670,7 @@ dependencies = [
 
 [[package]]
 name = "octara-host-native"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "accesskit_winit",
  "arboard",
@@ -2710,7 +2710,7 @@ dependencies = [
 
 [[package]]
 name = "octara-host-web"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "js-sys",
  "octara",
@@ -2728,7 +2728,7 @@ dependencies = [
 
 [[package]]
 name = "octara-icons"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "octara",
  "octara-model",
@@ -2741,7 +2741,7 @@ dependencies = [
 
 [[package]]
 name = "octara-inspect"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "js-sys",
  "octara",
@@ -2757,7 +2757,7 @@ dependencies = [
 
 [[package]]
 name = "octara-kit"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "octara",
  "octara-headless",
@@ -2767,7 +2767,7 @@ dependencies = [
 
 [[package]]
 name = "octara-macros"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2776,7 +2776,7 @@ dependencies = [
 
 [[package]]
 name = "octara-markdown"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -2790,7 +2790,7 @@ dependencies = [
 
 [[package]]
 name = "octara-model"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "bitflags 2.13.2",
  "color",
@@ -2804,7 +2804,7 @@ dependencies = [
 
 [[package]]
 name = "octara-pipeline"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "accesskit",
  "color",
@@ -2824,7 +2824,7 @@ dependencies = [
 
 [[package]]
 name = "octara-release"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "reqwest",
  "ring",
@@ -2836,7 +2836,7 @@ dependencies = [
 
 [[package]]
 name = "octara-render"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "bytemuck",
  "color",
@@ -2854,7 +2854,7 @@ dependencies = [
 
 [[package]]
 name = "octara-runtime"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "octara-model",
  "octara-tree",
@@ -2867,7 +2867,7 @@ dependencies = [
 
 [[package]]
 name = "octara-svg"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "kurbo",
  "octara-model",
@@ -2876,7 +2876,7 @@ dependencies = [
 
 [[package]]
 name = "octara-tree"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "bitflags 2.13.2",
  "octara-model",

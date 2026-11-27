@@ -661,6 +661,9 @@ impl Builder<'_> {
             TagEnd::CodeBlock => {
                 if let Some(Code { info, mut text, fence, body_start, text_end }) = self.code.take() {
                     let lang = info.split(|c: char| c.is_whitespace() || c == ',').next().unwrap_or("").to_owned();
+                    if text.contains('\r') {
+                        text = text.replace("\r\n", "\n").replace('\r', "\n");
+                    }
                     if text.ends_with('\n') {
                         text.pop();
                     }

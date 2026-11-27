@@ -135,3 +135,22 @@ Keep `Ask` (native filesystem path dialogs) and `ServiceRequest` (cross-platform
 | --- | --- | --- |
 | **Wave 1: Core Mechanisms (M1–M4)** | Dual-parent `logical_parent`/`logical_portals` inheritance & invalidation; reactive `WindowPresentation` (`theme`/`material`/`title`) + GPU clear color + macOS `NSWindow.appearance`/Vibrancy + `AppStatus` (badge/attention) + `WindowViewport.keyboard_inset` (iOS); unified `ClipboardItem`/`PasteEvent`/`HandlerKind::Paste` + `ServiceRequest::ReadClipboard` + `Ask::pick_directory`; `LinkEvent.modifiers` & selection-only suppression; ordered SPSC `TextStreamOp` + `drain_text_stream`; Layer-1 `hovered_tooltip` + Layer-2 `WindowTooltipLayer` | Portal theme inheritance & invalidation tests (including `MarkdownComposer` dark-mode popup); reactive theme/material/title & GPU clear-color parity tests; paste bubbling & privacy trace redaction tests; modified link click vs. `Shift+Click` selection tests; FIFO `TextStreamOp` + `drain_text_stream` tests; DST deterministic hover tooltip tests; layers, strict Clippy, dual Wasm & `ios-sim` green |
 | **Wave 2: Inline Primitives, Markdown, `__eh_frame` & `0.0.7` Release (M5)** | Layer-0 `InlineContent::Pill` (Parley real-metric Native + inline-flex Web), delete `0.70 em` heuristic; `file_paths` `#L10-L20`; `MarkdownComposer` rich `Completion` + custom row builder; reactive `streaming_effects(&mut ReadCx)` + `reduced_motion` + `CodeHighlighter` CRLF normalization; thin-wrapper `__eh_frame` outlining with before/after byte measurement; bump all 21 workspace members to `0.0.7`, refresh `api.json.gz` & `skills/octara/` | Real-metric `InlineContent::Pill` Native CPU↔GPU parity & Web DOM tests; `#L10-L20` recognizer tests; rich completion & reactive `reduced_motion` tests; measured `__eh_frame` reduction report; all 9/9 release gates (`check_layers`, Clippy `-D warnings`, 4× Wasm, `ios-sim`, `octara-markdown --all-features`, `OCTARA_VERIFY_RELEASE_API=1 cargo test --workspace`, `octara-cli --doc`, 19/19 `cargo publish --workspace --dry-run`) green |
+
+## 4. Debug Unwind Size
+
+Measured on `aarch64-apple-darwin` with Rust 1.100.0 from Wave 1 (`e18b35c`) through Wave 2. Both builds used the workspace's standard debug profile and the same set of test targets.
+
+```sh
+env -u CARGO_INCREMENTAL -u CARGO_PROFILE_DEV_DEBUG \
+  cargo test -p octara-chat -p octara-examples --no-run --message-format=json
+xcrun size -m <test-executable>
+```
+
+Sum the two Mach-O sections across Cargo's test-profile executable artifacts. All measurements are in bytes.
+
+| Package | Test executables | `__eh_frame` before → after | `__unwind_info` before → after | Combined before → after | Combined reduction |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `apps/chat` | 9 | 22,336,812 → 22,232,384 | 3,977,288 → 3,955,720 | 26,314,100 → 26,188,104 | 125,996 B (0.48%) |
+| `examples` | 18 | 12,397,716 → 12,323,632 | 2,188,664 → 2,173,888 | 14,586,380 → 14,497,520 | 88,860 B (0.61%) |
+
+The `chat` harness dropped from 4,398,236 to 4,359,932 bytes combined. The `acceptance` harness dropped from 5,014,456 to 4,901,728 bytes. The `rich_text` harness gained 21,888 bytes and now includes the CPU and GPU comparison for the inline pill.

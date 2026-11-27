@@ -1,6 +1,6 @@
 //! Element builders and their transaction writes.
 
-use super::behavior::Behavior;
+use super::behavior::{Behavior, Handler};
 use super::control::{OverlayBinding, Portal};
 use super::prop::{IntoProp, Prop, ReadValue};
 use super::style::{StylePatch, Styled, TwStyle};
@@ -115,13 +115,24 @@ struct ElementProps {
 
 macro_rules! prop_setters {
     ($($name:ident($value:ty) => $field:ident),* $(,)?) => {$(
+        #[inline(never)]
         fn $name(&mut self, value: $value) {
             self.$field = Some(value);
         }
     )*};
 }
 
+impl EditorContent {
+    prop_setters! {
+        set_value(Prop<String>) => value,
+        set_rich(Prop<EditorRichText>) => rich,
+        set_placeholder(Prop<Arc<str>>) => placeholder,
+        set_secure(Prop<bool>) => secure,
+    }
+}
+
 impl ElementProps {
+    #[inline(never)]
     fn boxed(content: Content, origin: &'static Location<'static>) -> Box<Self> {
         Box::new(Self {
             content,
@@ -163,6 +174,7 @@ impl ElementProps {
         set_paint((PaintProgram, Prop<PaintInput>)) => custom_paint,
         set_transition_paint((PaintProgram, Prop<u64>, Curve)) => transition_paint,
         set_scroll(Signal<Vec2>) => scroll,
+        set_text_reveal(Prop<Option<octara_model::motion::TextReveal>>) => text_reveal,
         set_copy_selection(CopySelection) => copy_selection,
         set_disabled(Prop<bool>) => disabled,
         set_key_context(Arc<str>) => key_context,
@@ -171,6 +183,7 @@ impl ElementProps {
         set_native_props(Prop<serde_json::Value>) => native_props,
     }
 
+    #[inline(never)]
     fn set_theme_patch(&mut self, patch: Prop<ThemePatch>) {
         self.theme_patch = Some(Box::new(patch));
     }
@@ -190,41 +203,48 @@ impl ElementProps {
         }
     }
 
+    #[inline(never)]
     fn push_style(&mut self, entry: StyleEntry) {
         self.styles.push(entry);
     }
 
+    #[inline(never)]
     fn push_styles(&mut self, properties: &[StyleProp]) {
         self.styles.extend(properties.iter().copied().map(StyleEntry::Static));
     }
 
-    fn push_override(&mut self, condition: When, properties: Vec<StyleProp>) {
-        self.overrides.push((condition, properties));
+    #[inline(never)]
+    fn push_override(&mut self, condition: When, patch: StylePatch) {
+        self.overrides.push((condition, patch.0.into_vec()));
     }
 
     fn configure_override(&mut self, condition: When, configure: StyleOverride) {
-        self.push_override(condition, configure(StylePatch::default()).0.into_vec());
+        self.push_override(condition, configure(StylePatch::default()));
     }
 
     fn push_tw(&mut self, style: TwStyle) {
         self.push_styles(style.base);
         for &(condition, properties) in style.overrides {
-            self.push_override(condition, properties.to_vec());
+            self.overrides.push((condition, properties.to_vec()));
         }
     }
 
+    #[inline(never)]
     fn push_child(&mut self, child: View) {
         self.children.push(child);
     }
 
+    #[inline(never)]
     fn push_children(&mut self, children: &mut dyn Iterator<Item = View>) {
         self.children.extend(children);
     }
 
+    #[inline(never)]
     fn static_semantics(&mut self) -> &mut SemanticsSlot {
         &mut self.semantics.get_or_insert_with(Box::default).authored
     }
 
+    #[inline(never)]
     fn push_semantic_binding(&mut self, read: ReadSemantics) {
         self.semantics.get_or_insert_with(Box::default).dynamic.push(read);
     }
@@ -242,6 +262,7 @@ impl ElementProps {
         self.set_flag(NodeFlags::SELECT_NONE, !enabled);
     }
 
+    #[inline(never)]
     fn extend_disabled(&mut self, mut value: Prop<bool>) {
         self.disabled = Some(match self.disabled.take() {
             Some(Prop::Static(true)) => Prop::Static(true),
@@ -256,10 +277,12 @@ impl ElementProps {
         });
     }
 
+    #[inline(never)]
     fn extend_behavior(&mut self, behavior: Behavior) {
         self.behavior.extend(behavior);
     }
 
+    #[inline(never)]
     fn prepend_behavior(&mut self, mut behavior: Behavior) {
         behavior.extend(mem::take(&mut self.behavior));
         self.behavior = behavior;
@@ -277,10 +300,12 @@ impl ElementProps {
         self.drag_drop.get_or_insert_with(Box::default).keyboard = true;
     }
 
+    #[inline(never)]
     fn push_command(&mut self, command: Command) {
         self.commands.push(command);
     }
 
+    #[inline(never)]
     fn push_portal(&mut self, portal: Portal) {
         self.portals.push(portal);
     }
@@ -327,7 +352,13 @@ pub fn spacer() -> El {
 
 #[track_caller]
 pub fn text(value: impl IntoText) -> El {
-    element(Content::Text(value.into_text()))
+    text_content(value.into_text())
+}
+
+#[inline(never)]
+#[track_caller]
+fn text_content(value: TextContent) -> El {
+    element(Content::Text(value))
 }
 
 #[track_caller]
@@ -469,7 +500,7 @@ impl<C> El<C> {
     }
 
     pub fn when(mut self, condition: impl Into<When>, style: impl FnOnce(StylePatch) -> StylePatch) -> Self {
-        self.props.push_override(condition.into(), style(StylePatch::default()).0.into_vec());
+        self.props.push_override(condition.into(), style(StylePatch::default()));
         self
     }
 
@@ -716,7 +747,7 @@ impl<C> El<C> {
 
     /// Sets the paint-time reveal frontier on a text element.
     pub fn text_reveal(mut self, value: impl IntoProp<Option<octara_model::motion::TextReveal>>) -> Self {
-        self.props.text_reveal = Some(value.into_prop());
+        self.props.set_text_reveal(value.into_prop());
         self
     }
 
@@ -777,15 +808,20 @@ impl<C> El<C> {
     }
 
     pub fn on(self, kind: HandlerKind, f: impl Fn(&mut WriteCx<'_>, &HandlerEvent<'_>) + 'static) -> Self {
-        self.behavior(|behavior| behavior.on(kind, f))
+        self.handler(Handler::Event(kind, Box::new(f)))
     }
 
     pub fn handle(self, kind: HandlerKind, f: impl Fn(&mut WriteCx<'_>, &HandlerEvent<'_>) -> HandlerOutcome + 'static) -> Self {
-        self.behavior(|behavior| behavior.handle(kind, f))
+        self.handler(Handler::Raw(kind, Box::new(f)))
     }
 
     pub fn on_press(self, f: impl Fn(&mut WriteCx<'_>) + 'static) -> Self {
-        self.behavior(|behavior| behavior.on_press(f))
+        self.handler(Handler::Action(HandlerKind::Press, Box::new(f)))
+    }
+
+    fn handler(mut self, handler: Handler) -> Self {
+        self.props.behavior.push(handler);
+        self
     }
 
     /// Intercepts rich-text link events. A consumed press suppresses default navigation.
@@ -811,7 +847,7 @@ impl<C> El<C> {
     }
 
     pub fn on_double_press(self, f: impl Fn(&mut WriteCx<'_>) + 'static) -> Self {
-        self.on(HandlerKind::DoublePress, move |write, _| f(write))
+        self.handler(Handler::Action(HandlerKind::DoublePress, Box::new(f)))
     }
 
     pub fn on_secondary_press(self, f: impl Fn(&mut WriteCx<'_>, Point) + 'static) -> Self {
@@ -874,7 +910,7 @@ impl<C> El<C> {
     /// Accepts a file drop when this is the closest interactive receiver to the hit node.
     /// Native hosts supply local paths. Browsers supply display names.
     pub fn on_file_drop(self, f: impl Fn(&mut WriteCx<'_>, &[DroppedFile]) + 'static) -> Self {
-        self.behavior(|behavior| behavior.on_file_drop(f))
+        self.handler(Handler::FileDrop(Box::new(f)))
     }
 
     pub fn on_touch_scroll_pre(self, f: impl Fn(&mut WriteCx<'_>, Vec2) -> HandlerOutcome + 'static) -> Self {
@@ -896,28 +932,28 @@ impl<C> El<C> {
     }
 
     pub fn on_toggle(self, f: impl Fn(&mut WriteCx<'_>) + 'static) -> Self {
-        self.behavior(|behavior| behavior.on_toggle(f))
+        self.handler(Handler::Action(HandlerKind::Toggle, Box::new(f)))
     }
 
     pub fn on_key(self, f: impl Fn(&mut WriteCx<'_>, &KeyEvent) -> bool + 'static) -> Self {
-        self.behavior(|behavior| behavior.on_key(f))
+        self.handler(Handler::Key(Box::new(f)))
     }
 
     /// Receives paste gestures targeted at this element or a logical descendant.
     pub fn on_paste(self, f: impl Fn(&mut WriteCx<'_>, &PasteEvent) -> bool + 'static) -> Self {
-        self.behavior(|behavior| behavior.on_paste(f))
+        self.handler(Handler::Paste(Box::new(f)))
     }
 
     pub fn on_focus(self, f: impl Fn(&mut WriteCx<'_>) + 'static) -> Self {
-        self.on(HandlerKind::Focus, move |w, _| f(w))
+        self.handler(Handler::Action(HandlerKind::Focus, Box::new(f)))
     }
 
     pub fn on_blur(self, f: impl Fn(&mut WriteCx<'_>) + 'static) -> Self {
-        self.on(HandlerKind::Blur, move |w, _| f(w))
+        self.handler(Handler::Action(HandlerKind::Blur, Box::new(f)))
     }
 
     pub fn on_hover_change(self, f: impl Fn(&mut WriteCx<'_>, bool) + 'static) -> Self {
-        self.behavior(|behavior| behavior.on_hover_change(f))
+        self.handler(Handler::Hover(Box::new(f)))
     }
 
     pub fn on_command(mut self, name: impl Into<Arc<str>>, f: impl Fn(&mut WriteCx<'_>) + 'static) -> Self {
@@ -932,7 +968,7 @@ impl<C> El<C> {
 
     pub fn layer(mut self, policy: LayerPolicy, dismiss: impl Fn(&mut WriteCx<'_>) + 'static) -> Self {
         self.props.set_layer(policy);
-        self.on(HandlerKind::Dismiss, move |w, _| dismiss(w))
+        self.handler(Handler::Action(HandlerKind::Dismiss, Box::new(dismiss)))
     }
 
     /// Include this element and its owned content in a shared logical layer scope.
@@ -1048,13 +1084,15 @@ impl TextInput {
     }
 
     pub fn value(mut self, value: impl IntoProp<String>) -> Self {
-        self.props.editor().value = Some(value.into_prop());
+        let value = value.into_prop();
+        self.props.editor().set_value(value);
         self
     }
 
     /// Applies rich styling, inline objects and atomic token ranges to the editor value.
     pub fn rich_text(mut self, rich: impl IntoProp<EditorRichText>) -> Self {
-        self.props.editor().rich = Some(rich.into_prop());
+        let rich = rich.into_prop();
+        self.props.editor().set_rich(rich);
         self
     }
 
@@ -1072,12 +1110,14 @@ impl TextInput {
     }
 
     pub fn placeholder(mut self, value: impl IntoProp<Arc<str>>) -> Self {
-        self.props.editor().placeholder = Some(value.into_prop());
+        let value = value.into_prop();
+        self.props.editor().set_placeholder(value);
         self
     }
 
     pub fn secure(mut self, secure: impl IntoProp<bool>) -> Self {
-        self.props.editor().secure = Some(secure.into_prop());
+        let secure = secure.into_prop();
+        self.props.editor().set_secure(secure);
         self
     }
 
@@ -1092,14 +1132,15 @@ impl TextInput {
     }
 
     pub fn on_input(self, f: impl Fn(&mut WriteCx<'_>, &str) + 'static) -> Self {
-        self.behavior(|behavior| behavior.on_input(f))
+        self.handler(Handler::Input(Box::new(f)))
     }
 
     pub fn on_submit(self, f: impl Fn(&mut WriteCx<'_>) + 'static) -> Self {
-        self.behavior(|behavior| behavior.on_submit(f))
+        self.handler(Handler::Action(HandlerKind::Submit, Box::new(f)))
     }
 }
 
+#[inline(never)]
 fn style_entry<T: 'static>(prop: Prop<T>, make_style: fn(T) -> StyleProp) -> StyleEntry {
     match prop {
         Prop::Static(value) => StyleEntry::Static(make_style(value)),
@@ -1107,6 +1148,7 @@ fn style_entry<T: 'static>(prop: Prop<T>, make_style: fn(T) -> StyleProp) -> Sty
     }
 }
 
+#[inline(never)]
 fn set_semantic_prop<T: 'static>(props: &mut ElementProps, prop: Prop<T>, apply: fn(&mut SemanticsSlot, T)) {
     match prop {
         Prop::Static(value) => apply(props.static_semantics(), value),

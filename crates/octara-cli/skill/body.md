@@ -1,4 +1,4 @@
-# 用 Octara 0.0.6 构建和验证应用
+# 用 Octara 0.0.7 构建和验证应用
 
 读这个版本的[入门指南](references/start-here.md)。`octara vocab` 列出 prelude，`octara vocab <name>` 显示应用所用源码中的签名、导入路径和定义，`octara explain <code>` 说明诊断原因。`octara skill install` 生成按模块组织的 [API 索引](references/api/index.md)。
 
@@ -14,8 +14,9 @@
 - 用 `octara_kit::button(label, size, variant)` 指定按钮尺寸和强调。组合自定义控件时，从 `octara_kit::parts` 获取主题样式，从 `octara_kit::headless` 获取行为。用 `build.provide(KitLocale::zh_cn())` 设置作用域内 Kit 控件的中文标签。
 - 选择器用 `headless::Choice` 提供选项，用 `headless::Selection` 声明单选或多选。通过 `PickerOptions` 和行工厂配置列表，通过 `PopupOptions` 配置浮层。`ComboboxOptions` 组合列表、浮层和输入框配置。
 - 用 `markdown_with(build, source, MarkdownConfig::chat())` 定制 Markdown 的解析、排版、链接和代码块。向作用域提供 `Arc<dyn MarkdownRenderer>`，可让多个 `markdown(build, source)` 共享渲染器。`TextBuffer` 支持增量追加，块缓存保留节点与选区。
-- 用 `markdown_stream` 呈现模型输出。通过 `BlockSlotRenderer` 定制思考折叠、代码或图表，用 `LinkVariantRule` 配置链接外观，用 `LinkPillContent` 响应式更新标签和图标。
-- 为 `octara-markdown` 启用 `math`，以矢量方式排版 `$…$` 与 `$$…$$` 并保留可复制的 TeX 源码。可向作用域提供 `Arc<dyn MathRenderer>`。启用 `composer` 后，用 `MarkdownComposer` 配置光标锚定的 `@` 等补全，并将原子提及序列化为 Markdown 链接。
+- 用 `markdown_stream` 呈现模型输出。渐显默认遵循系统的减弱动态效果设置，`MarkdownConfig::streaming_effects_with` 可响应式配置揭示效果。通过 `BlockSlotRenderer` 定制代码或图表，用 `LinkPillContent` 响应式更新链接胶囊的标签和图标。
+- 用 `InlinePill::attachment` 把胶囊嵌入富文本。宿主根据真实排版尺寸安放胶囊，选择和复制时使用附件范围内的逻辑文本。
+- 为 `octara-markdown` 启用 `math`，以矢量方式排版 `$…$` 与 `$$…$$` 并保留可复制的 TeX 源码。启用 `composer` 后，用 `MarkdownComposer` 配置光标锚定补全。为 `Completion` 添加图标、描述和分类，或用 `editor_with_completion_row` 提供自定义行。
 
 ## 验证应用
 

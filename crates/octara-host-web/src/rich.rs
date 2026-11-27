@@ -4,11 +4,12 @@ use crate::{css, dom, image};
 use octara_model::geometry::{Edges, Size};
 use octara_model::paint::{CanvasOp, FillRule, PathStyle};
 use octara_model::style::Visual;
-use octara_model::text::{InlineAlign, InlineAttachment, InlineContent};
+use octara_model::text::{InlineAlign, InlineAttachment, InlineContent, InlinePill, PillStyle};
 use octara_model::theme::{Fill, Theme};
+use std::fmt::Write as _;
 use std::ops::Range;
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{Document, Element, HtmlCanvasElement, HtmlElement, Node};
+use web_sys::{Document, Element, HtmlCanvasElement, HtmlElement, Node, Selection};
 
 const SOURCE: &str = "data-octara-inline-source";
 const MEDIA_INDEX: &str = "data-octara-inline-media";
@@ -62,14 +63,6 @@ pub(crate) fn attachment(
     theme: &Theme,
 ) -> Result<HtmlElement, JsValue> {
     let Size { width, height } = attachment.layout_size();
-    let align = match attachment.align {
-        InlineAlign::Baseline => {
-            attachment.layout_baseline().map_or_else(|| "baseline".into(), |baseline| format!("{}px", baseline - height))
-        }
-        InlineAlign::CapHeightCenter => format!("calc(0.5cap - {}px)", height * 0.5),
-        InlineAlign::Middle => "middle".into(),
-        InlineAlign::Bottom => "bottom".into(),
-    };
     let element = dom::html(doc, "span")?;
     element.set_attribute(SOURCE, source)?;
     element.set_attribute("contenteditable", "false")?;
@@ -79,6 +72,18 @@ pub(crate) fn attachment(
         element.set_attribute("role", "img")?;
         element.set_attribute("aria-label", source)?;
     }
+    if let InlineContent::Pill(pill) = &attachment.content {
+        project_pill(doc, &element, pill, theme)?;
+        return Ok(element);
+    }
+    let align = match attachment.align {
+        InlineAlign::Baseline => {
+            attachment.layout_baseline().map_or_else(|| "baseline".into(), |baseline| format!("{}px", baseline - height))
+        }
+        InlineAlign::CapHeightCenter => format!("calc(0.5cap - {}px)", height * 0.5),
+        InlineAlign::Middle => "middle".into(),
+        InlineAlign::Bottom => "bottom".into(),
+    };
     element.set_attribute(
         "style",
         &format!("display:inline-block;position:relative;overflow:hidden;width:{width}px;height:{height}px;vertical-align:{align};"),
@@ -87,6 +92,7 @@ pub(crate) fn attachment(
         return Ok(element);
     }
     match &attachment.content {
+        InlineContent::Pill(_) => unreachable!("intrinsic pill already projected"),
         InlineContent::Spacer { .. } => {}
         InlineContent::ImageSource { radius, .. } => {
             element.set_attribute(MEDIA_INDEX, &index.to_string())?;
@@ -141,6 +147,42 @@ pub(crate) fn attachment(
         }
     }
     Ok(element)
+}
+
+fn project_pill(doc: &Document, element: &HtmlElement, pill: &InlinePill, theme: &Theme) -> Result<(), JsValue> {
+    let PillStyle { size, weight, color, background, border_color, radius, padding_x, padding_y, gap } = pill.style.normalized();
+    let mut style = format!(
+        "display:inline-flex;align-items:center;vertical-align:baseline;inline-size:max-content;white-space:pre;
+         line-height:normal;font-size:{size}px;font-weight:{weight};gap:{gap}px;padding:{padding_y}px {padding_x}px;border-radius:{radius}px;"
+    );
+    if let Some(color) = color {
+        let _ = write!(style, "color:{};", css::color(color.resolve(theme).0));
+    }
+    if let Some(background) = background {
+        let _ = write!(style, "background-color:{};", css::color(background.resolve(theme).0));
+    }
+    if let Some(border_color) = border_color {
+        let _ = write!(style, "box-shadow:inset 0 0 0 1px {};", css::color(border_color.resolve(theme).0));
+    }
+    element.set_attribute("data-octara-pill", "")?;
+    element.set_attribute("style", &style)?;
+
+    if let Some(icon) = &pill.icon {
+        let svg = dom::icon(doc, icon)?;
+        svg.set_attribute("style", "display:block;flex:none;width:1em;height:1em;pointer-events:none;")?;
+        element.append_child(&svg)?;
+    }
+    let label = pill.layout_label();
+    if !label.is_empty() {
+        let text = dom::html(doc, "span")?;
+        // The label supplies the capsule's inline baseline. With an icon, its
+        // box is at least the icon height so both stay centered on the same line.
+        let style = if pill.icon.is_some() { "align-self:baseline;min-height:1em;align-content:center;" } else { "align-self:baseline;" };
+        text.set_attribute("style", style)?;
+        text.set_text_content(Some(&label));
+        element.append_child(&text)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn media_element(owner: &HtmlElement, index: usize) -> Option<HtmlElement> {
@@ -203,21 +245,47 @@ pub(crate) fn logical_text(node: &Node) -> String {
     text
 }
 
-pub(crate) fn logical_offset(owner: &HtmlElement, endpoint: &Node, offset: u32) -> Option<usize> {
-    let doc = owner.owner_document()?;
-    let range = doc.create_range().ok()?;
-    range.set_start(owner, 0).ok()?;
-    if let Some(object) = std::iter::successors(Some(endpoint.clone()), Node::parent_node).find(|node| source(node).is_some()) {
-        if offset == 0 {
-            range.set_end_before(&object).ok()?;
+pub(crate) struct SelectionPoint {
+    pub(crate) node: Node,
+    offset: u32,
+    after_attachment: bool,
+}
+
+impl SelectionPoint {
+    pub(crate) fn logical_offset(&self, owner: &HtmlElement) -> Option<usize> {
+        let range = owner.owner_document()?.create_range().ok()?;
+        range.set_start(owner, 0).ok()?;
+        if let Some(object) = std::iter::successors(Some(self.node.clone()), Node::parent_node).find(|node| source(node).is_some()) {
+            if self.after_attachment {
+                range.set_end_after(&object).ok()?;
+            } else {
+                range.set_end_before(&object).ok()?;
+            }
         } else {
-            range.set_end_after(&object).ok()?;
+            range.set_end(&self.node, self.offset).ok()?;
         }
-    } else {
-        range.set_end(endpoint, offset).ok()?;
+        let prefix = range.clone_contents().ok()?;
+        Some(logical_text(&prefix).len())
     }
-    let prefix = range.clone_contents().ok()?;
-    Some(logical_text(&prefix).len())
+}
+
+pub(crate) fn selection_points(selection: &Selection) -> Option<[SelectionPoint; 2]> {
+    let anchor = selection.anchor_node()?;
+    let focus = selection.focus_node()?;
+    let anchor_offset = selection.anchor_offset();
+    let focus_offset = selection.focus_offset();
+    // An endpoint inside an attachment expands to the edge in its selection direction.
+    let (anchor_after, focus_after) = if selection.is_collapsed() {
+        (anchor_offset != 0, focus_offset != 0)
+    } else {
+        let range = selection.get_range_at(selection.range_count().checked_sub(1)?).ok()?;
+        let backward = anchor == range.end_container().ok()? && anchor_offset == range.end_offset().ok()?;
+        (backward, !backward)
+    };
+    Some([
+        SelectionPoint { node: anchor, offset: anchor_offset, after_attachment: anchor_after },
+        SelectionPoint { node: focus, offset: focus_offset, after_attachment: focus_after },
+    ])
 }
 
 pub(crate) fn placeholder(doc: &Document, value: &str, theme: &Theme) -> Result<HtmlElement, JsValue> {
@@ -233,12 +301,11 @@ pub(crate) fn placeholder(doc: &Document, value: &str, theme: &Theme) -> Result<
 
 pub(crate) fn selection(element: &HtmlElement) -> Option<(usize, usize)> {
     let selection = element.owner_document()?.get_selection().ok()??;
-    let anchor = selection.anchor_node()?;
-    let caret = selection.focus_node()?;
-    if !element.contains(Some(&anchor)) || !element.contains(Some(&caret)) {
+    let [anchor, caret] = selection_points(&selection)?;
+    if !element.contains(Some(&anchor.node)) || !element.contains(Some(&caret.node)) {
         return None;
     }
-    Some((logical_offset(element, &anchor, selection.anchor_offset())?, logical_offset(element, &caret, selection.focus_offset())?))
+    Some((anchor.logical_offset(element)?, caret.logical_offset(element)?))
 }
 
 fn endpoint(node: &Node, byte: &mut usize) -> Option<(Node, u32)> {

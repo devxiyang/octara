@@ -44,14 +44,25 @@ pub enum Tone {
 #[ui]
 #[track_caller]
 pub fn button(label: impl IntoText, size: Size, variant: ButtonVariant) -> El {
-    button_part(row().select_none().child(text(label).select_none().min_w(0)), size, variant).text_align(TextAlign::Center)
+    styled_button(text(label), size, variant)
+}
+
+#[inline(never)]
+#[track_caller]
+fn styled_button(label: El, size: Size, variant: ButtonVariant) -> El {
+    button_part(row().select_none().child(label.select_none().min_w(0)), size, variant).text_align(TextAlign::Center)
 }
 
 /// A button that toggles a controlled boolean and exposes its pressed state.
 #[ui]
 #[track_caller]
 pub fn toggle_button(label: impl IntoText, pressed: Binding<bool>, size: Size, variant: ButtonVariant) -> El {
-    interactive::toggle_button(button(label, size, variant), pressed).when(State::CHECKED, |style| style.border_color(ColorToken::Accent))
+    styled_toggle_button(button(label, size, variant), pressed)
+}
+
+#[inline(never)]
+fn styled_toggle_button(button: El, pressed: Binding<bool>) -> El {
+    interactive::toggle_button(button, pressed).when(State::CHECKED, |style| style.border_color(ColorToken::Accent))
 }
 
 /// An icon-only button with an accessible name and matching tooltip.
@@ -59,7 +70,13 @@ pub fn toggle_button(label: impl IntoText, pressed: Binding<bool>, size: Size, v
 #[track_caller]
 pub fn icon_button(glyph: impl Into<Icon>, label: impl Into<String>) -> El {
     let label = label.into();
-    icon_target().child(icon(glyph.into()).a11y_hidden()).label(label.clone()).tooltip(label)
+    styled_icon_button(glyph.into(), label)
+}
+
+#[inline(never)]
+#[track_caller]
+fn styled_icon_button(glyph: Icon, label: String) -> El {
+    icon_target().child(icon(glyph).a11y_hidden()).label(label.clone()).tooltip(label)
 }
 
 fn icon_target() -> El {
@@ -91,32 +108,43 @@ fn toggle_target(visual: El) -> El {
 #[ui]
 #[track_caller]
 pub fn checkbox<T: CheckValue>(value: Binding<T>) -> El {
-    let square = el()
-        .size(sp(4.0))
-        .align(AlignItems::Center)
-        .justify(JustifyContent::Center)
-        .rounded(RadiusToken::Sm)
-        .border(1.0)
-        .border_color(ColorToken::Border)
-        .bg(ColorToken::Background)
-        .checked(move |r: &mut ReadCx<'_>| r.get(value).checked() != Checked::Unchecked)
-        .when(State::CHECKED, |p| p.bg(ColorToken::Accent).border_color(ColorToken::Accent))
-        .child(keyed(
+    let visual = checkbox_visual(
+        el().checked(move |r: &mut ReadCx<'_>| r.get(value).checked() != Checked::Unchecked),
+        keyed(
             move |r| match r.get(value).checked() {
                 Checked::Unchecked => "unchecked",
                 Checked::Checked => "checked",
                 Checked::Mixed => "mixed",
             },
-            |_, mark| {
-                let glyph = match *mark {
-                    "checked" => icons::CHECK,
-                    "mixed" => icons::MINUS,
-                    _ => return None,
-                };
-                Some(icon(glyph.into()).size(12.0).text_color(ColorToken::AccentText))
-            },
-        ));
-    octara_headless::checkbox::checkbox(toggle_target(square), value)
+            checkbox_mark,
+        ),
+    );
+    octara_headless::checkbox::checkbox(visual, value)
+}
+
+#[inline(never)]
+fn checkbox_visual(square: El, mark: View) -> El {
+    toggle_target(
+        square
+            .size(sp(4.0))
+            .align(AlignItems::Center)
+            .justify(JustifyContent::Center)
+            .rounded(RadiusToken::Sm)
+            .border(1.0)
+            .border_color(ColorToken::Border)
+            .bg(ColorToken::Background)
+            .when(State::CHECKED, |p| p.bg(ColorToken::Accent).border_color(ColorToken::Accent))
+            .child(mark),
+    )
+}
+
+fn checkbox_mark(_: &mut BuildCx<'_>, mark: &&str) -> Option<El> {
+    let glyph = match *mark {
+        "checked" => icons::CHECK,
+        "mixed" => icons::MINUS,
+        _ => return None,
+    };
+    Some(icon(glyph.into()).size(12.0).text_color(ColorToken::AccentText))
 }
 
 /// An on/off switch. Application `on_toggle` handlers observe the updated binding.
@@ -166,13 +194,15 @@ pub fn search_field(
     configure: impl FnOnce(TextInput) -> TextInput,
 ) -> El {
     let locale = KitLocale::get(build);
+    let editor = configure(group_editor(label.into(), value).placeholder(locale.search).submit_on_enter());
+    search_group(id, value, locale.clear_search, editor)
+}
+
+#[inline(never)]
+fn search_group(id: &str, value: Binding<String>, clear_label: &'static str, editor: TextInput) -> El {
     let focus_id = id.to_owned();
     let clear_id = format!("{id}-clear");
-    let editor =
-        configure(text_editor(editor_content(input()).min_w(0.0), value).label(label.into()).placeholder(locale.search).submit_on_enter())
-            .test_id(id.to_owned())
-            .grow(1.0)
-            .basis(0.0);
+    let editor = editor.test_id(id.to_owned()).grow(1.0).basis(0.0);
     editor_group()
         .child(icon(icons::SEARCH.into()).ml(sp(1.0)).shrink(0.0).text_color(ColorToken::TextMuted).size(sp(4.0)).a11y_hidden())
         .child(editor)
@@ -180,7 +210,7 @@ pub fn search_field(
             move |r| r.with(value, |query| !query.is_empty()),
             move |_| {
                 let focus_id = focus_id.clone();
-                icon_button(icons::X, locale.clear_search).test_id(clear_id.clone()).preserve_focus_on_press().on_press(move |w| {
+                icon_button(icons::X, clear_label).test_id(clear_id.clone()).preserve_focus_on_press().on_press(move |w| {
                     w.set(value, String::new());
                     w.focus(&focus_id);
                 })
@@ -202,12 +232,14 @@ pub fn password_field(
 ) -> El {
     let locale = KitLocale::get(build);
     let revealed = build.signal(false);
+    let editor = configure(group_editor(label.into(), value));
+    password_group(id, locale, revealed, editor)
+}
+
+#[inline(never)]
+fn password_group(id: &str, locale: KitLocale, revealed: Signal<bool>, editor: TextInput) -> El {
     let reveal_label = move |r: &mut ReadCx<'_>| if r.get(revealed) { locale.hide_password } else { locale.show_password };
-    let editor = configure(text_editor(editor_content(input()).min_w(0.0), value).label(label.into()))
-        .test_id(id.to_owned())
-        .secure(move |r: &mut ReadCx<'_>| !r.get(revealed))
-        .grow(1.0)
-        .basis(0.0);
+    let editor = editor.test_id(id.to_owned()).secure(move |r: &mut ReadCx<'_>| !r.get(revealed)).grow(1.0).basis(0.0);
     let reveal = icon_target()
         .test_id(format!("{id}-reveal"))
         .label(bind(move |r| reveal_label(r).to_owned()))
@@ -233,6 +265,12 @@ fn editor_group() -> El {
         .px(sp(1.0))
         .rounded(RadiusToken::Md)
         .bg(ColorToken::Background)
+}
+
+#[inline(never)]
+#[track_caller]
+fn group_editor(label: String, value: Binding<String>) -> TextInput {
+    text_editor(editor_content(input()).min_w(0.0), value).label(label)
 }
 
 fn text_editor(editor: TextInput, value: Binding<String>) -> TextInput {

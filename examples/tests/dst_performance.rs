@@ -269,7 +269,7 @@ fn markdown_streaming(seed: u64) -> Vec<Sample> {
             b,
             source,
             finished.read_only(),
-            StreamingOptions { effects: StreamingEffects::Fade { duration_secs: 0.1 }, pace: false, ..StreamingOptions::default() },
+            StreamingOptions { effects: Some(StreamingEffects::Fade { duration_secs: 0.1 }), pace: false, ..StreamingOptions::default() },
         )
         .test_id("document")
     });

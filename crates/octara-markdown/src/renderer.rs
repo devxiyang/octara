@@ -137,8 +137,14 @@ pub trait MarkdownRenderer: 'static {
         None
     }
 
-    fn streaming_effects(&self) -> StreamingEffects {
+    /// Chooses the reveal effect for streaming text. Reads can follow application signals.
+    fn streaming_effects(&self, _read: &mut ReadCx<'_>) -> StreamingEffects {
         StreamingEffects::None
+    }
+
+    /// Whether streaming effects remain enabled while the system requests reduced motion.
+    fn allow_reduced_motion_effects(&self) -> bool {
+        false
     }
 
     fn render_video(&self, build: &mut BuildCx<'_>, block: &RenderBlock) -> El {
@@ -160,6 +166,7 @@ impl MarkdownRenderer for DocumentRenderer {}
 type ThemeReader = dyn Fn(&mut ReadCx<'_>) -> MarkdownTheme;
 type InlineStyler = dyn Fn(&Style, &str, &mut Span);
 type PillContentReader = dyn Fn(&mut ReadCx<'_>, &str) -> Option<LinkPillContent>;
+type StreamingEffectsReader = dyn Fn(&mut ReadCx<'_>) -> StreamingEffects;
 
 /// A Markdown renderer with a theme preset and optional application callbacks.
 #[derive(Default)]
@@ -178,6 +185,8 @@ pub struct MarkdownConfig {
     variants: Option<LinkVariantRules>,
     pills: Option<Box<PillContentReader>>,
     effects: StreamingEffects,
+    effects_reader: Option<Box<StreamingEffectsReader>>,
+    allow_reduced_motion: bool,
     #[cfg(feature = "math")]
     math: Option<Arc<dyn MathRenderer>>,
     #[cfg(feature = "math")]
@@ -268,6 +277,19 @@ impl MarkdownConfig {
 
     pub fn streaming_effects(mut self, effects: StreamingEffects) -> Self {
         self.effects = effects;
+        self.effects_reader = None;
+        self
+    }
+
+    /// Tracks the signals read by the function for updates to the mounted document.
+    pub fn streaming_effects_with(mut self, effects: impl Fn(&mut ReadCx<'_>) -> StreamingEffects + 'static) -> Self {
+        self.effects_reader = Some(Box::new(effects));
+        self
+    }
+
+    /// Keeps streaming effects enabled when the system requests reduced motion.
+    pub fn allow_reduced_motion_effects(mut self, allow: bool) -> Self {
+        self.allow_reduced_motion = allow;
         self
     }
 
@@ -338,8 +360,12 @@ impl MarkdownRenderer for MarkdownConfig {
         self.pills.as_ref().and_then(|content| content(read, url))
     }
 
-    fn streaming_effects(&self) -> StreamingEffects {
-        self.effects
+    fn streaming_effects(&self, read: &mut ReadCx<'_>) -> StreamingEffects {
+        self.effects_reader.as_ref().map_or(self.effects, |effects| effects(read))
+    }
+
+    fn allow_reduced_motion_effects(&self) -> bool {
+        self.allow_reduced_motion
     }
 
     #[cfg(feature = "math")]

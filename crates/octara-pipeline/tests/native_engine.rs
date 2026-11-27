@@ -415,12 +415,11 @@ fn text_reveal_samples_the_same_glyphs_without_reflow() {
     let mut tree = tree();
     let mut tx = tree.transaction();
     let text = tx.create(NodeSpec::new(NodeContent::Text("AéZ".into())));
-    tx.change(
-        text,
-        NodeChange::TextReveal(Some(TextReveal { kind: TextRevealKind::Fade { duration_secs: 1.0 }, revealed_bytes: 3, finished: false })),
-    );
+    let reveal = TextReveal::new(TextRevealKind::Fade { duration_secs: 1.0 }, 3, false);
+    tx.change(text, NodeChange::TextReveal(Some(reveal)));
     tx.place(tree.node_ref(tree.root()), 0, text);
-    let (_, created) = tree.apply(tx.finish()).unwrap();
+    let (receipt, created) = tree.apply(tx.finish()).unwrap();
+    let node = receipt.node(text).unwrap();
     let mut initial = tree.initial_delta();
     initial.merge(created);
     let mut engine = engine();
@@ -451,6 +450,12 @@ fn text_reveal_samples_the_same_glyphs_without_reflow() {
     engine.set_reduced_motion(true);
     assert!(engine.project(&tree, &TreeDelta::default(), viewport(), 0.5).unwrap().next_deadline.is_none());
     assert_eq!(alpha(&engine.commit().draw.unwrap()), [(1, 1.0), (3, 1.0), (4, 1.0)]);
+
+    let mut tx = tree.transaction();
+    tx.change(tree.node_ref(node), NodeChange::TextReveal(Some(TextReveal { visible_bytes: 1, allow_reduced_motion: true, ..reveal })));
+    let (_, delta) = tree.apply(tx.finish()).unwrap();
+    assert!(engine.project(&tree, &delta, viewport(), 0.5).unwrap().next_deadline.is_some());
+    assert_eq!(alpha(&engine.commit().draw.unwrap()), [(1, 1.0), (3, 0.0), (4, 0.0)]);
 }
 
 #[test]

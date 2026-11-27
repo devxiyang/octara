@@ -1,4 +1,4 @@
-# 用 Octara 0.0.6 构建界面
+# 用 Octara 0.0.7 构建界面
 
 Octara 用普通 Rust 函数组合视图。应用持有响应式状态和窗口树，宿主负责把树投影到原生窗口或浏览器 DOM。下面的 Rust 示例会随 `cargo test -p octara-cli --doc` 编译并运行。
 
@@ -29,7 +29,10 @@ fn counter(cx: &mut BuildCx<'_>) -> El {
 }
 
 fn app() -> AppDefinition {
-    let options = WindowOptions { title: "Counter".into(), ..Default::default() };
+    let options = WindowOptions {
+        presentation: WindowPresentation { title: "Counter".into(), ..Default::default() },
+        ..Default::default()
+    };
     AppDefinition::new().window(WindowDefinition::new(options, counter))
 }
 
@@ -77,10 +80,13 @@ use octara::prelude::*;
 
 fn workspace() -> WindowDefinition {
     let options = WindowOptions {
-        title: "Workspace".into(),
+        presentation: WindowPresentation {
+            title: "Workspace".into(),
+            material: WindowMaterial::Vibrancy(VibrancyMaterial::Sidebar),
+            ..Default::default()
+        },
         min_size: Some(Size::new(480.0, 320.0)),
         titlebar: TitlebarStyle::HiddenInset { traffic_light_offset: Some(point(14.0, 12.0)) },
-        material: WindowMaterial::Vibrancy(VibrancyMaterial::Sidebar),
         persistence_key: Some("workspace".into()),
         ..WindowOptions::default()
     };
@@ -302,6 +308,8 @@ fn model_picker(build: &mut BuildCx<'_>) -> View {
 
 添加 `octara-markdown` 依赖后，用 `markdown(build, source)` 渲染字符串、响应式读取或 `TextBuffer`。用 `markdown_stream` 渲染模型输出，并在输入结束时更新完成信号。缓冲区随后排空，文档切换到完整解析。若上游已经合并增量，可用 `StreamingOptions::pace` 关闭额外的节奏缓冲，继续使用流式筛选和文字揭示效果。增量追加时，已完成的块会共享原有 AST 和挂载节点。
 
+流式渐显默认随 `SystemPreferences.reduced_motion` 更新。用 `MarkdownConfig::streaming_effects_with` 根据响应式状态配置揭示效果，用 `allow_reduced_motion_effects(true)` 显式允许在减弱动态效果模式下使用揭示。`StreamingOptions::effects` 默认沿用作用域内的配置，也可用 `Some(StreamingEffects::None)` 关闭当前文档的揭示效果。
+
 用 `markdown_with(build, source, config)` 为单个文档传入渲染配置。通过 `ParseOptions` 控制表格、任务列表、GFM 提示等语法。主题可选 `MarkdownTheme::document()`、`chat()` 或 `compact()`，也可以用 `theme_with` 跟随应用状态。`on_link` 提供主键按压、次键按压和悬停事件及视口坐标。
 
 ```rust
@@ -325,11 +333,15 @@ fn notes(build: &mut BuildCx<'_>, source: TextBuffer) -> El {
 
 用 `BuildCx::provide::<Arc<dyn BlockSlotRenderer>>` 为一个作用域注册代码块、独立链接、图片、视频、公式和指令渲染器。`render_slot` 返回 `None` 时使用默认部件。代码、公式和指令的正文与完成状态通过信号更新，围栏闭合时保留组件状态。`DocumentStore::snapshot` 提供按文档顺序排列的图片、链接和槽位索引。
 
-启用 `highlight` 可使用内置语法高亮，也可以注入 `Arc<dyn CodeHighlighter>`。启用 `media` 可通过 `MediaResolver` 加载图片，并用宿主视频部件播放受支持的 `<video>`。用 `on_context_menu` 获取当前选区的可用复制格式，包括纯文本、Markdown、表格 Markdown 和图片 URL。
+启用 `highlight` 可使用内置语法高亮，也可以注入 `Arc<dyn CodeHighlighter>`。高亮器接收以 LF 分行的源码。启用 `media` 可通过 `MediaResolver` 加载图片，并用宿主视频部件播放受支持的 `<video>`。用 `on_context_menu` 获取当前选区的可用复制格式，包括纯文本、Markdown、表格 Markdown 和图片 URL。
+
+用 `TextRecognizer::file_paths` 将正文中的文件路径投影为链接。传入的解析函数会收到完整路径，包括 `src/lib.rs#L42` 和 `./Cargo.toml#L10-L20` 中的行号后缀。用 `LinkPillContent` 更新链接胶囊的标签、图标和颜色。自建富文本可将 `InlinePill::attachment` 交给 `Rich::attachment`，由宿主测量标签和图标并对齐文字基线。附件覆盖的逻辑文本仍可复制。
 
 启用 `math` 后，用 `$…$` 写行内公式，用 `$$…$$` 写独立公式。公式沿用主题文字色，选区复制保留 TeX 源码，过宽的独立公式可横向滚动。通过 `El::theme_patch` 的响应式读取切换主题色时，公式会沿用现有矢量轮廓。用 `BuildCx::provide::<Arc<dyn MathRenderer>>` 注册自定义矢量排版器，或用 `MarkdownConfig::on_math_error` 接收公式解析错误。失败的公式显示等宽源码。
 
 启用 `composer` 后，用 `MarkdownComposer` 构建带实时 Markdown 高亮的多行输入框。用 `TriggerConfig` 配置 `@`、`#` 或 `/` 等触发字符，读取 `active_trigger()` 或直接为 `editor` 提供候选项。浮层跟随编辑器光标。提及按单个实体删除和撤销，由 `markdown()` 输出为 `[@Alice](user://u_1)` 等链接。为受控编辑器提供作用域内的 `Arc<dyn EditorBackend>`，可以定制装饰、附件与原子范围。
+
+补全项的 `Completion` 可通过 `.icon(...)`、`.description(...)` 和 `.category(...)` 添加信息。用 `editor_with_completion_row` 定制建议项的布局，继续使用编辑器的键盘导航和选中行为。
 
 运行 `cargo run -p octara-examples --bin window -- showcase markdown` 查看流式文档和补全输入框。
 
