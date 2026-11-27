@@ -8,12 +8,14 @@ use octara::tree::editor::EditorSession;
 use octara::tree::resolve_cursor;
 use octara_gpu::{DeviceExecutor, DeviceGeneration, DrawWork, DrawnFrame, FrameProgress, GpuError, GpuTask, SurfaceRendererFactory};
 use octara_model::geometry::{Point, Size, WindowViewport};
-use octara_model::identity::TargetGuard;
+use octara_model::identity::{NativeId, TargetGuard};
 use octara_model::input::{CursorStyle, DroppedFile, Modifiers};
+use octara_model::native::{NativeChange, NativePlacement};
 use octara_model::theme::{ColorToken, Theme};
 use octara_model::window::{WindowChrome, WindowGeometryRequest};
 use octara_pipeline::{NativeFrame, NativePublication};
 use octara_render::{gpu::OutputColor, wgpu};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::window::{CursorIcon, Window};
@@ -88,6 +90,8 @@ pub(crate) struct HostWindow {
     pub chrome: WindowChrome,
     pub initial_fullscreen: bool,
     pub service_cleanup: std::collections::HashMap<octara_model::ask::ServiceId, crate::os::ServiceCleanup>,
+    // Deltas through the synchronized revision, including publications skipped by the renderer.
+    native_placements: BTreeMap<NativeId, NativePlacement>,
     surface: Arc<wgpu::Surface<'static>>,
     presentation: Presentation,
     surface_info: Option<SurfaceInfo>,
@@ -123,6 +127,7 @@ impl HostWindow {
             chrome: WindowChrome::default(),
             initial_fullscreen: false,
             service_cleanup: std::collections::HashMap::new(),
+            native_placements: BTreeMap::new(),
             surface,
             presentation: Presentation::default(),
             surface_info: None,
@@ -242,6 +247,21 @@ impl HostWindow {
         let surface = self.os.module_surface(&self.window, kind, self.id);
         let mut built_in = Vec::new();
         for change in changes {
+            match &change {
+                NativeChange::Place { placements } => {
+                    for placement in placements {
+                        if self.native_mounts.contains(placement.id) {
+                            self.native_placements.insert(placement.id, placement.clone());
+                        }
+                    }
+                    built_in.push(change);
+                    continue;
+                }
+                NativeChange::Destroy { id } => {
+                    self.native_placements.remove(id);
+                }
+                _ => {}
+            }
             match self.native_mounts.apply_change(&change, surface, runtime.native_views_mut(), dispatcher) {
                 Ok(false) => built_in.push(change),
                 Ok(true) => {}
@@ -359,16 +379,27 @@ impl HostWindow {
             Err(error) => return Err(error.to_string()),
         };
         let latest = self.publication.latest().map_or(0, |frame| frame.number);
-        if !self.presentation.accepts(frame.stamp, runtime.tree().id(), device.executor.generation().number(), latest, self.size()) {
+        if self.synchronized != Some(latest)
+            || !self.presentation.accepts(frame.stamp, runtime.tree().id(), device.executor.generation().number(), latest, self.size())
+        {
             self.window.request_redraw();
             return Ok(false);
         }
         let suboptimal = frame.target.suboptimal();
         let progress = frame.progress();
         self.window.pre_present_notify();
+        let mut commit_native_views = || {
+            for placement in self.native_placements.values() {
+                self.native_mounts.place(placement);
+            }
+            self.native_placements.clear();
+        };
         match self.os.presentation() {
-            Some(presentation) => presentation.present(frame.target, &device.queue)?,
-            None => frame.target.present(&device.queue)?,
+            Some(presentation) => presentation.present_with_native_views(frame.target, &device.queue, &mut commit_native_views)?,
+            None => {
+                frame.target.present(&device.queue)?;
+                commit_native_views();
+            }
         }
         if let Err(error) = device.executor.accept_presentation(frame.presentation)
             && !device.executor.generation().is_lost()

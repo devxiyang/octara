@@ -189,7 +189,7 @@ fn native_host_preserves_island_changes_when_a_frame_is_skipped() {
     let mut tree = tree();
     let mut initial = tree.initial_delta();
     let mut tx = tree.transaction();
-    let web = tx.create(NodeSpec::new(NodeContent::Native { kind: "web", slot: NativeSlot::Underlay }));
+    let web = tx.create(NodeSpec::new(NodeContent::Native { kind: "test.view", slot: NativeSlot::Underlay }));
     tx.place(tree.node_ref(tree.root()), 0, web);
     let (receipt, mounted) = tree.apply(tx.finish()).unwrap();
     initial.merge(mounted);
@@ -212,7 +212,7 @@ fn native_host_preserves_island_changes_when_a_frame_is_skipped() {
     assert!(!latest.native_changes.iter().any(|change| matches!(change, NativeChange::Create { .. })));
     let received = publication.take_native_changes();
     assert!(
-        matches!(received.first(), Some(NativeChange::Create { id: created, kind, slot: NativeSlot::Underlay, .. }) if *created == id && kind == "web")
+        matches!(received.first(), Some(NativeChange::Create { id: created, kind, slot: NativeSlot::Underlay, .. }) if *created == id && kind == "test.view")
     );
     assert!(received.contains(&NativeChange::Update { id, props }));
     assert!(publication.take_native_changes().is_empty());

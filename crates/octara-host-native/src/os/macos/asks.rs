@@ -1,11 +1,11 @@
-//! AppKit popups, prompts, and file selection sheets.
+//! AppKit popups and prompts.
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{NSAlert, NSAlertStyle, NSEventModifierFlags, NSMenu, NSMenuItem, NSModalResponseOK, NSOpenPanel, NSSavePanel, NSView};
+use objc2_app_kit::{NSAlert, NSAlertStyle, NSEventModifierFlags, NSMenu, NSMenuItem, NSView};
 use objc2_core_foundation::{CFRunLoop, kCFRunLoopDefaultMode};
-use objc2_foundation::{NSPoint, NSString, NSURL};
+use objc2_foundation::{NSPoint, NSString};
 use octara_model::ask::{Answer, Ask, AskId, Menu, MenuItem, PromptLevel};
 use octara_model::geometry::Point;
 use octara_model::input::{Chord, Key, Modifiers};
@@ -37,7 +37,6 @@ pub(super) struct Shown {
     pending: RefCell<HashSet<AskId>>,
     menu: RefCell<Option<(AskId, Retained<NSMenu>)>>,
     alerts: RefCell<HashMap<AskId, Retained<NSAlert>>>,
-    panels: RefCell<HashMap<AskId, Retained<NSSavePanel>>>,
 }
 
 type Send = Rc<dyn Fn(AskId, Answer)>;
@@ -60,7 +59,6 @@ impl Shown {
                 Ask::Prompt { level, message, detail, answers } => {
                     alert(&view, &shown, id, *level, message, detail.as_deref(), answers, &send);
                 }
-                Ask::Paths(_) | Ask::NewPath { .. } => panel(&view, &shown, id, &ask, &send),
             }
         });
     }
@@ -83,11 +81,6 @@ impl Shown {
             if let Some(parent) = sheet.sheetParent() {
                 parent.endSheet(&sheet);
             }
-        }
-        let panel = self.panels.borrow_mut().remove(&id);
-        if let Some(panel) = panel {
-            // SAFETY: cancel accepts a nil action sender.
-            unsafe { panel.cancel(None) };
         }
     }
 
@@ -261,54 +254,4 @@ fn alert(
     });
     shown.alerts.borrow_mut().insert(id, alert.clone());
     alert.beginSheetModalForWindow_completionHandler(&window, Some(&done));
-}
-
-fn panel(view: &NSView, shown: &Rc<Shown>, id: AskId, ask: &Ask, send: &Send) {
-    let Some(window) = view.window().filter(|window| window.attachedSheet().is_none()) else {
-        shown.complete(id, Answer::dismissed(ask), send);
-        return;
-    };
-    let Some(mtm) = MainThreadMarker::new() else { return };
-    let (save, open) = match ask {
-        Ask::Paths(options) => {
-            let panel = NSOpenPanel::openPanel(mtm);
-            panel.setCanChooseFiles(options.files);
-            panel.setCanChooseDirectories(options.directories);
-            panel.setAllowsMultipleSelection(options.multiple);
-            if let Some(prompt) = &options.prompt {
-                panel.setPrompt(Some(&NSString::from_str(prompt)));
-            }
-            (panel.clone().into_super(), Some(panel))
-        }
-        Ask::NewPath { directory, name } => {
-            let panel = NSSavePanel::savePanel(mtm);
-            panel.setDirectoryURL(NSURL::from_file_path(directory).as_deref());
-            if let Some(name) = name {
-                panel.setNameFieldStringValue(&NSString::from_str(name));
-            }
-            (panel, None)
-        }
-        _ => return,
-    };
-    let done = {
-        let shown = shown.clone();
-        let send = send.clone();
-        let default = Answer::dismissed(ask);
-        let save = save.clone();
-        block2::RcBlock::new(move |response| {
-            shown.panels.borrow_mut().remove(&id);
-            let answer = if response != NSModalResponseOK {
-                default.clone()
-            } else if let Some(panel) = &open {
-                let paths = panel.URLs().iter().filter_map(|url| url.to_file_path()).collect::<Vec<_>>();
-                Answer::Paths((!paths.is_empty()).then_some(paths))
-            } else {
-                Answer::NewPath(save.URL().and_then(|url| url.to_file_path()))
-            };
-            save.orderOut(None);
-            shown.complete(id, answer, &send);
-        })
-    };
-    shown.panels.borrow_mut().insert(id, save.clone());
-    save.beginSheetModalForWindow_completionHandler(&window, &done);
 }

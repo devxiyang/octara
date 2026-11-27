@@ -7,6 +7,7 @@ mod authoring;
 pub mod declarative;
 pub mod module {
     //! Explicit application modules and platform view extension points.
+    pub use octara_model::identity::NativeId;
     pub use octara_model::native::{
         NativeChange, NativeMeasureRequest, NativePlacement, NativeSlot, NativeSnapshot, NativeSnapshotRequest, TypedNativeCommand,
         TypedNativeEvent, TypedNativeProps,
@@ -31,10 +32,10 @@ pub use octara_model::{
     text::{AtomicRange, CommitKind, TextEdit},
 };
 pub use octara_runtime::cycle::{AppError, CycleReceipt};
-pub use octara_runtime::media::{CancellationToken, LoadedMedia, MediaFuture, MediaLoader, MediaProgress, MediaRequest};
+pub use octara_runtime::media::{CancellationToken, LoadedMedia, MediaFuture, MediaLoader, MediaProgress, MediaRequest, VideoAdapter};
 pub use octara_runtime::{AppRuntime, CommitOutput, HostCommand, HostEngine, Input, ProjectError, ProjectFeedback, WindowRuntime};
 pub use octara_tree::{
-    NodeId, Tree,
+    NodeId, Tree, TreeDelta,
     editor::{EditorBackend, EditorRichText, EditorRope, EditorSession, EditorState},
 };
 

@@ -1,11 +1,10 @@
 //! Values and capabilities used to author views.
 
 pub use octara_model::ask::{
-    Answer, Ask, ClipboardItem, ClipboardKinds, Menu, MenuItem, PathPromptOptions, PickedFile, PromptLevel, ServiceError, ServiceOutcome,
-    ServiceRequest,
+    Answer, Ask, ClipboardItem, ClipboardKinds, Menu, MenuItem, PromptLevel, ServiceError, ServiceOutcome, ServiceRequest,
 };
 pub use octara_model::geometry::{Align, Edges, LayoutBox, Placement, Point, Rect, Side, Size, Vec2, WindowViewport, point};
-pub use octara_model::image::{CachePolicy, HttpMediaEntry, ImageSource, ImageState, VideoSource, VideoSurface};
+pub use octara_model::image::{CachePolicy, HttpMediaEntry, ImageSource, ImageState, VideoSource};
 pub use octara_model::input::{
     Button, Chord, ContextMenuEvent, ContextMenuItem, CopyFormat, CursorStyle, DragPayload, DropAxis, DropEvent, DropHover, DropPosition,
     DroppedFile, Key, KeyEvent, LinkEvent, LinkEventKind, Modifiers, PasteEvent,
@@ -41,7 +40,7 @@ pub use octara_runtime::graph::{
     text_stream::{TextStreamError, TextStreamOp, TextStreamSink},
     value::Memo,
 };
-pub use octara_runtime::media::{MediaCacheBackend, MediaResolver, VideoSurfaceProvider};
+pub use octara_runtime::media::{MediaCacheBackend, MediaResolver};
 pub use octara_runtime::task::{Receiver, Sender, TaskId, channel};
 pub use octara_runtime::{
     Binding, BuildCx, CleanupCx, CloseHandle, Field, HandlerEvent, HandlerOutcome, HoveredTooltip, Navigator, ReadCx, ReadSignal, Readable,

@@ -18,10 +18,10 @@ use octara_model::{
     native::{NativeEvent, NativeSlot, TypedNativeProps},
     paint::{Canvas, Icon, Image, NodeIcon, ObjectFit, PaintInput, PaintMount, PaintProgram},
     semantics::{Checked, Live, NumericRange, Role},
-    style::{FlexDirection, State, StyleProp, When},
+    style::{FlexDirection, Position, State, StyleProp, When},
     theme::{ColorValue, Fill, Theme, ThemePatch},
 };
-use octara_runtime::media::{MediaResolver, VideoSurfaceProvider};
+use octara_runtime::media::{MediaResolver, VideoAdapter};
 use octara_runtime::window::CopiedText;
 use octara_runtime::{Binding, BuildCx, HandlerEvent, HandlerOutcome, MountCx, ReadCx, Signal, WriteCx};
 use octara_tree::{
@@ -377,25 +377,11 @@ pub fn image_source(source: impl IntoProp<ImageSource>) -> El {
     element(Content::Media { source: source.into_prop(), fit: ObjectFit::default() })
 }
 
-/// A platform video with optional poster artwork.
+/// A video played by the application's video module.
+/// Without a video adapter, displays the poster when one is supplied.
 #[track_caller]
 pub fn video(source: VideoSource) -> El {
-    use octara_model::style::Position;
-    let poster = (!cfg!(target_family = "wasm")).then(|| source.poster.clone()).flatten();
-    let mut view = el().position(Position::Relative);
-    if let Some(poster) = poster {
-        view = view.child(
-            image_source(ImageSource::Uri(poster.into()))
-                .object_fit(ObjectFit::Contain)
-                .position(Position::Absolute)
-                .top(0)
-                .right(0)
-                .bottom(0)
-                .left(0),
-        );
-    }
-    let slot: El = element(Content::Video(source));
-    view.child(slot.w_full().h_full())
+    element(Content::Video(source)).position(Position::Relative)
 }
 
 #[track_caller]
@@ -1318,13 +1304,17 @@ pub(crate) fn build_el(
             }
         }
         Content::Video(source) => {
-            let custom = cx.build(|build| build.context::<Arc<dyn VideoSurfaceProvider>>()).and_then(|provider| provider.surface(&source));
-            let (kind, properties) = custom.map_or_else(
-                || ("video", serde_json::to_value(&source).expect("video properties serialize")),
-                |surface| (surface.kind, surface.props),
-            );
-            props.native_props = Some(NativeProps::Json(Prop::Static(properties)));
-            allocate(cx, NodeContent::Native { kind, slot: NativeSlot::Overlay })
+            let adapter = cx.build(|build| build.context::<VideoAdapter>());
+            if let Some(adapter) = adapter {
+                props.native_props = Some(NativeProps::Typed(Prop::Static((adapter.props)(source))));
+                allocate(cx, NodeContent::Native { kind: adapter.kind, slot: NativeSlot::Overlay })
+            } else if let Some(poster) = source.poster {
+                let resolver = cx.build(|build| build.context::<Arc<dyn MediaResolver>>());
+                let source = resolve_image_source(ImageSource::Uri(poster.into()), resolver.as_deref());
+                allocate(cx, NodeContent::ImageSource { source, fit: ObjectFit::Contain })
+            } else {
+                allocate(cx, NodeContent::Box)
+            }
         }
         Content::Text(text) => {
             let node = allocate(cx, NodeContent::Text(Arc::from("")));

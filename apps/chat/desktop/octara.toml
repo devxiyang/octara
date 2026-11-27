@@ -1,0 +1,2 @@
+[modules."octara.picker"]
+photo_library_usage_description = "Select photos to attach to an Octara Chat conversation."

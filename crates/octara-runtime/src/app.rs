@@ -383,6 +383,7 @@ impl AppRuntime {
     }
 
     pub(crate) fn remove_window(&mut self, id: WindowId) {
+        self.clear_module_native_surface(id);
         if let Some(mut window) = self.windows.remove(&id) {
             if window.projection_open {
                 window.engine.rollback();

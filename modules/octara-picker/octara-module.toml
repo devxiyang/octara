@@ -1,0 +1,13 @@
+[module]
+id = "octara.picker"
+schema = 1
+
+[ios.info_plist]
+NSPhotoLibraryUsageDescription = "${photo_library_usage_description}"
+
+[macos.entitlements]
+"com.apple.security.files.user-selected.read-write" = true
+
+[apple.frameworks]
+ios = ["PhotosUI", "UniformTypeIdentifiers", "UIKit"]
+macos = ["AppKit", "UniformTypeIdentifiers"]

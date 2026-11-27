@@ -26,8 +26,8 @@ pub use octara_headless::toast::{ToastId, ToastOptions, ToastQueue};
 
 pub use choices::{ComboboxOptions, PickerOptions, choice_row, combobox, combobox_input, select};
 pub use controls::{
-    ButtonVariant, FileDrop, Size, Tone, button, checkbox, file_dropzone, icon_button, password_field, search_field, switch, text_area,
-    text_field, toggle_button,
+    ButtonVariant, Size, Tone, button, checkbox, file_dropzone, icon_button, password_field, search_field, switch, text_area, text_field,
+    toggle_button,
 };
 pub use data::{data_table, tree_view, tree_view_with};
 pub use dialog::{DialogOptions, alert_dialog, dialog};

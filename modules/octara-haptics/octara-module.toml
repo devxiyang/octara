@@ -1,0 +1,7 @@
+[module]
+id = "octara.haptics"
+schema = 1
+
+[apple.frameworks]
+ios = ["UIKit"]
+macos = ["AppKit"]

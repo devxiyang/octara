@@ -277,29 +277,16 @@ fn text_editor(editor: TextInput, value: Binding<String>) -> TextInput {
     editor.value(value).behavior_first(|behavior| behavior.on_input(move |w, text| w.set(value, text.to_owned())))
 }
 
-/// Files from the system drop or chooser, or an error opening or reading the chosen file.
-#[derive(Debug)]
-pub enum FileDrop {
-    Dropped(Vec<DroppedFile>),
-    Picked(PickedFile),
-    Error(ServiceError),
-}
-
-/// A drop target that also opens the platform's file chooser by pointer or keyboard.
-/// `accept` and `max_bytes` configure the chooser. The application validates dropped files.
-/// Cancelling the chooser leaves the application state as it was.
+/// A file drop target with an application-supplied chooser action.
 #[ui]
 #[track_caller]
 pub fn file_dropzone(
     id: &str,
     label: impl Into<String>,
-    accept: impl Into<String>,
-    max_bytes: usize,
-    on_files: impl Fn(&mut WriteCx<'_>, FileDrop) + Clone + 'static,
+    on_files: impl Fn(&mut WriteCx<'_>, &[DroppedFile]) + 'static,
+    on_choose: impl Fn(&mut WriteCx<'_>) + 'static,
 ) -> El {
     let label = label.into();
-    let accept = accept.into();
-    let on_drop = on_files.clone();
     button_root(col())
         .test_id(id.to_owned())
         .label(label.clone())
@@ -319,13 +306,6 @@ pub fn file_dropzone(
         .when(State::DRAG_OVER, |p| p.border_color(ColorToken::Accent).bg(ColorToken::SurfaceHover))
         .child(icon(icons::UPLOAD.into()).size(sp(5.0)).a11y_hidden())
         .child(text(label).select_none().a11y_hidden())
-        .on_file_drop(move |w, files| on_drop(w, FileDrop::Dropped(files.to_vec())))
-        .on_press(move |w| {
-            let on_files = on_files.clone();
-            w.request_service(ServiceRequest::PickFile { max_bytes, accept: accept.clone() }, move |w, outcome| match outcome {
-                ServiceOutcome::FilePicked(Some(file)) => on_files(w, FileDrop::Picked(file)),
-                ServiceOutcome::Error(error) if error != ServiceError::Cancelled => on_files(w, FileDrop::Error(error)),
-                _ => {}
-            });
-        })
+        .on_file_drop(on_files)
+        .on_press(on_choose)
 }

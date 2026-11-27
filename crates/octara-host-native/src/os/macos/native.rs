@@ -1,10 +1,8 @@
-//! AppKit mounting, event delivery and snapshots for WebKit and MapKit islands.
+//! AppKit mounting, event delivery and snapshots for the MapKit underlay.
 
-use crate::os::video::Player;
-use crate::os::webkit::Web;
 use block2::RcBlock;
-use objc2::rc::{Allocated, Retained};
-use objc2::runtime::{AnyClass, AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::rc::Retained;
+use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AllocAnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSBitmapImageRep, NSDeviceRGBColorSpace, NSGraphicsContext, NSImage, NSView, NSVisualEffectView, NSWindowOrderingMode,
@@ -15,10 +13,9 @@ use objc2_map_kit::{
     MKMapSnapshotOptions, MKMapSnapshotter, MKMapView, MKMapViewDelegate, MKStandardMapConfiguration,
 };
 use objc2_quartz_core::CAMetalLayer;
-use objc2_web_kit::WKSnapshotConfiguration;
 use octara_model::geometry::{Rect, Size};
 use octara_model::identity::NativeId;
-use octara_model::native::{NativeChange, NativeCommand, NativeEvent, NativePlacement, NativeSlot, NativeSnapshot, NativeSnapshotRequest};
+use octara_model::native::{NativeChange, NativeEvent, NativePlacement, NativeSlot, NativeSnapshot, NativeSnapshotRequest};
 use octara_model::paint::Picture;
 use octara_model::window::VibrancyMaterial;
 use serde_json::{Value, json};
@@ -322,25 +319,12 @@ fn apply_map(map: &MKMapView, props: &Value, applied: &mut Value) {
     *applied = now;
 }
 
-/// The platform view behind a kind.
-enum Platform {
-    Web(Web),
-    Video(Player),
-    Map {
-        map: Retained<MKMapView>,
-        delegate: Retained<MapDelegate>,
-        /// The props last applied (region and style).
-        applied: Value,
-    },
-}
-
-/// One hosted view.
+/// A hosted MapKit underlay view.
 struct Hosted {
     clip: Retained<Clip>,
-    /// The platform view (the clip's subview).
-    view: Retained<NSView>,
-    platform: Platform,
-    slot: NativeSlot,
+    map: Retained<MKMapView>,
+    delegate: Retained<MapDelegate>,
+    applied: Value,
     placed: Option<NativePlacement>,
 }
 
@@ -372,71 +356,33 @@ impl Views {
             return;
         }
         let mtm = self.mtm;
-        let (view, platform): (Retained<NSView>, Platform) = match (kind, slot) {
-            ("web", _) => {
-                let inbox = self.inbox.clone();
-                let web = Web::new(mtm, props, move |event| inbox.push_event(id, event));
-                (web.view().clone().into_super(), Platform::Web(web))
-            }
-            ("video", NativeSlot::Overlay) => {
-                let Some(class) = AnyClass::get(c"AVPlayerView") else { return };
-                // SAFETY: AVKit's AVPlayerView is an NSView subclass and takes an NSRect initializer.
-                let view: Retained<NSView> = unsafe {
-                    let allocated: Allocated<NSView> = msg_send![class, alloc];
-                    msg_send![allocated, initWithFrame: NSRect::ZERO]
-                };
-                let mut player = Player::default();
-                player.update(&view, props);
-                (view, Platform::Video(player))
-            }
-            ("map", NativeSlot::Underlay) => {
-                let map = unsafe { MKMapView::initWithFrame(MKMapView::alloc(mtm), NSRect::ZERO) };
-                let delegate = MapDelegate::new(mtm, id, self.inbox.clone());
-                unsafe { map.setDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
-                let mut applied = Value::Null;
-                apply_map(&map, props, &mut applied);
-                (map.clone().into_super(), Platform::Map { map, delegate, applied })
-            }
-            _ => return,
-        };
-        view.setWantsLayer(true);
-        if let Some(layer) = view.layer() {
+        let map = unsafe { MKMapView::initWithFrame(MKMapView::alloc(mtm), NSRect::ZERO) };
+        let delegate = MapDelegate::new(mtm, id, self.inbox.clone());
+        unsafe { map.setDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
+        let mut applied = Value::Null;
+        apply_map(&map, props, &mut applied);
+        map.setWantsLayer(true);
+        if let Some(layer) = map.layer() {
             layer.setMasksToBounds(true);
         }
         let clip = Clip::new(mtm);
-        clip.addSubview(&view);
-        // Shown once placed.
+        clip.addSubview(&map);
         clip.setHidden(true);
-        self.hosted.insert(id, Hosted { clip, view, platform, slot, placed: None });
+        self.hosted.insert(id, Hosted { clip, map, delegate, applied, placed: None });
     }
 
     fn update(&mut self, id: NativeId, props: &Value) {
-        let Some(h) = self.hosted.get_mut(&id) else { return };
-        match &mut h.platform {
-            Platform::Web(web) => web.update(props),
-            Platform::Video(player) => player.update(&h.view, props),
-            Platform::Map { map, applied, .. } => apply_map(map, props, applied),
+        if let Some(hosted) = self.hosted.get_mut(&id) {
+            apply_map(&hosted.map, props, &mut hosted.applied);
         }
     }
 
     fn destroy(&mut self, id: NativeId) {
-        let Some(h) = self.hosted.remove(&id) else { return };
-        if let Platform::Map { map, .. } = &h.platform {
-            // SAFETY: Clear the non-owning delegate before releasing it.
-            unsafe { map.setDelegate(None) };
-        }
-        h.clip.removeFromSuperview();
+        let Some(hosted) = self.hosted.remove(&id) else { return };
+        // SAFETY: Clear the non-owning delegate before releasing it.
+        unsafe { hosted.map.setDelegate(None) };
+        hosted.clip.removeFromSuperview();
         self.update_regions();
-    }
-
-    pub(super) fn command(&self, command: NativeCommand) {
-        if let Some(hosted) = self.hosted.get(&command.id) {
-            match &hosted.platform {
-                Platform::Web(web) => web.command(&command.name, &command.data),
-                Platform::Video(player) => player.command(&command.name),
-                Platform::Map { .. } => {}
-            }
-        }
     }
 
     /// Requests a snapshot and echoes the request when the platform answers.
@@ -448,59 +394,33 @@ impl Views {
         }
         let scale = self.parent.window().map_or(1.0, |window| window.backingScaleFactor());
         let inbox = self.inbox.clone();
-        let misses = match view.platform {
-            Platform::Web(_) => vec!["WebKit snapshots omit hardware-decoded video and WebGL".into()],
-            Platform::Map { .. } => vec!["MapKit snapshots omit annotations and overlays".into()],
-            Platform::Video(_) => return Err("AVKit video cannot be captured in an Octara snapshot".into()),
-        };
-        let send = move |image: Option<&NSImage>| {
-            let snapshot = image
-                .and_then(|image| pixels(image, scale))
-                .and_then(|(width, height, pixels)| Picture::new(width, height, pixels))
-                .map(|picture| NativeSnapshot { picture, misses: misses.clone() })
-                .ok_or_else(|| "native view snapshot failed".into());
-            inbox.complete_snapshot((request, snapshot));
-        };
-        match &view.platform {
-            Platform::Web(web) => {
-                let config = unsafe { WKSnapshotConfiguration::new(self.mtm) };
-                unsafe { config.setAfterScreenUpdates(false) };
-                let done = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
-                    // SAFETY: WebKit passes an image or null during this callback.
-                    send(unsafe { image.as_ref() });
-                });
-                unsafe { web.view().takeSnapshotWithConfiguration_completionHandler(Some(&config), &done) };
-            }
-            Platform::Video(_) => unreachable!("video snapshot already rejected"),
-            Platform::Map { map, .. } => {
-                let options = unsafe { MKMapSnapshotOptions::new() };
-                unsafe {
-                    options.setRegion(map.region());
-                    options.setPreferredConfiguration(&map.preferredConfiguration());
-                    options.setSize(map.bounds().size);
-                }
-                let snapshotter = unsafe { MKMapSnapshotter::initWithOptions(MKMapSnapshotter::alloc(), &options) };
-                let keep = Cell::new(Some(snapshotter.clone()));
-                let done = RcBlock::new(move |shot: *mut MKMapSnapshot, _error: *mut NSError| {
-                    // SAFETY: MapKit passes a snapshot or null on the main thread.
-                    let image = unsafe { shot.as_ref() }.map(|shot| unsafe { shot.image() });
-                    keep.take();
-                    send(image.as_deref());
-                });
-                unsafe { snapshotter.startWithCompletionHandler(RcBlock::as_ptr(&done)) };
-            }
+        let options = unsafe { MKMapSnapshotOptions::new() };
+        unsafe {
+            options.setRegion(view.map.region());
+            options.setPreferredConfiguration(&view.map.preferredConfiguration());
+            options.setSize(view.map.bounds().size);
         }
+        let snapshotter = unsafe { MKMapSnapshotter::initWithOptions(MKMapSnapshotter::alloc(), &options) };
+        let keep = Cell::new(Some(snapshotter.clone()));
+        let done = RcBlock::new(move |shot: *mut MKMapSnapshot, _error: *mut NSError| {
+            // SAFETY: MapKit passes a snapshot or null on the main thread.
+            let snapshot = unsafe { shot.as_ref() }
+                .and_then(|shot| {
+                    let image = unsafe { shot.image() };
+                    pixels(&image, scale)
+                })
+                .and_then(|(width, height, pixels)| Picture::new(width, height, pixels))
+                .map(|picture| NativeSnapshot { picture, misses: vec!["MapKit snapshots omit annotations and overlays".into()] })
+                .ok_or_else(|| "native view snapshot failed".into());
+            keep.take();
+            inbox.complete_snapshot((request, snapshot));
+        });
+        unsafe { snapshotter.startWithCompletionHandler(RcBlock::as_ptr(&done)) };
         Ok(())
     }
 
-    /// A page or map tiles still loading.
     pub(super) fn busy(&self, id: NativeId) -> Option<String> {
-        let h = self.hosted.get(&id)?;
-        match &h.platform {
-            Platform::Web(web) => web.busy(),
-            Platform::Video(_) => None,
-            Platform::Map { delegate, .. } => delegate.ivars().loading.get().then(|| "loading map tiles".to_owned()),
-        }
+        self.hosted.get(&id)?.delegate.ivars().loading.get().then(|| "loading map tiles".to_owned())
     }
 
     /// The underlay host: made with the first underlay view, below every subview of winit's
@@ -534,7 +454,6 @@ impl Views {
         let regions = self
             .hosted
             .values()
-            .filter(|h| h.slot == NativeSlot::Underlay)
             .filter_map(|h| h.placed.as_ref())
             .filter(|p| p.visible)
             .map(|p| (p.rect.intersect(&p.clip), p.covered.clone()))
@@ -544,7 +463,7 @@ impl Views {
 
     /// Whether the Metal layer must be non-opaque (an underlay view shows through it).
     pub(super) fn has_underlay(&self) -> bool {
-        self.hosted.values().any(|h| h.slot == NativeSlot::Underlay)
+        !self.hosted.is_empty()
     }
 
     /// Applies the waiting placements (inside the frame's transaction).
@@ -552,21 +471,12 @@ impl Views {
         let flipped = self.parent.isFlipped();
         let height = self.parent.bounds().size.height as f32;
         let pending = std::mem::take(&mut self.pending);
-        let underlay = pending.iter().any(|p| self.hosted.get(&p.id).is_some_and(|h| h.slot == NativeSlot::Underlay && h.placed.is_none()));
+        let underlay = pending.iter().any(|p| self.hosted.get(&p.id).is_some_and(|h| h.placed.is_none()));
         let host = underlay.then(|| self.underlay_host());
         for p in pending {
             let Some(h) = self.hosted.get_mut(&p.id) else { continue };
             if h.placed.is_none() {
-                match h.slot {
-                    NativeSlot::Overlay => {
-                        self.parent.addSubview(&h.clip);
-                        // Above the Metal layer, which sits at z 1 once an underlay exists.
-                        if let Some(layer) = h.clip.layer() {
-                            layer.setZPosition(2.0);
-                        }
-                    }
-                    NativeSlot::Underlay => host.as_ref().expect("the underlay host").addSubview(&h.clip),
-                }
+                host.as_ref().expect("the underlay host").addSubview(&h.clip);
             }
             let c = p.clip;
             let y = if flipped { c.y } else { height - c.y - c.h };
@@ -574,17 +484,12 @@ impl Views {
             if let Some(layer) = h.clip.layer() {
                 layer.setCornerRadius(p.clip_radius as f64);
             }
-            h.view.setFrame(rect(p.rect.x - c.x, p.rect.y - c.y, p.rect.w, p.rect.h));
-            if let Some(layer) = h.view.layer() {
-                crate::os::corners::apply(&layer, p.radius, h.view.isFlipped());
+            h.map.setFrame(rect(p.rect.x - c.x, p.rect.y - c.y, p.rect.w, p.rect.h));
+            if let Some(layer) = h.map.layer() {
+                crate::os::corners::apply(&layer, p.radius, h.map.isFlipped());
             }
             h.clip.setAlphaValue(p.opacity as f64);
             h.clip.setHidden(!p.visible);
-            if !p.visible
-                && let Platform::Video(player) = &h.platform
-            {
-                player.pause();
-            }
             h.placed = Some(p);
         }
         self.update_regions();
@@ -622,6 +527,10 @@ impl Views {
         }
         let effect = super::chrome::visual_effect(&self.parent, material);
         self.parent.addSubview_positioned_relativeTo(&effect, NSWindowOrderingMode::Below, None);
+        if let Some(layer) = effect.layer() {
+            // Module underlays use z=0 between this backdrop and Metal.
+            layer.setZPosition(-1.0);
+        }
         self.vibrancy = Some(effect);
         self.order_metal_above_backing();
     }
@@ -637,6 +546,10 @@ impl Views {
             _ => false,
         } {
             return;
+        }
+        if let Some(metal) = metal {
+            // Keep the render surface between module-owned underlays and overlays.
+            metal.setZPosition(1.0);
         }
         self.metal = metal.map(objc2::Message::retain);
         self.order_metal_above_backing();
@@ -680,17 +593,11 @@ impl Views {
     }
 
     pub(super) fn shows(&self, kind: &str, slot: NativeSlot) -> bool {
-        match (kind, slot) {
-            ("web", NativeSlot::Overlay) => true,
-            ("video", NativeSlot::Overlay) => AnyClass::get(c"AVPlayerView").is_some(),
-            ("web", NativeSlot::Underlay) => self.supports_underlay,
-            ("map", NativeSlot::Underlay) => self.supports_underlay && objc2::available!(macos = 13.0),
-            _ => false,
-        }
+        kind == "map" && slot == NativeSlot::Underlay && self.supports_underlay && objc2::available!(macos = 13.0)
     }
 
     pub(super) fn measure(&self, id: NativeId) -> Option<Size> {
-        let size = self.hosted.get(&id)?.view.intrinsicContentSize();
+        let size = self.hosted.get(&id)?.map.intrinsicContentSize();
         (size.width.is_finite() && size.height.is_finite() && size.width > 0.0 && size.height > 0.0)
             .then_some(Size { width: size.width as f32, height: size.height as f32 })
     }
@@ -704,7 +611,7 @@ impl Views {
             .hosted
             .iter()
             .map(|(id, view)| {
-                let frame = view.view.convertRect_toView(view.view.bounds(), Some(&self.parent));
+                let frame = view.map.convertRect_toView(view.map.bounds(), Some(&self.parent));
                 (id.0, json!({ "id": id.0, "frame": [frame.origin.x, frame.origin.y, frame.size.width, frame.size.height] }))
             })
             .collect::<Vec<_>>();

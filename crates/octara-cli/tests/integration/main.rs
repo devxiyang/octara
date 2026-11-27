@@ -7,4 +7,5 @@ mod dev;
 mod harness;
 #[cfg(unix)]
 mod live;
+mod modules;
 mod skill;

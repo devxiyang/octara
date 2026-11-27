@@ -8,11 +8,11 @@ mod services;
 mod windows_preferences;
 
 use crate::ShellEvent;
-use crate::os::{ActiveEditorView, OsHost, OsWindow, OsWindowContext, ServiceCleanup, WindowAsks, WindowTextInput};
+use crate::os::{ActiveEditorView, OsHost, OsWindow, OsWindowContext, ServiceCleanup, WindowTextInput};
 use ime::WinitIme;
 use octara::module::{HostSurfaceKind, RawNativeSurface};
 use octara::runtime::Input;
-use octara_model::ask::{Ask, AskId, ServiceId, ServiceRequest};
+use octara_model::ask::{ServiceId, ServiceRequest};
 use octara_model::input::{EditorEvent, HostReply};
 use octara_model::paint::Image;
 use serde_json::Value;
@@ -133,12 +133,8 @@ impl OsWindow for DesktopWindow {
         self
     }
 
-    fn asks(&mut self) -> Option<&mut dyn WindowAsks> {
-        Some(self)
-    }
-
     fn request_service(&mut self, id: ServiceId, request: ServiceRequest) -> Option<ServiceCleanup> {
-        self.services.request(&self.window, id, request)
+        self.services.request(id, request)
     }
 }
 
@@ -153,22 +149,6 @@ impl WindowTextInput for DesktopWindow {
 
     fn inspect_text_input(&self) -> Value {
         self.ime.inspect(&self.window)
-    }
-}
-
-impl WindowAsks for DesktopWindow {
-    fn show_ask(&mut self, id: AskId, ask: Ask) -> Option<Ask> {
-        match &ask {
-            Ask::Paths(options) if options.files != options.directories => {}
-            Ask::NewPath { .. } => {}
-            _ => return Some(ask),
-        }
-        self.services.show_ask(&self.window, id, ask);
-        None
-    }
-
-    fn withdraw_ask(&mut self, id: AskId) {
-        self.services.withdraw_ask(id);
     }
 }
 

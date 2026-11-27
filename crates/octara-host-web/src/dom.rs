@@ -181,7 +181,6 @@ pub(crate) fn create_element(doc: &Document, tree: &Tree, node: NodeId) -> Resul
     let tag = match core.kind {
         NodeKind::TextInput => editor_tag(tree.editor(node).expect("mounted editor")),
         NodeKind::Image => "canvas",
-        NodeKind::Native if tree.native(node).is_some_and(|slot| slot.kind == "video" && slot.typed_props.is_none()) => "video",
         NodeKind::Link => "a",
         NodeKind::Box if checkbox => "input",
         NodeKind::Box if tree.semantics(node).and_then(|slot| slot.role) == Some(Role::Button) || tree.has_activation_handler(node) => {

@@ -4,7 +4,7 @@
 use super::section;
 use octara::prelude::*;
 use octara_kit::{ButtonVariant, Size as KitSize, button};
-use serde_json::json;
+use octara_webview::{WebViewEvent, WebViewProps, view as web_view};
 
 #[ui]
 pub fn view(cx: &mut BuildCx<'_>) -> El {
@@ -12,26 +12,26 @@ pub fn view(cx: &mut BuildCx<'_>) -> El {
     let page_title = cx.signal(String::new());
     let loaded = cx.signal(0u32);
     let section = section("Web view");
-    let web = native_view("web")
-        .test_id("web")
-        .label("Web page")
-        .native_props(move |r: &mut ReadCx<'_>| {
-            let (title, color) = [("First page", "#6366f1"), ("Second page", "#ec4899")][r.get(page)];
-            let html = format!(
-                "<html><head><title>{title}</title></head>\
-                 <body style='margin:0;font:15px -apple-system;display:grid;place-items:center;height:100vh;background:{color};color:white'>\
-                 <div><h2>{title}</h2><p>HTML in a native web view.</p></div></body></html>"
-            );
-            json!({ "html": html })
-        })
-        .on_native(move |w, e: &NativeEvent| match e.name.as_str() {
-            "title" => w.set(page_title, e.data["title"].as_str().unwrap_or_default().to_owned()),
-            "load" => w.update(loaded, |n| *n += 1),
-            _ => {}
-        })
-        .w(360)
-        .h(160)
-        .rounded(RadiusToken::Xl);
+    let web = web_view(move |r: &mut ReadCx<'_>| {
+        let (title, color) = [("First page", "#6366f1"), ("Second page", "#ec4899")][r.get(page)];
+        WebViewProps::html(format!(
+            "<html><head><title>{title}</title></head>\
+             <body style='margin:0;font:15px -apple-system;display:grid;place-items:center;height:100vh;background:{color};color:white'>\
+             <div><h2>{title}</h2><p>HTML in a native web view.</p></div></body></html>"
+        ))
+    })
+    .test_id("web")
+    .label("Web page")
+    .on_typed_native::<WebViewEvent>(move |w, _, event| match event {
+        WebViewEvent::Navigation(state) => {
+            w.set_if_changed(page_title, state.title.clone().unwrap_or_default());
+        }
+        WebViewEvent::Loaded { .. } => w.update(loaded, |n| *n += 1),
+        _ => {}
+    })
+    .w(360)
+    .h(160)
+    .rounded(RadiusToken::Xl);
     let section = if std::env::var_os("OCTARA_WEB_PLACEMENT_PROBE").is_some_and(|enabled| enabled == "1") {
         let moved = cx.signal(false);
         let marker = cx.signal(false);

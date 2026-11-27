@@ -280,9 +280,6 @@ pub(crate) fn style(tree: &Tree, node: NodeId, viewport: WindowViewport, activat
             let _ = write!(css, "width:{width}px;");
         }
     }
-    if kind == NodeKind::Native && tree.native(node).is_some_and(|slot| slot.kind == "video" && slot.typed_props.is_none()) {
-        css.push_str("object-fit:contain;");
-    }
     if matches!(kind, NodeKind::Text | NodeKind::TextInput) || activatable {
         let align = match v.align {
             TextAlign::Start => "start",

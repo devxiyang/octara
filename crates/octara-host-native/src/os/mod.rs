@@ -25,22 +25,16 @@ use winit::window::{Fullscreen, Theme, UserAttentionType, Window, WindowAttribut
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple_media;
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(target_os = "macos")]
 mod corners;
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 mod desktop;
-#[cfg(not(target_os = "ios"))]
-mod files;
 #[cfg(target_os = "ios")]
 mod ios;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod scheduling;
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-mod video;
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-mod webkit;
 
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 use desktop as platform;
@@ -171,7 +165,9 @@ pub trait OsWindow {
     fn module_surface<'a>(&'a self, window: &'a Window, kind: HostSurfaceKind, id: WindowId) -> HostSurface<'a> {
         let surface = HostSurface::new(kind, Some(id));
         match platform::raw_module_surface(window) {
-            Some(raw) => surface.with_raw_native(raw),
+            // SAFETY: The platform backend obtains the live native handles
+            // from the borrowed winit window on the UI thread.
+            Some(raw) => unsafe { surface.with_raw_native(raw) },
             None => surface,
         }
     }
@@ -322,6 +318,19 @@ pub trait WindowPresentation {
     fn surface_will_reconfigure(&mut self) -> bool;
     fn try_acquire_drawable(&mut self, surface: &Arc<wgpu::Surface<'static>>, color: OutputColor) -> DrawableAcquisition;
     fn present(&mut self, drawable: Box<dyn Drawable>, queue: &wgpu::Queue) -> Result<(), String>;
+
+    /// Present the drawable and commit typed native views once on success.
+    /// Backends with a platform transaction call the callback inside that transaction.
+    fn present_with_native_views(
+        &mut self,
+        drawable: Box<dyn Drawable>,
+        queue: &wgpu::Queue,
+        commit_native_views: &mut dyn FnMut(),
+    ) -> Result<(), String> {
+        self.present(drawable, queue)?;
+        commit_native_views();
+        Ok(())
+    }
 }
 
 pub trait Drawable: DrawTarget {

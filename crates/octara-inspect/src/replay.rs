@@ -14,7 +14,7 @@ use octara::{
     tree::editor::EditorSession,
 };
 use octara_model::{
-    ask::{Answer, ServiceOutcome},
+    ask::ServiceOutcome,
     identity::{EditorSessionId, WindowId},
     input::{EditorEvent, HostReply, InteractionEvent, Key, KeyEvent},
     semantics::A11yAction,
@@ -212,10 +212,9 @@ fn private_interaction(app: &App, window: WindowId, event: &InteractionEvent) ->
 
 fn private_reply(app: &App, window: WindowId, reply: &HostReply) -> bool {
     match reply {
-        HostReply::AskAnswer { answer: Answer::Paths(_) | Answer::NewPath(_), .. }
-        | HostReply::FilesDropped { .. }
+        HostReply::FilesDropped { .. }
         | HostReply::Paste(_)
-        | HostReply::ServiceReply { outcome: ServiceOutcome::FilePicked(_) | ServiceOutcome::Clipboard(_), .. }
+        | HostReply::ServiceReply { outcome: ServiceOutcome::Clipboard(_), .. }
         | HostReply::NativeEvent { .. }
         | HostReply::NativeSnapshot { .. } => true,
         HostReply::AccessibilityAction { target, action: A11yAction::SetValue(_) } => app.runtime().window(window).is_none_or(|window| {

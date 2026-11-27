@@ -36,7 +36,7 @@ cargo test -p octara-chat
 
 ```sh
 chat_tmp="$(mktemp -d /tmp/octara-chat.XXXXXX)"
-cargo run -p octara-cli -- launch --package octara-chat --socket "$chat_tmp/inspect.sock" --receipt "$chat_tmp/build.json"
+cargo run -p octara-cli -- launch --package octara-chat-desktop --socket "$chat_tmp/inspect.sock" --receipt "$chat_tmp/build.json"
 ```
 
 在另一个终端，使用前一个终端的临时目录运行脚本，或查看语义树。关闭窗口后可删除临时目录。

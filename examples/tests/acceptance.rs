@@ -8,8 +8,10 @@ use std::time::Duration;
 
 fn launch<V: IntoView>(root: impl FnOnce(&mut BuildCx<'_>) -> V + 'static) -> (HeadlessDriver, WindowId) {
     let mut driver = HeadlessDriver::default();
-    let window =
-        driver.launch(AppDefinition::new().window(WindowDefinition::new(window_options("Example", 800.0, 600.0), root))).unwrap()[0];
+    let definition = AppDefinition::new()
+        .with_module(octara_webview::mock())
+        .window(WindowDefinition::new(window_options("Example", 800.0, 600.0), root));
+    let window = driver.launch(definition).unwrap()[0];
     (driver, window)
 }
 
@@ -416,6 +418,17 @@ fn release_workspace_reorders_keyed_checks_and_announces_menu_actions() {
 #[test]
 fn note_window_actions_affect_only_the_opened_window() {
     let (mut driver, window) = launch(apps::windows);
+    driver.stub_module_call::<octara_picker::PickFiles>(|request| {
+        assert!(request.multiple);
+        Ok(vec![octara_picker::PickedFile {
+            path: None,
+            name: "note.txt".into(),
+            media_type: "text/plain".into(),
+            bytes: Some(b"notes".to_vec()),
+        }])
+    });
+    press(&mut driver, window, "open");
+    assert_eq!(node(&observe(&mut driver, window), "picked").text.as_deref(), Some("note.txt"));
     press(&mut driver, window, "new");
     let note = driver.app().runtime().windows().find(|&(&id, _)| id != window).map(|(&id, _)| id).expect("opened note");
     input(&mut driver, note, "body", "A note");

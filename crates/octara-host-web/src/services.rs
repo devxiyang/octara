@@ -4,18 +4,15 @@ use crate::{Driver, Listener};
 use js_sys::Uint8Array;
 use octara::runtime::{HostCommand, WindowId};
 use octara_model::ask::{
-    Answer, Ask, AskId, ClipboardItem, ClipboardKinds, Menu, MenuItem, PickedFile, ServiceError, ServiceId, ServiceOutcome, ServiceRequest,
+    Answer, Ask, AskId, ClipboardItem, ClipboardKinds, Menu, MenuItem, ServiceError, ServiceId, ServiceOutcome, ServiceRequest,
 };
 use octara_model::input::{Chord, HostReply, KeyEvent, Modifiers};
 use octara_model::theme::ColorScheme;
-use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::rc::{Rc, Weak};
+use std::rc::Weak;
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::{
-    Blob, Clipboard, Document, DomException, Event, EventTarget, File, HtmlDialogElement, HtmlElement, HtmlInputElement, Window,
-};
+use web_sys::{Blob, Clipboard, Document, DomException, Event, EventTarget, HtmlDialogElement, HtmlElement, Window};
 
 pub(crate) struct Services {
     browser: Window,
@@ -23,7 +20,6 @@ pub(crate) struct Services {
     mount: HtmlElement,
     owner: Weak<Driver>,
     asks: BTreeMap<AskId, Dialog>,
-    picker: Option<(ServiceId, Picker)>,
     menus: Vec<Menu>,
     primary: Modifiers,
 }
@@ -35,7 +31,7 @@ pub(crate) fn shortcut_modifier(browser: &Window) -> Modifiers {
 impl Services {
     pub(crate) fn new(browser: Window, document: Document, mount: HtmlElement, owner: Weak<Driver>) -> Self {
         let primary = shortcut_modifier(&browser);
-        Self { browser, document, mount, owner, asks: BTreeMap::new(), picker: None, menus: Vec::new(), primary }
+        Self { browser, document, mount, owner, asks: BTreeMap::new(), menus: Vec::new(), primary }
     }
 
     pub(crate) fn apply(&mut self, command: HostCommand) {
@@ -83,7 +79,6 @@ impl Services {
 
     pub(crate) fn stop(&mut self) {
         self.asks.clear();
-        self.picker.take();
         self.menus.clear();
     }
 
@@ -147,7 +142,6 @@ impl Services {
                     }
                 })?;
             }
-            Ask::Paths(_) | Ask::NewPath { .. } => return Err("browser paths are unavailable".into()),
         }
         if dialog.element.child_element_count() == 0 {
             return Err("the browser ask has no visible items".into());
@@ -199,11 +193,6 @@ impl Services {
 
     fn request(&mut self, window: WindowId, id: ServiceId, request: ServiceRequest) {
         match request {
-            ServiceRequest::PickFile { max_bytes, accept } => {
-                if let Err(error) = self.pick_file(window, id, max_bytes, &accept) {
-                    self.reply(window, HostReply::ServiceReply { id, outcome: ServiceOutcome::Error(error) });
-                }
-            }
             ServiceRequest::ReadClipboard { accept } if !accept.intersects(ClipboardKinds::TEXT | ClipboardKinds::IMAGE) => {
                 self.reply(window, HostReply::ServiceReply { id, outcome: ServiceOutcome::Clipboard(Vec::new()) });
             }
@@ -257,65 +246,6 @@ impl Services {
         let value: &JsValue = clipboard.as_ref();
         (!value.is_undefined() && !value.is_null()).then_some(clipboard)
     }
-
-    fn pick_file(&mut self, window: WindowId, id: ServiceId, max_bytes: usize, accept: &str) -> Result<(), ServiceError> {
-        if self.picker.is_some() {
-            return Err(ServiceError::Busy);
-        }
-        let body = self.document.body().ok_or(ServiceError::Unavailable)?;
-        let input = self.document.create_element("input").map_err(browser_error)?.unchecked_into::<HtmlInputElement>();
-        input.set_type("file");
-        input.set_accept(accept);
-        input.set_hidden(true);
-        input.set_attribute("data-octara-file-picker", "").map_err(browser_error)?;
-        let finished = Rc::new(Cell::new(false));
-        let changed = finished.clone();
-        let owner = self.owner.clone();
-        let change = register(input.as_ref(), "change", move |event| {
-            if changed.replace(true) {
-                return;
-            }
-            let file = event
-                .target()
-                .and_then(|target| target.dyn_into::<HtmlInputElement>().ok())
-                .and_then(|input| input.files())
-                .and_then(|files| files.item(0));
-            let owner = owner.clone();
-            spawn_local(async move {
-                let outcome = match file {
-                    Some(file) => {
-                        read_file(file, max_bytes).await.map_or_else(ServiceOutcome::Error, |file| ServiceOutcome::FilePicked(Some(file)))
-                    }
-                    None => ServiceOutcome::FilePicked(None),
-                };
-                finish_picker(&owner, window, id, outcome);
-            });
-        })
-        .map_err(browser_error)?;
-        let owner = self.owner.clone();
-        let cancel = register(input.as_ref(), "cancel", move |_| {
-            if !finished.replace(true) {
-                let owner = owner.clone();
-                spawn_local(async move { finish_picker(&owner, window, id, ServiceOutcome::FilePicked(None)) });
-            }
-        })
-        .map_err(browser_error)?;
-        let picker = Picker { input, _listeners: [change, cancel] };
-        body.append_child(&picker.input).map_err(browser_error)?;
-        let method = js_sys::Reflect::get(picker.input.as_ref(), &JsValue::from_str("showPicker")).map_err(browser_error)?;
-        if !method.is_function() {
-            return Err(ServiceError::Unavailable);
-        }
-        picker.input.show_picker().map_err(|error| {
-            if error.dyn_ref::<DomException>().is_some_and(|error| error.name() == "NotAllowedError") {
-                ServiceError::ActivationRequired
-            } else {
-                browser_error(error)
-            }
-        })?;
-        self.picker = Some((id, picker));
-        Ok(())
-    }
 }
 
 struct Dialog {
@@ -340,17 +270,6 @@ impl Drop for Dialog {
     }
 }
 
-struct Picker {
-    input: HtmlInputElement,
-    _listeners: [Listener; 2],
-}
-
-impl Drop for Picker {
-    fn drop(&mut self) {
-        self.input.remove();
-    }
-}
-
 fn register(target: &EventTarget, name: &'static str, handle: impl Fn(Event) + 'static) -> Result<Listener, JsValue> {
     let callback = Closure::new(handle);
     target.add_event_listener_with_callback(name, callback.as_ref().unchecked_ref())?;
@@ -368,28 +287,10 @@ fn queue_answer(owner: Weak<Driver>, window: WindowId, id: AskId, answer: Answer
     });
 }
 
-fn finish_picker(owner: &Weak<Driver>, window: WindowId, id: ServiceId, outcome: ServiceOutcome) {
-    let Some(driver) = owner.upgrade() else { return };
-    let finished = driver.services.borrow_mut().picker.take_if(|(pending, _)| *pending == id);
-    if finished.is_some() {
-        drop(finished);
-        deliver(owner, window, HostReply::ServiceReply { id, outcome });
-    }
-}
-
 fn deliver(owner: &Weak<Driver>, window: WindowId, reply: HostReply) {
     if let Some(driver) = owner.upgrade().filter(|driver| driver.window.get() == Some(window)) {
         driver.send(octara::runtime::Input::Host(reply));
     }
-}
-
-async fn read_file(file: File, max_bytes: usize) -> Result<PickedFile, ServiceError> {
-    let size = file.size();
-    if size > max_bytes as f64 {
-        return Err(ServiceError::TooLarge { bytes: size as u64, max_bytes });
-    }
-    let buffer = JsFuture::from(file.array_buffer()).await.map_err(browser_error)?;
-    Ok(PickedFile { name: file.name(), media_type: file.type_(), bytes: Uint8Array::new(&buffer).to_vec() })
 }
 
 async fn clipboard_items(value: JsValue, accept: ClipboardKinds) -> Vec<ClipboardItem> {

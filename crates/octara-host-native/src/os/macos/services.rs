@@ -1,20 +1,13 @@
-//! AppKit pasteboard and scoped file picking.
+//! AppKit pasteboard services.
 
-use super::asks::later;
-use crate::os::ServiceCleanup;
-use objc2::{AllocAnyThread, ClassType, MainThreadMarker, Message, rc::Retained};
+use objc2::{AllocAnyThread, ClassType, rc::Retained};
 use objc2_app_kit::{
-    NSBitmapFormat, NSBitmapImageFileType, NSBitmapImageRep, NSCalibratedRGBColorSpace, NSModalResponseCancel, NSModalResponseOK,
-    NSOpenPanel, NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeString, NSPasteboardTypeTIFF, NSPasteboardURLReadingFileURLsOnlyKey,
-    NSView,
+    NSBitmapFormat, NSBitmapImageFileType, NSBitmapImageRep, NSCalibratedRGBColorSpace, NSPasteboard, NSPasteboardTypePNG,
+    NSPasteboardTypeString, NSPasteboardTypeTIFF, NSPasteboardURLReadingFileURLsOnlyKey,
 };
 use objc2_foundation::{NSArray, NSData, NSDictionary, NSNumber, NSString, NSURL};
-use octara_model::ask::{ClipboardItem, ClipboardKinds, ServiceError, ServiceOutcome};
+use octara_model::ask::{ClipboardItem, ClipboardKinds};
 use octara_model::paint::Image;
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) fn read_clipboard(accept: ClipboardKinds) -> Vec<ClipboardItem> {
     let pasteboard = NSPasteboard::generalPasteboard();
@@ -114,110 +107,4 @@ pub(super) fn write_image(image: &Image) {
     pasteboard.clearContents();
     // SAFETY: PNG is the representation encoded above.
     pasteboard.setData_forType(Some(&png), unsafe { NSPasteboardTypePNG });
-}
-
-type Panel = RefCell<Option<Retained<NSOpenPanel>>>;
-
-struct Pick {
-    panel: Rc<Panel>,
-    live: Arc<AtomicBool>,
-}
-
-impl Pick {
-    fn cancel(&self) {
-        self.live.store(false, Ordering::Relaxed);
-        let panel = self.panel.borrow_mut().take();
-        if let Some(panel) = panel {
-            // SAFETY: The AppKit cancel action accepts a nil sender.
-            unsafe { panel.cancel(None) };
-        }
-    }
-}
-
-#[derive(Default)]
-pub(super) struct Picker(Option<Rc<Pick>>);
-
-impl Picker {
-    pub(super) fn start(
-        &mut self,
-        view: &NSView,
-        max_bytes: usize,
-        accept: &str,
-        send: impl Fn(ServiceOutcome) + Send + Sync + 'static,
-    ) -> Option<ServiceCleanup> {
-        if self.0.as_ref().is_some_and(|request| request.live.load(Ordering::Relaxed)) {
-            send(ServiceOutcome::Error(ServiceError::Busy));
-            return Some(Box::new(|| {}));
-        }
-        let request = Rc::new(Pick { panel: Rc::default(), live: Arc::new(AtomicBool::new(true)) });
-        self.0 = Some(request.clone());
-        let view = view.retain();
-        let extensions = crate::os::files::accept_extensions(accept);
-        let send = Arc::new(send);
-        let scheduled = Rc::downgrade(&request);
-        later(move || {
-            let Some(request) = scheduled.upgrade().filter(|request| request.live.load(Ordering::Relaxed)) else { return };
-            let sender = send.clone();
-            let Some((mtm, parent)) = MainThreadMarker::new().zip(view.window()) else {
-                finish(&request.live, &*sender, ServiceOutcome::Error(ServiceError::Unavailable));
-                return;
-            };
-            if parent.attachedSheet().is_some() {
-                finish(&request.live, &*sender, ServiceOutcome::Error(ServiceError::Busy));
-                return;
-            }
-            let panel = NSOpenPanel::openPanel(mtm);
-            panel.setCanChooseFiles(true);
-            panel.setCanChooseDirectories(false);
-            panel.setAllowsMultipleSelection(false);
-            let filters = (!extensions.is_empty()).then(|| {
-                let extensions = extensions.iter().map(|extension| NSString::from_str(extension)).collect::<Vec<_>>();
-                NSArray::from_retained_slice(&extensions)
-            });
-            // The extension-only AppKit API also supports unregistered extensions.
-            #[allow(deprecated)]
-            panel.setAllowedFileTypes(filters.as_deref());
-            let pending = Rc::downgrade(&request.panel);
-            let live = request.live.clone();
-            let done = block2::RcBlock::new(move |response| {
-                let Some(panel) = pending.upgrade().and_then(|slot| slot.borrow_mut().take()) else { return };
-                panel.orderOut(None);
-                if response == NSModalResponseCancel {
-                    finish(&live, &*sender, ServiceOutcome::FilePicked(None));
-                } else if response == NSModalResponseOK
-                    && let Some(path) = panel.URL().and_then(|url| url.to_file_path())
-                {
-                    let active = live.clone();
-                    let answer = sender.clone();
-                    let read = std::thread::Builder::new().name("octara-file-read".into()).spawn(move || {
-                        let result = crate::os::files::read_file(&path, max_bytes, &active)
-                            .map_or_else(ServiceOutcome::Error, |file| ServiceOutcome::FilePicked(Some(file)));
-                        finish(&active, &*answer, result);
-                    });
-                    if read.is_err() {
-                        finish(&live, &*sender, ServiceOutcome::Error(ServiceError::Failed));
-                    }
-                } else {
-                    finish(&live, &*sender, ServiceOutcome::Error(ServiceError::Failed));
-                }
-            });
-            request.panel.replace(Some(panel.clone()));
-            panel.beginSheetModalForWindow_completionHandler(&parent, &done);
-        });
-        Some(Box::new(move || request.cancel()))
-    }
-}
-
-impl Drop for Picker {
-    fn drop(&mut self) {
-        if let Some(request) = &self.0 {
-            request.cancel();
-        }
-    }
-}
-
-fn finish(live: &AtomicBool, send: &impl Fn(ServiceOutcome), result: ServiceOutcome) {
-    if live.swap(false, Ordering::AcqRel) {
-        send(result);
-    }
 }

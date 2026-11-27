@@ -274,7 +274,7 @@ impl Chat {
         }
     }
 
-    fn attach_file(&self, w: &mut WriteCx<'_>, name: String, path: Option<PathBuf>) {
+    pub(crate) fn attach_file(&self, w: &mut WriteCx<'_>, name: String, path: Option<PathBuf>) {
         let id = self.id(w);
         w.push_row(self.files, id, Attachment { name, path });
     }

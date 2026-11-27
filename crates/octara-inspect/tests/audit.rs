@@ -11,7 +11,7 @@ use octara_inspect::{
     replay::{Channel, Event, Replay},
 };
 use octara_model::{
-    ask::{Answer, AskId},
+    ask::{ClipboardItem, ServiceId, ServiceOutcome},
     diagnostics::{Severity, codes},
     input::HostReply,
     overlay::LayerPolicy,
@@ -203,7 +203,10 @@ fn custom_codec_dispatches_ordinary_requests_and_trace_records_redacted_entries(
     driver
         .dispatch(
             window,
-            Input::Host(HostReply::AskAnswer { id: AskId(42), answer: Answer::Paths(Some(vec!["/private/protected.txt".into()])) }),
+            Input::Host(HostReply::ServiceReply {
+                id: ServiceId(42),
+                outcome: ServiceOutcome::Clipboard(vec![ClipboardItem::Files(vec!["/private/protected.txt".into()])]),
+            }),
         )
         .unwrap();
     driver.execute(AgentRequest::new(Some(window), AgentCommand::Observe));

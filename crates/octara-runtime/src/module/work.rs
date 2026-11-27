@@ -170,6 +170,21 @@ impl BuildCx<'_> {
 }
 
 impl AppRuntime {
+    /// Register the originating window's raw handles for platform module calls.
+    ///
+    /// # Safety
+    /// The host must keep these handles valid until the runtime window closes
+    /// or the host clears the registration with `clear_module_native_surface`.
+    pub unsafe fn set_module_native_surface(&mut self, window: WindowId, surface: RawNativeSurface) {
+        if self.windows.contains_key(&window) {
+            self.modules.native_surfaces.insert(window, surface);
+        }
+    }
+
+    pub fn clear_module_native_surface(&mut self, window: WindowId) {
+        self.modules.native_surfaces.remove(&window);
+    }
+
     pub fn set_module_host_kind(&mut self, kind: HostSurfaceKind) {
         self.modules.host = Some(kind);
     }
@@ -277,11 +292,12 @@ impl AppRuntime {
             }
             let dispatcher = self.module_dispatcher();
             let host = self.modules.host_kind();
+            let native_surface = window.and_then(|window| self.modules.native_surfaces.get(&window).copied());
             let result = if let Some(stub) = self.modules.stubs.get_mut(&call.id) {
                 Some(stub(payload))
             } else if let Some(module) = self.modules.modules.get_mut(&call.module) {
                 let mut result = None;
-                let mut cx = ModuleCallCx { call, reply: &mut result, dispatcher, host, window };
+                let mut cx = ModuleCallCx { call, reply: &mut result, dispatcher, host, window, native_surface };
                 module.call(ticket, payload, &mut cx);
                 result
             } else {

@@ -44,5 +44,6 @@ fn main() {
         })
         .collect();
     let store = Store::new(directory);
-    octara_host_native::run_app(definition(Options { models, store: Some(store), ..Options::default() })).unwrap();
+    let app = definition(Options { models, store: Some(store), ..Options::default() });
+    octara_host_native::run_app(octara_chat_desktop::with_platform_modules(app)).unwrap();
 }

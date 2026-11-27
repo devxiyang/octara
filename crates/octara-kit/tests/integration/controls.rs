@@ -167,25 +167,19 @@ fn fieldset_disables_contained_fields_and_keeps_their_ids_and_relations() {
 }
 
 #[test]
-fn dropzone_routes_drop_and_picker_without_report_on_cancellation() {
+fn dropzone_routes_drop_and_application_chooser_action() {
     let mut driver = HeadlessDriver::default();
-    let seen = driver.app_mut().build(|b| b.signal(Vec::<String>::new())).unwrap();
+    let seen = driver.app_mut().build(|b| b.signal(Vec::new())).unwrap();
     let mut mounted = Mounted::new(driver, move |_| {
-        file_dropzone("files", "Add an attachment", ".txt", 16, move |w, event| {
-            let label = match event {
-                FileDrop::Dropped(files) => {
-                    assert_eq!(files, [DroppedFile::Name("dropped.txt".to_owned())]);
-                    "dropped".to_owned()
-                }
-                FileDrop::Picked(file) => {
-                    assert_eq!(file.name, "chosen.txt");
-                    assert_eq!(file.bytes, b"chosen file");
-                    "picked".to_owned()
-                }
-                FileDrop::Error(error) => error.to_string(),
-            };
-            w.update(seen, |seen| seen.push(label));
-        })
+        file_dropzone(
+            "files",
+            "Add an attachment",
+            move |w, files| {
+                assert_eq!(files, [DroppedFile::Name("dropped.txt".to_owned())]);
+                w.update(seen, |seen| seen.push("dropped"));
+            },
+            move |w| w.update(seen, |seen| seen.push("choose")),
+        )
     });
     let node = mounted.node("files");
     let target = mounted.tree().guard(node);
@@ -194,33 +188,8 @@ fn dropzone_routes_drop_and_picker_without_report_on_cancellation() {
     assert_eq!(mounted.window().file_drop_target(pos), Some(target));
     let drop = HostReply::FilesDropped { target, files: vec![DroppedFile::Name("dropped.txt".to_owned())] };
     assert!(mounted.driver.dispatch(mounted.id, Input::Host(drop)).unwrap().handled);
-    for outcome in [
-        ServiceOutcome::FilePicked(None),
-        ServiceOutcome::Error(ServiceError::Cancelled),
-        ServiceOutcome::FilePicked(Some(PickedFile {
-            name: "chosen.txt".to_owned(),
-            media_type: "text/plain".to_owned(),
-            bytes: b"chosen file".to_vec(),
-        })),
-        ServiceOutcome::Error(ServiceError::Denied),
-    ] {
-        assert!(mounted.a11y("files", A11yAction::Press));
-        let id = mounted
-            .driver
-            .take_host_commands()
-            .into_iter()
-            .find_map(|command| match command {
-                HostCommand::Service { id, request: ServiceRequest::PickFile { max_bytes, accept }, .. } => {
-                    assert_eq!((max_bytes, accept.as_str()), (16, ".txt"));
-                    Some(id)
-                }
-                _ => None,
-            })
-            .expect("picker request");
-        let reply = Input::Host(HostReply::ServiceReply { id, outcome });
-        assert!(mounted.driver.dispatch(mounted.id, reply).unwrap().handled);
-    }
-    assert_eq!(mounted.update(|w| w.get(seen)), ["dropped", "picked", &ServiceError::Denied.to_string()]);
+    assert!(mounted.a11y("files", A11yAction::Press));
+    assert_eq!(mounted.update(|w| w.get(seen)), ["dropped", "choose"]);
 }
 
 #[test]

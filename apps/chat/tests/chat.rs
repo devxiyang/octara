@@ -121,21 +121,19 @@ fn composer_preserves_identity_and_blocks_invalid_generation_across_input_routes
 #[test]
 fn duplicate_attachment_names_have_independent_remove_actions() {
     let (ui, _) = controlled(None);
+    ui.driver.borrow_mut().stub_module_call::<octara_picker::PickFiles>(|request| {
+        assert_eq!(request.title.as_deref(), Some("Attach"));
+        assert!(request.multiple);
+        Ok(["a/note.txt", "b/note.txt"]
+            .map(|path| octara_picker::PickedFile {
+                path: Some(path.into()),
+                name: "note.txt".into(),
+                media_type: "text/plain".into(),
+                bytes: None,
+            })
+            .into())
+    });
     assert!(ui.press("attach"));
-    let ask = ui
-        .driver
-        .borrow_mut()
-        .take_host_commands()
-        .into_iter()
-        .find_map(|command| match command {
-            HostCommand::Ask { id, ask: Ask::Paths(options), .. } => {
-                assert!(options.files && options.multiple && !options.directories);
-                Some(id)
-            }
-            _ => None,
-        })
-        .unwrap();
-    ui.host(HostReply::AskAnswer { id: ask, answer: Answer::Paths(Some(vec!["a/note.txt".into(), "b/note.txt".into()])) });
     assert!(ui.press("remove-file-1"));
     assert!(!ui.exists("file-1"));
     assert!(ui.exists("file-2"));

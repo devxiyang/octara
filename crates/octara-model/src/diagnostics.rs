@@ -196,6 +196,18 @@ pub mod codes {
             "The application could not install a registered module.",
             "The module returned an error during installation.",
             "docs/design/v2/14-octara-module-architecture.md";
+        MODULE_MANIFEST_INVALID: Error,
+            "A module manifest could not be validated.",
+            "Check the manifest schema and the type of every declared value.",
+            "docs/design/v2/14-octara-module-architecture.md#25-declarative-manifest-octara-moduletoml--octara-cli-integration";
+        MODULE_VARIABLE_MISSING: Error,
+            "A module manifest requires an application configuration value.",
+            "Set the named variable in the module's table in octara.toml.",
+            "docs/design/v2/14-octara-module-architecture.md#25-declarative-manifest-octara-moduletoml--octara-cli-integration";
+        MODULE_MANIFEST_CONFLICT: Error,
+            "Two modules require different values for the same application setting.",
+            "Resolve the conflicting module declarations before merging the manifests.",
+            "docs/design/v2/14-octara-module-architecture.md#25-declarative-manifest-octara-moduletoml--octara-cli-integration";
         NATIVE_VIEW_MOUNT_FAILED: Warning,
             "A registered native view could not mount.",
             "Its factory is unavailable on this host or could not create the view.",

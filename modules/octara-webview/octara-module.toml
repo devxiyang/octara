@@ -1,0 +1,7 @@
+[module]
+id = "octara.webview"
+schema = 1
+
+[apple.frameworks]
+ios = ["WebKit", "UIKit"]
+macos = ["WebKit", "AppKit"]

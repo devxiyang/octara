@@ -42,33 +42,11 @@ pub enum PromptLevel {
     Critical,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PathPromptOptions {
-    pub files: bool,
-    pub directories: bool,
-    pub multiple: bool,
-    pub prompt: Option<String>,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Ask {
     Menu { menu: Menu, at: Point },
     Prompt { level: PromptLevel, message: String, detail: Option<String>, answers: Vec<String> },
-    Paths(PathPromptOptions),
-    NewPath { directory: PathBuf, name: Option<String> },
-}
-
-impl Ask {
-    /// Prompts for a single native directory path.
-    pub fn pick_directory(prompt: Option<String>) -> Self {
-        Self::Paths(PathPromptOptions { directories: true, prompt, ..Default::default() })
-    }
-
-    /// Prompts for native file paths, with optional multiple selection.
-    pub fn pick_files(prompt: Option<String>, multiple: bool) -> Self {
-        Self::Paths(PathPromptOptions { files: true, multiple, prompt, ..Default::default() })
-    }
 }
 
 /// Who presents an ask for a window.
@@ -86,8 +64,6 @@ pub enum AskRoute {
 pub enum Answer {
     Menu(Option<String>),
     Prompt(Option<usize>),
-    Paths(Option<Vec<PathBuf>>),
-    NewPath(Option<PathBuf>),
 }
 
 impl Answer {
@@ -95,8 +71,6 @@ impl Answer {
         match ask {
             Ask::Menu { .. } => Self::Menu(None),
             Ask::Prompt { .. } => Self::Prompt(None),
-            Ask::Paths(_) => Self::Paths(None),
-            Ask::NewPath { .. } => Self::NewPath(None),
         }
     }
 
@@ -105,10 +79,6 @@ impl Answer {
         match (self, ask) {
             (Self::Menu(id), Ask::Menu { menu, .. }) => id.as_deref().is_none_or(|id| menu.accepts(id)),
             (Self::Prompt(index), Ask::Prompt { answers, .. }) => index.is_none_or(|index| index < answers.len()),
-            (Self::Paths(paths), Ask::Paths(options)) => {
-                paths.as_ref().is_none_or(|paths| !paths.is_empty() && (options.multiple || paths.len() == 1))
-            }
-            (Self::NewPath(_), Ask::NewPath { .. }) => true,
             _ => false,
         }
     }
@@ -152,7 +122,6 @@ bitflags::bitflags! {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceRequest {
-    PickFile { max_bytes: usize, accept: String },
     ReadClipboard { accept: ClipboardKinds },
     WriteClipboardText { text: String },
 }
@@ -160,28 +129,16 @@ pub enum ServiceRequest {
 impl fmt::Debug for ServiceRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PickFile { max_bytes, accept } => {
-                f.debug_struct("PickFile").field("max_bytes", max_bytes).field("accept", accept).finish()
-            }
             Self::ReadClipboard { accept } => f.debug_struct("ReadClipboard").field("accept", accept).finish(),
             Self::WriteClipboardText { .. } => f.debug_struct("WriteClipboardText").field("text", &"<redacted>").finish(),
         }
     }
 }
 
-/// Bytes from a file explicitly selected in the host's file chooser.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PickedFile {
-    pub name: String,
-    pub media_type: String,
-    pub bytes: Vec<u8>,
-}
-
 /// Terminal result of a platform service request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceOutcome {
-    FilePicked(Option<PickedFile>),
     Clipboard(Vec<ClipboardItem>),
     ClipboardWritten,
     Error(ServiceError),
@@ -206,7 +163,6 @@ pub enum ServiceError {
     Denied,
     Busy,
     Cancelled,
-    TooLarge { bytes: u64, max_bytes: usize },
     Failed,
 }
 
@@ -218,7 +174,6 @@ impl fmt::Display for ServiceError {
             Self::Denied => f.write_str("Permission denied"),
             Self::Busy => f.write_str("The host is already serving a request"),
             Self::Cancelled => f.write_str("Request cancelled"),
-            Self::TooLarge { bytes, max_bytes } => write!(f, "File exceeds the {max_bytes}-byte limit ({bytes} bytes)"),
             Self::Failed => f.write_str("The host could not complete the request"),
         }
     }
@@ -231,12 +186,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn path_helpers_and_clipboard_text_preserve_payload_types() {
-        assert_eq!(
-            Ask::pick_directory(Some("Choose a folder".into())),
-            Ask::Paths(PathPromptOptions { directories: true, prompt: Some("Choose a folder".into()), ..Default::default() }),
-        );
-        assert_eq!(Ask::pick_files(None, true), Ask::Paths(PathPromptOptions { files: true, multiple: true, ..Default::default() }));
+    fn clipboard_text_preserves_payload_types() {
         let images = vec![ClipboardItem::Image { media_type: "image/jpeg".into(), bytes: vec![1, 2, 3] }];
         assert_eq!(ServiceOutcome::Clipboard(images.clone()).clipboard_text(), None);
         let contents = ServiceOutcome::Clipboard([images, vec![ClipboardItem::Text("text".into())]].concat());

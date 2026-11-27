@@ -1100,9 +1100,11 @@ fn chat_completions(query: &TriggerQuery) -> Vec<Completion> {
 }
 
 fn attach_files(chat: Chat, w: &mut WriteCx<'_>) {
-    w.ask(Ask::pick_files(Some("Attach".into()), true), move |w, answer| {
-        if let Answer::Paths(Some(paths)) = answer {
-            chat.attach(w, &paths);
+    w.call_module(octara_picker::PickFiles { title: Some("Attach".into()), multiple: true, ..Default::default() }, move |w, result| {
+        if let Ok(files) = result {
+            for file in files {
+                chat.attach_file(w, file.name, file.path);
+            }
         }
     });
 }

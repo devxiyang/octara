@@ -3,11 +3,12 @@
 use block2::DynBlock;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
-use objc2::{extern_class, extern_methods};
-use objc2_foundation::{NSError, NSRect, NSString, NSURL, NSURLRequest};
+use objc2::{MainThreadMarker, extern_class, extern_methods};
+use objc2_foundation::{NSDictionary, NSError, NSRect, NSString, NSURL, NSURLRequest};
 use objc2_ui_kit::{UIImage, UIResponder, UIView};
 use objc2_web_kit::{
-    WKFindConfiguration, WKFindResult, WKNavigation, WKNavigationDelegate, WKSnapshotConfiguration, WKWebViewConfiguration,
+    WKContentWorld, WKFindConfiguration, WKFindResult, WKFrameInfo, WKNavigation, WKNavigationDelegate, WKSnapshotConfiguration,
+    WKUIDelegate, WKWebViewConfiguration,
 };
 use std::ptr::NonNull;
 
@@ -31,6 +32,25 @@ impl WKWebView {
         #[unsafe(method(setNavigationDelegate:))]
         #[unsafe(method_family = none)]
         pub(crate) unsafe fn setNavigationDelegate(&self, delegate: Option<&ProtocolObject<dyn WKNavigationDelegate>>);
+
+        #[unsafe(method(setUIDelegate:))]
+        #[unsafe(method_family = none)]
+        pub(crate) unsafe fn setUIDelegate(&self, delegate: Option<&ProtocolObject<dyn WKUIDelegate>>);
+
+        #[unsafe(method(handlesURLScheme:))]
+        #[unsafe(method_family = none)]
+        pub(crate) unsafe fn handlesURLScheme(scheme: &NSString, mtm: MainThreadMarker) -> bool;
+
+        #[unsafe(method(callAsyncJavaScript:arguments:inFrame:inContentWorld:completionHandler:))]
+        #[unsafe(method_family = none)]
+        pub(crate) unsafe fn callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
+            &self,
+            script: &NSString,
+            arguments: Option<&NSDictionary<NSString, AnyObject>>,
+            frame: Option<&WKFrameInfo>,
+            world: &WKContentWorld,
+            completion: Option<&DynBlock<dyn Fn(*mut AnyObject, *mut NSError)>>,
+        );
 
         #[unsafe(method(loadRequest:))]
         #[unsafe(method_family = none)]

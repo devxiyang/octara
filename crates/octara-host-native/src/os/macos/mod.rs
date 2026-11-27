@@ -28,7 +28,7 @@ use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, Service
 use octara_model::geometry::{Point, Size, WindowViewport};
 use octara_model::identity::NativeId;
 use octara_model::input::{HostReply, PasteEvent};
-use octara_model::native::{NativeChange, NativeCommand, NativeMeasureRequest, NativeSlot, NativeSnapshotRequest};
+use octara_model::native::{NativeChange, NativeMeasureRequest, NativeSlot, NativeSnapshotRequest};
 use octara_model::paint::Image;
 use octara_model::theme::ColorScheme;
 use octara_model::window::UserAttention;
@@ -160,7 +160,6 @@ impl OsHost for MacHost {
             editor,
             native,
             asks: Rc::default(),
-            picker: services::Picker::default(),
             pacing,
         }))
     }
@@ -230,7 +229,6 @@ struct MacWindow {
     editor: editor::Editor,
     native: native::Views,
     asks: Rc<asks::Shown>,
-    picker: services::Picker,
     pacing: Option<pacing::Pacing>,
 }
 
@@ -309,7 +307,6 @@ impl OsWindow for MacWindow {
             } else {
                 ServiceOutcome::Error(ServiceError::Failed)
             }),
-            ServiceRequest::PickFile { max_bytes, accept } => return self.picker.start(&self.view, max_bytes, &accept, send),
         }
         Some(Box::new(|| {}))
     }
@@ -346,10 +343,6 @@ impl WindowAsks for MacWindow {
 impl WindowNativeViews for MacWindow {
     fn sync_native_views(&mut self, changes: &[NativeChange]) {
         self.native.sync(changes);
-    }
-
-    fn send_native_command(&mut self, command: NativeCommand) {
-        self.native.command(command);
     }
 
     fn shows_native(&self, kind: &str, slot: NativeSlot) -> bool {
@@ -416,11 +409,22 @@ impl WindowPresentation for MacWindow {
     }
 
     fn present(&mut self, drawable: Box<dyn Drawable>, queue: &wgpu::Queue) -> Result<(), String> {
+        self.present_with_native_views(drawable, queue, &mut || {})
+    }
+
+    fn present_with_native_views(
+        &mut self,
+        drawable: Box<dyn Drawable>,
+        queue: &wgpu::Queue,
+        commit_native_views: &mut dyn FnMut(),
+    ) -> Result<(), String> {
         CATransaction::begin();
         CATransaction::setDisableActions(true);
         let _transaction = std::mem::DropGuard::new((), |()| CATransaction::commit());
+        drawable.present(queue)?;
         self.native.commit();
-        drawable.present(queue)
+        commit_native_views();
+        Ok(())
     }
 }
 

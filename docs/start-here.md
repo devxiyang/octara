@@ -133,35 +133,51 @@ fn workspace() -> WindowDefinition {
 }
 ```
 
-## 调用原生 WebView
+## 使用平台模块
 
-用 `native_view("web")` 在 macOS 或 iOS 上挂载 `WKWebView`。原生属性接受 `url`，或接受配合可选 `base_url` 的 `html`。macOS 上的 `NativeSlot::Underlay` 让 Octara 的菜单、弹层及对话框在 WebView 上方接收点击。`Overlay` 把原生视图放在 Octara 表面上方，也是 iOS 的 WebView 槽位。
+在应用定义上通过 `.with_module(octara_webview::module())` 显式注册 WebView。Apple 宿主使用 WKWebView，浏览器使用 iframe。macOS 默认使用 Underlay，Octara 弹层可以在 WebView 上方接收点击。iOS 默认使用 Overlay。无头测试可以注册 `octara_webview::mock()`。模块依赖关闭默认 feature 后，无头测试只编译 Rust 契约和 mock。
 
-在同一个窗口内通过 `test_id` 向已挂载的原生节点发送命令。`evaluate_js` 接收 `script` 和可选的 `request_id`，通过 `js_result` 返回对应的 `value` 或 `error`。还有 `go_back`、`go_forward`、`reload`、`stop_loading`、`find` 和 `clear_find`。`find` 接收 `query`，以及可选的 `backwards` 和 `case_sensitive`。
+在同一窗口内用 `octara_webview::send` 和 `test_id` 向已挂载的 WebView 发送类型化命令，通过 `on_typed_native` 接收 `WebViewEvent`。Apple 后端允许受信任的文档通过 Promise 发起 RPC。用 `WebViewProps::html` 加载应用自己的文档，使用 `trust_origin` 明确指定允许外部文档调用桥接的来源。
 
-页面脚本可以调用 `window.webkit.messageHandlers.octara.postMessage(payload)`。在 `on_native` 中接收 `post_message` 的 JSON 数据以及 `load`、`fail`、`title`。`navigation` 提供 `url`、`title`、`loading`、`can_go_back` 和 `can_go_forward`。
-
-```rust
+```rust,ignore
 use octara::prelude::*;
-use serde_json::json;
+use octara_webview::{WebViewCommand, WebViewEvent, WebViewProps, send, view};
 
 fn preview() -> El {
-    col()
-        .child(el().role(Role::Button).focusable().on_press(|w| {
-            w.send_native_command("preview", "evaluate_js", json!({
-                "script": "document.title", "request_id": "preview-title"
-            }));
-        }).child("Read title"))
-        .child(native_view("web")
+    col().child((
+        el().role(Role::Button).focusable().on_press(|w| {
+            send(w, "preview", WebViewCommand::Evaluate {
+                script: "document.title".into(),
+                request_id: Some("preview-title".into()),
+            });
+        }).child("Read title"),
+        view(WebViewProps::html("<title>Preview</title><p>Hello</p>"))
             .test_id("preview")
             .h(260.0)
-            .native_props(json!({"html": "<title>Preview</title><p>Hello</p>"}))
-            .on_native(|_, event| {
-                if event.name == "js_result" {
-                    println!("{}", event.data);
+            .on_typed_native(|_, _, event: &WebViewEvent| {
+                if let WebViewEvent::JavaScript { result, .. } = event {
+                    println!("{result:?}");
                 }
-            }))
+            }),
+    ))
 }
+
+let app = AppDefinition::new()
+    .with_module(octara_webview::module())
+    .window(WindowDefinition::new(WindowOptions::default(), |_| preview()));
+```
+
+注册 `octara_video::module()` 后，`video(VideoSource)` 和 Markdown 视频使用插件提供的播放器。没有播放器时使用作者指定的封面。文件和目录选择通过 `octara_picker`，在用户手势中用 `WriteCx::call_module` 发送 `PickFiles`、`PickFolder` 或 `PickSavePath`。浏览器可以返回文件内容和名称，原生宿主可以返回真实路径。`file_dropzone` 的点击回调由应用决定调用哪个选择器。注册 `octara_haptics::module()` 后，可以用 `WriteCx::notify_module` 请求触觉反馈。
+
+`octara modules merge` 根据应用的 Cargo 依赖生成 Apple plist、entitlements、framework 列表和 Web headers。把 manifest 所需的变量写在应用包目录的 `octara.toml` 内。打包已有应用时，用 `--ios-info-plist`、`--ios-entitlements`、`--macos-info-plist` 或 `--macos-entitlements` 传入原始文件，保留 bundle 标识符等应用元数据。
+
+```toml
+[modules."octara.picker"]
+photo_library_usage_description = "Select photos to attach."
+```
+
+```sh
+cargo run -p octara-cli -- modules merge -p octara-chat-desktop --out-dir target/chat-module-metadata
 ```
 
 ## 读取、更新与清理

@@ -1,0 +1,7 @@
+[module]
+id = "octara.video"
+schema = 1
+
+[apple.frameworks]
+ios = ["AVFoundation", "AVKit"]
+macos = ["AVFoundation", "AVKit"]

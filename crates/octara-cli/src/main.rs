@@ -12,6 +12,7 @@ mod audit;
 #[cfg(unix)]
 mod dev;
 mod launch;
+mod modules;
 mod receipt;
 mod release;
 mod session;
@@ -137,6 +138,11 @@ enum Command {
         #[arg(long)]
         locked: bool,
     },
+    /// Merge platform metadata declared by the app's Octara module dependencies.
+    Modules {
+        #[command(subcommand)]
+        action: modules::Action,
+    },
     /// Publish or select a complete version of a standalone Web app.
     Web {
         #[command(subcommand)]
@@ -251,6 +257,7 @@ fn main() -> ExitCode {
             };
             result(run)
         }
+        Command::Modules { action } => result(action.run(&mut out).map(|()| ExitCode::SUCCESS)),
         Command::Web { action } => match action.run() {
             Ok(release) => {
                 writeln!(out, "{release}").expect("a String can be written");

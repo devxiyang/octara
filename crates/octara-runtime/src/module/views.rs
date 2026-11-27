@@ -41,7 +41,12 @@ impl<'a> HostSurface<'a> {
         Self { kind, window, native: None, opaque: None }
     }
 
-    pub fn with_raw_native(mut self, native: RawNativeSurface) -> Self {
+    /// Attach handles supplied by the platform host.
+    ///
+    /// # Safety
+    /// The handles must identify live platform objects of the indicated types
+    /// on their owning UI thread and remain valid for this surface's lifetime.
+    pub unsafe fn with_raw_native(mut self, native: RawNativeSurface) -> Self {
         self.native = Some(native);
         self
     }
@@ -205,9 +210,7 @@ impl NativeViewMounts {
             }
             NativeChange::Place { placements } => {
                 for placement in placements {
-                    if let Some(view) = self.views.get_mut(&placement.id) {
-                        view.instance.place(placement);
-                    }
+                    self.place(placement);
                 }
                 Ok(false)
             }
@@ -218,6 +221,13 @@ impl NativeViewMounts {
 
     pub fn contains(&self, id: NativeId) -> bool {
         self.views.contains_key(&id)
+    }
+
+    /// Apply a placement to its mounted view during host presentation.
+    pub fn place(&mut self, placement: &NativePlacement) {
+        if let Some(view) = self.views.get_mut(&placement.id) {
+            view.instance.place(placement);
+        }
     }
 
     pub fn has_underlay(&self) -> bool {

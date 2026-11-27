@@ -16,6 +16,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut window = WindowOptions::default();
     window.presentation.title = format!("Octara Chat long session — {count}").into();
     window.viewport.size = Size::new(1000.0, 720.0);
-    octara_host_native::run(window, move |b| model.view(b, Some(store)))?;
+    octara_chat_desktop::run(window, move |b| model.view(b, Some(store)))?;
     Ok(())
 }

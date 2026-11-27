@@ -4,7 +4,10 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    match octara_chat::app().and_then(|app| octara_host_native::run_app(app).map_err(|error| error.to_string())) {
+    match octara_chat::app()
+        .map(octara_chat_desktop::with_platform_modules)
+        .and_then(|app| octara_host_native::run_app(app).map_err(|error| error.to_string()))
+    {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("octara-chat: {error}");

@@ -12,12 +12,17 @@ keywords.workspace = true
 categories.workspace = true
 publish = false
 
+[package.metadata.octara]
+entry = "octara_chat_desktop::startup"
+
 [dependencies]
+octara.workspace = true
 octara-chat = { path = ".." }
 octara-host-native.workspace = true
+octara-picker = { workspace = true, features = ["platform"] }
+octara-video = { workspace = true, features = ["platform"] }
 
 [dev-dependencies]
-octara.workspace = true
 reqwest = { version = "0.13.5", default-features = false }
 serde.workspace = true
 serde_json.workspace = true

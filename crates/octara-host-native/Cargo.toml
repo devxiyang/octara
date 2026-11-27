@@ -20,10 +20,6 @@ harness = false
 name = "macos_chrome"
 harness = false
 
-[[test]]
-name = "native_webview"
-harness = false
-
 [dependencies]
 accesskit_winit.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
@@ -54,7 +50,6 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_Sh
 [target.'cfg(not(any(target_os = "ios", target_os = "macos")))'.dependencies]
 arboard = { workspace = true, features = ["image-data"] }
 open.workspace = true
-rfd.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
 block2.workspace = true
@@ -70,9 +65,8 @@ objc2-ui-kit = { workspace = true, features = [
     "UIImage", "UINavigationController", "UIResponder", "UIScene", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UITextField", "UITextInput",
     "UIScrollView", "UITextInputTraits", "UITextView", "UIView", "UIViewController", "UIViewControllerTransitionCoordinator", "UIWindow", "UIWindowScene",
 ] }
-objc2-web-kit.workspace = true
 
-# Native views (AppKit, WebKit) and the frame's Core Animation transaction.
+# AppKit views and the frame's Core Animation transaction.
 [target.'cfg(target_os = "macos")'.dependencies]
 block2.workspace = true
 objc2.workspace = true
@@ -87,4 +81,3 @@ objc2-metal = { workspace = true, features = [
     "MTLDrawable", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLResource", "MTLTexture",
 ] }
 objc2-quartz-core = { workspace = true, features = ["CAMetalDisplayLink", "CAMetalLayer", "objc2-metal"] }
-objc2-web-kit.workspace = true

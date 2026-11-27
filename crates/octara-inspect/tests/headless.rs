@@ -23,7 +23,7 @@ use octara_inspect::{
     replay::{Channel, Event, Replay, Step},
 };
 use octara_model::{
-    ask::{Answer, AskId, ServiceId, ServiceOutcome, ServiceRequest},
+    ask::{ServiceId, ServiceOutcome, ServiceRequest},
     capture::CaptureSource,
     input::{EditorEvent, HostReply, InteractionEvent, PointerId, PointerKind, TextEdit},
     motion::Curve,
@@ -483,7 +483,10 @@ fn replay_redacts_password_keys_and_edits_and_private_platform_data() {
     recording.record_input(
         driver.app(),
         id,
-        &Input::Host(HostReply::AskAnswer { id: AskId(2), answer: Answer::Paths(Some(vec!["/private/path/token".into()])) }),
+        &Input::Host(HostReply::ServiceReply {
+            id: ServiceId(2),
+            outcome: ServiceOutcome::Clipboard(vec![ClipboardItem::Files(vec!["/private/path/token".into()])]),
+        }),
     );
     let window = target(&driver, id, "field");
     recording.record_input(

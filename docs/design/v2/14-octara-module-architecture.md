@@ -358,6 +358,7 @@ permissions_policy = []
 
 - Applications supply required template variables in `octara.toml` under `[modules."octara.picker"]`.
 - `octara-cli` resolves the workspace dependency graph via `cargo metadata`, collects every `octara-module.toml`, validates all `${...}` placeholders (failing with a clear diagnostic if missing), and merges `Info.plist`, `.entitlements`, and Web manifests deterministically.
+- `octara modules merge` accepts existing iOS and macOS plist and entitlement files as optional inputs. The merged files retain app metadata and report conflicts with module declarations.
 
 ---
 
@@ -374,7 +375,7 @@ Capabilities required by virtually every UI tree or tightly coupled to the windo
 
 | Module Crate | Replaces / Consolidates | Four-Platform Backends |
 | --- | --- | --- |
-| **`modules/octara-webview`** | Removes `octara-host-native/src/os/webkit.rs` & hardcoded `"webview"` slots | macOS/iOS `WKWebView` (+ `WKUIDelegate`, navigation policy, `WKURLSchemeHandler`, typed Promise RPC), Web `<iframe>`, Windows WebView2 / Linux WebKitGTK slots, Headless `mock()` |
+| **`modules/octara-webview`** | Removes `octara-host-native/src/os/webkit.rs` & hardcoded `"webview"` slots | macOS/iOS `WKWebView` (+ `WKUIDelegate`, navigation policy, `WKURLSchemeHandler`, typed Promise RPC), Web `<iframe>`, Headless `mock()` |
 | **`modules/octara-video`** | Removes `octara-host-native/src/os/video.rs` & hardcoded `"video"` slots | macOS/iOS `AVKit`, Web `<video>`, Headless `mock()` |
 | **`modules/octara-picker`** | Replaces `Ask::Paths`, `Ask::NewPath`, and `ServiceRequest::PickFile` | macOS `NSOpenPanel`/`NSSavePanel`, iOS `PHPickerViewController` + `UIDocumentPickerViewController`, Desktop `rfd`, Web `<input>`/`showDirectoryPicker`, Headless `mock()` |
 | **`modules/octara-haptics`** | New | iOS `UIImpactFeedbackGenerator`/`UINotificationFeedbackGenerator`, macOS `NSHapticFeedbackManager`, Web Vibration API, Headless `mock()` |

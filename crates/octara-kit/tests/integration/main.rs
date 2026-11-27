@@ -1,8 +1,7 @@
 //! Component behavior through native layout and the v2 event cycle.
 
 use octara::{
-    EditorEvent, EditorSession, HostCommand, HostReply, Input, InteractionEvent, NodeId, PointerId, PointerKind, Tree, WindowRuntime,
-    prelude::*,
+    EditorEvent, EditorSession, HostReply, Input, InteractionEvent, NodeId, PointerId, PointerKind, Tree, WindowRuntime, prelude::*,
 };
 use octara_inspect::{AgentAction, AgentCommand, AgentRequest, HeadlessDriver};
 use octara_kit::*;

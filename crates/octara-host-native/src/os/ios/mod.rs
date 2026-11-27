@@ -3,13 +3,11 @@
 mod back;
 mod draft;
 mod editor;
-mod native;
 mod scene;
 
 use crate::ShellEvent;
 use crate::os::{
-    ActiveEditorView, KeyDispatch, OsHost, OsWindow, OsWindowContext, ServiceCleanup, WindowHostEvent, WindowNativeViews, WindowScene,
-    WindowTextInput, reply,
+    ActiveEditorView, KeyDispatch, OsHost, OsWindow, OsWindowContext, ServiceCleanup, WindowHostEvent, WindowScene, WindowTextInput, reply,
 };
 use back::BackNavigation;
 use editor::TextInput;
@@ -124,8 +122,7 @@ impl OsHost for IosHost {
             move || refresh(),
         );
         let back = BackNavigation::new(window, proxy.clone())?;
-        let native = native::Views::new(content.clone(), id, proxy.clone());
-        Ok(Box::new(IosWindow { content, scene, editor, back, native, proxy, id, scene_active, active: true, focused: true }))
+        Ok(Box::new(IosWindow { content, scene, editor, back, proxy, id, scene_active, active: true, focused: true }))
     }
 
     fn open_url(&mut self, url: &str) {
@@ -149,7 +146,6 @@ struct IosWindow {
     scene: SceneConnection,
     editor: TextInput,
     back: BackNavigation,
-    native: native::Views,
     proxy: EventLoopProxy<ShellEvent>,
     id: WindowId,
     scene_active: Rc<Cell<bool>>,
@@ -201,10 +197,6 @@ impl OsWindow for IosWindow {
         self
     }
 
-    fn native_views(&mut self) -> Option<&mut dyn WindowNativeViews> {
-        Some(&mut self.native)
-    }
-
     fn scene(&mut self) -> Option<&mut dyn WindowScene> {
         Some(self)
     }
@@ -221,7 +213,6 @@ impl OsWindow for IosWindow {
                 write_clipboard_text(&text);
                 ServiceOutcome::ClipboardWritten
             }
-            ServiceRequest::PickFile { .. } => return None,
         };
         reply(&self.proxy, self.id, HostReply::ServiceReply { id, outcome });
         Some(Box::new(|| {}))

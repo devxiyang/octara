@@ -124,12 +124,6 @@ pub struct HttpMediaEntry {
     pub stale_while_revalidate: u64,
 }
 
-/// A video provider's native-slot kind and authored properties.
-pub struct VideoSurface {
-    pub kind: &'static str,
-    pub props: serde_json::Value,
-}
-
 /// How an image fills its element (GPUI's `ObjectFit`, CSS `object-fit`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum ObjectFit {

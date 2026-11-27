@@ -795,8 +795,7 @@ impl Compile<'_> {
         }
 
         if let Some(native) = self.tree.native(node) {
-            let uses_poster = native.kind == "video" && native.props.get("poster").is_some_and(|poster| poster.is_string());
-            if !native.live && !uses_poster {
+            if !native.live {
                 out.push(Item::Quad(solid(node, rect, self.tree.theme_at(node).get(ColorToken::Surface))));
             }
             out.push(Item::Native {

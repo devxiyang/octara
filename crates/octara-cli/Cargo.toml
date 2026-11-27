@@ -23,6 +23,7 @@ octara.workspace = true
 octara-inspect.workspace = true
 octara-model.workspace = true
 octara-release = { workspace = true, features = ["signing"] }
+plist = { version = "1.10", default-features = false }
 prettyplease.workspace = true
 proc-macro2.workspace = true
 quote.workspace = true
@@ -31,6 +32,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
+toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }
 
 [dev-dependencies]
 octara-kit.workspace = true

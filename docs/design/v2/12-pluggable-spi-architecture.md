@@ -18,7 +18,7 @@
 | # | SPI Trait(s) | Crate Home | Built-In Default | Extension Use Cases |
 | --- | --- | --- | --- | --- |
 | **SPI-1** | `SurfaceRenderer` | `octara-render` ↔ `octara-gpu` | Cross-platform `wgpu` micro-pipelines (`GlyphPipeline`, `Quad`, `Shadow`, `Image`, Early-Z) | Custom GPU compute backends, wide-gamut / HDR compositors, specialized vector/3D canvas pipelines |
-| **SPI-2** | `MediaResolver`, `MediaCacheBackend`, `VideoSurfaceProvider` | `octara` / `octara-runtime` | `ImageSource`, bounded RAM caches, opt-in native disk cache, Web `<img>` and `<video>`, native video and poster fallback | URI resolution, persistent caches, hardware-accelerated video, custom document renderers |
+| **SPI-2** | `MediaResolver`, `MediaCacheBackend`, `VideoAdapter` | `octara` / `octara-runtime` | `ImageSource`, bounded RAM caches, opt-in native disk cache, Web `<img>` and `<video>`, native video and poster fallback | URI resolution, persistent caches, hardware-accelerated video, custom document renderers |
 | **SPI-3** | `BlockSlotRenderer`, `CodeHighlighter`, `MathRenderer`, `EditorBackend` | `octara-markdown` / `octara-tree` | `octara-markdown` core, standard syntax highlight, vector LaTeX math, `EditorRope` + `MarkdownComposer` | Custom interactive AI artifacts, diagram/chart engines (Mermaid/SVG/GPU charts), specialized IDE code/diff editors, domain-specific widgets |
 | **SPI-4** | `AuditRule`, `InspectTransport`, `TraceRecorder` | `octara-inspect` | Text clipping, accessibility names, focus reachability, JSON inspection, replay | Project-specific audit rules, alternate transports and trace sinks |
 | **SPI-5** | `ReleaseProvider`, `SecurityPolicy` | `octara-release`, declarative compiler in `octara` | HTTPS update channel, Ed25519 verification, and declarative scene compilation to a `Transaction` | Alternate sources for signed packets and additional acceptance rules |
@@ -33,7 +33,7 @@ Register a factory with `octara_host_native::run_app_with_surface_renderer` for 
 
 ### SPI-2 Media registration
 
-Use `BuildCx::provide::<Arc<dyn MediaResolver>>` for logical URI resolution at a view scope. Register a persistent response store with `AppDefinition::with_media_cache_backend` and a custom native video slot provider with `AppDefinition::with_video_surface_provider`. Returning `None` from either resolver or video provider selects the built-in behavior. The persistent cache receives public HTTP bodies and validators only. The runtime enforces source policy before giving the Native loader a cache backend. See [Async Media](10-ai-document-media-and-markdown.md#34-viewport-aware-async-media-zero-cls-probing--3-tier-image-cache).
+Use `BuildCx::provide::<Arc<dyn MediaResolver>>` for logical URI resolution at a view scope. Register a persistent response store with `AppDefinition::with_media_cache_backend`. A module provides a `VideoAdapter` to mount a typed video view. Returning `None` from the media resolver uses ordinary URI resolution. The persistent cache receives public HTTP bodies and validators only. The runtime enforces source policy before giving the Native loader a cache backend. See [Async Media](10-ai-document-media-and-markdown.md#34-viewport-aware-async-media-zero-cls-probing--3-tier-image-cache).
 
 ### SPI-3 Markdown and editor registration
 
@@ -55,7 +55,7 @@ Use `ScenePacket::compile` to produce a declarative tree `Transaction`. For runt
 
 ### SPI-6 OS host registration
 
-Pass an `OsHost` to `octara_host_native::run_app_with_options` through `NativeAppOptions::os_host`. The event loop initializes the host and asks it for an `OsWindow` for each native window. Supply `WindowNativeViews` on the returned window to handle custom native slots, including kinds selected by `VideoSurfaceProvider`. The same options accept a renderer factory and an inspection hook. By default Octara selects its built-in platform host.
+Pass an `OsHost` to `octara_host_native::run_app_with_options` through `NativeAppOptions::os_host`. The event loop initializes the host and asks it for an `OsWindow` for each native window. Supply `WindowNativeViews` on the returned window for host-owned views. Register application native view factories through the [module SPI](14-octara-module-architecture.md). The same options accept a renderer factory and an inspection hook. By default Octara selects its built-in platform host.
 
 ## 3. SPI Implementation Discipline
 

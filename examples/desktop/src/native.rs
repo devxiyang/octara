@@ -8,6 +8,7 @@ pub fn run<V: IntoView>(options: WindowOptions, root: impl FnOnce(&mut BuildCx<'
 }
 
 pub fn run_app(app: AppDefinition) -> Result<(), ShellError> {
+    let app = app.with_module(octara_webview::module()).with_module(octara_video::module()).with_module(octara_picker::module());
     #[cfg(unix)]
     if let Some(path) = std::env::var_os("OCTARA_INSPECT") {
         return unix::run(app, &path);

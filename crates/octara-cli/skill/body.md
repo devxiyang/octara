@@ -10,7 +10,7 @@
 - 用 `cx.persisted(key, init)` 保存需要跨进程恢复的应用状态，并声明状态 schema。为变动列表选择稳定唯一的业务 key。用 `StateList::read_only()` 开始增量派生，或用 `cx.derive_list` 从普通响应式值构造 keyed list，再用 `each` 按 key 挂载行。
 - 用 `cx.menus` 声明窗口菜单，`cx.on_chord` 注册快捷键。菜单项和快捷键可以调用同一命令。用 `El::select_none()` 关闭界面文字的文本选择。
 - 用 `cx.window_chrome()` 布置自定义标题栏，用 `cx.window_geometry()` 订阅实际窗口位置和尺寸。由 `WindowOptions::persistence_key` 将窗口几何纳入 `RestartState`。用 `window_drag_region(true)` 标记标题栏的拖拽区。
-- 用 `native_view("web")` 在 macOS 或 iOS 托管 `WKWebView`。用 `WriteCx::send_native_command` 按 `test_id` 发消息，通过 `on_native` 接收导航和 JavaScript 响应。macOS 使用 `Underlay` 时，Octara 浮层可覆盖 WebView。
+- 用 `AppDefinition::with_module` 注册应用实际使用的 WebView、视频、文件选择或触觉反馈模块。通过 `octara_webview::view` 挂载页面，用类型化命令和事件处理导航与 JavaScript。用 `octara_picker::PickFiles` 发起文件选择。打包前执行 `octara modules merge` 合并声明式 plist、entitlements、framework 和 Web headers。
 - 数字样式值表示逻辑像素，`sp(2.0)` 使用主题间距。用 `FontSizeToken`、`ColorToken` 和 `Radius` 指定主题或形状。
 - 用 `octara_kit::button(label, size, variant)` 指定按钮尺寸和强调。组合自定义控件时，从 `octara_kit::parts` 获取主题样式，从 `octara_kit::headless` 获取行为。用 `build.provide(KitLocale::zh_cn())` 设置作用域内 Kit 控件的中文标签。
 - 选择器用 `headless::Choice` 提供选项，用 `headless::Selection` 声明单选或多选。通过 `PickerOptions` 和行工厂配置列表，通过 `PopupOptions` 配置浮层。`ComboboxOptions` 组合列表、浮层和输入框配置。

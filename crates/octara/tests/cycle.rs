@@ -359,14 +359,14 @@ fn native_commands_resolve_live_test_ids_in_the_current_window() {
     let (mut app, _) = app();
     let id = app
         .open_window(WindowOptions::default(), |_| {
-            el().child(native_view("web").test_id("web"))
+            el().child(native_view("test.view").test_id("web"))
                 .child(text("not an island").test_id("text"))
-                .child(native_view("web").id("authoring-only"))
-                .child(native_view("web").test_id("ambiguous"))
-                .child(native_view("web").test_id("ambiguous"))
+                .child(native_view("test.view").id("authoring-only"))
+                .child(native_view("test.view").test_id("ambiguous"))
+                .child(native_view("test.view").test_id("ambiguous"))
         })
         .unwrap();
-    let second = app.open_window(WindowOptions::default(), |_| native_view("web").test_id("web")).unwrap();
+    let second = app.open_window(WindowOptions::default(), |_| native_view("test.view").test_id("web")).unwrap();
     let send = |write: &mut WriteCx<'_>| write.send_native_command("web", "evaluate_js", json!({"script": "42"}));
     assert!(!app.update(send).unwrap());
     assert!(!app.update_window(id, send).unwrap());
@@ -421,7 +421,7 @@ fn native_commands_from_watches_and_tasks_publish_only_after_settle() {
                     }
                 },
             );
-            native_view("web").test_id("web")
+            native_view("test.view").test_id("web")
         })
         .unwrap();
     let tree = app.runtime().window(id).unwrap().tree();

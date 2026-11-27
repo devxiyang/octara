@@ -2,13 +2,13 @@
 
 use super::{CanvasFrame, DomEngine};
 use crate::image::{self, CanvasSize};
-use crate::{css, dom, media, rich};
+use crate::{css, dom, rich};
 use octara::runtime::engine::HostEngine;
 #[cfg(feature = "webgpu")]
 use octara::tree::TreeDelta;
 use octara::tree::{DirtyBitmap, NodeId, Tree};
 use octara_model::geometry::{Size, WindowViewport};
-use octara_model::image::{MediaAsset, ObjectFit, VideoSource};
+use octara_model::image::{MediaAsset, ObjectFit};
 use octara_model::paint::{CanvasOp, Sample};
 #[cfg(feature = "webgpu")]
 use rustc_hash::FxHashSet;
@@ -136,20 +136,6 @@ impl DomEngine {
             None
         };
         Ok(true)
-    }
-
-    pub(super) fn update_video(&mut self, node: NodeId, properties: &serde_json::Value) -> Result<(), JsValue> {
-        let Some(video) = self.dom.element(node) else { return Ok(()) };
-        let source = serde_json::from_value::<VideoSource>(properties.clone()).ok();
-        let src = source.as_ref().and_then(|source| media::browser_uri(&source.uri, false).ok());
-        let poster = source.as_ref().and_then(|source| source.poster.as_deref()).and_then(|poster| media::browser_uri(poster, true).ok());
-        let undo = &mut self.pending().undo;
-        undo.attr(&video, "preload", Some("metadata"))?;
-        undo.attr(&video, "playsinline", Some(""))?;
-        undo.attr(&video, "controls", source.as_ref().filter(|source| source.controls).map(|_| ""))?;
-        undo.attr(&video, "poster", poster.as_deref())?;
-        undo.attr(&video, "src", src.as_deref())?;
-        Ok(())
     }
 
     pub(super) fn update_canvases(

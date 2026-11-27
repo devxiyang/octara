@@ -34,7 +34,7 @@ ALLOWED = {
     "octara-inspect": {"octara", "octara-model", "octara-pipeline", "octara-render"},
     "octara-cli": {"octara", "octara-model", "octara-inspect", "octara-release"},
     "octara-chat": {"octara", "octara-icons", "octara-kit", "octara-markdown"},
-    "octara-chat-desktop": {"octara-chat", "octara-host-native"},
+    "octara-chat-desktop": {"octara", "octara-chat", "octara-host-native"},
     "octara-examples": {
         "octara", "octara-fonts", "octara-icons",
         "octara-kit", "octara-markdown", "octara-pipeline", "octara-render", "octara-inspect",
@@ -53,6 +53,7 @@ APP_DIRS = {
 }
 
 MODULE_ALLOWED = {"octara", "octara-icons", "octara-kit"}
+MODULE_CROSS_PLATFORM_DEPS = {"serde", "serde_json", "url"}
 
 
 AUTHORING_PACKAGES = ("octara-headless", "octara-kit", "octara-markdown", *APP_DIRS)
@@ -121,7 +122,7 @@ def violations(metadata):
                 path.is_relative_to(root) or resolved_path.is_relative_to(root)
             )
             if target not in directories and not in_repo:
-                if is_module and dependency["target"] is None:
+                if is_module and dependency["target"] is None and target not in MODULE_CROSS_PLATFORM_DEPS:
                     errors.append(f"production dependency {name} -> {target}: expected a target-specific dependency")
                 continue
             if target not in allowed:

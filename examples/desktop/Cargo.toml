@@ -12,6 +12,10 @@ keywords.workspace = true
 categories.workspace = true
 publish = false
 
+[[test]]
+name = "native_webview"
+harness = false
+
 [dependencies]
 octara.workspace = true
 octara-examples = { path = ".." }
@@ -19,8 +23,11 @@ octara-host-native.workspace = true
 octara-icons.workspace = true
 octara-inspect.workspace = true
 octara-kit.workspace = true
+octara-picker = { workspace = true, features = ["platform"] }
 octara-pipeline.workspace = true
 octara-render = { workspace = true, features = ["gpu"] }
+octara-video = { workspace = true, features = ["platform"] }
+octara-webview = { workspace = true, features = ["platform"] }
 
 [dev-dependencies]
 octara-fonts.workspace = true
@@ -32,3 +39,8 @@ octara-release = { workspace = true, features = ["http"] }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-web-kit.workspace = true

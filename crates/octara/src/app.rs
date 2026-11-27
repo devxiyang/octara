@@ -6,7 +6,7 @@ use octara_model::input::Chord;
 use octara_model::theme::Theme;
 use octara_model::window::{WindowMaterial, WindowPresentation};
 use octara_runtime::cycle::{AppError, CycleReceipt};
-use octara_runtime::media::{MediaCacheBackend, VideoSurfaceProvider};
+use octara_runtime::media::MediaCacheBackend;
 use octara_runtime::window::WindowRoot;
 use octara_runtime::{
     AppRuntime, BuildCx, HostEngine, Input, MountCx, ReadCx, RestartState, WindowId, WindowOptions, WindowRuntime, WriteCx,
@@ -115,7 +115,6 @@ pub struct AppDefinition {
     startup: Option<Startup>,
     windows: Vec<WindowDefinition>,
     media_cache: Option<Arc<dyn MediaCacheBackend>>,
-    video: Option<Arc<dyn VideoSurfaceProvider>>,
     modules: Vec<Box<dyn crate::module::OctaraModule>>,
 }
 
@@ -150,11 +149,6 @@ impl AppDefinition {
         self
     }
 
-    pub fn with_video_surface_provider(mut self, provider: Arc<dyn VideoSurfaceProvider>) -> Self {
-        self.video = Some(provider);
-        self
-    }
-
     pub fn launch(self, app: &mut App, restart: Option<RestartState>) -> Result<Vec<WindowId>, AppError> {
         self.launch_with_window_options(app, restart, |_| {})
     }
@@ -174,9 +168,6 @@ impl AppDefinition {
             app.import_persisted(restart);
         }
         app.runtime.install_modules(self.modules)?;
-        if let Some(video) = self.video {
-            app.build(|build| build.provide::<Arc<dyn VideoSurfaceProvider>>(video))?;
-        }
         if let Some(startup) = self.startup {
             startup(app)?;
         }

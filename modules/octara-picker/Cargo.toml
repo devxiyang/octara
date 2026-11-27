@@ -1,0 +1,59 @@
+[package]
+name = "octara-picker"
+description = "Octara module for file, folder, and media pickers."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["platform"]
+platform = [
+    "dep:block2", "dep:js-sys", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-core-foundation",
+    "dep:objc2-foundation", "dep:objc2-photos-ui", "dep:objc2-ui-kit",
+    "dep:objc2-uniform-type-identifiers", "dep:raw-window-handle", "dep:rfd", "dep:rustix",
+    "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys",
+]
+
+[dependencies]
+octara.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { optional = true, version = "1.1.6", features = ["fs"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = { workspace = true, optional = true }
+objc2 = { workspace = true, optional = true }
+objc2-app-kit = { optional = true, workspace = true, default-features = false, features = ["std", "block2", "NSApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSView", "NSWindow", "objc2-uniform-type-identifiers"] }
+objc2-core-foundation = { optional = true, workspace = true, features = ["block2"] }
+objc2-foundation = { optional = true, workspace = true, default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSString", "NSURL"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+block2 = { workspace = true, optional = true }
+objc2 = { workspace = true, optional = true }
+objc2-core-foundation = { optional = true, workspace = true, features = ["block2"] }
+objc2-foundation = { optional = true, workspace = true, default-features = false, features = ["std", "block2", "NSArray", "NSEnumerator", "NSError", "NSItemProvider", "NSProgress", "NSString", "NSURL"] }
+objc2-photos-ui = { optional = true, version = "0.3.2", default-features = false, features = ["std", "PHPicker"] }
+objc2-ui-kit = { optional = true, workspace = true, features = ["std", "block2", "UIDocumentPickerViewController", "UIPresentationController", "UIResponder", "UIView", "UIViewController", "UIWindow", "objc2-uniform-type-identifiers"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+objc2-uniform-type-identifiers = { optional = true, version = "0.3.2", default-features = false, features = ["std", "UTCoreTypes", "UTType"] }
+
+[target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
+raw-window-handle = { version = "0.6.2", optional = true }
+rfd = { workspace = true, optional = true }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+js-sys = { version = "0.3.107", optional = true }
+wasm-bindgen = { version = "0.2.130", optional = true }
+wasm-bindgen-futures = { version = "0.4.80", optional = true }
+web-sys = { optional = true, version = "0.3.107", features = [
+    "Blob", "Document", "DomException", "Element", "Event", "EventTarget", "File", "FileList",
+    "FileSystemDirectoryHandle", "FileSystemFileHandle", "FileSystemHandle",
+    "HtmlElement", "HtmlInputElement", "Navigator", "Node", "Window",
+] }

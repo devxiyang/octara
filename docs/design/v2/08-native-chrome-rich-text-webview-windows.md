@@ -116,6 +116,8 @@ Add `MarkdownStyle`, `MarkdownOptions`, and `markdown_with(build, source, option
 
 ## 3. `WKWebView` Native Island Upgrade (`Underlay`, Bidirectional JS Bridge & iOS)
 
+The implementation described in this section shipped before the [Wave 2 WebView module](14-octara-module-architecture.md). The module now owns WKWebView, its bridge, and the native slot factory.
+
 ### 3.1 `NativeSlot::Underlay` for `"web"` on macOS
 - Remove the `"web" => Overlay`-only restriction in `crates/octara-host-native/src/os/macos/native.rs`.
 - Allow `"web"` in both `NativeSlot::Underlay` and `NativeSlot::Overlay`.

@@ -210,8 +210,13 @@ impl Shell {
         let publication = self.frame_sources.borrow().get(&id).cloned().ok_or("missing native publication")?;
         let mut host = HostWindow::new(id, window.clone(), os, a11y, surface, publication, transparent);
         host.initial_fullscreen = initial_fullscreen;
+        let raw = host.os.module_surface(&host.window, self.os.module_surface_kind(), id).raw_native();
         self.ids.insert(window.id(), id);
         self.windows.insert(id, host);
+        if let Some(raw) = raw {
+            // SAFETY: The attached HostWindow owns the handles and clears the registration before drop.
+            unsafe { self.app.runtime_mut().set_module_native_surface(id, raw) };
+        }
         self.lifecycle(HostLifecycleEvent::WindowAttached { window: id })?;
         if let Some(theme) = window.theme() {
             self.refresh_system_preferences(Some(color_scheme(theme)), None)?;
@@ -221,6 +226,7 @@ impl Shell {
 
     fn detach_window(&mut self, id: WindowId) -> Result<(), String> {
         self.frame_sources.borrow_mut().remove(&id);
+        self.app.runtime_mut().clear_module_native_surface(id);
         if let Some(host) = self.windows.remove(&id) {
             self.ids.remove(&host.window.id());
             drop(host);
@@ -347,7 +353,6 @@ impl Shell {
                             self.os.write_clipboard_text(&text);
                             ServiceOutcome::ClipboardWritten
                         }
-                        ServiceRequest::PickFile { .. } => ServiceOutcome::Error(ServiceError::Unavailable),
                     };
                     os::reply(&self.proxy, window, HostReply::ServiceReply { id, outcome });
                 }

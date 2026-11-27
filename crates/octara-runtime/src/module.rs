@@ -78,6 +78,7 @@ pub struct ModuleRegistry {
     views: NativeViewRegistry,
     observer: Option<Observe>,
     host: Option<HostSurfaceKind>,
+    native_surfaces: BTreeMap<WindowId, RawNativeSurface>,
     pending: BTreeMap<CallTicket, work::PendingCall>,
 }
 
@@ -118,6 +119,7 @@ pub struct ModuleCallCx<'a> {
     dispatcher: ModuleDispatcher,
     host: HostSurfaceKind,
     window: Option<WindowId>,
+    native_surface: Option<RawNativeSurface>,
 }
 
 impl ModuleCallCx<'_> {
@@ -152,6 +154,14 @@ impl ModuleCallCx<'_> {
 
     pub fn window(&self) -> Option<WindowId> {
         self.window
+    }
+
+    /// The host surface associated with the scope that initiated the request.
+    pub fn surface(&self) -> Option<HostSurface<'_>> {
+        let surface = HostSurface::new(self.host, Some(self.window?));
+        // SAFETY: The host registered the handles for the live window. The
+        // returned surface borrows the call context on the UI thread.
+        Some(self.native_surface.map_or(surface, |raw| unsafe { surface.with_raw_native(raw) }))
     }
 
     pub fn method(&self) -> &'static str {

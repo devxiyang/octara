@@ -1,0 +1,35 @@
+[package]
+name = "octara-haptics"
+description = "Typed haptic feedback for Octara applications."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[dependencies]
+octara.workspace = true
+
+[features]
+default = ["platform"]
+platform = ["dep:objc2", "dep:objc2-app-kit", "dep:objc2-ui-kit", "dep:js-sys", "dep:wasm-bindgen", "dep:web-sys"]
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = { workspace = true, optional = true }
+objc2-ui-kit = { workspace = true, optional = true, features = [
+    "UIFeedbackGenerator", "UIImpactFeedbackGenerator", "UINotificationFeedbackGenerator",
+    "UISelectionFeedbackGenerator",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true, optional = true }
+objc2-app-kit = { version = "0.3.2", default-features = false, optional = true, features = ["std", "NSHapticFeedback"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { version = "0.3.107", optional = true }
+wasm-bindgen = { version = "0.2.130", optional = true }
+web-sys = { version = "0.3.107", optional = true, features = ["Navigator", "Window"] }

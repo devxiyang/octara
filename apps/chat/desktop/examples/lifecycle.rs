@@ -91,7 +91,7 @@ fn main() {
     let mut window = WindowOptions::default();
     window.presentation.title = "Octara Chat lifecycle".into();
     window.viewport.size = Size::new(1000.0, 720.0);
-    octara_host_native::run(window, move |b| {
+    octara_chat_desktop::run(window, move |b| {
         let app = root(
             b,
             Options {

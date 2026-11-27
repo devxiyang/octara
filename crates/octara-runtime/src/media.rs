@@ -3,11 +3,12 @@
 mod probe;
 mod schedule;
 
-pub use octara_model::image::{HttpMediaEntry, VideoSurface};
+pub use octara_model::image::HttpMediaEntry;
 pub use probe::probe_image_size;
 pub(crate) use schedule::MediaScheduler;
 
 use octara_model::image::{CachePolicy, Image, ImageSource, MediaAsset, ObjectFit, VideoSource};
+use octara_model::native::TypedNativeProps;
 use std::future::{Future, ready};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,9 +28,12 @@ pub trait MediaCacheBackend: Send + Sync + 'static {
     fn remove(&self, uri: &str);
 }
 
-/// Host extension for placing a video into a native slot.
-pub trait VideoSurfaceProvider: Send + Sync + 'static {
-    fn surface(&self, source: &VideoSource) -> Option<VideoSurface>;
+/// Connects an authored video to a module's typed native view factory.
+/// The module provides this context during installation on supported hosts.
+#[derive(Clone, Copy)]
+pub struct VideoAdapter {
+    pub kind: &'static str,
+    pub props: fn(VideoSource) -> TypedNativeProps,
 }
 
 /// A load result carries the original dimensions independently of its pixel buffer.

@@ -106,7 +106,7 @@ fn the_binary_prints_text_and_json() {
 fn help_lists_every_command() {
     let (ok, help) = run(&["--help"]);
     assert!(ok);
-    for c in ["vocab", "explain", "check", "inspect", "audit", "run", "launch", "release", "web", "skill"] {
+    for c in ["vocab", "explain", "check", "inspect", "audit", "run", "launch", "modules", "release", "web", "skill"] {
         assert!(help.lines().any(|l| l.trim_start().starts_with(c)), "--help lists `{c}`:\n{help}");
     }
 }

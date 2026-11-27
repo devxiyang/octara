@@ -147,23 +147,21 @@ mod browser {
                     let props = b.signal("first".to_owned());
                     let shown = b.signal(true);
                     handles.set(Some((props, shown)));
-                    col()
-                        .child(show(
-                            move |r| r.get(shown),
-                            move |_| {
-                                let listener = listener.clone();
-                                typed_native_view(KIND, move |r: &mut ReadCx<'_>| TypedNativeProps::new(r.get(props), None))
-                                    .w(100)
-                                    .h(40)
-                                    .test_id("typed-slot")
-                                    .on_typed_native::<u32>(move |_, name, &value| {
-                                        assert_eq!(name, "value");
-                                        let resolve = listener.take().expect("waiting for a native event");
-                                        resolve.call1(&JsValue::UNDEFINED, &JsValue::from(value)).unwrap();
-                                    })
-                            },
-                        ))
-                        .child(native_view("video").test_id("legacy-video"))
+                    col().child(show(
+                        move |r| r.get(shown),
+                        move |_| {
+                            let listener = listener.clone();
+                            typed_native_view(KIND, move |r: &mut ReadCx<'_>| TypedNativeProps::new(r.get(props), None))
+                                .w(100)
+                                .h(40)
+                                .test_id("typed-slot")
+                                .on_typed_native::<u32>(move |_, name, &value| {
+                                    assert_eq!(name, "value");
+                                    let resolve = listener.take().expect("waiting for a native event");
+                                    resolve.call1(&JsValue::UNDEFINED, &JsValue::from(value)).unwrap();
+                                })
+                        },
+                    ))
                 }
             }));
         let app = WebApp::launch(mount.clone(), definition, None)?;
@@ -173,7 +171,6 @@ mod browser {
             *observed.lifecycle.borrow(),
             [AppLaunched { urls: vec![url.clone()], files: Vec::new() }, WindowAttached { window }, AppForeground]
         );
-        assert!(mount.query_selector("video[data-octara-id='legacy-video']")?.is_some());
         let input = mount.query_selector("[data-octara-id='typed-slot'] input")?.unwrap().dyn_into::<HtmlInputElement>()?;
         assert_eq!(input.get_attribute("data-props").as_deref(), Some("first"));
         assert_eq!(input.get_attribute("data-width").as_deref(), Some("100"));

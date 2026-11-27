@@ -27,7 +27,9 @@ octara-inspect.workspace = true
 octara-kit.workspace = true
 octara-markdown = { workspace = true, features = ["composer", "math", "media"] }
 octara-pipeline.workspace = true
+octara-picker.workspace = true
 octara-render.workspace = true
+octara-webview.workspace = true
 png.workspace = true
 serde_json.workspace = true
 
