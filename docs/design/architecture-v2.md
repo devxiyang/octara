@@ -8,7 +8,7 @@
 This document is the architectural overview. Exact crate layouts, naming conventions, data structures, wire protocols, algorithms, and phase gates are specified in:
 
 1. [01 — Workspace Topology, Naming Conventions & `octara-model`](v2/01-crates-and-model.md)
-2. [02 — Reactive Runtime, Capability Contexts & Turn Engine (`octara-runtime` + `octara`)](v2/02-reactive-runtime.md)
+2. [02 — Reactive Runtime, Capability Contexts & Cycle Engine (`octara-runtime` + `octara`)](v2/02-reactive-runtime.md)
 3. [03 — Sparse ECS Micro-Kernel (`octara-tree`)](v2/03-tree-microkernel.md)
 4. [04 — Native Pipeline, Rendering, Event-Driven GPU & OS Host](v2/04-native-pipeline-render-host.md)
 5. [05 — Delta-First Web/Wasm Host (`octara-host-web`)](v2/05-web-host.md)
@@ -20,6 +20,7 @@ This document is the architectural overview. Exact crate layouts, naming convent
 11. [11 — Core Performance Architecture: CPU Cache, Algorithms, Modern GPU Micro-Pipelines & Inspect SPI (`0.0.6`)](v2/11-extreme-engine-cpu-gpu-and-ai-dx.md)
 12. [12 — Pluggable SPI Architecture: Modular Extension Boundaries](v2/12-pluggable-spi-architecture.md)
 13. [13 — Window Presentation, Dual-Parent Inheritance, Multimodal Input & Real-Metric Inline Primitives (`0.0.7`)](v2/13-window-presentation-multimodal-input-and-inline-primitives.md)
+14. [14 — Cycle Terminology Cleanup & `octara::module` Platform Extension Architecture (`0.0.8`)](v2/14-octara-module-architecture.md)
 
 ---
 
@@ -37,7 +38,7 @@ This document is the architectural overview. Exact crate layouts, naming convent
    - Strictly **two** write gates: `Tree::apply(Transaction)` (authored structure/props) and `Tree::apply_runtime(RuntimeOp)` (transient interaction/scroll/editor/exit state).
    - Emits first-class structured **`TreeDelta`** consumed incrementally by every downstream engine.
    - Zero layout engine (Taffy), zero text shaping (Parley), zero AccessKit, zero wgpu, zero DOM, zero animation interpolation inside `octara-tree`.
-4. **Five-Phase Turn Engine + Single-Transaction Subtree Commit**:
+4. **Five-Phase Cycle Engine + Single-Transaction Subtree Commit**:
    - `Ingress → React → Commit → Project (bounded ≤16 rounds) → Publish`.
    - During `React`, user code and view builders never hold `&mut Tree`; all creates, static props, styles, policies, and placements stream into one `TransactionBuilder` using `NodeRef::Pending` and commit as **one atomic `Transaction`**.
 5. **Strict Target Isolation & Pluggable `HostEngine`**:
@@ -66,7 +67,7 @@ flowchart TB
 
     subgraph L1["Layer 1: Engine-Agnostic Core (Wasm-tiny, Zero thread_local)"]
         Tree["octara-tree<br/>Sparse ECS NodeCore(≤48B) + SecondaryMaps<br/>StyleResolver · Transaction Preflight · TreeDelta<br/>InteractionArbiter · Logical EditorSession"]
-        Runtime["octara-runtime<br/>TypedSlab ReactiveWorld · All-Copy Handles<br/>Unified Value+Delta Topological Graph<br/>BuildCx/ReadCx/WriteCx/CleanupCx/TaskCx<br/>5-Phase Turn Engine · Virtual Clock · HostEngine"]
+        Runtime["octara-runtime<br/>TypedSlab ReactiveWorld · All-Copy Handles<br/>Unified Value+Delta Topological Graph<br/>BuildCx/ReadCx/WriteCx/CleanupCx/TaskCx<br/>5-Phase Cycle Engine · Module Spine · Virtual Clock · HostEngine"]
     end
 
     subgraph L2["Layer 2: Authoring API & Component Kit"]

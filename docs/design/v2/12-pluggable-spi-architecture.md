@@ -23,6 +23,7 @@
 | **SPI-4** | `AuditRule`, `InspectTransport`, `TraceRecorder` | `octara-inspect` | Text clipping, accessibility names, focus reachability, JSON inspection, replay | Project-specific audit rules, alternate transports and trace sinks |
 | **SPI-5** | `ReleaseProvider`, `SecurityPolicy` | `octara-release`, declarative compiler in `octara` | HTTPS update channel, Ed25519 verification, and declarative scene compilation to a `Transaction` | Alternate sources for signed packets and additional acceptance rules |
 | **SPI-6** | `OsHost`, `OsWindow` | `octara-host-native` | `winit` with macOS, iOS, Linux and Windows host backends | Platform-specific input, window and display integration |
+| **SPI-7** | `OctaraModule`, `ModuleCall`, `ModuleEvent`, `NativeViewFactory` | `octara-model` / `octara-runtime` / `octara::module` | Core `ModuleRegistry`, `HostLifecycleEvent` bus, `NativeViewRegistry`, optional first-party `modules/*` | Pluggable native & web capabilities (WebView, Video, Picker, Haptics, Notifications, Share, Secure Store, Desktop Shell) and custom native views |
 
 ---
 
