@@ -2594,7 +2594,7 @@ dependencies = [
 
 [[package]]
 name = "octara"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "octara-macros",
  "octara-model",
@@ -2610,7 +2610,7 @@ dependencies = [
 
 [[package]]
 name = "octara-chat"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "octara",
  "octara-icons",
@@ -2627,7 +2627,7 @@ dependencies = [
 
 [[package]]
 name = "octara-chat-desktop"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "octara",
  "octara-chat",
@@ -2641,7 +2641,7 @@ dependencies = [
 
 [[package]]
 name = "octara-cli"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "clap",
  "flate2",
@@ -2666,7 +2666,7 @@ dependencies = [
 
 [[package]]
 name = "octara-examples"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "octara",
  "octara-fonts",
@@ -2684,7 +2684,7 @@ dependencies = [
 
 [[package]]
 name = "octara-examples-desktop"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -2711,11 +2711,11 @@ dependencies = [
 
 [[package]]
 name = "octara-fonts"
-version = "0.0.7"
+version = "0.0.8"
 
 [[package]]
 name = "octara-gpu"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "octara-model",
  "octara-render",
@@ -2725,7 +2725,7 @@ dependencies = [
 
 [[package]]
 name = "octara-haptics"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "js-sys",
  "objc2 0.6.5",
@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "octara-headless"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "octara",
  "octara-inspect",
@@ -2747,7 +2747,7 @@ dependencies = [
 
 [[package]]
 name = "octara-host-native"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "accesskit_winit",
  "arboard",
@@ -2785,7 +2785,7 @@ dependencies = [
 
 [[package]]
 name = "octara-host-web"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "js-sys",
  "octara",
@@ -2803,7 +2803,7 @@ dependencies = [
 
 [[package]]
 name = "octara-icons"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "octara",
  "octara-model",
@@ -2816,7 +2816,7 @@ dependencies = [
 
 [[package]]
 name = "octara-inspect"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "js-sys",
  "octara",
@@ -2832,7 +2832,7 @@ dependencies = [
 
 [[package]]
 name = "octara-kit"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "octara",
  "octara-headless",
@@ -2842,7 +2842,7 @@ dependencies = [
 
 [[package]]
 name = "octara-macros"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2851,7 +2851,7 @@ dependencies = [
 
 [[package]]
 name = "octara-markdown"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -2865,7 +2865,7 @@ dependencies = [
 
 [[package]]
 name = "octara-model"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "bitflags 2.13.2",
  "color",
@@ -2879,7 +2879,7 @@ dependencies = [
 
 [[package]]
 name = "octara-picker"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "block2 0.6.2",
  "js-sys",
@@ -2901,7 +2901,7 @@ dependencies = [
 
 [[package]]
 name = "octara-pipeline"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "accesskit",
  "color",
@@ -2921,7 +2921,7 @@ dependencies = [
 
 [[package]]
 name = "octara-release"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "reqwest",
  "ring",
@@ -2933,7 +2933,7 @@ dependencies = [
 
 [[package]]
 name = "octara-render"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "bytemuck",
  "color",
@@ -2951,7 +2951,7 @@ dependencies = [
 
 [[package]]
 name = "octara-runtime"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "octara-model",
  "octara-tree",
@@ -2964,7 +2964,7 @@ dependencies = [
 
 [[package]]
 name = "octara-svg"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "kurbo",
  "octara-model",
@@ -2973,7 +2973,7 @@ dependencies = [
 
 [[package]]
 name = "octara-tree"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "bitflags 2.13.2",
  "octara-model",
@@ -2986,7 +2986,7 @@ dependencies = [
 
 [[package]]
 name = "octara-video"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -3002,7 +3002,7 @@ dependencies = [
 
 [[package]]
 name = "octara-webview"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "block2 0.6.2",
  "objc2 0.6.5",

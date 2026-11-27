@@ -574,7 +574,7 @@ fn file_drop_accepts_the_nearest_receiver_and_rejects_invalid_delivery() {
     let at = point(10.0, 10.0);
     assert_eq!(window.runtime().file_drop_target(at), Some(target));
 
-    let files = vec![DroppedFile::Path("/local/note.txt".into()), DroppedFile::Name("図.png".into())];
+    let files = vec![DroppedFile::Path("/local/note.txt".into()), DroppedFile::Name("café.png".into())];
     let drop = || Input::Host(HostReply::FilesDropped { target, files: files.clone() });
     let delivered = app.dispatch(id, drop()).unwrap();
     assert!(delivered.delivered && delivered.handled);

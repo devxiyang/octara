@@ -135,7 +135,12 @@ pub(super) fn merge(app_root: &Path, paths: Vec<PathBuf>, base: &BasePaths) -> R
             merge_field(&mut headers, name, header, source, &field)?;
         }
     }
-    Ok(Merged { ios: ios.finish(), macos: macos.finish(), frameworks, headers: take_values(headers).collect() })
+    Ok(Merged {
+        ios: ios.finish("MinimumOSVersion", "18.4"),
+        macos: macos.finish("LSMinimumSystemVersion", "15.4"),
+        frameworks,
+        headers: take_values(headers).collect(),
+    })
 }
 
 fn read_toml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
@@ -247,8 +252,13 @@ impl<'a> AppleMerge<'a> {
         Ok(())
     }
 
-    fn finish(self) -> AppleFiles {
-        AppleFiles { info_plist: take_values(self.info_plist).collect(), entitlements: take_values(self.entitlements).collect() }
+    fn finish(self, minimum_key: &str, minimum_version: &str) -> AppleFiles {
+        let mut info_plist: plist::Dictionary = take_values(self.info_plist).collect();
+        if !info_plist.contains_key(minimum_key) {
+            info_plist.insert(minimum_key.into(), minimum_version.into());
+            info_plist.sort_keys();
+        }
+        AppleFiles { info_plist, entitlements: take_values(self.entitlements).collect() }
     }
 }
 

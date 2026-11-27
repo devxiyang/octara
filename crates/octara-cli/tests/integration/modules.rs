@@ -77,6 +77,39 @@ fn json(out: &Path, file: &str) -> Value {
 }
 
 #[test]
+fn minimum_os_versions_default_without_modules() {
+    let w = Workspace::new();
+    let app = w.package("app", "");
+    let out = w.merge(&app, "defaults", &[]);
+
+    assert_eq!(plist(&out, "ios/Info.plist"), [("MinimumOSVersion", "18.4")].into_iter().collect());
+    assert_eq!(plist(&out, "macos/Info.plist"), [("LSMinimumSystemVersion", "15.4")].into_iter().collect());
+    assert!(plist(&out, "ios/Module.entitlements").is_empty());
+    assert!(plist(&out, "macos/Module.entitlements").is_empty());
+}
+
+#[test]
+fn minimum_os_versions_preserve_module_declarations_and_app_variables() {
+    let w = Workspace::new();
+    let app = w.package("app", "[dependencies]\none = { path = \"../one\" }");
+    w.module(
+        "one",
+        "",
+        r#"
+[ios.info_plist]
+MinimumOSVersion = "${ios_minimum}"
+[macos.info_plist]
+LSMinimumSystemVersion = "15.6"
+"#,
+    );
+    fs::write(app.join("octara.toml"), "[modules.\"fixture.one\"]\nios_minimum = \"18.6\"\n").unwrap();
+
+    let out = w.merge(&app, "declared", &[]);
+    assert_eq!(plist(&out, "ios/Info.plist")["MinimumOSVersion"].as_string(), Some("18.6"));
+    assert_eq!(plist(&out, "macos/Info.plist")["LSMinimumSystemVersion"].as_string(), Some("15.6"));
+}
+
+#[test]
 fn package_closure_merges_transitive_and_target_dependencies_once() {
     let w = Workspace::new();
     let app = w.package(
@@ -172,7 +205,8 @@ framework = "UniformTypeIdentifiers"
     let numbers = nested["numbers"].as_array().unwrap();
     assert_eq!(numbers[1].as_signed_integer(), Some(2));
     assert_eq!(plist(&out, "ios/Module.entitlements")["com.example.entitlement"].as_boolean(), Some(true));
-    assert!(plist(&out, "macos/Info.plist").is_empty());
+    assert_eq!(info["MinimumOSVersion"].as_string(), Some("18.4"));
+    assert_eq!(plist(&out, "macos/Info.plist")["LSMinimumSystemVersion"].as_string(), Some("15.4"));
     assert_eq!(plist(&out, "macos/Module.entitlements")["com.apple.security.files.user-selected.read-write"].as_boolean(), Some(true));
     assert_eq!(json(&out, "apple-frameworks.json"), json!({"ios": ["Metal", "PhotosUI", "UniformTypeIdentifiers"], "macos": ["AppKit"]}));
     assert_eq!(
@@ -220,6 +254,7 @@ NSMicrophoneUsageDescription = "Record a note"
         ("CFBundleExecutable", "$(EXECUTABLE_NAME)"),
         ("CFBundleShortVersionString", "1.2.3"),
         ("CFBundleVersion", "42"),
+        ("MinimumOSVersion", "$(IPHONEOS_DEPLOYMENT_TARGET)"),
         ("NSCameraUsageDescription", "Scan a code"),
         ("AppSetting", "${literal}"),
     ]
@@ -229,8 +264,13 @@ NSMicrophoneUsageDescription = "Record a note"
     ios_info.insert("CFBundleURLTypes".into(), Plist::Array(vec![Plist::Dictionary(url_type)]));
     let ios_entitlements: plist::Dictionary =
         [("keychain-access-groups", Plist::Array(vec!["$(AppIdentifierPrefix)com.example.ios".into()]))].into_iter().collect();
-    let macos_info: plist::Dictionary =
-        [("CFBundleIdentifier", "com.example.mac".into()), ("AppData", Plist::Data(vec![0, 255]))].into_iter().collect();
+    let macos_info: plist::Dictionary = [
+        ("CFBundleIdentifier", "com.example.mac".into()),
+        ("LSMinimumSystemVersion", "15.3".into()),
+        ("AppData", Plist::Data(vec![0, 255])),
+    ]
+    .into_iter()
+    .collect();
     let macos_entitlements: plist::Dictionary = [("com.apple.security.app-sandbox", Plist::Boolean(true))].into_iter().collect();
     let bases = [
         ("--ios-info-plist", "iOS Info.plist", "ios/Info.plist", &ios_info),

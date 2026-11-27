@@ -36,6 +36,10 @@ pub const CRATES: &[&str] = &[
     "octara-fonts",
     "octara-svg",
     "octara-macros",
+    "octara-webview",
+    "octara-video",
+    "octara-picker",
+    "octara-haptics",
 ];
 
 /// This workspace's directory, where the CLI was built from.
@@ -56,15 +60,19 @@ pub fn plain(path: &Path) -> PathBuf {
 
 /// The framework's crates in the workspace that builds the CLI.
 pub fn workspace_sources() -> Vec<Source> {
-    let root = workspace_root().join("crates");
+    let root = workspace_root();
     CRATES
         .iter()
-        .map(|c| {
-            let dir = root.join(c);
-            let lib = dir.join("src/lib.rs");
-            Source { name: c.to_string(), dir, lib }
+        .filter_map(|name| {
+            for group in ["crates", "modules"] {
+                let dir = root.join(group).join(name);
+                let lib = dir.join("src/lib.rs");
+                if lib.is_file() {
+                    return Some(Source { name: name.to_string(), dir, lib });
+                }
+            }
+            None
         })
-        .filter(|s| s.lib.exists())
         .collect()
 }
 
@@ -218,8 +226,10 @@ pub fn export_bundle(path: &Path) -> Result<(), String> {
         return Err("export-api requires a full Octara checkout".into());
     }
     let mut api = read(&sources)?;
-    for krate in &mut api.crates {
-        krate.root = format!("crates/{}", krate.name);
+    let root = workspace_root();
+    for (krate, source) in api.crates.iter_mut().zip(sources) {
+        let path = source.dir.strip_prefix(&root).map_err(|error| format!("{}: {error}", source.dir.display()))?;
+        krate.root = path.to_string_lossy().replace('\\', "/");
     }
     let mut output = GzEncoder::new(Vec::new(), Compression::best());
     serde_json::to_writer(&mut output, &api).map_err(|error| format!("bundled API: {error}"))?;

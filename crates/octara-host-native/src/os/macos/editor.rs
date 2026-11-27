@@ -3,7 +3,7 @@
 use super::super::{ActiveEditorView, KeyDispatch, WindowHostEvent, WindowTextInput};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject, Sel};
-use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
+use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSTextInputClient, NSTextInputContext, NSView};
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSNotFound, NSPoint, NSRange, NSRangePointer, NSRect, NSSize, NSString,
@@ -496,7 +496,7 @@ impl Editor {
         }
         if let Some(context) = self.view.inputContext() {
             context.invalidateCharacterCoordinates();
-            if selection_changed && context.respondsToSelector(sel!(textInputClientDidUpdateSelection)) {
+            if selection_changed {
                 context.textInputClientDidUpdateSelection();
             }
         }

@@ -252,15 +252,16 @@ fn showcase_form_keeps_controls_during_validation_and_reorder() {
     input(&mut driver, window, "profile-name", "admin");
     let invalid = observe(&mut driver, window);
     assert_eq!(node(&invalid, "profile-name").target, original);
-    assert!(node(&invalid, "profile-name-error").text.as_deref().unwrap().contains("不可用"));
+    assert_eq!(node(&invalid, "profile-name-error").text.as_deref(), Some("This display name is unavailable. Choose another name."));
     press(&mut driver, window, "forms-reorder");
     let reordered = observe(&mut driver, window);
     let radio = node(&reordered, "reply-style-option-balanced");
     assert_eq!(radio.target, balanced);
-    assert_eq!(radio.label.as_deref(), Some("均衡 · 推荐"));
+    assert_eq!(radio.label.as_deref(), Some("Balanced (recommended)"));
+    // Saving trims surrounding spaces and preserves the CJK name.
     input(&mut driver, window, "profile-name", " 小明 ");
     press(&mut driver, window, "forms-save");
-    assert_eq!(node(&observe(&mut driver, window), "forms-status").text.as_deref(), Some("已保存：小明 · balanced"));
+    assert_eq!(node(&observe(&mut driver, window), "forms-status").text.as_deref(), Some("Saved: 小明 · balanced"));
 }
 
 #[test]
@@ -272,17 +273,17 @@ fn showcase_dialog_retains_its_draft_and_routes_enter_to_suggestions_first() {
     let enter = Input::Interaction(InteractionEvent::Key(KeyEvent::new(Key::Enter, Modifiers::empty())));
     assert!(driver.dispatch(window, enter.clone()).unwrap().handled);
     let picked = observe(&mut driver, window);
-    assert_eq!(node(&picked, "interaction-chosen").text.as_deref(), Some("已选择：review"));
-    assert_eq!(node(&picked, "interaction-submissions").text.as_deref(), Some("提交次数：0"));
+    assert_eq!(node(&picked, "interaction-chosen").text.as_deref(), Some("Selected: /review"));
+    assert_eq!(node(&picked, "interaction-submissions").text.as_deref(), Some("Submissions: 0"));
 
     press(&mut driver, window, "editor-tabs-tab-preview");
     let preview = observe(&mut driver, window);
-    assert_eq!(node(&preview, "editor-preview-text").text.as_deref(), Some("预览：请审阅当前改动。"));
+    assert_eq!(node(&preview, "editor-preview-text").text.as_deref(), Some("Preview: Please review the current changes."));
     press(&mut driver, window, "editor-tabs-tab-draft");
     assert_eq!(node(&observe(&mut driver, window), "suggest-editor").target, draft);
     accessible(&mut driver, window, "suggest-editor", A11yAction::Focus);
     assert!(driver.dispatch(window, enter).unwrap().handled);
-    assert_eq!(node(&observe(&mut driver, window), "interaction-submissions").text.as_deref(), Some("提交次数：1"));
+    assert_eq!(node(&observe(&mut driver, window), "interaction-submissions").text.as_deref(), Some("Submissions: 1"));
 }
 
 #[test]

@@ -407,13 +407,13 @@ mod tests {
     #[test]
     fn utf8_crlf_cr_bom_comments_and_multiple_data_lines_cross_chunks() {
         let source = format!(
-            "\u{feff}: comment\r\n\r\ndata: {{\"choices\": [\r\ndata: {{\"index\":0,\"delta\":{{\"content\":\"中文🙂\"}},\"finish_reason\":null}}]}}\r\n\r\n{}data: [DONE]\r\r",
+            "\u{feff}: comment\r\n\r\ndata: {{\"choices\": [\r\ndata: {{\"index\":0,\"delta\":{{\"content\":\"café🙂\"}},\"finish_reason\":null}}]}}\r\n\r\n{}data: [DONE]\r\r",
             "data: {\"choices\":[],\"usage\":{\"total_tokens\":3}}\n\n"
         );
         for size in [1, 2, 3, 7, source.len()] {
             let (events, result) = parse(source.as_bytes().chunks(size).map(<[u8]>::to_vec));
             assert_eq!(result, Ok(()), "chunk size {size}");
-            assert_eq!(events, [Event::Text("中文🙂".into()), Event::Done]);
+            assert_eq!(events, [Event::Text("café🙂".into()), Event::Done]);
         }
     }
 
@@ -450,8 +450,8 @@ mod tests {
     }
 
     #[test]
-    fn local_titles_keep_the_topic_without_chinese_prompt_instructions() {
-        assert_eq!(conversation_title("请用中文解释 Rust 的所有权：列出三个要点。"), "请用中文解释 Rust 的所有权");
+    fn local_titles_keep_the_topic_without_followup_instructions() {
+        assert_eq!(conversation_title("Explain Rust ownership\u{ff1a}List three points."), "Explain Rust ownership");
         assert_eq!(conversation_title("Explain ownership\nInclude a code example"), "Explain ownership");
         assert_eq!(conversation_title("  "), "New chat");
     }

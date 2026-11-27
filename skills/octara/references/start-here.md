@@ -1,34 +1,47 @@
-# 用 Octara 0.0.7 构建界面
+# Build interfaces with Octara 0.0.8
 
-Octara 用普通 Rust 函数组合视图。应用持有响应式状态和窗口树，宿主负责把树投影到原生窗口或浏览器 DOM。下面的 Rust 示例会随 `cargo test -p octara-cli --doc` 编译并运行。
+Octara composes views with ordinary Rust functions. The app owns reactive state and the window tree. The host projects the tree into a native window or the browser DOM. The Apple deployment baselines are macOS 15.4 and iOS 18.4. `cargo test -p octara-cli --doc` compiles and runs the Rust examples marked for doctesting.
 
-## 声明窗口与交互
+## Declare windows and interactions
 
-构造函数接收 `BuildCx` 来创建状态。动态属性接收 `ReadCx` 来跟踪读取。事件处理器接收 `WriteCx` 来更新状态或排队请求。纯展示组件可以直接返回 `El`。用 `El::select_none()` 关闭按钮标签等界面文字的文本选择。
+Builders receive `BuildCx` to create state. Dynamic properties receive `ReadCx` to track reads. Event handlers receive `WriteCx` to update state or queue requests. Presentation-only components can return an `El` directly. Use `El::select_none()` to disable text selection for UI text such as button labels.
+
+Use short `#[ui]` functions named after their purpose so Inspect can trace components to their source. Put roles, accessible names, and event handlers on the nodes users interact with. Write static styles as `const STYLE: TwStyle = tw!(...)` and apply them with `.tw(STYLE)`. The `tw!` macro checks style classes at compile time.
+
+Use `.child((a, b, c))` to add a fixed group of children. Tuple members can have different `IntoView` types. Use `.children(iter)` with an array or iterator of same-type children.
 
 ```rust
 use octara::prelude::*;
 
+const COUNTER_STYLE: TwStyle = tw!("p-4 gap-2");
+const BUTTON_STYLE: TwStyle = tw!("px-3 py-2 rounded-md bg-surface");
+
 #[ui]
-fn counter(cx: &mut BuildCx<'_>) -> El {
-    let count = cx.signal(0);
-    col()
-        .p(sp(4.0))
-        .gap(sp(2.0))
-        .child(text(move |r: &mut ReadCx<'_>| format!("Count {}", r.get(count))))
-        .child(
-            el()
-                .role(Role::Button)
-                .label("Increment")
-                .test_id("increment")
-                .focusable()
-                .select_none()
-                .on_press(move |w| w.update(count, |count| *count += 1))
-                .child("Increment"),
-        )
+fn increment_button(count: Signal<u32>) -> El {
+    el()
+        .tw(BUTTON_STYLE)
+        .role(Role::Button)
+        .label("Increment")
+        .test_id("increment")
+        .focusable()
+        .select_none()
+        .on_press(move |w| w.update(count, |count| *count += 1))
+        .child("Increment")
 }
 
-fn app() -> AppDefinition {
+#[ui]
+fn counter(cx: &mut BuildCx<'_>) -> El {
+    let count = cx.signal(0_u32);
+    col()
+        .tw(COUNTER_STYLE)
+        .child((
+            text("Counter").role(Role::Heading),
+            move |r: &mut ReadCx<'_>| format!("Count {}", r.get(count)),
+            increment_button(count),
+        ))
+}
+
+pub fn startup() -> AppDefinition {
     let options = WindowOptions {
         presentation: WindowPresentation { title: "Counter".into(), ..Default::default() },
         ..Default::default()
@@ -38,11 +51,20 @@ fn app() -> AppDefinition {
 
 ```
 
-桌面可执行文件把定义交给 `octara_host_native::run_app(app())`。浏览器把定义和根元素交给 `octara_host_web::WebApp::launch`，并持有返回的 `WebApp`。一个 `WebApp` 拥有一处浏览器挂载。
+```rust
+use octara::prelude::*;
 
-文件放置目标通过 `El::on_file_drop` 声明。回调接收 `WriteCx` 和一组 `DroppedFile` 引用。原生宿主提供本地路径，浏览器提供文件显示名。
+#[ui]
+fn tags(labels: &[&str]) -> El {
+    row().children(labels.iter().copied().map(text))
+}
+```
 
-用 `BuildCx::menus` 注册随响应式状态更新的窗口菜单。用 `BuildCx::on_chord` 注册作用域快捷键。`mod` 在 macOS 上是 Command，在其他平台上是 Control。菜单和快捷键可以共用一个命令处理器。这两个注册方法也可用于 `WindowDefinition`。
+The desktop executable calls `octara_host_native::run_app(startup())`. For a fresh browser session, call `octara_host_web::WebApp::launch(root, startup(), None)` and keep the returned `WebApp` alive. Each `WebApp` owns one browser mount.
+
+Declare a drop target with `El::on_file_drop`. Its handler receives `WriteCx` and a borrowed slice of `DroppedFile` values. Native hosts provide local paths, and browsers provide file display names.
+
+Use `BuildCx::menus` to register menus that update with reactive state, and `BuildCx::on_chord` to register scoped shortcuts. The `mod` modifier maps to Command on macOS and Control elsewhere. Menus and shortcuts can share a command handler. `WindowDefinition` also supports both registration methods.
 
 ```rust
 use octara::prelude::*;
@@ -67,13 +89,13 @@ fn inspector(cx: &mut BuildCx<'_>) -> El {
 }
 ```
 
-## 配置原生窗口与几何
+## Configure native windows and geometry
 
-`WindowOptions` 可指定初始位置、内容尺寸范围、是否可调整大小和初始最大化状态。用 `BuildCx::window_geometry()` 订阅宿主报告的位置、内容尺寸、缩放比例、最大化和全屏状态。事件处理器可用 `WriteCx` 修改当前窗口的标题和几何、最小化窗口或切换最大化，也可按 `WindowId` 激活另一扇窗口。`WindowGeometryRequest` 只更新填写的字段，实际结果由宿主报告。
+`WindowOptions` sets the initial position, content size limits, resizability, and initial maximized state. Use `BuildCx::window_geometry()` to subscribe to the position, content size, scale factor, and maximized and fullscreen states reported by the host. In event handlers, use `WriteCx` to change the current window’s title or geometry, minimize it, toggle maximization, or activate another window by `WindowId`. `WindowGeometryRequest` updates the fields you set. The host reports the actual geometry.
 
-为每扇需要恢复几何的窗口指定稳定且唯一的 `persistence_key`。导出 `RestartState` 时会包含这些窗口的几何。把状态交给下次启动时的 `AppDefinition::launch` 即可恢复。
+Assign a stable, unique `persistence_key` to each window whose geometry should be restored. Exporting `RestartState` includes geometry for these windows. Pass that state to `AppDefinition::launch` on the next startup to restore it.
 
-macOS 上的 `TitlebarStyle::HiddenInset` 让内容延伸到原生标题栏，`BuildCx::window_chrome()` 提供标题栏高度和交通灯按钮占用的区域。用 `window_drag_region(true)` 标记可拖拽区域，双击可切换最大化。其中的按钮、输入框与其他交互控件拥有自己的点击和焦点。`WindowMaterial::Vibrancy` 通过 AppKit 为透明区域提供系统材质。其他平台按各自支持的窗口能力呈现。
+On macOS, `TitlebarStyle::HiddenInset` extends content into the native title bar, and `BuildCx::window_chrome()` reports the title bar height and the space taken by the traffic light buttons. Mark a draggable area with `window_drag_region(true)`. Double-clicking it toggles maximization. Buttons, inputs, and other controls within the area handle their own clicks and focus. `WindowMaterial::Vibrancy` uses AppKit to apply a system material to transparent areas. Other hosts use the window capabilities available on their platform.
 
 ```rust
 use octara::prelude::*;
@@ -108,42 +130,60 @@ fn workspace() -> WindowDefinition {
 }
 ```
 
-## 调用原生 WebView
+## Use platform modules
 
-用 `native_view("web")` 在 macOS 或 iOS 上挂载 `WKWebView`。原生属性接受 `url`，或接受配合可选 `base_url` 的 `html`。macOS 上的 `NativeSlot::Underlay` 让 Octara 的菜单、弹层及对话框在 WebView 上方接收点击。`Overlay` 把原生视图放在 Octara 表面上方，也是 iOS 的 WebView 槽位。
+Use `octara::module` for typed platform calls. The first-party packages are `octara-webview`, `octara-video`, `octara-picker`, and `octara-haptics`. Add the optional dependencies you need, then register them with `AppDefinition::with_module`. For headless tests, disable the package’s default features and register its pure-Rust `mock()` backend.
 
-在同一个窗口内通过 `test_id` 向已挂载的原生节点发送命令。`evaluate_js` 接收 `script` 和可选的 `request_id`，通过 `js_result` 返回对应的 `value` 或 `error`。还有 `go_back`、`go_forward`、`reload`、`stop_loading`、`find` 和 `clear_find`。`find` 接收 `query`，以及可选的 `backwards` 和 `case_sensitive`。
-
-页面脚本可以调用 `window.webkit.messageHandlers.octara.postMessage(payload)`。在 `on_native` 中接收 `post_message` 的 JSON 数据以及 `load`、`fail`、`title`。`navigation` 提供 `url`、`title`、`loading`、`can_go_back` 和 `can_go_forward`。
+Register WebView with `.with_module(octara_webview::module())`. Apple hosts use WKWebView, and the browser uses a sandboxed iframe. macOS uses an underlay by default so Octara popups can receive clicks above the WebView. iOS defaults to an overlay. Within a window, use `octara_webview::send` and a mounted WebView’s `test_id` to send typed commands, and use `on_typed_native` to receive `WebViewEvent`. The Apple backend lets trusted documents call the app through Promise-based RPC. Use `WebViewProps::html` for app-owned documents and `trust_origin` to specify which external origins can use the bridge.
 
 ```rust
 use octara::prelude::*;
-use serde_json::json;
+use octara_webview::{WebViewCommand, WebViewEvent, WebViewProps, send, view};
 
 fn preview() -> El {
-    col()
-        .child(el().role(Role::Button).focusable().on_press(|w| {
-            w.send_native_command("preview", "evaluate_js", json!({
-                "script": "document.title", "request_id": "preview-title"
-            }));
-        }).child("Read title"))
-        .child(native_view("web")
+    col().child((
+        el().role(Role::Button).focusable().on_press(|w| {
+            send(w, "preview", WebViewCommand::Evaluate {
+                script: "document.title".into(),
+                request_id: Some("preview-title".into()),
+            });
+        }).child("Read title"),
+        view(WebViewProps::html("<title>Preview</title><p>Hello</p>"))
             .test_id("preview")
             .h(260.0)
-            .native_props(json!({"html": "<title>Preview</title><p>Hello</p>"}))
-            .on_native(|_, event| {
-                if event.name == "js_result" {
-                    println!("{}", event.data);
+            .on_typed_native(|_, _, event: &WebViewEvent| {
+                if let WebViewEvent::JavaScript { result, .. } = event {
+                    println!("{result:?}");
                 }
-            }))
+            }),
+    ))
 }
+
+let app = AppDefinition::new()
+    .with_module(octara_webview::module())
+    .window(WindowDefinition::new(WindowOptions::default(), |_| preview()));
 ```
 
-## 读取、更新与清理
+Register `octara_video::module()` to enable playback in `video(VideoSource)` and Markdown video blocks. If playback is unavailable, the view shows the authored poster. Register `octara_picker::module()` for file and folder selection. From a user gesture, use `WriteCx::call_module` with `PickFiles`, `PickFolder`, or `PickSavePath`. Browsers can return file contents and names, and native hosts can return paths. The app chooses the picker to invoke from a `file_dropzone` click handler. Register `octara_haptics::module()` and use `WriteCx::notify_module` to request haptic feedback.
 
-`cx.signal(value)` 把值交给当前作用域。句柄可以复制到事件处理器或派生闭包。用 `r.with(handle, f)` 借用值，用 `r.get(handle)` 取得独立的值。这两个方法接受实现了 `Readable<T>` 的句柄，包括信号、Store 字段、列表行和绑定。构造期间可用 `cx.sample(handle)` 或 `cx.read(|r| …)` 做一次非订阅读取。
+For packaging, modules declare plist, entitlement, framework, and Web header contributions in a schema-v1 `octara-module.toml` at the package root. Put required template variables in `octara.toml` beside the app package’s `Cargo.toml`. Run `octara modules merge` with a new output directory to collect and merge contributions from the app’s resolved Cargo dependencies. When packaging an existing app, pass its base files with `--ios-info-plist`, `--ios-entitlements`, `--macos-info-plist`, or `--macos-entitlements` to retain metadata such as bundle identifiers. Generated plists default to macOS 15.4 and iOS 18.4 when no minimum version is supplied.
 
-`Binding<T>` 是可复制的双向绑定。用 `signal.into()` 直接绑定信号，或用 `cx.binding(read, write)` 定义读写逻辑。`octara-kit` 的受控控件接收 `Binding<T>`。在读写闭包中用 `r.get(binding)` 和 `w.set(binding, next)`。
+Set `MACOSX_DEPLOYMENT_TARGET=15.4` or `IPHONEOS_DEPLOYMENT_TARGET=18.4` for direct Cargo builds targeting the corresponding Apple platform.
+
+```toml
+[modules."octara.picker"]
+photo_library_usage_description = "Select photos to attach."
+```
+
+```sh
+cargo run -p octara-cli -- modules merge -p octara-chat-desktop --out-dir target/chat-module-metadata
+```
+
+## Read, update, and clean up state
+
+`cx.signal(value)` stores a value in the current scope. Copy the handle into an event handler or derived closure. Use `r.with(handle, f)` to borrow the value and `r.get(handle)` to get an owned value. Both work with handles that implement `Readable<T>`, including signals, store fields, list rows, and bindings. During construction, use `cx.sample(handle)` or `cx.read(|r| ...)` for a one-time, untracked read.
+
+`Binding<T>` is a copyable two-way binding. Use `signal.into()` to bind a signal directly, or `cx.binding(read, write)` to define its read and write behavior. Controlled `octara-kit` widgets accept `Binding<T>`. Read with `r.get(binding)` and write with `w.set(binding, next)`.
 
 ```rust
 use octara::prelude::*;
@@ -163,7 +203,7 @@ fn editor(cx: &mut BuildCx<'_>) -> El {
 }
 ```
 
-`#[derive(Store)]` 为结构体生成字段访问器。`cx.store(init)` 持有整份状态，`store.field()` 返回可复制的字段句柄。单独更新一个字段只通知该字段和包含它的 Store。读写整份状态时直接传入 Store 句柄。给嵌套字段加上 `#[store(nested)]` 即可继续访问其子字段。
+`#[derive(Store)]` generates field accessors for a struct. `cx.store(init)` holds the whole value, and `store.field()` returns a copyable field handle. An update to one field notifies subscribers to that field and the containing store. Pass the store handle to read or write the whole value. Mark a nested field with `#[store(nested)]` to access its fields too.
 
 ```rust
 use octara::prelude::*;
@@ -198,11 +238,11 @@ fn document(cx: &mut BuildCx<'_>) -> El {
 }
 ```
 
-`cx.memo` 计算派生值并比较新旧结果。`cx.memo_with(init, |r, value| …)` 复用已有存储。与 `w.mutate(handle, |value| …)` 一样，回调在值发生变化时返回 `true`。`cx.trigger()` 创建无载荷通知，计算中用 `r.track(trigger)` 订阅，事件处理中用 `w.notify(trigger)` 使订阅者重新计算。
+`cx.memo` computes a derived value and compares the old and new results. `cx.memo_with(init, |r, value| ...)` reuses existing storage. As with `w.mutate(handle, |value| ...)`, the callback returns `true` when the value changes. `cx.trigger()` creates a notification without a payload. Subscribe with `r.track(trigger)` during computation and call `w.notify(trigger)` in a handler to recompute subscribers.
 
-`cx.persisted` 使用作用域路径和业务键来识别可恢复状态。`AppDefinition::state_schema` 标识数据结构。退出、切换发布版本或更换进程时可以导出 `RestartState`，再从同一 schema 恢复持久值。用 `scope` 或列表行建立独立寿命，用 `cx.on_cleanup` 释放外部资源。清理回调中的 `CleanupCx` 提供采样能力。
+`cx.persisted` identifies restorable state by scope path and domain key. `AppDefinition::state_schema` identifies the data schema. Export `RestartState` before exit, a release switch, or a process handoff, and restore persisted values with the same schema. Use `scope` or a list row for an independent lifetime, and `cx.on_cleanup` to release external resources. The cleanup callback can sample state through `CleanupCx`.
 
-任务绑定到注册它的作用域。虚拟时钟驱动休眠，宿主在 Turn 中轮询就绪任务。`task.write` 在同步闭包内借出 `WriteCx`。
+A task is tied to the scope that registered it. The virtual clock drives sleeps, and the runtime polls ready tasks during a Cycle. `task.write` lends a `WriteCx` to a synchronous closure.
 
 ```rust
 use octara::prelude::*;
@@ -218,13 +258,13 @@ fn delayed_label(cx: &mut BuildCx<'_>) -> El {
 }
 ```
 
-## 用业务键更新列表
+## Update lists by domain key
 
-`each` 按业务键复用已挂载的行，并给行构造闭包传入业务键引用和可复制的 `RowSignal<T>`。`virtual_each` 根据宿主测得的视口选择驻留行，保留拥有焦点或指针触点的行。
+`each` reuses mounted rows by domain key and passes the row builder a reference to that key and a copyable `RowSignal<T>`. `virtual_each` chooses which rows to keep mounted based on the viewport measured by the host. It keeps rows with focus or an active pointer contact mounted.
 
-用 `r.get(row)` 或 `r.with(row, f)` 读取确定存在的行。行可能暂时缺失时用 `r.try_get(row)` 或 `r.try_with(row, f)`，它们返回 `Option`。在列表之外可用 `cx.row_signal(list, key)` 创建同样的句柄。读取只订阅指定业务键。`WriteCx` 也可读取行，更新行则用 `w.update_row(list, &key, f)`。
+Use `r.get(row)` or `r.with(row, f)` when the row exists. If a row might be missing, use `r.try_get(row)` or `r.try_with(row, f)`, which return `Option`. Outside a list, create the same handle with `cx.row_signal(list, key)`. Reads subscribe only to the specified key. `WriteCx` can also read rows. Update rows with `w.update_row(list, &key, f)`.
 
-已有列表可以用 `filter_with`、`map_list`、`group_by` 等增量算子组合。`filter_with` 接收显式参数信号，筛选闭包只借用行数据和参数值。列表来自普通信号或多个响应式读取时，用 `cx.derive_list` 返回带业务键的行。
+Compose existing lists with incremental operators such as `filter_with`, `map_list`, and `group_by`. `filter_with` takes an explicit parameter signal, and the predicate borrows the row and parameter values. For lists derived from an ordinary signal or several reactive reads, use `cx.derive_list` to return rows with domain keys.
 
 ```rust
 use octara::prelude::*;
@@ -253,9 +293,9 @@ fn selected_tasks(cx: &mut BuildCx<'_>, selection: Signal<Vec<u64>>) -> El {
 }
 ```
 
-## 组合 Kit 外观与 Headless 行为
+## Combine Kit styling and Headless behavior
 
-`octara-kit` 为原生和 Web 提供主题控件。用 `button(label, size, variant)` 指定尺寸和视觉强调。组合自定义控件时，从 `octara_kit::parts` 获取 `button_part`、`editor_style`、`popup_surface` 等带主题的部件，从 `octara_kit::headless` 获取行为。复选框接受 `Binding<bool>` 或 `Binding<Checked>`。
+`octara-kit` provides themed controls for native and Web. Use `button(label, size, variant)` to set size and visual emphasis. For custom controls, use themed parts such as `button_part`, `editor_style`, and `popup_surface` from `octara_kit::parts`, and behavior from `octara_kit::headless`. Checkboxes accept `Binding<bool>` or `Binding<Checked>`.
 
 ```rust
 use octara::prelude::*;
@@ -275,7 +315,7 @@ fn toolbar(build: &mut BuildCx<'_>) -> El {
 }
 ```
 
-用 `headless::Selection` 配置单选或多选。选项用 `headless::Choice` 表示，列表用独立的业务键区分重名项。`PickerOptions::Virtual` 按视口挂载选项。传入自己的行工厂可以在实际的选项节点上布置图标、标签和说明。通过 `PopupOptions` 配置浮层的位置、宽度、最大高度与表面样式，用 `ComboboxOptions` 同时配置组合框的选项列表、浮层与输入框。
+Use `headless::Selection` for single or multiple selection and `headless::Choice` for options. Give options unique domain keys so their labels can repeat. `PickerOptions::Virtual` mounts options based on the viewport. Supply a row factory to put icons, labels, and descriptions on the option node. Use `PopupOptions` to set popup placement, width, maximum height, and surface style. `ComboboxOptions` configures the list, popup, and input together.
 
 ```rust
 use octara::prelude::*;
@@ -300,17 +340,17 @@ fn model_picker(build: &mut BuildCx<'_>) -> View {
 }
 ```
 
-在构造控件前调用 `build.provide(octara_kit::KitLocale::zh_cn())`，让当前作用域内的 Kit 控件使用简体中文的系统标签。可通过 `KitLocale` 的字段覆盖个别标签。
+Call `build.provide(octara_kit::KitLocale::zh_cn())` before building controls to give Kit’s built-in labels in that scope a Simplified Chinese translation. Override individual labels through `KitLocale` fields.
 
-运行 `cargo run -p octara-examples --bin window -- showcase workspace` 体验数据表、树视图、命令面板、右键菜单和 Toast。工作台也展示了 Navigator 保活和元素拖放重排。
+Run `cargo run -p octara-examples-desktop --bin window -- showcase workspace` to try the data table, tree view, command palette, context menu, and toast. The workspace also demonstrates Navigator state retention and drag-and-drop reordering.
 
-## 定制流式 Markdown
+## Customize streaming Markdown
 
-添加 `octara-markdown` 依赖后，用 `markdown(build, source)` 渲染字符串、响应式读取或 `TextBuffer`。用 `markdown_stream` 渲染模型输出，并在输入结束时更新完成信号。缓冲区随后排空，文档切换到完整解析。若上游已经合并增量，可用 `StreamingOptions::pace` 关闭额外的节奏缓冲，继续使用流式筛选和文字揭示效果。增量追加时，已完成的块会共享原有 AST 和挂载节点。
+Add `octara-markdown` and use `markdown(build, source)` to render a string, reactive read, or `TextBuffer`. Use `markdown_stream` for model output and update the completion signal when input ends. The buffer then drains and the document switches to a full parse. If the upstream producer already batches deltas, disable the extra pacing buffer with `StreamingOptions::pace` while keeping stream filtering and text reveal effects. During incremental appends, completed blocks reuse their syntax trees and mounted nodes.
 
-流式渐显默认随 `SystemPreferences.reduced_motion` 更新。用 `MarkdownConfig::streaming_effects_with` 根据响应式状态配置揭示效果，用 `allow_reduced_motion_effects(true)` 显式允许在减弱动态效果模式下使用揭示。`StreamingOptions::effects` 默认沿用作用域内的配置，也可用 `Some(StreamingEffects::None)` 关闭当前文档的揭示效果。
+The default streaming reveal follows changes to `SystemPreferences.reduced_motion`. Use `MarkdownConfig::streaming_effects_with` to configure it from reactive state, and `allow_reduced_motion_effects(true)` to explicitly allow the reveal in reduced-motion mode. `StreamingOptions::effects` inherits the scoped configuration by default. Set it to `Some(StreamingEffects::None)` to disable the reveal for one document.
 
-用 `markdown_with(build, source, config)` 为单个文档传入渲染配置。通过 `ParseOptions` 控制表格、任务列表、GFM 提示等语法。主题可选 `MarkdownTheme::document()`、`chat()` 或 `compact()`，也可以用 `theme_with` 跟随应用状态。`on_link` 提供主键按压、次键按压和悬停事件及视口坐标。
+Use `markdown_with(build, source, config)` to configure rendering for one document. Use `ParseOptions` to control syntax such as tables, task lists, and GFM alerts. Choose `MarkdownTheme::document()`, `chat()`, or `compact()`, or use `theme_with` to follow app state. `on_link` receives primary press, secondary press, and hover events with viewport coordinates.
 
 ```rust
 use octara::prelude::*;
@@ -331,29 +371,49 @@ fn notes(build: &mut BuildCx<'_>, source: TextBuffer) -> El {
 }
 ```
 
-用 `BuildCx::provide::<Arc<dyn BlockSlotRenderer>>` 为一个作用域注册代码块、独立链接、图片、视频、公式和指令渲染器。`render_slot` 返回 `None` 时使用默认部件。代码、公式和指令的正文与完成状态通过信号更新，围栏闭合时保留组件状态。`DocumentStore::snapshot` 提供按文档顺序排列的图片、链接和槽位索引。
+Use `BuildCx::provide::<Arc<dyn BlockSlotRenderer>>` to register a renderer for code blocks, standalone links, images, videos, equations, and directives in a scope. Return `None` from `render_slot` to use the default component. Signals update the body and completion state of code, equations, and directives, preserving component state when the closing fence arrives. `DocumentStore::snapshot` provides an index of images, links, and slots in document order.
 
-启用 `highlight` 可使用内置语法高亮，也可以注入 `Arc<dyn CodeHighlighter>`。高亮器接收以 LF 分行的源码。启用 `media` 可通过 `MediaResolver` 加载图片，并用宿主视频部件播放受支持的 `<video>`。用 `on_context_menu` 获取当前选区的可用复制格式，包括纯文本、Markdown、表格 Markdown 和图片 URL。
+Enable `highlight` for built-in syntax highlighting, or inject an `Arc<dyn CodeHighlighter>`. The highlighter receives source with LF line endings. Enable `media` to load images through `MediaResolver` and play supported `<video>` elements through the host video component. Use `on_context_menu` to discover the available copy formats for the selection, including plain text, Markdown, table Markdown, and image URLs.
 
-用 `TextRecognizer::file_paths` 将正文中的文件路径投影为链接。传入的解析函数会收到完整路径，包括 `src/lib.rs#L42` 和 `./Cargo.toml#L10-L20` 中的行号后缀。用 `LinkPillContent` 更新链接胶囊的标签、图标和颜色。自建富文本可将 `InlinePill::attachment` 交给 `Rich::attachment`，由宿主测量标签和图标并对齐文字基线。附件覆盖的逻辑文本仍可复制。
+Use `TextRecognizer::file_paths` to turn paths in prose into links. The resolver receives the whole path, including line suffixes such as those in `src/lib.rs#L42` and `./Cargo.toml#L10-L20`. Use `LinkPillContent` to update a link pill’s label, icon, and color. In custom rich text, pass `InlinePill::attachment` to `Rich::attachment`. The host measures the label and icon and aligns the pill to the text baseline. The logical text covered by the attachment remains copyable.
 
-启用 `math` 后，用 `$…$` 写行内公式，用 `$$…$$` 写独立公式。公式沿用主题文字色，选区复制保留 TeX 源码，过宽的独立公式可横向滚动。通过 `El::theme_patch` 的响应式读取切换主题色时，公式会沿用现有矢量轮廓。用 `BuildCx::provide::<Arc<dyn MathRenderer>>` 注册自定义矢量排版器，或用 `MarkdownConfig::on_math_error` 接收公式解析错误。失败的公式显示等宽源码。
+Enable `math` and use `$...$` for inline math and `$$...$$` for display math. Equations inherit the theme text color, copying a selection preserves TeX source, and wide display equations scroll horizontally. Reactive color changes through `El::theme_patch` reuse the vector outlines. Use `BuildCx::provide::<Arc<dyn MathRenderer>>` to register a custom vector typesetter or `MarkdownConfig::on_math_error` to receive parse errors. Invalid expressions display their source in monospace.
 
-启用 `composer` 后，用 `MarkdownComposer` 构建带实时 Markdown 高亮的多行输入框。用 `TriggerConfig` 配置 `@`、`#` 或 `/` 等触发字符，读取 `active_trigger()` 或直接为 `editor` 提供候选项。浮层跟随编辑器光标。提及按单个实体删除和撤销，由 `markdown()` 输出为 `[@Alice](user://u_1)` 等链接。为受控编辑器提供作用域内的 `Arc<dyn EditorBackend>`，可以定制装饰、附件与原子范围。
+Enable `composer` and use `MarkdownComposer` to build a multiline input with live Markdown highlighting. Use `TriggerConfig` to set trigger characters such as `@`, `#`, or `/`, then read `active_trigger()` or pass suggestions directly to `editor`. The popup follows the caret. Mentions are atomic for deletion and undo, and `markdown()` serializes them as links such as `[@Alice](user://u_1)`. Provide a scoped `Arc<dyn EditorBackend>` to customize decorations, attachments, and atomic ranges for controlled editors.
 
-补全项的 `Completion` 可通过 `.icon(...)`、`.description(...)` 和 `.category(...)` 添加信息。用 `editor_with_completion_row` 定制建议项的布局，继续使用编辑器的键盘导航和选中行为。
+Add metadata to a `Completion` with `.icon(...)`, `.description(...)`, and `.category(...)`. Use `editor_with_completion_row` to customize the suggestion layout while retaining the editor’s keyboard navigation and selection behavior.
 
-运行 `cargo run -p octara-examples --bin window -- showcase markdown` 查看流式文档和补全输入框。
+Run `cargo run -p octara-examples-desktop --bin window -- showcase markdown` to see a streaming document and a composer with completions.
 
-## 用 Inspect 验证应用
+## Verify apps with Inspect
 
-在 headless 驱动和真实宿主中都可以通过 `octara.inspect/2` 发送观察与动作。先从观察结果取完整目标；节点被销毁并重建或换窗后重新观察。回执提供送达状态、当前树版本、结算状态和已提交帧。有实际呈现回执的宿主还提供已呈现帧。
+Make the app library and desktop launcher members of the same workspace. Expose `startup() -> AppDefinition` from `my-app/src/lib.rs` and declare UI and test dependencies in `my-app/Cargo.toml`.
+
+```toml
+[dependencies]
+octara = "0.0.8"
+
+[dev-dependencies]
+octara-inspect = "0.0.8"
+```
+
+The sibling `my-app-desktop/Cargo.toml` depends on the app library and native host. Call `octara_host_native::run_app(my_app::startup())` from the desktop package’s `src/main.rs`.
+
+```toml
+[dependencies]
+my-app = { path = "../my-app" }
+octara-host-native = "0.0.8"
+```
+
+Use `cargo test -p my-app` to run headless tests for the app library on its own. Use `HeadlessDriver::launch(startup())` to launch the same app definition or open a single view for testing. The driver uses `octara-pipeline` for layout and semantics and the `octara-render` CPU renderer for painted screenshots. Use `cargo tree -p my-app` to check for dependencies such as `octara-host-native`, `octara-gpu`, `wgpu`, and `objc2`. Building the app library by itself keeps desktop dependency features out of the test build. [Cargo tree reference](https://doc.rust-lang.org/cargo/commands/cargo-tree.html) · [Cargo feature resolution](https://doc.rust-lang.org/cargo/reference/resolver.html#features)
+
+Both the headless driver and live hosts accept observations and actions through `octara.inspect/2`. Get the complete target from an observation. Observe again after a node is recreated or moved to another window. Inspect receipts report delivery, the current tree revision, whether the window settled, and the committed frame. Hosts that report presentation also include the presented frame. When driving the runtime directly, `App::dispatch` and `App::advance_to` return `Result<CycleReceipt, AppError>`. The Cycle receipt reports delivery, handling, and the number of causal rounds.
 
 ```rust
 use octara::prelude::*;
 use octara_inspect::{HeadlessDriver, protocol::{AgentCommand, AgentRequest}};
 
-let mut driver = HeadlessDriver::new(Default::default());
+let mut driver = HeadlessDriver::default();
 let id = driver.app_mut().open_window(WindowOptions::default(), |_| {
     text("Ready").test_id("status")
 }).unwrap();
@@ -363,7 +423,14 @@ let snapshot = receipt.snapshot.unwrap();
 assert!(snapshot.nodes.iter().any(|node| node.test_id.as_deref() == Some("status")));
 ```
 
-查询当前 Rust 源码里的签名，或者让 CLI 用应用的 Cargo metadata 入口启动 headless 会话。
+The CLI calls the app library’s public `startup` function to launch a headless session. For a package named `my-app`, declare the entry in its `Cargo.toml`.
+
+```toml
+[package.metadata.octara]
+entry = "my_app::startup"
+```
+
+Use `octara vocab` to look up signatures in the current Rust source, `octara inspect` to observe a window, and `octara audit` to check for UI issues.
 
 ```sh
 cargo run -q -p octara-cli -- vocab BuildCx
@@ -371,12 +438,28 @@ cargo run -q -p octara-cli -- inspect --manifest-path examples/Cargo.toml --json
 cargo run -q -p octara-cli -- audit --manifest-path examples/Cargo.toml --json
 ```
 
-应用在 `[package.metadata.octara]` 的 `entry` 字段声明返回 `AppDefinition` 的公开 Rust 函数。连接已启动的应用时，把同一协议的 JSONL 请求交给 `octara run`。下例请求当前窗口列表。
+Use `octara run` to send JSONL requests through the same protocol. Pass `--connect SOCKET` to connect to a running app. This request lists its windows.
 
 ```json
 {"protocol":"octara.inspect/2","op":"list_windows"}
 ```
 
-从 `octara::diagnostics` 查询运行时诊断或使用 `octara explain CODE`。未结算的投影、失效目标和已经销毁的响应式句柄有各自的诊断。
+Look up runtime diagnostics through `octara::diagnostics` or with `octara explain CODE`. Unsettled projections, stale targets, and destroyed reactive handles have distinct diagnostics.
 
-`octara audit` 检查已结算窗口的文本裁剪、交互控件的无障碍名称和失效的焦点目标。文本报告用 `file:line` 指向节点的定义位置。JSON 报告使用 `octara.audit/1`，按窗口列出问题及其级别、目标和源码位置。错误级问题退出码为 1。窗口无法启动、连接失败或无法完成审计时退出码为 2。只检查一扇窗口时，从 `list_windows` 回执取得 ID 后传给 `--window-id`。使用 `--connect SOCKET` 可以检查现有的宿主窗口。
+`octara audit` checks settled windows for text clipping, missing accessible names on interactive controls, and invalid focus targets. The text report points to the defining node at `file:line`. The JSON report uses `octara.audit/1` and lists findings by window, with severity, target, and source location. Error-level findings produce exit code 1. Failure to launch, connect, or complete the audit produces exit code 2. To audit a single window, pass its ID from the `list_windows` receipt to `--window-id`. To audit a running host, pass `--connect SOCKET`.
+
+## Configure development and test builds
+
+Set Cargo profiles in the workspace root `Cargo.toml`. The wildcard overrides below use `opt-level = 2` for dependencies outside the workspace in development and test builds. In a typical downstream app, these include `octara`, `octara-*`, `wgpu`, `parley`, and `taffy`. Workspace members retain the default `opt-level = 0` for faster iteration on app code. [Cargo profile overrides](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides)
+
+```toml
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.test.package."*"]
+opt-level = 2
+```
+
+Dependency optimization can reduce CPU cost for text layout and rendering in debug builds. Results vary by workload. On macOS arm64 at commit `6ea4f49`, increasing external dependencies from `opt-level = 1` to `2` reduced the median startup and initial projection time for a 1,000-item to-do list from 514.30 ms to 463.64 ms. Across 27 Chat and example test executables, `__eh_frame` and `__unwind_info` shrank from a combined 43,613,036 bytes to 40,669,392 bytes, a reduction of about 6.7%. Use `xcrun size -m` to inspect these sections in your own project.
+
+The Octara CLI copies the root manifest’s `[profile.*]` tables into the generated program’s standalone workspace and uses the app’s Cargo target directory. Cargo treats the app library and its dependencies as external to the generated workspace, so the wildcard also applies to any original workspace members it builds. To build the app library at `opt-level = 0`, set an override such as `[profile.dev.package.my-app]` in the applicable profile. Named package overrides take precedence over the wildcard. [Cargo profile overrides](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides)

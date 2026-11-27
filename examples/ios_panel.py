@@ -56,6 +56,7 @@ def main():
             "CFBundleShortVersionString": "1.0",
             "CFBundleVersion": "1",
             "LSRequiresIPhoneOS": True,
+            "MinimumOSVersion": "18.4",
             "UIDeviceFamily": [1, 2],
             "UILaunchScreen": {},
             "UIApplicationSceneManifest": {

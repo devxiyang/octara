@@ -1,13 +1,13 @@
-# 平台验证路线
+# Platform verification roadmap
 
-当前分层和工程门禁见 [Octara v2 架构总纲](design/architecture-v2.md)。实现与回归分布在各 crate 的测试中。
+The architecture specification defines the current crate boundaries and engineering checks. The release roadmap covers milestones and platform priorities. [v2 architecture specification](design/architecture-v2.md) · [Release roadmap](design/roadmap.md)
 
-| 范围 | 验证入口 |
+| Area | Verification |
 | --- | --- |
-| 编辑器、重排、模态和触摸滚动 | [无窗口回归](../crates/octara-inspect/tests/headless.rs) |
-| 多窗口、虚拟时钟和回放 | [确定性模拟](../crates/octara-inspect/src/dst.rs) |
-| GPU 队列、颜色与回读 | [渲染测试](../crates/octara-render/tests/integration/) · [设备执行器](../crates/octara-gpu/src/executor.rs) |
-| macOS 原生窗口首帧 | [原生宿主验证](../crates/octara-host-native/examples/smoke.rs) |
-| Chromium 的真实 DOM、选择和回滚 | [浏览器验证](../crates/octara-host-web/examples/) |
+| Editing, reordering, modals, and touch scrolling | [Headless regression tests](../crates/octara-inspect/tests/headless.rs) |
+| Multiple windows, the virtual clock, and replay | [Deterministic simulation](../crates/octara-inspect/src/dst.rs) |
+| GPU queues, color, and readback | [Rendering tests](../crates/octara-render/tests/integration/) · [Device executor](../crates/octara-gpu/src/executor.rs) |
+| First frame in a native macOS window | [Native host smoke example](../crates/octara-host-native/examples/smoke.rs) |
+| Live DOM, selection, and rollback in Chromium | [Browser examples](../crates/octara-host-web/examples/) |
 
-后续平台验证沿用 macOS、iOS、Linux、Android、Windows 的推进顺序。实窗或真机验收记录在对应测试和构建收据中。[工作清单](TODO.md)
+Platform verification prioritizes macOS 15.4+, iOS 18.4+, Web, and Linux. Windows and Android are deferred. Record live-window and device verification in the relevant tests and build receipts. [Follow-up checklist](TODO.md)

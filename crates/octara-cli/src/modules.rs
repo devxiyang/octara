@@ -17,6 +17,7 @@ pub(crate) enum Action {
     /// Optional base files must contain plist dictionaries. The command writes
     /// XML plists. Identical values for a key are kept once. Different values
     /// for the same key cause a conflict.
+    /// Missing minimum OS versions default to iOS 18.4 and macOS 15.4.
     /// Relative base paths are resolved from the current directory.
     Merge {
         #[command(flatten)]

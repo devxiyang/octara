@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Prepare a macOS app bundle for manual OS-input/IME validation; never launch or control it.
 
-Build first: cargo build -p octara-examples-desktop --bin ime -p octara-cli --bin octara
+Build with MACOSX_DEPLOYMENT_TARGET=15.4 cargo build -p octara-examples-desktop --bin ime -p octara-cli --bin octara
 The output directory owns one copied executable, Info.plist, and manifest.json. No input source,
 keyboard, pointer, process, user preference or Accessibility permission is changed by this tool.
 """
@@ -62,6 +62,7 @@ def main():
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": "1.0",
         "CFBundleVersion": "1",
+        "LSMinimumSystemVersion": "15.4",
         "NSHighResolutionCapable": True,
         "LSEnvironment": {"OCTARA_INSPECT": str(socket), "OCTARA_IME_SCENE": args.scene},
     }

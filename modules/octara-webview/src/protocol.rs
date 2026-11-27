@@ -259,8 +259,7 @@ impl WebViewProps {
     }
 
     /// Supplies local paths for a trusted document's file input. Return `None` to cancel.
-    /// The custom open panel callback is supported on macOS and iOS 18.4+.
-    /// Earlier iOS releases manage web file inputs with WebKit's system picker.
+    /// Available in the native WebKit view on macOS and iOS.
     pub fn on_file_picker(mut self, handler: impl Fn(FilePickerRequest) -> Option<Vec<PathBuf>> + Send + Sync + 'static) -> Self {
         self.picker = Some(Arc::new(handler));
         self

@@ -30,7 +30,7 @@ fn main() {
     let url = reqwest::Url::parse(&endpoint).expect("a complete loopback HTTP URL");
     assert!(url.scheme() == "http" && url.host_str() == Some("127.0.0.1"), "this verification example only connects to loopback HTTP");
     let directory = std::env::var_os("OCTARA_CHAT_DIR").map(PathBuf::from).expect("set an isolated OCTARA_CHAT_DIR");
-    let models: Vec<_> = [("local-a", "wire-a", "本地模型 A"), ("local-b", "wire-b", "本地模型 B")]
+    let models: Vec<_> = [("local-a", "wire-a", "Local model A"), ("local-b", "wire-b", "Local model B")]
         .into_iter()
         .map(|(id, wire, name)| {
             let network = NetworkModel::new(NetworkConfig {

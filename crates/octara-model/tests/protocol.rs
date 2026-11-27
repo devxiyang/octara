@@ -40,14 +40,14 @@ fn file_drop_preserves_its_guard_and_distinguishes_paths_from_bare_names() {
     let target = TargetGuard::for_node(tree, ids.insert(()));
     let reply = HostReply::FilesDropped {
         target,
-        files: vec![DroppedFile::Path("/workspace/local/notes.md".into()), DroppedFile::Name("図.png".into())],
+        files: vec![DroppedFile::Path("/workspace/local/notes.md".into()), DroppedFile::Name("café.png".into())],
     };
     let wire = to_value(&reply).unwrap();
-    assert_eq!(wire["files_dropped"]["files"], json!([{ "path": "/workspace/local/notes.md" }, { "name": "図.png" }]));
+    assert_eq!(wire["files_dropped"]["files"], json!([{ "path": "/workspace/local/notes.md" }, { "name": "café.png" }]));
     assert_eq!(serde_json::from_value::<HostReply>(wire).unwrap(), reply);
     assert_ne!(target, TargetGuard::for_node(tree, stale));
     let debug = format!("{reply:?}");
-    assert!(!debug.contains("notes.md") && !debug.contains("図.png"));
+    assert!(!debug.contains("notes.md") && !debug.contains("café.png"));
 }
 
 #[test]

@@ -354,7 +354,7 @@ fn streaming_filters_hold_unfinished_blocks_until_they_close() {
         ("\n\n```rust\nfoo", "\n```"),
         ("\n\n$$\nx + y", "\n$$"),
         ("\n\n$$x + y", "$$"),
-        ("\n\n:::think model='small test'\n𠮷\n", ":::"),
+        ("\n\n:::think model='small test'\n🪶\n", ":::"),
         ("\n\n![moon](moon", ".png)"),
         ("\n\n| A | B |\n|--", "-|---|\n"),
     ] {
@@ -373,15 +373,15 @@ fn streaming_filters_hold_unfinished_blocks_until_they_close() {
 
 #[test]
 fn directives_are_lossless_opaque_and_can_appear_in_callouts() {
-    let src = "> [!NOTE]\n> :::think model='small test' compact\n> *𠮷*\n> [label]: /opaque\n> :::\n\nVisible [label].";
+    let src = "> [!NOTE]\n> :::think model='small test' compact\n> *🪶*\n> [label]: /opaque\n> :::\n\nVisible [label].";
     let parsed = parse(src, 0, ParseOptions::default());
     let Kind::Quote { callout: Some(CalloutKind::Note), blocks } = &parsed.blocks[0].kind else { panic!() };
     let Kind::Directive { name, attrs, body, is_complete } = &blocks[0].kind else { panic!("{blocks:?}") };
     assert_eq!(name, "think");
     assert_eq!(attrs, &[("model".into(), "small test".into()), ("compact".into(), "".into())]);
-    assert_eq!(body, "*𠮷*\n[label]: /opaque\n");
+    assert_eq!(body, "*🪶*\n[label]: /opaque\n");
     assert!(is_complete);
-    assert_eq!(&src[blocks[0].source.clone()], ":::think model='small test' compact\n> *𠮷*\n> [label]: /opaque\n> :::\n");
+    assert_eq!(&src[blocks[0].source.clone()], ":::think model='small test' compact\n> *🪶*\n> [label]: /opaque\n> :::\n");
     let Kind::Paragraph(inline) = &parsed.blocks[1].kind else { panic!() };
     assert!(inline.styles.is_empty());
 }
@@ -398,13 +398,13 @@ fn an_opaque_block_cannot_open_a_markdown_fence_into_the_following_block() {
 #[test]
 fn spoilers_retain_nested_styles_and_you_can_escape_their_pipes() {
     let mut doc = DocumentStore::new(true, ParseOptions::default());
-    doc.update("||**秘密**");
+    doc.update("||**secret**");
     let Kind::Spoiler(inline) = &doc.blocks()[0].kind else { panic!("{:?}", doc.blocks()) };
-    assert_eq!(inline.text, "秘密");
+    assert_eq!(inline.text, "secret");
     assert_eq!(inline.styles, [(0..6, Style::Strong), (0..6, Style::Spoiler)]);
-    doc.update("||**秘密**|");
-    assert_eq!(texts(&doc), ["秘密"]);
-    doc.update("||**秘密**||\n\nRead ||this|| beside `||code||` and \\||escaped||.");
+    doc.update("||**secret**|");
+    assert_eq!(texts(&doc), ["secret"]);
+    doc.update("||**secret**||\n\nRead ||this|| beside `||code||` and \\||escaped||.");
     let Kind::Paragraph(inline) = &doc.blocks()[1].kind else { panic!() };
     assert_eq!(inline.text, "Read this beside ||code|| and ||escaped||.");
     assert_eq!(inline.styles.iter().filter(|(_, style)| *style == Style::Spoiler).count(), 1);
@@ -426,9 +426,9 @@ fn an_open_inline_formula_is_repaired_without_changing_earlier_paragraphs() {
 fn progressive_image_does_not_create_an_attachment_for_a_partial_destination() {
     let filter = StreamingFilter { media: StreamingPolicy::Progressive, ..StreamingFilter::default() };
     let mut doc = DocumentStore::new(true, ParseOptions::default()).with_streaming_filter(filter);
-    doc.update("See ![青い月](https://example.org");
+    doc.update("See ![blue moon](https://example.org");
     let Kind::Paragraph(inline) = &doc.blocks()[0].kind else { panic!("{:?}", doc.blocks()) };
-    assert_eq!(inline.text, "See 青い月");
+    assert_eq!(inline.text, "See blue moon");
     assert!(inline.styles.is_empty());
     doc.update("![:::think](https://example.org");
     let Kind::Paragraph(inline) = &doc.blocks()[0].kind else { panic!("{:?}", doc.blocks()) };

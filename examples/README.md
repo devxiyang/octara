@@ -1,69 +1,69 @@
-# 示例与窗口验证
+# Examples and window verification
 
-从仓库根目录构建并运行。`octara-examples` 提供示例应用、无窗口测试和 CPU 工具。`octara-examples-desktop` 提供桌面与 iOS 共用的原生启动器及 GPU 验证。
+Build and run from the repository root. `octara-examples` contains the example apps, headless tests, and CPU tools. `octara-examples-desktop` contains the native launcher shared by desktop and iOS, plus GPU tests.
 
-| 功能 | 启动命令 |
+| Feature | Command |
 | --- | --- |
-| 计数器与可恢复状态 | `cargo run -p octara-examples-desktop --bin window -- counter` |
-| 稳定键、筛选、排序与分组 | `cargo run -p octara-examples-desktop --bin window -- todo` 或 `contacts` |
-| 聊天回复、虚拟行与编辑器 | `cargo run -p octara-examples-desktop --bin window -- chat_virtual` |
-| Kit 表单、组合框与弹层 | `cargo run -p octara-examples-desktop --bin window -- showcase forms` 或 `choices`、`interaction`、`controls` |
-| 发布工作台，含 Navigator、树视图、数据表、拖放排序、命令面板、右键菜单与 Toast | `cargo run -p octara-examples-desktop --bin window -- showcase workspace` |
-| 实时 Markdown、可选富文本、画布、地图与原生 Web 视图 | `cargo run -p octara-examples-desktop --bin window -- showcase markdown` 或 `text`、`drawing`、`map`、`web` |
-| 多窗口与各窗口独立的撤销历史 | `cargo run -p octara-examples-desktop --bin window -- windows` 或 `undo` |
-| 虚拟行尺寸与离屏编辑器 | `cargo run -p octara-examples-desktop --bin virtual_geometry` 或 `--bin virtual_interaction` |
-| 系统输入法与标记文本 | `cargo run -p octara-examples-desktop --bin ime`。[IME 操作步骤](IME.md) |
-| 交互式 GPU 材质、流场与折射 | `cargo run -p octara-examples-desktop --bin window -- gpu_lab` |
-| CPU 参考截图 | `cargo run -p octara-examples --bin screenshot -- /tmp/octara-shots 2 --bundled` |
-| CPU 投影基准 | `cargo run --release -p octara-examples --bin bench` |
-| GPU 绘制与缓存基准 | `cargo run --release -p octara-examples-desktop --bin gpu_bench -- gpu` 或 `-- gpu-retain` |
+| Counter and restorable state | `cargo run -p octara-examples-desktop --bin window -- counter` |
+| Stable keys, filtering, sorting, and grouping | `cargo run -p octara-examples-desktop --bin window -- todo` or `contacts` |
+| Chat replies, virtualized rows, and an editor | `cargo run -p octara-examples-desktop --bin window -- chat_virtual` |
+| Kit forms, comboboxes, and popups | `cargo run -p octara-examples-desktop --bin window -- showcase forms` or `choices`, `interaction`, `controls` |
+| Release workspace with a Navigator, tree view, data table, drag-and-drop reordering, command palette, context menu, and toast | `cargo run -p octara-examples-desktop --bin window -- showcase workspace` |
+| Live Markdown, selectable rich text, canvas, maps, and native WebView | `cargo run -p octara-examples-desktop --bin window -- showcase markdown` or `text`, `drawing`, `map`, `web` |
+| Multiple windows and per-window undo history | `cargo run -p octara-examples-desktop --bin window -- windows` or `undo` |
+| Virtualized row geometry and offscreen editors | `cargo run -p octara-examples-desktop --bin virtual_geometry` or `--bin virtual_interaction` |
+| System input methods and marked text | `cargo run -p octara-examples-desktop --bin ime`. [IME walkthrough](IME.md) |
+| Interactive GPU materials, flow fields, and refraction | `cargo run -p octara-examples-desktop --bin window -- gpu_lab` |
+| CPU reference screenshots | `cargo run -p octara-examples --bin screenshot -- /tmp/octara-shots 2 --bundled` |
+| CPU projection benchmark | `cargo run --release -p octara-examples --bin bench` |
+| GPU painting and cache benchmarks | `cargo run --release -p octara-examples-desktop --bin gpu_bench -- gpu` or `-- gpu-retain` |
 
-CPU 截图默认使用内置字体。使用系统字体时，添加 Cargo 参数 `--features system-fonts` 并省略 `--bundled`。
+CPU screenshots use bundled fonts by default. To use system fonts, add the Cargo flag `--features system-fonts` and omit `--bundled`.
 
-运行 `cargo test -p octara-examples` 验证无窗口应用行为和 CPU 渲染。运行 `cargo test -p octara-examples-desktop` 验证 GPU 帧规划的性能预算、着色器回退和富文本 CPU/GPU 像素一致性。可设置 `OCTARA_REQUIRE_GPU=1` 要求像素一致性测试使用可用的 GPU 适配器。
+Run `cargo test -p octara-examples` to verify headless app behavior and CPU rendering. Run `cargo test -p octara-examples-desktop` to verify GPU frame-planning budgets, shader fallbacks, and CPU/GPU pixel parity for rich text. Set `OCTARA_REQUIRE_GPU=1` to require a usable GPU adapter for the parity tests.
 
-`gpu_lab replay 60` 与 `gpu_lab replay 120 stress` 通过应用时钟持续更新着色器。使用 `gpu_lab input-pressure` 时，点击 **Start workload**，随后用系统键盘、点击与拖动操作控件。设置 `OCTARA_GPU_LAB_TRANSITION=1` 会在玻璃面板中显示局部 GPU 过渡。
+`gpu_lab replay 60` and `gpu_lab replay 120 stress` update shaders continuously using the app clock. For `gpu_lab input-pressure`, click **Start workload**, then use the system keyboard, clicks, and drags to interact with the controls. Set `OCTARA_GPU_LAB_TRANSITION=1` to show a local GPU transition in the glass panel.
 
-发布工作台可按平台筛选构建，点击数据表的表头可排序。打开审阅页并编辑备注，使用后退和前进按钮可检验 Navigator 保留的草稿。在审阅队列上拖动，或按空格、上／下方向键和 Enter 调整顺序。**Notify on move** 是用 Headless Checkbox 自定义样式的复选框。右击 **Queue actions** 或在焦点位于该按钮时按 Shift+F10，可重置队列顺序。
+In the release workspace, filter builds by platform and click a table header to sort. Open a review and edit its notes, then navigate back and forward to see the draft the Navigator retained. Reorder the review queue by dragging or by using Space, the Up and Down arrows, and Enter. **Notify on move** uses the Headless Checkbox with custom styling. Right-click **Queue actions**, or focus the button and press Shift+F10, to reset the queue order.
 
-Markdown 示例使用本地月食对话。点击 **Replay answer** 可查看流式渐变和引用标签更新。展开 **Observation plan** 查看计划，点击段内缩略图或独立图片打开预览。输入 **@Luna** 可插入联系人，**/replay** 重播回复，**/question** 填入示例问题。用方向键和 Enter 选择补全。
+The Markdown example uses a local conversation about a lunar eclipse. Click **Replay answer** to see the streaming reveal and citation label updates. Expand **Observation plan** to read the plan, then click an inline thumbnail or standalone image to open a preview. Type **@Luna** to insert a contact, **/replay** to replay the answer, or **/question** to fill in the sample question. Use the arrow keys and Enter to select a completion.
 
-## 检查真实窗口
+## Inspect a live window
 
 ```sh
 cargo build -p octara-examples-desktop --bin window -p octara-cli --bin octara
 python3 -B examples/live_inspect.py --window target/debug/window
 ```
 
-脚本在交互式桌面打开计数器，读取实际窗口回执，用守卫目标点击按钮，并验证计数变化、新帧呈现和 PNG 捕获。退出时清理进程、套接字和捕获。
+The script opens the counter on an interactive desktop, reads a live window receipt, clicks the button using a guarded target, and verifies the count change, presentation of a new frame, and PNG capture. It cleans up the process, socket, and capture on exit.
 
-手动场景用 `OCTARA_INSPECT` 指定尚未使用的 Unix 套接字。另一个终端用 `target/debug/octara inspect --connect "$socket" --json` 获取回执。动作请求引用 `snapshot.nodes` 中的 `target`。应用和窗口重建会产生新目标。[协议操作与回执](../docs/design/v2/06-inspect-dst-release-migration.md)
+For manual testing, set `OCTARA_INSPECT` to an unused Unix socket path. In another terminal, use `target/debug/octara inspect --connect "$socket" --json` to get a receipt, with `socket` set to the path from the first terminal. Use `target` from `snapshot.nodes` in action requests. Reopening the app or recreating the window produces new targets. [Protocol operations and receipts](../docs/design/v2/06-inspect-dst-release-migration.md)
 
 ```sh
 socket=$(mktemp -d /tmp/octara-example.XXXXXX)/inspect.sock
 OCTARA_INSPECT="$socket" target/debug/window counter
 ```
 
-触控板样本使用 `trackpad`。快速推动内层视口并抬手，观察直接滚动和惯性，再用 **Reset** 重建视口。打开 `OCTARA_TRACE_SCROLL=1` 可收集宿主的滚动记录。
+Run the `trackpad` example to test trackpad scrolling. Flick the inner viewport, lift your fingers, and watch the direct scroll and momentum. Use **Reset** to recreate the viewport. Set `OCTARA_TRACE_SCROLL=1` to collect host scroll traces.
 
-## iOS 模拟器
+## iOS Simulator
 
-已启动 Apple Silicon iPhone 模拟器时，可构建并安装与桌面共用的示例。
+Build and install the same examples on a booted iOS 18.4 or later iPhone simulator on Apple Silicon. Set `device` to its UDID.
 
 ```sh
-IPHONEOS_DEPLOYMENT_TARGET=17.0 cargo build --locked --target aarch64-apple-ios-sim -p octara-examples-desktop --bin panel_scroll
+IPHONEOS_DEPLOYMENT_TARGET=18.4 cargo build --locked --target aarch64-apple-ios-sim -p octara-examples-desktop --bin panel_scroll
 sim_run=$(mktemp -d /tmp/octara-ios.XXXXXX)
 python3 -B examples/ios_panel.py --device "$device" \
   --binary target/aarch64-apple-ios-sim/debug/panel_scroll --output "$sim_run/run"
 ```
 
-输出的 `run.json` 包含本次进程的构建回执、套接字和日志路径。运行 `target/debug/octara inspect --connect SOCKET --receipt RECEIPT --json` 校验并读取窗口。用系统触摸拖动列表，可从 `pan-list` 的高度和 `scroll_offset` 观察面板扩张和列表滚动。也可构建 `album_back` 并使用 `--scene album` 检查返回手势，或用 `--scene interaction`、`--scene review`、`--scene ime` 检验对应窗口。
+The generated `run.json` lists the build receipt, socket, and log paths for the process. Run `target/debug/octara inspect --connect SOCKET --receipt RECEIPT --json` to verify the build identity and inspect the window. Drag the list with the simulator’s touch controls. The height and `scroll_offset` of `pan-list` show the panel expanding and the list scrolling. To test the back gesture, build `album_back` and use `--scene album`. Use `--scene interaction`, `--scene review`, or `--scene ime` with the corresponding `window`, `review_queue`, or `ime` binary to test those windows.
 
-结束时用 `xcrun simctl terminate DEVICE BUNDLE` 终止样本，再用 `xcrun simctl uninstall DEVICE BUNDLE` 卸载后清理运行目录。设备和包名在 `run.json` 中。
+When finished, run `xcrun simctl terminate DEVICE BUNDLE` and `xcrun simctl uninstall DEVICE BUNDLE`, then remove the run directory. Find the device UDID and bundle identifier in `run.json`.
 
-## 浏览器输入
+## Browser input
 
-浏览器样本演示组合输入、UTF-8 选区、键盘拦截、焦点与视口尺寸。用与 Rust 依赖版本匹配的 `wasm-bindgen` 生成浏览器入口。
+The browser example exercises composition, UTF-8 selections, key interception, focus, and viewport sizing. Generate the browser bindings with a `wasm-bindgen` CLI that matches the Rust dependency version.
 
 ```sh
 cargo build --locked --target wasm32-unknown-unknown -p octara-host-web --example web_input
@@ -73,8 +73,15 @@ cp crates/octara-host-web/examples/web_input.html "$web_run/"
 python3 -m http.server --bind 127.0.0.1 --directory "$web_run" 0
 ```
 
-从命令输出的本地端口打开 `web_input.html`，查看页面上的断言结果。添加 Cargo 参数 `--features webgpu` 并打开 `web_input.html?webgpu` 可验证浏览器的 GPU 画布。完成后关闭服务器并清理临时目录。[Web 输入示例](../crates/octara-host-web/examples/web_input.rs) · [DOM 更新示例](../crates/octara-host-web/examples/dom_transactions.rs)
+Open `web_input.html` on the local port printed by the server and read the assertions on the page. To verify the browser GPU canvas, build with the Cargo flag `--features webgpu`, regenerate the bindings, and open `web_input.html?webgpu`. Stop the server and remove the temporary directory when finished. [Web input example](../crates/octara-host-web/examples/web_input.rs) · [DOM transaction example](../crates/octara-host-web/examples/dom_transactions.rs)
 
-## 本地签名发布样本
+## Local signed release example
 
-`signed_review` 是 macOS 原生样本。用 `cargo build -p octara-examples-desktop --bin signed_review` 构建，并用 `OCTARA_REVIEW_PUBLIC_KEY` 绑定发布公钥。应用可用 `signed_review STORE SIGNED_PACKAGE` 暂存包，下次启动后在首帧确认。编辑草稿保存在 `STORE/draft.json`。使用 `package_signed_review.py` 组装并验证本地应用包。[签名发布流程](../docs/design/v2/06-inspect-dst-release-migration.md)
+`signed_review` is a native macOS example. Set `public_key` to the 64-digit hexadecimal release public key before building.
+
+```sh
+OCTARA_REVIEW_PUBLIC_KEY="$public_key" MACOSX_DEPLOYMENT_TARGET=15.4 \
+  cargo build -p octara-examples-desktop --bin signed_review
+```
+
+Run `signed_review STORE SIGNED_PACKAGE` to stage the package. The app confirms it after the first frame on the next launch. The editing draft is stored in `STORE/draft.json`. Use `package_signed_review.py` to assemble and verify the local app bundle. [Signed release workflow](../docs/design/v2/06-inspect-dst-release-migration.md)

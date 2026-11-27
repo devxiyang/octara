@@ -67,7 +67,7 @@ impl<F: FnMut(HostSurfaceKind, Haptic) -> Result<(), ModuleError> + 'static> Oct
 }
 
 #[cfg(all(feature = "platform", target_os = "ios"))]
-#[allow(deprecated)] // These initializers support iOS versions before the view-based factories.
+#[allow(deprecated)] // Haptics calls can originate outside a window, so use view-independent initializers.
 fn play(kind: HostSurfaceKind, feedback: Haptic) -> Result<(), ModuleError> {
     use objc2::MainThreadMarker;
     use objc2_ui_kit::{

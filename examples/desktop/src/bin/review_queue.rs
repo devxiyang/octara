@@ -12,11 +12,19 @@ struct Document {
 }
 
 const DOCUMENTS: [Document; 3] = [
-    Document { id: "release", title: "发布说明", brief: "确认升级步骤、依赖版本和已知问题。" },
-    Document { id: "navigation", title: "导航说明", brief: "确认页面入口清晰，键盘可以到达所有主要操作。" },
-    Document { id: "handoff", title: "交接清单", brief: "确认维护人、运行步骤和待处理问题有明确记录。" },
+    Document { id: "release", title: "Release notes", brief: "Verify the upgrade steps, dependency versions, and known issues." },
+    Document {
+        id: "navigation",
+        title: "Navigation guide",
+        brief: "Make sure page entry points are clear and all primary actions are reachable by keyboard.",
+    },
+    Document {
+        id: "handoff",
+        title: "Handoff checklist",
+        brief: "Make sure the maintainers, run instructions, and open issues are documented.",
+    },
 ];
-const NOTE_REQUIRED: &str = "请填写审阅意见。";
+const NOTE_REQUIRED: &str = "Enter a review note.";
 type Decisions = Signal<HashMap<&'static str, String>>;
 
 fn action(label: impl IntoText, press: impl Fn(&mut WriteCx<'_>) + 'static) -> El {
@@ -52,7 +60,7 @@ fn approval_form(cx: &mut BuildCx<'_>, id: &'static str, decisions: Decisions) -
     };
     col()
         .gap(sp(2.0))
-        .child(text("审阅意见").test_id("review-note-label").text_weight(600))
+        .child(text("Review note").test_id("review-note-label").text_weight(600))
         .child(
             textarea()
                 .test_id("review-note")
@@ -73,13 +81,13 @@ fn approval_form(cx: &mut BuildCx<'_>, id: &'static str, decisions: Decisions) -
                 .when(State::FOCUS_VISIBLE, |p| p.border_color(ColorToken::Focus)),
         )
         .child(show(move |r| r.get(invalid), |_| text(NOTE_REQUIRED).test_id("review-note-error").role(Role::Status).live(Live::Polite)))
-        .child(action("通过", approve).test_id("review-approve").align_self(AlignItems::Start))
+        .child(action("Approve", approve).test_id("review-approve").align_self(AlignItems::Start))
 }
 
 #[ui]
 fn review_detail(cx: &mut BuildCx<'_>, id: &'static str, decisions: Decisions) -> El {
     let Some(document) = DOCUMENTS.iter().find(|document| document.id == id) else {
-        return col().p(sp(4.0)).child(text("此列表没有文档。").test_id("review-empty"));
+        return col().p(sp(4.0)).child(text("No documents in this list.").test_id("review-empty"));
     };
     let approved = cx.memo(move |r| r.with(decisions, |saved| saved.contains_key(id)));
     col()
@@ -91,7 +99,7 @@ fn review_detail(cx: &mut BuildCx<'_>, id: &'static str, decisions: Decisions) -
         .child(show(
             move |r| r.get(approved),
             move |_| {
-                col().gap(sp(2.0)).child(text("已保存的审阅意见").text_weight(600)).child(
+                col().gap(sp(2.0)).child(text("Saved review note").text_weight(600)).child(
                     text(move |r: &mut ReadCx<'_>| r.with(decisions, |saved| saved.get(id).cloned().unwrap_or_default()))
                         .test_id("review-saved-note"),
                 )
@@ -117,7 +125,7 @@ fn view(cx: &mut BuildCx<'_>) -> El {
     let list = col()
         .test_id("review-list")
         .role(Role::List)
-        .label("文档")
+        .label("Documents")
         .gap(sp(2.0))
         .w(rel(1.0))
         .when(Breakpoint::Medium, |p| p.w(220))
@@ -142,19 +150,19 @@ fn view(cx: &mut BuildCx<'_>) -> El {
         .bg(ColorToken::Background)
         .text_color(ColorToken::Text)
         .overflow_y(Overflow::Scroll)
-        .child(text("资料审阅").test_id("review-heading").role(Role::Heading).text_size(FontSizeToken::Xl).text_weight(600))
+        .child(text("Document review").test_id("review-heading").role(Role::Heading).text_size(FontSizeToken::Xl).text_weight(600))
         .child(
             row()
                 .gap(sp(2.0))
                 .child(
-                    action("待审", move |w| w.set(approved, false))
+                    action("Pending", move |w| w.set(approved, false))
                         .test_id("review-pending")
                         .selected(move |r: &mut ReadCx<'_>| !r.get(approved)),
                 )
-                .child(action("已通过", move |w| w.set(approved, true)).test_id("review-approved").selected(approved))
+                .child(action("Approved", move |w| w.set(approved, true)).test_id("review-approved").selected(approved))
                 .child(
                     text(move |r: &mut ReadCx<'_>| {
-                        r.with(decisions, |saved| format!("{} 待审 · {} 已通过", DOCUMENTS.len() - saved.len(), saved.len()))
+                        r.with(decisions, |saved| format!("{} pending · {} approved", DOCUMENTS.len() - saved.len(), saved.len()))
                     })
                     .test_id("review-counts")
                     .text_size(FontSizeToken::Sm)
@@ -179,5 +187,5 @@ fn view(cx: &mut BuildCx<'_>) -> El {
 }
 
 fn main() -> Result<(), octara_host_native::ShellError> {
-    octara_examples_desktop::native::run(window_options("资料审阅", 830.0, 650.0), view)
+    octara_examples_desktop::native::run(window_options("Document review", 830.0, 650.0), view)
 }

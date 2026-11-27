@@ -593,7 +593,7 @@ impl Views {
     }
 
     pub(super) fn shows(&self, kind: &str, slot: NativeSlot) -> bool {
-        kind == "map" && slot == NativeSlot::Underlay && self.supports_underlay && objc2::available!(macos = 13.0)
+        kind == "map" && slot == NativeSlot::Underlay && self.supports_underlay
     }
 
     pub(super) fn measure(&self, id: NativeId) -> Option<Size> {

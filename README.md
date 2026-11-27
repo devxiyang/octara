@@ -1,15 +1,16 @@
-# Octara 0.0.7
+# Octara 0.0.8
 
-用 Rust 编写原生与 Web 界面。用显式能力上下文构造视图和更新状态，原生宿主用 GPU 呈现，Web 宿主投影真实 DOM。用同一套目标与编辑会话协议测试交互、观察帧进度和重放故障。
+Build native and Web interfaces in Rust. Explicit capability contexts let you compose views and update state. Native hosts render on the GPU, and the Web host projects views into the DOM. Use the same target and editor session protocol to test interactions, track frame progress, and replay failures.
 
-- 从 [入门指南](docs/start-here.md) 开始。
-- 使用 `octara-kit` 的主题控件，或组合 `octara_kit::headless` 的行为部件和 `octara_kit::parts` 的样式。
-- 使用 `octara-markdown` 渲染流式文档，定制代码和图表等块级组件。链接胶囊按文字排版尺寸绘制，流式渐显默认遵循系统的减弱动态效果设置。启用 `math` 支持原生及 Web 矢量公式，启用 `composer` 为输入框添加光标锚定的富补全、原子提及和 Markdown 序列化。
-- 用 `octara audit` 检查文本裁剪、交互控件的无障碍名称和失效的焦点目标。
-- 了解 [crate 边界与 Cycle](docs/ARCHITECTURE.md) 或查阅 [v2 架构规范](docs/design/architecture-v2.md)。
-- 运行 [示例](examples/README.md) 和 [流式 Chat 应用](apps/chat/README.md)。
+- Start with the [Getting Started guide](docs/start-here.md).
+- Use themed controls from `octara-kit`, or compose behavior from `octara_kit::headless` with styles from `octara_kit::parts`.
+- Render streaming documents with `octara-markdown` and customize blocks such as code and charts. Link pills use measured text sizes, and streaming reveals respect the system’s reduced-motion preference by default. Enable `math` for vector math on native and Web, or `composer` for rich caret-anchored completions, atomic mentions, and Markdown serialization.
+- Add WebView, video playback, file pickers, or haptics through optional `octara::module` packages. [Module architecture and packaging](docs/design/v2/14-octara-module-architecture.md)
+- Run `octara audit` to find clipped text, interactive controls with missing accessible names, and invalid focus targets.
+- Explore the [crate boundaries and Cycle](docs/ARCHITECTURE.md) or the [v2 architecture specification](docs/design/architecture-v2.md).
+- Run the [examples](examples/README.md) and the [streaming Chat app](apps/chat/README.md).
 
-在工作区根目录使用 Rust 1.100 或更高版本。
+Run these commands from the workspace root with Rust 1.100 or later. The Apple deployment baselines are macOS 15.4 and iOS 18.4.
 
 ```sh
 cargo run -p octara-examples-desktop --bin window -- counter
@@ -18,7 +19,7 @@ cargo run -q -p octara-cli -- vocab BuildCx
 cargo run -q -p octara-cli -- audit --manifest-path examples/Cargo.toml --json
 ```
 
-运行工作区测试、依赖边界、Markdown 特性测试和 Wasm 检查。
+Run the workspace tests, dependency boundary check, Markdown feature tests, and Wasm checks.
 
 ```sh
 python3 tools/check_layers.py
@@ -32,18 +33,18 @@ cargo check --target wasm32-unknown-unknown -p octara-host-web
 cargo check --target wasm32-unknown-unknown -p octara-host-web --features webgpu
 ```
 
-在装有 iOS Simulator SDK 和对应 Rust 目标的 macOS 上检查原生宿主。
+On a Mac with the iOS Simulator SDK and the matching Rust target, check the native host.
 
 ```sh
-cargo check --target aarch64-apple-ios-sim -p octara-host-native
+IPHONEOS_DEPLOYMENT_TARGET=18.4 cargo check --target aarch64-apple-ios-sim -p octara-host-native
 ```
 
-在工作区统一预检 19 个 `0.0.7` crate 的归档。Cargo 会解析同批内部依赖并从归档解包编译。
+Preflight all 23 publishable Octara 0.0.8 crates together. Cargo resolves internal dependencies in the release batch and builds from the unpacked archives.
 
 ```sh
 cargo publish --workspace --dry-run
 ```
 
-复用工作区 Cargo 缓存。结束验证后清理临时捕获、socket 和测试进程。[仓库约定](AGENTS.md)
+Reuse the workspace Cargo cache. Clean up temporary captures, sockets, and test processes after verification. [Repository conventions](AGENTS.md)
 
-项目按 [MIT](LICENSE-MIT) 或 [Apache-2.0](LICENSE-APACHE) 许可发布。
+Octara is licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).

@@ -41,7 +41,7 @@ mod macos {
 
     impl Presentation {
         fn embedded() -> Self {
-            Self { title: "发布审阅".into(), accent: Accent::Jade, sections: [Section::Editor, Section::Preview] }
+            Self { title: "Release review".into(), accent: Accent::Jade, sections: [Section::Editor, Section::Preview] }
         }
 
         fn prepare(raw: &str) -> io::Result<Self> {
@@ -133,8 +133,8 @@ mod macos {
                     w.set(
                         status,
                         match saved {
-                            Ok(()) => "草稿已保存".into(),
-                            Err(error) => format!("保存失败：{error}"),
+                            Ok(()) => "Draft saved.".into(),
+                            Err(error) => format!("Could not save draft: {error}"),
                         },
                     );
                     w.set(saving, false);
@@ -147,12 +147,12 @@ mod macos {
             .gap(sp(3.0))
             .rounded(RadiusToken::Lg)
             .bg(ColorToken::Surface)
-            .child(text("审阅意见").text_weight(600).test_id("review-label"))
+            .child(text("Review note").text_weight(600).test_id("review-label"))
             .child(
                 textarea()
                     .test_id("review-draft")
                     .labelled_by("review-label")
-                    .placeholder("写下对本次发布的意见")
+                    .placeholder("Write your notes for this release")
                     .rows(3, 4)
                     .w(rel(1.0))
                     .p(sp(3.0))
@@ -167,7 +167,7 @@ mod macos {
                     .gap(sp(3.0))
                     .align(AlignItems::Center)
                     .child(
-                        octara_kit::button("保存草稿", KitSize::Md, ButtonVariant::Secondary)
+                        octara_kit::button("Save draft", KitSize::Md, ButtonVariant::Secondary)
                             .test_id("review-save")
                             .disabled(saving)
                             .on_press(save),
@@ -189,7 +189,7 @@ mod macos {
             .rounded(RadiusToken::Lg)
             .border(1)
             .border_color(ColorToken::Border)
-            .child(text("草稿预览").text_weight(600))
+            .child(text("Draft preview").text_weight(600))
             .child(text(draft).test_id("review-preview-text").text_color(ColorToken::TextMuted));
         let header = row()
             .gap(sp(3.0))
@@ -220,16 +220,16 @@ mod macos {
         let status = cx.signal(String::new());
         let check = move |w: &mut WriteCx<'_>| {
             w.set(checking, true);
-            w.set(status, "正在检查更新…".into());
+            w.set(status, "Checking for updates…".into());
             let store = store.clone();
             w.spawn("check signed-review updates", move |task| async move {
                 let checked = task.background(move || Channel::new(origin)?.check(&store, Presentation::prepare)).await;
                 let message = match checked {
-                    Ok(Check::Unpublished) => "当前渠道尚未发布更新。".into(),
-                    Ok(Check::AlreadyAdmitted(version)) => format!("版本 {} 已处理。", version.sequence),
-                    Ok(Check::Staged(version)) => format!("已下载版本 {}，重开应用后启用。", version.sequence),
-                    Ok(Check::Superseded) => "检查期间发布了其他版本，请再检查一次。".into(),
-                    Err(error) => format!("检查更新失败。{error}"),
+                    Ok(Check::Unpublished) => "No update has been published on this channel.".into(),
+                    Ok(Check::AlreadyAdmitted(version)) => format!("Version {} has already been processed.", version.sequence),
+                    Ok(Check::Staged(version)) => format!("Version {} downloaded. Reopen the app to apply it.", version.sequence),
+                    Ok(Check::Superseded) => "The channel changed during the check. Check for updates again.".into(),
+                    Err(error) => format!("Could not check for updates: {error}"),
                 };
                 task.write(|w| {
                     w.set(status, message);
@@ -241,7 +241,7 @@ mod macos {
             .gap(sp(3.0))
             .align(AlignItems::Center)
             .child(
-                octara_kit::button("检查更新", KitSize::Md, ButtonVariant::Secondary)
+                octara_kit::button("Check for updates", KitSize::Md, ButtonVariant::Secondary)
                     .test_id("review-check-update")
                     .disabled(checking)
                     .on_press(check),
@@ -293,12 +293,12 @@ mod macos {
             eprintln!("signed_review: {reason}");
         }
         let (version, presentation) = selected.map_or_else(
-            || ("内置版".into(), Presentation::embedded()),
-            |(version, presentation)| (format!("版本 {}", version.sequence), presentation),
+            || ("Built-in version".into(), Presentation::embedded()),
+            |(version, presentation)| (format!("Version {}", version.sequence), presentation),
         );
         let session = Arc::new(session);
         let confirmer = session.clone();
-        let mut options = window_options("Octara · 发布审阅", 680.0, 550.0);
+        let mut options = window_options("Octara · Release review", 680.0, 550.0);
         options.presentation.theme = presentation.theme();
         let app = AppDefinition::new()
             .window(WindowDefinition::new(options, move |b| view(b, &presentation, &version, &draft, draft_path, session, store)));

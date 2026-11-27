@@ -30,6 +30,7 @@ def bundle(binary, destination, *, identity="-", version="0.1.0", build_number="
             "CFBundleInfoDictionaryVersion": "6.0",
             "CFBundleShortVersionString": version,
             "CFBundleVersion": build_number,
+            "LSMinimumSystemVersion": "15.4",
         }))
         subprocess.run(["/usr/bin/plutil", "-lint", info], check=True, timeout=15)
         timestamp = "--timestamp=none" if identity == "-" else "--timestamp"

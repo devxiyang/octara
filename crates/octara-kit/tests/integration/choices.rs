@@ -200,7 +200,7 @@ fn combobox_retains_rows_and_search_while_tracking_the_active_option() {
     let search = mounted.node("pick-search");
     assert_eq!(mounted.window().geometry(mounted.node("pick")).unwrap().rect.w, 120.0);
     assert_eq!(mounted.window().geometry(mounted.node("pick-popover")).unwrap().rect.w, 210.0);
-    assert_eq!(mounted.tree().semantics(search).unwrap().label.as_deref(), Some("搜索Pick"));
+    assert_eq!(mounted.tree().semantics(search).unwrap().label.as_deref(), Some(KitLocale::zh_cn().search_label("Pick").as_str()));
     assert_eq!(&*mounted.tree().editor(search).unwrap().placeholder, "Find a choice");
     assert_eq!(mounted.tree().visual(search).font_size, 16.0);
     let retained = mounted.node("pick-option-a");

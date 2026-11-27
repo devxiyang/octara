@@ -265,14 +265,14 @@ mod tests {
 
     #[test]
     fn recognizes_in_order_with_utf8_byte_ranges() {
-        let text = "🍵 Check (src/主要.rs:42:8), #128, and @álîçé.";
+        let text = "🍵 Check (src/résumé.rs:42:8), #128, and @álîçé.";
         let recognizer = TextRecognizer::new()
             .file_paths(|path| Some(format!("file:{path}")))
             .issues(|issue| Some(format!("issue:{}", &issue[1..])))
             .mentions(|mention| Some(format!("user:{}", &mention[1..])));
         let links = recognizer.recognize(text);
         let result: Vec<_> = links.iter().map(|link| (&text[link.range.clone()], link.url.as_ref())).collect();
-        assert_eq!(result, [("src/主要.rs:42:8", "file:src/主要.rs:42:8"), ("#128", "issue:128"), ("@álîçé", "user:álîçé")]);
+        assert_eq!(result, [("src/résumé.rs:42:8", "file:src/résumé.rs:42:8"), ("#128", "issue:128"), ("@álîçé", "user:álîçé")]);
         assert_eq!(links[0].range.start, text.find("src/").unwrap());
     }
 
@@ -303,14 +303,14 @@ mod tests {
     #[test]
     fn paths_cover_line_fragments_and_ranges() {
         let recognizer = TextRecognizer::new().file_paths(|path| Some(format!("file:{path}"))).issues(|issue| Some(issue.into()));
-        let text = "🦀 (./Cargo.toml#L10-L20), src/主要.rs#L42, main.rs#L5-7. Makefile#L2 and #128";
+        let text = "🦀 (./Cargo.toml#L10-L20), src/résumé.rs#L42, main.rs#L5-7. Makefile#L2 and #128";
         let links = recognizer.recognize(text);
         let result: Vec<_> = links.iter().map(|link| (&text[link.range.clone()], link.url.as_ref())).collect();
         assert_eq!(
             result,
             [
                 ("./Cargo.toml#L10-L20", "file:./Cargo.toml#L10-L20"),
-                ("src/主要.rs#L42", "file:src/主要.rs#L42"),
+                ("src/résumé.rs#L42", "file:src/résumé.rs#L42"),
                 ("main.rs#L5-7", "file:main.rs#L5-7"),
                 ("Makefile#L2", "file:Makefile#L2"),
                 ("#128", "#128"),

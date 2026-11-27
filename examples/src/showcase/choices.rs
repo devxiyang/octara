@@ -7,18 +7,18 @@ use octara_kit::{ButtonVariant, ComboboxOptions, PopupOptions, Size as KitSize, 
 
 fn cities(updated: bool) -> Vec<(String, Choice)> {
     let mut options: Vec<_> = [
-        ("beijing", Choice::new("北京")),
-        ("shanghai", Choice::new("上海（暂不可选）").disabled(true)),
-        ("hangzhou", Choice::new(if updated { "杭州 · 已更新" } else { "杭州" })),
-        ("shenzhen", Choice::new("深圳")),
-        ("guangzhou", Choice::new("广州")),
-        ("chengdu", Choice::new("成都")),
+        ("beijing", Choice::new("Beijing")),
+        ("shanghai", Choice::new("Shanghai (unavailable)").disabled(true)),
+        ("hangzhou", Choice::new(if updated { "Hangzhou (updated)" } else { "Hangzhou" })),
+        ("shenzhen", Choice::new("Shenzhen")),
+        ("guangzhou", Choice::new("Guangzhou")),
+        ("chengdu", Choice::new("Chengdu")),
     ]
     .into_iter()
     .filter(|(key, _)| !updated || *key != "beijing")
     .map(|(key, choice)| (key.to_owned(), choice))
     .collect();
-    options.extend((1..=24).map(|n| (format!("city-{n}"), Choice::new(format!("示例城市 {n:02}")))));
+    options.extend((1..=24).map(|n| (format!("city-{n}"), Choice::new(format!("Sample city {n:02}")))));
     if updated {
         options.reverse();
     }
@@ -40,26 +40,18 @@ pub fn view(cx: &mut BuildCx<'_>) -> El {
         .w(rel(1.0))
         .on_command("choices.update", update)
         .on_command("choices.toggle", move |w| w.update(visible, |v| *v = !*v))
-        .child(text("城市 / City").text_weight(500))
+        .child(text("City").text_weight(500))
         .child(show(
             move |r| r.get(visible),
             move |_| {
-                combobox(
-                    "city",
-                    "城市 / City",
-                    Selection::Single(selected.into()),
-                    options,
-                    ComboboxOptions::default(),
-                    city_trigger,
-                    choice_row,
-                )
+                combobox("city", "City", Selection::Single(selected.into()), options, ComboboxOptions::default(), city_trigger, choice_row)
             },
         ))
         .child(
             text(move |r: &mut ReadCx<'_>| {
                 let current = r.get(selected);
                 let label = current.and_then(|id| r.with_row(options, &id, |item| item.map(|choice| choice.label.clone())));
-                format!("已选择：{}", label.as_deref().unwrap_or("无"))
+                format!("Selected city: {}", label.as_deref().unwrap_or("None"))
             })
             .test_id("chosen-city")
             .text_size(FontSizeToken::Sm),
@@ -68,9 +60,9 @@ pub fn view(cx: &mut BuildCx<'_>) -> El {
             row()
                 .gap(sp(2.0))
                 .wrap(FlexWrap::Wrap)
-                .child(button("更新选项", KitSize::Md, ButtonVariant::Secondary).test_id("update-cities").on_press(update))
+                .child(button("Update options", KitSize::Md, ButtonVariant::Secondary).test_id("update-cities").on_press(update))
                 .child(
-                    button("显示 / 隐藏选择器", KitSize::Md, ButtonVariant::Secondary)
+                    button("Toggle city picker", KitSize::Md, ButtonVariant::Secondary)
                         .test_id("toggle-city")
                         .on_press(move |w| w.update(visible, |v| *v = !*v)),
                 ),
@@ -80,23 +72,23 @@ pub fn view(cx: &mut BuildCx<'_>) -> El {
             "details",
             details.into(),
             PopupOptions::default(),
-            button("打开 Popover", KitSize::Md, ButtonVariant::Secondary),
+            button("Open popover", KitSize::Md, ButtonVariant::Secondary),
             move |_| {
                 col()
                     .w(280.0)
                     .max_w(rel(1.0))
                     .gap(sp(3.0))
-                    .child(text("备注 / Note").text_weight(500))
-                    .child(text_field(note.into()).test_id("choice-note").label("备注 / Note").w(rel(1.0)))
+                    .child(text("Note").text_weight(500))
+                    .child(text_field(note.into()).test_id("choice-note").label("Note").w(rel(1.0)))
                     .child(
-                        button("完成", KitSize::Md, ButtonVariant::Secondary)
+                        button("Done", KitSize::Md, ButtonVariant::Secondary)
                             .test_id("close-details")
                             .on_press(move |w| w.set(details, false)),
                     )
             },
         ))
         .child(
-            button("在对话框中选择", KitSize::Md, ButtonVariant::Secondary)
+            button("Choose in a dialog", KitSize::Md, ButtonVariant::Secondary)
                 .test_id("open-choices-dialog")
                 .on_press(move |w| w.set(dialog, true))
                 .overlay(
@@ -106,7 +98,7 @@ pub fn view(cx: &mut BuildCx<'_>) -> El {
                         col()
                             .test_id("choices-dialog")
                             .role(Role::Dialog)
-                            .label("选择目的地")
+                            .label("Choose a destination")
                             .w(320.0)
                             .p(sp(4.0))
                             .gap(sp(3.0))
@@ -116,10 +108,10 @@ pub fn view(cx: &mut BuildCx<'_>) -> El {
                             .bg(ColorToken::Surface)
                             .shadow(ShadowToken::Lg)
                             .layer(LayerPolicy { dismiss_on_outside_press: false, ..LayerPolicy::modal() }, move |w| w.set(dialog, false))
-                            .child(text("选择目的地").text_weight(600))
+                            .child(text("Choose a destination").text_weight(600))
                             .child(combobox(
                                 "dialog-city",
-                                "目的地 / Destination",
+                                "Destination",
                                 Selection::Single(selected.into()),
                                 options,
                                 ComboboxOptions::default(),
@@ -127,7 +119,7 @@ pub fn view(cx: &mut BuildCx<'_>) -> El {
                                 choice_row,
                             ))
                             .child(
-                                button("完成", KitSize::Md, ButtonVariant::Secondary)
+                                button("Done", KitSize::Md, ButtonVariant::Secondary)
                                     .test_id("close-choices-dialog")
                                     .on_press(move |w| w.set(dialog, false)),
                             )
@@ -135,7 +127,7 @@ pub fn view(cx: &mut BuildCx<'_>) -> El {
                 ),
         )
         .child(
-            text(move |r: &mut ReadCx<'_>| if r.get(updated) { "选项已更新" } else { "原始选项" })
+            text(move |r: &mut ReadCx<'_>| if r.get(updated) { "Options updated" } else { "Original options" })
                 .test_id("choices-revision")
                 .text_size(FontSizeToken::Sm),
         )

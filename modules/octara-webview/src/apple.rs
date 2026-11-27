@@ -206,19 +206,17 @@ impl Web {
                 config.setURLSchemeHandler_forURLScheme(Some(ProtocolObject::from_ref(&*delegate)), &NSString::from_str(scheme));
             }
             let controller = config.userContentController();
-            if objc2::available!(macos = 11.0, ios = 14.0) {
-                controller.addScriptMessageHandlerWithReply_contentWorld_name(
-                    ProtocolObject::from_ref(&*delegate),
-                    &WKContentWorld::pageWorld(mtm),
-                    ns_string!("octara"),
-                );
-                controller.addUserScript(&WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
-                    WKUserScript::alloc(mtm),
-                    &NSString::from_str(include_str!("apple/bridge.js")),
-                    WKUserScriptInjectionTime::AtDocumentStart,
-                    true,
-                ));
-            }
+            controller.addScriptMessageHandlerWithReply_contentWorld_name(
+                ProtocolObject::from_ref(&*delegate),
+                &WKContentWorld::pageWorld(mtm),
+                ns_string!("octara"),
+            );
+            controller.addUserScript(&WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
+                WKUserScript::alloc(mtm),
+                &NSString::from_str(include_str!("apple/bridge.js")),
+                WKUserScriptInjectionTime::AtDocumentStart,
+                true,
+            ));
             let view = WKWebView::initWithFrame_configuration(WKWebView::alloc(mtm), NSRect::ZERO, &config);
             view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate)));
             view.setUIDelegate(Some(ProtocolObject::from_ref(&*delegate)));
@@ -330,10 +328,6 @@ impl Web {
             self.events().send(event(Err(ModuleError::PermissionDenied)));
             return;
         };
-        if await_promise && !objc2::available!(macos = 11.0, ios = 14.0) {
-            self.events().send(event(Err(ModuleError::Unavailable)));
-            return;
-        }
 
         let origin = canonical_origin(&url).expect("trusted pages have a named origin");
         let guard = if matches!(url.scheme(), "http" | "https") {
@@ -391,21 +385,16 @@ impl Web {
     fn find(&self, query: &str, backwards: bool, case_sensitive: bool) {
         if query.is_empty() {
             self.clear_find();
-        } else if objc2::available!(macos = 11.0, ios = 14.0) {
-            // SAFETY: Availability was checked and the blocks and configuration are used on the UI thread.
-            unsafe {
-                let config = WKFindConfiguration::new(MainThreadMarker::from(&*self.view));
-                config.setBackwards(backwards);
-                config.setCaseSensitive(case_sensitive);
-                config.setWraps(true);
-                let done = RcBlock::new(|_: NonNull<WKFindResult>| {});
-                self.view.findString_withConfiguration_completionHandler(&NSString::from_str(query), Some(&config), &done);
-            }
-        } else {
-            let query = json!(query);
-            let script = format!("window.find({query}, {case_sensitive}, {backwards}, true, false, true, false)");
-            // SAFETY: The query is encoded as a JSON string, and the evaluation runs on the UI thread.
-            unsafe { self.view.evaluateJavaScript_completionHandler(&NSString::from_str(&script), None) };
+            return;
+        }
+        // SAFETY: The block and configuration are used on the UI thread.
+        unsafe {
+            let config = WKFindConfiguration::new(MainThreadMarker::from(&*self.view));
+            config.setBackwards(backwards);
+            config.setCaseSensitive(case_sensitive);
+            config.setWraps(true);
+            let done = RcBlock::new(|_: NonNull<WKFindResult>| {});
+            self.view.findString_withConfiguration_completionHandler(&NSString::from_str(query), Some(&config), &done);
         }
     }
 

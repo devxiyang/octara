@@ -75,7 +75,7 @@ impl Payload {
                 10 => format!("let streamed_checkpoint = {index};\n"),
                 11 => "```\n\n".into(),
                 _ => format!(
-                    "Chunk {index:04}: new text changes only the live answer while the reader explores earlier messages. 中文与 emoji 😀 wrap with the window.\n\n"
+                    "Chunk {index:04}: new text changes only the live answer while the reader explores earlier messages. Emoji 😀 wrap with the window.\n\n"
                 ),
             },
         }
@@ -90,11 +90,11 @@ pub fn history(count: usize) -> (Thread, Vec<SavedMessage>) {
             let (author, parts) = if index.is_multiple_of(2) {
                 (
                     Author::User,
-                    vec![SavedPart::Text(format!("Question {index:05}: explain checkpoint {id} with a concrete example. 中文 😀"))],
+                    vec![SavedPart::Text(format!("Question {index:05}: explain checkpoint {id} with a concrete example. 😀"))],
                 )
             } else {
                 let paragraphs = (0..index % 5 + 1)
-                    .map(|line| format!("Checkpoint {id}, paragraph {line}: retained rows keep their own identity while new text arrives. 中文段落与 emoji 😀 verify wrapping.\n\n"))
+                    .map(|line| format!("Checkpoint {id}, paragraph {line}: retained rows keep their own identity while new text arrives. Long paragraphs with emoji 😀 exercise text wrapping.\n\n"))
                     .collect::<String>();
                 (
                     Author::Assistant,

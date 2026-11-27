@@ -196,8 +196,9 @@ fn a_read_is_cached_until_the_source_changes() {
 #[test]
 fn api_catalog_matches_checkout() {
     let mut expected = api::load().clone();
-    for krate in &mut expected.crates {
-        krate.root = format!("crates/{}", krate.name);
+    let root = api::workspace_root();
+    for (krate, source) in expected.crates.iter_mut().zip(api::workspace_sources()) {
+        krate.root = source.dir.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
     }
     let catalog: api::Api = if std::env::var_os("OCTARA_VERIFY_RELEASE_API").is_some() {
         api::bundled().unwrap()
@@ -208,6 +209,10 @@ fn api_catalog_matches_checkout() {
         let archive = flate2::read::GzDecoder::new(std::fs::File::open(path).unwrap());
         serde_json::from_reader(archive).unwrap()
     };
+    for module in ["octara-webview", "octara-video", "octara-picker", "octara-haptics"] {
+        let krate = catalog.crates.iter().find(|krate| krate.name == module).expect("official module in the catalog");
+        assert_eq!(krate.root, format!("modules/{module}"));
+    }
     assert_eq!(catalog.format, expected.format);
     assert_eq!(catalog.crates.len(), expected.crates.len());
     for (bundled, expected) in catalog.crates.iter().zip(expected.crates) {

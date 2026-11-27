@@ -247,7 +247,7 @@ class Handler(BaseHTTPRequestHandler):
         state.event("response_started", ordinal)
         if mode in {"hold", "idle"}:
             if mode == "idle":
-                self.text(ordinal, "A prefix before the fixture becomes idle. 中文 😀\n\n")
+                self.text(ordinal, "A prefix before the fixture becomes idle. 😀\n\n")
             outcome = self.wait(ordinal, 60)
             if outcome != "release":
                 return outcome or "hold_limit"
@@ -261,9 +261,9 @@ class Handler(BaseHTTPRequestHandler):
             if outcome not in {None, "release"}:
                 return outcome
             if index % 8 == 7:
-                text = "\n\n```rust\nlet reply = \"中文 😀\";\n```\n\n"
+                text = "\n\n```rust\nlet reply = \"Ready 😀\";\n```\n\n"
             else:
-                text = "Streaming over real HTTP keeps a complete ordered answer. 中文输入与选择 😀。 "
+                text = "Streaming over real HTTP keeps a complete ordered answer. Text input and selection stay responsive 😀. "
             self.text(ordinal, text)
         if mode == "drop":
             state.event("intentional_drop", ordinal)

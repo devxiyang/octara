@@ -1,10 +1,10 @@
-//! Metal display opportunities and the background drawable fallback on older macOS.
+//! Metal display-link pacing and background drawable acquisition.
 
 use super::metal_frame::MetalFrame;
 use crate::os::{DrawableAcquisition, surface_drawable};
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
-use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, available, define_class, msg_send};
+use objc2::{AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_foundation::{NSRunLoop, NSRunLoopCommonModes};
 use objc2_metal::MTLPixelFormat;
 use objc2_quartz_core::{
@@ -62,10 +62,7 @@ struct DisplayClock {
 }
 
 impl DisplayClock {
-    fn new(layer: &CAMetalLayer, mtm: MainThreadMarker, wake: impl Fn(Instant) + 'static) -> Option<Self> {
-        if !available!(macos = 14.0) {
-            return None;
-        }
+    fn new(layer: &CAMetalLayer, mtm: MainThreadMarker, wake: impl Fn(Instant) + 'static) -> Self {
         let this = Target::alloc(mtm).set_ivars(ClockIvars { newest: Cell::default(), active: Cell::new(false), wake: Box::new(wake) });
         let target: Retained<Target> = unsafe { msg_send![super(this), init] };
         let link = CAMetalDisplayLink::initWithMetalLayer(CAMetalDisplayLink::alloc(), layer);
@@ -73,7 +70,7 @@ impl DisplayClock {
         link.setDelegate(Some(ProtocolObject::from_ref(&*target)));
         // SAFETY: Both the link and its delegate belong to this main run loop.
         unsafe { link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes) };
-        Some(Self { link, target })
+        Self { link, target }
     }
 
     fn set_active(&self, active: bool) {
@@ -234,11 +231,9 @@ impl Pacing {
         }
         let Some(layer) = self.layer.as_deref().filter(|layer| direct_target(layer)) else { return };
         let wake = self.wake.clone();
-        self.clock = DisplayClock::new(layer, self.mtm, move |target| wake(target));
-        if let Some(clock) = &self.clock {
-            clock.link.setPreferredFrameLatency(self.frame_latency as f32);
-            clock.set_active(self.active);
-        }
+        let clock = self.clock.insert(DisplayClock::new(layer, self.mtm, move |target| wake(target)));
+        clock.link.setPreferredFrameLatency(self.frame_latency as f32);
+        clock.set_active(self.active);
     }
 
     pub(super) fn layer(&self) -> Option<&CAMetalLayer> {
@@ -281,7 +276,7 @@ impl Pacing {
 fn metal_layer(surface: &wgpu::Surface<'static>) -> Option<Retained<CAMetalLayer>> {
     // SAFETY: The HAL guard keeps the surface alive while we retain its layer.
     let layer = unsafe { surface.as_hal::<wgpu::hal::api::Metal>() }?.render_layer().lock().clone();
-    if available!(macos = 10.15) && !layer.allowsNextDrawableTimeout() {
+    if !layer.allowsNextDrawableTimeout() {
         layer.setAllowsNextDrawableTimeout(true);
     }
     Some(layer)

@@ -621,7 +621,7 @@ fn markdown_shares_renderer_and_reacts_to_density_and_subtree_tokens() {
 
 #[test]
 fn markdown_callouts_and_code_controls_use_locale_and_theme() {
-    let locale = MarkdownLocale { copied: "已写入剪贴板", ..MarkdownLocale::zh_cn() };
+    let locale = MarkdownLocale { copied: "Copied to the clipboard", ..MarkdownLocale::zh_cn() };
     let mut mounted = Mounted::new(HeadlessDriver::default(), move |b| {
         b.provide(locale);
         let mut theme = MarkdownTheme::chat();
@@ -680,7 +680,7 @@ fn markdown_table_uses_aligned_intrinsic_columns_and_scrolls() {
     let mut mounted = Mounted::new(driver, move |b| {
         col().w(200).child(
             markdown(b, move |r: &mut ReadCx<'_>| {
-                let description = if r.get(wide) { "宽长列 · long description ".repeat(12) } else { "small".into() };
+                let description = if r.get(wide) { "long column description ".repeat(12) } else { "small".into() };
                 format!("| N | Description |\n| --: | :-- |\n| 1 | {description} |\n| 2 | short |")
             })
             .test_id("markdown"),

@@ -2,7 +2,7 @@
 
 > Part of the [Octara v2 Clean-Sheet Architecture](../architecture-v2.md).  
 > Design premise: **Zero historical baggage, zero backwards compatibility with `0.0.1` Kit APIs.**  
-> Grounded in [Headless UI React 的组件、机制与 Octara 分层](../../research/headless-ui-react.md) and Octara v2's `Copy`-handle + capability-context runtime.
+> Grounded in [Headless UI React: Components, Mechanisms, and Octara's Layers](../../research/headless-ui-react.md) and Octara v2's `Copy`-handle + capability-context runtime.
 
 ---
 

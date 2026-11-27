@@ -1,26 +1,26 @@
-# 运行 Chat
+# Run Chat
 
-在仓库根目录运行 `cargo run -p octara-chat-desktop`。Chat 使用 Octara v2 的原生窗口、编辑器和组件。可以创建并管理会话、流式阅读回复、停止或重新生成答案、调整模型和输出设置。
+Run `cargo run -p octara-chat-desktop` from the repository root. Chat uses Octara v2’s native windows, editor, and components. Create and manage conversations, read replies as they stream, stop or regenerate a reply, and adjust the model and generation settings.
 
-## 选择后端
+## Choose a backend
 
-| 启动环境 | 应用行为 |
+| Environment | App behavior |
 | --- | --- |
-| 无模型服务配置 | 使用离线 Scripted 后端，可验证界面、队列和取消 |
-| 设置 `OPENROUTER_API_KEY` | 使用应用内置的 OpenRouter 预设 `deepseek/deepseek-v4.1-flash` |
-| 设置 `OCTARA_CHAT_ENDPOINT` 和 `OCTARA_CHAT_MODEL` | 连接指定的完整 Chat Completions 地址与模型。`OCTARA_CHAT_API_KEY` 是可选的专用凭据，显式配置优先 |
-| 设置 `OCTARA_CHAT_DIR` | 将会话和设置保存在指定目录，便于隔离测试 |
-| 设置 `OCTARA_CHAT_TIMEOUT_SECS` | 配置连接或读取空闲超时，取值 1 至 600 秒，默认 60 秒 |
+| No model service configured | Uses the offline Scripted backend to exercise the UI, queue, and cancellation |
+| `OPENROUTER_API_KEY` | Uses the built-in OpenRouter preset `deepseek/deepseek-v4.1-flash` |
+| `OCTARA_CHAT_ENDPOINT` and `OCTARA_CHAT_MODEL` | Uses the full Chat Completions URL and model you specify. `OCTARA_CHAT_API_KEY` is optional. This configuration takes precedence over the OpenRouter preset |
+| `OCTARA_CHAT_DIR` | Stores conversations and settings in the specified directory for isolated tests |
+| `OCTARA_CHAT_TIMEOUT_SECS` | Sets the connection and idle read timeouts to a value from 1 to 600 seconds. The default is 60 seconds |
 
-会话保存在 `<thread>.v2.json` 中。用编辑区的附件选择器添加文件，或将文件拖入编辑区。附件以本地文件引用保存，发送给模型的是对话文本。
+Chat saves conversations as `<thread>.v2.json`. Use the composer’s attachment picker or drag files into the composer. Chat stores attachments as local file references and sends the conversation text to the model.
 
-模型选择以稳定 ID 保存。应用在发送或排队时记录模型和生成参数。流式输出途中切换模型只影响之后创建的请求。停止或重新生成会取消旧请求，迟到的增量和结束事件无法修改当前回复。取消设置对话框会丢弃草稿，保存才更新配置。
+Model selections use stable IDs. Chat records the model and generation parameters when you send or queue a request. Switching models during a stream applies to future requests. Stopping or regenerating cancels the previous request, and Chat ignores late deltas and completion events from it. Canceling the settings dialog discards the draft. Saving applies the new settings.
 
-使用 Scripted 模型时，在输入框键入 **/transit**，选择命令并发送预填的问题。回复包含可展开的分析笔记、引用、图片、公式、亮度曲线和 Rust 代码。点击图片可放大。键入 **@** 可插入可整块删除的示例联系人，**/attach** 打开文件选择器。
+With the Scripted model selected, type **/transit** in the composer, select the command, and send the prefilled question. The reply includes expandable analysis notes, citations, images, equations, a light curve, and Rust code. Click an image to enlarge it. Type **@** to insert a sample contact you can delete as a unit, or use **/attach** to open the file picker.
 
-## 确定性检查
+## Deterministic checks
 
-CLI 使用相同的界面、离线模型和固定时钟，并将会话保存在内存中。可用 `--size` 和 `--theme` 覆盖检查窗口的尺寸和主题。
+The CLI runs the same UI with the offline model, a fixed clock, and in-memory conversations. Use `--size` and `--theme` to override the window size and theme for inspection.
 
 ```sh
 cargo run -p octara-cli -- check --package octara-chat
@@ -28,44 +28,45 @@ cargo run -p octara-cli -- inspect --package octara-chat --size 390x844
 cargo test -p octara-chat
 ```
 
-[HTTP 测试](tests/network.rs)使用环回服务覆盖真实 SSE、取消和超时。[界面测试](tests/chat.rs)通过 Inspect v2 验证编辑器和对话框。[长会话测试](tests/long_session.rs)覆盖虚拟列表和流式输出时的位置保持。
+The HTTP tests use a loopback server to cover SSE, cancellation, and timeouts. The UI tests exercise the editor and dialogs through Inspect v2. The long-session tests cover virtualized lists and scroll position during streaming. [HTTP tests](tests/network.rs) · [UI tests](tests/chat.rs) · [Long-session tests](tests/long_session.rs)
 
-## 实窗与本地 HTTP
+## Live window and local HTTP
 
-通过 CLI 启动带 Inspector 的离线 Chat。下列命令适用于 Unix。
+Use the CLI to launch offline Chat with Inspect. These commands run on Unix.
 
 ```sh
 chat_tmp="$(mktemp -d /tmp/octara-chat.XXXXXX)"
 cargo run -p octara-cli -- launch --package octara-chat-desktop --socket "$chat_tmp/inspect.sock" --receipt "$chat_tmp/build.json"
 ```
 
-在另一个终端，使用前一个终端的临时目录运行脚本，或查看语义树。关闭窗口后可删除临时目录。
+In another terminal, replace `/tmp/octara-chat.XXXXXX` with the first terminal’s temporary directory. Run the live check script or inspect the semantic tree. Remove the temporary directory after closing the window.
 
 ```sh
 python3 -B apps/chat/live_chat.py --connect /tmp/octara-chat.XXXXXX/inspect.sock
 cargo run -p octara-cli -- inspect --connect /tmp/octara-chat.XXXXXX/inspect.sock
 ```
 
-需要连接本地 HTTP 时，先运行隔离的 [SSE 测试服务](serve_network_fixture.py)，再以它输出的完整地址和独立会话目录启动 Chat。测试服务不需要凭据。
+To test local HTTP, start the isolated SSE test server, then launch Chat with the full URL it writes and a separate conversation directory. The test server requires no credentials. [SSE test server](serve_network_fixture.py)
 
 ```sh
 python3 -B apps/chat/serve_network_fixture.py --output /tmp/octara-chat-peer
 ```
 
 ```sh
+chat_tmp="$(mktemp -d /tmp/octara-chat-http.XXXXXX)"
 OCTARA_CHAT_ENDPOINT="$(cat /tmp/octara-chat-peer/endpoint.txt)" \
 OCTARA_CHAT_MODEL=local-fixture OCTARA_CHAT_DIR="$chat_tmp/session" cargo run -p octara-chat-desktop
 ```
 
-在界面中发送消息，确认收到标题为 “Local HTTP stream” 的回复。关闭窗口后结束测试服务。
+Send a message and confirm that a reply titled “Local HTTP stream” appears. Close the window, then stop the test server.
 
-## 长会话观测
+## Inspect long sessions
 
-使用 `cargo run -p octara-chat-desktop --example long_session` 打开长会话窗口。通过 `OCTARA_CHAT_DIR` 指定空目录以生成带有 1,000 条消息的历史。将 `OCTARA_CHAT_MESSAGES` 设为 `10000` 可检查较大的历史。在这个窗口中发送消息会开始一段较长的离线回复。
+Run `cargo run -p octara-chat-desktop --example long_session` with `OCTARA_CHAT_DIR` pointing to an empty directory to generate a history of 1,000 messages. Set `OCTARA_CHAT_MESSAGES=10000` to inspect a larger history. Sending a message in this window starts a long offline reply.
 
 ```sh
 cargo run --release -p octara-chat --example long_bench -- --samples 40
 cargo run --release -p octara-chat --example stream_bench -- --samples 20
 ```
 
-基准输出记录进程内的流式接收和提交耗时、事务数量、帧编号和已挂载消息数量。
+The benchmarks report in-process stream intake and commit timings, transaction counts, frame numbers, and the number of mounted messages.

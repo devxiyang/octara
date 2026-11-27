@@ -3,32 +3,54 @@ name: octara
 description: "Build and change native or browser UI with the Octara Rust framework: elements, styles, state, lists, input, motion, async work, headless tests and diagnostics. Use whenever code uses the `octara` crates (`use octara::prelude::*`), the task touches Octara views or tests, or an Octara diagnostic code (such as STALE_TARGET or LAYOUT_LOOP) appears."
 license: MIT OR Apache-2.0
 metadata:
-  octara-version: "0.0.7"
+  octara-version: "0.0.8"
 ---
 
-# 用 Octara 0.0.7 构建和验证应用
+# Build and verify apps with Octara 0.0.8
 
-读这个版本的[入门指南](references/start-here.md)。`octara vocab` 列出 prelude，`octara vocab <name>` 显示应用所用源码中的签名、导入路径和定义，`octara explain <code>` 说明诊断原因。`octara skill install` 生成按模块组织的 [API 索引](references/api/index.md)。
+Read the [Getting Started guide for this version](references/start-here.md). `octara vocab` lists the prelude, and `octara vocab <name>` shows signatures, import paths, and definitions from the app’s source dependencies. `octara explain <code>` explains diagnostics. `octara skill install` generates an [API index organized by module](references/api/index.md).
 
-## 编写视图和状态
+## Write views and manage state
 
-- 用普通 Rust 函数组合视图，通过 `AppDefinition` 和 `WindowDefinition` 指定窗口入口。单行编辑用 `input()`，多行编辑用 `textarea()`。把语义角色、标签和处理器放在实际操作的节点上。
-- `BuildCx` 创建 Signal、Memo、集合和任务所需的状态。`ReadCx` 用于动态读取，`WriteCx` 用于处理器中的修改。构造时用 `cx.read(|r| …)` 做一次非订阅读取。受控控件用可复制的 `Binding<T>`，从 Signal 转换或用 `cx.binding(read, write)` 定义读写。
-- 用 `cx.persisted(key, init)` 保存需要跨进程恢复的应用状态，并声明状态 schema。为变动列表选择稳定唯一的业务 key。用 `StateList::read_only()` 开始增量派生，或用 `cx.derive_list` 从普通响应式值构造 keyed list，再用 `each` 按 key 挂载行。
-- 用 `cx.menus` 声明窗口菜单，`cx.on_chord` 注册快捷键。菜单项和快捷键可以调用同一命令。用 `El::select_none()` 关闭界面文字的文本选择。
-- 用 `cx.window_chrome()` 布置自定义标题栏，用 `cx.window_geometry()` 订阅实际窗口位置和尺寸。由 `WindowOptions::persistence_key` 将窗口几何纳入 `RestartState`。用 `window_drag_region(true)` 标记标题栏的拖拽区。
-- 用 `native_view("web")` 在 macOS 或 iOS 托管 `WKWebView`。用 `WriteCx::send_native_command` 按 `test_id` 发消息，通过 `on_native` 接收导航和 JavaScript 响应。macOS 使用 `Underlay` 时，Octara 浮层可覆盖 WebView。
-- 数字样式值表示逻辑像素，`sp(2.0)` 使用主题间距。用 `FontSizeToken`、`ColorToken` 和 `Radius` 指定主题或形状。
-- 用 `octara_kit::button(label, size, variant)` 指定按钮尺寸和强调。组合自定义控件时，从 `octara_kit::parts` 获取主题样式，从 `octara_kit::headless` 获取行为。用 `build.provide(KitLocale::zh_cn())` 设置作用域内 Kit 控件的中文标签。
-- 选择器用 `headless::Choice` 提供选项，用 `headless::Selection` 声明单选或多选。通过 `PickerOptions` 和行工厂配置列表，通过 `PopupOptions` 配置浮层。`ComboboxOptions` 组合列表、浮层和输入框配置。
-- 用 `markdown_with(build, source, MarkdownConfig::chat())` 定制 Markdown 的解析、排版、链接和代码块。向作用域提供 `Arc<dyn MarkdownRenderer>`，可让多个 `markdown(build, source)` 共享渲染器。`TextBuffer` 支持增量追加，块缓存保留节点与选区。
-- 用 `markdown_stream` 呈现模型输出。渐显默认遵循系统的减弱动态效果设置，`MarkdownConfig::streaming_effects_with` 可响应式配置揭示效果。通过 `BlockSlotRenderer` 定制代码或图表，用 `LinkPillContent` 响应式更新链接胶囊的标签和图标。
-- 用 `InlinePill::attachment` 把胶囊嵌入富文本。宿主根据真实排版尺寸安放胶囊，选择和复制时使用附件范围内的逻辑文本。
-- 为 `octara-markdown` 启用 `math`，以矢量方式排版 `$…$` 与 `$$…$$` 并保留可复制的 TeX 源码。启用 `composer` 后，用 `MarkdownComposer` 配置光标锚定补全。为 `Completion` 添加图标、描述和分类，或用 `editor_with_completion_row` 提供自定义行。
+- Compose views with ordinary Rust functions. Declare window entry points with `AppDefinition` and `WindowDefinition`. Use `input()` for single-line editing and `textarea()` for multiline editing. Put semantic roles, labels, and handlers on the nodes users interact with.
+- Name components with short, purpose-specific `#[ui]` functions so Inspect can show their origins. Declare static styles with `const STYLE: TwStyle = tw!(...)` and apply them with `.tw(STYLE)`. Add fixed children with `.child((a, b, c))`, which accepts a mix of `IntoView` types. Use `.children(iter)` for same-type children.
+- Use `BuildCx` to create signals, memos, collections, and task state. Use `ReadCx` for reactive reads and `WriteCx` to update state in handlers. Use `cx.read(|r| ...)` for a one-time, untracked read during construction. Controlled widgets use a copyable `Binding<T>`. Convert a signal into a binding or define its behavior with `cx.binding(read, write)`.
+- Use `cx.persisted(key, init)` and declare a state schema for app state that should survive a process restart. Give changing lists stable, unique domain keys. Start incremental derivations from `StateList::read_only()`, or use `cx.derive_list` to build a keyed list from reactive values. Mount rows by key with `each`.
+- Declare window menus with `cx.menus` and register shortcuts with `cx.on_chord`. Menu items and shortcuts can invoke the same command. Use `El::select_none()` to disable text selection for UI labels.
+- Use `cx.window_chrome()` to lay out a custom title bar and `cx.window_geometry()` to observe the window’s actual position and size. Set `WindowOptions::persistence_key` to include its geometry in `RestartState`. Mark the draggable part of the title bar with `window_drag_region(true)`.
+- Use `octara::module` for typed platform calls. Add the optional packages your app needs and register them with `AppDefinition::with_module`. With `octara-webview`, mount pages using `octara_webview::view` and use typed commands and events for navigation and JavaScript. Use `octara-video` for playback, `octara-picker` for file selection such as `PickFiles`, and `octara-haptics` for haptic feedback. Use each package’s `mock()` for headless tests and disable default features to omit platform bindings.
+- Before packaging, set manifest variables in the app’s `octara.toml` and run `octara modules merge` with a new output directory. The CLI reads declarative `octara-module.toml` files from dependencies to generate Apple plists, entitlements, and framework lists, plus Web headers. The Apple baselines are macOS 15.4 and iOS 18.4.
+- Numeric style values are logical pixels. `sp(2.0)` uses theme spacing. Use `FontSizeToken`, `ColorToken`, and `Radius` for theme values and shapes.
+- Set button size and emphasis with `octara_kit::button(label, size, variant)`. For custom controls, use themed styles from `octara_kit::parts` and behavior from `octara_kit::headless`. Call `build.provide(KitLocale::zh_cn())` to give Kit controls in that scope Simplified Chinese labels.
+- Use `headless::Choice` for options and `headless::Selection` for single or multiple selection. Configure the list with `PickerOptions` and a row factory, and configure the popup with `PopupOptions`. `ComboboxOptions` combines list, popup, and input settings.
+- Use `markdown_with(build, source, MarkdownConfig::chat())` to customize Markdown parsing, layout, links, and code blocks. Provide an `Arc<dyn MarkdownRenderer>` in scope to share a renderer across `markdown(build, source)` calls. `TextBuffer` supports incremental appends, and the block cache preserves nodes and selections.
+- Use `markdown_stream` to render model output. The reveal follows the system’s reduced-motion preference by default. Use `MarkdownConfig::streaming_effects_with` to configure it reactively. Customize code or chart blocks with `BlockSlotRenderer` and update link pill labels and icons reactively with `LinkPillContent`.
+- Embed pills in rich text with `InlinePill::attachment`. The host positions them using measured text metrics. Selection and copying use the logical text in the attachment’s range.
+- Enable `octara-markdown`’s `math` feature to render `$...$` and `$$...$$` as vector math while keeping the TeX source copyable. Enable `composer` and use `MarkdownComposer` for caret-anchored completions. Add icons, descriptions, and categories to `Completion`, or supply a custom row with `editor_with_completion_row`.
 
-## 验证应用
+## Verify the app
 
-1. 在 Cargo 的 `[package.metadata.octara]` 中登记 `entry = "my_app::startup"`。该函数返回 `AppDefinition`。`octara check -p my-app` 检查手机和桌面尺寸、亮色和暗色下的诊断与结算。`octara inspect -p my-app --json` 启动无头宿主并观察窗口。`octara audit -p my-app --json` 检查文本裁剪、无障碍名称和焦点目标。按回执里的 `provenance.file` 和 `provenance.line` 定位问题。错误级问题退出码为 1。
-2. 用 `octara launch -p my-app --socket SOCKET --receipt FILE` 在本机启动同一个入口。选择未占用的绝对 Unix socket 路径和新的回执文件。`octara inspect --connect SOCKET --receipt FILE --json` 校验进程和构建身份。
-3. 用 `octara run` 在同一次会话中观察并操作，或通过 `--connect SOCKET` 操作已启动的宿主。每行写一个 `octara.inspect/2` 请求。先发送 `{"protocol":"octara.inspect/2","op":"list_windows"}` 或 `{"protocol":"octara.inspect/2","op":"observe"}` 查找窗口和节点。每次 `act` 都原样传回当前快照的 `target`；从节点的几何读取坐标，确认窗口和交互目标。通过 `octara vocab AgentRequest` 和 `octara vocab AgentAction` 查参数。
-4. 读取每步的 `delivery`、`progress.settled`、`committed_frame` 和 `presented_frame`。在下一条 `observe` 中核对值和焦点。收到 `STALE_TARGET` 或连接中断时先观察，再决定是否重试。用 `capture` 的 `painted` 来源核对绘制像素，用实际宿主分别验证系统输入法和呈现行为。
+In one workspace, expose `startup() -> AppDefinition` from the `my-app` library and add `octara-inspect` to the library’s `[dev-dependencies]`. Put the native host dependency in the sibling `my-app-desktop` package. Its `src/main.rs` calls `octara_host_native::run_app(my_app::startup())`.
+
+```toml
+[dependencies]
+my-app = { path = "../my-app" }
+octara-host-native = "0.0.8"
+```
+
+Use `cargo test -p my-app` to test the app library on its own. `HeadlessDriver::launch(startup())` launches the app definition with the layout pipeline and CPU renderer. Use `cargo tree -p my-app` to check for native test dependencies such as `octara-host-native`, `octara-gpu`, `wgpu`, or `objc2`. [Cargo tree reference](https://doc.rust-lang.org/cargo/commands/cargo-tree.html)
+
+Give test nodes a stable `test_id`. Send `Observe` to get a target, then `Act` and assert the updated state. When driving the app directly, `App::dispatch` and `App::advance_to` return `Result<CycleReceipt, AppError>`.
+
+1. Set `entry = "my_app::startup"` in Cargo’s `[package.metadata.octara]`. The function returns `AppDefinition`. Run `octara check -p my-app` to check diagnostics and settling at phone and desktop sizes in light and dark themes. Run `octara inspect -p my-app --json` to inspect a headless window. Run `octara audit -p my-app --json` to check text clipping, accessible names, and focus targets. Use `provenance.file` and `provenance.line` to locate findings. Error-level findings produce exit code 1.
+2. Use `octara launch -p my-app --socket SOCKET --receipt FILE` to launch the same entry point in a native window. Choose an unused absolute Unix socket path and a new receipt file. Use `octara inspect --connect SOCKET --receipt FILE --json` to verify the process and build identity.
+3. Use `octara run` to observe and act in one session, or pass `--connect SOCKET` to control a running host. Write one `octara.inspect/2` request per line. Start with `{"protocol":"octara.inspect/2","op":"list_windows"}` or `{"protocol":"octara.inspect/2","op":"observe"}` to locate windows and nodes. In each `act`, pass the current snapshot’s `target` verbatim. Use the node’s geometry for coordinates and verify the window and interaction target. Look up the arguments with `octara vocab AgentRequest` and `octara vocab AgentAction`.
+4. Check `delivery`, `progress.settled`, `progress.committed_frame`, and `progress.presented_frame` after each action. Verify the value and focus with the next `observe`. If you get `STALE_TARGET` or the connection drops, observe again before deciding whether to retry. Use the `painted` capture source to verify rendered pixels, and test system input methods and presentation in the actual host.
+
+## Configure development and test builds
+
+Set `opt-level = 2` in `[profile.dev.package."*"]` and `[profile.test.package."*"]` in the workspace root `Cargo.toml`. This applies to external dependencies such as `octara`, `octara-*`, `wgpu`, `parley`, and `taffy`. Workspace members use the default `opt-level = 0`. [Cargo profile overrides](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides)
+
+Dependency optimization can reduce CPU cost for layout and rendering in debug builds. Results vary by workload. On macOS arm64, raising external dependencies from `opt-level = 1` to `2` at commit `6ea4f49` reduced the combined size of `__eh_frame` and `__unwind_info` by about 6.7% across 27 Chat and example test executables.
+
+The CLI copies the root manifest’s `[profile.*]` tables into the generated program’s standalone workspace. There, the app library and its dependencies count as external dependencies, so the wildcard also applies to any original workspace members it builds. Named package overrides take precedence. For example, set `opt-level = 0` in `[profile.dev.package.my-app]` to override the wildcard for the app library. [Cargo profile overrides](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides)

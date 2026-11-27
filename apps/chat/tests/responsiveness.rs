@@ -62,7 +62,7 @@ fn four_mib_of_streamed_text_keeps_the_editor_and_virtual_transcript_responsive(
     let observe =
         |fixture: &mut Fixture| fixture.driver.execute(AgentRequest::new(Some(fixture.window), AgentCommand::Observe)).snapshot.unwrap();
     let editor = observe(&mut fixture).editor.unwrap();
-    let draft = "Keep drafting 中文";
+    let draft = "Keep drafting 😀";
     fixture
         .driver
         .dispatch(

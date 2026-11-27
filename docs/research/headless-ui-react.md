@@ -1,51 +1,51 @@
-# Headless UI React 的组件、机制与 Octara 分层
+# Headless UI React: Components, Mechanisms, and Octara's Layers
 
-Headless UI React 把完整控件行为装进可组合的部件，同时复用真实焦点、集合导航、弹层仲裁和语义关系。对 Octara，最值得采用的是让 Kit 配置真正参与交互的节点，让 Core 及宿主统一需要跨节点或跨系统协调的能力。应用用普通 Rust 函数组装，可以直接使用 Core，也可以用 Kit 完成常见交互。[Octara 的分层与原语准入](../ARCHITECTURE.md)
+Headless UI React packages complete control behavior in composable parts and reuses mechanisms for actual focus, collection navigation, overlay arbitration, and semantic relationships. In Octara, Kit can configure the nodes users interact with, and Core and the hosts can coordinate behavior across nodes and system services. Apps compose ordinary Rust functions and can use Core directly or build common interactions with Kit. [Octara layering and criteria for adding primitives](../ARCHITECTURE.md)
 
-调研基线为 Tailwind Labs 的 `@headlessui/react` **2.2.10**，发布于 2026 年 4 月 7 日，对应提交 `d13526d02a2de92c4ad7b62c15cd980636543fe2`。公开面按发布包根入口的运行时命名导出统计，机制按同一提交核对。本轮结论来自发布包与源码的静态审查。文末的 Octara 场景是验收设计。[npm 版本](https://www.npmjs.com/package/%40headlessui/react?activeTab=versions) · [发布记录](https://github.com/tailwindlabs/headlessui/releases/tag/%40headlessui%2Freact%40v2.2.10) · [固定版本导出表](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/index.ts)
+This study uses Tailwind Labs' `@headlessui/react` **2.2.10**, released April 7, 2026, at commit `d13526d02a2de92c4ad7b62c15cd980636543fe2`. The public API count comes from the released package's root runtime named exports. Implementation details were checked at the same commit. The findings come from static review of the released package and source. The closing Octara scenarios define acceptance criteria. [npm version](https://www.npmjs.com/package/%40headlessui/react?activeTab=versions) · [Release notes](https://github.com/tailwindlabs/headlessui/releases/tag/%40headlessui%2Freact%40v2.2.10) · [Pinned export list](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/index.ts)
 
-## 公开能力全表
+## Public API Inventory
 
-包根入口有 **65 个运行时命名导出**。53 个是当前可渲染组件或部件，10 个是废弃的可渲染名称，其余两个是枚举 `FocusTrapFeatures` 和 Hook `useClose`。官方目录中的 16 个组件族占 46 个当前导出，共用表单部件和工具占 7 个。[官方目录](https://headlessui.com/) · [发布版本的组件源码](https://github.com/tailwindlabs/headlessui/tree/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components)
+The package root has **65 named runtime exports**. Of these, 53 are current renderable components or parts, 10 are deprecated renderable names, and two are the `FocusTrapFeatures` enum and `useClose` hook. The official catalog's 16 component families account for 46 current exports, with seven more shared form parts and utilities. [Official catalog](https://headlessui.com/) · [Released component source](https://github.com/tailwindlabs/headlessui/tree/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components)
 
-| 组件族 | 当前导出 | 行为 |
+| Component family | Current exports | Behavior |
 | --- | --- | --- |
-| Menu | `Menu`, `MenuButton`, `MenuItems`, `MenuItem`, `MenuSection`, `MenuHeading`, `MenuSeparator` | 在命令集合中导航、按字查找、执行并关闭。 |
-| Combobox | `Combobox`, `ComboboxInput`, `ComboboxButton`, `ComboboxOptions`, `ComboboxOption` | 搜索输入保留焦点，选项独立高亮和提交，支持单选、多选和虚拟列表。 |
-| Listbox | `Listbox`, `ListboxButton`, `ListboxOptions`, `ListboxOption`, `ListboxSelectedOption` | 自定义单选或多选列表，可在触发器内显示选中值。 |
-| Radio Group | `RadioGroup`, `Radio` | 互斥选择，方向键移动实际焦点并选择。 |
-| Tabs | `TabGroup`, `TabList`, `Tab`, `TabPanels`, `TabPanel` | 标签与面板配对，支持方向和自动或手动激活。 |
-| Dialog | `Dialog`, `DialogPanel`, `DialogTitle`, `DialogBackdrop` | 模态范围、初始焦点、关闭与焦点恢复。 |
-| Popover | `Popover`, `PopoverButton`, `PopoverPanel`, `PopoverBackdrop`, `PopoverGroup` | 锚定面板，管理触发器、面板与同组成员之间的焦点。 |
-| Disclosure | `Disclosure`, `DisclosureButton`, `DisclosurePanel` | 在文档流中展开与收起。 |
-| Transition | `Transition`, `TransitionChild` | 协调进入、退出和后代退出后的卸载。 |
-| Button | `Button` | 使用原生按钮，提供焦点、悬停和按压反馈。 |
-| Checkbox | `Checkbox` | 用外部值或内部默认值管理勾选，支持中间态。 |
-| Switch | `Switch` | 用外部值或内部默认值管理开关。 |
-| Fieldset | `Fieldset`, `Legend` | 表单分组、组名与禁用状态传递。 |
-| Input | `Input` | 原生单行输入，接入字段语义和交互状态。 |
-| Select | `Select` | 原生 HTML 选择控件。 |
-| Textarea | `Textarea` | 原生多行输入，接入字段语义和交互状态。 |
+| Menu | `Menu`, `MenuButton`, `MenuItems`, `MenuItem`, `MenuSection`, `MenuHeading`, `MenuSeparator` | Navigate commands, find them with typeahead, run a command, and close the menu. |
+| Combobox | `Combobox`, `ComboboxInput`, `ComboboxButton`, `ComboboxOptions`, `ComboboxOption` | Keep focus in the search field and highlight and commit options independently. Supports single selection, multiple selection, and virtual lists. |
+| Listbox | `Listbox`, `ListboxButton`, `ListboxOptions`, `ListboxOption`, `ListboxSelectedOption` | Customize a single- or multi-select list and optionally show the selected value in the trigger. |
+| Radio Group | `RadioGroup`, `Radio` | Choose one option. Arrow keys move actual focus and select the option. |
+| Tabs | `TabGroup`, `TabList`, `Tab`, `TabPanels`, `TabPanel` | Pair tabs and panels with configurable orientation and automatic or manual activation. |
+| Dialog | `Dialog`, `DialogPanel`, `DialogTitle`, `DialogBackdrop` | Define modal scope, set initial focus, handle dismissal, and restore focus. |
+| Popover | `Popover`, `PopoverButton`, `PopoverPanel`, `PopoverBackdrop`, `PopoverGroup` | Anchor a panel and manage focus across the trigger, panel, and group members. |
+| Disclosure | `Disclosure`, `DisclosureButton`, `DisclosurePanel` | Expand and collapse content in document flow. |
+| Transition | `Transition`, `TransitionChild` | Coordinate entry, exit, and unmounting after descendant exits complete. |
+| Button | `Button` | Use a native button and expose focus, hover, and press feedback. |
+| Checkbox | `Checkbox` | Manage a controlled or default-checked value, including an indeterminate state. |
+| Switch | `Switch` | Manage an on/off state with a controlled value or an internal default. |
+| Fieldset | `Fieldset`, `Legend` | Group form fields, name the group, and propagate disabled state. |
+| Input | `Input` | Use a native single-line input with field semantics and interaction state. |
+| Select | `Select` | Use a native HTML select control. |
+| Textarea | `Textarea` | Use a native multiline input with field semantics and interaction state. |
 
-### 共用部件、工具和关闭能力
+### Shared Parts, Utilities, and Dismissal
 
-| 公开入口 | 责任 |
+| Public export | Responsibility |
 | --- | --- |
-| `Field`, `Label`, `Description` | 把控件与已挂载的标签和说明关联，并传递禁用状态。 |
-| `DataInteractive` | 给自定义节点提供焦点、悬停和按压状态。 |
-| `CloseButton`, `useClose` | 调用最近的 Dialog、Disclosure 或 Popover 的关闭操作。Menu 通过自己的 render prop 提供 `close`。 |
-| `FocusTrap`, `FocusTrapFeatures` | 可独立配置 `InitialFocus`、`TabLock`、`FocusLock`、`RestoreFocus` 和 `AutoFocus`，也可用 `None` 关闭这些能力。 |
-| `Portal` | 改变内容的实际挂载位置，并参与登记嵌套 Portal 的范围。 |
+| `Field`, `Label`, `Description` | Associate a control with mounted labels and descriptions and propagate disabled state. |
+| `DataInteractive` | Expose focus, hover, and press states on custom nodes. |
+| `CloseButton`, `useClose` | Invoke the nearest Dialog, Disclosure, or Popover's close operation. Menu supplies `close` through its own render prop. |
+| `FocusTrap`, `FocusTrapFeatures` | Configure `InitialFocus`, `TabLock`, `FocusLock`, `RestoreFocus`, and `AutoFocus` independently, or disable them with `None`. |
+| `Portal` | Change the actual mount location and help register the scope of nested portals. |
 
-这里的 `DataInteractive` 提供交互反馈，按钮语义与业务动作由使用者声明。Portal 的挂载位置也可以独立于模态策略配置。[DataInteractive](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/data-interactive/data-interactive.tsx#L29-L56) · [关闭上下文](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/internal/close-provider.tsx) · [FocusTrap](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/focus-trap/focus-trap.tsx#L53-L88) · [Portal](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/portal/portal.tsx#L208-L259)
+`DataInteractive` supplies interaction feedback. The caller declares button semantics and business actions. Portal mount location is configurable independently of modal policy. [DataInteractive](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/data-interactive/data-interactive.tsx#L29-L56) · [Close context](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/internal/close-provider.tsx) · [FocusTrap](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/focus-trap/focus-trap.tsx#L53-L88) · [Portal](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/portal/portal.tsx#L208-L259)
 
-### 废弃入口
+### Deprecated Exports
 
-10 个顶层名称是 `ComboboxLabel`、`DialogDescription`、`ListboxLabel`、`PopoverOverlay`、`RadioGroupOption`、`RadioGroupLabel`、`RadioGroupDescription`、`SwitchGroup`、`SwitchLabel`、`SwitchDescription`。其中七个指向同一个 `Label` 或 `Description` 组件。`PopoverOverlay`、`RadioGroupOption`、`SwitchGroup` 有各自的旧实现。[发布版本组件导出](https://github.com/tailwindlabs/headlessui/tree/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components)
+The 10 top-level names are `ComboboxLabel`, `DialogDescription`, `ListboxLabel`, `PopoverOverlay`, `RadioGroupOption`, `RadioGroupLabel`, `RadioGroupDescription`, `SwitchGroup`, `SwitchLabel`, and `SwitchDescription`. Seven alias the shared `Label` or `Description` component. `PopoverOverlay`, `RadioGroupOption`, and `SwitchGroup` each have their own legacy implementation. [Released component exports](https://github.com/tailwindlabs/headlessui/tree/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components)
 
-旧式点号可渲染入口共有 40 个。表中的部件名加上所属组件和点号即为旧入口。`Portal.Group` 是唯一只通过点号暴露的可渲染部件。`Transition.Root` 指向 `Transition`，`FocusTrap.features` 另外指向 `FocusTrapFeatures` 枚举。[旧 Portal 入口](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/portal/portal.tsx#L254-L259) · [旧 Transition 入口](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/transition/transition.tsx#L637-L648)
+There are 40 legacy renderable dot-notation APIs. Each combines an owning component and a part from the table below. `Portal.Group` is the only renderable part exposed exclusively through dot notation. `Transition.Root` aliases `Transition`, and `FocusTrap.features` separately aliases the `FocusTrapFeatures` enum. [Legacy Portal API](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/portal/portal.tsx#L254-L259) · [Legacy Transition APIs](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/transition/transition.tsx#L637-L648)
 
-| 所属组件 | 旧式点号部件 |
+| Owning component | Legacy dot-notation parts |
 | --- | --- |
 | `Combobox` | `Input`, `Button`, `Label`, `Options`, `Option` |
 | `Dialog` | `Panel`, `Title`, `Description` |
@@ -59,64 +59,64 @@ Headless UI React 把完整控件行为装进可组合的部件，同时复用�
 | `Tab` | `Group`, `List`, `Panels`, `Panel` |
 | `Transition` | `Child`, `Root` |
 
-## 可复用机制及其边界
+## Shared Mechanisms and Their Limits
 
-### 配置实际交互节点
+### Configuring the Interactive Node
 
-`as` 选择承载行为的元素。渲染层把 ref、语义属性和事件合并到该元素，并以 render props 和 `data-*` 提供状态。使用 Fragment 转发这些属性时需要一个能够承接它们的子元素。属性发生冲突时，组件拥有的属性优先，调用方事件先执行，可通过 `preventDefault()` 中止后续事件处理。禁用时，合并器禁用相应交互处理器。[节点渲染](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/utils/render.ts#L130-L270) · [属性与事件合并](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/utils/render.ts#L339-L394)
+`as` selects the element that carries the behavior. The render layer merges refs, semantic attributes, and events into that element and exposes state through render props and `data-*`. Forwarding these props through a Fragment requires a single child that can receive them. Component-owned props win conflicts. Caller event handlers run first and can prevent later handlers from running with `preventDefault()`. When the control is disabled, prop merging disables the relevant interaction handlers. [Node rendering](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/utils/render.ts#L130-L270) · [Prop and event merging](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/utils/render.ts#L339-L394)
 
-按压也有自己的生命周期。React 实现跟踪指针离开、移动、抬起和取消。菜单类触发器根据设备类型选择开始时刻，鼠标可在焦点变化前打开，触摸和笔走 click 路径。从触发器按下、拖到选项再抬起也有独立判定。这些路径能共用命中与取消信号，最终是否打开、选择或执行由控件决定。[按压状态](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/hooks/use-active-press.tsx#L38-L97) · [设备与开关时机](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/hooks/use-handle-toggle.tsx#L6-L53) · [拖动释放](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/hooks/use-quick-release.ts#L22-L113)
+Press handling tracks pointer leave, move, up, and cancel. Menu-style triggers choose when to open based on the device. A mouse can open before focus changes. Touch and pen use the click path. Pressing the trigger, dragging to an option, and releasing also has dedicated handling. These paths can share hit testing and cancellation signals. Each control decides whether to open, select, or invoke a command. [Press state](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/hooks/use-active-press.tsx#L38-L97) · [Device type and toggle timing](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/hooks/use-handle-toggle.tsx#L6-L53) · [Drag and release](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/hooks/use-quick-release.ts#L22-L113)
 
-Octara 用 `El::behavior` 把组件行为与应用回调放在同一挂载节点上，顺序为 IME 路由、组件行为、应用回调。Kit 的 `select` 与 `combobox` 把控件的角色、名称、展开状态和输入行为安装到应用提供的触发元素上。应用可在同一个元素上设置样式、禁用和提示，并追加按压回调。[Octara `El::behavior`](../../crates/octara/src/view/el.rs) · [行为层](../../crates/octara/src/view/behavior.rs) · [Kit 选择器](../../crates/octara-kit/src/choices.rs)
+Octara uses `El::behavior` to attach component behavior and app callbacks to the same mounted node. IME routing runs first, followed by component behavior and app callbacks. Kit's `select` and `combobox` attach role, name, expanded state, and input behavior to an app-provided trigger. The app can style and disable the same element, give it a tooltip, and add a press callback. [Octara `El::behavior`](../../crates/octara/src/view/el.rs) · [Behavior layer](../../crates/octara/src/view/behavior.rs) · [Kit selectors](../../crates/octara-kit/src/choices.rs)
 
-### 集合身份、焦点、活动项和提交
+### Collection Identity, Focus, Active Items, and Commit
 
-Headless UI 的集合机制能根据活着的节点更新位置，在重排时保留同一个活动项，移除后清理目标。部分复合控件共用 reducer、订阅和清理机制，各自维护控件状态。Combobox、Listbox、RadioGroup 提供受控值和默认值两种归属，支持用 `by` 比较业务值。动态选项、当前活动项和已提交值可以独立变化。[集合重排](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/menu/menu-machine.ts#L69-L92) · [活动项计算](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/utils/calculate-active-index.ts#L25-L94) · [共用状态机](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/machine.ts#L5-L88) · [受控值](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/hooks/use-controllable.ts#L5-L45)
+Headless UI updates collection positions from live nodes, preserves the active item on reorder, and clears removed targets. Some composite controls share reducer, subscription, and cleanup machinery while keeping their own state. Combobox, Listbox, and RadioGroup support both controlled and default values and can compare business values with `by`. Dynamic options, the active item, and the committed value can change independently. [Collection reordering](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/menu/menu-machine.ts#L69-L92) · [Active item calculation](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/utils/calculate-active-index.ts#L25-L94) · [Shared state machine](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/machine.ts#L5-L88) · [Controlled values](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/hooks/use-controllable.ts#L5-L45)
 
-| 控件 | 实际焦点 | 导航和提交 |
+| Control | Actual focus | Navigation and commit |
 | --- | --- | --- |
-| Menu | 菜单容器 | 活动项是当前命令目标，确认时执行。 |
-| Listbox | 选项容器 | 活动项与选中值独立。单选提交后关闭，多选可继续。 |
-| Combobox | 编辑器 | 活动项作为编辑器的语义关系发布。应用可独立维护查询，确认后写入选择。 |
-| 手动激活 Tabs | 当前 Tab | 方向键改变焦点，确认后才切换选中 Tab 和面板。 |
-| RadioGroup | 当前 Radio | 方向键移动焦点，也更新选中值。 |
+| Menu | Menu container | The active item is the current command target. Confirming runs it. |
+| Listbox | Options container | The active item and selected value are independent. Committing a single selection closes the list. In multi-select mode, the list can stay open. |
+| Combobox | Editor | The editor exposes the active item as a semantic relationship. The app can maintain the query independently and write the selection on confirmation. |
+| Manually activated Tabs | Current tab | Arrow keys move focus. Confirming changes the selected tab and panel. |
+| RadioGroup | Current radio | Arrow keys move focus and update the selected value. |
 
-Combobox 让 IME 优先处理组词期间的 Enter，同时仍可把编辑变化交给应用参与过滤。Octara 的宿主和编辑器已经有系统组合区与草稿协议。Kit 需要根据产品定义何时使用草稿过滤、何时提交业务值。集合顺序、禁用项过滤和身份解析可以共享，焦点是否移动、导航是否提交以及提交什么留给各控件。[Menu 键盘处理](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/menu/menu.tsx#L458-L556) · [Listbox 提交](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/listbox/listbox-machine.ts#L513-L543) · [Combobox 输入](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/combobox/combobox.tsx#L678-L825) · [Tabs 键盘处理](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/tabs/tabs.tsx#L444-L502) · [RadioGroup 键盘处理](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/radio-group/radio-group.tsx#L223-L275) · [Octara 文本输入](../design/v2/03-tree-microkernel.md)
+Combobox lets the IME handle Enter first during composition and can still pass edits to the app for filtering. Octara's hosts and editor already have a system composition and draft contract. Kit needs to decide for each product when to filter on drafts and when to commit a business value. Controls can share collection ordering, disabled-item filtering, and identity resolution. Each control decides whether focus moves, whether navigation commits, and what it commits. [Menu keyboard handling](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/menu/menu.tsx#L458-L556) · [Listbox commit](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/listbox/listbox-machine.ts#L513-L543) · [Combobox input](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/combobox/combobox.tsx#L678-L825) · [Tabs keyboard handling](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/tabs/tabs.tsx#L444-L502) · [RadioGroup keyboard handling](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/radio-group/radio-group.tsx#L223-L275) · [Octara text input](../design/v2/03-tree-microkernel.md)
 
-### 弹层位置、逻辑范围和模态权限
+### Overlay Placement, Logical Scope, and Modal Authority
 
-定位逻辑根据锚点和空间更新面板。Portal 管实际挂载位置并登记后代。弹层栈决定哪层有权处理 Escape 或外部按压。Dialog 还限制背景交互并恢复焦点。Popover 能把触发器、面板、嵌套 Portal 和同组弹层视作逻辑范围，若在外部点到可聚焦控件，可以保留焦点的新去向。焦点隔离、滚动锁和退出生命周期各有自己的释放时机。[锚点定位](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/internal/floating.tsx#L197-L248) · [弹层栈](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/hooks/use-is-top-layer.ts#L29-L65) · [Dialog](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/dialog/dialog.tsx#L191-L269) · [Popover](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/popover/popover.tsx#L175-L240)
+Positioning updates the panel from its anchor and available space. Portal manages the physical mount location and registers descendants. The overlay stack decides which layer handles Escape or outside presses. Dialog also limits background interaction and restores focus. A Popover's logical scope can include its trigger, panel, nested portals, and grouped overlays. An outside press on a focusable control can leave focus on that new target. Focus isolation, scroll lock, and exit state each end on their own schedule. [Anchor positioning](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/internal/floating.tsx#L197-L248) · [Overlay stack](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/hooks/use-is-top-layer.ts#L29-L65) · [Dialog](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/dialog/dialog.tsx#L191-L269) · [Popover](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/popover/popover.tsx#L175-L240)
 
-在 Octara，Headless 控制器声明弹层的锚点和关闭条件，窗口依据挂载关系和输入会话确定谁响应。Kit 的 `popover` 采用非模态范围。`combobox_input` 在编辑器保留焦点时呈现建议列表。Dialog 中的编辑器示例覆盖面板的逻辑归属和组词期间的按键路由。[Octara 弹层契约](../design/v2/02-reactive-runtime.md) · [编辑器与弹层示例](../../examples/src/showcase/interaction.rs)
+In Octara, a Headless controller declares an overlay's anchor and dismissal conditions. The window uses mount relationships and input sessions to determine who responds. Kit's `popover` uses a nonmodal scope. `combobox_input` shows suggestions while the editor retains focus. The editor-in-Dialog example covers the panel's logical ownership and key routing during composition. [Octara overlay contract](../design/v2/02-reactive-runtime.md) · [Editor and overlay examples](../../examples/src/showcase/interaction.rs)
 
-### 虚拟选项与退出时序
+### Virtual Options and Exit Timing
 
-Combobox 是这版 React 包提供公开虚拟列表接口的组件族。导航基于完整逻辑选项，活动项移出视口时可以请求滚动。可访问的活动后代关系只指向已经挂载且与当前活动项相符的行。挂载行也报告自己在完整集合中的位置和总数。Octara 的 `virtual_each` 已使用业务 key 保留行身份。[虚拟列表用法](https://headlessui.com/react/combobox#virtual-scrolling) · [虚拟行测量](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/combobox/combobox.tsx#L134-L232) · [活动目标校验](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/combobox/combobox-machine.ts#L608-L628) · [Octara 虚拟集合](../../crates/octara/src/view/list.rs)
-
-
-`WriteCx::reveal_row` 按业务键向已挂载的虚拟列表请求测量与滚动。`select` 和 `combobox` 保留列表或搜索框的焦点，活动行挂载后供 `active_descendant` 解析。[揭示契约](../design/v2/03-tree-microkernel.md) · [Chat 会话列表](../../apps/chat/src/ui.rs) · [Kit 选择器](../../crates/octara-kit/src/choices.rs)
+Combobox is the component family with a public virtualization API in this React release. Navigation uses the entire logical option set and can request scrolling to an active option outside the viewport. The accessible active-descendant relationship only references a mounted row for the current active option. Mounted rows also report their position and the total size of the full collection. Octara's `virtual_each` already uses business keys to preserve row identity. [Virtual scrolling](https://headlessui.com/react/combobox#virtual-scrolling) · [Virtual row measurement](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/combobox/combobox.tsx#L134-L232) · [Active target checks](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/combobox/combobox-machine.ts#L608-L628) · [Octara virtual collections](../../crates/octara/src/view/list.rs)
 
 
-Rune 用业务 key 表示当前活动选项，在编辑器持有真实焦点时按 key 揭示选项，组合期间跳过选择器按键处理。它给弹层主体与结果容器留出收缩能力，键盘撑小可用区域时由结果视口承担滚动。Exact 的 iOS 弹层按页面可用区域定位，把键盘上沿纳入计算，并把选定区域交给内容布局。Expo 的 SwiftUI TextField 区分 Return 按键标签和 `onSubmit` 回调，系统输入与业务选择的时序仍需用实际输入法验证。[Rune Combobox](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune-kit/src/combobox.rs#L216-L338) · [Exact iOS 弹层](https://github.com/expo/exact/blob/08c889a9de21a30b7c3b308422fc588cf1a480d3/host/apple/Sources/ExactKit/IOS/MenusIOS.swift#L749-L792) · [Expo TextField](https://docs.expo.dev/versions/latest/sdk/ui/swift-ui/textfield/#submit-handling)
+`WriteCx::reveal_row` asks a mounted virtual list to measure and scroll to a business key. `select` and `combobox` keep focus on the list or search field. Once mounted, the active row can be resolved by `active_descendant`. [Reveal contract](../design/v2/03-tree-microkernel.md) · [Chat conversation list](../../apps/chat/src/ui.rs) · [Kit selectors](../../crates/octara-kit/src/choices.rs)
 
-Transition 让正在退出的内容保留绘制，等待参与过渡的后代完成再卸载，重新打开会取消过时的退出完成。Combobox 在离开期间还可以保留退出内容的视觉快照。Octara 应按场景定义输入、可访问对象、绘制与卸载各自的生效时刻。弹层开始关闭后，旧 Agent 目标的有效性应由窗口根据当前交互权限判定，独立于旧像素的存在。[嵌套退出](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/transition/transition.tsx#L176-L274) · [取消过渡](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/hooks/use-transition.ts#L255-L284) · [退出快照](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/combobox/combobox.tsx#L1334-L1398)
 
-### 字段语义与系统编辑
+Rune identifies the active option by business key and reveals it by key while the editor holds actual focus. Chooser key handling is skipped during composition. The overlay body and results container can shrink, so the results viewport handles scrolling when the keyboard reduces available space. Exact positions iOS overlays within the available page area, accounting for the keyboard's top edge, and passes the resulting area to content layout. Expo's SwiftUI TextField distinguishes the Return key label from the `onSubmit` callback. Verify the ordering of system input and choice submission with a real IME. [Rune Combobox](https://github.com/anomalyco/rune/blob/3686e94ae09545fd5f2a61e22aabfbeba1cd896f/crates/rune-kit/src/combobox.rs#L216-L338) · [Exact iOS overlays](https://github.com/expo/exact/blob/08c889a9de21a30b7c3b308422fc588cf1a480d3/host/apple/Sources/ExactKit/IOS/MenusIOS.swift#L749-L792) · [Expo TextField](https://docs.expo.dev/versions/latest/sdk/ui/swift-ui/textfield/#submit-handling)
 
-`Field`、`Label` 和 `Description` 组合已挂载的语义关系。`Input`、`Textarea` 和 `Select` 使用浏览器原生控件，选项类组件通过表单归属、禁用、提交和重置协议参与原生表单。对 Octara，Kit 可组合标签、说明、控件和模型绑定，窗口与宿主负责真实编辑会话、选区、组合区、候选窗锚点与平台辅助功能。标签文字变化应通过关系更新到原来的控件，并在同一更新周期内供 Inspector 和平台语义读取。[Field](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/field/field.tsx#L28-L74) · [表单参与](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/internal/form-fields.tsx#L21-L105) · [Octara 字段组合](../../crates/octara-kit/src/forms.rs) · [窗口语义](../../crates/octara-tree/src/semantics.rs)
+Transition keeps exiting content painted, waits for participating descendants to finish, then unmounts. Reopening cancels stale exit completion. Combobox can also retain a visual snapshot of exiting content. Octara should define when input, accessibility objects, painting, and unmounting take effect in each scenario. Once an overlay starts closing, the window should use current interaction authority to evaluate old Agent targets independently of whether the old pixels remain visible. [Nested exits](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/transition/transition.tsx#L176-L274) · [Transition cancellation](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/hooks/use-transition.ts#L255-L284) · [Exit snapshots](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/combobox/combobox.tsx#L1334-L1398)
 
-## Octara 的设计取舍与验收
+### Field Semantics and System Editing
 
-保留三条责任边界。**应用**拥有业务 ID、数据来源和提交策略。**Kit** 组合可直接使用的行为，并允许调用者配置实际部件，多个组件可以共享内部实现。**Core 与宿主**拥有挂载身份、真实焦点、输入路由、窗口级协调和系统编辑。只有当实际调用方必须复制窗口状态、争抢同一次输入或绕过系统协议时，才评审更通用的 Core 入口。[Octara 原语准入与身份](../ARCHITECTURE.md)
+`Field`, `Label`, and `Description` compose semantic relationships among mounted elements. `Input`, `Textarea`, and `Select` use native browser controls. Choice components take part in native forms through form ownership, disabled state, submission, and reset. In Octara, Kit can compose labels, descriptions, controls, and model bindings. The window and host own actual edit sessions, selections, composition ranges, candidate-window anchors, and platform accessibility. Label text changes should update the original control through its label relationship and become readable by the Inspector and platform accessibility in the same update cycle. [Field](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/components/field/field.tsx#L28-L74) · [Form participation](https://github.com/tailwindlabs/headlessui/blob/d13526d02a2de92c4ad7b62c15cd980636543fe2/packages/%40headlessui-react/src/internal/form-fields.tsx#L21-L105) · [Octara field composition](../../crates/octara-kit/src/forms.rs) · [Window semantics](../../crates/octara-tree/src/semantics.rs)
 
-Chat 的工具栏模型选择器在 `combobox` 的触发工厂里设置样式、提示、空状态文案与禁用条件。模型列表为空或有内容时都使用同一个选择器，窗口和 Agent 从实际触发器读取语义与可用动作。模型 ID 表示业务选择，触发器和选项由框架分配各自的挂载身份。[Chat 模型选择器](../../apps/chat/src/ui.rs) · [Kit 选择器](../../crates/octara-kit/src/choices.rs)
+## Octara Design Choices and Acceptance Criteria
 
-| 场景 | 验收条件 |
+The **app** owns business IDs, data sources, and commit policy. **Kit** composes ready-to-use behaviors, lets callers configure the actual parts, and can share internal implementations across components. **Core and the host** own mount identity, actual focus, input routing, window-level coordination, and system editing. Consider a more general Core API only if a real caller must duplicate window state, compete for the same input, or bypass a system protocol. [Octara primitives and identity](../ARCHITECTURE.md)
+
+The Chat toolbar model picker configures styling, tooltips, empty-state text, and disabled conditions in the `combobox` trigger factory. It uses the same picker with an empty or populated model list. The window and Agent read semantics and available actions from the actual trigger. Model IDs represent business selections, and the framework assigns mount identities to the trigger and options. [Chat model picker](../../apps/chat/src/ui.rs) · [Kit selectors](../../crates/octara-kit/src/choices.rs)
+
+| Scenario | Acceptance criteria |
 | --- | --- |
-| Chat 模型选择器 | 空集合禁用，模型恢复后可用。样式、提示、角色与 Agent 动作指向实际触发器。重名模型可按稳定 ID 区分。 |
-| Combobox 搜索和虚拟选项 | 中文组词的 Enter 只服务当前输入法操作。确认词后再确认选项时，业务提交一次。键盘导航到视口外的选项时，先滚动挂载，再发布可解析的活动后代关系。 |
-| Dialog 内的非模态浮层 | Escape 只关闭有权处理的顶层。外部可聚焦节点可以接收焦点，关闭时只恢复仍有效的目标。嵌套浮层的逻辑范围在挂载位置变化后仍成立。 |
-| 关闭并重新打开的浮层 | 旧画面可以完成退出，输入和 Agent 操作资格按窗口的当前状态判定。过时的退出完成事件不会卸载重新打开的内容。 |
-| 受控字段与手动 Tabs | 修改字段标签后，编辑器保持挂载身份并报告新名称。手动 Tabs 的键盘焦点与已选面板可以独立变化，确认后才切换面板。 |
+| Chat model picker | The picker is disabled when the collection is empty and available when models return. Style, tooltip, role, and Agent actions refer to the actual trigger. Models with duplicate names are distinguishable by stable ID. |
+| Combobox search and virtual options | During Chinese composition, Enter serves only the current IME operation. Confirming an option after confirming the composed word commits the business selection once. Keyboard navigation to an offscreen option scrolls and mounts it before publishing a resolvable active-descendant relationship. |
+| Nonmodal overlay inside a Dialog | Escape dismisses only the top layer authorized to handle it. Focusable nodes outside can receive focus, and dismissal restores focus only to a still-valid target. Nested overlays retain their logical scope when the mount location changes. |
+| Closing and reopening an overlay | The old visuals can finish exiting. Input and Agent actions follow the window's current state. A stale exit completion leaves reopened content mounted. |
+| Controlled field and manual Tabs | Editing the label preserves the editor's mount identity and reports the new name. Keyboard focus and the selected panel can change independently in manual Tabs. Confirmation switches the panel. |
 
-这些场景用来区分现有组合能力、Kit API 缺口和真正需要窗口仲裁的契约。时序与状态可先用无窗口驱动复核，系统 IME、平台焦点与辅助功能输出需要对应宿主的观察结果。[Octara 的验证边界](../ARCHITECTURE.md#怎样判断架构收敛了)
+These scenarios identify what existing composition supports, what Kit APIs need to add, and what requires window arbitration. A headless driver can check timing and state. System IME, platform focus, and accessibility output require observations from the relevant host. [Octara verification plan](../design/architecture-v2.md#9-phased-execution--verification-plan)

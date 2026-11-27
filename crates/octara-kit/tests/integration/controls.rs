@@ -232,24 +232,26 @@ fn status_components_publish_labels_and_removable_chips_activate() {
 fn localized_labels_follow_context_across_child_scopes_and_dialogs() {
     let mounted = Mounted::new(HeadlessDriver::default(), |b| {
         b.provide(KitLocale::zh_cn());
-        let query = b.signal("笔记".to_owned());
+        let query = b.signal("Notes".to_owned());
         let open = b.signal(true);
         col()
-            .child(search_field(b, "query", "查找笔记", query.into(), |editor| editor))
-            .child(removable_chip(b, "附件", |remove| remove.test_id("remove")))
+            .child(search_field(b, "query", "Find notes", query.into(), |editor| editor))
+            .child(removable_chip(b, "Attachment", |remove| remove.test_id("remove")))
             .child(spinner(b).test_id("loading"))
             .child(scoped(move |b| {
-                b.provide(KitLocale { close: "完成", ..KitLocale::zh_cn() });
-                dialog("summary", "摘要", open.into(), DialogOptions::default(), |b| breadcrumb(b, [text("首页")]).test_id("breadcrumbs"))
+                b.provide(KitLocale { close: "Done", ..KitLocale::zh_cn() });
+                dialog("summary", "Summary", open.into(), DialogOptions::default(), |b| {
+                    breadcrumb(b, [text("Home")]).test_id("breadcrumbs")
+                })
             }))
     });
     let label = |name| mounted.tree().semantics(mounted.node(name)).unwrap().label.as_deref().unwrap();
-    assert_eq!(mounted.tree().editor(mounted.node("query")).unwrap().placeholder.as_ref(), "搜索");
-    assert_eq!(label("query"), "查找笔记");
-    assert_eq!(label("query-clear"), "清除搜索");
-    assert_eq!(label("remove"), "移除附件");
-    assert_eq!(label("loading"), "正在加载");
-    assert_eq!(label("summary-close"), "完成");
-    assert_eq!(label("breadcrumbs"), "面包屑导航");
+    assert_eq!(mounted.tree().editor(mounted.node("query")).unwrap().placeholder.as_ref(), KitLocale::zh_cn().search);
+    assert_eq!(label("query"), "Find notes");
+    assert_eq!(label("query-clear"), KitLocale::zh_cn().clear_search);
+    assert_eq!(label("remove"), KitLocale::zh_cn().remove_item.replace("{item}", "Attachment"));
+    assert_eq!(label("loading"), KitLocale::zh_cn().loading);
+    assert_eq!(label("summary-close"), "Done");
+    assert_eq!(label("breadcrumbs"), KitLocale::zh_cn().breadcrumb);
     assert_eq!(mounted.tree().visual(mounted.node("summary")).background, Some(Theme::default().get(ColorToken::SurfaceElevated)));
 }

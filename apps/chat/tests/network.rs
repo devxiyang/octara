@@ -216,9 +216,9 @@ fn queued_requests_keep_the_model_selected_at_enqueue_and_send_the_completed_his
 
 #[test]
 fn fragmented_unicode_sse_reaches_chat_and_followups_send_the_real_history() {
-    // HTTP chunks split JSON, SSE CRLF, and the UTF-8 bytes inside 中文/emoji.
+    // HTTP chunks split JSON, SSE CRLF, and the UTF-8 bytes of accented text and emoji.
     let mut bytes = b": heartbeat\r\n\r\n".to_vec();
-    bytes.extend(peer::text("你好，"));
+    bytes.extend(peer::text("Café, "));
     bytes.extend(peer::text("world 😀"));
     bytes.extend_from_slice(b"data: [DONE]\r\n\r\n");
     let server = Fixture::new(vec![
@@ -226,10 +226,10 @@ fn fragmented_unicode_sse_reaches_chat_and_followups_send_the_real_history() {
         Plan::success("second answer"),
     ]);
     let h = Harness::new(&server, TIMEOUT);
-    let thread = h.send("first question 中文");
+    let thread = h.send("first question about a café");
     h.done(&server, thread);
     assert_eq!(h.answer(thread).status, Status::Done);
-    assert_eq!(h.answer_text(thread), "你好，world 😀");
+    assert_eq!(h.answer_text(thread), "Café, world 😀");
     h.send("follow up");
     h.done(&server, thread);
     server.inspect(|s| {
@@ -239,8 +239,8 @@ fn fragmented_unicode_sse_reaches_chat_and_followups_send_the_real_history() {
         assert_eq!(
             s.requests[1]["messages"],
             json!([
-                {"role":"user","content":"first question 中文"},
-                {"role":"assistant","content":"你好，world 😀"},
+                {"role":"user","content":"first question about a café"},
+                {"role":"assistant","content":"Café, world 😀"},
                 {"role":"user","content":"follow up"},
             ])
         );
@@ -288,14 +288,14 @@ fn a_refused_loopback_connection_ends_the_chat_answer_without_exposing_the_endpo
 #[test]
 fn a_dropped_stream_keeps_its_prefix_and_regeneration_replaces_it() {
     let server = Fixture::new(vec![
-        Plan { status: 200, chunks: vec![peer::text("received 中文")], end: End::Disconnect },
+        Plan { status: 200, chunks: vec![peer::text("received café")], end: End::Disconnect },
         Plan::success("complete replacement"),
     ]);
     let h = Harness::new(&server, TIMEOUT);
     let thread = h.send("regenerate this");
     h.done(&server, thread);
     assert!(matches!(h.answer(thread).status, Status::Failed(_)));
-    assert_eq!(h.answer_text(thread), "received 中文");
+    assert_eq!(h.answer_text(thread), "received café");
     let answer = h.answer(thread).id;
     h.act(move |chat, w| chat.regenerate(w, answer));
     h.done(&server, thread);
