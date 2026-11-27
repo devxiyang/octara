@@ -181,7 +181,7 @@ fn context(canvas: &HtmlCanvasElement) -> Result<CanvasRenderingContext2d, JsVal
 }
 
 fn draw_text(context: &CanvasRenderingContext2d, text: &CanvasText, visual: Visual, theme: &Theme) -> Result<(), JsValue> {
-    let size = text.size.unwrap_or(visual.font_size) * text.scale;
+    let size = text.size.map_or(visual.font_size, |size| size * visual.text_scale) * text.scale;
     let line_height = visual.line_height * (size / visual.font_size.max(1.0));
     let weight = text.weight.unwrap_or(visual.font_weight);
     let family = crate::css::font_family(visual.font_family);

@@ -6,18 +6,21 @@ use octara_model::input::CursorStyle;
 use octara_model::motion::{Curve, Motion};
 use octara_model::paint::ObjectFit;
 use octara_model::style::{
-    AlignItems, Display, FlexDirection, FlexWrap, GridPos, JustifyContent, LayoutLength, Overflow, Position, ScrollbarVisibility,
-    UserSelect,
+    AlignItems, Direction, Display, FlexDirection, FlexWrap, GridPos, JustifyContent, LayoutLength, Overflow, Position,
+    ScrollbarVisibility, UserSelect, Visual,
 };
 use octara_model::text::{TextAlign, Wrap};
 use octara_model::theme::{Color, ColorScheme, ColorToken};
 use std::fmt::Write;
 
-pub(crate) fn style(tree: &Tree, node: NodeId, viewport: WindowViewport, activatable: bool, reduced_motion: bool) -> String {
+pub(crate) fn text_direction(direction: Direction) -> &'static str {
+    if direction == Direction::Rtl { "rtl" } else { "ltr" }
+}
+
+pub(crate) fn style(tree: &Tree, node: NodeId, v: Visual, viewport: WindowViewport, activatable: bool, reduced_motion: bool) -> String {
     let core = tree.node(node).expect("style for a retained node");
     let kind = core.kind;
     let l = tree.layout_style(node);
-    let v = tree.visual(node);
     let theme = tree.theme_at(node);
     let scheme = if kind == NodeKind::Root || tree.has_theme_patch(node) {
         match theme.scheme {
@@ -62,6 +65,13 @@ pub(crate) fn style(tree: &Tree, node: NodeId, viewport: WindowViewport, activat
         "box-sizing:border-box;color-scheme:{scheme};display:{display};position:{position};flex-direction:{direction};flex-wrap:{wrap};flex-grow:{};flex-shrink:{};",
         l.flex_grow, l.flex_shrink,
     );
+    let has_text = matches!(kind, NodeKind::Text | NodeKind::TextInput | NodeKind::Link);
+    if !has_text {
+        // Structural layout and scroll offsets use the same physical axes as Taffy.
+        css.push_str("direction:ltr;");
+    } else {
+        let _ = write!(css, "--octara-text-scale:{};--octara-text-direction:{};", v.text_scale, text_direction(v.direction));
+    }
     let _ = write!(css, "isolation:isolate;z-index:{};", v.z_index);
     if let Some(link) = tree.link(node)
         && let Some(text) = tree.physical_parent(node).and_then(|parent| tree.text(parent))
@@ -120,12 +130,11 @@ pub(crate) fn style(tree: &Tree, node: NodeId, viewport: WindowViewport, activat
         if let Some(value) = value {
             let word = match value {
                 AlignItems::Normal => "normal",
-                AlignItems::Start => "start",
-                AlignItems::End => "end",
+                // Text direction does not change the direction of the item's layout box.
+                AlignItems::Start | AlignItems::SelfStart => "start",
+                AlignItems::End | AlignItems::SelfEnd => "end",
                 AlignItems::FlexStart => "flex-start",
                 AlignItems::FlexEnd => "flex-end",
-                AlignItems::SelfStart => "self-start",
-                AlignItems::SelfEnd => "self-end",
                 AlignItems::Center => "center",
                 AlignItems::Baseline => "baseline",
                 AlignItems::Stretch => "stretch",
@@ -348,7 +357,11 @@ pub(crate) fn style(tree: &Tree, node: NodeId, viewport: WindowViewport, activat
         }
     }
     let drag_source = tree.drag_drop(node).is_some_and(|slot| slot.source.is_some());
-    if drag_source {
+    let managed_touch_scroll = tree.scroll(node).is_some()
+        && core
+            .flags
+            .intersects(NodeFlags::OVERSCROLL | NodeFlags::DISMISS_KEYBOARD_IMMEDIATELY | NodeFlags::DISMISS_KEYBOARD_INTERACTIVELY);
+    if drag_source || managed_touch_scroll {
         css.push_str("touch-action:none;");
     }
     let selection = v.user_select.or_else(|| {

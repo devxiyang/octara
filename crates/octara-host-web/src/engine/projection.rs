@@ -3,7 +3,7 @@
 use super::{DomEngine, EntryState, exit::ExitPlan, subtrees};
 use crate::{css, dom, rich};
 use octara::runtime::engine::ProjectFeedback;
-use octara::tree::{DirtyBitmap, NodeFlags, NodeId, RetiredNode, Tree, TreeDelta};
+use octara::tree::{DirtyBitmap, NodeFlags, NodeId, NodeKind, RetiredNode, Tree, TreeDelta};
 use octara_model::geometry::WindowViewport;
 use octara_model::input::{CursorStyle, HostReply};
 use octara_model::paint::Image;
@@ -257,7 +257,13 @@ impl DomEngine {
                 continue;
             }
             if let Some(element) = self.projected_element(node) {
-                let style = css::style(tree, node, viewport, tree.has_activation_handler(node), self.reduced_motion);
+                let visual = tree.visual(node);
+                let direction = visual.direction;
+                // An inline link with the paragraph's direction should stay in its BiDi sequence.
+                let inline = tree.node(node).is_some_and(|core| core.kind == NodeKind::Link)
+                    && tree.physical_parent(node).is_some_and(|parent| tree.visual(parent).direction == direction);
+                self.pending().undo.attr(&element, "dir", (!inline).then(|| css::text_direction(direction)))?;
+                let style = css::style(tree, node, visual, viewport, tree.has_activation_handler(node), self.reduced_motion);
                 self.pending().undo.attr(&element, "style", Some(&style))?;
                 if let Some(revision) = tree.text(node).map(|text| {
                     let theme_revision = if text.runs.is_empty() && text.attachments.is_empty() { 0 } else { tree.theme_revision_at(node) };
@@ -334,6 +340,11 @@ impl DomEngine {
                     entry.inline_images = inline_images;
                     self.register_indexes(node);
                 }
+            }
+        }
+        for node in created.iter().copied().chain(delta.editor_traits_dirty.iter().filter(|node| !created.contains(node))) {
+            if let (Some(editor), Some(element)) = (tree.editor(node), self.projected_element(node)) {
+                dom::update_input_traits(&mut self.pending().undo, &element, editor.input_traits)?;
             }
         }
         if let Some(parked) = self.parked.as_ref()

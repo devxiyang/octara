@@ -14,17 +14,21 @@ use octara_model::{
     geometry::Size,
     input::CursorStyle,
     motion::Motion,
-    style::{FontSize, Inherited, LayoutStyle, Length, LineHeight, Radius, Ring, Shadows, State, StyleProp, UserSelect, Visual, When},
+    style::{
+        Direction, FontSize, Inherited, LayoutStyle, Length, LineHeight, Radius, Ring, Shadows, State, StyleProp, UserSelect, Visual, When,
+    },
     text::{TextAlign, Wrap},
     theme::{
         Breakpoint, ColorScheme, ColorToken, ColorValue, Family, Fill, FontSizeToken, Gradient, ResponsiveBreakpoint, TextScale, Theme,
     },
 };
+use smallvec::SmallVec;
 
-fn apply(prop: StyleProp, layout: &mut LayoutStyle, visual: &mut Unresolved, theme: &Theme) {
+fn apply(prop: StyleProp, layout: &mut LayoutStyle, visual: &mut Unresolved, inline: &mut SmallVec<[StyleProp; 8]>, theme: &Theme) {
     match prop {
         StyleProp::Display(d) => layout.display = d,
         StyleProp::Direction(d) => layout.flex_direction = d,
+        StyleProp::TextDirection(d) => visual.direction = d,
         StyleProp::FlexWrap(w) => layout.flex_wrap = w,
         StyleProp::AlignItems(a) => layout.align_items = a,
         StyleProp::AlignSelf(a) => layout.align_self = a,
@@ -36,13 +40,9 @@ fn apply(prop: StyleProp, layout: &mut LayoutStyle, visual: &mut Unresolved, the
         StyleProp::GapX(g) => layout.gap.width = g.resolved(theme).unwrap_or_default(),
         StyleProp::GapY(g) => layout.gap.height = g.resolved(theme).unwrap_or_default(),
         StyleProp::PaddingTop(p) => layout.padding.top = p.resolved(theme).unwrap_or_default(),
-        StyleProp::PaddingRight(p) => layout.padding.right = p.resolved(theme).unwrap_or_default(),
         StyleProp::PaddingBottom(p) => layout.padding.bottom = p.resolved(theme).unwrap_or_default(),
-        StyleProp::PaddingLeft(p) => layout.padding.left = p.resolved(theme).unwrap_or_default(),
         StyleProp::MarginTop(m) => layout.margin.top = m.resolved(theme),
-        StyleProp::MarginRight(m) => layout.margin.right = m.resolved(theme),
         StyleProp::MarginBottom(m) => layout.margin.bottom = m.resolved(theme),
-        StyleProp::MarginLeft(m) => layout.margin.left = m.resolved(theme),
         StyleProp::Width(d) => layout.size.width = d.resolved(theme),
         StyleProp::Height(d) => layout.size.height = d.resolved(theme),
         StyleProp::MinWidth(d) => layout.min_size.width = d.resolved(theme),
@@ -62,15 +62,27 @@ fn apply(prop: StyleProp, layout: &mut LayoutStyle, visual: &mut Unresolved, the
         StyleProp::OverflowY(o) => layout.overflow_y = o,
         StyleProp::Scrollbar(visibility) => visual.scrollbar = visibility,
         StyleProp::Top(d) => layout.inset.top = d.resolved(theme),
-        StyleProp::Right(d) => layout.inset.right = d.resolved(theme),
         StyleProp::Bottom(d) => layout.inset.bottom = d.resolved(theme),
-        StyleProp::Left(d) => layout.inset.left = d.resolved(theme),
         StyleProp::Grow(g) => layout.flex_grow = g,
         StyleProp::Shrink(s) => layout.flex_shrink = s,
         StyleProp::BorderTop(w) => layout.border.top = w.resolved(theme).unwrap_or_default(),
-        StyleProp::BorderRight(w) => layout.border.right = w.resolved(theme).unwrap_or_default(),
         StyleProp::BorderBottom(w) => layout.border.bottom = w.resolved(theme).unwrap_or_default(),
-        StyleProp::BorderLeft(w) => layout.border.left = w.resolved(theme).unwrap_or_default(),
+        StyleProp::PaddingLeft(_)
+        | StyleProp::PaddingRight(_)
+        | StyleProp::PaddingStart(_)
+        | StyleProp::PaddingEnd(_)
+        | StyleProp::MarginLeft(_)
+        | StyleProp::MarginRight(_)
+        | StyleProp::MarginStart(_)
+        | StyleProp::MarginEnd(_)
+        | StyleProp::Left(_)
+        | StyleProp::Right(_)
+        | StyleProp::InsetStart(_)
+        | StyleProp::InsetEnd(_)
+        | StyleProp::BorderLeft(_)
+        | StyleProp::BorderRight(_)
+        | StyleProp::BorderStart(_)
+        | StyleProp::BorderEnd(_) => inline.push(prop),
         StyleProp::Background(p) => visual.background = p,
         StyleProp::TextColor(p) => visual.text = p,
         StyleProp::BorderColor(p) => visual.border = p,
@@ -105,6 +117,30 @@ fn apply(prop: StyleProp, layout: &mut LayoutStyle, visual: &mut Unresolved, the
         StyleProp::ColorMotion(c) => visual.motion.color = c,
         StyleProp::OpacityMotion(c) => visual.motion.opacity = c,
         StyleProp::LayoutMotion(c) => visual.motion.layout = c,
+    }
+}
+
+// Logical and physical declarations share edge slots once the cascade has chosen a direction.
+fn apply_inline(prop: StyleProp, rtl: bool, layout: &mut LayoutStyle, theme: &Theme) {
+    use StyleProp::*;
+    match (prop, rtl) {
+        (PaddingLeft(p), _) | (PaddingStart(p), false) | (PaddingEnd(p), true) => {
+            layout.padding.left = p.resolved(theme).unwrap_or_default();
+        }
+        (PaddingRight(p), _) | (PaddingEnd(p), false) | (PaddingStart(p), true) => {
+            layout.padding.right = p.resolved(theme).unwrap_or_default();
+        }
+        (MarginLeft(m), _) | (MarginStart(m), false) | (MarginEnd(m), true) => layout.margin.left = m.resolved(theme),
+        (MarginRight(m), _) | (MarginEnd(m), false) | (MarginStart(m), true) => layout.margin.right = m.resolved(theme),
+        (Left(d), _) | (InsetStart(d), false) | (InsetEnd(d), true) => layout.inset.left = d.resolved(theme),
+        (Right(d), _) | (InsetEnd(d), false) | (InsetStart(d), true) => layout.inset.right = d.resolved(theme),
+        (BorderLeft(w), _) | (BorderStart(w), false) | (BorderEnd(w), true) => {
+            layout.border.left = w.resolved(theme).unwrap_or_default();
+        }
+        (BorderRight(w), _) | (BorderEnd(w), false) | (BorderStart(w), true) => {
+            layout.border.right = w.resolved(theme).unwrap_or_default();
+        }
+        _ => unreachable!("only inline edges are deferred"),
     }
 }
 
@@ -147,6 +183,8 @@ struct Unresolved {
     ring_color: Option<ColorValue>,
     radius: [f32; 4],
     z_index: i32,
+    direction: Direction,
+    text_scale: f32,
     font_size: FontSize,
     line_height: Option<LineHeight>,
     font_weight: u16,
@@ -180,6 +218,8 @@ impl Unresolved {
             ring_color: None,
             radius: [0.0; 4],
             z_index: 0,
+            direction: from.direction,
+            text_scale: from.text_scale,
             font_size: from.font_size,
             line_height: from.line_height,
             font_weight: from.font_weight,
@@ -205,6 +245,8 @@ impl Unresolved {
     /// What this node passes down to its children.
     fn inherited(&self, letter_spacing: f32) -> Inherited {
         Inherited {
+            direction: self.direction,
+            text_scale: self.text_scale,
             text: self.text,
             font_size: self.font_size,
             line_height: self.line_height,
@@ -223,7 +265,7 @@ impl Unresolved {
     }
 
     /// The visual, and custom tokens the theme lacks (shown as `MISSING`).
-    fn resolve(&self, theme: &Theme, missing: &mut Vec<&'static str>) -> Visual {
+    fn resolve(&self, theme: &Theme, missing: &mut Vec<&'static str>) -> (Visual, Inherited) {
         let mut paint = |p: ColorValue| {
             let (c, m) = p.resolve(theme);
             missing.extend(m);
@@ -255,7 +297,8 @@ impl Unresolved {
             offset: self.ring_offset,
             color: self.ring_color.map_or(text, &mut paint),
         });
-        Visual {
+        let letter_spacing = self.letter_spacing.resolve(scale.size);
+        let visual = Visual {
             background,
             gradient,
             text,
@@ -263,14 +306,16 @@ impl Unresolved {
             ring,
             radius: self.radius,
             z_index: self.z_index,
-            font_size: scale.size,
-            line_height,
+            direction: self.direction,
+            text_scale: self.text_scale,
+            font_size: scale.size * self.text_scale,
+            line_height: line_height * self.text_scale,
             font_weight: self.font_weight,
             font_family: theme.family(self.family),
             italic: self.italic,
             underline: self.underline,
             strike: self.strike,
-            letter_spacing: self.letter_spacing.resolve(scale.size),
+            letter_spacing: letter_spacing * self.text_scale,
             tabular_nums: self.tabular_nums,
             wrap: self.wrap,
             align: self.align,
@@ -282,7 +327,8 @@ impl Unresolved {
             user_select: self.user_select,
             cursor: self.cursor,
             motion: self.motion,
-        }
+        };
+        (visual, self.inherited(letter_spacing))
     }
 }
 
@@ -309,8 +355,11 @@ impl<'a> StyleResolver<'a> {
 
     pub fn initial(theme: &Theme) -> (Inherited, Visual) {
         let inherited = Inherited::root();
-        let visual = Unresolved::new(&inherited).resolve(theme, &mut Vec::new());
-        (inherited, visual)
+        (inherited, Self::initial_visual(theme, &inherited))
+    }
+
+    fn initial_visual(theme: &Theme, inherited: &Inherited) -> Visual {
+        Unresolved::new(inherited).resolve(theme, &mut Vec::new()).0
     }
 
     /// Repeated declarations apply in authored order within each precedence level.
@@ -324,11 +373,12 @@ impl<'a> StyleResolver<'a> {
         group_hovered: impl Fn(&str) -> bool,
     ) -> ResolvedStyle {
         let mut visual = Unresolved::new(from);
+        let mut inline = SmallVec::new();
         let mut opacity_motion_authored = false;
         let mut apply_props = |props: &[StyleProp]| {
             for &prop in props {
                 opacity_motion_authored |= matches!(prop, StyleProp::Motion(_) | StyleProp::OpacityMotion(_));
-                apply(prop, &mut layout, &mut visual, self.theme);
+                apply(prop, &mut layout, &mut visual, &mut inline, self.theme);
             }
         };
         apply_props(base);
@@ -362,12 +412,14 @@ impl<'a> StyleResolver<'a> {
                 apply_props(props);
             }
         }
+        if visual.direction == Direction::Inherit {
+            visual.direction = from.direction;
+        }
+        for &prop in &inline {
+            apply_inline(prop, visual.direction == Direction::Rtl, &mut layout, self.theme);
+        }
         let mut missing_tokens = Vec::new();
-        let (visual, inherited) = {
-            let resolved = visual.resolve(self.theme, &mut missing_tokens);
-            let inherited = visual.inherited(resolved.letter_spacing);
-            (resolved, inherited)
-        };
+        let (visual, inherited) = visual.resolve(self.theme, &mut missing_tokens);
         ResolvedStyle { layout, visual, inherited, opacity_motion_authored, missing_tokens }
     }
 }
@@ -397,6 +449,43 @@ mod tests {
         let child = resolver.resolve(LayoutStyle::default(), &parent.inherited, &[], &overrides, State::PRESSED, |group| group == "row");
         assert_eq!(child.layout.size.width, Some(LayoutLength::Px(60.0)));
         assert_eq!(child.visual.text_style().align, TextAlign::Center);
+    }
+
+    #[test]
+    fn logical_edges_follow_the_final_direction_and_cascade_order() {
+        use StyleProp::*;
+        use octara_model::style::Direction::{Inherit, Ltr, Rtl};
+
+        let theme = Theme::light();
+        let resolver = StyleResolver::new(&theme, Breakpoint::Expanded, None, false);
+        let base = [
+            MarginLeft(1.into()),
+            MarginEnd(2.into()),
+            PaddingStart(3.into()),
+            PaddingRight(4.into()),
+            InsetStart(Length::Pct(0.2)),
+            InsetEnd(5.into()),
+            BorderStart(6.into()),
+            BorderEnd(7.into()),
+            TextDirection(Ltr),
+        ];
+        let overrides = [(When::State(State::HOVER), vec![MarginStart(Length::Auto), BorderRight(8.into()), TextDirection(Inherit)])];
+        let root = Inherited { direction: Rtl, ..Inherited::root() };
+        let resolve = |state| resolver.resolve(LayoutStyle::default(), &root, &base, &overrides, state, |_| false);
+        let px = LayoutLength::Px;
+        let ltr = resolve(State::empty());
+        assert_eq!(ltr.visual.direction, Ltr);
+        assert_eq!((ltr.layout.margin.left, ltr.layout.margin.right), (Some(px(1.0)), Some(px(2.0))));
+        assert_eq!((ltr.layout.padding.left, ltr.layout.padding.right), (px(3.0), px(4.0)));
+        assert_eq!((ltr.layout.inset.left, ltr.layout.inset.right), (Some(LayoutLength::Pct(0.2)), Some(px(5.0))));
+        assert_eq!((ltr.layout.border.left, ltr.layout.border.right), (px(6.0), px(7.0)));
+
+        let rtl = resolve(State::HOVER);
+        assert_eq!(rtl.visual.direction, Rtl);
+        assert_eq!((rtl.layout.margin.left, rtl.layout.margin.right), (Some(px(2.0)), None));
+        assert_eq!((rtl.layout.padding.left, rtl.layout.padding.right), (px(0.0), px(4.0)));
+        assert_eq!((rtl.layout.inset.left, rtl.layout.inset.right), (Some(px(5.0)), Some(LayoutLength::Pct(0.2))));
+        assert_eq!((rtl.layout.border.left, rtl.layout.border.right), (px(7.0), px(8.0)));
     }
 
     #[test]

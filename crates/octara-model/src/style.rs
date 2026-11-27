@@ -28,6 +28,16 @@ pub enum FlexDirection {
     ColumnReverse,
 }
 
+/// Inline direction for text and logical spacing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    #[default]
+    Inherit,
+    Ltr,
+    Rtl,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FlexWrap {
     #[default]
@@ -473,6 +483,7 @@ pub enum UserSelect {
 pub enum StyleProp {
     Display(Display),
     Direction(FlexDirection),
+    TextDirection(Direction),
     FlexWrap(FlexWrap),
     AlignItems(AlignItems),
     AlignSelf(Option<AlignItems>),
@@ -487,10 +498,14 @@ pub enum StyleProp {
     PaddingRight(Length),
     PaddingBottom(Length),
     PaddingLeft(Length),
+    PaddingStart(Length),
+    PaddingEnd(Length),
     MarginTop(Length),
     MarginRight(Length),
     MarginBottom(Length),
     MarginLeft(Length),
+    MarginStart(Length),
+    MarginEnd(Length),
     Width(Length),
     Height(Length),
     MinWidth(Length),
@@ -516,12 +531,16 @@ pub enum StyleProp {
     Right(Length),
     Bottom(Length),
     Left(Length),
+    InsetStart(Length),
+    InsetEnd(Length),
     Grow(f32),
     Shrink(f32),
     BorderTop(Length),
     BorderRight(Length),
     BorderBottom(Length),
     BorderLeft(Length),
+    BorderStart(Length),
+    BorderEnd(Length),
     Background(Option<Fill>),
     TextColor(ColorValue),
     BorderColor(ColorValue),
@@ -590,6 +609,8 @@ pub struct Visual {
     /// Top-left, top-right, bottom-right, bottom-left in logical pixels.
     pub radius: [f32; 4],
     pub z_index: i32,
+    pub direction: Direction,
+    pub text_scale: f32,
     pub font_size: f32,
     pub line_height: f32,
     pub font_weight: u16,
@@ -617,6 +638,8 @@ pub struct Visual {
 impl Visual {
     pub fn text_style(&self) -> TextStyle {
         TextStyle {
+            direction: self.direction,
+            text_scale: self.text_scale,
             font_size: self.font_size,
             line_height: self.line_height,
             weight: self.font_weight,
@@ -636,6 +659,8 @@ impl Visual {
 /// Text and motion properties a node passes down to its descendants.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Inherited {
+    pub direction: Direction,
+    pub text_scale: f32,
     pub text: ColorValue,
     pub font_size: FontSize,
     pub line_height: Option<LineHeight>,
@@ -656,6 +681,8 @@ impl Inherited {
     /// What the window passes down: the theme's defaults.
     pub fn root() -> Self {
         Inherited {
+            direction: Direction::Ltr,
+            text_scale: 1.0,
             text: ColorValue::Token(ColorToken::Text),
             font_size: FontSize::Token(FontSizeToken::Base),
             line_height: None,

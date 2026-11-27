@@ -69,7 +69,8 @@ impl ResolvedStyle {
         v.ring.map(|ring| (float_bits(ring.width), float_bits(ring.offset), color_key(ring.color))).hash(&mut hash);
         v.radius.map(float_bits).hash(&mut hash);
         v.z_index.hash(&mut hash);
-        for value in [v.font_size, v.line_height, v.letter_spacing, v.opacity] {
+        v.direction.hash(&mut hash);
+        for value in [v.font_size, v.line_height, v.letter_spacing, v.opacity, v.text_scale] {
             float_bits(value).hash(&mut hash);
         }
         v.font_weight.hash(&mut hash);

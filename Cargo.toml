@@ -58,6 +58,7 @@ rfd = "0.18.0"
 winit = "0.30.13"
 accesskit = { version = "0.25.2", features = ["serde"] }
 linebender_resource_handle = "0.1.1"
+icu_locale = { version = "~2.3.0", default-features = false, features = ["compiled_data"] }
 parley = { version = "0.13.0", default-features = false, features = ["std", "complex-scripts"] }
 png = "0.18.1"
 taffy = { version = "0.15.1", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "content_size"] }

@@ -11,14 +11,15 @@ use octara_model::{
     geometry::{LayoutBox, Placement, Point, Vec2},
     image::{ImageSource, ImageState, VideoSource},
     input::{
-        ContextMenuEvent, CopyFormat, CursorStyle, DragPayload, DropAxis, DropEvent, DropHover, DroppedFile, KeyEvent, LinkEvent,
-        PasteEvent,
+        ContextMenuEvent, CopyFormat, CursorStyle, DragPayload, DropAxis, DropEvent, DropHover, DroppedFile, GestureEvent, KeyEvent,
+        LinkEvent, PasteEvent,
     },
     motion::Curve,
     native::{NativeEvent, NativeSlot, TypedNativeProps},
     paint::{Canvas, Icon, Image, NodeIcon, ObjectFit, PaintInput, PaintMount, PaintProgram},
     semantics::{Checked, Live, NumericRange, Role},
     style::{FlexDirection, Position, State, StyleProp, When},
+    text::{AutoCapitalize, Autocorrect, KeyboardType, ReturnKeyType, TextContentType},
     theme::{ColorValue, Fill, Theme, ThemePatch},
 };
 use octara_runtime::media::{MediaResolver, VideoAdapter};
@@ -99,6 +100,7 @@ struct ElementProps {
     disabled: Option<Prop<bool>>,
     geometry: SmallVec<[Signal<Option<LayoutBox>>; 1]>,
     scroll: Option<Signal<Vec2>>,
+    overscroll: Option<Signal<f32>>,
     text_reveal: Option<Prop<Option<octara_model::motion::TextReveal>>>,
     copy_selection: Option<CopySelection>,
     copy_formats: Vec<(CopyFormat, CopySelection)>,
@@ -152,6 +154,7 @@ impl ElementProps {
             disabled: None,
             geometry: SmallVec::new(),
             scroll: None,
+            overscroll: None,
             text_reveal: None,
             copy_selection: None,
             copy_formats: Vec::new(),
@@ -704,6 +707,23 @@ impl<C> El<C> {
         self
     }
 
+    /// Publishes signed overscroll in logical pixels, including the spring back to zero.
+    pub fn observe_overscroll(mut self, signal: Signal<f32>) -> Self {
+        self.props.overscroll = Some(signal);
+        self.flags(NodeFlags::OVERSCROLL)
+    }
+
+    /// Sets how a captured touch scroll dismisses an active soft keyboard.
+    pub fn scroll_dismisses_keyboard(mut self, mode: octara_model::input::ScrollDismissesKeyboard) -> Self {
+        use octara_model::input::ScrollDismissesKeyboard;
+        self.props.flags.remove(NodeFlags::DISMISS_KEYBOARD_IMMEDIATELY | NodeFlags::DISMISS_KEYBOARD_INTERACTIVELY);
+        self.flags(match mode {
+            ScrollDismissesKeyboard::Never => NodeFlags::empty(),
+            ScrollDismissesKeyboard::Immediately => NodeFlags::DISMISS_KEYBOARD_IMMEDIATELY,
+            ScrollDismissesKeyboard::Interactively => NodeFlags::DISMISS_KEYBOARD_INTERACTIVELY,
+        })
+    }
+
     fn semantic_prop<T: 'static>(mut self, value: Prop<T>, apply: fn(&mut SemanticsSlot, T)) -> Self {
         set_semantic_prop(&mut self.props, value, apply);
         self
@@ -853,6 +873,14 @@ impl<C> El<C> {
         self.handler(Handler::Action(HandlerKind::DoublePress, Box::new(f)))
     }
 
+    /// Receives gestures on this element or its logical descendants. Return `true` to stop bubbling.
+    pub fn on_gesture(self, f: impl Fn(&mut WriteCx<'_>, &GestureEvent) -> bool + 'static) -> Self {
+        self.handle(HandlerKind::Gesture, move |write, event| {
+            let consumed = matches!(event, HandlerEvent::Gesture(gesture) if f(write, gesture));
+            HandlerOutcome { consumed, ..Default::default() }
+        })
+    }
+
     pub fn on_secondary_press(self, f: impl Fn(&mut WriteCx<'_>, Point) + 'static) -> Self {
         self.handle(HandlerKind::SecondaryPress, move |write, event| {
             if let HandlerEvent::Interaction { payload: InteractionPayload::Press { pos, .. }, .. } = *event {
@@ -922,6 +950,16 @@ impl<C> El<C> {
 
     pub fn on_touch_scroll_post(self, f: impl Fn(&mut WriteCx<'_>, Vec2) -> HandlerOutcome + 'static) -> Self {
         self.on_touch_scroll(HandlerKind::TouchScrollPost, f)
+    }
+
+    /// Observes the touch drag and release beyond this vertical scrollport's bounds.
+    pub fn on_overscroll(self, f: impl Fn(&mut WriteCx<'_>, octara_model::input::OverscrollEvent) + 'static) -> Self {
+        self.flags(NodeFlags::OVERSCROLL).handle(HandlerKind::Overscroll, move |write, event| {
+            if let HandlerEvent::Interaction { payload: InteractionPayload::Overscroll(overscroll), .. } = *event {
+                f(write, overscroll);
+            }
+            HandlerOutcome::default()
+        })
     }
 
     fn on_touch_scroll(self, kind: HandlerKind, f: impl Fn(&mut WriteCx<'_>, Vec2) -> HandlerOutcome + 'static) -> Self {
@@ -1140,6 +1178,36 @@ impl TextInput {
     pub fn secure(mut self, secure: impl IntoProp<bool>) -> Self {
         let secure = secure.into_prop();
         self.props.editor().set_secure(secure);
+        self
+    }
+
+    /// Sets the preferred soft keyboard layout.
+    pub fn keyboard_type(mut self, keyboard_type: KeyboardType) -> Self {
+        self.props.editor().slot.input_traits.keyboard_type = keyboard_type;
+        self
+    }
+
+    /// Sets the soft keyboard's return key label or icon.
+    pub fn return_key(mut self, return_key: ReturnKeyType) -> Self {
+        self.props.editor().slot.input_traits.return_key = return_key;
+        self
+    }
+
+    /// Hints what kind of value to autofill.
+    pub fn content_type(mut self, content_type: TextContentType) -> Self {
+        self.props.editor().slot.input_traits.content_type = content_type;
+        self
+    }
+
+    /// Sets how the soft keyboard capitalizes text as the user types.
+    pub fn autocapitalize(mut self, autocapitalize: AutoCapitalize) -> Self {
+        self.props.editor().slot.input_traits.autocapitalize = Some(autocapitalize);
+        self
+    }
+
+    /// Controls whether the platform may autocorrect text as the user types.
+    pub fn autocorrect(mut self, enabled: bool) -> Self {
+        self.props.editor().slot.input_traits.autocorrect = if enabled { Autocorrect::On } else { Autocorrect::Off };
         self
     }
 
@@ -1421,6 +1489,9 @@ pub(crate) fn build_el(
     }
     if let Some(scroll) = props.scroll {
         cx.observe_scroll(node, scroll);
+    }
+    if let Some(overscroll) = props.overscroll {
+        cx.observe_overscroll(node, overscroll);
     }
     if let Some(format) = props.copy_selection {
         cx.on_copy_selection(node, format);

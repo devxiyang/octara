@@ -67,6 +67,7 @@ pub enum InteractionEvent {
     PointerCancel { id: PointerId },
     PointerLeave,
     Wheel { pos: Point, delta: Vec2, phase: WheelPhase, mods: Modifiers },
+    Gesture(GestureEvent),
     Key(KeyEvent),
     BackGesture { id: u64, phase: BackPhase },
     WindowActive(bool),
@@ -145,6 +146,53 @@ pub enum PointerKind {
     Mouse,
     Touch,
     Pen,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GesturePhase {
+    Started,
+    Changed,
+    Ended,
+    Cancelled,
+}
+
+/// Controls when a touch drag on a scrollport dismisses the active editor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollDismissesKeyboard {
+    #[default]
+    Never,
+    Immediately,
+    Interactively,
+}
+
+/// A touch gesture's signed vertical distance beyond the scroll range.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverscrollEvent {
+    pub phase: GesturePhase,
+    /// Positive above the start of the scrollport and negative beyond its end.
+    pub offset: f32,
+}
+
+/// A gesture in window coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GestureEvent {
+    Pinch { phase: GesturePhase, scale: f32, delta_scale: f32, anchor: Point, modifiers: Modifiers },
+    Rotate { phase: GesturePhase, radians: f32, delta_radians: f32, anchor: Point, modifiers: Modifiers },
+    LongPress { phase: GesturePhase, position: Point, pointer: PointerKind },
+    DoubleTap { position: Point, pointer: PointerKind },
+}
+
+impl GestureEvent {
+    /// The point used to target the gesture in the window.
+    pub fn position(self) -> Point {
+        match self {
+            Self::Pinch { anchor, .. } | Self::Rotate { anchor, .. } => anchor,
+            Self::LongPress { position, .. } | Self::DoubleTap { position, .. } => position,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -571,5 +619,24 @@ mod tests {
         assert!(chord.platform_mod);
         assert_eq!(chord.modifiers, Modifiers::SHIFT);
         assert_eq!(chord.to_string().parse::<Chord>().unwrap(), chord);
+    }
+
+    #[test]
+    fn gestures_round_trip_on_the_interaction_channel() {
+        let point = Point::new(5.0, 6.0);
+        for event in [
+            GestureEvent::Pinch { phase: GesturePhase::Changed, scale: 1.5, delta_scale: 1.25, anchor: point, modifiers: Modifiers::CTRL },
+            GestureEvent::Rotate {
+                phase: GesturePhase::Ended,
+                radians: 1.0,
+                delta_radians: 0.0,
+                anchor: point,
+                modifiers: Modifiers::META,
+            },
+            GestureEvent::LongPress { phase: GesturePhase::Cancelled, position: point, pointer: PointerKind::Pen },
+            GestureEvent::DoubleTap { position: point, pointer: PointerKind::Touch },
+        ] {
+            round_trip(InteractionEvent::Gesture(event));
+        }
     }
 }

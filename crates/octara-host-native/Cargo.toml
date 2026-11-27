@@ -60,8 +60,8 @@ objc2-foundation.workspace = true
 objc2-quartz-core.workspace = true
 objc2-ui-kit = { workspace = true, features = [
     "std", "block2", "objc2-core-foundation", "objc2-core-graphics", "objc2-quartz-core",
-    "UIApplication", "UIPasteboard", "UIScreenEdgePanGestureRecognizer", "UIPanGestureRecognizer",
-    "UIAccessibility", "UIColor", "UIControl", "UIEvent", "UIGeometry", "UIGestureRecognizer", "UIInterface", "UILayoutGuide", "UIOpenURLContext", "UIScreen",
+    "UIApplication", "UIPasteboard", "UIScreenEdgePanGestureRecognizer", "UIPanGestureRecognizer", "UIPinchGestureRecognizer", "UIRotationGestureRecognizer",
+    "UIAccessibility", "UIColor", "UICommand", "UIContentSizeCategory", "UIControl", "UIEvent", "UIFont", "UIFontDescriptor", "UIGeometry", "UIGestureRecognizer", "UIInterface", "UILayoutGuide", "UIOpenURLContext", "UIScreen",
     "UIImage", "UINavigationController", "UIResponder", "UIScene", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UITextField", "UITextInput",
     "UIScrollView", "UITextInputTraits", "UITextView", "UIView", "UIViewController", "UIViewControllerTransitionCoordinator", "UIWindow", "UIWindowScene",
 ] }

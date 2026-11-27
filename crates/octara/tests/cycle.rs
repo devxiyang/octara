@@ -67,8 +67,14 @@ fn app() -> (App, Rc<Probe>) {
 #[test]
 fn system_preferences_are_initialized_and_shared_reactively() {
     let (mut app, probe) = app();
-    let initial = SystemPreferences { color_scheme: ColorScheme::Dark, reduced_motion: true };
-    app.runtime_mut().set_system_preferences(initial).unwrap();
+    let initial = SystemPreferences {
+        color_scheme: ColorScheme::Dark,
+        reduced_motion: true,
+        locale: "ar".into(),
+        text_scale: 1.25,
+        high_contrast: true,
+    };
+    app.runtime_mut().set_system_preferences(initial.clone()).unwrap();
     let preferences = app.build(|build| build.system_preferences()).unwrap();
     let first = app
         .open_window(WindowOptions::default(), move |build| {
@@ -85,7 +91,7 @@ fn system_preferences_are_initialized_and_shared_reactively() {
     assert_eq!(probe.reduced_motion_updates.get(), 2);
 
     let next = SystemPreferences::default();
-    let receipt = app.dispatch(first, Input::Host(HostReply::SystemPreferencesChanged(next))).unwrap();
+    let receipt = app.dispatch(first, Input::Host(HostReply::SystemPreferencesChanged(next.clone()))).unwrap();
     assert!(receipt.delivered && receipt.handled);
     assert_eq!(app.update(|write| write.get(preferences)).unwrap(), next);
     let tree = app.window(second).unwrap().runtime().tree();

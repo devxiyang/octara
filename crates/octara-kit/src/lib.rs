@@ -22,6 +22,7 @@ mod status;
 mod structure;
 
 pub use octara_headless as headless;
+pub use octara_headless::PullToRefresh;
 pub use octara_headless::toast::{ToastId, ToastOptions, ToastQueue};
 
 pub use choices::{ComboboxOptions, PickerOptions, choice_row, combobox, combobox_input, select};
@@ -31,7 +32,7 @@ pub use controls::{
 };
 pub use data::{data_table, tree_view, tree_view_with};
 pub use dialog::{DialogOptions, alert_dialog, dialog};
-pub use feedback::{command_palette, toast_viewport};
+pub use feedback::{command_palette, pull_to_refresh, toast_viewport};
 pub use forms::{FieldInfo, field, fieldset, radio_group};
 pub use locale::KitLocale;
 pub use menus::{context_menu, menu_button};

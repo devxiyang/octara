@@ -17,6 +17,7 @@ mod browser {
     use octara_model::paint::{Canvas, CanvasOp, Icon, Image, NodeIcon, ObjectFit, Path};
     use octara_model::semantics::Relations;
     use octara_model::style::{Display, FlexDirection, Length, Overflow, Position, ScrollbarVisibility, StyleProp};
+    use octara_model::text::{InputTraits, KeyboardType, TextContentType};
     use octara_model::theme::{Theme, rgb};
     use std::sync::Arc;
     use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
@@ -68,6 +69,122 @@ mod browser {
             .unwrap()
             .data()
             .0
+    }
+
+    #[wasm_bindgen]
+    pub fn run_dom_direction() -> Result<(), JsValue> {
+        use octara_model::window::SystemPreferences;
+
+        let browser = web_sys::window().unwrap();
+        let document = browser.document().unwrap();
+        let surface = document.create_element("div")?.dyn_into::<HtmlElement>()?;
+        surface.set_attribute("style", "width:400px;height:300px;")?;
+        document.body().unwrap().append_child(&surface)?;
+        let mut engine = DomEngine::new(surface.clone())?;
+        let mut tree = Tree::new(TreeId::new([6, 1], 8), Theme::default());
+        let mut delta = tree.initial_delta();
+        let mut tx = tree.transaction();
+        let row = tx.create(NodeSpec::new(NodeContent::Box));
+        tx.change(row, NodeChange::TestId(Some("physical-row".into())));
+        tx.change(row, style([StyleProp::Width(180.into())]));
+        tx.place(tree.node_ref(tree.root()), 0, row);
+        for (index, name) in ["first-label", "second-label"].into_iter().enumerate() {
+            let label = tx.create(NodeSpec::new(NodeContent::Text("View 42".into())));
+            tx.change(label, NodeChange::TestId(Some(name.into())));
+            tx.change(label, style([StyleProp::Width(90.into()), StyleProp::PaddingStart(11.into())]));
+            tx.place(row, index, label);
+        }
+        let (receipt, created) = tree.apply(tx.finish()).unwrap();
+        let container = receipt.node(row).unwrap();
+        delta.merge(created);
+        settle(&mut engine, &mut tree, delta);
+        let row = element(&surface, "physical-row");
+        let first = element(&surface, "first-label");
+        let second = element(&surface, "second-label");
+        let before = [first.get_bounding_client_rect().left(), second.get_bounding_client_rect().left()];
+        assert!(before[0] < before[1]);
+        assert_eq!(first.get_attribute("dir").as_deref(), Some("ltr"));
+        let prefs = SystemPreferences { locale: "ar".into(), text_scale: 1.5, ..SystemPreferences::default() };
+        let delta = tree.set_system_preferences(&prefs);
+        settle(&mut engine, &mut tree, delta);
+        assert_eq!(row.get_attribute("dir").as_deref(), Some("rtl"));
+        assert_eq!(first.get_attribute("dir").as_deref(), Some("rtl"));
+        assert_eq!([first.get_bounding_client_rect().left(), second.get_bounding_client_rect().left()], before);
+        let computed = browser.get_computed_style(&first)?.unwrap();
+        assert_eq!(computed.get_property_value("direction")?, "rtl");
+        assert_eq!(computed.get_property_value("padding-left")?, "0px");
+        assert_eq!(computed.get_property_value("padding-right")?, "11px");
+        assert_eq!(computed.get_property_value("font-size")?, "24px");
+        let mut tx = tree.transaction();
+        tx.change(
+            tree.node_ref(container),
+            style([StyleProp::Display(Display::Grid), StyleProp::Width(180.into()), StyleProp::GridCols(2)]),
+        );
+        let (_, delta) = tree.apply(tx.finish()).unwrap();
+        settle(&mut engine, &mut tree, delta);
+        assert_eq!([first.get_bounding_client_rect().left(), second.get_bounding_client_rect().left()], before);
+        surface.remove();
+        Ok(())
+    }
+
+    #[wasm_bindgen]
+    pub async fn run_dom_text_scale() -> Result<(), JsValue> {
+        use octara::prelude::text;
+        use octara_host_web::WebApp;
+
+        let browser = web_sys::window().unwrap();
+        let document = browser.document().unwrap();
+        let body = document.body().unwrap();
+        let root = document.document_element().unwrap().dyn_into::<HtmlElement>()?;
+        let original_style = root.get_attribute("style");
+        root.style().set_property("font-size", "16px")?;
+        let sheet = document.create_element("style")?;
+        document.query_selector("head")?.unwrap().append_child(&sheet)?;
+        let surface = document.create_element("div")?.dyn_into::<HtmlElement>()?;
+        surface.set_attribute("style", "width:400px;height:300px;")?;
+        body.append_child(&surface)?;
+        let body_children = body.child_element_count();
+        let app = WebApp::mount(surface.clone(), |_| text("Scaled label").test_id("host-text-scale"))?;
+        let label = element(&surface, "host-text-scale");
+        let font_size = || browser.get_computed_style(&label)?.unwrap().get_property_value("font-size");
+        let next_frame = || {
+            JsFuture::from(Promise::new(&mut |resolve, reject| {
+                if let Err(error) = browser.request_animation_frame(&resolve) {
+                    reject.call1(&JsValue::UNDEFINED, &error).unwrap();
+                }
+            }))
+        };
+        for _ in 0..3 {
+            next_frame().await?;
+        }
+        assert_eq!(font_size()?, "16px");
+        let viewport = app.viewport();
+        let wait_for_font = async |expected| {
+            for _ in 0..12 {
+                if font_size()? == expected {
+                    break;
+                }
+                next_frame().await?;
+            }
+            assert_eq!(font_size()?, expected);
+            assert_eq!(app.viewport(), viewport);
+            Ok::<(), JsValue>(())
+        };
+
+        root.style().set_property("font-size", "20px")?;
+        wait_for_font("20px").await?;
+        sheet.set_text_content(Some(":root { font-size: 24px !important; }"));
+        wait_for_font("24px").await?;
+
+        drop(app);
+        assert_eq!(body.child_element_count(), body_children);
+        surface.remove();
+        sheet.remove();
+        match original_style {
+            Some(style) => root.set_attribute("style", &style)?,
+            None => root.remove_attribute("style")?,
+        }
+        Ok(())
     }
 
     #[wasm_bindgen]
@@ -464,19 +581,39 @@ mod browser {
         document.body().unwrap().append_child(&surface)?;
         let app = WebApp::mount(surface.clone(), |build| {
             let value = build.signal("A @β Z".to_owned());
-            input().bind_value(value).test_id("inline-editor").rich_text(EditorRichText {
-                attachments: Arc::from([InlineAttachment {
-                    range: 2..5,
-                    size: Size::new(24.0, 14.0),
-                    align: InlineAlign::CapHeightCenter,
-                    baseline: None,
-                    content: InlineContent::Vector { ops: drawing(0x397bd6) },
-                }]),
-                atoms: Arc::from([AtomicRange { range: 2..5, kind: "mention".into() }]),
-                ..Default::default()
-            })
+            input()
+                .bind_value(value)
+                .test_id("inline-editor")
+                .keyboard_type(KeyboardType::Email)
+                .return_key(ReturnKeyType::Send)
+                .content_type(TextContentType::Email)
+                .autocapitalize(AutoCapitalize::Sentences)
+                .autocorrect(false)
+                .rich_text(EditorRichText {
+                    attachments: Arc::from([InlineAttachment {
+                        range: 2..5,
+                        size: Size::new(24.0, 14.0),
+                        align: InlineAlign::CapHeightCenter,
+                        baseline: None,
+                        content: InlineContent::Vector { ops: drawing(0x397bd6) },
+                    }]),
+                    atoms: Arc::from([AtomicRange { range: 2..5, kind: "mention".into() }]),
+                    ..Default::default()
+                })
         })?;
+        let assert_input_traits = |editor: &HtmlElement| {
+            for (name, value) in [
+                ("inputmode", "email"),
+                ("enterkeyhint", "send"),
+                ("autocapitalize", "sentences"),
+                ("autocorrect", "off"),
+                ("autocomplete", "email"),
+            ] {
+                assert_eq!(editor.get_attribute(name).as_deref(), Some(value));
+            }
+        };
         let editor = element(&surface, "inline-editor");
+        assert_input_traits(&editor);
         assert_eq!(editor.get_attribute("contenteditable").as_deref(), Some("true"));
         let object = editor.query_selector("[data-octara-inline-source]")?.expect("inline object");
         assert_eq!(object.get_attribute("aria-label").as_deref(), Some("@β"));
@@ -497,6 +634,7 @@ mod browser {
         let event = delete.call0(&JsValue::UNDEFINED)?.dyn_into::<Event>()?;
         assert!(!editor.dispatch_event(&event)?);
         let plain = element(&surface, "inline-editor").dyn_into::<HtmlInputElement>()?;
+        assert_input_traits(&plain);
         assert_eq!(plain.value(), "A  Z!");
         assert_eq!(document.active_element().as_ref(), Some(plain.as_ref()));
 
@@ -504,6 +642,7 @@ mod browser {
         let event = undo.call0(&JsValue::UNDEFINED)?.dyn_into::<Event>()?;
         assert!(!plain.dispatch_event(&event)?);
         let restored = element(&surface, "inline-editor");
+        assert_input_traits(&restored);
         assert_eq!(restored.get_attribute("contenteditable").as_deref(), Some("true"));
         assert!(restored.query_selector("[data-octara-inline-source]")?.is_some());
         assert_eq!(restored.text_content().as_deref(), Some("A  Z!"));
@@ -1141,6 +1280,8 @@ mod browser {
         settle(&mut engine, &mut tree, delta);
 
         let input = element(&surface, "editor").dyn_into::<HtmlInputElement>()?;
+        assert!(!input.has_attribute("inputmode"));
+        assert!(!input.has_attribute("autocapitalize"));
         let label = element(&surface, "text");
         let canvas = element(&surface, "image");
         let drawing_wrapper = element(&surface, "drawing");
@@ -1171,6 +1312,14 @@ mod browser {
         let previous = selection();
         let mut tx = tree.transaction();
         tx.place(right_ref, 0, editor_ref);
+        tx.change(
+            editor_ref,
+            NodeChange::EditorInputTraits(InputTraits {
+                keyboard_type: KeyboardType::Number,
+                content_type: TextContentType::Password,
+                ..Default::default()
+            }),
+        );
         tx.change(text_ref, NodeChange::Text("tentative".into()));
         tx.change(drawing_ref, NodeChange::Canvas(drawing(0x993366)));
         let (_, mut delta) = tree.apply(tx.finish()).unwrap();
@@ -1178,6 +1327,9 @@ mod browser {
         image.set(1, 1, [40, 50, 60, 255]);
         engine.project(&tree, &delta, VIEWPORT, 0.0).unwrap();
         assert_eq!(input.parent_element().as_ref(), Some(right_el.as_ref()));
+        assert_eq!(input.get_attribute("inputmode").as_deref(), Some("numeric"));
+        assert_eq!(input.get_attribute("autocomplete").as_deref(), Some("current-password"));
+        assert_eq!(input.type_(), "text");
         assert_eq!(label.text_content().as_deref(), Some("tentative"));
         assert_eq!(scroll_el.scroll_top(), 135);
         assert_eq!(pixel_at(&canvas, 0.0), vec![40, 50, 60, 255]);
@@ -1188,6 +1340,8 @@ mod browser {
         }
         engine.rollback();
         assert_eq!(document.active_element().as_ref(), Some(input.as_ref()));
+        assert!(!input.has_attribute("inputmode"));
+        assert!(!input.has_attribute("autocomplete"));
         assert_eq!(selection(), previous);
         assert_eq!(input.parent_element().as_ref(), Some(left_el.as_ref()));
         assert_eq!(label.text_content().as_deref(), Some("initial"));
@@ -1199,6 +1353,16 @@ mod browser {
         assert_eq!(engine.geometry(editor), Some(mounted_rect));
         settle(&mut engine, &mut tree, delta);
         assert_eq!(input.parent_element().as_ref(), Some(right_el.as_ref()));
+        assert_eq!(input.get_attribute("autocomplete").as_deref(), Some("current-password"));
+
+        let previous = selection();
+        let mut tx = tree.transaction();
+        tx.change(editor_ref, NodeChange::EditorInputTraits(InputTraits::default()));
+        let (_, delta) = tree.apply(tx.finish()).unwrap();
+        settle(&mut engine, &mut tree, delta);
+        assert!(!input.has_attribute("inputmode"));
+        assert!(!input.has_attribute("autocomplete"));
+        assert_eq!(selection(), previous);
 
         let mut tx = tree.transaction();
         tx.change(editor_ref, NodeChange::Disabled(true));

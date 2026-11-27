@@ -350,6 +350,8 @@ fn border(value: &str) -> ClassResult<Vec<TokenStream>> {
         "r" => &["BorderRight"],
         "b" => &["BorderBottom"],
         "l" => &["BorderLeft"],
+        "s" => &["BorderStart"],
+        "e" => &["BorderEnd"],
         "x" => &["BorderLeft", "BorderRight"],
         "y" => &["BorderTop", "BorderBottom"],
         _ => {
@@ -550,6 +552,8 @@ fn lengths(class: &str) -> ClassResult<Vec<TokenStream>> {
         "pr" => &["PaddingRight"],
         "pb" => &["PaddingBottom"],
         "pl" => &["PaddingLeft"],
+        "ps" => &["PaddingStart"],
+        "pe" => &["PaddingEnd"],
         "m" => &["MarginLeft", "MarginRight", "MarginTop", "MarginBottom"],
         "mx" => &["MarginLeft", "MarginRight"],
         "my" => &["MarginTop", "MarginBottom"],
@@ -557,6 +561,8 @@ fn lengths(class: &str) -> ClassResult<Vec<TokenStream>> {
         "mr" => &["MarginRight"],
         "mb" => &["MarginBottom"],
         "ml" => &["MarginLeft"],
+        "ms" => &["MarginStart"],
+        "me" => &["MarginEnd"],
         "inset" => &["Top", "Right", "Bottom", "Left"],
         "inset-x" => &["Left", "Right"],
         "inset-y" => &["Top", "Bottom"],
@@ -564,6 +570,8 @@ fn lengths(class: &str) -> ClassResult<Vec<TokenStream>> {
         "right" => &["Right"],
         "bottom" => &["Bottom"],
         "left" => &["Left"],
+        "start" => &["InsetStart"],
+        "end" => &["InsetEnd"],
         "size" => &["Width", "Height"],
         "w" => &["Width"],
         "h" => &["Height"],
@@ -579,7 +587,24 @@ fn lengths(class: &str) -> ClassResult<Vec<TokenStream>> {
     };
     let allow_negative = matches!(
         kind,
-        "inset" | "inset-x" | "inset-y" | "top" | "right" | "bottom" | "left" | "m" | "mx" | "my" | "mt" | "mr" | "mb" | "ml"
+        "inset"
+            | "inset-x"
+            | "inset-y"
+            | "top"
+            | "right"
+            | "bottom"
+            | "left"
+            | "start"
+            | "end"
+            | "m"
+            | "mx"
+            | "my"
+            | "mt"
+            | "mr"
+            | "mb"
+            | "ml"
+            | "ms"
+            | "me"
     );
     let sizing = matches!(kind, "w" | "h" | "min-w" | "min-h" | "max-w" | "max-h" | "size" | "basis");
     if sign < 0.0 && !allow_negative {
@@ -754,6 +779,7 @@ mod tests {
             "self-auto self-start self-end self-center self-baseline self-stretch",
             "justify-start justify-end justify-center justify-between justify-around justify-evenly justify-normal justify-stretch",
             "mx-auto ml-auto mr-auto aspect-square aspect-video",
+            "ps-2 pe-3 ms-auto -me-4 start-1/2 -end-px border-s border-e-2",
             "border border-0 border-2 border-4 border-t border-r-0 border-b-2 border-l-4 border-x-2 border-y-4 border-border/60",
             "ring ring-0 ring-1 ring-2 ring-4 ring-offset-2 ring-offset-[13px] ring-focus/50 ring-blue-500/25",
             "transition-colors transition-opacity transition-all truncate whitespace-nowrap",

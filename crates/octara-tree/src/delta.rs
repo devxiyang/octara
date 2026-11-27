@@ -40,6 +40,8 @@ pub struct TreeDelta {
     pub semantics_dirty: DirtyBitmap,
     pub scroll_dirty: DirtyBitmap,
     pub editor_dirty: DirtyBitmap,
+    /// Platform keyboard and autofill hints changed.
+    pub editor_traits_dirty: DirtyBitmap,
     pub overlay_dirty: DirtyBitmap,
     pub geometry_demands: FxHashSet<GeometryDemand>,
     pub diagnostics: Vec<Diagnostic>,
@@ -57,6 +59,7 @@ impl TreeDelta {
             && self.semantics_dirty.is_empty()
             && self.scroll_dirty.is_empty()
             && self.editor_dirty.is_empty()
+            && self.editor_traits_dirty.is_empty()
             && self.overlay_dirty.is_empty()
             && self.geometry_demands.is_empty()
             && self.diagnostics.is_empty()
@@ -71,6 +74,7 @@ impl TreeDelta {
         self.semantics_dirty.union_with(&next.semantics_dirty);
         self.scroll_dirty.union_with(&next.scroll_dirty);
         self.editor_dirty.union_with(&next.editor_dirty);
+        self.editor_traits_dirty.union_with(&next.editor_traits_dirty);
         self.overlay_dirty.union_with(&next.overlay_dirty);
         self.geometry_demands.extend(next.geometry_demands);
         self.diagnostics.extend(next.diagnostics);

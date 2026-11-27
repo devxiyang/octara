@@ -9,6 +9,47 @@ use crate::{
 use octara::prelude::*;
 use octara_headless::{Choice, ComboboxState, Selection, ToastQueue};
 
+/// Wraps a vertical scrollport with a themed pull indicator and refresh spinner.
+#[ui]
+pub fn pull_to_refresh(state: crate::PullToRefresh, scrollport: El, refresh: impl Fn(&mut WriteCx<'_>) + 'static) -> El {
+    col().position(Position::Relative).min_h(0).child((
+        state.attach(scrollport, refresh),
+        show(
+            move |read| state.distance(read) > 0.5 || state.is_refreshing(read),
+            move |_| {
+                row()
+                    .position(Position::Absolute)
+                    .left(0)
+                    .right(0)
+                    .justify(JustifyContent::Center)
+                    .pointer_events_none()
+                    .style_with(move |read, style| {
+                        let top = if state.is_refreshing(read) { 8.0 } else { (state.distance(read) - 28.0).clamp(0.0, 24.0) };
+                        style.top(f64::from(top))
+                    })
+                    .child(
+                        popup_surface(row())
+                            .size(32)
+                            .align(AlignItems::Center)
+                            .justify(JustifyContent::Center)
+                            .pointer_events_none()
+                            .child((
+                                show(move |read| state.is_refreshing(read), |build| crate::spinner(build).pointer_events_none()),
+                                show(
+                                    move |read| !state.is_refreshing(read),
+                                    move |_| {
+                                        text("↓")
+                                            .pointer_events_none()
+                                            .opacity(move |read: &mut ReadCx<'_>| (state.distance(read) / state.threshold()).min(1.0))
+                                    },
+                                ),
+                            )),
+                    )
+            },
+        ),
+    ))
+}
+
 /// Mounts queued toasts in the bottom-right corner of the surrounding view.
 /// Timers pause when the pointer rests on a toast.
 #[ui]

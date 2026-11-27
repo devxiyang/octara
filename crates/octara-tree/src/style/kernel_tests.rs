@@ -1,8 +1,9 @@
 use std::mem::size_of;
 use std::sync::Arc;
 
-use octara_model::style::{LayoutLength, LayoutStyle, State, StyleProp, Visual, When};
+use octara_model::style::{Direction, LayoutLength, LayoutStyle, State, StyleProp, Visual, When};
 use octara_model::theme::{Breakpoint, ColorScheme, ColorToken, ResponsiveBreakpoint, Theme, ThemePatch, rgb};
+use octara_model::window::SystemPreferences;
 
 use crate::style::{ComputedStyle, sensitivity};
 use crate::tables::AuthoredStyle;
@@ -14,6 +15,22 @@ fn authored(base: &[StyleProp], overrides: &[(When, Vec<StyleProp>)], group: Opt
         overrides: overrides.iter().cloned().collect(),
         group,
     }))
+}
+
+#[test]
+fn locale_script_overrides_the_language_default_and_survives_theme_changes() {
+    let mut tree = Tree::new(TreeId::new([63, 91], 5), Theme::light());
+    for (locale, direction) in [("ar", Direction::Rtl), ("ar-Latn", Direction::Ltr), ("en-Arab-u-nu-arab", Direction::Rtl)] {
+        let prefs = SystemPreferences { locale: locale.into(), text_scale: 1.5, ..SystemPreferences::default() };
+        let delta = tree.set_system_preferences(&prefs);
+        assert!(delta.paint_dirty.contains(&tree.root()));
+        assert_eq!(tree.visual(tree.root()).direction, direction);
+        assert!(tree.set_system_preferences(&prefs).paint_dirty.is_empty());
+    }
+    tree.apply_runtime(RuntimeOp::ThemeChanged(Box::new(Theme::dark())));
+    let visual = tree.visual(tree.root());
+    assert_eq!(visual.direction, Direction::Rtl);
+    assert_eq!(visual.font_size, 24.0);
 }
 
 #[test]

@@ -9,7 +9,7 @@ pub use rope::EditorRope;
 use crate::{NodeId, Tree};
 use octara_model::identity::{EditorSessionId, TreeId};
 use octara_model::input::{EditorEvent, KeyEvent};
-use octara_model::text::{AtomicRange, CommitKind, InlineAttachment, RichSpan, TextEdit};
+use octara_model::text::{AtomicRange, CommitKind, InlineAttachment, InputTraits, RichSpan, TextEdit};
 use std::{fmt, ops::Range, sync::Arc};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -92,6 +92,7 @@ pub struct EditorSlot {
     pub rows: (u16, u16),
     pub submit_on_enter: bool,
     pub revealed: bool,
+    pub input_traits: InputTraits,
 }
 
 impl fmt::Debug for EditorSlot {
@@ -127,6 +128,7 @@ impl EditorSlot {
             rows: (1, 1),
             submit_on_enter: false,
             revealed: false,
+            input_traits: InputTraits::default(),
         }
     }
 
@@ -594,6 +596,7 @@ impl EditorMirror {
             rows: slot.rows,
             submit_on_enter: slot.submit_on_enter,
             revealed: slot.revealed,
+            input_traits: slot.input_traits,
         })
     }
 
@@ -944,7 +947,8 @@ fn map_selection(new: &str, (anchor, caret): (usize, usize), start: usize, old_e
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{NodeContent, NodeSpec, Retirement, RuntimeOp};
+    use crate::{NodeChange, NodeContent, NodeSpec, Retirement, RuntimeOp};
+    use octara_model::text::{KeyboardType, TextContentType};
 
     const TREE: TreeId = TreeId::new([1, 2], 0);
 
@@ -1224,6 +1228,13 @@ mod tests {
         };
         assert!(tree.apply_runtime(RuntimeOp::EditorApply { node, update: draft }).editor_dirty.contains(&node));
         let draft_rev = tree.editor(node).unwrap().document_rev();
+        let traits = InputTraits { keyboard_type: KeyboardType::Number, content_type: TextContentType::OneTimeCode, ..Default::default() };
+        let mut tx = tree.transaction();
+        tx.change(node_ref, NodeChange::EditorInputTraits(traits));
+        let (_, delta) = tree.apply(tx.finish()).unwrap();
+        assert!(delta.editor_traits_dirty.contains(&node));
+        assert!(delta.editor_dirty.is_empty());
+        assert!(delta.layout_dirty.is_empty());
         let mut tx = tree.transaction();
         tx.place(root, 1, node_ref);
         tree.apply(tx.finish()).unwrap();
@@ -1233,6 +1244,8 @@ mod tests {
         assert_eq!(session.id(), id);
         assert_eq!(session.editor().document_rev(), draft_rev);
         assert_eq!(session.editor().composition().unwrap().text(), "文note");
+        assert_eq!(session.editor().input_traits, traits);
+        assert_eq!(EditorMirror::new(session.editor()).editor().input_traits, traits);
         let EditorAction::Propose(commit) =
             session.route(EditorEvent::Commit { session: id, expected_rev: draft_rev, text: "文".into() }).unwrap()
         else {

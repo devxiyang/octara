@@ -3,10 +3,10 @@
 use crate::editor::EditorRuntimeUpdate;
 use crate::selection::DocSelection;
 use crate::tables::ScrollSlot;
-use crate::{ComputedStyle, ExitTicket, GeometryDemand, NodeFlags, NodeId, StyleInvalidation, Tree, TreeDelta, sensitivity};
+use crate::{ExitTicket, GeometryDemand, NodeFlags, NodeId, StyleInvalidation, Tree, TreeDelta, sensitivity};
 use octara_model::geometry::{Placed, Vec2};
 use octara_model::image::{ImageState, MediaAsset};
-use octara_model::style::{LayoutStyle, State, When};
+use octara_model::style::{State, When};
 use octara_model::theme::{Breakpoint, ResponsiveBreakpoint, Theme};
 use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
@@ -16,6 +16,7 @@ pub enum RuntimeOp {
     SetState { node: NodeId, state: State, on: bool },
     SetFocus { node: Option<NodeId>, visible: bool },
     SetScroll { node: NodeId, offset: Vec2, clamped: bool },
+    SetOverscrollOffset { node: NodeId, offset: f32 },
     RequestScroll { node: NodeId, target: Vec2 },
     ReleaseFollowTail { node: NodeId },
     ResumeFollowTail { node: NodeId },
@@ -79,12 +80,20 @@ impl Tree {
                     && finite(offset)
                     && let Some(slot) = self.tables.scrolls.get_mut(node)
                 {
-                    let next = ScrollSlot { offset, clamped, requested: None };
+                    let next = ScrollSlot { offset, clamped, requested: None, ..*slot };
                     if *slot != next {
                         *slot = next;
                         delta.scroll_dirty.insert(node);
                         self.paint_changed(node, &mut delta);
                     }
+                }
+            }
+            RuntimeOp::SetOverscrollOffset { node, offset } => {
+                if self.is_live(node)
+                    && offset.is_finite()
+                    && let Some(slot) = self.tables.scrolls.get_mut(node)
+                {
+                    slot.overscroll_offset = offset;
                 }
             }
             RuntimeOp::RequestScroll { node, target } => {
@@ -202,10 +211,7 @@ impl Tree {
                 if changed != 0 {
                     self.theme = *theme;
                     self.root_theme_revision = self.next_theme_revision();
-                    let (inherited, visual) = crate::style::StyleResolver::initial(&self.theme);
-                    self.initial_inherited = inherited;
-                    let initial = self.style_interner.intern(ComputedStyle { layout: LayoutStyle::default(), visual });
-                    self.style_interner.release(std::mem::replace(&mut self.initial_style, initial));
+                    self.update_initial_style();
                     self.resolve_subtree(self.root, StyleInvalidation { theme: changed, ..StyleInvalidation::default() }, &mut delta);
                     self.paint_changed(self.root, &mut delta);
                     self.reconcile_focus(&mut delta);

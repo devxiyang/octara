@@ -9,6 +9,7 @@ pub use octara_model::input::{
     Button, Chord, ContextMenuEvent, ContextMenuItem, CopyFormat, CursorStyle, DragPayload, DropAxis, DropEvent, DropHover, DropPosition,
     DroppedFile, Key, KeyEvent, LinkEvent, LinkEventKind, Modifiers, PasteEvent,
 };
+pub use octara_model::input::{OverscrollEvent, ScrollDismissesKeyboard};
 pub use octara_model::motion::{Curve, Motion, Spring, TextReveal, TextRevealKind};
 pub use octara_model::native::{NativeCommand, NativeEvent, NativeSlot};
 pub use octara_model::overlay::AnchorTarget;
@@ -18,11 +19,12 @@ pub use octara_model::paint::{
 };
 pub use octara_model::semantics::{A11yAction, Checked, Live, Role, TextPosition};
 pub use octara_model::style::{
-    AlignItems, Display, FlexDirection, FlexWrap, GridPos, JustifyContent, LayoutLength, Overflow, Position, ScrollbarVisibility,
-    StyleProp, UserSelect,
+    AlignItems, Direction, Display, FlexDirection, FlexWrap, GridPos, JustifyContent, LayoutLength, Overflow, Position,
+    ScrollbarVisibility, StyleProp, UserSelect,
 };
 pub use octara_model::text::{
-    FontStyle, FontWeight, InlineAlign, InlineAttachment, InlineContent, InlinePill, PillStyle, RichSpan, TextAlign, Wrap as TextWrap,
+    AutoCapitalize, Autocorrect, FontStyle, FontWeight, InlineAlign, InlineAttachment, InlineContent, InlinePill, InputTraits,
+    KeyboardType, PillStyle, ReturnKeyType, RichSpan, TextAlign, TextContentType, Wrap as TextWrap,
 };
 pub use octara_model::theme::{
     BoxShadow, Breakpoint, Color, ColorScheme, ColorToken, ColorValue, ContainerWidthToken, Family as FontFamilyToken, Fill, FontSizeToken,

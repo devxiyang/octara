@@ -88,6 +88,9 @@ bitflags! {
         const MAINTAIN_SCROLL_ANCHOR = 1 << 21;
         /// A virtual list's leading spacer requests anchoring from its parent.
         const VIRTUAL_SCROLL_ANCHOR = 1 << 22;
+        const OVERSCROLL = 1 << 23;
+        const DISMISS_KEYBOARD_IMMEDIATELY = 1 << 24;
+        const DISMISS_KEYBOARD_INTERACTIVELY = 1 << 25;
     }
 }
 
@@ -106,7 +109,10 @@ impl NodeFlags {
         .union(Self::INERT)
         .union(Self::NATIVE_CHECKBOX)
         .union(Self::INTERACTION_STATE)
-        .union(Self::WINDOW_DRAG_REGION);
+        .union(Self::WINDOW_DRAG_REGION)
+        .union(Self::OVERSCROLL)
+        .union(Self::DISMISS_KEYBOARD_IMMEDIATELY)
+        .union(Self::DISMISS_KEYBOARD_INTERACTIVELY);
 }
 
 #[repr(C)]
@@ -953,6 +959,13 @@ impl Tree {
             NodeChange::EditorSecure(secure) => {
                 if self.tables.editors[node].set_secure(secure) {
                     self.editor_changed(node, delta);
+                }
+            }
+            NodeChange::EditorInputTraits(traits) => {
+                let editor = &mut self.tables.editors[node];
+                if editor.input_traits != traits {
+                    editor.input_traits = traits;
+                    delta.editor_traits_dirty.insert(node);
                 }
             }
             NodeChange::TextReveal(reveal) => {

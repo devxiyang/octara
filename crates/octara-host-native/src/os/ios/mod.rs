@@ -3,6 +3,7 @@
 mod back;
 mod draft;
 mod editor;
+mod gestures;
 mod scene;
 
 use crate::ShellEvent;
@@ -13,8 +14,12 @@ use back::BackNavigation;
 use editor::TextInput;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_foundation::{NSDictionary, NSString, NSURL};
-use objc2_ui_kit::{UIApplication, UIPasteboard, UIUserInterfaceStyle, UIView};
+use objc2_foundation::{NSCurrentLocaleDidChangeNotification, NSDictionary, NSNotificationCenter, NSString, NSURL};
+use objc2_ui_kit::{
+    UIAccessibilityDarkerSystemColorsEnabled, UIAccessibilityDarkerSystemColorsStatusDidChangeNotification,
+    UIAccessibilityIsReduceMotionEnabled, UIAccessibilityReduceMotionStatusDidChangeNotification, UIApplication,
+    UIContentSizeCategoryDidChangeNotification, UIFont, UIFontTextStyleBody, UIPasteboard, UIUserInterfaceStyle, UIView,
+};
 use octara::module::{HostSurfaceKind, RawNativeSurface};
 use octara::runtime::{Input, WindowId};
 use octara_model::ask::{ClipboardItem, ClipboardKinds, ServiceId, ServiceOutcome, ServiceRequest};
@@ -27,6 +32,7 @@ use scene::SceneConnection;
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use winit::event::KeyEvent;
 use winit::event_loop::EventLoopProxy;
 use winit::keyboard::PhysicalKey;
@@ -41,15 +47,45 @@ pub(super) fn raw_module_surface(window: &Window) -> Option<RawNativeSurface> {
 }
 
 pub(super) fn create() -> Box<dyn OsHost> {
-    Box::new(IosHost)
+    Box::new(IosHost { preferences: None })
 }
 
-struct IosHost;
+struct IosHost {
+    preferences: Option<super::apple_preferences::Observer>,
+}
 
 impl OsHost for IosHost {
     fn initialize(&mut self, proxy: EventLoopProxy<ShellEvent>) {
         super::scheduling::interactive();
-        scene::register(proxy);
+        scene::register(proxy.clone());
+        // SAFETY: Foundation and UIKit expose these as static notification names.
+        let names = unsafe {
+            [
+                NSCurrentLocaleDidChangeNotification,
+                UIContentSizeCategoryDidChangeNotification,
+                UIAccessibilityDarkerSystemColorsStatusDidChangeNotification,
+                UIAccessibilityReduceMotionStatusDidChangeNotification,
+            ]
+        };
+        self.preferences = Some(super::apple_preferences::Observer::new(NSNotificationCenter::defaultCenter(), &names, proxy));
+    }
+
+    fn reduced_motion(&self) -> Option<bool> {
+        Some(UIAccessibilityIsReduceMotionEnabled())
+    }
+
+    fn locale(&self) -> Option<Arc<str>> {
+        super::apple_preferences::locale()
+    }
+
+    fn text_scale(&self) -> Option<f32> {
+        // SAFETY: The body style is a UIKit constant and the font is live.
+        let point_size = unsafe { UIFont::preferredFontForTextStyle(UIFontTextStyleBody).pointSize() };
+        Some(point_size as f32 / 17.0)
+    }
+
+    fn high_contrast(&self) -> Option<bool> {
+        Some(UIAccessibilityDarkerSystemColorsEnabled())
     }
 
     fn take_launch_items(&mut self) -> (Vec<String>, Vec<PathBuf>) {
@@ -122,7 +158,8 @@ impl OsHost for IosHost {
             move || refresh(),
         );
         let back = BackNavigation::new(window, proxy.clone())?;
-        Ok(Box::new(IosWindow { content, scene, editor, back, proxy, id, scene_active, active: true, focused: true }))
+        let gestures = gestures::Recognizers::new(&content, proxy.clone(), id);
+        Ok(Box::new(IosWindow { content, scene, editor, back, _gestures: gestures, proxy, id, scene_active, active: true, focused: true }))
     }
 
     fn open_url(&mut self, url: &str) {
@@ -146,6 +183,7 @@ struct IosWindow {
     scene: SceneConnection,
     editor: TextInput,
     back: BackNavigation,
+    _gestures: gestures::Recognizers,
     proxy: EventLoopProxy<ShellEvent>,
     id: WindowId,
     scene_active: Rc<Cell<bool>>,

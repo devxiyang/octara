@@ -7,19 +7,21 @@ mod services;
 #[cfg(target_os = "windows")]
 mod windows_preferences;
 
+use super::gestures::TrackpadGestures;
 use crate::ShellEvent;
 use crate::os::{ActiveEditorView, OsHost, OsWindow, OsWindowContext, ServiceCleanup, WindowTextInput};
 use ime::WinitIme;
 use octara::module::{HostSurfaceKind, RawNativeSurface};
 use octara::runtime::Input;
 use octara_model::ask::{ServiceId, ServiceRequest};
-use octara_model::input::{EditorEvent, HostReply};
+use octara_model::geometry::Point;
+use octara_model::input::{EditorEvent, GestureEvent, HostReply, Modifiers};
 use octara_model::paint::Image;
 use serde_json::Value;
 use services::{Clipboard, Services};
 use std::rc::Rc;
 use std::sync::Arc;
-use winit::event::Ime;
+use winit::event::{Ime, WindowEvent};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
@@ -81,6 +83,11 @@ impl OsHost for DesktopHost {
         self.preferences = linux_preferences::Observer::start(proxy).ok();
     }
 
+    #[cfg(target_os = "linux")]
+    fn locale(&self) -> Option<Arc<str>> {
+        linux_preferences::locale()
+    }
+
     #[cfg(target_os = "windows")]
     fn reduced_motion(&self) -> Option<bool> {
         windows_preferences::reduced_motion()
@@ -97,6 +104,7 @@ impl OsHost for DesktopHost {
             _preferences: preferences,
             window: context.window.clone(),
             ime: WinitIme::default(),
+            gestures: TrackpadGestures::default(),
             services: Services::new(self.clipboard.clone(), reply),
         }))
     }
@@ -125,10 +133,15 @@ struct DesktopWindow {
     _preferences: Option<windows_preferences::Observer>,
     window: Arc<Window>,
     ime: WinitIme,
+    gestures: TrackpadGestures,
     services: Services,
 }
 
 impl OsWindow for DesktopWindow {
+    fn on_winit_gesture(&mut self, event: &WindowEvent, anchor: Option<Point>, modifiers: Modifiers) -> Option<GestureEvent> {
+        self.gestures.update(event, anchor, modifiers)
+    }
+
     fn text_input(&mut self) -> &mut dyn WindowTextInput {
         self
     }

@@ -347,6 +347,18 @@ Call `build.provide(octara_kit::KitLocale::zh_cn())` before building controls to
 
 Run `cargo run -p octara-examples-desktop --bin window -- showcase workspace` to try the data table, tree view, command palette, context menu, and toast. The workspace also demonstrates Navigator state retention and drag-and-drop reordering.
 
+## Handle touch gestures and input preferences
+
+Use `.on_gesture(|write, event| ...)` to receive pinch, rotation, long press, and double tap. The event follows the logical parent chain until a handler returns `true`. Long press uses the app clock, so a headless test can dispatch a pointer down and advance to its 500 ms deadline.
+
+Set `.scroll_dismisses_keyboard(ScrollDismissesKeyboard::Immediately)` to dismiss the active soft keyboard when a touch drag starts scrolling. `Interactively` dismisses it after a downward drag, and `Never` is the default. Use `.observe_overscroll(signal)` to read the signed vertical offset in logical pixels. The offset is positive above the scrollport and returns to zero on release.
+
+Create `PullToRefresh::new(build, threshold)` and attach it to a vertical scrollport, or pass the same controller and scrollport to `octara_kit::pull_to_refresh` for a themed indicator. The controller starts refreshing after a qualifying release. Call `finish(write)` when the work completes. The Headless controller also accepts a threshold haptics callback.
+
+Set `.keyboard_type(...)`, `.return_key(...)`, `.content_type(...)`, `.autocapitalize(...)`, and `.autocorrect(...)` on `TextInput` to configure the native iOS keyboard and browser input attributes. Continue validating the submitted value in the app.
+
+Direction defaults to the host locale and inherits along logical parents. Set `.text_direction(Direction::Rtl)` for a right-to-left subtree. Use `.ms(...)` and `.me(...)` for inline margins, `.ps(...)` and `.pe(...)` for inline padding, and `.start(...)` and `.end(...)` for inline insets. Read `build.system_preferences()` to follow changes in locale, text scale, and contrast.
+
 ## Customize streaming Markdown
 
 Add `octara-markdown` and use `markdown(build, source)` to render a string, reactive read, or `TextBuffer`. Use `markdown_stream` for model output and update the completion signal when input ends. The buffer then drains and the document switches to a full parse. If the upstream producer already batches deltas, disable the extra pacing buffer with `StreamingOptions::pace` while keeping stream filtering and text reveal effects. During incremental appends, completed blocks reuse their syntax trees and mounted nodes.

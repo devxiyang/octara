@@ -11,6 +11,7 @@ mod pacing;
 mod preferences;
 mod services;
 
+use super::gestures::TrackpadGestures;
 use super::{
     Drawable, DrawableAcquisition, HostEvent, OsHost, OsWindow, OsWindowContext, ServiceCleanup, WindowAsks, WindowHostEvent,
     WindowNativeViews, WindowPresentation, WindowTextInput, reply, surface_drawable,
@@ -27,7 +28,7 @@ use octara::{TitlebarStyle, WindowChrome, WindowGeometry, WindowGeometryRequest,
 use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceError, ServiceId, ServiceOutcome, ServiceRequest};
 use octara_model::geometry::{Point, Size, WindowViewport};
 use octara_model::identity::NativeId;
-use octara_model::input::{HostReply, PasteEvent};
+use octara_model::input::{GestureEvent, HostReply, Modifiers, PasteEvent};
 use octara_model::native::{NativeChange, NativeMeasureRequest, NativeSlot, NativeSnapshotRequest};
 use octara_model::paint::Image;
 use octara_model::theme::ColorScheme;
@@ -38,6 +39,7 @@ use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
+use winit::event::WindowEvent;
 use winit::event_loop::EventLoopProxy;
 use winit::platform::macos::WindowAttributesExtMacOS;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -114,6 +116,14 @@ impl OsHost for MacHost {
         Some(NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion())
     }
 
+    fn locale(&self) -> Option<Arc<str>> {
+        super::apple_preferences::locale()
+    }
+
+    fn high_contrast(&self) -> Option<bool> {
+        Some(NSWorkspace::sharedWorkspace().accessibilityDisplayShouldIncreaseContrast())
+    }
+
     fn supports_window_vibrancy(&self) -> bool {
         true
     }
@@ -158,6 +168,7 @@ impl OsHost for MacHost {
             view,
             chrome,
             editor,
+            gestures: TrackpadGestures::default(),
             native,
             asks: Rc::default(),
             pacing,
@@ -227,12 +238,18 @@ struct MacWindow {
     view: Retained<NSView>,
     chrome: chrome::Chrome,
     editor: editor::Editor,
+    gestures: TrackpadGestures,
     native: native::Views,
     asks: Rc<asks::Shown>,
     pacing: Option<pacing::Pacing>,
 }
 
 impl OsWindow for MacWindow {
+    fn on_winit_gesture(&mut self, event: &WindowEvent, anchor: Option<Point>, modifiers: Modifiers) -> Option<GestureEvent> {
+        // Winit forwards magnifyWithEvent: and rotateWithEvent: after their cursor update.
+        self.gestures.update(event, anchor, modifiers)
+    }
+
     fn text_input(&mut self) -> &mut dyn WindowTextInput {
         &mut self.editor
     }

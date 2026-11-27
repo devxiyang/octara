@@ -152,7 +152,7 @@ pub(crate) fn attachment(
 fn project_pill(doc: &Document, element: &HtmlElement, pill: &InlinePill, theme: &Theme) -> Result<(), JsValue> {
     let PillStyle { size, weight, color, background, border_color, radius, padding_x, padding_y, gap } = pill.style.normalized();
     let mut style = format!(
-        "display:inline-flex;align-items:center;vertical-align:baseline;inline-size:max-content;white-space:pre;
+        "display:inline-flex;direction:ltr;align-items:center;vertical-align:baseline;inline-size:max-content;white-space:pre;
          line-height:normal;font-size:{size}px;font-weight:{weight};gap:{gap}px;padding:{padding_y}px {padding_x}px;border-radius:{radius}px;"
     );
     if let Some(color) = color {
@@ -177,8 +177,13 @@ fn project_pill(doc: &Document, element: &HtmlElement, pill: &InlinePill, theme:
         let text = dom::html(doc, "span")?;
         // The label supplies the capsule's inline baseline. With an icon, its
         // box is at least the icon height so both stay centered on the same line.
-        let style = if pill.icon.is_some() { "align-self:baseline;min-height:1em;align-content:center;" } else { "align-self:baseline;" };
-        text.set_attribute("style", style)?;
+        let mut style = format!(
+            "align-self:baseline;direction:var(--octara-text-direction, ltr);font-size:calc({size}px * var(--octara-text-scale, 1));"
+        );
+        if pill.icon.is_some() {
+            let _ = write!(style, "min-height:{size}px;align-content:center;");
+        }
+        text.set_attribute("style", &style)?;
         text.set_text_content(Some(&label));
         element.append_child(&text)?;
     }

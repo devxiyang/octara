@@ -9,7 +9,7 @@ use octara_model::identity::{NativeId, TreeId};
 use octara_model::input::ContactTarget;
 use octara_model::semantics::{Checked, Live, Role};
 use octara_model::style::State;
-use octara_model::text::RichSpan;
+use octara_model::text::{AutoCapitalize, Autocorrect, InputTraits, KeyboardType, ReturnKeyType, RichSpan, TextContentType};
 use rustc_hash::{FxHashMap, FxHashSet};
 use slotmap::KeyData;
 use std::cell::{Cell, OnceCell, RefCell};
@@ -438,6 +438,57 @@ fn aria_role(role: Role) -> Option<&'static str> {
     })
 }
 
+pub(crate) fn update_input_traits(undo: &mut DomUndoLog, element: &HtmlElement, traits: InputTraits) -> Result<(), JsValue> {
+    let inputmode = match traits.keyboard_type {
+        KeyboardType::Default => None,
+        KeyboardType::Email => Some("email"),
+        KeyboardType::Number => Some("numeric"),
+        KeyboardType::Decimal => Some("decimal"),
+        KeyboardType::Phone => Some("tel"),
+        KeyboardType::Url => Some("url"),
+        KeyboardType::Search => Some("search"),
+    };
+    let enterkeyhint = match traits.return_key {
+        ReturnKeyType::Default => None,
+        ReturnKeyType::Done => Some("done"),
+        ReturnKeyType::Go => Some("go"),
+        ReturnKeyType::Next => Some("next"),
+        ReturnKeyType::Search => Some("search"),
+        ReturnKeyType::Send => Some("send"),
+    };
+    let autocapitalize = traits.autocapitalize.map(|hint| match hint {
+        AutoCapitalize::Sentences => "sentences",
+        AutoCapitalize::Words => "words",
+        AutoCapitalize::Characters => "characters",
+        AutoCapitalize::None => "none",
+    });
+    let autocorrect = match traits.autocorrect {
+        Autocorrect::Default => None,
+        Autocorrect::On => Some("on"),
+        Autocorrect::Off => Some("off"),
+    };
+    let autocomplete = match traits.content_type {
+        TextContentType::None => None,
+        TextContentType::Username => Some("username"),
+        TextContentType::Password => Some("current-password"),
+        TextContentType::NewPassword => Some("new-password"),
+        TextContentType::OneTimeCode => Some("one-time-code"),
+        TextContentType::Email => Some("email"),
+        TextContentType::Url => Some("url"),
+        TextContentType::Telephone => Some("tel"),
+    };
+    for (name, value) in [
+        ("inputmode", inputmode),
+        ("enterkeyhint", enterkeyhint),
+        ("autocapitalize", autocapitalize),
+        ("autocorrect", autocorrect),
+        ("autocomplete", autocomplete),
+    ] {
+        undo.attr(element, name, value)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn update_editor(
     undo: &mut DomUndoLog,
     element: &HtmlElement,
@@ -633,7 +684,7 @@ fn rich_style(style: &mut String, span: RichSpan, theme: &octara_model::theme::T
         let _ = write!(style, "font-family:{};", css::font_family(theme.font_mono));
     }
     if let Some(size) = span.size {
-        let _ = write!(style, "font-size:{size}px;");
+        let _ = write!(style, "font-size:calc({size}px * var(--octara-text-scale, 1));");
     }
     if let Some(color) = span.color {
         let _ = write!(style, "color:{};", css::color(color.resolve(theme).0));

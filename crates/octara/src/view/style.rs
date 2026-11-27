@@ -2,7 +2,7 @@
 
 use crate::TextOverflow;
 use octara_model::motion::Curve;
-use octara_model::style::{AlignItems, Display, FlexDirection, FlexWrap, JustifyContent, Overflow, Position, StyleProp};
+use octara_model::style::{AlignItems, Direction, Display, FlexDirection, FlexWrap, JustifyContent, Overflow, Position, StyleProp};
 pub use octara_model::style::{FontSize, Length, LineHeight, Radius, Ring, Shadows, State, When};
 use octara_model::text::{FontWeight, TextAlign, Wrap};
 use octara_model::theme::{ColorValue, Family, Fill};
@@ -76,6 +76,7 @@ pub trait Styled: Sized {
         layout_motion(impl Into<Curve>) => LayoutMotion,
         display(Display) => Display,
         direction(FlexDirection) => Direction,
+        text_direction(Direction) => TextDirection,
         wrap(FlexWrap) => FlexWrap,
         align(AlignItems) => AlignItems,
         justify(JustifyContent) => Justify,
@@ -97,14 +98,20 @@ pub trait Styled: Sized {
         pr(impl Into<Length>) => PaddingRight,
         pb(impl Into<Length>) => PaddingBottom,
         pl(impl Into<Length>) => PaddingLeft,
+        ps(impl Into<Length>) => PaddingStart,
+        pe(impl Into<Length>) => PaddingEnd,
         mt(impl Into<Length>) => MarginTop,
         mr(impl Into<Length>) => MarginRight,
         mb(impl Into<Length>) => MarginBottom,
         ml(impl Into<Length>) => MarginLeft,
+        ms(impl Into<Length>) => MarginStart,
+        me(impl Into<Length>) => MarginEnd,
         top(impl Into<Length>) => Top,
         right(impl Into<Length>) => Right,
         bottom(impl Into<Length>) => Bottom,
         left(impl Into<Length>) => Left,
+        start(impl Into<Length>) => InsetStart,
+        end(impl Into<Length>) => InsetEnd,
         gap(impl Into<Length>) => Gap,
         gap_x(impl Into<Length>) => GapX,
         gap_y(impl Into<Length>) => GapY,
@@ -112,6 +119,8 @@ pub trait Styled: Sized {
         border_r(impl Into<Length>) => BorderRight,
         border_b(impl Into<Length>) => BorderBottom,
         border_l(impl Into<Length>) => BorderLeft,
+        border_s(impl Into<Length>) => BorderStart,
+        border_e(impl Into<Length>) => BorderEnd,
         border_color(impl Into<ColorValue>) => BorderColor,
         ring(impl Into<Length>) => RingWidth,
         ring_color(impl Into<ColorValue>) => RingColor,

@@ -1,9 +1,12 @@
 //! One guarded pointer contact state machine for all hosts.
 
+mod gesture;
 mod scrollbar;
 mod text;
 mod transfer;
 
+pub use gesture::GestureIntent;
+use gesture::{ContactGesture, HardwareGestures};
 use scrollbar::ScrollbarCapture;
 pub use scrollbar::{ScrollbarAxis, ScrollbarHit, ScrollbarKey, ScrollbarPart, ScrollbarScroll};
 use std::{sync::Arc, time::Duration};
@@ -43,6 +46,23 @@ impl Default for Tuning {
     }
 }
 
+impl Tuning {
+    fn record_press(self, previous: &mut Option<LastPress>, target: TargetGuard, kind: PointerKind, pos: Point, now: Duration) -> u32 {
+        let (gap, slop) =
+            if kind == PointerKind::Touch { (self.double_tap, self.double_tap_slop) } else { (self.double_click, self.drag_threshold) };
+        let count = previous
+            .filter(|last| {
+                last.target == target
+                    && last.kind == kind
+                    && now.checked_sub(last.now).is_some_and(|elapsed| elapsed <= gap)
+                    && distance(last.pos, pos) <= slop
+            })
+            .map_or(1, |last| last.count.saturating_add(1));
+        *previous = Some(LastPress { target, kind, pos, now, count });
+        count
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct InteractionContext<'a> {
     /// The cycle's virtual monotonic time.
@@ -77,6 +97,7 @@ pub enum InteractionPayload {
     Drop { event: DropEvent, keyboard: bool },
     DropHover { event: DropHover, keyboard: bool },
     TouchScroll { available: Vec2 },
+    Overscroll(octara_model::input::OverscrollEvent),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -239,6 +260,7 @@ impl TouchScrollIntent {
 #[derive(Debug)]
 pub enum InteractionIntent {
     Invoke(HandlerIntent),
+    Gesture(GestureIntent),
     Focus(FocusHandoff),
     Activate(ActivationIntent),
     TextPointer(TextPointerIntent),
@@ -306,6 +328,7 @@ struct Contact {
     down: Point,
     at: Point,
     mode: ContactMode,
+    gesture: Option<ContactGesture>,
 }
 
 impl Contact {
@@ -360,6 +383,8 @@ pub struct InteractionArbiter {
     transfer: Option<Transfer>,
     last_press: Option<LastPress>,
     last_text_press: Option<TextPress>,
+    last_tap: Option<LastPress>,
+    hardware_gestures: HardwareGestures,
     window_drag_press: Option<(PointerId, LastPress)>,
     hover: Vec<NodeId>,
     active: bool,
@@ -380,6 +405,8 @@ impl InteractionArbiter {
             transfer: None,
             last_press: None,
             last_text_press: None,
+            last_tap: None,
+            hardware_gestures: HardwareGestures::default(),
             window_drag_press: None,
             hover: Vec::new(),
             active: true,
@@ -426,7 +453,7 @@ impl InteractionArbiter {
             ContactMode::Pressed => contact.target.action.unwrap_or(contact.target.hit).node(),
             ContactMode::Selecting => contact.text.and_then(|text| text.target.guard().node()),
             ContactMode::Dragging(target) | ContactMode::Scrolling(target) | ContactMode::Transferring(target) => target.node(),
-            ContactMode::Spent => None,
+            ContactMode::Spent => contact.gesture.and(contact.target.hit.node()),
         }
     }
 
@@ -447,10 +474,14 @@ impl InteractionArbiter {
         decision
     }
 
-    /// Cancel a contact whose capture has been retired, hidden, disabled, or blocked.
+    /// Clear captures that have been retired, hidden, disabled, or blocked.
     pub fn reconcile(&mut self, tree: &Tree, now: Duration) -> InteractionDecision {
         let mut decision = InteractionDecision::default();
         let modal = tree.front_modal();
+        self.hardware_gestures.reconcile(tree, modal);
+        if self.last_tap.is_some_and(|tap| guarded_node(tree, tap.target, modal).is_none()) {
+            self.last_tap = None;
+        }
         self.hover.retain(|&node| {
             let active = tree.interactive_in(node, modal);
             if !active {
@@ -473,6 +504,7 @@ impl InteractionArbiter {
         if let InteractionEvent::WindowActive(active) = event {
             self.active = active;
             if !active {
+                self.hardware_gestures = HardwareGestures::default();
                 self.cancel(tree, &mut decision, context.now);
                 decision.operations.extend(self.update_hover(tree, None).operations);
             }
@@ -496,6 +528,7 @@ impl InteractionArbiter {
             self.end_transfer(tree, &mut decision, None);
             self.last_press = None;
             self.last_text_press = None;
+            self.last_tap = None;
             self.window_drag_press = None;
             self.scrollbar = Some(ScrollbarCapture::begin(tree, id, pos, hit, &mut decision));
             return decision;
@@ -520,6 +553,7 @@ impl InteractionArbiter {
                     down: pos,
                     at: pos,
                     mode: ContactMode::Pressed,
+                    gesture: None,
                 };
                 self.down(tree, &mut decision, contact, mods, context);
             }
@@ -529,7 +563,9 @@ impl InteractionArbiter {
                     self.window_drag_press = None;
                 }
                 if let Some(mut contact) = self.contact.take_if(|contact| contact.id == id) {
+                    let previous = contact.at;
                     self.moved(tree, &mut decision, &mut contact, pos, context.now);
+                    self.move_contact_gesture(&mut decision, &mut contact, previous);
                     self.contact = Some(contact);
                     self.pointer_transfer(tree, &mut decision, id, pos, context.pointer);
                 }
@@ -565,6 +601,7 @@ impl InteractionArbiter {
                         _ => contact.at = pos,
                     }
                     self.up(tree, &mut decision, &contact, target, mods, context.now);
+                    self.finish_contact_gesture(tree, &mut decision, &contact, target, pos, context.now);
                 }
             }
             InteractionEvent::PointerCancel { id } => {
@@ -597,7 +634,14 @@ impl InteractionArbiter {
         mods: Modifiers,
         context: InteractionContext<'_>,
     ) {
-        if self.contact.is_some() || !finite(contact.down) {
+        if let Some(active) = &mut self.contact {
+            if contact.id != active.id && contact.kind == PointerKind::Touch && active.kind == PointerKind::Touch {
+                active.cancel_gesture(decision);
+                self.last_tap = None;
+            }
+            return;
+        }
+        if !finite(contact.down) {
             return;
         }
         let previous_drag = self.window_drag_press.take();
@@ -654,6 +698,7 @@ impl InteractionArbiter {
                     Some((contact.id, LastPress { target, kind: contact.kind, pos: contact.down, now: context.now, count: 1 }));
             }
             self.last_press = None;
+            self.last_tap = None;
             decision.intents.push(InteractionIntent::WindowDrag { target, maximize });
             return;
         }
@@ -685,6 +730,7 @@ impl InteractionArbiter {
                 .intents
                 .push(InteractionIntent::TextPointer(contact.text.map_or(TextPointerIntent::Clear, |text| text.down(contact.down))));
         }
+        contact.begin_gesture(tree, context.now);
         self.contact = Some(contact);
     }
 
@@ -800,10 +846,12 @@ impl InteractionArbiter {
         self.scrollbar = None;
         self.last_press = None;
         self.last_text_press = None;
+        self.last_tap = None;
         self.window_drag_press = None;
         self.end_transfer(tree, decision, None);
-        if let Some(contact) = self.contact.take() {
+        if let Some(mut contact) = self.contact.take() {
             contact.clear_press(decision);
+            contact.cancel_gesture(decision);
             match contact.mode {
                 ContactMode::Dragging(target) => contact.drag(tree, decision, target, DragPhase::Cancel),
                 ContactMode::Scrolling(target) => contact.scroll(decision, target, TouchScrollPhase::Cancel, Vec2::default(), now),
@@ -891,21 +939,7 @@ impl InteractionArbiter {
                 }
             }
             ActivationKind::Pointer { button: Button::Primary, kind, pos, modifiers, now } => {
-                let (gap, slop) = if kind == PointerKind::Touch {
-                    (self.tuning.double_tap, self.tuning.double_tap_slop)
-                } else {
-                    (self.tuning.double_click, self.tuning.drag_threshold)
-                };
-                let count = self
-                    .last_press
-                    .filter(|last| {
-                        last.target == activation.action
-                            && last.kind == kind
-                            && now.checked_sub(last.now).is_some_and(|elapsed| elapsed <= gap)
-                            && distance(last.pos, pos) <= slop
-                    })
-                    .map_or(1, |last| last.count.saturating_add(1));
-                self.last_press = Some(LastPress { target: activation.action, kind, pos, now, count });
+                let count = self.tuning.record_press(&mut self.last_press, activation.action, kind, pos, now);
                 let kinds = [HandlerKind::Press, HandlerKind::Toggle, HandlerKind::DoublePress];
                 intentions(&kinds[..if count == 2 { 3 } else { 2 }], InteractionPayload::Press { pos, modifiers })
             }

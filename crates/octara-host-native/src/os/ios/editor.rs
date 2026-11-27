@@ -9,8 +9,11 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_clas
 use objc2_foundation::{NSNotification, NSNotificationCenter, NSPoint, NSRange, NSRect, NSSize, NSString, NSValue};
 use objc2_ui_kit::{
     NSObjectUIAccessibility, NSValueUIGeometryExtensions, UIColor, UIControlEvents, UICoordinateSpace, UIEdgeInsets, UIEvent,
-    UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification, UIScrollViewDelegate,
-    UITextField, UITextFieldDelegate, UITextInput, UITextInputTraits, UITextPosition, UITextRange, UITextView, UITextViewDelegate, UIView,
+    UIKeyboardFrameEndUserInfoKey, UIKeyboardType, UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification, UIReturnKeyType,
+    UIScrollViewDelegate, UITextAutocapitalizationType, UITextAutocorrectionType, UITextContentTypeEmailAddress,
+    UITextContentTypeNewPassword, UITextContentTypeOneTimeCode, UITextContentTypePassword, UITextContentTypeTelephoneNumber,
+    UITextContentTypeURL, UITextContentTypeUsername, UITextField, UITextFieldDelegate, UITextInput, UITextInputTraits, UITextPosition,
+    UITextRange, UITextView, UITextViewDelegate, UIView,
 };
 use octara::EditorRope;
 use octara::runtime::Input;
@@ -18,7 +21,7 @@ use octara_model::ask::ClipboardKinds;
 use octara_model::geometry::Rect;
 use octara_model::identity::EditorSessionId;
 use octara_model::input::{HostReply, PasteEvent};
-use octara_model::text::TextGeometry;
+use octara_model::text::{AutoCapitalize, Autocorrect, InputTraits, KeyboardType, ReturnKeyType, TextContentType, TextGeometry};
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
@@ -401,6 +404,62 @@ impl Editor {
         }
     }
 
+    fn apply_input_traits(&self, previous: InputTraits, traits: InputTraits) {
+        let input = self.input();
+        if previous.keyboard_type != traits.keyboard_type {
+            input.setKeyboardType(match traits.keyboard_type {
+                KeyboardType::Default => UIKeyboardType::Default,
+                KeyboardType::Email => UIKeyboardType::EmailAddress,
+                KeyboardType::Number => UIKeyboardType::NumberPad,
+                KeyboardType::Decimal => UIKeyboardType::DecimalPad,
+                KeyboardType::Phone => UIKeyboardType::PhonePad,
+                KeyboardType::Url => UIKeyboardType::URL,
+                KeyboardType::Search => UIKeyboardType::WebSearch,
+            });
+        }
+        if previous.return_key != traits.return_key {
+            input.setReturnKeyType(match traits.return_key {
+                ReturnKeyType::Default => UIReturnKeyType::Default,
+                ReturnKeyType::Done => UIReturnKeyType::Done,
+                ReturnKeyType::Go => UIReturnKeyType::Go,
+                ReturnKeyType::Next => UIReturnKeyType::Next,
+                ReturnKeyType::Search => UIReturnKeyType::Search,
+                ReturnKeyType::Send => UIReturnKeyType::Send,
+            });
+        }
+        if previous.autocapitalize != traits.autocapitalize {
+            input.setAutocapitalizationType(match traits.autocapitalize.unwrap_or_default() {
+                AutoCapitalize::Sentences => UITextAutocapitalizationType::Sentences,
+                AutoCapitalize::Words => UITextAutocapitalizationType::Words,
+                AutoCapitalize::Characters => UITextAutocapitalizationType::AllCharacters,
+                AutoCapitalize::None => UITextAutocapitalizationType::None,
+            });
+        }
+        if previous.autocorrect != traits.autocorrect {
+            input.setAutocorrectionType(match traits.autocorrect {
+                Autocorrect::Default => UITextAutocorrectionType::Default,
+                Autocorrect::On => UITextAutocorrectionType::Yes,
+                Autocorrect::Off => UITextAutocorrectionType::No,
+            });
+        }
+        if previous.content_type != traits.content_type {
+            // SAFETY: These immutable UIKit constants are available on all supported iOS versions.
+            let content_type = unsafe {
+                match traits.content_type {
+                    TextContentType::None => None,
+                    TextContentType::Username => Some(UITextContentTypeUsername),
+                    TextContentType::Password => Some(UITextContentTypePassword),
+                    TextContentType::NewPassword => Some(UITextContentTypeNewPassword),
+                    TextContentType::OneTimeCode => Some(UITextContentTypeOneTimeCode),
+                    TextContentType::Email => Some(UITextContentTypeEmailAddress),
+                    TextContentType::Url => Some(UITextContentTypeURL),
+                    TextContentType::Telephone => Some(UITextContentTypeTelephoneNumber),
+                }
+            };
+            input.setTextContentType(content_type);
+        }
+    }
+
     fn read(&self) -> Draft {
         match self {
             Self::Field(field) => field.draft(),
@@ -452,6 +511,7 @@ struct Session {
     inflight: Option<Change>,
     multiline: bool,
     secure: bool,
+    input_traits: InputTraits,
 }
 
 pub(super) struct TextInput {
@@ -520,6 +580,13 @@ impl TextInput {
         }
         if session.signals.pending.borrow().is_empty() {
             session.editor.synchronize(&session.expected, &session.signals);
+            let traits = input.editor.input_traits;
+            // Keep UIKit's marked text alive until the input method finishes editing it.
+            if session.input_traits != traits && session.expected.marked.is_none() && session.editor.input().markedTextRange().is_none() {
+                session.editor.apply_input_traits(session.input_traits, traits);
+                session.input_traits = traits;
+                view.reloadInputViews();
+            }
         } else {
             (self.wake)();
         }
@@ -564,6 +631,8 @@ impl TextInput {
             field.setSecureTextEntry(input.secure);
             Editor::Field(field)
         };
+        let input_traits = input.editor.input_traits;
+        editor.apply_input_traits(InputTraits::default(), input_traits);
         let view = editor.view();
         view.setBackgroundColor(Some(&clear));
         // SAFETY: The color is a UIKit UIColor on the main thread.
@@ -583,6 +652,7 @@ impl TextInput {
             inflight: None,
             multiline: input.multiline,
             secure: input.secure,
+            input_traits,
         });
     }
 

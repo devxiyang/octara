@@ -14,7 +14,7 @@ use octara_model::motion::TextReveal;
 use octara_model::native::{NativeSlot, TypedNativeProps};
 use octara_model::overlay::AnchorTarget;
 use octara_model::paint::{CanvasOp, Image, NodeIcon, ObjectFit};
-use octara_model::text::{InlineAttachment, RichSpan};
+use octara_model::text::{InlineAttachment, InputTraits, RichSpan};
 use octara_model::theme::ThemePatch;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
@@ -119,6 +119,7 @@ pub enum NodeChange {
     EditorRichText(Box<EditorRichText>),
     EditorPlaceholder(Arc<str>),
     EditorSecure(bool),
+    EditorInputTraits(InputTraits),
     Image {
         image: Image,
         fit: ObjectFit,
@@ -150,9 +151,11 @@ impl NodeChange {
     fn content_kind(&self) -> Option<NodeKind> {
         match self {
             Self::Text(_) | Self::RichText(_) | Self::SpliceText { .. } | Self::TextReveal(_) => Some(NodeKind::Text),
-            Self::EditorValue(_) | Self::EditorRichText(_) | Self::EditorPlaceholder(_) | Self::EditorSecure(_) => {
-                Some(NodeKind::TextInput)
-            }
+            Self::EditorValue(_)
+            | Self::EditorRichText(_)
+            | Self::EditorPlaceholder(_)
+            | Self::EditorSecure(_)
+            | Self::EditorInputTraits(_) => Some(NodeKind::TextInput),
             Self::Image { .. } => Some(NodeKind::Image),
             Self::ImageSource { .. } => Some(NodeKind::Media),
             Self::Icon(_) => Some(NodeKind::Icon),

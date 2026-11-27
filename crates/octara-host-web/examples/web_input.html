@@ -45,6 +45,73 @@ try {
     button.click();
     assert(node("press-count").textContent === "2", "a click without a contact should activate the button");
 
+    const readPinches = () => JSON.parse(app.take_pinches()).map(event => event.pinch);
+    const readUnclaimed = () => JSON.parse(app.take_unclaimed_gestures());
+    const zone = node("drop-zone");
+    const zoneBounds = zone.getBoundingClientRect();
+    const zoneX = Math.trunc(zoneBounds.x) + 2;
+    const zoneY = Math.trunc(zoneBounds.y) + 2;
+    const at = mount.getBoundingClientRect();
+    const zoom = { bubbles: true, cancelable: true, clientX: pointer.clientX, clientY: pointer.clientY, deltaY: -50 };
+    assert(dispatch(button, new WheelEvent("wheel", zoom)), "ordinary wheel input was unexpectedly canceled");
+    assert(!dispatch(button, new WheelEvent("wheel", { ...zoom, ctrlKey: true })), "a claimed pinch should cancel browser zoom");
+    assert(!dispatch(zone, new WheelEvent("wheel", { ...zoom, clientX: zoneX, clientY: zoneY, ctrlKey: true })),
+        "a wheel pinch lost its owner when its anchor moved to a sibling");
+    await wait(160);
+    const wheel = readPinches();
+    assert(wheel.map(event => event.phase).join() === "started,changed,changed,ended", "unexpected wheel pinch phases");
+    assert(wheel[1].scale > 1 && wheel[2].scale > wheel[1].scale && wheel[3].scale === wheel[2].scale,
+        "wheel zoom should accumulate until the burst ends");
+    assert(wheel[0].anchor.x === Math.trunc(zoom.clientX) - at.x && wheel[0].anchor.y === Math.trunc(zoom.clientY) - at.y,
+        "wheel zoom anchor should use mount coordinates");
+    assert(wheel[2].anchor.y === zoneY - at.y && readUnclaimed().length === 0, "wheel pinch lost its new anchor or reached the sibling");
+
+    const touch = (type, id, x, target = button, y = pointer.clientY) => dispatch(target, new PointerEvent(type, {
+        ...pointer, pointerId: id, pointerType: "touch", isPrimary: id === 2, clientX: x, clientY: y,
+    }));
+    const x = Math.trunc(pointer.clientX);
+    touch("pointerdown", 2, x);
+    touch("pointerdown", 3, x + 12);
+    assert(!dispatch(button, new Event("touchstart", { bubbles: true, cancelable: true })),
+        "a claimed touch pinch should cancel native touch handling");
+    touch("pointermove", 3, x + 24);
+    touch("pointerup", 3, x + 24);
+    touch("pointerup", 2, x);
+    const touchPinch = readPinches();
+    assert(touchPinch.map(event => event.phase).join() === "started,changed,ended", "unexpected touch pinch phases");
+    assert(touchPinch[1].scale === 2 && touchPinch[1].delta_scale === 2 && touchPinch[1].anchor.x === x + 12 - at.x,
+        "touch zoom should report the distance ratio and the midpoint in mount coordinates");
+    assert(node("press-count").textContent === "2", "a claimed pinch should cancel the active press");
+
+    const unclaimedTouch = (type, id, offset = 0) => touch(type, id, zoneX + offset, zone, zoneY);
+    unclaimedTouch("pointerdown", 2);
+    unclaimedTouch("pointerdown", 3);
+    assert(dispatch(zone, new Event("touchstart", { bubbles: true, cancelable: true })), "an unclaimed pair canceled native touch handling");
+    await wait(550);
+    assert(readUnclaimed().length === 0, "a coincident second touch left the long press armed");
+    unclaimedTouch("pointermove", 3, 12);
+    unclaimedTouch("pointerup", 3, 12);
+    unclaimedTouch("pointerup", 2);
+    assert(readUnclaimed().map(event => event.pinch?.phase).join() === "started,ended", "unclaimed pinch phases were lost");
+
+    unclaimedTouch("pointerdown", 2);
+    await within(() => readUnclaimed().some(event => event.long_press?.phase === "started"), "one touch stopped arming a long press");
+    unclaimedTouch("pointerdown", 3, 12);
+    assert(readUnclaimed().map(event => event.long_press?.phase ?? event.pinch?.phase).join() === "cancelled,started",
+        "a pair should cancel a recognized long press before dispatching its pinch");
+    unclaimedTouch("pointerup", 3, 12);
+    unclaimedTouch("pointerup", 2);
+
+    dispatch(button, new PointerEvent("pointermove", pointer));
+    for (const [type, scale] of [["gesturestart", 1], ["gesturechange", 1.25], ["gestureend", 1.25]]) {
+        const event = new Event(type, { bubbles: true, cancelable: true });
+        Object.defineProperty(event, "scale", { value: scale });
+        assert(!dispatch(button, event), "a claimed Safari gesture should cancel browser zoom");
+    }
+    const safari = readPinches();
+    assert(safari.map(event => event.phase).join() === "started,changed,ended" && safari[1].delta_scale === 1.25
+        && safari[1].anchor.x === x - at.x, "Safari gesture should use the cursor when the event lacks an anchor");
+
     const letter = key => new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
     button.focus();
     assert(!dispatch(button, letter("Tab")), "an authored Tab shortcut did not consume the key");

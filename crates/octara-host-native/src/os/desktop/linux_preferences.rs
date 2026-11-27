@@ -2,6 +2,7 @@ use crate::ShellEvent;
 use futures_lite::{StreamExt, future};
 use octara_model::theme::ColorScheme;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use winit::event_loop::EventLoopProxy;
 use zbus::zvariant::OwnedValue;
@@ -10,6 +11,23 @@ const APPEARANCE: &str = "org.freedesktop.appearance";
 const GNOME_INTERFACE: &str = "org.gnome.desktop.interface";
 
 type Settings = HashMap<String, HashMap<String, OwnedValue>>;
+
+pub(super) fn locale() -> Option<Arc<str>> {
+    let locale = ["LC_ALL", "LC_MESSAGES", "LANG"].into_iter().filter_map(|key| std::env::var(key).ok()).find(|value| !value.is_empty())?;
+    let (tag, modifier) = locale.split_once('@').unwrap_or((&locale, ""));
+    let tag = tag.split('.').next()?;
+    if tag.is_empty() || matches!(tag, "C" | "POSIX") {
+        return None;
+    }
+    let tag = tag.replace('_', "-");
+    let script = match modifier {
+        "latin" => "Latn",
+        "cyrillic" => "Cyrl",
+        _ => return Some(Arc::from(tag)),
+    };
+    let (language, rest) = tag.split_once('-').unwrap_or((&tag, ""));
+    Some(Arc::from(if rest.is_empty() { format!("{language}-{script}") } else { format!("{language}-{script}-{rest}") }))
+}
 
 pub(super) struct Observer {
     cancel: async_channel::Sender<()>,
@@ -82,5 +100,12 @@ fn publish(proxy: &EventLoopProxy<ShellEvent>, settings: &Settings) {
             let value = settings.get(GNOME_INTERFACE)?.get("enable-animations")?;
             bool::try_from(value).ok().map(|enabled| !enabled)
         });
-    let _ = proxy.send_event(ShellEvent::SystemPreferencesChanged { color_scheme, reduced_motion });
+    let high_contrast = appearance.and_then(|values| values.get("contrast")).and_then(|value| u32::try_from(value).ok()).map(|v| v == 1);
+    let text_scale = settings
+        .get(GNOME_INTERFACE)
+        .and_then(|values| values.get("text-scaling-factor"))
+        .and_then(|value| f64::try_from(value).ok())
+        .map(|value| value as f32)
+        .filter(|scale| scale.is_finite() && *scale > 0.0);
+    let _ = proxy.send_event(ShellEvent::SystemPreferencesChanged { color_scheme, reduced_motion, text_scale, high_contrast });
 }

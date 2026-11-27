@@ -1,13 +1,14 @@
 use crate::ShellEvent;
-use block2::RcBlock;
+use crate::os::apple_preferences;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{AnyObject, NSObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSWorkspace, NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
 use objc2_foundation::{
-    NSArray, NSDictionary, NSKeyValueObservingOptions, NSNotificationCenter, NSObjectNSKeyValueObserverRegistration, NSString, ns_string,
+    NSArray, NSCurrentLocaleDidChangeNotification, NSDictionary, NSKeyValueObservingOptions, NSNotificationCenter,
+    NSObjectNSKeyValueObserverRegistration, NSString, ns_string,
 };
 use octara_model::theme::ColorScheme;
 use std::ffi::c_void;
@@ -30,14 +31,19 @@ define_class!(
                 // SAFETY: The name is a static AppKit constant.
                 if &*name == unsafe { NSAppearanceNameDarkAqua } { ColorScheme::Dark } else { ColorScheme::Light }
             });
-            let _ = self.ivars().send_event(ShellEvent::SystemPreferencesChanged { color_scheme: scheme, reduced_motion: None });
+            let _ = self.ivars().send_event(ShellEvent::SystemPreferencesChanged {
+                color_scheme: scheme,
+                reduced_motion: None,
+                text_scale: None,
+                high_contrast: None,
+            });
         }
     }
 );
 
 pub(super) struct Observer {
-    center: Retained<NSNotificationCenter>,
-    token: Retained<ProtocolObject<dyn NSObjectProtocol>>,
+    _workspace: apple_preferences::Observer,
+    _locale: apple_preferences::Observer,
     appearance: Option<(Retained<NSApplication>, Retained<AppearanceObserver>)>,
 }
 
@@ -61,26 +67,19 @@ impl Observer {
             }
             (app, observer)
         });
-        let callback = RcBlock::new(move |_| {
-            let _ = proxy.send_event(ShellEvent::RefreshReducedMotion);
-        });
-        // SAFETY: The notification is posted by NSWorkspace and the callback only uses the thread-safe event proxy.
-        let token = unsafe {
-            center.addObserverForName_object_queue_usingBlock(
-                Some(NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
-                None,
-                None,
-                &callback,
-            )
-        };
-        Self { center, token, appearance }
+        // SAFETY: AppKit and Foundation expose these as static notification names.
+        let (display, locale) =
+            unsafe { (NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification, NSCurrentLocaleDidChangeNotification) };
+        Self {
+            _workspace: apple_preferences::Observer::new(center, &[display], proxy.clone()),
+            _locale: apple_preferences::Observer::new(NSNotificationCenter::defaultCenter(), &[locale], proxy),
+            appearance,
+        }
     }
 }
 
 impl Drop for Observer {
     fn drop(&mut self) {
-        // SAFETY: This is the token returned by the same notification center.
-        unsafe { self.center.removeObserver((*self.token).as_ref()) };
         if let Some((app, observer)) = &self.appearance {
             // SAFETY: This is the same application, observer and key path registered in new.
             unsafe { app.removeObserver_forKeyPath(observer, ns_string!("effectiveAppearance")) };

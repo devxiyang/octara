@@ -12,6 +12,9 @@ mod text_selection;
 #[path = "headless/tooltip.rs"]
 mod tooltip;
 
+#[path = "headless/gestures.rs"]
+mod gestures;
+
 use octara::{
     prelude::*,
     runtime::{HandlerEvent, HandlerOutcome, HostCommand, Input},
@@ -60,6 +63,53 @@ fn target(driver: &HeadlessDriver, id: WindowId, test_id: &str) -> TargetRef {
     let tree = driver.app().runtime().window(id).unwrap().tree();
     let [node] = tree.test_ids(test_id) else { panic!("expected a single node for {test_id}") };
     tree.guard(*node)
+}
+
+#[test]
+fn locale_and_text_scale_reach_logical_portals_and_update_native_layout() {
+    let mut driver = driver();
+    let window = driver
+        .app_mut()
+        .open_window(options(), |_| {
+            row()
+                .child(el().portal(
+                    |_| true,
+                    |_| {
+                        col().child(
+                            text("View 42")
+                                .test_id("portal-text")
+                                .ms(12)
+                                .ps(6)
+                                .border_e(2)
+                                .text_size(16)
+                                .line_height(LineHeight::Len(px(20.0))),
+                        )
+                    },
+                ))
+                .child(
+                    el().text_direction(Direction::Ltr).portal(|_| true, |_| col().child(text("Fixed direction").test_id("fixed").ms(7))),
+                )
+        })
+        .unwrap();
+    let portal = target(&driver, window, "portal-text").node().unwrap();
+    let fixed = target(&driver, window, "fixed").node().unwrap();
+    let tree = driver.app().runtime().window(window).unwrap().tree();
+    assert_eq!(tree.visual(portal).direction, Direction::Ltr);
+    assert_eq!(tree.layout_style(portal).margin.left, Some(LayoutLength::Px(12.0)));
+
+    let prefs = SystemPreferences { locale: "fa-IR".into(), text_scale: 1.5, ..SystemPreferences::default() };
+    driver.dispatch(window, Input::Host(HostReply::SystemPreferencesChanged(prefs))).unwrap();
+    let runtime = driver.app().runtime().window(window).unwrap();
+    let tree = runtime.tree();
+    let layout = runtime.geometry(portal).unwrap();
+    assert_eq!(tree.visual(portal).direction, Direction::Rtl);
+    assert_eq!(tree.visual(portal).font_size, 24.0);
+    assert_eq!(tree.visual(portal).line_height, 30.0);
+    assert_eq!(tree.layout_style(portal).margin.right, Some(LayoutLength::Px(12.0)));
+    assert_eq!((layout.padding.left, layout.padding.right), (0.0, 6.0));
+    assert_eq!((layout.border.left, layout.border.right), (2.0, 0.0));
+    assert_eq!(tree.visual(fixed).direction, Direction::Ltr);
+    assert_eq!(tree.layout_style(fixed).margin.left, Some(LayoutLength::Px(7.0)));
 }
 
 #[test]

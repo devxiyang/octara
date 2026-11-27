@@ -186,7 +186,14 @@ impl TextEngine {
         let gap = if pill.icon.is_some() { style.gap } else { 0.0 };
         let shape = self.shape(
             &label,
-            ShapeStyle { font_size: style.size, weight: style.weight, line_height: None, underline: false, strike: false, ..inherited },
+            ShapeStyle {
+                font_size: style.size * inherited.text_scale,
+                weight: style.weight,
+                line_height: None,
+                underline: false,
+                strike: false,
+                ..inherited
+            },
             &[],
             true,
         );

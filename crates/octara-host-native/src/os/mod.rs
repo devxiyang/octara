@@ -9,7 +9,7 @@ use octara_gpu::DrawTarget;
 use octara_model::ask::{Ask, AskId, ClipboardItem, ClipboardKinds, Menu, ServiceId, ServiceRequest};
 use octara_model::geometry::{Point, Rect, Size, WindowViewport};
 use octara_model::identity::{EditorSessionId, NativeId, TargetGuard};
-use octara_model::input::{EditorEvent, HostReply};
+use octara_model::input::{EditorEvent, GestureEvent, HostReply, Modifiers};
 use octara_model::native::{NativeChange, NativeCommand, NativeMeasureRequest, NativeSlot, NativeSnapshotRequest};
 use octara_model::paint::Image;
 use octara_model::text::TextGeometry;
@@ -19,16 +19,20 @@ use octara_render::{gpu::OutputColor, wgpu};
 use std::path::PathBuf;
 use std::sync::Arc;
 use winit::dpi::{LogicalPosition, LogicalSize};
-use winit::event::{Ime, KeyEvent};
+use winit::event::{Ime, KeyEvent, WindowEvent};
 use winit::event_loop::EventLoopProxy;
 use winit::window::{Fullscreen, Theme, UserAttentionType, Window, WindowAttributes};
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple_media;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod apple_preferences;
 #[cfg(target_os = "macos")]
 mod corners;
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 mod desktop;
+#[cfg(not(target_os = "ios"))]
+mod gestures;
 #[cfg(target_os = "ios")]
 mod ios;
 #[cfg(target_os = "macos")]
@@ -113,6 +117,15 @@ pub trait OsHost {
     fn reduced_motion(&self) -> Option<bool> {
         None
     }
+    fn locale(&self) -> Option<Arc<str>> {
+        None
+    }
+    fn text_scale(&self) -> Option<f32> {
+        None
+    }
+    fn high_contrast(&self) -> Option<bool> {
+        None
+    }
     fn supports_window_vibrancy(&self) -> bool {
         false
     }
@@ -160,6 +173,9 @@ pub trait OsHost {
 pub trait OsWindow {
     fn text_input(&mut self) -> &mut dyn WindowTextInput;
     fn request_service(&mut self, id: ServiceId, request: ServiceRequest) -> Option<ServiceCleanup>;
+    fn on_winit_gesture(&mut self, _event: &WindowEvent, _anchor: Option<Point>, _modifiers: Modifiers) -> Option<GestureEvent> {
+        None
+    }
 
     /// Supplies handles valid while the host borrows the live window.
     fn module_surface<'a>(&'a self, window: &'a Window, kind: HostSurfaceKind, id: WindowId) -> HostSurface<'a> {

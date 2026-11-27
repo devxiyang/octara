@@ -236,18 +236,30 @@ impl AppRuntime {
     }
 
     pub fn system_preferences(&self) -> SystemPreferences {
-        self.host_preferences.unwrap_or_default()
+        self.host_preferences.clone().unwrap_or_default()
     }
 
-    pub(crate) fn update_system_preferences(&mut self, preferences: SystemPreferences) {
-        let previous = self.host_preferences.replace(preferences);
-        self.world.write(self.world.root_scope(), None).set_if_changed(self.system_preferences, preferences);
-        if previous.is_none_or(|previous| previous.reduced_motion != preferences.reduced_motion) {
-            for window in self.windows.values_mut() {
+    pub(crate) fn prefers_reduced_motion(&self) -> bool {
+        self.host_preferences.as_ref().is_some_and(|preferences| preferences.reduced_motion)
+    }
+
+    pub(crate) fn update_system_preferences(&mut self, mut preferences: SystemPreferences) {
+        if !preferences.text_scale.is_finite() || preferences.text_scale <= 0.0 {
+            preferences.text_scale = 1.0;
+        }
+        let previous = self.host_preferences.as_ref();
+        if previous == Some(&preferences) {
+            return;
+        }
+        for window in self.windows.values_mut() {
+            window.set_style_preferences(&preferences);
+            if previous.is_none_or(|previous| previous.reduced_motion != preferences.reduced_motion) {
                 window.engine.set_reduced_motion(preferences.reduced_motion);
                 window.force_project = true;
             }
         }
+        self.world.write(self.world.root_scope(), None).set_if_changed(self.system_preferences, preferences.clone());
+        self.host_preferences = Some(preferences);
     }
 
     pub fn window(&self, id: WindowId) -> Option<&WindowRuntime> {
@@ -275,7 +287,11 @@ impl AppRuntime {
             .next_deadline()
             .into_iter()
             .chain(self.text_stream_deadline)
-            .chain(self.windows.values().flat_map(|window| window.next_deadline.into_iter().chain(window.tooltip.deadline())))
+            .chain(self.windows.values().flat_map(|window| {
+                [window.next_deadline, window.tooltip.deadline(), window.arbiter.gesture_deadline(), window.scroll_motion.deadline()]
+                    .into_iter()
+                    .flatten()
+            }))
             .min()
     }
 
@@ -352,11 +368,14 @@ impl AppRuntime {
         }
         let mut engine = (self.engine)(id, &options);
         engine.set_window_material(options.presentation.material);
-        if let Some(preferences) = self.host_preferences {
+        if let Some(preferences) = &self.host_preferences {
             engine.set_reduced_motion(preferences.reduced_motion);
         }
         let tree_id = TreeId::new(self.namespace, id.data().as_ffi());
-        let window = WindowRuntime::new(&mut self.world, id, tree_id, options, restored, engine, root);
+        let mut window = WindowRuntime::new(&mut self.world, id, tree_id, options, restored, engine, root);
+        if let Some(preferences) = &self.host_preferences {
+            window.set_style_preferences(preferences);
+        }
         self.windows.insert(id, window);
         self.staged_host.push(HostCommand::Opened(id));
     }

@@ -5,6 +5,7 @@ mod css;
 mod dom;
 mod edit;
 mod engine;
+mod gestures;
 #[cfg(feature = "webgpu")]
 mod gpu;
 mod image;
@@ -24,6 +25,7 @@ pub use octara_render::{SurfaceFrame, SurfaceRenderer, SurfaceRendererFactory};
 
 use dom::DomHandle;
 use edit::Editor;
+use gestures::Gestures;
 use js_sys::Array;
 use native::NativeViews;
 use navigation::{BrowserRoutes, HistoryBridge};
@@ -48,8 +50,9 @@ use std::time::Duration;
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{
-    Document, DragEvent, Element, Event, EventTarget, HtmlElement, MediaQueryList, MessageChannel, MessageEvent, MessagePort, MouseEvent,
-    PageTransitionEvent, Performance, PointerEvent, PopStateEvent, ResizeObserver, ResizeObserverEntry, Window as Browser,
+    AddEventListenerOptions, Document, DragEvent, Element, Event, EventTarget, HtmlElement, MediaQueryList, MessageChannel, MessageEvent,
+    MessagePort, MouseEvent, PageTransitionEvent, Performance, PointerEvent, PopStateEvent, ResizeObserver, ResizeObserverEntry,
+    Window as Browser,
 };
 
 /// Owns one Octara window and its browser event sources. Dropping it unmounts the window.
@@ -123,6 +126,7 @@ impl WebApp {
         };
         let dark_mode = browser.match_media("(prefers-color-scheme: dark)")?;
         let reduced_motion = browser.match_media("(prefers-reduced-motion: reduce)")?;
+        let high_contrast = browser.match_media("(prefers-contrast: more), (forced-colors: active)")?;
         let host = Self(Rc::new_cyclic(|owner: &std::rc::Weak<Driver>| {
             let weak = owner.clone();
             let on_wake = Closure::new(move |_: MessageEvent| {
@@ -161,9 +165,12 @@ impl WebApp {
                 native_views: RefCell::default(),
                 dark_mode,
                 reduced_motion,
+                high_contrast,
+                refresh_preferences: Cell::default(),
                 stopped: Cell::default(),
                 editor: Editor::default(),
                 pointer: Cell::default(),
+                gestures: Gestures::default(),
                 refresh: Cell::default(),
                 history: RefCell::default(),
                 listeners: RefCell::default(),
@@ -292,9 +299,12 @@ struct Driver {
     native_views: RefCell<NativeViews>,
     dark_mode: Option<MediaQueryList>,
     reduced_motion: Option<MediaQueryList>,
+    high_contrast: Option<MediaQueryList>,
+    refresh_preferences: Cell<bool>,
     stopped: Cell<bool>,
     editor: Editor,
     pointer: Cell<Option<PointerId>>,
+    gestures: Gestures,
     refresh: Cell<bool>,
     history: RefCell<Option<Box<dyn HistoryBridge>>>,
     listeners: RefCell<Vec<Listener>>,
@@ -310,10 +320,16 @@ struct Driver {
 
 impl Driver {
     fn connect(self: &Rc<Self>) -> Result<(), JsValue> {
-        for query in [&self.dark_mode, &self.reduced_motion].into_iter().flatten() {
+        for query in [&self.dark_mode, &self.reduced_motion, &self.high_contrast].into_iter().flatten() {
             self.listen(query.as_ref(), "change", false, |driver, _| {
-                let preferences = driver.system_preferences();
-                driver.send(Input::Host(HostReply::SystemPreferencesChanged(preferences)));
+                driver.refresh_preferences.set(true);
+                driver.schedule_frame();
+            })?;
+        }
+        for name in ["languagechange", "resize"] {
+            self.listen(self.browser.as_ref(), name, false, |driver, _| {
+                driver.refresh_preferences.set(true);
+                driver.schedule_frame();
             })?;
         }
         for name in ["pointerdown", "pointermove", "pointerup", "pointercancel", "pointerleave"] {
@@ -322,6 +338,7 @@ impl Driver {
                 if matches!(name, "pointerup" | "pointermove" | "pointercancel") { self.browser.as_ref() } else { self.mount.as_ref() };
             self.listen(target, name, matches!(name, "pointerup" | "pointercancel"), move |driver, event| driver.pointer(name, &event))?;
         }
+        self.connect_gestures()?;
         self.listen(self.mount.as_ref(), "click", false, |driver, event| {
             if let Some(input) = event.target().and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok())
                 && input.type_() == "checkbox"
@@ -390,6 +407,7 @@ impl Driver {
         for name in ["focus", "blur"] {
             self.listen(self.browser.as_ref(), name, false, move |driver, _| {
                 if name == "blur" {
+                    driver.cancel_gestures();
                     driver.pointer.set(None);
                 }
                 driver.send(Input::Interaction(InteractionEvent::WindowActive(name == "focus")));
@@ -407,7 +425,6 @@ impl Driver {
         self.listen(self.browser.as_ref(), "pageshow", false, |driver, _| {
             driver.report_visibility(!driver.document.hidden());
         })?;
-        self.listen(self.browser.as_ref(), "resize", false, |driver, _| driver.schedule_frame())?;
         self.listen(self.document.as_ref(), "fullscreenchange", false, |driver, _| driver.schedule_frame())?;
         self.listen(self.browser.as_ref(), "popstate", false, |driver, event| {
             let Some(event) = event.dyn_ref::<PopStateEvent>() else { return };
@@ -454,7 +471,18 @@ impl Driver {
         self.listen(self.mount.as_ref(), "dragover", false, |driver, event| driver.file_drop(&event, false))?;
         self.listen(self.mount.as_ref(), "drop", false, |driver, event| driver.file_drop(&event, true))?;
 
+        // A rem-sized box tracks computed root font changes even when the mount keeps its size.
+        let text_scale_probe = dom::html(&self.document, "span")?;
+        text_scale_probe.set_attribute("aria-hidden", "true")?;
+        text_scale_probe.set_attribute(
+            "style",
+            "all:initial!important;display:block!important;position:fixed!important;bottom:100%!important;left:0!important;\
+             width:0!important;height:1rem!important;overflow:hidden!important;visibility:hidden!important;pointer-events:none!important;",
+        )?;
+        let probe_parent = self.document.body().map(Element::from).or_else(|| self.document.document_element());
+        let probe_parent = probe_parent.ok_or("Octara needs a document element to observe text scale")?;
         let weak = Rc::downgrade(self);
+        let probe = text_scale_probe.clone();
         let callback = Closure::new(move |entries: Array| {
             let Some(driver) = weak.upgrade().filter(|driver| !driver.stopped.get()) else { return };
             let mut nodes = Vec::new();
@@ -462,6 +490,8 @@ impl Driver {
                 let target = entry.unchecked_into::<ResizeObserverEntry>().target();
                 if let Some(node) = driver.dom.node(target.as_ref()) {
                     nodes.push(node);
+                } else if target == *driver.mount || target == *probe {
+                    driver.refresh_preferences.set(true);
                 }
             }
             if !nodes.is_empty() {
@@ -472,9 +502,11 @@ impl Driver {
             driver.schedule_frame();
         });
         let observer = ResizeObserver::new(callback.as_ref().unchecked_ref())?;
+        probe_parent.append_child(&text_scale_probe)?;
+        observer.observe(&text_scale_probe);
         observer.observe(&self.mount);
         self.dom.install_observer(observer.clone());
-        self.resize.replace(Some(Resize { observer, _callback: callback }));
+        self.resize.replace(Some(Resize { observer, text_scale_probe, _callback: callback }));
         Ok(())
     }
 
@@ -494,7 +526,12 @@ impl Driver {
                 action(&driver, event);
             }
         });
-        target.add_event_listener_with_callback_and_bool(name, callback.as_ref().unchecked_ref(), capture)?;
+        let options = AddEventListenerOptions::new();
+        options.set_capture(capture);
+        if matches!(name, "wheel" | "touchstart" | "touchmove") {
+            options.set_passive(false);
+        }
+        target.add_event_listener_with_callback_and_add_event_listener_options(name, callback.as_ref().unchecked_ref(), &options)?;
         self.listeners.borrow_mut().push(Listener { target: target.clone(), name, capture, callback });
         Ok(())
     }
@@ -508,13 +545,16 @@ impl Driver {
     }
 
     fn pointer(&self, name: &str, event: &Event) {
-        let Some(pointer) = event.dyn_ref::<PointerEvent>().filter(|pointer| pointer.is_primary()) else { return };
+        let Some(pointer) = event.dyn_ref::<PointerEvent>() else { return };
         let id = PointerId(pointer.pointer_id() as u32 as u64);
         let kind = match pointer.pointer_type().as_str() {
             "touch" => PointerKind::Touch,
             "pen" => PointerKind::Pen,
             _ => PointerKind::Mouse,
         };
+        if (kind == PointerKind::Touch && self.pinch_pointer(name, id, pointer)) || !pointer.is_primary() {
+            return;
+        }
         if matches!(name, "pointerup" | "pointercancel") && self.pointer.get() != Some(id) {
             return;
         }
@@ -524,8 +564,10 @@ impl Driver {
         {
             return;
         }
-        let rect = self.mount.get_bounding_client_rect();
-        let pos = Point::new(pointer.client_x() as f32 - rect.x() as f32, pointer.client_y() as f32 - rect.y() as f32);
+        let pos = self.window_point(pointer.client_x() as f32, pointer.client_y() as f32);
+        if kind == PointerKind::Mouse {
+            self.gestures.cursor.set((name != "pointerleave").then_some(pos));
+        }
         let mods = modifiers(pointer.shift_key(), pointer.ctrl_key(), pointer.alt_key(), pointer.meta_key());
         let result = self.cycle(|app, window| {
             let input = match name {
@@ -629,7 +671,19 @@ impl Driver {
         SystemPreferences {
             color_scheme: if dark { ColorScheme::Dark } else { ColorScheme::Light },
             reduced_motion: self.reduced_motion.as_ref().is_some_and(MediaQueryList::matches),
+            locale: self.browser.navigator().language().filter(|tag| !tag.is_empty()).unwrap_or_else(|| "en-US".into()).into(),
+            text_scale: self.root_text_scale(),
+            high_contrast: self.high_contrast.as_ref().is_some_and(MediaQueryList::matches),
         }
+    }
+
+    fn root_text_scale(&self) -> f32 {
+        self.document
+            .document_element()
+            .and_then(|root| self.browser.get_computed_style(&root).ok().flatten())
+            .and_then(|style| style.get_property_value("font-size").ok())
+            .and_then(|size| size.strip_suffix("px")?.parse::<f32>().ok())
+            .map_or(1.0, |size| size / 16.0)
     }
 
     fn elapsed(&self) -> Duration {
@@ -680,6 +734,13 @@ impl Driver {
                 app.dispatch(id, Input::Host(HostReply::ViewportChanged(viewport)))?;
             }
             app.advance_to(self.elapsed())?;
+            self.finish_wheel_pinch(app, id)?;
+            if self.refresh_preferences.replace(false) {
+                let preferences = self.system_preferences();
+                if app.runtime().system_preferences() != preferences {
+                    app.dispatch(id, Input::Host(HostReply::SystemPreferencesChanged(preferences)))?;
+                }
+            }
             action(app, id)
         })();
         if matches!(&result, Err(AppError::Project { window, .. }) if *window != id) {
@@ -705,7 +766,7 @@ impl Driver {
             web_sys::console::error_1(&error);
         }
         let commands = app.runtime_mut().take_host_commands();
-        let deadline = app.runtime().next_deadline();
+        let deadline = app.runtime().next_deadline().into_iter().chain(self.wheel_pinch_deadline()).min();
         let closed = app.runtime().window(id).is_none() || app.runtime().is_failed();
         drop(slot);
         if !closed {
@@ -843,12 +904,14 @@ impl Drop for Listener {
 
 struct Resize {
     observer: ResizeObserver,
+    text_scale_probe: HtmlElement,
     _callback: Closure<dyn FnMut(Array)>,
 }
 
 impl Drop for Resize {
     fn drop(&mut self) {
         self.observer.disconnect();
+        self.text_scale_probe.remove();
     }
 }
 

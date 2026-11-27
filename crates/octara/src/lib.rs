@@ -27,7 +27,9 @@ pub use authoring::*;
 pub use octara_model::{
     capture::{CaptureSource, FrameReceipt, PaintFallback, PaintOutcome, PaintSample},
     identity::{EditorSessionId, TargetGuard},
-    input::{BackPhase, ContactTarget, EditorEvent, HostReply, InteractionEvent, PointerId, PointerKind, WheelPhase},
+    input::{
+        BackPhase, ContactTarget, EditorEvent, GestureEvent, GesturePhase, HostReply, InteractionEvent, PointerId, PointerKind, WheelPhase,
+    },
     paint::{DisplayList, Item as PaintItem, Picture},
     text::{AtomicRange, CommitKind, TextEdit},
 };
@@ -44,7 +46,7 @@ pub mod prelude {
     pub use crate::authoring::*;
     pub use crate::view::*;
     pub use crate::{
-        App, AppDefinition, AppError, AtomicRange, EditorBackend, EditorRichText, EditorRope, EditorState, Store, Window, WindowActions,
-        WindowDefinition, ui,
+        App, AppDefinition, AppError, AtomicRange, EditorBackend, EditorRichText, EditorRope, EditorState, GestureEvent, GesturePhase,
+        Store, Window, WindowActions, WindowDefinition, ui,
     };
 }

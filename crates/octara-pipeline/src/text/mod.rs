@@ -14,11 +14,12 @@ use octara_model::CacheLine;
 use octara_model::geometry::{Align, Point, Rect, Size};
 use octara_model::paint::{CanvasText, FontData, FontFace, FontId, Glyph, GlyphRun, Item, Quad};
 use octara_model::semantics::TextClip;
+use octara_model::style::Direction;
 use octara_model::text::{InlineAttachment, InlineContent, RichSpan, TextAlign, TextGeometry, TextLine, TextStyle, Wrap};
 use octara_model::theme::{Color, ColorToken};
 use octara_tree::{DirtyBitmap, NodeId, RetiredNode, Tree, TreeDelta};
 use parley::fontique::{Blob, Collection, CollectionOptions, FallbackKey, GenericFamily, Script, SourceCache};
-use parley::{Alignment, AlignmentOptions, FontContext, FontWeight, Layout, LayoutContext, StyleProperty};
+use parley::{Alignment, AlignmentOptions, BaseDirection, FontContext, FontWeight, Layout, LayoutContext, StyleProperty};
 use rustc_hash::{FxHashMap, FxHasher};
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
@@ -63,6 +64,8 @@ impl Shape {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ShapeStyle {
+    direction: Direction,
+    text_scale: f32,
     family: &'static str,
     font_size: f32,
     line_height: Option<f32>,
@@ -77,6 +80,8 @@ struct ShapeStyle {
 impl From<TextStyle> for ShapeStyle {
     fn from(style: TextStyle) -> Self {
         Self {
+            direction: style.direction,
+            text_scale: style.text_scale,
             family: style.family,
             font_size: style.font_size,
             line_height: Some(style.line_height),
@@ -413,6 +418,8 @@ impl TextEngine {
                 style.strike,
                 style.letter_spacing.to_bits(),
                 style.tabular_nums,
+                style.direction,
+                style.text_scale.to_bits(),
             )
                 .hash(&mut hasher);
             for span in spans {
@@ -444,6 +451,11 @@ impl TextEngine {
         let (shaped_text, inline) = inline::Box::project(text, spans, attachments, (offset, first), self, style);
         // A pill label retains its fractional metrics inside the enclosing paragraph.
         let mut builder = self.layouts.ranged_builder(&mut self.fonts, &shaped_text, 1.0, style.line_height.is_some());
+        builder.set_base_direction(match style.direction {
+            Direction::Inherit => BaseDirection::Auto,
+            Direction::Ltr => BaseDirection::Ltr,
+            Direction::Rtl => BaseDirection::Rtl,
+        });
         builder.push_default(StyleProperty::Brush(0));
         builder.push_default(StyleProperty::FontFamily(style.family.into()));
         builder.push_default(StyleProperty::FontSize(style.font_size));
@@ -620,7 +632,7 @@ impl TextEngine {
                 range: range.clone(),
                 brush: (i + 1) as u16,
                 family: span.mono.then_some(mono),
-                size: span.size,
+                size: span.size.map(|size| size * style.text_scale),
                 weight: span.weight,
                 italic: span.italic,
                 underline: span.underline,
@@ -1110,7 +1122,7 @@ impl TextEngine {
 
     pub(crate) fn canvas_items(&mut self, source: NodeId, text: &CanvasText, mut style: TextStyle, color: Color) -> Vec<Item> {
         let ratio = style.line_height / style.font_size.max(1.0);
-        style.font_size = text.size.unwrap_or(style.font_size) * text.scale;
+        style.font_size = text.size.map_or(style.font_size, |size| size * style.text_scale) * text.scale;
         style.line_height = style.font_size * ratio;
         style.weight = text.weight.unwrap_or(style.weight);
         style.wrap = if text.max_width.is_some() { Wrap::Words } else { Wrap::None };
@@ -1211,6 +1223,27 @@ mod tests {
         drop(document);
         assert_eq!(run.font.data.as_ptr(), address);
         assert_eq!(run.font.data.as_ref(), std::fs::read(path).unwrap().as_slice());
+    }
+
+    #[test]
+    fn paragraph_direction_changes_alignment_and_invalidates_the_shape_cache() {
+        let mut engine = TextEngine::new(false);
+        let layout = |engine: &mut TextEngine, direction| {
+            let style = TextStyle { direction, ..TextStyle::default() };
+            let paragraphs = engine.paragraphs("ABC אבג", style, &[], &[], true);
+            assert_eq!(paragraphs[0].shape.borrow().layout.is_rtl(), direction == Direction::Rtl);
+            let document = Document { paragraphs, style, offsets: Vec::new(), placeholder: false };
+            engine.present(&document, Some(240.0))
+        };
+        let ltr = layout(&mut engine, Direction::Ltr);
+        let rtl = layout(&mut engine, Direction::Rtl);
+        assert!(ltr.lines[0].fragments.first().unwrap().range.start < 4);
+        assert!(rtl.lines[0].fragments.first().unwrap().rtl);
+        assert!(rtl.lines[0].rect.x > ltr.lines[0].rect.x);
+        assert!((rtl.lines[0].rect.right() - 240.0).abs() < 0.1);
+        let repeated = layout(&mut engine, Direction::Rtl);
+        assert_eq!(rtl.lines, repeated.lines);
+        assert_eq!(engine.work.shapes_built, 2);
     }
 
     #[test]

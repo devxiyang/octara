@@ -1,5 +1,6 @@
 //! The atomic ingress, react, commit, project and publish cycle.
 
+pub(crate) mod scroll;
 mod text;
 
 pub(crate) use text::{PasteTarget, TextInteraction};
@@ -22,8 +23,8 @@ use octara_model::native::TypedNativeEvent;
 use octara_model::semantics::A11yAction;
 use octara_model::style::State;
 use octara_tree::arbiter::{
-    FocusHandoff, HandlerIntent, InteractionContext, InteractionDecision, InteractionIntent, InteractionPayload, PointerGeometry,
-    TouchScrollIntent, TouchScrollStage, focus_leave,
+    FocusHandoff, GestureIntent, HandlerIntent, InteractionContext, InteractionDecision, InteractionIntent, InteractionPayload,
+    PointerGeometry, TouchScrollIntent, focus_leave,
 };
 use octara_tree::editor::{EditorAction, EditorProposal, EditorSession};
 use octara_tree::tables::{HandlerId, HandlerKind};
@@ -117,6 +118,7 @@ impl AppRuntime {
         self.drain_module_messages();
         let now = self.now();
         self.coalesce_text_streams(now);
+        self.advance_overscrolls(now);
         for window in self.windows.values_mut() {
             if window.next_deadline.is_some_and(|deadline| deadline <= now) {
                 window.force_project = true;
@@ -200,19 +202,11 @@ impl AppRuntime {
             Routed::Input(id, input) => self.route_input(id, input, routed),
             Routed::Intent(id, intent) => self.route_intent(id, intent, routed),
             Routed::ScrollViewport(id, scroll, available) => {
-                let used = self
-                    .windows
-                    .get(&id)
-                    .and_then(|window| scroll.viewport_delta(&window.tree, available))
-                    .and_then(|delta| scroll.target.node().map(|node| self.scroll_by(id, node, delta)))
-                    .unwrap_or_default();
+                let used = self.scroll_viewport(id, scroll, available);
                 routed.push_front(Routed::ScrollPost(id, scroll, TouchScrollIntent::remaining(available, used)));
                 used != Vec2::default()
             }
-            Routed::ScrollPost(id, scroll, available) => {
-                let handler = self.windows.get(&id).and_then(|window| scroll.handler(&window.tree, TouchScrollStage::Post, available));
-                handler.is_some_and(|handler| self.invoke_intent(id, handler).consumed)
-            }
+            Routed::ScrollPost(id, scroll, available) => self.scroll_post(id, scroll, available),
             Routed::FocusEvent(id, node, focused) => {
                 let kind = if focused { HandlerKind::Focus } else { HandlerKind::Blur };
                 self.invoke_node(id, node, kind, HandlerEvent::Focus { node, focused }).consumed
@@ -240,6 +234,7 @@ impl AppRuntime {
                 | InteractionEvent::PointerCancel { .. }
                 | InteractionEvent::PointerLeave
                 | InteractionEvent::Wheel { .. }
+                | InteractionEvent::Gesture(_)
                 | InteractionEvent::Key(_)
                 | InteractionEvent::BackGesture { .. }
                 | InteractionEvent::WindowActive(false),
@@ -268,6 +263,13 @@ impl AppRuntime {
                 handled
             }
             Input::Interaction(InteractionEvent::BackGesture { id: token, phase }) => self.back_gesture(id, token, phase),
+            Input::Interaction(InteractionEvent::Gesture(event)) => {
+                let intent = window.arbiter.gesture(&window.tree, event, |pos| {
+                    window.settled?;
+                    window.engine.hit_test(&window.tree, pos).map(|target| target.hit)
+                });
+                intent.is_some_and(|intent| self.deliver_gesture(id, intent))
+            }
             Input::Interaction(event) => {
                 if let InteractionEvent::WindowActive(active) = event {
                     let window = self.windows.get_mut(&id).expect("known window");
@@ -386,6 +388,7 @@ impl AppRuntime {
         let Some(window) = self.windows.get_mut(&id) else { return false };
         match intent {
             InteractionIntent::Invoke(intent) => self.invoke_intent(id, intent).consumed,
+            InteractionIntent::Gesture(intent) => self.deliver_gesture(id, intent),
             InteractionIntent::Focus(intent) => {
                 if let Some(op) = intent.resolve(&window.tree) {
                     self.apply_operation_with_pointer(id, op, Some(intent), routed);
@@ -408,15 +411,7 @@ impl AppRuntime {
                 let Some(node) = scroll.target.node() else { return false };
                 self.scroll_by(id, node, delta) != Vec2::default()
             }
-            InteractionIntent::TouchScroll(scroll) => {
-                let handler = scroll.handler(&window.tree, TouchScrollStage::Pre, scroll.delta);
-                let used = handler.map_or_default(|handler| self.invoke_intent(id, handler).scroll);
-                let available = TouchScrollIntent::remaining(scroll.delta, used);
-                if available != Vec2::default() {
-                    routed.push_front(Routed::ScrollViewport(id, scroll, available));
-                }
-                used != Vec2::default()
-            }
+            InteractionIntent::TouchScroll(scroll) => self.route_touch_scroll(id, scroll, routed),
             InteractionIntent::WindowDrag { target, maximize } => {
                 if !window.tree.contains_target(target) || !target.node().is_some_and(|node| window.tree.is_interactive(node)) {
                     return false;
@@ -767,6 +762,11 @@ impl AppRuntime {
             }
         }
         HandlerOutcome { consumed, ..Default::default() }
+    }
+
+    fn deliver_gesture(&mut self, id: WindowId, intent: GestureIntent) -> bool {
+        let handlers = intent.handlers(&self.windows[&id].tree).collect::<smallvec::SmallVec<[HandlerId; 2]>>();
+        handlers.into_iter().any(|handler| self.invoke(id, handler, HandlerEvent::Gesture(&intent.event)).consumed)
     }
 
     fn deliver_link(&mut self, id: WindowId, node: NodeId, kind: LinkEventKind, modifiers: Modifiers) -> bool {
@@ -1161,6 +1161,9 @@ impl AppRuntime {
                 Self::note_focus(window, previous, routed);
             }
             routed.extend(decision.intents.into_iter().map(|intent| Routed::Intent(window.id, intent)));
+            if let Some(gesture) = window.arbiter.advance_gestures(&window.tree, now) {
+                routed.push_back(Routed::Intent(window.id, InteractionIntent::Gesture(gesture)));
+            }
         }
         self.tasks.cancel_retired_scopes(&self.world);
         self.cancel_platform_work();
@@ -1221,6 +1224,9 @@ impl AppRuntime {
                     }
                     FeedbackSignal::Scroll(signal) => {
                         write.set_if_changed(signal, window.tree.scroll(id).map_or(Vec2::default(), |slot| slot.offset));
+                    }
+                    FeedbackSignal::Overscroll(signal) => {
+                        write.set_if_changed(signal, window.tree.scroll(id).map_or(0.0, |slot| slot.overscroll_offset));
                     }
                     FeedbackSignal::ScrollAnchor(signal) => {
                         write.set_if_changed(signal, window.engine.scroll_anchor(&window.tree, id));

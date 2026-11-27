@@ -2,19 +2,27 @@
 mod browser {
     use octara::prelude::*;
     use octara_host_web::WebApp;
+    use std::cell::RefCell;
+    use std::rc::Rc;
     use wasm_bindgen::prelude::*;
     use web_sys::HtmlElement;
 
     #[wasm_bindgen]
     pub struct WebInputFixture {
         app: WebApp,
+        pinches: Rc<RefCell<Vec<GestureEvent>>>,
+        unclaimed_gestures: Rc<RefCell<Vec<GestureEvent>>>,
     }
 
     #[wasm_bindgen]
     impl WebInputFixture {
         #[wasm_bindgen(constructor)]
         pub fn new(mount: HtmlElement) -> Result<Self, JsValue> {
-            let app = WebApp::mount(mount, |cx| {
+            let pinches = Rc::new(RefCell::new(Vec::new()));
+            let captured = Rc::clone(&pinches);
+            let unclaimed_gestures = Rc::new(RefCell::new(Vec::new()));
+            let unclaimed = Rc::clone(&unclaimed_gestures);
+            let app = WebApp::mount(mount, move |cx| {
                 let value = cx.signal("a😀b".to_owned());
                 let presses = cx.signal(0);
                 let intercepts = cx.signal(0);
@@ -27,6 +35,13 @@ mod browser {
                         el().role(Role::Button)
                             .focusable()
                             .test_id("press")
+                            .on_gesture(move |_, event| {
+                                if matches!(event, GestureEvent::Pinch { .. }) {
+                                    captured.borrow_mut().push(*event);
+                                    return true;
+                                }
+                                false
+                            })
                             .on_press(move |cx| {
                                 let count = cx.get(presses);
                                 cx.set(presses, count + 1);
@@ -58,6 +73,10 @@ mod browser {
                     .child(text(bind(move |cx| cx.get(shortcuts).to_string())).test_id("shortcut-count"))
                     .child(
                         el().test_id("drop-zone")
+                            .on_gesture(move |_, event| {
+                                unclaimed.borrow_mut().push(*event);
+                                false
+                            })
                             .on_file_drop(move |cx, files| {
                                 let names = files
                                     .iter()
@@ -76,7 +95,15 @@ mod browser {
                 let content = content.child(gpu_canvas());
                 content
             })?;
-            Ok(Self { app })
+            Ok(Self { app, pinches, unclaimed_gestures })
+        }
+
+        pub fn take_pinches(&self) -> String {
+            serde_json::to_string(&self.pinches.take()).unwrap()
+        }
+
+        pub fn take_unclaimed_gestures(&self) -> String {
+            serde_json::to_string(&self.unclaimed_gestures.take()).unwrap()
         }
 
         pub fn value(&self) -> String {

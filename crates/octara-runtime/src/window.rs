@@ -5,6 +5,7 @@ use crate::arena::{ReactiveId, ReactiveWorld, ScopeId};
 use crate::authoring::WindowAuthoring;
 use crate::cx::{BuildCx, ReadCx, WriteCx};
 use crate::cycle::TextInteraction;
+use crate::cycle::scroll::ScrollMotion;
 use crate::engine::{CommitOutput, HostEngine};
 use crate::graph::value::{ReadSignal, Signal};
 use crate::task::TaskSpawner;
@@ -12,7 +13,7 @@ use crate::tooltip::{HoverTooltip, HoveredTooltip};
 use octara_model::geometry::{LayoutBox, Point, Size, Vec2, WindowViewport};
 pub use octara_model::identity::WindowId;
 use octara_model::identity::{TreeId, ViewportRev, WindowRev};
-use octara_model::input::{ContactTarget, DroppedFile, KeyEvent, Modifiers};
+use octara_model::input::{ContactTarget, DroppedFile, GestureEvent, KeyEvent, Modifiers};
 use octara_model::native::{NativeEvent, TypedNativeEvent};
 use octara_model::semantics::{A11yAction, TextClip};
 use octara_model::theme::Breakpoint;
@@ -79,6 +80,7 @@ impl WindowOptions {
 
 pub enum HandlerEvent<'a> {
     Interaction { target: TargetGuard, kind: HandlerKind, payload: InteractionPayload, local_pos: Option<Point> },
+    Gesture(&'a GestureEvent),
     FileDrop(&'a [DroppedFile]),
     Paste(&'a octara_model::input::PasteEvent),
     EditorInput { node: NodeId, value: &'a str },
@@ -170,6 +172,7 @@ pub(crate) enum FeedbackSignal {
     Composition(Signal<bool>),
     Editor(Signal<Option<EditorState>>),
     Scroll(Signal<Vec2>),
+    Overscroll(Signal<f32>),
     ScrollAnchor(Signal<Option<NodeId>>),
     Pinned(Signal<bool>),
 }
@@ -431,6 +434,10 @@ impl MountCx<'_> {
         self.window.feedback.push(ScopedFeedback { node: node.into(), scope: self.scope, signal: FeedbackSignal::Scroll(signal) });
     }
 
+    pub fn observe_overscroll(&mut self, node: impl Into<NodeRef>, signal: Signal<f32>) {
+        self.window.feedback.push(ScopedFeedback { node: node.into(), scope: self.scope, signal: FeedbackSignal::Overscroll(signal) });
+    }
+
     pub fn observe_scroll_anchor(&mut self, node: impl Into<NodeRef>, signal: Signal<Option<NodeId>>) {
         self.window.feedback.push(ScopedFeedback { node: node.into(), scope: self.scope, signal: FeedbackSignal::ScrollAnchor(signal) });
     }
@@ -523,6 +530,7 @@ pub struct WindowRuntime {
     pub(crate) transaction_count: u64,
     pub(crate) handler_seq: u64,
     pub(crate) keyboard_open: bool,
+    pub(crate) scroll_motion: ScrollMotion,
     pub(crate) text: TextInteraction,
     pub(crate) back: Option<(u64, HandlerId)>,
     edit: Option<PendingEdit>,
@@ -610,6 +618,7 @@ impl WindowRuntime {
             transaction_count: 0,
             handler_seq: 0,
             keyboard_open: false,
+            scroll_motion: ScrollMotion::default(),
             text: TextInteraction::default(),
             back: None,
             edit: None,
@@ -1062,6 +1071,11 @@ impl WindowRuntime {
 
     pub(crate) fn apply(&mut self, op: RuntimeOp) {
         let delta = self.tree.apply_runtime(op);
+        self.merge_delta(delta);
+    }
+
+    pub(crate) fn set_style_preferences(&mut self, preferences: &SystemPreferences) {
+        let delta = self.tree.set_system_preferences(preferences);
         self.merge_delta(delta);
     }
 

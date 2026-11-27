@@ -241,6 +241,7 @@ pub enum HandlerKind {
     SecondaryPress,
     ContextMenu,
     DoublePress,
+    Gesture,
     Toggle,
     Drag,
     Drop,
@@ -249,6 +250,7 @@ pub enum HandlerKind {
     Paste,
     TouchScrollPre,
     TouchScrollPost,
+    Overscroll,
     Dismiss,
     Key,
     Focus,
@@ -300,6 +302,7 @@ pub struct OverlaySlot {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ScrollSlot {
     pub offset: Vec2,
+    pub overscroll_offset: f32,
     pub requested: Option<(u64, Vec2)>,
     pub clamped: bool,
 }

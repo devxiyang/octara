@@ -43,7 +43,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
     if message == WM_SETTINGCHANGE {
         // SAFETY: The installed subclass data references the live boxed proxy.
         let proxy = unsafe { &*(data as *const EventLoopProxy<ShellEvent>) };
-        let _ = proxy.send_event(ShellEvent::RefreshReducedMotion);
+        let _ = proxy.send_event(ShellEvent::RefreshSystemPreferences);
     }
     // SAFETY: Forward this callback's parameters along the window's subclass chain.
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }

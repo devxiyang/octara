@@ -2,13 +2,37 @@
 
 use crate::tables::{TableMask, ThemeScope};
 use crate::{NodeFlags, NodeId, NodeKind, StyleInvalidation, Tree, TreeDelta};
-use octara_model::style::{Inherited, LayoutStyle, State};
+use icu_locale::{Locale, LocaleDirectionality};
+use octara_model::style::{Direction, Inherited, LayoutStyle, State};
+use octara_model::window::SystemPreferences;
 use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
 
 use super::{ComputedStyle, StyleResolver, sensitivity};
 
 impl Tree {
+    /// Recompute the window's inherited text defaults from its host preferences.
+    pub fn set_system_preferences(&mut self, preferences: &SystemPreferences) -> TreeDelta {
+        const DIRECTIONALITY: LocaleDirectionality = LocaleDirectionality::new_common();
+        let rtl = preferences.locale.parse::<Locale>().is_ok_and(|locale| DIRECTIONALITY.is_right_to_left(&locale.id));
+        let direction = if rtl { Direction::Rtl } else { Direction::Ltr };
+        let text_scale = if preferences.text_scale.is_finite() && preferences.text_scale > 0.0 { preferences.text_scale } else { 1.0 };
+        let mut delta = TreeDelta::default();
+        if (direction, text_scale) != (self.initial_inherited.direction, self.initial_inherited.text_scale) {
+            self.initial_inherited.direction = direction;
+            self.initial_inherited.text_scale = text_scale;
+            self.update_initial_style();
+            self.resolve_subtree(self.root, StyleInvalidation { inherited_dirty: true, ..StyleInvalidation::default() }, &mut delta);
+        }
+        delta
+    }
+
+    pub(crate) fn update_initial_style(&mut self) {
+        let visual = StyleResolver::initial_visual(&self.theme, &self.initial_inherited);
+        let initial = self.style_interner.intern(ComputedStyle { layout: LayoutStyle::default(), visual });
+        self.style_interner.release(std::mem::replace(&mut self.initial_style, initial));
+    }
+
     pub(crate) fn inherited_at(&self, mut node: Option<NodeId>) -> Inherited {
         while let Some(current) = node {
             if let Some(style) = self.style(current) {
@@ -239,7 +263,7 @@ impl Tree {
 
     fn resolve_style(&mut self, node: NodeId, from: Inherited, theme_invalidated: bool, delta: &mut TreeDelta) {
         let Some(style) = self.style(node) else {
-            // Unstyled nodes still consume inherited paint and motion properties.
+            // Unstyled nodes still consume inherited visual properties.
             self.resolve_pointer_events(node, None, delta);
             self.paint_changed(node, delta);
             if matches!(self.nodes[node].kind, NodeKind::Text | NodeKind::TextInput | NodeKind::Link) {

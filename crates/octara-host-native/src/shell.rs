@@ -42,13 +42,33 @@ pub enum ShellEvent {
     Wake,
     PlatformReady,
     Lifecycle(HostLifecycleEvent),
-    Device { generation: u64, notice: DeviceNotice },
-    Input { window: WindowId, input: Input },
-    Frame { window: WindowId, target: Instant },
-    Native { window: WindowId, id: NativeId, event: NativeEvent },
-    RefreshViewport { window: WindowId },
-    RefreshReducedMotion,
-    SystemPreferencesChanged { color_scheme: Option<ColorScheme>, reduced_motion: Option<bool> },
+    Device {
+        generation: u64,
+        notice: DeviceNotice,
+    },
+    Input {
+        window: WindowId,
+        input: Input,
+    },
+    Frame {
+        window: WindowId,
+        target: Instant,
+    },
+    Native {
+        window: WindowId,
+        id: NativeId,
+        event: NativeEvent,
+    },
+    RefreshViewport {
+        window: WindowId,
+    },
+    RefreshSystemPreferences,
+    SystemPreferencesChanged {
+        color_scheme: Option<ColorScheme>,
+        reduced_motion: Option<bool>,
+        text_scale: Option<f32>,
+        high_contrast: Option<bool>,
+    },
     Accessibility(accesskit_winit::Event),
 }
 
@@ -219,7 +239,7 @@ impl Shell {
         }
         self.lifecycle(HostLifecycleEvent::WindowAttached { window: id })?;
         if let Some(theme) = window.theme() {
-            self.refresh_system_preferences(Some(color_scheme(theme)), None)?;
+            self.refresh_system_preferences(Some(color_scheme(theme)))?;
         }
         self.refresh_viewport(id)
     }
@@ -407,13 +427,18 @@ impl Shell {
         Ok(())
     }
 
-    fn refresh_system_preferences(&mut self, color_scheme: Option<ColorScheme>, reduced_motion: Option<bool>) -> Result<(), String> {
-        let previous = self.app.runtime().system_preferences();
-        let next = SystemPreferences {
-            color_scheme: color_scheme.unwrap_or(previous.color_scheme),
-            reduced_motion: reduced_motion.unwrap_or(previous.reduced_motion),
-        };
-        if next == previous {
+    fn refresh_system_preferences(&mut self, color_scheme: Option<ColorScheme>) -> Result<(), String> {
+        let mut next = self.app.runtime().system_preferences();
+        next.color_scheme = color_scheme.unwrap_or(next.color_scheme);
+        next.reduced_motion = self.os.reduced_motion().unwrap_or(next.reduced_motion);
+        next.locale = self.os.locale().unwrap_or(next.locale);
+        next.text_scale = self.os.text_scale().unwrap_or(next.text_scale);
+        next.high_contrast = self.os.high_contrast().unwrap_or(next.high_contrast);
+        self.apply_system_preferences(next)
+    }
+
+    fn apply_system_preferences(&mut self, next: SystemPreferences) -> Result<(), String> {
+        if next == self.app.runtime().system_preferences() {
             return Ok(());
         }
         let window = self.app.runtime().windows().next().map(|(&id, _)| id);
@@ -778,7 +803,7 @@ impl Shell {
                 self.dispatch(id, Input::Host(HostReply::CloseRequested))?;
             }
             WindowEvent::Destroyed => self.app.close_window(id).map_err(|error| error.to_string())?,
-            WindowEvent::ThemeChanged(theme) => self.refresh_system_preferences(Some(color_scheme(theme)), None)?,
+            WindowEvent::ThemeChanged(theme) => self.refresh_system_preferences(Some(color_scheme(theme)))?,
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                 self.windows.get_mut(&id).expect("known window").invalidate_surface(false);
                 self.refresh_viewport(id)?;
@@ -835,6 +860,12 @@ impl Shell {
                     id,
                     Input::Interaction(InteractionEvent::Wheel { pos, delta, phase: WheelPhase::Discrete, mods: host.modifiers }),
                 )?;
+            }
+            event @ (WindowEvent::PinchGesture { .. } | WindowEvent::RotationGesture { .. }) => {
+                let host = self.windows.get_mut(&id).expect("known window");
+                if let Some(gesture) = host.os.on_winit_gesture(&event, host.pointer, host.modifiers) {
+                    self.dispatch(id, Input::Interaction(InteractionEvent::Gesture(gesture)))?;
+                }
             }
             WindowEvent::Touch(Touch { phase, location, id: touch, .. }) => {
                 let scale = self.windows[&id].window.scale_factor();
@@ -902,7 +933,7 @@ impl Shell {
             return Ok(());
         }
         if let Some(definition) = self.definition.take() {
-            self.refresh_system_preferences(event_loop.system_theme().map(color_scheme), self.os.reduced_motion())?;
+            self.refresh_system_preferences(event_loop.system_theme().map(color_scheme))?;
             let restart = read_restart(&self.config)?;
             definition.launch(&mut self.app, restart).map_err(|error| error.to_string())?;
             let (urls, files) = self.os.take_launch_items();
@@ -1016,9 +1047,14 @@ impl ApplicationHandler<ShellEvent> for Shell {
                 ShellEvent::Frame { window, target } => shell.draw(window, target)?,
                 ShellEvent::Native { window, id, event } => shell.native_reply(window, id, event)?,
                 ShellEvent::RefreshViewport { window } => shell.refresh_viewport(window)?,
-                ShellEvent::RefreshReducedMotion => shell.refresh_system_preferences(None, shell.os.reduced_motion())?,
-                ShellEvent::SystemPreferencesChanged { color_scheme, reduced_motion } => {
-                    shell.refresh_system_preferences(color_scheme, reduced_motion)?;
+                ShellEvent::RefreshSystemPreferences => shell.refresh_system_preferences(None)?,
+                ShellEvent::SystemPreferencesChanged { color_scheme, reduced_motion, text_scale, high_contrast } => {
+                    let mut next = shell.app.runtime().system_preferences();
+                    next.color_scheme = color_scheme.unwrap_or(next.color_scheme);
+                    next.reduced_motion = reduced_motion.unwrap_or(next.reduced_motion);
+                    next.text_scale = text_scale.unwrap_or(next.text_scale);
+                    next.high_contrast = high_contrast.unwrap_or(next.high_contrast);
+                    shell.apply_system_preferences(next)?;
                 }
                 ShellEvent::Accessibility(event) => shell.accessibility(event)?,
                 ShellEvent::Device { generation, notice: DeviceNotice::Failed(error) } if generation == shell.generation => {

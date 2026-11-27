@@ -6,10 +6,28 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Appearance and accessibility preferences supplied by the host.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SystemPreferences {
     pub color_scheme: ColorScheme,
     pub reduced_motion: bool,
+    /// Preferred language as a BCP 47 tag.
+    pub locale: Arc<str>,
+    /// Preferred text size relative to the platform's default.
+    pub text_scale: f32,
+    pub high_contrast: bool,
+}
+
+impl Default for SystemPreferences {
+    fn default() -> Self {
+        Self {
+            color_scheme: ColorScheme::default(),
+            reduced_motion: false,
+            locale: Arc::from("en-US"),
+            text_scale: 1.0,
+            high_contrast: false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]

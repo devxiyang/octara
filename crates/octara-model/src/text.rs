@@ -3,6 +3,7 @@
 use crate::geometry::{Point, Rect, Size};
 use crate::image::ImageSource;
 use crate::paint::{CanvasOp, Image, NodeIcon, ObjectFit};
+use crate::style::Direction;
 use crate::theme::ColorValue;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -47,6 +48,9 @@ pub enum FontStyle {
 /// What a text engine needs to know about a text's style.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct TextStyle {
+    pub direction: Direction,
+    /// System multiplier for explicit sizes within this text, such as rich spans.
+    pub text_scale: f32,
     pub font_size: f32,
     /// A family: a registered name, or `system-ui` / `ui-monospace` (resolved per engine).
     pub family: &'static str,
@@ -67,6 +71,8 @@ pub struct TextStyle {
 impl Default for TextStyle {
     fn default() -> Self {
         TextStyle {
+            direction: Direction::Ltr,
+            text_scale: 1.0,
             font_size: 16.0,
             family: "system-ui",
             line_height: 24.0,
@@ -81,6 +87,81 @@ impl Default for TextStyle {
             max_lines: None,
         }
     }
+}
+
+/// Preferred layout of the platform's soft keyboard.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyboardType {
+    #[default]
+    Default,
+    Email,
+    Number,
+    Decimal,
+    Phone,
+    Url,
+    Search,
+}
+
+/// Label or icon for the soft keyboard's return key.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReturnKeyType {
+    #[default]
+    Default,
+    Done,
+    Go,
+    Next,
+    Search,
+    Send,
+}
+
+/// Which characters the platform should capitalize as the user types.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoCapitalize {
+    #[default]
+    Sentences,
+    Words,
+    Characters,
+    None,
+}
+
+/// Whether the platform may automatically correct text as the user types.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Autocorrect {
+    #[default]
+    Default,
+    On,
+    Off,
+}
+
+/// What kind of value an editor expects, for platform autofill.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextContentType {
+    #[default]
+    None,
+    Username,
+    Password,
+    NewPassword,
+    OneTimeCode,
+    Email,
+    Url,
+    Telephone,
+}
+
+/// Platform input hints for an editor. Defaults preserve platform behavior.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InputTraits {
+    pub keyboard_type: KeyboardType,
+    pub return_key: ReturnKeyType,
+    pub content_type: TextContentType,
+    /// An explicit capitalization hint. `None` lets the platform choose.
+    pub autocapitalize: Option<AutoCapitalize>,
+    pub autocorrect: Autocorrect,
 }
 
 /// An edit from a platform text input. Ranges count UTF-8 bytes in the displayed document,
@@ -560,6 +641,19 @@ pub struct TextFragment {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_traits_deserialize_partial_platform_hints() {
+        let traits: InputTraits =
+            serde_json::from_str(r#"{"keyboard_type":"number","content_type":"one_time_code","autocorrect":"off"}"#).unwrap();
+        assert_eq!(traits.keyboard_type, KeyboardType::Number);
+        assert_eq!(traits.content_type, TextContentType::OneTimeCode);
+        assert_eq!(traits.autocorrect, Autocorrect::Off);
+        assert_eq!(traits.return_key, ReturnKeyType::Default);
+        assert_eq!(traits.autocapitalize, None);
+        assert!(size_of::<InputTraits>() <= 5);
+        assert_eq!(serde_json::from_value::<InputTraits>(serde_json::to_value(traits).unwrap()).unwrap(), traits);
+    }
 
     #[test]
     fn pill_layout_preserves_logical_bytes_and_flattens_visual_line_breaks() {
