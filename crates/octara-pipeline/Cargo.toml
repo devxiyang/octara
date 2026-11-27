@@ -1,0 +1,31 @@
+[package]
+name = "octara-pipeline"
+description = "Native layout, text, motion, paint and accessibility for Octara."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = true
+
+[features]
+system-fonts = ["parley/system"]
+
+[dependencies]
+octara-model.workspace = true
+octara-runtime.workspace = true
+octara-tree.workspace = true
+accesskit.workspace = true
+color.workspace = true
+linebender_resource_handle.workspace = true
+parley.workspace = true
+rustc-hash.workspace = true
+serde_json.workspace = true
+slotmap.workspace = true
+smallvec.workspace = true
+taffy.workspace = true
+unicode-segmentation.workspace = true

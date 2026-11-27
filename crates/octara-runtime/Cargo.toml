@@ -1,0 +1,22 @@
+[package]
+name = "octara-runtime"
+description = "Octara's capability-based reactive runtime and turn engine."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = true
+
+[dependencies]
+octara-model.workspace = true
+octara-tree.workspace = true
+rustc-hash.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+slotmap.workspace = true
+smallvec.workspace = true

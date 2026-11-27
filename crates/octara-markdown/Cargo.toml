@@ -1,0 +1,32 @@
+[package]
+name = "octara-markdown"
+description = "Streaming, selectable Markdown documents and replaceable block slots for Octara."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = true
+
+[features]
+default = []
+composer = []
+highlight = []
+math = ["dep:swash"]
+media = []
+
+[dependencies]
+octara.workspace = true
+octara-headless.workspace = true
+octara-icons.workspace = true
+aho-corasick.workspace = true
+memchr.workspace = true
+pulldown-cmark.workspace = true
+swash = { workspace = true, optional = true }
+
+[dev-dependencies]
+octara-inspect.workspace = true

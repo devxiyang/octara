@@ -1,0 +1,48 @@
+[package]
+name = "octara-examples"
+description = "Example apps, their acceptance tests and benchmarks."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+# `octara check` / `inspect` / `run` call the counter's application entry.
+[package.metadata.octara]
+entry = "octara_examples::apps::counter_app"
+
+[dependencies]
+octara.workspace = true
+octara-fonts.workspace = true
+octara-icons.workspace = true
+octara-kit.workspace = true
+octara-markdown = { workspace = true, features = ["composer", "math", "media"] }
+octara-render = { workspace = true, features = ["gpu"] }
+octara-host-native.workspace = true
+octara-pipeline.workspace = true
+octara-inspect.workspace = true
+png.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation.workspace = true
+octara-release = { workspace = true, features = ["http"] }
+serde.workspace = true
+tempfile.workspace = true
+
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+
+[[bin]]
+name = "screenshot"
+path = "src/bin/screenshot.rs"
+
+[[bin]]
+name = "window"
+path = "src/bin/window.rs"

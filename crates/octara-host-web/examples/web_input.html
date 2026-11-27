@@ -1,0 +1,118 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Octara browser input test</title>
+<div id="mount" style="width: 500px; height: 300px"></div>
+<pre id="output"></pre>
+<script type="module">
+import init, { WebInputFixture } from "./web_input.js";
+
+const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+};
+const node = name => document.querySelector(`[data-octara-id="${name}"]`);
+const mount = document.getElementById("mount");
+const output = document.getElementById("output");
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+const within = async (condition, message, timeout = 1000) => {
+    const deadline = performance.now() + timeout;
+    while (!condition()) {
+        assert(performance.now() < deadline, message);
+        await wait(16);
+    }
+};
+const dispatch = (element, event) => element.dispatchEvent(event);
+const edit = (field, data, start, end) => {
+    const options = { bubbles: true, cancelable: true, inputType: "insertText", data };
+    assert(dispatch(field, new InputEvent("beforeinput", options)), "the browser's edit was unexpectedly canceled");
+    field.setRangeText(data, start, end, "end");
+    dispatch(field, new InputEvent("input", options));
+};
+
+try {
+    await init();
+    const app = new WebInputFixture(mount);
+    assert(app.viewport_width() === 500, "initial viewport width differs from the mount");
+    const button = node("press");
+    const rect = button.getBoundingClientRect();
+    const pointer = {
+        bubbles: true, cancelable: true, pointerId: 1, pointerType: "mouse", isPrimary: true,
+        button: 0, clientX: rect.x + 1, clientY: rect.y + 1,
+    };
+    dispatch(button, new PointerEvent("pointerdown", { ...pointer, buttons: 1 }));
+    dispatch(button, new PointerEvent("pointerup", pointer));
+    dispatch(button, new MouseEvent("click", { bubbles: true, detail: 1 }));
+    assert(node("press-count").textContent === "1", "one pointer sequence should produce one activation");
+    button.click();
+    assert(node("press-count").textContent === "2", "a click without a contact should activate the button");
+
+    const letter = key => new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    button.focus();
+    assert(!dispatch(button, letter("Tab")), "an authored Tab shortcut did not consume the key");
+    const field = node("editor");
+    field.focus();
+    assert(!dispatch(field, letter("F2")) && node("shortcut-count").textContent === "2",
+        "a focused editor did not deliver the authored shortcut");
+    assert(field.value === "a😀b", "the native editor did not receive the initial value");
+    field.setSelectionRange(1, 3, "backward");
+    dispatch(field, new Event("select", { bubbles: true }));
+    assert(app.selection().join() === "5,1", "a backward selection did not preserve UTF-8 byte direction");
+    edit(field, "界", 1, 3);
+    assert(app.value() === "a界b" && field.value === "a界b", "the controlled editor dropped an accepted edit");
+    edit(field, "!", 2, 2);
+    assert(app.value() === "a界b" && field.value === "a界b", "the browser retained a rejected edit");
+    assert(!dispatch(field, new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }))
+        && node("key-count").textContent === "1", "the editor did not intercept a consumed navigation key");
+
+    const composition = (type, data) => dispatch(field, new CompositionEvent(type, { bubbles: true, data }));
+    field.setSelectionRange(2, 2);
+    composition("compositionstart", "");
+    composition("compositionupdate", "你");
+    field.setRangeText("你", 2, 2, "end");
+    dispatch(field, new InputEvent("input", { bubbles: true, inputType: "insertCompositionText", data: "你", isComposing: true }));
+    assert(app.marked() && field.value === "a界你b" && app.value() === "a界b", "an IME draft became a committed edit");
+    composition("compositionend", "你");
+    await within(() => !app.marked(), "the IME commit did not finish");
+    assert(app.value() === "a界你b" && field.value === app.value(), "the IME commit was lost or applied twice");
+
+    const dropLabel = node("drop-label");
+    const dropRect = dropLabel.getBoundingClientRect();
+    const drag = (type, target, dataTransfer, at) => dispatch(target, new DragEvent(type, {
+        bubbles: true, cancelable: true, dataTransfer, clientX: at.x + 1, clientY: at.y + 1,
+    }));
+    const files = new DataTransfer();
+    files.items.add(new File(["abc"], "alpha.txt"));
+    files.items.add(new File(["def"], "beta.txt"));
+    assert(drag("dragover", button, files, rect), "dragover outside a drop receiver should remain unhandled");
+    assert(drag("drop", button, files, rect), "drop outside a drop receiver should remain unhandled");
+    assert(drag("dragover", dropLabel, new DataTransfer(), dropRect), "dragover without files should remain unhandled");
+    assert(!drag("dragover", dropLabel, files, dropRect), "a drop receiver should accept a file drag over its child");
+    assert(!drag("drop", dropLabel, files, dropRect), "a file drop should be handled");
+    assert(node("dropped-files").textContent === "alpha.txt,beta.txt", "the app did not receive the browser file names in order");
+
+    mount.style.width = "360px";
+    await within(() => app.viewport_width() === 360, "ResizeObserver did not update the viewport");
+    const gpuNode = node("gpu-canvas");
+    if (gpuNode) {
+        const required = new URLSearchParams(location.search).has("webgpu");
+        await within(
+            () => gpuNode.dataset.octaraGpu !== undefined && gpuNode.dataset.octaraGpu !== "pending",
+            "WebGPU initialization did not finish",
+            5000,
+        );
+        const status = gpuNode.dataset.octaraGpu;
+        assert(status === "submitted" || (!required && status === "unavailable"), `WebGPU canvas was ${status}`);
+        if (status === "submitted") {
+            const canvas = gpuNode.querySelector("canvas");
+            assert(canvas.width > 0 && canvas.height > 0 && getComputedStyle(canvas).visibility === "visible", "the WebGPU canvas was not presented");
+        }
+        document.body.dataset.webgpu = status;
+    }
+    app.free();
+    assert(mount.childElementCount === 0, "dropping the WebApp left its mounted DOM in place");
+    document.body.dataset.result = "passed";
+    output.textContent = "Browser input and lifecycle passed";
+} catch (error) {
+    document.body.dataset.result = "failed";
+    output.textContent = error.stack || String(error);
+}
+</script>

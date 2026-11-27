@@ -1,0 +1,20 @@
+[package]
+name = "octara-headless"
+description = "Unstyled interaction parts and Copy state controllers for Octara."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = true
+
+[dependencies]
+octara.workspace = true
+
+[dev-dependencies]
+octara-inspect.workspace = true
+octara-pipeline.workspace = true

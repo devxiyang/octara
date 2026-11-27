@@ -1,0 +1,90 @@
+[package]
+name = "octara-host-native"
+description = "Native Octara host orchestration and OS services."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = true
+
+[[test]]
+name = "native_window"
+harness = false
+
+[[test]]
+name = "macos_chrome"
+harness = false
+
+[[test]]
+name = "native_webview"
+harness = false
+
+[dependencies]
+accesskit_winit.workspace = true
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
+sha2.workspace = true
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "time", "net"] }
+octara.workspace = true
+octara-gpu.workspace = true
+octara-model.workspace = true
+octara-pipeline = { workspace = true, features = ["system-fonts"] }
+octara-render = { workspace = true, features = ["gpu"] }
+pollster.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+winit.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.6", features = ["event", "fs"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+async-channel = "2.5.0"
+futures-lite = "2.6.1"
+zbus = { version = "5.19.0", default-features = false, features = ["async-io"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(not(any(target_os = "ios", target_os = "macos")))'.dependencies]
+arboard = { workspace = true, features = ["image-data"] }
+open.workspace = true
+rfd.workspace = true
+
+[target.'cfg(target_os = "ios")'.dependencies]
+block2.workspace = true
+objc2.workspace = true
+objc2-core-foundation.workspace = true
+objc2-core-graphics.workspace = true
+objc2-foundation.workspace = true
+objc2-quartz-core.workspace = true
+objc2-ui-kit = { workspace = true, features = [
+    "std", "block2", "objc2-core-foundation", "objc2-core-graphics", "objc2-quartz-core",
+    "UIApplication", "UIPasteboard", "UIScreenEdgePanGestureRecognizer", "UIPanGestureRecognizer",
+    "UIAccessibility", "UIColor", "UIControl", "UIEvent", "UIGeometry", "UIGestureRecognizer", "UIKeyboardLayoutGuide", "UILayoutGuide", "UITrackingLayoutGuide",
+    "UIImage", "UINavigationController", "UIResponder", "UIScene", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UITextField", "UITextInput",
+    "UIScrollView", "UITextInputTraits", "UITextView", "UIView", "UIViewController", "UIViewControllerTransitionCoordinator", "UIWindow", "UIWindowScene",
+] }
+objc2-web-kit.workspace = true
+
+# Native views (AppKit, WebKit) and the frame's Core Animation transaction.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2.workspace = true
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-core-foundation.workspace = true
+objc2-core-graphics.workspace = true
+objc2-core-location.workspace = true
+objc2-foundation.workspace = true
+objc2-map-kit.workspace = true
+objc2-metal = { workspace = true, features = [
+    "std", "block2", "objc2-core-foundation", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDevice",
+    "MTLDrawable", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLResource", "MTLTexture",
+] }
+objc2-quartz-core = { workspace = true, features = ["CAMetalDisplayLink", "CAMetalLayer", "objc2-metal"] }
+objc2-web-kit.workspace = true

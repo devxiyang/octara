@@ -1,0 +1,18 @@
+[package]
+name = "octara-svg"
+description = "SVG parsing for Octara path data."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = true
+
+[dependencies]
+octara-model.workspace = true
+roxmltree.workspace = true
+kurbo.workspace = true

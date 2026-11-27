@@ -1,0 +1,103 @@
+# Desktop builds, tests and screenshots, plus an Android library cross-check.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: Format and clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Latest stable Rust (1.100+)
+        run: rustup update stable --no-self-update
+      - name: Linux libraries
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Package dependency boundaries
+        run: python3 tools/check_layers.py
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Check the browser host and its Wasm startup example
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo clippy --locked --target wasm32-unknown-unknown -p octara-host-web --all-targets -- -D warnings
+          cargo clippy --locked --target wasm32-unknown-unknown -p octara-host-web --all-targets --features webgpu -- -D warnings
+          cargo tree --locked --target wasm32-unknown-unknown -p octara-host-web --prefix none --format '{p}' |
+            awk '$1 ~ /^(taffy|parley|accesskit|wgpu|swash|zeno|png|roxmltree)$/ { print; forbidden = 1 } END { exit forbidden }'
+
+  android:
+    name: Android library cross-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Latest stable Rust (1.100+)
+        run: rustup update stable --no-self-update
+      - name: Android Rust target
+        run: rustup target add --toolchain stable aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - name: Check Octara and Kit for Android
+        run: cargo check --locked --target aarch64-linux-android -p octara -p octara-kit --lib
+
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Latest stable Rust (1.100+)
+        run: rustup update stable --no-self-update
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --workspace --all-targets
+      - name: Test
+        run: cargo test --workspace
+      - name: CLI guide and release artifacts
+        shell: bash
+        run: |
+          OCTARA_VERIFY_RELEASE_API=1 cargo test -p octara-cli --test integration api_catalog_matches_checkout
+          cargo test -p octara-cli --doc
+          cargo run -q -p octara-cli -- skill export skills
+          git diff --exit-code -- skills/octara
+      - name: Native host first frame
+        if: runner.os != 'Linux'
+        shell: bash
+        env:
+          OCTARA_EXIT_AFTER_FRAMES: "1"
+        run: cargo run -p octara-host-native --example smoke
+      - name: Capture a reference image with Inspect
+        shell: bash
+        run: |
+          set -o pipefail
+          printf '%s\n' '{"protocol":"octara.inspect/2","op":"capture","source":"painted"}' |
+            cargo run -q -p octara-cli -- run --manifest-path examples/Cargo.toml --json > capture.jsonl
+          python3 -c 'import json; result = json.load(open("capture.jsonl")); assert result["ok"] and result["progress"]["settled"]'
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: capture-${{ matrix.os }}
+          path: capture.jsonl
+          if-no-files-found: warn

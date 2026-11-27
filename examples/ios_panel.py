@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Run a built Octara fixture on a booted iOS simulator."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import plistlib
+import shutil
+import subprocess
+from uuid import uuid4
+
+
+def main():
+    scenes = {
+        "panel": ("panel", "Octara Panel", "panel_scroll", ()),
+        "ime": ("ime", "Octara IME", "ime", ()),
+        "choices": ("ime", "Octara IME Choices", "ime", ("choices",)),
+        "album": ("album", "Octara Album Back", "album_back", ()),
+        "interaction": ("interaction", "Octara Interaction", "window", ("showcase", "interaction")),
+        "review": ("review", "Octara Review", "review_queue", ()),
+    }
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--device", required=True, help="UDID of the booted simulator")
+    parser.add_argument("--scene", choices=scenes, default="panel", help="fixture to launch (default: panel)")
+    parser.add_argument("--binary", type=Path, required=True, help="fixture executable built for aarch64-apple-ios-sim")
+    parser.add_argument("--output", type=Path, required=True, help="new directory for the app, socket, receipt and logs")
+    args = parser.parse_args()
+    if not args.binary.is_file():
+        parser.error(f"executable was not found: {args.binary}")
+    fixture, name, executable_name, launch_args = scenes[args.scene]
+    output = args.output.resolve()
+    endpoint = output / f"{fixture}.sock"
+    if len(os.fsencode(endpoint)) >= 104:
+        parser.error("choose a shorter output path for the Unix socket")
+    output.mkdir()
+
+    app = output / f"{name}.app"
+    app.mkdir()
+    executable = app / executable_name
+    shutil.copy2(args.binary, executable)
+    digest = hashlib.sha256()
+    with executable.open("rb") as stream:
+        for block in iter(lambda: stream.read(1_048_576), b""):
+            digest.update(block)
+    build = digest.hexdigest()
+    bundle = f"dev.octara.{fixture}.{uuid4().hex}"
+    with (app / "Info.plist").open("wb") as stream:
+        plistlib.dump({
+            "CFBundleExecutable": executable.name,
+            "CFBundleIdentifier": bundle,
+            "CFBundleName": name,
+            "CFBundlePackageType": "APPL",
+            "CFBundleSupportedPlatforms": ["iPhoneSimulator"],
+            "CFBundleShortVersionString": "1.0",
+            "CFBundleVersion": "1",
+            "LSRequiresIPhoneOS": True,
+            "UIDeviceFamily": [1, 2],
+            "UILaunchScreen": {},
+            "UIApplicationSceneManifest": {
+                "UIApplicationSupportsMultipleScenes": False,
+                "UISceneConfigurations": {
+                    "UIWindowSceneSessionRoleApplication": [{
+                        "UISceneConfigurationName": "Octara",
+                        "UISceneClassName": "UIWindowScene",
+                        "UISceneDelegateClassName": "OctaraWindowSceneDelegate",
+                    }],
+                },
+            },
+        }, stream)
+    receipt = output / "receipt.json"
+
+
+    simctl = ["xcrun", "simctl"]
+    env = {
+        **os.environ,
+        "SIMCTL_CHILD_OCTARA_INSPECT": str(endpoint),
+        "SIMCTL_CHILD_OCTARA_INSPECT_BUILD": build,
+        "SIMCTL_CHILD_OCTARA_TRACE_INPUT": "1",
+    }
+    trace = output / "console.log"
+    trace.touch()
+    stdout = output / "stdout.log"
+    stdout.touch()
+    run = {
+        "device": args.device,
+        "bundle": bundle,
+        "socket": str(endpoint),
+        "receipt": str(receipt),
+        "trace": str(trace),
+    }
+    subprocess.run([*simctl, "install", args.device, app], check=True)
+    try:
+        result = subprocess.run(
+            [*simctl, "launch", f"--stdout={stdout}", f"--stderr={trace}",
+             args.device, bundle, *launch_args],
+            env=env, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        reported_bundle, separator, pid = result.rpartition(": ")
+        if not separator or reported_bundle != bundle or not pid.isdecimal():
+            raise RuntimeError(f"Could not read the simulator process ID: {result}")
+        receipt.write_text(json.dumps({
+            "schema": "octara.launch/2", "package": "octara-examples", "entry": executable_name,
+            "build": {"digest": build, "pid": int(pid)},
+        }) + "\n", encoding="utf-8")
+        report = json.dumps(run, indent=2)
+        (output / "run.json").write_text(report + "\n")
+        print(report)
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        subprocess.run([*simctl, "terminate", args.device, bundle], check=False)
+        subprocess.run([*simctl, "uninstall", args.device, bundle], check=False)
+        raise
+
+
+if __name__ == "__main__":
+    main()

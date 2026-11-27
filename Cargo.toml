@@ -1,0 +1,109 @@
+[workspace]
+resolver = "3"
+members = [
+    "apps/chat",
+    "crates/octara",
+    "crates/octara-cli",
+    "crates/octara-fonts",
+    "crates/octara-gpu",
+    "crates/octara-headless",
+    "crates/octara-host-native",
+    "crates/octara-host-web",
+    "crates/octara-icons",
+    "crates/octara-inspect",
+    "crates/octara-kit",
+    "crates/octara-markdown",
+    "crates/octara-macros",
+    "crates/octara-model",
+    "crates/octara-pipeline",
+    "crates/octara-release",
+    "crates/octara-render",
+    "crates/octara-runtime",
+    "crates/octara-svg",
+    "crates/octara-tree",
+    "examples",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.100"
+license = "MIT OR Apache-2.0"
+version = "0.0.5"
+repository = "https://github.com/octoii-works/octara"
+homepage = "https://github.com/octoii-works/octara/blob/main/docs/start-here.md"
+readme = "README.md"
+keywords = ["gui", "ui", "reactive", "native", "wasm"]
+categories = ["gui"]
+
+[workspace.dependencies]
+accesskit_winit = "0.34.2"
+arboard = { version = "3.7.0", default-features = false }
+block2 = "0.6.2"
+objc2-map-kit = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
+objc2-core-location = "0.3.2"
+objc2-metal = { version = "0.3.2", default-features = false }
+objc2-quartz-core = "0.3.2"
+objc2-ui-kit = { version = "0.3.2", default-features = false }
+objc2-web-kit = "0.3.2"
+open = "5.4.5"
+rfd = "0.18.0"
+winit = "0.30.13"
+accesskit = { version = "0.25.2", features = ["serde"] }
+linebender_resource_handle = "0.1.1"
+parley = { version = "0.13.0", default-features = false, features = ["std", "complex-scripts"] }
+png = "0.18.1"
+taffy = { version = "0.15.1", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "content_size"] }
+zeno = { version = "0.3.3", default-features = false, features = ["std", "eval"] }
+bitflags = { version = "2.13.2", features = ["serde"] }
+bytemuck = { version = "1.25.2", features = ["derive"] }
+clap = { version = "4.6.9", features = ["derive"] }
+color = "0.3.3"
+flate2 = "1.1.11"
+rustc-hash = "2.1.3"
+prettyplease = "0.3.0"
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
+quote = "1.0.47"
+syn = { version = "3.0.10", features = ["full", "parsing", "printing", "visit-mut"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+ring = "0.17.14"
+tempfile = "3.27.0"
+objc2 = "0.6.5"
+objc2-foundation = "0.3.2"
+objc2-app-kit = "0.3.2"
+smallvec = "1.16.6"
+slotmap = { version = "1.1.1", features = ["serde"] }
+swash = "0.2.10"
+kurbo = "0.13.1"
+aho-corasick = "1.1.4"
+memchr = "2.8.3"
+pulldown-cmark = { version = "0.13.6", default-features = false }
+roxmltree = "0.21.2"
+pollster = "1.0.3"
+unicode-segmentation = "1.13.3"
+wgpu = "30.0.2"
+octara = { path = "crates/octara", version = "0.0.5" }
+octara-fonts = { path = "crates/octara-fonts", version = "0.0.5" }
+octara-gpu = { path = "crates/octara-gpu", version = "0.0.5" }
+octara-headless = { path = "crates/octara-headless", version = "0.0.5" }
+octara-host-native = { path = "crates/octara-host-native", version = "0.0.5" }
+octara-icons = { path = "crates/octara-icons", version = "0.0.5" }
+octara-inspect = { path = "crates/octara-inspect", version = "0.0.5" }
+octara-kit = { path = "crates/octara-kit", version = "0.0.5" }
+octara-markdown = { path = "crates/octara-markdown", version = "0.0.5" }
+octara-macros = { path = "crates/octara-macros", version = "0.0.5" }
+octara-model = { path = "crates/octara-model", version = "0.0.5" }
+octara-pipeline = { path = "crates/octara-pipeline", version = "0.0.5" }
+octara-release = { path = "crates/octara-release", version = "0.0.5" }
+octara-render = { path = "crates/octara-render", version = "0.0.5", default-features = false }
+octara-runtime = { path = "crates/octara-runtime", version = "0.0.5" }
+octara-svg = { path = "crates/octara-svg", version = "0.0.5" }
+octara-tree = { path = "crates/octara-tree", version = "0.0.5" }
+
+# Dependencies (Parley's shaping above all) are optimized even in dev builds, so debug tests
+# that lay out thousands of texts stay fast; workspace crates keep fast debug builds.
+[profile.dev.package."*"]
+opt-level = 2

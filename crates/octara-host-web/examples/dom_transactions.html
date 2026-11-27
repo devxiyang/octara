@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Octara DOM transaction regression</title>
+<body data-result="waiting">
+<output>Running Octara DOM transaction regression…</output>
+<script type="module">
+    import init, { run_dom_exits, run_dom_inline_editor, run_dom_layers, run_dom_links, run_dom_local_stacking, run_dom_measurements, run_dom_pointer_styles, run_dom_rich_pills, run_dom_scrolling, run_dom_semantics, run_dom_text_anchors, run_dom_text_reveal, run_dom_text_selection, run_dom_transactions, run_dom_transitions } from "./dom_transactions.js";
+
+    const output = document.querySelector("output");
+    try {
+        await init();
+        run_dom_transactions(false);
+        run_dom_transactions(true);
+        run_dom_layers();
+        run_dom_links();
+        run_dom_rich_pills();
+        run_dom_inline_editor();
+        run_dom_scrolling();
+        run_dom_text_selection();
+        run_dom_text_anchors();
+        run_dom_text_reveal();
+        run_dom_pointer_styles();
+        run_dom_local_stacking();
+        run_dom_semantics();
+        run_dom_transitions();
+        await run_dom_exits(matchMedia("(prefers-reduced-motion: reduce)").matches);
+        const rect = Element.prototype.getBoundingClientRect;
+        const counts = new Map();
+        Element.prototype.getBoundingClientRect = function() {
+            counts.set("", (counts.get("") ?? 0) + 1);
+            const id = this.getAttribute("data-octara-id");
+            if (id !== null) counts.set(id, (counts.get(id) ?? 0) + 1);
+            return rect.call(this);
+        };
+        try {
+            run_dom_measurements(() => counts.clear(), id => counts.get(id) ?? 0);
+        } finally {
+            Element.prototype.getBoundingClientRect = rect;
+        }
+        document.body.dataset.result = "passed";
+        output.value = "Octara DOM transaction regression passed.";
+    } catch (error) {
+        document.body.dataset.result = "failed";
+        output.value = document.body.dataset.panic ?? String(error);
+        throw error;
+    }
+</script>

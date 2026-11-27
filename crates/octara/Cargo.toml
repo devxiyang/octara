@@ -1,0 +1,27 @@
+[package]
+name = "octara"
+description = "Authoring API for Octara views and reactive applications."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = true
+
+[dependencies]
+octara-macros.workspace = true
+octara-model.workspace = true
+octara-runtime.workspace = true
+octara-tree.workspace = true
+rustc-hash.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+smallvec.workspace = true
+
+[dev-dependencies]
+octara-release = { workspace = true, features = ["signing"] }
+tempfile.workspace = true

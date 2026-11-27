@@ -1,0 +1,21 @@
+[package]
+name = "octara-kit"
+description = "Themed Octara components built on octara-headless."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = true
+
+[dependencies]
+octara.workspace = true
+octara-headless.workspace = true
+octara-icons.workspace = true
+
+[dev-dependencies]
+octara-inspect.workspace = true

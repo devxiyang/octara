@@ -1,0 +1,25 @@
+[package]
+name = "octara-model"
+description = "Shared Octara values and host protocols."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = true
+
+[dependencies]
+bitflags.workspace = true
+color.workspace = true
+kurbo.workspace = true
+serde = { workspace = true, features = ["rc"] }
+serde_json.workspace = true
+slotmap.workspace = true
+smallvec.workspace = true
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.4.3", features = ["wasm_js"] }

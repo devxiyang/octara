@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Octara browser history regression</title>
+<body data-result="waiting">
+<div id="mount" style="width: 400px; height: 300px;"></div>
+<output>Running the browser history regression…</output>
+<script type="module">
+    import init, { NavigationFixture } from "./web_navigation.js";
+
+    const output = document.querySelector("output");
+    const node = name => document.querySelector(`[data-octara-id="${name}"]`);
+    const browserRoute = () => new URL(location.href).searchParams.get("route");
+    const assert = (condition, message) => { if (!condition) throw new Error(message); };
+    const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+    const until = async (condition, message) => {
+        for (let i = 0; i < 120; i++) {
+            if (condition()) return;
+            await frame();
+        }
+        throw new Error(message);
+    };
+    try {
+        await init();
+        history.replaceState(null, "", "?route=deep");
+        const fixture = new NavigationFixture(document.querySelector("#mount"), location.pathname);
+        assert(fixture.current() === "deep", "imports the initial deep link");
+        const editor = node("draft-deep");
+        const scroll = node("scroll-deep");
+        editor.focus();
+        editor.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, data: "unsaved", inputType: "insertText" }));
+        editor.value = "unsaved";
+        editor.dispatchEvent(new InputEvent("input", { bubbles: true, data: "unsaved", inputType: "insertText" }));
+        scroll.scrollTop = 65;
+        await frame();
+        await frame();
+        fixture.push("form");
+        assert(browserRoute() === "form", "push writes the browser location");
+        assert(editor.getClientRects().length === 0, "inactive editor is hidden");
+        fixture.block(true);
+        const visited = [];
+        const record = () => visited.push(browserRoute());
+        addEventListener("popstate", record);
+        history.back();
+        await until(() => visited.length === 2, "a guard restores the browser after a vetoed Back");
+        removeEventListener("popstate", record);
+        assert(visited.join(",") === "deep,form" && fixture.current() === "form", "guard preserved the active route");
+        fixture.block(false);
+        history.back();
+        await until(() => fixture.current() === "deep", "browser Back moves the navigator");
+        assert(node("draft-deep") === editor && editor.value === "unsaved", "retained editor keeps its node and value");
+        assert(scroll.scrollTop === 65, `retained scroll offset recovered (${scroll.scrollTop})`);
+        history.forward();
+        await until(() => fixture.current() === "form", "browser Forward moves the navigator");
+        fixture.replace("edited");
+        assert(browserRoute() === "edited", "replace updates the active browser entry");
+        fixture.go(-1);
+        await until(() => browserRoute() === "deep", "navigator Back moves browser history");
+        fixture.go(1);
+        await until(() => browserRoute() === "edited", "navigator Forward moves browser history");
+        fixture.free();
+        document.body.dataset.result = "passed";
+        output.value = "Octara browser history regression passed.";
+    } catch (error) {
+        document.body.dataset.result = "failed";
+        output.value = String(error);
+        throw error;
+    }
+</script>

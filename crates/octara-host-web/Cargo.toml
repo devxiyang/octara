@@ -1,0 +1,40 @@
+[package]
+name = "octara-host-web"
+description = "DOM host for Octara, with optional WebGPU rendering."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = true
+
+[features]
+webgpu = ["dep:octara-render", "octara-render/gpu"]
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+octara-headless.workspace = true
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+octara.workspace = true
+octara-model.workspace = true
+octara-render = { workspace = true, optional = true }
+js-sys = "0.3.107"
+rustc-hash.workspace = true
+serde_json.workspace = true
+slotmap.workspace = true
+unicode-segmentation.workspace = true
+wasm-bindgen = "0.2.130"
+wasm-bindgen-futures = "0.4.80"
+web-sys = { version = "0.3.107", features = [
+    "AbortController", "AbortSignal", "Blob", "BlobPropertyBag", "CanvasGradient", "CanvasRenderingContext2d", "CanvasWindingRule", "CharacterData", "Clipboard", "ClipboardEvent", "CompositionEvent",
+    "CssStyleDeclaration", "DataTransfer", "Document", "DragEvent",
+    "DocumentFragment", "DomException", "DomRect", "DomRectList", "Element", "Event", "EventTarget", "File", "FileList", "FocusEvent", "FocusOptions",
+    "History", "HtmlCanvasElement", "HtmlDialogElement", "HtmlElement", "HtmlImageElement", "HtmlInputElement", "HtmlTextAreaElement", "ImageData", "InputEvent",
+    "KeyboardEvent", "Location", "MediaQueryList", "MessageChannel", "MessageEvent", "MessagePort", "MouseEvent", "Navigator", "Node", "NodeList", "PointerEvent", "PopStateEvent", "Range", "ResizeObserver", "Selection",
+    "ResizeObserverBoxOptions", "ResizeObserverEntry", "ResizeObserverOptions", "ScrollBehavior", "ScrollToOptions", "Text",
+    "TextMetrics", "Url", "Window", "Performance", "console",
+] }
