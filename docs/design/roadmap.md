@@ -42,26 +42,25 @@
 
 ---
 
-### `0.0.9` — Tier-1 Core Interaction, Accessibility, Forms, RTL & Airspace Closure *(Next — Core First)*
-- **Spec**: [15 — Tier-1 Core Interaction, Accessibility, Forms, RTL & Airspace Closure (`0.0.9`)](v2/15-four-platform-core-polish.md)
-- **Why Core First**: Finalizing gestures, input traits, iOS VoiceOver, Web `visualViewport`/`inert`, Drag Out, `WindowLevel`/`NSPanel`, Airspace `SnapshotOnOcclude`, and RTL stabilizes the core public API before scaling out the `modules/*` ecosystem.
-- **Scope**:
-  1. **Unified Gesture Engine**: `GestureEvent::{Pinch, Rotate, LongPress, DoubleTap}` across macOS trackpad (`magnifyWithEvent:` / `rotateWithEvent:`), iOS multi-touch, Linux touchpad, and Web Pointer/Wheel; `PullToRefresh` primitive and mobile overscroll physics.
-  2. **Forms & Soft-Keyboard Semantics**: `KeyboardType`, `ReturnKeyType`, `AutoCapitalize`, `Autocorrect`, `TextContentType` (password/OTP autofill), and `ScrollDismissesKeyboard::{Never, Immediately, Interactively}` mapped to iOS `UITextInputTraits` and Web `inputmode`/`enterkeyhint`/`autocomplete`.
-  3. **iOS Native Closure**: **`UIAccessibility` / VoiceOver** semantic tree bridge; `StatusBarStyle::{Auto, Light, Dark, Hidden}` synced with `WindowPresentation.theme`; portrait/landscape + Dynamic Island safe-area verification.
-  4. **Web Production Closure**: `window.visualViewport` → `WindowViewport.keyboard_inset`; `document.title` & `<meta name="theme-color">` sync; `beforeunload` wired to `Window::on_close_request`; multimodal clipboard write (text/image); complete modal ARIA focus trap + `inert`.
-  5. **macOS & Linux Desktop Closure**:
-     - **Drag Out**: macOS `NSDraggingSession`, Linux Wayland/X11 drag source, and Web `draggable`/`dataTransfer`.
-     - **Window Levels & Panels**: `WindowLevel::{Normal, Floating, AlwaysOnTop}` and non-activating floating panel (`NSPanel` semantics).
-     - **Linux Native Polish**: Wayland `text-input-v3` IME, fractional HiDPI scaling, XDG Desktop Portal dark-mode/preferences integration.
-  6. **Airspace Occlusion**: Implement `AirspacePolicy::SnapshotOnOcclude` automatic GPU snapshot freeze and live-view hide whenever an Octara overlay intersects an overlay native view.
-  7. **Internationalization & Accessibility Preferences**: BiDi/RTL `Direction::{Ltr, Rtl}` with logical spacing/alignment (`start`/`end`), plus `SystemPreferences::{locale, text_scale, high_contrast}`.
-  8. **P0 120Hz `CADisplayLink` Presentation Pacing, VSync Input Coalescing & Scroll Hot-Path Optimization**: Monotonic GPU frame presentation (eliminating `finish_draw` stale-rev discard & `Retry(+16ms)` cascade), unified macOS/iOS `CADisplayLink` (`NSView::displayLinkWithTarget:selector:` / iOS `CADisplayLink`) with adaptive ProMotion `CAFrameRateRange`, `targetTimestamp` scanout sampling, on-demand drawable acquisition & ~120 ms idle grace window, causal VSync `MouseWheel`/`CursorMoved` coalescing with real `WheelPhase`, and Release CPU/GPU profiling & optimization of `SetScroll`, `virtual_each` + `octara-markdown` mounts, and bulk list switches.
+### `0.0.9` — Core Gestures, Soft-Keyboard Traits, RTL & P0 120Hz CPU+GPU Rendering Overhaul *(Released — `f0e572c`)*
+- **Spec**: [15 — Tier-1 Core Interaction, Accessibility, Forms, RTL & Airspace Closure](v2/15-four-platform-core-polish.md) (Wave A + Wave B1 / C7)
+- **Delivered**:
+  - Unified gestures (`GestureEvent::{Pinch, Rotate, LongPress, DoubleTap}`, `PullToRefresh`, `ScrollDismissesKeyboard`), `InputTraits` (`KeyboardType`, `ReturnKeyType`, `TextContentType`), BiDi/RTL `Direction` & `SystemPreferences::{locale, text_scale, high_contrast}`.
+  - End-to-end CPU+GPU Scroll-Space Separation (`SpatialTable`, retained GPU instance buffers, 5K `DamageRect` partial rasterization, dormant `AccessKitProjector`, O(1) bulk retirement), unified Apple `CADisplayLink`, monotonic presentation, and causal VSync input coalescing.
 
 ---
 
-### `0.0.10` — High-Frequency System Modules & WebView Persistence
-- **Spec**: [16 — High-Frequency System Modules & WebView Depth (`0.0.10`)](v2/16-high-frequency-modules.md)
+### `0.0.10` — Zero-`winit` Direct Native Hosts + Tier-1 Core & Airspace Closure *(In Progress)*
+- **Specs**: [15 — Tier-1 Core Closure](v2/15-four-platform-core-polish.md) (C3–C6) & [17 — Direct Native Platform Hosts (Zero `winit` Architecture)](v2/17-native-platform-hosts-without-winit.md)
+- **Scope**:
+  1. **iOS & Web Production Closure (C3 + C4)**: iOS `UIAccessibility` VoiceOver bridge + `StatusBarStyle` + scene-local keyboard layout; Web `visualViewport`, `document.title`/`theme-color`, `beforeunload`, unified multimodal `WriteClipboard`, and modal ARIA focus trap + `inert`.
+  2. **100% `winit` & `accesskit_winit` Removal**: Pure platform-neutral `OsHost` / `OsWindow` / `PlatformEvent` SPI in `octara-host-native`; direct macOS `15.4+` AppKit host (`NSApplication` / `NSWindow` / `NSPanel` / `NSTextInputClient` / `accesskit_macos`), direct iOS `18.4+` UIKit host (`UIApplicationMain` / `UIWindowSceneDelegate` / `UIViewController`), and direct Linux Wayland (`smithay-client-toolkit`, `zwp_text_input_v3`, `zwp_pointer_gestures_v1`, `wp_fractional_scale_v1`, `wl_data_device`, XDG Portal) + X11 (`x11rb`) host.
+  3. **Desktop Drag-Out, Window Levels/Panels & Airspace Closure (C5 + C6)**: `DragItem` / `el.on_drag_start` (`NSDraggingSession`, Web `DataTransfer`, Linux `wl_data_device`), `WindowLevel` + native macOS `NSPanel`, and `AirspacePolicy::SnapshotOnOcclude`.
+
+---
+
+### `0.0.11` — High-Frequency System Modules & WebView Persistence
+- **Spec**: [16 — High-Frequency System Modules & WebView Depth](v2/16-high-frequency-modules.md)
 - **Scope (Tier-1 Platforms: macOS, iOS, Web, Linux + Headless `mock()`)**:
   1. **`modules/octara-notifications`**: Local notifications, permission state machine, remote push token registration, tap/action deep-link wake (`UNUserNotificationCenter`, Linux `org.freedesktop.Notifications` D-Bus, Web Notification API).
   2. **`modules/octara-secure-store`**: Encrypted credential/secret store with mandatory `SENSITIVE = true` redaction (Apple Keychain, Linux Secret Service D-Bus, Web Crypto AES-GCM + IndexedDB).
