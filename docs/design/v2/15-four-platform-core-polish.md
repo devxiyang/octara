@@ -160,11 +160,15 @@ pub enum TextContentType { #[default] None, Username, Password, NewPassword, One
 3. **Causal VSync Input Coalescing & `WheelPhase` Fidelity (`shell.rs`)**:
    - Map `winit`'s `MouseWheel` `TouchPhase` accurately to `WheelPhase` (stopping hardcoded `WheelPhase::Discrete`) so trackpad direct vs. momentum scroll physics work natively.
    - Coalesce bursty `CursorMoved` (keep latest position) and `MouseWheel` (accumulate `delta` for matching `(window, phase, mods)`) and flush them at the start of each `CADisplayLink` VSync tick—before running `Cycle` + layout + paint—while flushing immediately ahead of any discrete button/key/phase-change event to preserve strict causal ordering.
-4. **Release CPU / GPU Profiling & Hot-Path Optimization (`octara-tree`, `octara-pipeline`, `octara-markdown`, `octara-render`)**:
-   - Profile and optimize three canonical workloads in Release mode with reproducible benchmarks and DST regression ceilings:
-     1. Pure `SetScroll` micro-scroll (zero new rows mounted): eliminate unnecessary style/layout/paint-compiler work on pure scroll-offset updates (target `< 0.5 ms` p95 at 120Hz).
-     2. Fast-fling `virtual_each` + `octara-markdown` row mount/recycle: optimize row mount, Markdown incremental parsing/shaping, Taffy subtree layout, and paint compilation to stay comfortably inside the `8.33 ms` 120Hz budget.
-     3. Heavy list/thread switch teardown + remount: optimize bulk scope disposal, sparse table cleanup, and initial subtree mount latency.
+4. **Flamegraph-Backed CPU / GPU Scroll & Bulk-Switch Hot-Path Optimization (`octara-pipeline`, `octara-tree`, `octara-runtime`, `octara-host-native`)**:
+   - **P0-A — Lazy / On-Demand `AccessKitProjector` + Scroll-Container Offset Fast-Path (`crates/octara-pipeline/src/a11y/mod.rs`, `octara-host-native`, `octara-inspect`)**:
+     - Keep `AccessKitProjector` dormant (`0.00 ms` per frame) until an assistive consumer activates it (`accesskit_winit` initial-tree request, iOS VoiceOver activation, or `Inspector` a11y query); materialize via `snapshot_full` on first activation and track incremental diffs thereafter.
+     - Even when accessibility IS active, pure scroll offset updates MUST update only the scroll container's scroll properties/transform rather than pushing every scrolled descendant into `staging.moved` and running `Tree::is_locally_accessible` + `build_entry` + `accesskit::Properties::eq` across hundreds/thousands of unchanged nodes.
+   - **P0-B — O(1) Scroll-Transform Retained Paint (`crates/octara-pipeline/src/paint/mod.rs`)**:
+     - Keep scroll-container children compiled in scroll-content-local coordinates beneath a single scroll-offset transform/clip wrapper so pure `SetScroll` rebuilds **O(1)** subtrees (the scroll container wrapper only) instead of re-evaluating 600–1,600 descendant `draw_keys` / `subtrees_rebuilt` / `child_spans_rebuilt`.
+   - **P1-C — O(1) Bulk Teardown & Preflight (`crates/octara-runtime/src/window.rs::is_retiring`, `crates/octara-tree/src/transaction.rs::Preflight::retirement_ancestor`)**:
+     - Replace repeated per-node ancestor-chain walks during bulk subtree retirement and transaction preflight with memoized / flat retired-set lookup so heavy list/thread switches avoid O(N × depth) overhead.
+   - **Regression Gates**: Add DST & Release micro-benchmarks asserting O(1) `subtrees_rebuilt` on pure scroll (100+ scrolled rows), zero `AccessKitProjector` work while dormant, zero stale-frame discards / `Retry` stalls under overlapping 60Hz/120Hz scroll & hover input, and verified Release timings for pure micro-scroll, fast-fling `virtual_each` + `octara-markdown`, and heavy list switches.
 
 ---
 
